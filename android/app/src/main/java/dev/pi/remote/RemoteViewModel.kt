@@ -179,9 +179,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             while (true) {
                 delay(PULL_TICK_MS)
-                // 后台调度出错只记录，不要在 main 线程上把 App 崩掉（那会被误读成「下载一开就断连」）。
-                runCatching { tickPullSchedulers() }
-                    .onFailure { Log.e(RELOAD_TRACE_TAG, "pull.tick_failed", it) }
+                // sync 也可能收尾完整的续传文件：SHA-256 校验和发布不能占用 UI 线程。
+                withContext(Dispatchers.IO) {
+                    runCatching { tickPullSchedulers() }
+                        .onFailure { Log.e(RELOAD_TRACE_TAG, "pull.tick_failed", it) }
+                }
                 runCatching { reAdvertiseStalledUploads() }
                     .onFailure { Log.e(RELOAD_TRACE_TAG, "upload.reevaluate_failed", it) }
             }

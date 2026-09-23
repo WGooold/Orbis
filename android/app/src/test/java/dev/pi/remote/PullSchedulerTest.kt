@@ -175,4 +175,110 @@ class PullSchedulerTest {
         assertEquals("电脑无法读取该文件的这一段", h.scheduler.onReadFailed(requestId))
         assertNull(h.scheduler.onReadFailed("unknown-request"))
     }
+
+    @Test
+    fun `slow reliable link completes without building a queue of duplicate ranges`() {
+        val h = Harness(size = 12 * mib)
+        val queue = java.util.ArrayDeque<Harness.Sent>()
+        val received = sortedMapOf<Long, Int>()
+        var issued = 0
+        var remaining = 0L
+        var durable = 0L
+        var peakQueuedBytes = 0L
+        h.tick()
+        // 256 KiB/s: one 1 MiB response takes four seconds, without any packet loss.
+        // Requests share a reliable FIFO byte stream with their own retransmissions.
+        for (tick in 0 until 1_200) {
+            while (issued < h.sent.size) queue.addLast(h.sent[issued++])
+            if (remaining == 0L && queue.isNotEmpty()) remaining = queue.first.length.toLong()
+            peakQueuedBytes = maxOf(peakQueuedBytes, queue.sumOf { it.length.toLong() })
+            h.advance(100)
+            if (queue.isNotEmpty()) {
+                remaining -= 256 * 1024 / 10
+                if (remaining <= 0L) {
+                    val response = queue.removeFirst()
+                    remaining = 0L
+                    if (response.offset >= durable) received[response.offset] = response.length
+                    while (true) durable += received.remove(durable) ?: break
+                    h.deliver(response.offset, response.length, durable)
+                }
+            }
+            h.tick()
+            if (h.scheduler.complete) break
+        }
+        assertTrue("durable=$durable requests=${h.sent.size} peakQueuedBytes=$peakQueuedBytes", h.scheduler.complete)
+        assertEquals("a progressing reliable link must not retry its queued responses", 12, h.sent.size)
+        assertTrue("peakQueuedBytes=$peakQueuedBytes", peakQueuedBytes <= PullScheduler.MAX_WINDOW_BYTES)
+        assertTrue("completion took ${h.now}ms", h.now <= 50_000L)
+    }
+
+    @Test
+    fun `stalled window retries one range and backs off instead of repeating the window`() {
+        val h = Harness(size = 8 * mib)
+        h.tick()
+        h.advance(PullScheduler.DEFAULT_RTO_MS + 1)
+        h.tick()
+        assertEquals(1, h.sent.drop(4).size)
+        assertEquals(0L, h.sent.last().offset)
+        val afterFirstRetry = h.sent.size
+        h.advance(PullScheduler.DEFAULT_RTO_MS + 1)
+        h.tick()
+        assertEquals("the next retry must wait for exponential backoff", afterFirstRetry, h.sent.size)
+        h.advance(PullScheduler.DEFAULT_RTO_MS + 1)
+        h.tick()
+        assertEquals(afterFirstRetry + 1, h.sent.size)
+        assertEquals(0L, h.sent.last().offset)
+    }
+
+    @Test
+    fun `switching out of interactive mode never overshoots the receive window`() {
+        val h = Harness(size = 32 * mib)
+        h.scheduler.setInteractive(true)
+        h.tick()
+        val first = h.sent.first()
+        h.advance(50)
+        h.deliver(first.offset, first.length, first.length.toLong())
+        h.scheduler.setInteractive(false)
+        h.tick()
+        val highest = h.sent.maxOf { it.offset + it.length }
+        assertTrue("issued=$highest durable=${h.scheduler.durableOffset} window=${h.scheduler.window}",
+            highest - h.scheduler.durableOffset <= h.scheduler.window)
+    }
+
+    @Test
+    fun `late duplicate responses do not postpone recovery or inflate the window`() {
+        val h = Harness(size = 4 * mib)
+        h.tick()
+        h.advance(50)
+        h.deliver(0, oneChunk, mib)
+        val window = h.scheduler.window
+        repeat(4) {
+            h.advance(250)
+            h.deliver(0, oneChunk, mib)
+        }
+        h.advance(1)
+        h.tick()
+        assertEquals(5, h.sent.size)
+        assertEquals(mib, h.sent.last().offset)
+        assertTrue(h.scheduler.window < window)
+    }
+
+    @Test
+    fun `recovery repairs several dropped ranges one at a time and finishes`() {
+        val h = Harness(size = 4 * mib)
+        h.tick()
+        h.advance(20)
+        h.deliver(3 * mib, oneChunk, 0)
+        for (missing in 0 until 3) {
+            val before = h.sent.size
+            h.advance(PullScheduler.MAX_RTO_MS + 1)
+            h.tick()
+            val request = h.sent.drop(before).single()
+            assertEquals(missing * mib, request.offset)
+            h.advance(20)
+            h.deliver(request.offset, request.length, if (missing == 2) 4 * mib else (missing + 1) * mib)
+        }
+        assertTrue(h.scheduler.complete)
+        assertEquals(0, h.scheduler.inFlight)
+    }
 }

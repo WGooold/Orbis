@@ -7,7 +7,7 @@ package dev.pi.remote
 internal class PullDownloads(
     private val read: (transferId: String, requestId: String, offset: Long, length: Int) -> Unit,
     private val finish: (transferId: String) -> Unit,
-    private val now: () -> Long = System::currentTimeMillis,
+    private val now: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val lock = Any()
     private val schedulers = mutableMapOf<String, PullScheduler>()

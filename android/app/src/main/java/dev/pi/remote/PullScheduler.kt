@@ -11,9 +11,9 @@ import kotlin.math.abs
  *
  * 三条不变量：
  * 1. **进度只有 `durableOffset` 一个权威**——它是 `.part` 文件里连续落盘的前缀长度。
- * 2. **`highestIssued - durableOffset ≤ window`**——在途 + 乱序暂存的总量有界。写盘跟不上
- *    时 `durableOffset` 不动，新请求自动停发，这就是磁盘背压。
- * 3. **超时只重请求那一个 chunk**，绝不重发整窗——这是相对旧 16 MiB 窗口模型的核心收益。
+ * 2. 新请求不超过 `highestIssued - durableOffset ≤ window`。窗口收缩后先等在途数据落盘，
+ *    不再追加；写盘跟不上时 `durableOffset` 不动，新请求自动停发。
+ * 3. 无进展超时只补最前面的缺片，并指数退避。排在可靠字节流中的慢响应不能被整窗重发。
  *
  * 纯逻辑、无 I/O：`send` 由调用方注入（真实实现走 E2E 通道），`now` 可注入时钟，
  * 因此可以确定性地单测乱序、丢包、收敛与交互让路。
@@ -22,7 +22,7 @@ internal class PullScheduler(
     private val size: Long,
     startOffset: Long,
     private val send: (requestId: String, offset: Long, length: Int) -> Unit,
-    private val now: () -> Long = System::currentTimeMillis,
+    private val now: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private class Outstanding(
         var requestId: String,
@@ -46,6 +46,8 @@ internal class PullScheduler(
     private var srtt = 0L
     private var rttvar = 0L
     private var sawRttSample = false
+    private var retryTimerStartedAt = 0L
+    private var retryBackoffMs = 0L
 
     // 简单带宽估计：只用来给「加性增」定一个上限目标（BDP），不参与乘性减。
     private var bandwidthBytesPerMs = 0.0
@@ -80,7 +82,8 @@ internal class PullScheduler(
         retransmitTimedOut(nowMs)
         val effective = if (interactive) minOf(window, ARTIFACT_CHUNK_BYTES.toLong()) else window
         while (highestIssued < size && highestIssued - durableOffset < effective) {
-            val length = chunkLength(highestIssued)
+            val remainingWindow = effective - (highestIssued - durableOffset)
+            val length = minOf(chunkLength(highestIssued).toLong(), remainingWindow).toInt()
             issue(highestIssued, length, nowMs)
             highestIssued += length
         }
@@ -90,13 +93,16 @@ internal class PullScheduler(
      * 收到一个 chunk。[durableOffsetAfterWrite] 是把它写进 `.part` 之后 store 报回的连续前缀。
      */
     fun onChunk(offset: Long, length: Int, durableOffsetAfterWrite: Long) {
+        val entry = outstanding[offset] ?: return // 重传副本不是新的进展，也不能重置超时或放大窗口。
+        if (length != entry.length) return
         val nowMs = now()
         val wasContiguous = offset == durableOffset
-        outstanding.remove(offset)?.let { entry ->
-            requestById.remove(entry.requestId)
-            // Karn：重传过的样本不拿去更新 RTT，否则估计会被污染。
-            if (!entry.retransmitted) sampleRtt(nowMs - entry.sentAt)
-        }
+        outstanding.remove(offset)
+        requestById.remove(entry.requestId)
+        // Karn：重传过的样本不拿去更新 RTT，否则估计会被污染。
+        if (!entry.retransmitted) sampleRtt(nowMs - entry.sentAt)
+        retryTimerStartedAt = nowMs
+        retryBackoffMs = 0L
         if (durableOffsetAfterWrite > durableOffset) durableOffset = durableOffsetAfterWrite
         noteDelivered(length, nowMs)
         if (wasContiguous && !complete) growWindow()
@@ -110,21 +116,25 @@ internal class PullScheduler(
     }
 
     private fun retransmitTimedOut(nowMs: Long) {
-        val rto = currentRto()
-        for ((offset, entry) in outstanding.entries.toList()) {
-            if (nowMs - entry.sentAt <= rto) continue
-            onLoss()
-            requestById.remove(entry.requestId)
-            entry.requestId = UUID.randomUUID().toString()
-            entry.sentAt = nowMs
-            entry.retransmitted = true
-            requestById[entry.requestId] = offset
-            // 交互状态只改变新请求的粒度。补洞必须覆盖原范围，不能缩短或扩大。
-            send(entry.requestId, offset, entry.length)
-        }
+        val (offset, entry) = outstanding.entries.firstOrNull() ?: return
+        val rto = maxOf(currentRto(), retryBackoffMs)
+        if (nowMs - retryTimerStartedAt <= rto) return
+        // 一窗响应在同一条可靠连接上排队。后面的请求变老不代表丢失；同时重发它们
+        // 会绕过字节窗口，把 Host/Relay 的待发队列越堆越大。每次停滞只探最前面的洞。
+        onLoss()
+        requestById.remove(entry.requestId)
+        entry.requestId = UUID.randomUUID().toString()
+        entry.sentAt = nowMs
+        entry.retransmitted = true
+        requestById[entry.requestId] = offset
+        retryTimerStartedAt = nowMs
+        retryBackoffMs = (rto * 2).coerceAtMost(MAX_RTO_MS)
+        // 交互状态只改变新请求的粒度。补洞必须覆盖原范围，不能缩短或扩大。
+        send(entry.requestId, offset, entry.length)
     }
 
     private fun issue(offset: Long, length: Int, nowMs: Long) {
+        if (outstanding.isEmpty()) retryTimerStartedAt = nowMs
         val requestId = UUID.randomUUID().toString()
         outstanding[offset] = Outstanding(requestId, length, nowMs)
         requestById[requestId] = offset
@@ -199,9 +209,10 @@ internal class PullScheduler(
         /** 交互让路时的分片粒度（见 `chunkLength`）。 */
         const val INTERACTIVE_CHUNK_BYTES = 128 * 1024
 
-        const val MIN_RTO_MS = 200L
-        const val MAX_RTO_MS = 2_000L
-        const val DEFAULT_RTO_MS = 1_000L
+        // RTT 样本包括分片的序列化与排队时间，慢链路不能被硬截成 2 秒。
+        const val MIN_RTO_MS = 1_000L
+        const val MAX_RTO_MS = 60_000L
+        const val DEFAULT_RTO_MS = 5_000L
 
         const val BDP_SAFETY = 1.5
         const val BANDWIDTH_SAMPLE_MS = 500L
