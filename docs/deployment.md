@@ -39,7 +39,7 @@ Build Android with the Windows wrapper, publish the verified APK as `/var/www/or
 
 ## Registration and persistent state
 
-QQ email verification defaults to required. In the console's Service page, the operator may disable it to allow direct Host-bound activation. Do not change this setting as a side effect of deployment. SMTP configuration stays in `shared/relay.env`; see the Windows Host README. If verification is required and SMTP is absent, existing credentials continue working but new registrations are unavailable.
+QQ email verification defaults to required. In the console's Service page, the operator may disable it to allow direct Host-bound activation. Do not change this setting as a side effect of deployment. SMTP configuration stays in `shared/relay.env`; see [verification email setup](mail-server.md) for provider and self-hosted sending options. If verification is required and SMTP is absent, existing credentials continue working but new registrations are unavailable.
 
 Back up `shared/relay.env`, all `shared/data/` files, and download checksums privately. The Relay device store, registration store and administrator policy/audit store must migrate together. Host pairing keys stay on each computer/phone, never in the server repository. Stop writes briefly for the final state copy when moving servers, then verify hashes and resume traffic.
 
