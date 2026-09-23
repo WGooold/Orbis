@@ -15,7 +15,7 @@ class CachedHistoryTreeTest {
         runtimeId: String,
         sessionId: String,
         cwd: String,
-        hostname: String,
+        hostname: String?,
     ) = RuntimeSummary(
         runtimeId = runtimeId,
         name = "Pi runtime",
@@ -116,6 +116,71 @@ class CachedHistoryTreeTest {
         val tree = cachedHistoryTree(state)
 
         assertEquals(listOf("devbox"), tree.map { it.hostname })
+    }
+
+    @Test
+    fun `opening a session without a runtime hostname keeps it in the same sidebar directory`() {
+        val cwd = "D:\\work\\alpha"
+        val initial = RemoteState(
+            sessions = mapOf(
+                "s1" to session("s1", cwd, modifiedAt = 2, hostname = "devbox"),
+                "s2" to session("s2", cwd, modifiedAt = 1, hostname = "devbox"),
+            ),
+        )
+        val before = cachedHistoryTree(initial).single()
+
+        for (runtimeId in listOf("r1", "codex:s1")) {
+            for (hostname in listOf(null, "", "  ")) {
+                val online = initial.copy(
+                    runtimes = mapOf(runtimeId to runtime(runtimeId, "s1", cwd, hostname)),
+                    selectedRuntimeId = runtimeId,
+                )
+                val host = cachedHistoryTree(online).single()
+                assertEquals(before.hostname, host.hostname)
+                val directory = host.directories.single()
+                assertEquals(cwd, directory.cwd)
+                assertEquals(listOf("s1", "s2"), directory.sessions.map { it.sessionId })
+                val row = directory.sessions.first()
+                assertEquals("devbox", row.hostname)
+                assertEquals(runtimeId, row.runtimeId)
+                assertTrue(row.isOnline)
+            }
+        }
+    }
+
+    @Test
+    fun `an online session uses the catalog directory until its runtime reports one`() {
+        val storedCwd = "D:\\work\\alpha"
+        val initial = RemoteState(
+            sessions = mapOf("s1" to session("s1", storedCwd, modifiedAt = 1, hostname = "devbox")),
+        )
+        for (runtimeCwd in listOf("", "  ", "D:\\work\\beta")) {
+            val online = initial.copy(
+                runtimes = mapOf("r1" to runtime("r1", "s1", runtimeCwd, "devbox")),
+            )
+            val directory = cachedHistoryTree(online).single().directories.single()
+            val expectedCwd = if (runtimeCwd.isBlank()) storedCwd else runtimeCwd
+            assertEquals(expectedCwd, directory.cwd)
+            assertEquals(expectedCwd, directory.sessions.single().cwd)
+        }
+    }
+
+    @Test
+    fun `loading history and closing a session preserve its sidebar host`() {
+        val entry = session("s1", "D:\\work\\alpha", modifiedAt = 10, hasHistoryCache = false, hostname = "devbox")
+            .copy(name = "Saved session", agentKind = "codex", archived = false)
+        for (hostname in listOf(null, "", "  ", "new-host")) {
+            val cached = entry.withHistoryCache(hostname)
+            val expectedHost = if (hostname.isNullOrBlank()) "devbox" else hostname
+            assertEquals(entry.copy(hasHistoryCache = true, hostname = expectedHost), cached)
+            val offline = RemoteState(sessions = mapOf(entry.sessionId to cached))
+            val host = cachedHistoryTree(offline).single()
+            assertEquals(expectedHost, host.hostname)
+            assertEquals(entry.cwd, host.directories.single().cwd)
+            val row = host.directories.single().sessions.single()
+            assertEquals(entry.sessionId, row.sessionId)
+            assertEquals(false, row.isOnline)
+        }
     }
 
     @Test

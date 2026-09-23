@@ -813,16 +813,20 @@ internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
     val rows = linkedMapOf<String, CachedSessionRow>()
     for ((sessionId, runtimes) in runtimesBySession) {
         val runtime = runtimes.firstOrNull() ?: continue
+        val session = state.sessions[sessionId]
         rows[sessionId] = CachedSessionRow(
             sessionId = sessionId,
             runtimeId = runtime.runtimeId,
             isOnline = true,
-            cwd = runtime.cwd,
-            hostname = runtime.hostname?.takeIf(String::isNotBlank),
-            catalogEntry = state.sessions[sessionId],
+            cwd = runtime.cwd.ifBlank { session?.cwd.orEmpty() },
+            // Runtime metadata may omit the host (for example, Codex). Opening the
+            // session must not move it out of its existing sidebar host group.
+            hostname = runtime.hostname?.takeIf(String::isNotBlank)
+                ?: session?.hostname?.takeIf(String::isNotBlank),
+            catalogEntry = session,
             title = state.runtimeDisplayName(runtime),
             messageCount = state.conversations[runtime.runtimeId]?.messages?.size ?: 0,
-            modifiedAt = state.sessions[sessionId]?.modifiedAt ?: 0L,
+            modifiedAt = session?.modifiedAt ?: 0L,
         )
     }
     for (session in state.sessions.values) {
@@ -1862,11 +1866,8 @@ class RelayReducer(
                     nextSessionSyncFailures = nextSessionSyncFailures - runtimeId
                     nextSessionGraphs = state.sessionGraphs + (snapshot.sessionId to graphForProjection)
                     nextSessions = nextSessions + (
-                        snapshot.sessionId to (nextSessions[snapshot.sessionId] ?: SessionCatalogEntry(snapshot.sessionId)).copy(
-                            hasHistoryCache = true,
-                            hostname = state.runtimes[runtimeId]?.hostname
-                                ?: nextSessions[snapshot.sessionId]?.hostname,
-                        )
+                        snapshot.sessionId to (nextSessions[snapshot.sessionId] ?: SessionCatalogEntry(snapshot.sessionId))
+                            .withHistoryCache(state.runtimes[runtimeId]?.hostname)
                     )
                 }
                 val currentViewLeaf = state.runtimeSessionViews[runtimeId]

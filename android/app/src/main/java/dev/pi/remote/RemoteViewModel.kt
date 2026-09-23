@@ -1964,7 +1964,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                             current.copy(
                                 sessionGraphs = current.sessionGraphs + (sessionId to graph),
                                 sessions = current.sessions + (sessionId to (current.sessions[sessionId]
-                                    ?: SessionCatalogEntry(sessionId)).copy(hasHistoryCache = true, hostname = runtime.hostname)),
+                                    ?: SessionCatalogEntry(sessionId)).withHistoryCache(runtime.hostname)),
                             ).seedCachedSessionView(runtime.runtimeId, graph)
                         }
                     }

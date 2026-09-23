@@ -31,6 +31,12 @@ data class SessionCatalogEntry(
     val archived: Boolean? = null,
 )
 
+/** Loading history must not erase the host supplied by the session directory. */
+internal fun SessionCatalogEntry.withHistoryCache(runtimeHostname: String?): SessionCatalogEntry = copy(
+    hasHistoryCache = true,
+    hostname = runtimeHostname?.takeIf(String::isNotBlank) ?: hostname,
+)
+
 @Serializable
 private data class PersistedSessionCatalog(
     val relayUrl: String,
