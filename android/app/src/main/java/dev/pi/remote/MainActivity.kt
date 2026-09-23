@@ -67,7 +67,6 @@ import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Refresh
@@ -204,6 +203,10 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
             AllDownloadsScreen(
                 state = state,
                 onBack = { allDownloadsOpen = false },
+                onBrowse = model::browseSessions,
+                onBrowseInto = model::browseInto,
+                onBrowseUp = model::browseUp,
+                onDismissBrowse = model::dismissBrowse,
                 onDownload = { path -> model.downloadFile(path) },
                 onRetry = { taskId -> model.retryDownload(taskId) },
                 onCancel = model::cancelDownload,
@@ -732,76 +735,22 @@ internal fun NewSessionSheet(
                 )
             } else {
                 val browse = state.sessionBrowse
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Rounded.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text(
-                        browse?.path?.takeIf(String::isNotBlank) ?: "电脑根目录",
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (browse?.isLoading == true) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    }
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                val entries = browse?.entries.orEmpty()
-                if (browse != null && !browse.isLoading && entries.isEmpty()) {
-                    Text(
-                        "此目录没有子目录",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 320.dp),
-                    contentPadding = PaddingValues(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    if (browse?.path?.isNotBlank() == true) {
-                        item(key = "browse-up") {
-                            NeumorphTextButton("上一级", onClick = onBrowseUp, icon = Icons.Rounded.ArrowUpward, modifier = Modifier.fillMaxWidth())
-                        }
-                    }
-                    items(entries, key = { it.name }) { entry ->
-                        if (!entry.isDir) return@items
-                        NeumorphSurface(onClick = { onBrowseInto(entry.name) }, modifier = Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape, shadowScale = 0.45f) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                Icons.Rounded.Folder,
-                                contentDescription = null,
-                                tint = if (entry.hasSessions) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Text(
-                                entry.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            if (entry.hasSessions) {
-                                Badge(containerColor = MaterialTheme.colorScheme.secondaryContainer) {
-                                    Text("有历史", style = MaterialTheme.typography.labelSmall)
-                                }
-                            }
-                        }
-                        }
-                    }
-                }
+                RemoteDirectoryBrowser(
+                    browse = browse,
+                    connected = !offline && state.e2eReady,
+                    onBrowse = onBrowse,
+                    onBrowseInto = onBrowseInto,
+                    onBrowseUp = onBrowseUp,
+                    modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+                )
                 NeumorphActionButton(
                     onClick = {
                         val cwd = browse?.path.orEmpty()
                         if (cwd.isNotBlank()) onCreate(agentKind, cwd)
                     },
                     text = "在这里新建 ${agentBrand(agentKind).title} 会话",
-                    enabled = !offline && browse != null && !browse.isLoading && !browse.path.isNullOrBlank(),
+                    enabled = !offline && state.e2eReady && browse != null && !browse.isLoading &&
+                        browse.error == null && !browse.path.isNullOrBlank(),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -1178,11 +1127,15 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
     }
 
     if (downloadManagerOpen) {
-        // 对话上方的下载页与主页面下载页是**同一个页面**（路径输入 + 下载 + 列表），
+        // 对话上方的下载页与主页面下载页是同一个页面（浏览文件 + 下载列表），
         // 语义都是「和 Host 交互」——不再是「某个 runtime 的下载」。
         AllDownloadsScreen(
             state = state,
             onBack = { downloadManagerOpen = false },
+            onBrowse = model::browseSessions,
+            onBrowseInto = model::browseInto,
+            onBrowseUp = model::browseUp,
+            onDismissBrowse = model::dismissBrowse,
             onDownload = { path -> model.downloadFile(path) },
             onRetry = { taskId -> model.retryDownload(taskId) },
             onCancel = model::cancelDownload,
@@ -1310,7 +1263,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
                 },
                 actions = {
                     // 「历史与分支」入口：与输入 /tree 打开的是同一个整页。用 History（时钟）
-                    // 而不是 AccountTree——后者留给标题栏的「Git 工作分支」行，两个都画成
+                    // 而不是 AccountTree——后者留给输入区的「Git 工作分支」行，两个都画成
                     // 分叉树会让人以为这个按钮是切换分支用的。
                     NeumorphIconButton(
                         onClick = {
@@ -1337,16 +1290,6 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
             Surface {
                 Column {
                     ComposerContextRail(composerStatus(runtime))
-                    androidx.compose.runtime.key(runtimeId, sessionId) {
-                        RuntimePermissionsStatus(
-                            permissions = runtime?.permissions,
-                            commands = state.capabilities[runtimeId]?.commands.orEmpty(),
-                            connected = state.e2eReady && runtime != null,
-                            idle = runtime?.status == "idle" && conversation.interactions.isEmpty() && conversation.queuedMessages.isEmpty(),
-                            commandResults = state.commandResults,
-                            onApply = model::executeSlashCommand,
-                        )
-                    }
                     commandFeedback?.let { NoticeCard(it) }
                     PendingMessagesPanel(
                         messages = conversation.queuedMessages.values.toList(),
@@ -1403,16 +1346,26 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
                         },
                     )
                     ComposerContextNotice(composerStatus(runtime))
-                    // 运行位置行贴在输入区上方：它是稳定的会话身份，排在瞬时通知（命令反馈、
-                    // 上下文告警）之后、附件 chip 之前——chip 属于这条消息，要挨着输入框。
-                    ComposerLocationLine(
+                    // 目录、分支和权限组成同一组会话信息；附件属于待发送消息，紧贴输入框。
+                    ComposerSessionInfo(
                         path = runtime?.cwd,
                         branch = runtime?.let { current ->
                             state.workingBranches[runtimeId]?.takeIf {
                                 it.cwd == current.cwd && it.sessionId == current.sessionId
                             }
                         },
-                    )
+                    ) {
+                        androidx.compose.runtime.key(runtimeId, sessionId) {
+                            RuntimePermissionsStatus(
+                                permissions = runtime?.permissions,
+                                commands = state.capabilities[runtimeId]?.commands.orEmpty(),
+                                connected = state.e2eReady && runtime != null,
+                                idle = runtime?.status == "idle" && conversation.interactions.isEmpty() && conversation.queuedMessages.isEmpty(),
+                                commandResults = state.commandResults,
+                                onApply = model::executeSlashCommand,
+                            )
+                        }
+                    }
                     if (attachedUploads.isNotEmpty()) {
                         AttachmentChips(
                             uploads = attachedUploads,
@@ -1622,47 +1575,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
 /** 会话元信息行共用的左侧槽宽：顶部信息块的图标与状态点都从这里起笔，文字才会落在同一条左基准线上。 */
 private val MetaLineLeadingSlot = 20.dp
 
-/** 元信息行里图形与文字之间的间距；顶部信息块与输入框上方的运行位置行共用同一套节奏。 */
+/** 顶部元信息行里图形与文字之间的间距。 */
 private val MetaLineGap = 6.dp
-
-/** 分支名的宽度上限：超长分支名不再独占整行，同一行的运行路径始终有位置可显示。 */
-private val BranchLabelMaxWidth = 110.dp
-
-@Composable
-private fun WorkingBranchLabel(
-    branch: WorkingBranch?,
-    modifier: Modifier = Modifier,
-) {
-    val label = when {
-        branch?.branch != null -> branch.branch
-        branch?.commit != null -> "HEAD · ${branch.commit}（分离）"
-        branch?.loaded == true -> "未获取到 Git 分支"
-        else -> "分支信息待同步"
-    }
-    Row(
-        modifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(MetaLineGap),
-    ) {
-        Icon(
-            Icons.Rounded.AccountTree,
-            contentDescription = "当前 Git 工作分支",
-            modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            label,
-            // 不设 weight：分支名按自身宽度占位，不会把同一行的运行路径挤到右边。
-            modifier = Modifier.widthIn(max = BranchLabelMaxWidth),
-            style = MaterialTheme.typography.labelMedium,
-            fontFamily = FontFamily.Monospace,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Start,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -1949,15 +1863,19 @@ private fun DownloadStatusButton(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-private fun AllDownloadsScreen(
+internal fun AllDownloadsScreen(
     state: RemoteState,
     onBack: () -> Unit,
+    onBrowse: (String?) -> Unit,
+    onBrowseInto: (String) -> Unit,
+    onBrowseUp: () -> Unit,
+    onDismissBrowse: () -> Unit,
     onDownload: (String) -> Unit,
     onRetry: (String) -> Unit,
     onCancel: (String) -> Unit,
     onDelete: (Set<String>) -> Unit,
 ) {
-    var path by remember { mutableStateOf("") }
+    var filePickerOpen by rememberSaveable { mutableStateOf(false) }
     var selectedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     val downloads = state.downloads.values.sortedByDescending(ArtifactDownload::createdAt)
     val visibleTaskIds = downloads.mapTo(mutableSetOf(), ArtifactDownload::taskId)
@@ -2009,37 +1927,17 @@ private fun AllDownloadsScreen(
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Text(
-                "输入电脑上的文件路径，保存到手机",
+                "浏览电脑目录，选择文件下载到手机",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = RemoteUi.PagePadding, vertical = 12.dp),
             )
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding).padding(bottom = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                OutlinedTextField(
-                    value = path,
-                    onValueChange = { path = it },
-                    label = { Text("电脑文件路径") },
-                    placeholder = { Text("C:\\work\\build\\app.apk") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-                // S6：下载是凸起圆钮。
-                NeumorphIconButton(
-                    onClick = {
-                        onDownload(path.trim())
-                        path = ""
-                    },
-                    icon = Icons.Rounded.Download,
-                    contentDescription = "开始下载",
-                    modifier = Modifier.padding(bottom = 4.dp),
-                    enabled = path.isNotBlank(),
-                    size = 40.dp,
-                )
-            }
+            NeumorphActionButton(
+                text = "浏览电脑文件",
+                icon = Icons.Rounded.Folder,
+                onClick = { onDismissBrowse(); filePickerOpen = true },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding).padding(bottom = 20.dp),
+            )
             HorizontalDivider()
             if (downloads.isEmpty()) {
                 Column(
@@ -2080,6 +1978,16 @@ private fun AllDownloadsScreen(
                 }
             }
         }
+    }
+    if (filePickerOpen) {
+        DownloadFileSheet(
+            state = state,
+            onDismiss = { filePickerOpen = false; onDismissBrowse() },
+            onBrowse = onBrowse,
+            onBrowseInto = onBrowseInto,
+            onBrowseUp = onBrowseUp,
+            onDownload = onDownload,
+        )
     }
 }
 
@@ -2747,41 +2655,6 @@ private fun ChatRuntimeStatus(
                 color = MaterialTheme.colorScheme.secondary,
             )
         }
-    }
-}
-
-/**
- * 输入框上方的运行位置行：目录与 Git 分支同行，回答「这段对话在哪台机器的哪个目录、哪条线上跑」。
- *
- * 平面文字，不给输入区再加一层表面——输入框本身已经是凹陷的，两者叠在一起会互相抢；
- * 左右留白取 [RemoteUi.PagePadding]，与同样坐在输入框上方的附件 chip、排队消息、Follow-up / Steer 对齐。
- * 路径吃掉行内剩余宽度（短路径就只占自身宽度），分支跟在后面，两者都从左侧起笔，不被推到行尾。
- */
-@Composable
-private fun ComposerLocationLine(path: String?, branch: WorkingBranch?) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(MetaLineGap),
-    ) {
-        Icon(
-            Icons.Rounded.Folder,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            path?.takeIf(String::isNotBlank) ?: "运行路径待同步",
-            modifier = Modifier.weight(1f, fill = false),
-            style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Start,
-        )
-        // 多出的 6dp 把「在哪台机器的哪个目录」和「在哪条线上跑」分成两组。
-        WorkingBranchLabel(branch, modifier = Modifier.padding(start = 6.dp))
     }
 }
 

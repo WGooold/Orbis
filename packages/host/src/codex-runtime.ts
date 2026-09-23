@@ -664,12 +664,25 @@ export class CodexRuntime implements AgentBackend {
 
   // ── 会话目录与激活 ───────────────────────────────────────────────────────────
 
+  async currentProvider(): Promise<string | undefined> {
+    try {
+      const result = object(await this.#server.request("config/read", { includeLayers: false }, 5_000));
+      if (result.config === null || typeof result.config !== "object" || Array.isArray(result.config)) return undefined;
+      const config = object(result.config);
+      const provider = config.model_provider;
+      return provider == null ? "openai" : codexProviderId(provider);
+    } catch (error) {
+      this.#options.log?.(`读取 Codex 当前 provider 失败：${describeError(error)}`);
+      return undefined;
+    }
+  }
+
   /** Persistent thread catalog, with a rollout fallback when app-server discovery fails. */
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
     const limit = 200;
     let live: AgentSessionSummary[] = [];
     try {
-      const result = (await this.#server.request("thread/list", { limit, ...(archived ? { archived: true } : {}) })) as {
+      const result = (await this.#server.request("thread/list", { limit, modelProviders: [], ...(archived ? { archived: true } : {}) })) as {
         data?: Array<Record<string, unknown>>;
       };
       live = (result.data ?? []).flatMap((thread): AgentSessionSummary[] => {
@@ -678,6 +691,7 @@ export class CodexRuntime implements AgentBackend {
         const createdAt = toMillis(thread.createdAt);
         const modifiedAt = toMillis(thread.updatedAt);
         const name = codexSessionName(thread.name);
+        const modelProvider = codexProviderId(thread.modelProvider);
         if (typeof id !== "string" || typeof cwd !== "string" || createdAt === undefined || modifiedAt === undefined) {
           return [];
         }
@@ -694,6 +708,7 @@ export class CodexRuntime implements AgentBackend {
           messageCount: Array.isArray(thread.turns) ? thread.turns.length : 0,
           agentKind: "codex",
           archived,
+          ...(modelProvider === undefined ? {} : { modelProvider }),
         }];
       });
     } catch (error) {
@@ -701,8 +716,15 @@ export class CodexRuntime implements AgentBackend {
       this.#options.log?.(`thread/list 失败，目录只含磁盘 rollout：${describeError(error)}`);
     }
     const disk = await this.#diskCatalog(archived);
+    const diskById = new Map(disk.map((entry) => [entry.sessionId, entry]));
     const liveIds = new Set(live.map((entry) => entry.sessionId));
-    return [...live, ...disk.filter((entry) => !liveIds.has(entry.sessionId))];
+    return [
+      ...live.map((entry) => {
+        const modelProvider = entry.modelProvider ?? diskById.get(entry.sessionId)?.modelProvider;
+        return modelProvider === undefined ? entry : { ...entry, modelProvider };
+      }),
+      ...disk.filter((entry) => !liveIds.has(entry.sessionId)),
+    ];
   }
 
   /** 扫磁盘 rollout 目录。同名会话（fork/重复）取 modifiedAt 最新的那份。 */
@@ -2708,13 +2730,13 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
     return undefined; // 并发删除/权限问题：跳过这份文件，不拖垮整个目录。
   }
   const lines = head.split("\n");
-  let meta: { id?: unknown; cwd?: unknown; timestamp?: unknown } | undefined;
+  let meta: { id?: unknown; cwd?: unknown; timestamp?: unknown; model_provider?: unknown } | undefined;
   let firstMessage: string | undefined;
   for (const line of lines) {
     if (meta === undefined && line.includes('"session_meta"')) {
       const parsed = parseJsonLine(line);
       const payload = parsed?.type === "session_meta" && typeof parsed.payload === "object" && parsed.payload !== null
-        ? (parsed.payload as { id?: unknown; cwd?: unknown; timestamp?: unknown })
+        ? (parsed.payload as { id?: unknown; cwd?: unknown; timestamp?: unknown; model_provider?: unknown })
         : undefined;
       if (payload !== undefined) meta = payload;
     }
@@ -2734,6 +2756,7 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
   // meta.timestamp 解析不出来时用文件 mtime 兜底——schema 里 createdAt 必填。
   const parsedCreatedAt = typeof meta?.timestamp === "string" ? Date.parse(meta.timestamp) : NaN;
   const createdAt = Number.isFinite(parsedCreatedAt) && parsedCreatedAt >= 0 ? parsedCreatedAt : modifiedAt;
+  const modelProvider = codexProviderId(meta?.model_provider);
   return {
     sessionId: id,
     cwd,
@@ -2745,7 +2768,12 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
     modifiedAt,
     messageCount: 0,
     agentKind: "codex",
+    ...(modelProvider === undefined ? {} : { modelProvider }),
   };
+}
+
+function codexProviderId(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 128 ? value : undefined;
 }
 
 /**

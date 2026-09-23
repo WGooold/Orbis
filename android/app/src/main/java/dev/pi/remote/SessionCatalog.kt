@@ -29,6 +29,8 @@ data class SessionCatalogEntry(
     val agentKind: String? = null,
     /** Null on runtime history snapshots, which do not own archive state. */
     val archived: Boolean? = null,
+    /** Provider ownership from the Host catalog; null means unknown, never the current provider. */
+    val modelProvider: String? = null,
 )
 
 /** Loading history must not erase the host supplied by the session directory. */

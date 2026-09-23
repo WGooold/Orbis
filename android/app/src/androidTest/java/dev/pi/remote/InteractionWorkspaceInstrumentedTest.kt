@@ -89,7 +89,7 @@ class InteractionWorkspaceInstrumentedTest {
             permissions.value, listOf(command), commandResults = results.value,
             onApply = { name, value -> calls.add(name to value); "write-${calls.size}" },
         ) } }
-        compose.onNodeWithText("只读沙箱 · 不申请审批").performClick()
+        compose.onNodeWithContentDescription("当前会话权限").performClick()
         compose.onNodeWithText("○ 工作区可写").performScrollTo().performClick()
         compose.onNodeWithText("应用到当前会话").performClick()
         compose.onNodeWithText("正在应用，等待电脑确认…").assertIsNotEnabled()
@@ -107,7 +107,7 @@ class InteractionWorkspaceInstrumentedTest {
 
     @Test fun unavailablePiPermissionsDoNotInventSettings() {
         compose.setContent { PiRemoteTheme { RuntimePermissionsStatus(null) } }
-        compose.onNodeWithText("权限 · 查看").performClick()
+        compose.onNodeWithText("电脑端管理").performClick()
         compose.onNodeWithText("工具权限由电脑端", substring = true).assertIsDisplayed()
         compose.onNodeWithText("应用到当前会话").assertDoesNotExist()
     }

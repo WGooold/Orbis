@@ -215,6 +215,8 @@ export const AgentSessionSummarySchema = SessionCatalogEntrySchema.extend({
   hostname: z.string().min(1).max(256),
   /** Archive state is owned by the backend, not by runtime history snapshots. */
   archived: z.boolean().optional(),
+  /** Provider that owns this session; independent of the currently selected model. */
+  modelProvider: z.string().min(1).max(128).optional(),
 });
 export type AgentSessionSummary = z.infer<typeof AgentSessionSummarySchema>;
 
@@ -1023,6 +1025,11 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("session.list.result"),
     requestId: z.string().min(1).max(128),
     sessions: z.array(AgentSessionSummarySchema).max(2_000),
+    /** Backend configuration, including when the backend has no sessions. */
+    currentProviders: z.array(z.strictObject({
+      agentKind: AgentKindSchema,
+      provider: z.string().min(1).max(128),
+    })).max(2).optional(),
   }),
   z.strictObject({
     type: z.literal("session.browse.result"),

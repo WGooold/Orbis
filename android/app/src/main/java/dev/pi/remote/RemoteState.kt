@@ -305,6 +305,7 @@ data class SessionBrowseState(
     val parent: String? = null,
     val entries: List<SessionBrowseEntry> = emptyList(),
     val isLoading: Boolean = true,
+    val error: String? = null,
 )
 
 @Serializable
@@ -351,6 +352,8 @@ data class RemoteState(
      * 这一项（它不知道电脑装没装 codex），旧版 Host 也不会发；只有 Host 发的才是权威答案。
      */
     val supportedAgents: Set<String>? = null,
+    /** Effective Host configuration; do not infer it from a historical session or model name. */
+    val currentProviders: Map<String, String> = emptyMap(),
     val sessionGraphs: Map<String, SessionGraph> = emptyMap(),
     val runtimeSessionViews: Map<String, RuntimeSessionView> = emptyMap(),
     val sessionSyncCommands: Map<String, PendingSessionSync> = emptyMap(),
@@ -369,7 +372,7 @@ data class RemoteState(
     val sessionListRequestEpochs: Map<String, Long> = emptyMap(),
     /** 进行中的 session.list 请求（spec §8）：requestId 集合，响应/错误到达后移除。 */
     val sessionListRequests: Set<String> = emptySet(),
-    /** 目录浏览（L2 新建用）：null 表示没在浏览；isLoading 期间 entries 是上一层的旧数据。 */
+    /** 新建会话 / 下载共用的电脑文件浏览：null 表示选择器已关闭。 */
     val sessionBrowse: SessionBrowseState? = null,
     /** 进行中的 session.activate 请求（L1 resume / L2 new 共用）。 */
     val sessionActivateRequests: Set<String> = emptySet(),
@@ -463,6 +466,7 @@ private fun mergeSessionCatalogEntry(
         hostname = incoming.hostname ?: existing.hostname,
         agentKind = incoming.agentKind ?: existing.agentKind,
         archived = incoming.archived ?: existing.archived,
+        modelProvider = incoming.modelProvider?.takeIf(String::isNotBlank) ?: existing.modelProvider,
     )
 }
 
@@ -496,6 +500,13 @@ private fun reduceSessionListResult(state: RemoteState, message: JsonObject): Re
     }
     return state.copy(
         sessions = merged,
+        currentProviders = message["currentProviders"]?.jsonArray.orEmpty().mapNotNull { element ->
+            val entry = element as? JsonObject ?: return@mapNotNull null
+            val agentKind = entry["agentKind"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val provider = entry["provider"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+                ?: return@mapNotNull null
+            agentKind to provider
+        }.toMap(),
         sessionListRequests = requestId?.let { state.sessionListRequests - it } ?: state.sessionListRequests,
         sessionListRequestEpochs = requestId?.let { state.sessionListRequestEpochs - it } ?: state.sessionListRequestEpochs,
     )
@@ -533,10 +544,12 @@ private fun reduceSessionBrowseResult(state: RemoteState, message: JsonObject): 
             path = path ?: "",
             parent = parent,
             entries = entries.sortedWith(
-                compareByDescending<SessionBrowseEntry> { it.hasSessions }
+                compareByDescending<SessionBrowseEntry> { it.isDir }
+                    .thenByDescending { it.hasSessions }
                     .thenBy(SessionBrowseEntry::name),
             ),
             isLoading = false,
+            error = null,
         ),
     )
 }
@@ -1090,6 +1103,7 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
     }
     return copy(
         connection = RelayConnection.RECONNECTING,
+        currentProviders = emptyMap(),
         // 断开即没有加密通道：这条信息比 connection 更贴近「能不能干活」。
         e2eReady = false,
         conversations = conversations.mapValues { (_, conversation) ->
@@ -1398,6 +1412,7 @@ class RelayReducer(
                 val interrupted = state.pendingCommands.keys
                 state.copy(
                     e2eReady = false,
+                    currentProviders = emptyMap(),
                     runtimes = emptyMap(),
                     pendingCommands = emptyMap(),
                     commandResults = state.commandResults + interrupted.filterNot { it.isSessionSyncCommandId() }.associateWith {
@@ -1474,11 +1489,11 @@ class RelayReducer(
                         sessionListRequestEpochs = listCleared?.let { state.sessionListRequestEpochs - it } ?: state.sessionListRequestEpochs,
                         sessionActivateRequests = activateCleared?.let { state.sessionActivateRequests - it } ?: state.sessionActivateRequests,
                         sessionBrowse = if (browseCleared != null) {
-                            state.sessionBrowse?.copy(isLoading = false)
+                            state.sessionBrowse?.copy(isLoading = false, error = syncError)
                         } else {
                             state.sessionBrowse
                         },
-                        error = syncError,
+                        error = if (browseCleared != null) state.error else syncError,
                     )
                 }
                 val sessionSync = commandId?.let(state.sessionSyncCommands::get)

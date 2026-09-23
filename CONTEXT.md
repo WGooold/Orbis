@@ -129,7 +129,7 @@ The `auto` | `tui` | `headless` choice for how an activated session starts. `aut
 _Avoid_: Attach mode
 
 **Directory browse**:
-A read-only listing of directories a device may choose as the location for a new session. It has no root restriction and no allowlist.
+A read-only listing of computer directories and regular files. The shared mobile browser selects a directory for a new session or a file for a path-addressed download. It has no root restriction and no allowlist.
 
 **Steer delivery**:
 A working-state message delivery mode that places a user message ahead of follow-up work at an agent-loop boundary; it does not promise interruption of work already executing.

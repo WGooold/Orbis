@@ -1609,13 +1609,14 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
     device.sendPayload(Buffer.from(JSON.stringify(message), "utf8"));
   };
 
-  it("session.browse 返回子目录并标出有会话历史的目录", async () => {
+  it("session.browse 返回目录和可下载文件，并标出有会话历史的目录", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
     const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-remote-sessions-"));
     extraDirs.push(sessionsRoot);
     const projectDir = join(sessionsRoot, "with-history");
     await mkdir(projectDir, { recursive: true });
     await mkdir(join(sessionsRoot, "empty"), { recursive: true });
+    await writeFile(join(sessionsRoot, "report 中文.txt"), "download contents", "utf8");
     // 造一个真会话文件：cwd 的权威来源是文件首行（§8.1）。
     const groupDir = join(sessionsRoot, `--${projectDir.replaceAll(/[\\/:]/gu, "-")}--`);
     await mkdir(groupDir, { recursive: true });
@@ -1645,8 +1646,15 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
       entries: expect.arrayContaining([
         { name: "with-history", isDir: true, hasSessions: true },
         { name: "empty", isDir: true, hasSessions: false },
+        { name: "report 中文.txt", isDir: false, hasSessions: false },
       ]),
     });
+    sendRequest(device, { type: "session.browse", protocolVersion: PROTOCOL_VERSION, requestId: "r2", path: projectDir });
+    await expect(device.receiveMessage()).resolves.toMatchObject({
+      type: "session.browse.result", requestId: "r2", path: projectDir, parent: sessionsRoot, entries: [],
+    });
+    sendRequest(device, { type: "session.browse", protocolVersion: PROTOCOL_VERSION, requestId: "r3", path: join(sessionsRoot, "missing") });
+    await expect(device.receiveMessage()).resolves.toMatchObject({ type: "protocol.error", requestId: "r3" });
   });
 
   it("session.list 返回磁盘扫描出的历史会话", async () => {
@@ -2110,12 +2118,16 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   it("session.list 合并 Codex 目录（catalog 失败时降级为纯 Pi 并不炸）", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
     relay = await startRelayLocal(stateDir);
+    let currentProvider = "custom";
+    const listRequests: unknown[] = [];
     const runtime = new CodexRuntime({
       server: {
-        request: vi.fn(async (method: string) => {
+        request: vi.fn(async (method: string, params: unknown) => {
+          if (method === "config/read") return { config: { model_provider: currentProvider } };
           if (method === "thread/list") {
+            listRequests.push(params);
             return {
-              data: [{ id: "th-codex-1", cwd: "D:/codex-repo", preview: "codex 会话", createdAt: 1_782_812_705, updatedAt: 1_782_812_800, turns: [] }],
+              data: [{ id: "th-codex-1", modelProvider: "custom", cwd: "D:/codex-repo", preview: "codex 会话", createdAt: 1_782_812_705, updatedAt: 1_782_812_800, turns: [] }],
             };
           }
           throw new Error(`unexpected ${method}`);
@@ -2142,8 +2154,15 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     await expect(device.receiveMessage()).resolves.toMatchObject({
       type: "session.list.result",
       requestId: "r1",
-      sessions: [expect.objectContaining({ sessionId: "th-codex-1", agentKind: "codex" })],
+      sessions: [expect.objectContaining({ sessionId: "th-codex-1", agentKind: "codex", modelProvider: "custom" })],
+      currentProviders: [{ agentKind: "codex", provider: "custom" }],
     });
+    currentProvider = "switched";
+    sendRequest(device, { type: "session.list", protocolVersion: PROTOCOL_VERSION, requestId: "r2" });
+    await expect(device.receiveMessage()).resolves.toMatchObject({
+      currentProviders: [{ agentKind: "codex", provider: "switched" }],
+    });
+    expect(listRequests).toHaveLength(2);
   });
 
   it("Codex 空壳不进进程目录；会话激活后 runtime.online 如实重播 cwd", async () => {

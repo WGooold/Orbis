@@ -1,14 +1,26 @@
 package dev.pi.remote
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Computer
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.HelpOutline
+import androidx.compose.material.icons.rounded.LockOpen
+import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,7 +29,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.serialization.Serializable
 
@@ -33,14 +52,17 @@ data class RuntimePermissions(
     val problem: String? = null,
 )
 
-internal fun permissionSummary(permissions: RuntimePermissions): String {
-    val sandbox = when (permissions.sandbox) {
+private fun permissionScopeLabel(permissions: RuntimePermissions): String =
+    when (permissions.sandbox) {
         "readOnly", "read-only" -> "只读沙箱"
         "workspaceWrite", "workspace-write" -> "工作区可写"
         "dangerFullAccess", "danger-full-access" -> "完全访问"
         "externalSandbox" -> "外部沙箱"
         else -> "权限待确认"
     }
+
+internal fun permissionSummary(permissions: RuntimePermissions): String {
+    val sandbox = permissionScopeLabel(permissions)
     val approval = when (permissions.approvalPolicy) {
         "never" -> "不申请审批"
         "on-request", "onRequest" -> "按需批准"
@@ -89,6 +111,7 @@ internal fun RuntimePermissionsStatus(
     idle: Boolean = true,
     commandResults: Map<String, CommandResult> = emptyMap(),
     onApply: (String, String) -> String? = { _, _ -> null },
+    modifier: Modifier = Modifier,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     var selectedCommand by rememberSaveable { mutableStateOf("sandbox") }
@@ -107,11 +130,42 @@ internal fun RuntimePermissionsStatus(
         pendingId = null
         if (result.ok) selectedValue = null
     }
-    NeumorphTextButton(
-        text = if (permissions?.problem != null) "沙箱异常 · 查看详情" else permissions?.let(::permissionSummary) ?: "权限 · 查看",
-        onClick = { expanded = true },
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-    )
+    // A quiet session fact beside the working directory, with a full-sized touch target.
+    // Approval/network details belong in the sheet; never imply that "never" means auto-approve.
+    val hasProblem = permissions?.problem != null
+    val label = when {
+        hasProblem -> "沙箱异常"
+        permissions == null -> "电脑端管理"
+        else -> permissionScopeLabel(permissions)
+    }
+    val icon = when {
+        hasProblem -> Icons.Rounded.ErrorOutline
+        permissions == null -> Icons.Rounded.Computer
+        permissions.sandbox in listOf("dangerFullAccess", "danger-full-access") -> Icons.Rounded.LockOpen
+        permissions.sandbox in listOf("readOnly", "read-only", "workspaceWrite", "workspace-write", "externalSandbox") -> Icons.Rounded.Shield
+        else -> Icons.Rounded.HelpOutline
+    }
+    val tint = if (hasProblem) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(role = Role.Button, onClickLabel = "查看权限与审批设置") { expanded = true }
+            .semantics {
+                contentDescription = "当前会话权限"
+                stateDescription = permissions?.let {
+                    "${if (hasProblem) "沙箱异常。" else ""}${permissionSummary(it)}"
+                } ?: "由电脑端管理"
+            }
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = tint)
+        Text(label, modifier = Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelMedium,
+            color = tint, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Icon(Icons.Rounded.ChevronRight, contentDescription = null, modifier = Modifier.size(14.dp), tint = tint)
+    }
     if (expanded) SessionControlDialog("当前会话权限", onClose = { expanded = false }) {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             if (permissions == null) {

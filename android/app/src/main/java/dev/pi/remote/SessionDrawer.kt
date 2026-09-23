@@ -25,6 +25,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Unarchive
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Check
@@ -89,13 +90,20 @@ private fun DrawerAgentFilterMenu(
     onSelect: (DrawerAgentFilter) -> Unit,
     showArchived: Boolean,
     onToggleArchived: () -> Unit,
+    providerOptions: List<CodexProviderOption>,
+    providerFilterKey: String,
+    onSelectProvider: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var showProviders by remember { mutableStateOf(false) }
+    val filterLabel = if (selected == DrawerAgentFilter.Codex) {
+        "Codex · ${providerOptions.firstOrNull { it.key == providerFilterKey }?.label.orEmpty()}"
+    } else selected.label
     Box {
         NeumorphIconButton(
-            onClick = { expanded = true },
+            onClick = { showProviders = false; expanded = true },
             icon = Icons.Rounded.FilterList,
-            contentDescription = "筛选会话：${selected.label}",
+            contentDescription = "筛选会话：$filterLabel",
             tint = if (selected == DrawerAgentFilter.All) {
                 MaterialTheme.colorScheme.onSurfaceVariant
             } else {
@@ -103,12 +111,34 @@ private fun DrawerAgentFilterMenu(
             },
         )
         NeumorphMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            if (showProviders) {
+                NeumorphMenuItem(
+                    text = { Text("Codex · provider") },
+                    leadingIcon = { Icon(Icons.Rounded.ArrowBack, contentDescription = "返回会话筛选", modifier = Modifier.size(18.dp)) },
+                    onClick = { showProviders = false },
+                )
+                Text(
+                    "会话绑定所属 provider；打开其他 provider 的会话前，请先在电脑端切换。",
+                    modifier = Modifier.width(248.dp).padding(horizontal = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                providerOptions.forEach { option ->
+                    NeumorphMenuItem(
+                        text = { Text(option.label) },
+                        onClick = { onSelectProvider(option.key); expanded = false },
+                        trailingIcon = if (option.key == providerFilterKey) {
+                            { Icon(Icons.Rounded.Check, contentDescription = "当前 provider 筛选", tint = MaterialTheme.colorScheme.primary) }
+                        } else null,
+                    )
+                }
+            } else {
             DrawerAgentFilter.values().forEach { filter ->
                 NeumorphMenuItem(
                     text = { Text(filter.label) },
                     onClick = {
                         onSelect(filter)
-                        expanded = false
+                        if (filter == DrawerAgentFilter.Codex) showProviders = true else expanded = false
                     },
                     leadingIcon = {
                         if (filter == DrawerAgentFilter.All) {
@@ -117,9 +147,12 @@ private fun DrawerAgentFilterMenu(
                             AgentIcon(agentBrand(filter.key), Modifier.size(18.dp))
                         }
                     },
-                    trailingIcon = if (filter == selected) {
-                        { Icon(Icons.Rounded.Check, contentDescription = "当前筛选", tint = MaterialTheme.colorScheme.primary) }
-                    } else null,
+                    trailingIcon = {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (filter == selected) Icon(Icons.Rounded.Check, contentDescription = "当前筛选", tint = MaterialTheme.colorScheme.primary)
+                            if (filter == DrawerAgentFilter.Codex) Icon(Icons.Rounded.ChevronRight, contentDescription = "按 provider 筛选")
+                        }
+                    },
                 )
             }
             HorizontalDivider()
@@ -128,6 +161,7 @@ private fun DrawerAgentFilterMenu(
                 onClick = { onToggleArchived(); expanded = false },
                 leadingIcon = { Icon(Icons.Rounded.Archive, contentDescription = null, modifier = Modifier.size(18.dp)) },
             )
+            }
         }
     }
 }
@@ -146,12 +180,21 @@ internal fun SessionDrawer(
     }
     var agentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
     val agentFilter = drawerAgentFilter(agentFilterKey)
+    val currentProvider = state.currentProviders["codex"]
+    var requestedProviderKey by rememberSaveable(state.hostId) { mutableStateOf(CURRENT_CODEX_PROVIDER) }
+    val providerOptions = remember(tree, currentProvider) { codexProviderOptions(tree, currentProvider) }
+    val providerKey = requestedProviderKey.takeIf { key -> providerOptions.any { it.key == key } } ?: CURRENT_CODEX_PROVIDER
+    val providerLabel = providerOptions.first { it.key == providerKey }.label
     var showArchived by rememberSaveable { mutableStateOf(false) }
-    val filteredTree = remember(tree, agentFilterKey, showArchived) {
+    var blockedSessionId by remember { mutableStateOf<String?>(null) }
+    val filteredTree = remember(tree, agentFilterKey, showArchived, providerKey, currentProvider) {
         tree.mapNotNull { host ->
             host.copy(
                 directories = host.directories.mapNotNull { directory ->
-                    directory.copy(sessions = directory.sessions.filter { agentFilter.matches(it) && it.isArchived == showArchived })
+                    directory.copy(sessions = directory.sessions.filter {
+                        agentFilter.matches(it) && it.isArchived == showArchived &&
+                            (agentFilter != DrawerAgentFilter.Codex || matchesCodexProvider(it, providerKey, currentProvider))
+                    })
                         .takeIf { it.sessions.isNotEmpty() }
                 },
             ).takeIf { it.directories.isNotEmpty() }
@@ -175,12 +218,12 @@ internal fun SessionDrawer(
         }
     }
     // Keep only one branch open. Searching reveals the first result without losing its parent.
-    var expandedCwd by rememberSaveable(selectedHost, searchTerm, agentFilterKey) {
+    var expandedCwd by rememberSaveable(selectedHost, searchTerm, agentFilterKey, providerKey, currentProvider) {
         mutableStateOf(directories.firstOrNull()?.cwd)
     }
-    var showAllSessions by rememberSaveable(selectedHost, searchTerm, agentFilterKey, expandedCwd) { mutableStateOf(false) }
+    var showAllSessions by rememberSaveable(selectedHost, searchTerm, agentFilterKey, providerKey, currentProvider, expandedCwd) { mutableStateOf(false) }
     // Reset only when browsing a different catalog, not when restoring this page from history.
-    val listState = rememberSaveable(selectedHost, searchTerm, agentFilterKey, showArchived, saver = LazyListState.Saver) {
+    val listState = rememberSaveable(selectedHost, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, saver = LazyListState.Saver) {
         LazyListState()
     }
     val connected = state.connection == RelayConnection.ONLINE
@@ -188,6 +231,19 @@ internal fun SessionDrawer(
     val canCreate = connected && !activating
     val focusManager = LocalFocusManager.current
     val drawerWidth = (LocalConfiguration.current.screenWidthDp.dp - 32.dp).coerceAtMost(384.dp)
+
+    blockedSessionId?.let { sessionId ->
+        val reason = state.codexProviderMismatch(sessionId)
+        if (reason != null) NeumorphDialog(
+            onDismissRequest = { blockedSessionId = null },
+            title = { Text("需要切换 provider") },
+            text = { Text(reason) },
+            confirmButton = { NeumorphTextButton("知道了", { blockedSessionId = null }) },
+            dismissButton = if (state.sessions[sessionId]?.hasHistoryCache == true) {
+                { NeumorphTextButton("查看只读历史", { blockedSessionId = null; onOpenHistory(sessionId) }) }
+            } else null,
+        )
+    }
 
     ModalDrawerSheet(
         modifier = Modifier.width(drawerWidth),
@@ -235,6 +291,9 @@ internal fun SessionDrawer(
                         onSelect = { agentFilterKey = it.key },
                         showArchived = showArchived,
                         onToggleArchived = { showArchived = !showArchived },
+                        providerOptions = providerOptions,
+                        providerFilterKey = providerKey,
+                        onSelectProvider = { requestedProviderKey = it; agentFilterKey = DrawerAgentFilter.Codex.key },
                     )
                     NeumorphIconButton(
                         onClick = { onNewSession(null) },
@@ -244,6 +303,14 @@ internal fun SessionDrawer(
                         tint = MaterialTheme.colorScheme.primary,
                     )
                 }
+            if (agentFilter == DrawerAgentFilter.Codex) {
+                Text(
+                    "Codex · $providerLabel",
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -281,6 +348,7 @@ internal fun SessionDrawer(
                             Text(
                                 if (searchTerm.isEmpty()) {
                                     if (showArchived) "没有已归档的会话"
+                                    else if (agentFilter == DrawerAgentFilter.Codex && providerKey == CURRENT_CODEX_PROVIDER && currentProvider == null) "尚未获取当前 provider"
                                     else if (agentFilter == DrawerAgentFilter.All) "还没有可显示的会话"
                                     else "没有${agentFilter.label}会话"
                                 } else "没有找到匹配的目录或会话",
@@ -289,6 +357,7 @@ internal fun SessionDrawer(
                             Text(
                                 if (searchTerm.isEmpty()) {
                                     if (showArchived) "通过筛选菜单返回未归档会话"
+                                    else if (agentFilter == DrawerAgentFilter.Codex && providerKey == CURRENT_CODEX_PROVIDER && currentProvider == null) "连接电脑获取当前配置，或在筛选菜单中选择其他 provider"
                                     else if (agentFilter == DrawerAgentFilter.All) "新建一个会话，从选择目录开始"
                                     else "切换筛选条件，或新建一个${agentFilter.label}会话"
                                 } else "试试目录名、完整路径或会话标题",
@@ -319,7 +388,10 @@ internal fun SessionDrawer(
                             DrawerBranch {
                                 DrawerSessionRow(
                                     row = row,
-                                    onOpenSession = { onOpenSession(row.sessionId) },
+                                    onOpenSession = {
+                                        if (state.codexProviderMismatch(row.sessionId) != null) blockedSessionId = row.sessionId
+                                        else onOpenSession(row.sessionId)
+                                    },
                                     onOpenHistory = { onOpenHistory(row.sessionId) },
                                     archiveEnabled = connected && state.e2eReady &&
                                         row.catalogEntry?.agentKind != null && row.agentKind != "dsh" &&
@@ -556,6 +628,15 @@ private fun DrawerSessionRow(
                         Box(Modifier.size(4.dp).background(MaterialTheme.colorScheme.tertiary, CircleShape))
                         Text("在线", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
                     }
+                }
+                if (row.isCodex) {
+                    Text(
+                        row.modelProvider ?: "未知 provider",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
             Icon(

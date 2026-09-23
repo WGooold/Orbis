@@ -965,12 +965,24 @@ export class HostService {
         // 实测 2.5–6s，Pi 侧全盘扫）。手机在每次激活/重连/回前台都会请求一遍，
         // 不收敛的话这些请求会互相堆叠、把每一台设备都拖进几十秒的等待。
         // 这里按 TTL 缓存 + 合并并发请求：同一时刻的多个 `session.list` 共享同一次扫描。
-        const { sessions, cached } = await this.#catalogWithCache();
+        const [{ sessions, cached }, providers] = await Promise.all([
+          this.#catalogWithCache(),
+          Promise.all(this.#backends.filter((backend) => backend.isReady()).map(async (backend) => {
+            try {
+              const provider = await backend.currentProvider?.();
+              return provider === undefined ? [] : [{ agentKind: backend.kind, provider }];
+            } catch (error) {
+              this.#options.log?.(`读取 ${backend.kind} 当前 provider 失败：${describeError(error)}`);
+              return [];
+            }
+          })),
+        ]);
         const localHostname = hostname();
         const payload = {
           type: "session.list.result" as const,
           requestId,
           sessions: sessions.map((entry) => ({ ...entry, hostname: localHostname })),
+          currentProviders: providers.flat(),
         };
         this.#options.log?.(
           `[debug] 回 session.list.result：${payload.sessions.length} 条，${JSON.stringify(payload).length} 字节${cached ? "（命中缓存）" : ""}`,

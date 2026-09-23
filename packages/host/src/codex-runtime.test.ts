@@ -348,7 +348,7 @@ describe("CodexRuntime", () => {
   it("catalog：归档参数透传到 thread/list，并保留 archived 标记", async () => {
     const h = makeHarness();
     const pending = h.runtime.catalog(true);
-    expect(h.requests).toHaveBeenCalledWith("thread/list", { limit: 200, archived: true });
+    expect(h.requests).toHaveBeenCalledWith("thread/list", { limit: 200, modelProviders: [], archived: true });
     h.resolveNext({
       data: [{ id: "archived-1", cwd: "D:/repo", createdAt: 100, updatedAt: 200, turns: [] }],
     });
@@ -360,11 +360,12 @@ describe("CodexRuntime", () => {
   it("catalog：thread/list 的结果映射成 agentKind=codex 的目录条目（Unix 秒 → 毫秒）", async () => {
     const h = makeHarness();
     const pending = h.runtime.catalog();
-    expect(h.requests).toHaveBeenCalledWith("thread/list", { limit: 200 });
+    expect(h.requests).toHaveBeenCalledWith("thread/list", { limit: 200, modelProviders: [] });
     h.resolveNext({
       data: [
         {
           id: "019f-thread-1",
+          modelProvider: "custom",
           cwd: "D:/repo",
           name: "统一会话名称",
           preview: "帮我看看这个设计",
@@ -378,6 +379,7 @@ describe("CodexRuntime", () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0]).toMatchObject({
       sessionId: "019f-thread-1",
+      modelProvider: "custom",
       cwd: "D:/repo",
       name: "统一会话名称",
       firstMessage: "帮我看看这个设计",
@@ -420,7 +422,7 @@ describe("CodexRuntime", () => {
         JSON.stringify({
           timestamp: "2026-09-14T07:37:23.454Z",
           type: "session_meta",
-          payload: { id: "019f-disk-1", cwd: "D:/repo-b", timestamp: "2026-09-14T07:37:07.471Z" },
+          payload: { id: "019f-disk-1", cwd: "D:/repo-b", timestamp: "2026-09-14T07:37:07.471Z", model_provider: "legacy" },
         }),
         JSON.stringify({
           timestamp: "2026-09-14T07:37:23.471Z",
@@ -436,6 +438,7 @@ describe("CodexRuntime", () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0]).toMatchObject({
       sessionId: "019f-disk-1",
+      modelProvider: "legacy",
       cwd: "D:/repo-b",
       firstMessage: "磁盘里的历史会话",
       agentKind: "codex",
@@ -447,7 +450,7 @@ describe("CodexRuntime", () => {
     const h = makeHarness();
     writeFileSync(
       join(h.rolloutRoot, "rollout-x-019f-disk-2.jsonl"),
-      `${JSON.stringify({ type: "session_meta", payload: { id: "019f-disk-2", cwd: "D:/repo-c" } })}\n`,
+      `${JSON.stringify({ type: "session_meta", payload: { id: "019f-disk-2", cwd: "D:/repo-c", model_provider: "disk-provider" } })}\n`,
       "utf8",
     );
     // 活跃 thread 与磁盘条目同 id：thread/list 的（信息更全）赢。
@@ -459,12 +462,52 @@ describe("CodexRuntime", () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.messageCount).toBe(0); // 来自 thread/list（turns=[] → 0），不是磁盘的兜底条目
     expect(sessions[0]?.modifiedAt).toBe(200_000);
+    expect(sessions[0]?.modelProvider).toBe("disk-provider");
 
     // thread/list 整个失败：磁盘条目顶上，不抛错。
     const pending2 = h.runtime.catalog();
     h.rejectNext(new Error("app-server 未就绪"));
     const fallback: AgentSessionSummary[] = await pending2;
     expect(fallback.map((entry) => entry.sessionId)).toEqual(["019f-disk-2"]);
+    expect(fallback[0]?.modelProvider).toBe("disk-provider");
+  });
+
+  it("current provider comes from configuration without activating a thread and refreshes after changes", async () => {
+    const h = makeHarness();
+    for (const [config, expected] of [
+      [{ model_provider: "custom" }, "custom"],
+      [{ model_provider: "other" }, "other"],
+      [{}, "openai"],
+      [{ model_provider: "effective", profile: "work", profiles: { work: { model_provider: "overridden" } } }, "effective"],
+      [{ model_provider: "" }, undefined],
+    ] as const) {
+      const pending = h.runtime.currentProvider();
+      expect(h.requests).toHaveBeenLastCalledWith("config/read", { includeLayers: false }, 5_000);
+      h.resolveNext({ config });
+      expect(await pending).toBe(expected);
+    }
+    expect(h.runtime.directoryEntries()).toEqual([]);
+    const failed = h.runtime.currentProvider();
+    h.rejectNext(new Error("offline"));
+    expect(await failed).toBeUndefined();
+    const malformed = h.runtime.currentProvider();
+    h.resolveNext({});
+    expect(await malformed).toBeUndefined();
+  });
+
+  it("catalog keeps live provider ownership over disk and leaves missing ownership unknown", async () => {
+    const h = makeHarness();
+    writeFileSync(join(h.rolloutRoot, "rollout-ownership.jsonl"), JSON.stringify({
+      type: "session_meta", payload: { id: "owned", cwd: "D:/repo", model_provider: "old" },
+    }));
+    const pending = h.runtime.catalog();
+    h.resolveNext({ data: [
+      { id: "owned", cwd: "D:/repo", createdAt: 100, updatedAt: 200, modelProvider: "actual" },
+      { id: "unknown", cwd: "D:/repo", createdAt: 100, updatedAt: 200 },
+    ] });
+    const entries = await pending;
+    expect(entries.find((entry) => entry.sessionId === "owned")?.modelProvider).toBe("actual");
+    expect(entries.find((entry) => entry.sessionId === "unknown")?.modelProvider).toBeUndefined();
   });
 
   it("activate：thread/resume 后回放 turns 条目图并发布 replace 快照", async () => {

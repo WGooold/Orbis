@@ -5,8 +5,8 @@
  * - `listPiSessions`：扫 `~/.pi/agent/sessions/<编码后的 cwd>/*.jsonl`。**权威数据是会话
  *   文件的首行**（`{"type":"session","id":...,"cwd":...}`）——目录名是有损编码（cwd 里的
  *   `-` 和分隔符的 `-` 无法区分），所以 cwd 必须读文件，不能从目录名反解。
- * - `browseDirectory`：§8.1 的 `browse { path? }`。空路径返回盘符 / 根；`hasSessions`
- *   用扫描出的 cwd 集合判定，比目录名匹配准。
+ * - `browseDirectory`：空路径返回盘符 / 根，否则返回目录和普通文件。会话选择器只取
+ *   目录，下载选择器也显示文件；`hasSessions` 用扫描出的 cwd 集合判定。
  */
 import { open, readdir, stat, access } from "node:fs/promises";
 import { homedir, hostname, platform } from "node:os";
@@ -185,20 +185,26 @@ export async function browseDirectory(
       platform() === "win32" ? await listWindowsDrives(cwds) : [{ name: "/", isDir: true, hasSessions: cwds.has("/") }];
     return { path: "", entries };
   }
-  const names = await readdir(target);
+  const children = await readdir(target, { withFileTypes: true });
   const entries: BrowseEntry[] = [];
-  for (const name of names) {
+  for (const child of children) {
+    const name = child.name;
     const full = join(target, name);
-    let isDir: boolean;
-    try {
-      isDir = (await stat(full)).isDirectory();
-    } catch {
+    if (child.isSymbolicLink()) {
+      try {
+        // Follow directory/file links just as the path-addressed download does; skip broken links.
+        const linked = await stat(full);
+        if (!linked.isDirectory() && !linked.isFile()) continue;
+        entries.push({ name, isDir: linked.isDirectory(), hasSessions: linked.isDirectory() && cwds.has(normalizeCwdKey(full)) });
+      } catch {
+        // A link target can disappear or be unreadable while browsing.
+      }
       continue;
     }
-    if (!isDir) continue;
-    entries.push({ name, isDir, hasSessions: cwds.has(normalizeCwdKey(full)) });
+    if (!child.isDirectory() && !child.isFile()) continue;
+    entries.push({ name, isDir: child.isDirectory(), hasSessions: child.isDirectory() && cwds.has(normalizeCwdKey(full)) });
   }
-  entries.sort((a, b) => a.name.localeCompare(b.name));
+  entries.sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
   const parent = dirname(target);
   return {
     path: target,
