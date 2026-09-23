@@ -1,6 +1,7 @@
 package dev.pi.remote
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -123,6 +124,43 @@ class SessionGraphTest {
 
         assertEquals(listOf("bash"), projected.messages.map(ChatMessage::messageId))
         assertEquals("$ pwd\n/workspace", projected.messages.single().content.single().text)
+    }
+
+    @Test
+    fun `completed Codex tool calls remain renderable after canonical projection`() {
+        val tool = SessionGraphEntry(
+            entryId = "tool-1",
+            parentId = null,
+            type = "message",
+            timestamp = "1970-01-01T00:00:00.000Z",
+            data = buildJsonObject {
+                put("message", buildJsonObject {
+                    put("role", "assistant")
+                    put("content", buildJsonArray {
+                        add(buildJsonObject {
+                            put("type", "tool_call")
+                            put("toolCallId", "tool-1")
+                            put("toolName", "commandExecution")
+                            put("arguments", buildJsonObject { put("command", "npm test") })
+                        })
+                    })
+                })
+            },
+        )
+
+        val projected = projectSessionGraph(
+            SessionGraph(
+                sessionId = "session-1",
+                entries = mapOf(tool.entryId to tool),
+                cursor = SessionBranchCursor(tool.entryId),
+            ),
+            json,
+        )
+        val presentation = buildConversationPresentation(projected.messages)
+
+        assertEquals(listOf("tool-1"), presentation.messages.map(ChatMessage::messageId))
+        assertEquals("tool_call", presentation.messages.single().content.single().type)
+        assertEquals("tool-1", presentation.messages.single().content.single().toolCallId)
     }
 
     @Test

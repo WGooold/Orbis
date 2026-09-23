@@ -361,10 +361,12 @@ private fun PiMessageProjection.toChatMessage(messageId: String, failure: String
             when (obj["type"]?.jsonPrimitive?.contentOrNull) {
                 "text" -> listOf(RemoteContent(type = "text", text = obj["text"]?.jsonPrimitive?.contentOrNull.orEmpty()))
                 "thinking" -> listOf(RemoteContent(type = "thinking", text = obj["thinking"]?.jsonPrimitive?.contentOrNull.orEmpty()))
-                "toolCall" -> listOf(RemoteContent(
+                "toolCall", "tool_call" -> listOf(RemoteContent(
                     type = "tool_call",
-                    toolCallId = obj["id"]?.jsonPrimitive?.contentOrNull,
-                    toolName = obj["name"]?.jsonPrimitive?.contentOrNull,
+                    toolCallId = obj["toolCallId"]?.jsonPrimitive?.contentOrNull
+                        ?: obj["id"]?.jsonPrimitive?.contentOrNull,
+                    toolName = obj["toolName"]?.jsonPrimitive?.contentOrNull
+                        ?: obj["name"]?.jsonPrimitive?.contentOrNull,
                     arguments = obj["arguments"],
                 ))
                 else -> emptyList()
