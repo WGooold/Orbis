@@ -2076,12 +2076,16 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   it("session.list 合并 Codex 目录（catalog 失败时降级为纯 Pi 并不炸）", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
     relay = await startRelayLocal(stateDir);
+    let currentProvider = "custom";
+    const listRequests: unknown[] = [];
     const runtime = new CodexRuntime({
       server: {
-        request: vi.fn(async (method: string) => {
+        request: vi.fn(async (method: string, params: unknown) => {
+          if (method === "config/read") return { config: { model_provider: currentProvider } };
           if (method === "thread/list") {
+            listRequests.push(params);
             return {
-              data: [{ id: "th-codex-1", cwd: "D:/codex-repo", preview: "codex 会话", createdAt: 1_782_812_705, updatedAt: 1_782_812_800, turns: [] }],
+              data: [{ id: "th-codex-1", modelProvider: "custom", cwd: "D:/codex-repo", preview: "codex 会话", createdAt: 1_782_812_705, updatedAt: 1_782_812_800, turns: [] }],
             };
           }
           throw new Error(`unexpected ${method}`);
@@ -2108,8 +2112,15 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     await expect(device.receiveMessage()).resolves.toMatchObject({
       type: "session.list.result",
       requestId: "r1",
-      sessions: [expect.objectContaining({ sessionId: "th-codex-1", agentKind: "codex" })],
+      sessions: [expect.objectContaining({ sessionId: "th-codex-1", agentKind: "codex", modelProvider: "custom" })],
+      currentProviders: [{ agentKind: "codex", provider: "custom" }],
     });
+    currentProvider = "switched";
+    sendRequest(device, { type: "session.list", protocolVersion: PROTOCOL_VERSION, requestId: "r2" });
+    await expect(device.receiveMessage()).resolves.toMatchObject({
+      currentProviders: [{ agentKind: "codex", provider: "switched" }],
+    });
+    expect(listRequests).toHaveLength(2);
   });
 
   it("Codex 空壳不进进程目录；会话激活后 runtime.online 如实重播 cwd", async () => {

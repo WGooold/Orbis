@@ -418,6 +418,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     /** L1：继续已有会话——cwd 与 agentKind 都来自会话记录，手机只需要 sessionId。 */
     fun activateSession(sessionId: String) {
+        mutableState.value.codexProviderMismatch(sessionId)?.let { reason ->
+            updateState { it.copy(error = reason) }
+            return
+        }
         if (mutableState.value.sessions[sessionId]?.archived == true) {
             updateState { it.copy(error = "请先恢复这个已归档会话") }
             return

@@ -17,6 +17,21 @@ import {
 
 describe("runtime command protocol", () => {
 
+  it("carries session provider ownership and current backend providers, including an empty catalog", () => {
+    const message = {
+      type: "session.list.result", requestId: "providers", sessions: [],
+      currentProviders: [{ agentKind: "codex", provider: "custom" }],
+    };
+    expect(RelayToDeviceMessageSchema.safeParse(message).success).toBe(true);
+    const session = {
+      sessionId: "thread", cwd: "D:/repo", hostname: "host", agentKind: "codex",
+      createdAt: 1, modifiedAt: 2, messageCount: 0, modelProvider: "other",
+    };
+    expect(RelayToDeviceMessageSchema.safeParse({ ...message, sessions: [session] }).success).toBe(true);
+    expect(RelayToDeviceMessageSchema.safeParse({ ...message, sessions: [{ ...session, modelProvider: "" }] }).success).toBe(false);
+    expect(RelayToDeviceMessageSchema.safeParse({ ...message, currentProviders: [{ agentKind: "codex", provider: "" }] }).success).toBe(false);
+  });
+
   it("accepts a lightweight Session catalog and correlates graph syncs", () => {
     expect(RuntimeEventSchema.safeParse({
       type: "session.catalog",
