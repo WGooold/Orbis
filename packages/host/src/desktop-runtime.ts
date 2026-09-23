@@ -226,11 +226,12 @@ export class DesktopRuntime {
     this.log(`${kind} 安装完成`);
   }
 
-  async openAgent(kind: string): Promise<void> {
+  async openAgent(kind: string, mode = "setup"): Promise<void> {
+    if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
     const cli = kind === "pi" ? await resolvePiCommand() : kind === "codex" ? await resolveCodexCommand() : undefined;
     if (!cli) throw new Error("未知 agent");
     const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-    const args = kind === "pi" ? [...cli.prefixArgs, "-e", defaultExtensionPath()] : [...cli.prefixArgs, "login"];
+    const args = kind === "pi" ? [...cli.prefixArgs, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : cli.prefixArgs;
     const script = `& ${[cli.command, ...args].map(quote).join(" ")}`;
     const child = spawn("powershell.exe", ["-NoProfile", "-NoExit", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { detached: true, stdio: "ignore", windowsHide: false, cwd: homedir() });
     await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });

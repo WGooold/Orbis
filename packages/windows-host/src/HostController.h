@@ -74,6 +74,7 @@ public:
     Q_INVOKABLE void detectAgents();
     Q_INVOKABLE void installAgent(const QString &kind);
     Q_INVOKABLE void openAgent(const QString &kind);
+    Q_INVOKABLE void openAgentTui(const QString &kind);
     Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &piPath, const QString &codexPath, const QString &name);
     Q_INVOKABLE void diagnose();
     Q_INVOKABLE void exportDiagnostics();

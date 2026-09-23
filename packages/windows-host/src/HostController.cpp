@@ -227,6 +227,12 @@ void HostController::renameDevice(const QString &deviceId, const QString &label)
 void HostController::detectAgents() { command("detect", agentSettings(), [this](const QJsonValue &value) { m_agents = value.toArray().toVariantList(); emit changed(); }); }
 void HostController::installAgent(const QString &kind) { command("install", {{"kind", kind}}, [this](const QJsonValue &) { detectAgents(); }); }
 void HostController::openAgent(const QString &kind) { command("openAgent", {{"kind", kind}}); }
+void HostController::openAgentTui(const QString &kind) {
+    if (!m_bridgeReady || busy()) return;
+    command("openAgent", {{"kind", kind}, {"mode", "tui"}}, [this, kind](const QJsonValue &) {
+        setMessage(QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(kind == "pi" ? "Pi" : "Codex"));
+    });
+}
 void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &piPath, const QString &codexPath, const QString &name) {
     QString normalized = relay.trimmed(); while (normalized.endsWith('/')) normalized.chop(1);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }

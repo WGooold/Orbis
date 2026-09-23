@@ -142,6 +142,35 @@ ApplicationWindow {
                                 ActionButton { visible: host.activated; text: "＋ 添加手机"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
                             }
                         }
+                        Card {
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                anchors.fill: parent; spacing: 13
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 16
+                                    ColumnLayout {
+                                        Layout.fillWidth: true; spacing: 6
+                                        Heading { text: "打开 AI 工作台" }
+                                        Hint { text: "在独立终端中打开 Pi 或 Codex，直接开始对话。"; Layout.fillWidth: true }
+                                    }
+                                    ActionButton {
+                                        objectName: "overviewOpenPiTui"
+                                        text: "打开 Pi"; primary: true
+                                        enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "pi" && a.installed)
+                                        Accessible.name: "打开 Pi 终端界面"
+                                        onClicked: host.openAgentTui("pi")
+                                    }
+                                    ActionButton {
+                                        objectName: "overviewOpenCodexTui"
+                                        text: "打开 Codex"
+                                        enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "codex" && a.installed)
+                                        Accessible.name: "打开 Codex 终端界面"
+                                        onClicked: host.openAgentTui("codex")
+                                    }
+                                }
+                                Hint { text: "默认打开在你的用户目录。按钮不可用时，请到 Agent 页检测或安装；模型登录也可在那里完成。"; Layout.fillWidth: true; font.pixelSize: 11 }
+                            }
+                        }
                         RowLayout {
                             visible: !host.activated
                             Layout.fillWidth: true; spacing: 20

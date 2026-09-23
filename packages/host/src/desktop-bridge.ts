@@ -29,7 +29,7 @@ input.on("line", line => {
         case "renameDevice": await runtime.renameDevice(String(p.deviceId), String(p.label)); break;
         case "rename": await runtime.renameHost(String(p.name)); break;
         case "install": await runtime.install(String(p.kind)); break;
-        case "openAgent": await runtime.openAgent(String(p.kind)); break;
+        case "openAgent": await runtime.openAgent(String(p.kind), p.mode === undefined ? "setup" : String(p.mode)); break;
         case "shutdown": await runtime.close(); closing = true; break;
         default: throw new Error("Unknown desktop command");
       }

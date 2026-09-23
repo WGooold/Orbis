@@ -7,7 +7,7 @@
 [Setup]
 AppId={{7D5CE083-9F47-48CA-B802-CC14F269FAE1}
 AppName=Orbis Host
-AppVersion=0.1.2
+AppVersion=0.1.3
 AppPublisher=Orbis
 AppPublisherURL=https://github.com/WGooold/Orbis
 DefaultDirName={localappdata}\Programs\Orbis Host
@@ -17,7 +17,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#OutputDir}
-OutputBaseFilename=OrbisHost-0.1.2-windows-x64-setup
+OutputBaseFilename=OrbisHost-0.1.3-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
