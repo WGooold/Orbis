@@ -233,9 +233,15 @@ export class DesktopRuntime {
     const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
     const args = kind === "pi" ? [...cli.prefixArgs, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : cli.prefixArgs;
     const script = `& ${[cli.command, ...args].map(quote).join(" ")}`;
-    const child = spawn("powershell.exe", ["-NoProfile", "-NoExit", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { detached: true, stdio: "ignore", windowsHide: false, cwd: homedir() });
-    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-    child.unref();
+    // A detached Node child with ignored stdio has no usable console on some
+    // Windows hosts. Let Windows create the visible terminal with its own input.
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    const launcher = `$ErrorActionPreference = 'Stop'; Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-NoExit','-EncodedCommand',${quote(encoded)} -WorkingDirectory ${quote(homedir())} -WindowStyle Normal -ErrorAction Stop`;
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(launcher, "utf16le").toString("base64")], { stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000 });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开终端界面，请重试")));
+    });
   }
 
   async #dispose(): Promise<void> {

@@ -21,24 +21,31 @@ describe("desktop terminal shortcuts", () => {
     terminal.codex.mockResolvedValue({ command: "C:\\Orbis Tools\\node.exe", prefixArgs: ["C:\\User's tools\\codex.js"] });
     terminal.spawn.mockImplementation(() => {
       const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
-      queueMicrotask(() => child.emit("spawn"));
+      queueMicrotask(() => child.emit("exit", 0));
       return child;
     });
   });
 
-  function invocation(): { script: string; options: Record<string, unknown> } {
+  function invocation(): { script: string; launcher: string; options: Record<string, unknown> } {
     const [program, args, options] = terminal.spawn.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(program).toBe("powershell.exe");
-    expect(args.slice(0, 3)).toEqual(["-NoProfile", "-NoExit", "-EncodedCommand"]);
-    return { script: Buffer.from(args[3]!, "base64").toString("utf16le"), options };
+    expect(args.slice(0, 3)).toEqual(["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+    const launcher = Buffer.from(args[3]!, "base64").toString("utf16le");
+    const encoded = launcher.match(/'-EncodedCommand','([A-Za-z0-9+/=]+)'/)?.[1];
+    expect(encoded).toBeTruthy();
+    return { script: Buffer.from(encoded!, "base64").toString("utf16le"), launcher, options };
   }
 
   it("opens the Codex interactive CLI, preserving paths with spaces and apostrophes", async () => {
     const runtime = new DesktopRuntime(() => {});
     await runtime.openAgent("codex", "tui");
-    const { script, options } = invocation();
+    const { script, launcher, options } = invocation();
     expect(script).toBe("& 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js'");
-    expect(options).toMatchObject({ detached: true, stdio: "ignore", windowsHide: false, cwd: homedir() });
+    expect(launcher).toContain("Start-Process -FilePath 'powershell.exe'");
+    expect(launcher).toContain("'-NoProfile','-NoExit','-EncodedCommand'");
+    expect(launcher).toContain(`-WorkingDirectory '${homedir().replaceAll("'", "''")}'`);
+    expect(launcher).toContain("-WindowStyle Normal -ErrorAction Stop");
+    expect(options).toMatchObject({ stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000 });
   });
 
   it("keeps the separate Codex account setup action", async () => {
@@ -67,5 +74,14 @@ describe("desktop terminal shortcuts", () => {
       return child;
     });
     await expect(new DesktopRuntime(() => {}).openAgent("codex", "tui")).rejects.toThrow("Terminal unavailable");
+  });
+
+  it("does not report success when the Windows launcher exits unsuccessfully", async () => {
+    terminal.spawn.mockImplementation(() => {
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit("exit", 1));
+      return child;
+    });
+    await expect(new DesktopRuntime(() => {}).openAgent("pi", "tui")).rejects.toThrow("无法打开终端界面");
   });
 });
