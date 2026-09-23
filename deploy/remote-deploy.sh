@@ -65,7 +65,12 @@ if [[ -n "$downloads_archive" ]]; then
   downloads_dir="$shared/download-releases/$release"
   install -d -m 755 "$downloads_dir"
   tar -xzf "$downloads_archive" --no-same-owner -C "$downloads_dir"
-  (cd "$downloads_dir" && sha256sum -c OrbisHost-0.1.2-windows-x64-setup.exe.sha256 && sha256sum -c OrbisHost-0.1.2-windows-x64.zip.sha256)
+  # PowerShell-generated checksum files may use CRLF. Normalize only line
+  # endings; sha256sum still validates both the digest and the exact file name.
+  (cd "$downloads_dir" &&
+    for checksum in OrbisHost-0.1.2-windows-x64-setup.exe.sha256 OrbisHost-0.1.2-windows-x64.zip.sha256; do
+      tr -d '\r' < "$checksum" | sha256sum -c -
+    done)
   chmod 644 "$downloads_dir"/*
 fi
 

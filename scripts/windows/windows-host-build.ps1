@@ -49,7 +49,7 @@ try {
             if ($testProcess.ExitCode -ne 0) { throw "Packaged app smoke test failed: $($testProcess.ExitCode). See $smokeDir" }
             $archive = Join-Path $releaseRoot 'OrbisHost-0.1.2-windows-x64.zip'
             Compress-Archive -LiteralPath $stage -DestinationPath $archive
-            (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $archive) | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii
+            [IO.File]::WriteAllText("$archive.sha256", (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $archive) + "`n", [Text.Encoding]::ASCII)
             if ($InnoCompiler) {
                 # Inno's file reader still encounters MAX_PATH with nested npm packages.
                 # A temporary drive alias shortens source paths without changing the payload.
@@ -68,7 +68,7 @@ try {
                     if ($installerDrive) { & "$env:SystemRoot\System32\subst.exe" $installerDrive /D }
                 }
                 $installer = Join-Path $releaseRoot 'OrbisHost-0.1.2-windows-x64-setup.exe'
-                (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $installer) | Set-Content -LiteralPath "$installer.sha256" -Encoding ascii
+                [IO.File]::WriteAllText("$installer.sha256", (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $installer) + "`n", [Text.Encoding]::ASCII)
             }
             Write-Output "Portable release: $archive"
             Write-Output "Executable: $stage\OrbisHost.exe"
