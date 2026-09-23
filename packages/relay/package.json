@@ -1,0 +1,25 @@
+{
+  "name": "@pi-remote/relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "node --enable-source-maps dist/main.js"
+  },
+  "dependencies": {
+    "@pi-remote/protocol": "0.1.0",
+    "nodemailer": "^10.0.10",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/nodemailer": "^8.0.2"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WGooold/Orbis.git"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@pi-remote/runtime-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "files": [
+    "src",
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@pi-remote/protocol": "0.1.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WGooold/Orbis.git"
+  }
+}

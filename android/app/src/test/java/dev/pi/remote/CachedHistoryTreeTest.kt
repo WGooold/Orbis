@@ -1,0 +1,276 @@
+package dev.pi.remote
+
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class CachedHistoryTreeTest {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private fun runtime(
+        runtimeId: String,
+        sessionId: String,
+        cwd: String,
+        hostname: String,
+    ) = RuntimeSummary(
+        runtimeId = runtimeId,
+        name = "Pi runtime",
+        cwd = cwd,
+        status = "online",
+        sessionId = sessionId,
+        hostname = hostname,
+    )
+
+    private fun session(
+        sessionId: String,
+        cwd: String,
+        modifiedAt: Long,
+        hasHistoryCache: Boolean = true,
+        hostname: String? = null,
+    ) = SessionCatalogEntry(
+        sessionId = sessionId,
+        cwd = cwd,
+        modifiedAt = modifiedAt,
+        hasHistoryCache = hasHistoryCache,
+        hostname = hostname,
+    )
+
+    private fun userEntry(id: String, parentId: String?, text: String) = SessionGraphEntry(
+        entryId = id,
+        parentId = parentId,
+        type = "message",
+        timestamp = "2026-01-01T00:00:00.000Z",
+        data = buildJsonObject {
+            put(
+                "message",
+                buildJsonObject {
+                    put("role", "user")
+                    put("content", text)
+                },
+            )
+        },
+    )
+
+    private fun assistantEntry(id: String, parentId: String?, text: String) = userEntry(id, parentId, text)
+        .copy(
+            data = buildJsonObject {
+                put(
+                    "message",
+                    buildJsonObject {
+                        put("role", "assistant")
+                        put("content", text)
+                    },
+                )
+            },
+        )
+
+    @Test
+    fun `tree nests sessions under host then directory`() {
+        val state = RemoteState(
+            runtimes = mapOf(
+                "r1" to runtime("r1", "s1", "D:\\work\\alpha", "devbox"),
+                "r2" to runtime("r2", "s2", "D:\\work\\beta", "devbox"),
+                "r3" to runtime("r3", "s3", "D:\\work\\alpha", "laptop"),
+            ),
+            sessions = mapOf(
+                "s1" to session("s1", "D:\\work\\alpha", modifiedAt = 1),
+                "s2" to session("s2", "D:\\work\\beta", modifiedAt = 2),
+                "s3" to session("s3", "D:\\work\\alpha", modifiedAt = 3),
+            ),
+        )
+
+        val tree = cachedHistoryTree(state)
+
+        assertEquals(listOf("devbox", "laptop"), tree.map { it.hostname })
+        assertEquals(listOf("D:\\work\\beta", "D:\\work\\alpha"), tree[0].directories.map { it.cwd })
+        assertEquals(listOf("s2"), tree[0].directories[0].sessions.map { it.sessionId })
+        assertEquals(listOf("s1"), tree[0].directories[1].sessions.map { it.sessionId })
+        assertEquals(listOf("s3"), tree[1].directories.single().sessions.map { it.sessionId })
+    }
+
+    @Test
+    fun `offline sessions use the stored hostname`() {
+        val state = RemoteState(
+            sessions = mapOf(
+                "s1" to session("s1", "D:\\work\\alpha", modifiedAt = 1, hostname = "devbox"),
+                "s2" to session("s2", "D:\\work\\beta", modifiedAt = 2, hostname = "laptop"),
+            ),
+        )
+
+        val tree = cachedHistoryTree(state)
+
+        assertEquals(listOf("devbox", "laptop"), tree.map { it.hostname })
+    }
+
+    @Test
+    fun `an online runtime hostname takes precedence over the stored one`() {
+        val state = RemoteState(
+            runtimes = mapOf("r1" to runtime("r1", "s1", "D:\\work\\alpha", "devbox")),
+            sessions = mapOf("s1" to session("s1", "D:\\work\\alpha", modifiedAt = 1, hostname = "stale-host")),
+        )
+
+        val tree = cachedHistoryTree(state)
+
+        assertEquals(listOf("devbox"), tree.map { it.hostname })
+    }
+
+    @Test
+    fun `sessions without a known host fall under the unknown host last`() {
+        val state = RemoteState(
+            sessions = mapOf(
+                "s1" to session("s1", "D:\\work\\alpha", modifiedAt = 1),
+                "s2" to session("s2", "D:\\work\\beta", modifiedAt = 2, hostname = "devbox"),
+            ),
+        )
+
+        val tree = cachedHistoryTree(state)
+
+        assertEquals(listOf("devbox", null), tree.map { it.hostname })
+        assertNull(tree.last().hostname)
+    }
+
+    @Test
+    fun `sessions without a history cache still appear and newest comes first`() {
+        val state = RemoteState(
+            sessions = mapOf(
+                "s1" to session("s1", "D:\\work", modifiedAt = 1, hostname = "devbox"),
+                "s2" to session("s2", "D:\\work", modifiedAt = 5, hostname = "devbox"),
+                "s3" to session("s3", "D:\\work", modifiedAt = 9, hasHistoryCache = false, hostname = "devbox"),
+            ),
+        )
+
+        val tree = cachedHistoryTree(state)
+
+        // 侧栏是「聊天记录」的全量目录：电脑上有过的会话都要在，哪怕手机没缓存过它。
+        // 没缓存只是意味着没有只读历史可看，点它照样能把会话加载进一个进程。
+        assertEquals(1, tree.size)
+        assertEquals(1, tree.single().directories.size)
+        val rows = tree.single().directories.single().sessions
+        assertEquals(listOf("s3", "s2", "s1"), rows.map { it.sessionId })
+        assertEquals(false, rows.first().isOnline)
+        assertEquals(false, rows.first().catalogEntry?.hasHistoryCache)
+    }
+
+    @Test
+    fun `sidebar orders by modified time and does not promote online rows`() {
+        val state = RemoteState(
+            runtimes = mapOf("r1" to runtime("r1", "s1", "D:\\work", "devbox")),
+            sessions = mapOf(
+                "s1" to session("s1", "D:\\work", modifiedAt = 1, hostname = "devbox"),
+                "s2" to session("s2", "D:\\work", modifiedAt = 9, hasHistoryCache = false, hostname = "devbox"),
+            ),
+        )
+
+        val tree = cachedHistoryTree(state)
+
+        // 侧栏是聊天记录的目录，排序只看会话本身有多新：正在被进程打开的会话不会因此提前
+        // （「哪些进程开着」是主页面的职责）。这里把这个默契钉住，免得以后被顺手改掉。
+        val rows = tree.single().directories.single().sessions
+        assertEquals(listOf("s2", "s1"), rows.map { it.sessionId })
+        assertEquals(true, rows.last().isOnline)
+    }
+
+    @Test
+    fun `directories are ordered by their newest session modified time`() {
+        val state = RemoteState(
+            sessions = mapOf(
+                "old" to session("old", "D:\\work\\old", modifiedAt = 100, hostname = "devbox"),
+                "new" to session("new", "D:\\work\\new", modifiedAt = 300, hostname = "devbox"),
+                "newer" to session("newer", "D:\\work\\new", modifiedAt = 500, hostname = "devbox"),
+            ),
+        )
+
+        val tree = cachedHistoryTree(state)
+
+        assertEquals(
+            listOf("D:\\work\\new", "D:\\work\\old"),
+            tree.single().directories.map { it.cwd },
+        )
+        assertEquals(500L, tree.single().directories.first().modifiedAt)
+    }
+
+    @Test
+    fun `online runtimes appear even without a cached catalog entry`() {
+        val state = RemoteState(
+            runtimes = mapOf(
+                "r1" to runtime("r1", "live-1", "D:\\work\\alpha", "devbox"),
+            ),
+        )
+
+        val tree = cachedHistoryTree(state)
+
+        assertEquals(listOf("devbox"), tree.map { it.hostname })
+        val row = tree.single().directories.single().sessions.single()
+        assertEquals("live-1", row.sessionId)
+        assertEquals("r1", row.runtimeId)
+        assertTrue(row.isOnline)
+    }
+
+    @Test
+    fun `online runtime deduplicates the matching cached session`() {
+        val state = RemoteState(
+            runtimes = mapOf("r1" to runtime("r1", "s1", "D:\\work\\alpha", "devbox")),
+            sessions = mapOf("s1" to session("s1", "D:\\work\\alpha", modifiedAt = 99, hostname = "devbox")),
+        )
+
+        val tree = cachedHistoryTree(state)
+        val rows = tree.single().directories.single().sessions
+        assertEquals(1, rows.size)
+        assertTrue(rows.single().isOnline)
+    }
+
+    @Test
+    fun `sidebar host list puts named hosts first and unknown host last`() {
+        val tree = listOf(
+            CachedHostGroup(null, emptyList()),
+            CachedHostGroup("devbox", emptyList()),
+            CachedHostGroup("laptop", emptyList()),
+        )
+
+        val list = sidebarHostList(tree)
+
+        assertEquals(listOf("devbox", "laptop", null), list.hosts)
+        assertEquals("devbox", list.defaultSelected)
+    }
+
+    @Test
+    fun `sidebar host list keeps the unknown bucket when it is the only entry`() {
+        val tree = listOf(CachedHostGroup(null, emptyList()))
+
+        val list = sidebarHostList(tree)
+
+        assertEquals(listOf(null), list.hosts)
+        assertNull(list.defaultSelected)
+    }
+
+    @Test
+    fun `firstUserMessageTitle returns the first user message of the branch`() {
+        val graph = SessionGraph(
+            sessionId = "s1",
+            entries = listOf(
+                userEntry("u1", null, "这是第一句"),
+                assistantEntry("a1", "u1", "收到"),
+                userEntry("u2", "a1", "这是第二句"),
+            ).associateBy(SessionGraphEntry::entryId),
+            cursor = SessionBranchCursor("u2"),
+        )
+
+        assertEquals("这是第一句", graph.firstUserMessageTitle(json))
+    }
+
+    @Test
+    fun `firstUserMessageTitle returns null when the branch has no user message`() {
+        val graph = SessionGraph(
+            sessionId = "s1",
+            entries = listOf(assistantEntry("a1", null, "你好"))
+                .associateBy(SessionGraphEntry::entryId),
+            cursor = SessionBranchCursor("a1"),
+        )
+
+        assertNull(graph.firstUserMessageTitle(json))
+    }
+}

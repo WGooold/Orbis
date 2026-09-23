@@ -1,0 +1,49 @@
+node_modules/
+coverage/
+dist/
+.env
+*.local
+.idea/
+.gradle/
+android/local.properties
+android/**/build/
+*.tsbuildinfo
+data/
+deploy/.deploy.env
+.workbuddy/
+android/.kotlin/
+
+# 本机 Agent 行为约束
+/AGENTS.md
+
+# Local phone uploads
+.pi-remote-uploads/
+
+# Local static website draft
+/website/
+
+# Native Windows Host build and release products
+/.artifacts/
+aqtinstall.log
+
+# Local browser validation artifacts
+/.playwright-cli/
+/output/playwright/
+
+# Private operational state and credentials
+.scratch/
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.log
+*.apk
+*.aab
+*.exe
+*.zip
+*.tar.gz
+*.pi-remote-build.json

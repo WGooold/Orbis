@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- RelayClient 仅允许本机、私有局域网和 .local 主机使用明文 ws://。 -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

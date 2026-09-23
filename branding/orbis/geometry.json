@@ -1,0 +1,14 @@
+{
+  "background": "#10213D",
+  "block_shift_source_px": [
+    0,
+    0
+  ],
+  "source_gap_px": 100.16985574512923,
+  "block_equivalent_side_px": 100.91580649234291,
+  "gap_ratio": 0.9926081872291207,
+  "adaptive_safe_radius_dp": 31.5,
+  "adaptive_canvas_dp": 108,
+  "launcher_visible_dp": 72,
+  "foreground_count": 2
+}

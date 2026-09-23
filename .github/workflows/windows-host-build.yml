@@ -1,0 +1,70 @@
+name: Windows Host build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-host:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_mingw
+          tools: 'tools_mingw1310,qt.tools.win64_mingw1310'
+          archives: 'qtbase qtdeclarative qttools qtsvg qttranslations'
+          cache: true
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run typecheck
+      # The existing multi-megabyte encryption assertions can exceed 10s on hosted CPUs.
+      # Native WebRTC loopback tests can race with other workers on hosted Windows runners.
+      - run: npx vitest run --maxWorkers=1 --retry=1 --testTimeout=30000
+      - name: Build, package, and smoke-test native client
+        shell: pwsh
+        run: |
+          $qtBase = Split-Path (Split-Path $env:QT_ROOT_DIR)
+          $compiler = Join-Path $qtBase 'Tools\mingw1310_64'
+          $inno = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (!(Test-Path -LiteralPath $inno)) { throw 'The runner must provide Inno Setup 6' }
+          scripts/windows/windows-host-build.ps1 -QtRoot $env:QT_ROOT_DIR -CompilerRoot $compiler -Package -InnoCompiler $inno
+      - name: Verify installed application
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem .artifacts/windows-host -Recurse -Filter '*-setup.exe' | Select-Object -First 1
+          $installDir = Join-Path $env:RUNNER_TEMP 'OrbisHost-installed'
+          $smokeDir = Join-Path $setup.DirectoryName 'installer-smoke'
+          New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
+          try {
+            $installer = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOICONS',('/DIR="' + $installDir + '"'),('/LOG="' + $smokeDir + '\install.log"') -WindowStyle Hidden -PassThru -Wait
+            if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
+            $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+            $app = Start-Process -FilePath "$installDir\OrbisHost.exe" -ArgumentList '--smoke-test','--data-dir',('"' + $smokeDir + '"'),'--screenshot',('"' + $smokeDir + '\preview.png"') -WindowStyle Hidden -PassThru -Wait -RedirectStandardError "$smokeDir\qml.log"
+            if ($app.ExitCode -ne 0) { throw "Installed application smoke test failed: $($app.ExitCode)" }
+          } finally {
+            if (Test-Path -LiteralPath "$installDir\unins000.exe") {
+              $uninstaller = Start-Process -FilePath "$installDir\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -PassThru -Wait
+              if ($uninstaller.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstaller.ExitCode)" }
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OrbisHost-windows-x64
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .artifacts/windows-host/**/*.zip
+            .artifacts/windows-host/**/*setup.exe
+            .artifacts/windows-host/**/*.sha256
+            .artifacts/windows-host/**/preview.png
+            .artifacts/windows-host/**/smoke-result.json
+            .artifacts/windows-host/**/qml.log

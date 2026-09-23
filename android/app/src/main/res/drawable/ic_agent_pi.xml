@@ -1,0 +1,10 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="470" android:viewportHeight="470">
+    <!-- Pi official mark, pi.dev/logo-auto.svg; translated to remove the outer canvas margin. -->
+    <group android:translateX="-165.29" android:translateY="-165.29">
+        <path android:fillColor="#F09082" android:pathData="M165.29,165.29H517.36V400H400V282.65H165.29Z" />
+        <path android:fillColor="#4D9ABF" android:pathData="M165.29,282.65H282.65V400H400V517.36H282.65V634.72H165.29Z" />
+        <path android:fillColor="#F1BE58" android:pathData="M517.36,400H634.72V634.72H517.36Z" />
+    </group>
+</vector>

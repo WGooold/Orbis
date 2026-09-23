@@ -1,0 +1,199 @@
+name: Relay deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - tsconfig.base.json
+      - scripts/clean.mjs
+      - scripts/build-relay-web.mjs
+      - packages/relay/**
+      - packages/protocol/**
+      - deploy/**
+      - .github/workflows/relay-deploy.yml
+  workflow_dispatch:
+    inputs:
+      windows_build_run_id:
+        description: 'Optional successful Windows Host build run ID to publish on the website'
+        required: false
+        type: string
+
+# 一次只跑一个部署，且不取消进行中的那个：部署中途被打断会留下候选容器。
+concurrency:
+  group: relay-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  check:
+    # **必须跑在 Windows 上。** 测试套件里有一批断言编码的是 Windows 专属行为，而且它们描述的
+    # 就是真实行为、不是 bug：
+    #   - `packages/host/src/spawner.ts` 的 TUI 降级链是 Windows Terminal（`wt.exe`）→ headless，
+    #     POSIX 上按设计直接 headless，所以 Linux 上跑必然得到 `headless`；
+    #   - `packages/pi-extension/src/runtime-log.test.ts` 断言 `D:/workspace` 解析成盘符路径；
+    #   - `packages/host/src/sessions.test.ts` 依赖 Windows 文件系统的大小写不敏感匹配。
+    # 而且这两块代码本来就跑在开发者的 Windows 机器上（Host / Pi 扩展），在 Windows 上验证才
+    # 名副其实。首次在 ubuntu 上跑过：3 个文件红、33 个绿，红的全是上面这些平台假设。
+    # （让套件本身可移植是另一件事，见 AGENTS.md。）
+    name: lint / 类型检查 / 测试（Windows）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run typecheck
+      # Native WebRTC loopback tests can race with other workers on hosted Windows runners.
+      - run: npx vitest run --maxWorkers=1 --retry=1 --testTimeout=30000
+      - run: npm run build
+
+  deploy:
+    name: 部署到服务器
+    needs: check
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      TARGET: ${{ secrets.PI_REMOTE_DEPLOY_TARGET }}
+      PORT: ${{ secrets.PI_REMOTE_SSH_PORT }}
+      APP_DIR: ${{ secrets.PI_REMOTE_DEPLOY_DIR }}
+      HEALTH_URL: ${{ secrets.PI_REMOTE_HEALTH_URL }}
+      SSH_KEY_FILE: /tmp/orbis-deploy-key
+      SSH_PRIVATE_KEY: ${{ secrets.PI_REMOTE_SSH_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.PI_REMOTE_SSH_KNOWN_HOSTS }}
+      WINDOWS_BUILD_RUN: ${{ inputs.windows_build_run_id }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 打包 HEAD
+        run: |
+          set -euo pipefail
+          release="$(git rev-parse --short=12 HEAD)"
+          echo "RELEASE=$release" >> "$GITHUB_ENV"
+          git archive --format=tar.gz --output="/tmp/pi-remote-relay-$release.tar.gz" HEAD
+          echo "待部署版本：$release"
+
+      - name: Validate requested Windows build
+        if: inputs.windows_build_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$WINDOWS_BUILD_RUN" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$WINDOWS_BUILD_RUN" > /tmp/windows-run.json
+          python3 - <<'PY'
+          import json
+          run = json.load(open('/tmp/windows-run.json'))
+          assert run['conclusion'] == 'success' and run['head_branch'] == 'main'
+          assert run['path'] == '.github/workflows/windows-host-build.yml'
+          PY
+
+      - uses: actions/download-artifact@v4
+        if: inputs.windows_build_run_id != ''
+        with:
+          name: OrbisHost-windows-x64
+          path: /tmp/orbis-windows-artifact
+          run-id: ${{ inputs.windows_build_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify and archive Windows downloads
+        if: inputs.windows_build_run_id != ''
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, os, tarfile
+          root = Path('/tmp/orbis-windows-artifact')
+          with tarfile.open('/tmp/orbis-downloads-' + os.environ['RELEASE'] + '.tar.gz', 'w:gz') as archive:
+              for name in ['OrbisHost-0.1.2-windows-x64-setup.exe', 'OrbisHost-0.1.2-windows-x64.zip']:
+                  matches = list(root.rglob(name))
+                  assert len(matches) == 1, name
+                  file = matches[0]
+                  checksum = file.with_name(name + '.sha256')
+                  assert hashlib.sha256(file.read_bytes()).hexdigest() == checksum.read_text().split()[0]
+                  archive.add(file, arcname=name)
+                  archive.add(checksum, arcname=name + '.sha256')
+          PY
+
+      - name: 准备 SSH
+        run: |
+          set -euo pipefail
+          : "${TARGET:?缺少 secret PI_REMOTE_DEPLOY_TARGET}"
+          : "${PORT:?缺少 secret PI_REMOTE_SSH_PORT}"
+          : "${APP_DIR:?缺少 secret PI_REMOTE_DEPLOY_DIR}"
+          : "${HEALTH_URL:?缺少 secret PI_REMOTE_HEALTH_URL}"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$SSH_KEY_FILE"
+          chmod 600 "$SSH_KEY_FILE"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          : "${SSH_KNOWN_HOSTS:?Missing pinned host keys}"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          printf 'Host *\n  StrictHostKeyChecking yes\n  IdentitiesOnly yes\n' > ~/.ssh/config
+
+      - name: 服务器已是这个版本就跳过
+        id: skip
+        run: |
+          set -euo pipefail
+          deployed="$(ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            "$TARGET" "cat $APP_DIR/shared/deployed-commit 2>/dev/null || true" | tr -d '\r\n')"
+          if [[ "$deployed" == "$RELEASE" && -z "$WINDOWS_BUILD_RUN" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "服务器已经是 $RELEASE，跳过构建与切换。"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "服务器当前 ${deployed:-<无标记>} → 将部署 $RELEASE"
+          fi
+
+      - name: 上传归档与远端部署脚本
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            "/tmp/pi-remote-relay-$RELEASE.tar.gz" "$TARGET:/tmp/pi-remote-relay-$RELEASE.tar.gz"
+          scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            deploy/remote-deploy.sh "$TARGET:/tmp/pi-remote-remote-deploy-$RELEASE.sh"
+          if [[ -n "$WINDOWS_BUILD_RUN" ]]; then
+            scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+              "/tmp/orbis-downloads-$RELEASE.tar.gz" "$TARGET:/tmp/orbis-downloads-$RELEASE.tar.gz"
+          fi
+
+      - name: 在服务器上构建、健康检查并切换
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          downloads=""
+          if [[ -n "$WINDOWS_BUILD_RUN" ]]; then downloads="/tmp/orbis-downloads-$RELEASE.tar.gz"; fi
+          ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            "$TARGET" "bash /tmp/pi-remote-remote-deploy-$RELEASE.sh '$RELEASE' \
+              '/tmp/pi-remote-relay-$RELEASE.tar.gz' '$APP_DIR' '$HEALTH_URL' '$downloads'"
+          ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            "$TARGET" "rm -f /tmp/pi-remote-remote-deploy-$RELEASE.sh" || true
+
+      - name: 核对公网版本与服务器部署标记
+        run: |
+          set -euo pipefail
+          deployed="$(ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            "$TARGET" "cat $APP_DIR/shared/deployed-commit")"
+          test "$deployed" = "$RELEASE"
+          health="$(curl -fsS --max-time 20 "$HEALTH_URL")"
+          printf '%s' "$health" | python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["status"] == "ok" and value["commit"] == sys.argv[1]' "$RELEASE"
+          echo "Verified deployed-commit and public health: $RELEASE"
+          site_url="${HEALTH_URL%/healthz}/"
+          site_body="$(curl -fsS --max-time 20 "$site_url")"
+          admin_body="$(curl -fsS --max-time 20 "${site_url}admin/")"
+          grep -q 'Easy Agents Everywhere' <<<"$site_body"
+          grep -q 'Relay 控制台' <<<"$admin_body"
+          status="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "${site_url}v1/admin/overview")"
+          test "$status" = 401

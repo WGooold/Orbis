@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "baseUrl": ".",
+    "paths": {
+      "@pi-remote/protocol": ["packages/protocol/src/index.ts"],
+      "@pi-remote/e2e": ["packages/e2e/src/index.ts"],
+      "@pi-remote/host": ["packages/host/src/index.ts"],
+      "@pi-remote/runtime-bridge": ["packages/runtime-bridge/src/index.ts"],
+      "@pi-remote/interaction-sdk": ["packages/remote-interaction-sdk/src/index.ts"],
+    },
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true,
+    "skipLibCheck": true,
+    "outDir": "dist"
+  }
+}

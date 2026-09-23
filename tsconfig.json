@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/protocol" },
+    { "path": "packages/e2e" },
+    { "path": "packages/host" },
+    { "path": "packages/relay" },
+    { "path": "packages/runtime-bridge" },
+    { "path": "packages/remote-interaction-sdk" },
+    { "path": "packages/pi-extension" }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "name": "@pi-remote/host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "host": "node --enable-source-maps dist/cli.js host",
+    "pair": "node --enable-source-maps dist/cli.js pair"
+  },
+  "dependencies": {
+    "@pi-remote/e2e": "0.1.0",
+    "@pi-remote/protocol": "0.1.0",
+    "node-datachannel": "^0.33.4",
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@pi-remote/relay": "0.1.0",
+    "@types/qrcode": "^1.5.6"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WGooold/Orbis.git"
+  }
+}

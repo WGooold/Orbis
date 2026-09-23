@@ -1,0 +1,39 @@
+# 行尾策略：仓库统一 LF。
+#
+# 起因：一次 Windows 侧编辑器保存把 24 个已跟踪文件写成了 CRLF，产生纯空白 diff。
+# 仓库当时既没有 .gitattributes 也没有 .editorconfig，所以没有东西阻止它再发生。
+# 而 `packages/protocol/**` 命中 Relay 部署路径——纯空白改动也可能触发一次部署。
+#
+# 一律按文本处理并归一化为 LF（checkout 与提交都写 LF）：
+* text=auto eol=lf
+
+# 平台惯例文件：批处理必须 CRLF。
+#
+# `cmd.exe` 解析 .bat/.cmd 要求 CRLF 行尾：LF-only 的批处理会把长行/中文注释切错，
+# 于是 `rem 中文` 被当成命令执行（实测报错：'绂荤嚎...' 不是内部或外部命令）。
+# 所以仓库里这些文件**存 LF、检出 CRLF**。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# PowerShell 不强制行尾（它在两种行尾下都能跑）。
+*.ps1 -text
+
+# 二进制：禁止任何行尾转换（避免内容被改写）。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.apk binary
+*.jar binary
+*.keystore binary
+*.jks binary
+*.so binary
+*.dll binary
+*.exe binary
+*.woff binary
+*.woff2 binary

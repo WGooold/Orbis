@@ -1,0 +1,2 @@
+-keepattributes *Annotation*
+-keep,includedescriptorclasses class dev.pi.remote.**$$serializer { *; }

@@ -1,0 +1,24 @@
+#include <windows.h>
+IDI_ICON1 ICON "assets/orbis.ico"
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 0,1,2,0
+ PRODUCTVERSION 0,1,2,0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "040904B0"
+  BEGIN
+   VALUE "CompanyName", "Orbis"
+   VALUE "FileDescription", "Orbis Host"
+   VALUE "FileVersion", "0.1.2"
+   VALUE "ProductName", "Orbis Host"
+   VALUE "ProductVersion", "0.1.2"
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x409, 1200
+ END
+END

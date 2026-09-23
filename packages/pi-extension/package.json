@@ -1,0 +1,37 @@
+{
+  "name": "@pi-remote/pi-extension",
+  "version": "0.1.0",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "src",
+    "dist"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@pi-remote/interaction-sdk": "0.1.0",
+    "@pi-remote/protocol": "0.1.0",
+    "@pi-remote/runtime-bridge": "0.1.0",
+    "ws": "^8.18.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WGooold/Orbis.git"
+  }
+}
