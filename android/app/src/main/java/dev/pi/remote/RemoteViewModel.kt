@@ -364,7 +364,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    /** 浏览电脑目录（L2 新建用）。path 为空返回盘符 / 根；否则返回该目录的子目录。 */
+    /** 新建会话与下载共用的只读浏览。path 为空返回盘符 / 根。 */
     fun browseSessions(path: String? = null) {
         val requestId = UUID.randomUUID().toString()
         val current = mutableState.value.sessionBrowse
@@ -389,19 +389,22 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             },
             rollback = { it.copy(sessionBrowse = current) },
         )
+        viewModelScope.launch {
+            delay(15_000)
+            updateState { state ->
+                val browse = state.sessionBrowse
+                if (browse?.requestId == requestId && browse.isLoading) {
+                    state.copy(sessionBrowse = browse.copy(isLoading = false, error = "目录读取超时，请重试"))
+                } else state
+            }
+        }
     }
 
     /** 浏览器下钻到子目录（name 拼到当前 path 上，根层级的 name 本身就是完整路径）。 */
     fun browseInto(name: String) {
         val browse = mutableState.value.sessionBrowse ?: return
-        val parent = browse.path
-        val target = when {
-            parent.isNullOrBlank() -> name // 根层级：entries 的 name 是完整路径（如 "C:\"）
-            parent.endsWith("/") || parent.endsWith("\\") -> parent + name
-            parent.startsWith("/") -> "$parent/$name"
-            else -> "$parent\\$name"
-        }
-        browseSessions(target)
+        if (browse.isLoading || browse.entries.none { it.name == name && it.isDir }) return
+        browseSessions(remoteBrowsePath(browse.path, name))
     }
 
     fun browseUp() {

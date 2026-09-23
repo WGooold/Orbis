@@ -204,6 +204,10 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
             AllDownloadsScreen(
                 state = state,
                 onBack = { allDownloadsOpen = false },
+                onBrowse = model::browseSessions,
+                onBrowseInto = model::browseInto,
+                onBrowseUp = model::browseUp,
+                onDismissBrowse = model::dismissBrowse,
                 onDownload = { path -> model.downloadFile(path) },
                 onRetry = { taskId -> model.retryDownload(taskId) },
                 onCancel = model::cancelDownload,
@@ -726,76 +730,22 @@ private fun NewSessionSheet(
                 )
             } else {
                 val browse = state.sessionBrowse
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Rounded.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text(
-                        browse?.path?.takeIf(String::isNotBlank) ?: "电脑根目录",
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (browse?.isLoading == true) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    }
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                val entries = browse?.entries.orEmpty()
-                if (browse != null && !browse.isLoading && entries.isEmpty()) {
-                    Text(
-                        "此目录没有子目录",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 320.dp),
-                    contentPadding = PaddingValues(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    if (browse?.path?.isNotBlank() == true) {
-                        item(key = "browse-up") {
-                            NeumorphTextButton("上一级", onClick = onBrowseUp, icon = Icons.Rounded.ArrowUpward, modifier = Modifier.fillMaxWidth())
-                        }
-                    }
-                    items(entries, key = { it.name }) { entry ->
-                        if (!entry.isDir) return@items
-                        NeumorphSurface(onClick = { onBrowseInto(entry.name) }, modifier = Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape, shadowScale = 0.45f) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                Icons.Rounded.Folder,
-                                contentDescription = null,
-                                tint = if (entry.hasSessions) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Text(
-                                entry.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            if (entry.hasSessions) {
-                                Badge(containerColor = MaterialTheme.colorScheme.secondaryContainer) {
-                                    Text("有历史", style = MaterialTheme.typography.labelSmall)
-                                }
-                            }
-                        }
-                        }
-                    }
-                }
+                RemoteDirectoryBrowser(
+                    browse = browse,
+                    connected = !offline && state.e2eReady,
+                    onBrowse = onBrowse,
+                    onBrowseInto = onBrowseInto,
+                    onBrowseUp = onBrowseUp,
+                    modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+                )
                 NeumorphActionButton(
                     onClick = {
                         val cwd = browse?.path.orEmpty()
                         if (cwd.isNotBlank()) onCreate(agentKind, cwd)
                     },
                     text = "在这里新建 ${agentBrand(agentKind == "codex").title} 会话",
-                    enabled = !offline && browse != null && !browse.isLoading && !browse.path.isNullOrBlank(),
+                    enabled = !offline && state.e2eReady && browse != null && !browse.isLoading &&
+                        browse.error == null && !browse.path.isNullOrBlank(),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -1172,11 +1122,15 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
     }
 
     if (downloadManagerOpen) {
-        // 对话上方的下载页与主页面下载页是**同一个页面**（路径输入 + 下载 + 列表），
+        // 对话上方的下载页与主页面下载页是同一个页面（浏览文件 + 下载列表），
         // 语义都是「和 Host 交互」——不再是「某个 runtime 的下载」。
         AllDownloadsScreen(
             state = state,
             onBack = { downloadManagerOpen = false },
+            onBrowse = model::browseSessions,
+            onBrowseInto = model::browseInto,
+            onBrowseUp = model::browseUp,
+            onDismissBrowse = model::dismissBrowse,
             onDownload = { path -> model.downloadFile(path) },
             onRetry = { taskId -> model.retryDownload(taskId) },
             onCancel = model::cancelDownload,
@@ -1941,15 +1895,19 @@ private fun DownloadStatusButton(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-private fun AllDownloadsScreen(
+internal fun AllDownloadsScreen(
     state: RemoteState,
     onBack: () -> Unit,
+    onBrowse: (String?) -> Unit,
+    onBrowseInto: (String) -> Unit,
+    onBrowseUp: () -> Unit,
+    onDismissBrowse: () -> Unit,
     onDownload: (String) -> Unit,
     onRetry: (String) -> Unit,
     onCancel: (String) -> Unit,
     onDelete: (Set<String>) -> Unit,
 ) {
-    var path by remember { mutableStateOf("") }
+    var filePickerOpen by rememberSaveable { mutableStateOf(false) }
     var selectedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     val downloads = state.downloads.values.sortedByDescending(ArtifactDownload::createdAt)
     val visibleTaskIds = downloads.mapTo(mutableSetOf(), ArtifactDownload::taskId)
@@ -2001,37 +1959,17 @@ private fun AllDownloadsScreen(
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Text(
-                "输入电脑上的文件路径，保存到手机",
+                "浏览电脑目录，选择文件下载到手机",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = RemoteUi.PagePadding, vertical = 12.dp),
             )
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding).padding(bottom = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                OutlinedTextField(
-                    value = path,
-                    onValueChange = { path = it },
-                    label = { Text("电脑文件路径") },
-                    placeholder = { Text("C:\\work\\build\\app.apk") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-                // S6：下载是凸起圆钮。
-                NeumorphIconButton(
-                    onClick = {
-                        onDownload(path.trim())
-                        path = ""
-                    },
-                    icon = Icons.Rounded.Download,
-                    contentDescription = "开始下载",
-                    modifier = Modifier.padding(bottom = 4.dp),
-                    enabled = path.isNotBlank(),
-                    size = 40.dp,
-                )
-            }
+            NeumorphActionButton(
+                text = "浏览电脑文件",
+                icon = Icons.Rounded.Folder,
+                onClick = { onDismissBrowse(); filePickerOpen = true },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding).padding(bottom = 20.dp),
+            )
             HorizontalDivider()
             if (downloads.isEmpty()) {
                 Column(
@@ -2072,6 +2010,16 @@ private fun AllDownloadsScreen(
                 }
             }
         }
+    }
+    if (filePickerOpen) {
+        DownloadFileSheet(
+            state = state,
+            onDismiss = { filePickerOpen = false; onDismissBrowse() },
+            onBrowse = onBrowse,
+            onBrowseInto = onBrowseInto,
+            onBrowseUp = onBrowseUp,
+            onDownload = onDownload,
+        )
     }
 }
 

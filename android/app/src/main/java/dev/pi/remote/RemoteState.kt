@@ -305,6 +305,7 @@ data class SessionBrowseState(
     val parent: String? = null,
     val entries: List<SessionBrowseEntry> = emptyList(),
     val isLoading: Boolean = true,
+    val error: String? = null,
 )
 
 @Serializable
@@ -369,7 +370,7 @@ data class RemoteState(
     val sessionListRequestEpochs: Map<String, Long> = emptyMap(),
     /** 进行中的 session.list 请求（spec §8）：requestId 集合，响应/错误到达后移除。 */
     val sessionListRequests: Set<String> = emptySet(),
-    /** 目录浏览（L2 新建用）：null 表示没在浏览；isLoading 期间 entries 是上一层的旧数据。 */
+    /** 新建会话 / 下载共用的电脑文件浏览：null 表示选择器已关闭。 */
     val sessionBrowse: SessionBrowseState? = null,
     /** 进行中的 session.activate 请求（L1 resume / L2 new 共用）。 */
     val sessionActivateRequests: Set<String> = emptySet(),
@@ -533,10 +534,12 @@ private fun reduceSessionBrowseResult(state: RemoteState, message: JsonObject): 
             path = path ?: "",
             parent = parent,
             entries = entries.sortedWith(
-                compareByDescending<SessionBrowseEntry> { it.hasSessions }
+                compareByDescending<SessionBrowseEntry> { it.isDir }
+                    .thenByDescending { it.hasSessions }
                     .thenBy(SessionBrowseEntry::name),
             ),
             isLoading = false,
+            error = null,
         ),
     )
 }
@@ -1465,11 +1468,11 @@ class RelayReducer(
                         sessionListRequestEpochs = listCleared?.let { state.sessionListRequestEpochs - it } ?: state.sessionListRequestEpochs,
                         sessionActivateRequests = activateCleared?.let { state.sessionActivateRequests - it } ?: state.sessionActivateRequests,
                         sessionBrowse = if (browseCleared != null) {
-                            state.sessionBrowse?.copy(isLoading = false)
+                            state.sessionBrowse?.copy(isLoading = false, error = syncError)
                         } else {
                             state.sessionBrowse
                         },
-                        error = syncError,
+                        error = if (browseCleared != null) state.error else syncError,
                     )
                 }
                 val sessionSync = commandId?.let(state.sessionSyncCommands::get)

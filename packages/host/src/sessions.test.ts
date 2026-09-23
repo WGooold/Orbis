@@ -116,13 +116,14 @@ describe("browseDirectory", () => {
     await mkdir(project);
     await mkdir(empty);
     await writeFile(join(project, "file.txt"), "x", "utf8");
+    await writeFile(join(root, "report 中文.txt"), "download me", "utf8");
 
     const result = await browseDirectory(root, new Set([project.toUpperCase()]));
     expect(result.path).toBe(root);
     expect(result.entries).toContainEqual({ name: "with-history", isDir: true, hasSessions: true });
     expect(result.entries).toContainEqual({ name: "empty", isDir: true, hasSessions: false });
-    // 文件不进目录浏览（手机的下一跳永远是目录）。
-    expect(result.entries.every((entry) => entry.isDir)).toBe(true);
+    expect(result.entries).toContainEqual({ name: "report 中文.txt", isDir: false, hasSessions: false });
+    expect(result.entries.map((entry) => entry.isDir)).toEqual([true, true, false]);
     expect(result.parent).toBeDefined();
   });
 
@@ -134,5 +135,17 @@ describe("browseDirectory", () => {
     const result = await browseDirectory(leaf, new Set());
     expect(result.entries).toEqual([]);
     expect(result.parent).toBe(root);
+  });
+
+  it("文件目录可以逐层浏览，并返回可直接下载的原始文件名", async () => {
+    const root = await tempRoot();
+    const nested = join(root, "build output");
+    await mkdir(nested);
+    await writeFile(join(nested, "应用 v1.apk"), "apk", "utf8");
+    const result = await browseDirectory(nested, new Set());
+    expect(result.entries).toEqual([{ name: "应用 v1.apk", isDir: false, hasSessions: false }]);
+    expect(result.path).toBe(nested);
+    expect(result.parent).toBe(root);
+    await expect(browseDirectory(join(root, "missing"), new Set())).rejects.toThrow();
   });
 });
