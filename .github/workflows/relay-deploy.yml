@@ -21,6 +21,14 @@ on:
         description: 'Optional successful Windows Host build run ID to publish on the website'
         required: false
         type: string
+      android_release_tag:
+        description: 'Optional GitHub release containing verified orbis.apk and orbis.apk.sha256 assets'
+        required: false
+        type: string
+      android_apk_sha256:
+        description: 'Required SHA-256 of the locally verified APK when publishing Android'
+        required: false
+        type: string
 
 # 一次只跑一个部署，且不取消进行中的那个：部署中途被打断会留下候选容器。
 concurrency:
@@ -71,6 +79,8 @@ jobs:
       SSH_PRIVATE_KEY: ${{ secrets.PI_REMOTE_SSH_KEY }}
       SSH_KNOWN_HOSTS: ${{ secrets.PI_REMOTE_SSH_KNOWN_HOSTS }}
       WINDOWS_BUILD_RUN: ${{ inputs.windows_build_run_id }}
+      ANDROID_RELEASE_TAG: ${{ inputs.android_release_tag }}
+      ANDROID_APK_SHA256: ${{ inputs.android_apk_sha256 }}
     steps:
       - uses: actions/checkout@v5
 
@@ -122,6 +132,31 @@ jobs:
                   assert hashlib.sha256(file.read_bytes()).hexdigest() == checksum.read_text().split()[0]
                   archive.add(file, arcname=name)
                   archive.add(checksum, arcname=name + '.sha256')
+          PY
+
+      - name: Download and verify requested Android release
+        if: inputs.android_release_tag != '' || inputs.android_apk_sha256 != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$ANDROID_RELEASE_TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]
+          [[ "$ANDROID_APK_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          mkdir -p /tmp/orbis-android-artifact
+          gh release download "$ANDROID_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern orbis.apk --pattern orbis.apk.sha256 --dir /tmp/orbis-android-artifact
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, os, zipfile
+          root = Path('/tmp/orbis-android-artifact')
+          apk = root / 'orbis.apk'
+          expected = os.environ['ANDROID_APK_SHA256']
+          assert hashlib.sha256(apk.read_bytes()).hexdigest() == expected, 'APK hash mismatch'
+          assert (root / 'orbis.apk.sha256').read_text().split() == [expected, 'orbis.apk'], 'Invalid checksum file'
+          with zipfile.ZipFile(apk) as archive:
+              assert 'AndroidManifest.xml' in archive.namelist(), 'Missing Android manifest'
+              assert 'classes.dex' in archive.namelist(), 'Missing Android code'
+          print('Verified Android APK SHA-256: ' + expected)
           PY
 
       - name: 准备 SSH
@@ -197,3 +232,19 @@ jobs:
           grep -q 'Relay 控制台' <<<"$admin_body"
           status="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "${site_url}v1/admin/overview")"
           test "$status" = 401
+
+      - name: Publish verified Android download
+        if: inputs.android_release_tag != ''
+        run: |
+          set -euo pipefail
+          remote_dir="/tmp/orbis-android-$ANDROID_APK_SHA256"
+          ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            "$TARGET" "install -d -m 700 '$remote_dir'"
+          scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            /tmp/orbis-android-artifact/orbis.apk /tmp/orbis-android-artifact/orbis.apk.sha256 \
+            "$TARGET:$remote_dir/"
+          ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            "$TARGET" "bash -s -- '$ANDROID_APK_SHA256'" < deploy/remote-publish-android.sh

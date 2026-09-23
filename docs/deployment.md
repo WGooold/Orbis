@@ -37,6 +37,8 @@ Run **Windows Host build** on `main`. After it succeeds, dispatch **Relay deploy
 
 Build Android with the Windows wrapper, publish the verified APK as `/var/www/orbis-downloads/orbis.apk` and its checksum as `orbis.apk.sha256`. Preserve the signing identity for upgrades. Never publish signing keys. Binary releases belong in GitHub Releases or the download directory, not source history.
 
+To publish an existing local Android build, first verify its build-manifest SHA-256 and compare its signing certificate with the current website APK. Upload `orbis.apk` and `orbis.apk.sha256` to a GitHub Release, then dispatch **Relay deploy** with `android_release_tag` and the exact `android_apk_sha256`. The production job verifies the release asset, publishes both files, and downloads them again through the public website to verify their hashes. It preserves the previous APK and checksum outside the public directory and restores them if publication fails. The Android version may remain unchanged for a preview refresh; the pinned hash identifies the exact build.
+
 ## Registration and persistent state
 
 QQ email verification defaults to required. In the console's Service page, the operator may disable it to allow direct Host-bound activation. Do not change this setting as a side effect of deployment. SMTP configuration stays in `shared/relay.env`; see [verification email setup](mail-server.md) for provider and self-hosted sending options. If verification is required and SMTP is absent, existing credentials continue working but new registrations are unavailable.
