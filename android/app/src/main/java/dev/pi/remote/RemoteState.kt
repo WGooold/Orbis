@@ -351,6 +351,8 @@ data class RemoteState(
      * 这一项（它不知道电脑装没装 codex），旧版 Host 也不会发；只有 Host 发的才是权威答案。
      */
     val supportedAgents: Set<String>? = null,
+    /** Effective Host configuration; do not infer it from a historical session or model name. */
+    val currentProviders: Map<String, String> = emptyMap(),
     val sessionGraphs: Map<String, SessionGraph> = emptyMap(),
     val runtimeSessionViews: Map<String, RuntimeSessionView> = emptyMap(),
     val sessionSyncCommands: Map<String, PendingSessionSync> = emptyMap(),
@@ -463,6 +465,7 @@ private fun mergeSessionCatalogEntry(
         hostname = incoming.hostname ?: existing.hostname,
         agentKind = incoming.agentKind ?: existing.agentKind,
         archived = incoming.archived ?: existing.archived,
+        modelProvider = incoming.modelProvider?.takeIf(String::isNotBlank) ?: existing.modelProvider,
     )
 }
 
@@ -496,6 +499,13 @@ private fun reduceSessionListResult(state: RemoteState, message: JsonObject): Re
     }
     return state.copy(
         sessions = merged,
+        currentProviders = message["currentProviders"]?.jsonArray.orEmpty().mapNotNull { element ->
+            val entry = element as? JsonObject ?: return@mapNotNull null
+            val agentKind = entry["agentKind"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val provider = entry["provider"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+                ?: return@mapNotNull null
+            agentKind to provider
+        }.toMap(),
         sessionListRequests = requestId?.let { state.sessionListRequests - it } ?: state.sessionListRequests,
         sessionListRequestEpochs = requestId?.let { state.sessionListRequestEpochs - it } ?: state.sessionListRequestEpochs,
     )
@@ -1081,6 +1091,7 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
     }
     return copy(
         connection = RelayConnection.RECONNECTING,
+        currentProviders = emptyMap(),
         // 断开即没有加密通道：这条信息比 connection 更贴近「能不能干活」。
         e2eReady = false,
         conversations = conversations.mapValues { (_, conversation) ->
@@ -1389,6 +1400,7 @@ class RelayReducer(
                 val interrupted = state.pendingCommands.keys
                 state.copy(
                     e2eReady = false,
+                    currentProviders = emptyMap(),
                     runtimes = emptyMap(),
                     pendingCommands = emptyMap(),
                     commandResults = state.commandResults + interrupted.filterNot { it.isSessionSyncCommandId() }.associateWith {

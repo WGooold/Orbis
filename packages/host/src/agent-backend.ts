@@ -46,6 +46,8 @@ export interface AgentBackend {
   ownsRuntime(runtimeId: string): boolean;
   /** 本后端名下的会话目录（§7.5）。失败抛错，由上层聚合（单后端失败不拖垮整个列表）。 */
   catalog(archived?: boolean): Promise<AgentSessionSummary[]>;
+  /** Effective configured provider, independent of any open session. Unknown on failure. */
+  currentProvider?(): Promise<string | undefined>;
   setArchived(sessionId: string, archived: boolean): Promise<void>;
   /**
    * 激活一个会话。不归本后端的会话抛 `ActivationError("session_not_found")`，
