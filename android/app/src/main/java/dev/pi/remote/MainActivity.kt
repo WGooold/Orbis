@@ -182,7 +182,7 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
     // session.activated（spec §8）：只证明进程已拉起；会话真正上线后 runtime.online 会接管 UI。
     LaunchedEffect(state.sessionActivation) {
         state.sessionActivation?.let { activation ->
-            val kind = if (activation.agentKind == "codex") "Codex" else "Pi"
+            val kind = agentBrand(activation.agentKind).title
             val suffix = if (activation.spawnMode == "headless") "，此会话无头（电脑上无窗口）" else ""
             Toast.makeText(context, "已在电脑上拉起 $kind 进程$suffix，等待会话上线…", Toast.LENGTH_LONG).show()
             model.clearActivationNotice()
@@ -191,7 +191,7 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
     when {
         !appearsPaired -> PairingScreen(state.error, model::pair, model::clearError)
         state.selectedRuntimeId == null && state.selectedOfflineSessionId != null -> AgentTheme(
-            agentBrand(state.sessions[state.selectedOfflineSessionId]?.agentKind == "codex"),
+            agentBrand(state.sessions[state.selectedOfflineSessionId]?.agentKind),
         ) {
             OfflineHistoryScreen(
                 state = state,
@@ -244,8 +244,8 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
                 )
             }
         }
-        else -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.isCodex == true ||
-            state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind == "codex")) {
+        else -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?:
+            state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
             ChatScreen(state, model)
         }
     }
@@ -552,7 +552,7 @@ private fun RuntimeListScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 ) {
-                                    AgentEmblem(agentBrand(runtime.isCodex), 44.dp)
+                                    AgentEmblem(agentBrand(runtime.agentKind), 44.dp)
                                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                         Text(
                                             state.runtimeDisplayName(runtime),
@@ -570,7 +570,7 @@ private fun RuntimeListScreen(
                                             overflow = TextOverflow.Ellipsis,
                                         )
                                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            Text(agentBrand(runtime.isCodex).title, color = agentBrand(runtime.isCodex).accent(), style = MaterialTheme.typography.labelMedium)
+                                            Text(agentBrand(runtime.agentKind).title, color = agentBrand(runtime.agentKind).accent(), style = MaterialTheme.typography.labelMedium)
                                             RuntimeStatus(runtime.status)
                                         }
                                         if (state.hasPendingInteraction(runtime.runtimeId)) {
@@ -641,7 +641,7 @@ private fun RuntimeListScreen(
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NewSessionSheet(
+internal fun NewSessionSheet(
     state: RemoteState,
     presetCwd: String?,
     onDismiss: () -> Unit,
@@ -654,14 +654,16 @@ private fun NewSessionSheet(
     var agentKind by rememberSaveable { mutableStateOf("pi") }
     // 电脑端说得很清楚时不让人白点：做不到的 agent 直接置灰（未知=不限制，见 RemoteState）。
     val codexSupported = state.supportedAgents?.contains("codex") != false
-    LaunchedEffect(codexSupported) {
+    val dshSupported = state.supportedAgents?.contains("dsh") == true
+    LaunchedEffect(codexSupported, dshSupported) {
         // chip 可能停在上一轮选中的 Codex 上（rememberSaveable），电脑不支持就拉回来。
         if (!codexSupported && agentKind == "codex") agentKind = "pi"
+        if (!dshSupported && agentKind == "dsh") agentKind = "pi"
     }
     LaunchedEffect(Unit) {
         if (presetCwd == null && state.sessionBrowse == null) onBrowse(null)
     }
-    AgentTheme(agentBrand(agentKind == "codex")) {
+    AgentTheme(agentBrand(agentKind)) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -686,9 +688,13 @@ private fun NewSessionSheet(
                 AgentChoice(AgentBrand.Pi, agentKind == "pi", { agentKind = "pi" }, Modifier.weight(1f))
                 AgentChoice(AgentBrand.Codex, agentKind == "codex", { agentKind = "codex" }, Modifier.weight(1f), codexSupported)
             }
+            AgentChoice(AgentBrand.DeepSeek, agentKind == "dsh", { agentKind = "dsh" }, Modifier.fillMaxWidth(), dshSupported)
+            if (agentKind == "dsh") {
+                Text("DeepSeek Harness 会话在后台运行，支持模型切换与工具审批", style = MaterialTheme.typography.bodySmall)
+            }
             if (!codexSupported) {
                 Text(
-                    "这台电脑没启用 Codex 后端，只能新建 Pi 会话",
+                    "这台电脑没启用 Codex 后端",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -720,7 +726,7 @@ private fun NewSessionSheet(
                 }
                 NeumorphActionButton(
                     onClick = { onCreate(agentKind, preset) },
-                    text = "在此目录新建 ${agentBrand(agentKind == "codex").title} 会话",
+                    text = "在此目录新建 ${agentBrand(agentKind).title} 会话",
                     enabled = !offline,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -794,7 +800,7 @@ private fun NewSessionSheet(
                         val cwd = browse?.path.orEmpty()
                         if (cwd.isNotBlank()) onCreate(agentKind, cwd)
                     },
-                    text = "在这里新建 ${agentBrand(agentKind == "codex").title} 会话",
+                    text = "在这里新建 ${agentBrand(agentKind).title} 会话",
                     enabled = !offline && browse != null && !browse.isLoading && !browse.path.isNullOrBlank(),
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -1379,6 +1385,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
                         // 命令词表的 source 在 Pi 与 Codex 下都叫 "builtin"，但徽标文案不同：
                         // Codex 的命令来自 app-server，标成 "Pi" 会让用户以为点错了后端。
                         isCodex = runtime?.isCodex == true,
+                        isDsh = runtime?.agentKind == "dsh",
                         onOpenTree = {
                             // /tree 不再把候选铺在输入框下面：整页打开，命令词也一并清掉，
                             // 免得节点 ID 落到聊天输入框里。
@@ -1671,7 +1678,7 @@ private fun SessionAliasDialog(
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { AgentLabel(agentBrand(runtime.isCodex), suffix = "设置会话别名") },
+        title = { AgentLabel(agentBrand(runtime.agentKind), suffix = "设置会话别名") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
@@ -1730,6 +1737,7 @@ private fun SlashCommandPicker(
     commands: List<RuntimeSlashCommand>,
     selectedCommandName: String?,
     isCodex: Boolean = false,
+    isDsh: Boolean = false,
     onOpenTree: () -> Unit,
     onCommandSelected: (RuntimeSlashCommand, String) -> Unit,
 ) {
@@ -1794,7 +1802,7 @@ private fun SlashCommandPicker(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        Text(slashSourceText(command.source, isCodex), color = MaterialTheme.colorScheme.primary)
+                        Text(if (isDsh && command.source == "builtin") "DeepSeek" else slashSourceText(command.source, isCodex), color = MaterialTheme.colorScheme.primary)
                     }
                     command.description?.let {
                         Text(

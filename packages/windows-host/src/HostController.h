@@ -23,6 +23,7 @@ class HostController : public QObject {
     Q_PROPERTY(QString version READ version CONSTANT)
     Q_PROPERTY(QString piEntry READ piEntry NOTIFY changed)
     Q_PROPERTY(QString codexEntry READ codexEntry NOTIFY changed)
+    Q_PROPERTY(QString dshEntry READ dshEntry NOTIFY changed)
     Q_PROPERTY(bool activated READ activated NOTIFY changed)
     Q_PROPERTY(bool verificationRequired READ verificationRequired NOTIFY changed)
     Q_PROPERTY(bool registrationAvailable READ registrationAvailable NOTIFY changed)
@@ -30,6 +31,7 @@ class HostController : public QObject {
     Q_PROPERTY(bool bridgeReady READ bridgeReady NOTIFY changed)
     Q_PROPERTY(bool autoStart READ autoStart NOTIFY changed)
     Q_PROPERTY(bool codexEnabled READ codexEnabled NOTIFY changed)
+    Q_PROPERTY(bool dshEnabled READ dshEnabled NOTIFY changed)
     Q_PROPERTY(int cooldown READ cooldown NOTIFY changed)
     Q_PROPERTY(int pairSeconds READ pairSeconds NOTIFY changed)
     Q_PROPERTY(int runtimeCount READ runtimeCount NOTIFY changed)
@@ -49,6 +51,7 @@ public:
     QString version() const { return ORBIS_VERSION; }
     QString piEntry() const { return m_settings.value("piEntry").toString(); }
     QString codexEntry() const { return m_settings.value("codexEntry").toString(); }
+    QString dshEntry() const { return m_settings.value("dshEntry").toString(); }
     bool activated() const { return !m_credential.isEmpty(); }
     bool verificationRequired() const { return m_verificationRequired; }
     bool registrationAvailable() const { return m_registrationAvailable; }
@@ -56,6 +59,7 @@ public:
     bool bridgeReady() const { return m_bridgeReady; }
     bool autoStart() const { return m_settings.value("autoStart", false).toBool(); }
     bool codexEnabled() const { return m_settings.value("codexEnabled", true).toBool(); }
+    bool dshEnabled() const { return m_settings.value("dshEnabled", false).toBool(); }
     int cooldown() const { return m_cooldown; }
     int pairSeconds() const;
     int runtimeCount() const { return m_runtimeCount; }
@@ -75,7 +79,7 @@ public:
     Q_INVOKABLE void installAgent(const QString &kind);
     Q_INVOKABLE void openAgent(const QString &kind);
     Q_INVOKABLE void openAgentTui(const QString &kind);
-    Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &piPath, const QString &codexPath, const QString &name);
+    Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &piPath, const QString &codexPath, const QString &name, bool dsh, const QString &dshPath);
     Q_INVOKABLE void diagnose();
     Q_INVOKABLE void exportDiagnostics();
     Q_INVOKABLE void copyDiagnostics();

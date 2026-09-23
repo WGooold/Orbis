@@ -46,6 +46,8 @@ import { createRelayServer, type RelayServer } from "@pi-remote/relay";
 import { HostService } from "./host-service.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import { DshRuntime } from "./dsh-runtime.js";
+import type { DshConnection } from "./dsh-client.js";
 import { ActivationError, type SessionSpawner } from "./spawner.js";
 
 type EnvelopeFrame = { type?: unknown; envelope?: unknown };
@@ -1920,6 +1922,46 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   const sendRequest = (target: TestDevice, message: Record<string, unknown>): void => {
     target.sendPayload(Buffer.from(JSON.stringify(message), "utf8"));
   };
+
+  it("routes DSH activation, bounded sync and stop over the encrypted Host connection", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-host-"));
+    relay = await startRelayLocal(stateDir);
+    const client: DshConnection = {
+      onNotification: undefined, onRequest: undefined, onExit: undefined,
+      request: vi.fn(async method => method === "session/new" ? { sessionId: "dsh-thread", configOptions: [] } : { sessions: [] }),
+      notify: vi.fn(), stop: vi.fn(async () => {}),
+    };
+    const runtime = new DshRuntime(client, {
+      list: async () => [], read: async id => ({ header: { id, cwd: stateDir!, createdAt: 1 }, events: [] }), close: async () => {},
+    });
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshRuntime: runtime });
+    try {
+      await host.start();
+      const ready = await readyDeviceCapturing({ host, relay });
+      device = ready.device;
+      expect(ready.ready).toMatchObject({ type: "device.ready", agents: ["pi", "dsh"], runtimes: [] });
+      await device.receiveMessage();
+      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "dsh-new", target: { type: "new", agentKind: "dsh", cwd: stateDir } });
+      const until = async (predicate: (message: Record<string, unknown>) => boolean) => {
+        for (let i = 0; i < 16; i++) {
+          const message = await device!.receiveMessage() as Record<string, unknown>;
+          expect(message.type).not.toBe("protocol.error");
+          if (predicate(message)) return message;
+        }
+        throw new Error("Expected Host response not received");
+      };
+      expect(await until(message => message.type === "session.activated")).toMatchObject({ agentKind: "dsh", sessionId: "dsh:dsh-thread", spawnMode: "headless" });
+      sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "dsh:dsh-thread", commandId: "sync-dsh",
+        command: { type: "session.sync", sessionId: "dsh:dsh-thread", syncId: "sync-dsh", range: "preview" } });
+      expect(await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.snapshot")).toMatchObject({
+        runtimeId: "dsh:dsh-thread", event: { sessionId: "dsh:dsh-thread", entries: [], syncId: "sync-dsh" },
+      });
+      sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "dsh:dsh-thread", commandId: "stop-dsh", command: { type: "stop" } });
+      await until(message => (message.event as { commandId?: string } | undefined)?.commandId === "stop-dsh");
+      expect(client.notify).toHaveBeenCalledWith("session/cancel", { sessionId: "dsh-thread" });
+    } finally { await runtime.stop(); }
+  });
 
   it("device.ready 带上这台电脑支持的 agent：没启用 Codex 就只有 pi", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));

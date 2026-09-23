@@ -29,15 +29,22 @@ import androidx.compose.ui.unit.dp
 internal enum class AgentBrand(val title: String, val icon: Int) {
     Pi("Pi", R.drawable.ic_agent_pi),
     Codex("Codex", R.drawable.ic_agent_codex),
+    DeepSeek("DeepSeek", R.drawable.ic_agent_dsh),
 }
 
 internal fun agentBrand(isCodex: Boolean) = if (isCodex) AgentBrand.Codex else AgentBrand.Pi
+internal fun agentBrand(kind: String?) = when (kind) {
+    "codex" -> AgentBrand.Codex
+    "dsh" -> AgentBrand.DeepSeek
+    else -> AgentBrand.Pi
+}
 internal val LocalAgentBrand = staticCompositionLocalOf { AgentBrand.Pi }
 
 @Composable
 internal fun AgentBrand.accent(): Color = when (this) {
     AgentBrand.Pi -> if (isSystemInDarkTheme()) Color(0xFFF2AD90) else Color(0xFF99482F)
     AgentBrand.Codex -> if (isSystemInDarkTheme()) Color(0xFF77D6C7) else Color(0xFF006C64)
+    AgentBrand.DeepSeek -> if (isSystemInDarkTheme()) Color(0xFFA1B5FF) else Color(0xFF4361D8)
 }
 
 /** Keep the shared soft base; focus rings, actions and selection inherit the agent accent. */

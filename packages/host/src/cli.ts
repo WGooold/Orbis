@@ -24,6 +24,7 @@ import { LoopbackDescriptorSchema } from "@pi-remote/protocol";
 import { loadHostConfig } from "./config.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import { DshRuntime } from "./dsh-runtime.js";
 import { HostService } from "./host-service.js";
 import { describePath } from "./path.js";
 
@@ -37,6 +38,7 @@ const USAGE = `pi-remote —— 电脑侧的 Host 进程
 可选参数：
   --state-dir <路径>             覆盖状态目录（默认 ~/.pi-remote）
   --codex                        host 子命令：启用 Codex 后端（需已全局安装 codex-cli）
+  --dsh                          host 子命令：启用 DeepSeek Harness 后端
 
 环境变量：
   PI_REMOTE_LAN_PORT             覆盖 LAN 直连端口（默认 42130）
@@ -48,6 +50,7 @@ async function main(): Promise<void> {
     options: {
       "state-dir": { type: "string" },
       codex: { type: "boolean" },
+      dsh: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
     allowPositionals: true,
@@ -60,7 +63,7 @@ async function main(): Promise<void> {
       await runPair(stateDir);
       return;
     case "host":
-      await runHost(stateDir, parsed.values.codex === true);
+      await runHost(stateDir, parsed.values.codex === true, parsed.values.dsh === true);
       return;
     case "devices":
       await runDevices(rest[0], rest[1], stateDir);
@@ -72,7 +75,7 @@ async function main(): Promise<void> {
 }
 
 /** 常驻模式：连上 Relay，开 LAN 端点，并开一条本机 loopback 等 Pi 扩展接进来。 */
-async function runHost(stateDirOption: string | undefined, codexEnabled: boolean): Promise<void> {
+async function runHost(stateDirOption: string | undefined, codexEnabled: boolean, dshEnabled: boolean): Promise<void> {
   const stateDir = resolveStateDir(stateDirOption);
   const config = await loadHostConfig({ stateDir });
 
@@ -95,40 +98,51 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
     }
   }
 
-  const service = await HostService.create({
-    relayUrl: config.relayUrl,
-    credential: config.runtimeCredential,
-    stateDir,
-    ...(config.adminToken === undefined ? {} : { adminToken: config.adminToken }),
-    ...(config.lanPort === undefined ? {} : { lanPort: config.lanPort }),
-    ...(config.stunServers.length > 0 ? { stunServers: config.stunServers } : {}),
-    ...(codexRuntime === undefined ? {} : { codexRuntime }),
-    log: (line) => console.log(`[host] ${line}`),
-    onStateChange: (state) => console.log(`[host] relay ${state}`),
-    onPathChange: (deviceId, change) => {
-      console.log(`[host] 设备 ${deviceId} 切到${describePath(change.to)}`);
-    },
-    onData: (_deviceId, payload) => {
-      console.log(`[host] 收到 ${payload.byteLength} 字节载荷，但没有对应的本机 runtime 能处理它`);
-    },
-  });
-
-  await service.start();
-  console.log(`[host] hostId=${service.hostId} 已就绪，共 ${service.devices.length} 台已配对设备`);
-  if (service.lan !== undefined) {
-    const endpoints = service.lan.endpoints.map((entry) => `${entry.host}:${entry.port}`).join("、");
-    console.log(`[host] LAN 直连已就绪：${endpoints.length === 0 ? "（未找到非回环网卡）" : endpoints}`);
+  let dshRuntime: DshRuntime | undefined;
+  if (dshEnabled) {
+    try { dshRuntime = await DshRuntime.create(); }
+    catch (error) { console.error(`[dsh] 后端未启用：${error instanceof Error ? error.message : String(error)}`); }
   }
-  if (service.loopback !== undefined) {
-    for (const runtime of service.localRuntimes) {
-      console.log(`[host] 本机已接入 runtime ${runtime.runtimeId}（${runtime.cwd}）`);
+
+  let service: HostService | undefined;
+  try {
+    service = await HostService.create({
+      relayUrl: config.relayUrl,
+      credential: config.runtimeCredential,
+      stateDir,
+      ...(config.adminToken === undefined ? {} : { adminToken: config.adminToken }),
+      ...(config.lanPort === undefined ? {} : { lanPort: config.lanPort }),
+      ...(config.stunServers.length > 0 ? { stunServers: config.stunServers } : {}),
+      ...(codexRuntime === undefined ? {} : { codexRuntime }),
+      ...(dshRuntime === undefined ? {} : { dshRuntime }),
+      log: (line) => console.log(`[host] ${line}`),
+      onStateChange: (state) => console.log(`[host] relay ${state}`),
+      onPathChange: (deviceId, change) => {
+        console.log(`[host] 设备 ${deviceId} 切到${describePath(change.to)}`);
+      },
+      onData: (_deviceId, payload) => {
+        console.log(`[host] 收到 ${payload.byteLength} 字节载荷，但没有对应的本机 runtime 能处理它`);
+      },
+    });
+
+    await service.start();
+    console.log(`[host] hostId=${service.hostId} 已就绪，共 ${service.devices.length} 台已配对设备`);
+    if (service.lan !== undefined) {
+      const endpoints = service.lan.endpoints.map((entry) => `${entry.host}:${entry.port}`).join("、");
+      console.log(`[host] LAN 直连已就绪：${endpoints.length === 0 ? "（未找到非回环网卡）" : endpoints}`);
     }
-    console.log("[host] 在另一台终端启动 Pi 即会自动接上本机通道；Ctrl+C 退出");
-  }
+    if (service.loopback !== undefined) {
+      for (const runtime of service.localRuntimes) {
+        console.log(`[host] 本机已接入 runtime ${runtime.runtimeId}（${runtime.cwd}）`);
+      }
+      console.log("[host] 在另一台终端启动 Pi 即会自动接上本机通道；Ctrl+C 退出");
+    }
 
-  await waitForSignal();
-  await service.stop();
-  await codexServer?.stop();
+    await waitForSignal();
+  } finally {
+    try { await service?.stop(); }
+    finally { await Promise.all([codexServer?.stop(), dshRuntime?.stop()]); }
+  }
   console.log("[host] 已退出");
 }
 

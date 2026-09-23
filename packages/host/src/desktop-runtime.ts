@@ -9,12 +9,15 @@ import QRCode from "qrcode";
 import { HostService } from "./host-service.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import { DshRuntime } from "./dsh-runtime.js";
+import { DSH_VERSION, resolveDshCommand } from "./dsh-client.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
 import { defaultStunServers } from "./config.js";
 
 const execute = promisify(execFile);
 export type DesktopSettings = {
   relayUrl: string; credential: string; codexEnabled?: boolean; piEntry?: string; codexEntry?: string;
+  dshEnabled?: boolean; dshEntry?: string;
   lanPort?: number; stunServers?: string[];
 };
 export type DesktopEvent = { event: string; [key: string]: unknown };
@@ -34,6 +37,7 @@ export class DesktopRuntime {
   #service: HostService | undefined;
   #codex: CodexAppServer | undefined;
   #codexRuntime: CodexRuntime | undefined;
+  #dshRuntime: DshRuntime | undefined;
   #retry: NodeJS.Timeout | undefined;
   #poll: NodeJS.Timeout | undefined;
   #desired: DesktopSettings | undefined;
@@ -59,6 +63,7 @@ export class DesktopRuntime {
   #environment(settings?: Partial<DesktopSettings>): void {
     if (settings?.piEntry) process.env.ORBIS_PI_ENTRY = settings.piEntry; else delete process.env.ORBIS_PI_ENTRY;
     if (settings?.codexEntry) process.env.ORBIS_CODEX_ENTRY = settings.codexEntry; else delete process.env.ORBIS_CODEX_ENTRY;
+    if (settings?.dshEntry) process.env.ORBIS_DSH_ENTRY = settings.dshEntry; else delete process.env.ORBIS_DSH_ENTRY;
     // Existing installations win. Managed installations are a fallback and never replace global npm packages.
     const managed = join(process.env.LOCALAPPDATA ?? homedir(), "Orbis", "agents");
     const searchPath = process.env.PATH ?? process.env.Path ?? "";
@@ -76,11 +81,11 @@ export class DesktopRuntime {
 
   async detect(settings?: Partial<DesktopSettings>): Promise<unknown[]> {
     this.#environment(settings);
-    return Promise.all((["pi", "codex"] as const).map(async (kind) => {
+    return Promise.all((["pi", "codex", "dsh"] as const).map(async (kind) => {
       try {
-        const cli = await (kind === "pi" ? resolvePiCommand() : resolveCodexCommand());
+        const cli = await (kind === "pi" ? resolvePiCommand() : kind === "dsh" ? resolveDshCommand() : resolveCodexCommand());
         const { stdout } = await execute(cli.command, [...cli.prefixArgs, "--version"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 });
-        return { kind, installed: true, version: stdout.trim(), path: cli.prefixArgs[0] ?? cli.command, connected: kind === "pi" ? (this.#service?.localRuntimes.length ?? 0) > 0 : this.#codexRuntime?.isReady() ?? false };
+        return { kind, installed: true, version: stdout.trim(), path: cli.prefixArgs[0] ?? cli.command, connected: kind === "pi" ? (this.#service?.localRuntimes.length ?? 0) > 0 : kind === "dsh" ? this.#dshRuntime?.isReady() ?? false : this.#codexRuntime?.isReady() ?? false };
       } catch (error) { return { kind, installed: false, error: error instanceof Error ? error.message : String(error) }; }
     }));
   }
@@ -120,11 +125,16 @@ export class DesktopRuntime {
           this.#codexRuntime = new CodexRuntime({ server: this.#codex, log: line => this.log(line), onEvent: () => {} });
         } catch (error) { this.log(`Codex 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
       }
+      if (settings.dshEnabled) {
+        try { this.#dshRuntime = await DshRuntime.create(); }
+        catch (error) { this.log(`DeepSeek Harness 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
+      }
       const stunServers = settings.stunServers ?? defaultStunServers(settings.relayUrl);
       this.#service = await HostService.create({
         stateDir: this.#stateDir, relayUrl: settings.relayUrl, credential: settings.credential,
         ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }), stunServers,
         ...(this.#codexRuntime === undefined ? {} : { codexRuntime: this.#codexRuntime }),
+        ...(this.#dshRuntime === undefined ? {} : { dshRuntime: this.#dshRuntime }),
         log: line => this.log(line),
         onStateChange: state => this.#emit({ event: "state", state }),
         onPaired: device => { this.#emit({ event: "paired", deviceId: device.deviceId }); this.status(); },
@@ -161,7 +171,7 @@ export class DesktopRuntime {
       if (path) this.#lastSeen.set(d.deviceId, Date.now());
       return { deviceId: d.deviceId, label: d.label, createdAt: d.createdAt, path: path ?? "offline", lastSeen: this.#lastSeen.get(d.deviceId) ?? 0 };
     });
-    const status = { event: "status", devices, runtimeCount: service.localRuntimes.length + (this.#codexRuntime?.directoryEntries().length ?? 0), lan: service.lanEndpoints };
+    const status = { event: "status", devices, runtimeCount: service.localRuntimes.length + (this.#codexRuntime?.directoryEntries().length ?? 0) + (this.#dshRuntime?.directoryEntries().length ?? 0), lan: service.lanEndpoints };
     const text = JSON.stringify(status);
     if (text !== this.#lastStatus) { this.#lastStatus = text; this.#emit(status); }
   }
@@ -212,7 +222,7 @@ export class DesktopRuntime {
   }
 
   async install(kind: string): Promise<void> {
-    const packageName = kind === "pi" ? "@earendil-works/pi-coding-agent@0.84.4" : kind === "codex" ? "@openai/codex@0.154.0" : undefined;
+    const packageName = kind === "pi" ? "@earendil-works/pi-coding-agent@0.84.4" : kind === "codex" ? "@openai/codex@0.154.0" : kind === "dsh" ? `@deepseek-ai/dsh@${DSH_VERSION}` : undefined;
     if (!packageName) throw new Error("未知 agent");
     const npm = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
     await access(npm);
@@ -228,10 +238,10 @@ export class DesktopRuntime {
 
   async openAgent(kind: string, mode = "setup"): Promise<void> {
     if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
-    const cli = kind === "pi" ? await resolvePiCommand() : kind === "codex" ? await resolveCodexCommand() : undefined;
+    const cli = kind === "pi" ? await resolvePiCommand() : kind === "codex" ? await resolveCodexCommand() : kind === "dsh" ? await resolveDshCommand() : undefined;
     if (!cli) throw new Error("未知 agent");
     const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-    const args = kind === "pi" ? [...cli.prefixArgs, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : cli.prefixArgs;
+    const args = kind === "pi" ? [...cli.prefixArgs, "-e", defaultExtensionPath()] : kind === "dsh" ? [...cli.prefixArgs, "web"] : mode === "setup" ? [...cli.prefixArgs, "login"] : cli.prefixArgs;
     const script = `& ${[cli.command, ...args].map(quote).join(" ")}`;
     // A detached Node child with ignored stdio has no usable console on some
     // Windows hosts. Let Windows create the visible terminal with its own input.
@@ -249,6 +259,8 @@ export class DesktopRuntime {
     await service?.stop().catch(error => this.log(String(error)));
     const codex = this.#codex; this.#codex = undefined; this.#codexRuntime = undefined;
     await codex?.stop().catch(error => this.log(String(error)));
+    const dsh = this.#dshRuntime; this.#dshRuntime = undefined;
+    await dsh?.stop().catch(error => this.log(String(error)));
   }
   async stop(): Promise<void> {
     this.#desired = undefined;

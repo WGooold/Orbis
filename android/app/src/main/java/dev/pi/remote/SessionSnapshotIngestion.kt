@@ -35,7 +35,7 @@ internal fun ingestSessionSnapshot(
     try {
         store.upsert(device, snapshot.sessionId, snapshot.entries, observed,
             snapshot.turnTimings.orEmpty(), writeGuard = ::owns,
-            agentKind = if (state.runtimes.getValue(runtimeId).isCodex) "codex" else "pi")
+            agentKind = state.runtimes.getValue(runtimeId).agentKind)
     } catch (error: SessionGraphStoreException) {
         if (error.message == "stale_snapshot") return null
         throw error

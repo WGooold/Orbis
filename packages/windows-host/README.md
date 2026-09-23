@@ -7,14 +7,16 @@ Windows x64 desktop client, implemented in C++20, Qt 6.8 and QML. The interface 
 Extract the entire ZIP, then double-click `OrbisHost.exe`. Keep the DLLs, `qml`, `plugins` and `runtime` directories alongside it. Node, npm, the Pi extension and the required JavaScript/native dependencies are included; source code, Qt and a global Node installation are not required on the destination computer.
 
 1. Activate this computer according to the selected Relay's policy. By default, verify an `@qq.com` mailbox; when the operator disables that requirement, activate directly without an email. Numeric and QQ alias addresses are accepted when verification is required; other domains, including `foxmail.com`, are excluded.
-2. Review the detected Pi/Codex installations on the Agent page. Existing installations take precedence; the bundled Pi and per-user managed installations provide fallbacks. Model login remains in the agent's own terminal.
+2. Review the detected Pi/Codex/DeepSeek Harness installations on the Agent page. Existing installations take precedence; the bundled Pi and per-user managed installations provide fallbacks. Model credentials remain in the agent's own configuration.
 3. Start Host and choose Add phone. Scan the short-lived QR code in Orbis Android.
 
 The Overview page provides **Open Pi** and **Open Codex** shortcuts. Each opens the interactive terminal interface in your Windows user directory; Pi loads the Orbis integration automatically. These local shortcuts do not require Relay activation. If an agent is missing, use the Agent page to detect or install it. The Agent page's separate Codex login action remains available for account setup.
 
 Email activation requires server-side SMTP. Without SMTP and with verification required, the server returns `registration_unavailable`. Direct activation is available only while the Relay operator explicitly disables verification; it still issues a Host-bound credential. Self-hosted servers are selectable in Settings and publish their own activation policy.
 
-Closing the window leaves the application in the tray. Use Exit from the tray menu to quit. Pausing stops this Host and its Codex backend; running work in Host-owned headless sessions may be interrupted. Independent terminal sessions are not forcibly terminated. Updating or uninstalling retains activation and pairing data.
+DeepSeek Harness is opt-in under Settings. Enable it and restart the Host, then choose DeepSeek when creating a session on Android. The Agent page opens `dsh web` for local use; Orbis runs its own background `acp` profile. Configuration and supported capabilities are documented in [DeepSeek Harness integration](../../docs/deepseek-harness.md).
+
+Closing the window leaves the application in the tray. Use Exit from the tray menu to quit. Pausing stops this Host and its Codex/DSH backends; running work in Host-owned headless sessions may be interrupted. Independent terminal sessions are not forcibly terminated. Updating or uninstalling retains activation and pairing data.
 
 Desktop settings and DPAPI-encrypted activation are stored in the current Windows user's local Orbis application-data directory. Pairing identity stays in `~/.pi-remote/` for compatibility with existing Pi loopback discovery. An already-running CLI Host is detected; stop it in its original window before starting the desktop Host. Credentials cannot be copied to another Windows account.
 

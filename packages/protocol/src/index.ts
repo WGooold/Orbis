@@ -187,7 +187,7 @@ export type SessionCatalogEntry = z.infer<typeof SessionCatalogEntrySchema>;
  * `pi` 的历史会话由 Host 直接扫磁盘（§8.1）；`codex` 走 M4 的 daemon。手机侧只按
  * agentKind 画角标，分组逻辑（以 cwd 分组）不因它分叉（§7.5）。
  */
-export const AgentKindSchema = z.enum(["pi", "codex"]);
+export const AgentKindSchema = z.enum(["pi", "codex", "dsh"]);
 export type AgentKind = z.infer<typeof AgentKindSchema>;
 
 /**

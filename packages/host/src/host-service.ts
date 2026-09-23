@@ -46,6 +46,7 @@ import type { AgentBackend, BackendActivation } from "./agent-backend.js";
 import { PiBackend } from "./agent-backend.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import type { DshRuntime } from "./dsh-runtime.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
 import { DeviceLink, type ActivePathChange, type PathSink } from "./device-link.js";
@@ -143,6 +144,7 @@ export type HostServiceOptions = {
    * （CLI 在 `--codex` 时创建并 stop）；缺省/未传 = 不启用 Codex。
    */
   codexRuntime?: CodexRuntime;
+  dshRuntime?: DshRuntime;
   log?: (line: string) => void;
   /** 配对成功。调用方负责对外报告；落盘已经由 HostService 完成。 */
   onPaired?: (device: DeviceRecord) => void;
@@ -302,6 +304,18 @@ export class HostService {
         this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: "codex", sessionId, archived });
       };
       backends.push(codex);
+    }
+    if (options.dshRuntime !== undefined) {
+      const dsh = options.dshRuntime;
+      dsh.setEventSink((event, runtimeId) => this.#publishRuntimeEvent(runtimeId, event));
+      dsh.onMetadataChange = () => {
+        for (const runtime of dsh.directoryEntries()) this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+      };
+      dsh.onOffline = (reason, runtimes) => {
+        this.#invalidateCatalog();
+        for (const runtime of runtimes) this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
+      };
+      backends.push(dsh);
     }
     this.#backends = backends;
   }
@@ -992,7 +1006,7 @@ export class HostService {
             "agent_unsupported",
             target.agentKind === "codex"
               ? "Codex 后端未启用：请用 `pi-remote host --codex` 启动"
-              : "未知的 agent 类型",
+              : target.agentKind === "dsh" ? "DeepSeek Harness 后端未启用：请用 `pi-remote host --dsh` 启动" : "未知的 agent 类型",
           );
         }
         if (!backend.isReady()) {
@@ -1077,6 +1091,7 @@ export class HostService {
         codex.announce(threadId);
       }
     }
+    this.#options.dshRuntime?.announce();
     // Pi 侧同理：扩展只在自己的 transport 重连时才重播 capabilities，而那和“手机刚重连”
     // 是两件事——手机侧被 `device.ready` / `runtime.online` 清掉词表后，只要扩展的 transport
     // 没断过，`/` 菜单就一直空着（一直要到下一轮 turn 结束刷新 capabilities）。

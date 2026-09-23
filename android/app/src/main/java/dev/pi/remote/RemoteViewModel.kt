@@ -1841,7 +1841,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         initial: RemoteState,
     ): SessionGraph? {
         val sessionId = runtime.sessionId ?: return null
-        sessionGraphStore.prepareSession(pairedDevice, sessionId, if (runtime.isCodex) "codex" else "pi")
+        sessionGraphStore.prepareSession(pairedDevice, sessionId, runtime.agentKind)
         val observedLeaf = sessionGraphStore.latestLeaf(pairedDevice, sessionId)
         var graph = initial.sessionGraphs[sessionId] ?: SessionGraph(sessionId)
         for (leaf in listOfNotNull(runtime.sessionLeafId, observedLeaf).distinct()) {

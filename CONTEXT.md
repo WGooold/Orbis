@@ -1,6 +1,6 @@
 # Orbis
 
-Orbis lets a paired mobile device observe and operate the coding agents a resident computer-side Host manages — today Pi and Codex — without becoming a terminal emulator, remote desktop, or process manager.
+Orbis lets a paired mobile device observe and operate the coding agents a resident computer-side Host manages — today Pi, Codex and DeepSeek Harness — without becoming a terminal emulator, remote desktop, or process manager.
 
 ## Runtime and routing
 
@@ -17,7 +17,7 @@ One computer-side agent integration behind the Host, addressed by an `agentKind`
 _Avoid_: Generic agent abstraction
 
 **Agent kind**:
-The `pi` | `codex` discriminator that labels a session and selects a backend. It never selects a display-projection rule.
+The `pi` | `codex` | `dsh` discriminator that labels a session and selects a backend. It never selects a display-projection rule. DSH uses a Host-owned ACP connection and canonical persistence reads; see ADR-0018.
 _Avoid_: Backend branch in UI logic
 
 **Pi runtime**:

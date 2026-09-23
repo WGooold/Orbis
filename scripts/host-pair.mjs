@@ -1,7 +1,7 @@
 // 开发用：一个进程同时当「常驻 Host」和「配对窗口」，避免
 // `pair`（短命）与 `host`（常驻）争抢同一个 runtime 凭据互踢。
 //
-//   node scripts/host-pair.mjs [--codex] [轮换秒数，默认 240]
+//   node scripts/host-pair.mjs [--dsh] [轮换秒数，默认 240]
 //
 // 每轮换一次配对码（Relay 侧配对码 TTL 300s，所以轮换必须小于它），
 // 二维码写到 .scratch/pair-qr.txt/.png；配对成功后停止轮换、继续常驻，
@@ -14,6 +14,7 @@ import { encodePairingQrText, resolveStateDir } from "@pi-remote/e2e";
 import { loadHostConfig } from "../packages/host/dist/config.js";
 import { CodexAppServer } from "../packages/host/dist/codex-daemon.js";
 import { CodexRuntime } from "../packages/host/dist/codex-runtime.js";
+import { DshRuntime } from "../packages/host/dist/dsh-runtime.js";
 import { HostService } from "../packages/host/dist/host-service.js";
 
 import { parseRotateSeconds } from "./host-pair-args.mjs";
@@ -43,12 +44,19 @@ try {
   console.error(`[codex] 后端未启用：${error instanceof Error ? error.message : String(error)}`);
 }
 
+let dshRuntime;
+if (process.argv.includes("--dsh")) {
+  try { dshRuntime = await DshRuntime.create(); console.log("[dsh] 后端已就绪"); }
+  catch (error) { console.error(`[dsh] 后端未启用：${error.message}`); }
+}
+
 const service = await HostService.create({
   relayUrl: config.relayUrl,
   // 必须显式传：HostService 只在 stunServers 非空时才建 P2P 管理器，漏传就是「P2P 静默关闭」——
   // 症状是手机状态页永远显示中继，而日志里连一行理由都没有。正式 CLI 也传同一份配置。
   ...(config.stunServers.length > 0 ? { stunServers: config.stunServers } : {}),
   ...(codexRuntime === undefined ? {} : { codexRuntime }),
+  ...(dshRuntime === undefined ? {} : { dshRuntime }),
   credential: config.runtimeCredential,
   ...(config.adminToken === undefined ? {} : { adminToken: config.adminToken }),
   onPaired: (device) => {
@@ -125,6 +133,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     service.stop()
       .catch(() => {})
       .finally(() => codexServer?.stop())
+      .finally(() => dshRuntime?.stop())
       .finally(() => process.exit(0));
   });
 }

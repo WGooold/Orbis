@@ -198,7 +198,7 @@ ApplicationWindow {
                                     anchors.fill: parent; spacing: 17
                                     Label { text: "三步，随处开始"; font.pixelSize: 18; font.weight: Font.DemiBold; color: "#223757"; Layout.bottomMargin: 6 }
                                     Repeater {
-                                        model: [{n: "01", title: "激活这台电脑", detail: host.verificationRequired ? "用 QQ 邮箱验证并注册。" : "按当前服务器设置直接激活。"}, {n: "02", title: "接入你的 Agent", detail: "复用 Pi 或 Codex 的现有安装。"}, {n: "03", title: "手机扫码连接", detail: "在 Orbis Android 中扫码配对。"}]
+                                        model: [{n: "01", title: "激活这台电脑", detail: host.verificationRequired ? "用 QQ 邮箱验证并注册。" : "按当前服务器设置直接激活。"}, {n: "02", title: "接入你的 Agent", detail: "复用本机已有的 Agent 安装。"}, {n: "03", title: "手机扫码连接", detail: "在 Orbis Android 中扫码配对。"}]
                                         delegate: ColumnLayout {
                                             required property var modelData
                                             Layout.fillWidth: true; spacing: 6
@@ -214,7 +214,7 @@ ApplicationWindow {
                         RowLayout {
                             Layout.fillWidth: true; spacing: 16
                             Repeater {
-                                model: [{label: "已配对设备", value: String(host.devices.length), detail: "每台设备均可独立撤销"}, {label: "在线会话", value: String(host.runtimeCount), detail: "由这台电脑上的 Host 提供"}, {label: "Agent 接入", value: String(host.agents.filter(a => a.installed).length), detail: "支持 Pi 与 Codex"}]
+                                model: [{label: "已配对设备", value: String(host.devices.length), detail: "每台设备均可独立撤销"}, {label: "在线会话", value: String(host.runtimeCount), detail: "由这台电脑上的 Host 提供"}, {label: "Agent 接入", value: String(host.agents.filter(a => a.installed).length), detail: "Pi / Codex / DeepSeek"}]
                                 delegate: Card {
                                     required property var modelData
                                     Layout.fillWidth: true; Layout.preferredWidth: 1
@@ -269,7 +269,7 @@ ApplicationWindow {
                                     anchors.fill: parent; spacing: 15
                                     RowLayout {
                                         Layout.fillWidth: true
-                                        Heading { text: modelData.kind === "pi" ? "Pi" : "Codex" }
+                                        Heading { text: modelData.kind === "pi" ? "Pi" : modelData.kind === "dsh" ? "DeepSeek Harness" : "Codex" }
                                         Item { Layout.fillWidth: true }
                                         Hint { text: modelData.installed ? "已检测到安装" : "尚未安装"; color: modelData.installed ? "#278868" : "#8b7790" }
                                     }
@@ -277,20 +277,20 @@ ApplicationWindow {
                                     Hint { visible: !!modelData.path; text: modelData.path || ""; Layout.fillWidth: true; font.pixelSize: 12; elide: Text.ElideMiddle; maximumLineCount: 2 }
                                     RowLayout {
                                         spacing: 10
-                                        ActionButton { text: modelData.kind === "pi" ? "打开 Pi 并接入" : "打开 Codex 登录"; primary: true; visible: modelData.installed; enabled: !host.busy; onClicked: host.openAgent(modelData.kind) }
+                                        ActionButton { text: modelData.kind === "pi" ? "打开 Pi 并接入" : modelData.kind === "dsh" ? "打开 DeepSeek Harness" : "打开 Codex 登录"; primary: true; visible: modelData.installed; enabled: !host.busy; onClicked: host.openAgent(modelData.kind) }
                                         ActionButton { text: "安装推荐版本"; visible: !modelData.installed; enabled: !host.busy; onClicked: { window.installKind = modelData.kind; installDialog.open() } }
                                     }
                                 }
                             }
                         }
-                        Hint { text: "Agent 的模型账号由官方登录流程管理。Pi 打开后可输入 /login 完成登录；Codex 登录完成后启动 Host 即可接入。"; Layout.fillWidth: true }
+                        Hint { text: "Agent 的模型账号由官方流程管理。Pi 可输入 /login；Codex 登录后即可接入；DeepSeek Harness 使用本机 dsh 的模型配置，在设置中启用后接入。"; Layout.fillWidth: true }
                         Hint { visible: host.busy; text: "正在处理，请稍候。首次安装需要下载依赖，可能需要几分钟。"; Layout.fillWidth: true }
                     }
 
                     Card {
                         id: settingsPane
                         visible: window.page === 3; Layout.fillWidth: true
-                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; piPathField.text = host.piEntry; codexPathField.text = host.codexEntry; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled }
+                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; piPathField.text = host.piEntry; codexPathField.text = host.codexEntry; dshPathField.text = host.dshEntry; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled }
                         ColumnLayout {
                             anchors.fill: parent; spacing: 15
                             Heading { text: "常规" }
@@ -298,6 +298,7 @@ ApplicationWindow {
                             Field { id: nameField; Layout.fillWidth: true; maximumLength: 80 }
                             SoftSwitch { id: startupSwitch; text: "登录 Windows 后自动启动" }
                             SoftSwitch { id: codexSwitch; text: "启动 Host 时启用 Codex" }
+                            SoftSwitch { id: dshSwitch; text: "启动 Host 时启用 DeepSeek Harness" }
                             Heading { text: "中继服务器"; Layout.topMargin: 10 }
                             Field { id: relayField; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
                             Hint { text: "支持默认中继或自建中继。更换服务器后需按新服务器设置重新激活，并为手机重新配对。"; Layout.fillWidth: true }
@@ -305,7 +306,8 @@ ApplicationWindow {
                             Hint { text: "留空时自动检测。安装了多个版本时，可指定对应的 CLI JavaScript 入口文件。"; Layout.fillWidth: true }
                             Field { id: piPathField; Layout.fillWidth: true; placeholderText: "Pi：自动检测" }
                             Field { id: codexPathField; Layout.fillWidth: true; placeholderText: "Codex：自动检测" }
-                            ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, piPathField.text, codexPathField.text, nameField.text) }
+                            Field { id: dshPathField; Layout.fillWidth: true; placeholderText: "DeepSeek Harness：自动检测" }
+                            ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, piPathField.text, codexPathField.text, nameField.text, dshSwitch.checked, dshPathField.text) }
                             Hint { text: "修改设置前请先在概览中暂停连接。"; Layout.fillWidth: true }
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#e5eaf2"; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
@@ -361,7 +363,7 @@ ApplicationWindow {
         onAccepted: host.revoke(window.revokeId)
     }
     Dialog {
-        id: installDialog; title: "安装 " + (window.installKind === "pi" ? "Pi 0.84.4" : "Codex 0.154.0"); anchors.centerIn: parent; modal: true; width: 420
+        id: installDialog; title: "安装 " + (window.installKind === "pi" ? "Pi 0.84.4" : window.installKind === "dsh" ? "DeepSeek Harness 0.1.7-rc.1" : "Codex 0.154.0"); anchors.centerIn: parent; modal: true; width: 420
         background: NeuSurface { anchors.fill: parent; anchors.margins: -14; margin: 14; cornerRadius: 18 }
         footer: DialogButtonBox { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "开始安装"; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
         Label { width: parent.width; text: "从 npm 下载推荐版本并安装到 Orbis 的独立目录。完成后仍需使用你自己的模型账号登录。"; wrapMode: Text.WordWrap }

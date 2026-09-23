@@ -70,13 +70,14 @@ import androidx.compose.ui.unit.dp
 private enum class DrawerAgentFilter(
     val key: String,
     val label: String,
-    private val codex: Boolean?,
+    private val kind: String?,
 ) {
     All("all", "全部", null),
-    Pi("pi", "Pi", false),
-    Codex("codex", "Codex", true);
+    Pi("pi", "Pi", "pi"),
+    Codex("codex", "Codex", "codex"),
+    DeepSeek("dsh", "DeepSeek", "dsh");
 
-    fun matches(row: CachedSessionRow): Boolean = codex == null || row.isCodex == codex
+    fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
 }
 
 private fun drawerAgentFilter(key: String): DrawerAgentFilter =
@@ -113,7 +114,7 @@ private fun DrawerAgentFilterMenu(
                         if (filter == DrawerAgentFilter.All) {
                             Icon(Icons.Rounded.FilterList, contentDescription = null, modifier = Modifier.size(18.dp))
                         } else {
-                            AgentIcon(agentBrand(filter == DrawerAgentFilter.Codex), Modifier.size(18.dp))
+                            AgentIcon(agentBrand(filter.key), Modifier.size(18.dp))
                         }
                     },
                     trailingIcon = if (filter == selected) {
@@ -321,7 +322,7 @@ internal fun SessionDrawer(
                                     onOpenSession = { onOpenSession(row.sessionId) },
                                     onOpenHistory = { onOpenHistory(row.sessionId) },
                                     archiveEnabled = connected && state.e2eReady &&
-                                        row.catalogEntry?.agentKind != null &&
+                                        row.catalogEntry?.agentKind != null && row.agentKind != "dsh" &&
                                         row.sessionId !in state.sessionArchiveRequests.values &&
                                         (row.isArchived || !row.isOnline || (row.isCodex && state.runtimes[row.runtimeId]?.status == "idle")),
                                     archivePending = row.sessionId in state.sessionArchiveRequests.values,
@@ -545,11 +546,11 @@ private fun DrawerSessionRow(
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(row.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    AgentIcon(agentBrand(row.isCodex), modifier = Modifier.size(14.dp))
+                    AgentIcon(agentBrand(row.agentKind), modifier = Modifier.size(14.dp))
                     Text(
-                        agentBrand(row.isCodex).title,
+                        agentBrand(row.agentKind).title,
                         style = MaterialTheme.typography.labelSmall,
-                        color = agentBrand(row.isCodex).accent(),
+                        color = agentBrand(row.agentKind).accent(),
                     )
                     if (row.isOnline) {
                         Box(Modifier.size(4.dp).background(MaterialTheme.colorScheme.tertiary, CircleShape))
@@ -588,6 +589,7 @@ private fun DrawerSessionRow(
                         text = { Text(when {
                             archivePending -> "处理中…"
                             row.isArchived -> "恢复会话"
+                            row.agentKind == "dsh" -> "DSH 暂不支持归档"
                             row.isOnline && !row.isCodex -> "请先退出 Pi 会话"
                             row.isOnline && !archiveEnabled -> "等待任务完成后归档"
                             else -> "归档会话"

@@ -722,12 +722,21 @@ private fun RuntimeSummary.catalogEntry(): SessionCatalogEntry? = sessionId?.let
         messageCount = 0,
         // 在线进程合入目录时也要带 agentKind（codex 是固定虚拟 runtimeId，Pi 是 UUID），
         // 否则侧栏在 session.list 刷新前无法给在线 codex 会话画角标。
-        agentKind = if (runtimeId == CODEX_RUNTIME_ID || runtimeId.startsWith("$CODEX_RUNTIME_ID:")) "codex" else "pi",
+        agentKind = runtimeAgentKind(runtimeId),
     )
 }
 
 /** codex 的固定虚拟 runtimeId（host 侧同值）。Pi 的 runtimeId 是随机 UUID，不会撞。 */
 const val CODEX_RUNTIME_ID = "codex"
+
+internal fun runtimeAgentKind(runtimeId: String?): String = when {
+    runtimeId == CODEX_RUNTIME_ID || runtimeId?.startsWith("$CODEX_RUNTIME_ID:") == true -> "codex"
+    runtimeId?.startsWith("dsh:") == true -> "dsh"
+    else -> "pi"
+}
+
+internal val RuntimeSummary.agentKind: String get() = runtimeAgentKind(runtimeId)
+internal val CachedSessionRow.agentKind: String get() = catalogEntry?.agentKind ?: runtimeAgentKind(runtimeId)
 
 /** 该侧栏行是不是 codex 会话：目录条目优先，在线 runtime 兜底（session.list 未刷新时条目可能为 null）。 */
 internal val CachedSessionRow.isCodex: Boolean
