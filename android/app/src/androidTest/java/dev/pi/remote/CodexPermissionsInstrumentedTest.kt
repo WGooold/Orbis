@@ -36,7 +36,7 @@ class CodexPermissionsInstrumentedTest {
             sandbox = "readOnly", approvalPolicy = "never", networkAccess = false, reviewer = "user",
             problem = "Windows 沙箱初始化失败，请在电脑端修复 Codex 沙箱设置后重试。",
         )) } }
-        compose.onNodeWithText("沙箱异常 · 查看详情").performClick()
+        compose.onNodeWithText("沙箱异常").performClick()
         compose.onNodeWithText("当前会话权限").assertIsDisplayed()
         compose.onNodeWithText("只读沙箱 · 不申请审批", substring = true).assertIsDisplayed()
         compose.onNodeWithText("电脑端修复 Codex 沙箱设置", substring = true).assertExists()
