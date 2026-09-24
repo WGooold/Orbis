@@ -146,13 +146,10 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             ColumnLayout {
                                 anchors.fill: parent; spacing: 13
+                                Heading { text: "打开 AI 工作台" }
+                                Hint { text: "打开 Pi、Codex 或 DeepSeek Harness，直接开始对话。"; Layout.fillWidth: true }
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 16
-                                    ColumnLayout {
-                                        Layout.fillWidth: true; spacing: 6
-                                        Heading { text: "打开 AI 工作台" }
-                                        Hint { text: "在独立终端中打开 Pi 或 Codex，直接开始对话。"; Layout.fillWidth: true }
-                                    }
                                     ActionButton {
                                         objectName: "overviewOpenPiTui"
                                         text: "打开 Pi"; primary: true
@@ -167,8 +164,22 @@ ApplicationWindow {
                                         Accessible.name: "打开 Codex 终端界面"
                                         onClicked: host.openAgentTui("codex")
                                     }
+                                    ActionButton {
+                                        objectName: "overviewOpenDsh"
+                                        text: "打开 DeepSeek Harness"
+                                        enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "dsh" && a.installed)
+                                        Accessible.name: "打开 DeepSeek Harness 网页工作台"
+                                        onClicked: host.openAgent("dsh")
+                                    }
+                                    Item { Layout.fillWidth: true }
                                 }
                                 Hint { text: "默认打开在你的用户目录。按钮不可用时，请到 Agent 页检测或安装；模型登录也可在那里完成。"; Layout.fillWidth: true; font.pixelSize: 11 }
+                                RowLayout {
+                                    visible: !host.dshEnabled && host.agents.some(a => a.kind === "dsh" && a.installed)
+                                    Layout.fillWidth: true; spacing: 16
+                                    Hint { text: "手机端 DeepSeek 尚未启用，请在设置中开启接入后重新连接 Host。"; Layout.fillWidth: true }
+                                    ActionButton { text: "前往设置"; onClicked: window.selectPage(3) }
+                                }
                             }
                         }
                         RowLayout {
