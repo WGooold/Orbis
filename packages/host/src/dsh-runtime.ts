@@ -34,7 +34,7 @@ function optionChoices(value: unknown): { value: string; label: string }[] {
 
 export class DshRuntime implements AgentBackend {
   readonly kind = "dsh" as const;
-  readonly #client: DshConnection;
+  #client: DshConnection;
   readonly #history: DshHistory;
   readonly #sessions = new Map<string, Session>();
   readonly #activating = new Map<string, Promise<BackendActivation>>();
@@ -49,6 +49,10 @@ export class DshRuntime implements AgentBackend {
   constructor(client: DshConnection, history: DshHistory) {
     this.#client = client;
     this.#history = history;
+    this.#attachClient(client);
+  }
+
+  #attachClient(client: DshConnection): void {
     client.onNotification = (method, params) => this.#notification(method, params);
     client.onRequest = request => this.#permission(request);
     client.onExit = reason => {
@@ -60,14 +64,26 @@ export class DshRuntime implements AgentBackend {
     };
   }
 
-  static async create(): Promise<DshRuntime> {
+  static async create(env?: NodeJS.ProcessEnv): Promise<DshRuntime> {
     const cli = await resolveDshCommand();
     const history = await openDshHistory(cli.prefixArgs[0]!);
-    try { return new DshRuntime(await DshAcpClient.create({ cli }), history); }
+    try { return new DshRuntime(await DshAcpClient.create({ cli, ...(env ? { env } : {}) }), history); }
     catch (error) { await history.close(); throw error; }
   }
 
   setEventSink(sink: (event: RuntimeEvent, runtimeId: string) => void): void { this.#sink = sink; }
+  assertProviderSwitchReady(): void {
+    if (this.#activating.size > 0 || this.#approvals.size > 0 || [...this.#sessions.values()].some(session => session.running || session.closing)) throw new Error("DeepSeek Harness 正在工作或等待审批，请结束任务后切换供应商");
+  }
+  async reloadProviderConfiguration(env: NodeJS.ProcessEnv): Promise<void> {
+    this.assertProviderSwitchReady();
+    await this.#client.stop();
+    this.#client.onExit?.("供应商已切换，请重新打开会话");
+    const client = await DshAcpClient.create({ env });
+    this.#client = client;
+    this.#attachClient(client);
+    this.#ready = true;
+  }
   isReady(): boolean { return this.#ready; }
   ownsRuntime(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
   directoryEntries(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => this.#metadata(session)); }

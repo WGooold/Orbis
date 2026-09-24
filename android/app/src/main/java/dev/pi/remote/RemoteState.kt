@@ -356,6 +356,7 @@ data class RemoteState(
     val supportedAgents: Set<String>? = null,
     /** Effective Host configuration; do not infer it from a historical session or model name. */
     val currentProviders: Map<String, String> = emptyMap(),
+    val agentProviders: AgentProvidersState = AgentProvidersState(),
     val sessionGraphs: Map<String, SessionGraph> = emptyMap(),
     val runtimeSessionViews: Map<String, RuntimeSessionView> = emptyMap(),
     val sessionSyncCommands: Map<String, PendingSessionSync> = emptyMap(),
@@ -1135,7 +1136,7 @@ class RelayReducer(
         val messageType = message.string("type")
         if (messageType !in setOf(
                 "device.ready", "runtime.online", "runtime.offline", "runtime.event", "runtime.git",
-                "protocol.error",
+                "protocol.error", "provider.result", "provider.changed",
                 "artifact.read.failed",
                 // 上传的入站消息：状态由 ViewModel 的上传处理器维护，reducer 只需不把它当非法消息。
                 "file.upload.ready", "file.upload.read", "file.upload.progress", "file.upload.finished", "file.upload.failed",
@@ -1151,6 +1152,8 @@ class RelayReducer(
             return state.copy(error = "收到不兼容的协议版本，请升级 Orbis")
         }
         return when (messageType) {
+            "provider.result" -> if (channel != null) state.withProviderResult(message) else state
+            "provider.changed" -> state
             "runtime.git" -> state.withWorkingBranch(message)
             "device.ready" -> {
                 // Relay's plaintext authentication receipt always carries an empty directory:

@@ -16,8 +16,12 @@ ApplicationWindow {
     property var pageNames: ["概览", "设备", "Agent", "设置", "诊断"]
     property string revokeId: ""
     property string installKind: ""
+    property bool providersOpen: false
+    property var providerDraft: ({})
+    property string deleteProviderId: ""
     onVisibleChanged: if (visible) host.refreshRegistrationPolicy()
     function selectPage(index) { page = index; if (index === 3) settingsPane.load() }
+    function openProviders(kind) { page = 2; providersOpen = true; host.loadProviders(kind) }
     function stateText() {
         return ({connected: "已连接", connecting: "正在连接", reconnecting: "正在重连", closed: "连接已断开", stopped: "已暂停", error: "需要处理"})[host.state] || "正在准备"
     }
@@ -269,7 +273,7 @@ ApplicationWindow {
                     }
 
                     ColumnLayout {
-                        visible: window.page === 2; Layout.fillWidth: true; spacing: 16
+                        visible: window.page === 2 && !window.providersOpen; Layout.fillWidth: true; spacing: 16
                         RowLayout { Layout.fillWidth: true; Heading { text: "你的 Agent" } Item { Layout.fillWidth: true } ActionButton { text: "重新检测"; enabled: host.bridgeReady && !host.busy; onClicked: host.detectAgents() } }
                         Repeater {
                             model: host.agents
@@ -284,18 +288,56 @@ ApplicationWindow {
                                         Item { Layout.fillWidth: true }
                                         Hint { text: modelData.installed ? "已检测到安装" : "尚未安装"; color: modelData.installed ? "#278868" : "#8b7790" }
                                     }
-                                    Hint { text: modelData.installed ? (modelData.version || "版本未知") : "可将推荐版本安装到 Orbis 的独立目录。"; Layout.fillWidth: true }
+                                    Hint { text: modelData.installed ? (modelData.version || "版本未知") : "可安装最新版本，或指定版本号。"; Layout.fillWidth: true }
                                     Hint { visible: !!modelData.path; text: modelData.path || ""; Layout.fillWidth: true; font.pixelSize: 12; elide: Text.ElideMiddle; maximumLineCount: 2 }
                                     RowLayout {
                                         spacing: 10
                                         ActionButton { text: modelData.kind === "pi" ? "打开 Pi 并接入" : modelData.kind === "dsh" ? "打开 DeepSeek Harness" : "打开 Codex 登录"; primary: true; visible: modelData.installed; enabled: !host.busy; onClicked: host.openAgent(modelData.kind) }
-                                        ActionButton { text: "安装推荐版本"; visible: !modelData.installed; enabled: !host.busy; onClicked: { window.installKind = modelData.kind; installDialog.open() } }
+                                        ActionButton { text: modelData.installed ? "更新 / 安装版本" : "安装 Agent"; enabled: !host.busy; onClicked: { window.installKind = modelData.kind; installVersion.text = "latest"; installDialog.open() } }
+                                        ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders(modelData.kind) }
                                     }
                                 }
                             }
                         }
-                        Hint { text: "Agent 的模型账号由官方流程管理。Pi 可输入 /login；Codex 登录后即可接入；DeepSeek Harness 使用本机 dsh 的模型配置，在设置中启用后接入。"; Layout.fillWidth: true }
+                        Hint { text: "在供应商配置中添加 API 地址、密钥与模型，并在 Host 或 APP 启用。原生账号登录仍可从 Agent 终端完成。安装更新前请先暂停 Host。"; Layout.fillWidth: true }
                         Hint { visible: host.busy; text: "正在处理，请稍候。首次安装需要下载依赖，可能需要几分钟。"; Layout.fillWidth: true }
+                    }
+
+                    ColumnLayout {
+                        visible: window.page === 2 && window.providersOpen; Layout.fillWidth: true; spacing: 16
+                        RowLayout {
+                            Layout.fillWidth: true
+                            ActionButton { text: "‹ Agent"; onClicked: window.providersOpen = false }
+                            Heading { text: ({pi: "Pi", codex: "Codex", dsh: "DeepSeek Harness"})[host.providerKind] + " · 供应商" }
+                            Item { Layout.fillWidth: true }
+                            ActionButton { text: "刷新 / 导入"; enabled: !host.busy; onClicked: host.loadProviders(host.providerKind) }
+                            ActionButton { text: "＋ 添加供应商"; primary: true; enabled: !host.busy; onClicked: host.editProvider("") }
+                        }
+                        Hint { Layout.fillWidth: true; text: host.providerKind === "pi" ? "Pi 可同时启用多个供应商。刷新会同步 models.json 中的显式配置；停用保留卡片，不更改原生登录与默认模型。" : "启用时先保存当前配置，再写入目标配置。Host 中的后台 Agent 会重新加载；已有会话和独立终端需要重新打开。" }
+                        Card {
+                            visible: host.providers.length === 0; Layout.fillWidth: true
+                            ColumnLayout { anchors.fill: parent; spacing: 12
+                                Heading { text: "添加第一个供应商" }
+                                Hint { text: "支持自定义兼容 API，以及高级原生配置。已有本机配置会自动导入。"; Layout.fillWidth: true }
+                            }
+                        }
+                        Repeater {
+                            model: host.providers
+                            delegate: Card {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                RowLayout { anchors.fill: parent; spacing: 12
+                                    ColumnLayout { Layout.fillWidth: true
+                                        Heading { text: modelData.name; font.pixelSize: 18 }
+                                        Hint { text: modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用"; color: modelData.enabled ? "#278868" : "#73819a" }
+                                    }
+                                    ActionButton { text: modelData.enabled ? "停用" : "启用"; visible: !modelData.enabled || modelData.mode === "additive"; primary: !modelData.enabled; enabled: !host.busy; onClicked: host.switchProvider(modelData.id, !modelData.enabled) }
+                                    ActionButton { text: "编辑"; enabled: !host.busy; onClicked: host.editProvider(modelData.id) }
+                                    ActionButton { text: "删除"; danger: true; enabled: !host.busy && !modelData.enabled; onClicked: { window.deleteProviderId = modelData.id; deleteProviderDialog.open() } }
+                                }
+                            }
+                        }
+                        Hint { visible: host.busy; text: "正在处理供应商配置…"; Layout.fillWidth: true }
                     }
 
                     Card {
@@ -374,11 +416,59 @@ ApplicationWindow {
         onAccepted: host.revoke(window.revokeId)
     }
     Dialog {
-        id: installDialog; title: "安装 " + (window.installKind === "pi" ? "Pi 0.84.4" : window.installKind === "dsh" ? "DeepSeek Harness 0.1.7-rc.1" : "Codex 0.154.0"); anchors.centerIn: parent; modal: true; width: 420
+        id: installDialog; title: "安装 / 更新 " + (window.installKind === "pi" ? "Pi" : window.installKind === "dsh" ? "DeepSeek Harness" : "Codex"); anchors.centerIn: parent; modal: true; width: 450
         background: NeuSurface { anchors.fill: parent; anchors.margins: -14; margin: 14; cornerRadius: 18 }
         footer: DialogButtonBox { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "开始安装"; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
-        Label { width: parent.width; text: "从 npm 下载推荐版本并安装到 Orbis 的独立目录。完成后仍需使用你自己的模型账号登录。"; wrapMode: Text.WordWrap }
-        onAccepted: host.installAgent(window.installKind)
+        ColumnLayout { width: parent.width; spacing: 12
+            Hint { text: "从 npm 安装到 Orbis 独立目录，并自动选中新版本。填写 latest 或完整版本号；现有安装保留，可在设置中切回。请先暂停 Host。"; Layout.fillWidth: true }
+            Field { id: installVersion; text: "latest"; placeholderText: "latest / 0.1.7-rc.1"; Layout.fillWidth: true }
+        }
+        onAccepted: host.installAgent(window.installKind, installVersion.text)
+    }
+    Dialog {
+        id: providerDialog; title: window.providerDraft.create ? "添加供应商" : "编辑供应商"
+        anchors.centerIn: parent; modal: true; width: 760; height: Math.min(window.height - 70, 690)
+        background: NeuSurface { anchors.fill: parent; anchors.margins: -14; margin: 14; cornerRadius: 18 }
+        contentItem: ScrollView {
+            clip: true
+            contentWidth: availableWidth
+            ColumnLayout { width: providerDialog.width - 48; spacing: 12
+                Label { text: "名称"; color: "#4b5d78" }
+                Field { id: providerName; Layout.fillWidth: true; maximumLength: 80; placeholderText: "例如：工作账号 / 自建 API" }
+                Label { text: "供应商标识"; color: "#4b5d78" }
+                Field { id: providerKey; Layout.fillWidth: true; maximumLength: 128; placeholderText: "custom"; enabled: window.providerDraft.kind !== "pi" || !!window.providerDraft.create }
+                SoftSwitch { id: advancedProvider; text: "高级配置（原生 JSON；保留全部字段）" }
+                ColumnLayout { visible: !advancedProvider.checked; Layout.fillWidth: true; spacing: 12
+                    Hint { text: "自定义 API 表单。原生账号、额外模型与特殊参数请使用高级配置。"; Layout.fillWidth: true }
+                    Field { id: providerUrl; Layout.fillWidth: true; placeholderText: "API 地址，例如 https://api.example.com/v1" }
+                    Field { id: providerApiKey; Layout.fillWidth: true; placeholderText: "API Key"; echoMode: TextInput.Password }
+                    Field { id: providerModel; Layout.fillWidth: true; placeholderText: "模型 ID（按供应商提供的名称填写）" }
+                    ComboBox { id: providerApi; Layout.fillWidth: true; model: ["openai-completions", "openai-responses", "anthropic-messages"]; enabled: window.providerDraft.kind !== "codex" }
+                }
+                ColumnLayout { visible: advancedProvider.checked; Layout.fillWidth: true
+                    Hint { text: window.providerDraft.kind === "codex" ? "Codex：auth 为 auth.json 对象或 null，config 为 config.toml 文本。" : window.providerDraft.kind === "pi" ? "Pi：完整的 models.json.providers.<标识> 节点。" : "DSH：patch 为 cordis.patch.yml 文本，env 保存该配置所需的凭据环境变量。"; Layout.fillWidth: true }
+                    TextArea { id: providerJson; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; color: "#21314d"; background: Rectangle { color: "#DDE3EF"; radius: 8 } padding: 12 }
+                }
+                Hint { visible: host.message.length > 0; text: host.message; Layout.fillWidth: true; color: "#a34d4d" }
+            }
+        }
+        footer: RowLayout {
+            spacing: 12
+            Item { Layout.fillWidth: true }
+            ActionButton { text: "取消"; enabled: !host.busy; onClicked: providerDialog.reject() }
+            ActionButton { text: host.busy ? "保存中…" : "保存"; primary: true; enabled: !host.busy && providerName.text.trim().length > 0; onClicked: {
+                var draft = {kind: window.providerDraft.kind, id: window.providerDraft.kind === "pi" ? providerKey.text.trim() : window.providerDraft.id, name: providerName.text, config: providerJson.text, create: !!window.providerDraft.create}
+                if (!advancedProvider.checked) draft.fields = {providerKey: providerKey.text.trim(), baseUrl: providerUrl.text.trim(), apiKey: providerApiKey.text, model: providerModel.text.trim(), api: providerApi.currentText}
+                host.saveProvider(draft)
+            } }
+        }
+        onClosed: { providerApiKey.text = ""; providerJson.text = ""; window.providerDraft = ({}) }
+    }
+    Dialog {
+        id: deleteProviderDialog; title: "删除供应商？"; anchors.centerIn: parent; modal: true; width: 410
+        Label { width: parent.width; text: "将删除这个未启用的供应商配置。"; wrapMode: Text.WordWrap }
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        onAccepted: host.removeProvider(window.deleteProviderId)
     }
     Dialog {
         id: renameDialog; title: "设备名称"; anchors.centerIn: parent; modal: true; width: 410
@@ -390,5 +480,15 @@ ApplicationWindow {
     Connections {
         target: host
         function onChanged() { if (host.qr.length > 0 && !pairDialog.visible) pairDialog.open(); if (host.qr.length === 0 && pairDialog.visible) pairDialog.close() }
+        function onProviderDraftReady(draft) {
+            window.providerDraft = draft; host.clearMessage()
+            providerName.text = draft.name; providerKey.text = draft.fields.providerKey
+            providerUrl.text = draft.fields.baseUrl; providerApiKey.text = draft.fields.apiKey; providerModel.text = draft.fields.model
+            providerApi.currentIndex = Math.max(0, providerApi.find(draft.fields.api))
+            providerJson.text = JSON.stringify(draft.config, null, 2)
+            advancedProvider.checked = !draft.create
+            providerDialog.open()
+        }
+        function onProviderSaved() { providerDialog.close() }
     }
 }

@@ -26,6 +26,7 @@ import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { HostService } from "./host-service.js";
+import { ProviderManager } from "./provider-manager.js";
 import { describePath } from "./path.js";
 
 const USAGE = `pi-remote —— 电脑侧的 Host 进程
@@ -79,6 +80,12 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
   const stateDir = resolveStateDir(stateDirOption);
   const config = await loadHostConfig({ stateDir });
 
+  let service: HostService | undefined;
+  const providers = new ProviderManager(stateDir, undefined, {
+    beforeApply: async kind => { service?.assertProviderSwitchReady(kind); },
+    afterApply: async kind => { await service?.reloadProviderConfiguration(kind, await providers.environment(kind)); },
+  });
+
   // Codex 后端按需启用；起不来（未安装/版本太旧）不是致命错误，降级为纯 Pi。
   let codexServer: CodexAppServer | undefined;
   let codexRuntime: CodexRuntime | undefined;
@@ -100,13 +107,13 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
 
   let dshRuntime: DshRuntime | undefined;
   if (dshEnabled) {
-    try { dshRuntime = await DshRuntime.create(); }
+    try { dshRuntime = await DshRuntime.create(await providers.environment("dsh")); }
     catch (error) { console.error(`[dsh] 后端未启用：${error instanceof Error ? error.message : String(error)}`); }
   }
 
-  let service: HostService | undefined;
   try {
     service = await HostService.create({
+      providers,
       relayUrl: config.relayUrl,
       credential: config.runtimeCredential,
       stateDir,
@@ -141,7 +148,7 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
     await waitForSignal();
   } finally {
     try { await service?.stop(); }
-    finally { await Promise.all([codexServer?.stop(), dshRuntime?.stop()]); }
+    finally { await Promise.all([codexRuntime ? codexRuntime.stop() : codexServer?.stop(), dshRuntime?.stop()]); }
   }
   console.log("[host] 已退出");
 }

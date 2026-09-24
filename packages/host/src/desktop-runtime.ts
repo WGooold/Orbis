@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
-import { readFile, mkdir, writeFile, rename, access } from "node:fs/promises";
+import { readFile, writeFile, rename } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, delimiter } from "node:path";
+import { join, delimiter } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, resolveStateDir, revokeDeviceRecord, saveDeviceStore } from "@pi-remote/e2e";
@@ -10,9 +10,13 @@ import { HostService } from "./host-service.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
-import { DSH_VERSION, resolveDshCommand } from "./dsh-client.js";
+import { resolveDshCommand } from "./dsh-client.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
 import { defaultStunServers } from "./config.js";
+import { ProviderManager, ProviderError, agentKind, type ProviderSummary } from "./provider-manager.js";
+import { installAgentPackage } from "./agent-installation.js";
+import { randomUUID } from "node:crypto";
+import { newProviderConfig, providerFields, applyProviderFields, type ProviderFields } from "./provider-form.js";
 
 const execute = promisify(execFile);
 export type DesktopSettings = {
@@ -46,10 +50,18 @@ export class DesktopRuntime {
   #lastStatus = "";
   #lastSeen = new Map<string, number>();
   #installation: AbortController | undefined;
+  readonly #providers: ProviderManager;
 
   constructor(emit: (event: DesktopEvent) => void, stateDir?: string) {
     this.#emit = emit;
     this.#stateDir = resolveStateDir(stateDir);
+    this.#providers = new ProviderManager(this.#stateDir, undefined, {
+      beforeApply: async kind => { this.#service?.assertProviderSwitchReady(kind); },
+      afterApply: async kind => {
+        await this.#service?.reloadProviderConfiguration(kind, await this.#providers.environment(kind));
+        this.#emit({ event: "providersChanged", kind });
+      },
+    });
   }
 
   async initialize(): Promise<unknown> {
@@ -126,11 +138,12 @@ export class DesktopRuntime {
         } catch (error) { this.log(`Codex 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
       }
       if (settings.dshEnabled) {
-        try { this.#dshRuntime = await DshRuntime.create(); }
+        try { this.#dshRuntime = await DshRuntime.create(await this.#providers.environment("dsh")); }
         catch (error) { this.log(`DeepSeek Harness 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
       }
       const stunServers = settings.stunServers ?? defaultStunServers(settings.relayUrl);
       this.#service = await HostService.create({
+        providers: this.#providers,
         stateDir: this.#stateDir, relayUrl: settings.relayUrl, credential: settings.credential,
         ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }), stunServers,
         ...(this.#codexRuntime === undefined ? {} : { codexRuntime: this.#codexRuntime }),
@@ -221,19 +234,46 @@ export class DesktopRuntime {
     await rename(`${path}.tmp`, path);
   }
 
-  async install(kind: string): Promise<void> {
-    const packageName = kind === "pi" ? "@earendil-works/pi-coding-agent@0.84.4" : kind === "codex" ? "@openai/codex@0.154.0" : kind === "dsh" ? `@deepseek-ai/dsh@${DSH_VERSION}` : undefined;
-    if (!packageName) throw new Error("未知 agent");
-    const npm = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-    await access(npm);
+  async install(kind: string, version = "latest"): Promise<{ entry: string; version: string }> {
+    const selected = agentKind(kind);
+    if (this.#desired || this.#starting) throw new Error("请先暂停 Host，再安装或更新 Agent");
+    if (this.#installation) throw new Error("另一个安装正在进行");
     const managed = join(process.env.LOCALAPPDATA ?? homedir(), "Orbis", "agents");
-    await mkdir(managed, { recursive: true });
-    this.log(`正在安装 ${kind}，首次下载可能需要几分钟…`);
+    this.log(`正在安装 ${kind} ${version}，下载可能需要几分钟…`);
     this.#installation = new AbortController();
     try {
-      await execute(process.execPath, [npm, "install", "--prefix", managed, "--no-audit", "--no-fund", packageName], { signal: this.#installation.signal, timeout: 600_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
+      const result = await installAgentPackage(selected, version, managed, this.#installation.signal);
+      process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] = result.entry;
+      this.log(`${kind} ${result.version} 安装完成，已选中新版本`);
+      return result;
     } finally { this.#installation = undefined; }
-    this.log(`${kind} 安装完成`);
+  }
+
+  listProviders(kind: string): Promise<ProviderSummary[]> { return this.#providers.list(agentKind(kind)); }
+  getProvider(kind: string, id: string): ReturnType<ProviderManager["get"]> { return this.#providers.get(agentKind(kind), id); }
+  async providerDraft(kind: string, id?: string): Promise<unknown> {
+    const selected = agentKind(kind);
+    const profile = id ? await this.#providers.get(selected, id) : { kind: selected, id: selected === "pi" ? "" : randomUUID(), name: "", config: newProviderConfig(selected) };
+    return { ...profile, fields: providerFields(profile), create: !id };
+  }
+  async mutateProvider(kind: string, operation: "save" | "switch" | "remove", params: Record<string, unknown>): Promise<ProviderSummary[]> {
+    const selected = agentKind(kind);
+    if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
+    const work = async (): Promise<ProviderSummary[]> => {
+      let result: ProviderSummary[];
+      if (operation === "save") {
+        let config: unknown;
+        try { config = typeof params.config === "string" ? JSON.parse(params.config) : params.config; }
+        catch { throw new ProviderError("高级配置 JSON 格式无效"); }
+        if (params.fields) config = applyProviderFields(selected, config as Record<string, unknown>, params.fields as ProviderFields);
+        result = await this.#providers.save(selected, String(params.id ?? ""), String(params.name ?? ""), config, params.create === true);
+      }
+      else if (operation === "switch") result = await this.#providers.switch(selected, String(params.id), params.enabled !== false);
+      else result = await this.#providers.remove(selected, String(params.id));
+      this.#service?.announceProviderChange(selected);
+      return result;
+    };
+    return this.#service ? this.#service.changeProvider(selected, work) : work();
   }
 
   async openAgent(kind: string, mode = "setup"): Promise<void> {
@@ -247,7 +287,7 @@ export class DesktopRuntime {
     // Windows hosts. Let Windows create the visible terminal with its own input.
     const encoded = Buffer.from(script, "utf16le").toString("base64");
     const launcher = `$ErrorActionPreference = 'Stop'; Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-NoExit','-EncodedCommand',${quote(encoded)} -WorkingDirectory ${quote(homedir())} -WindowStyle Normal -ErrorAction Stop`;
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(launcher, "utf16le").toString("base64")], { stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000 });
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(launcher, "utf16le").toString("base64")], { stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000, ...(kind === "dsh" ? { env: await this.#providers.environment("dsh") } : {}) });
     await new Promise<void>((resolve, reject) => {
       child.once("error", reject);
       child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开终端界面，请重试")));
@@ -257,8 +297,8 @@ export class DesktopRuntime {
   async #dispose(): Promise<void> {
     const service = this.#service; this.#service = undefined;
     await service?.stop().catch(error => this.log(String(error)));
-    const codex = this.#codex; this.#codex = undefined; this.#codexRuntime = undefined;
-    await codex?.stop().catch(error => this.log(String(error)));
+    const codex = this.#codex; const codexRuntime = this.#codexRuntime; this.#codex = undefined; this.#codexRuntime = undefined;
+    await (codexRuntime ? codexRuntime.stop() : codex?.stop())?.catch(error => this.log(String(error)));
     const dsh = this.#dshRuntime; this.#dshRuntime = undefined;
     await dsh?.stop().catch(error => this.log(String(error)));
   }

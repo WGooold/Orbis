@@ -49,6 +49,7 @@ import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import type { DshConnection } from "./dsh-client.js";
 import { ActivationError, type SessionSpawner } from "./spawner.js";
+import { ProviderManager } from "./provider-manager.js";
 
 type EnvelopeFrame = { type?: unknown; envelope?: unknown };
 
@@ -613,6 +614,30 @@ describe("host end-to-end over relay", () => {
   let runtime: TestRuntime | undefined;
   let stateDir: string | undefined;
   let proxy: TcpProxy | undefined;
+
+  it("lists and switches local provider profiles over an authenticated encrypted channel without exposing secrets", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-provider-e2e-"));
+    relay = await startRelay(stateDir);
+    const paths = { pi: join(stateDir, "pi"), codex: join(stateDir, "codex"), dsh: join(stateDir, "dsh") };
+    const providers = new ProviderManager(stateDir, paths);
+    await providers.save("pi", "custom", "Custom", { apiKey: "never-send-this", baseUrl: "https://example.com/v1", api: "openai-completions", models: [{ id: "model" }] }, true);
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false, providers });
+    await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await device.receiveMessage(); await device.receiveMessage();
+    device.sendData(JSON.stringify({ type: "provider.list", protocolVersion: PROTOCOL_VERSION, requestId: "list", kind: "pi" }));
+    const list = await device.receiveMessage();
+    expect(list).toMatchObject({ type: "provider.result", requestId: "list", providers: [{ id: "custom", enabled: false }] });
+    expect(JSON.stringify(list)).not.toContain("never-send-this");
+    device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "switch", kind: "pi", id: "custom", enabled: true }));
+    const switched = await device.receiveMessage();
+    expect(switched).toMatchObject({ type: "provider.result", requestId: "switch", providers: [{ id: "custom", enabled: true }] });
+    expect(JSON.parse(readFileSync(join(paths.pi, "models.json"), "utf8")).providers.custom.apiKey).toBe("never-send-this");
+    expect(JSON.stringify(switched)).not.toContain("never-send-this");
+    device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "missing", kind: "pi", id: "missing", enabled: true }));
+    expect(await device.receiveMessage()).toMatchObject({ type: "provider.result", requestId: "missing", error: expect.any(String) });
+  });
 
   afterEach(async () => {
     runtime?.close();

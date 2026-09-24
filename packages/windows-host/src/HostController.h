@@ -37,6 +37,8 @@ class HostController : public QObject {
     Q_PROPERTY(int runtimeCount READ runtimeCount NOTIFY changed)
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
+    Q_PROPERTY(QVariantList providers READ providers NOTIFY changed)
+    Q_PROPERTY(QString providerKind READ providerKind NOTIFY changed)
 public:
     HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QObject *parent = nullptr);
     ~HostController() override;
@@ -65,6 +67,8 @@ public:
     int runtimeCount() const { return m_runtimeCount; }
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
+    QVariantList providers() const { return m_providers; }
+    QString providerKind() const { return m_providerKind; }
     Q_INVOKABLE void requestCode(const QString &email);
     Q_INVOKABLE void activate(const QString &email, const QString &code);
     Q_INVOKABLE void activateWithoutEmail();
@@ -76,7 +80,12 @@ public:
     Q_INVOKABLE void revoke(const QString &deviceId);
     Q_INVOKABLE void renameDevice(const QString &deviceId, const QString &label);
     Q_INVOKABLE void detectAgents();
-    Q_INVOKABLE void installAgent(const QString &kind);
+    Q_INVOKABLE void installAgent(const QString &kind, const QString &version = "latest");
+    Q_INVOKABLE void loadProviders(const QString &kind);
+    Q_INVOKABLE void editProvider(const QString &id);
+    Q_INVOKABLE void saveProvider(const QVariantMap &draft);
+    Q_INVOKABLE void switchProvider(const QString &id, bool enabled);
+    Q_INVOKABLE void removeProvider(const QString &id);
     Q_INVOKABLE void openAgent(const QString &kind);
     Q_INVOKABLE void openAgentTui(const QString &kind);
     Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &piPath, const QString &codexPath, const QString &name, bool dsh, const QString &dshPath);
@@ -91,6 +100,8 @@ public:
 signals:
     void changed();
     void paired();
+    void providerDraftReady(const QVariantMap &draft);
+    void providerSaved();
     void notification(const QString &title, const QString &body);
 private:
     using Callback = std::function<void(const QJsonValue &)>;
@@ -114,6 +125,8 @@ private:
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_challenge, m_challengeEmail;
     QStringList m_logs;
     QVariantList m_devices, m_agents;
+    QVariantList m_providers;
+    QString m_providerKind = "codex";
     int m_nextId = 1, m_busy = 0, m_cooldown = 0, m_runtimeCount = 0, m_crashes = 0;
     int m_policyTicks = 0;
     qint64 m_pairExpires = 0;

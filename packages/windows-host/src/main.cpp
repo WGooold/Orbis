@@ -35,6 +35,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"tray", "Start in the system tray"});
     parser.addOption({"smoke-test", "Render the window and exit after checking the Host bridge"});
     parser.addOption({"screenshot", "Save the smoke-test window image", "path"});
+    parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
     parser.process(app);
     QString dataDir = parser.value("data-dir"); if (dataDir.isEmpty()) dataDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     dataDir = QDir(dataDir).absolutePath(); QDir().mkpath(dataDir);
@@ -97,7 +98,19 @@ int main(int argc, char *argv[]) {
                     });
                 });
             }
-            QTimer::singleShot(1800, &app, [&] { app.exit(0); });
+            if (parser.isSet("smoke-providers")) {
+                QTimer::singleShot(1800, &app, [&] {
+                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "codex"));
+                });
+                QTimer::singleShot(2500, &app, [&] {
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".providers.png")) app.exit(7);
+                    controller.editProvider("");
+                });
+                QTimer::singleShot(3200, &app, [&] {
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".provider-editor.png")) app.exit(7);
+                    app.exit(0);
+                });
+            } else QTimer::singleShot(1800, &app, [&] { app.exit(0); });
         });
     }
     return app.exec();

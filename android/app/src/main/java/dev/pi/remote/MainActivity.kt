@@ -86,6 +86,7 @@ import dev.pi.remote.NeumorphMenu as DropdownMenu
 import dev.pi.remote.NeumorphMenuItem as DropdownMenuItem
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -2289,6 +2290,12 @@ private fun StatusScreen(
 @Composable
 private fun SettingsScreen(model: RemoteViewModel, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
+    val state by model.state.collectAsStateWithLifecycle()
+    var providersOpen by remember { mutableStateOf(false) }
+    if (providersOpen) {
+        AgentProvidersScreen(state, model, onBack = { providersOpen = false })
+        return
+    }
     // 顺序改在本地状态里：store 不是 Compose state，不这么写点完箭头界面不会刷新。
     var order by remember { mutableStateOf(model.pathPreference()) }
     Scaffold(
@@ -2314,6 +2321,11 @@ private fun SettingsScreen(model: RemoteViewModel, onBack: () -> Unit) {
                 .padding(horizontal = RemoteUi.PagePadding, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            StatusSectionTitle("Agent 供应商")
+            StatusCard {
+                Text("切换电脑上已保存的供应商。API 地址、密钥与模型在 Host 的 Agent 页面配置。", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { providersOpen = true; model.loadAgentProviders("codex") }) { Text("供应商配置与切换") }
+            }
             StatusSectionTitle("连接优先级")
             StatusCard {
                 Text(
@@ -2340,6 +2352,51 @@ private fun SettingsScreen(model: RemoteViewModel, onBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AgentProvidersScreen(state: RemoteState, model: RemoteViewModel, onBack: () -> Unit) {
+    BackHandler(onBack = onBack)
+    val catalog = state.agentProviders
+    var pending by remember(state.hostId, catalog.kind) { mutableStateOf<AgentProvider?>(null) }
+    val available = state.e2eReady && state.connection == RelayConnection.ONLINE && catalog.hostId == state.hostId && !catalog.loading
+    Scaffold(topBar = {
+        TopAppBar(title = { Text("供应商") }, navigationIcon = {
+            NeumorphIconButton(onClick = onBack, icon = Icons.Rounded.ArrowBack, contentDescription = "返回", size = 40.dp)
+        }, actions = { TextButton(onClick = { model.loadAgentProviders(catalog.kind) }, enabled = !catalog.loading) { Text("刷新") } })
+    }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(state.hostName ?: "已配对的电脑", style = MaterialTheme.typography.titleMedium)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("pi" to "Pi", "codex" to "Codex", "dsh" to "DeepSeek").forEach { (kind, label) ->
+                    FilterChip(selected = catalog.kind == kind, onClick = { model.loadAgentProviders(kind) }, label = { Text(label) }, enabled = !catalog.loading)
+                }
+            }
+            Text(if (catalog.kind == "pi") "可同时启用多个供应商。更改后重新打开 Pi，再用 /model 选择模型。" else "切换后重新打开会话。正在工作的 Agent 需先结束当前任务。", style = MaterialTheme.typography.bodySmall)
+            if (catalog.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            catalog.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            catalog.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+            if (!catalog.loading && catalog.error == null && catalog.providers.isEmpty()) Text("还没有供应商，请先在 Host 的 Agent 页面添加。")
+            catalog.providers.forEach { provider ->
+                StatusCard {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(provider.name, fontWeight = FontWeight.SemiBold)
+                            Text(if (provider.enabled) (if (provider.additive) "已启用" else "当前使用") else "未启用", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (!provider.enabled || provider.additive) TextButton(onClick = { pending = provider }, enabled = available) { Text(if (provider.enabled) "停用" else "启用") }
+                    }
+                }
+            }
+        }
+    }
+    pending?.let { provider ->
+        AlertDialog(onDismissRequest = { pending = null }, title = { Text(if (provider.enabled) "停用供应商" else "启用供应商") },
+            text = { Text("${provider.name}\n${if (provider.additive) "将更新 Pi 显式配置。" else "将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。"}") },
+            confirmButton = { TextButton(enabled = available, onClick = { model.switchAgentProvider(provider, catalog.hostId); pending = null }) { Text("确认") } },
+            dismissButton = { TextButton(onClick = { pending = null }) { Text("取消") } })
     }
 }
 

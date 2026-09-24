@@ -471,6 +471,44 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
+    fun loadAgentProviders(kind: String) {
+        if (kind !in setOf("pi", "codex", "dsh")) return
+        requestAgentProviders(kind, null, true)
+    }
+
+    fun switchAgentProvider(provider: AgentProvider, expectedHostId: String?) {
+        val current = mutableState.value
+        if (expectedHostId == null || expectedHostId != current.hostId || current.agentProviders.hostId != expectedHostId || current.agentProviders.loading || provider !in current.agentProviders.providers) {
+            updateState { it.copy(agentProviders = it.agentProviders.copy(error = "目标电脑或供应商列表已变化，请刷新后重试")) }
+            return
+        }
+        requestAgentProviders(provider.kind, provider.id, !provider.enabled)
+    }
+
+    private fun requestAgentProviders(kind: String, id: String?, enabled: Boolean) {
+        val current = mutableState.value
+        val hostId = current.hostId
+        if (hostId == null || !current.e2eReady || current.connection != RelayConnection.ONLINE) {
+            updateState { it.copy(agentProviders = AgentProvidersState(kind = kind, hostId = hostId, error = "请先连接已配对的电脑")) }
+            return
+        }
+        val requestId = UUID.randomUUID().toString()
+        updateState { it.copy(agentProviders = AgentProvidersState(kind = kind, hostId = hostId, requestId = requestId, loading = true,
+            providers = if (it.agentProviders.kind == kind && it.agentProviders.hostId == hostId) it.agentProviders.providers else emptyList())) }
+        val sent = relay.sendDeviceMessage(buildJsonObject {
+            put("type", if (id == null) "provider.list" else "provider.switch")
+            put("protocolVersion", PROTOCOL_VERSION); put("requestId", requestId); put("kind", kind)
+            if (id != null) { put("id", id); put("enabled", enabled) }
+        })
+        if (!sent) updateState { it.copy(agentProviders = it.agentProviders.copy(requestId = null, loading = false, error = "供应商操作未发送，请重新连接")) }
+        viewModelScope.launch {
+            delay(90_000)
+            updateState { state ->
+                if (state.agentProviders.requestId == requestId && state.hostId == hostId) state.copy(agentProviders = state.agentProviders.copy(requestId = null, loading = false, error = "操作超时，请刷新以确认实际状态")) else state
+            }
+        }
+    }
+
     fun clearActivationNotice() {
         mutableState.value = mutableState.value.copy(sessionActivation = null)
     }
@@ -1388,6 +1426,12 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                                 val message = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
                                 val messageType = message?.get("type")?.jsonPrimitive?.contentOrNull
                                 val protocolCode = message?.get("code")?.jsonPrimitive?.contentOrNull
+                                if (interactiveChannel != null && messageType == "provider.changed") {
+                                    val kind = message["kind"]?.jsonPrimitive?.contentOrNull
+                                    if (kind == reduced.agentProviders.kind && !reduced.agentProviders.loading) viewModelScope.launch { loadAgentProviders(kind) }
+                                    if (kind in setOf("pi", "codex", "dsh")) viewModelScope.launch { refreshSessions() }
+                                }
+                                if (interactiveChannel != null && messageType == "provider.result" && message?.get("notice")?.jsonPrimitive?.contentOrNull?.isNotBlank() == true) viewModelScope.launch { refreshSessions() }
                                 val runtimeError = message?.get("event")?.jsonObject
                                     ?.takeIf { messageType == "runtime.event" }
                                     ?.takeIf { it["type"]?.jsonPrimitive?.contentOrNull == "runtime.error" }

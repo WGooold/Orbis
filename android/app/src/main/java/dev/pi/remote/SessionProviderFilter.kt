@@ -39,5 +39,5 @@ internal fun RemoteState.codexProviderMismatch(sessionId: String): String? {
     if (session.agentKind != "codex") return null
     val provider = session.modelProvider?.takeIf(String::isNotBlank) ?: return null
     val current = currentProviders["codex"] ?: return null
-    return if (provider != current) "此会话属于 $provider，当前使用 $current。请先在电脑端切换到 $provider，再打开会话。" else null
+    return if (provider != current) "此会话属于 $provider，当前使用 $current。请在设置的供应商页面切换到 $provider，再打开会话。" else null
 }

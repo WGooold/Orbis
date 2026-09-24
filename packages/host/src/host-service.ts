@@ -61,6 +61,8 @@ import { HostRelayClient, type HostRelayState } from "./relay-client.js";
 import { browseDirectory, listPiSessions } from "./sessions.js";
 import { ActivationError, SessionSpawner } from "./spawner.js";
 import { SessionArchiveError } from "./session-archive.js";
+import { ProviderManager, ProviderError } from "./provider-manager.js";
+import { parseProviderRequest, providerResult, type ProviderRequest } from "./provider-messages.js";
 
 /**
  * 会话目录（`session.list`）的缓存时长。
@@ -145,6 +147,7 @@ export type HostServiceOptions = {
    */
   codexRuntime?: CodexRuntime;
   dshRuntime?: DshRuntime;
+  providers?: ProviderManager;
   log?: (line: string) => void;
   /** 配对成功。调用方负责对外报告；落盘已经由 HostService 完成。 */
   onPaired?: (device: DeviceRecord) => void;
@@ -208,6 +211,7 @@ export class HostService {
   #catalogEpoch = 0;
   #sessionMutation: Promise<void> = Promise.resolve();
   readonly #gitReads = new Map<string, ReturnType<typeof readGitBranch>>();
+  #providerChanging: AgentKind | undefined;
 
   private constructor(
     options: HostServiceOptions,
@@ -365,6 +369,48 @@ export class HostService {
   /** 当前已接入 Host 的本机 runtime（Pi 进程）。 */
   get localRuntimes(): readonly RuntimeMetadata[] {
     return this.#loopback?.runtimes ?? [];
+  }
+
+  assertProviderSwitchReady(kind: AgentKind): void {
+    try {
+      if (kind === "codex") this.#options.codexRuntime?.assertProviderSwitchReady();
+      if (kind === "dsh") this.#options.dshRuntime?.assertProviderSwitchReady();
+    } catch (error) { throw new ProviderError(error instanceof Error ? error.message : "Agent 正在工作"); }
+  }
+
+  async reloadProviderConfiguration(kind: AgentKind, env: NodeJS.ProcessEnv): Promise<void> {
+    if (kind === "codex") await this.#options.codexRuntime?.reloadProviderConfiguration();
+    if (kind === "dsh") await this.#options.dshRuntime?.reloadProviderConfiguration(env);
+    this.#invalidateCatalog();
+  }
+
+  changeProvider<T>(kind: AgentKind, operation: () => Promise<T>): Promise<T> {
+    const result = this.#sessionMutation.then(async () => {
+      this.#providerChanging = kind;
+      try { this.assertProviderSwitchReady(kind); return await operation(); }
+      finally { this.#providerChanging = undefined; }
+    });
+    this.#sessionMutation = result.then(() => {}, () => {});
+    return result;
+  }
+
+  announceProviderChange(kind: AgentKind, exceptDeviceId?: string): void {
+    for (const [id, link] of this.#links) if (id !== exceptDeviceId) link.send(Buffer.from(JSON.stringify({ type: "provider.changed", protocolVersion: PROTOCOL_VERSION, kind })), "ctl");
+  }
+
+  async #handleProviderRequest(deviceId: string, request: ProviderRequest): Promise<void> {
+    const send = (message: object): void => { this.#links.get(deviceId)?.send(Buffer.from(JSON.stringify(message)), "ctl"); };
+    try {
+      const manager = this.#options.providers;
+      if (!manager) throw new ProviderError("此 Host 尚未启用供应商管理，请升级并重启 Host");
+      const providers = request.type === "provider.list" ? await manager.list(request.kind)
+        : await this.changeProvider(request.kind, () => manager.switch(request.kind, request.id!, request.enabled));
+      send(providerResult(request, providers));
+      if (request.type === "provider.switch") this.announceProviderChange(request.kind, deviceId);
+    } catch (error) {
+      send({ type: "provider.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind,
+        error: error instanceof ProviderError ? error.message : "供应商操作失败，请在 Host 检查配置与文件权限" });
+    }
   }
 
   /**
@@ -701,6 +747,10 @@ export class HostService {
       this.#options.onData?.(deviceId, payload);
       return;
     }
+    if (message.type === "provider.list" || message.type === "provider.switch") {
+      void this.#handleProviderRequest(deviceId, message);
+      return;
+    }
     if (message.type === "runtime.git.request") {
       void this.#handleGitBranchRequest(deviceId, message).catch((error: unknown) => {
         this.#options.onDeviceError?.(deviceId, error);
@@ -775,6 +825,10 @@ export class HostService {
       return;
     }
     const command = message.command;
+    if (this.#providerChanging && command.type !== "stop" && this.#backends.some(backend => backend.kind === this.#providerChanging && backend.ownsRuntime(message.runtimeId))) {
+      this.#sendToDevice(deviceId, { type: "protocol.error", code: "provider_switching", commandId: message.commandId, message: "正在切换供应商，请稍后重新打开会话" });
+      return;
+    }
     // 下载的取消先给 Host 的下载服务认领：它服务的那条传输只有它认识。
     if (command.type === "artifact.cancel") {
       if (this.#downloads.handleTransferControl(deviceId, message.runtimeId, command)) return;
@@ -1347,7 +1401,7 @@ function isAddressInUse(error: unknown): boolean {
     (error as { code?: unknown }).code === "EADDRINUSE";
 }
 
-function parseDevicePayload(payload: Buffer): DeviceE2ePayload | PathPreferenceMessage | LanDiscoveryRequest | GitBranchRequest | undefined {
+function parseDevicePayload(payload: Buffer): DeviceE2ePayload | PathPreferenceMessage | LanDiscoveryRequest | GitBranchRequest | ProviderRequest | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(payload.toString("utf8")) as unknown;
@@ -1357,5 +1411,5 @@ function parseDevicePayload(payload: Buffer): DeviceE2ePayload | PathPreferenceM
   const result = DeviceE2ePayloadSchema.safeParse(parsed);
   if (result.success) return result.data;
   // 连接优先级不在协议 schema 里（见 path-preference.ts）：Relay 看不见的纯本机偏好。
-  return parsePathPreferenceMessage(parsed) ?? parseLanDiscoveryRequest(parsed) ?? parseGitBranchRequest(parsed);
+  return parsePathPreferenceMessage(parsed) ?? parseLanDiscoveryRequest(parsed) ?? parseGitBranchRequest(parsed) ?? parseProviderRequest(parsed);
 }

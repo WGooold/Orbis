@@ -135,6 +135,7 @@ void HostController::receiveLine(const QJsonObject &line) {
         const auto event = line.value("event").toString();
         if (event == "state") { m_state = line.value("state").toString(); if (m_state == "error") m_desiredRunning = false; if (line.contains("message")) setMessage(line.value("message").toString()); }
         else if (event == "log") appendLog(line.value("message").toString());
+        else if (event == "providersChanged" && line.value("kind").toString() == m_providerKind) loadProviders(m_providerKind);
         else if (event == "status") { m_devices = line.value("devices").toArray().toVariantList(); m_runtimeCount = line.value("runtimeCount").toInt(); }
         else if (event == "paired") { m_qr.clear(); m_pairExpires = 0; setMessage("手机配对成功，现在可以在手机上使用 Orbis"); emit paired(); emit notification("Orbis", "新手机已配对"); }
     }
@@ -226,7 +227,37 @@ void HostController::cancelPair() { m_qr.clear(); m_pairExpires = 0; command("ca
 void HostController::revoke(const QString &deviceId) { command("revoke", {{"deviceId", deviceId}}, [this](const QJsonValue &) { setMessage("设备已撤销，连接立即失效"); }); }
 void HostController::renameDevice(const QString &deviceId, const QString &label) { command("renameDevice", {{"deviceId", deviceId}, {"label", label}}); }
 void HostController::detectAgents() { command("detect", agentSettings(), [this](const QJsonValue &value) { m_agents = value.toArray().toVariantList(); emit changed(); }); }
-void HostController::installAgent(const QString &kind) { command("install", {{"kind", kind}}, [this](const QJsonValue &) { detectAgents(); }); }
+void HostController::installAgent(const QString &kind, const QString &version) {
+    command("install", {{"kind", kind}, {"version", version.trimmed()}}, [this, kind](const QJsonValue &value) {
+        const auto result = value.toObject();
+        m_settings.setValue(kind + "Entry", result.value("entry").toString()); m_settings.sync();
+        setMessage(kind + " " + result.value("version").toString() + " 已安装并选中"); detectAgents();
+    });
+}
+void HostController::loadProviders(const QString &kind) {
+    if (m_providerKind != kind) m_providers.clear();
+    m_providerKind = kind; emit changed();
+    command("provider.list", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
+        if (m_providerKind == kind) { m_providers = value.toArray().toVariantList(); emit changed(); }
+    });
+}
+void HostController::editProvider(const QString &id) {
+    command("provider.draft", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) { emit providerDraftReady(value.toObject().toVariantMap()); });
+}
+void HostController::saveProvider(const QVariantMap &draft) {
+    command("provider.save", QJsonObject::fromVariantMap(draft), [this](const QJsonValue &value) {
+        m_providers = value.toArray().toVariantList(); emit providerSaved(); setMessage("供应商已保存；已启用配置会同步到 Agent");
+    });
+}
+void HostController::switchProvider(const QString &id, bool enabled) {
+    command("provider.switch", {{"kind", m_providerKind}, {"id", id}, {"enabled", enabled}}, [this](const QJsonValue &value) {
+        m_providers = value.toArray().toVariantList();
+        setMessage(m_providerKind == "pi" ? "Pi 显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : "供应商已切换。请重新打开会话；独立终端也需重启。");
+    });
+}
+void HostController::removeProvider(const QString &id) {
+    command("provider.remove", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) { m_providers = value.toArray().toVariantList(); setMessage("供应商已删除"); });
+}
 void HostController::openAgent(const QString &kind) { command("openAgent", {{"kind", kind}}); }
 void HostController::openAgentTui(const QString &kind) {
     if (!m_bridgeReady || busy()) return;

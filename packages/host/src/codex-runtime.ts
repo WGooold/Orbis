@@ -53,7 +53,7 @@ import type {
   BackendActivation,
   CommandDispatch,
 } from "./agent-backend.js";
-import { CODEX_RUNTIME_ID, type CodexAppServer, type CodexCommand, type CodexServerRequest } from "./codex-daemon.js";
+import { CODEX_RUNTIME_ID, CodexAppServer, type CodexCommand, type CodexServerRequest } from "./codex-daemon.js";
 import { describeError } from "./describe-error.js";
 import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
@@ -243,7 +243,7 @@ type ThreadState = {
 export class CodexRuntime implements AgentBackend {
   readonly runtimeId: string;
   readonly #options: CodexRuntimeOptions;
-  readonly #server: CodexAppServer;
+  #server: CodexAppServer;
   /** 活跃 thread 表。codex 的 thread/resume 返回完整 turns，激活即拿到历史。 */
   readonly #threads = new Map<string, ThreadState>();
   /** 审批窗口（键 = 独立生成的手机 requestId）。超时按接口对应的拒绝格式回复。 */
@@ -312,6 +312,11 @@ export class CodexRuntime implements AgentBackend {
     this.#options = options;
     this.#eventSink = options.onEvent;
     this.#server = options.server;
+    this.#attachServer(options.server);
+  }
+
+  #attachServer(server: CodexAppServer): void {
+    const options = { ...this.#options, server };
     options.server.onNotification = (method: string, params: unknown) => {
       void this.#handleNotification(method, params).catch((error: unknown) => {
         options.log?.(`处理 app-server 通知 ${method} 失败：${describeError(error)}`);
@@ -360,6 +365,26 @@ export class CodexRuntime implements AgentBackend {
   get handlesRequests(): boolean {
     return this.#started;
   }
+
+  assertProviderSwitchReady(): void {
+    if (this.#activating > 0 || this.#permissionUpdates.size > 0 || [...this.#threads.values()].some(thread => this.#statusOf(thread) !== "idle" || thread.queue.length > 0)) {
+      throw new Error("Codex 正在工作或等待审批，请结束当前任务后切换供应商");
+    }
+  }
+
+  async reloadProviderConfiguration(): Promise<void> {
+    this.assertProviderSwitchReady();
+    const old = this.#server;
+    await old.stop();
+    old.onExit?.(0);
+    this.#modelListCache = undefined;
+    const server = await CodexAppServer.create({ ...(this.#options.log ? { log: this.#options.log } : {}) });
+    this.#server = server;
+    this.#attachServer(server);
+    this.markStarted();
+  }
+
+  async stop(): Promise<void> { await this.#server.stop(); this.#server.onExit?.(0); }
 
   /** 是否挂着活跃 thread：Host 的进程目录只在这时收录 Codex（§8.1）。 */
   get hasActiveThread(): boolean {
