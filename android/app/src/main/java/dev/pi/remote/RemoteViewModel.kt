@@ -154,10 +154,13 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         device?.let { pairedDevice ->
+            val host = e2eIdentityStore.loadPairedHost()
             mutableState.value = mutableState.value.copy(
                 deviceId = pairedDevice.deviceId,
-                hostId = e2eIdentityStore.loadPairedHost()?.hostId,
-                sessions = sessionCatalogStore.load(pairedDevice).associateBy(SessionCatalogEntry::sessionId),
+                hostId = host?.hostId,
+                hostName = host?.hostName,
+                sessions = host?.let { sessionCatalogStore.load(pairedDevice, it.hostId) }
+                    .orEmpty().associateBy(SessionCatalogEntry::sessionId),
                 sessionAliases = sessionAliasStore.load(pairedDevice),
             )
             connect(pairedDevice)
@@ -282,7 +285,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     // 走到这里 = 对手确实持有 qr.hostPub 对应的私钥。此时才落盘、才进主界面。
                     pairingAwaitingAccept = false
                     e2eIdentityStore.savePairedHost(
-                        HostIdentity(hostId = qr.hostId, hostPub = qr.hostPub, pskRoot = Crypto.toBase64Url(session.pskRoot), lanEndpoints = qr.lan),
+                        HostIdentity(hostId = qr.hostId, hostPub = qr.hostPub, pskRoot = Crypto.toBase64Url(session.pskRoot),
+                            lanEndpoints = qr.lan, hostName = qr.hostName),
                     )
                     credentials.save(paired)
                     device = paired
@@ -290,7 +294,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     reconnectDelayMs = 500L
                     mutableState.value = mutableState.value.copy(
                         deviceId = paired.deviceId,
-                        sessions = sessionCatalogStore.load(paired).associateBy(SessionCatalogEntry::sessionId),
+                        hostId = qr.hostId,
+                        hostName = qr.hostName,
+                        sessions = sessionCatalogStore.load(paired, qr.hostId).associateBy(SessionCatalogEntry::sessionId),
                         sessionAliases = sessionAliasStore.load(paired),
                     )
                     // 主动断开配对会话，紧接着由普通重连发起 HS1，与常驻 Host 建立加密会话。
@@ -433,7 +439,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /** L2：在指定目录新建会话（agentKind = pi | codex）。 */
-    fun createSession(agentKind: String, cwd: String) {
+    fun createSession(agentKind: String, cwd: String, expectedHostId: String?) {
+        if (!mutableState.value.canCreateSessionOn(expectedHostId)) {
+            updateState { it.copy(error = "目标电脑已变更、未连接或正在创建会话，请返回目录重试") }
+            return
+        }
         activateTarget(buildJsonObject {
             put("type", "new")
             put("agentKind", agentKind)
@@ -471,7 +481,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         register: (RemoteState) -> RemoteState,
         rollback: (RemoteState) -> RemoteState,
     ) {
-        if (mutableState.value.connection != RelayConnection.ONLINE) {
+        val current = mutableState.value
+        if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank()) {
             mutableState.value = mutableState.value.copy(error = "尚未连接到电脑，连接建立后才能操作会话")
             return
         }
@@ -1415,7 +1426,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                                         viewModelScope.launch(Dispatchers.IO) {
                                             catalogWriteLock.withLock {
                                                 if (device == pairedDevice) {
-                                                    runCatching { sessionCatalogStore.save(pairedDevice, mutableState.value.sessions.values) }
+                                                    runCatching { saveSessionCatalog(pairedDevice) }
                                                 }
                                             }
                                         }
@@ -1722,7 +1733,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     catalogWriteLock.withLock {
                         if (device == pairedDevice) {
                             runCatching {
-                                sessionCatalogStore.save(pairedDevice, mutableState.value.sessions.values)
+                                saveSessionCatalog(pairedDevice)
                             }
                         }
                     }
@@ -1733,6 +1744,13 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             if (next.connection == RelayConnection.ONLINE) reconnectDelayMs = 500
             notifyNewInteractions(previous, next)
         }
+    }
+
+    private fun saveSessionCatalog(pairedDevice: DeviceCredential) {
+        val current = mutableState.value
+        val owner = current.hostId?.takeIf(String::isNotBlank) ?: return
+        if (current.deviceId != pairedDevice.deviceId) return
+        sessionCatalogStore.save(pairedDevice, owner, current.sessions.values)
     }
 
     private fun notifyNewInteractions(previous: RemoteState, next: RemoteState) {

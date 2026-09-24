@@ -20,13 +20,13 @@ class SessionProviderFilterInstrumentedTest {
             session("Unknown session", null), session("Archived session", "custom", archived = true),
             session("Pi session", null, agent = "pi"),
         )
-        val state = mutableStateOf(RemoteState(
+        val state = mutableStateOf(RemoteState(hostId = "paired-host", hostName = "Desktop",
             sessions = entries.associateBy { it.sessionId }, currentProviders = mapOf("codex" to "custom"),
         ))
         val opened = mutableListOf<String>()
         compose.setContent { PiRemoteTheme { SessionDrawer(state.value, opened::add, {}, {}, { _, _ -> }) } }
         openFilter()
-        compose.onNodeWithText("Codex").performClick()
+        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
         compose.onNodeWithText("custom（当前使用）").assertIsDisplayed()
         compose.onNodeWithContentDescription("当前 provider 筛选").assertExists()
         compose.onNodeWithText("会话绑定所属 provider", substring = true).assertIsDisplayed()
@@ -38,7 +38,7 @@ class SessionProviderFilterInstrumentedTest {
         capture("current-provider")
 
         openFilter()
-        compose.onNodeWithText("Codex").performClick()
+        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
         compose.onNodeWithText("openai").performClick()
         compose.onNodeWithText("Other session").assertIsDisplayed().performClick()
         compose.onNodeWithText("需要切换 provider").assertIsDisplayed()
@@ -47,7 +47,7 @@ class SessionProviderFilterInstrumentedTest {
         capture("provider-mismatch")
         compose.onNodeWithText("知道了").performClick()
         openFilter()
-        compose.onNodeWithText("Codex").performClick()
+        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
         compose.onNodeWithText("全部 provider").performClick()
         compose.onNodeWithText("Custom session").assertIsDisplayed()
         compose.onNodeWithText("Other session").assertIsDisplayed()
@@ -55,7 +55,7 @@ class SessionProviderFilterInstrumentedTest {
         compose.onNodeWithText("Pi session").assertDoesNotExist()
 
         openFilter()
-        compose.onNodeWithText("Codex").performClick()
+        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
         compose.onNodeWithText("custom（当前使用）").performClick()
         compose.runOnIdle { state.value = state.value.copy(currentProviders = mapOf("codex" to "openai")) }
         compose.onNodeWithText("Other session").assertIsDisplayed()
@@ -73,15 +73,15 @@ class SessionProviderFilterInstrumentedTest {
     }
 
     @Test fun missingConfigurationNeverClaimsUnknownSessionsAreCurrent() {
-        val state = mutableStateOf(RemoteState(sessions = listOf(session("Unknown session", null)).associateBy { it.sessionId }))
+        val state = mutableStateOf(RemoteState(hostId = "paired-host", hostName = "Desktop", sessions = listOf(session("Unknown session", null)).associateBy { it.sessionId }))
         compose.setContent { PiRemoteTheme { SessionDrawer(state.value, {}, {}, {}, { _, _ -> }) } }
         openFilter()
-        compose.onNodeWithText("Codex").performClick()
+        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
         compose.onNodeWithText("当前 provider（尚未获取）").performClick()
         compose.onNodeWithText("尚未获取当前 provider").assertIsDisplayed()
         compose.onNodeWithText("Unknown session").assertDoesNotExist()
         openFilter()
-        compose.onNodeWithText("Codex").performClick()
+        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
         compose.onNodeWithText("未知 provider").performClick()
         compose.onNodeWithText("Unknown session").assertIsDisplayed()
     }

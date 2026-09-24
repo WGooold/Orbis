@@ -70,7 +70,7 @@ class CachedHistoryTreeTest {
 
     @Test
     fun `tree nests sessions under host then directory`() {
-        val state = RemoteState(
+        val state = RemoteState(hostId = "paired-host", hostName = "devbox",
             runtimes = mapOf(
                 "r1" to runtime("r1", "s1", "D:\\work\\alpha", "devbox"),
                 "r2" to runtime("r2", "s2", "D:\\work\\beta", "devbox"),
@@ -85,16 +85,15 @@ class CachedHistoryTreeTest {
 
         val tree = cachedHistoryTree(state)
 
-        assertEquals(listOf("devbox", "laptop"), tree.map { it.hostname })
-        assertEquals(listOf("D:\\work\\beta", "D:\\work\\alpha"), tree[0].directories.map { it.cwd })
-        assertEquals(listOf("s2"), tree[0].directories[0].sessions.map { it.sessionId })
-        assertEquals(listOf("s1"), tree[0].directories[1].sessions.map { it.sessionId })
-        assertEquals(listOf("s3"), tree[1].directories.single().sessions.map { it.sessionId })
+        assertEquals(listOf("paired-host"), tree.map { it.hostId })
+        assertEquals(listOf("D:\\work\\alpha", "D:\\work\\beta"), tree[0].directories.map { it.cwd })
+        assertEquals(listOf("s3", "s1"), tree[0].directories[0].sessions.map { it.sessionId })
+        assertEquals(listOf("s2"), tree[0].directories[1].sessions.map { it.sessionId })
     }
 
     @Test
-    fun `offline sessions use the stored hostname`() {
-        val state = RemoteState(
+    fun `offline sessions with different legacy names share the paired Host`() {
+        val state = RemoteState(hostId = "paired-host", hostName = "devbox",
             sessions = mapOf(
                 "s1" to session("s1", "D:\\work\\alpha", modifiedAt = 1, hostname = "devbox"),
                 "s2" to session("s2", "D:\\work\\beta", modifiedAt = 2, hostname = "laptop"),
@@ -103,12 +102,12 @@ class CachedHistoryTreeTest {
 
         val tree = cachedHistoryTree(state)
 
-        assertEquals(listOf("devbox", "laptop"), tree.map { it.hostname })
+        assertEquals(listOf("devbox"), tree.map { it.hostname })
     }
 
     @Test
-    fun `an online runtime hostname takes precedence over the stored one`() {
-        val state = RemoteState(
+    fun `runtime and stored names cannot override the paired Host`() {
+        val state = RemoteState(hostId = "paired-host", hostName = "devbox",
             runtimes = mapOf("r1" to runtime("r1", "s1", "D:\\work\\alpha", "devbox")),
             sessions = mapOf("s1" to session("s1", "D:\\work\\alpha", modifiedAt = 1, hostname = "stale-host")),
         )
@@ -121,7 +120,7 @@ class CachedHistoryTreeTest {
     @Test
     fun `opening a session without a runtime hostname keeps it in the same sidebar directory`() {
         val cwd = "D:\\work\\alpha"
-        val initial = RemoteState(
+        val initial = RemoteState(hostId = "paired-host", hostName = "devbox",
             sessions = mapOf(
                 "s1" to session("s1", cwd, modifiedAt = 2, hostname = "devbox"),
                 "s2" to session("s2", cwd, modifiedAt = 1, hostname = "devbox"),
@@ -151,7 +150,7 @@ class CachedHistoryTreeTest {
     @Test
     fun `an online session uses the catalog directory until its runtime reports one`() {
         val storedCwd = "D:\\work\\alpha"
-        val initial = RemoteState(
+        val initial = RemoteState(hostId = "paired-host", hostName = "devbox",
             sessions = mapOf("s1" to session("s1", storedCwd, modifiedAt = 1, hostname = "devbox")),
         )
         for (runtimeCwd in listOf("", "  ", "D:\\work\\beta")) {
@@ -173,9 +172,9 @@ class CachedHistoryTreeTest {
             val cached = entry.withHistoryCache(hostname)
             val expectedHost = if (hostname.isNullOrBlank()) "devbox" else hostname
             assertEquals(entry.copy(hasHistoryCache = true, hostname = expectedHost), cached)
-            val offline = RemoteState(sessions = mapOf(entry.sessionId to cached))
+            val offline = RemoteState(hostId = "paired-host", hostName = "devbox", sessions = mapOf(entry.sessionId to cached))
             val host = cachedHistoryTree(offline).single()
-            assertEquals(expectedHost, host.hostname)
+            assertEquals("devbox", host.hostname)
             assertEquals(entry.cwd, host.directories.single().cwd)
             val row = host.directories.single().sessions.single()
             assertEquals(entry.sessionId, row.sessionId)
@@ -184,8 +183,8 @@ class CachedHistoryTreeTest {
     }
 
     @Test
-    fun `sessions without a known host fall under the unknown host last`() {
-        val state = RemoteState(
+    fun `sessions without hostname share the same paired Host as named sessions`() {
+        val state = RemoteState(hostId = "paired-host", hostName = "devbox",
             sessions = mapOf(
                 "s1" to session("s1", "D:\\work\\alpha", modifiedAt = 1),
                 "s2" to session("s2", "D:\\work\\beta", modifiedAt = 2, hostname = "devbox"),
@@ -194,13 +193,13 @@ class CachedHistoryTreeTest {
 
         val tree = cachedHistoryTree(state)
 
-        assertEquals(listOf("devbox", null), tree.map { it.hostname })
-        assertNull(tree.last().hostname)
+        assertEquals(listOf("devbox"), tree.map { it.hostname })
+        assertEquals(setOf("s1", "s2"), tree.single().directories.flatMap { it.sessions }.map { it.sessionId }.toSet())
     }
 
     @Test
     fun `sessions without a history cache still appear and newest comes first`() {
-        val state = RemoteState(
+        val state = RemoteState(hostId = "paired-host", hostName = "devbox",
             sessions = mapOf(
                 "s1" to session("s1", "D:\\work", modifiedAt = 1, hostname = "devbox"),
                 "s2" to session("s2", "D:\\work", modifiedAt = 5, hostname = "devbox"),
@@ -222,7 +221,7 @@ class CachedHistoryTreeTest {
 
     @Test
     fun `sidebar orders by modified time and does not promote online rows`() {
-        val state = RemoteState(
+        val state = RemoteState(hostId = "paired-host", hostName = "devbox",
             runtimes = mapOf("r1" to runtime("r1", "s1", "D:\\work", "devbox")),
             sessions = mapOf(
                 "s1" to session("s1", "D:\\work", modifiedAt = 1, hostname = "devbox"),
@@ -241,7 +240,7 @@ class CachedHistoryTreeTest {
 
     @Test
     fun `directories are ordered by their newest session modified time`() {
-        val state = RemoteState(
+        val state = RemoteState(hostId = "paired-host", hostName = "devbox",
             sessions = mapOf(
                 "old" to session("old", "D:\\work\\old", modifiedAt = 100, hostname = "devbox"),
                 "new" to session("new", "D:\\work\\new", modifiedAt = 300, hostname = "devbox"),
@@ -260,7 +259,7 @@ class CachedHistoryTreeTest {
 
     @Test
     fun `online runtimes appear even without a cached catalog entry`() {
-        val state = RemoteState(
+        val state = RemoteState(hostId = "paired-host", hostName = "devbox",
             runtimes = mapOf(
                 "r1" to runtime("r1", "live-1", "D:\\work\\alpha", "devbox"),
             ),
@@ -277,7 +276,7 @@ class CachedHistoryTreeTest {
 
     @Test
     fun `online runtime deduplicates the matching cached session`() {
-        val state = RemoteState(
+        val state = RemoteState(hostId = "paired-host", hostName = "devbox",
             runtimes = mapOf("r1" to runtime("r1", "s1", "D:\\work\\alpha", "devbox")),
             sessions = mapOf("s1" to session("s1", "D:\\work\\alpha", modifiedAt = 99, hostname = "devbox")),
         )
@@ -286,30 +285,6 @@ class CachedHistoryTreeTest {
         val rows = tree.single().directories.single().sessions
         assertEquals(1, rows.size)
         assertTrue(rows.single().isOnline)
-    }
-
-    @Test
-    fun `sidebar host list puts named hosts first and unknown host last`() {
-        val tree = listOf(
-            CachedHostGroup(null, emptyList()),
-            CachedHostGroup("devbox", emptyList()),
-            CachedHostGroup("laptop", emptyList()),
-        )
-
-        val list = sidebarHostList(tree)
-
-        assertEquals(listOf("devbox", "laptop", null), list.hosts)
-        assertEquals("devbox", list.defaultSelected)
-    }
-
-    @Test
-    fun `sidebar host list keeps the unknown bucket when it is the only entry`() {
-        val tree = listOf(CachedHostGroup(null, emptyList()))
-
-        val list = sidebarHostList(tree)
-
-        assertEquals(listOf(null), list.hosts)
-        assertNull(list.defaultSelected)
     }
 
     @Test

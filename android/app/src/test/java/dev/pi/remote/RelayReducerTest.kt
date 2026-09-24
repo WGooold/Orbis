@@ -2900,7 +2900,7 @@ class RelayReducerTest {
             {"type":"runtime.online","runtime":{"runtimeId":"runtime","name":"Pi","cwd":"/repo","status":"idle","sessionId":"s-1"}}
         """)
         assertEquals(true, runtimeMetadata.sessions["s-1"]?.archived)
-        assertTrue(cachedHistoryTree(runtimeMetadata).flatMap { it.directories }.flatMap { it.sessions }.single().isArchived)
+        assertTrue(cachedHistoryTree(runtimeMetadata.copy(hostId = "paired-host")).flatMap { it.directories }.flatMap { it.sessions }.single().isArchived)
 
         val restoring = runtimeMetadata.copy(sessionArchiveRequests = mapOf("restore" to "s-1"))
         val failed = reducer.reduce(restoring, """

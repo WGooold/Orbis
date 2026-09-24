@@ -45,7 +45,7 @@ data class RuntimeSummary(
     val sessionId: String? = null,
     val sessionGraphSync: Boolean = false,
     val sessionLeafId: String? = null,
-    /** OS hostname of the Pi machine; device identity that needs no user configuration. */
+    /** Optional OS hostname for display; the authenticated pairing owns this Runtime. */
     val hostname: String? = null,
     val sessionName: String? = null,
     /** Active model reported by the Runtime; absent on older Runtime or Relay versions. */
@@ -336,6 +336,8 @@ data class RemoteState(
      * null = 还没有已配对的 Host（旧凭据或未配对）。
      */
     val hostId: String? = null,
+    /** Display label from the pairing identity; never a Session ownership or routing key. */
+    val hostName: String? = null,
     val runtimes: Map<String, RuntimeSummary> = emptyMap(),
     val workingBranches: Map<String, WorkingBranch> = emptyMap(),
     /** Last known session identity survives a transient runtime.offline event. */
@@ -463,7 +465,7 @@ private fun mergeSessionCatalogEntry(
         modifiedAt = maxOf(existing.modifiedAt, incoming.modifiedAt),
         messageCount = maxOf(existing.messageCount, incoming.messageCount),
         hasHistoryCache = existing.hasHistoryCache || incoming.hasHistoryCache,
-        hostname = incoming.hostname ?: existing.hostname,
+        hostname = incoming.hostname?.takeIf(String::isNotBlank) ?: existing.hostname,
         agentKind = incoming.agentKind ?: existing.agentKind,
         archived = incoming.archived ?: existing.archived,
         modelProvider = incoming.modelProvider?.takeIf(String::isNotBlank) ?: existing.modelProvider,
@@ -731,6 +733,7 @@ private fun RuntimeSummary.catalogEntry(): SessionCatalogEntry? = sessionId?.let
         // must not be resurrected by the catalog's missing-field merge fallback.
         name = sessionName?.trim().orEmpty(),
         cwd = cwd,
+        hostname = hostname,
         modifiedAt = 0,
         messageCount = 0,
         // 在线进程合入目录时也要带 agentKind（codex 是固定虚拟 runtimeId，Pi 是 UUID），
@@ -772,7 +775,7 @@ internal data class CachedSessionRow(
     val runtimeId: String?,
     val isOnline: Boolean,
     val cwd: String,
-    val hostname: String?,
+    val hostname: String,
     /** Cached catalog entry, kept so the sidebar can fall back to the legacy `firstMessage`. */
     val catalogEntry: SessionCatalogEntry?,
     val title: String,
@@ -789,33 +792,34 @@ internal data class CachedDirectoryGroup(
         get() = sessions.maxOfOrNull(CachedSessionRow::modifiedAt) ?: 0L
 }
 
-/** One top-level tree node in the cached-history sidebar: a Pi host and its directories. */
+/** The paired Host owns the entire authenticated directory and its device-scoped cache. */
 internal data class CachedHostGroup(
-    val hostname: String?,
+    val hostId: String,
+    val hostname: String,
     val directories: List<CachedDirectoryGroup>,
 )
 
-/** All hosts the sidebar can switch to, sorted with named hosts first and the unknown bucket last. */
-internal data class SidebarHostList(
-    val hosts: List<String?>,
-    val defaultSelected: String?,
-) {
-    fun contains(hostname: String?): Boolean = hosts.contains(hostname)
-}
+internal data class SessionHost(val hostId: String, val name: String)
 
 /**
- * Returns the list of distinct hostnames represented by online runtimes and offline cache rows.
- * Named hosts come first in alphabetical order, the unknown-host bucket (null) is always last so
- * the sidebar can surface named hosts first and place "未知主机" at the end of the chip row.
+ * Host identity comes only from pairing. Legacy hostname metadata may supply a display label,
+ * but missing, stale or conflicting labels cannot create another Host or change ownership.
  */
-internal fun sidebarHostList(tree: List<CachedHostGroup>): SidebarHostList {
-    if (tree.isEmpty()) return SidebarHostList(emptyList(), null)
-    val (named, unnamed) = tree.map { it.hostname }.partition { it != null }
-    val sortedNamed = named.sortedBy { it }
-    val hosts = sortedNamed + unnamed
-    val defaultSelected = sortedNamed.firstOrNull() ?: hosts.firstOrNull()
-    return SidebarHostList(hosts, defaultSelected)
-}
+internal val RemoteState.sessionHost: SessionHost?
+    get() {
+        val id = hostId?.takeIf(String::isNotBlank) ?: return null
+        val label = hostName?.takeIf(String::isNotBlank)
+            ?: (sessions.values.map { it.hostname } + runtimes.values.map { it.hostname })
+                .mapNotNull { it?.takeIf(String::isNotBlank) }.distinct().singleOrNull()
+            ?: "已配对电脑"
+        return SessionHost(id, label)
+    }
+
+internal val RemoteState.canOperateSessions: Boolean
+    get() = !hostId.isNullOrBlank() && connection == RelayConnection.ONLINE && e2eReady
+
+internal fun RemoteState.canCreateSessionOn(expectedHostId: String?): Boolean =
+    canOperateSessions && expectedHostId == hostId && sessionActivateRequests.isEmpty()
 
 /**
  * Builds the sidebar tree (`host -> directory -> session`). Online runtimes and offline catalog
@@ -828,6 +832,7 @@ internal fun sidebarHostList(tree: List<CachedHostGroup>): SidebarHostList {
  * 找的东西——没缓存的会话点一下就把会话加载进一个进程（§8.1），不需要先有缓存。
  */
 internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
+    val host = state.sessionHost ?: return emptyList()
     val runtimesBySession = state.runtimes.values
         .filter { it.sessionId != null }
         .sortedBy(state::runtimeDisplayName)
@@ -841,10 +846,7 @@ internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
             runtimeId = runtime.runtimeId,
             isOnline = true,
             cwd = runtime.cwd.ifBlank { session?.cwd.orEmpty() },
-            // Runtime metadata may omit the host (for example, Codex). Opening the
-            // session must not move it out of its existing sidebar host group.
-            hostname = runtime.hostname?.takeIf(String::isNotBlank)
-                ?: session?.hostname?.takeIf(String::isNotBlank),
+            hostname = host.name,
             catalogEntry = session,
             title = state.runtimeDisplayName(runtime),
             messageCount = state.conversations[runtime.runtimeId]?.messages?.size ?: 0,
@@ -853,47 +855,35 @@ internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
     }
     for (session in state.sessions.values) {
         if (rows.containsKey(session.sessionId)) continue
-        val hostname = state.runtimes.values
-            .filter { it.sessionId == session.sessionId }
-            .sortedBy(state::runtimeDisplayName)
-            .firstOrNull()
-            ?.hostname
-            ?.takeIf(String::isNotBlank)
-            ?: session.hostname?.takeIf(String::isNotBlank)
         rows[session.sessionId] = CachedSessionRow(
             sessionId = session.sessionId,
             runtimeId = null,
             isOnline = false,
             cwd = session.cwd,
-            hostname = hostname,
+            hostname = host.name,
             catalogEntry = session,
             title = state.sessionDisplayName(session.sessionId),
             messageCount = session.messageCount,
             modifiedAt = session.modifiedAt,
         )
     }
-    return rows.values
-        .groupBy { it.hostname }
-        .toSortedMap(compareBy(nullsLast<String>()) { it })
-        .map { (hostname, hostRows) ->
-            val directories = hostRows
-                .groupBy { it.cwd }
-                .values
-                .map { directoryRows ->
-                    CachedDirectoryGroup(
-                        cwd = directoryRows.first().cwd,
-                        sessions = directoryRows.sortedWith(
-                            compareByDescending<CachedSessionRow> { it.sortKey() }
-                                .thenBy { it.sessionId },
-                        ),
-                    )
-                }
-                .sortedWith(
-                    compareByDescending<CachedDirectoryGroup> { it.modifiedAt }
-                        .thenBy { it.cwd },
+    val directories = rows.values
+        .groupBy { it.cwd }
+        .values
+        .map { directoryRows ->
+            CachedDirectoryGroup(
+                cwd = directoryRows.first().cwd,
+                sessions = directoryRows.sortedWith(
+                    compareByDescending<CachedSessionRow> { it.sortKey() }
+                        .thenBy { it.sessionId },
                 )
-            CachedHostGroup(hostname, directories)
+            )
         }
+        .sortedWith(
+            compareByDescending<CachedDirectoryGroup> { it.modifiedAt }
+                .thenBy { it.cwd },
+        )
+    return listOf(CachedHostGroup(host.hostId, host.name, directories))
 }
 
 /**

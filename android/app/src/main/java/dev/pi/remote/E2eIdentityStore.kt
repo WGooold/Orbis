@@ -21,6 +21,7 @@ data class HostIdentity(
     /** base64url 的 pskRoot。 */
     val pskRoot: String,
     val lanEndpoints: List<LanEndpoint> = emptyList(),
+    val hostName: String? = null,
 )
 
 class E2eIdentityStore(context: Context) {

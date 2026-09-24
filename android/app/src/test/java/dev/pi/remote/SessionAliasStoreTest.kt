@@ -69,7 +69,7 @@ class SessionAliasStoreTest {
             entryId = "u1", parentId = null, type = "message", timestamp = "2026-01-01T00:00:00.000Z",
             data = Json.parseToJsonElement("""{"message":{"role":"user","content":"图中的首条消息。第二句"}}""").jsonObject,
         )
-        val state = RemoteState(
+        val state = RemoteState(hostId = "paired-host",
             runtimes = mapOf(runtime.runtimeId to runtime),
             sessions = mapOf("session-1" to SessionCatalogEntry(
                 "session-1", name = "目录名称", cwd = runtime.cwd, firstMessage = "目录中的首条消息。第二句",
@@ -107,7 +107,7 @@ class SessionAliasStoreTest {
         assertNames("第一句：请检查项目。", noPreview)
         assertNames("session-1", noPreview.copy(conversations = emptyMap()))
         assertNames("session-1", noPreview.copy(runtimes = emptyMap()))
-        assertEquals("runtime-1", RemoteState().runtimeDisplayName(runtime.copy(sessionId = null, sessionName = null)))
+        assertEquals("runtime-1", RemoteState(hostId = "paired-host", ).runtimeDisplayName(runtime.copy(sessionId = null, sessionName = null)))
         assertEquals("123456789012345678901234567890123456789…", firstUserMessageTitle(listOf(
             firstMessage.copy(content = listOf(RemoteContent("text", "12345678901234567890123456789012345678901234567890"))),
         )))

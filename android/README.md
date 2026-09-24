@@ -46,6 +46,8 @@ LAN 地址不可达或握手失败时自动尝试下一个地址，并定期重�
 
 会话目录由 Host 聚合下发，按 cwd 分组，Pi 与 Codex 的会话在同一棵树里，`agentKind` 只做角标。点开一个只有历史、没在跑的会话会触发激活：Host 按会话记录里的原目录把 agent 拉起来；「新建」则进入只读的目录浏览，选好目录后由 Host 在那里起一个全新会话。
 
+会话与目录统一归属当前配对的 `hostId`，侧栏显示这台电脑；会话中的可选 `hostname` 只提供名称，不能生成另一台主机。空会话、离线缓存、主机改名和目录筛选都不改变归属。Session Catalog 落盘时校验 Relay、设备与 Host 身份；旧缓存只在原配对的设备命名空间内迁移，保留已有会话与历史。新建操作要求已配对的加密连接，面板打开后更换配对会使原操作失效。
+
 APP 启动时只加载并持久化轻量 Session Catalog；用户打开在线 Runtime 后，才根据其当前 Session 读取对应的本地加密 Entry Graph Cache。没有在线 Runtime 的 Session 只能从独立历史入口打开已有缓存，并且只读。聊天页采用聊天气泡布局，普通消息完整显示；thinking 和工具调用默认折叠，点击后查看完整内容。Android 按选中 Runtime 的 leaf 从共享 graph 计算 branch、compaction、custom message、工具关联和显示顺序；同一 Session 的不同 runtime 不会把 sibling branch 合并。graph 同步使用 `sessionId`、graph version、entry digest、leaf、branch fingerprint 和 `syncId`，可验证时只追加缺失 entry，否则完整替换。消息生成期间的内容只作为 runtime/session-scoped overlay，直到持久化 entry 可以关联。取消配对时会删除本地 Session catalog、graph cache 和相关本地数据。Slash 菜单来自当前 runtime 发布的 capability manifest；Android 只负责选择命令和参数，并通过统一的 `slash.execute` 提交，Session、分支、上下文、模型和 thinking level 的实际语义均由电脑端的 agent 执行。
 
 聊天页标题下方显示当前会话工作目录的 Git 分支，Pi 和 Codex 共用这一入口。打开聊天、回到前台及前台每 15 秒向 Host 读取一次，也可点击分支行立即刷新。Host 根据已注册会话的真实工作目录读取 Git，支持子目录和独立 worktree；分离 HEAD 显示短提交号，读取不到则显示「未获取到 Git 分支」。这里显示的是磁盘工作分支，与聊天记录的会话分支无关。需要更新并重启 Host 后，新版 APP 才能收到分支信息。

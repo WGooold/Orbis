@@ -15,7 +15,8 @@ class DshInstrumentedTest {
     @Test fun selectsDeepSeekAndCreatesSessionInChosenDirectory() {
         var created: Pair<String, String>? = null
         compose.setContent { PiRemoteTheme { NewSessionSheet(
-            state = RemoteState(connection = RelayConnection.ONLINE, supportedAgents = setOf("pi", "codex", "dsh")),
+            state = RemoteState(hostId = "paired-host", connection = RelayConnection.ONLINE, e2eReady = true,
+                supportedAgents = setOf("pi", "codex", "dsh")),
             presetCwd = "D:/orbis-deepseek-harness", onDismiss = {}, onBrowse = {}, onBrowseInto = {}, onBrowseUp = {},
             onCreate = { kind, cwd -> created = kind to cwd },
         ) } }

@@ -21,8 +21,8 @@ data class SessionCatalogEntry(
     val messageCount: Int = 0,
     val hasHistoryCache: Boolean = false,
     /**
-     * OS hostname of the Pi machine that last produced this Session's history cache, used to group
-     * cached history by host in the sidebar. Null for entries cached before this field existed.
+     * Optional source metadata, retained for display labels in old pairing records.
+     * Ownership belongs to the paired Host's catalog namespace, never this hostname.
      */
     val hostname: String? = null,
     /** 产生该会话的 agent（pi/codex，spec §8）；来自 session.list / runtime 元数据，旧缓存为 null。 */
@@ -46,28 +46,35 @@ private data class PersistedSessionCatalog(
     val sessions: List<SessionCatalogEntry>,
     val updatedAt: Long,
     val schemaVersion: Int = 1,
+    val hostId: String? = null,
 )
 
 /** Lightweight Session index. It deliberately does not contain entry bodies. */
-class SessionCatalogStore(
-    context: Context,
+class SessionCatalogStore internal constructor(
+    private val file: File,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
-    private val appContext = context.applicationContext
-    private val file = File(appContext.filesDir, "session-catalog/catalog.cache")
+    constructor(context: Context, json: Json = Json { ignoreUnknownKeys = true }) :
+        this(File(context.applicationContext.filesDir, "session-catalog/catalog.cache"), json)
 
     @Synchronized
-    fun load(device: DeviceCredential): List<SessionCatalogEntry> {
-        if (!file.isFile) return emptyList()
-        return runCatching {
+    fun load(device: DeviceCredential, hostId: String): List<SessionCatalogEntry> {
+        if (hostId.isBlank() || !file.isFile) return emptyList()
+        val stored = runCatching {
             json.decodeFromString<PersistedSessionCatalog>(file.readText(Charsets.UTF_8))
         }.getOrNull()?.takeIf {
-            it.schemaVersion == 1 && it.relayUrl == device.relayUrl && it.deviceId == device.deviceId
-        }?.sessions.orEmpty()
+            it.schemaVersion == 1 && it.relayUrl == device.relayUrl && it.deviceId == device.deviceId &&
+                (it.hostId == null || it.hostId == hostId)
+        } ?: return emptyList()
+        // Old catalogs already belong to this exact pairing's device/Relay namespace.
+        // Bind that namespace once, preserving all sessions, including empty and offline ones.
+        if (stored.hostId == null) runCatching { save(device, hostId, stored.sessions) }
+        return stored.sessions
     }
 
     @Synchronized
-    fun save(device: DeviceCredential, sessions: Collection<SessionCatalogEntry>) {
+    fun save(device: DeviceCredential, hostId: String, sessions: Collection<SessionCatalogEntry>) {
+        require(hostId.isNotBlank()) { "Session catalog requires a paired Host" }
         file.parentFile?.mkdirs()
         val temporary = File(file.parentFile, "${file.name}.${System.nanoTime()}.tmp")
         runCatching {
@@ -76,6 +83,7 @@ class SessionCatalogStore(
                     PersistedSessionCatalog(
                         relayUrl = device.relayUrl,
                         deviceId = device.deviceId,
+                        hostId = hostId,
                         sessions = sessions.sortedByDescending(SessionCatalogEntry::modifiedAt),
                         updatedAt = System.currentTimeMillis(),
                     ),

@@ -175,6 +175,14 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
     // 若拿 cwd != null 当可见性判据，面板永远不会出现（抽屉收回、什么也没发生）。
     var newSessionOpen by rememberSaveable { mutableStateOf(false) }
     var newSessionCwd by rememberSaveable { mutableStateOf<String?>(null) }
+    var newSessionHostId by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(state.hostId) {
+        if (newSessionOpen && state.hostId != newSessionHostId) {
+            newSessionOpen = false
+            newSessionCwd = null
+            model.dismissBrowse()
+        }
+    }
     // Keep the directory page's drawer, filters, expansion and scroll position across navigation.
     val runtimeListStateHolder = rememberSaveableStateHolder()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -238,6 +246,7 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
                         model.selectOfflineSession(sessionId)
                     },
                     onNewSession = { cwd ->
+                        newSessionHostId = state.hostId
                         newSessionCwd = cwd
                         newSessionOpen = true
                     },
@@ -252,7 +261,7 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
             ChatScreen(state, model)
         }
     }
-    if (newSessionOpen) {
+    if (newSessionOpen && state.hostId == newSessionHostId) {
         NewSessionSheet(
             state = state,
             presetCwd = newSessionCwd,
@@ -264,7 +273,7 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
                 newSessionOpen = false
                 newSessionCwd = null
                 model.dismissBrowse()
-                model.createSession(agentKind, cwd)
+                model.createSession(agentKind, cwd, newSessionHostId)
             },
         )
     }
@@ -683,7 +692,7 @@ internal fun NewSessionSheet(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "在电脑上新建会话",
+                "在${state.sessionHost?.name ?: "电脑"}上新建会话",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -702,7 +711,7 @@ internal fun NewSessionSheet(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            val offline = state.connection != RelayConnection.ONLINE
+            val offline = !state.canOperateSessions
             if (offline) {
                 Text(
                     "未连接到电脑：连接建立后才能浏览目录与新建会话",
@@ -730,7 +739,7 @@ internal fun NewSessionSheet(
                 NeumorphActionButton(
                     onClick = { onCreate(agentKind, preset) },
                     text = "在此目录新建 ${agentBrand(agentKind).title} 会话",
-                    enabled = !offline,
+                    enabled = state.canCreateSessionOn(state.hostId),
                     modifier = Modifier.fillMaxWidth(),
                 )
             } else {
@@ -749,7 +758,7 @@ internal fun NewSessionSheet(
                         if (cwd.isNotBlank()) onCreate(agentKind, cwd)
                     },
                     text = "在这里新建 ${agentBrand(agentKind).title} 会话",
-                    enabled = !offline && state.e2eReady && browse != null && !browse.isLoading &&
+                    enabled = state.canCreateSessionOn(state.hostId) && browse != null && !browse.isLoading &&
                         browse.error == null && !browse.path.isNullOrBlank(),
                     modifier = Modifier.fillMaxWidth(),
                 )

@@ -175,7 +175,7 @@ internal fun SessionDrawer(
     onNewSession: (String?) -> Unit,
     onSetArchived: (String, Boolean) -> Unit,
 ) {
-    val tree = remember(state.sessions, state.runtimes, state.sessionAliases, state.sessionGraphs, state.conversations) {
+    val tree = remember(state.hostId, state.hostName, state.sessions, state.runtimes, state.sessionAliases, state.sessionGraphs, state.conversations) {
         cachedHistoryTree(state)
     }
     var agentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
@@ -200,11 +200,9 @@ internal fun SessionDrawer(
             ).takeIf { it.directories.isNotEmpty() }
         }
     }
-    val hosts = remember(filteredTree) { sidebarHostList(filteredTree) }
-    var requestedHost by rememberSaveable { mutableStateOf(hosts.defaultSelected) }
-    // Refreshes and agent filters may change the catalog, but must not reset a host the user is still browsing.
-    val selectedHost = if (hosts.contains(requestedHost)) requestedHost else hosts.defaultSelected
-    val activeHost = filteredTree.firstOrNull { it.hostname == selectedHost }
+    val host = state.sessionHost
+    val selectedHost = host?.hostId
+    val activeHost = filteredTree.singleOrNull()
     var query by rememberSaveable { mutableStateOf("") }
     val searchTerm = query.trim()
     val directories = remember(activeHost, searchTerm) {
@@ -226,9 +224,8 @@ internal fun SessionDrawer(
     val listState = rememberSaveable(selectedHost, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, saver = LazyListState.Saver) {
         LazyListState()
     }
-    val connected = state.connection == RelayConnection.ONLINE
-    val activating = state.sessionActivateRequests.isNotEmpty()
-    val canCreate = connected && !activating
+    val connected = state.canOperateSessions
+    val canCreate = state.canCreateSessionOn(selectedHost)
     val focusManager = LocalFocusManager.current
     val drawerWidth = (LocalConfiguration.current.screenWidthDp.dp - 32.dp).coerceAtMost(384.dp)
 
@@ -420,18 +417,14 @@ internal fun SessionDrawer(
             }
             // 「电脑」贴着抽屉底部：它是当前所在的主机，不是列表的筛选条件，
             // 放到顶部会先于「你看哪个目录」被读到，也让搜索框离拇指更远。
-            if (hosts.hosts.isNotEmpty()) {
+            if (host != null) {
                 // 细线给列表收口：页脚必须被读成列表之外的一段，而不是最后一张目录卡片。
                 HorizontalDivider(
                     modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp),
                     thickness = 1.dp,
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
                 )
-                DrawerHostPicker(hosts.hosts, selectedHost) {
-                    requestedHost = it
-                    query = ""
-                    focusManager.clearFocus()
-                }
+                DrawerHostLabel(host.name)
             }
         }
     }
@@ -446,8 +439,7 @@ internal fun SessionDrawer(
  * 「你正站在哪台电脑上」是底座，不是筛选条件。
  */
 @Composable
-private fun DrawerHostPicker(hosts: List<String?>, selected: String?, onSelect: (String?) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
+private fun DrawerHostLabel(name: String) {
     Box(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 12.dp, bottom = 4.dp),
     ) {
@@ -456,7 +448,6 @@ private fun DrawerHostPicker(hosts: List<String?>, selected: String?, onSelect: 
             style = NeumorphStyle.Raised,
             shape = RemoteUi.ControlShape,
             shadowScale = 0.8f,
-            onClick = { expanded = true },
         ) {
             Row(
                 Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(horizontal = 16.dp, vertical = 6.dp),
@@ -475,29 +466,11 @@ private fun DrawerHostPicker(hosts: List<String?>, selected: String?, onSelect: 
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    selected ?: "未知主机",
+                    name,
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                )
-                Icon(
-                    Icons.Rounded.ExpandMore,
-                    contentDescription = "切换电脑",
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        NeumorphMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            hosts.forEach { host ->
-                NeumorphMenuItem(
-                    text = { Text(host ?: "未知主机", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    onClick = { onSelect(host); expanded = false },
-                    leadingIcon = { Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    trailingIcon = if (host == selected) {
-                        { Icon(Icons.Rounded.Check, contentDescription = "当前电脑", tint = MaterialTheme.colorScheme.primary) }
-                    } else null,
                 )
             }
         }
