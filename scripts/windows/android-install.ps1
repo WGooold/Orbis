@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^emulator-\d+$')]
+    [ValidatePattern('^[A-Za-z0-9._:-]+$')]
     [string] $Serial,
 
     [Parameter(Mandatory = $true)]
