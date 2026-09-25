@@ -18,7 +18,9 @@
     "@pi-remote/protocol": "0.1.0",
     "node-datachannel": "^0.33.4",
     "qrcode": "^1.5.4",
+    "quickjs-emscripten": "0.31.0",
     "smol-toml": "1.9.0",
+    "toml-eslint-parser": "0.10.0",
     "ws": "^8.18.3",
     "yaml": "2.9.1"
   },

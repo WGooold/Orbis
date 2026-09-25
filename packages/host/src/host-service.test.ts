@@ -620,7 +620,7 @@ describe("host end-to-end over relay", () => {
     relay = await startRelay(stateDir);
     const paths = { pi: join(stateDir, "pi"), codex: join(stateDir, "codex"), dsh: join(stateDir, "dsh") };
     const providers = new ProviderManager(stateDir, paths);
-    await providers.save("pi", "custom", "Custom", { apiKey: "never-send-this", baseUrl: "https://example.com/v1", api: "openai-completions", models: [{ id: "model" }] }, true);
+    await providers.save("pi", "custom", "Custom", { apiKey: "never-send-this", baseUrl: "https://example.com/v1", api: "openai-completions", models: [{ id: "model" }] }, true, false, { notes: "private-notes-never-send", usageScript: { enabled: false, language: "javascript", timeout: 10, code: "private-script-never-send" } });
     host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false, providers });
     await host.start();
     const paired = await pairDevice({ relay, host }); device = paired.device;
@@ -630,6 +630,8 @@ describe("host end-to-end over relay", () => {
     const list = await device.receiveMessage();
     expect(list).toMatchObject({ type: "provider.result", requestId: "list", providers: [{ id: "custom", enabled: false }] });
     expect(JSON.stringify(list)).not.toContain("never-send-this");
+    expect(JSON.stringify(list)).not.toContain("private-notes-never-send");
+    expect(JSON.stringify(list)).not.toContain("private-script-never-send");
     device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "switch", kind: "pi", id: "custom", enabled: true }));
     const switched = await device.receiveMessage();
     expect(switched).toMatchObject({ type: "provider.result", requestId: "switch", providers: [{ id: "custom", enabled: true }] });

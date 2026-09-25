@@ -39,6 +39,7 @@ int main(int argc, char *argv[]) {
     parser.process(app);
     QString dataDir = parser.value("data-dir"); if (dataDir.isEmpty()) dataDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     dataDir = QDir(dataDir).absolutePath(); QDir().mkpath(dataDir);
+    if (parser.isSet("smoke-test") && parser.isSet("smoke-providers")) qputenv("ORBIS_PROVIDER_TEST_ROOT", (dataDir + "/test-agents").toUtf8());
     const auto serverName = "OrbisHost-" + QString::fromLatin1(QCryptographicHash::hash(dataDir.toUtf8(), QCryptographicHash::Sha256).toHex().left(24));
     QLockFile lock(dataDir + "/desktop.lock"); lock.setStaleLockTime(0);
     if (!lock.tryLock(100)) {
@@ -108,6 +109,33 @@ int main(int argc, char *argv[]) {
                 });
                 QTimer::singleShot(3200, &app, [&] {
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".provider-editor.png")) app.exit(7);
+                    QMetaObject::invokeMethod(window, "closeProviderEditor");
+                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "pi"));
+                });
+                QTimer::singleShot(3800, &app, [&] { controller.presetProvider("pi-0"); });
+                QTimer::singleShot(4600, &app, [&] {
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".pi-editor.png")) app.exit(7);
+                    QMetaObject::invokeMethod(window, "saveProviderEditor");
+                });
+                QTimer::singleShot(5500, &app, [&] {
+                    const auto providers = controller.providers();
+                    if (providers.size() != 1 || !providers.first().toMap().value("enabled").toBool()) { app.exit(8); return; }
+                    controller.copyProvider(providers.first().toMap().value("id").toString());
+                });
+                QTimer::singleShot(6200, &app, [&] {
+                    const auto providers = controller.providers();
+                    if (providers.size() != 2 || providers.last().toMap().value("enabled").toBool()) { app.exit(9); return; }
+                    controller.switchProvider(providers.last().toMap().value("id").toString(), true);
+                });
+                QTimer::singleShot(7000, &app, [&] {
+                    const auto providers = controller.providers();
+                    if (providers.size() != 2 || !providers.last().toMap().value("enabled").toBool()) { app.exit(10); return; }
+                    controller.removeProvider(providers.last().toMap().value("id").toString());
+                });
+                QTimer::singleShot(7800, &app, [&] {
+                    const auto providers = controller.providers();
+                    if (providers.size() != 1) { app.exit(11); return; }
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".pi-list.png")) app.exit(7);
                     app.exit(0);
                 });
             } else QTimer::singleShot(1800, &app, [&] { app.exit(0); });

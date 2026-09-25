@@ -39,6 +39,8 @@ class HostController : public QObject {
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
     Q_PROPERTY(QVariantList providers READ providers NOTIFY changed)
     Q_PROPERTY(QString providerKind READ providerKind NOTIFY changed)
+    Q_PROPERTY(QVariantList providerPresets READ providerPresets NOTIFY changed)
+    Q_PROPERTY(QString piDefaultProvider READ piDefaultProvider NOTIFY changed)
 public:
     HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QObject *parent = nullptr);
     ~HostController() override;
@@ -69,6 +71,8 @@ public:
     QVariantList agents() const { return m_agents; }
     QVariantList providers() const { return m_providers; }
     QString providerKind() const { return m_providerKind; }
+    QVariantList providerPresets() const { return m_providerPresets; }
+    QString piDefaultProvider() const { return m_piDefaultProvider; }
     Q_INVOKABLE void requestCode(const QString &email);
     Q_INVOKABLE void activate(const QString &email, const QString &code);
     Q_INVOKABLE void activateWithoutEmail();
@@ -83,9 +87,22 @@ public:
     Q_INVOKABLE void installAgent(const QString &kind, const QString &version = "latest");
     Q_INVOKABLE void loadProviders(const QString &kind);
     Q_INVOKABLE void editProvider(const QString &id);
+    Q_INVOKABLE void presetProvider(const QString &id);
+    Q_INVOKABLE void previewProvider(const QVariantMap &draft);
+    Q_INVOKABLE void loadCodexPreferences();
+    Q_INVOKABLE void saveCodexPreferences(const QVariantMap &preferences);
+    Q_INVOKABLE void checkProvider(const QString &id);
+    Q_INVOKABLE void fetchProviderModels(const QVariantMap &draft);
+    Q_INVOKABLE void editProviderUsage(const QString &id);
+    Q_INVOKABLE void saveProviderUsage(const QString &id, const QVariantMap &script);
+    Q_INVOKABLE void queryProviderUsage(const QString &id);
+    Q_INVOKABLE void loadUsageTemplate(const QString &id, const QString &type, const QString &baseUrl);
+    Q_INVOKABLE void oauthAccount(const QString &operation, const QString &id = "");
+    Q_INVOKABLE void openProvider(const QString &id);
     Q_INVOKABLE void saveProvider(const QVariantMap &draft);
     Q_INVOKABLE void switchProvider(const QString &id, bool enabled);
     Q_INVOKABLE void removeProvider(const QString &id);
+    Q_INVOKABLE void copyProvider(const QString &id);
     Q_INVOKABLE void openAgent(const QString &kind);
     Q_INVOKABLE void openAgentTui(const QString &kind);
     Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &piPath, const QString &codexPath, const QString &name, bool dsh, const QString &dshPath);
@@ -101,6 +118,15 @@ signals:
     void changed();
     void paired();
     void providerDraftReady(const QVariantMap &draft);
+    void providerPreviewReady(const QVariantMap &draft);
+    void codexPreferencesReady(const QVariantMap &preferences);
+    void codexPreferencesSaved();
+    void providerModelsReady(const QVariantList &models);
+    void providerUsageReady(const QString &id, const QVariantMap &script);
+    void providerUsageSaved();
+    void usageTemplateReady(const QVariantMap &value);
+    void oauthAccountResult(const QString &operation, const QVariant &value);
+    void providerInfoReady(const QString &title, const QString &text);
     void providerSaved();
     void notification(const QString &title, const QString &body);
 private:
@@ -126,7 +152,9 @@ private:
     QStringList m_logs;
     QVariantList m_devices, m_agents;
     QVariantList m_providers;
+    QVariantList m_providerPresets;
     QString m_providerKind = "codex";
+    QString m_piDefaultProvider;
     int m_nextId = 1, m_busy = 0, m_cooldown = 0, m_runtimeCount = 0, m_crashes = 0;
     int m_policyTicks = 0;
     qint64 m_pairExpires = 0;
