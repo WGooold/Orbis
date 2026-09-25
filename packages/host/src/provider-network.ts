@@ -18,8 +18,14 @@ export async function responseJson(response: Response, limit = 2_000_000): Promi
       if (size > limit) throw new ProviderError("供应商响应超过大小限制");
       chunks.push(next.value);
     }
-    try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown; }
-    catch { throw new ProviderError("供应商未返回有效 JSON"); }
+    const text = Buffer.concat(chunks).toString("utf8");
+    try { return JSON.parse(text) as unknown; }
+    catch {
+      if (/^\s*(?:<!doctype\s+html|<html\b)/i.test(text) || response.headers.get("content-type")?.includes("text/html")) {
+        throw new ProviderError("供应商返回了 HTML 网页，请检查 API 地址及版本路径（如 /v1）");
+      }
+      throw new ProviderError("供应商未返回有效 JSON");
+    }
   } finally { await reader.cancel().catch(() => {}); }
 }
 /** CC Switch reachability: any HTTP response is reachable; never spend tokens or send credentials. */
@@ -37,7 +43,9 @@ export async function fetchProviderModels(fields: ProviderFields): Promise<{ id:
   if (fields.api === "bedrock-converse-stream") throw new ProviderError("Bedrock 使用 AWS 认证，请手动配置模型");
   if (fields.apiKey.startsWith("!")) throw new ProviderError("模型发现不执行 Pi 命令表达式，请手动配置模型");
   const path = url.pathname.replace(/\/+$/, "");
-  url.pathname = path.endsWith("/models") ? path : `${path || "/v1"}/models`;
+  // Only Anthropic's SDK adds /v1 to its API root. OpenAI-compatible transports
+  // append to the configured base URL verbatim, including a root with no version.
+  url.pathname = fields.api === "anthropic-messages" && !path.endsWith("/v1") ? `${path}/v1/models` : `${path}/models`;
   const headers = new Headers(fields.headers);
   if (fields.api === "anthropic-messages") {
     headers.set("x-api-key", fields.apiKey); headers.set("anthropic-version", "2023-06-01");
@@ -46,7 +54,11 @@ export async function fetchProviderModels(fields: ProviderFields): Promise<{ id:
   let response: Response;
   try { response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(15_000) }); }
   catch { throw new ProviderError("获取模型失败，请检查端点、网络和认证方式"); }
-  if (!response.ok) { await response.body?.cancel(); throw new ProviderError(`获取模型失败（HTTP ${response.status}）`); }
+  if (!response.ok) {
+    await response.body?.cancel();
+    const hint = response.status === 405 || response.headers.get("content-type")?.includes("text/html") ? "，请检查 API 地址及版本路径（如 /v1），当前地址可能指向网页" : "";
+    throw new ProviderError(`获取模型失败（HTTP ${response.status}）${hint}`);
+  }
   const body = await responseJson(response) as { data?: unknown; models?: unknown };
   const values = body?.data ?? body?.models;
   if (!Array.isArray(values)) throw new ProviderError("供应商返回的模型列表格式不受支持");
