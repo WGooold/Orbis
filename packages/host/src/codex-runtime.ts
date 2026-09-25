@@ -1037,6 +1037,40 @@ export class CodexRuntime implements AgentBackend {
         }
       }
     }
+    // A previously cached snapshot may have been assembled from live item/started events,
+    // whereas turns/list returns the same items after completion.  Their message payloads are
+    // authoritative and equal, but concurrent tools can have different adjacent parents. Keep
+    // an old parent while that parent still belongs to this replay and while the resulting graph
+    // stays acyclic. This lets a running Host converge to the phone's existing cache without
+    // weakening the content conflict check below.
+    const replayIds = new Set(thread.entries.map((entry) => entry.entryId));
+    const parentById = new Map(thread.entries.map((entry) => [entry.entryId, entry.parentId]));
+    const replayParents = new Map(parentById);
+    for (const entry of thread.entries) {
+      const old = previous.get(entry.entryId);
+      const oldParent = old?.parentId;
+      if (old === undefined ||
+        (oldParent !== null && oldParent !== undefined && !replayIds.has(oldParent)) ||
+        oldParent === entry.entryId) continue;
+      parentById.set(entry.entryId, oldParent ?? null);
+    }
+    // Validate the complete candidate graph after all edges have been replaced. Checking one
+    // edge at a time would reject an otherwise valid old chain when its parent is visited later.
+    for (const entry of thread.entries) {
+      if (parentGraphHasCycle(entry.entryId, parentById)) {
+        parentById.set(entry.entryId, replayParents.get(entry.entryId) ?? null);
+      }
+    }
+    for (const entry of thread.entries) {
+      if (parentById.has(entry.entryId)) entry.parentId = parentById.get(entry.entryId) ?? null;
+    }
+    // Keep the retained branch's previous linear order as well. The snapshot cursor is the last
+    // entry in this array; leaving completion order here could make an older item appear to be the
+    // new leaf even after its immutable parent edge was restored.
+    const previousOrder = new Map([...previous.keys()].map((id, index) => [id, index]));
+    thread.entries.sort((left, right) =>
+      (previousOrder.get(left.entryId) ?? Number.MAX_SAFE_INTEGER) -
+      (previousOrder.get(right.entryId) ?? Number.MAX_SAFE_INTEGER));
     for (const entry of thread.entries) {
       const old = previous.get(entry.entryId);
       if (old !== undefined && !isDeepStrictEqual(old, entry)) thread.historyError = "canonical_entry_conflict";
@@ -2511,6 +2545,17 @@ function resultText(value: unknown, canonical = false): string {
   }
 }
 
+function parentGraphHasCycle(start: string, parents: Map<string, string | null>): boolean {
+  const seen = new Set<string>();
+  let current: string | null | undefined = start;
+  while (typeof current === "string") {
+    if (seen.has(current)) return true;
+    seen.add(current);
+    current = parents.get(current);
+  }
+  return false;
+}
+
 function skillCommands(value: unknown): DynamicSlashCommand[] {
   if (!Array.isArray(value)) return [];
   const commands: DynamicSlashCommand[] = [];
@@ -2780,13 +2825,25 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
     return undefined; // 并发删除/权限问题：跳过这份文件，不拖垮整个目录。
   }
   const lines = head.split("\n");
-  let meta: { id?: unknown; cwd?: unknown; timestamp?: unknown; model_provider?: unknown } | undefined;
+  let meta: {
+    id?: unknown;
+    cwd?: unknown;
+    timestamp?: unknown;
+    model_provider?: unknown;
+    source?: unknown;
+  } | undefined;
   let firstMessage: string | undefined;
   for (const line of lines) {
     if (meta === undefined && line.includes('"session_meta"')) {
       const parsed = parseJsonLine(line);
       const payload = parsed?.type === "session_meta" && typeof parsed.payload === "object" && parsed.payload !== null
-        ? (parsed.payload as { id?: unknown; cwd?: unknown; timestamp?: unknown; model_provider?: unknown })
+        ? (parsed.payload as {
+            id?: unknown;
+            cwd?: unknown;
+            timestamp?: unknown;
+            model_provider?: unknown;
+            source?: unknown;
+          })
         : undefined;
       if (payload !== undefined) meta = payload;
     }
@@ -2800,6 +2857,7 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
     }
     if (meta !== undefined && firstMessage !== undefined) break;
   }
+  if (isCodexSubagentSource(meta?.source)) return undefined;
   const id = meta?.id;
   const cwd = meta?.cwd;
   if (typeof id !== "string" || typeof cwd !== "string") return undefined;
@@ -2820,6 +2878,16 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
     agentKind: "codex",
     ...(modelProvider === undefined ? {} : { modelProvider }),
   };
+}
+
+function isCodexSubagentSource(source: unknown): boolean {
+  if (source === null || typeof source !== "object" || Array.isArray(source)) return false;
+  const record = source as Record<string, unknown>;
+  // Rollout JSON uses snake_case (`subagent`); app-server responses from newer Codex
+  // versions may use the schema's camelCase spelling (`subAgent`). Both identify an
+  // internal child thread, which thread/list excludes from the interactive catalog.
+  return Object.prototype.hasOwnProperty.call(record, "subagent") ||
+    Object.prototype.hasOwnProperty.call(record, "subAgent");
 }
 
 function codexProviderId(value: unknown): string | undefined {

@@ -472,6 +472,31 @@ describe("CodexRuntime", () => {
     expect(fallback[0]?.modelProvider).toBe("disk-provider");
   });
 
+  it("catalog：磁盘兜底忽略 Codex subagent fork，避免把空线程发布到会话目录", async () => {
+    const h = makeHarness();
+    const sessionMeta = (id: string, source: unknown) => JSON.stringify({
+      type: "session_meta",
+      payload: { id, cwd: "D:/repo", timestamp: "2026-09-25T00:00:00.000Z", source },
+    });
+    writeFileSync(
+      join(h.rolloutRoot, "rollout-subagent.jsonl"),
+      sessionMeta("subagent-thread", { subagent: { thread_spawn: { parent_thread_id: "th-parent" } } }),
+      "utf8",
+    );
+    writeFileSync(
+      join(h.rolloutRoot, "rollout-interactive.jsonl"),
+      sessionMeta("interactive-thread", "vscode"),
+      "utf8",
+    );
+
+    const pending = h.runtime.catalog();
+    h.resolveNext({ data: [] });
+
+    await expect(pending).resolves.toEqual([
+      expect.objectContaining({ sessionId: "interactive-thread", agentKind: "codex" }),
+    ]);
+  });
+
   it("current provider comes from configuration without activating a thread and refreshes after changes", async () => {
     const h = makeHarness();
     for (const [config, expected] of [
@@ -1363,6 +1388,41 @@ describe("CodexRuntime", () => {
         status: "success",
       });
     });
+  });
+
+  it("tree replay keeps immutable parents when concurrent items return in a different order", async () => {
+    const h = makeHarness();
+    h.runtime.markStarted();
+    const first = [
+      { id: "turn-1", status: "completed", items: [
+        { type: "agentMessage", id: "a", text: "a" },
+        { type: "agentMessage", id: "b", text: "b" },
+      ] },
+      { id: "turn-2", status: "completed", items: [{ type: "agentMessage", id: "c", text: "c" }] },
+    ];
+    await activateWithTurns(h, first);
+    const replayed = syncHistory(h);
+    expect(replayed?.entries.map((entry) => [entry.entryId, entry.parentId])).toEqual([
+      ["a", null], ["b", "a"], ["c", "b"],
+    ]);
+
+    expect(h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "a" }, "c-tree", "th-1")).toBe(true);
+    await vi.waitFor(() => expect(h.requests).toHaveBeenCalledWith("thread/revert", {
+      threadId: "th-1", beforeTurnId: "turn-2",
+    }));
+    h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo" } });
+    await vi.waitFor(() => expect(h.requests).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
+    h.resolveNext({ data: [{ id: "turn-1", status: "completed", items: [
+      { type: "agentMessage", id: "b", text: "b" },
+      { type: "agentMessage", id: "a", text: "a" },
+    ] }] });
+    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({
+      type: "command.result", commandId: "c-tree", ok: true, status: "success",
+    })));
+    const finalSnapshot = syncHistory(h);
+    expect(finalSnapshot?.entries.map((entry) => [entry.entryId, entry.parentId])).toEqual([
+      ["a", null], ["b", "a"],
+    ]);
   });
 
   it("slash.execute /tree <最后一条回复>：历史已经停在这一点，不发任何 RPC", async () => {

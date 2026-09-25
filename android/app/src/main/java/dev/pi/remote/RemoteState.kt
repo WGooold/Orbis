@@ -628,21 +628,42 @@ internal fun RemoteState.failSessionSync(commandId: String, message: String): Re
 internal fun RemoteState.seedCachedSessionView(runtimeId: String, graph: SessionGraph): RemoteState {
     val runtime = runtimes[runtimeId] ?: return this
     if (runtime.sessionId != graph.sessionId) return this
-    val leaf = runtime.sessionLeafId ?: return this
-    if (!graph.entries.containsKey(leaf)) return this
+    val leaf = runtime.sessionLeafId
+    if (leaf != null && !graph.entries.containsKey(leaf)) return this
     val conversation = conversations[runtimeId] ?: RuntimeConversation()
-    if (conversation.hasLiveSnapshot && conversation.messages.isNotEmpty()) return this
-    val projection = projectSessionGraph(graph.copy(cursor = SessionBranchCursor(leaf)), sessionMessageJson)
+    val previousView = runtimeSessionViews[runtimeId]?.takeIf { it.sessionId == graph.sessionId }
+    if (conversation.hasLiveSnapshot && previousView != null && previousView.leafId == leaf &&
+        !conversation.isChatSyncing
+    ) return this
+    val branchChanged = previousView != null && graph.isKnownBranchChange(previousView.leafId, leaf)
+    val source = if (branchChanged) RuntimeConversation(revision = conversation.revision) else conversation
+    val sameBranch = previousView != null &&
+        (previousView.leafId == leaf || graph.isDescendant(leaf, previousView.leafId))
+    val baseMessages = source.messages.filterNot { it.messageId in source.streamingMessageIds }
+    val projection = (if (sameBranch) {
+        mergeTemporaryOlderMessages(
+            graph.projectLeafDeltaProjection(
+                previousView?.leafId, leaf, canonicalRowsForDeltaProjection(baseMessages, graph), sessionMessageJson,
+            ),
+            graph, baseMessages,
+        )
+    } else projectSessionGraph(graph.copy(cursor = SessionBranchCursor(leaf)), sessionMessageJson))
         .let { if (it.error == "missing_parent") it.copy(error = null) else it }
-    val (messages, overlay) = mergeProjectedWithStreaming(projection.messages, conversation)
+    val (messages, overlay) = mergeProjectedWithStreaming(projection.messages, source)
     val branch = buildSessionPath(graph.entries, leaf)
+    val invalidated = if (branchChanged) sessionSyncCommands.filterValues { it.runtimeId == runtimeId }.keys else emptySet()
+    val history = sessionHistory[runtimeId]?.takeIf { sameBranch && it.sessionId == graph.sessionId }
     return copy(
-        conversations = conversations + (runtimeId to conversation.applyProjection(projection, messages, keepLiveTiming = true).copy(
+        pendingCommands = pendingCommands - invalidated,
+        sessionSyncCommands = sessionSyncCommands - invalidated,
+        sessionBranchGenerations = if (branchChanged) sessionBranchGenerations +
+            (runtimeId to ((sessionBranchGenerations[runtimeId] ?: 0) + 1)) else sessionBranchGenerations,
+        conversations = conversations + (runtimeId to source.applyProjection(projection, messages, keepLiveTiming = !branchChanged).copy(
             hasLiveSnapshot = true, isChatSyncing = false, streamingMessageIds = overlay,
             streamingSessionId = graph.sessionId.takeIf { overlay.isNotEmpty() }, revision = conversation.revision + 1,
         )),
         runtimeSessionViews = runtimeSessionViews + (runtimeId to RuntimeSessionView(runtimeId, graph.sessionId, leaf)),
-        sessionHistory = sessionHistory + (runtimeId to (sessionHistory[runtimeId]?.takeIf { it.sessionId == graph.sessionId }
+        sessionHistory = sessionHistory + (runtimeId to (history?.copy(leafId = leaf)
             ?: SessionHistoryState(graph.sessionId, leaf, branch.firstOrNull()?.entryId, branch.firstOrNull()?.parentId != null))),
     )
 }
@@ -652,14 +673,19 @@ private fun RemoteState.isKnownBranchChange(
     previousLeafId: String?,
     nextLeafId: String?,
 ): Boolean {
-    if (sessionId == null || previousLeafId == null || nextLeafId == null || previousLeafId == nextLeafId) return false
-    val graph = sessionGraphs[sessionId] ?: return false
-    if (!graph.entries.containsKey(previousLeafId) || !graph.entries.containsKey(nextLeafId)) return false
-    if (graph.isDescendant(nextLeafId, previousLeafId)) return false
-    val previousPath = buildSessionPath(graph.entries, previousLeafId).map { it.entryId }.toSet()
-    val nextPath = buildSessionPath(graph.entries, nextLeafId)
+    if (sessionId == null) return false
+    return (sessionGraphs[sessionId] ?: SessionGraph(sessionId)).isKnownBranchChange(previousLeafId, nextLeafId)
+}
+
+private fun SessionGraph.isKnownBranchChange(previousLeafId: String?, nextLeafId: String?): Boolean {
+    if (previousLeafId == null || previousLeafId == nextLeafId) return false
+    if (nextLeafId == null) return true
+    if (!entries.containsKey(nextLeafId)) return false
+    if (isDescendant(nextLeafId, previousLeafId)) return false
+    val previousPath = buildSessionPath(entries, previousLeafId).map { it.entryId }.toSet()
+    val nextPath = buildSessionPath(entries, nextLeafId)
     // Two disconnected fragments cannot prove a branch change; their missing parent may still
-    // join them. A common ancestor or a known root does prove the paths have diverged/rewound.
+    // join them. A complete target chain proves divergence even if the old leaf left the window.
     return nextPath.firstOrNull()?.parentId == null || nextPath.any { it.entryId in previousPath }
 }
 
@@ -697,8 +723,8 @@ internal fun RemoteState.requestRuntimeRefresh(runtimeId: String): RemoteState {
     // A periodic refresh reconciles the Session Graph in the background. Once the conversation
     // already has displayable content, keep that snapshot live while the preview/catch-up request
     // is in flight; invalidating it here makes the UI flash its loading indicator and re-anchor
-    // the list on every poll. Only an initial/empty conversation needs the blocking load state.
-    val needsDisplayLoad = conversation.hasLiveSnapshot != true || conversation.messages.isEmpty()
+    // the list on every poll. Only a conversation without a snapshot needs a blocking load state.
+    val needsDisplayLoad = conversation.hasLiveSnapshot != true
     return copy(
         conversations = conversations + (
             runtimeId to conversation.copy(
@@ -715,6 +741,48 @@ internal fun RemoteState.requestRuntimeRefresh(runtimeId: String): RemoteState {
     )
 }
 
+/**
+ * Starts the display refresh owned by a successful history/tree action.
+ *
+ * The action's metadata precedes its command result. Invalidate the old tasks and display together,
+ * then let the shared loader project that current leaf from cache or request its missing range.
+ */
+internal fun RemoteState.requestBranchRefresh(runtimeId: String): RemoteState {
+    if (selectedRuntimeId != runtimeId) return this
+    val runtime = runtimes[runtimeId] ?: return this
+    if (!runtime.sessionGraphSync || runtime.sessionId == null) return this
+    val staleCommands = sessionSyncCommands.filterValues { it.runtimeId == runtimeId }.keys
+    val generation = (sessionBranchGenerations[runtimeId] ?: 0) + 1
+    val conversation = conversations[runtimeId] ?: RuntimeConversation()
+    // A newer turn may have started before Compose consumes the action's result. Keep its live
+    // overlay while replacing only the persisted branch underneath it.
+    val live = conversation.takeIf { runtime.status == "running" }
+    return copy(
+        pendingCommands = pendingCommands - staleCommands,
+        sessionSyncCommands = sessionSyncCommands - staleCommands,
+        sessionSyncFailures = sessionSyncFailures - runtimeId,
+        sessionSyncRequests = sessionSyncRequests + runtimeId,
+        sessionBranchGenerations = sessionBranchGenerations + (runtimeId to generation),
+        runtimeSessionViews = runtimeSessionViews - runtimeId,
+        sessionHistory = sessionHistory - runtimeId,
+        // Do not let rows from the old branch remain attached to the new projection while the
+        // authoritative snapshot is in flight. The existing chat refresh/anchor machinery will
+        // position the replacement at the new leaf when it settles.
+        conversations = conversations + (runtimeId to RuntimeConversation(
+            messages = live?.messages.orEmpty().filter { it.messageId in live?.streamingMessageIds.orEmpty() },
+            streamingMessageIds = live?.streamingMessageIds.orEmpty(),
+            streamingSessionId = live?.streamingSessionId,
+            turnTimings = live?.turnTimings.orEmpty().filterValues { it.durationMs == null },
+            activeTurnId = live?.activeTurnId,
+            tools = live?.tools.orEmpty().filterValues { it.state != "finished" },
+            isChatSyncing = true,
+            interactions = conversation.interactions,
+            waitingLocalInteraction = conversation.waitingLocalInteraction,
+            revision = conversation.revision + 1,
+        )),
+    )
+}
+
 internal fun shouldStartBranchCatchUpImmediately(
     conversation: RuntimeConversation?,
     hasInMemoryGraph: Boolean,
@@ -724,8 +792,13 @@ private fun RuntimeSummary.isSyncPending(
     selectedRuntimeId: String?,
     graphs: Map<String, SessionGraph>,
 ): Boolean = sessionGraphSync &&
-    runtimeId == selectedRuntimeId && sessionId != null &&
-    (graphs[sessionId]?.hasCompleteCursor(sessionLeafId) != true)
+    runtimeId == selectedRuntimeId && sessionId != null && sessionLeafId != null &&
+    (graphs[sessionId]?.hasCompleteEntryChain(sessionLeafId) != true)
+
+private fun previousViewNeedsRefresh(state: RemoteState, runtime: RuntimeSummary): Boolean =
+    state.runtimeSessionViews[runtime.runtimeId]?.let { view ->
+        view.sessionId != runtime.sessionId || view.leafId != runtime.sessionLeafId
+    } ?: true
 
 private fun RuntimeSummary.catalogEntry(): SessionCatalogEntry? = sessionId?.let { id ->
     SessionCatalogEntry(
@@ -1187,7 +1260,7 @@ class RelayReducer(
                         val runtime = runtimes[runtimeId]
                         val previousLeaf = state.runtimes[runtimeId]?.sessionLeafId
                             ?: state.runtimeSessionViews[runtimeId]?.leafId
-                        state.isKnownBranchChange(
+                        runtime?.sessionGraphSync == true && state.isKnownBranchChange(
                             sessionId = runtime?.sessionId,
                             previousLeafId = previousLeaf,
                             nextLeafId = runtime?.sessionLeafId,
@@ -1208,8 +1281,7 @@ class RelayReducer(
                     val previousView = state.runtimeSessionViews[runtime.runtimeId]
                     val keepPreviousView = previousView != null &&
                         previousView.sessionId == incomingView.sessionId &&
-                        runtime.sessionLeafId != null &&
-                        state.sessionGraphs[incomingView.sessionId]?.hasCompleteCursor(runtime.sessionLeafId) != true
+                        previousView.leafId != incomingView.leafId && branchChanged[runtime.runtimeId] != true
                     runtimeViews[runtime.runtimeId] = if (keepPreviousView) previousView else incomingView
                 }
                 val conversations = runtimes.mapValues { (runtimeId, runtime) ->
@@ -1219,7 +1291,7 @@ class RelayReducer(
                     val preservePreOnlineInteraction = !hasPreviousRuntime && previous != null &&
                         previous.interactions.isNotEmpty()
                     val displayNeedsPreview = runtime.runtimeId == state.selectedRuntimeId &&
-                        previous?.hasLiveSnapshot != true
+                        (previous?.hasLiveSnapshot != true || previousViewNeedsRefresh(state, runtime))
                     val shouldSync = runtime.isSyncPending(state.selectedRuntimeId, state.sessionGraphs) || displayNeedsPreview
                     if (sessionChanged[runtimeId] == true || branchChanged[runtimeId] == true) {
                         // `interaction.requested` / `interaction.snapshot` may cross the wire just
@@ -1281,7 +1353,7 @@ class RelayReducer(
                             runtime.sessionGraphSync && (
                                 runtime.isSyncPending(state.selectedRuntimeId, state.sessionGraphs) ||
                                     runtime.runtimeId == state.selectedRuntimeId &&
-                                    state.conversations[runtime.runtimeId]?.hasLiveSnapshot != true
+                                    (state.conversations[runtime.runtimeId]?.hasLiveSnapshot != true || previousViewNeedsRefresh(state, runtime))
                             )
                         }
                         .map { it.runtimeId }
@@ -1303,7 +1375,7 @@ class RelayReducer(
                 val sessionChanged = !hasPreviousRuntime || previousSessionId != runtime.sessionId
                 val previousLeaf = previousRuntime?.sessionLeafId
                     ?: state.runtimeSessionViews[runtime.runtimeId]?.leafId
-                val branchChanged = !sessionChanged && state.isKnownBranchChange(
+                val branchChanged = !sessionChanged && runtime.sessionGraphSync && state.isKnownBranchChange(
                     sessionId = runtime.sessionId,
                     previousLeafId = previousLeaf,
                     nextLeafId = runtime.sessionLeafId,
@@ -1314,7 +1386,7 @@ class RelayReducer(
                     emptySet()
                 }
                 val displayNeedsPreview = runtime.runtimeId == state.selectedRuntimeId &&
-                    state.conversations[runtime.runtimeId]?.hasLiveSnapshot != true
+                    (state.conversations[runtime.runtimeId]?.hasLiveSnapshot != true || previousViewNeedsRefresh(state, runtime))
                 val shouldSync = runtime.isSyncPending(state.selectedRuntimeId, state.sessionGraphs) || displayNeedsPreview
                 val conversation = if (sessionChanged || branchChanged) {
                     val preservePreOnlineInteraction = !hasPreviousRuntime &&
@@ -1355,8 +1427,7 @@ class RelayReducer(
                         val previousView = state.runtimeSessionViews[runtime.runtimeId]
                         val keepPreviousView = previousView != null &&
                             previousView.sessionId == it.sessionId &&
-                            runtime.sessionLeafId != null &&
-                            state.sessionGraphs[it.sessionId]?.hasCompleteCursor(runtime.sessionLeafId) != true
+                            previousView.leafId != it.leafId && !branchChanged
                         state.runtimeSessionViews + (runtime.runtimeId to if (keepPreviousView) previousView else it)
                     } ?: state.runtimeSessionViews,
                     knownRuntimeSessions = state.knownRuntimeSessions + (runtime.runtimeId to runtime.sessionId),
@@ -1605,12 +1676,12 @@ class RelayReducer(
                 val previousLeaf = previousRuntime?.sessionLeafId
                     ?: previousView?.leafId
                 val graphForMetadata = state.sessionGraphs[metadata.sessionId]
-                val targetKnown = metadata.sessionLeafId != null &&
-                    graphForMetadata?.entries?.containsKey(metadata.sessionLeafId) == true
+                val targetKnown = metadata.sessionLeafId == null ||
+                    graphForMetadata?.hasCompleteEntryChain(metadata.sessionLeafId) == true
                 // A new leaf is not enough to prove a branch switch: normal turn completion
-                // advances the leaf before the catch-up response arrives. Only a leaf already
-                // present in the canonical graph can prove that it is a different branch.
-                val branchChanged = !sessionChanged && state.isKnownBranchChange(
+                // advances the leaf before the catch-up response arrives. A known ancestry
+                // must prove the divergence before the previous branch is invalidated.
+                val branchChanged = !sessionChanged && metadata.sessionGraphSync && state.isKnownBranchChange(
                     metadata.sessionId, previousLeaf, metadata.sessionLeafId,
                 )
                 nextRuntimes = state.runtimes + (runtimeId to metadata.carryingComposerStatus(previousRuntime))
@@ -1638,6 +1709,7 @@ class RelayReducer(
                     ) previousView else incomingView
                     nextRuntimeSessionViews = nextRuntimeSessionViews + (runtimeId to view)
                     val graph = state.sessionGraphs[view.sessionId]
+                        ?: SessionGraph(view.sessionId).takeIf { view.leafId == null && metadata.sessionGraphSync }
                     if (graph != null && graph.hasCompleteEntryChain(view.leafId)) {
                         val oldLeaf = previousView?.takeIf { it.sessionId == view.sessionId }?.leafId
                         val contextChanged = sessionChanged || branchChanged
@@ -1672,9 +1744,22 @@ class RelayReducer(
                             .copy(
                                 streamingMessageIds = overlayIds,
                                 streamingSessionId = view.sessionId.takeIf { overlayIds.isNotEmpty() },
+                                hasLiveSnapshot = true,
+                                isChatSyncing = false,
                                 chatSyncError = projection.error,
                                 revision = sourceConversation.revision + 1,
                             )
+                        val branch = buildSessionPath(graph.entries, view.leafId)
+                        val history = nextSessionHistory[runtimeId]?.takeIf { it.sessionId == view.sessionId }
+                        nextSessionHistory = nextSessionHistory + (runtimeId to
+                            (history?.copy(leafId = view.leafId) ?: SessionHistoryState(
+                                view.sessionId, view.leafId, branch.firstOrNull()?.entryId,
+                                branch.firstOrNull()?.parentId != null,
+                            )))
+                        // Metadata projection completed from the local graph. Drop the queued
+                        // loader request so a directory/metadata refresh cannot replay the same
+                        // cache read after the display is already current.
+                        nextSessionSyncRequests = nextSessionSyncRequests - runtimeId
                     }
                 }
                 metadata.catalogEntry()?.let { entry ->
@@ -1682,9 +1767,7 @@ class RelayReducer(
                         entry.sessionId to mergeSessionCatalogEntry(nextSessions[entry.sessionId], entry)
                     )
                 }
-                if (metadata.sessionGraphSync && state.selectedRuntimeId == runtimeId &&
-                    (state.sessionGraphs[metadata.sessionId]?.hasCompleteCursor(metadata.sessionLeafId) != true)
-                ) {
+                if (metadata.isSyncPending(state.selectedRuntimeId, state.sessionGraphs)) {
                     nextSessionSyncRequests = nextSessionSyncRequests + runtimeId
                 }
             }
@@ -1962,7 +2045,24 @@ class RelayReducer(
                 }
                 val canProject = !isCatchUp || snapshot.complete != false ||
                     graphForProjection.hasCompleteEntryChain(viewLeafId)
-                if (!staleTarget && viewLeafId != null && canProject) {
+                val emptyPreview = pending.range == "preview" && targetLeafId == null &&
+                    snapshot.entries.isEmpty() && snapshot.complete == true &&
+                    snapshot.rangeStatus in setOf(null, "complete") && liveLeafId == pending.viewLeafId
+                if (!staleTarget && emptyPreview) {
+                    nextRuntimes[runtimeId]?.let { runtime ->
+                        nextRuntimes = nextRuntimes + (runtimeId to runtime.copy(sessionLeafId = null))
+                    }
+                    nextRuntimeSessionViews = nextRuntimeSessionViews +
+                        (runtimeId to RuntimeSessionView(runtimeId, snapshot.sessionId, null))
+                    nextSessionHistory = nextSessionHistory +
+                        (runtimeId to SessionHistoryState(snapshot.sessionId, null, null, false))
+                    val (messages, overlayIds) = mergeProjectedWithStreaming(emptyList(), conversation)
+                    nextConversation = conversation.applyProjection(SessionProjectionResult(emptyList()), messages, keepLiveTiming = true)
+                        .copy(hasLiveSnapshot = true, isChatSyncing = false, chatSyncError = null,
+                            streamingMessageIds = overlayIds,
+                            streamingSessionId = snapshot.sessionId.takeIf { overlayIds.isNotEmpty() },
+                            revision = conversation.revision + 1)
+                } else if (!staleTarget && viewLeafId != null && canProject) {
                     val oldLeaf = state.runtimeSessionViews[runtimeId]
                         ?.takeIf { it.sessionId == snapshot.sessionId }?.leafId
                     val baseMessages = conversation.messages.filterNot {

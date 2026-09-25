@@ -110,6 +110,91 @@ class RelayReducerTest {
         assertEquals(streaming, streaming.requestRuntimeRefresh("runtime-a"))
     }
 
+    @Test
+    fun `tree refresh supersedes an older catch-up task before requesting the new branch`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "idle", "session-1",
+                    sessionGraphSync = true, sessionLeafId = "old-leaf",
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    messages = listOf(ChatMessage("old-leaf", "assistant", emptyList(), 1)),
+                    hasLiveSnapshot = true,
+                ),
+            ),
+            runtimeSessionViews = mapOf("runtime-a" to RuntimeSessionView("runtime-a", "session-1", "old-leaf")),
+            sessionSyncCommands = mapOf(
+                "old-command" to PendingSessionSync(
+                    "runtime-a", "session-1", "old-sync", range = "catchup", targetLeafId = "old-leaf",
+                ),
+            ),
+            pendingCommands = mapOf("old-command" to "runtime-a"),
+        )
+
+        val refreshed = initial.requestBranchRefresh("runtime-a")
+
+        assertTrue("old-command" !in refreshed.sessionSyncCommands)
+        assertTrue("old-command" !in refreshed.pendingCommands)
+        assertTrue("runtime-a" in refreshed.sessionSyncRequests)
+        assertTrue(refreshed.conversations["runtime-a"]?.messages?.isEmpty() == true)
+        assertEquals(1, refreshed.sessionBranchGenerations["runtime-a"])
+    }
+
+    @Test
+    fun `explicit tree refresh rejects a late snapshot from a disconnected old branch`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "idle", "session-1",
+                    sessionGraphSync = true, sessionLeafId = "new-leaf",
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    messages = listOf(ChatMessage("old-leaf", "assistant", emptyList(), 1)),
+                    hasLiveSnapshot = true,
+                ),
+            ),
+            runtimeSessionViews = mapOf("runtime-a" to RuntimeSessionView("runtime-a", "session-1", "old-leaf")),
+            sessionGraphs = mapOf(
+                "session-1" to SessionGraph(
+                    "session-1",
+                    entries = listOf(
+                        SessionGraphEntry("old-leaf", null, "message", "1"),
+                        SessionGraphEntry("new-leaf", "missing-parent", "message", "2"),
+                    ).associateBy(SessionGraphEntry::entryId),
+                    cursor = SessionBranchCursor("old-leaf"),
+                ),
+            ),
+            sessionSyncCommands = mapOf(
+                "old-command" to PendingSessionSync("runtime-a", "session-1", "old-sync", targetLeafId = "old-leaf"),
+            ),
+            pendingCommands = mapOf("old-command" to "runtime-a"),
+        )
+
+        val refreshed = initial.requestBranchRefresh("runtime-a")
+        val changed = reducer.reduce(refreshed, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
+            "type":"session.snapshot","sessionId":"session-1","syncId":"old-sync","mode":"append",
+            "range":"catchup","targetLeafId":"old-leaf","complete":true,"cursor":{"leafId":"old-leaf"},
+            "entries":[{"entryId":"stale","parentId":null,"type":"message","timestamp":"3"}]
+          }}
+        """.trimIndent())
+
+        assertTrue("old-command" !in changed.sessionSyncCommands)
+        assertTrue("old-command" !in changed.pendingCommands)
+        assertEquals("new-leaf", changed.runtimes["runtime-a"]?.sessionLeafId)
+        assertEquals(initial.sessionGraphs, changed.sessionGraphs)
+        assertTrue(changed.conversations["runtime-a"]?.messages?.isEmpty() == true)
+        assertTrue("runtime-a" in changed.sessionSyncRequests)
+        assertEquals(1, changed.sessionBranchGenerations["runtime-a"])
+    }
+
     // 版本号必须来自常量。曾经这里硬编码了 `!= 3`：协议升到 4 之后每条入站消息都被判成
     // 「不兼容的协议版本」，界面永远停在「正在连接」+ 弹窗——而链路其实是通的，极难定位。
     @Test

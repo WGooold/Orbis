@@ -610,8 +610,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         val graph = runtime?.sessionId?.let(current.sessionGraphs::get)
         // The loader verifies this runtime's current leaf against SQLite before seeding a page.
         val needsSessionRefresh = runtime?.sessionGraphSync == true &&
-            (conversation?.hasLiveSnapshot != true || conversation.messages.isEmpty() ||
-                graph?.hasCompleteCursor(runtime.sessionLeafId) != true)
+            (conversation?.hasLiveSnapshot != true ||
+                current.runtimeSessionViews[runtimeId]?.leafId != runtime.sessionLeafId ||
+                runtime.sessionLeafId != null && graph?.hasCompleteEntryChain(runtime.sessionLeafId) != true)
         val selectedState = current.cancelForegroundSessionSyncs(runtimeId).copy(
             selectedRuntimeId = runtimeId,
             selectedOfflineSessionId = null,
@@ -635,7 +636,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
         runtime?.takeIf(RuntimeSummary::sessionGraphSync)?.let { selected ->
-            val targetChainComplete = graph?.hasCompleteCursor(selected.sessionLeafId) == true
+            val targetChainComplete = selected.sessionLeafId == null || graph?.hasCompleteEntryChain(selected.sessionLeafId) == true
             Log.i(
                 RELOAD_TRACE_TAG,
                 "session.open runtimeId=${selected.runtimeId} sessionId=${selected.sessionId} " +
@@ -699,6 +700,21 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             scheduleSessionGraphLoad(pairedDevice, listOf(runtime))
         }
         return true
+    }
+
+    /** Branch invalidation shares ownership with snapshot persistence and the regular loader. */
+    fun refreshAfterBranchAction(runtimeId: String) {
+        viewModelScope.launch {
+            relayStateLock.withLock {
+                updateState { it.requestBranchRefresh(runtimeId) }
+                val refreshed = mutableState.value
+                val pairedDevice = device ?: return@withLock
+                val runtime = refreshed.runtimes[runtimeId] ?: return@withLock
+                if (refreshed.connection == RelayConnection.ONLINE && runtimeId in refreshed.sessionSyncRequests) {
+                    scheduleSessionGraphLoad(pairedDevice, listOf(runtime))
+                }
+            }
+        }
     }
 
     /** Opens only an already-cached Session graph as a read-only history view. */
@@ -2022,7 +2038,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 val sessionId = runtime.sessionId ?: return@withLock
                 if (runtime.runtimeId in initial.sessionSyncFailures || initial.conversations[runtime.runtimeId]?.chatSyncError != null) return@withLock
                 try {
-                    val loaded = loadLocalGraphForRuntime(pairedDevice, runtime, initial)
+                    val loaded = if (runtime.sessionLeafId == null) SessionGraph(sessionId)
+                        else loadLocalGraphForRuntime(pairedDevice, runtime, initial)
                     if (loaded != null) updateState { current ->
                         if (device != pairedDevice || generation != connectionGeneration ||
                             current.runtimes[runtime.runtimeId]?.sessionId != sessionId ||
@@ -2044,6 +2061,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     val conversation = current.conversations[runtime.runtimeId]
                     if (conversation?.hasLiveSnapshot == true) {
                         startBranchCatchUp(pairedDevice, runtime)
+                        if (mutableState.value.sessionSyncCommands.values.none { it.runtimeId == runtime.runtimeId }) {
+                            updateState { it.copy(sessionSyncRequests = it.sessionSyncRequests - runtime.runtimeId) }
+                        }
                     } else if (runtime.runtimeId == current.selectedRuntimeId) {
                         val pending = PendingSessionSync(
                             runtime.runtimeId, sessionId, UUID.randomUUID().toString(), range = "preview",

@@ -1107,7 +1107,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
         followNewestAfterSync = true
         initialPositioned = false
         historyOpen = false
-        refreshConversation()
+        // A tree/rewind action is an explicit branch replacement. It must supersede any older
+        // catch-up task before the ordinary display refresh scheduler runs; a periodic refresh
+        // would otherwise be rejected as "already pending" and the old snapshot could clear it.
+        model.refreshAfterBranchAction(runtimeId)
+        model.refreshWorkingBranch(runtimeId)
     }
 
     if (historyOpen) {
