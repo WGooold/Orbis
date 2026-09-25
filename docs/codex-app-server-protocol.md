@@ -1,5 +1,7 @@
 # Codex app-server 协议方法清单
 
+> 状态：版本化协议参考快照，来源为 codex-cli 0.154.0 的 JSON schema（v2）。它用于理解适配层历史行为，不是当前 Codex 版本的完整契约；升级 Codex 时应以实际生成的 schema 和 `docs/codex-permissions.md` 为准。
+
 来源：codex-cli 0.154.0 的 JSON schema（v2）。共 87 个客户端请求、1 个客户端通知、68 个服务器通知、10 个服务器请求（需回帧）。
 
 传输：WebSocket（`codex app-server --listen ws://127.0.0.1:<port>`）。帧是不带 `jsonrpc:"2.0"` 的 JSON-RPC：请求 `{id,method,params}`、响应 `{id,result|error}`、通知 `{method,params}`。

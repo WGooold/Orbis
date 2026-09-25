@@ -1,6 +1,6 @@
 # Android 新拟物覆盖审计
 
-范围：`MainActivity.kt`、`RemoteUi.kt`、`Neumorph.kt`、`AgentBrand.kt`、`MarkdownText.kt`、`HistoryTreePage.kt`、`QrPairing.kt`、主题与系统入口。对应 0.1.42。
+范围：`MainActivity.kt`、`RemoteUi.kt`、`Neumorph.kt`、`AgentBrand.kt`、`MarkdownText.kt`、`HistoryTreePage.kt`、`QrPairing.kt`、主题与系统入口。本文是 2026-09-24 的实现审计记录，不绑定某个历史 APK 版本。
 
 ## 已采用的区域
 

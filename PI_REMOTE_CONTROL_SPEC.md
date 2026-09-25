@@ -1,8 +1,10 @@
 # Pi Remote Control 规格（多 agent 远程控制）
 
+> 状态：核心远程控制协议与客户端边界说明。Pi/Codex 的通用契约仍在本文；DeepSeek Harness（DSH）的 ACP 生命周期、持久化和能力边界以 [ADR-0018](docs/adr/0018-deepseek-harness-acp-backend.md) 与 [接入说明](docs/deepseek-harness.md) 为准。
+
 ## 1. Problem Statement
 
-用户需要一个适合触屏操作的**手机客户端**，用于操作电脑上由 **Host** 托管的 coding agent（目前是 Pi 与 Codex）。电脑上的 Host 是唯一后端与网关：它持有配对身份、设备记录、端到端加密信道、传输路径、文件服务和会话目录聚合；每个 agent backend（Pi / Codex）是自己那份会话内容的实际权威。Android 是一个独立的 Session 客户端，而不是远程桌面、终端模拟器或电脑管理工具。
+用户需要一个适合触屏操作的**手机客户端**，用于操作电脑上由 **Host** 托管的 coding agent（目前是 Pi、Codex 与 DeepSeek Harness）。电脑上的 Host 是唯一后端与网关：它持有配对身份、设备记录、端到端加密信道、传输路径、文件服务和会话目录聚合；每个 agent backend（Pi / Codex / DSH）是自己那份会话内容的实际权威。Android 是一个独立的 Session 客户端，而不是远程桌面、终端模拟器或电脑管理工具。
 
 手机需要能够：
 
@@ -55,7 +57,7 @@
 - agent、工具、模型、扩展和本地权限；
 - Pi 正式的 session/tree/branch/compaction/上下文语义。
 
-它通过本机 loopback 端点接入 Host：对 Host 而言，本机那条通道就是一条「本地 Relay」，说的仍是 runtime 侧既有的那套消息。其它 agent 产品（Codex）由各自的 backend 接入，见 §12 的 `AgentBackend`。每一条 runtime 连接代表一个独立的控制对象。
+它通过本机 loopback 端点接入 Host：对 Host 而言，本机那条通道就是一条「本地 Relay」，说的仍是 runtime 侧既有的那套消息。其它 agent 产品（Codex 与 DeepSeek Harness）由各自的 backend 接入，见 §12 的 `AgentBackend`。每一条 runtime 连接代表一个独立的控制对象。
 
 ### 2.3 Runtime ID
 
@@ -216,7 +218,7 @@ Runtime B → leaf = branch-b-leaf
 系统由五个主要部分组成：
 
 1. **Host**：电脑上的常驻进程，持有身份、配对记录、设备表、端到端加密、传输路径、文件服务与会话目录聚合；
-2. **Agent backend**：Pi 远程控制扩展（经 loopback 接入 Host）与 Codex app-server 适配器；
+2. **Agent backend**：Pi 远程控制扩展（经 loopback 接入 Host）、Codex app-server 适配器与 DeepSeek Harness ACP 适配器；
 3. Android 原生客户端；
 4. Relay Server；
 5. Remote Interaction SDK。
@@ -250,7 +252,7 @@ Android 负责：
 - 对实时 entry 和 streaming overlay 做增量更新；
 - 通过 `runtimeId` 路由用户命令。
 
-Session、tree、branch、leaf、compaction 和 agent 执行语义仍由各自的 agent backend 拥有（Pi 的归 Pi，Codex 的归 Codex），Host 只做聚合与转发；Android 只复制“读取和显示”所需的投影算法，不复制任何 backend 的写入和执行实现。
+Session、tree、branch、leaf、compaction 和 agent 执行语义仍由各自的 agent backend 拥有（Pi 的归 Pi，Codex 的归 Codex，DSH 的归 DSH），Host 只做聚合与转发；Android 只复制“读取和显示”所需的投影算法，不复制任何 backend 的写入和执行实现。
 
 ---
 
@@ -740,7 +742,7 @@ Queue ID 不能与 Session entry ID 混用。具体 queue 语义仍遵循 Pi 的
 
 手机能对电脑下达的指令**止于「把 agent 拉起来」**，不包含任意命令。
 
-- **允许**：按已有会话激活（L1，只传 `sessionId`）与在手机选定的目录新建（L2，传 `{ agentKind, cwd }`）；`argv` 与 `env` 一律由 Host 构造（§8）。Host 只认识 `pi` 与 `codex` 两种命令。
+- **允许**：按已有会话激活（L1，只传 `sessionId`）与在手机选定的目录新建（L2，传 `{ agentKind, cwd }`）；具体启动参数与环境一律由 Host 为受支持的 agent backend 构造，手机不能传入任意命令行或环境变量。
 - **永久排除**：手机提供命令行或环境变量的任意命令执行（L3），以及任意非 agent 进程管理。
 - 手机不能强制终止、重启或自动恢复进程；`/quit` 只能请求当前 agent 通过自身 command context 优雅退出。Host 可以结束它自己拉起的会话进程，但不提供「杀掉任意进程」。
 - **已配对设备视为可信**：安全由配对（信任根是二维码里的 Host 公钥）与端到端加密提供，不靠校验设备输入，因此不做 cwd 白名单、不做桌面二次确认、不做速率限制。这三条留在 §8.4 的是职责边界与防手滑，不是安全加固。
@@ -755,7 +757,7 @@ Queue ID 不能与 Session entry ID 混用。具体 queue 语义仍遵循 Pi 的
 
 ## 11. User Stories
 
-1. 作为 remote 用户，我可以在手机上看到所有在线 Runtime：一个 Runtime 对应一个在线 agent 交互窗口（一个 Pi 进程，或 Codex 的一个活跃 thread），并且能在一棵树里按项目目录同时看到 Pi 与 Codex 的会话。
+1. 作为 remote 用户，我可以在手机上看到所有在线 Runtime：一个 Runtime 对应一个在线 agent 交互窗口（一个 Pi 进程、一个 Codex 活跃 thread 或一个 DSH 活跃会话），并且能在一棵树里按项目目录同时看到 Pi、Codex 与 DSH 的会话。
 2. 作为 remote 用户，我可以在 APP 重启后先看到在线 Runtime；并从左侧边栏按“主机 → 目录 → 会话”树状查看电脑上的所有 Session——包括手机还没缓存过的，其中没有被任何 Runtime 持有的 Session 点一下即由 Host 拉起进程把它加载进去。
 3. 作为 remote 用户，我可以打开一个 Runtime 时，根据它当前的 Session 和 leaf 先看到本地缓存，再等待后台同步。
 4. 作为 remote 用户，我可以打开同一个 Session 的多个 Runtime，而每个 Runtime 保留自己的 branch view，不复制或合并聊天正文。
@@ -795,7 +797,7 @@ Queue ID 不能与 Session entry ID 混用。具体 queue 语义仍遵循 Pi 的
 - `EnvelopeKind` 是 Host 与中继的共同契约：中继会拒收自己不认识的帧种类，所以新增种类必须**先部署中继**。`node scripts/relay-protocol-probe.mjs` 用于确认线上中继认不认当前协议（防手滑）。
 - runtime 注册必须声明 `role`，并且只有 `host` 被接受（`runtime_role_not_allowed`）；中继据此只保留网关：它既不持有 agent 连接，也不广播 agent 的 `runtime.online`/`runtime.offline`（见 §3.3）。
 - 手机进程目录的补发挂在 DeviceLink 的**会话就绪**回调上，而不是「生效路径变化」回调上；同一条路上重新握手同样触发补发（见 §8.1）。路径变化通知退化为就绪时的附加信息。
-- `device.ready.agents` 由 Host 写入（`["pi"]`，Codex 后端真的接管请求时再加 `"codex"`）。Relay 那条同名的种子 `device.ready` 里该字段是 `null`——中继不知道电脑上装了什么后端；手机把 `null` 解释为未知并放弃限制选项（见 §8.2）。
+- `device.ready.agents` 由 Host 写入，按实际启用的后端包含 `pi`、`codex`、`dsh` 的一个子集。Relay 那条同名的种子 `device.ready` 里该字段是 `null`——中继不知道电脑上装了什么后端；手机把 `null` 解释为未知并放弃限制选项（见 §8.2）。
 - Codex 虚拟 runtime 只在**挂着活跃 thread** 时才进进程目录（没会话时它没有 cwd，拿 homedir 占位就是「主页面多出一条用户目录」的假进程）；cwd/状态随激活与 turn 起止变化，变化时重播 `runtime.online`（APP 按 runtimeId upsert）。
 - Codex 会话的**有头窗口**是官方 TUI 的 **remote attach**：app-server 以 `--listen ws://127.0.0.1:<port>` 启动（注意这会**取代** stdio，Host 自己的 JSON-RPC 也走这条 WebSocket），开窗命令是 `wt` 里跑 `codex resume <threadId> --remote <endpoint>`。TUI 与手机订阅的是 app-server 内存里**同一个 thread**，消息双同步。实测 `--remote` 并不绕过本地 session 解析：rollout 首轮对话才落盘，所以窗口先开（`-NoExit` 不闪退）、内嵌轮询 rollout，一落盘自动 attach；wt 对带空格的 `-Command` 会重拼引号（实测整条命令被当成可执行文件名，0x80070002），必须走 `-EncodedCommand`。`PI_REMOTE_CODEX_HEAD=0` 可整体关掉。
 - Codex 的 `/quit` **只能由 Host 结束本机 TUI 进程**兑现：app-server 没有关闭 TUI 的 RPC（`thread/archive|delete` 是删会话，不是关窗）。Host 按命令行同时命中 `resume <threadId>` 与 `--remote <endpoint>` 结束 codex/node 进程，等待窗口（rollout 未落盘、命令行只有 base64 `-EncodedCommand` 的 powershell）解码后再匹配；随后一律按「TUI 已关闭」下线该 thread，与看门狗发现窗口消失同一条广播路径。这是**有头窗口**的生命周期操作，不扩展到 Pi 进程——§10 的「手机不能强制终止 Pi 进程」不变。

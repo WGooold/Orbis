@@ -1,5 +1,7 @@
 # Codex 会话权限与批准
 
+> 状态：当前功能说明。文末的验证日期和测试数量是历史记录，不代表当前工作树的检查结果。
+
 Host 从 app-server 的 `thread/start`、`thread/resume`、`thread/fork` 响应和 `thread/settings/updated.threadSettings` 读取有效权限。App 在输入区显示权限摘要，点击进入会话权限面板，可查看及调整文件访问、网络访问、审批策略和审批处理方式，并查看授权目录及初始化错误。没有会话级数据时显示未知，不以全局配置推断。
 
 沙箱控制访问范围，批准策略控制是否允许请求人工批准。`readOnly + never` 的受限操作不会弹批准框；`dangerFullAccess + never` 不受 Codex 沙箱限制，也不弹人工提权批准。已配对设备可通过当前会话发布的 `/sandbox`、`/network`、`/approvals` 和 `/approval-reviewer` 命令显式调整会话权限。Host 将其映射到 `thread/settings/update`，同时等待 RPC 成功和匹配的有效设置通知；相同设置直接确认已有状态（Codex 不会为无变化的设置发通知）。超时、断线和组织策略拒绝均显示未确认，不做乐观权限更新。任务或交互进行中禁止修改，设置只影响当前会话的后续任务；全局配置和电脑 trust 不属于此入口。网络切换保留原始文件策略，文件访问类型切换会明确重置额外可写目录。完全访问模式包含联网权限，不能独立禁用联网。

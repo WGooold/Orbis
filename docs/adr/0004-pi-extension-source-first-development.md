@@ -30,7 +30,7 @@ packages/pi-extension/dist/index.js
 
 ## Decision
 
-本仓库当前采用 **source-first** 的本地开发结构：
+当时的实现采用 **source-first** 的本地开发结构：
 
 - `@pi-remote/pi-extension` 的 Pi manifest 和 package export 指向 `./src/index.ts`；
 - `packages/pi-extension/src` 中对本仓库 workspace package 的运行时依赖使用明确的

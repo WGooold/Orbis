@@ -54,4 +54,4 @@ val message = "这是一条很长很长很长很长很长很长很长很长的�
 
 图片无法加载时应保留可点击的替代文字，不影响其余消息。
 
-[sample]: <D:/pi-remote-markdown/android/docs/markdown-smoke.md>
+[sample]: markdown-smoke.md

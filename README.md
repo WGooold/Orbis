@@ -10,7 +10,7 @@ Windows 桌面 Host 使用 **C++ / Qt / QML**，提供新拟物界面、系统�
 
 这是一个原生手机 UI 客户端，用于操作电脑上由 **Host** 托管的 coding agent（目前是 [Pi](https://github.com/earendil-works/pi-mono)、Codex 与 [DeepSeek Harness](docs/deepseek-harness.md)）。电脑上的 Host 是唯一后端和网关：它持有配对身份、设备记录、端到端加密信道、传输路径、文件服务与会话目录聚合。手机负责持久化 Session catalog、按需缓存 Session entry graph、按 runtime leaf 计算 branch 显示、跟踪消息与工具执行流、发送或追加请求、停止当前 turn，以及响应扩展发起或 agent 提出的交互。
 
-DeepSeek Harness 使用官方 ACP 后台会话，支持新建/恢复、模型切换、工具审批和历史同步。在桌面设置启用，或使用 `node packages/host/dist/cli.js host --dsh`。安装版本、模型配置和能力边界见 [接入说明](docs/deepseek-harness.md)。
+DeepSeek Harness 默认接入官方 Web 会话，手机、浏览器和桌面 Host 观察同一个 Session，支持实时流、Steer/Follow-up、队列撤回、工具审批和历史同步；旧 ACP 适配仍保留用于兼容测试。在桌面设置启用，或使用 `node packages/host/dist/cli.js host --dsh`。安装版本、模型配置和能力边界见 [接入说明](docs/deepseek-harness.md)。
 
 本系统不是远程桌面、终端模拟器或电脑管理工具。手机可以**请求** Host 把一个 agent 拉起来——继续一个已经存在的会话，或在手机选定的目录新建一个——但不能指定命令行、不能管理任意进程；`argv` 与 `env` 一律由 Host 构造（见下文「会话激活」）。
 
@@ -295,7 +295,7 @@ Codex 后端走同一条 `slash.execute` 车道：它在自己的适配层把命
 
 差别只在于 `cwd` 从哪来：L1 来自会话记录（两个 backend 的会话记录里都带 `cwd`，所以 L1 不需要向手机要任何参数），L2 由手机选择。会话记录里的 `cwd` 已经不存在时，激活直接失败并回报，**不会静默换一个目录**。
 
-L3「手机直接给命令行」**永久排除**：Host 只认识 `pi` 与 `codex` 两种命令，`argv` 与 `env` 全部由 Host 构造，spawn 一律走 argv 数组、禁止 shell。手机侧也根本没有输入 `argv` / `env` 的入口。
+L3「手机直接给命令行」**永久排除**：Host 只为受支持的 agent backend 构造启动参数，`argv` 与 `env` 全部由 Host 构造，spawn 一律走 argv 数组、禁止 shell。手机侧也根本没有输入 `argv` / `env` 的入口。
 
 **拉起方式**
 
@@ -379,7 +379,7 @@ SDK 会把每个请求绑定到 runtime、扩展和唯一请求 ID。本地端�
 - 每台设备有独立 `pskRoot`；撤销是设备级的，不影响其他设备，也不必给其他设备重新配对。
 - Host 侧只持久化身份私钥与设备记录（`~/.pi-remote/`，0600）；Android 用系统加密存储保存自己的身份材料。
 - Relay 始终根据已认证连接和信封路由头转发；客户端声明的 session ID 不能用于选择 runtime。
-- 手机能下达的指令止于「把 agent 拉起来」：可以传 `sessionId` 或 `{ agentKind, cwd }`，不能传命令行或环境变量，Host 只构造 `pi` / `codex` 两种命令（见「会话激活」）。
+- 手机能下达的指令止于「把 agent 拉起来」：可以传 `sessionId` 或 `{ agentKind, cwd }`，不能传命令行或环境变量，Host 只构造受支持 backend 的启动参数（见「会话激活」）。
 - 已配对设备视为可信，所以不做 cwd 白名单、不做桌面二次确认、不做速率限制——安全由配对与端到端加密提供，不靠校验设备输入。
 - 不提供强制终止/重启/自动恢复进程、包管理、凭据/provider/trust 写入；菜单中的 `/quit` 只请求当前 agent 自行优雅退出。
 - 无法接管的本地扩展 UI 会 fail closed，并显示「需要在电脑处理」；系统不会伪造响应。
