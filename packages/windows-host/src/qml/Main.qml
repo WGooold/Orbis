@@ -18,10 +18,67 @@ ApplicationWindow {
     property string installKind: ""
     property bool providersOpen: false
     property var providerDraft: ({})
+    property var piModels: []
+    property var codexModels: []
+    property string providerFormError: ""
+    property bool providerTargetAdvanced: false
     property string deleteProviderId: ""
+    property string removeProviderId: ""
+    property string usageProviderId: ""
+    property var fetchedModels: []
+    property var oauthAccounts: []
+    property var oauthPending: ({})
+    function accountOptions(accounts) { return [{id:"",label:"使用本机 CLI 登录"},{id:"$default",label:"使用默认托管账号"}].concat(accounts.map(function(a) { return {id:a.id,label:(a.email || a.workspace) + (a.isDefault ? "（默认）" : "")} })) }
+    function usageText(usage) {
+        if (!usage) return ""
+        var parts = (usage.data || []).map(function(row) { return (row.planName ? row.planName + " · " : "") + (row.remaining === undefined ? (row.invalidMessage || "") : "剩余 " + Number(row.remaining).toLocaleString() + " " + (row.unit || "")) })
+        if (usage.error) parts.push(usage.error + (parts.length ? "（保留上次结果）" : ""))
+        return parts.join("\n")
+    }
+    function updatePiModel(index, key, value) { if (index >= 0 && index < piModels.length) piModels[index][key] = value }
+    function addPiModel() { piModels = piModels.concat([{id: "", name: "", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 8192}]) }
+    function deletePiModel(index) { var next = piModels.slice(); next.splice(index, 1); piModels = next }
+    function updateCodexModel(index, key, value) { if (index >= 0 && index < codexModels.length) codexModels[index][key] = value }
+    function deleteCodexModel(index) { var next = codexModels.slice(); next.splice(index, 1); codexModels = next }
+    function loadProviderFields(draft) {
+        providerKey.text = draft.fields.providerKey
+        providerUrl.text = draft.fields.baseUrl; providerApiKey.text = draft.fields.apiKey; providerModel.text = draft.fields.model
+        if (providerApi.find(draft.fields.api) < 0) providerApi.model = providerApi.model.concat([draft.fields.api])
+        providerApi.currentIndex = Math.max(0, providerApi.find(draft.fields.api))
+        piHeaders.text = JSON.stringify(draft.fields.headers || {}, null, 2)
+        piCompat.text = JSON.stringify(draft.fields.compat || {}, null, 2)
+        window.piModels = window.providerDraft.kind === "pi" ? draft.fields.models : []
+        window.codexModels = draft.fields.catalog || []
+        codexReasoning.currentIndex = Math.max(0, codexReasoning.find(draft.fields.reasoningEffort || ""))
+        providerJson.text = JSON.stringify(draft.config, null, 2)
+    }
+    function buildProviderDraft(basic) {
+        var draft = {kind: window.providerDraft.kind, id: window.providerDraft.kind === "pi" ? providerKey.text.trim() : window.providerDraft.id, name: providerName.text, config: providerJson.text, create: !!window.providerDraft.create, addToLive: providerAddToLive.checked,
+            metadata: {category: providerCategory.text, notes: providerNotes.text, websiteUrl: providerWebsite.text, icon: providerIcon.text, sortIndex: Number(providerOrder.text || "0"), commonConfigEnabled: providerCommon.checked}}
+        if (draft.kind === "codex") draft.metadata.authBinding = providerAccount.currentValue ? {source:"managed_account",authProvider:"codex_oauth",accountId:providerAccount.currentValue === "$default" ? "" : providerAccount.currentValue} : null
+        if (basic) {
+            draft.fields = {providerKey: providerKey.text.trim(), baseUrl: providerUrl.text.trim(), apiKey: providerApiKey.text, model: providerModel.text.trim(), api: providerApi.currentText}
+            if (draft.kind === "codex") { draft.fields.catalog = window.codexModels; draft.fields.reasoningEffort = codexReasoning.currentText }
+            if (draft.kind === "pi" || draft.kind === "codex") {
+                try {
+                    draft.fields.headers = JSON.parse(piHeaders.text || "{}")
+                    if (draft.kind === "pi") draft.fields.compat = JSON.parse(piCompat.text || "{}")
+                } catch (error) { window.providerFormError = "请求头和兼容参数必须是有效的 JSON 对象"; return null }
+                if (draft.fields.headers === null || Array.isArray(draft.fields.headers) || typeof draft.fields.headers !== "object") { window.providerFormError = "请求头必须是 JSON 对象"; return null }
+                if (draft.kind === "pi") {
+                    if (draft.fields.compat === null || Array.isArray(draft.fields.compat) || typeof draft.fields.compat !== "object") { window.providerFormError = "兼容参数必须是 JSON 对象"; return null }
+                    draft.fields.models = window.piModels
+                }
+            }
+        }
+        window.providerFormError = ""
+        return draft
+    }
     onVisibleChanged: if (visible) host.refreshRegistrationPolicy()
     function selectPage(index) { page = index; if (index === 3) settingsPane.load() }
     function openProviders(kind) { page = 2; providersOpen = true; host.loadProviders(kind) }
+    function closeProviderEditor() { providerDialog.close() }
+    function saveProviderEditor() { var draft = buildProviderDraft(!advancedProvider.checked); if (draft !== null) host.saveProvider(draft) }
     function stateText() {
         return ({connected: "已连接", connecting: "正在连接", reconnecting: "正在重连", closed: "连接已断开", stopped: "已暂停", error: "需要处理"})[host.state] || "正在准备"
     }
@@ -311,6 +368,9 @@ ApplicationWindow {
                             Heading { text: ({pi: "Pi", codex: "Codex", dsh: "DeepSeek Harness"})[host.providerKind] + " · 供应商" }
                             Item { Layout.fillWidth: true }
                             ActionButton { text: "刷新 / 导入"; enabled: !host.busy; onClicked: host.loadProviders(host.providerKind) }
+                            ActionButton { text: "通用配置"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: host.loadCodexPreferences() }
+                            ActionButton { text: "账号管理"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: { host.clearMessage(); host.oauthAccount("list"); oauthDialog.open() } }
+                            ActionButton { text: "从预设添加"; visible: host.providerKind !== "dsh"; enabled: !host.busy; onClicked: presetDialog.open() }
                             ActionButton { text: "＋ 添加供应商"; primary: true; enabled: !host.busy; onClicked: host.editProvider("") }
                         }
                         Hint { Layout.fillWidth: true; text: host.providerKind === "pi" ? "Pi 可同时启用多个供应商。刷新会同步 models.json 中的显式配置；停用保留卡片，不更改原生登录与默认模型。" : "启用时先保存当前配置，再写入目标配置。Host 中的后台 Agent 会重新加载；已有会话和独立终端需要重新打开。" }
@@ -326,14 +386,26 @@ ApplicationWindow {
                             delegate: Card {
                                 required property var modelData
                                 Layout.fillWidth: true
-                                RowLayout { anchors.fill: parent; spacing: 12
+                                ColumnLayout { anchors.fill: parent; spacing: 12
+                                  RowLayout { Layout.fillWidth: true; spacing: 12
                                     ColumnLayout { Layout.fillWidth: true
                                         Heading { text: modelData.name; font.pixelSize: 18 }
                                         Hint { text: modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用"; color: modelData.enabled ? "#278868" : "#73819a" }
+                                        Hint { text: modelData.notes || ""; visible: text.length > 0; Layout.fillWidth: true }
+                                        Hint { text: window.usageText(modelData.usage); visible: text.length > 0; Layout.fillWidth: true }
                                     }
-                                    ActionButton { text: modelData.enabled ? "停用" : "启用"; visible: !modelData.enabled || modelData.mode === "additive"; primary: !modelData.enabled; enabled: !host.busy; onClicked: host.switchProvider(modelData.id, !modelData.enabled) }
+                                    ActionButton { text: modelData.enabled ? "移除" : "启用"; visible: !modelData.enabled || modelData.mode === "additive"; primary: !modelData.enabled; enabled: !host.busy; onClicked: { if (modelData.enabled) { window.removeProviderId = modelData.id; removeProviderDialog.open() } else host.switchProvider(modelData.id, true) } }
                                     ActionButton { text: "编辑"; enabled: !host.busy; onClicked: host.editProvider(modelData.id) }
-                                    ActionButton { text: "删除"; danger: true; enabled: !host.busy && !modelData.enabled; onClicked: { window.deleteProviderId = modelData.id; deleteProviderDialog.open() } }
+                                    ActionButton { text: "复制"; enabled: !host.busy; onClicked: host.copyProvider(modelData.id) }
+                                    ActionButton { text: "删除"; danger: true; enabled: !host.busy && (!modelData.enabled || modelData.mode === "additive"); onClicked: { window.deleteProviderId = modelData.id; deleteProviderDialog.open() } }
+                                  }
+                                  RowLayout { Layout.fillWidth: true; spacing: 10
+                                    Hint { text: modelData.websiteUrl || modelData.id; Layout.fillWidth: true }
+                                    ActionButton { text: "检测"; visible: modelData.category !== "official"; enabled: !host.busy; onClicked: host.checkProvider(modelData.id) }
+                                    ActionButton { text: "用量设置"; enabled: !host.busy; onClicked: host.editProviderUsage(modelData.id) }
+                                    ActionButton { text: "查询用量"; enabled: !host.busy; onClicked: host.queryProviderUsage(modelData.id) }
+                                    ActionButton { text: "启用并打开"; enabled: !host.busy; onClicked: host.openProvider(modelData.id) }
+                                  }
                                 }
                             }
                         }
@@ -437,19 +509,99 @@ ApplicationWindow {
                 Field { id: providerName; Layout.fillWidth: true; maximumLength: 80; placeholderText: "例如：工作账号 / 自建 API" }
                 Label { text: "供应商标识"; color: "#4b5d78" }
                 Field { id: providerKey; Layout.fillWidth: true; maximumLength: 128; placeholderText: "custom"; enabled: window.providerDraft.kind !== "pi" || !!window.providerDraft.create }
-                SoftSwitch { id: advancedProvider; text: "高级配置（原生 JSON；保留全部字段）" }
+                Label { text: "ChatGPT 登录来源"; visible: window.providerDraft.kind === "codex" && window.providerDraft.category === "official"; color: "#4b5d78" }
+                ComboBox { id: providerAccount; visible: window.providerDraft.kind === "codex" && window.providerDraft.category === "official"; Layout.fillWidth: true; textRole: "label"; valueRole: "id"; model: [] }
+                SoftSwitch { id: providerDetails; text: "显示备注、分类和排序设置" }
+                ColumnLayout { visible: providerDetails.checked; Layout.fillWidth: true; spacing: 8
+                    RowLayout { Layout.fillWidth: true
+                        ColumnLayout { Layout.fillWidth: true
+                            Label { text: "分类"; color: "#4b5d78" }
+                            Field { id: providerCategory; Layout.fillWidth: true; placeholderText: "custom / official / aggregator" }
+                        }
+                        ColumnLayout { Layout.preferredWidth: 100
+                            Label { text: "排序"; color: "#4b5d78" }
+                            Field { id: providerOrder; Layout.fillWidth: true; validator: IntValidator {} }
+                        }
+                        ColumnLayout { Layout.preferredWidth: 130
+                            Label { text: "图标"; color: "#4b5d78" }
+                            Field { id: providerIcon; Layout.fillWidth: true; placeholderText: "图标名称" }
+                        }
+                    }
+                    Field { id: providerWebsite; Layout.fillWidth: true; placeholderText: "供应商网站" }
+                    Field { id: providerNotes; Layout.fillWidth: true; placeholderText: "备注"; maximumLength: 4000 }
+                }
+                SoftSwitch { id: providerAddToLive; text: window.providerDraft.kind === "pi" ? "保存后立即启用" : "没有当前供应商时自动启用"; visible: !!window.providerDraft.create }
+                SoftSwitch { id: providerCommon; text: "使用 Codex 通用配置"; visible: window.providerDraft.kind === "codex" }
+                SoftSwitch { id: advancedProvider; text: "高级配置（原生 JSON；保留全部字段）"; enabled: !host.busy; onToggled: {
+                    var target = checked
+                    checked = !target
+                    var preview = window.buildProviderDraft(target)
+                    if (preview !== null) { window.providerTargetAdvanced = target; host.previewProvider(preview) }
+                } }
                 ColumnLayout { visible: !advancedProvider.checked; Layout.fillWidth: true; spacing: 12
-                    Hint { text: "自定义 API 表单。原生账号、额外模型与特殊参数请使用高级配置。"; Layout.fillWidth: true }
                     Field { id: providerUrl; Layout.fillWidth: true; placeholderText: "API 地址，例如 https://api.example.com/v1" }
                     Field { id: providerApiKey; Layout.fillWidth: true; placeholderText: "API Key"; echoMode: TextInput.Password }
-                    Field { id: providerModel; Layout.fillWidth: true; placeholderText: "模型 ID（按供应商提供的名称填写）" }
-                    ComboBox { id: providerApi; Layout.fillWidth: true; model: ["openai-completions", "openai-responses", "anthropic-messages"]; enabled: window.providerDraft.kind !== "codex" }
+                    Field { id: providerModel; visible: window.providerDraft.kind !== "pi"; Layout.fillWidth: true; placeholderText: "模型 ID（按供应商提供的名称填写）" }
+                    RowLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true
+                        Label { text: "思考档位"; color: "#4b5d78" }
+                        ComboBox { id: codexReasoning; Layout.fillWidth: true; model: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] }
+                    }
+                    ComboBox { id: providerApi; Layout.fillWidth: true; model: ["", "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai", "bedrock-converse-stream"]; enabled: window.providerDraft.kind !== "codex" }
+                    ActionButton { text: "获取模型列表"; enabled: !host.busy && providerUrl.text.trim().length > 0; onClicked: { var draft = window.buildProviderDraft(true); if (draft !== null) host.fetchProviderModels(draft) } }
+                    Label { text: "请求头（JSON 对象）"; visible: window.providerDraft.kind !== "dsh"; color: "#4b5d78" }
+                    TextArea { id: piHeaders; visible: window.providerDraft.kind !== "dsh"; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                    ColumnLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true; spacing: 8
+                        RowLayout { Layout.fillWidth: true
+                            Label { text: "模型目录"; color: "#4b5d78"; font.bold: true }
+                            Item { Layout.fillWidth: true }
+                            ActionButton { text: "＋ 添加模型"; onClicked: window.codexModels = window.codexModels.concat([{model: ""}]) }
+                        }
+                        Repeater { model: window.codexModels
+                            delegate: RowLayout {
+                                required property var modelData; required property int index
+                                Layout.fillWidth: true
+                                Field { Layout.fillWidth: true; text: modelData.model || ""; placeholderText: "模型 ID"; onTextEdited: window.updateCodexModel(index, "model", text) }
+                                Field { Layout.fillWidth: true; text: modelData.displayName || ""; placeholderText: "显示名称"; onTextEdited: window.updateCodexModel(index, "displayName", text) }
+                                Field { Layout.preferredWidth: 120; text: modelData.contextWindow === undefined ? "" : String(modelData.contextWindow); placeholderText: "上下文窗口"; onTextEdited: window.updateCodexModel(index, "contextWindow", text) }
+                                ActionButton { text: "删除"; danger: true; onClicked: window.deleteCodexModel(index) }
+                            }
+                        }
+                    }
+                    ColumnLayout { visible: window.providerDraft.kind === "pi"; Layout.fillWidth: true; spacing: 8
+                        Label { text: "兼容参数（JSON 对象）"; color: "#4b5d78" }
+                        TextArea { id: piCompat; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                        RowLayout { Layout.fillWidth: true
+                            Label { text: "模型"; color: "#4b5d78"; font.bold: true }
+                            Item { Layout.fillWidth: true }
+                            ActionButton { text: "＋ 添加模型"; onClicked: window.addPiModel() }
+                        }
+                        Repeater { model: window.piModels
+                            delegate: ColumnLayout {
+                                required property var modelData
+                                required property int index
+                                Layout.fillWidth: true; spacing: 6
+                                RowLayout { Layout.fillWidth: true
+                                    Field { Layout.fillWidth: true; text: modelData.id || ""; placeholderText: "模型 ID"; onTextEdited: window.updatePiModel(index, "id", text) }
+                                    Field { Layout.fillWidth: true; text: modelData.name || ""; placeholderText: "显示名称"; onTextEdited: window.updatePiModel(index, "name", text) }
+                                    ActionButton { text: "删除"; danger: true; onClicked: window.deletePiModel(index) }
+                                }
+                                RowLayout { Layout.fillWidth: true
+                                    CheckBox { text: "推理"; checked: modelData.reasoning === true; onToggled: window.updatePiModel(index, "reasoning", checked) }
+                                    CheckBox { text: "图像输入"; checked: Array.isArray(modelData.input) && modelData.input.indexOf("image") >= 0; onToggled: window.updatePiModel(index, "input", checked ? ["text", "image"] : ["text"]) }
+                                    Field { Layout.fillWidth: true; text: modelData.contextWindow === undefined ? "" : String(modelData.contextWindow); placeholderText: "上下文窗口"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updatePiModel(index, "contextWindow", text) }
+                                    Field { Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: "最大输出"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updatePiModel(index, "maxTokens", text) }
+                                }
+                                TextArea { Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "思考档位映射（JSON，可留空使用 Pi 默认值）"; text: modelData.thinkingLevelMap === undefined ? "" : JSON.stringify(modelData.thinkingLevelMap); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updatePiModel(index, "thinkingLevelMap", text); background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                            }
+                        }
+                    }
                 }
                 ColumnLayout { visible: advancedProvider.checked; Layout.fillWidth: true
                     Hint { text: window.providerDraft.kind === "codex" ? "Codex：auth 为 auth.json 对象或 null，config 为 config.toml 文本。" : window.providerDraft.kind === "pi" ? "Pi：完整的 models.json.providers.<标识> 节点。" : "DSH：patch 为 cordis.patch.yml 文本，env 保存该配置所需的凭据环境变量。"; Layout.fillWidth: true }
                     TextArea { id: providerJson; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; color: "#21314d"; background: Rectangle { color: "#DDE3EF"; radius: 8 } padding: 12 }
                 }
                 Hint { visible: host.message.length > 0; text: host.message; Layout.fillWidth: true; color: "#a34d4d" }
+                Hint { visible: window.providerFormError.length > 0; text: window.providerFormError; Layout.fillWidth: true; color: "#a34d4d" }
             }
         }
         footer: RowLayout {
@@ -457,16 +609,144 @@ ApplicationWindow {
             Item { Layout.fillWidth: true }
             ActionButton { text: "取消"; enabled: !host.busy; onClicked: providerDialog.reject() }
             ActionButton { text: host.busy ? "保存中…" : "保存"; primary: true; enabled: !host.busy && providerName.text.trim().length > 0; onClicked: {
-                var draft = {kind: window.providerDraft.kind, id: window.providerDraft.kind === "pi" ? providerKey.text.trim() : window.providerDraft.id, name: providerName.text, config: providerJson.text, create: !!window.providerDraft.create}
-                if (!advancedProvider.checked) draft.fields = {providerKey: providerKey.text.trim(), baseUrl: providerUrl.text.trim(), apiKey: providerApiKey.text, model: providerModel.text.trim(), api: providerApi.currentText}
-                host.saveProvider(draft)
+                window.saveProviderEditor()
             } }
         }
         onClosed: { providerApiKey.text = ""; providerJson.text = ""; window.providerDraft = ({}) }
     }
     Dialog {
+        id: presetDialog; title: "选择供应商预设"; anchors.centerIn: parent; modal: true; width: 530
+        ColumnLayout { width: parent.width; spacing: 12
+            ComboBox { id: providerPreset; model: host.providerPresets; textRole: "name"; valueRole: "id"; Layout.fillWidth: true; editable: true }
+            Hint { text: "选择后可编辑端点、密钥及模型。"; Layout.fillWidth: true }
+        }
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        onAccepted: host.presetProvider(providerPreset.currentValue)
+    }
+    Dialog {
+        id: oauthDialog; title: "Codex · ChatGPT 账号"; anchors.centerIn: parent; modal: true; width: 700; height: 560
+        contentItem: ScrollView { clip: true; contentWidth: availableWidth
+            ColumnLayout { width: oauthDialog.width - 44; spacing: 12
+                Hint { text: "登录完成后，在官方供应商卡片中选择托管账号。切换前会刷新凭据，并同步本机 Codex 更新过的登录。"; Layout.fillWidth: true }
+                RowLayout {
+                    ActionButton { text: "添加账号"; primary: true; enabled: !host.busy && !window.oauthPending.deviceCode; onClicked: host.oauthAccount("start") }
+                    ActionButton { text: "导入本机登录"; enabled: !host.busy; onClicked: host.oauthAccount("import") }
+                    ActionButton { text: "刷新"; enabled: !host.busy; onClicked: host.oauthAccount("list") }
+                }
+                ColumnLayout { visible: !!window.oauthPending.deviceCode; Layout.fillWidth: true
+                    Label { text: window.oauthPending.userCode || ""; font.pixelSize: 24; font.bold: true; color: "#21314d" }
+                    Hint { text: "在浏览器登录并输入上方授权码。完成后会自动显示账号。"; Layout.fillWidth: true }
+                    RowLayout {
+                        ActionButton { text: "打开授权页"; onClicked: Qt.openUrlExternally(window.oauthPending.verificationUrl) }
+                        ActionButton { text: "取消登录"; enabled: !host.busy; onClicked: { host.oauthAccount("cancel", window.oauthPending.deviceCode); window.oauthPending = ({}) } }
+                    }
+                }
+                Repeater { model: window.oauthAccounts
+                    delegate: ColumnLayout { required property var modelData; Layout.fillWidth: true
+                        Label { text: (modelData.email || modelData.workspace) + (modelData.isDefault ? " · 默认账号" : ""); color: "#21314d"; font.bold: true }
+                        Hint { text: modelData.workspace; Layout.fillWidth: true }
+                        RowLayout {
+                            ActionButton { text: "设为默认"; enabled: !host.busy && !modelData.isDefault; onClicked: host.oauthAccount("default", modelData.id) }
+                            ActionButton { text: "重新登录"; enabled: !host.busy && !window.oauthPending.deviceCode; onClicked: host.oauthAccount("start", modelData.id) }
+                            ActionButton { text: "删除账号"; danger: true; enabled: !host.busy; onClicked: { oauthDeleteDialog.accountId = modelData.id; oauthDeleteDialog.open() } }
+                        }
+                    }
+                }
+                Hint { text: host.message; visible: text.length > 0; Layout.fillWidth: true; color: "#a34d4d" }
+            }
+        }
+        standardButtons: Dialog.Close
+        onClosed: { if (window.oauthPending.deviceCode) host.oauthAccount("cancel", window.oauthPending.deviceCode); window.oauthPending = ({}) }
+    }
+    Dialog {
+        id: oauthDeleteDialog; property string accountId: ""; title: "删除托管账号？"; anchors.centerIn: parent; modal: true; width: 420
+        Label { width: parent.width; text: "删除 Host 保存的登录凭据。仍被供应商绑定的账号需要先解除绑定。"; wrapMode: Text.WordWrap }
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        onAccepted: host.oauthAccount("remove", accountId)
+    }
+    Timer {
+        interval: Math.max(5000, (window.oauthPending.interval || 8) * 1000); repeat: true; running: oauthDialog.visible && !!window.oauthPending.deviceCode
+        onTriggered: { if (Date.now() >= window.oauthPending.expiresAt) { host.oauthAccount("cancel", window.oauthPending.deviceCode); window.oauthPending = ({}) } else if (!host.busy) host.oauthAccount("poll", window.oauthPending.deviceCode) }
+    }
+    Dialog {
+        id: codexPreferencesDialog; title: "Codex 通用配置"; anchors.centerIn: parent; modal: true; width: 660; height: 480
+        ColumnLayout { width: parent.width; spacing: 12
+            Hint { text: "勾选“使用 Codex 通用配置”的供应商共用这些偏好；切换前会同步当前原生配置中的共享改动。MCP 配置继续保留。"; Layout.fillWidth: true }
+            TextArea { id: codexCommonText; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+            SoftSwitch { id: preserveCodexLogin; text: "切换第三方供应商时保留官方登录" }
+            Hint { text: host.message; visible: text.length > 0; Layout.fillWidth: true; color: "#a34d4d" }
+        }
+        footer: RowLayout {
+            Item { Layout.fillWidth: true }
+            ActionButton { text: "取消"; enabled: !host.busy; onClicked: codexPreferencesDialog.reject() }
+            ActionButton { text: "保存"; primary: true; enabled: !host.busy; onClicked: host.saveCodexPreferences({ commonConfig: codexCommonText.text, preserveOfficialLogin: preserveCodexLogin.checked }) }
+        }
+    }
+    Dialog {
+        id: providerInfoDialog; anchors.centerIn: parent; modal: true; width: 590; height: 400
+        property string infoText: ""
+        contentItem: ScrollView { TextArea { text: providerInfoDialog.infoText; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap } }
+        standardButtons: Dialog.Ok
+    }
+    Dialog {
+        id: fetchedModelsDialog; title: "选择模型"; anchors.centerIn: parent; modal: true; width: 550; height: 490
+        contentItem: ScrollView { clip: true; contentWidth: availableWidth
+            ColumnLayout { width: fetchedModelsDialog.width - 40
+                Repeater { model: window.fetchedModels
+                    CheckBox { required property var modelData; required property int index; text: modelData.name + " · " + modelData.id; onToggled: window.fetchedModels[index].selected = checked }
+                }
+            }
+        }
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        onAccepted: {
+            var selected = window.fetchedModels.filter(function(model) { return model.selected })
+            if (window.providerDraft.kind === "pi") {
+                var current = window.piModels.filter(function(model) { return model.id.trim().length > 0 })
+                selected.forEach(function(model) { if (!current.some(function(existing) { return existing.id === model.id })) current.push({id: model.id, name: model.name, input: ["text"]}) })
+                window.piModels = current
+            } else if (selected.length > 0) providerModel.text = selected[0].id
+        }
+    }
+    Dialog {
+        id: usageDialog; title: "用量查询配置"; anchors.centerIn: parent; modal: true; width: 680; height: 620
+        contentItem: ScrollView { clip: true; contentWidth: availableWidth
+            ColumnLayout { width: usageDialog.width - 42; spacing: 10
+                SoftSwitch { id: usageEnabled; text: "启用用量查询" }
+                RowLayout { Layout.fillWidth: true
+                    ComboBox { id: usageTemplateType; Layout.fillWidth: true; textRole: "name"; valueRole: "id"; model: [{id:"custom",name:"自定义脚本"},{id:"general",name:"通用余额"},{id:"newapi",name:"New API"},{id:"balance",name:"官方余额（DeepSeek 等）"}] }
+                    ActionButton { text: "载入模板"; enabled: !host.busy; onClicked: host.loadUsageTemplate(window.usageProviderId, usageTemplateType.currentValue, usageBaseUrl.text) }
+                }
+                Hint { text: "脚本返回 { request: { url, method, headers }, extractor: response => ({ remaining, unit }) }。支持 {{apiKey}}、{{baseUrl}}、{{accessToken}}、{{userId}} 变量。"; Layout.fillWidth: true }
+                TextArea { id: usageCode; Layout.fillWidth: true; Layout.preferredHeight: 180; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                Field { id: usageBaseUrl; placeholderText: "查询地址覆盖（留空跟随供应商）"; Layout.fillWidth: true }
+                Field { id: usageApiKey; placeholderText: "API Key 覆盖（留空跟随供应商）"; echoMode: TextInput.Password; Layout.fillWidth: true }
+                RowLayout { Layout.fillWidth: true
+                    Field { id: usageAccessToken; placeholderText: "访问令牌（可选）"; echoMode: TextInput.Password; Layout.fillWidth: true }
+                    Field { id: usageUserId; placeholderText: "用户 ID（可选）"; Layout.fillWidth: true }
+                    Field { id: usageTimeout; placeholderText: "超时秒数"; text: "10"; Layout.preferredWidth: 100; validator: IntValidator { bottom: 2; top: 30 } }
+                }
+                Label { text: "自动查询间隔（分钟，0 表示关闭）"; color: "#4b5d78" }
+                Field { id: usageInterval; text: "5"; Layout.fillWidth: true; validator: IntValidator { bottom: 0; top: 1440 } }
+                Hint { text: usageTemplateType.currentValue === "custom" ? "自定义模板可以使用独立查询端点。" : usageTemplateType.currentValue === "balance" ? "官方余额查询使用内置接口；自定义代码请选择其他模板。" : "查询端点须与供应商或覆盖地址属于同一主机。"; Layout.fillWidth: true }
+                Hint { text: host.message; visible: text.length > 0; Layout.fillWidth: true; color: "#a34d4d" }
+            }
+        }
+        footer: RowLayout {
+            Item { Layout.fillWidth: true }
+            ActionButton { text: "取消"; enabled: !host.busy; onClicked: usageDialog.reject() }
+            ActionButton { text: "保存"; primary: true; enabled: !host.busy; onClicked: host.saveProviderUsage(window.usageProviderId, { enabled: usageEnabled.checked, language: "javascript", code: usageCode.text, timeout: Number(usageTimeout.text), apiKey: usageApiKey.text, baseUrl: usageBaseUrl.text, accessToken: usageAccessToken.text, userId: usageUserId.text, templateType: usageTemplateType.currentValue, autoQueryInterval: Number(usageInterval.text) }) }
+        }
+        onClosed: { usageApiKey.text = ""; usageAccessToken.text = ""; usageCode.text = "" }
+    }
+    Dialog {
+        id: removeProviderDialog; title: "从 Pi 移除供应商？"; anchors.centerIn: parent; modal: true; width: 440
+        Label { width: parent.width; text: "仅移除 models.json 中的节点，卡片和最新配置仍保留。" + (host.piDefaultProvider === window.removeProviderId ? "\n这是 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。" : ""); wrapMode: Text.WordWrap }
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        onAccepted: host.switchProvider(window.removeProviderId, false)
+    }
+    Dialog {
         id: deleteProviderDialog; title: "删除供应商？"; anchors.centerIn: parent; modal: true; width: 410
-        Label { width: parent.width; text: "将删除这个未启用的供应商配置。"; wrapMode: Text.WordWrap }
+        Label { width: parent.width; text: host.providerKind === "pi" ? "删除卡片和 models.json 中的对应供应商。" + (host.piDefaultProvider === window.deleteProviderId ? "\n这是 Pi 的全局默认供应商，删除后请在 Pi 中重新选择模型。" : "") : "删除这个未启用的供应商配置。"; wrapMode: Text.WordWrap }
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: host.removeProvider(window.deleteProviderId)
     }
@@ -482,13 +762,37 @@ ApplicationWindow {
         function onChanged() { if (host.qr.length > 0 && !pairDialog.visible) pairDialog.open(); if (host.qr.length === 0 && pairDialog.visible) pairDialog.close() }
         function onProviderDraftReady(draft) {
             window.providerDraft = draft; host.clearMessage()
-            providerName.text = draft.name; providerKey.text = draft.fields.providerKey
-            providerUrl.text = draft.fields.baseUrl; providerApiKey.text = draft.fields.apiKey; providerModel.text = draft.fields.model
-            providerApi.currentIndex = Math.max(0, providerApi.find(draft.fields.api))
-            providerJson.text = JSON.stringify(draft.config, null, 2)
+            window.providerFormError = ""
+            providerName.text = draft.name
+            providerAccount.model = window.accountOptions(draft.accounts || [])
+            providerAccount.currentIndex = Math.max(0, providerAccount.indexOfValue(draft.authBinding ? (draft.authBinding.accountId || "$default") : ""))
+            providerDetails.checked = false
+            providerCategory.text = draft.category || "custom"; providerNotes.text = draft.notes || ""; providerWebsite.text = draft.websiteUrl || ""; providerIcon.text = draft.icon || ""; providerOrder.text = String(draft.sortIndex || 0)
+            providerCommon.checked = draft.commonConfigEnabled === true || (!!draft.create && draft.kind === "codex")
+            providerAddToLive.checked = !!draft.create
+            window.loadProviderFields(draft)
             advancedProvider.checked = !draft.create
+            if (draft.category === "official") advancedProvider.checked = true
             providerDialog.open()
         }
+        function onProviderPreviewReady(draft) { window.loadProviderFields(draft); advancedProvider.checked = window.providerTargetAdvanced }
+        function onCodexPreferencesReady(preferences) { codexCommonText.text = preferences.commonConfig; preserveCodexLogin.checked = preferences.preserveOfficialLogin; host.clearMessage(); codexPreferencesDialog.open() }
+        function onCodexPreferencesSaved() { codexPreferencesDialog.close() }
+        function onProviderModelsReady(models) { window.fetchedModels = models.map(function(model) { return {id: model.id, name: model.name, selected: false} }); fetchedModelsDialog.open() }
+        function onProviderUsageReady(id, script) {
+            window.usageProviderId = id; usageEnabled.checked = script.enabled === true; usageTemplateType.currentIndex = Math.max(0, usageTemplateType.indexOfValue(script.templateType || "custom")); usageInterval.text = String(script.autoQueryInterval === undefined ? 5 : script.autoQueryInterval)
+            usageCode.text = script.code || "({\n  request: { url: '{{baseUrl}}/usage', method: 'GET', headers: { Authorization: 'Bearer {{apiKey}}' } },\n  extractor: response => ({ remaining: response.remaining, unit: 'USD' })\n})"
+            usageBaseUrl.text = script.baseUrl || ""; usageApiKey.text = script.apiKey || ""; usageAccessToken.text = script.accessToken || ""; usageUserId.text = script.userId || ""; usageTimeout.text = String(script.timeout || 10)
+            host.clearMessage(); usageDialog.open()
+        }
+        function onProviderUsageSaved() { usageDialog.close() }
+        function onUsageTemplateReady(value) { usageCode.text = value.code; if (value.baseUrl) usageBaseUrl.text = value.baseUrl }
+        function onOauthAccountResult(operation, value) {
+            if (operation === "start") window.oauthPending = value
+            else if (operation === "poll") { if (!value.pending) { window.oauthPending = ({}); host.oauthAccount("list") } }
+            else if (operation !== "cancel") window.oauthAccounts = value
+        }
+        function onProviderInfoReady(title, text) { providerInfoDialog.title = title; providerInfoDialog.infoText = text; providerInfoDialog.open() }
         function onProviderSaved() { providerDialog.close() }
     }
 }

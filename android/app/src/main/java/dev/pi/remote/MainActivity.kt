@@ -2386,15 +2386,15 @@ private fun AgentProvidersScreen(state: RemoteState, model: RemoteViewModel, onB
                             Text(provider.name, fontWeight = FontWeight.SemiBold)
                             Text(if (provider.enabled) (if (provider.additive) "已启用" else "当前使用") else "未启用", style = MaterialTheme.typography.bodySmall)
                         }
-                        if (!provider.enabled || provider.additive) TextButton(onClick = { pending = provider }, enabled = available) { Text(if (provider.enabled) "停用" else "启用") }
+                        if (!provider.enabled || provider.additive) TextButton(onClick = { pending = provider }, enabled = available) { Text(if (provider.enabled) "移除" else "启用") }
                     }
                 }
             }
         }
     }
     pending?.let { provider ->
-        AlertDialog(onDismissRequest = { pending = null }, title = { Text(if (provider.enabled) "停用供应商" else "启用供应商") },
-            text = { Text("${provider.name}\n${if (provider.additive) "将更新 Pi 显式配置。" else "将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。"}") },
+        AlertDialog(onDismissRequest = { pending = null }, title = { Text(if (provider.enabled) "移除供应商" else "启用供应商") },
+            text = { Text("${provider.name}\n${if (provider.additive) { if (provider.enabled) "从 Pi 配置移除；Host 中的卡片和配置仍保留。" else "添加到 Pi 配置，可与其他供应商同时启用。" } else "将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。"}${if (provider.enabled && provider.globalDefault) "\n这是 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。" else ""}") },
             confirmButton = { TextButton(enabled = available, onClick = { model.switchAgentProvider(provider, catalog.hostId); pending = null }) { Text("确认") } },
             dismissButton = { TextButton(onClick = { pending = null }) { Text("取消") } })
     }

@@ -3,10 +3,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProviderManager, type ProviderHooks } from "./provider-manager.js";
-import { applyProviderFields, newProviderConfig } from "./provider-form.js";
+import { applyProviderFields, newProviderConfig, providerFields } from "./provider-form.js";
 import { parseProviderRequest, providerResult } from "./provider-messages.js";
 import { installPackage } from "./agent-installation.js";
 import { PROTOCOL_VERSION } from "@pi-remote/protocol";
+import { parse as parseToml } from "smol-toml";
+import { parse as parseYaml } from "yaml";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -19,6 +21,22 @@ async function fixture(hooks: ProviderHooks = {}) {
 const codex = (provider: string, key: string) => ({ auth: { OPENAI_API_KEY: key }, config: `model_provider = "${provider}"\nmodel = "test-model"\n[model_providers.${provider}]\nname = "${provider}"\nwire_api = "responses"\nbase_url = "https://example.com/v1"\n` });
 
 describe("CC Switch provider configuration semantics", () => {
+  it("round-trips a Pi built-in override without turning inheritance into explicit defaults", () => {
+    for (const config of [{ apiKey: "ENV_KEY", future: true }, { apiKey: "!custom-command", models: [], compat: {} }]) {
+      const fields = providerFields({ id: "anthropic", kind: "pi", name: "Anthropic", config });
+      expect(applyProviderFields("pi", config, fields)).toEqual(config);
+      expect(() => applyProviderFields("pi", config, fields, true)).toThrow("新建供应商");
+    }
+    const config = { api: "future-api", models: [{ id: " Case-Sensitive ", future: true }] };
+    expect(applyProviderFields("pi", config, providerFields({ id: "custom", kind: "pi", name: "Custom", config }))).toEqual(config);
+  });
+  it("preserves secondary DSH models and the existing credential environment key", () => {
+    const config = { env: { CUSTOM_KEY: "old" }, patch: '- id: llm-pi-ai\n  config:\n    providers:\n      custom:\n        apiKeyEnv: CUSTOM_KEY\n        models:\n          - id: secondary\n            keep: true\n          - id: selected\n            keep: 42\n- id: acp\n  config:\n    provider: custom\n    model: selected\n' };
+    const fields = providerFields({ kind: "dsh", id: "dsh", name: "DSH", config });
+    const next = applyProviderFields("dsh", config, { ...fields, model: "renamed", apiKey: "new" });
+    expect(next.env).toEqual({ CUSTOM_KEY: "new" });
+    expect(parseYaml(String(next.patch))[0].config.providers.custom).toMatchObject({ apiKeyEnv: "CUSTOM_KEY", models: [{ id: "secondary", keep: true }, { id: "renamed", keep: 42 }] });
+  });
   it("imports native Codex auth/config and backfills external changes before switching", async () => {
     const { manager, paths } = await fixture();
     const original = codex("original", "first-secret");
@@ -29,10 +47,10 @@ describe("CC Switch provider configuration semantics", () => {
     await manager.save("codex", "custom", "Custom", codex("custom", "second-secret"), true);
     await writeFile(join(paths.codex, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "rotated-secret" }));
     await manager.switch("codex", "custom");
-    expect(JSON.parse(await readFile(join(paths.codex, "auth.json"), "utf8"))).toEqual({ OPENAI_API_KEY: "second-secret" });
+    await expect(readFile(join(paths.codex, "auth.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(parseToml(await readFile(join(paths.codex, "config.toml"), "utf8"))).toMatchObject({ model_providers: { custom: { experimental_bearer_token: "second-secret" } } });
     await manager.switch("codex", imported!.id);
-    expect(JSON.parse(await readFile(join(paths.codex, "auth.json"), "utf8"))).toEqual({ OPENAI_API_KEY: "rotated-secret" });
-    expect(await readFile(join(paths.codex, "config.toml"), "utf8")).toBe(original.config);
+    expect(parseToml(await readFile(join(paths.codex, "config.toml"), "utf8"))).toMatchObject({ model_providers: { original: { experimental_bearer_token: "rotated-secret" } } });
     expect(JSON.stringify(await manager.list("codex"))).not.toContain("secret");
   });
   it("treats built-in Pi IDs as explicit nodes, preserves unknown fields and leaves auth/defaults untouched", async () => {
@@ -56,11 +74,11 @@ describe("CC Switch provider configuration semantics", () => {
     await manager.save("codex", "a", "A", codex("a", "a-secret"), true);
     await manager.save("codex", "b", "B", codex("b", "b-secret"), true);
     await manager.switch("codex", "a");
-    const auth = await readFile(join(paths.codex, "auth.json"), "utf8");
+    const auth = await readFile(join(paths.codex, "auth.json"), "utf8").catch(() => null);
     const config = await readFile(join(paths.codex, "config.toml"), "utf8");
     reload.mockRejectedValueOnce(new Error("bad backend"));
     await expect(manager.switch("codex", "b")).rejects.toThrow("已恢复原配置");
-    expect(await readFile(join(paths.codex, "auth.json"), "utf8")).toBe(auth);
+    expect(await readFile(join(paths.codex, "auth.json"), "utf8").catch(() => null)).toBe(auth);
     expect(await readFile(join(paths.codex, "config.toml"), "utf8")).toBe(config);
     expect((await manager.list("codex")).filter(p => p.enabled).map(p => p.id)).toEqual(["a"]);
   });
@@ -70,8 +88,22 @@ describe("CC Switch provider configuration semantics", () => {
     await Promise.all(["a", "b"].map(id => manager.switch("pi", id)));
     expect(Object.keys(JSON.parse(await readFile(join(paths.pi, "models.json"), "utf8")).providers)).toEqual(["a", "b"]);
     expect(() => manager.save("codex", "broken", "Broken", { auth: {}, config: "token = SECRET invalid" }, true)).toThrow("格式无效");
-    await expect(manager.remove("pi", "a")).rejects.toThrow("先停用");
-    await expect(manager.save("pi", "a", "Again", {}, true)).rejects.toThrow("已存在");
+    await manager.remove("pi", "a");
+    expect(Object.keys(JSON.parse(await readFile(join(paths.pi, "models.json"), "utf8")).providers)).toEqual(["b"]);
+    expect((await manager.list("pi")).map(p => p.id)).toEqual(["b"]);
+    await expect(manager.save("pi", "b", "Again", {}, true)).rejects.toThrow("已存在");
+  });
+  it("creates live Pi providers, keeps a copied card disabled, and validates all structured models", async () => {
+    const { manager, paths } = await fixture();
+    const initial = { name: "Original", baseUrl: "https://example.com/v1", apiKey: "secret", api: "google-generative-ai", headers: { "X-Test": "value" }, compat: { future: true }, models: [{ id: "one", name: "One", reasoning: true, input: ["text", "image"], contextWindow: 32000, maxTokens: 8000, future: "keep" }, { id: "two", input: ["text"] }] };
+    const fields = { providerKey: "custom", baseUrl: initial.baseUrl, apiKey: initial.apiKey, model: "one", api: initial.api, headers: initial.headers, compat: initial.compat, models: initial.models };
+    await manager.save("pi", "custom", "Original", applyProviderFields("pi", {}, fields), true);
+    expect(JSON.parse(await readFile(join(paths.pi, "models.json"), "utf8")).providers.custom).toEqual(initial);
+    const copied = await manager.copy("pi", "custom");
+    expect(copied.find(p => p.id === "custom-copy")?.enabled).toBe(false);
+    expect((await manager.get("pi", "custom-copy")).config.models).toEqual(initial.models);
+    expect(() => applyProviderFields("pi", {}, { ...fields, models: [{ id: "one" }, { id: "one" }] })).toThrow("不能重复");
+    expect(() => applyProviderFields("pi", {}, { ...fields, models: [{ id: "one", maxTokens: "0" }] })).toThrow("正整数");
   });
   it("projects full Codex configs without dropping unrelated settings and supports DSH credentials locally", async () => {
     const fields = { baseUrl: "https://example.com/v1", apiKey: "local-secret", model: "custom-model", api: "openai-completions", providerKey: "custom" };
@@ -94,6 +126,48 @@ describe("CC Switch provider configuration semantics", () => {
     expect((await manager.get("dsh", imported!.id)).config.patch).toBe(patch);
     await manager.save("dsh", imported!.id, "Native patch", { patch, env: {} });
     expect(await readFile(join(paths.dsh, "cordis.patch.yml"), "utf8")).toBe(patch);
+  });
+  it("refuses an external edit between the initial read and the switch without erasing it", async () => {
+    const beforeApply = vi.fn().mockResolvedValue(undefined);
+    const { manager, paths } = await fixture({ beforeApply });
+    await manager.save("pi", "test", "Test", { models: [{ id: "a" }] }, true, false);
+    const external = JSON.stringify({ providers: { outside: { models: [{ id: "external" }] } }, outside: true });
+    beforeApply.mockImplementationOnce(() => writeFile(join(paths.pi, "models.json"), external));
+    await expect(manager.switch("pi", "test")).rejects.toThrow("外部修改");
+    expect(await readFile(join(paths.pi, "models.json"), "utf8")).toBe(external);
+    expect((await manager.list("pi")).find(p => p.id === "test")?.enabled).toBe(false);
+  });
+  it("carries added and removed common preferences across Codex switches and preserves CLI-rotated login", async () => {
+    const { manager, paths } = await fixture();
+    await manager.saveCodexPreferences({ commonConfig: '[features]\na = true\n', commonCleared: false, preserveOfficialLogin: true });
+    await manager.save("codex", "a", "A", codex("a", "key-a"), true, true, { commonConfigEnabled: true });
+    await manager.save("codex", "b", "B", codex("b", "key-b"), true, true, { commonConfigEnabled: true });
+    const rotated = JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "rotated", refresh_token: "fresh" } });
+    await writeFile(join(paths.codex, "auth.json"), rotated);
+    await writeFile(join(paths.codex, "config.toml"), (await readFile(join(paths.codex, "config.toml"), "utf8")).replace("a = true", "b = true"));
+    await manager.switch("codex", "b");
+    expect(parseToml(await readFile(join(paths.codex, "config.toml"), "utf8")).features).toEqual({ b: true });
+    expect(await readFile(join(paths.codex, "auth.json"), "utf8")).toBe(rotated);
+    expect((await manager.get("codex", "a")).config.auth).toEqual({ OPENAI_API_KEY: "key-a" });
+    expect(await manager.codexPreferences()).toMatchObject({ preserveOfficialLogin: true });
+  });
+  it("projects Codex model capabilities atomically and backfills native catalog edits", async () => {
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const { manager, paths } = await fixture({ afterApply: reload });
+    await manager.save("codex", "custom", "Custom", { ...codex("custom", "test-key"), modelCatalog: { models: [{ model: "vision-test", contextWindow: 64000, inputModalities: ["text", "image"], reasoningLevels: ["low", "high"], future: true }] } }, true);
+    const catalogPath = join(paths.codex, "orbis-model-catalog.json");
+    const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+    expect(catalog.models[0]).toMatchObject({ slug: "vision-test", context_window: 64000, input_modalities: ["text", "image"], default_reasoning_level: "high" });
+    expect(parseToml(await readFile(join(paths.codex, "config.toml"), "utf8")).model_catalog_json).toBe(catalogPath);
+    catalog.models[0].context_window = 96000;
+    await writeFile(catalogPath, JSON.stringify(catalog));
+    expect((await manager.get("codex", "custom")).config.modelCatalog).toMatchObject({ models: [{ model: "vision-test", contextWindow: 96000, future: true }] });
+    await manager.save("codex", "other", "Other", codex("other", "other-key"), true);
+    reload.mockRejectedValueOnce(new Error("reload failed"));
+    await expect(manager.switch("codex", "other")).rejects.toThrow("已恢复原配置");
+    expect(JSON.parse(await readFile(catalogPath, "utf8"))).toEqual(catalog);
+    await manager.switch("codex", "other");
+    await expect(readFile(catalogPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

@@ -13,10 +13,15 @@ import { DshRuntime } from "./dsh-runtime.js";
 import { resolveDshCommand } from "./dsh-client.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
 import { defaultStunServers } from "./config.js";
-import { ProviderManager, ProviderError, agentKind, type ProviderSummary } from "./provider-manager.js";
+import { ProviderManager, ProviderError, agentKind, providerMetadata, type ProviderPaths, type ProviderProfile, type ProviderSummary } from "./provider-manager.js";
 import { installAgentPackage } from "./agent-installation.js";
 import { randomUUID } from "node:crypto";
 import { newProviderConfig, providerFields, applyProviderFields, type ProviderFields } from "./provider-form.js";
+import { providerPresets } from "./provider-presets.js";
+import type { CodexPreferences } from "./provider-codex.js";
+import { checkProviderEndpoint, fetchProviderModels } from "./provider-network.js";
+import { ProviderUsageCache, type UsageSnapshot } from "./provider-usage-cache.js";
+import { usageTemplate } from "./provider-usage-templates.js";
 
 const execute = promisify(execFile);
 export type DesktopSettings = {
@@ -51,23 +56,26 @@ export class DesktopRuntime {
   #lastSeen = new Map<string, number>();
   #installation: AbortController | undefined;
   readonly #providers: ProviderManager;
+  readonly #usage: ProviderUsageCache;
 
-  constructor(emit: (event: DesktopEvent) => void, stateDir?: string) {
+  constructor(emit: (event: DesktopEvent) => void, stateDir?: string, providerPaths?: ProviderPaths) {
     this.#emit = emit;
     this.#stateDir = resolveStateDir(stateDir);
-    this.#providers = new ProviderManager(this.#stateDir, undefined, {
+    this.#providers = new ProviderManager(this.#stateDir, providerPaths, {
       beforeApply: async kind => { this.#service?.assertProviderSwitchReady(kind); },
       afterApply: async kind => {
         await this.#service?.reloadProviderConfiguration(kind, await this.#providers.environment(kind));
         this.#emit({ event: "providersChanged", kind });
       },
     });
+    this.#usage = new ProviderUsageCache(() => this.#providers.usageProfiles(), (profile, usage) => this.#emit({ event: "providerUsageChanged", kind: profile.kind, providerId: profile.id, usage }));
   }
 
   async initialize(): Promise<unknown> {
     const identity = await loadOrCreateHostIdentity({ dir: this.#stateDir });
     this.#poll = setInterval(() => this.status(), 2_000);
     this.#poll.unref();
+    this.#usage.start();
     const devices = (await loadDeviceStore(this.#stateDir)).devices.filter(d => !d.revoked).map(d => ({ deviceId: d.deviceId, label: d.label, createdAt: d.createdAt }));
     return { hostId: identity.hostId, hostName: identity.hostName, stateDir: this.#stateDir, devices, nodeVersion: process.version };
   }
@@ -249,14 +257,73 @@ export class DesktopRuntime {
     } finally { this.#installation = undefined; }
   }
 
-  listProviders(kind: string): Promise<ProviderSummary[]> { return this.#providers.list(agentKind(kind)); }
-  getProvider(kind: string, id: string): ReturnType<ProviderManager["get"]> { return this.#providers.get(agentKind(kind), id); }
-  async providerDraft(kind: string, id?: string): Promise<unknown> {
-    const selected = agentKind(kind);
-    const profile = id ? await this.#providers.get(selected, id) : { kind: selected, id: selected === "pi" ? "" : randomUUID(), name: "", config: newProviderConfig(selected) };
-    return { ...profile, fields: providerFields(profile), create: !id };
+  async listProviders(kind: string): Promise<(ProviderSummary & { usage?: UsageSnapshot | undefined })[]> {
+    return (await this.#providers.list(agentKind(kind))).map(profile => ({ ...profile, usage: this.#usage.get(kind, profile.id) }));
   }
-  async mutateProvider(kind: string, operation: "save" | "switch" | "remove", params: Record<string, unknown>): Promise<ProviderSummary[]> {
+  piDefaultProvider(): Promise<string> { return this.#providers.piDefaultProvider(); }
+  async checkProvider(kind: string, id: string): Promise<unknown> {
+    return checkProviderEndpoint(providerFields(await this.#providers.get(agentKind(kind), id)).baseUrl);
+  }
+  async fetchProviderModels(params: Record<string, unknown>): Promise<unknown> {
+    if (params.fields && typeof params.fields === "object") {
+      const fields = params.fields as ProviderFields;
+      if ([fields.baseUrl, fields.apiKey, fields.api].some(value => typeof value !== "string")) throw new ProviderError("模型查询配置无效");
+      return fetchProviderModels(fields);
+    }
+    const preview = this.providerPreview(params) as { fields: ProviderFields };
+    return fetchProviderModels(preview.fields);
+  }
+  async queryProviderUsage(kind: string, id: string): Promise<unknown> {
+    const profile = await this.#providers.get(agentKind(kind), id);
+    if (!profile.usageScript) throw new ProviderError("请先配置用量查询脚本");
+    return this.#usage.refresh(profile);
+  }
+  async saveProviderUsage(kind: string, id: string, script: unknown): Promise<void> {
+    await this.#providers.updateMetadata(agentKind(kind), id, { usageScript: script });
+    this.#usage.invalidate(kind, id);
+    this.#emit({ event: "providerUsageChanged", kind, providerId: id, usage: {} });
+    void this.#usage.tick().catch(() => {});
+  }
+  async providerUsageTemplate(kind: string, id: string, template: string, baseUrl: string): Promise<unknown> {
+    const profile = await this.#providers.get(agentKind(kind), id);
+    return usageTemplate(template, baseUrl || providerFields(profile).baseUrl);
+  }
+  getProvider(kind: string, id: string): ReturnType<ProviderManager["get"]> { return this.#providers.get(agentKind(kind), id); }
+  oauth(operation: string, id: string): Promise<unknown> { return this.#providers.oauth(operation, id); }
+  providerPresets(kind: string): unknown {
+    return providerPresets.filter(p => p.kind === agentKind(kind)).map(p => ({ id: p.id, name: p.name, requiresOAuth: p.requiresOAuth === true, requiresProxy: p.apiFormat !== undefined && !["responses", "openai_responses"].includes(p.apiFormat) }));
+  }
+  async providerDraft(kind: string, id?: string, presetId?: string): Promise<unknown> {
+    const selected = agentKind(kind);
+    const profile: ProviderProfile = id ? await this.#providers.get(selected, id) : { kind: selected, id: selected === "pi" ? "" : randomUUID(), name: "", config: newProviderConfig(selected) };
+    if (presetId && !id) {
+      const preset = providerPresets.find(p => p.id === presetId && p.kind === selected);
+      if (!preset) throw new ProviderError("供应商预设不存在");
+      if (preset.requiresOAuth || (preset.apiFormat !== undefined && !["responses", "openai_responses"].includes(preset.apiFormat))) throw new ProviderError("此预设依赖托管 OAuth 或本地代理，尚未接入");
+      Object.assign(profile, { config: structuredClone(preset.config), name: preset.name, category: preset.category, websiteUrl: preset.websiteUrl, ...(preset.icon ? { icon: preset.icon } : {}) });
+      if (selected === "pi") profile.id = preset.providerKey ?? "";
+    }
+    return { ...profile, fields: providerFields(profile), create: !id, accounts: selected === "codex" ? await this.#providers.oauth("list") : [] };
+  }
+  providerPreview(params: Record<string, unknown>): unknown {
+    const kind = agentKind(params.kind);
+    let config: unknown;
+    try { config = typeof params.config === "string" ? JSON.parse(params.config) : params.config; } catch { throw new ProviderError("原生 JSON 格式无效"); }
+    if (!config || typeof config !== "object" || Array.isArray(config)) throw new ProviderError("配置必须是对象");
+    if (params.fields) config = applyProviderFields(kind, config as Record<string, unknown>, params.fields as ProviderFields, params.create === true);
+    return { config, fields: providerFields({ kind, id: String(params.id ?? ""), name: String(params.name ?? ""), config: config as Record<string, unknown> }) };
+  }
+  codexPreferences(): Promise<CodexPreferences> { return this.#providers.codexPreferences(); }
+  async saveCodexPreferences(params: Record<string, unknown>): Promise<CodexPreferences> {
+    if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
+    const work = async (): Promise<CodexPreferences> => {
+      const result = await this.#providers.saveCodexPreferences(params as CodexPreferences);
+      this.#service?.announceProviderChange("codex");
+      return result;
+    };
+    return this.#service ? this.#service.changeProvider("codex", work) : work();
+  }
+  async mutateProvider(kind: string, operation: "save" | "switch" | "remove" | "copy", params: Record<string, unknown>): Promise<ProviderSummary[]> {
     const selected = agentKind(kind);
     if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
     const work = async (): Promise<ProviderSummary[]> => {
@@ -265,11 +332,13 @@ export class DesktopRuntime {
         let config: unknown;
         try { config = typeof params.config === "string" ? JSON.parse(params.config) : params.config; }
         catch { throw new ProviderError("高级配置 JSON 格式无效"); }
-        if (params.fields) config = applyProviderFields(selected, config as Record<string, unknown>, params.fields as ProviderFields);
-        result = await this.#providers.save(selected, String(params.id ?? ""), String(params.name ?? ""), config, params.create === true);
+        if (params.fields) config = applyProviderFields(selected, config as Record<string, unknown>, params.fields as ProviderFields, params.create === true);
+        result = await this.#providers.save(selected, String(params.id ?? ""), String(params.name ?? ""), config, params.create === true, params.addToLive !== false, providerMetadata(params.metadata ?? {}));
       }
       else if (operation === "switch") result = await this.#providers.switch(selected, String(params.id), params.enabled !== false);
+      else if (operation === "copy") result = await this.#providers.copy(selected, String(params.id));
       else result = await this.#providers.remove(selected, String(params.id));
+      if (operation === "save" || operation === "remove") this.#usage.invalidate(selected, String(params.id));
       this.#service?.announceProviderChange(selected);
       return result;
     };
@@ -293,6 +362,10 @@ export class DesktopRuntime {
       child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开终端界面，请重试")));
     });
   }
+  async openProvider(kind: string, id: string): Promise<void> {
+    await this.mutateProvider(kind, "switch", { id, enabled: true });
+    await this.openAgent(kind, "tui");
+  }
 
   async #dispose(): Promise<void> {
     const service = this.#service; this.#service = undefined;
@@ -308,7 +381,7 @@ export class DesktopRuntime {
     await this.#dispose();
     this.#emit({ event: "state", state: "stopped" });
   }
-  async close(): Promise<void> { if (this.#poll) clearInterval(this.#poll); await this.stop(); }
+  async close(): Promise<void> { if (this.#poll) clearInterval(this.#poll); await Promise.all([this.#usage.close(), this.stop()]); }
   cancelInstall(): void { this.#installation?.abort(); }
   log(message: string): void { this.#emit({ event: "log", message: message.replace(/orbis_host_[\w-]+/g, "[redacted]").slice(0, 1500) }); }
 }

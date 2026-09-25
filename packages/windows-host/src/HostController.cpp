@@ -136,6 +136,12 @@ void HostController::receiveLine(const QJsonObject &line) {
         if (event == "state") { m_state = line.value("state").toString(); if (m_state == "error") m_desiredRunning = false; if (line.contains("message")) setMessage(line.value("message").toString()); }
         else if (event == "log") appendLog(line.value("message").toString());
         else if (event == "providersChanged" && line.value("kind").toString() == m_providerKind) loadProviders(m_providerKind);
+        else if (event == "providerUsageChanged" && line.value("kind").toString() == m_providerKind) {
+            for (auto &entry : m_providers) {
+                auto provider = entry.toMap();
+                if (provider.value("id").toString() == line.value("providerId").toString()) { provider["usage"] = line.value("usage").toObject().toVariantMap(); entry = provider; }
+            }
+        }
         else if (event == "status") { m_devices = line.value("devices").toArray().toVariantList(); m_runtimeCount = line.value("runtimeCount").toInt(); }
         else if (event == "paired") { m_qr.clear(); m_pairExpires = 0; setMessage("手机配对成功，现在可以在手机上使用 Orbis"); emit paired(); emit notification("Orbis", "新手机已配对"); }
     }
@@ -240,9 +246,53 @@ void HostController::loadProviders(const QString &kind) {
     command("provider.list", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
         if (m_providerKind == kind) { m_providers = value.toArray().toVariantList(); emit changed(); }
     });
+    command("provider.presets", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
+        if (m_providerKind == kind) { m_providerPresets = value.toArray().toVariantList(); emit changed(); }
+    });
+    if (kind == "pi") command("provider.piDefault", {}, [this](const QJsonValue &value) { m_piDefaultProvider = value.toString(); emit changed(); });
 }
 void HostController::editProvider(const QString &id) {
     command("provider.draft", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) { emit providerDraftReady(value.toObject().toVariantMap()); });
+}
+void HostController::presetProvider(const QString &id) {
+    command("provider.draft", {{"kind", m_providerKind}, {"presetId", id}}, [this](const QJsonValue &value) { emit providerDraftReady(value.toObject().toVariantMap()); });
+}
+void HostController::previewProvider(const QVariantMap &draft) {
+    command("provider.preview", QJsonObject::fromVariantMap(draft), [this](const QJsonValue &value) { emit providerPreviewReady(value.toObject().toVariantMap()); });
+}
+void HostController::loadCodexPreferences() {
+    command("provider.codexPreferences", {}, [this](const QJsonValue &value) { emit codexPreferencesReady(value.toObject().toVariantMap()); });
+}
+void HostController::saveCodexPreferences(const QVariantMap &preferences) {
+    command("provider.saveCodexPreferences", QJsonObject::fromVariantMap(preferences), [this](const QJsonValue &) { emit codexPreferencesSaved(); setMessage("Codex 通用配置已保存"); });
+}
+void HostController::checkProvider(const QString &id) {
+    command("provider.check", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) {
+        const auto result = value.toObject();
+        const bool failed = result.value("status").toString() == "failed";
+        emit providerInfoReady("端点连通性", failed ? "端点无法连接或请求超时" : QString("端点可达 · %1 ms · HTTP %2\n此检查不验证 API Key 或模型权限。").arg(result.value("latencyMs").toInt()).arg(result.value("httpStatus").toInt()));
+    });
+}
+void HostController::fetchProviderModels(const QVariantMap &draft) {
+    command("provider.models", QJsonObject::fromVariantMap(draft), [this](const QJsonValue &value) { emit providerModelsReady(value.toArray().toVariantList()); });
+}
+void HostController::editProviderUsage(const QString &id) {
+    command("provider.get", {{"kind", m_providerKind}, {"id", id}}, [this, id](const QJsonValue &value) { emit providerUsageReady(id, value.toObject().value("usageScript").toObject().toVariantMap()); });
+}
+void HostController::saveProviderUsage(const QString &id, const QVariantMap &script) {
+    command("provider.saveUsage", {{"kind", m_providerKind}, {"id", id}, {"script", QJsonObject::fromVariantMap(script)}}, [this](const QJsonValue &) { emit providerUsageSaved(); setMessage("用量查询配置已保存"); });
+}
+void HostController::queryProviderUsage(const QString &id) {
+    command("provider.usage", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) { emit providerInfoReady("供应商用量", QString::fromUtf8(QJsonDocument(value.toArray()).toJson(QJsonDocument::Indented))); });
+}
+void HostController::loadUsageTemplate(const QString &id, const QString &type, const QString &baseUrl) {
+    command("provider.usageTemplate", {{"kind", m_providerKind}, {"id", id}, {"template", type}, {"baseUrl", baseUrl}}, [this](const QJsonValue &value) { emit usageTemplateReady(value.toObject().toVariantMap()); });
+}
+void HostController::oauthAccount(const QString &operation, const QString &id) {
+    command("provider.oauth", {{"operation", operation}, {"accountId", id}}, [this, operation](const QJsonValue &value) { emit oauthAccountResult(operation, value.toVariant()); });
+}
+void HostController::openProvider(const QString &id) {
+    command("provider.open", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &) { setMessage("供应商已启用，已打开 Agent。Pi 请使用 /model 选择模型。"); });
 }
 void HostController::saveProvider(const QVariantMap &draft) {
     command("provider.save", QJsonObject::fromVariantMap(draft), [this](const QJsonValue &value) {
@@ -257,6 +307,9 @@ void HostController::switchProvider(const QString &id, bool enabled) {
 }
 void HostController::removeProvider(const QString &id) {
     command("provider.remove", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) { m_providers = value.toArray().toVariantList(); setMessage("供应商已删除"); });
+}
+void HostController::copyProvider(const QString &id) {
+    command("provider.copy", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) { m_providers = value.toArray().toVariantList(); setMessage("供应商已复制，请编辑副本后启用"); });
 }
 void HostController::openAgent(const QString &kind) { command("openAgent", {{"kind", kind}}); }
 void HostController::openAgentTui(const QString &kind) {

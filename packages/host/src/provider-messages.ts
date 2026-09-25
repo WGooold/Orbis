@@ -19,6 +19,6 @@ export function parseProviderRequest(value: unknown): ProviderRequest | undefine
   return data as ProviderRequest;
 }
 export function providerResult(request: ProviderRequest, providers: ProviderSummary[]): object {
-  return { type: "provider.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind, providers,
+  return { type: "provider.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind, providers: providers.map(({ id, kind, name, enabled, mode, globalDefault }) => ({ id, kind, name, enabled, mode, globalDefault: globalDefault === true })),
     notice: request.type === "provider.switch" ? (request.kind === "pi" ? "显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : "供应商已切换；请重新打开会话。独立终端也需重启。") : "" };
 }
