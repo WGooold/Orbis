@@ -136,6 +136,7 @@ void HostController::receiveLine(const QJsonObject &line) {
         if (event == "state") { m_state = line.value("state").toString(); if (m_state == "error") m_desiredRunning = false; if (line.contains("message")) setMessage(line.value("message").toString()); }
         else if (event == "log") appendLog(line.value("message").toString());
         else if (event == "providersChanged" && line.value("kind").toString() == m_providerKind) loadProviders(m_providerKind);
+        else if (event == "proxyStatusChanged" && m_providerKind == "codex") loadProxyStatus();
         else if (event == "providerUsageChanged" && line.value("kind").toString() == m_providerKind) {
             for (auto &entry : m_providers) {
                 auto provider = entry.toMap();
@@ -243,6 +244,7 @@ void HostController::installAgent(const QString &kind, const QString &version) {
 void HostController::loadProviders(const QString &kind) {
     if (m_providerKind != kind) m_providers.clear();
     m_providerKind = kind; emit changed();
+    if (kind == "codex") loadProxyStatus();
     command("provider.list", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
         if (m_providerKind == kind) { m_providers = value.toArray().toVariantList(); emit changed(); }
     });
@@ -265,6 +267,20 @@ void HostController::loadCodexPreferences() {
 }
 void HostController::saveCodexPreferences(const QVariantMap &preferences) {
     command("provider.saveCodexPreferences", QJsonObject::fromVariantMap(preferences), [this](const QJsonValue &) { emit codexPreferencesSaved(); setMessage("Codex 通用配置已保存"); });
+}
+void HostController::loadProxyStatus(bool open) {
+    command("provider.proxyStatus", {}, [this, open](const QJsonValue &value) {
+        m_proxyStatus = value.toObject().toVariantMap(); emit changed();
+        if (open) emit proxyPreferencesReady(value.toObject().value("preferences").toObject().toVariantMap());
+    });
+}
+void HostController::saveProxyPreferences(const QVariantMap &preferences) {
+    command("provider.saveProxyPreferences", QJsonObject::fromVariantMap(preferences), [this](const QJsonValue &value) {
+        m_proxyStatus = value.toObject().toVariantMap(); emit changed(); emit proxyPreferencesSaved(); setMessage("Codex 本地路由配置已保存");
+    });
+}
+void HostController::resetProxyHealth(const QString &id) {
+    command("provider.resetProxyHealth", {{"id", id}}, [this](const QJsonValue &value) { m_proxyStatus = value.toObject().toVariantMap(); emit changed(); });
 }
 void HostController::checkProvider(const QString &id) {
     command("provider.check", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) {
@@ -302,7 +318,7 @@ void HostController::saveProvider(const QVariantMap &draft) {
 void HostController::switchProvider(const QString &id, bool enabled) {
     command("provider.switch", {{"kind", m_providerKind}, {"id", id}, {"enabled", enabled}}, [this](const QJsonValue &value) {
         m_providers = value.toArray().toVariantList();
-        setMessage(m_providerKind == "pi" ? "Pi 显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : "供应商已切换。请重新打开会话；独立终端也需重启。");
+        setMessage(m_providerKind == "pi" ? "Pi 显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : m_providerKind == "codex" && m_proxyStatus.value("takeover").toBool() ? "本地路由已切换，后续请求使用新供应商" : "供应商已切换。请重新打开会话；独立终端也需重启。");
     });
 }
 void HostController::removeProvider(const QString &id) {

@@ -6223,6 +6223,13 @@ export const providerPresets: ProviderPreset[] = [
             ]
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": false,
+        "thinkingParam": "thinking",
+        "effortParam": "none",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -6393,6 +6400,14 @@ export const providerPresets: ProviderPreset[] = [
             "defaultReasoningLevel": "high"
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": true,
+        "thinkingParam": "enable_thinking",
+        "effortParam": "reasoning_effort",
+        "effortValueMode": "deepseek",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -6708,6 +6723,13 @@ export const providerPresets: ProviderPreset[] = [
             ]
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": false,
+        "supportsEffort": false,
+        "thinkingParam": "none",
+        "effortParam": "none",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -6940,6 +6962,13 @@ export const providerPresets: ProviderPreset[] = [
             ]
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": false,
+        "thinkingParam": "thinking",
+        "effortParam": "none",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -7013,6 +7042,14 @@ export const providerPresets: ProviderPreset[] = [
             "contextWindow": 262144
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": true,
+        "thinkingParam": "thinking",
+        "effortParam": "reasoning_effort",
+        "effortValueMode": "deepseek",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -7456,6 +7493,13 @@ export const providerPresets: ProviderPreset[] = [
             ]
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": true,
+        "thinkingParam": "thinking",
+        "effortParam": "reasoning_effort",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -7530,6 +7574,13 @@ export const providerPresets: ProviderPreset[] = [
             ]
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": true,
+        "thinkingParam": "thinking",
+        "effortParam": "reasoning_effort",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -7719,6 +7770,13 @@ export const providerPresets: ProviderPreset[] = [
             ]
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": true,
+        "thinkingParam": "thinking",
+        "effortParam": "reasoning_effort",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -7865,6 +7923,13 @@ export const providerPresets: ProviderPreset[] = [
             ]
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": true,
+        "thinkingParam": "thinking",
+        "effortParam": "reasoning_effort",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -7893,6 +7958,13 @@ export const providerPresets: ProviderPreset[] = [
             ]
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": true,
+        "thinkingParam": "thinking",
+        "effortParam": "reasoning_effort",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -7922,6 +7994,13 @@ export const providerPresets: ProviderPreset[] = [
             ]
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": true,
+        "thinkingParam": "thinking",
+        "effortParam": "reasoning_effort",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -8105,6 +8184,13 @@ export const providerPresets: ProviderPreset[] = [
             "contextWindow": 200000
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": false,
+        "thinkingParam": "enable_thinking",
+        "effortParam": "none",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -8489,6 +8575,13 @@ export const providerPresets: ProviderPreset[] = [
             ]
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": false,
+        "supportsEffort": false,
+        "thinkingParam": "none",
+        "effortParam": "none",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -8612,6 +8705,14 @@ export const providerPresets: ProviderPreset[] = [
             "defaultReasoningLevel": "high"
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": false,
+        "supportsEffort": true,
+        "thinkingParam": "none",
+        "effortParam": "reasoning_effort",
+        "effortValueMode": "passthrough",
+        "outputFormat": "reasoning_content"
       }
     }
   },
@@ -8697,6 +8798,14 @@ export const providerPresets: ProviderPreset[] = [
             "contextWindow": 1048576
           }
         ]
+      },
+      "codexChatReasoning": {
+        "supportsThinking": true,
+        "supportsEffort": true,
+        "thinkingParam": "none",
+        "effortParam": "reasoning_effort",
+        "effortValueMode": "zen",
+        "outputFormat": "reasoning_content"
       }
     }
   },

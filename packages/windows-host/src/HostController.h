@@ -41,6 +41,7 @@ class HostController : public QObject {
     Q_PROPERTY(QString providerKind READ providerKind NOTIFY changed)
     Q_PROPERTY(QVariantList providerPresets READ providerPresets NOTIFY changed)
     Q_PROPERTY(QString piDefaultProvider READ piDefaultProvider NOTIFY changed)
+    Q_PROPERTY(QVariantMap proxyStatus READ proxyStatus NOTIFY changed)
 public:
     HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QObject *parent = nullptr);
     ~HostController() override;
@@ -73,6 +74,7 @@ public:
     QString providerKind() const { return m_providerKind; }
     QVariantList providerPresets() const { return m_providerPresets; }
     QString piDefaultProvider() const { return m_piDefaultProvider; }
+    QVariantMap proxyStatus() const { return m_proxyStatus; }
     Q_INVOKABLE void requestCode(const QString &email);
     Q_INVOKABLE void activate(const QString &email, const QString &code);
     Q_INVOKABLE void activateWithoutEmail();
@@ -91,6 +93,9 @@ public:
     Q_INVOKABLE void previewProvider(const QVariantMap &draft);
     Q_INVOKABLE void loadCodexPreferences();
     Q_INVOKABLE void saveCodexPreferences(const QVariantMap &preferences);
+    Q_INVOKABLE void loadProxyStatus(bool open = false);
+    Q_INVOKABLE void saveProxyPreferences(const QVariantMap &preferences);
+    Q_INVOKABLE void resetProxyHealth(const QString &id);
     Q_INVOKABLE void checkProvider(const QString &id);
     Q_INVOKABLE void fetchProviderModels(const QVariantMap &draft);
     Q_INVOKABLE void editProviderUsage(const QString &id);
@@ -121,6 +126,8 @@ signals:
     void providerPreviewReady(const QVariantMap &draft);
     void codexPreferencesReady(const QVariantMap &preferences);
     void codexPreferencesSaved();
+    void proxyPreferencesReady(const QVariantMap &preferences);
+    void proxyPreferencesSaved();
     void providerModelsReady(const QVariantList &models);
     void providerUsageReady(const QString &id, const QVariantMap &script);
     void providerUsageSaved();
@@ -155,6 +162,7 @@ private:
     QVariantList m_providerPresets;
     QString m_providerKind = "codex";
     QString m_piDefaultProvider;
+    QVariantMap m_proxyStatus;
     int m_nextId = 1, m_busy = 0, m_cooldown = 0, m_runtimeCount = 0, m_crashes = 0;
     int m_policyTicks = 0;
     qint64 m_pairExpires = 0;

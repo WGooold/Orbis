@@ -10,16 +10,18 @@ import { backfillCodex, codexOfficial, defaultCodexPreferences, extractCodexComm
 import { validateUsageScript, type UsageScript } from "./provider-usage.js";
 import { backfillCatalog, catalogFilename, catalogSpecs, ownedCatalog, prepareCatalog } from "./provider-catalog.js";
 import { CodexOAuthAccounts, managedAuthMarker, type ManagedAuthMarker } from "./provider-oauth.js";
+import { CodexProxy, type ProxySnapshot } from "./codex-proxy.js";
+import { defaultProxyPreferences, proxyPreferences, proxyRoute, projectProxy, restoreProxy, upstreamFormat, validateCodexRouting, type ProxyPreferences, type ProxyTakeover } from "./provider-proxy-config.js";
 export { ProviderError } from "./provider-error.js";
 
 type ObjectValue = Record<string, unknown>;
 export type ProviderMetadata = { category?: string; notes?: string; websiteUrl?: string; icon?: string; sortIndex?: number; commonConfigEnabled?: boolean; usageScript?: UsageScript; authBinding?: { source: "managed_account"; authProvider: "codex_oauth"; accountId?: string } | null };
 export type ProviderProfile = { id: string; kind: AgentKind; name: string; config: ObjectValue } & ProviderMetadata;
 export type ProviderSummary = { id: string; kind: AgentKind; name: string; enabled: boolean; mode: "exclusive" | "additive"; globalDefault?: boolean; category?: string | undefined; notes?: string | undefined; websiteUrl?: string | undefined; icon?: string | undefined; sortIndex?: number | undefined };
-type Store = { version: 1; providers: ProviderProfile[]; current: Partial<Record<AgentKind, string>>; codexPreferences?: CodexPreferences; managedAuth?: ManagedAuthMarker };
+type Store = { version: 1; providers: ProviderProfile[]; current: Partial<Record<AgentKind, string>>; codexPreferences?: CodexPreferences; managedAuth?: ManagedAuthMarker; proxyPreferences?: ProxyPreferences; proxyToken?: string; proxyTakeover?: ProxyTakeover };
 type FileChange = { path: string; before: string | null; after: string | null };
 export type ProviderPaths = { codex: string; pi: string; dsh: string };
-export type ProviderHooks = { beforeApply?: (kind: AgentKind) => Promise<void>; afterApply?: (kind: AgentKind) => Promise<void> };
+export type ProviderHooks = { beforeApply?: (kind: AgentKind, hotSwitch: boolean) => Promise<void>; afterApply?: (kind: AgentKind, hotSwitch: boolean) => Promise<void>; proxyStatus?: () => void };
 const object = (value: unknown): value is ObjectValue => value !== null && typeof value === "object" && !Array.isArray(value);
 const json = (value: unknown): string => JSON.stringify(value, null, 2) + "\n";
 const kinds = ["pi", "codex", "dsh"] as const;
@@ -76,6 +78,8 @@ function validateConfig(kind: AgentKind, config: unknown): asserts config is Obj
     if (!(config.auth === null || object(config.auth)) || typeof config.config !== "string") throw new ProviderError("Codex 配置需要 auth 对象（或 null）与 config TOML 文本");
     try { parseToml(config.config); } catch { throw new ProviderError("Codex config.toml 格式无效，请检查高级配置"); }
     catalogSpecs(config);
+    upstreamFormat(config);
+    validateCodexRouting(config);
   } else if (kind === "pi") {
     if (config.models !== undefined && (!Array.isArray(config.models) || config.models.some(model => !object(model) || typeof model.id !== "string" || !model.id))) throw new ProviderError("Pi models 必须是包含模型 id 的数组");
   } else {
@@ -92,6 +96,9 @@ export class ProviderManager {
   readonly #journal: string;
   readonly #hooks: ProviderHooks;
   readonly #oauth: CodexOAuthAccounts;
+  readonly #proxy: CodexProxy;
+  #suspending = false;
+  #takeoverActive = false;
   #revisions = new Map<string, string | null>();
   #piDefault = "";
   #queue: Promise<unknown> = Promise.resolve();
@@ -105,6 +112,7 @@ export class ProviderManager {
     this.#journal = join(stateDir, "providers-transaction.json");
     this.#hooks = hooks;
     this.#oauth = new CodexOAuthAccounts(join(stateDir, "codex-oauth-accounts.json"));
+    this.#proxy = new CodexProxy(() => this.#run(() => this.#proxySnapshot()), hooks.proxyStatus);
   }
   #run<T>(work: () => Promise<T>): Promise<T> {
     const next = this.#queue.then(async () => {
@@ -164,7 +172,9 @@ export class ProviderManager {
     };
     if (kind === "codex") {
       const auth = await readNative(join(this.paths.codex, "auth.json"));
-      const config = await readNative(join(this.paths.codex, "config.toml")) ?? "";
+      let config = await readNative(join(this.paths.codex, "config.toml")) ?? "";
+      const takeover = (await this.#load()).proxyTakeover;
+      if (takeover) config = restoreProxy(config, takeover);
       const value: ObjectValue = { auth: auth === null ? null : parseObject(auth, "Codex auth.json"), config };
       validateConfig(kind, value);
       if (ownedCatalog(config, this.paths.codex)) {
@@ -258,6 +268,7 @@ export class ProviderManager {
         profile.config.auth = {}; profile.category = "official";
       }
       if (kind === "codex" && !profile.category) profile.category = codexOfficial(config) ? "official" : "custom";
+      if (kind === "codex" && store.proxyPreferences?.queue.includes(profile.id)) proxyRoute(profile);
       if (kind === "pi" && (create || Object.hasOwn(profile.config, "name"))) profile.config.name = name.trim();
       if (existing) Object.assign(existing, profile); else store.providers.push(profile);
       if (active || (create && addToLive && (kind === "pi" || !store.current[kind]))) await this.#apply(store, profile, live, true);
@@ -270,6 +281,83 @@ export class ProviderManager {
   }
   usageProfiles(): Promise<ProviderProfile[]> {
     return this.#run(async () => structuredClone((await this.#load()).providers.filter(profile => profile.usageScript?.enabled)));
+  }
+  get proxyTakeoverActive(): boolean { return this.#takeoverActive && this.#proxy.running; }
+  async #proxySnapshot(): Promise<ProxySnapshot> {
+    const store = await this.#load();
+    const preferences = store.proxyPreferences ?? defaultProxyPreferences();
+    const current = store.providers.find(p => p.kind === "codex" && p.id === store.current.codex);
+    if (!preferences.enabled || !store.proxyTakeover || !current || codexOfficial(current.config)) return { preferences, routes: [] };
+    const ids = preferences.autoFailoverEnabled ? preferences.queue : [current.id];
+    return { preferences, routes: ids.flatMap(id => {
+      const profile = store.providers.find(p => p.kind === "codex" && p.id === id);
+      return profile ? [proxyRoute(profile)] : [];
+    }) };
+  }
+  proxyStatus(): Promise<object> {
+    return this.#run(async () => ({ preferences: (await this.#load()).proxyPreferences ?? defaultProxyPreferences(), ...this.#proxy.status, takeover: this.proxyTakeoverActive }));
+  }
+  resetProxyHealth(id: string): void { this.#proxy.reset(id); }
+  startRouting(): Promise<void> {
+    return this.#run(async () => {
+      const store = await this.#load();
+      if (!store.proxyPreferences?.enabled) return;
+      const live = await this.#sync(store, "codex");
+      const active = store.providers.find(p => p.kind === "codex" && p.id === store.current.codex);
+      if (active) {
+        const recovering = !!store.proxyTakeover;
+        try { await this.#apply(store, active, live, true); }
+        catch (error) {
+          if (recovering) {
+            // A crashed Host must not leave native Codex pointing at an unavailable listener.
+            const saved = await this.#load();
+            const original = await this.#sync(saved, "codex");
+            this.#suspending = true;
+            try { await this.#apply(saved, saved.providers.find(p => p.kind === "codex" && p.id === saved.current.codex)!, original, true); }
+            finally { this.#suspending = false; }
+          }
+          throw error;
+        }
+      }
+    });
+  }
+  async closeRouting(): Promise<void> {
+    try {
+      await this.#run(async () => {
+        const store = await this.#load();
+        if (!store.proxyTakeover) return;
+        const live = await this.#sync(store, "codex");
+        const active = store.providers.find(p => p.kind === "codex" && p.id === store.current.codex);
+        this.#suspending = true;
+        try { if (active) await this.#apply(store, active, live, true); }
+        finally { this.#suspending = false; }
+      });
+    } finally { await this.#proxy.stop(); this.#takeoverActive = false; }
+  }
+  saveProxyPreferences(value: unknown): Promise<object> {
+    const preferences = proxyPreferences(value);
+    return this.#run(async () => {
+      const store = await this.#load(); const live = await this.#sync(store, "codex");
+      const old = store.proxyPreferences ?? defaultProxyPreferences();
+      if (this.#proxy.running && preferences.port !== old.port) throw new ProviderError("Disable local routing before changing its port");
+      const current = store.providers.find(p => p.kind === "codex" && p.id === store.current.codex);
+      if (old.enabled && !preferences.enabled && current && upstreamFormat(current.config) !== "responses") throw new ProviderError("Switch Codex to a Responses provider before disabling local routing");
+      for (const id of preferences.queue) {
+        const profile = store.providers.find(p => p.kind === "codex" && p.id === id);
+        if (!profile) throw new ProviderError("Failover queue contains a missing provider");
+        proxyRoute(profile);
+      }
+      if (preferences.autoFailoverEnabled && !preferences.queue.length) throw new ProviderError("Add at least one provider to the failover queue");
+      store.proxyPreferences = preferences;
+      const active = store.providers.find(p => p.kind === "codex" && p.id === store.current.codex);
+      this.#suspending = old.enabled && !preferences.enabled;
+      try {
+        if (active) await this.#apply(store, active, live, true);
+        else await atomicWrite(this.#file, json(store));
+      } finally { this.#suspending = false; }
+      if (!preferences.enabled) await this.#proxy.stop();
+      return { preferences: store.proxyPreferences, ...this.#proxy.status, takeover: this.proxyTakeoverActive };
+    });
   }
   oauth(operation: string, id = ""): Promise<unknown> {
     return this.#run(async () => {
@@ -351,6 +439,7 @@ export class ProviderManager {
       const store = await this.#load(); const live = await this.#sync(store, kind);
       const active = this.#summaries(store, kind, live).find(p => p.id === id)?.enabled;
       if (active && kind !== "pi") throw new ProviderError("请先切换到其他供应商，再删除当前配置");
+      if (kind === "codex" && store.proxyPreferences?.queue.includes(id)) throw new ProviderError("Remove this provider from the failover queue before deleting it");
       store.providers = store.providers.filter(p => p.kind !== kind || p.id !== id);
       if (active) {
         const native = object(live.providers) ? live.providers[id] : undefined;
@@ -366,8 +455,16 @@ export class ProviderManager {
     return kind === "dsh" && object(env) ? { ...process.env, ...env as Record<string, string> } : { ...process.env };
   }
   async #apply(store: Store, profile: ProviderProfile, live: ObjectValue, enabled: boolean): Promise<void> {
+    const running = this.#proxy.running;
+    try { await this.#applyTransaction(store, profile, live, enabled); }
+    catch (error) { if (!running) await this.#proxy.stop(); throw error; }
+  }
+  async #applyTransaction(store: Store, profile: ProviderProfile, live: ObjectValue, enabled: boolean): Promise<void> {
     validateConfig(profile.kind, profile.config);
-    await this.#hooks.beforeApply?.(profile.kind);
+    const takeover = profile.kind === "codex" && store.proxyPreferences?.enabled === true && !codexOfficial(profile.config) && !this.#suspending;
+    const hotSwitch = !!(takeover && store.proxyTakeover && this.#proxy.running);
+    if (profile.kind === "codex" && upstreamFormat(profile.config) !== "responses" && !takeover && !this.#suspending) throw new ProviderError("Enable Codex local routing before activating this API format");
+    await this.#hooks.beforeApply?.(profile.kind, hotSwitch);
     const desired: { path: string; after: string | null }[] = [];
     if (profile.kind === "pi") {
       const providers = { ...(object(live.providers) ? live.providers : {}) };
@@ -382,6 +479,14 @@ export class ProviderManager {
         store.managedAuth = managedAuthMarker(managed.accountId, managed.auth);
       } else if (Object.hasOwn(prepared, "auth")) delete store.managedAuth;
       const projection = prepareCatalog(profile.config, prepared.config, this.paths.codex);
+      if (takeover) {
+        proxyRoute(profile);
+        store.proxyToken ??= randomUUID() + randomUUID();
+        await this.#proxy.start(store.proxyPreferences!.port, store.proxyToken);
+        store.proxyPreferences!.port = Number(new URL(this.#proxy.baseUrl).port);
+        store.proxyTakeover = projectProxy(projection.config, this.#proxy.baseUrl, store.proxyToken);
+        projection.config = store.proxyTakeover.projected;
+      } else delete store.proxyTakeover;
       desired.push({ path: join(this.paths.codex, catalogFilename), after: projection.catalog === null ? null : json(projection.catalog) });
       if (Object.hasOwn(prepared, "auth")) desired.push({ path: join(this.paths.codex, "auth.json"), after: prepared.auth === null ? null : json(prepared.auth) });
       desired.push({ path: join(this.paths.codex, "config.toml"), after: projection.config });
@@ -400,11 +505,14 @@ export class ProviderManager {
         if (await read(change.path) !== change.before) throw new ProviderError("配置已被外部修改，请刷新后重试");
         await atomicWrite(change.path, change.after);
       }
-      await this.#hooks.afterApply?.(profile.kind);
+      await this.#hooks.afterApply?.(profile.kind, hotSwitch);
       await rm(this.#journal);
+      this.#takeoverActive = !!store.proxyTakeover;
+      if (profile.kind === "codex" && !store.proxyTakeover) await this.#proxy.stop();
     } catch (error) {
       await this.#recover();
-      try { await this.#hooks.afterApply?.(profile.kind); } catch { throw new ProviderError("配置已回滚，但 Agent 重载失败，请重启 Host"); }
+      this.#takeoverActive = !!(await this.#load()).proxyTakeover;
+      try { await this.#hooks.afterApply?.(profile.kind, hotSwitch); } catch { throw new ProviderError("配置已回滚，但 Agent 重载失败，请重启 Host"); }
       throw error instanceof ProviderError ? error : new ProviderError("切换失败，已恢复原配置；请检查 Agent 安装与配置");
     }
   }

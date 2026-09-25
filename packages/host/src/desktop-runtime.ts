@@ -62,17 +62,20 @@ export class DesktopRuntime {
     this.#emit = emit;
     this.#stateDir = resolveStateDir(stateDir);
     this.#providers = new ProviderManager(this.#stateDir, providerPaths, {
-      beforeApply: async kind => { this.#service?.assertProviderSwitchReady(kind); },
-      afterApply: async kind => {
-        await this.#service?.reloadProviderConfiguration(kind, await this.#providers.environment(kind));
+      beforeApply: async (kind, hotSwitch) => { if (!hotSwitch) this.#service?.assertProviderSwitchReady(kind); },
+      afterApply: async (kind, hotSwitch) => {
+        if (!hotSwitch) await this.#service?.reloadProviderConfiguration(kind, await this.#providers.environment(kind));
         this.#emit({ event: "providersChanged", kind });
       },
+      proxyStatus: () => this.#emit({ event: "proxyStatusChanged" }),
     });
     this.#usage = new ProviderUsageCache(() => this.#providers.usageProfiles(), (profile, usage) => this.#emit({ event: "providerUsageChanged", kind: profile.kind, providerId: profile.id, usage }));
   }
 
   async initialize(): Promise<unknown> {
     const identity = await loadOrCreateHostIdentity({ dir: this.#stateDir });
+    try { await this.#providers.startRouting(); }
+    catch (error) { this.log(error instanceof ProviderError ? error.message : "Codex local routing could not start; check its port and settings"); }
     this.#poll = setInterval(() => this.status(), 2_000);
     this.#poll.unref();
     this.#usage.start();
@@ -299,8 +302,9 @@ export class DesktopRuntime {
     if (presetId && !id) {
       const preset = providerPresets.find(p => p.id === presetId && p.kind === selected);
       if (!preset) throw new ProviderError("供应商预设不存在");
-      if (preset.requiresOAuth || (preset.apiFormat !== undefined && !["responses", "openai_responses"].includes(preset.apiFormat))) throw new ProviderError("此预设依赖托管 OAuth 或本地代理，尚未接入");
+      if (preset.requiresOAuth) throw new ProviderError("此预设依赖其他托管 OAuth 账号，尚未接入");
       Object.assign(profile, { config: structuredClone(preset.config), name: preset.name, category: preset.category, websiteUrl: preset.websiteUrl, ...(preset.icon ? { icon: preset.icon } : {}) });
+      if (selected === "codex") profile.config.apiFormat = preset.apiFormat === "openai_chat" ? "openai_chat" : "responses";
       if (selected === "pi") profile.id = preset.providerKey ?? "";
     }
     return { ...profile, fields: providerFields(profile), create: !id, accounts: selected === "codex" ? await this.#providers.oauth("list") : [] };
@@ -314,6 +318,16 @@ export class DesktopRuntime {
     return { config, fields: providerFields({ kind, id: String(params.id ?? ""), name: String(params.name ?? ""), config: config as Record<string, unknown> }) };
   }
   codexPreferences(): Promise<CodexPreferences> { return this.#providers.codexPreferences(); }
+  proxyStatus(): Promise<object> { return this.#providers.proxyStatus(); }
+  async resetProxyHealth(id: string): Promise<object> { this.#providers.resetProxyHealth(id); return this.proxyStatus(); }
+  async saveProxyPreferences(params: Record<string, unknown>): Promise<object> {
+    if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
+    if (!this.#service) await this.#checkExistingHost();
+    const work = () => this.#providers.saveProxyPreferences(params);
+    const result = await (this.#service ? this.#service.changeProvider("codex", work) : work());
+    this.#service?.announceProviderChange("codex");
+    return result;
+  }
   async saveCodexPreferences(params: Record<string, unknown>): Promise<CodexPreferences> {
     if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
     const work = async (): Promise<CodexPreferences> => {
@@ -381,7 +395,11 @@ export class DesktopRuntime {
     await this.#dispose();
     this.#emit({ event: "state", state: "stopped" });
   }
-  async close(): Promise<void> { if (this.#poll) clearInterval(this.#poll); await Promise.all([this.#usage.close(), this.stop()]); }
+  async close(): Promise<void> {
+    if (this.#poll) clearInterval(this.#poll);
+    await Promise.all([this.#usage.close(), this.stop()]);
+    await this.#providers.closeRouting();
+  }
   cancelInstall(): void { this.#installation?.abort(); }
   log(message: string): void { this.#emit({ event: "log", message: message.replace(/orbis_host_[\w-]+/g, "[redacted]").slice(0, 1500) }); }
 }

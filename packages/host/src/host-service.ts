@@ -387,7 +387,7 @@ export class HostService {
   changeProvider<T>(kind: AgentKind, operation: () => Promise<T>): Promise<T> {
     const result = this.#sessionMutation.then(async () => {
       this.#providerChanging = kind;
-      try { this.assertProviderSwitchReady(kind); return await operation(); }
+      try { if (!(kind === "codex" && this.#options.providers?.proxyTakeoverActive)) this.assertProviderSwitchReady(kind); return await operation(); }
       finally { this.#providerChanging = undefined; }
     });
     this.#sessionMutation = result.then(() => {}, () => {});
@@ -405,7 +405,7 @@ export class HostService {
       if (!manager) throw new ProviderError("此 Host 尚未启用供应商管理，请升级并重启 Host");
       const providers = request.type === "provider.list" ? await manager.list(request.kind)
         : await this.changeProvider(request.kind, () => manager.switch(request.kind, request.id!, request.enabled));
-      send(providerResult(request, providers));
+      send(providerResult(request, providers, request.kind === "codex" && manager.proxyTakeoverActive));
       if (request.type === "provider.switch") this.announceProviderChange(request.kind, deviceId);
     } catch (error) {
       send({ type: "provider.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind,

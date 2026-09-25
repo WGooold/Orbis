@@ -136,6 +136,11 @@ int main(int argc, char *argv[]) {
                     const auto providers = controller.providers();
                     if (providers.size() != 1) { app.exit(11); return; }
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".pi-list.png")) app.exit(7);
+                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "codex"));
+                });
+                QTimer::singleShot(8500, &app, [&] { controller.loadProxyStatus(true); });
+                QTimer::singleShot(9300, &app, [&] {
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".routing.png")) app.exit(7);
                     app.exit(0);
                 });
             } else QTimer::singleShot(1800, &app, [&] { app.exit(0); });

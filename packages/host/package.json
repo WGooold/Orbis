@@ -16,6 +16,7 @@
   "dependencies": {
     "@pi-remote/e2e": "0.1.0",
     "@pi-remote/protocol": "0.1.0",
+    "eventsource-parser": "^3.0.6",
     "node-datachannel": "^0.33.4",
     "qrcode": "^1.5.4",
     "quickjs-emscripten": "0.31.0",

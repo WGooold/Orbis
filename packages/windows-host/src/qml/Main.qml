@@ -28,6 +28,12 @@ ApplicationWindow {
     property var fetchedModels: []
     property var oauthAccounts: []
     property var oauthPending: ({})
+    property var routingDraft: ({})
+    property var routingQueue: []
+    property var providerRoutingDraft: ({})
+    function routingName(id) { var match = host.providers.filter(function(p) { return p.id === id }); return match.length ? match[0].name : id }
+    function moveRoute(index, offset) { var next = routingQueue.slice(); var target = index + offset; if (target < 0 || target >= next.length) return; var value = next.splice(index, 1)[0]; next.splice(target, 0, value); routingQueue = next }
+    function proxyHealth(id) { var entries = host.proxyStatus.health || []; var match = entries.filter(function(p) { return p.id === id }); return match.length ? ({closed:"正常",open:"已熔断",half_open:"恢复探测"})[match[0].state] + (match[0].lastError ? " · " + match[0].lastError : "") : "尚无请求" }
     function accountOptions(accounts) { return [{id:"",label:"使用本机 CLI 登录"},{id:"$default",label:"使用默认托管账号"}].concat(accounts.map(function(a) { return {id:a.id,label:(a.email || a.workspace) + (a.isDefault ? "（默认）" : "")} })) }
     function usageText(usage) {
         if (!usage) return ""
@@ -51,6 +57,20 @@ ApplicationWindow {
         window.codexModels = draft.fields.catalog || []
         codexReasoning.currentIndex = Math.max(0, codexReasoning.find(draft.fields.reasoningEffort || ""))
         providerJson.text = JSON.stringify(draft.config, null, 2)
+        var routing = draft.fields.routing || {}
+        window.providerRoutingDraft = routing
+        providerProxyDetails.checked = false
+        providerFullUrl.checked = routing.isFullUrl === true
+        providerCache.currentIndex = Math.max(0, providerCache.indexOfValue(routing.promptCacheRouting || "auto"))
+        var reasoning = routing.codexChatReasoning || {}
+        providerReasoningAuto.checked = Object.keys(reasoning).length === 0
+        providerThinking.checked = reasoning.supportsThinking === true
+        providerEffort.checked = reasoning.supportsEffort === true
+        providerThinkingParam.currentIndex = Math.max(0, providerThinkingParam.find(reasoning.thinkingParam || "thinking"))
+        providerEffortParam.currentIndex = Math.max(0, providerEffortParam.find(reasoning.effortParam || "reasoning_effort"))
+        providerEffortMode.currentIndex = Math.max(0, providerEffortMode.find(reasoning.effortValueMode || "passthrough"))
+        providerChatOptions.text = JSON.stringify(routing.chatOptions || {}, null, 2)
+        providerRequestOverrides.text = JSON.stringify(routing.requestOverrides || {}, null, 2)
     }
     function buildProviderDraft(basic) {
         var draft = {kind: window.providerDraft.kind, id: window.providerDraft.kind === "pi" ? providerKey.text.trim() : window.providerDraft.id, name: providerName.text, config: providerJson.text, create: !!window.providerDraft.create, addToLive: providerAddToLive.checked,
@@ -69,6 +89,18 @@ ApplicationWindow {
                     if (draft.fields.compat === null || Array.isArray(draft.fields.compat) || typeof draft.fields.compat !== "object") { window.providerFormError = "兼容参数必须是 JSON 对象"; return null }
                     draft.fields.models = window.piModels
                 }
+            }
+            if (draft.kind === "codex") {
+                var routing = JSON.parse(JSON.stringify(window.providerRoutingDraft))
+                routing.isFullUrl = providerFullUrl.checked
+                routing.promptCacheRouting = providerCache.currentValue
+                var reasoning = routing.codexChatReasoning || {}
+                reasoning.supportsThinking = providerThinking.checked; reasoning.supportsEffort = providerEffort.checked
+                reasoning.thinkingParam = providerThinkingParam.currentText; reasoning.effortParam = providerEffortParam.currentText; reasoning.effortValueMode = providerEffortMode.currentText
+                routing.codexChatReasoning = providerReasoningAuto.checked ? {} : reasoning
+                try { routing.chatOptions = JSON.parse(providerChatOptions.text || "{}"); routing.requestOverrides = JSON.parse(providerRequestOverrides.text || "{}") }
+                catch (error) { window.providerFormError = "兼容参数和请求覆盖必须是有效的 JSON 对象"; return null }
+                draft.fields.routing = routing
             }
         }
         window.providerFormError = ""
@@ -374,6 +406,10 @@ ApplicationWindow {
                             ActionButton { text: "＋ 添加供应商"; primary: true; enabled: !host.busy; onClicked: host.editProvider("") }
                         }
                         Hint { Layout.fillWidth: true; text: host.providerKind === "pi" ? "Pi 可同时启用多个供应商。刷新会同步 models.json 中的显式配置；停用保留卡片，不更改原生登录与默认模型。" : "启用时先保存当前配置，再写入目标配置。Host 中的后台 Agent 会重新加载；已有会话和独立终端需要重新打开。" }
+                        RowLayout { visible: host.providerKind === "codex"; Layout.fillWidth: true
+                            Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#4b5d78"; text: host.proxyStatus.takeover ? "本地路由运行中 · " + host.proxyStatus.baseUrl + " · 请求 " + host.proxyStatus.totalRequests + " · 成功 " + host.proxyStatus.successfulRequests + " · 故障转移 " + host.proxyStatus.failoverCount : "本地路由未接管" }
+                            ActionButton { text: "路由与故障转移"; enabled: !host.busy; onClicked: host.loadProxyStatus(true) }
+                        }
                         Card {
                             visible: host.providers.length === 0; Layout.fillWidth: true
                             ColumnLayout { anchors.fill: parent; spacing: 12
@@ -393,6 +429,7 @@ ApplicationWindow {
                                         Hint { text: modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用"; color: modelData.enabled ? "#278868" : "#73819a" }
                                         Hint { text: modelData.notes || ""; visible: text.length > 0; Layout.fillWidth: true }
                                         Hint { text: window.usageText(modelData.usage); visible: text.length > 0; Layout.fillWidth: true }
+                                        Hint { visible: host.providerKind === "codex" && host.proxyStatus.takeover; text: window.proxyHealth(modelData.id); Layout.fillWidth: true }
                                     }
                                     ActionButton { text: modelData.enabled ? "移除" : "启用"; visible: !modelData.enabled || modelData.mode === "additive"; primary: !modelData.enabled; enabled: !host.busy; onClicked: { if (modelData.enabled) { window.removeProviderId = modelData.id; removeProviderDialog.open() } else host.switchProvider(modelData.id, true) } }
                                     ActionButton { text: "编辑"; enabled: !host.busy; onClicked: host.editProvider(modelData.id) }
@@ -402,6 +439,7 @@ ApplicationWindow {
                                   RowLayout { Layout.fillWidth: true; spacing: 10
                                     Hint { text: modelData.websiteUrl || modelData.id; Layout.fillWidth: true }
                                     ActionButton { text: "检测"; visible: modelData.category !== "official"; enabled: !host.busy; onClicked: host.checkProvider(modelData.id) }
+                                    ToolButton { text: "↻"; visible: host.providerKind === "codex" && host.proxyStatus.takeover; enabled: !host.busy; onClicked: host.resetProxyHealth(modelData.id); ToolTip.visible: hovered; ToolTip.text: "重置熔断状态" }
                                     ActionButton { text: "用量设置"; enabled: !host.busy; onClicked: host.editProviderUsage(modelData.id) }
                                     ActionButton { text: "查询用量"; enabled: !host.busy; onClicked: host.queryProviderUsage(modelData.id) }
                                     ActionButton { text: "启用并打开"; enabled: !host.busy; onClicked: host.openProvider(modelData.id) }
@@ -546,7 +584,30 @@ ApplicationWindow {
                         Label { text: "思考档位"; color: "#4b5d78" }
                         ComboBox { id: codexReasoning; Layout.fillWidth: true; model: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] }
                     }
-                    ComboBox { id: providerApi; Layout.fillWidth: true; model: ["", "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai", "bedrock-converse-stream"]; enabled: window.providerDraft.kind !== "codex" }
+                    ComboBox { id: providerApi; Layout.fillWidth: true; model: window.providerDraft.kind === "codex" ? ["openai-responses", "openai-completions", "anthropic-messages"] : ["", "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai", "bedrock-converse-stream"] }
+                    SoftSwitch { id: providerProxyDetails; text: "路由与推理参数"; visible: window.providerDraft.kind === "codex" }
+                    ColumnLayout { visible: window.providerDraft.kind === "codex" && providerProxyDetails.checked; Layout.fillWidth: true; spacing: 8
+                        SoftSwitch { id: providerFullUrl; text: "使用完整 API 端点地址" }
+                        RowLayout { Layout.fillWidth: true
+                            Label { text: "会话缓存路由"; color: "#4b5d78" }
+                            ComboBox { id: providerCache; Layout.fillWidth: true; textRole: "label"; valueRole: "value"; model: [{label:"自动",value:"auto"},{label:"启用",value:"enabled"},{label:"禁用",value:"disabled"}] }
+                        }
+                        SoftSwitch { id: providerReasoningAuto; text: "自动识别推理参数" }
+                        GridLayout { visible: !providerReasoningAuto.checked; columns: 2; Layout.fillWidth: true
+                            CheckBox { id: providerThinking; text: "支持思考开关" }
+                            CheckBox { id: providerEffort; text: "支持思考档位" }
+                            Label { text: "思考开关参数"; color: "#4b5d78" }
+                            ComboBox { id: providerThinkingParam; Layout.fillWidth: true; model: ["thinking", "enable_thinking", "reasoning_split", "none"] }
+                            Label { text: "档位参数"; color: "#4b5d78" }
+                            ComboBox { id: providerEffortParam; Layout.fillWidth: true; model: ["reasoning_effort", "reasoning.effort", "none"] }
+                            Label { text: "档位映射"; color: "#4b5d78" }
+                            ComboBox { id: providerEffortMode; Layout.fillWidth: true; model: ["passthrough", "deepseek", "low_high", "openrouter", "zen"] }
+                        }
+                        Label { text: "Chat 兼容参数（JSON）"; color: "#4b5d78" }
+                        TextArea { id: providerChatOptions; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                        Label { text: "请求覆盖（headers / body）"; color: "#4b5d78" }
+                        TextArea { id: providerRequestOverrides; Layout.fillWidth: true; Layout.preferredHeight: 90; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                    }
                     ActionButton { text: "获取模型列表"; enabled: !host.busy && providerUrl.text.trim().length > 0; onClicked: { var draft = window.buildProviderDraft(true); if (draft !== null) host.fetchProviderModels(draft) } }
                     Label { text: "请求头（JSON 对象）"; visible: window.providerDraft.kind !== "dsh"; color: "#4b5d78" }
                     TextArea { id: piHeaders; visible: window.providerDraft.kind !== "dsh"; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
@@ -669,6 +730,54 @@ ApplicationWindow {
         onTriggered: { if (Date.now() >= window.oauthPending.expiresAt) { host.oauthAccount("cancel", window.oauthPending.deviceCode); window.oauthPending = ({}) } else if (!host.busy) host.oauthAccount("poll", window.oauthPending.deviceCode) }
     }
     Dialog {
+        id: routingDialog; title: "Codex 本地路由"; anchors.centerIn: parent; modal: true
+        width: Math.min(760, window.width - 40); height: Math.min(690, window.height - 40)
+        contentItem: ScrollView { clip: true
+            ColumnLayout { width: routingDialog.width - 48; spacing: 12
+                SoftSwitch { id: routingEnabled; text: "接管 Codex 请求" }
+                RowLayout { Layout.fillWidth: true
+                    Label { text: "本地端口"; color: "#4b5d78" }
+                    SpinBox { id: routingPort; from: 1024; to: 65535; editable: true; enabled: !host.proxyStatus.running }
+                    Item { Layout.fillWidth: true }
+                    SoftSwitch { id: routingFailover; text: "自动故障转移" }
+                }
+                Label { text: "故障转移队列"; font.bold: true; color: "#21314d" }
+                Repeater { model: window.routingQueue
+                    delegate: RowLayout { required property int index; required property string modelData; Layout.fillWidth: true
+                        Label { text: String(index + 1) + ". " + window.routingName(modelData); Layout.fillWidth: true; elide: Text.ElideRight; color: "#21314d" }
+                        ToolButton { text: "↑"; enabled: index > 0; onClicked: window.moveRoute(index, -1); ToolTip.visible: hovered; ToolTip.text: "上移" }
+                        ToolButton { text: "↓"; enabled: index + 1 < window.routingQueue.length; onClicked: window.moveRoute(index, 1); ToolTip.visible: hovered; ToolTip.text: "下移" }
+                        ToolButton { text: "×"; onClicked: { var next = window.routingQueue.slice(); next.splice(index, 1); window.routingQueue = next } ToolTip.visible: hovered; ToolTip.text: "移出队列" }
+                    }
+                }
+                RowLayout { Layout.fillWidth: true
+                    ComboBox { id: routingCandidate; Layout.fillWidth: true; model: host.providers.filter(function(p) { return p.category !== "official" && window.routingQueue.indexOf(p.id) < 0 }); textRole: "name"; valueRole: "id" }
+                    ActionButton { text: "加入队列"; enabled: routingCandidate.currentIndex >= 0; onClicked: window.routingQueue = window.routingQueue.concat([routingCandidate.currentValue]) }
+                }
+                Label { text: "超时与重试"; font.bold: true; color: "#21314d" }
+                GridLayout { columns: 2; Layout.fillWidth: true; columnSpacing: 20
+                    Label { text: "最多重试次数"; Layout.fillWidth: true; color: "#4b5d78" } SpinBox { id: routingRetries; from: 0; to: 10; editable: true }
+                    Label { text: "首字节超时（秒）"; color: "#4b5d78" } SpinBox { id: routingFirst; from: 1; to: 600; editable: true }
+                    Label { text: "流空闲超时（秒）"; color: "#4b5d78" } SpinBox { id: routingIdle; from: 1; to: 3600; editable: true }
+                    Label { text: "请求总超时（秒）"; color: "#4b5d78" } SpinBox { id: routingTimeout; from: 1; to: 3600; editable: true }
+                }
+                Label { text: "熔断与恢复"; font.bold: true; color: "#21314d" }
+                GridLayout { columns: 2; Layout.fillWidth: true; columnSpacing: 20
+                    Label { text: "连续失败阈值"; Layout.fillWidth: true; color: "#4b5d78" } SpinBox { id: routingFailures; from: 1; to: 100; editable: true }
+                    Label { text: "恢复成功阈值"; color: "#4b5d78" } SpinBox { id: routingSuccesses; from: 1; to: 100; editable: true }
+                    Label { text: "恢复等待（秒）"; color: "#4b5d78" } SpinBox { id: routingCooldown; from: 1; to: 3600; editable: true }
+                    Label { text: "错误率阈值（%）"; color: "#4b5d78" } SpinBox { id: routingErrorRate; from: 1; to: 100; editable: true }
+                    Label { text: "错误率最小样本"; color: "#4b5d78" } SpinBox { id: routingMinRequests; from: 1; to: 1000; editable: true }
+                }
+                Hint { visible: host.message.length > 0; text: host.message; Layout.fillWidth: true; color: "#a34d4d" }
+            }
+        }
+        footer: RowLayout { spacing: 10; Item { Layout.fillWidth: true }
+            ActionButton { text: "取消"; enabled: !host.busy; onClicked: routingDialog.reject() }
+            ActionButton { text: "保存"; primary: true; enabled: !host.busy; onClicked: host.saveProxyPreferences({enabled:routingEnabled.checked, port:routingPort.value, autoFailoverEnabled:routingFailover.checked, queue:window.routingQueue, maxRetries:routingRetries.value, firstByteTimeout:routingFirst.value, idleTimeout:routingIdle.value, requestTimeout:routingTimeout.value, failureThreshold:routingFailures.value, successThreshold:routingSuccesses.value, timeoutSeconds:routingCooldown.value, errorRateThreshold:routingErrorRate.value / 100, minRequests:routingMinRequests.value}) }
+        }
+    }
+    Dialog {
         id: codexPreferencesDialog; title: "Codex 通用配置"; anchors.centerIn: parent; modal: true; width: 660; height: 480
         ColumnLayout { width: parent.width; spacing: 12
             Hint { text: "勾选“使用 Codex 通用配置”的供应商共用这些偏好；切换前会同步当前原生配置中的共享改动。MCP 配置继续保留。"; Layout.fillWidth: true }
@@ -778,6 +887,14 @@ ApplicationWindow {
         function onProviderPreviewReady(draft) { window.loadProviderFields(draft); advancedProvider.checked = window.providerTargetAdvanced }
         function onCodexPreferencesReady(preferences) { codexCommonText.text = preferences.commonConfig; preserveCodexLogin.checked = preferences.preserveOfficialLogin; host.clearMessage(); codexPreferencesDialog.open() }
         function onCodexPreferencesSaved() { codexPreferencesDialog.close() }
+        function onProxyPreferencesReady(p) {
+            window.routingDraft = p; window.routingQueue = p.queue.slice(); host.clearMessage()
+            routingEnabled.checked = p.enabled; routingPort.value = p.port; routingFailover.checked = p.autoFailoverEnabled
+            routingRetries.value = p.maxRetries; routingFirst.value = p.firstByteTimeout; routingIdle.value = p.idleTimeout; routingTimeout.value = p.requestTimeout
+            routingFailures.value = p.failureThreshold; routingSuccesses.value = p.successThreshold; routingCooldown.value = p.timeoutSeconds; routingErrorRate.value = Math.round(p.errorRateThreshold * 100); routingMinRequests.value = p.minRequests
+            routingDialog.open()
+        }
+        function onProxyPreferencesSaved() { routingDialog.close() }
         function onProviderModelsReady(models) { window.fetchedModels = models.map(function(model) { return {id: model.id, name: model.name, selected: false} }); fetchedModelsDialog.open() }
         function onProviderUsageReady(id, script) {
             window.usageProviderId = id; usageEnabled.checked = script.enabled === true; usageTemplateType.currentIndex = Math.max(0, usageTemplateType.indexOfValue(script.templateType || "custom")); usageInterval.text = String(script.autoQueryInterval === undefined ? 5 : script.autoQueryInterval)
