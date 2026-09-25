@@ -452,7 +452,7 @@ export class ProviderManager {
   async environment(kind: AgentKind): Promise<NodeJS.ProcessEnv> {
     const store = await this.#load();
     const env = store.providers.find(p => p.kind === kind && p.id === store.current[kind])?.config.env;
-    return kind === "dsh" && object(env) ? { ...process.env, ...env as Record<string, string> } : { ...process.env };
+    return kind === "dsh" ? { ...process.env, ...(object(env) ? env as Record<string, string> : {}), DSH_HOME: this.paths.dsh, ORBIS_DSH_PROVIDER_ENV: JSON.stringify(object(env) ? env : {}) } : { ...process.env };
   }
   async #apply(store: Store, profile: ProviderProfile, live: ObjectValue, enabled: boolean): Promise<void> {
     const running = this.#proxy.running;

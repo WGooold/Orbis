@@ -2,7 +2,7 @@
 
 Date: 2026-09-24
 
-Status: accepted
+Status: superseded by [ADR-0020](0020-deepseek-harness-shared-web-backend.md). The ACP adapter remains for legacy embedders and tests.
 
 ## Context
 

@@ -14,6 +14,22 @@ afterEach(async () => {
 });
 
 describe("DeepSeek Web runtime adapter", () => {
+  it("reads the native archive set and blocks switching during browser-only work", async () => {
+    const request = vi.fn(async (method: string) => method === "session/list" ? { items: [
+      { sessionId: "saved", cwd: "D:/work", updatedAt: 10, running: false },
+      { sessionId: "browser", cwd: "D:/work", updatedAt: 20, running: true },
+    ] } : {});
+    const client: DshWebConnection = {
+      onEvent: undefined, onExit: undefined, onReconnect: undefined,
+      request: request as unknown as DshWebConnection["request"],
+      subscribe: (_method, _args, onFrame) => { queueMicrotask(() => onFrame({ type: "baseline", value: { archivedSessionIds: ["saved"] } })); return () => {}; },
+      respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+    };
+    const runtime = new DshWebRuntime(client); runtimes.push(runtime);
+    expect((await runtime.catalog()).map(item => item.sessionId)).toEqual(["dsh:browser"]);
+    expect((await runtime.catalog(true)).map(item => item.sessionId)).toEqual(["dsh:saved"]);
+    await expect(runtime.assertProviderSwitchReady()).rejects.toThrow("浏览器会话正在工作");
+  });
   it("maps the shared Web session stream to Pi-shaped turns, tools, queue delivery, and IDs", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-web-runtime-")); roots.push(cwd);
     let follow: ((frame: unknown) => void) | undefined;

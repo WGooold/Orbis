@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolveDshCommand } from "../packages/host/dist/dsh-client.js";
 import { DshWebClient } from "../packages/host/dist/dsh-web-client.js";
+import { applyDshWebProvider } from "../packages/host/dist/dsh-web-provider.js";
 
 const root = await mkdtemp(join(tmpdir(), "orbis-dsh-web-smoke-"));
 const home = join(root, "dsh-home");
@@ -41,6 +42,7 @@ await writeFile(patch, `
 `);
 
 let modelRequests = 0;
+let lastModelPath;
 let releaseFirst;
 const firstResponseGate = new Promise(resolve => { releaseFirst = resolve; });
 let releaseSecond;
@@ -48,8 +50,10 @@ const secondResponseGate = new Promise(resolve => { releaseSecond = resolve; });
 const model = createServer(async (request, response) => {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
-  if (request.method !== "POST" || request.url !== "/v1/chat/completions") { response.writeHead(404).end(); return; }
+  if (request.method !== "POST" || !["/v1/chat/completions", "/v2/chat/completions"].includes(request.url)) { response.writeHead(404).end(); return; }
+  assert.equal(request.headers.authorization, request.url.startsWith("/v2/") ? "Bearer switched-local-key" : "Bearer orbis-local-web-smoke");
   modelRequests++;
+  lastModelPath = request.url;
   const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   assert.equal(body.model, "smoke-model");
   if (modelRequests === 1) await firstResponseGate;
@@ -80,7 +84,8 @@ const patchText = await (await import("node:fs/promises")).readFile(patch, "utf8
 await writeFile(patch, patchText.replace("__MODEL_PORT__", String(modelPort)));
 
 const cli = await resolveDshCommand();
-const env = { ...process.env, DSH_HOME: home, ORBIS_DSH_WEB_TEST_KEY: "orbis-local-web-smoke", DSH_TELEMETRY_DISABLED: "1" };
+const env = { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: "1" };
+delete env.ORBIS_DSH_WEB_TEST_KEY;
 const child = spawn(cli.command, [...cli.prefixArgs, "--profile", "web", "--no-open", "--port", "0"], { env, cwd: workspace, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 let output = "";
 child.stdout.on("data", chunk => { output += chunk.toString(); });
@@ -105,6 +110,7 @@ try {
   const url = await started;
   first = await DshWebClient.connect({ url, cliEntry: cli.prefixArgs[0], timeoutMs: 15_000 });
   second = await DshWebClient.connect({ url, cliEntry: cli.prefixArgs[0], timeoutMs: 15_000 });
+  await applyDshWebProvider(first, { ...env, ORBIS_DSH_PROVIDER_ENV: JSON.stringify({ ORBIS_DSH_WEB_TEST_KEY: "orbis-local-web-smoke" }) });
   const list = await first.request("session/list", { _request: {} });
   assert.ok(list && Array.isArray(list.items));
   const created = await first.request("session/create", { request: { cwd: workspace } });
@@ -127,8 +133,15 @@ try {
   await waitFor(() => frames.some(frame => JSON.stringify(frame).includes("WEB_SMOKE_FOLLOW")));
   await first.request("session/prompt", { request: { sessionId, requestId: "web-tool", mode: "queue", content: [{ type: "text", text: "WEB_SMOKE_TOOL" }] } });
   await waitFor(() => modelRequests >= 3 && frames.some(frame => JSON.stringify(frame).includes("WEB_SMOKE_TOOL_DONE")));
+  const switched = (await (await import("node:fs/promises")).readFile(patch, "utf8")).replace("/v1\n", "/v2\n");
+  await writeFile(patch, switched);
+  await applyDshWebProvider(first, { ...env, ORBIS_DSH_PROVIDER_ENV: JSON.stringify({ ORBIS_DSH_WEB_TEST_KEY: "switched-local-key" }) });
+  const beforeSwitch = modelRequests;
+  await first.request("session/prompt", { request: { sessionId, requestId: "web-switched", mode: "queue", content: [{ type: "text", text: "VERIFY_SWITCH" }] } });
+  await waitFor(() => modelRequests > beforeSwitch);
+  assert.equal(lastModelPath, "/v2/chat/completions");
   dispose();
-  console.log("PASS: isolated DSH Web launch, two clients, prompt, live follow, streamed token/tool, queue mutation, and stop");
+  console.log("PASS: isolated DSH Web launch, two clients, prompt, live follow, streamed token/tool, queue mutation, stop, and live provider URL/key switch");
 } finally {
   await first?.stop().catch(() => {});
   await second?.stop().catch(() => {});

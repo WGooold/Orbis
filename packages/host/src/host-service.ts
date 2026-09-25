@@ -371,10 +371,10 @@ export class HostService {
     return this.#loopback?.runtimes ?? [];
   }
 
-  assertProviderSwitchReady(kind: AgentKind): void {
+  async assertProviderSwitchReady(kind: AgentKind): Promise<void> {
     try {
       if (kind === "codex") this.#options.codexRuntime?.assertProviderSwitchReady();
-      if (kind === "dsh") this.#options.dshRuntime?.assertProviderSwitchReady();
+      if (kind === "dsh") await this.#options.dshRuntime?.assertProviderSwitchReady();
     } catch (error) { throw new ProviderError(error instanceof Error ? error.message : "Agent 正在工作"); }
   }
 
@@ -387,7 +387,7 @@ export class HostService {
   changeProvider<T>(kind: AgentKind, operation: () => Promise<T>): Promise<T> {
     const result = this.#sessionMutation.then(async () => {
       this.#providerChanging = kind;
-      try { if (!(kind === "codex" && this.#options.providers?.proxyTakeoverActive)) this.assertProviderSwitchReady(kind); return await operation(); }
+      try { if (!(kind === "codex" && this.#options.providers?.proxyTakeoverActive)) await this.assertProviderSwitchReady(kind); return await operation(); }
       finally { this.#providerChanging = undefined; }
     });
     this.#sessionMutation = result.then(() => {}, () => {});

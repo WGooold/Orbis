@@ -12,6 +12,7 @@ import { DshWebClient, type DshWebConnection, type DshWebEvent } from "./dsh-web
 import { dshErrorText, dshWebEntries, dshWebEntryId, dshWebMessage, type DshStreamDecoder, type DshWebLogEvent } from "./dsh-web-history.js";
 import { localHostname } from "./sessions.js";
 import { ActivationError } from "./spawner.js";
+import { applyDshWebProvider } from "./dsh-web-provider.js";
 
 type Obj = Record<string, unknown>;
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
@@ -89,22 +90,41 @@ export class DshWebRuntime implements AgentBackend {
   ownsRuntime(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
   directoryEntries(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => this.#metadata(session)); }
   currentProvider(): Promise<string | undefined> { return Promise.resolve("deepseek-web"); }
-  assertProviderSwitchReady(): void {
-    if ([...this.#sessions.values()].some(session => session.running || session.closing) || this.#approvals.size > 0) throw new Error("DeepSeek Web 正在工作或等待审批，请结束任务后切换供应商");
+  async assertProviderSwitchReady(): Promise<void> {
+    if (this.#activating.size || [...this.#sessions.values()].some(session => session.running || session.closing) || this.#approvals.size > 0) throw new Error("DeepSeek Web 正在工作或等待审批，请结束任务后切换供应商");
+    const list = object(await this.#client.request("session/list", { _request: {} }));
+    if (arrayObjects(list.items).some(session => session.running)) throw new Error("DeepSeek Web 浏览器会话正在工作，请结束任务后切换供应商");
+  }
+  async reloadProviderConfiguration(env: NodeJS.ProcessEnv): Promise<void> {
+    await this.assertProviderSwitchReady();
+    await applyDshWebProvider(this.#client, env);
+    for (const session of this.#sessions.values()) await this.#loadModelCatalog(session);
   }
 
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
-    if (archived) return [];
+    const archiveIds = await this.#archivedSessionIds();
     const result = await this.#client.request<Obj>("session/list", { _request: {} });
     const items = Array.isArray(result.items) ? result.items : Array.isArray(result.sessions) ? result.sessions : [];
     return items.flatMap(raw => {
       const item = object(raw); const id = typeof item.sessionId === "string" ? item.sessionId : typeof item.id === "string" ? item.id : undefined;
       const cwd = typeof item.cwd === "string" ? item.cwd : undefined;
-      if (!id || !cwd) return [];
+      if (!id || !cwd || archiveIds.has(id) !== archived || item.origin === "subagent" && item.blank === true) return [];
       const local = this.#sessions.get(publicId(id));
       return [{ sessionId: publicId(id), agentKind: "dsh" as const, hostname: localHostname(), cwd,
         createdAt: local?.createdAt ?? Number(item.createdAt ?? item.updatedAt ?? Date.now()), modifiedAt: Number(item.updatedAt ?? item.createdAt ?? Date.now()),
         messageCount: local?.entries.length ?? 0, ...(typeof item.title === "string" ? { name: item.title.slice(0, 256) } : {}) }];
+    });
+  }
+
+  #archivedSessionIds(): Promise<Set<string>> {
+    return new Promise((resolve, reject) => {
+      let unsubscribe = () => {};
+      const timer = setTimeout(() => { unsubscribe(); reject(new Error("DeepSeek Web 会话归档目录超时")); }, 15_000);
+      const finish = (error?: Error, ids?: Set<string>) => { clearTimeout(timer); queueMicrotask(() => unsubscribe()); if (error) reject(error); else resolve(ids!); };
+      unsubscribe = this.#client.subscribe("workspace/follow", {}, raw => {
+        const frame = object(raw);
+        if (frame.type === "baseline") finish(undefined, new Set((object(frame.value).archivedSessionIds as string[] | undefined) ?? []));
+      }, error => finish(error));
     });
   }
 

@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { record, resolveDshCommand } from "./dsh-client.js";
 import type { PiCommand } from "./spawner.js";
+import { dshWebLaunchEnvironment } from "./dsh-web-provider.js";
 
 export interface DshWebService {
   /** Private launch URL, including the process token. Never include it in logs. */
@@ -138,7 +139,7 @@ async function ensureLocalService(home: string, env: NodeJS.ProcessEnv, options:
     let failed = false;
     try {
       child = spawn(cli.command, [...cli.prefixArgs, "--profile", "web", "--host", "127.0.0.1", "--port", String(port), "--no-open"], {
-        detached: true, windowsHide: true, cwd: homedir(), env, stdio: ["ignore", output.fd, output.fd],
+        detached: true, windowsHide: true, cwd: homedir(), env: dshWebLaunchEnvironment(env), stdio: ["ignore", output.fd, output.fd],
       });
       child.once("error", () => { failed = true; });
     } finally { await output.close(); }

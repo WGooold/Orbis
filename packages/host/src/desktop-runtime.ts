@@ -10,8 +10,10 @@ import { HostService } from "./host-service.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
-import { resolveDshCommand, DSH_VERSION } from "./dsh-client.js";
+import { DSH_VERSION } from "./dsh-client.js";
 import { ensureDshWebService, validateDshWebUrl } from "./dsh-web-service.js";
+import { DshWebClient } from "./dsh-web-client.js";
+import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
 import { defaultStunServers } from "./config.js";
 import { ProviderManager, ProviderError, agentKind, providerMetadata, type ProviderPaths, type ProviderProfile, type ProviderSummary } from "./provider-manager.js";
@@ -66,7 +68,7 @@ export class DesktopRuntime {
     this.#emit = emit;
     this.#stateDir = resolveStateDir(stateDir);
     this.#providers = new ProviderManager(this.#stateDir, providerPaths, {
-      beforeApply: async (kind, hotSwitch) => { if (!hotSwitch) this.#service?.assertProviderSwitchReady(kind); },
+      beforeApply: async (kind, hotSwitch) => { if (!hotSwitch) await this.#service?.assertProviderSwitchReady(kind); },
       afterApply: async (kind, hotSwitch) => {
         if (!hotSwitch) await this.#service?.reloadProviderConfiguration(kind, await this.#providers.environment(kind));
         this.#emit({ event: "providersChanged", kind });
@@ -459,7 +461,10 @@ export class DesktopRuntime {
   async openAgent(kind: string, mode = "setup"): Promise<void> {
     if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
     if (kind === "dsh") {
-      const service = await ensureDshWebService(await this.#providers.environment("dsh"));
+      const env = await this.#providers.environment("dsh");
+      const service = await ensureDshWebService(env);
+      const client = await DshWebClient.connect({ url: service.url, env, ...(service.cli ? { cli: service.cli } : {}) });
+      try { await applyDshWebProvider(client, env); } finally { await client.stop(); }
       const script = `Start-Process -FilePath '${service.url.replaceAll("'", "''")}' -ErrorAction Stop`;
       try {
         await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15_000 });

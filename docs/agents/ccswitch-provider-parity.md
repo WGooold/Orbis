@@ -4,7 +4,7 @@ Reference repository: `D:/cc-switch`, commit `f8788719`. The reference is MIT li
 
 ## Scope
 
-The requested scope is the three Agent types already exposed by Orbis: Pi, Codex, and DeepSeek Harness (DSH). Claude, Gemini, OpenCode, and the other CC Switch applications are outside this change. DSH has no CC Switch implementation, so its native `cordis.patch.yml` and ACP contract define the adaptation.
+The requested scope is the three Agent types already exposed by Orbis: Pi, Codex, and DeepSeek Harness (DSH). Claude, Gemini, OpenCode, and the other CC Switch applications are outside this change. DSH has no CC Switch implementation, so its native `cordis.patch.yml` and Web RPC contract define the adaptation (ADR-0020).
 
 ## Implemented behavior
 
@@ -16,13 +16,13 @@ The requested scope is the three Agent types already exposed by Orbis: Pi, Codex
 - Provider presets, endpoint checks, authenticated model discovery, bounded QuickJS usage scripts, New API/general/official-balance templates, per-provider usage cache, automatic refresh intervals, and last-good snapshots are implemented.
 - Codex local routing now follows CC Switch's loopback takeover model: authenticated `127.0.0.1` Responses endpoint, Chat Completions and Anthropic conversion, native Responses passthrough including `/responses/compact`, explicit failover queue, circuit breaker, bounded timeouts, cancellation, prompt-cache routing, vendor reasoning mapping, request overrides, and proxy hot-switching without restarting Codex.
 - The Windows Agent page exposes provider cards plus routing controls, and Android switches saved provider IDs through the existing encrypted provider protocol. Routing credentials and the local bearer token stay on the Host.
-- DSH preserves the complete patch text, existing provider model rows, unknown YAML fields, and the provider's existing environment-variable name while keeping credentials in Host state.
+- DSH preserves the complete patch text, existing provider model rows, unknown YAML fields, and the provider's existing environment-variable name while keeping credentials in Host state and syncing them to the native local Web credential store. Browser-only running sessions also block a provider switch.
 - The Android protocol carries only saved Agent/provider IDs and status. It never carries provider credentials, raw native configuration, scripts, or OAuth tokens.
 - Host supports Agent installation/update from pinned package names and isolated managed directories, npm dist-tag checks, exact global npm-prefix updates, validated activation, cancellation, batch operations, installation history, and rollback. DSH requires the published ACP-compatible 0.1.7-rc.1 package when the registry's latest tag is older.
 
 ## Deliberate limits
 
-The parity claim is limited to the three Orbis Agent kinds. CC Switch's Claude, Gemini, OpenCode, xAI OAuth account flow, and other application-specific integrations remain outside this branch. DSH is an adaptation because CC Switch has no DSH backend; its native ACP contract is preserved. Official Codex OAuth accounts are deliberately excluded from the proxy failover queue and continue using native routing. Advanced provider fields remain available in the native JSON/TOML editor; the common form covers routing, cache, reasoning, Chat options, and request overrides.
+The parity claim is limited to the three Orbis Agent kinds. CC Switch's Claude, Gemini, OpenCode, xAI OAuth account flow, and other application-specific integrations remain outside this branch. DSH is an adaptation because CC Switch has no DSH backend; its native Web service owns shared sessions; native HMR and credential writes apply provider changes without restarting the service. Official Codex OAuth accounts are deliberately excluded from the proxy failover queue and continue using native routing. Advanced provider fields remain available in the native JSON/TOML editor; the common form covers routing, cache, reasoning, Chat options, and request overrides.
 
 ## Evidence
 

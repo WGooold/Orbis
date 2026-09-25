@@ -82,7 +82,7 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
 
   let service: HostService | undefined;
   const providers = new ProviderManager(stateDir, undefined, {
-    beforeApply: async kind => { service?.assertProviderSwitchReady(kind); },
+    beforeApply: async kind => { await service?.assertProviderSwitchReady(kind); },
     afterApply: async kind => { await service?.reloadProviderConfiguration(kind, await providers.environment(kind)); },
   });
 

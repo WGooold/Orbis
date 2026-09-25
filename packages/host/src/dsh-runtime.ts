@@ -15,6 +15,7 @@ import { DshWebClient, type DshWebConnection } from "./dsh-web-client.js";
 import { DshWebRuntime } from "./dsh-web-runtime.js";
 import { ensureDshWebService } from "./dsh-web-service.js";
 import type { DshStreamDecoder } from "./dsh-web-history.js";
+import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { localHostname } from "./sessions.js";
 import { ActivationError } from "./spawner.js";
 
@@ -467,7 +468,7 @@ type DshImplementation = AgentBackend & {
   onMetadataChange?: (() => void) | undefined;
   onOffline?: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
   announce?: () => void;
-  assertProviderSwitchReady?: () => void;
+  assertProviderSwitchReady?: () => void | Promise<void>;
   reloadProviderConfiguration?: (env: NodeJS.ProcessEnv) => Promise<void>;
 };
 
@@ -503,18 +504,18 @@ export class DshRuntime implements AgentBackend {
 
   static async create(env: NodeJS.ProcessEnv = process.env): Promise<DshRuntime> {
     const service = await ensureDshWebService(env);
+    const cli = service.cli ?? await resolveDshCommand(env);
     const client = await DshWebClient.connect({
       url: service.url,
       env,
-      ...(service.cli === undefined ? {} : { cli: service.cli, cliEntry: service.cli.prefixArgs[0] }),
+      cli,
     });
-    let decoder: DshStreamDecoder | undefined;
-    const entry = service.cli?.prefixArgs[0];
-    if (entry) {
+    try {
+      await applyDshWebProvider(client, env);
       const { loadDshStreamDecoder } = await import("./dsh-web-history.js");
-      decoder = await loadDshStreamDecoder(entry);
-    }
-    return new DshRuntime(client, decoder);
+      const decoder = cli.prefixArgs[0] ? await loadDshStreamDecoder(cli.prefixArgs[0]) : undefined;
+      return new DshRuntime(client, decoder);
+    } catch (error) { await client.stop(); throw error; }
   }
 
   setEventSink(sink: (event: RuntimeEvent, runtimeId: string) => void): void { this.#implementation.setEventSink(sink); }
@@ -533,7 +534,7 @@ export class DshRuntime implements AgentBackend {
     this.#implementation.announce?.();
   }
   currentProvider(): Promise<string | undefined> { return this.#implementation.currentProvider?.() ?? Promise.resolve(undefined); }
-  assertProviderSwitchReady(): void { this.#implementation.assertProviderSwitchReady?.(); }
+  async assertProviderSwitchReady(): Promise<void> { await this.#implementation.assertProviderSwitchReady?.(); }
   async reloadProviderConfiguration(env: NodeJS.ProcessEnv): Promise<void> {
     if (this.#implementation.reloadProviderConfiguration) {
       await this.#implementation.reloadProviderConfiguration(env);
