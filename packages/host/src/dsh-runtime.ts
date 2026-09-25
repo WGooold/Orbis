@@ -11,6 +11,10 @@ import {
 import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshAcpClient, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
 import { dshEntries, openDshHistory, type DshHistory } from "./dsh-history.js";
+import { DshWebClient, type DshWebConnection } from "./dsh-web-client.js";
+import { DshWebRuntime } from "./dsh-web-runtime.js";
+import { ensureDshWebService } from "./dsh-web-service.js";
+import type { DshStreamDecoder } from "./dsh-web-history.js";
 import { localHostname } from "./sessions.js";
 import { ActivationError } from "./spawner.js";
 
@@ -32,7 +36,8 @@ function optionChoices(value: unknown): { value: string; label: string }[] {
     : typeof item.value === "string" && typeof item.name === "string" ? [{ value: item.value, label: item.name }] : []);
 }
 
-export class DshRuntime implements AgentBackend {
+/** Legacy ACP implementation retained for compatibility with existing callers and tests. */
+export class DshAcpRuntime implements AgentBackend {
   readonly kind = "dsh" as const;
   #client: DshConnection;
   readonly #history: DshHistory;
@@ -64,10 +69,10 @@ export class DshRuntime implements AgentBackend {
     };
   }
 
-  static async create(env?: NodeJS.ProcessEnv): Promise<DshRuntime> {
+  static async create(env?: NodeJS.ProcessEnv): Promise<DshAcpRuntime> {
     const cli = await resolveDshCommand();
     const history = await openDshHistory(cli.prefixArgs[0]!);
-    try { return new DshRuntime(await DshAcpClient.create({ cli, ...(env ? { env } : {}) }), history); }
+    try { return new DshAcpRuntime(await DshAcpClient.create({ cli, ...(env ? { env } : {}) }), history); }
     catch (error) { await history.close(); throw error; }
   }
 
@@ -454,4 +459,87 @@ export class DshRuntime implements AgentBackend {
       try { await this.#client.stop(); } finally { await this.#history.close(); }
     })();
   }
+}
+
+type DshImplementation = AgentBackend & {
+  setEventSink(sink: (event: RuntimeEvent, runtimeId: string) => void): void;
+  stop(): Promise<void>;
+  onMetadataChange?: (() => void) | undefined;
+  onOffline?: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
+  announce?: () => void;
+  assertProviderSwitchReady?: () => void;
+  reloadProviderConfiguration?: (env: NodeJS.ProcessEnv) => Promise<void>;
+};
+
+/**
+ * Public DSH backend. New Host instances use the persistent Web runtime so a
+ * browser and Orbis observe the same Session. The two-argument constructor is
+ * kept for the ACP unit tests and older embedders.
+ */
+export class DshRuntime implements AgentBackend {
+  readonly kind = "dsh" as const;
+  readonly #implementation: DshImplementation;
+  #metadataChange: (() => void) | undefined;
+  #offline: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
+
+  get onMetadataChange(): (() => void) | undefined { return this.#metadataChange; }
+  set onMetadataChange(value: (() => void) | undefined) {
+    this.#metadataChange = value;
+    this.#implementation.onMetadataChange = value;
+  }
+  get onOffline(): ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined { return this.#offline; }
+  set onOffline(value: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined) {
+    this.#offline = value;
+    this.#implementation.onOffline = value;
+  }
+
+  constructor(client: DshConnection, history: DshHistory);
+  constructor(client: DshWebConnection, decoder?: DshStreamDecoder);
+  constructor(client: DshConnection | DshWebConnection, history?: DshHistory | DshStreamDecoder) {
+    this.#implementation = history !== undefined && typeof history !== "function"
+      ? new DshAcpRuntime(client as DshConnection, history)
+      : new DshWebRuntime(client as DshWebConnection, history as DshStreamDecoder | undefined);
+  }
+
+  static async create(env: NodeJS.ProcessEnv = process.env): Promise<DshRuntime> {
+    const service = await ensureDshWebService(env);
+    const client = await DshWebClient.connect({
+      url: service.url,
+      env,
+      ...(service.cli === undefined ? {} : { cli: service.cli, cliEntry: service.cli.prefixArgs[0] }),
+    });
+    let decoder: DshStreamDecoder | undefined;
+    const entry = service.cli?.prefixArgs[0];
+    if (entry) {
+      const { loadDshStreamDecoder } = await import("./dsh-web-history.js");
+      decoder = await loadDshStreamDecoder(entry);
+    }
+    return new DshRuntime(client, decoder);
+  }
+
+  setEventSink(sink: (event: RuntimeEvent, runtimeId: string) => void): void { this.#implementation.setEventSink(sink); }
+  isReady(): boolean { return this.#implementation.isReady(); }
+  ownsRuntime(runtimeId: string): boolean { return this.#implementation.ownsRuntime(runtimeId); }
+  catalog(archived = false): Promise<AgentSessionSummary[]> { return this.#implementation.catalog(archived); }
+  setArchived(sessionId: string, archived: boolean): Promise<void> { return this.#implementation.setArchived(sessionId, archived); }
+  activate(target: AgentActivateTarget, context?: { deviceId?: string; spawnMode?: import("@pi-remote/protocol").SpawnMode }): Promise<BackendActivation> {
+    return this.#implementation.activate(target, context);
+  }
+  dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
+    return this.#implementation.dispatchCommand(runtimeId, commandId, command);
+  }
+  directoryEntries(): RuntimeMetadata[] { return this.#implementation.directoryEntries?.() ?? []; }
+  announce(): void {
+    this.#implementation.announce?.();
+  }
+  currentProvider(): Promise<string | undefined> { return this.#implementation.currentProvider?.() ?? Promise.resolve(undefined); }
+  assertProviderSwitchReady(): void { this.#implementation.assertProviderSwitchReady?.(); }
+  async reloadProviderConfiguration(env: NodeJS.ProcessEnv): Promise<void> {
+    if (this.#implementation.reloadProviderConfiguration) {
+      await this.#implementation.reloadProviderConfiguration(env);
+      return;
+    }
+    throw new Error("DeepSeek Web 已在运行；请关闭并重新打开 Web 工作台后应用供应商配置");
+  }
+  stop(): Promise<void> { return this.#implementation.stop(); }
 }

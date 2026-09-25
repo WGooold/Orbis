@@ -24,6 +24,7 @@ class HostController : public QObject {
     Q_PROPERTY(QString piEntry READ piEntry NOTIFY changed)
     Q_PROPERTY(QString codexEntry READ codexEntry NOTIFY changed)
     Q_PROPERTY(QString dshEntry READ dshEntry NOTIFY changed)
+    Q_PROPERTY(QString dshWebUrl READ dshWebUrl NOTIFY changed)
     Q_PROPERTY(bool activated READ activated NOTIFY changed)
     Q_PROPERTY(bool verificationRequired READ verificationRequired NOTIFY changed)
     Q_PROPERTY(bool registrationAvailable READ registrationAvailable NOTIFY changed)
@@ -56,6 +57,7 @@ public:
     QString piEntry() const { return m_settings.value("piEntry").toString(); }
     QString codexEntry() const { return m_settings.value("codexEntry").toString(); }
     QString dshEntry() const { return m_settings.value("dshEntry").toString(); }
+    QString dshWebUrl() const { return m_settings.value("dshWebUrl").toString(); }
     bool activated() const { return !m_credential.isEmpty(); }
     bool verificationRequired() const { return m_verificationRequired; }
     bool registrationAvailable() const { return m_registrationAvailable; }
@@ -105,7 +107,7 @@ public:
     Q_INVOKABLE void copyProvider(const QString &id);
     Q_INVOKABLE void openAgent(const QString &kind);
     Q_INVOKABLE void openAgentTui(const QString &kind);
-    Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &piPath, const QString &codexPath, const QString &name, bool dsh, const QString &dshPath);
+    Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &piPath, const QString &codexPath, const QString &name, bool dsh, const QString &dshPath, const QString &dshUrl);
     Q_INVOKABLE void diagnose();
     Q_INVOKABLE void exportDiagnostics();
     Q_INVOKABLE void copyDiagnostics();

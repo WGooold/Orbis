@@ -9,6 +9,7 @@ import { catalogSpecs } from "./provider-catalog.js";
 type Obj = Record<string, unknown>;
 const isObject = (value: unknown): value is Obj => value !== null && typeof value === "object" && !Array.isArray(value);
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
+const dshDefaultSelection = (rows: Obj[]): Obj => object((rows.find(row => row.id === "agent-default-model") ?? rows.find(row => row.id === "acp"))?.config);
 export type ProviderFields = { baseUrl: string; apiKey: string; model: string; api: string; providerKey: string; headers?: Record<string, string>; compat?: Obj; models?: Obj[]; catalog?: Obj[]; reasoningEffort?: string };
 export function providerFields(profile: ProviderProfile): ProviderFields {
   const config = profile.config;
@@ -23,10 +24,10 @@ export function providerFields(profile: ProviderProfile): ProviderFields {
   if (document.errors.length || document.warnings.length) return { providerKey: "", baseUrl: "", apiKey: "", model: "", api: "openai-completions" };
   const patch: unknown = document.toJS();
   const rows = Array.isArray(patch) ? patch.map(object) : [];
-  const acp = object(rows.find(row => row.id === "acp")?.config);
-  const key = String(acp.provider ?? "custom");
+  const selection = dshDefaultSelection(rows);
+  const key = String(selection.provider ?? "custom");
   const route = object(object(object(rows.find(row => row.id === "llm-pi-ai")?.config).providers)[key]);
-  return { providerKey: key, baseUrl: String(route.baseURL ?? ""), apiKey: String(object(config.env)[String(route.apiKeyEnv ?? "ORBIS_DSH_API_KEY")] ?? ""), model: String(acp.model ?? ""), api: String(route.api ?? "openai-completions") };
+  return { providerKey: key, baseUrl: String(route.baseURL ?? ""), apiKey: String(object(config.env)[String(route.apiKeyEnv ?? "ORBIS_DSH_API_KEY")] ?? ""), model: String(selection.model ?? ""), api: String(route.api ?? "openai-completions") };
 }
 /** Basic form is a projection over the complete native config; advanced mode retains all fields. */
 export function applyProviderFields(kind: AgentKind, previous: Obj, fields: ProviderFields, create = false): Obj {
@@ -111,7 +112,7 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
     const row = (id: string): Obj => { let item = rows.find(value => value.id === id); if (!item) { item = { id }; rows.push(item); } return item; };
     const llm = row("llm-pi-ai"); const llmConfig = object(llm.config);
     const providers = object(llmConfig.providers); const route = object(providers[fields.providerKey]);
-    const previousModel = String(object(row("acp").config).model ?? "");
+    const previousModel = String(dshDefaultSelection(rows).model ?? "");
     const models = Array.isArray(route.models) ? route.models.map(object) : [];
     const index = models.findIndex(model => model.id === previousModel);
     if (!models.some(model => model.id === fields.model)) {
@@ -120,7 +121,9 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
     }
     const envKey = typeof route.apiKeyEnv === "string" && /^[A-Z_][A-Z0-9_]*$/.test(route.apiKeyEnv) ? route.apiKeyEnv : "ORBIS_DSH_API_KEY";
     llm.config = { ...llmConfig, providers: { ...providers, [fields.providerKey]: { ...route, baseURL: fields.baseUrl, api: fields.api, apiKeyEnv: envKey, models } } };
-    const acp = row("acp"); acp.config = { ...object(acp.config), provider: fields.providerKey, model: fields.model };
+    const selection = row("agent-default-model"); selection.config = { ...object(selection.config), provider: fields.providerKey, model: fields.model };
+    const acp = rows.find(item => item.id === "acp");
+    if (acp) acp.config = { ...object(acp.config), provider: fields.providerKey, model: fields.model };
     config.patch = yaml(rows); config.env = { ...object(config.env), [envKey]: fields.apiKey };
   }
   return config;

@@ -415,7 +415,7 @@ ApplicationWindow {
                     Card {
                         id: settingsPane
                         visible: window.page === 3; Layout.fillWidth: true
-                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; piPathField.text = host.piEntry; codexPathField.text = host.codexEntry; dshPathField.text = host.dshEntry; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled }
+                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; piPathField.text = host.piEntry; codexPathField.text = host.codexEntry; dshPathField.text = host.dshEntry; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled }
                         ColumnLayout {
                             anchors.fill: parent; spacing: 15
                             Heading { text: "常规" }
@@ -432,7 +432,9 @@ ApplicationWindow {
                             Field { id: piPathField; Layout.fillWidth: true; placeholderText: "Pi：自动检测" }
                             Field { id: codexPathField; Layout.fillWidth: true; placeholderText: "Codex：自动检测" }
                             Field { id: dshPathField; Layout.fillWidth: true; placeholderText: "DeepSeek Harness：自动检测" }
-                            ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, piPathField.text, codexPathField.text, nameField.text, dshSwitch.checked, dshPathField.text) }
+                            Label { text: "DeepSeek Web 启动链接（可选）"; color: "#4b5d78" }
+                            Field { id: dshWebUrlField; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
+                            ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, piPathField.text, codexPathField.text, nameField.text, dshSwitch.checked, dshPathField.text, dshWebUrlField.text) }
                             Hint { text: "修改设置前请先在概览中暂停连接。"; Layout.fillWidth: true }
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#e5eaf2"; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }

@@ -35,7 +35,40 @@ describe("CC Switch provider configuration semantics", () => {
     const fields = providerFields({ kind: "dsh", id: "dsh", name: "DSH", config });
     const next = applyProviderFields("dsh", config, { ...fields, model: "renamed", apiKey: "new" });
     expect(next.env).toEqual({ CUSTOM_KEY: "new" });
-    expect(parseYaml(String(next.patch))[0].config.providers.custom).toMatchObject({ apiKeyEnv: "CUSTOM_KEY", models: [{ id: "secondary", keep: true }, { id: "renamed", keep: 42 }] });
+    const rows = parseYaml(String(next.patch));
+    expect(rows[0].config.providers.custom).toMatchObject({ apiKeyEnv: "CUSTOM_KEY", models: [{ id: "secondary", keep: true }, { id: "renamed", keep: 42 }] });
+    expect(rows).toContainEqual({ id: "agent-default-model", config: { provider: "custom", model: "renamed" } });
+    expect(rows).toContainEqual({ id: "acp", config: { provider: "custom", model: "renamed" } });
+  });
+  it("prefers DSH's shared Web default and preserves unrelated patch configuration", () => {
+    const rows = [
+      { id: "llm-pi-ai", config: { providers: {
+        web: { apiKeyEnv: "WEB_KEY", baseURL: "https://example.com/v1", api: "openai-responses", models: [{ id: "web-model", reasoningEfforts: { high: "high" } }, { id: "secondary" }], compat: { supportsMaxOutputTokens: false } },
+        legacy: { apiKeyEnv: "LEGACY_KEY", models: [{ id: "legacy-model" }] },
+      }, future: true } },
+      { id: "agent-default-model", config: { provider: "web", model: "web-model", reasoningEffort: "high", future: "keep" } },
+      { id: "acp", config: { provider: "legacy", model: "legacy-model", timeout: 12 } },
+      { id: "unrelated", config: { nested: ["preserved"] }, disabled: true },
+      { insert: [{ id: "custom-plugin", name: "custom-plugin", config: { retain: true } }] },
+    ];
+    const config = { env: { WEB_KEY: "web-key", LEGACY_KEY: "legacy-key" }, patch: JSON.stringify(rows) };
+    const fields = providerFields({ kind: "dsh", id: "dsh", name: "DSH", config });
+    expect(fields).toMatchObject({ providerKey: "web", model: "web-model", baseUrl: "https://example.com/v1", api: "openai-responses", apiKey: "web-key" });
+    const next = applyProviderFields("dsh", config, { ...fields, model: "updated" });
+    const updated = parseYaml(String(next.patch));
+    expect(updated[0].config).toEqual({ ...rows[0]!.config, providers: { ...rows[0]!.config!.providers, web: { ...rows[0]!.config!.providers!.web, models: [{ id: "updated", reasoningEfforts: { high: "high" } }, { id: "secondary" }] } } });
+    expect(updated[1]).toEqual({ id: "agent-default-model", config: { provider: "web", model: "updated", reasoningEffort: "high", future: "keep" } });
+    expect(updated[2]).toEqual({ id: "acp", config: { provider: "web", model: "updated", timeout: 12 } });
+    expect(updated.slice(3)).toEqual(rows.slice(3));
+    expect(next.env).toEqual(config.env);
+  });
+  it("creates DSH shared defaults without adding an ACP-only row or changing the API root", () => {
+    const fields = { providerKey: "custom", model: "custom-model", baseUrl: "https://example.com/", api: "openai-responses", apiKey: "key" };
+    const config = applyProviderFields("dsh", newProviderConfig("dsh"), fields, true);
+    const rows = parseYaml(String(config.patch));
+    expect(rows).toContainEqual({ id: "agent-default-model", config: { provider: "custom", model: "custom-model" } });
+    expect(rows.some((row: { id?: string }) => row.id === "acp")).toBe(false);
+    expect(providerFields({ kind: "dsh", id: "dsh", name: "DSH", config })).toEqual(fields);
   });
   it("imports native Codex auth/config and backfills external changes before switching", async () => {
     const { manager, paths } = await fixture();

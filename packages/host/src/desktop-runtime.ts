@@ -11,6 +11,7 @@ import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { resolveDshCommand } from "./dsh-client.js";
+import { ensureDshWebService, validateDshWebUrl } from "./dsh-web-service.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
 import { defaultStunServers } from "./config.js";
 import { ProviderManager, ProviderError, agentKind, providerMetadata, type ProviderPaths, type ProviderProfile, type ProviderSummary } from "./provider-manager.js";
@@ -26,7 +27,7 @@ import { usageTemplate } from "./provider-usage-templates.js";
 const execute = promisify(execFile);
 export type DesktopSettings = {
   relayUrl: string; credential: string; codexEnabled?: boolean; piEntry?: string; codexEntry?: string;
-  dshEnabled?: boolean; dshEntry?: string;
+  dshEnabled?: boolean; dshEntry?: string; dshWebUrl?: string;
   lanPort?: number; stunServers?: string[];
 };
 export type DesktopEvent = { event: string; [key: string]: unknown };
@@ -84,6 +85,7 @@ export class DesktopRuntime {
     if (settings?.piEntry) process.env.ORBIS_PI_ENTRY = settings.piEntry; else delete process.env.ORBIS_PI_ENTRY;
     if (settings?.codexEntry) process.env.ORBIS_CODEX_ENTRY = settings.codexEntry; else delete process.env.ORBIS_CODEX_ENTRY;
     if (settings?.dshEntry) process.env.ORBIS_DSH_ENTRY = settings.dshEntry; else delete process.env.ORBIS_DSH_ENTRY;
+    if (settings?.dshWebUrl?.trim()) process.env.ORBIS_DSH_WEB_URL = validateDshWebUrl(settings.dshWebUrl.trim()); else delete process.env.ORBIS_DSH_WEB_URL;
     // Existing installations win. Managed installations are a fallback and never replace global npm packages.
     const managed = join(process.env.LOCALAPPDATA ?? homedir(), "Orbis", "agents");
     const searchPath = process.env.PATH ?? process.env.Path ?? "";
@@ -347,16 +349,25 @@ export class DesktopRuntime {
 
   async openAgent(kind: string, mode = "setup"): Promise<void> {
     if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
-    const cli = kind === "pi" ? await resolvePiCommand() : kind === "codex" ? await resolveCodexCommand() : kind === "dsh" ? await resolveDshCommand() : undefined;
+    if (kind === "dsh") {
+      const service = await ensureDshWebService(await this.#providers.environment("dsh"));
+      const script = `Start-Process -FilePath '${service.url.replaceAll("'", "''")}' -ErrorAction Stop`;
+      try {
+        await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15_000 });
+      } catch { throw new Error("无法打开 DeepSeek 网页工作台，请检查默认浏览器"); }
+      finally { await service.stop(); }
+      return;
+    }
+    const cli = kind === "pi" ? await resolvePiCommand() : kind === "codex" ? await resolveCodexCommand() : undefined;
     if (!cli) throw new Error("未知 agent");
     const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-    const args = kind === "pi" ? [...cli.prefixArgs, "-e", defaultExtensionPath()] : kind === "dsh" ? [...cli.prefixArgs, "web"] : mode === "setup" ? [...cli.prefixArgs, "login"] : cli.prefixArgs;
+    const args = kind === "pi" ? [...cli.prefixArgs, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : cli.prefixArgs;
     const script = `& ${[cli.command, ...args].map(quote).join(" ")}`;
     // A detached Node child with ignored stdio has no usable console on some
     // Windows hosts. Let Windows create the visible terminal with its own input.
     const encoded = Buffer.from(script, "utf16le").toString("base64");
     const launcher = `$ErrorActionPreference = 'Stop'; Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-NoExit','-EncodedCommand',${quote(encoded)} -WorkingDirectory ${quote(homedir())} -WindowStyle Normal -ErrorAction Stop`;
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(launcher, "utf16le").toString("base64")], { stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000, ...(kind === "dsh" ? { env: await this.#providers.environment("dsh") } : {}) });
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(launcher, "utf16le").toString("base64")], { stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000 });
     await new Promise<void>((resolve, reject) => {
       child.once("error", reject);
       child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开终端界面，请重试")));

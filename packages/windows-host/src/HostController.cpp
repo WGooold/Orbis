@@ -14,6 +14,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QUrlQuery>
 #include <QVersionNumber>
 
 static QString friendlyError(const QString &code) {
@@ -219,7 +220,7 @@ void HostController::refreshRegistrationPolicy() {
         reply->deleteLater();
     });
 }
-QJsonObject HostController::agentSettings() const { return {{"piEntry", piEntry()}, {"codexEntry", codexEntry()}, {"dshEntry", dshEntry()}}; }
+QJsonObject HostController::agentSettings() const { return {{"piEntry", piEntry()}, {"codexEntry", codexEntry()}, {"dshEntry", dshEntry()}, {"dshWebUrl", dshWebUrl()}}; }
 void HostController::startHost() {
     if (!activated() || !m_bridgeReady || m_desiredRunning) return;
     m_desiredRunning = true; m_state = "connecting"; m_settings.setValue("runHost", true);
@@ -315,17 +316,26 @@ void HostController::openAgent(const QString &kind) { command("openAgent", {{"ki
 void HostController::openAgentTui(const QString &kind) {
     if (!m_bridgeReady || busy()) return;
     command("openAgent", {{"kind", kind}, {"mode", "tui"}}, [this, kind](const QJsonValue &) {
-        setMessage(QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(kind == "pi" ? "Pi" : kind == "dsh" ? "DeepSeek Harness" : "Codex"));
+        setMessage(kind == "dsh" ? "已打开 DeepSeek Harness 网页工作台" : QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(kind == "pi" ? "Pi" : "Codex"));
     });
 }
-void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &piPath, const QString &codexPath, const QString &name, bool dsh, const QString &dshPath) {
+void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &piPath, const QString &codexPath, const QString &name, bool dsh, const QString &dshPath, const QString &dshUrl) {
     QString normalized = relay.trimmed(); while (normalized.endsWith('/')) normalized.chop(1);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }
     if (m_desiredRunning) { setMessage("请先在概览中暂停连接，再修改设置"); return; }
+    if (!dshUrl.trimmed().isEmpty()) {
+        const QUrl web(dshUrl.trimmed());
+        const auto query = QUrlQuery(web).queryItems();
+        if (!web.isValid() || web.scheme() != "http" || !(web.host() == "127.0.0.1" || web.host() == "localhost" || web.host() == "::1")
+            || !web.userInfo().isEmpty() || (!web.path().isEmpty() && web.path() != "/") || web.hasFragment()
+            || query.size() != 1 || query.first().first != "token" || !QRegularExpression("^[A-Za-z0-9_-]{16,}$").match(query.first().second).hasMatch()) {
+            setMessage("请填写本机 dsh web 启动时输出的完整 http://127.0.0.1:端口/?token=... 链接"); return;
+        }
+    }
     if (normalized != relayUrl()) { m_credential.clear(); m_email.clear(); m_challenge.clear(); m_verificationRequired = true; m_registrationAvailable = false; QFile::remove(m_dataDir + "/activation.dat"); }
     m_settings.setValue("relayUrl", normalized); m_settings.setValue("autoStart", startup); m_settings.setValue("codexEnabled", codex);
     m_settings.setValue("piEntry", piPath.trimmed()); m_settings.setValue("codexEntry", codexPath.trimmed()); m_settings.sync();
-    m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshEntry", dshPath.trimmed()); m_settings.sync();
+    m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshEntry", dshPath.trimmed()); m_settings.setValue("dshWebUrl", dshUrl.trimmed()); m_settings.sync();
 #ifdef Q_OS_WIN
     QSettings startupRegistry("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", QSettings::NativeFormat);
     if (startup) startupRegistry.setValue("OrbisHost", '"' + QDir::toNativeSeparators(QCoreApplication::applicationFilePath()) + "\" --tray");
