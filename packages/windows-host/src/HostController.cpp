@@ -86,6 +86,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
         m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_busy = 0; m_qr.clear();
+        if (agentInstalling()) m_agentInstallStage = "error";
         if (m_shutdown) return;
         m_state = "error";
         setMessage(QString("Host 核心已退出（%1）").arg(code));
@@ -129,7 +130,11 @@ void HostController::receiveLine(const QJsonObject &line) {
         int id = line.value("id").toInt();
         if (!m_pending.contains(id)) return;
         auto callback = m_pending.take(id); auto method = m_methods.take(id); m_busy = qMax(0, m_busy - 1);
-        if (line.contains("error")) { if (method == "start") { m_desiredRunning = false; m_state = "error"; } setMessage(line.value("error").toString()); }
+        if (line.contains("error")) {
+            if (method == "start") { m_desiredRunning = false; m_state = "error"; }
+            if (method == "install" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; detectAgents(); }
+            setMessage(line.value("error").toString());
+        }
         else if (callback) callback(line.value("result"));
     } else {
         const auto event = line.value("event").toString();
@@ -141,6 +146,17 @@ void HostController::receiveLine(const QJsonObject &line) {
             for (auto &entry : m_providers) {
                 auto provider = entry.toMap();
                 if (provider.value("id").toString() == line.value("providerId").toString()) { provider["usage"] = line.value("usage").toObject().toVariantMap(); entry = provider; }
+            }
+        }
+        else if (event == "agentInstall") {
+            m_agentInstallKind = line.value("kind").toString();
+            m_agentInstallStage = line.value("stage").toString();
+            if (line.contains("version")) m_agentInstallVersion = line.value("version").toString();
+        }
+        else if (event == "agentInstalled") {
+            const auto kind = line.value("kind").toString();
+            if (QStringList{"pi", "codex", "dsh"}.contains(kind)) {
+                m_settings.setValue(kind + "Entry", line.value("entry").toString()); m_settings.sync();
             }
         }
         else if (event == "status") { m_devices = line.value("devices").toArray().toVariantList(); m_runtimeCount = line.value("runtimeCount").toInt(); }
@@ -222,7 +238,7 @@ void HostController::refreshRegistrationPolicy() {
 }
 QJsonObject HostController::agentSettings() const { return {{"piEntry", piEntry()}, {"codexEntry", codexEntry()}, {"dshEntry", dshEntry()}}; }
 void HostController::startHost() {
-    if (!activated() || !m_bridgeReady || m_desiredRunning) return;
+    if (!activated() || !m_bridgeReady || m_desiredRunning || agentInstalling()) return;
     m_desiredRunning = true; m_state = "connecting"; m_settings.setValue("runHost", true);
     auto params = agentSettings(); params.insert("relayUrl", relayUrl()); params.insert("credential", m_credential); params.insert("codexEnabled", codexEnabled());
     params.insert("dshEnabled", dshEnabled());
@@ -233,12 +249,40 @@ void HostController::pair() { command("pair", {}, [this](const QJsonValue &value
 void HostController::cancelPair() { m_qr.clear(); m_pairExpires = 0; command("cancelPair"); }
 void HostController::revoke(const QString &deviceId) { command("revoke", {{"deviceId", deviceId}}, [this](const QJsonValue &) { setMessage("设备已撤销，连接立即失效"); }); }
 void HostController::renameDevice(const QString &deviceId, const QString &label) { command("renameDevice", {{"deviceId", deviceId}, {"label", label}}); }
-void HostController::detectAgents() { command("detect", agentSettings(), [this](const QJsonValue &value) { m_agents = value.toArray().toVariantList(); emit changed(); }); }
-void HostController::installAgent(const QString &kind, const QString &version) {
-    command("install", {{"kind", kind}, {"version", version.trimmed()}}, [this, kind](const QJsonValue &value) {
+void HostController::detectAgents(bool checkLatest) {
+    auto params = agentSettings(); params.insert("checkLatest", checkLatest);
+    command("detect", params, [this](const QJsonValue &value) { m_agents = value.toArray().toVariantList(); emit changed(); });
+}
+void HostController::installAgent(const QString &kind, const QString &version, const QString &mode) {
+    if (!m_bridgeReady || busy()) return;
+    m_agentInstallKind = kind; m_agentInstallStage = "queued"; m_agentInstallVersion = version.trimmed(); emit changed();
+    command("install", {{"kind", kind}, {"version", version.trimmed()}, {"mode", mode}}, [this, kind](const QJsonValue &value) {
         const auto result = value.toObject();
         m_settings.setValue(kind + "Entry", result.value("entry").toString()); m_settings.sync();
+        m_agentInstallStage = "done"; m_agentInstallVersion = result.value("version").toString();
         setMessage(kind + " " + result.value("version").toString() + " 已安装并选中"); detectAgents();
+    });
+}
+void HostController::cancelInstall() {
+    if (!agentInstalling() || m_agentInstallStage == "cancelling") return;
+    m_agentInstallStage = "cancelling"; emit changed();
+    command("cancelInstall");
+}
+void HostController::installAllAgents(const QString &action) {
+    if (!m_bridgeReady || busy()) return;
+    m_agentInstallStage = "queued"; emit changed();
+    command("installAll", {{"action", action}}, [this](const QJsonValue &value) {
+        const auto result = value.toObject();
+        const auto failures = result.value("failures").toArray().toVariantList();
+        QStringList details; for (const auto &failure : failures) details.append(failure.toString());
+        m_agentInstallStage = result.value("cancelled").toBool() ? "cancelled" : failures.isEmpty() ? "done" : "error";
+        setMessage(QString("%1：成功 %2 项，失败 %3 项%4").arg(m_agentInstallStage == "cancelled" ? "批量操作已取消" : "批量操作完成").arg(result.value("succeeded").toInt()).arg(failures.size()).arg(details.isEmpty() ? "" : "\n" + details.join('\n')));
+        detectAgents();
+    });
+}
+void HostController::activateInstallation(const QString &kind, const QString &id) {
+    command("activateInstallation", {{"kind", kind}, {"id", id}}, [this](const QJsonValue &value) {
+        setMessage("已切换到 Agent " + value.toObject().value("version").toString()); detectAgents();
     });
 }
 void HostController::loadProviders(const QString &kind) {
@@ -363,7 +407,11 @@ void HostController::diagnose() {
 }
 QString HostController::diagnostics() const {
     QJsonArray agents;
-    for (const auto &value : m_agents) { auto agent = QJsonObject::fromVariantMap(value.toMap()); agent.remove("path"); agent.remove("error"); agents.append(agent); }
+    for (const auto &value : m_agents) {
+        auto agent = QJsonObject::fromVariantMap(value.toMap());
+        for (const auto &key : {"path", "entry", "error", "installations", "copies"}) agent.remove(key);
+        agents.append(agent);
+    }
     QJsonObject result{{"version", version()}, {"state", m_state}, {"activated", activated()}, {"devices", m_devices.size()}, {"agents", agents}, {"logs", QJsonArray::fromStringList(m_logs)}};
     return QString::fromUtf8(QJsonDocument(result).toJson());
 }

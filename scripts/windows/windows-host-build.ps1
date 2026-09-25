@@ -44,7 +44,7 @@ try {
             New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
             # Remove development tooling from PATH when checking the portable package.
             $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
-            $testProcess = Start-Process -FilePath "$stage\OrbisHost.exe" -ArgumentList '--smoke-test','--data-dir',('"' + $smokeDir + '"'),'--screenshot',('"' + $releaseRoot + '\preview.png"') -WindowStyle Hidden -PassThru -Wait -RedirectStandardError "$smokeDir\qml.log"
+            $testProcess = Start-Process -FilePath "$stage\OrbisHost.exe" -ArgumentList '--smoke-test','--smoke-agents','--data-dir',('"' + $smokeDir + '"'),'--screenshot',('"' + $releaseRoot + '\preview.png"') -WindowStyle Hidden -PassThru -Wait -RedirectStandardError "$smokeDir\qml.log"
             $env:Path = "$CompilerRoot\bin;$QtRoot\bin;$savedPath"
             if ($testProcess.ExitCode -ne 0) { throw "Packaged app smoke test failed: $($testProcess.ExitCode). See $smokeDir" }
             $archive = Join-Path $releaseRoot 'OrbisHost-0.1.4-windows-x64.zip'

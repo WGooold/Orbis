@@ -37,6 +37,10 @@ class HostController : public QObject {
     Q_PROPERTY(int runtimeCount READ runtimeCount NOTIFY changed)
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
+    Q_PROPERTY(QString agentInstallKind READ agentInstallKind NOTIFY changed)
+    Q_PROPERTY(QString agentInstallStage READ agentInstallStage NOTIFY changed)
+    Q_PROPERTY(QString agentInstallVersion READ agentInstallVersion NOTIFY changed)
+    Q_PROPERTY(bool agentInstalling READ agentInstalling NOTIFY changed)
     Q_PROPERTY(QVariantList providers READ providers NOTIFY changed)
     Q_PROPERTY(QString providerKind READ providerKind NOTIFY changed)
     Q_PROPERTY(QVariantList providerPresets READ providerPresets NOTIFY changed)
@@ -70,6 +74,10 @@ public:
     int runtimeCount() const { return m_runtimeCount; }
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
+    QString agentInstallKind() const { return m_agentInstallKind; }
+    QString agentInstallStage() const { return m_agentInstallStage; }
+    QString agentInstallVersion() const { return m_agentInstallVersion; }
+    bool agentInstalling() const { return QStringList{"queued", "resolving", "downloading", "verifying", "activating", "cancelling"}.contains(m_agentInstallStage); }
     QVariantList providers() const { return m_providers; }
     QString providerKind() const { return m_providerKind; }
     QVariantList providerPresets() const { return m_providerPresets; }
@@ -85,8 +93,11 @@ public:
     Q_INVOKABLE void cancelPair();
     Q_INVOKABLE void revoke(const QString &deviceId);
     Q_INVOKABLE void renameDevice(const QString &deviceId, const QString &label);
-    Q_INVOKABLE void detectAgents();
-    Q_INVOKABLE void installAgent(const QString &kind, const QString &version = "latest");
+    Q_INVOKABLE void detectAgents(bool checkLatest = false);
+    Q_INVOKABLE void installAgent(const QString &kind, const QString &version = "latest", const QString &mode = "current");
+    Q_INVOKABLE void installAllAgents(const QString &action);
+    Q_INVOKABLE void activateInstallation(const QString &kind, const QString &id);
+    Q_INVOKABLE void cancelInstall();
     Q_INVOKABLE void loadProviders(const QString &kind);
     Q_INVOKABLE void editProvider(const QString &id);
     Q_INVOKABLE void presetProvider(const QString &id);
@@ -158,6 +169,7 @@ private:
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_challenge, m_challengeEmail;
     QStringList m_logs;
     QVariantList m_devices, m_agents;
+    QString m_agentInstallKind, m_agentInstallStage, m_agentInstallVersion;
     QVariantList m_providers;
     QVariantList m_providerPresets;
     QString m_providerKind = "codex";

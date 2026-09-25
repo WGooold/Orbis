@@ -54,6 +54,11 @@ const nodeRoot = dirname(process.execPath);
 await mkdir(join(output, "node", "node_modules"), { recursive: true });
 await cp(process.execPath, join(output, "node", "node.exe"));
 await cp(join(nodeRoot, "node_modules", "npm"), join(output, "node", "node_modules", "npm"), { recursive: true, dereference: true });
+// npm lifecycle scripts may invoke npm/npx themselves; keep those launchers next to the pinned Node.
+for (const launcher of ["npm.cmd", "npx.cmd", "npm", "npx"]) {
+  try { await access(join(nodeRoot, launcher)); } catch { continue; }
+  await cp(join(nodeRoot, launcher), join(output, "node", launcher));
+}
 for (const file of await readdir(nodeRoot)) if (/^(LICENSE|LICENSE\.txt)$/i.test(file)) await cp(join(nodeRoot, file), join(output, "node", file));
 await writeFile(join(output, "DEPENDENCIES.json"), JSON.stringify({ node: process.version, packages: inventory }, null, 2));
 console.log(`Packaged Node ${process.version} and ${inventory.length} runtime packages into ${output}`);

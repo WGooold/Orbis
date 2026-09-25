@@ -36,6 +36,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"smoke-test", "Render the window and exit after checking the Host bridge"});
     parser.addOption({"screenshot", "Save the smoke-test window image", "path"});
     parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
+    parser.addOption({"smoke-agents", "Also render Agent installation dialogs without starting downloads"});
     parser.process(app);
     QString dataDir = parser.value("data-dir"); if (dataDir.isEmpty()) dataDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     dataDir = QDir(dataDir).absolutePath(); QDir().mkpath(dataDir);
@@ -141,6 +142,26 @@ int main(int argc, char *argv[]) {
                 QTimer::singleShot(8500, &app, [&] { controller.loadProxyStatus(true); });
                 QTimer::singleShot(9300, &app, [&] {
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".routing.png")) app.exit(7);
+                    app.exit(0);
+                });
+            } else if (parser.isSet("smoke-agents")) {
+                QTimer::singleShot(1800, &app, [&] { QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 2)); });
+                QTimer::singleShot(2500, &app, [&] {
+                    if (controller.agents().isEmpty()) { app.exit(12); return; }
+                    QMetaObject::invokeMethod(window, "showAgentInstaller", Q_ARG(QVariant, controller.agents().first()));
+                });
+                QTimer::singleShot(3200, &app, [&] {
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-install.png")) app.exit(7);
+                    QMetaObject::invokeMethod(window, "closeAgentDialogs");
+                    QMetaObject::invokeMethod(window, "showAgentHistory", Q_ARG(QVariant, controller.agents().first()));
+                });
+                QTimer::singleShot(4000, &app, [&] {
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-history.png")) app.exit(7);
+                    QMetaObject::invokeMethod(window, "closeAgentDialogs");
+                    QMetaObject::invokeMethod(window, "showAgentBatch", Q_ARG(QVariant, "update"));
+                });
+                QTimer::singleShot(4800, &app, [&] {
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-batch.png")) app.exit(7);
                     app.exit(0);
                 });
             } else QTimer::singleShot(1800, &app, [&] { app.exit(0); });
