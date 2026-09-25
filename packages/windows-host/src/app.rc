@@ -1,8 +1,8 @@
 #include <windows.h>
 IDI_ICON1 ICON "assets/orbis.ico"
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,1,5,0
- PRODUCTVERSION 0,1,5,0
+ FILEVERSION 0,1,6,0
+ PRODUCTVERSION 0,1,6,0
  FILEOS VOS_NT_WINDOWS32
  FILETYPE VFT_APP
 BEGIN
@@ -12,9 +12,9 @@ BEGIN
   BEGIN
    VALUE "CompanyName", "Orbis"
    VALUE "FileDescription", "Orbis Host"
-   VALUE "FileVersion", "0.1.5"
+   VALUE "FileVersion", "0.1.6"
    VALUE "ProductName", "Orbis Host"
-   VALUE "ProductVersion", "0.1.5"
+   VALUE "ProductVersion", "0.1.6"
   END
  END
  BLOCK "VarFileInfo"
