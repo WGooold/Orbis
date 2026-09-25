@@ -572,6 +572,28 @@ describe("CodexRuntime", () => {
     expect(statuses.at(-1)).toMatchObject({ status: "idle" });
   });
 
+  it("user_message attachments are included in the Codex text input", async () => {
+    const h = makeHarness();
+    await activate(h);
+
+    expect(h.runtime.handleCommand({
+      type: "user_message",
+      text: "请检查这些文件",
+      messageId: "with-files",
+      attachments: ["C:\\work\\report.txt", "C:\\work\\screenshot.png"],
+    }, "send-files", "th-1")).toBe(true);
+    await vi.waitFor(() => {
+      expect(h.requests).toHaveBeenCalledWith("turn/start", {
+        threadId: "th-1",
+        input: [{
+          type: "text",
+          text: "请检查这些文件\n\n附件路径：\nC:\\work\\report.txt\nC:\\work\\screenshot.png",
+        }],
+        clientUserMessageId: "with-files",
+      });
+    });
+  });
+
   it("clientUserMessageId：userMessage item 用 App 的 messageId 上屏，落盘后映射回 entry id", async () => {
     const h = makeHarness();
     await activate(h);

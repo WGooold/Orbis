@@ -159,8 +159,19 @@ type PendingApproval = {
 type QueuedTurn = {
   messageId: string;
   text: string;
+  attachments?: readonly string[];
   delivery: "steer" | "followUp";
 };
+
+/**
+ * Codex app-server currently accepts text input for a turn. Keep the uploaded
+ * files explicit in that text so Codex can inspect the paths on the computer.
+ */
+function codexPromptText(text: string, attachments?: readonly string[]): string {
+  return attachments === undefined || attachments.length === 0
+    ? text
+    : `${text}\n\n附件路径：\n${attachments.join("\n")}`;
+}
 
 type PersistedMessageMapping = {
   messageId: string;
@@ -1131,7 +1142,7 @@ export class CodexRuntime implements AgentBackend {
         // messageId 钉到该 item 上（clientId 原样带回），与 Pi 的 message_start 单事件链同构。
         const messageId = command.messageId ?? `user-${Date.now()}`;
         this.#commandResult(threadId, commandId, true);
-        void this.#startTurn(thread, command.text, command.messageId).catch((error) => {
+        void this.#startTurn(thread, command.text, command.attachments, command.messageId).catch((error) => {
           this.#failTurnStart(thread, messageId, command.text, error);
           this.#commandResult(threadId, commandId, false, describeError(error));
         });
@@ -1205,7 +1216,12 @@ export class CodexRuntime implements AgentBackend {
       return true;
     }
     const messageId = command.messageId ?? `queued-${Date.now()}`;
-    const queued: QueuedTurn = { messageId, text: command.text, delivery: command.delivery };
+    const queued: QueuedTurn = {
+      messageId,
+      text: command.text,
+      ...(command.attachments === undefined ? {} : { attachments: command.attachments }),
+      delivery: command.delivery,
+    };
     if (command.delivery === "steer") {
       // 先插队再打断：turn/completed 里的补跑（#drainQueue）会立刻把它送上。
       thread.queue.unshift(queued);
@@ -1239,7 +1255,7 @@ export class CodexRuntime implements AgentBackend {
         delivery: next.delivery,
         state: "delivered",
       });
-      void this.#startTurn(thread, next.text, next.messageId).catch((error) => {
+      void this.#startTurn(thread, next.text, next.attachments, next.messageId).catch((error) => {
         this.#failTurnStart(thread, next.messageId, next.text, error);
       });
     }
@@ -1696,8 +1712,17 @@ export class CodexRuntime implements AgentBackend {
     });
   }
 
-  async #startTurn(thread: ThreadState, text: string, clientUserMessageId?: string): Promise<void> {
-    return this.#startTurnWithInput(thread, [{ type: "text", text }], clientUserMessageId);
+  async #startTurn(
+    thread: ThreadState,
+    text: string,
+    attachments?: readonly string[],
+    clientUserMessageId?: string,
+  ): Promise<void> {
+    return this.#startTurnWithInput(
+      thread,
+      [{ type: "text", text: codexPromptText(text, attachments) }],
+      clientUserMessageId,
+    );
   }
 
   async #startTurnWithInput(thread: ThreadState, input: unknown[], clientUserMessageId?: string): Promise<void> {
