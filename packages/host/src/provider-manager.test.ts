@@ -21,6 +21,15 @@ async function fixture(hooks: ProviderHooks = {}) {
 const codex = (provider: string, key: string) => ({ auth: { OPENAI_API_KEY: key }, config: `model_provider = "${provider}"\nmodel = "test-model"\n[model_providers.${provider}]\nname = "${provider}"\nwire_api = "responses"\nbase_url = "https://example.com/v1"\n` });
 
 describe("CC Switch provider configuration semantics", () => {
+  it("round-trips routing form options and rejects malformed overrides before saving", () => {
+    const config = { ...codex("custom", "key"), apiFormat: "openai_chat", isFullUrl: true, promptCacheRouting: "disabled", codexChatReasoning: { supportsThinking: false, supportsEffort: true, thinkingParam: "none", effortParam: "reasoning.effort", effortValueMode: "openrouter" }, requestOverrides: { body: { service_tier: "priority" }, headers: { "x-custom": "kept" } }, chatOptions: { supportsStrictMode: false }, future: { value: 42 } };
+    const fields = providerFields({ kind: "codex", id: "custom", name: "Custom", config });
+    const next = applyProviderFields("codex", config, fields);
+    expect(next).toMatchObject({ ...fields.routing, apiFormat: "openai_chat", future: { value: 42 } });
+    expect(fields.api).toBe("openai-completions");
+    expect(() => applyProviderFields("codex", config, { ...fields, routing: { promptCacheRouting: "typo" } })).toThrow("cache routing");
+    expect(() => applyProviderFields("codex", config, { ...fields, routing: { requestOverrides: { body: [] } } })).toThrow("JSON object");
+  });
   it("round-trips a Pi built-in override without turning inheritance into explicit defaults", () => {
     for (const config of [{ apiKey: "ENV_KEY", future: true }, { apiKey: "!custom-command", models: [], compat: {} }]) {
       const fields = providerFields({ id: "anthropic", kind: "pi", name: "Anthropic", config });

@@ -37,6 +37,8 @@ describe("desktop Host lifecycle", () => {
       const activated = await registration.activate({ ...request, ...challenge, code: verificationCode });
       await runtime.start({ relayUrl: relay.url, credential: activated.credential, lanPort: 0, stunServers: [] });
       expect(events).toContainEqual({ event: "state", state: "connected" });
+      await expect(runtime.install("pi")).rejects.toThrow("请先暂停 Host");
+      await expect(runtime.installAll("update")).rejects.toThrow("请先暂停 Host");
       const pair = await runtime.pair() as { qr: string; expiresAt: number };
       expect(pair.qr).toMatch(/^data:image\/png;base64,/);
       expect(pair.expiresAt).toBeGreaterThan(Date.now());

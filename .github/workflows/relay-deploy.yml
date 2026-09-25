@@ -124,7 +124,7 @@ jobs:
           import hashlib, os, tarfile
           root = Path('/tmp/orbis-windows-artifact')
           with tarfile.open('/tmp/orbis-downloads-' + os.environ['RELEASE'] + '.tar.gz', 'w:gz') as archive:
-              for name in ['OrbisHost-0.1.4-windows-x64-setup.exe', 'OrbisHost-0.1.4-windows-x64.zip']:
+              for name in ['OrbisHost-0.1.5-windows-x64-setup.exe', 'OrbisHost-0.1.5-windows-x64.zip']:
                   matches = list(root.rglob(name))
                   assert len(matches) == 1, name
                   file = matches[0]

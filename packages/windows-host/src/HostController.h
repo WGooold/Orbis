@@ -38,10 +38,15 @@ class HostController : public QObject {
     Q_PROPERTY(int runtimeCount READ runtimeCount NOTIFY changed)
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
+    Q_PROPERTY(QString agentInstallKind READ agentInstallKind NOTIFY changed)
+    Q_PROPERTY(QString agentInstallStage READ agentInstallStage NOTIFY changed)
+    Q_PROPERTY(QString agentInstallVersion READ agentInstallVersion NOTIFY changed)
+    Q_PROPERTY(bool agentInstalling READ agentInstalling NOTIFY changed)
     Q_PROPERTY(QVariantList providers READ providers NOTIFY changed)
     Q_PROPERTY(QString providerKind READ providerKind NOTIFY changed)
     Q_PROPERTY(QVariantList providerPresets READ providerPresets NOTIFY changed)
     Q_PROPERTY(QString piDefaultProvider READ piDefaultProvider NOTIFY changed)
+    Q_PROPERTY(QVariantMap proxyStatus READ proxyStatus NOTIFY changed)
 public:
     HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QObject *parent = nullptr);
     ~HostController() override;
@@ -71,10 +76,15 @@ public:
     int runtimeCount() const { return m_runtimeCount; }
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
+    QString agentInstallKind() const { return m_agentInstallKind; }
+    QString agentInstallStage() const { return m_agentInstallStage; }
+    QString agentInstallVersion() const { return m_agentInstallVersion; }
+    bool agentInstalling() const { return QStringList{"queued", "resolving", "downloading", "verifying", "activating", "cancelling"}.contains(m_agentInstallStage); }
     QVariantList providers() const { return m_providers; }
     QString providerKind() const { return m_providerKind; }
     QVariantList providerPresets() const { return m_providerPresets; }
     QString piDefaultProvider() const { return m_piDefaultProvider; }
+    QVariantMap proxyStatus() const { return m_proxyStatus; }
     Q_INVOKABLE void requestCode(const QString &email);
     Q_INVOKABLE void activate(const QString &email, const QString &code);
     Q_INVOKABLE void activateWithoutEmail();
@@ -85,14 +95,20 @@ public:
     Q_INVOKABLE void cancelPair();
     Q_INVOKABLE void revoke(const QString &deviceId);
     Q_INVOKABLE void renameDevice(const QString &deviceId, const QString &label);
-    Q_INVOKABLE void detectAgents();
-    Q_INVOKABLE void installAgent(const QString &kind, const QString &version = "latest");
+    Q_INVOKABLE void detectAgents(bool checkLatest = false);
+    Q_INVOKABLE void installAgent(const QString &kind, const QString &version = "latest", const QString &mode = "current");
+    Q_INVOKABLE void installAllAgents(const QString &action);
+    Q_INVOKABLE void activateInstallation(const QString &kind, const QString &id);
+    Q_INVOKABLE void cancelInstall();
     Q_INVOKABLE void loadProviders(const QString &kind);
     Q_INVOKABLE void editProvider(const QString &id);
     Q_INVOKABLE void presetProvider(const QString &id);
     Q_INVOKABLE void previewProvider(const QVariantMap &draft);
     Q_INVOKABLE void loadCodexPreferences();
     Q_INVOKABLE void saveCodexPreferences(const QVariantMap &preferences);
+    Q_INVOKABLE void loadProxyStatus(bool open = false);
+    Q_INVOKABLE void saveProxyPreferences(const QVariantMap &preferences);
+    Q_INVOKABLE void resetProxyHealth(const QString &id);
     Q_INVOKABLE void checkProvider(const QString &id);
     Q_INVOKABLE void fetchProviderModels(const QVariantMap &draft);
     Q_INVOKABLE void editProviderUsage(const QString &id);
@@ -123,6 +139,8 @@ signals:
     void providerPreviewReady(const QVariantMap &draft);
     void codexPreferencesReady(const QVariantMap &preferences);
     void codexPreferencesSaved();
+    void proxyPreferencesReady(const QVariantMap &preferences);
+    void proxyPreferencesSaved();
     void providerModelsReady(const QVariantList &models);
     void providerUsageReady(const QString &id, const QVariantMap &script);
     void providerUsageSaved();
@@ -153,10 +171,12 @@ private:
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_challenge, m_challengeEmail;
     QStringList m_logs;
     QVariantList m_devices, m_agents;
+    QString m_agentInstallKind, m_agentInstallStage, m_agentInstallVersion;
     QVariantList m_providers;
     QVariantList m_providerPresets;
     QString m_providerKind = "codex";
     QString m_piDefaultProvider;
+    QVariantMap m_proxyStatus;
     int m_nextId = 1, m_busy = 0, m_cooldown = 0, m_runtimeCount = 0, m_crashes = 0;
     int m_policyTicks = 0;
     qint64 m_pairExpires = 0;

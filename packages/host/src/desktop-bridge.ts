@@ -11,19 +11,32 @@ const runtime = new DesktopRuntime(output, process.env.ORBIS_HOST_STATE_DIR, pro
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 let commands = Promise.resolve();
 let closing = false;
+let installCancellation = 0;
 input.on("line", line => {
   if (line.length > 65_536) return;
-  try { if ((JSON.parse(line) as { method?: string }).method === "shutdown") runtime.cancelInstall(); } catch { /* Normal request handling reports malformed JSON below. */ }
+  try {
+    const parsed = JSON.parse(line) as { id?: number; method?: string };
+    const method = Number.isSafeInteger(parsed.id) ? parsed.method : undefined;
+    if (method === "shutdown" || method === "cancelInstall") { installCancellation += 1; runtime.cancelInstall(); }
+    // Cancellation must bypass the serialized command queue: npm may still be running.
+    if (method === "cancelInstall") {
+      const request = JSON.parse(line) as { id: number };
+      output({ id: request.id, result: {} });
+      return;
+    }
+  } catch { /* Normal request handling reports malformed JSON below. */ }
+  const cancellationAtEnqueue = installCancellation;
   commands = commands.then(async () => {
     let request: { id: number; method: string; params?: Record<string, unknown> } | undefined;
     try {
       request = JSON.parse(line) as typeof request;
-      if (!request || !Number.isSafeInteger(request.id)) throw new Error("Invalid request");
+      if (!request || !Number.isSafeInteger(request.id) || typeof request.method !== "string") throw new Error("Invalid request");
+      if (["install", "installAll", "activateInstallation"].includes(request.method) && cancellationAtEnqueue !== installCancellation) throw new Error("安装已取消");
       const p = request.params ?? {};
       let result: unknown = {};
       switch (request.method) {
         case "initialize": result = await runtime.initialize(); break;
-        case "detect": result = await runtime.detect(p); break;
+        case "detect": result = await runtime.detect(p, p.checkLatest === true); break;
         case "start": await runtime.start(p as DesktopSettings); break;
         case "stop": await runtime.stop(); break;
         case "pair": result = await runtime.pair(); break;
@@ -31,13 +44,18 @@ input.on("line", line => {
         case "revoke": await runtime.revoke(String(p.deviceId)); break;
         case "renameDevice": await runtime.renameDevice(String(p.deviceId), String(p.label)); break;
         case "rename": await runtime.renameHost(String(p.name)); break;
-        case "install": result = await runtime.install(String(p.kind), String(p.version ?? "latest")); break;
+        case "install": result = await runtime.install(String(p.kind), String(p.version ?? "latest"), String(p.mode ?? "current")); break;
+        case "installAll": result = await runtime.installAll(String(p.action)); break;
+        case "activateInstallation": result = await runtime.activateInstallation(String(p.kind), String(p.id)); break;
         case "provider.list": result = await runtime.listProviders(String(p.kind)); break;
         case "provider.get": result = await runtime.getProvider(String(p.kind), String(p.id)); break;
         case "provider.draft": result = await runtime.providerDraft(String(p.kind), p.id ? String(p.id) : undefined, p.presetId ? String(p.presetId) : undefined); break;
         case "provider.presets": result = runtime.providerPresets(String(p.kind)); break;
         case "provider.preview": result = runtime.providerPreview(p); break;
         case "provider.codexPreferences": result = await runtime.codexPreferences(); break;
+        case "provider.proxyStatus": result = await runtime.proxyStatus(); break;
+        case "provider.saveProxyPreferences": result = await runtime.saveProxyPreferences(p); break;
+        case "provider.resetProxyHealth": result = await runtime.resetProxyHealth(String(p.id)); break;
         case "provider.saveCodexPreferences": result = await runtime.saveCodexPreferences(p); break;
         case "provider.piDefault": result = await runtime.piDefaultProvider(); break;
         case "provider.check": result = await runtime.checkProvider(String(p.kind), String(p.id)); break;
@@ -57,8 +75,8 @@ input.on("line", line => {
       }
       output({ id: request.id, result });
       if (closing) process.exit(0);
-    } catch (error) { output({ id: request?.id ?? 0, error: request?.method.startsWith("provider.") && !(error instanceof ProviderError) ? "供应商操作失败，请检查配置格式与文件权限" : error instanceof Error ? error.message : String(error) }); }
+    } catch (error) { output({ id: request?.id ?? 0, error: typeof request?.method === "string" && request.method.startsWith("provider.") && !(error instanceof ProviderError) ? "供应商操作失败，请检查配置格式与文件权限" : error instanceof Error ? error.message : String(error) }); }
   });
 });
-input.on("close", () => { runtime.cancelInstall(); void commands.finally(async () => { await runtime.close(); process.exit(0); }); });
-process.on("SIGTERM", () => { void runtime.close().finally(() => process.exit(0)); });
+input.on("close", () => { installCancellation += 1; runtime.cancelInstall(); void commands.finally(async () => { await runtime.close(); process.exit(0); }); });
+process.on("SIGTERM", () => { installCancellation += 1; void runtime.close().finally(() => process.exit(0)); });

@@ -10,12 +10,12 @@ import { HostService } from "./host-service.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
-import { resolveDshCommand } from "./dsh-client.js";
+import { resolveDshCommand, DSH_VERSION } from "./dsh-client.js";
 import { ensureDshWebService, validateDshWebUrl } from "./dsh-web-service.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
 import { defaultStunServers } from "./config.js";
 import { ProviderManager, ProviderError, agentKind, providerMetadata, type ProviderPaths, type ProviderProfile, type ProviderSummary } from "./provider-manager.js";
-import { installAgentPackage } from "./agent-installation.js";
+import { installAgentPackage, activateManagedAgent, activeManagedEntry, findAgentCopies, queryAgentStatus, recommendedAgentVersion, extractAgentVersion, compareAgentVersions, installationSource, type AgentInstallProgress, type AgentInstallStatus, type LocalAgent } from "./agent-installation.js";
 import { randomUUID } from "node:crypto";
 import { newProviderConfig, providerFields, applyProviderFields, type ProviderFields } from "./provider-form.js";
 import { providerPresets } from "./provider-presets.js";
@@ -56,6 +56,9 @@ export class DesktopRuntime {
   #lastStatus = "";
   #lastSeen = new Map<string, number>();
   #installation: AbortController | undefined;
+  #installationTask: Promise<{ entry: string; version: string }> | undefined;
+  #batchCancelled = false;
+  #detected = new Map<string, AgentInstallStatus>();
   readonly #providers: ProviderManager;
   readonly #usage: ProviderUsageCache;
 
@@ -63,17 +66,20 @@ export class DesktopRuntime {
     this.#emit = emit;
     this.#stateDir = resolveStateDir(stateDir);
     this.#providers = new ProviderManager(this.#stateDir, providerPaths, {
-      beforeApply: async kind => { this.#service?.assertProviderSwitchReady(kind); },
-      afterApply: async kind => {
-        await this.#service?.reloadProviderConfiguration(kind, await this.#providers.environment(kind));
+      beforeApply: async (kind, hotSwitch) => { if (!hotSwitch) this.#service?.assertProviderSwitchReady(kind); },
+      afterApply: async (kind, hotSwitch) => {
+        if (!hotSwitch) await this.#service?.reloadProviderConfiguration(kind, await this.#providers.environment(kind));
         this.#emit({ event: "providersChanged", kind });
       },
+      proxyStatus: () => this.#emit({ event: "proxyStatusChanged" }),
     });
     this.#usage = new ProviderUsageCache(() => this.#providers.usageProfiles(), (profile, usage) => this.#emit({ event: "providerUsageChanged", kind: profile.kind, providerId: profile.id, usage }));
   }
 
   async initialize(): Promise<unknown> {
     const identity = await loadOrCreateHostIdentity({ dir: this.#stateDir });
+    try { await this.#providers.startRouting(); }
+    catch (error) { this.log(error instanceof ProviderError ? error.message : "Codex local routing could not start; check its port and settings"); }
     this.#poll = setInterval(() => this.status(), 2_000);
     this.#poll.unref();
     this.#usage.start();
@@ -81,13 +87,20 @@ export class DesktopRuntime {
     return { hostId: identity.hostId, hostName: identity.hostName, stateDir: this.#stateDir, devices, nodeVersion: process.version };
   }
 
-  #environment(settings?: Partial<DesktopSettings>): void {
-    if (settings?.piEntry) process.env.ORBIS_PI_ENTRY = settings.piEntry; else delete process.env.ORBIS_PI_ENTRY;
-    if (settings?.codexEntry) process.env.ORBIS_CODEX_ENTRY = settings.codexEntry; else delete process.env.ORBIS_CODEX_ENTRY;
-    if (settings?.dshEntry) process.env.ORBIS_DSH_ENTRY = settings.dshEntry; else delete process.env.ORBIS_DSH_ENTRY;
+  #managedRoot(): string { return process.env.ORBIS_AGENT_INSTALL_ROOT ?? join(process.env.LOCALAPPDATA ?? homedir(), "Orbis", "agents"); }
+  async #environment(settings?: Partial<DesktopSettings>): Promise<void> {
     if (settings?.dshWebUrl?.trim()) process.env.ORBIS_DSH_WEB_URL = validateDshWebUrl(settings.dshWebUrl.trim()); else delete process.env.ORBIS_DSH_WEB_URL;
-    // Existing installations win. Managed installations are a fallback and never replace global npm packages.
-    const managed = join(process.env.LOCALAPPDATA ?? homedir(), "Orbis", "agents");
+    const managed = this.#managedRoot();
+    for (const kind of ["pi", "codex", "dsh"] as const) {
+      const configured = settings?.[`${kind}Entry`];
+      let active: string | undefined;
+      try { active = await activeManagedEntry(kind, managed); }
+      catch { this.log(`${kind} 安装记录不可读，请检查文件权限和 installations.json`); }
+      // The manifest survives a UI crash between installation and saving QSettings.
+      const entry = configured && installationSource(configured, managed) !== "managed" ? configured : active ?? configured;
+      const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
+      if (entry) process.env[key] = entry; else delete process.env[key];
+    }
     const searchPath = process.env.PATH ?? process.env.Path ?? "";
     const legacyNpm = process.env.APPDATA ? join(process.env.APPDATA, "npm") : "";
     const roots = searchPath.split(delimiter);
@@ -96,19 +109,53 @@ export class DesktopRuntime {
     process.env.PATH = roots.join(delimiter);
     const bundled = fileURLToPath(new URL("../../../", import.meta.url));
     if (!(process.env.PATH ?? "").split(delimiter).includes(bundled)) process.env.PATH = `${process.env.PATH}${delimiter}${bundled}`;
+    // Detection, updates and session startup must target the same copy, including a broken default.
+    for (const kind of ["pi", "codex", "dsh"] as const) {
+      const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
+      if (!process.env[key]) {
+        const entry = (await findAgentCopies(kind, process.env))[0]?.entry;
+        if (entry) process.env[key] = entry;
+      }
+    }
     process.env.PI_REMOTE_ENABLED = "true";
     process.env.PI_REMOTE_RELAY_URL = "ws://127.0.0.1";
     process.env.PI_REMOTE_RUNTIME_CREDENTIAL = "loopback-only";
   }
 
-  async detect(settings?: Partial<DesktopSettings>): Promise<unknown[]> {
-    this.#environment(settings);
+  async detect(settings?: Partial<DesktopSettings>, checkLatest = false): Promise<AgentInstallStatus[]> {
+    await this.#environment(settings);
+    const managed = this.#managedRoot();
     return Promise.all((["pi", "codex", "dsh"] as const).map(async (kind) => {
+      const copies = await findAgentCopies(kind, process.env);
+      const entry = process.env[`ORBIS_${kind.toUpperCase()}_ENTRY`] ?? copies[0]?.entry;
+      const local: LocalAgent = { installed: false, installedButBroken: false, ...(entry ? { entry } : {}) };
       try {
-        const cli = await (kind === "pi" ? resolvePiCommand() : kind === "dsh" ? resolveDshCommand() : resolveCodexCommand());
-        const { stdout } = await execute(cli.command, [...cli.prefixArgs, "--version"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 });
-        return { kind, installed: true, version: stdout.trim(), path: cli.prefixArgs[0] ?? cli.command, connected: kind === "pi" ? (this.#service?.localRuntimes.length ?? 0) > 0 : kind === "dsh" ? this.#dshRuntime?.isReady() ?? false : this.#codexRuntime?.isReady() ?? false };
-      } catch (error) { return { kind, installed: false, error: error instanceof Error ? error.message : String(error) }; }
+        if (entry) {
+          const { stdout, stderr } = await execute(process.execPath, [entry, "--version"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 });
+          const version = extractAgentVersion(stdout + "\n" + stderr);
+          if (!version) throw new Error("no version");
+          local.installed = true; local.version = version;
+        }
+      } catch {
+        local.installedButBroken = true;
+        local.error = "发现安装但无法运行，请检查 Node 版本，或重新安装修复";
+      }
+      let status: AgentInstallStatus;
+      try { status = await queryAgentStatus(kind, managed, local, checkLatest); }
+      catch { status = { ...local, kind, package: "", installationSource: installationSource(entry, managed), updateAvailable: false, installations: [], copies: [], error: "Agent 安装记录不可读，请检查文件权限和 installations.json" }; }
+      if (!checkLatest) {
+        const previous = this.#detected.get(kind);
+        if (previous?.latestVersion) {
+          status.latestVersion = previous.latestVersion;
+          const recommended = recommendedAgentVersion(kind, previous.latestVersion)!;
+          status.recommendedVersion = recommended;
+          status.updateAvailable = compareAgentVersions(recommended, local.version ?? "") === 1;
+          if (recommended === previous.latestVersion) delete status.compatibilityNote;
+        }
+      }
+      status.copies = copies;
+      this.#detected.set(kind, status);
+      return { ...status, path: local.entry, connected: kind === "pi" ? (this.#service?.localRuntimes.length ?? 0) > 0 : kind === "dsh" ? this.#dshRuntime?.isReady() ?? false : this.#codexRuntime?.isReady() ?? false };
     }));
   }
 
@@ -117,7 +164,8 @@ export class DesktopRuntime {
     if (!/^orbis_host_[\w-]{43}$/.test(settings.credential)) throw new Error("请先通过 QQ 邮箱注册并激活这台电脑");
     if (this.#desired || this.#starting) throw new Error("Host 已在运行，请先暂停连接");
     await this.#checkExistingHost();
-    this.#environment(settings);
+    if (this.#installation) throw new Error("请等待 Agent 安装完成或取消后再启动 Host");
+    await this.#environment(settings);
     this.#desired = settings;
     this.#attempt = 0;
     await this.#connect();
@@ -244,19 +292,69 @@ export class DesktopRuntime {
     await rename(`${path}.tmp`, path);
   }
 
-  async install(kind: string, version = "latest"): Promise<{ entry: string; version: string }> {
+  async install(kind: string, version = "latest", mode = "current"): Promise<{ entry: string; version: string }> {
     const selected = agentKind(kind);
+    if (!["current", "managed"].includes(mode)) throw new Error("未知安装方式");
+    if (selected === "dsh") {
+      if (version === "latest") version = this.#detected.get(selected)?.recommendedVersion ?? DSH_VERSION;
+      if (compareAgentVersions(version, DSH_VERSION) === -1) throw new Error(`Orbis 手机接入需要 DeepSeek Harness ${DSH_VERSION} 或兼容版本`);
+    }
     if (this.#desired || this.#starting) throw new Error("请先暂停 Host，再安装或更新 Agent");
     if (this.#installation) throw new Error("另一个安装正在进行");
-    const managed = join(process.env.LOCALAPPDATA ?? homedir(), "Orbis", "agents");
+    const managed = this.#managedRoot();
     this.log(`正在安装 ${kind} ${version}，下载可能需要几分钟…`);
     this.#installation = new AbortController();
-    try {
-      const result = await installAgentPackage(selected, version, managed, this.#installation.signal);
+    const signal = this.#installation.signal;
+    this.#installationTask = (async () => {
+      await this.#checkExistingHost();
+      const current = this.#detected.get(kind);
+      const entry = process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] ?? current?.entry;
+      const result = await installAgentPackage(selected, version, managed, signal, progress => this.#agentInstallProgress(progress),
+        mode === "current" && entry && installationSource(entry, managed) !== "managed" ? { existingEntry: entry } : {});
       process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] = result.entry;
+      this.#emit({ event: "agentInstalled", kind: selected, entry: result.entry, version: result.version });
       this.log(`${kind} ${result.version} 安装完成，已选中新版本`);
       return result;
-    } finally { this.#installation = undefined; }
+    })();
+    try { return await this.#installationTask; }
+    finally { this.#installation = undefined; this.#installationTask = undefined; }
+  }
+
+  async activateInstallation(kind: string, id: string): Promise<{ entry: string; version: string }> {
+    const selected = agentKind(kind);
+    if (this.#desired || this.#starting || this.#installation) throw new Error("请先暂停 Host，并等待当前安装完成");
+    this.#installation = new AbortController();
+    const signal = this.#installation.signal;
+    this.#installationTask = (async () => {
+      await this.#checkExistingHost();
+      const result = await activateManagedAgent(selected, id, this.#managedRoot(), signal);
+      process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] = result.entry;
+      this.#emit({ event: "agentInstalled", kind: selected, entry: result.entry, version: result.version });
+      return result;
+    })();
+    try { return await this.#installationTask; }
+    finally { this.#installation = undefined; this.#installationTask = undefined; }
+  }
+
+  async installAll(action: string): Promise<{ succeeded: number; failures: string[]; cancelled: boolean }> {
+    if (!["install", "update"].includes(action)) throw new Error("未知安装操作");
+    if (this.#desired || this.#starting) throw new Error("请先暂停 Host，再安装或更新 Agent");
+    this.#batchCancelled = false;
+    const targets = (["pi", "codex", "dsh"] as const).flatMap(kind => {
+      const status = this.#detected.get(kind);
+      return status && (action === "update" ? status.updateAvailable : !status.installed) ? [status] : [];
+    });
+    const failures: string[] = []; let succeeded = 0;
+    for (const target of targets) {
+      if (this.#batchCancelled) break;
+      try { await this.install(target.kind, target.recommendedVersion ?? target.latestVersion ?? "latest", target.installationSource === "custom" ? "managed" : "current"); succeeded += 1; }
+      catch (error) { failures.push(`${target.kind}: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    return { succeeded, failures, cancelled: this.#batchCancelled };
+  }
+
+  #agentInstallProgress(progress: AgentInstallProgress): void {
+    this.#emit({ event: "agentInstall", kind: progress.kind, stage: progress.stage, ...(progress.version === undefined ? {} : { version: progress.version }) });
   }
 
   async listProviders(kind: string): Promise<(ProviderSummary & { usage?: UsageSnapshot | undefined })[]> {
@@ -301,8 +399,9 @@ export class DesktopRuntime {
     if (presetId && !id) {
       const preset = providerPresets.find(p => p.id === presetId && p.kind === selected);
       if (!preset) throw new ProviderError("供应商预设不存在");
-      if (preset.requiresOAuth || (preset.apiFormat !== undefined && !["responses", "openai_responses"].includes(preset.apiFormat))) throw new ProviderError("此预设依赖托管 OAuth 或本地代理，尚未接入");
+      if (preset.requiresOAuth) throw new ProviderError("此预设依赖其他托管 OAuth 账号，尚未接入");
       Object.assign(profile, { config: structuredClone(preset.config), name: preset.name, category: preset.category, websiteUrl: preset.websiteUrl, ...(preset.icon ? { icon: preset.icon } : {}) });
+      if (selected === "codex") profile.config.apiFormat = preset.apiFormat === "openai_chat" ? "openai_chat" : "responses";
       if (selected === "pi") profile.id = preset.providerKey ?? "";
     }
     return { ...profile, fields: providerFields(profile), create: !id, accounts: selected === "codex" ? await this.#providers.oauth("list") : [] };
@@ -316,6 +415,16 @@ export class DesktopRuntime {
     return { config, fields: providerFields({ kind, id: String(params.id ?? ""), name: String(params.name ?? ""), config: config as Record<string, unknown> }) };
   }
   codexPreferences(): Promise<CodexPreferences> { return this.#providers.codexPreferences(); }
+  proxyStatus(): Promise<object> { return this.#providers.proxyStatus(); }
+  async resetProxyHealth(id: string): Promise<object> { this.#providers.resetProxyHealth(id); return this.proxyStatus(); }
+  async saveProxyPreferences(params: Record<string, unknown>): Promise<object> {
+    if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
+    if (!this.#service) await this.#checkExistingHost();
+    const work = () => this.#providers.saveProxyPreferences(params);
+    const result = await (this.#service ? this.#service.changeProvider("codex", work) : work());
+    this.#service?.announceProviderChange("codex");
+    return result;
+  }
   async saveCodexPreferences(params: Record<string, unknown>): Promise<CodexPreferences> {
     if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
     const work = async (): Promise<CodexPreferences> => {
@@ -392,7 +501,13 @@ export class DesktopRuntime {
     await this.#dispose();
     this.#emit({ event: "state", state: "stopped" });
   }
-  async close(): Promise<void> { if (this.#poll) clearInterval(this.#poll); await Promise.all([this.#usage.close(), this.stop()]); }
-  cancelInstall(): void { this.#installation?.abort(); }
+  async close(): Promise<void> {
+    this.cancelInstall();
+    await this.#installationTask?.catch(() => {});
+    if (this.#poll) clearInterval(this.#poll);
+    await Promise.all([this.#usage.close(), this.stop()]);
+    await this.#providers.closeRouting();
+  }
+  cancelInstall(): void { this.#batchCancelled = true; this.#installation?.abort(); }
   log(message: string): void { this.#emit({ event: "log", message: message.replace(/orbis_host_[\w-]+/g, "[redacted]").slice(0, 1500) }); }
 }

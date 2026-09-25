@@ -5,19 +5,21 @@ import { ProviderError, type ProviderProfile } from "./provider-manager.js";
 import { codexToken } from "./provider-codex.js";
 import { setToml } from "./provider-toml.js";
 import { catalogSpecs } from "./provider-catalog.js";
+import { upstreamFormat, validateCodexRouting } from "./provider-proxy-config.js";
 
 type Obj = Record<string, unknown>;
 const isObject = (value: unknown): value is Obj => value !== null && typeof value === "object" && !Array.isArray(value);
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
 const dshDefaultSelection = (rows: Obj[]): Obj => object((rows.find(row => row.id === "agent-default-model") ?? rows.find(row => row.id === "acp"))?.config);
-export type ProviderFields = { baseUrl: string; apiKey: string; model: string; api: string; providerKey: string; headers?: Record<string, string>; compat?: Obj; models?: Obj[]; catalog?: Obj[]; reasoningEffort?: string };
+export type ProviderFields = { baseUrl: string; apiKey: string; model: string; api: string; providerKey: string; headers?: Record<string, string>; compat?: Obj; models?: Obj[]; catalog?: Obj[]; reasoningEffort?: string; routing?: Obj };
 export function providerFields(profile: ProviderProfile): ProviderFields {
   const config = profile.config;
   if (profile.kind === "codex") {
     const toml = parse(String(config.config ?? ""));
     const key = String(toml.model_provider ?? "openai");
     const provider = object(object(toml.model_providers)[key]);
-    return { providerKey: key, baseUrl: String(provider.base_url ?? ""), apiKey: codexToken(config), model: String(toml.model ?? ""), api: "openai-responses", headers: object(provider.http_headers) as Record<string, string>, catalog: structuredClone(catalogSpecs(config)), reasoningEffort: String(toml.model_reasoning_effort ?? "") };
+    const routing = { isFullUrl: (config.isFullUrl ?? config.fullUrl) === true, promptCacheRouting: config.promptCacheRouting ?? "auto", codexChatReasoning: object(config.codexChatReasoning), chatOptions: object(config.chatOptions), requestOverrides: object(config.requestOverrides) };
+    return { providerKey: key, baseUrl: String(provider.base_url ?? ""), apiKey: codexToken(config), model: String(toml.model ?? ""), api: ({ responses: "openai-responses", openai_chat: "openai-completions", anthropic: "anthropic-messages" })[upstreamFormat(config)], headers: object(provider.http_headers) as Record<string, string>, catalog: structuredClone(catalogSpecs(config)), reasoningEffort: String(toml.model_reasoning_effort ?? ""), routing: structuredClone(routing) };
   }
   if (profile.kind === "pi") return { providerKey: profile.id, baseUrl: String(config.baseUrl ?? ""), apiKey: String(config.apiKey ?? ""), model: String(object((config.models as unknown[] | undefined)?.[0]).id ?? ""), api: String(config.api ?? ""), headers: object(config.headers) as Record<string, string>, compat: object(config.compat), models: Array.isArray(config.models) ? structuredClone(config.models.map(object)) : [] };
   const document = parseDocument(String(config.patch ?? ""));
@@ -42,6 +44,14 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
   }
   const config = structuredClone(previous);
   if (kind === "codex") {
+    if (!["openai-responses", "openai-completions", "anthropic-messages"].includes(fields.api)) throw new ProviderError("Codex 上游格式必须是 Responses、Chat Completions 或 Anthropic Messages");
+    config.apiFormat = fields.api === "openai-completions" ? "openai_chat" : fields.api === "anthropic-messages" ? "anthropic" : "responses";
+    if (fields.routing !== undefined) {
+      if (!isObject(fields.routing)) throw new ProviderError("路由配置必须是 JSON 对象");
+      for (const key of ["isFullUrl", "promptCacheRouting", "codexChatReasoning", "chatOptions", "requestOverrides"])
+        if (Object.hasOwn(fields.routing, key)) config[key] = structuredClone(fields.routing[key]);
+      validateCodexRouting(config);
+    }
     if (["openai", "ollama", "lmstudio"].includes(fields.providerKey)) throw new ProviderError("内置供应商请使用原生账号或高级配置；自定义供应商请使用独立标识");
     if (!fields.baseUrl) throw new ProviderError("请填写自定义供应商 API 地址");
     let toml = String(config.config ?? "");
