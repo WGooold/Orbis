@@ -1,0 +1,104 @@
+name: Publish client release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing draft release tag with a verified Android APK'
+        required: true
+        type: string
+      windows_build_run_id:
+        description: 'Successful main Windows Host build for the exact release tag commit'
+        required: true
+        type: string
+      android_apk_sha256:
+        description: 'Locally verified Android APK SHA-256'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: client-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      WINDOWS_BUILD_RUN: ${{ inputs.windows_build_run_id }}
+      ANDROID_APK_SHA256: ${{ inputs.android_apk_sha256 }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Validate release and build provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid release tag' }
+          if ($env:WINDOWS_BUILD_RUN -notmatch '^[0-9]+$') { throw 'Invalid build run ID' }
+          if ($env:ANDROID_APK_SHA256 -notmatch '^[a-f0-9]{64}$') { throw 'Invalid APK SHA-256' }
+          $commit = git rev-list -n 1 "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0 -or !$commit) { throw 'Release tag not found' }
+          $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:WINDOWS_BUILD_RUN" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read Windows build run' }
+          if ($run.conclusion -ne 'success' -or $run.head_branch -ne 'main' -or $run.path -ne '.github/workflows/windows-host-build.yml' -or $run.head_sha -ne $commit) {
+            throw 'Windows build does not match the successful main build for this release tag'
+          }
+          $release = gh release view $env:RELEASE_TAG --json isDraft | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !$release.isDraft) { throw 'Expected an existing draft release' }
+          $cmake = (git show "${env:RELEASE_TAG}:packages/windows-host/CMakeLists.txt") -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $cmake -notmatch 'project\(OrbisHost VERSION ([0-9]+\.[0-9]+\.[0-9]+) ') { throw 'Host version not found in release source' }
+          $version = $Matches[1]
+          if ("v$version" -ne $env:RELEASE_TAG) { throw 'Host version and tag differ' }
+          "HOST_VERSION=$version" >> $env:GITHUB_ENV
+          Write-Output "Verified release source: $commit"
+      - uses: actions/download-artifact@v4
+        with:
+          name: OrbisHost-windows-x64
+          path: client-artifacts
+          run-id: ${{ inputs.windows_build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify clients and upload Windows assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path android-release | Out-Null
+          gh release download $env:RELEASE_TAG --pattern orbis.apk --pattern orbis.apk.sha256 --dir android-release
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot download Android release assets' }
+          $apkHash = (Get-FileHash android-release/orbis.apk -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($apkHash -ne $env:ANDROID_APK_SHA256 -or (Get-Content android-release/orbis.apk.sha256 -Raw).Trim() -ne "$apkHash  orbis.apk") { throw 'Android checksum mismatch' }
+          $names = @("OrbisHost-$env:HOST_VERSION-windows-x64-setup.exe", "OrbisHost-$env:HOST_VERSION-windows-x64.zip")
+          $uploads = @()
+          foreach ($name in $names) {
+            $files = @(Get-ChildItem client-artifacts -Recurse -File -Filter $name)
+            if ($files.Count -ne 1) { throw "Expected one artifact: $name" }
+            $file = $files[0]
+            $checksum = $file.FullName + '.sha256'
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ((Get-Content -LiteralPath $checksum -Raw).Trim() -ne "$hash  $name") { throw "Checksum mismatch: $name" }
+            $uploads += $file.FullName
+            $uploads += $checksum
+            Write-Output "Verified $name SHA-256: $hash"
+          }
+          gh release upload $env:RELEASE_TAG @uploads
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release asset upload failed; release remains a draft' }
+          $release = gh release view $env:RELEASE_TAG --json assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify uploaded assets' }
+          foreach ($path in $uploads) {
+            $name = Split-Path -Leaf $path
+            $asset = @($release.assets | Where-Object name -eq $name)
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($asset.Count -ne 1 -or $asset[0].state -ne 'uploaded' -or $asset[0].digest -ne "sha256:$hash") { throw "Uploaded asset verification failed: $name" }
+          }
+      - name: Publish verified release
+        shell: pwsh
+        run: |
+          gh release edit $env:RELEASE_TAG --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
