@@ -18,7 +18,7 @@ The requested scope is the three Agent types already exposed by Orbis: Pi, Codex
 - The Windows Agent page exposes provider cards plus routing controls, and Android switches saved provider IDs through the existing encrypted provider protocol. Routing credentials and the local bearer token stay on the Host.
 - DSH preserves the complete patch text, existing provider model rows, unknown YAML fields, and the provider's existing environment-variable name while keeping credentials in Host state.
 - The Android protocol carries only saved Agent/provider IDs and status. It never carries provider credentials, raw native configuration, scripts, or OAuth tokens.
-- Host supports Agent installation/update from pinned package names and isolated managed directories.
+- Host supports Agent installation/update from pinned package names and isolated managed directories, npm dist-tag checks, exact global npm-prefix updates, validated activation, cancellation, batch operations, installation history, and rollback. DSH requires the published ACP-compatible 0.1.7-rc.1 package when the registry's latest tag is older.
 
 ## Deliberate limits
 
@@ -27,12 +27,12 @@ The parity claim is limited to the three Orbis Agent kinds. CC Switch's Claude, 
 ## Evidence
 
 - `npm run typecheck` and `npm run lint` pass.
-- Focused proxy, conversion, and provider-manager tests pass (39 tests in the final focused run); the full Vitest suite passed earlier at 519 tests before the final focused additions.
+- The full Vitest suite passes with 561 tests. The final installation-detection adjustment passes 41 focused tests, and release website validation passes 9 tests.
 - `scripts/test-provider-routing.mjs` passes against installed Codex and Pi CLIs with isolated homes and a local mock upstream, including Chat/Anthropic conversion and tool round trips.
 - `scripts/windows/windows-host-build.ps1` builds Qt Host and its CTest target successfully.
 - Host provider smoke test exits 0 and produces provider editor/list/Pi editor screenshots with an empty QML error log.
-- Android debug build and unit tests pass through `scripts/windows/android-build.ps1`.
+- Android 0.1.46 (versionCode 47) builds through `scripts/windows/android-build.ps1`; all 294 unit tests pass. Its signing certificate matches the previous official APK.
 
-## Release gate still required
+## Release verification
 
-Before merging or publishing, run the current Android build/install workflow against an explicitly owned device. The local Android debug build and unit tests already pass; no physical phone was connected during this run. The current branch has not been merged, pushed, published, or installed on a physical phone.
+On 2026-09-26, the release APK was installed through `scripts/windows/android-install.ps1` on the explicitly owned `emulator-5554`. Both provider-filter instrumentation tests pass, including current-provider selection and missing-configuration handling. Screenshots and logs are retained under `.artifacts/release-v0.1.5/android-smoke/`. The emulator was closed and its leases released. No physical phone or user Host installation was changed during release preparation.
