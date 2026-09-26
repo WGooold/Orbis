@@ -198,7 +198,9 @@ node packages/host/dist/cli.js devices revoke <id>  # 撤销一台
 Host 的状态放在 `~/.pi-remote/`：`host.json`（身份私钥）、`devices.json`（设备记录，0600）、`loopback.json`（给本机 Pi 扩展看的发现文件）、`config.json`（可选的 `adminToken` / `lanPort` / `stunServers`；`adminToken` 只在配对时用来向 Relay 换取管道凭据）。它与 `~/.pi/agent/remote-control.json` 是两处不同的配置。
 ## 启用 Pi 扩展
 
-远程控制默认关闭。必须在用户级配置文件 `~/.pi/agent/remote-control.json` 中显式启用：
+Windows Host 安装器把随包附带的 Pi 扩展登记到当前用户的 `~/.pi/agent/settings.json`，并在 `remote-control.json` 写入 `orbisLocalEnabled: true`。因此安装后直接在终端运行 `pi` 也会加载扩展，连接已经启动的本机 Host；Host 未启动时扩展等待它，不会回退到 Relay。用户原有的 `enabled: false` 仍可关闭独立启动的 Pi 连接。卸载安装版时会移除该安装目录的包登记与安装器写入的本机开关，不清除用户的其他 Pi 配置。免安装 ZIP 没有安装步骤，需从 Host 的“打开 Pi”入口运行或手动登记扩展。
+
+仅在不使用安装器、而是直接从源码运行 Host 时，远程控制默认关闭；可以在用户级配置文件 `~/.pi/agent/remote-control.json` 中显式启用：
 
 ```json
 {
@@ -216,7 +218,7 @@ Host 的状态放在 `~/.pi-remote/`：`host.json`（身份私钥）、`devices.
 
 扩展会随 Runtime metadata 上报 Pi 所在机器的 `hostname`，APP 据此区分不同设备上的 agent 进程并在侧边栏按“主机 → 目录 → 会话”树状分组，不需要额外配置。
 
-> 已知遗留：`relayUrl` 与 `runtimeCredential` 现在由 **Host** 使用，扩展本身已经用不到它们，但配置校验仍然要求这两个字段存在。收掉这块死配置要动配对时的配置交接，留作后续。
+> 遗留配置：`relayUrl` 与 `runtimeCredential` 已经不用于 Pi 扩展的本机连接；安装器启用的 `orbisLocalEnabled` 不需要它们。旧的 `enabled` 配置方式仍校验这两个字段，供未通过安装器设置的环境使用。
 
 在本仓库中开发时，Pi extension 由 **Host 按需拉起**：`packages/pi-extension/package.json` 的 manifest 指向 `./dist/index.js`，扩展对本仓库 workspace 依赖使用普通 package import（解析到各包的 `dist`）。因此改完扩展或其本地依赖后的生效方式是：
 

@@ -39,6 +39,36 @@ Name: "{userdesktop}\Orbis Host"; Filename: "{app}\OrbisHost.exe"; Tasks: deskto
 [Run]
 Filename: "{app}\OrbisHost.exe"; Description: "Launch Orbis Host"; Flags: nowait postinstall skipifsilent
 
+[Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ExitCode: Integer;
+  RuntimeRoot: String;
+begin
+  if CurStep <> ssPostInstall then Exit;
+  RuntimeRoot := ExpandConstant('{app}\runtime');
+  ExitCode := -1;
+  if not Exec(RuntimeRoot + '\node\node.exe',
+    '"' + RuntimeRoot + '\packages\host\dist\pi-integration-install.js" "' + RuntimeRoot + '\packages\pi-extension"',
+    '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+    RaiseException('Could not register Orbis with Pi. Check the current user''s Pi configuration.');
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ExitCode: Integer;
+  RuntimeRoot: String;
+begin
+  if CurUninstallStep <> usUninstall then Exit;
+  RuntimeRoot := ExpandConstant('{app}\runtime');
+  if not FileExists(RuntimeRoot + '\packages\host\dist\pi-integration-install.js') then Exit;
+  ExitCode := -1;
+  if not Exec(RuntimeRoot + '\node\node.exe',
+    '"' + RuntimeRoot + '\packages\host\dist\pi-integration-install.js" "' + RuntimeRoot + '\packages\pi-extension" --uninstall',
+    '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+    Log('Could not remove the Orbis Pi integration from user settings.');
+end;
+
 [UninstallDelete]
 ; User configuration, Windows-protected activation and pairing records are deliberately retained.
 
