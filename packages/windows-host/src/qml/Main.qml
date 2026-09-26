@@ -193,6 +193,179 @@ ApplicationWindow {
         contentItem: Label { text: softSwitch.text; leftPadding: softSwitch.indicator.width + softSwitch.spacing; verticalAlignment: Text.AlignVCenter; color: softSwitch.enabled ? "#40516c" : "#8995a9" }
     }
 
+    component SoftComboBox: ComboBox {
+        id: softCombo
+        implicitHeight: 46
+        implicitWidth: 180
+        leftPadding: 14; rightPadding: 42
+        font.pixelSize: 14
+        contentItem: TextField {
+            text: softCombo.editable ? softCombo.editText : softCombo.displayText
+            font: softCombo.font
+            color: softCombo.enabled ? "#21314d" : "#8995a9"
+            placeholderTextColor: "#98a4b8"
+            verticalAlignment: Text.AlignVCenter
+            readOnly: !softCombo.editable
+            selectByMouse: true
+            background: Item {}
+            onTextEdited: if (softCombo.editable) softCombo.editText = text
+        }
+        indicator: Label {
+            x: softCombo.width - width - 14; y: (softCombo.height - height) / 2
+            width: 20; height: 24
+            text: "⌄"
+            color: softCombo.enabled ? "#50617b" : "#9aa6b8"
+            font.pixelSize: 20; font.family: "Segoe UI Symbol"
+            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+        }
+        background: NeuSurface {
+            anchors.fill: parent; margin: 0; cornerRadius: 8
+            inset: true; focused: softCombo.activeFocus; surface: "#DDE3EF"
+        }
+        delegate: ItemDelegate {
+            width: softCombo.width - 16; implicitHeight: 40
+            highlighted: softCombo.highlightedIndex === index
+            contentItem: Text {
+                text: modelData && softCombo.textRole ? modelData[softCombo.textRole] : modelData
+                color: softCombo.enabled ? "#21314d" : "#8995a9"
+                font.pixelSize: 14; verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+            }
+            background: NeuSurface {
+                anchors.fill: parent; margin: 0; cornerRadius: 6
+                inset: parent.highlighted || parent.down; surface: "#E6EBF4"
+            }
+        }
+        popup: Popup {
+            y: softCombo.height - 1; width: softCombo.width
+            padding: 8
+            implicitHeight: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, 320)
+            contentItem: ListView {
+                clip: true
+                implicitHeight: Math.min(contentHeight, 304)
+                model: softCombo.popup.visible ? softCombo.delegateModel : null
+                currentIndex: softCombo.highlightedIndex
+                highlightMoveDuration: 0
+            }
+            background: NeuSurface {
+                anchors.fill: parent; anchors.margins: -12; margin: 12
+                cornerRadius: 9; surface: "#E6EBF4"; depth: 1.4; blur: 0.9
+            }
+        }
+    }
+    component SoftCheckBox: CheckBox {
+        id: softCheck
+        spacing: 12
+        implicitHeight: 38
+        indicator: Item {
+            implicitWidth: 24; implicitHeight: 24
+            x: softCheck.leftPadding; y: (softCheck.height - height) / 2
+            opacity: softCheck.enabled ? 1 : 0.5
+            NeuSurface {
+                anchors.fill: parent; margin: 0; cornerRadius: 7
+                inset: !softCheck.checked; depth: softCheck.checked ? 1.3 : 1.0
+                blur: 0.8; surface: softCheck.checked ? "#2459D3" : "#DDE3EF"
+            }
+            Label {
+                anchors.fill: parent; visible: softCheck.checked
+                text: "✓"; color: "white"; font.pixelSize: 16; font.bold: true
+                horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+            }
+        }
+        contentItem: Label {
+            text: softCheck.text
+            leftPadding: softCheck.indicator.width + softCheck.spacing
+            verticalAlignment: Text.AlignVCenter
+            color: softCheck.enabled ? "#40516c" : "#8995a9"
+        }
+    }
+    component SoftTextArea: TextArea {
+        implicitHeight: 96
+        leftPadding: 14; rightPadding: 14; topPadding: 12; bottomPadding: 12
+        selectByMouse: true
+        color: "#21314d"
+        placeholderTextColor: "#98a4b8"
+        background: NeuSurface {
+            anchors.fill: parent; margin: 0; cornerRadius: 8
+            inset: true; focused: parent.activeFocus; surface: "#DDE3EF"
+        }
+    }
+    component SoftToolButton: ToolButton {
+        id: softTool
+        implicitWidth: Math.max(42, contentItem.implicitWidth + 20)
+        implicitHeight: 42
+        hoverEnabled: true
+        contentItem: Text {
+            text: softTool.text
+            font.pixelSize: 18
+            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+            color: !softTool.enabled ? "#8995a9" : "#253651"
+        }
+        background: NeuSurface {
+            anchors.fill: parent; anchors.margins: -8; margin: 8
+            cornerRadius: 7; inset: softTool.down || !softTool.enabled
+            focused: softTool.activeFocus; opacity: softTool.enabled ? 1 : 0.6
+        }
+    }
+    component SoftSpinBox: SpinBox {
+        id: softSpin
+        implicitWidth: 154; implicitHeight: 46
+        leftPadding: 46; rightPadding: 46
+        font.pixelSize: 14
+        editable: true
+        contentItem: TextInput {
+            id: spinText
+            text: softSpin.displayText
+            font: softSpin.font
+            color: softSpin.enabled ? "#21314d" : "#8995a9"
+            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+            readOnly: !softSpin.editable
+            selectByMouse: true
+            validator: softSpin.validator
+            inputMethodHints: Qt.ImhFormattedNumbersOnly
+            onEditingFinished: {
+                softSpin.value = softSpin.valueFromText(text, softSpin.locale)
+                text = softSpin.displayText
+            }
+        }
+        onValueChanged: if (!spinText.activeFocus) spinText.text = displayText
+        background: NeuSurface {
+            anchors.fill: parent; margin: 0; cornerRadius: 8
+            inset: true; focused: softSpin.activeFocus; surface: "#DDE3EF"
+        }
+        down.indicator: ToolButton {
+            x: 0; y: 0; width: 46; height: softSpin.height
+            text: "−"; enabled: softSpin.enabled && softSpin.value > softSpin.from
+            Accessible.name: "减少"
+            onClicked: softSpin.decrease()
+            contentItem: Text {
+                text: parent.text; font.pixelSize: 23
+                horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                color: parent.enabled ? "#253651" : "#8995a9"
+            }
+            background: NeuSurface {
+                anchors.fill: parent; anchors.margins: -6; margin: 6
+                cornerRadius: 7; inset: parent.down || !parent.enabled
+                opacity: parent.enabled ? 1 : 0.55
+            }
+        }
+        up.indicator: ToolButton {
+            x: softSpin.width - width; y: 0; width: 46; height: softSpin.height
+            text: "+"; enabled: softSpin.enabled && softSpin.value < softSpin.to
+            Accessible.name: "增加"
+            onClicked: softSpin.increase()
+            contentItem: Text {
+                text: parent.text; font.pixelSize: 23
+                horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                color: parent.enabled ? "#253651" : "#8995a9"
+            }
+            background: NeuSurface {
+                anchors.fill: parent; anchors.margins: -6; margin: 6
+                cornerRadius: 7; inset: parent.down || !parent.enabled
+                opacity: parent.enabled ? 1 : 0.55
+            }
+        }
+    }
     RowLayout {
         anchors.fill: parent
         spacing: 0
@@ -235,8 +408,8 @@ ApplicationWindow {
         ColumnLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
             Rectangle {
-                Layout.fillWidth: true; Layout.preferredHeight: 100; color: "#F2F5FA"
-                Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: "#CED7E5" }
+                Layout.fillWidth: true; Layout.preferredHeight: 82; color: "#E6EBF4"
+                Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: "#D8E0EC" }
                 RowLayout {
                     anchors.fill: parent; anchors.leftMargin: 36; anchors.rightMargin: 36
                     ColumnLayout {
@@ -259,7 +432,7 @@ ApplicationWindow {
                 RowLayout {
                     anchors.fill: parent; anchors.margins: 12
                     Label { id: messageLabel; text: host.message; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#365485"; font.pixelSize: 13 }
-                    ToolButton { text: "×"; onClicked: host.clearMessage(); implicitWidth: 30; implicitHeight: 28; Accessible.name: "关闭提示" }
+                    SoftToolButton { text: "×"; onClicked: host.clearMessage(); implicitWidth: 30; implicitHeight: 28; Accessible.name: "关闭提示" }
                 }
             }
             ScrollView {
@@ -512,7 +685,7 @@ ApplicationWindow {
                                   RowLayout { Layout.fillWidth: true; spacing: 10
                                     Hint { text: modelData.websiteUrl || modelData.id; Layout.fillWidth: true }
                                     ActionButton { text: "检测"; visible: modelData.category !== "official"; enabled: !host.busy; onClicked: host.checkProvider(modelData.id) }
-                                    ToolButton { text: "↻"; visible: host.providerKind === "codex" && host.proxyStatus.takeover; enabled: !host.busy; onClicked: host.resetProxyHealth(modelData.id); ToolTip.visible: hovered; ToolTip.text: "重置熔断状态" }
+                                    SoftToolButton { text: "↻"; visible: host.providerKind === "codex" && host.proxyStatus.takeover; enabled: !host.busy; onClicked: host.resetProxyHealth(modelData.id); ToolTip.visible: hovered; ToolTip.text: "重置熔断状态" }
                                     ActionButton { text: "用量设置"; enabled: !host.busy; onClicked: host.editProviderUsage(modelData.id) }
                                     ActionButton { text: "查询用量"; enabled: !host.busy; onClicked: host.queryProviderUsage(modelData.id) }
                                     ActionButton { text: "启用并打开"; enabled: !host.busy; onClicked: host.openProvider(modelData.id) }
@@ -568,7 +741,7 @@ ApplicationWindow {
                             ColumnLayout {
                                 anchors.fill: parent; spacing: 16
                                 Heading { text: "本次运行日志" }
-                                TextArea { text: host.logs || "暂无日志"; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; color: "#50617b"; font.family: "Consolas"; font.pixelSize: 12; Layout.fillWidth: true; background: Rectangle { radius: 8; color: "#f7f9fd" } padding: 15 }
+                                SoftTextArea { text: host.logs || "暂无日志"; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; color: "#50617b"; font.family: "Consolas"; font.pixelSize: 12; Layout.fillWidth: true }
                             }
                         }
                     }
@@ -604,7 +777,7 @@ ApplicationWindow {
         ColumnLayout { width: parent.width; spacing: 12
             Hint { text: "当前 " + (window.installAgentData.version || "未安装") + " · 最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
             Hint { visible: !!window.installAgentData.compatibilityNote; text: window.installAgentData.compatibilityNote || ""; Layout.fillWidth: true }
-            ComboBox { id: installLocation; model: ["更新当前 npm 安装", "Orbis 独立安装"]; Layout.fillWidth: true }
+            SoftComboBox { id: installLocation; model: ["更新当前 npm 安装", "Orbis 独立安装"]; Layout.fillWidth: true }
             Hint { text: installLocation.currentIndex === 0 ? "更新当前 npm 目录；终端中使用这份安装的 Agent 也会更新。请先关闭使用它的终端。" : "下载到独立目录，验证后设为 Host 使用的版本。旧版保留，可从安装记录切回。"; Layout.fillWidth: true }
             Hint { visible: installLocation.currentIndex === 0; text: window.installAgentData.entry || "没有可更新的 npm 安装，请选择独立安装。"; Layout.fillWidth: true }
             Hint { visible: !window.canInstallAgents; text: "请先在概览中暂停 Host，再开始安装。暂停会中断连接及运行中的会话。"; Layout.fillWidth: true; color: "#b46b19" }
@@ -650,7 +823,7 @@ ApplicationWindow {
                 Label { text: "供应商标识"; color: "#4b5d78" }
                 Field { id: providerKey; Layout.fillWidth: true; maximumLength: 128; placeholderText: "custom"; enabled: window.providerDraft.kind !== "pi" || !!window.providerDraft.create }
                 Label { text: "ChatGPT 登录来源"; visible: window.providerDraft.kind === "codex" && window.providerDraft.category === "official"; color: "#4b5d78" }
-                ComboBox { id: providerAccount; visible: window.providerDraft.kind === "codex" && window.providerDraft.category === "official"; Layout.fillWidth: true; textRole: "label"; valueRole: "id"; model: [] }
+                SoftComboBox { id: providerAccount; visible: window.providerDraft.kind === "codex" && window.providerDraft.category === "official"; Layout.fillWidth: true; textRole: "label"; valueRole: "id"; model: [] }
                 SoftSwitch { id: providerDetails; text: "显示备注、分类和排序设置" }
                 ColumnLayout { visible: providerDetails.checked; Layout.fillWidth: true; spacing: 8
                     RowLayout { Layout.fillWidth: true
@@ -684,35 +857,35 @@ ApplicationWindow {
                     Field { id: providerModel; visible: window.providerDraft.kind !== "pi"; Layout.fillWidth: true; placeholderText: "模型 ID（按供应商提供的名称填写）" }
                     RowLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true
                         Label { text: "思考档位"; color: "#4b5d78" }
-                        ComboBox { id: codexReasoning; Layout.fillWidth: true; model: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] }
+                        SoftComboBox { id: codexReasoning; Layout.fillWidth: true; model: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] }
                     }
-                    ComboBox { id: providerApi; Layout.fillWidth: true; model: window.providerDraft.kind === "codex" ? ["openai-responses", "openai-completions", "anthropic-messages"] : ["", "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai", "bedrock-converse-stream"] }
+                    SoftComboBox { id: providerApi; Layout.fillWidth: true; model: window.providerDraft.kind === "codex" ? ["openai-responses", "openai-completions", "anthropic-messages"] : ["", "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai", "bedrock-converse-stream"] }
                     SoftSwitch { id: providerProxyDetails; text: "路由与推理参数"; visible: window.providerDraft.kind === "codex" }
                     ColumnLayout { visible: window.providerDraft.kind === "codex" && providerProxyDetails.checked; Layout.fillWidth: true; spacing: 8
                         SoftSwitch { id: providerFullUrl; text: "使用完整 API 端点地址" }
                         RowLayout { Layout.fillWidth: true
                             Label { text: "会话缓存路由"; color: "#4b5d78" }
-                            ComboBox { id: providerCache; Layout.fillWidth: true; textRole: "label"; valueRole: "value"; model: [{label:"自动",value:"auto"},{label:"启用",value:"enabled"},{label:"禁用",value:"disabled"}] }
+                            SoftComboBox { id: providerCache; Layout.fillWidth: true; textRole: "label"; valueRole: "value"; model: [{label:"自动",value:"auto"},{label:"启用",value:"enabled"},{label:"禁用",value:"disabled"}] }
                         }
                         SoftSwitch { id: providerReasoningAuto; text: "自动识别推理参数" }
                         GridLayout { visible: !providerReasoningAuto.checked; columns: 2; Layout.fillWidth: true
-                            CheckBox { id: providerThinking; text: "支持思考开关" }
-                            CheckBox { id: providerEffort; text: "支持思考档位" }
+                            SoftCheckBox { id: providerThinking; text: "支持思考开关" }
+                            SoftCheckBox { id: providerEffort; text: "支持思考档位" }
                             Label { text: "思考开关参数"; color: "#4b5d78" }
-                            ComboBox { id: providerThinkingParam; Layout.fillWidth: true; model: ["thinking", "enable_thinking", "reasoning_split", "none"] }
+                            SoftComboBox { id: providerThinkingParam; Layout.fillWidth: true; model: ["thinking", "enable_thinking", "reasoning_split", "none"] }
                             Label { text: "档位参数"; color: "#4b5d78" }
-                            ComboBox { id: providerEffortParam; Layout.fillWidth: true; model: ["reasoning_effort", "reasoning.effort", "none"] }
+                            SoftComboBox { id: providerEffortParam; Layout.fillWidth: true; model: ["reasoning_effort", "reasoning.effort", "none"] }
                             Label { text: "档位映射"; color: "#4b5d78" }
-                            ComboBox { id: providerEffortMode; Layout.fillWidth: true; model: ["passthrough", "deepseek", "low_high", "openrouter", "zen"] }
+                            SoftComboBox { id: providerEffortMode; Layout.fillWidth: true; model: ["passthrough", "deepseek", "low_high", "openrouter", "zen"] }
                         }
                         Label { text: "Chat 兼容参数（JSON）"; color: "#4b5d78" }
-                        TextArea { id: providerChatOptions; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                        SoftTextArea { id: providerChatOptions; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
                         Label { text: "请求覆盖（headers / body）"; color: "#4b5d78" }
-                        TextArea { id: providerRequestOverrides; Layout.fillWidth: true; Layout.preferredHeight: 90; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                        SoftTextArea { id: providerRequestOverrides; Layout.fillWidth: true; Layout.preferredHeight: 90; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
                     }
                     ActionButton { text: "获取模型列表"; enabled: !host.busy && providerUrl.text.trim().length > 0; onClicked: { var draft = window.buildProviderDraft(true); if (draft !== null) host.fetchProviderModels(draft) } }
                     Label { text: "请求头（JSON 对象）"; visible: window.providerDraft.kind !== "dsh"; color: "#4b5d78" }
-                    TextArea { id: piHeaders; visible: window.providerDraft.kind !== "dsh"; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                    SoftTextArea { id: piHeaders; visible: window.providerDraft.kind !== "dsh"; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
                     ColumnLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true; spacing: 8
                         RowLayout { Layout.fillWidth: true
                             Label { text: "模型目录"; color: "#4b5d78"; font.bold: true }
@@ -732,7 +905,7 @@ ApplicationWindow {
                     }
                     ColumnLayout { visible: window.providerDraft.kind === "pi"; Layout.fillWidth: true; spacing: 8
                         Label { text: "兼容参数（JSON 对象）"; color: "#4b5d78" }
-                        TextArea { id: piCompat; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                        SoftTextArea { id: piCompat; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
                         RowLayout { Layout.fillWidth: true
                             Label { text: "模型"; color: "#4b5d78"; font.bold: true }
                             Item { Layout.fillWidth: true }
@@ -749,19 +922,19 @@ ApplicationWindow {
                                     ActionButton { text: "删除"; danger: true; onClicked: window.deletePiModel(index) }
                                 }
                                 RowLayout { Layout.fillWidth: true
-                                    CheckBox { text: "推理"; checked: modelData.reasoning === true; onToggled: window.updatePiModel(index, "reasoning", checked) }
-                                    CheckBox { text: "图像输入"; checked: Array.isArray(modelData.input) && modelData.input.indexOf("image") >= 0; onToggled: window.updatePiModel(index, "input", checked ? ["text", "image"] : ["text"]) }
+                                    SoftCheckBox { text: "推理"; checked: modelData.reasoning === true; onToggled: window.updatePiModel(index, "reasoning", checked) }
+                                    SoftCheckBox { text: "图像输入"; checked: Array.isArray(modelData.input) && modelData.input.indexOf("image") >= 0; onToggled: window.updatePiModel(index, "input", checked ? ["text", "image"] : ["text"]) }
                                     Field { Layout.fillWidth: true; text: modelData.contextWindow === undefined ? "" : String(modelData.contextWindow); placeholderText: "上下文窗口"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updatePiModel(index, "contextWindow", text) }
                                     Field { Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: "最大输出"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updatePiModel(index, "maxTokens", text) }
                                 }
-                                TextArea { Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "思考档位映射（JSON，可留空使用 Pi 默认值）"; text: modelData.thinkingLevelMap === undefined ? "" : JSON.stringify(modelData.thinkingLevelMap); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updatePiModel(index, "thinkingLevelMap", text); background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                                SoftTextArea { Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "思考档位映射（JSON，可留空使用 Pi 默认值）"; text: modelData.thinkingLevelMap === undefined ? "" : JSON.stringify(modelData.thinkingLevelMap); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updatePiModel(index, "thinkingLevelMap", text) }
                             }
                         }
                     }
                 }
                 ColumnLayout { visible: advancedProvider.checked; Layout.fillWidth: true
                     Hint { text: window.providerDraft.kind === "codex" ? "Codex：auth 为 auth.json 对象或 null，config 为 config.toml 文本。" : window.providerDraft.kind === "pi" ? "Pi：完整的 models.json.providers.<标识> 节点。" : "DSH：patch 为 cordis.patch.yml 文本，env 保存该配置所需的凭据环境变量。"; Layout.fillWidth: true }
-                    TextArea { id: providerJson; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; color: "#21314d"; background: Rectangle { color: "#DDE3EF"; radius: 8 } padding: 12 }
+                    SoftTextArea { id: providerJson; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; color: "#21314d" }
                 }
                 Hint { visible: host.message.length > 0; text: host.message; Layout.fillWidth: true; color: "#a34d4d" }
                 Hint { visible: window.providerFormError.length > 0; text: window.providerFormError; Layout.fillWidth: true; color: "#a34d4d" }
@@ -780,7 +953,7 @@ ApplicationWindow {
     SoftDialog {
         id: presetDialog; title: "选择供应商预设"; anchors.centerIn: parent; modal: true; width: 530
         ColumnLayout { width: parent.width; spacing: 12
-            ComboBox { id: providerPreset; model: host.providerPresets; textRole: "name"; valueRole: "id"; Layout.fillWidth: true; editable: true }
+            SoftComboBox { id: providerPreset; model: host.providerPresets; textRole: "name"; valueRole: "id"; Layout.fillWidth: true; editable: true }
             Hint { text: "选择后可编辑端点、密钥及模型。"; Layout.fillWidth: true }
         }
         standardButtons: Dialog.Cancel | Dialog.Ok
@@ -839,7 +1012,7 @@ ApplicationWindow {
                 SoftSwitch { id: routingEnabled; text: "接管 Codex 请求" }
                 RowLayout { Layout.fillWidth: true
                     Label { text: "本地端口"; color: "#4b5d78" }
-                    SpinBox { id: routingPort; from: 1024; to: 65535; editable: true; enabled: !host.proxyStatus.running }
+                    SoftSpinBox { id: routingPort; from: 1024; to: 65535; editable: true; enabled: !host.proxyStatus.running }
                     Item { Layout.fillWidth: true }
                     SoftSwitch { id: routingFailover; text: "自动故障转移" }
                 }
@@ -847,29 +1020,29 @@ ApplicationWindow {
                 Repeater { model: window.routingQueue
                     delegate: RowLayout { required property int index; required property string modelData; Layout.fillWidth: true
                         Label { text: String(index + 1) + ". " + window.routingName(modelData); Layout.fillWidth: true; elide: Text.ElideRight; color: "#21314d" }
-                        ToolButton { text: "↑"; enabled: index > 0; onClicked: window.moveRoute(index, -1); ToolTip.visible: hovered; ToolTip.text: "上移" }
-                        ToolButton { text: "↓"; enabled: index + 1 < window.routingQueue.length; onClicked: window.moveRoute(index, 1); ToolTip.visible: hovered; ToolTip.text: "下移" }
-                        ToolButton { text: "×"; onClicked: { var next = window.routingQueue.slice(); next.splice(index, 1); window.routingQueue = next } ToolTip.visible: hovered; ToolTip.text: "移出队列" }
+                        SoftToolButton { text: "↑"; enabled: index > 0; onClicked: window.moveRoute(index, -1); ToolTip.visible: hovered; ToolTip.text: "上移" }
+                        SoftToolButton { text: "↓"; enabled: index + 1 < window.routingQueue.length; onClicked: window.moveRoute(index, 1); ToolTip.visible: hovered; ToolTip.text: "下移" }
+                        SoftToolButton { text: "×"; onClicked: { var next = window.routingQueue.slice(); next.splice(index, 1); window.routingQueue = next } ToolTip.visible: hovered; ToolTip.text: "移出队列" }
                     }
                 }
                 RowLayout { Layout.fillWidth: true
-                    ComboBox { id: routingCandidate; Layout.fillWidth: true; model: host.providers.filter(function(p) { return p.category !== "official" && window.routingQueue.indexOf(p.id) < 0 }); textRole: "name"; valueRole: "id" }
+                    SoftComboBox { id: routingCandidate; Layout.fillWidth: true; model: host.providers.filter(function(p) { return p.category !== "official" && window.routingQueue.indexOf(p.id) < 0 }); textRole: "name"; valueRole: "id" }
                     ActionButton { text: "加入队列"; enabled: routingCandidate.currentIndex >= 0; onClicked: window.routingQueue = window.routingQueue.concat([routingCandidate.currentValue]) }
                 }
                 Label { text: "超时与重试"; font.bold: true; color: "#21314d" }
                 GridLayout { columns: 2; Layout.fillWidth: true; columnSpacing: 20
-                    Label { text: "最多重试次数"; Layout.fillWidth: true; color: "#4b5d78" } SpinBox { id: routingRetries; from: 0; to: 10; editable: true }
-                    Label { text: "首字节超时（秒）"; color: "#4b5d78" } SpinBox { id: routingFirst; from: 1; to: 600; editable: true }
-                    Label { text: "流空闲超时（秒）"; color: "#4b5d78" } SpinBox { id: routingIdle; from: 1; to: 3600; editable: true }
-                    Label { text: "请求总超时（秒）"; color: "#4b5d78" } SpinBox { id: routingTimeout; from: 1; to: 3600; editable: true }
+                    Label { text: "最多重试次数"; Layout.fillWidth: true; color: "#4b5d78" } SoftSpinBox { id: routingRetries; from: 0; to: 10; editable: true }
+                    Label { text: "首字节超时（秒）"; color: "#4b5d78" } SoftSpinBox { id: routingFirst; from: 1; to: 600; editable: true }
+                    Label { text: "流空闲超时（秒）"; color: "#4b5d78" } SoftSpinBox { id: routingIdle; from: 1; to: 3600; editable: true }
+                    Label { text: "请求总超时（秒）"; color: "#4b5d78" } SoftSpinBox { id: routingTimeout; from: 1; to: 3600; editable: true }
                 }
                 Label { text: "熔断与恢复"; font.bold: true; color: "#21314d" }
                 GridLayout { columns: 2; Layout.fillWidth: true; columnSpacing: 20
-                    Label { text: "连续失败阈值"; Layout.fillWidth: true; color: "#4b5d78" } SpinBox { id: routingFailures; from: 1; to: 100; editable: true }
-                    Label { text: "恢复成功阈值"; color: "#4b5d78" } SpinBox { id: routingSuccesses; from: 1; to: 100; editable: true }
-                    Label { text: "恢复等待（秒）"; color: "#4b5d78" } SpinBox { id: routingCooldown; from: 1; to: 3600; editable: true }
-                    Label { text: "错误率阈值（%）"; color: "#4b5d78" } SpinBox { id: routingErrorRate; from: 1; to: 100; editable: true }
-                    Label { text: "错误率最小样本"; color: "#4b5d78" } SpinBox { id: routingMinRequests; from: 1; to: 1000; editable: true }
+                    Label { text: "连续失败阈值"; Layout.fillWidth: true; color: "#4b5d78" } SoftSpinBox { id: routingFailures; from: 1; to: 100; editable: true }
+                    Label { text: "恢复成功阈值"; color: "#4b5d78" } SoftSpinBox { id: routingSuccesses; from: 1; to: 100; editable: true }
+                    Label { text: "恢复等待（秒）"; color: "#4b5d78" } SoftSpinBox { id: routingCooldown; from: 1; to: 3600; editable: true }
+                    Label { text: "错误率阈值（%）"; color: "#4b5d78" } SoftSpinBox { id: routingErrorRate; from: 1; to: 100; editable: true }
+                    Label { text: "错误率最小样本"; color: "#4b5d78" } SoftSpinBox { id: routingMinRequests; from: 1; to: 1000; editable: true }
                 }
                 Hint { visible: host.message.length > 0; text: host.message; Layout.fillWidth: true; color: "#a34d4d" }
             }
@@ -883,7 +1056,7 @@ ApplicationWindow {
         id: codexPreferencesDialog; title: "Codex 通用配置"; anchors.centerIn: parent; modal: true; width: 660; height: 480
         ColumnLayout { width: parent.width; spacing: 12
             Hint { text: "勾选“使用 Codex 通用配置”的供应商共用这些偏好；切换前会同步当前原生配置中的共享改动。MCP 配置继续保留。"; Layout.fillWidth: true }
-            TextArea { id: codexCommonText; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+            SoftTextArea { id: codexCommonText; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
             SoftSwitch { id: preserveCodexLogin; text: "切换第三方供应商时保留官方登录" }
             Hint { text: host.message; visible: text.length > 0; Layout.fillWidth: true; color: "#a34d4d" }
         }
@@ -896,7 +1069,7 @@ ApplicationWindow {
     SoftDialog {
         id: providerInfoDialog; anchors.centerIn: parent; modal: true; width: 590; height: 400
         property string infoText: ""
-        contentItem: ScrollView { TextArea { text: providerInfoDialog.infoText; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap } }
+        contentItem: ScrollView { SoftTextArea { text: providerInfoDialog.infoText; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap } }
         standardButtons: Dialog.Ok
     }
     SoftDialog {
@@ -904,7 +1077,7 @@ ApplicationWindow {
         contentItem: ScrollView { clip: true; contentWidth: availableWidth
             ColumnLayout { width: fetchedModelsDialog.width - 40
                 Repeater { model: window.fetchedModels
-                    CheckBox { required property var modelData; required property int index; text: modelData.name + " · " + modelData.id; onToggled: window.fetchedModels[index].selected = checked }
+                    SoftCheckBox { required property var modelData; required property int index; text: modelData.name + " · " + modelData.id; onToggled: window.fetchedModels[index].selected = checked }
                 }
             }
         }
@@ -924,11 +1097,11 @@ ApplicationWindow {
             ColumnLayout { width: usageDialog.width - 42; spacing: 10
                 SoftSwitch { id: usageEnabled; text: "启用用量查询" }
                 RowLayout { Layout.fillWidth: true
-                    ComboBox { id: usageTemplateType; Layout.fillWidth: true; textRole: "name"; valueRole: "id"; model: [{id:"custom",name:"自定义脚本"},{id:"general",name:"通用余额"},{id:"newapi",name:"New API"},{id:"balance",name:"官方余额（DeepSeek 等）"}] }
+                    SoftComboBox { id: usageTemplateType; Layout.fillWidth: true; textRole: "name"; valueRole: "id"; model: [{id:"custom",name:"自定义脚本"},{id:"general",name:"通用余额"},{id:"newapi",name:"New API"},{id:"balance",name:"官方余额（DeepSeek 等）"}] }
                     ActionButton { text: "载入模板"; enabled: !host.busy; onClicked: host.loadUsageTemplate(window.usageProviderId, usageTemplateType.currentValue, usageBaseUrl.text) }
                 }
                 Hint { text: "脚本返回 { request: { url, method, headers }, extractor: response => ({ remaining, unit }) }。支持 {{apiKey}}、{{baseUrl}}、{{accessToken}}、{{userId}} 变量。"; Layout.fillWidth: true }
-                TextArea { id: usageCode; Layout.fillWidth: true; Layout.preferredHeight: 180; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; background: Rectangle { color: "#DDE3EF"; radius: 8 } }
+                SoftTextArea { id: usageCode; Layout.fillWidth: true; Layout.preferredHeight: 180; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
                 Field { id: usageBaseUrl; placeholderText: "查询地址覆盖（留空跟随供应商）"; Layout.fillWidth: true }
                 Field { id: usageApiKey; placeholderText: "API Key 覆盖（留空跟随供应商）"; echoMode: TextInput.Password; Layout.fillWidth: true }
                 RowLayout { Layout.fillWidth: true
