@@ -136,6 +136,40 @@ ApplicationWindow {
     }
     component Heading: Label { font.pixelSize: 20; font.weight: Font.DemiBold; color: "#172a49" }
     component Hint: Label { color: "#73819a"; wrapMode: Text.WordWrap; lineHeight: 1.4; font.pixelSize: 13 }
+    component EngravedWordmark: Item {
+        id: wordmark
+        property alias text: face.text
+        readonly property real relief: 1.8
+        implicitWidth: face.implicitWidth + relief
+        implicitHeight: face.implicitHeight + relief
+        // An engraved glyph has a dark upper-left wall and a lit lower-right wall.
+        // The darker face keeps the word readable against the same neumorphic panel.
+        Label {
+            id: darkWall
+            x: 0; y: 0
+            text: face.text
+            color: "#71819A"
+            opacity: 0.9
+            font: face.font
+        }
+        Label {
+            id: lightWall
+            x: wordmark.relief; y: wordmark.relief
+            text: face.text
+            color: "#FFFFFF"
+            opacity: 0.92
+            font: face.font
+        }
+        Label {
+            id: face
+            x: wordmark.relief / 2; y: wordmark.relief / 2
+            text: "Orbis"
+            color: "#AAB8CB"
+            font.pixelSize: 29
+            font.weight: Font.DemiBold
+            font.family: "Segoe UI"
+        }
+    }
     component DialogSurface: Rectangle { color: "#E6EBF4"; radius: 8; border.width: 1; border.color: "#C8D3E2" }
     component SoftDialog: Dialog {
         id: dialog
@@ -377,7 +411,7 @@ ApplicationWindow {
                 RowLayout {
                     Layout.topMargin: 18; Layout.bottomMargin: 3; spacing: 10
                     Image { source: "qrc:/src/assets/orbis.png"; Layout.preferredWidth: 40; Layout.preferredHeight: 40; smooth: true }
-                    Label { text: "Orbis"; color: "#232A36"; font.pixelSize: 29; font.weight: Font.DemiBold; font.family: "Segoe UI" }
+                    EngravedWordmark { text: "Orbis" }
                 }
                 Label { text: "Easy Agents Everywhere"; color: "#8298ba"; font.pixelSize: 11; Layout.leftMargin: 4; Layout.bottomMargin: 36 }
                 Repeater {
