@@ -20,7 +20,7 @@ Button {
     }
     background: NeuSurface {
         anchors.fill: parent; anchors.margins: -12; margin: 12
-        cornerRadius: 10
+        cornerRadius: 6
         inset: button.down || !button.enabled
         focused: button.activeFocus
         opacity: button.enabled ? 1 : 0.6

@@ -132,21 +132,65 @@ ApplicationWindow {
         selectByMouse: true
         color: "#21314d"
         placeholderTextColor: "#98a4b8"
-        background: NeuSurface { margin: 0; cornerRadius: 10; inset: true; surface: "#DDE3EF"; focused: parent.activeFocus }
+        background: NeuSurface { margin: 0; cornerRadius: 6; inset: true; surface: "#DDE3EF"; focused: parent.activeFocus }
     }
     component Heading: Label { font.pixelSize: 20; font.weight: Font.DemiBold; color: "#172a49" }
     component Hint: Label { color: "#73819a"; wrapMode: Text.WordWrap; lineHeight: 1.4; font.pixelSize: 13 }
+    component DialogSurface: Rectangle { color: "#E6EBF4"; radius: 8; border.width: 1; border.color: "#C8D3E2" }
+    component SoftDialog: Dialog {
+        id: dialog
+        palette.window: "#E6EBF4"
+        background: DialogSurface {}
+        header: Label {
+            text: dialog.title; visible: text.length > 0
+            padding: 18; bottomPadding: 16
+            font.pixelSize: 17; font.weight: Font.DemiBold; color: "#21314d"
+            wrapMode: Text.WordWrap
+            background: Rectangle {
+                color: "transparent"
+                Rectangle { anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 1; height: 1; color: "#C8D3E2" }
+            }
+        }
+        footer: SoftDialogButtons { visible: count > 0 }
+    }
+    component SoftDialogButtons: DialogButtonBox {
+        spacing: 14; padding: 18; alignment: Qt.AlignRight
+        background: Item {}
+        delegate: ActionButton {}
+    }
+    component SoftDialogActions: Pane {
+        id: dialogActions
+        default property alias actions: actionRow.data
+        spacing: 12; padding: 18
+        background: Item {}
+        contentItem: RowLayout { id: actionRow; spacing: dialogActions.spacing }
+    }
     component SoftSwitch: Switch {
         id: softSwitch
-        spacing: 14
+        spacing: 12
+        implicitHeight: 38
+        readonly property real knobSize: 34 // fills the groove height, as the reference does
+        readonly property real knobRadius: 12 // large radius with a flat edge: the reference thumb is a rounded square, not a circle
         indicator: Item {
-            implicitWidth: 56; implicitHeight: 32
+            implicitWidth: 68; implicitHeight: 34
+            opacity: softSwitch.enabled ? 1 : 0.45
             x: softSwitch.leftPadding
             y: (softSwitch.height - height) / 2
-            NeuSurface { anchors.fill: parent; margin: 0; cornerRadius: 16; inset: true; surface: "#DDE3EF"; focused: softSwitch.activeFocus }
-            NeuSurface { width: 34; height: 34; margin: 6; cornerRadius: 11; x: softSwitch.checked ? 26 : -4; y: -1; Rectangle { anchors.centerIn: parent; width: 6; height: 6; radius: 3; color: softSwitch.checked ? "#2459D3" : "#a6b2c6" } }
+            // Recessed groove: the surface keeps the panel colour, the relief comes from the clipped inner shadow.
+            NeuSurface {
+                anchors.fill: parent; margin: 0; cornerRadius: 13
+                inset: true; depth: 5; focused: softSwitch.activeFocus
+            }
+            // Raised knob. The item is inflated by the shadow margin so the blur has room inside its own image.
+            Item {
+                width: softSwitch.knobSize + 24; height: width
+                x: (softSwitch.checked ? indicator.width - softSwitch.knobSize : 0) - 12
+                y: (indicator.height - height) / 2
+                Behavior on x { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+                NeuSurface { anchors.fill: parent; margin: 12; cornerRadius: softSwitch.knobRadius; surface: "#F7F9FD"; depth: 2.2; blur: 0.55 }
+            }
         }
-        contentItem: Label { text: softSwitch.text; leftPadding: softSwitch.indicator.width + softSwitch.spacing; verticalAlignment: Text.AlignVCenter; color: "#40516c" }
+        contentItem: Label { text: softSwitch.text; leftPadding: softSwitch.indicator.width + softSwitch.spacing; verticalAlignment: Text.AlignVCenter; color: softSwitch.enabled ? "#40516c" : "#8995a9" }
     }
 
     RowLayout {
@@ -175,7 +219,7 @@ ApplicationWindow {
                             Label { text: ["◈", "▣", "⌘", "⚙", "≡"][index]; color: window.page === index ? "#2459D3" : "#627591"; font.family: "Segoe UI Symbol"; font.pixelSize: 20; Layout.leftMargin: 13; Layout.preferredWidth: 22 }
                             Label { text: modelData; color: window.page === index ? "#2459D3" : "#50617b"; font.weight: window.page === index ? Font.DemiBold : Font.Normal; Layout.fillWidth: true }
                         }
-                        background: NeuSurface { anchors.fill: parent; anchors.margins: -12; margin: 12; cornerRadius: 11; inset: window.page === index || parent.down; visible: window.page === index || parent.hovered || parent.activeFocus; focused: parent.activeFocus }
+                        background: NeuSurface { anchors.fill: parent; anchors.margins: -12; margin: 12; cornerRadius: 6; inset: window.page === index || parent.down; visible: window.page === index || parent.hovered || parent.activeFocus; focused: parent.activeFocus }
                     }
                 }
                 Item { Layout.fillHeight: true }
@@ -191,7 +235,8 @@ ApplicationWindow {
         ColumnLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
             Rectangle {
-                Layout.fillWidth: true; height: 100; color: "#E6EBF4"
+                Layout.fillWidth: true; Layout.preferredHeight: 100; color: "#F2F5FA"
+                Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: "#CED7E5" }
                 RowLayout {
                     anchors.fill: parent; anchors.leftMargin: 36; anchors.rightMargin: 36
                     ColumnLayout {
@@ -201,7 +246,7 @@ ApplicationWindow {
                     }
                     Item { Layout.fillWidth: true }
                     Rectangle {
-                        implicitWidth: statusLabel.implicitWidth + 30; implicitHeight: 32; radius: 16
+                        implicitWidth: statusLabel.implicitWidth + 26; implicitHeight: 30; radius: 6
                         color: host.state === "connected" ? "#e1f4ee" : "#e7ecf4"
                         Label { id: statusLabel; anchors.centerIn: parent; text: stateText(); color: host.state === "connected" ? "#278868" : "#677992"; font.pixelSize: 12 }
                     }
@@ -210,7 +255,7 @@ ApplicationWindow {
             Rectangle {
                 visible: host.message.length > 0
                 Layout.fillWidth: true; Layout.leftMargin: 36; Layout.rightMargin: 36; Layout.bottomMargin: 16
-                implicitHeight: messageLabel.implicitHeight + 24; radius: 10; color: "#e8effd"
+                implicitHeight: messageLabel.implicitHeight + 24; radius: 6; color: "#e8effd"
                 RowLayout {
                     anchors.fill: parent; anchors.margins: 12
                     Label { id: messageLabel; text: host.message; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#365485"; font.pixelSize: 13 }
@@ -226,7 +271,7 @@ ApplicationWindow {
                 ColumnLayout {
                     width: scroll.availableWidth - 72
                     x: 36; spacing: 20
-                    Item { Layout.preferredHeight: 10 }
+                    Item { Layout.preferredHeight: 22 }
 
                     ColumnLayout {
                         visible: window.page === 0
@@ -424,6 +469,9 @@ ApplicationWindow {
                             ActionButton { text: "‹ Agent"; onClicked: window.providersOpen = false }
                             Heading { text: ({pi: "Pi", codex: "Codex", dsh: "DeepSeek Harness"})[host.providerKind] + " · 供应商" }
                             Item { Layout.fillWidth: true }
+                        }
+                        Flow {
+                            Layout.fillWidth: true; spacing: 14
                             ActionButton { text: "刷新 / 导入"; enabled: !host.busy; onClicked: host.loadProviders(host.providerKind) }
                             ActionButton { text: "通用配置"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: host.loadCodexPreferences() }
                             ActionButton { text: "账号管理"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: { host.clearMessage(); host.oauthAccount("list"); oauthDialog.open() } }
@@ -450,7 +498,7 @@ ApplicationWindow {
                                 ColumnLayout { anchors.fill: parent; spacing: 12
                                   RowLayout { Layout.fillWidth: true; spacing: 12
                                     ColumnLayout { Layout.fillWidth: true
-                                        Heading { text: modelData.name; font.pixelSize: 18 }
+                                        Heading { text: modelData.name; font.pixelSize: 18; Layout.fillWidth: true; elide: Text.ElideRight }
                                         Hint { text: modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用"; color: modelData.enabled ? "#278868" : "#73819a" }
                                         Hint { text: modelData.notes || ""; visible: text.length > 0; Layout.fillWidth: true }
                                         Hint { text: window.usageText(modelData.usage); visible: text.length > 0; Layout.fillWidth: true }
@@ -529,14 +577,13 @@ ApplicationWindow {
             }
         }
     }
-    Dialog {
+    SoftDialog {
         id: pairDialog
         title: "用手机扫描二维码"
         anchors.centerIn: parent
         width: 430
         modal: true
-        background: NeuSurface { anchors.fill: parent; anchors.margins: -14; margin: 14; cornerRadius: 18 }
-        footer: DialogButtonBox { ActionButton { text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } onRejected: pairDialog.reject() }
+        footer: SoftDialogButtons { ActionButton { text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } onRejected: pairDialog.reject() }
         onRejected: host.cancelPair()
         ColumnLayout {
             width: parent.width; spacing: 16
@@ -545,17 +592,15 @@ ApplicationWindow {
             Hint { text: "在 Orbis Android 中选择“扫码配对”。二维码仅可使用一次。"; Layout.fillWidth: true }
         }
     }
-    Dialog {
+    SoftDialog {
         id: revokeDialog; title: "撤销这台手机的配对？"; anchors.centerIn: parent; modal: true; width: 410
-        background: NeuSurface { anchors.fill: parent; anchors.margins: -14; margin: 14; cornerRadius: 18 }
-        footer: DialogButtonBox { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "撤销配对"; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: revokeDialog.accept(); onRejected: revokeDialog.reject() }
+        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "撤销配对"; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: revokeDialog.accept(); onRejected: revokeDialog.reject() }
         Label { width: parent.width; text: "连接会立即失效。再次使用时，需要重新扫码配对。"; wrapMode: Text.WordWrap }
         onAccepted: host.revoke(window.revokeId)
     }
-    Dialog {
+    SoftDialog {
         id: installDialog; title: "安装 / 更新 " + window.agentName(window.installKind); anchors.centerIn: parent; modal: true; width: 540
-        background: NeuSurface { anchors.fill: parent; anchors.margins: -14; margin: 14; cornerRadius: 18 }
-        footer: DialogButtonBox { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "开始安装"; enabled: window.canInstallAgents && !host.busy && (installLocation.currentIndex === 1 || window.installAgentData.installationSource === "npm"); primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
+        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "开始安装"; enabled: window.canInstallAgents && !host.busy && (installLocation.currentIndex === 1 || window.installAgentData.installationSource === "npm"); primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
             Hint { text: "当前 " + (window.installAgentData.version || "未安装") + " · 最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
             Hint { visible: !!window.installAgentData.compatibilityNote; text: window.installAgentData.compatibilityNote || ""; Layout.fillWidth: true }
@@ -567,10 +612,9 @@ ApplicationWindow {
         }
         onAccepted: host.installAgent(window.installKind, installVersion.text, installLocation.currentIndex === 0 ? "current" : "managed")
     }
-    Dialog {
+    SoftDialog {
         id: batchInstallDialog; title: window.batchInstallAction === "update" ? "更新所有可更新的 Agent" : "安装缺失的 Agent"; anchors.centerIn: parent; modal: true; width: 540
-        background: NeuSurface { anchors.fill: parent; anchors.margins: -14; margin: 14; cornerRadius: 18 }
-        footer: DialogButtonBox { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "开始"; primary: true; enabled: window.canInstallAgents && !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
+        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "开始"; primary: true; enabled: window.canInstallAgents && !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
             Hint { text: "逐个安装并验证，一个失败后会继续其余项目。npm 安装更新到原目录；独立安装保留旧版本。"; Layout.fillWidth: true }
             Repeater { model: host.agents.filter(a => window.batchInstallAction === "update" ? a.updateAvailable : !a.installed); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → " + (modelData.recommendedVersion || modelData.latestVersion || "latest") + " · " + (modelData.installationSource === "npm" ? "原 npm 目录" : "独立安装"); Layout.fillWidth: true } }
@@ -578,10 +622,9 @@ ApplicationWindow {
         }
         onAccepted: host.installAllAgents(window.batchInstallAction)
     }
-    Dialog {
+    SoftDialog {
         id: installationHistory; title: window.agentName(window.installKind) + " · 安装记录"; anchors.centerIn: parent; modal: true; width: 700; height: Math.min(window.height - 100, 570)
-        background: NeuSurface { anchors.fill: parent; anchors.margins: -14; margin: 14; cornerRadius: 18 }
-        footer: DialogButtonBox { ActionButton { text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } onRejected: installationHistory.reject() }
+        footer: SoftDialogButtons { ActionButton { text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } onRejected: installationHistory.reject() }
         contentItem: ScrollView { clip: true; contentWidth: availableWidth
             ColumnLayout { width: installationHistory.width - 48; spacing: 15
                 Hint { text: "切回旧版前请先暂停 Host。切换会重新验证该版本能否运行。"; Layout.fillWidth: true }
@@ -595,10 +638,9 @@ ApplicationWindow {
             }
         }
     }
-    Dialog {
+    SoftDialog {
         id: providerDialog; title: window.providerDraft.create ? "添加供应商" : "编辑供应商"
         anchors.centerIn: parent; modal: true; width: 760; height: Math.min(window.height - 70, 690)
-        background: NeuSurface { anchors.fill: parent; anchors.margins: -14; margin: 14; cornerRadius: 18 }
         contentItem: ScrollView {
             clip: true
             contentWidth: availableWidth
@@ -725,7 +767,7 @@ ApplicationWindow {
                 Hint { visible: window.providerFormError.length > 0; text: window.providerFormError; Layout.fillWidth: true; color: "#a34d4d" }
             }
         }
-        footer: RowLayout {
+        footer: SoftDialogActions {
             spacing: 12
             Item { Layout.fillWidth: true }
             ActionButton { text: "取消"; enabled: !host.busy; onClicked: providerDialog.reject() }
@@ -735,7 +777,7 @@ ApplicationWindow {
         }
         onClosed: { providerApiKey.text = ""; providerJson.text = ""; window.providerDraft = ({}) }
     }
-    Dialog {
+    SoftDialog {
         id: presetDialog; title: "选择供应商预设"; anchors.centerIn: parent; modal: true; width: 530
         ColumnLayout { width: parent.width; spacing: 12
             ComboBox { id: providerPreset; model: host.providerPresets; textRole: "name"; valueRole: "id"; Layout.fillWidth: true; editable: true }
@@ -744,7 +786,7 @@ ApplicationWindow {
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: host.presetProvider(providerPreset.currentValue)
     }
-    Dialog {
+    SoftDialog {
         id: oauthDialog; title: "Codex · ChatGPT 账号"; anchors.centerIn: parent; modal: true; width: 700; height: 560
         contentItem: ScrollView { clip: true; contentWidth: availableWidth
             ColumnLayout { width: oauthDialog.width - 44; spacing: 12
@@ -779,7 +821,7 @@ ApplicationWindow {
         standardButtons: Dialog.Close
         onClosed: { if (window.oauthPending.deviceCode) host.oauthAccount("cancel", window.oauthPending.deviceCode); window.oauthPending = ({}) }
     }
-    Dialog {
+    SoftDialog {
         id: oauthDeleteDialog; property string accountId: ""; title: "删除托管账号？"; anchors.centerIn: parent; modal: true; width: 420
         Label { width: parent.width; text: "删除 Host 保存的登录凭据。仍被供应商绑定的账号需要先解除绑定。"; wrapMode: Text.WordWrap }
         standardButtons: Dialog.Cancel | Dialog.Ok
@@ -789,7 +831,7 @@ ApplicationWindow {
         interval: Math.max(5000, (window.oauthPending.interval || 8) * 1000); repeat: true; running: oauthDialog.visible && !!window.oauthPending.deviceCode
         onTriggered: { if (Date.now() >= window.oauthPending.expiresAt) { host.oauthAccount("cancel", window.oauthPending.deviceCode); window.oauthPending = ({}) } else if (!host.busy) host.oauthAccount("poll", window.oauthPending.deviceCode) }
     }
-    Dialog {
+    SoftDialog {
         id: routingDialog; title: "Codex 本地路由"; anchors.centerIn: parent; modal: true
         width: Math.min(760, window.width - 40); height: Math.min(690, window.height - 40)
         contentItem: ScrollView { clip: true
@@ -832,12 +874,12 @@ ApplicationWindow {
                 Hint { visible: host.message.length > 0; text: host.message; Layout.fillWidth: true; color: "#a34d4d" }
             }
         }
-        footer: RowLayout { spacing: 10; Item { Layout.fillWidth: true }
+        footer: SoftDialogActions { spacing: 12; Item { Layout.fillWidth: true }
             ActionButton { text: "取消"; enabled: !host.busy; onClicked: routingDialog.reject() }
             ActionButton { text: "保存"; primary: true; enabled: !host.busy; onClicked: host.saveProxyPreferences({enabled:routingEnabled.checked, port:routingPort.value, autoFailoverEnabled:routingFailover.checked, queue:window.routingQueue, maxRetries:routingRetries.value, firstByteTimeout:routingFirst.value, idleTimeout:routingIdle.value, requestTimeout:routingTimeout.value, failureThreshold:routingFailures.value, successThreshold:routingSuccesses.value, timeoutSeconds:routingCooldown.value, errorRateThreshold:routingErrorRate.value / 100, minRequests:routingMinRequests.value}) }
         }
     }
-    Dialog {
+    SoftDialog {
         id: codexPreferencesDialog; title: "Codex 通用配置"; anchors.centerIn: parent; modal: true; width: 660; height: 480
         ColumnLayout { width: parent.width; spacing: 12
             Hint { text: "勾选“使用 Codex 通用配置”的供应商共用这些偏好；切换前会同步当前原生配置中的共享改动。MCP 配置继续保留。"; Layout.fillWidth: true }
@@ -845,19 +887,19 @@ ApplicationWindow {
             SoftSwitch { id: preserveCodexLogin; text: "切换第三方供应商时保留官方登录" }
             Hint { text: host.message; visible: text.length > 0; Layout.fillWidth: true; color: "#a34d4d" }
         }
-        footer: RowLayout {
+        footer: SoftDialogActions {
             Item { Layout.fillWidth: true }
             ActionButton { text: "取消"; enabled: !host.busy; onClicked: codexPreferencesDialog.reject() }
             ActionButton { text: "保存"; primary: true; enabled: !host.busy; onClicked: host.saveCodexPreferences({ commonConfig: codexCommonText.text, preserveOfficialLogin: preserveCodexLogin.checked }) }
         }
     }
-    Dialog {
+    SoftDialog {
         id: providerInfoDialog; anchors.centerIn: parent; modal: true; width: 590; height: 400
         property string infoText: ""
         contentItem: ScrollView { TextArea { text: providerInfoDialog.infoText; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap } }
         standardButtons: Dialog.Ok
     }
-    Dialog {
+    SoftDialog {
         id: fetchedModelsDialog; title: "选择模型"; anchors.centerIn: parent; modal: true; width: 550; height: 490
         contentItem: ScrollView { clip: true; contentWidth: availableWidth
             ColumnLayout { width: fetchedModelsDialog.width - 40
@@ -876,7 +918,7 @@ ApplicationWindow {
             } else if (selected.length > 0) providerModel.text = selected[0].id
         }
     }
-    Dialog {
+    SoftDialog {
         id: usageDialog; title: "用量查询配置"; anchors.centerIn: parent; modal: true; width: 680; height: 620
         contentItem: ScrollView { clip: true; contentWidth: availableWidth
             ColumnLayout { width: usageDialog.width - 42; spacing: 10
@@ -900,30 +942,29 @@ ApplicationWindow {
                 Hint { text: host.message; visible: text.length > 0; Layout.fillWidth: true; color: "#a34d4d" }
             }
         }
-        footer: RowLayout {
+        footer: SoftDialogActions {
             Item { Layout.fillWidth: true }
             ActionButton { text: "取消"; enabled: !host.busy; onClicked: usageDialog.reject() }
             ActionButton { text: "保存"; primary: true; enabled: !host.busy; onClicked: host.saveProviderUsage(window.usageProviderId, { enabled: usageEnabled.checked, language: "javascript", code: usageCode.text, timeout: Number(usageTimeout.text), apiKey: usageApiKey.text, baseUrl: usageBaseUrl.text, accessToken: usageAccessToken.text, userId: usageUserId.text, templateType: usageTemplateType.currentValue, autoQueryInterval: Number(usageInterval.text) }) }
         }
         onClosed: { usageApiKey.text = ""; usageAccessToken.text = ""; usageCode.text = "" }
     }
-    Dialog {
+    SoftDialog {
         id: removeProviderDialog; title: "从 Pi 移除供应商？"; anchors.centerIn: parent; modal: true; width: 440
         Label { width: parent.width; text: "仅移除 models.json 中的节点，卡片和最新配置仍保留。" + (host.piDefaultProvider === window.removeProviderId ? "\n这是 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。" : ""); wrapMode: Text.WordWrap }
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: host.switchProvider(window.removeProviderId, false)
     }
-    Dialog {
+    SoftDialog {
         id: deleteProviderDialog; title: "删除供应商？"; anchors.centerIn: parent; modal: true; width: 410
         Label { width: parent.width; text: host.providerKind === "pi" ? "删除卡片和 models.json 中的对应供应商。" + (host.piDefaultProvider === window.deleteProviderId ? "\n这是 Pi 的全局默认供应商，删除后请在 Pi 中重新选择模型。" : "") : "删除这个未启用的供应商配置。"; wrapMode: Text.WordWrap }
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: host.removeProvider(window.deleteProviderId)
     }
-    Dialog {
+    SoftDialog {
         id: renameDialog; title: "设备名称"; anchors.centerIn: parent; modal: true; width: 410
-        background: NeuSurface { anchors.fill: parent; anchors.margins: -14; margin: 14; cornerRadius: 18 }
         Field { id: deviceNameField; width: parent.width; maximumLength: 80; placeholderText: "例如：我的手机" }
-        footer: DialogButtonBox { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "保存名称"; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: renameDialog.accept(); onRejected: renameDialog.reject() }
+        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "保存名称"; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: renameDialog.accept(); onRejected: renameDialog.reject() }
         onAccepted: host.renameDevice(window.revokeId, deviceNameField.text)
     }
     Connections {

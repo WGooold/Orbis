@@ -34,6 +34,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"host-state-dir", "Isolated Host identity directory", "path"});
     parser.addOption({"tray", "Start in the system tray"});
     parser.addOption({"smoke-test", "Render the window and exit after checking the Host bridge"});
+    parser.addOption({"smoke-compact", "Run the smoke test at the minimum window size"});
     parser.addOption({"screenshot", "Save the smoke-test window image", "path"});
     parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
     parser.addOption({"smoke-agents", "Also render Agent installation dialogs without starting downloads"});
@@ -81,6 +82,7 @@ int main(int argc, char *argv[]) {
     QObject::connect(&app, &QApplication::aboutToQuit, &controller, &HostController::shutdown);
     if (parser.isSet("tray") && QSystemTrayIcon::isSystemTrayAvailable() && !parser.isSet("smoke-test")) window->hide();
     if (parser.isSet("smoke-test")) {
+        if (parser.isSet("smoke-compact")) window->resize(window->minimumSize());
         QTimer::singleShot(8000, &app, [&] {
             bool imageOk = true;
             if (parser.isSet("screenshot")) imageOk = window->grabWindow().save(parser.value("screenshot"));
