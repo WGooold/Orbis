@@ -51,7 +51,7 @@ import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
 import { DeviceLink, type ActivePathChange, type PathSink } from "./device-link.js";
 import { DEFAULT_LAN_PORT, HostLanServer, localLanEndpoints, parseLanDiscoveryRequest, type LanDiscoveryRequest } from "./lan-server.js";
-import { HostLoopbackServer } from "./loopback-server.js";
+import { HostLoopbackServer, type CodexLaunchRequest, type CodexLaunchResult } from "./loopback-server.js";
 import { HostP2pManager } from "./p2p-manager.js";
 import { HostPairingService, requestPairingCode, type OpenedPairingWindow } from "./pairing.js";
 import { describePath, normalizePreference, type PathChange } from "./path.js";
@@ -146,6 +146,8 @@ export type HostServiceOptions = {
    * （CLI 在 `--codex` 时创建并 stop）；缺省/未传 = 不启用 Codex。
    */
   codexRuntime?: CodexRuntime;
+  /** 终端 shim 通过 loopback 请求官方 Codex TUI 接入 Host app-server。 */
+  codexLaunch?: (request: CodexLaunchRequest) => Promise<CodexLaunchResult>;
   dshRuntime?: DshRuntime;
   providers?: ProviderManager;
   log?: (line: string) => void;
@@ -516,6 +518,7 @@ export class HostService {
         stateDir: this.#stateDir,
         hostId: this.#identity.hostId,
         ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
+        ...(this.#options.codexLaunch === undefined ? {} : { onCodexLaunch: this.#options.codexLaunch }),
         onRuntimeOnline: (metadata) => {
           this.#broadcastDeviceMessage({
             type: "runtime.online",

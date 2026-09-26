@@ -13,7 +13,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 
@@ -29,6 +29,9 @@ import {
 } from "@pi-remote/protocol";
 import WebSocket, { WebSocketServer } from "ws";
 
+export type CodexLaunchRequest = { cwd: string };
+export type CodexLaunchResult = { endpoint: string; command: string; prefixArgs: readonly string[] };
+
 export type HostLoopbackServerOptions = {
   stateDir: string;
   hostId: string;
@@ -36,8 +39,10 @@ export type HostLoopbackServerOptions = {
   /** 本机 runtime 注册（含 `/reload` 之后带着同一个 runtimeId 重新注册）。 */
   onRuntimeOnline?: (runtime: RuntimeMetadata) => void;
   onRuntimeOffline?: (runtimeId: string, reason: string) => void;
-  /** 本机 runtime 推上来的一条事件。 */
   onRuntimeEvent?: (runtimeId: string, sequence: number, event: RuntimeEvent) => void;
+  /** 终端 shim 请求官方 Codex 接入同一个 app-server。 */
+  onCodexLaunch?: (request: CodexLaunchRequest) => Promise<CodexLaunchResult>;
+
   /** 本机 runtime 推上来的二进制帧（artifact 分片）。 */
   onRuntimeFrame?: (runtimeId: string, frame: Buffer) => void;
 };
@@ -105,7 +110,9 @@ export class HostLoopbackServer {
     if (this.#server !== undefined) throw new Error("loopback 服务已经在运行");
 
     const wss = new WebSocketServer({ noServer: true });
-    const server = createServer();
+    const server = createServer((request, response) => {
+      void this.#handleHttp(request, response);
+    });
     server.on("upgrade", (request, socket, head) => {
       if (new URL(request.url ?? "/", "ws://127.0.0.1").pathname !== LOOPBACK_PATH) {
         socket.destroy();
@@ -184,6 +191,46 @@ export class HostLoopbackServer {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+
+  async #handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    if (path !== "/v1/codex/launch") {
+      response.writeHead(404).end();
+      return;
+    }
+    if (request.method !== "POST") {
+      response.writeHead(405, { allow: "POST" }).end();
+      return;
+    }
+    if (request.headers.authorization !== `Bearer ${this.#token}`) {
+      this.#writeJson(response, 401, { error: "unauthorized" });
+      return;
+    }
+    if (this.#options.onCodexLaunch === undefined) {
+      this.#writeJson(response, 503, { error: "codex_unavailable" });
+      return;
+    }
+    try {
+      const raw = await readRequestBody(request, 64 * 1024);
+      const parsed = JSON.parse(raw) as { cwd?: unknown };
+      if (typeof parsed.cwd !== "string" || parsed.cwd.trim().length === 0 || parsed.cwd.length > 4096) {
+        this.#writeJson(response, 400, { error: "invalid_cwd" });
+        return;
+      }
+      const result = await this.#options.onCodexLaunch({ cwd: parsed.cwd });
+      this.#writeJson(response, 200, result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#options.log?.(`Codex 终端启动请求失败：${message}`);
+      this.#writeJson(response, 503, { error: "codex_unavailable" });
+    }
+  }
+
+  #writeJson(response: ServerResponse, status: number, value: unknown): void {
+    const body = JSON.stringify(value);
+    response.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(body) });
+    response.end(body);
+  }
 
   #handleConnection(socket: WebSocket): void {
     let runtimeId: string | undefined;
@@ -310,6 +357,23 @@ export class HostLoopbackServer {
     entry.socket.send(JSON.stringify(message));
     return true;
   }
+}
+
+async function readRequestBody(request: IncomingMessage, maximumBytes: number): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    let body = "";
+    let rejected = false;
+    request.setEncoding("utf8");
+    request.on("data", chunk => {
+      body += chunk;
+      if (Buffer.byteLength(body) > maximumBytes && !rejected) {
+        rejected = true;
+        reject(new Error("request too large"));
+      }
+    });
+    request.on("end", () => { if (!rejected) resolve(body); });
+    request.on("error", error => { if (!rejected) reject(error); });
+  });
 }
 
 async function writePrivateJson(path: string, value: unknown): Promise<void> {

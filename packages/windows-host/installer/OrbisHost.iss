@@ -52,6 +52,11 @@ begin
     '"' + RuntimeRoot + '\packages\host\dist\pi-integration-install.js" "' + RuntimeRoot + '\packages\pi-extension"',
     '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
     RaiseException('Could not register Orbis with Pi. Check the current user''s Pi configuration.');
+  ExitCode := -1;
+  if not Exec(RuntimeRoot + '\node\node.exe',
+    '"' + RuntimeRoot + '\packages\host\dist\codex-shim-install.js" --install "' + RuntimeRoot + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+    RaiseException('Could not install the Codex terminal shim.');
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -61,12 +66,20 @@ var
 begin
   if CurUninstallStep <> usUninstall then Exit;
   RuntimeRoot := ExpandConstant('{app}\runtime');
-  if not FileExists(RuntimeRoot + '\packages\host\dist\pi-integration-install.js') then Exit;
-  ExitCode := -1;
-  if not Exec(RuntimeRoot + '\node\node.exe',
-    '"' + RuntimeRoot + '\packages\host\dist\pi-integration-install.js" "' + RuntimeRoot + '\packages\pi-extension" --uninstall',
-    '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
-    Log('Could not remove the Orbis Pi integration from user settings.');
+  if FileExists(RuntimeRoot + '\packages\host\dist\pi-integration-install.js') then begin
+    ExitCode := -1;
+    if not Exec(RuntimeRoot + '\node\node.exe',
+      '"' + RuntimeRoot + '\packages\host\dist\pi-integration-install.js" "' + RuntimeRoot + '\packages\pi-extension" --uninstall',
+      '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+      Log('Could not remove the Orbis Pi integration from user settings.');
+  end;
+  if FileExists(RuntimeRoot + '\packages\host\dist\codex-shim-install.js') then begin
+    ExitCode := -1;
+    if not Exec(RuntimeRoot + '\node\node.exe',
+      '"' + RuntimeRoot + '\packages\host\dist\codex-shim-install.js" --uninstall',
+      '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+      Log('Could not remove the Orbis Codex terminal shim.');
+  end;
 end;
 
 [UninstallDelete]

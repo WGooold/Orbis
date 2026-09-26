@@ -1913,6 +1913,7 @@ describe("CodexRuntime TUI 切换会话", () => {
       },
       notify: vi.fn(),
       endpoint: "ws://127.0.0.1:9931",
+      codexCommand: { command: "node.exe", prefixArgs: ["codex.js"] },
     } as unknown as CodexAppServer;
     const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-switch-"));
     // 捕获看门狗 tick：#startHeadWatcher 在 activate 内部调用，覆盖窗必须盖到那之后。
@@ -1951,6 +1952,31 @@ describe("CodexRuntime TUI 切换会话", () => {
     };
     return { runtime, events, queue, offline, opened, pollResults, notify, activateDefault, watcher: () => watcherTick() };
   }
+
+  it("shim 终端的首个 thread/started 会按 cwd 收编，不要求预先落盘 rollout", async () => {
+    const h = makeSwitchHarness();
+    const launch = await h.runtime.prepareTerminalLaunch("D:/terminal-repo");
+    expect(launch).toEqual({ endpoint: "ws://127.0.0.1:9931", command: "node.exe", prefixArgs: ["codex.js"] });
+
+    h.notify("thread/started", { thread: { id: "th-terminal", cwd: "D:/terminal-repo" } });
+    await vi.waitFor(() => expect(h.queue.length).toBeGreaterThan(0));
+    h.queue.shift()!.resolve({ data: [] });
+    await flush();
+
+    expect(h.events).toContainEqual(expect.objectContaining({
+      type: "runtime.metadata",
+      metadata: expect.objectContaining({ runtimeId: "codex:th-terminal", cwd: "D:/terminal-repo" }),
+    }));
+    expect(h.offline).toEqual([]);
+    h.pollResults.push(new Set(["__orbis_remote_tui__"]));
+    h.watcher();
+    await flush();
+    expect(h.offline).toEqual([]);
+    h.pollResults.push(new Set());
+    h.watcher();
+    await flush();
+    expect(h.offline).toHaveLength(1);
+  });
 
   it("TUI /new（thread/started 广播）→ 旧会话下线、新会话收编且不重开窗口", async () => {
     const h = makeSwitchHarness();

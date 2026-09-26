@@ -206,7 +206,7 @@ export class DesktopRuntime {
         providers: this.#providers,
         stateDir: this.#stateDir, relayUrl: settings.relayUrl, credential: settings.credential,
         ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }), stunServers,
-        ...(this.#codexRuntime === undefined ? {} : { codexRuntime: this.#codexRuntime }),
+        ...(this.#codexRuntime === undefined ? {} : { codexRuntime: this.#codexRuntime, codexLaunch: (request: { cwd: string }) => this.#codexRuntime!.prepareTerminalLaunch(request.cwd) }),
         ...(this.#dshRuntime === undefined ? {} : { dshRuntime: this.#dshRuntime }),
         log: line => this.log(line),
         onStateChange: state => this.#emit({ event: "state", state }),

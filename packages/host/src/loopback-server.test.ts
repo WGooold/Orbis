@@ -25,6 +25,28 @@ describe("HostLoopbackServer 的发现文件", () => {
     dir = undefined;
   });
 
+  it("用发现文件 token 认证终端 Codex 启动请求", async () => {
+    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    server = new HostLoopbackServer({
+      stateDir: dir,
+      hostId: "host-1",
+      onCodexLaunch: async request => ({ endpoint: "ws://127.0.0.1:9000", command: "node.exe", prefixArgs: ["codex.js", request.cwd] }),
+    });
+    const descriptor = await server.start();
+    const url = descriptor.url.replace(/^ws:/u, "http:");
+    const body = JSON.stringify({ cwd: "C:\\work\\repo" });
+
+    const unauthorized = await fetch(`${url}/v1/codex/launch`, { method: "POST", body, headers: { "content-type": "application/json" } });
+    expect(unauthorized.status).toBe(401);
+    const response = await fetch(`${url}/v1/codex/launch`, {
+      method: "POST",
+      body,
+      headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ endpoint: "ws://127.0.0.1:9000", command: "node.exe", prefixArgs: ["codex.js", "C:\\work\\repo"] });
+  });
+
   it("启动时写 0600 的发现文件，停止时删掉它", async () => {
     dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
     server = new HostLoopbackServer({ stateDir: dir, hostId: "host-1" });

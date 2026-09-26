@@ -120,7 +120,7 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
       ...(config.adminToken === undefined ? {} : { adminToken: config.adminToken }),
       ...(config.lanPort === undefined ? {} : { lanPort: config.lanPort }),
       ...(config.stunServers.length > 0 ? { stunServers: config.stunServers } : {}),
-      ...(codexRuntime === undefined ? {} : { codexRuntime }),
+      ...(codexRuntime === undefined ? {} : { codexRuntime, codexLaunch: (request: { cwd: string }) => codexRuntime!.prepareTerminalLaunch(request.cwd) }),
       ...(dshRuntime === undefined ? {} : { dshRuntime }),
       log: (line) => console.log(`[host] ${line}`),
       onStateChange: (state) => console.log(`[host] relay ${state}`),
