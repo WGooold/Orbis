@@ -469,7 +469,7 @@ private fun RuntimeListScreen(
                 },
                     title = {
                         Column {
-                            Text("Orbis", fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            OrbisWordmark()
                             Text(
                                 "Easy Agents EveryWhere",
                                 style = MaterialTheme.typography.labelMedium.copy(
