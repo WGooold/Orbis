@@ -312,6 +312,11 @@ export class HostService {
     if (options.dshRuntime !== undefined) {
       const dsh = options.dshRuntime;
       dsh.setEventSink((event, runtimeId) => this.#publishRuntimeEvent(runtimeId, event));
+      dsh.onCatalogChange = () => this.#invalidateCatalog();
+      dsh.onArchiveChange = (sessionId, archived) => {
+        this.#invalidateCatalog();
+        this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: "dsh", sessionId, archived });
+      };
       dsh.onMetadataChange = () => {
         for (const runtime of dsh.directoryEntries()) this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
       };
@@ -575,6 +580,8 @@ export class HostService {
       this.#options.log?.(`Codex 后端已就绪（runtimeId=${this.#options.codexRuntime.runtimeId}）`);
     }
 
+    try { await this.#options.dshRuntime?.start(); }
+    catch (error) { this.#options.log?.(`DeepSeek Web 会话发现暂时失败，将自动重试：${describeError(error)}`); }
     await relay.start();
   }
 

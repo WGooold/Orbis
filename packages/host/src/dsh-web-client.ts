@@ -207,13 +207,15 @@ export class DshWebClient implements DshWebConnection {
         this.#ready = true;
         this.#reconnectAttempt = 0;
         clearTimeout(this.#handshakeTimer);
-        for (const subscription of this.#subscriptions) this.#openSubscription(subscription);
         const reconnecting = this.#connectedOnce;
         this.#connectedOnce = true;
         this.#initialResolve?.();
         this.#initialResolve = undefined;
         this.#initialReject = undefined;
         if (reconnecting) this.onReconnect?.();
+        // Let the adapter discard instance-bound follows before transport replay;
+        // DSH following a now-cold Session would otherwise revive its Agent.
+        for (const subscription of this.#subscriptions) this.#openSubscription(subscription);
         return;
       }
       this.#receiveEvent(event);

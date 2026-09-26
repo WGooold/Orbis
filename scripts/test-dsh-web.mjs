@@ -6,11 +6,15 @@ import { createServer } from "node:http";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolveDshCommand } from "../packages/host/dist/dsh-client.js";
 import { DshWebClient } from "../packages/host/dist/dsh-web-client.js";
 import { applyDshWebProvider } from "../packages/host/dist/dsh-web-provider.js";
+import { DshRuntime } from "../packages/host/dist/dsh-runtime.js";
+import { loadDshStreamDecoder } from "../packages/host/dist/dsh-web-history.js";
 
 const root = await mkdtemp(join(tmpdir(), "orbis-dsh-web-smoke-"));
 const home = join(root, "dsh-home");
@@ -84,6 +88,21 @@ const patchText = await (await import("node:fs/promises")).readFile(patch, "utf8
 await writeFile(patch, patchText.replace("__MODEL_PORT__", String(modelPort)));
 
 const cli = await resolveDshCommand();
+// Seed a durable, cold Session with the matching official writer. Discovery and
+// history reads must leave it cold until a browser explicitly prompts it.
+const dshRequire = createRequire(cli.prefixArgs[0]);
+const nativeImport = name => import(pathToFileURL(dshRequire.resolve(name)).href);
+const { Context } = await nativeImport("@deepseek-ai/cordis");
+const { default: persistence } = await nativeImport("@deepseek-ai/dsh-session-persistence-jsonl");
+const { SESSION_FORMAT_VERSION } = await nativeImport("@deepseek-ai/dsh-session");
+const coldId = "session-orbis-cold-smoke";
+const seedContext = new Context();
+try {
+  await seedContext.plugin(persistence, { root: join(home, "sessions") });
+  const handle = await seedContext.sessionPersistence.create({ id: coldId, version: SESSION_FORMAT_VERSION, createdAt: Date.now(), cwd: workspace, isSeeded: false });
+  await handle.flush();
+  await handle.close();
+} finally { await seedContext.fiber.dispose(); }
 const env = { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: "1" };
 delete env.ORBIS_DSH_WEB_TEST_KEY;
 const child = spawn(cli.command, [...cli.prefixArgs, "--profile", "web", "--no-open", "--port", "0"], { env, cwd: workspace, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -102,6 +121,8 @@ const started = new Promise((resolve, reject) => {
 
 let first;
 let second;
+let mobile;
+let mobileClient;
 const waitFor = async (predicate, timeout = 30_000) => {
   const deadline = Date.now() + timeout;
   while (!predicate()) { if (Date.now() > deadline) throw new Error("Timed out waiting for DSH Web smoke event"); await delay(25); }
@@ -115,9 +136,19 @@ try {
   assert.ok(list && Array.isArray(list.items));
   const created = await first.request("session/create", { request: { cwd: workspace } });
   const sessionId = created.sessionId;
+  mobileClient = await DshWebClient.connect({ url, cliEntry: cli.prefixArgs[0], timeoutMs: 15_000 });
+  mobile = new DshRuntime(mobileClient, await loadDshStreamDecoder(cli.prefixArgs[0]));
+  const mobileEvents = [];
+  mobile.setEventSink((event, runtimeId) => mobileEvents.push({ event, runtimeId }));
+  await mobile.start();
+  assert.ok(mobile.ownsRuntime(`dsh:${sessionId}`), "Host discovers the pre-existing browser Agent without APP activation");
+  assert.equal(mobile.ownsRuntime(`dsh:${coldId}`), false);
+  await first.request("session/page", { request: { address: { kind: "session", sessionId: coldId }, throughSeq: -1, maxMessages: 10 } });
+  assert.equal((await first.request("session/list", { _request: {} })).items.find(item => item.sessionId === coldId)?.agentAvailable, false,
+    "automatic discovery and reading history must not revive a cold Agent");
   const frames = [];
   const dispose = second.subscribe("session/follow", { request: { address: { kind: "session", sessionId }, assistantStream: true } }, frame => frames.push(frame), error => { throw error; });
-  await second.request("session/prompt", { request: { sessionId, requestId: "web-first", mode: "queue", content: [{ type: "text", text: "WEB_SMOKE_FIRST" }] } });
+  await first.request("session/prompt", { request: { sessionId, requestId: "web-first", mode: "queue", content: [{ type: "text", text: "WEB_SMOKE_FIRST" }] } });
   await waitFor(() => modelRequests >= 1);
   const queued = await second.request("session/prompt", { request: { sessionId, requestId: "web-queued", mode: "queue", content: [{ type: "text", text: "WEB_SMOKE_QUEUED" }] } });
   assert.equal(queued.accepted, true);
@@ -126,6 +157,7 @@ try {
   await second.request("session/updateQueue", { request: { sessionId, itemId: "web-queued", action: { kind: "remove" } } }).catch(error => assert.match(String(error), /queue-item-not-found|pending/));
   releaseFirst();
   await waitFor(() => frames.some(frame => JSON.stringify(frame).includes("WEB_SMOKE_TOKEN")));
+  await waitFor(() => mobileEvents.some(({ event }) => event.type === "message.finished" && JSON.stringify(event).includes("WEB_SMOKE_TOKEN")));
   await first.request("session/prompt", { request: { sessionId, requestId: "web-follow", mode: "queue", content: [{ type: "text", text: "WEB_SMOKE_FOLLOW" }] } });
   await waitFor(() => modelRequests >= 2);
   await second.request("session/cancel", { request: { sessionId } });
@@ -133,6 +165,22 @@ try {
   await waitFor(() => frames.some(frame => JSON.stringify(frame).includes("WEB_SMOKE_FOLLOW")));
   await first.request("session/prompt", { request: { sessionId, requestId: "web-tool", mode: "queue", content: [{ type: "text", text: "WEB_SMOKE_TOOL" }] } });
   await waitFor(() => modelRequests >= 3 && frames.some(frame => JSON.stringify(frame).includes("WEB_SMOKE_TOOL_DONE")));
+  await waitFor(() => mobile.directoryEntries().find(item => item.sessionId === `dsh:${sessionId}`)?.status === "idle");
+  const fresh = await first.request("session/create", { request: { cwd: workspace } });
+  await waitFor(() => mobile.ownsRuntime(`dsh:${fresh.sessionId}`));
+  const browserFrames = [];
+  const closeBrowser = first.subscribe("session/follow", { request: { address: { kind: "session", sessionId: fresh.sessionId }, assistantStream: true } }, frame => browserFrames.push(frame));
+  assert.equal(mobile.dispatchCommand(`dsh:${fresh.sessionId}`, "app-prompt", { type: "user_message", text: "APP_TO_BROWSER", messageId: "app-prompt" }), "handled");
+  await waitFor(() => browserFrames.some(frame => frame.type === "event" && frame.event.type === "user/message" && frame.event.data.source.rpcId === "app-prompt"));
+  await waitFor(() => mobileEvents.some(({ event, runtimeId }) => runtimeId === `dsh:${fresh.sessionId}` && event.type === "turn.finished"));
+  await first.request("workspace/archiveSession", { request: { sessionId: fresh.sessionId } });
+  await waitFor(() => !mobile.ownsRuntime(`dsh:${fresh.sessionId}`));
+  await first.request("workspace/unarchiveSession", { request: { sessionId: fresh.sessionId } });
+  await waitFor(() => mobile.ownsRuntime(`dsh:${fresh.sessionId}`));
+  closeBrowser();
+  await first.request("session/prompt", { request: { sessionId: coldId, requestId: "web-resume", mode: "queue", content: [{ type: "text", text: "RESUME_COLD_HISTORY" }] } });
+  await waitFor(() => mobile.ownsRuntime(`dsh:${coldId}`));
+  await waitFor(() => mobileEvents.some(({ event, runtimeId }) => runtimeId === `dsh:${coldId}` && event.type === "turn.finished"));
   const switched = (await (await import("node:fs/promises")).readFile(patch, "utf8")).replace("/v1\n", "/v2\n");
   await writeFile(patch, switched);
   await applyDshWebProvider(first, { ...env, ORBIS_DSH_PROVIDER_ENV: JSON.stringify({ ORBIS_DSH_WEB_TEST_KEY: "switched-local-key" }) });
@@ -141,8 +189,10 @@ try {
   await waitFor(() => modelRequests > beforeSwitch);
   assert.equal(lastModelPath, "/v2/chat/completions");
   dispose();
-  console.log("PASS: isolated DSH Web launch, two clients, prompt, live follow, streamed token/tool, queue mutation, stop, and live provider URL/key switch");
+  console.log("PASS: isolated DSH Web launch, automatic existing/new/restored Agent discovery, cold history stays inactive, browser-to-APP and APP-to-browser messages, archive/unarchive, streamed token/tool, queue mutation, stop, and live provider URL/key switch");
 } finally {
+  await mobile?.stop().catch(() => {});
+  await mobileClient?.stop().catch(() => {});
   await first?.stop().catch(() => {});
   await second?.stop().catch(() => {});
   if (child.exitCode === null) { child.kill(); await new Promise(resolve => child.once("exit", resolve)); }

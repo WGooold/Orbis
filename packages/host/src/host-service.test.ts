@@ -48,6 +48,7 @@ import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import type { DshConnection } from "./dsh-client.js";
+import type { DshWebConnection } from "./dsh-web-client.js";
 import { ActivationError, type SessionSpawner } from "./spawner.js";
 import { ProviderManager } from "./provider-manager.js";
 
@@ -1995,6 +1996,60 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "dsh:dsh-thread", commandId: "stop-dsh", command: { type: "stop" } });
       await until(message => (message.event as { commandId?: string } | undefined)?.commandId === "stop-dsh");
       expect(client.notify).toHaveBeenCalledWith("session/cancel", { sessionId: "dsh-thread" });
+    } finally { await runtime.stop(); }
+  });
+
+  it("announces browser DSH sessions and shares messages over E2E without APP activation", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-discovery-host-"));
+    relay = await startRelayLocal(stateDir);
+    const follows = new Map<string, (value: unknown) => void>();
+    let workspace: ((value: unknown) => void) | undefined;
+    const row = (sessionId: string) => ({ sessionId, cwd: stateDir, agentAvailable: true, running: false, updatedAt: 1000 });
+    const request = vi.fn<(method: string, args?: unknown) => Promise<unknown>>(async method => method === "session/list" ? { items: [row("existing")] } : {});
+    const client: DshWebConnection = {
+      onEvent: undefined, onExit: undefined, onReconnect: undefined,
+      request: request as DshWebConnection["request"], respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+      subscribe(method, args, frame) {
+        if (method === "workspace/follow") {
+          workspace = frame;
+          queueMicrotask(() => frame({ type: "baseline", value: { archivedSessionIds: [] } }));
+          return () => {};
+        }
+        const id = (args.request as { address: { sessionId: string } }).address.sessionId;
+        follows.set(id, frame);
+        return () => { follows.delete(id); };
+      },
+    };
+    const runtime = new DshRuntime(client);
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshRuntime: runtime });
+    try {
+      await host.start();
+      const ready = await readyDeviceCapturing({ host, relay }); device = ready.device;
+      expect(ready.ready).toMatchObject({ runtimes: [expect.objectContaining({ runtimeId: "dsh:existing" })] });
+      const until = async (predicate: (message: Record<string, unknown>) => boolean) => {
+        for (let i = 0; i < 60; i++) {
+          const message = await device!.receiveMessage() as Record<string, unknown>;
+          expect(message.type).not.toBe("protocol.error");
+          if (predicate(message)) return message;
+        }
+        throw new Error("Expected DSH discovery message not received");
+      };
+      client.onEvent?.({ type: "emit", event: "api-session/added", args: [row("browser")] });
+      expect(await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata)?.runtimeId === "dsh:browser"))
+        .toMatchObject({ runtime: { sessionId: "dsh:browser", status: "idle" } });
+      follows.get("browser")!({ type: "event", event: { seq: 0, time: 1000, type: "user/message",
+        data: { role: "user", source: { kind: "user", rpcId: "web-1" }, content: [{ type: "text", text: "browser message" }] } } });
+      expect(await until(message => message.runtimeId === "dsh:browser" && (message.event as RuntimeEvent)?.type === "message.finished"))
+        .toMatchObject({ event: { message: { content: [{ type: "text", text: "browser message" }] } } });
+      sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "dsh:browser", commandId: "app-send",
+        command: { type: "user_message", text: "phone message", messageId: "app-1" } });
+      await vi.waitFor(() => expect(request).toHaveBeenCalledWith("session/prompt", { request: expect.objectContaining({ sessionId: "browser", content: [{ type: "text", text: "phone message" }] }) }));
+      workspace!({ type: "archived", archivedSessionIds: ["browser"] });
+      expect(await until(message => message.type === "runtime.offline" && message.runtimeId === "dsh:browser")).toMatchObject({ runtimeId: "dsh:browser" });
+      expect(await until(message => message.type === "session.archive.changed" && message.sessionId === "dsh:browser"))
+        .toMatchObject({ archived: true, agentKind: "dsh" });
+      expect(request.mock.calls.some(([method]) => method === "session/create")).toBe(false);
     } finally { await runtime.stop(); }
   });
 

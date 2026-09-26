@@ -8,12 +8,203 @@ import { DshWebRuntime } from "./dsh-web-runtime.js";
 
 const roots: string[] = [];
 const runtimes: DshWebRuntime[] = [];
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+function discoveryFixture() {
+  let items: Record<string, unknown>[] = [];
+  const subscriptions: { method: string; args: Record<string, unknown>; frame: (value: unknown) => void; fail?: ((error: Error) => void) | undefined; closed: boolean }[] = [];
+  const request = vi.fn<(method: string, args?: unknown) => Promise<unknown>>(async method => {
+    if (method === "session/list") return { items };
+    if (method === "workspace/create") return { workspace: { workspaceId: "workspace" } };
+    if (method === "session/page") return { records: [] };
+    return {};
+  });
+  const client: DshWebConnection = {
+    onEvent: undefined, onExit: undefined, onReconnect: undefined,
+    request: request as DshWebConnection["request"],
+    subscribe(method, args, frame, fail) {
+      const subscription = { method, args, frame, fail, closed: false }; subscriptions.push(subscription);
+      if (method === "workspace/follow") queueMicrotask(() => frame({ type: "baseline", value: { archivedSessionIds: ["archived"] } }));
+      return () => { subscription.closed = true; };
+    },
+    respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+  };
+  const runtime = new DshWebRuntime(client); runtimes.push(runtime);
+  const events: { event: RuntimeEvent; runtimeId: string }[] = [];
+  runtime.setEventSink((event, runtimeId) => { RuntimeEventSchema.parse(event); events.push({ event: structuredClone(event), runtimeId }); });
+  const offline = vi.fn(); runtime.onOffline = offline;
+  const archives = vi.fn(); runtime.onArchiveChange = archives;
+  const metadata = vi.fn(); runtime.onMetadataChange = metadata;
+  const changed = vi.fn(); runtime.onCatalogChange = changed;
+  const emit = (event: string, ...args: unknown[]) => client.onEvent?.({ type: "emit", event, args });
+  const live = (id: string, running = false) => ({ sessionId: id, cwd: "D:/work", title: `Title ${id}`, updatedAt: 1000, agentAvailable: true, running });
+  const follows = () => subscriptions.filter(item => item.method === "session/follow" && !item.closed);
+  return { runtime, client, events, offline, archives, metadata, changed, emit, live, follows, subscriptions, request,
+    list: (next: Record<string, unknown>[]) => { items = next; } };
+}
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) await runtime.stop();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
 describe("DeepSeek Web runtime adapter", () => {
+  it("discovers existing browser Agents at startup without activating cold, archived, or child sessions", async () => {
+    const f = discoveryFixture();
+    f.list([f.live("busy", true), f.live("idle"), { ...f.live("cold"), agentAvailable: false }, f.live("archived"), { ...f.live("child"), origin: "subagent" }]);
+    await f.runtime.start();
+    expect(f.runtime.directoryEntries()).toEqual([
+      expect.objectContaining({ sessionId: "dsh:busy", status: "running", sessionName: "Title busy" }),
+      expect.objectContaining({ sessionId: "dsh:idle", status: "idle" }),
+    ]);
+    expect(f.follows()).toHaveLength(2);
+    expect(f.request.mock.calls.some(([method]) => method === "session/create" || method === "workspace/create")).toBe(false);
+    expect(f.metadata).toHaveBeenCalled();
+  });
+
+  it("discovers browser activity, shares both directions, and distinguishes idle from disposed", async () => {
+    const f = discoveryFixture(); await f.runtime.start();
+    f.emit("api-session/added", f.live("browser"));
+    f.emit("api-session/added", f.live("browser"));
+    f.emit("api-session/status", "browser", true);
+    expect(f.follows()).toHaveLength(1);
+    expect(f.runtime.directoryEntries()[0]?.status).toBe("running");
+    const follow = f.follows()[0]!;
+    follow.frame({ type: "event", event: { seq: 0, time: 1000, type: "user/message", data: { role: "user", source: { kind: "user", rpcId: "web-1" }, content: [{ type: "text", text: "from browser" }] } } });
+    expect(f.events).toContainEqual(expect.objectContaining({ runtimeId: "dsh:browser", event: expect.objectContaining({ type: "message.finished", message: expect.objectContaining({ content: [{ type: "text", text: "from browser" }] }) }) }));
+    expect(f.runtime.dispatchCommand("dsh:browser", "mobile-1", { type: "user_message", text: "from phone", messageId: "mobile-1" })).toBe("handled");
+    await vi.waitFor(() => expect(f.request).toHaveBeenCalledWith("session/prompt", { request: expect.objectContaining({ sessionId: "browser", content: [{ type: "text", text: "from phone" }] }) }));
+    f.emit("api-session/status", "browser", false);
+    expect(f.runtime.directoryEntries()[0]?.status).toBe("idle");
+    f.emit("api-session/removed", "browser");
+    expect(f.runtime.directoryEntries()).toEqual([]);
+    expect(f.offline).toHaveBeenCalledWith(expect.any(String), [expect.objectContaining({ runtimeId: "dsh:browser" })]);
+    const count = f.events.length;
+    follow.frame({ type: "event", event: { seq: 1, time: 1001, type: "turn/start", data: { turn: 1 } } });
+    expect(f.events).toHaveLength(count);
+  });
+
+  it("reconciles missed additions and removals when the Web connection reconnects", async () => {
+    const f = discoveryFixture(); f.list([f.live("old")]); await f.runtime.start();
+    f.list([f.live("new", true), { ...f.live("old"), agentAvailable: false }]);
+    f.client.onReconnect?.();
+    f.subscriptions[0]!.frame({ type: "baseline", value: { archivedSessionIds: [] } });
+    await vi.waitFor(() => expect(f.runtime.directoryEntries().map(item => item.sessionId)).toEqual(["dsh:new"]));
+    expect(f.follows()).toHaveLength(1);
+    expect(f.offline).toHaveBeenCalled();
+  });
+
+  it("does not let an older list response undo notifications received during that request", async () => {
+    const f = discoveryFixture(); f.list([f.live("old")]); await f.runtime.start();
+    const pending = deferred<unknown>();
+    f.request.mockImplementationOnce(() => pending.promise);
+    f.client.onReconnect?.();
+    f.subscriptions[0]!.frame({ type: "baseline", value: { archivedSessionIds: [] } });
+    expect(f.follows()).toHaveLength(0);
+    f.emit("api-session/removed", "old");
+    f.emit("api-session/added", f.live("new", true));
+    pending.resolve({ items: [f.live("old")] });
+    await vi.waitFor(() => expect(f.changed).toHaveBeenCalledTimes(4));
+    expect(f.runtime.directoryEntries().map(item => item.sessionId)).toEqual(["dsh:new"]);
+    expect(f.follows()).toHaveLength(1);
+  });
+
+  it("waits for the fresh archive baseline before following Agents after reconnect", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser")]); await f.runtime.start();
+    f.client.onReconnect?.();
+    await vi.waitFor(() => expect(f.changed).toHaveBeenCalledTimes(2));
+    expect(f.follows()).toHaveLength(0);
+    f.subscriptions[0]!.frame({ type: "baseline", value: { archivedSessionIds: ["browser"] } });
+    expect(f.follows()).toHaveLength(0);
+    expect(f.runtime.ownsRuntime("dsh:browser")).toBe(false);
+  });
+
+  it("retries a failed follow only after rechecking that its native Agent is still live", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser")]); await f.runtime.start();
+    vi.useFakeTimers();
+    try {
+      f.follows()[0]!.fail!(new Error("follow interrupted"));
+      expect(f.follows()).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(f.follows()).toHaveLength(1);
+      f.follows()[0]!.fail!(new Error("follow ended"));
+      f.list([{ ...f.live("browser"), agentAvailable: false }]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(f.follows()).toHaveLength(0);
+      expect(f.runtime.ownsRuntime("dsh:browser")).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("mirrors browser archive changes and keeps local quit detached until explicitly reopened", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser")]); await f.runtime.start();
+    const workspace = f.subscriptions.find(item => item.method === "workspace/follow")!;
+    workspace.frame({ type: "archived", archivedSessionIds: ["browser"] });
+    expect(f.runtime.directoryEntries()).toEqual([]);
+    expect(f.archives).toHaveBeenCalledWith("dsh:browser", true);
+    workspace.frame({ type: "archived", archivedSessionIds: [] });
+    expect(f.runtime.ownsRuntime("dsh:browser")).toBe(true);
+    f.runtime.dispatchCommand("dsh:browser", "quit", { type: "slash.execute", name: "quit", args: "" });
+    await vi.waitFor(() => expect(f.runtime.ownsRuntime("dsh:browser")).toBe(false));
+    f.emit("api-session/added", f.live("browser"));
+    f.client.onReconnect?.();
+    workspace.frame({ type: "baseline", value: { archivedSessionIds: [] } });
+    await vi.waitFor(() => expect(f.request.mock.calls.filter(([method]) => method === "session/list")).toHaveLength(2));
+    expect(f.runtime.ownsRuntime("dsh:browser")).toBe(false);
+    workspace.frame({ type: "archived", archivedSessionIds: ["browser"] });
+    workspace.frame({ type: "archived", archivedSessionIds: [] });
+    expect(f.runtime.ownsRuntime("dsh:browser")).toBe(false);
+    await f.runtime.activate({ type: "resume", sessionId: "dsh:browser" });
+    expect(f.follows()).toHaveLength(1);
+    expect(f.request.mock.calls.some(([method]) => method === "workspace/archiveSession")).toBe(false);
+  });
+
+  it("reuses the browser-discovered subscription when an APP activation races its creation event", async () => {
+    const f = discoveryFixture(); await f.runtime.start();
+    f.list([f.live("browser")]);
+    const request = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, args) => {
+      if (method === "session/create") f.emit("api-session/added", f.live("browser"));
+      return request(method, args);
+    });
+    await f.runtime.activate({ type: "resume", sessionId: "dsh:browser" });
+    expect(f.follows()).toHaveLength(1);
+    expect(f.subscriptions.filter(item => item.method === "session/follow")).toHaveLength(1);
+  });
+
+  it("ignores late discovery results and notifications after stop", async () => {
+    const f = discoveryFixture();
+    const pending = deferred<unknown>();
+    f.request.mockImplementationOnce(() => pending.promise);
+    const start = f.runtime.start();
+    await vi.waitFor(() => expect(f.request).toHaveBeenCalledWith("session/list", expect.anything()));
+    await f.runtime.stop();
+    pending.resolve({ items: [f.live("late")] }); await start;
+    f.emit("api-session/added", f.live("later"));
+    expect(f.runtime.directoryEntries()).toEqual([]);
+    expect(f.follows()).toEqual([]);
+    expect(f.subscriptions.every(item => item.closed)).toBe(true);
+  });
+
+  it("restores an in-progress browser reply and replays it when the APP opens the discovered session", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const follow = f.follows()[0]!;
+    follow.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: 0,
+      records: [{ type: "event", event: { seq: 0, time: 1000, type: "turn/start", data: { turn: 1 } } }],
+      assistantStream: { revision: 2, activeAttempt: { attemptId: "attempt-1", turn: 1, step: 1, nextIndex: 1, startedAfterSeq: 0,
+        stream: [{ time: 1001, chunk: { type: "text-delta", text: "already sent " } }] } } });
+    follow.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId: "attempt-1", index: 1, chunk: { type: "text-delta", text: "and still streaming" } } });
+    f.events.length = 0;
+    f.runtime.dispatchCommand("dsh:browser", "sync", { type: "session.sync", sessionId: "dsh:browser", syncId: "sync", range: "preview" });
+    await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot")).toBe(true));
+    const restored = f.events.find(({ event }) => event.type === "message.started")?.event;
+    expect(restored).toMatchObject({ type: "message.started", message: { messageId: "attempt-1", content: [{ type: "text", text: "already sent " }, { type: "text", text: "and still streaming" }] } });
+    follow.frame({ type: "assistant-stream", frame: { type: "end", attemptId: "attempt-1", outcome: { kind: "committed", seq: 1 } } });
+    follow.frame({ type: "event", event: { seq: 2, time: 1100, type: "turn/end", data: { turn: 1 } } });
+    expect(f.events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "turn.finished", persistedMessages: [{ messageId: "attempt-1", entryId: "dsh:browser:web:1" }] }) }));
+  });
+
   it("reads the native archive set and blocks switching during browser-only work", async () => {
     const request = vi.fn(async (method: string) => method === "session/list" ? { items: [
       { sessionId: "saved", cwd: "D:/work", updatedAt: 10, running: false },

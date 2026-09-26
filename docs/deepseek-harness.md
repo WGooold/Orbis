@@ -58,6 +58,8 @@ Harness home 默认是 `~/.dsh`，可用 `DSH_HOME` 覆盖。Orbis 默认连接 
 
 桌面「打开 DeepSeek Harness」打开 Host 使用的同一个 `dsh web` 工作台。Orbis 会复用已有的 loopback Web 服务；没有时在 `127.0.0.1` 启动持久服务并保存带 token 的 descriptor。Host 断开不会关闭 Web 服务，浏览器可继续使用；手机需要 Host 恢复在线后才能重新接回同一会话。Web 的模型选择、消息、实时流和队列操作会同步给所有客户端。
 
+Host 启动时读取原生会话目录，只对 `agentAvailable=true` 的普通、未归档会话建立 `session/follow`。之后持续处理 DSH 的会话新增、状态、活动和移除通知，因此在网页创建或恢复的 Agent 会自动显示为 APP 在线会话，无需先在 APP 激活。`running=false` 表示实例空闲，仍保持在线；实例移除才断开对应 runtime。重连时先重新核对目录，再恢复仍存活实例的订阅，不通过重放旧订阅唤醒冷历史。APP 打开会话时会补发当前 turn 和已生成的回复前缀，后续消息继续使用同一个 DSH session ID。
+
 Web runtime 不读取本地 sessions 目录作为会话来源；会话目录和历史由 Web RPC（`session/list`、`session/page`、`session/follow`）提供。`$DSH_HOME/sessions` 以及 `ORBIS_DSH_SESSIONS_ROOT` 只供旧 ACP 兼容运行时读取；设置该变量只改变 Orbis 的历史读取位置，不会改写 dsh profile。仍使用 ACP 适配时，Orbis 从所选 CLI 安装位置加载同版本持久化库，并以只读 handle 读取日志。
 
 ## 能力与边界
@@ -72,6 +74,7 @@ Web runtime 不读取本地 sessions 目录作为会话来源；会话目录和�
 - 支持归档、fork、Steer、Follow-up、队列撤回和 Web skills；未识别的 dsh slash 命令仍会拒绝。审批采用 Orbis 共享 interaction，先响应的客户端获胜。
 - 同一活跃会话中的 `messageId` 重试不会重复执行；这份回执不跨 Host 重启。重启后先同步历史确认发送结果，避免盲目重发不确定请求。
 - Web transport 的请求超时只结束该 RPC；连接断开后会自动重连并恢复各会话的 follow/snapshot。Host 退出不会关闭 dsh Web 服务，浏览器仍可继续使用，手机需等待 Host 重新连接；`/quit` 只关闭手机当前的会话连接，不归档指定会话。
+- 网页归档和取消归档通过持续的 Workspace 订阅同步到 APP。`/quit` 后本次 Host 生命周期内不会因状态通知或重连自动接回同一个实例；在 APP 中重新打开会话，或原生实例移除后重新出现，才重新订阅。
 - Web 会话目录使用 dsh 返回的 session 元数据；未激活的会话不会预读完整历史，消息数会在激活并同步 `session/page` 后准确。归档和取消归档通过 Web RPC 完成，Host 不维护独立的历史目录。
 
 ## 验证
@@ -86,7 +89,7 @@ npm test
 node scripts/test-dsh.mjs
 ```
 
-`node scripts/test-dsh-web.mjs` 调用已安装的真实 dsh，但创建独立临时 `DSH_HOME` 和工作目录，模型请求仅发往本机回环测试服务，不消费真实 API 额度。它验证 Web URL/token、双客户端同会话 follow、实时 token/tool 流、队列撤回、session cancel、工具 round-trip，以及同一进程中供应商 URL/API Key 切换后的真实请求。测试不会修改用户已有 dsh 会话或凭据。
+`node scripts/test-dsh-web.mjs` 调用已安装的真实 dsh，但创建独立临时 `DSH_HOME` 和工作目录，模型请求仅发往本机回环测试服务，不消费真实 API 额度。它验证 Web URL/token、Host 对已有、新建及网页恢复实例的自动发现、冷历史在发现和读取时保持未激活、网页与 APP 适配器的双向消息、归档及取消归档、实时 token/tool 流、队列撤回、session cancel、工具 round-trip，以及同一进程中供应商 URL/API Key 切换后的真实请求。测试不会修改用户已有 dsh 会话或凭据。
 
 Host 单元测试另外覆盖旧 ACP 兼容层的分包、超时、无效帧、停止竞态、加密命令路由，以及 Web runtime 的审批会话归属和有界历史同步。Android 的 `DshIdentityTest` 验证品牌和缓存身份，`DshInstrumentedTest` 验证新建入口与审批操作。Android 构建、安装与模拟器使用遵守仓库规定的 Windows 脚本和资源锁。
 

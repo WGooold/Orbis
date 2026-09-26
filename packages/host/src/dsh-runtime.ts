@@ -463,10 +463,13 @@ export class DshAcpRuntime implements AgentBackend {
 }
 
 type DshImplementation = AgentBackend & {
+  start?: () => Promise<void>;
   setEventSink(sink: (event: RuntimeEvent, runtimeId: string) => void): void;
   stop(): Promise<void>;
   onMetadataChange?: (() => void) | undefined;
   onOffline?: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
+  onCatalogChange?: (() => void) | undefined;
+  onArchiveChange?: ((sessionId: string, archived: boolean) => void) | undefined;
   announce?: () => void;
   assertProviderSwitchReady?: () => void | Promise<void>;
   reloadProviderConfiguration?: (env: NodeJS.ProcessEnv) => Promise<void>;
@@ -482,6 +485,8 @@ export class DshRuntime implements AgentBackend {
   readonly #implementation: DshImplementation;
   #metadataChange: (() => void) | undefined;
   #offline: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
+  set onCatalogChange(value: (() => void) | undefined) { this.#implementation.onCatalogChange = value; }
+  set onArchiveChange(value: ((sessionId: string, archived: boolean) => void) | undefined) { this.#implementation.onArchiveChange = value; }
 
   get onMetadataChange(): (() => void) | undefined { return this.#metadataChange; }
   set onMetadataChange(value: (() => void) | undefined) {
@@ -519,6 +524,7 @@ export class DshRuntime implements AgentBackend {
   }
 
   setEventSink(sink: (event: RuntimeEvent, runtimeId: string) => void): void { this.#implementation.setEventSink(sink); }
+  async start(): Promise<void> { await this.#implementation.start?.(); }
   isReady(): boolean { return this.#implementation.isReady(); }
   ownsRuntime(runtimeId: string): boolean { return this.#implementation.ownsRuntime(runtimeId); }
   catalog(archived = false): Promise<AgentSessionSummary[]> { return this.#implementation.catalog(archived); }

@@ -142,6 +142,18 @@ describe("DSH Web transport", () => {
     expect(backend.opens.filter(value => value.endpoint === "session/follow")[0]!.streamId).not.toBe(backend.opens.filter(value => value.endpoint === "session/follow")[1]!.streamId);
   });
 
+  it("lets the runtime remove instance-bound follows before replaying subscriptions", async () => {
+    const backend = await fixture();
+    const client = await backend.connect();
+    client.subscribe("workspace/follow", {}, vi.fn());
+    const detach = client.subscribe("session/follow", { request: { address: { kind: "session", sessionId: "old" } } }, vi.fn());
+    client.onReconnect = detach;
+    await vi.waitFor(() => expect(backend.opens).toHaveLength(3));
+    backend.sockets[0]!.terminate();
+    await vi.waitFor(() => expect(backend.opens.filter(item => item.endpoint === "workspace/follow")).toHaveLength(2));
+    expect(backend.opens.filter(item => item.endpoint === "session/follow")).toHaveLength(1);
+  });
+
   it("answers one approval in its exact client generation and delegates unhandled requests", async () => {
     const backend = await fixture();
     const client = await backend.connect();
