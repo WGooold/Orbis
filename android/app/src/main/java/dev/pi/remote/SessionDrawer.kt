@@ -391,9 +391,11 @@ internal fun SessionDrawer(
                                     },
                                     onOpenHistory = { onOpenHistory(row.sessionId) },
                                     archiveEnabled = connected && state.e2eReady &&
-                                        row.catalogEntry?.agentKind != null && row.agentKind != "dsh" &&
+                                        row.catalogEntry?.agentKind != null &&
                                         row.sessionId !in state.sessionArchiveRequests.values &&
-                                        (row.isArchived || !row.isOnline || (row.isCodex && state.runtimes[row.runtimeId]?.status == "idle")),
+                                        (row.isArchived || !row.isOnline ||
+                                            (row.isCodex && state.runtimes[row.runtimeId]?.status == "idle") ||
+                                            (row.agentKind == "dsh" && state.runtimes[row.runtimeId]?.status == "idle")),
                                     archivePending = row.sessionId in state.sessionArchiveRequests.values,
                                     onSetArchived = { onSetArchived(row.sessionId, !row.isArchived) },
                                 )
@@ -643,8 +645,7 @@ private fun DrawerSessionRow(
                         text = { Text(when {
                             archivePending -> "处理中…"
                             row.isArchived -> "恢复会话"
-                            row.agentKind == "dsh" -> "DSH 暂不支持归档"
-                            row.isOnline && !row.isCodex -> "请先退出 Pi 会话"
+                            row.isOnline && row.agentKind == "pi" -> "请先退出 Pi 会话"
                             row.isOnline && !archiveEnabled -> "等待任务完成后归档"
                             else -> "归档会话"
                         }) },

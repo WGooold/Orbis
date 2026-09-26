@@ -26,7 +26,7 @@ Windows 桌面使用步骤：
 1. 在 Agent 页重新检测，确认出现 DeepSeek Harness。
 2. 暂停 Host，在设置中勾选「启动 Host 时启用 DeepSeek Harness」，保存后重新连接。
 3. Android 连接同一 Host 后，选择「新建会话 → DeepSeek」，选择电脑上的工作目录。
-4. 使用会话的 `/model` 菜单选择模型；当前模型声明推理档位时，再使用 `/thinking` 菜单切换档位。使用 `/quit` 归档这个会话并保留历史。
+4. 使用会话的 `/model` 菜单选择模型；当前模型声明推理档位时，再使用 `/thinking` 菜单切换档位。`/quit` 只关闭手机当前打开的会话连接并保留历史；需要隐藏会话时，在侧边栏会话菜单使用「归档」。
 
 CLI Host 在仓库构建后启动：
 
@@ -62,7 +62,7 @@ Web runtime 不读取本地 sessions 目录作为会话来源；会话目录和�
 
 ## 能力与边界
 
-支持会话目录、新建、恢复、独立关闭、文本请求、实时 assistant stream、工具生命周期、共享工具审批、停止、模型与推理档位选择、skills slash 命令，以及 preview/history/catchup 同步。普通消息进入 Web queue，`delivery: "steer"` 会插入当前 turn，`delivery: "followUp"` 会排队；排队消息可撤回。Web runtime 不设置活跃会话数量上限，实际数量受 dsh Web 服务和本机资源限制；用 `/quit` 归档当前会话。
+支持会话目录、新建、恢复、独立关闭、文本请求、实时 assistant stream、工具生命周期、共享工具审批、停止、模型与推理档位选择、skills slash 命令，以及 preview/history/catchup 同步。普通消息进入 Web queue，`delivery: "steer"` 会插入当前 turn，`delivery: "followUp"` 会排队；排队消息可撤回。Web runtime 不设置活跃会话数量上限，实际数量受 dsh Web 服务和本机资源限制。归档由侧边栏会话管理执行，`/quit` 不改变归档状态。
 
 - Host 不拥有 Web 服务的浏览器生命周期，只持有认证连接；多个客户端通过同一个官方 Web 服务读写 Session，不直接写日志。
 - Web follow 同时回放 durable event 和 assistant stream，断线后会自动重开订阅并从 Web snapshot 恢复。
@@ -71,7 +71,7 @@ Web runtime 不读取本地 sessions 目录作为会话来源；会话目录和�
 - 审批展示工具名及参数，批准只对应一次请求，五分钟未回答自动取消。停止、关闭会话或后端断线会取消待审批请求；不会自动批准工具。
 - 支持归档、fork、Steer、Follow-up、队列撤回和 Web skills；未识别的 dsh slash 命令仍会拒绝。审批采用 Orbis 共享 interaction，先响应的客户端获胜。
 - 同一活跃会话中的 `messageId` 重试不会重复执行；这份回执不跨 Host 重启。重启后先同步历史确认发送结果，避免盲目重发不确定请求。
-- Web transport 的请求超时只结束该 RPC；连接断开后会自动重连并恢复各会话的 follow/snapshot。Host 退出不会关闭 dsh Web 服务，浏览器仍可继续使用，手机需等待 Host 重新连接；`/quit` 只归档指定会话。
+- Web transport 的请求超时只结束该 RPC；连接断开后会自动重连并恢复各会话的 follow/snapshot。Host 退出不会关闭 dsh Web 服务，浏览器仍可继续使用，手机需等待 Host 重新连接；`/quit` 只关闭手机当前的会话连接，不归档指定会话。
 - Web 会话目录使用 dsh 返回的 session 元数据；未激活的会话不会预读完整历史，消息数会在激活并同步 `session/page` 后准确。归档和取消归档通过 Web RPC 完成，Host 不维护独立的历史目录。
 
 ## 验证

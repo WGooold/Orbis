@@ -15,6 +15,7 @@ import { ActivationError } from "./spawner.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
 
 type Obj = Record<string, unknown>;
+type WorkspaceView = { workspaceId: string; path: string; title?: string; sessionIds?: string[] };
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
 const arrayObjects = (value: unknown): Obj[] => Array.isArray(value) ? value.map(object) : [];
 const publicId = (id: string): string => `dsh:${id}`;
@@ -130,7 +131,15 @@ export class DshWebRuntime implements AgentBackend {
 
   async setArchived(sessionId: string, archived: boolean): Promise<void> {
     if (!sessionId.startsWith("dsh:")) throw new Error("不属于 DeepSeek Harness 的会话");
+    const runtimeId = sessionId;
     await this.#client.request(archived ? "workspace/archiveSession" : "workspace/unarchiveSession", { request: { sessionId: sessionId.slice(4) } });
+    if (archived) {
+      // Archiving is a sidebar/workspace operation. Once it succeeds, detach a
+      // local runtime as well so the archived session cannot keep accepting
+      // prompts through the phone while the Web registry blocks its work.
+      const session = this.#sessions.get(runtimeId);
+      if (session) this.#detachSession(session, "DeepSeek Web 会话已归档");
+    }
   }
 
   activate(target: AgentActivateTarget): Promise<BackendActivation> {
@@ -138,7 +147,9 @@ export class DshWebRuntime implements AgentBackend {
     if (target.type === "resume") {
       if (!target.sessionId.startsWith("dsh:")) return Promise.reject(new ActivationError("session_not_found", "不属于 DeepSeek Harness 的会话"));
       const current = this.#sessions.get(target.sessionId);
-      if (current && !current.closing) return Promise.resolve({ sessionId: target.sessionId, spawnMode: "headless" });
+      if (current && !current.closing) {
+        return this.#ensureWorkspace(current.cwd).then(() => ({ sessionId: target.sessionId, spawnMode: "headless" as const }));
+      }
       const prior = this.#activating.get(target.sessionId); if (prior) return prior;
       const operation = this.#scheduleActivation(target).finally(() => this.#activating.delete(target.sessionId));
       this.#activating.set(target.sessionId, operation); return operation;
@@ -153,7 +164,8 @@ export class DshWebRuntime implements AgentBackend {
     if (target.type === "new") {
       cwd = target.cwd;
       if (!isAbsolute(cwd) || !(await stat(cwd).then(info => info.isDirectory(), () => false))) throw new ActivationError("cwd_missing", "请选择存在的绝对目录");
-      const created = object(await this.#client.request("session/create", { request: { cwd } }));
+      const workspaceId = await this.#ensureWorkspace(cwd);
+      const created = object(await this.#client.request("session/create", { request: { workspaceId } }));
       id = typeof created.sessionId === "string" ? created.sessionId : "";
       if (!id) throw new Error("DeepSeek Web 没有返回会话 ID");
     } else {
@@ -161,7 +173,8 @@ export class DshWebRuntime implements AgentBackend {
       const item = (await this.catalog()).find(value => value.sessionId === target.sessionId);
       if (!item) throw new ActivationError("session_not_found", "找不到这个 DeepSeek Web 会话");
       cwd = item.cwd; createdAt = item.createdAt;
-      await this.#client.request("session/create", { request: { sessionId: id } });
+      const workspaceId = await this.#ensureWorkspace(cwd);
+      await this.#client.request("session/create", { request: { sessionId: id, workspaceId } });
     }
     const runtimeId = publicId(id);
     const previous = this.#sessions.get(runtimeId); if (previous) previous.unsubscribe();
@@ -241,7 +254,7 @@ export class DshWebRuntime implements AgentBackend {
   }
 
   async #slash(session: WebSession, args: string, name: string, commandId: string): Promise<void> {
-    if (name === "quit") { await this.#client.request("workspace/archiveSession", { request: { sessionId: session.id } }); session.closing = true; session.unsubscribe(); this.#sessions.delete(publicId(session.id)); this.onOffline?.("DeepSeek Web 会话已归档", [this.#metadata(session)]); return; }
+    if (name === "quit") { this.#detachSession(session, "DeepSeek Web 会话已关闭"); return; }
     if (name === "name") { const title = args.trim(); if (!title) throw new Error("会话名称不能为空"); await this.#client.request("session/rename", { request: { sessionId: session.id, title } }); session.title = title; this.#publishMetadata(session); return; }
     if (name === "fork" || name === "clone") {
       const parsed = args.trim() === "" ? undefined : Number(args.trim());
@@ -565,6 +578,22 @@ export class DshWebRuntime implements AgentBackend {
     return { commands: [...builtin, ...skills] };
   }
   #publishMetadata(session: WebSession): void { if (!this.#sessions.has(publicId(session.id))) return; const metadata = this.#metadata(session); this.#emit(session, { type: "runtime.status", status: metadata.status }); this.#emit(session, { type: "runtime.metadata", metadata }); this.onMetadataChange?.(); }
+  #detachSession(session: WebSession, reason: string): void {
+    if (session.closing) return;
+    session.closing = true;
+    this.#cancelSessionApprovals(session, "owner_closed");
+    session.unsubscribe();
+    this.#sessions.delete(publicId(session.id));
+    this.onOffline?.(reason, [this.#metadata(session)]);
+  }
+  async #ensureWorkspace(cwd: string): Promise<string> {
+    const result = object(await this.#client.request("workspace/create", { request: { path: cwd } }));
+    const workspace = object(result.workspace) as WorkspaceView;
+    if (typeof workspace.workspaceId !== "string" || workspace.workspaceId.length === 0) {
+      throw new Error("DeepSeek Web 没有返回工作区 ID");
+    }
+    return workspace.workspaceId;
+  }
   #emit(session: WebSession, event: RuntimeEvent): void { this.#sink(event, publicId(session.id)); }
   #report(message: string, runtimeId?: string): void { if (runtimeId) { const session = this.#sessions.get(runtimeId); if (session) this.#emit(session, { type: "runtime.error", message, recoverable: true }); } }
   async stop(): Promise<void> { if (this.#stopping) return this.#stopping; this.#stopping = (async () => { this.#ready = false; for (const id of this.#approvals.keys()) this.#cancelApproval(id, "owner_closed"); for (const session of this.#sessions.values()) session.unsubscribe(); this.#sessions.clear(); await this.#client.stop(); })(); return this.#stopping; }

@@ -30,10 +30,55 @@ describe("DeepSeek Web runtime adapter", () => {
     expect((await runtime.catalog(true)).map(item => item.sessionId)).toEqual(["dsh:saved"]);
     await expect(runtime.assertProviderSwitchReady()).rejects.toThrow("浏览器会话正在工作");
   });
+
+  it("puts app-created sessions in the matching Web workspace and keeps quit separate from archive", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-web-workspace-")); roots.push(cwd);
+    let follow: ((frame: unknown) => void) | undefined;
+    const request = vi.fn(async (method: string) => {
+      if (method === "workspace/create") return { workspace: { workspaceId: "workspace-app", path: cwd } };
+      if (method === "session/create") return { sessionId: "web-workspace" };
+      return {};
+    });
+    const client: DshWebConnection = {
+      onEvent: undefined, onExit: undefined, onReconnect: undefined,
+      request: request as unknown as DshWebConnection["request"],
+      subscribe: vi.fn((_method, _args, onFrame) => { follow = onFrame; return () => { follow = undefined; }; }),
+      respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+    };
+    const runtime = new DshWebRuntime(client); runtimes.push(runtime);
+    const events: RuntimeEvent[] = [];
+    runtime.setEventSink(event => { RuntimeEventSchema.parse(event); events.push(event); });
+    await runtime.activate({ type: "new", cwd });
+    expect(request).toHaveBeenCalledWith("workspace/create", { request: { path: cwd } });
+    expect(request).toHaveBeenCalledWith("session/create", { request: { workspaceId: "workspace-app" } });
+    follow!({ type: "snapshot", header: { createdAt: 1000, cwd }, cursor: -1, records: [], hasMore: false, projections: { asOfSeq: -1, values: {} }, assistantStream: { revision: 0 } });
+
+    runtime.dispatchCommand("dsh:web-workspace", "quit", { type: "slash.execute", name: "quit", args: "" });
+    await vi.waitFor(() => expect(events.some(event => event.type === "command.result" && event.commandId === "quit" && event.ok)).toBe(true));
+    expect(request.mock.calls.some(([method]) => method === "workspace/archiveSession")).toBe(false);
+    expect(runtime.ownsRuntime("dsh:web-workspace")).toBe(false);
+  });
+
+  it("archives an active Web runtime only through the sidebar archive operation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-web-archive-")); roots.push(cwd);
+    const request = vi.fn(async (method: string) => method === "workspace/create"
+      ? { workspace: { workspaceId: "workspace-archive", path: cwd } }
+      : method === "session/create" ? { sessionId: "web-archive" } : {});
+    const client: DshWebConnection = {
+      onEvent: undefined, onExit: undefined, onReconnect: undefined,
+      request: request as unknown as DshWebConnection["request"],
+      subscribe: vi.fn(() => () => {}), respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+    };
+    const runtime = new DshWebRuntime(client); runtimes.push(runtime);
+    await runtime.activate({ type: "new", cwd });
+    await runtime.setArchived("dsh:web-archive", true);
+    expect(request).toHaveBeenCalledWith("workspace/archiveSession", { request: { sessionId: "web-archive" } });
+    expect(runtime.ownsRuntime("dsh:web-archive")).toBe(false);
+  });
   it("maps the shared Web session stream to Pi-shaped turns, tools, queue delivery, and IDs", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-web-runtime-")); roots.push(cwd);
     let follow: ((frame: unknown) => void) | undefined;
-    const requestMock = vi.fn(async (method: string) => method === "session/create" ? { sessionId: "web-1" } : method === "skills/list" ? { skills: [] } : {});
+    const requestMock = vi.fn(async (method: string) => method === "workspace/create" ? { workspace: { workspaceId: "workspace-1" } } : method === "session/create" ? { sessionId: "web-1" } : method === "skills/list" ? { skills: [] } : {});
     const request = requestMock as unknown as DshWebConnection["request"];
     const client: DshWebConnection = {
       onEvent: undefined, onExit: undefined, onReconnect: undefined,
@@ -73,7 +118,7 @@ describe("DeepSeek Web runtime adapter", () => {
   it("rejects a reused message ID whose payload changed", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-web-runtime-")); roots.push(cwd);
     let follow: ((frame: unknown) => void) | undefined;
-    const requestMock = vi.fn(async (method: string) => method === "session/create" ? { sessionId: "web-2" } : {});
+    const requestMock = vi.fn(async (method: string) => method === "workspace/create" ? { workspace: { workspaceId: "workspace-2" } } : method === "session/create" ? { sessionId: "web-2" } : {});
     const request = requestMock as unknown as DshWebConnection["request"];
     const client: DshWebConnection = {
       onEvent: undefined, onExit: undefined, onReconnect: undefined,
@@ -96,7 +141,7 @@ describe("DeepSeek Web runtime adapter", () => {
   it("retains the durable prefix when follow reopens after a reconnect", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-web-runtime-")); roots.push(cwd);
     let follow: ((frame: unknown) => void) | undefined;
-    const requestMock = vi.fn(async (method: string) => method === "session/create"
+    const requestMock = vi.fn(async (method: string) => method === "workspace/create" ? { workspace: { workspaceId: "workspace-reconnect" } } : method === "session/create"
       ? { sessionId: "web-reconnect" }
       : method === "session/page" ? { records: [] } : {});
     const client: DshWebConnection = {
@@ -125,7 +170,7 @@ describe("DeepSeek Web runtime adapter", () => {
   it("uses the empty-session cursor when syncing a new session", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-web-runtime-")); roots.push(cwd);
     let follow: ((frame: unknown) => void) | undefined;
-    const requestMock = vi.fn(async (method: string) => method === "session/create"
+    const requestMock = vi.fn(async (method: string) => method === "workspace/create" ? { workspace: { workspaceId: "workspace-empty" } } : method === "session/create"
       ? { sessionId: "web-empty" }
       : method === "session/page" ? { records: [] } : {});
     const client: DshWebConnection = {
@@ -146,7 +191,7 @@ describe("DeepSeek Web runtime adapter", () => {
 
   it("deduplicates a replayed approval after the Web carrier reconnects", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-web-runtime-")); roots.push(cwd);
-    const requestMock = vi.fn(async (method: string) => method === "session/create" ? { sessionId: "web-approval" } : {});
+    const requestMock = vi.fn(async (method: string) => method === "workspace/create" ? { workspace: { workspaceId: "workspace-approval" } } : method === "session/create" ? { sessionId: "web-approval" } : {});
     const client: DshWebConnection = {
       onEvent: undefined, onExit: undefined, onReconnect: undefined,
       request: requestMock as unknown as DshWebConnection["request"],
