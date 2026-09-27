@@ -29,7 +29,7 @@ export function providerFields(profile: ProviderProfile, allowIncomplete = false
   const selection = dshDefaultSelection(rows);
   const key = String(selection.provider ?? "custom");
   const route = object(object(object(rows.find(row => row.id === "llm-pi-ai")?.config).providers)[key]);
-  return { providerKey: key, baseUrl: String(route.baseURL ?? ""), apiKey: String(object(config.env)[String(route.apiKeyEnv ?? "ORBIS_DSH_API_KEY")] ?? ""), model: String(selection.model ?? ""), api: String(route.api ?? "openai-completions") };
+  return { providerKey: key, baseUrl: String(route.baseURL ?? ""), apiKey: String(object(config.env)[String(route.apiKeyEnv ?? "ORBIS_DSH_API_KEY")] ?? ""), model: String(selection.model ?? ""), api: String(route.api ?? "openai-completions"), ...(Array.isArray(route.models) ? { models: structuredClone(route.models.map(object)) } : {}) };
 }
 /** Basic form is a projection over the complete native config; advanced mode retains all fields. */
 export function applyProviderFields(kind: AgentKind, previous: Obj, fields: ProviderFields, create = false, validateRequired = true): Obj {
@@ -103,29 +103,7 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
       if (Object.keys(fields.compat).length || Object.hasOwn(previous, "compat")) config.compat = fields.compat;
     }
     const models = fields.models ?? (Array.isArray(config.models) && config.models.length ? [{ ...object(config.models[0]), id: fields.model }, ...config.models.slice(1) as Obj[]] : fields.model ? [{ id: fields.model }] : []);
-    if (!Array.isArray(models) || (validateRequired && create && !models.length) || models.some(model => !isObject(model) || typeof model.id !== "string" || (validateRequired && !model.id.length))) throw new ProviderError("请填写有效模型 ID；新建供应商至少需要一个模型");
-    if (new Set(models.map(model => model.id)).size !== models.length) throw new ProviderError("同一供应商的模型 ID 不能重复");
-    const normalized = models.map(model => {
-      const next = { ...model };
-      if (validateRequired && create && !(typeof next.api === "string" && next.api.trim()) && !fields.api.trim()) throw new ProviderError("请为新建供应商选择 API 格式");
-      if (validateRequired && create && !(typeof next.baseUrl === "string" && next.baseUrl.trim()) && !fields.baseUrl.trim()) throw new ProviderError("请填写新建供应商 API 地址");
-      for (const key of ["contextWindow", "maxTokens"] as const) {
-        if (next[key] === "") { delete next[key]; continue; }
-        if (typeof next[key] === "string") {
-          if (!/^\d+$/.test(next[key])) throw new ProviderError(`${key} 必须是正整数`);
-          next[key] = Number(next[key]);
-        }
-        if (next[key] !== undefined && (!Number.isSafeInteger(next[key]) || (next[key] as number) <= 0)) throw new ProviderError(`${key} 必须是正整数`);
-      }
-      if (next.input !== undefined && (!Array.isArray(next.input) || next.input.some(value => value !== "text" && value !== "image"))) throw new ProviderError("模型输入类型只能包含 text 或 image");
-      if (next.reasoning !== undefined && typeof next.reasoning !== "boolean") throw new ProviderError("reasoning 必须是布尔值");
-      if (typeof next.thinkingLevelMap === "string") {
-        try { next.thinkingLevelMap = next.thinkingLevelMap.trim() ? JSON.parse(next.thinkingLevelMap) as unknown : {}; }
-        catch { throw new ProviderError("思考档位映射必须是 JSON 对象"); }
-        if (!isObject(next.thinkingLevelMap) || Object.entries(next.thinkingLevelMap).some(([key, value]) => !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(key) || (value !== null && typeof value !== "string"))) throw new ProviderError("思考档位映射的值须为字符串或 null");
-      }
-      return next;
-    });
+    const normalized = normalizeModels("pi", models, fields, create, validateRequired);
     if (normalized.length || Object.hasOwn(previous, "models")) config.models = normalized;
   } else {
     const doc = parseDocument(String(config.patch ?? ""));
@@ -135,9 +113,11 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
     const llm = row("llm-pi-ai"); const llmConfig = object(llm.config);
     const providers = object(llmConfig.providers); const route = object(providers[fields.providerKey]);
     const previousModel = String(dshDefaultSelection(rows).model ?? "");
-    const models = Array.isArray(route.models) ? route.models.map(object) : [];
-    const index = models.findIndex(model => model.id === previousModel);
-    if (!models.some(model => model.id === fields.model)) {
+    const models = fields.models === undefined ? (Array.isArray(route.models) ? route.models.map(object) : []) : normalizeModels("dsh", fields.models, fields, create, validateRequired);
+    if (fields.models !== undefined) {
+      if (validateRequired && !models.some(model => model.id === fields.model)) throw new ProviderError("默认模型必须在模型目录中，请选择或添加该模型");
+    } else if (!models.some(model => model.id === fields.model)) {
+      const index = models.findIndex(model => model.id === previousModel);
       if (index >= 0) models[index] = { ...models[index], id: fields.model };
       else models.push({ id: fields.model });
     }
@@ -149,6 +129,41 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
     config.patch = yaml(rows); config.env = { ...object(config.env), [envKey]: fields.apiKey };
   }
   return config;
+}
+function normalizeModels(kind: "pi" | "dsh", models: Obj[], fields: ProviderFields, create: boolean, validateRequired: boolean): Obj[] {
+  if (!Array.isArray(models) || (validateRequired && create && !models.length) || models.some(model => !isObject(model) || typeof model.id !== "string" || (validateRequired && !model.id.trim()))) throw new ProviderError("请填写有效模型 ID；新建供应商至少需要一个模型");
+  const ids = models.map(model => model.id).filter(id => validateRequired || id);
+  if (new Set(ids).size !== ids.length) throw new ProviderError("同一供应商的模型 ID 不能重复");
+  return models.map(model => {
+    const next = { ...model };
+    if (validateRequired && create && !(kind === "pi" && typeof next.api === "string" && next.api.trim()) && !fields.api.trim()) throw new ProviderError("请为新建供应商选择 API 格式");
+    if (validateRequired && create && !(kind === "pi" && typeof next.baseUrl === "string" && next.baseUrl.trim()) && !fields.baseUrl.trim()) throw new ProviderError("请填写新建供应商 API 地址");
+    if (next.name === "") next.name = next.id;
+    for (const key of ["contextWindow", "maxTokens"] as const) {
+      if (next[key] === "") { delete next[key]; continue; }
+      if (typeof next[key] === "string") {
+        if (!/^\d+$/.test(next[key])) throw new ProviderError(`${key} 必须是正整数`);
+        next[key] = Number(next[key]);
+      }
+      if (next[key] !== undefined && (!Number.isSafeInteger(next[key]) || (next[key] as number) <= 0)) throw new ProviderError(`${key} 必须是正整数`);
+    }
+    if (next.input !== undefined && (!Array.isArray(next.input) || next.input.some(value => value !== "text" && value !== "image"))) throw new ProviderError("模型输入类型只能包含 text 或 image");
+    if (kind === "pi") {
+      if (next.reasoning !== undefined && typeof next.reasoning !== "boolean") throw new ProviderError("reasoning 必须是布尔值");
+      if (typeof next.thinkingLevelMap === "string") {
+        try { next.thinkingLevelMap = next.thinkingLevelMap.trim() ? JSON.parse(next.thinkingLevelMap) as unknown : {}; }
+        catch { throw new ProviderError("思考档位映射必须是 JSON 对象"); }
+        if (!isObject(next.thinkingLevelMap) || Object.entries(next.thinkingLevelMap).some(([key, value]) => !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(key) || (value !== null && typeof value !== "string"))) throw new ProviderError("思考档位映射的值须为字符串或 null");
+      }
+    } else {
+      if (typeof next.reasoningEfforts === "string") {
+        try { if (next.reasoningEfforts.trim()) next.reasoningEfforts = JSON.parse(next.reasoningEfforts) as unknown; else delete next.reasoningEfforts; }
+        catch { throw new ProviderError("DSH 推理档位映射必须是 JSON 对象或 false"); }
+      }
+      if (next.reasoningEfforts !== undefined && next.reasoningEfforts !== false && (!isObject(next.reasoningEfforts) || !Object.keys(next.reasoningEfforts).length || Object.entries(next.reasoningEfforts).some(([key, value]) => !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(key) || !(key === "off" && value === null) && (typeof value !== "string" || key !== "off" && !value.trim())))) throw new ProviderError("DSH 推理档位映射须为非空档位映射或 false");
+    }
+    return next;
+  });
 }
 export function newProviderConfig(kind: AgentKind): Obj {
   return kind === "codex" ? { auth: { OPENAI_API_KEY: "" }, config: "model_provider = \"custom\"\nmodel = \"\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n" }

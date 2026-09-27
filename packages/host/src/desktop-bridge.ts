@@ -47,6 +47,8 @@ input.on("line", line => {
         case "install": result = await runtime.install(String(p.kind), String(p.version ?? "latest"), String(p.mode ?? "current")); break;
         case "installAll": result = await runtime.installAll(String(p.action)); break;
         case "activateInstallation": result = await runtime.activateInstallation(String(p.kind), String(p.id)); break;
+        case "selectCodexEntry": result = await runtime.selectCodexEntry(String(p.entry)); break;
+        case "enableCodexTerminal": result = await runtime.enableCodexTerminal(String(p.runtimeRoot)); break;
         case "provider.list": result = await runtime.listProviders(String(p.kind)); break;
         case "provider.reorder": result = await runtime.reorderProviders(String(p.kind), p.ids); break;
         case "provider.get": result = await runtime.getProvider(String(p.kind), String(p.id)); break;
@@ -65,12 +67,12 @@ input.on("line", line => {
         case "provider.saveUsage": await runtime.saveProviderUsage(String(p.kind), String(p.id), p.script); break;
         case "provider.usageTemplate": result = await runtime.providerUsageTemplate(String(p.kind), String(p.id), String(p.template), String(p.baseUrl ?? "")); break;
         case "provider.oauth": result = await runtime.oauth(String(p.operation), String(p.accountId ?? "")); break;
-        case "provider.open": await runtime.openProvider(String(p.kind), String(p.id)); break;
+        case "provider.open": await runtime.openProvider(String(p.kind), String(p.id), typeof p.cwd === "string" ? p.cwd : undefined); break;
         case "provider.save": result = await runtime.mutateProvider(String(p.kind), "save", p); break;
         case "provider.switch": result = await runtime.mutateProvider(String(p.kind), "switch", p); break;
         case "provider.remove": result = await runtime.mutateProvider(String(p.kind), "remove", p); break;
         case "provider.copy": result = await runtime.mutateProvider(String(p.kind), "copy", p); break;
-        case "openAgent": await runtime.openAgent(String(p.kind), p.mode === undefined ? "setup" : String(p.mode)); break;
+        case "openAgent": await runtime.openAgent(String(p.kind), p.mode === undefined ? "setup" : String(p.mode), typeof p.cwd === "string" ? p.cwd : undefined); break;
         case "shutdown": await runtime.close(); closing = true; break;
         default: throw new Error("Unknown desktop command");
       }

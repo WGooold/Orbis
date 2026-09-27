@@ -14,6 +14,8 @@
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QTcpServer>
+#include <QTcpSocket>
 #ifdef ORBIS_SMOKE_INTERACTION
 #include <QQuickItem>
 #include <QTest>
@@ -21,6 +23,20 @@ static QQuickItem *findVisualItem(QQuickItem *root, const QString &name) {
     if (root->objectName() == name) return root;
     for (auto *child : root->childItems()) if (auto *match = findVisualItem(child, name)) return match;
     return nullptr;
+}
+static bool clickSmokeItem(QQuickWindow *window, const QString &name, bool reveal = false) {
+    auto *item = findVisualItem(window->contentItem(), name);
+    if (!item) return false;
+    if (reveal) {
+        auto *scroll = window->findChild<QObject *>("providerFormScroll");
+        auto *viewport = scroll ? qobject_cast<QQuickItem *>(scroll->property("contentItem").value<QObject *>()) : nullptr;
+        if (!viewport) return false;
+        const auto y = viewport->property("contentY").toReal() + item->mapToItem(viewport, QPointF()).y() - viewport->height() / 3;
+        viewport->setProperty("contentY", qBound(0.0, y, qMax(0.0, viewport->property("contentHeight").toReal() - viewport->height())));
+        QTest::qWait(80);
+    }
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint());
+    return true;
 }
 #endif
 #include <QStandardPaths>
@@ -90,9 +106,30 @@ int main(int argc, char *argv[]) {
     QObject::connect(&controller, &HostController::notification, &tray, [&tray](const QString &title, const QString &body) { tray.showMessage(title, body, QSystemTrayIcon::Information, 4000); });
     QObject::connect(&app, &QApplication::aboutToQuit, &controller, &HostController::shutdown);
     if (parser.isSet("tray") && QSystemTrayIcon::isSystemTrayAvailable() && !parser.isSet("smoke-test")) window->hide();
+    QString smokeModelUrl;
+    int smokePiModelCount = 0;
     if (parser.isSet("smoke-test")) {
+        if (parser.isSet("smoke-providers")) {
+            auto *models = new QTcpServer(&app);
+            if (!models->listen(QHostAddress::LocalHost, 0)) return 23;
+            smokeModelUrl = QString("http://127.0.0.1:%1/v1").arg(models->serverPort());
+            QObject::connect(models, &QTcpServer::newConnection, &app, [models] {
+                while (auto *socket = models->nextPendingConnection()) {
+                    QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+                    QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket] {
+                        const auto request = socket->property("request").toByteArray() + socket->readAll();
+                        socket->setProperty("request", request);
+                        if (!request.contains("\r\n\r\n")) return;
+                        const bool valid = request.startsWith("GET /v1/models ") && request.toLower().contains("authorization: bearer smoke-only");
+                        const QByteArray body = valid ? R"({"data":[{"id":"smoke-a","displayName":"Model A"},{"id":"smoke-b","displayName":"Model B"}]})" : R"({"error":"invalid smoke request"})";
+                        socket->write(QByteArray("HTTP/1.1 ") + (valid ? "200 OK" : "403 Forbidden") + "\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
+                        socket->disconnectFromHost();
+                    });
+                }
+            });
+        }
         if (parser.isSet("smoke-compact")) window->resize(window->minimumSize());
-        QTimer::singleShot(8000, &app, [&] {
+        QTimer::singleShot(8000, Qt::PreciseTimer, &app, [&] {
             bool imageOk = true;
             if (parser.isSet("screenshot")) imageOk = window->grabWindow().save(parser.value("screenshot"));
             QFile report(dataDir + "/smoke-result.json");
@@ -172,60 +209,185 @@ int main(int argc, char *argv[]) {
                     if (!providers.first().toMap().value("id").toString().endsWith("-copy") || providers.first().toMap().value("enabled").toBool()) { app.exit(14); return; }
                     QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "codex"));
                 });
-                QTimer::singleShot(10000, &app, [&] { controller.presetProvider("codex-0"); });
-                QTimer::singleShot(10800, &app, [&] {
+                QTimer::singleShot(10000, Qt::PreciseTimer, &app, [&] { controller.presetProvider("codex-0"); });
+                QTimer::singleShot(10800, Qt::PreciseTimer, &app, [&] {
                     auto *nativeMode = window->findChild<QObject *>("providerNativeMode");
                     auto *apiKey = window->findChild<QObject *>("providerApiKey");
                     if (!nativeMode || nativeMode->property("checked").toBool() || !apiKey || apiKey->property("visible").toBool()) { app.exit(15); return; }
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".official-editor.png")) app.exit(7);
                     QMetaObject::invokeMethod(window, "saveProviderEditor");
                 });
-                QTimer::singleShot(11600, &app, [&] {
+                QTimer::singleShot(11600, Qt::PreciseTimer, &app, [&] {
                     const auto providers = controller.providers();
                     if (providers.size() != 1 || !providers.first().toMap().value("enabled").toBool()) { app.exit(16); return; }
                     controller.editProvider("");
                 });
-                QTimer::singleShot(12400, &app, [&] {
+                QTimer::singleShot(12400, Qt::PreciseTimer, &app, [&] {
                     // An incomplete new form must still be able to open native configuration.
                     QMetaObject::invokeMethod(window, "setProviderEditorMode", Q_ARG(QVariant, true));
                 });
-                QTimer::singleShot(13200, &app, [&] {
+                QTimer::singleShot(13200, Qt::PreciseTimer, &app, [&] {
                     auto *nativeMode = window->findChild<QObject *>("providerNativeMode");
                     if (!nativeMode || !nativeMode->property("checked").toBool()) { app.exit(17); return; }
                     QMetaObject::invokeMethod(window, "setProviderEditorMode", Q_ARG(QVariant, false));
                 });
-                QTimer::singleShot(14000, &app, [&] {
-                    const QMap<QString, QString> fields{{"providerName", "Smoke API"}, {"providerUrl", "https://example.com/v1"}, {"providerApiKey", "smoke-only"}};
+                QTimer::singleShot(14000, Qt::PreciseTimer, &app, [&] {
+                    const QMap<QString, QString> fields{{"providerName", "Smoke API"}, {"providerUrl", smokeModelUrl}, {"providerApiKey", "smoke-only"}};
                     for (auto it = fields.cbegin(); it != fields.cend(); ++it) {
                         auto *field = window->findChild<QObject *>(it.key());
                         if (!field) { app.exit(18); return; }
                         field->setProperty("text", it.value());
                     }
-                    window->setProperty("fetchedModels", QVariantList{
-                        QVariantMap{{"id", "smoke-a"}, {"name", "Model A"}, {"selected", true}},
-                        QVariantMap{{"id", "smoke-b"}, {"name", "Model B"}, {"selected", true}}
-                    });
-                    QMetaObject::invokeMethod(window, "acceptDiscoveredModels");
+                    auto *model = window->findChild<QObject *>("providerDefaultModel");
+                    auto *reasoning = window->findChild<QObject *>("codexReasoning");
+                    if (!model || model->property("text").toString().isEmpty() || !reasoning || reasoning->property("currentText").toString().isEmpty()) { app.exit(24); return; }
+#ifdef ORBIS_SMOKE_INTERACTION
+                    if (!clickSmokeItem(window, "fetchDefaultModel", true)) { app.exit(25); return; }
+#else
+                    QMetaObject::invokeMethod(window, "requestProviderModels", Q_ARG(QVariant, -2));
+#endif
+                });
+                QTimer::singleShot(14800, Qt::PreciseTimer, &app, [&] {
+#ifdef ORBIS_SMOKE_INTERACTION
+                    if (!clickSmokeItem(window, "discoveredModel-smoke-a") || !clickSmokeItem(window, "discoveredModel-smoke-b")) { app.exit(26); return; }
+                    auto *first = findVisualItem(window->contentItem(), "discoveredModel-smoke-a");
+                    auto *second = findVisualItem(window->contentItem(), "discoveredModel-smoke-b");
+                    if (first->property("checked").toBool() || !second->property("checked").toBool()) { app.exit(27); return; }
+#else
+                    window->setProperty("fetchedModels", QVariantList{QVariantMap{{"id", "smoke-b"}, {"selected", true}}});
+#endif
+                    auto *dialog = window->findChild<QObject *>("fetchedModelsDialog");
+                    if (!dialog || !dialog->property("visible").toBool()) { app.exit(28); return; }
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".model-picker.png")) app.exit(7);
+                    QMetaObject::invokeMethod(dialog, "accept");
                     QMetaObject::invokeMethod(window, "saveProviderEditor");
                 });
-                QTimer::singleShot(14800, &app, [&] {
+                QTimer::singleShot(15600, Qt::PreciseTimer, &app, [&] {
                     const auto providers = controller.providers();
                     if (providers.size() != 2 || providers.last().toMap().value("enabled").toBool()) { app.exit(19); return; }
                     controller.editProvider(providers.last().toMap().value("id").toString());
                 });
-                QTimer::singleShot(15600, &app, [&] {
+                QTimer::singleShot(16400, Qt::PreciseTimer, &app, [&] {
                     auto *nativeMode = window->findChild<QObject *>("providerNativeMode");
                     auto *model = window->findChild<QObject *>("providerDefaultModel");
-                    if (!nativeMode || nativeMode->property("checked").toBool() || !model || model->property("text").toString() != "smoke-a" || window->property("codexModels").toList().size() != 2) { app.exit(20); return; }
-                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".custom-editor.png")) app.exit(7);
-                    QMetaObject::invokeMethod(window, "closeProviderEditor");
-                    controller.switchProvider(controller.providers().last().toMap().value("id").toString(), true);
+                    if (!nativeMode || nativeMode->property("checked").toBool() || !model || model->property("text").toString() != "smoke-b" || window->property("providerDraft").toMap().value("config").toMap().contains("modelCatalog")) { app.exit(20); return; }
+                    auto *scroll = window->findChild<QObject *>("providerFormScroll");
+                    if (auto *viewport = scroll ? scroll->property("contentItem").value<QObject *>() : nullptr) viewport->setProperty("contentY", 220);
+                    QTimer::singleShot(100, &app, [&] {
+                        if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".custom-editor.png")) app.exit(7);
+                        QMetaObject::invokeMethod(window, "closeProviderEditor");
+                        controller.switchProvider(controller.providers().last().toMap().value("id").toString(), true);
+                    });
                 });
-                QTimer::singleShot(16400, &app, [&] {
+                QTimer::singleShot(17200, Qt::PreciseTimer, &app, [&] {
                     const auto providers = controller.providers();
                     if (providers.size() != 2 || providers.first().toMap().value("enabled").toBool() || !providers.last().toMap().value("enabled").toBool()) { app.exit(21); return; }
-                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".codex-list.png")) app.exit(7);
-                    app.exit(0);
+                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "pi"));
+                });
+                QTimer::singleShot(18000, Qt::PreciseTimer, &app, [&] { controller.editProvider(controller.providers().last().toMap().value("id").toString()); });
+                QTimer::singleShot(18800, Qt::PreciseTimer, &app, [&] {
+                    smokePiModelCount = window->property("providerModels").toList().size();
+                    window->findChild<QObject *>("providerUrl")->setProperty("text", smokeModelUrl);
+                    window->findChild<QObject *>("providerApiKey")->setProperty("text", "smoke-only");
+#ifdef ORBIS_SMOKE_INTERACTION
+                    if (!clickSmokeItem(window, "fetchCatalogModels", true)) { app.exit(29); return; }
+#else
+                    QMetaObject::invokeMethod(window, "requestProviderModels", Q_ARG(QVariant, -1));
+#endif
+                });
+                QTimer::singleShot(19600, Qt::PreciseTimer, &app, [&] {
+#ifdef ORBIS_SMOKE_INTERACTION
+                    if (!clickSmokeItem(window, "discoveredModel-smoke-a") || !clickSmokeItem(window, "discoveredModel-smoke-b")) { app.exit(30); return; }
+#else
+                    window->setProperty("fetchedModels", QVariantList{QVariantMap{{"id", "smoke-a"}, {"selected", true}}, QVariantMap{{"id", "smoke-b"}, {"selected", true}}});
+#endif
+                    auto *dialog = window->findChild<QObject *>("fetchedModelsDialog");
+                    if (!dialog || !dialog->property("visible").toBool()) { app.exit(31); return; }
+                    QMetaObject::invokeMethod(dialog, "accept");
+                    if (window->property("providerModels").toList().size() != smokePiModelCount + 2) { app.exit(32); return; }
+                    QMetaObject::invokeMethod(window, "saveProviderEditor");
+                });
+                QTimer::singleShot(20400, Qt::PreciseTimer, &app, [&] { controller.editProvider(controller.providers().last().toMap().value("id").toString()); });
+                QTimer::singleShot(21200, Qt::PreciseTimer, &app, [&] {
+                    const auto models = window->property("providerModels").toList();
+                    if (models.size() != smokePiModelCount + 2 || models.last().toMap().value("contextWindow").toInt() <= 0 || models.last().toMap().value("maxTokens").toInt() <= 0) { app.exit(33); return; }
+                    QMetaObject::invokeMethod(window, "closeProviderEditor");
+                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "dsh"));
+                });
+                QTimer::singleShot(22000, Qt::PreciseTimer, &app, [&] { controller.editProvider(""); });
+                QTimer::singleShot(22800, Qt::PreciseTimer, &app, [&] {
+                    const QMap<QString, QString> fields{{"providerName", "Smoke DSH"}, {"providerUrl", smokeModelUrl}, {"providerApiKey", "smoke-only"}};
+                    for (auto it = fields.cbegin(); it != fields.cend(); ++it) window->findChild<QObject *>(it.key())->setProperty("text", it.value());
+#ifdef ORBIS_SMOKE_INTERACTION
+                    if (!clickSmokeItem(window, "fetchCatalogModels", true)) { app.exit(34); return; }
+#else
+                    QMetaObject::invokeMethod(window, "requestProviderModels", Q_ARG(QVariant, -1));
+#endif
+                });
+                QTimer::singleShot(23600, Qt::PreciseTimer, &app, [&] {
+#ifdef ORBIS_SMOKE_INTERACTION
+                    if (!clickSmokeItem(window, "discoveredModel-smoke-a") || !clickSmokeItem(window, "discoveredModel-smoke-b")) { app.exit(35); return; }
+#else
+                    window->setProperty("fetchedModels", QVariantList{QVariantMap{{"id", "smoke-a"}, {"selected", true}}, QVariantMap{{"id", "smoke-b"}, {"selected", true}}});
+#endif
+                    auto *dialog = window->findChild<QObject *>("fetchedModelsDialog");
+                    if (!dialog || !dialog->property("visible").toBool()) { app.exit(36); return; }
+                    QMetaObject::invokeMethod(dialog, "accept");
+                    window->findChild<QObject *>("providerDefaultModel")->setProperty("text", "smoke-b");
+                    QMetaObject::invokeMethod(window, "saveProviderEditor");
+                });
+                QTimer::singleShot(24400, Qt::PreciseTimer, &app, [&] {
+                    if (controller.providers().size() != 1) { app.exit(37); return; }
+                    controller.editProvider(controller.providers().first().toMap().value("id").toString());
+                });
+                QTimer::singleShot(25200, Qt::PreciseTimer, &app, [&] {
+                    const auto models = window->property("providerModels").toList();
+                    auto *model = window->findChild<QObject *>("providerDefaultModel");
+                    if (models.size() != 2 || !model || model->property("text").toString() != "smoke-b" || models.first().toMap().value("maxTokens").toInt() <= 0) { app.exit(38); return; }
+                    auto *scroll = window->findChild<QObject *>("providerFormScroll");
+                    if (auto *viewport = scroll ? scroll->property("contentItem").value<QObject *>() : nullptr) viewport->setProperty("contentY", 450);
+                    QTimer::singleShot(100, &app, [&] {
+                        if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".dsh-models.png")) app.exit(7);
+                        QMetaObject::invokeMethod(window, "deleteProviderModel", Q_ARG(QVariant, 0));
+                        QMetaObject::invokeMethod(window, "addProviderModel");
+#ifdef ORBIS_SMOKE_INTERACTION
+                        if (!clickSmokeItem(window, "selectCatalogModel-1", true)) { app.exit(39); return; }
+#else
+                        QMetaObject::invokeMethod(window, "requestProviderModels", Q_ARG(QVariant, 1));
+#endif
+                    });
+                });
+                QTimer::singleShot(26400, Qt::PreciseTimer, &app, [&] {
+#ifdef ORBIS_SMOKE_INTERACTION
+                    if (!clickSmokeItem(window, "discoveredModel-smoke-a")) { app.exit(40); return; }
+#else
+                    window->setProperty("fetchedModels", QVariantList{QVariantMap{{"id", "smoke-a"}, {"selected", true}}});
+#endif
+                    auto *dialog = window->findChild<QObject *>("fetchedModelsDialog");
+                    if (!dialog || !dialog->property("visible").toBool()) { app.exit(41); return; }
+                    QMetaObject::invokeMethod(dialog, "accept");
+                    const auto models = window->property("providerModels").toList();
+                    if (models.size() != 2 || models.last().toMap().value("id").toString() != "smoke-a" || models.last().toMap().value("maxTokens").toInt() <= 0 || window->findChild<QObject *>("providerDefaultModel")->property("text").toString() != "smoke-b") { app.exit(42); return; }
+                    QMetaObject::invokeMethod(window, "saveProviderEditor");
+                });
+                QTimer::singleShot(27200, Qt::PreciseTimer, &app, [&] {
+                    controller.editProvider(controller.providers().first().toMap().value("id").toString());
+                });
+                QTimer::singleShot(28000, Qt::PreciseTimer, &app, [&] {
+                    const auto models = window->property("providerModels").toList();
+                    if (models.size() != 2 || models.first().toMap().value("id").toString() != "smoke-b" || models.last().toMap().value("id").toString() != "smoke-a") { app.exit(43); return; }
+                    QMetaObject::invokeMethod(window, "closeProviderEditor");
+                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "pi"));
+                });
+                QTimer::singleShot(28800, Qt::PreciseTimer, &app, [&] { controller.editProvider(controller.providers().last().toMap().value("id").toString()); });
+                QTimer::singleShot(29600, Qt::PreciseTimer, &app, [&] {
+                    auto *scroll = window->findChild<QObject *>("providerFormScroll");
+                    auto *viewport = scroll ? scroll->property("contentItem").value<QObject *>() : nullptr;
+                    if (viewport) viewport->setProperty("contentY", qMax(0.0, viewport->property("contentHeight").toReal() - viewport->property("height").toReal()));
+                    QTimer::singleShot(100, &app, [&] {
+                        if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".pi-models.png")) app.exit(7);
+                        app.exit(0);
+                    });
                 });
             } else if (parser.isSet("smoke-agents")) {
                 QTimer::singleShot(1800, &app, [&] { QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 2)); });

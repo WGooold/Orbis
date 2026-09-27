@@ -18,6 +18,8 @@ export type AgentInstallStatus = LocalAgent & {
   kind: AgentKind; package: string; latestVersion?: string; recommendedVersion?: string; compatibilityNote?: string; updateAvailable: boolean; latestError?: string;
   installationSource: "managed" | "npm" | "custom" | "unknown";
   installations: AgentInstallation[]; copies: { entry: string; version?: string }[];
+  terminalIntegration?: "enabled" | "pending" | "repair" | "disabled"; terminalIntegrationDetail?: string;
+  terminalCompatible?: boolean; terminalCompatibilityDetail?: string;
 };
 export type InstallRun = (command: string, args: string[], options: { signal: AbortSignal; timeout: number; cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
 

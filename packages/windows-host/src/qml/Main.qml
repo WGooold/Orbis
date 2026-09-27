@@ -38,45 +38,69 @@ ApplicationWindow {
     function moveProvider(source, target) { var ids = ProviderFlow.reorderedIds(host.providers, source, target); if (ids !== null) host.reorderProviders(ids) }
     function acceptDiscoveredModels() {
         var selected = fetchedModels.filter(function(model) { return model.selected })
-        if (providerDraft.kind === "dsh") { if (selected.length) providerModel.text = selected[0].id }
+        if (!selected.length) return
+        if (modelRequestConfig !== modelQueryConfig()) { providerFormError = "接口或模型行已修改，请重新获取模型列表。"; return }
+        if (modelRequestIndex === -2) providerModel.text = selected[0].id
         else {
-            var result = ProviderFlow.mergeDiscoveredModels(providerDraft.kind, providerDraft.kind === "pi" ? piModels : codexModels, selected, providerModel.text)
-            if (providerDraft.kind === "pi") piModels = result.models
-            else { codexModels = result.models; providerModel.text = result.defaultModel }
+            var result = ProviderFlow.applyDiscoveredModels(providerDraft.kind, providerModels, selected, providerModel.text, modelRequestIndex)
+            if (result.error) { providerFormError = result.error; return }
+            providerModels = result.models
+            explicitProviderModels = true
+            if (providerDraft.kind === "dsh") providerModel.text = result.defaultModel
         }
         providerFormDirty = true
     }
     property var providerDraft: ({})
-    property var piModels: []
-    property var codexModels: []
+    property var providerModels: []
+    property bool explicitProviderModels: false
     property string providerFormError: ""
     property bool providerTargetAdvanced: false
     property string deleteProviderId: ""
     property string removeProviderId: ""
     property var fetchedModels: []
     property string modelRequestConfig: ""
-    function modelQueryConfig() { return JSON.stringify([providerUrl.text, providerApiKey.text, providerApi.currentText, piHeaders.text]) }
-    function requestProviderModels() { var draft = window.buildProviderDraft(true); if (draft !== null) { modelRequestConfig = modelQueryConfig(); host.fetchProviderModels(draft) } }
+    property int modelRequestIndex: -1
+    readonly property bool singleModelSelection: providerDraft.kind === "codex" || modelRequestIndex !== -1
+    function modelQueryConfig() { return JSON.stringify([providerUrl.text, providerApiKey.text, providerApi.currentText, piHeaders.text, modelRequestIndex >= 0 ? providerModels : null]) }
+    function requestProviderModels(index) {
+        var draft = window.buildProviderDraft(true)
+        if (draft !== null) {
+            modelRequestIndex = providerDraft.kind === "codex" ? -2 : typeof index === "number" ? index : -1
+            modelRequestConfig = modelQueryConfig()
+            host.fetchProviderModels(draft)
+        }
+    }
     property var oauthAccounts: []
     property var oauthPending: ({})
     property var providerRoutingDraft: ({})
     function accountOptions(accounts) { return [{id:"",label:"使用本机 CLI 登录"},{id:"$default",label:"使用默认托管账号"}].concat(accounts.map(function(a) { return {id:a.id,label:(a.email || a.workspace) + (a.isDefault ? "（默认）" : "")} })) }
-    function updatePiModel(index, key, value) { if (index >= 0 && index < piModels.length) { piModels[index][key] = value; providerFormDirty = true } }
-    function addPiModel() { piModels = piModels.concat([{id: "", name: "", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 8192}]); providerFormDirty = true }
-    function deletePiModel(index) { var next = piModels.slice(); next.splice(index, 1); piModels = next; providerFormDirty = true }
-    function updateCodexModel(index, key, value) { if (index >= 0 && index < codexModels.length) { codexModels[index][key] = value; providerFormDirty = true } }
-    function deleteCodexModel(index) { var next = codexModels.slice(); next.splice(index, 1); codexModels = next; providerFormDirty = true }
+    function updateProviderModel(index, key, value) {
+        if (index < 0 || index >= providerModels.length) return
+        var previousId = providerModels[index].id
+        providerModels[index][key] = value
+        if (providerDraft.kind === "dsh" && key === "id" && (!providerModel.text || providerModel.text === previousId)) providerModel.text = value
+        providerFormDirty = true
+    }
+    function addProviderModel() { providerModels = providerModels.concat([ProviderFlow.newModel(providerDraft.kind)]); explicitProviderModels = true; providerFormDirty = true }
+    function deleteProviderModel(index) {
+        var next = providerModels.slice(); var removed = next.splice(index, 1)[0]
+        providerModels = next
+        if (providerDraft.kind === "dsh" && removed && providerModel.text === removed.id) providerModel.text = next.length ? next[0].id : ""
+        providerFormDirty = true
+    }
     function loadProviderFields(draft) {
         providerKey.text = draft.fields.providerKey
-        providerUrl.text = draft.fields.baseUrl; providerApiKey.text = draft.fields.apiKey; providerModel.text = draft.fields.model
+        providerUrl.text = draft.fields.baseUrl; providerApiKey.text = draft.fields.apiKey
+        providerModel.text = draft.fields.model || (window.providerDraft.kind === "codex" ? "gpt-5.6-sol" : "")
         providerApi.model = window.providerDraft.kind === "codex" ? ["openai-responses", "openai-completions", "anthropic-messages"] : ["", "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai", "bedrock-converse-stream"]
         if (providerApi.find(draft.fields.api) < 0) providerApi.model = providerApi.model.concat([draft.fields.api])
         providerApi.currentIndex = Math.max(0, providerApi.find(draft.fields.api))
         piHeaders.text = JSON.stringify(draft.fields.headers || {}, null, 2)
         piCompat.text = JSON.stringify(draft.fields.compat || {}, null, 2)
-        window.piModels = window.providerDraft.kind === "pi" ? draft.fields.models : []
-        window.codexModels = draft.fields.catalog || []
-        codexReasoning.currentIndex = Math.max(0, codexReasoning.find(draft.fields.reasoningEffort || ""))
+        window.providerModels = window.providerDraft.kind === "codex" ? [] : draft.fields.models || []
+        window.explicitProviderModels = draft.fields.models !== undefined
+        if (draft.create && window.providerDraft.kind === "pi") window.providerModels = window.providerModels.map(function(model) { return !model.id ? Object.assign(ProviderFlow.newModel("pi"), model) : model })
+        codexReasoning.currentIndex = Math.max(0, codexReasoning.find(draft.fields.reasoningEffort || "medium"))
         providerJson.text = JSON.stringify(draft.config, null, 2)
         var advanced = draft.config || {}
         if (window.providerDraft.kind === "codex") {
@@ -141,7 +165,8 @@ ApplicationWindow {
         if (draft.kind === "codex") draft.metadata.authBinding = providerAccount.currentValue ? {source:"managed_account",authProvider:"codex_oauth",accountId:providerAccount.currentValue === "$default" ? "" : providerAccount.currentValue} : null
         if (basic) {
             draft.fields = {providerKey: providerKey.text.trim(), baseUrl: providerUrl.text.trim(), apiKey: providerApiKey.text, model: providerModel.text.trim(), api: providerApi.currentText}
-            if (draft.kind === "codex") { draft.fields.catalog = window.codexModels; draft.fields.reasoningEffort = codexReasoning.currentText }
+            if (draft.kind === "codex") draft.fields.reasoningEffort = codexReasoning.currentText
+            if (draft.kind === "pi" || (draft.kind === "dsh" && window.explicitProviderModels)) draft.fields.models = window.providerModels
             if (draft.kind === "pi" || draft.kind === "codex") {
                 try {
                     draft.fields.headers = JSON.parse(piHeaders.text || "{}")
@@ -150,7 +175,6 @@ ApplicationWindow {
                 if (draft.fields.headers === null || Array.isArray(draft.fields.headers) || typeof draft.fields.headers !== "object") { window.providerFormError = "请求头必须是 JSON 对象"; return null }
                 if (draft.kind === "pi") {
                     if (draft.fields.compat === null || Array.isArray(draft.fields.compat) || typeof draft.fields.compat !== "object") { window.providerFormError = "兼容参数必须是 JSON 对象"; return null }
-                    draft.fields.models = window.piModels
                 }
             }
             if (draft.kind === "codex" && !window.officialProvider) {
@@ -537,7 +561,7 @@ ApplicationWindow {
                                     Layout.fillWidth: true; spacing: 16
                                     ActionButton {
                                         objectName: "overviewOpenPiTui"
-                                        text: "打开 Pi"; primary: true
+                                        text: "打开 Pi"
                                         enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "pi" && a.installed)
                                         Accessible.name: "打开 Pi 终端界面"
                                         onClicked: host.openAgentTui("pi")
@@ -558,7 +582,7 @@ ApplicationWindow {
                                     }
                                     Item { Layout.fillWidth: true }
                                 }
-                                Hint { text: "默认打开在你的用户目录。按钮不可用时，请到 Agent 页检测或安装；模型登录也可在那里完成。"; Layout.fillWidth: true; font.pixelSize: 11 }
+                                Hint { text: "Pi 和 Codex 会先让你选择工作区，DeepSeek 使用网页工作台。按钮不可用时，请到 Agent 页检测或安装；模型登录也可在那里完成。"; Layout.fillWidth: true; font.pixelSize: 11 }
                                 RowLayout {
                                     visible: !host.dshEnabled && host.agents.some(a => a.kind === "dsh" && a.installed)
                                     Layout.fillWidth: true; spacing: 16
@@ -681,6 +705,9 @@ ApplicationWindow {
                                     }
                                     Hint { text: "当前 " + (modelData.version || "—") + " · 最新 " + (modelData.latestVersion || "未知") + (modelData.updateAvailable ? " · 有可用更新" : ""); Layout.fillWidth: true; color: modelData.updateAvailable ? "#b46b19" : "#60728e" }
                                     Hint { visible: !!modelData.entry; text: "来源：" + (({managed:"Orbis 独立安装", npm:"npm", custom:"自定义 / 其他包管理器", unknown:"未知"})[modelData.installationSource] || "未知"); Layout.fillWidth: true }
+                                    Hint { visible: modelData.kind === "codex"; text: "终端接入：" + (({enabled: "已启用", pending: "等待新终端", repair: "需要修复", disabled: "未启用"})[modelData.terminalIntegration] || "未检测") + " · Host 后端：" + (modelData.connected ? "已连接" : "未连接"); Layout.fillWidth: true; color: modelData.terminalIntegration === "enabled" ? "#278868" : "#b46b19" }
+                                    Hint { visible: modelData.kind === "codex"; text: modelData.terminalIntegrationDetail || ""; Layout.fillWidth: true }
+                                    Hint { visible: modelData.kind === "codex" && modelData.terminalCompatible === false; text: modelData.terminalCompatibilityDetail || ""; Layout.fillWidth: true; color: "#b46b19" }
                                     Hint { visible: !!modelData.error || !!modelData.latestError; text: modelData.error || modelData.latestError || ""; Layout.fillWidth: true; color: "#b46b19" }
                                     Hint { visible: !!modelData.compatibilityNote; text: modelData.compatibilityNote || ""; Layout.fillWidth: true }
                                     Hint { visible: !!modelData.path; text: modelData.path || ""; Layout.fillWidth: true; font.pixelSize: 12; elide: Text.ElideMiddle; maximumLineCount: 2 }
@@ -688,6 +715,7 @@ ApplicationWindow {
                                         spacing: 10
                                         ActionButton { text: modelData.kind === "pi" ? "打开 Pi 并接入" : modelData.kind === "dsh" ? "打开 DeepSeek Harness" : "打开 Codex 登录"; primary: true; visible: modelData.installed; enabled: !host.busy; onClicked: host.openAgent(modelData.kind) }
                                         ActionButton { text: modelData.installedButBroken ? "重新安装修复" : modelData.installed ? (modelData.updateAvailable ? "下载更新" : "安装版本") : "安装 Agent"; enabled: !host.busy; onClicked: window.showAgentInstaller(modelData) }
+                                        ActionButton { text: modelData.kind === "codex" && modelData.terminalIntegration !== "enabled" ? "启用 / 修复终端接入" : ""; visible: modelData.kind === "codex" && modelData.terminalIntegration !== "enabled"; enabled: host.bridgeReady && !host.busy && modelData.installed && modelData.terminalCompatible === true; onClicked: host.enableCodexTerminal() }
                                         ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders(modelData.kind) }
                                         ActionButton { text: "安装记录"; enabled: !host.busy; onClicked: window.showAgentHistory(modelData) }
                                     }
@@ -884,7 +912,10 @@ ApplicationWindow {
                 } }
                 Hint { visible: !(window.installAgentData.installations || []).length; text: "暂无 Orbis 独立安装记录。" }
                 Heading { text: "本机 npm 安装"; font.pixelSize: 16 }
-                Repeater { model: window.installAgentData.copies || []; delegate: Hint { required property var modelData; text: (modelData.version || "版本未知") + " · " + modelData.entry; Layout.fillWidth: true } }
+                Repeater { model: window.installAgentData.copies || []; delegate: RowLayout { required property var modelData; Layout.fillWidth: true
+                    Hint { text: (modelData.version || "版本未知") + " · " + modelData.entry; Layout.fillWidth: true }
+                    ActionButton { text: "使用此版本"; visible: window.installKind === "codex"; enabled: window.canInstallAgents && !host.busy && modelData.entry !== window.installAgentData.entry; onClicked: { host.selectCodexEntry(modelData.entry); installationHistory.close() } }
+                } }
             }
         }
     }
@@ -894,7 +925,7 @@ ApplicationWindow {
         closePolicy: Popup.NoAutoClose
         onOpened: providerFormScroll.contentItem.contentY = 0
         contentItem: ScrollView {
-            id: providerFormScroll
+            id: providerFormScroll; objectName: "providerFormScroll"
             clip: true
             contentWidth: availableWidth
             ColumnLayout { width: providerDialog.width - 48; spacing: 14
@@ -965,10 +996,13 @@ ApplicationWindow {
                     Label { text: "API Key / 凭据"; visible: !window.officialProvider; color: "#4b5d78" }
                     Field { id: providerApiKey; objectName: "providerApiKey"; visible: !window.officialProvider; Layout.fillWidth: true; placeholderText: "API Key；已有环境变量认证会保留"; echoMode: TextInput.PasswordEchoOnEdit }
                     Label { text: "默认模型"; visible: window.providerDraft.kind !== "pi"; color: "#4b5d78" }
-                    Field { id: providerModel; objectName: "providerDefaultModel"; visible: window.providerDraft.kind !== "pi"; Layout.fillWidth: true; placeholderText: window.officialProvider ? "留空使用 Codex 默认模型" : "模型 ID（按供应商提供的名称填写）" }
+                    RowLayout { visible: window.providerDraft.kind !== "pi"; Layout.fillWidth: true; spacing: 12
+                        Field { id: providerModel; objectName: "providerDefaultModel"; Layout.fillWidth: true; placeholderText: "填写模型 ID，或从模型列表选择" }
+                        ActionButton { objectName: "fetchDefaultModel"; text: host.providerModelsLoading ? "获取中…" : "获取模型列表"; visible: window.providerDraft.kind === "codex" && !window.officialProvider; enabled: !host.busy && !host.providerModelsLoading && providerUrl.text.trim().length > 0; onClicked: window.requestProviderModels(-2) }
+                    }
                     RowLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true
                         Label { text: "思考档位"; color: "#4b5d78" }
-                        SoftComboBox { id: codexReasoning; Layout.fillWidth: true; model: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] }
+                        SoftComboBox { id: codexReasoning; objectName: "codexReasoning"; Layout.fillWidth: true; model: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] }
                     }
                     Label { text: "接口格式"; visible: !window.officialProvider; color: "#4b5d78" }
                     SoftComboBox { id: providerApi; visible: !window.officialProvider; Layout.fillWidth: true; model: [] }
@@ -996,53 +1030,42 @@ ApplicationWindow {
                         Label { text: "请求覆盖（headers / body）"; color: "#4b5d78" }
                         SoftTextArea { id: providerRequestOverrides; Layout.fillWidth: true; Layout.preferredHeight: 90; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
                     }
-                    ActionButton { text: host.providerModelsLoading ? "获取中…" : "获取模型列表"; visible: !window.officialProvider; enabled: !host.busy && !host.providerModelsLoading && providerUrl.text.trim().length > 0; onClicked: window.requestProviderModels() }
                     SoftSwitch { id: providerTransportDetails; marksProviderDirty: false; text: "请求头与兼容配置"; visible: !window.officialProvider && window.providerDraft.kind !== "dsh" }
                     Label { text: "请求头（JSON 对象）"; visible: providerTransportDetails.visible && providerTransportDetails.checked; color: "#4b5d78" }
                     SoftTextArea { id: piHeaders; visible: providerTransportDetails.visible && providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
-                    ColumnLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true; spacing: 8
+                    ColumnLayout { visible: window.providerDraft.kind === "pi" || window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 8
+                        Label { text: "兼容参数（JSON 对象）"; visible: window.providerDraft.kind === "pi" && providerTransportDetails.checked; color: "#4b5d78" }
+                        SoftTextArea { id: piCompat; visible: window.providerDraft.kind === "pi" && providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
                         RowLayout { Layout.fillWidth: true
                             Label { text: "模型目录"; color: "#4b5d78"; font.bold: true }
                             Item { Layout.fillWidth: true }
-                            ActionButton { text: "＋ 添加模型"; onClicked: { window.codexModels = window.codexModels.concat([{model: ""}]); window.providerFormDirty = true } }
+                            ActionButton { objectName: "fetchCatalogModels"; text: host.providerModelsLoading ? "获取中…" : "获取模型列表"; enabled: !host.busy && !host.providerModelsLoading && providerUrl.text.trim().length > 0; onClicked: window.requestProviderModels(-1) }
+                            ActionButton { text: "＋ 添加模型"; enabled: !host.providerModelsLoading; onClicked: window.addProviderModel() }
                         }
-                        Repeater { model: window.codexModels
-                            delegate: RowLayout {
-                                required property var modelData; required property int index
-                                Layout.fillWidth: true
-                                Field { Layout.fillWidth: true; text: modelData.model || ""; placeholderText: "模型 ID"; onTextEdited: window.updateCodexModel(index, "model", text) }
-                                Field { Layout.fillWidth: true; text: modelData.displayName || ""; placeholderText: "显示名称"; onTextEdited: window.updateCodexModel(index, "displayName", text) }
-                                Field { Layout.preferredWidth: 120; text: modelData.contextWindow === undefined ? "" : String(modelData.contextWindow); placeholderText: "上下文窗口"; onTextEdited: window.updateCodexModel(index, "contextWindow", text) }
-                                ActionButton { text: providerModel.text === modelData.model && !!modelData.model ? "默认" : "设为默认"; enabled: !!modelData.model && providerModel.text !== modelData.model; onClicked: { providerModel.text = modelData.model; window.providerFormDirty = true } }
-                                ActionButton { text: "删除"; danger: true; onClicked: window.deleteCodexModel(index) }
-                            }
-                        }
-                    }
-                    ColumnLayout { visible: window.providerDraft.kind === "pi"; Layout.fillWidth: true; spacing: 8
-                        Label { text: "兼容参数（JSON 对象）"; visible: providerTransportDetails.checked; color: "#4b5d78" }
-                        SoftTextArea { id: piCompat; visible: providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
-                        RowLayout { Layout.fillWidth: true
-                            Label { text: "模型"; color: "#4b5d78"; font.bold: true }
-                            Item { Layout.fillWidth: true }
-                            ActionButton { text: "＋ 添加模型"; onClicked: window.addPiModel() }
-                        }
-                        Repeater { model: window.piModels
+                        Hint { Layout.fillWidth: true; text: "可手填模型 ID，或获取列表后选择。新模型会填入可修改的默认能力参数，请按供应商实际能力调整。" }
+                        Repeater { model: window.providerModels
                             delegate: ColumnLayout {
                                 required property var modelData
                                 required property int index
                                 Layout.fillWidth: true; spacing: 6
                                 RowLayout { Layout.fillWidth: true
-                                    Field { Layout.fillWidth: true; text: modelData.id || ""; placeholderText: "模型 ID"; onTextEdited: window.updatePiModel(index, "id", text) }
-                                    Field { Layout.fillWidth: true; text: modelData.name || ""; placeholderText: "显示名称"; onTextEdited: window.updatePiModel(index, "name", text) }
-                                    ActionButton { text: "删除"; danger: true; onClicked: window.deletePiModel(index) }
+                                    Field { id: modelIdField; Layout.fillWidth: true; text: modelData.id || ""; placeholderText: "模型 ID"; onTextEdited: window.updateProviderModel(index, "id", text) }
+                                    ActionButton { objectName: "selectCatalogModel-" + index; text: "从列表选择"; enabled: !host.busy && !host.providerModelsLoading && providerUrl.text.trim().length > 0; onClicked: window.requestProviderModels(index) }
+                                    Field { Layout.fillWidth: true; text: modelData.name || modelIdField.text; placeholderText: "显示名称（默认同模型 ID）"; onTextEdited: window.updateProviderModel(index, "name", text) }
+                                    ActionButton { text: providerModel.text === modelIdField.text && !!modelIdField.text ? "默认" : "设为默认"; visible: window.providerDraft.kind === "dsh"; enabled: !!modelIdField.text && providerModel.text !== modelIdField.text; onClicked: { providerModel.text = modelIdField.text; window.providerFormDirty = true } }
+                                    ActionButton { text: "删除"; danger: true; enabled: !host.providerModelsLoading; onClicked: window.deleteProviderModel(index) }
                                 }
                                 RowLayout { Layout.fillWidth: true
-                                    SoftCheckBox { text: "推理"; checked: modelData.reasoning === true; onToggled: window.updatePiModel(index, "reasoning", checked) }
-                                    SoftCheckBox { text: "图像输入"; checked: Array.isArray(modelData.input) && modelData.input.indexOf("image") >= 0; onToggled: window.updatePiModel(index, "input", checked ? ["text", "image"] : ["text"]) }
-                                    Field { Layout.fillWidth: true; text: modelData.contextWindow === undefined ? "" : String(modelData.contextWindow); placeholderText: "上下文窗口"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updatePiModel(index, "contextWindow", text) }
-                                    Field { Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: "最大输出"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updatePiModel(index, "maxTokens", text) }
+                                    SoftCheckBox { text: "推理"; visible: window.providerDraft.kind === "pi"; checked: modelData.reasoning === true; onToggled: window.updateProviderModel(index, "reasoning", checked) }
+                                    SoftCheckBox { text: "图像输入"; checked: Array.isArray(modelData.input) && modelData.input.indexOf("image") >= 0; onToggled: window.updateProviderModel(index, "input", checked ? ["text", "image"] : ["text"]) }
+                                    Label { text: "上下文"; color: "#4b5d78" }
+                                    Field { Layout.fillWidth: true; text: modelData.contextWindow === undefined ? "" : String(modelData.contextWindow); placeholderText: "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "contextWindow", text) }
+                                    Label { text: "最大输出"; color: "#4b5d78" }
+                                    Field { Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "maxTokens", text) }
                                 }
-                                SoftTextArea { Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "思考档位映射（JSON，可留空使用 Pi 默认值）"; text: modelData.thinkingLevelMap === undefined ? "" : JSON.stringify(modelData.thinkingLevelMap); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updatePiModel(index, "thinkingLevelMap", text) }
+                                SoftTextArea { visible: window.providerDraft.kind === "pi"; Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "思考档位映射（留空使用 Pi 默认值）"; text: modelData.thinkingLevelMap === undefined ? "" : JSON.stringify(modelData.thinkingLevelMap); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updateProviderModel(index, "thinkingLevelMap", text) }
+                                Label { visible: window.providerDraft.kind === "dsh"; text: "推理档位映射（JSON；false 表示不支持，留空继承原生能力）"; color: "#4b5d78" }
+                                SoftTextArea { visible: window.providerDraft.kind === "dsh"; Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "例如 {\"medium\":\"medium\",\"high\":\"high\"}"; text: modelData.reasoningEfforts === undefined ? "" : JSON.stringify(modelData.reasoningEfforts); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updateProviderModel(index, "reasoningEfforts", text) }
                             }
                         }
                     }
@@ -1162,14 +1185,23 @@ ApplicationWindow {
         standardButtons: Dialog.Ok
     }
     SoftDialog {
-        id: fetchedModelsDialog; title: "选择模型"; anchors.centerIn: parent; modal: true; width: 550; height: 490
+        id: fetchedModelsDialog; objectName: "fetchedModelsDialog"; title: window.modelRequestIndex === -2 ? "选择默认模型" : "选择模型"; anchors.centerIn: parent; modal: true; width: 550; height: 490
         contentItem: ScrollView { clip: true; contentWidth: availableWidth
             ColumnLayout { width: fetchedModelsDialog.width - 40; spacing: 8
-                Hint { text: window.providerDraft.kind === "dsh" ? "选择一个默认模型。" : "所选模型会全部加入模型目录，保留已有能力设置和默认模型。"; Layout.fillWidth: true }
+                Hint { text: window.singleModelSelection ? "选择一个模型，确认后回填当前模型栏。" : "所选模型会加入模型目录，保留已有模型的能力设置。"; Layout.fillWidth: true }
                 Hint { text: "接口没有返回模型，可返回表单手动添加。"; visible: window.fetchedModels.length === 0; Layout.fillWidth: true }
                 ButtonGroup { id: discoveredModelGroup }
                 Repeater { model: window.fetchedModels
-                    SoftCheckBox { required property var modelData; required property int index; marksProviderDirty: false; text: modelData.name + " · " + modelData.id; ButtonGroup.group: window.providerDraft.kind === "dsh" ? discoveredModelGroup : null; onToggled: window.fetchedModels[index].selected = checked }
+                    SoftCheckBox {
+                        required property var modelData; required property int index
+                        objectName: "discoveredModel-" + modelData.id; marksProviderDirty: false
+                        text: modelData.name === modelData.id ? modelData.id : modelData.name + " · " + modelData.id
+                        checked: modelData.selected; ButtonGroup.group: window.singleModelSelection ? discoveredModelGroup : null
+                        onToggled: {
+                            if (checked && window.singleModelSelection) window.fetchedModels.forEach(function(model, position) { model.selected = position === index })
+                            else window.fetchedModels[index].selected = checked
+                        }
+                    }
                 }
             }
         }
@@ -1230,7 +1262,8 @@ ApplicationWindow {
         function onProviderModelsReady(models) {
             if (!providerDialog.visible) return
             if (window.modelRequestConfig !== window.modelQueryConfig()) { window.providerFormError = "接口或凭据已修改，请重新获取模型列表。"; return }
-            window.fetchedModels = models.map(function(model) { return {id: model.id, name: model.name, selected: false} }); fetchedModelsDialog.open()
+            var selectedId = window.singleModelSelection ? (window.modelRequestIndex >= 0 ? window.providerModels[window.modelRequestIndex].id : providerModel.text) : ""
+            window.fetchedModels = models.map(function(model) { return {id: model.id, name: model.name, selected: model.id === selectedId} }); fetchedModelsDialog.open()
         }
         function onOauthAccountResult(operation, value) {
             if (operation === "start") window.oauthPending = value

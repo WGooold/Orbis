@@ -1,13 +1,13 @@
 import { execFile } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const ORBIS_BIN = join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Orbis", "bin");
-const SHIM_PATH = join(ORBIS_BIN, "codex.cmd");
-const MANIFEST_PATH = join(ORBIS_BIN, "codex-shim.json");
+function orbisBin(): string { return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Orbis", "bin"); }
+function shimPath(): string { return join(orbisBin(), "codex.cmd"); }
+function manifestPath(): string { return join(orbisBin(), "codex-shim.json"); }
 
 export function renderCodexShim(runtimeRoot: string): string {
   const escapedRuntime = resolve(runtimeRoot).replace(/"/gu, "");
@@ -22,20 +22,69 @@ export function renderCodexShim(runtimeRoot: string): string {
 }
 
 export async function installCodexShim(runtimeRoot: string): Promise<void> {
-  await mkdir(ORBIS_BIN, { recursive: true });
-  await writeFile(SHIM_PATH, renderCodexShim(runtimeRoot), "utf8");
-  await writeFile(MANIFEST_PATH, `${JSON.stringify({ version: 1, bin: ORBIS_BIN }, null, 2)}\n`, "utf8");
-  await updateUserPath(path => [ORBIS_BIN, ...path.filter(entry => !samePath(entry, ORBIS_BIN))]);
+  const prior = await readFile(shimPath(), "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (prior && !prior.includes("ORBIS_CODEX_RUNTIME=")) throw new Error("Orbis bin 中已有非 Orbis 的 codex.cmd，未覆盖");
+  await access(join(runtimeRoot, "node", "node.exe"));
+  await access(join(runtimeRoot, "packages", "host", "dist", "codex-shim.js"));
+  const current = await readUserPath();
+  await mkdir(orbisBin(), { recursive: true });
+  await writeFile(shimPath(), renderCodexShim(runtimeRoot), "utf8");
+  await writeFile(manifestPath(), `${JSON.stringify({ version: 1, bin: orbisBin(), runtimeRoot: resolve(runtimeRoot) }, null, 2)}\n`, "utf8");
+  await updateUserPath(current, path => [orbisBin(), ...path.filter(entry => !samePath(entry, orbisBin()))]);
 }
 
 export async function uninstallCodexShim(): Promise<void> {
-  await updateUserPath(path => path.filter(entry => !samePath(entry, ORBIS_BIN)));
-  await rm(SHIM_PATH, { force: true });
-  await rm(MANIFEST_PATH, { force: true });
+  const current = await readUserPath();
+  await updateUserPath(current, path => path.filter(entry => !samePath(entry, orbisBin())));
+  const owned = await readFile(shimPath(), "utf8").catch(() => "");
+  if (owned.includes("ORBIS_CODEX_RUNTIME=")) await rm(shimPath(), { force: true });
+  await rm(manifestPath(), { force: true });
 }
 
-async function updateUserPath(update: (path: string[]) => string[]): Promise<void> {
-  const current = await readUserPath();
+export type CodexTerminalIntegration = { state: "enabled" | "pending" | "repair" | "disabled"; detail: string };
+export async function codexShimStatus(): Promise<CodexTerminalIntegration> {
+  if (process.platform !== "win32") return { state: "disabled", detail: "仅支持 Windows 终端" };
+  let manifest: { runtimeRoot?: unknown };
+  let script: string;
+  try {
+    script = await readFile(shimPath(), "utf8");
+    manifest = JSON.parse(await readFile(manifestPath(), "utf8")) as { runtimeRoot?: unknown };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return { state: "disabled", detail: "尚未启用终端接入" };
+    return { state: "repair", detail: "终端接入文件不可读，请修复" };
+  }
+  if (typeof manifest.runtimeRoot !== "string" || script !== renderCodexShim(manifest.runtimeRoot)
+    || !await exists(join(manifest.runtimeRoot, "node", "node.exe"))
+    || !await exists(join(manifest.runtimeRoot, "packages", "host", "dist", "codex-shim.js"))) {
+    return { state: "repair", detail: "终端入口与当前安装不一致，请修复" };
+  }
+  try {
+    const userPath = await readUserPath();
+    if (!samePath(userPath[0] ?? "", orbisBin())) return { state: "repair", detail: "用户 PATH 未优先指向 Orbis，请修复" };
+    const first = await firstCodexOnPath(process.env.Path ?? process.env.PATH ?? "");
+    if (first && samePath(first, shimPath())) return { state: "enabled", detail: "当前终端已解析到 Orbis" };
+    return { state: "pending", detail: "已写入用户 PATH；请重新打开终端后检查 codex 命中位置" };
+  } catch {
+    return { state: "repair", detail: "无法读取用户 PATH，请检查权限" };
+  }
+}
+
+async function firstCodexOnPath(path: string): Promise<string | undefined> {
+  for (const dir of splitPath(path)) {
+    const expanded = dir.replace(/%([^%]+)%/gu, (_, name: string) => Object.entries(process.env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1] ?? `%${name}%`);
+    for (const ext of [".COM", ".EXE", ".BAT", ".CMD"]) {
+      const candidate = join(expanded.replace(/^"|"$/gu, ""), `codex${ext.toLowerCase()}`);
+      if (await exists(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+async function exists(path: string): Promise<boolean> { try { await access(path); return true; } catch { return false; } }
+
+async function updateUserPath(current: string[], update: (path: string[]) => string[]): Promise<void> {
   const next = update(current);
   if (next.join(";") === current.join(";")) return;
   if (next.length === 0) {
@@ -46,20 +95,11 @@ async function updateUserPath(update: (path: string[]) => string[]): Promise<voi
 }
 
 async function readUserPath(): Promise<string[]> {
-  try {
-    const { stdout } = await execFileAsync("reg.exe", ["query", "HKCU\\Environment", "/v", "Path"], { windowsHide: true });
-    const match = stdout.match(/^\s*Path\s+REG_\w+\s+(.*)$/imu);
-    if (match?.[1] !== undefined) return splitPath(match[1]);
-  } catch {
-    // A missing user Path is valid; use the inherited value as a conservative fallback.
-  }
-  return splitPath(process.env.Path ?? process.env.PATH ?? "");
+  const { stdout } = await execFileAsync("reg.exe", ["query", "HKCU\\Environment"], { windowsHide: true });
+  const match = stdout.match(/^\s*Path\s+REG_\w+\s+(.*)$/imu);
+  return match ? splitPath(match[1]!) : [];
 }
-
-function splitPath(value: string): string[] {
-  return value.split(";").map(entry => entry.trim()).filter(entry => entry.length > 0);
-}
-
+function splitPath(value: string): string[] { return value.split(";").map(entry => entry.trim()).filter(Boolean); }
 function samePath(left: string, right: string): boolean {
   return resolve(left).replaceAll("/", "\\").replace(/[\\]+$/u, "").toLowerCase()
     === resolve(right).replaceAll("/", "\\").replace(/[\\]+$/u, "").toLowerCase();

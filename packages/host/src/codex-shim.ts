@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { resolveCodexCommand, type CodexCommand } from "./codex-daemon.js";
+import { readCodexSelection } from "./codex-selection.js";
 
 const LOOPBACK_DESCRIPTOR = join(homedir(), ".pi-remote", "loopback.json");
 
@@ -24,7 +25,8 @@ export async function runCodexShim(args: readonly string[] = process.argv.slice(
       cwd: process.cwd(),
     });
   }
-  const command = await resolveCodexCommand();
+  const selected = await readCodexSelection();
+  const command = await resolveCodexCommand(selected ? { ...process.env, ORBIS_CODEX_ENTRY: selected } : process.env);
   return await spawnCodex({ command, args, cwd: process.cwd() });
 }
 

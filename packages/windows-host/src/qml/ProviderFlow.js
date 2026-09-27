@@ -1,13 +1,30 @@
 // Shared by the QML editor and its behavioral tests. No Host/native writes.
 /* eslint-disable @typescript-eslint/no-unused-vars -- QML imports these functions as a namespace. */
-function mergeDiscoveredModels(kind, current, selected, defaultModel) {
-    var key = kind === "codex" ? "model" : "id"
-    var models = current.filter(function(row) { return typeof row[key] === "string" && row[key].trim().length > 0 }).slice()
+function newModel(kind, id, name) {
+    var model = {id: id || "", name: name || id || "", input: ["text"], contextWindow: kind === "dsh" ? 262144 : 128000, maxTokens: kind === "dsh" ? 32768 : 8192}
+    if (kind === "dsh") model.reasoningEfforts = false
+    else model.reasoning = false
+    return model
+}
+
+function applyDiscoveredModels(kind, current, selected, defaultModel, index) {
+    if (!selected.length) return {models: current, defaultModel: defaultModel}
+    var models = current.slice()
+    if (index >= 0) {
+        if (index >= models.length) return {error: "模型行已变化，请重新选择。"}
+        var id = selected[0].id
+        if (models.some(function(row, position) { return position !== index && row.id === id })) return {error: "该模型已在目录中，请选择其他模型。"}
+        var previous = models[index]
+        // Changing an ID keeps capabilities and explicit names from that row.
+        models[index] = Object.assign({}, previous, {id: id, name: !previous.name || previous.name === previous.id ? selected[0].name || id : previous.name})
+        return {models: models, defaultModel: !defaultModel || defaultModel === previous.id ? id : defaultModel}
+    }
+    models = models.filter(function(row) { return typeof row.id === "string" && row.id.trim().length > 0 })
     selected.forEach(function(row) {
-        if (!row.id || models.some(function(existing) { return existing[key] === row.id })) return
-        models.push(kind === "codex" ? {model: row.id, displayName: row.name || row.id} : {id: row.id, name: row.name || row.id, input: ["text"]})
+        if (!row.id || models.some(function(existing) { return existing.id === row.id })) return
+        models.push(newModel(kind, row.id, row.name))
     })
-    return {models: models, defaultModel: defaultModel || (selected.length ? selected[0].id : "")}
+    return {models: models, defaultModel: defaultModel || selected[0].id}
 }
 
 function matchesProvider(provider, query) {

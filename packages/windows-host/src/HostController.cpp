@@ -292,6 +292,18 @@ void HostController::activateInstallation(const QString &kind, const QString &id
         setMessage("已切换到 Agent " + value.toObject().value("version").toString()); detectAgents();
     });
 }
+void HostController::enableCodexTerminal() {
+    command("enableCodexTerminal", {{"runtimeRoot", m_runtimeRoot}}, [this](const QJsonValue &value) {
+        m_agents = value.toArray().toVariantList(); emit changed();
+        setMessage("Codex 终端入口已设置。请重新打开终端，确认 codex 命中 Orbis。");
+    });
+}
+void HostController::selectCodexEntry(const QString &entry) {
+    command("selectCodexEntry", {{"entry", entry}}, [this](const QJsonValue &value) {
+        m_settings.setValue("codexEntry", value.toObject().value("entry").toString()); m_settings.sync();
+        setMessage("已切换到 Codex " + value.toObject().value("version").toString()); detectAgents();
+    });
+}
 void HostController::setProviders(const QVariantList &providers) {
     if (m_providers == providers) return;
     m_providers = providers; emit providersChanged();
@@ -354,7 +366,14 @@ void HostController::oauthAccount(const QString &operation, const QString &id) {
     command("provider.oauth", {{"operation", operation}, {"accountId", id}}, [this, operation](const QJsonValue &value) { emit oauthAccountResult(operation, value.toVariant()); });
 }
 void HostController::openProvider(const QString &id) {
-    command("provider.open", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &) { setMessage("供应商已启用，已打开 Agent。Pi 请使用 /model 选择模型。"); });
+    if (!m_bridgeReady || busy()) return;
+    QJsonObject params{{"kind", m_providerKind}, {"id", id}};
+    if (m_providerKind == "pi" || m_providerKind == "codex") {
+        const auto cwd = selectWorkspace(m_providerKind);
+        if (cwd.isEmpty()) return;
+        params.insert("cwd", cwd);
+    }
+    command("provider.open", params, [this](const QJsonValue &) { setMessage("供应商已启用，已打开 Agent。Pi 请使用 /model 选择模型。"); });
 }
 void HostController::saveProvider(const QVariantMap &draft) {
     const auto kind = draft.value("kind").toString();
@@ -379,10 +398,26 @@ void HostController::copyProvider(const QString &id) {
     const auto kind = m_providerKind;
     command("provider.copy", {{"kind", kind}, {"id", id}}, [this, kind](const QJsonValue &value) { if (kind == m_providerKind) { setProviders(value.toArray().toVariantList()); setMessage("供应商已复制，请编辑副本后启用"); } });
 }
-void HostController::openAgent(const QString &kind) { command("openAgent", {{"kind", kind}}); }
+QString HostController::selectWorkspace(const QString &kind) {
+    const auto cwd = QFileDialog::getExistingDirectory(nullptr,
+        QString("选择 %1 工作区").arg(kind == "pi" ? "Pi" : "Codex"),
+        m_settings.value("lastWorkspace", QDir::homePath()).toString());
+    if (!cwd.isEmpty()) m_settings.setValue("lastWorkspace", cwd);
+    return cwd;
+}
+void HostController::openAgent(const QString &kind) {
+    if (kind == "pi") { openAgentTui(kind); return; }
+    command("openAgent", {{"kind", kind}});
+}
 void HostController::openAgentTui(const QString &kind) {
     if (!m_bridgeReady || busy()) return;
-    command("openAgent", {{"kind", kind}, {"mode", "tui"}}, [this, kind](const QJsonValue &) {
+    QJsonObject params{{"kind", kind}, {"mode", "tui"}};
+    if (kind == "pi" || kind == "codex") {
+        const auto cwd = selectWorkspace(kind);
+        if (cwd.isEmpty()) return;
+        params.insert("cwd", cwd);
+    }
+    command("openAgent", params, [this, kind](const QJsonValue &) {
         setMessage(kind == "dsh" ? "已打开 DeepSeek Harness 网页工作台" : QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(kind == "pi" ? "Pi" : "Codex"));
     });
 }

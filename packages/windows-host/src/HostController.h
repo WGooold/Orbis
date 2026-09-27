@@ -101,6 +101,8 @@ public:
     Q_INVOKABLE void installAgent(const QString &kind, const QString &version = "latest", const QString &mode = "current");
     Q_INVOKABLE void installAllAgents(const QString &action);
     Q_INVOKABLE void activateInstallation(const QString &kind, const QString &id);
+    Q_INVOKABLE void enableCodexTerminal();
+    Q_INVOKABLE void selectCodexEntry(const QString &entry);
     Q_INVOKABLE void cancelInstall();
     Q_INVOKABLE void loadProviders(const QString &kind);
     Q_INVOKABLE void reorderProviders(const QVariantList &ids);
@@ -153,6 +155,7 @@ private:
     void setProviders(const QVariantList &providers);
     void setProviderPresets(const QVariantList &presets);
     void appendLog(QString message);
+    QString selectWorkspace(const QString &kind);
     QJsonObject agentSettings() const;
     QString diagnostics() const;
     QString m_runtimeRoot, m_dataDir, m_hostStateDir;

@@ -9,6 +9,7 @@ vi.mock("./agent-installation.js", async original => ({
 import { agentEntries, agentPackages } from "./agent-installation.js";
 import { DesktopRuntime, type DesktopEvent } from "./desktop-runtime.js";
 import { resolveCodexCommand } from "./codex-daemon.js";
+import { readCodexSelection } from "./codex-selection.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -35,6 +36,34 @@ async function fixture() {
 }
 
 describe("desktop Agent installation commands", () => {
+  it("persists the selected Codex npm copy for the Host and standalone shim", async () => {
+    const { runtime, root, prefix, events } = await fixture();
+    await runtime.detect();
+    const alternate = join(root, "alternate-npm", "node_modules", agentPackages.codex, agentEntries.codex);
+    await mkdir(dirname(alternate), { recursive: true });
+    await writeFile(alternate, 'console.log("2.0.0")');
+    await writeFile(join(root, "alternate-npm", "node_modules", agentPackages.codex, "package.json"), JSON.stringify({ name: agentPackages.codex, version: "2.0.0" }));
+    vi.stubEnv("PATH", prefix + delimiter + join(root, "alternate-npm"));
+    expect(await runtime.selectCodexEntry(alternate)).toEqual({ entry: alternate, version: "2.0.0" });
+    expect(await readCodexSelection()).toBe(alternate);
+    expect((await resolveCodexCommand()).prefixArgs).toEqual([alternate]);
+    expect(events).toContainEqual({ event: "agentInstalled", kind: "codex", entry: alternate, version: "2.0.0" });
+    expect((await runtime.detect({ codexEntry: alternate })).find(status => status.kind === "codex")?.entry).toBe(alternate);
+    await runtime.close();
+  });
+
+  it("preserves a successful Codex download when terminal selection storage fails", async () => {
+    const { runtime, root, events } = await fixture();
+    await runtime.detect();
+    const entry = join(root, "installed", "bin", "codex.js");
+    installation.run.mockResolvedValue({ entry, version: "2.0.0" });
+    await rm(join(root, "agents"), { recursive: true, force: true });
+    await writeFile(join(root, "agents"), "unwritable selection directory");
+    expect(await runtime.install("codex", "2.0.0", "managed")).toEqual({ entry, version: "2.0.0" });
+    expect(events).toContainEqual({ event: "agentInstalled", kind: "codex", entry, version: "2.0.0" });
+    await runtime.close();
+  });
+
   it("detects broken default entries without silently choosing a different copy", async () => {
     const { runtime, prefix, root } = await fixture();
     await rm(join(prefix, "node_modules", agentPackages.codex, agentEntries.codex));

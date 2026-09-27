@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
-import { homedir } from "node:os";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const terminal = vi.hoisted(() => ({ spawn: vi.fn(), pi: vi.fn(), codex: vi.fn() }));
 vi.mock("node:child_process", async importOriginal => ({
@@ -15,7 +17,9 @@ vi.mock("./codex-daemon.js", async importOriginal => ({
 import { DesktopRuntime } from "./desktop-runtime.js";
 
 describe("desktop terminal shortcuts", () => {
-  beforeEach(() => {
+  let workspace: string;
+  beforeEach(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "orbis 工作区's "));
     vi.clearAllMocks();
     terminal.pi.mockResolvedValue({ command: "C:\\Orbis Tools\\node.exe", prefixArgs: ["C:\\My Projects\\pi.js"] });
     terminal.codex.mockResolvedValue({ command: "C:\\Orbis Tools\\node.exe", prefixArgs: ["C:\\User's tools\\codex.js"] });
@@ -25,6 +29,8 @@ describe("desktop terminal shortcuts", () => {
       return child;
     });
   });
+
+  afterEach(async () => { await rm(workspace, { recursive: true, force: true }); });
 
   function invocation(): { script: string; launcher: string; options: Record<string, unknown> } {
     const [program, args, options] = terminal.spawn.mock.calls[0] as [string, string[], Record<string, unknown>];
@@ -36,28 +42,46 @@ describe("desktop terminal shortcuts", () => {
     return { script: Buffer.from(encoded!, "base64").toString("utf16le"), launcher, options };
   }
 
-  it("opens the Codex interactive CLI, preserving paths with spaces and apostrophes", async () => {
+  it("opens Pi and Codex in the selected workspace, preserving paths and Pi integration", async () => {
     const runtime = new DesktopRuntime(() => {});
-    await runtime.openAgent("codex", "tui");
-    const { script, launcher, options } = invocation();
-    expect(script).toBe("& 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js'");
-    expect(launcher).toContain("Start-Process -FilePath 'powershell.exe'");
-    expect(launcher).toContain("'-NoProfile','-NoExit','-EncodedCommand'");
-    expect(launcher).toContain(`-WorkingDirectory '${homedir().replaceAll("'", "''")}'`);
-    expect(launcher).toContain("-WindowStyle Normal -ErrorAction Stop");
-    expect(options).toMatchObject({ stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000 });
+    for (const kind of ["pi", "codex"]) {
+      terminal.spawn.mockClear();
+      await runtime.openAgent(kind, "tui", workspace);
+      const { script, launcher, options } = invocation();
+      if (kind === "codex") expect(script).toBe("& 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js'");
+      else {
+        expect(script).toContain("'C:\\My Projects\\pi.js' '-e'");
+        expect(script.replaceAll("\\", "/")).toContain("/pi-extension/dist/index.js'");
+      }
+      expect(launcher).toContain("Start-Process -FilePath 'powershell.exe'");
+      expect(launcher).toContain("'-NoProfile','-NoExit','-EncodedCommand'");
+      expect(launcher).toContain(`-WorkingDirectory '${workspace.replaceAll("'", "''")}'`);
+      expect(launcher).toContain("-WindowStyle Normal -ErrorAction Stop");
+      expect(options).toMatchObject({ stdio: "ignore", windowsHide: true, cwd: workspace, timeout: 15_000 });
+    }
   });
 
   it("keeps the separate Codex account setup action", async () => {
     await new DesktopRuntime(() => {}).openAgent("codex");
-    expect(invocation().script).toBe("& 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js' 'login'");
+    const { script, options } = invocation();
+    expect(script).toBe("& 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js' 'login'");
+    expect(options.cwd).toBe(homedir());
   });
 
-  it("opens Pi with the Orbis extension attached", async () => {
-    await new DesktopRuntime(() => {}).openAgent("pi", "tui");
-    const { script } = invocation();
-    expect(script).toContain("'C:\\My Projects\\pi.js' '-e'");
-    expect(script.replaceAll("\\", "/")).toContain("/pi-extension/dist/index.js'");
+  it("never falls back to the user directory when an interactive workspace is missing or invalid", async () => {
+    const file = join(workspace, "not-a-directory.txt");
+    await writeFile(file, "not a workspace");
+    const runtime = new DesktopRuntime(() => {});
+    const switchProvider = vi.spyOn(runtime, "mutateProvider");
+    for (const kind of ["pi", "codex"]) {
+      for (const cwd of [undefined, "", "relative-workspace", join(workspace, "missing"), file]) {
+        await expect(runtime.openAgent(kind, "tui", cwd)).rejects.toThrow("工作区");
+        await expect(runtime.openProvider(kind, "test-provider", cwd)).rejects.toThrow("工作区");
+      }
+    }
+    await expect(runtime.openAgent("pi")).rejects.toThrow("工作区");
+    expect(switchProvider).not.toHaveBeenCalled();
+    expect(terminal.spawn).not.toHaveBeenCalled();
   });
 
   it("rejects unknown agents and modes without launching anything", async () => {
@@ -73,7 +97,7 @@ describe("desktop terminal shortcuts", () => {
       queueMicrotask(() => child.emit("error", new Error("Terminal unavailable")));
       return child;
     });
-    await expect(new DesktopRuntime(() => {}).openAgent("codex", "tui")).rejects.toThrow("Terminal unavailable");
+    await expect(new DesktopRuntime(() => {}).openAgent("codex", "tui", workspace)).rejects.toThrow("Terminal unavailable");
   });
 
   it("does not report success when the Windows launcher exits unsuccessfully", async () => {
@@ -82,6 +106,6 @@ describe("desktop terminal shortcuts", () => {
       queueMicrotask(() => child.emit("exit", 1));
       return child;
     });
-    await expect(new DesktopRuntime(() => {}).openAgent("pi", "tui")).rejects.toThrow("无法打开终端界面");
+    await expect(new DesktopRuntime(() => {}).openAgent("pi", "tui", workspace)).rejects.toThrow("无法打开终端界面");
   });
 });

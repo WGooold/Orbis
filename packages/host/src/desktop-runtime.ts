@@ -1,13 +1,15 @@
 import { execFile, spawn } from "node:child_process";
-import { readFile, writeFile, rename } from "node:fs/promises";
+import { readFile, writeFile, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, delimiter } from "node:path";
+import { join, delimiter, isAbsolute } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, resolveStateDir, revokeDeviceRecord, saveDeviceStore } from "@pi-remote/e2e";
 import QRCode from "qrcode";
 import { HostService } from "./host-service.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
+import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
+import { codexShimStatus, installCodexShim } from "./codex-shim-install.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DSH_VERSION } from "./dsh-client.js";
@@ -42,6 +44,12 @@ export function validateDesktopRelay(value: unknown): string {
   return url.toString().replace(/\/$/, "");
 }
 
+async function terminalWorkspace(cwd: string | undefined): Promise<string> {
+  if (!cwd || !isAbsolute(cwd)) throw new Error("请先选择工作区目录");
+  if (!(await stat(cwd).catch(() => undefined))?.isDirectory()) throw new Error("工作区目录不存在或无法访问，请重新选择");
+  return cwd;
+}
+
 /** Owns only the Host process started by the desktop app. No TCP management endpoint is exposed. */
 export class DesktopRuntime {
   readonly #stateDir: string;
@@ -60,6 +68,7 @@ export class DesktopRuntime {
   #installation: AbortController | undefined;
   #installationTask: Promise<{ entry: string; version: string }> | undefined;
   #batchCancelled = false;
+  #selectionError = false;
   #detected = new Map<string, AgentInstallStatus>();
   readonly #providers: ProviderManager;
   readonly #usage: ProviderUsageCache;
@@ -93,15 +102,19 @@ export class DesktopRuntime {
   async #environment(settings?: Partial<DesktopSettings>): Promise<void> {
     if (settings?.dshWebUrl?.trim()) process.env.ORBIS_DSH_WEB_URL = validateDshWebUrl(settings.dshWebUrl.trim()); else delete process.env.ORBIS_DSH_WEB_URL;
     const managed = this.#managedRoot();
+    let selectedCodex: string | undefined;
+    try { selectedCodex = await readCodexSelection(); this.#selectionError = false; }
+    catch { this.#selectionError = true; this.log("Codex 版本选择记录不可读，请在 Agent 页修复终端接入"); }
     for (const kind of ["pi", "codex", "dsh"] as const) {
       const configured = settings?.[`${kind}Entry`];
       let active: string | undefined;
       try { active = await activeManagedEntry(kind, managed); }
       catch { this.log(`${kind} 安装记录不可读，请检查文件权限和 installations.json`); }
       // The manifest survives a UI crash between installation and saving QSettings.
-      const entry = configured && installationSource(configured, managed) !== "managed" ? configured : active ?? configured;
+      const entry = configured && installationSource(configured, managed) !== "managed" ? configured : active ?? (kind === "codex" ? selectedCodex : undefined) ?? configured;
       const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
       if (entry) process.env[key] = entry; else delete process.env[key];
+      if (kind === "codex" && entry && entry !== selectedCodex) await this.#syncCodexSelection(entry);
     }
     const searchPath = process.env.PATH ?? process.env.Path ?? "";
     const legacyNpm = process.env.APPDATA ? join(process.env.APPDATA, "npm") : "";
@@ -119,9 +132,15 @@ export class DesktopRuntime {
         if (entry) process.env[key] = entry;
       }
     }
+    if (process.env.ORBIS_CODEX_ENTRY && !selectedCodex && !this.#selectionError) await this.#syncCodexSelection(process.env.ORBIS_CODEX_ENTRY);
     process.env.PI_REMOTE_ENABLED = "true";
     process.env.PI_REMOTE_RELAY_URL = "ws://127.0.0.1";
     process.env.PI_REMOTE_RUNTIME_CREDENTIAL = "loopback-only";
+  }
+
+  async #syncCodexSelection(entry: string): Promise<void> {
+    try { await saveCodexSelection(entry); this.#selectionError = false; }
+    catch { this.#selectionError = true; this.log("Codex 已安装，但终端版本选择未同步；请在 Agent 页修复终端接入"); }
   }
 
   async detect(settings?: Partial<DesktopSettings>, checkLatest = false): Promise<AgentInstallStatus[]> {
@@ -156,6 +175,21 @@ export class DesktopRuntime {
         }
       }
       status.copies = copies;
+      if (kind === "codex") {
+        const shim = await codexShimStatus();
+        status = { ...status, terminalIntegration: this.#selectionError ? "repair" : shim.state,
+          terminalIntegrationDetail: this.#selectionError ? "版本选择未同步，请修复终端接入" : shim.detail };
+        if (local.installed && entry) {
+          try {
+            const [cli, server] = await Promise.all([
+              execute(process.execPath, [entry, "--help"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 }),
+              execute(process.execPath, [entry, "app-server", "--help"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 }),
+            ]);
+            status.terminalCompatible = /--remote\b/u.test(cli.stdout + cli.stderr) && /--listen\b/u.test(server.stdout + server.stderr);
+          } catch { status.terminalCompatible = false; }
+          if (!status.terminalCompatible) status.terminalCompatibilityDetail = "此 Codex 版本缺少 remote 或 app-server 能力；CLI 可用，但手机接入需要兼容版本";
+        }
+      }
       this.#detected.set(kind, status);
       return { ...status, path: local.entry, connected: kind === "pi" ? (this.#service?.localRuntimes.length ?? 0) > 0 : kind === "dsh" ? this.#dshRuntime?.isReady() ?? false : this.#codexRuntime?.isReady() ?? false };
     }));
@@ -313,6 +347,7 @@ export class DesktopRuntime {
       const entry = process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] ?? current?.entry;
       const result = await installAgentPackage(selected, version, managed, signal, progress => this.#agentInstallProgress(progress),
         mode === "current" && entry && installationSource(entry, managed) !== "managed" ? { existingEntry: entry } : {});
+      if (selected === "codex") await this.#syncCodexSelection(result.entry);
       process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] = result.entry;
       this.#emit({ event: "agentInstalled", kind: selected, entry: result.entry, version: result.version });
       this.log(`${kind} ${result.version} 安装完成，已选中新版本`);
@@ -330,12 +365,38 @@ export class DesktopRuntime {
     this.#installationTask = (async () => {
       await this.#checkExistingHost();
       const result = await activateManagedAgent(selected, id, this.#managedRoot(), signal);
+      if (selected === "codex") await this.#syncCodexSelection(result.entry);
       process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] = result.entry;
       this.#emit({ event: "agentInstalled", kind: selected, entry: result.entry, version: result.version });
       return result;
     })();
     try { return await this.#installationTask; }
     finally { this.#installation = undefined; this.#installationTask = undefined; }
+  }
+
+  async selectCodexEntry(entry: string): Promise<{ entry: string; version: string }> {
+    if (this.#desired || this.#starting || this.#installation) throw new Error("请先暂停 Host，再切换 Codex 版本");
+    await this.#checkExistingHost();
+    const copies = await findAgentCopies("codex", process.env);
+    if (!copies.some(copy => copy.entry === entry)) throw new Error("Codex 入口未在当前 npm 安装中找到");
+    const { stdout, stderr } = await execute(process.execPath, [entry, "--version"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 });
+    const version = extractAgentVersion(stdout + "\n" + stderr);
+    if (!version) throw new Error("Codex 入口无法运行");
+    await saveCodexSelection(entry);
+    process.env.ORBIS_CODEX_ENTRY = entry;
+    this.#emit({ event: "agentInstalled", kind: "codex", entry, version });
+    return { entry, version };
+  }
+
+  async enableCodexTerminal(runtimeRoot: string): Promise<AgentInstallStatus[]> {
+    if (process.platform !== "win32") throw new Error("终端接入仅支持 Windows");
+    const codex = this.#detected.get("codex");
+    if (!codex?.installed || !codex.entry) throw new Error("请先检测并安装可运行的 Codex");
+    if (!codex.terminalCompatible) throw new Error(codex.terminalCompatibilityDetail ?? "此 Codex 版本不支持 Host 终端接入");
+    await this.#syncCodexSelection(codex.entry);
+    if (this.#selectionError) throw new Error("无法写入 Codex 版本选择，请检查 Orbis agents 目录权限");
+    await installCodexShim(runtimeRoot);
+    return this.detect();
   }
 
   async installAll(action: string): Promise<{ succeeded: number; failures: string[]; cancelled: boolean }> {
@@ -466,7 +527,7 @@ export class DesktopRuntime {
     return this.#service ? this.#service.changeProvider(selected, work) : work();
   }
 
-  async openAgent(kind: string, mode = "setup"): Promise<void> {
+  async openAgent(kind: string, mode = "setup", cwd?: string): Promise<void> {
     if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
     if (kind === "dsh") {
       const env = await this.#providers.environment("dsh");
@@ -480,24 +541,30 @@ export class DesktopRuntime {
       finally { await service.stop(); }
       return;
     }
-    const cli = kind === "pi" ? await resolvePiCommand() : kind === "codex" ? await resolveCodexCommand() : undefined;
-    if (!cli) throw new Error("未知 agent");
+    if (kind !== "pi" && kind !== "codex") throw new Error("未知 agent");
+    const workingDirectory = kind === "pi" || mode === "tui" ? await terminalWorkspace(cwd) : homedir();
+    const cli = kind === "pi" ? await resolvePiCommand() : await resolveCodexCommand();
+    const remote = kind === "codex" && mode === "tui" && this.#codexRuntime?.isReady()
+      ? await this.#codexRuntime.prepareTerminalLaunch(workingDirectory) : undefined;
     const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-    const args = kind === "pi" ? [...cli.prefixArgs, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : cli.prefixArgs;
-    const script = `& ${[cli.command, ...args].map(quote).join(" ")}`;
+    const args = kind === "pi" ? [...cli.prefixArgs, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : remote ? [...remote.prefixArgs, "--remote", remote.endpoint] : cli.prefixArgs;
+    const command = remote?.command ?? cli.command;
+    const script = `& ${[command, ...args].map(quote).join(" ")}`;
     // A detached Node child with ignored stdio has no usable console on some
     // Windows hosts. Let Windows create the visible terminal with its own input.
     const encoded = Buffer.from(script, "utf16le").toString("base64");
-    const launcher = `$ErrorActionPreference = 'Stop'; Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-NoExit','-EncodedCommand',${quote(encoded)} -WorkingDirectory ${quote(homedir())} -WindowStyle Normal -ErrorAction Stop`;
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(launcher, "utf16le").toString("base64")], { stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000 });
+    const launcher = `$ErrorActionPreference = 'Stop'; Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-NoExit','-EncodedCommand',${quote(encoded)} -WorkingDirectory ${quote(workingDirectory)} -WindowStyle Normal -ErrorAction Stop`;
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(launcher, "utf16le").toString("base64")], { stdio: "ignore", windowsHide: true, cwd: workingDirectory, timeout: 15_000 });
     await new Promise<void>((resolve, reject) => {
       child.once("error", reject);
       child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开终端界面，请重试")));
     });
   }
-  async openProvider(kind: string, id: string): Promise<void> {
+  async openProvider(kind: string, id: string, cwd?: string): Promise<void> {
+    // Validate before switching providers: a cancelled or stale workspace must not change configuration.
+    if (kind === "pi" || kind === "codex") await terminalWorkspace(cwd);
     await this.mutateProvider(kind, "switch", { id, enabled: true });
-    await this.openAgent(kind, "tui");
+    await this.openAgent(kind, "tui", cwd);
   }
 
   async #dispose(): Promise<void> {

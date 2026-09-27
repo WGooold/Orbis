@@ -30,6 +30,11 @@ describe("CC Switch provider configuration semantics", () => {
       const next = applyProviderFields("codex", config, { ...fields, model: "updated" });
       expect(next.auth).toEqual(config.auth);
       expect(parseToml(String(next.config))).toEqual({ ...parseToml(config.config), model: "updated" });
+      const catalogConfig = { ...config, modelCatalog: { models: [{ model: "existing", future: true }] } };
+      const plainFields = providerFields({ kind: "codex", id: "profile", name: "Profile", config: catalogConfig });
+      delete plainFields.catalog;
+      const withoutCatalogEditor = applyProviderFields("codex", catalogConfig, { ...plainFields, model: "updated" });
+      expect(withoutCatalogEditor.modelCatalog).toEqual(catalogConfig.modelCatalog);
     }
     const config = { auth: null, config: "" };
     const fields = providerFields({ kind: "codex", id: "official", name: "Official", config });
@@ -69,12 +74,26 @@ describe("CC Switch provider configuration semantics", () => {
   it("preserves secondary DSH models and the existing credential environment key", () => {
     const config = { env: { CUSTOM_KEY: "old" }, patch: '- id: llm-pi-ai\n  config:\n    providers:\n      custom:\n        apiKeyEnv: CUSTOM_KEY\n        models:\n          - id: secondary\n            keep: true\n          - id: selected\n            keep: 42\n- id: acp\n  config:\n    provider: custom\n    model: selected\n' };
     const fields = providerFields({ kind: "dsh", id: "dsh", name: "DSH", config });
-    const next = applyProviderFields("dsh", config, { ...fields, model: "renamed", apiKey: "new" });
+    const { models, ...legacyFields } = fields;
+    const next = applyProviderFields("dsh", config, { ...legacyFields, model: "renamed", apiKey: "new" });
     expect(next.env).toEqual({ CUSTOM_KEY: "new" });
     const rows = parseYaml(String(next.patch));
     expect(rows[0].config.providers.custom).toMatchObject({ apiKeyEnv: "CUSTOM_KEY", models: [{ id: "secondary", keep: true }, { id: "renamed", keep: 42 }] });
     expect(rows).toContainEqual({ id: "agent-default-model", config: { provider: "custom", model: "renamed" } });
     expect(rows).toContainEqual({ id: "acp", config: { provider: "custom", model: "renamed" } });
+    const selected = applyProviderFields("dsh", config, { ...fields, model: "secondary" });
+    expect(providerFields({ kind: "dsh", id: "dsh", name: "DSH", config: selected }).models).toEqual(models);
+    const added = { id: "discovered", name: "", contextWindow: "262144", maxTokens: "32768", input: ["text"], reasoningEfforts: '{"medium":"medium"}', future: "keep" };
+    const edited = applyProviderFields("dsh", config, { ...fields, model: "discovered", models: [...models!, added] });
+    const editedFields = providerFields({ kind: "dsh", id: "dsh", name: "DSH", config: edited });
+    expect(editedFields.models).toEqual([...models!, { ...added, name: "discovered", contextWindow: 262144, maxTokens: 32768, reasoningEfforts: { medium: "medium" } }]);
+    expect(edited.env).toEqual(config.env);
+    for (const invalid of [
+      { ...fields, model: "missing" },
+      { ...fields, models: [models![0]!, models![0]!] },
+      { ...fields, models: [{ ...models![1], maxTokens: "0" }] },
+      { ...fields, models: [{ ...models![1], reasoningEfforts: "true" }] },
+    ]) expect(() => applyProviderFields("dsh", config, invalid)).toThrow();
   });
   it("prefers DSH's shared Web default and preserves unrelated patch configuration", () => {
     const rows = [
@@ -90,7 +109,7 @@ describe("CC Switch provider configuration semantics", () => {
     const config = { env: { WEB_KEY: "web-key", LEGACY_KEY: "legacy-key" }, patch: JSON.stringify(rows) };
     const fields = providerFields({ kind: "dsh", id: "dsh", name: "DSH", config });
     expect(fields).toMatchObject({ providerKey: "web", model: "web-model", baseUrl: "https://example.com/v1", api: "openai-responses", apiKey: "web-key" });
-    const next = applyProviderFields("dsh", config, { ...fields, model: "updated" });
+    const next = applyProviderFields("dsh", config, { ...fields, model: "updated", models: fields.models!.map(model => model.id === fields.model ? { ...model, id: "updated" } : model) });
     const updated = parseYaml(String(next.patch));
     expect(updated[0].config).toEqual({ ...rows[0]!.config, providers: { ...rows[0]!.config!.providers, web: { ...rows[0]!.config!.providers!.web, models: [{ id: "updated", reasoningEfforts: { high: "high" } }, { id: "secondary" }] } } });
     expect(updated[1]).toEqual({ id: "agent-default-model", config: { provider: "web", model: "updated", reasoningEffort: "high", future: "keep" } });
@@ -104,7 +123,7 @@ describe("CC Switch provider configuration semantics", () => {
     const rows = parseYaml(String(config.patch));
     expect(rows).toContainEqual({ id: "agent-default-model", config: { provider: "custom", model: "custom-model" } });
     expect(rows.some((row: { id?: string }) => row.id === "acp")).toBe(false);
-    expect(providerFields({ kind: "dsh", id: "dsh", name: "DSH", config })).toEqual(fields);
+    expect(providerFields({ kind: "dsh", id: "dsh", name: "DSH", config })).toEqual({ ...fields, models: [{ id: "custom-model" }] });
   });
   it("imports native Codex auth/config and backfills external changes before switching", async () => {
     const { manager, paths } = await fixture();
