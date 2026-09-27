@@ -45,7 +45,7 @@ export async function uninstallCodexShim(): Promise<void> {
 }
 
 export type CodexTerminalIntegration = { state: "enabled" | "pending" | "repair" | "disabled"; detail: string };
-export async function codexShimStatus(): Promise<CodexTerminalIntegration> {
+export async function codexShimStatus(expectedRuntimeRoot?: string): Promise<CodexTerminalIntegration> {
   if (process.platform !== "win32") return { state: "disabled", detail: "仅支持 Windows 终端" };
   let manifest: { runtimeRoot?: unknown };
   let script: string;
@@ -57,6 +57,7 @@ export async function codexShimStatus(): Promise<CodexTerminalIntegration> {
     return { state: "repair", detail: "终端接入文件不可读，请修复" };
   }
   if (typeof manifest.runtimeRoot !== "string" || script !== renderCodexShim(manifest.runtimeRoot)
+    || expectedRuntimeRoot && !samePath(manifest.runtimeRoot, expectedRuntimeRoot)
     || !await exists(join(manifest.runtimeRoot, "node", "node.exe"))
     || !await exists(join(manifest.runtimeRoot, "packages", "host", "dist", "codex-shim.js"))) {
     return { state: "repair", detail: "终端入口与当前安装不一致，请修复" };
@@ -66,6 +67,9 @@ export async function codexShimStatus(): Promise<CodexTerminalIntegration> {
     if (!samePath(userPath[0] ?? "", orbisBin())) return { state: "repair", detail: "用户 PATH 未优先指向 Orbis，请修复" };
     const first = await firstCodexOnPath(process.env.Path ?? process.env.PATH ?? "");
     if (first && samePath(first, shimPath())) return { state: "enabled", detail: "当前终端已解析到 Orbis" };
+    if ((process.env.Path ?? process.env.PATH ?? "").split(";").some(entry => samePath(entry, orbisBin()))) {
+      return { state: "repair", detail: `当前 PATH 优先命中 ${first ?? "其他入口"}；请检查系统 PATH 顺序` };
+    }
     return { state: "pending", detail: "已写入用户 PATH；请重新打开终端后检查 codex 命中位置" };
   } catch {
     return { state: "repair", detail: "无法读取用户 PATH，请检查权限" };
@@ -89,9 +93,12 @@ async function updateUserPath(current: string[], update: (path: string[]) => str
   if (next.join(";") === current.join(";")) return;
   if (next.length === 0) {
     await execFileAsync("reg.exe", ["delete", "HKCU\\Environment", "/v", "Path", "/f"], { windowsHide: true });
-    return;
+  } else {
+    await execFileAsync("reg.exe", ["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", next.join(";"), "/f"], { windowsHide: true });
   }
-  await execFileAsync("reg.exe", ["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", next.join(";"), "/f"], { windowsHide: true });
+  await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+    'Add-Type -Namespace Orbis -Name EnvNotify -MemberDefinition \'[DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern System.IntPtr SendMessageTimeout(System.IntPtr hwnd, int msg, System.IntPtr wp, string lp, int flags, int timeout, out System.IntPtr result);\' -UsingNamespace System.Runtime.InteropServices; $result = [IntPtr]::Zero; [void][Orbis.EnvNotify]::SendMessageTimeout([IntPtr]0xffff, 0x1a, [IntPtr]::Zero, "Environment", 2, 5000, [ref]$result)',
+  ], { windowsHide: true, timeout: 10_000 }).catch(() => {});
 }
 
 async function readUserPath(): Promise<string[]> {

@@ -176,7 +176,7 @@ export class DesktopRuntime {
       }
       status.copies = copies;
       if (kind === "codex") {
-        const shim = await codexShimStatus();
+        const shim = await codexShimStatus(fileURLToPath(new URL("../../../", import.meta.url)));
         status = { ...status, terminalIntegration: this.#selectionError ? "repair" : shim.state,
           terminalIntegrationDetail: this.#selectionError ? "版本选择未同步，请修复终端接入" : shim.detail };
         if (local.installed && entry) {

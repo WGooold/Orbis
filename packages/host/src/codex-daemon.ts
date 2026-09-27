@@ -25,6 +25,7 @@ import { platform } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { resolveNodePackageCli } from "./spawner.js";
+import { readCodexSelection } from "./codex-selection.js";
 
 export const CODEX_RUNTIME_ID = "codex";
 
@@ -399,6 +400,10 @@ export type CodexCommand = {
  * 里的对不上——两边其实是两个不同版本的 codex。
  */
 export async function resolveCodexCommand(env: Record<string, string | undefined> = process.env): Promise<CodexCommand> {
+  if (env === process.env && !env.ORBIS_CODEX_ENTRY) {
+    const selected = await readCodexSelection();
+    if (selected) env = { ...env, ORBIS_CODEX_ENTRY: selected };
+  }
   if (env.ORBIS_CODEX_ENTRY) {
     const { access } = await import("node:fs/promises");
     await access(env.ORBIS_CODEX_ENTRY);

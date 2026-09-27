@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { saveCodexSelection } from "./codex-selection.js";
+import { resolveCodexCommand } from "./codex-daemon.js";
 
 const childProcess = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: childProcess.spawn }));
@@ -27,6 +28,9 @@ describe("Codex Windows shim", () => {
     await writeFile(entry, "");
     await saveCodexSelection(entry);
     expect(JSON.parse(await readFile(join(root, "codex-selection.json"), "utf8")).entry).toBe(entry);
+    vi.stubEnv("ORBIS_CODEX_ENTRY", "");
+    expect((await resolveCodexCommand()).prefixArgs).toEqual([entry]);
+    vi.stubEnv("ORBIS_CODEX_ENTRY", join(root, "stale.js"));
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Host offline")));
     childProcess.spawn.mockImplementation(() => {
       const child = new EventEmitter();

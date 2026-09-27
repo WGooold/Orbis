@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, isAbsolute } from "node:path";
 
@@ -28,7 +28,6 @@ export async function saveCodexSelection(entry: string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   await mkdir(dirname(path), { recursive: true });
   try {
-    const { writeFile } = await import("node:fs/promises");
     await writeFile(temporary, JSON.stringify({ version: 1, entry }), { mode: 0o600 });
     await rename(temporary, path);
   } finally { await rm(temporary, { force: true }); }
