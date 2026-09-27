@@ -310,7 +310,8 @@ int main(int argc, char *argv[]) {
                 QTimer::singleShot(20400, Qt::PreciseTimer, &app, [&] { controller.editProvider(controller.providers().last().toMap().value("id").toString()); });
                 QTimer::singleShot(21200, Qt::PreciseTimer, &app, [&] {
                     const auto models = window->property("providerModels").toList();
-                    if (models.size() != smokePiModelCount + 2 || models.last().toMap().value("contextWindow").toInt() <= 0 || models.last().toMap().value("maxTokens").toInt() <= 0) { app.exit(33); return; }
+                    const auto last = models.last().toMap();
+                    if (models.size() != smokePiModelCount + 2 || !last.value("contextWindow").toString().isEmpty() || !last.value("maxTokens").toString().isEmpty()) { app.exit(33); return; }
                     QMetaObject::invokeMethod(window, "closeProviderEditor");
                     QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "dsh"));
                 });

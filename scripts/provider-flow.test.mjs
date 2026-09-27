@@ -4,6 +4,23 @@ import { expect, it } from "vitest";
 
 const flow = runInNewContext(`${readFileSync(new URL("../packages/windows-host/src/qml/ProviderFlow.js", import.meta.url), "utf8")}\n({applyDiscoveredModels, newModel})`);
 
+it("uses CC Switch defaults for new Pi models while keeping DSH native defaults", () => {
+  expect(flow.newModel("pi")).toMatchObject({
+    id: "",
+    name: "",
+    input: ["text"],
+    contextWindow: "",
+    maxTokens: "",
+    reasoning: false,
+  });
+  expect(flow.newModel("dsh")).toMatchObject({
+    input: ["text"],
+    contextWindow: 262144,
+    maxTokens: 32768,
+    reasoningEfforts: false,
+  });
+});
+
 it("adds or selects discovered models without replacing existing capabilities or introducing duplicates", () => {
   for (const kind of ["pi", "dsh"]) {
     const existing = { id: "existing", name: "My model", contextWindow: 64000, future: true };

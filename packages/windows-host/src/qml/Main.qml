@@ -100,7 +100,7 @@ ApplicationWindow {
         window.providerModels = window.providerDraft.kind === "codex" ? [] : draft.fields.models || []
         window.explicitProviderModels = draft.fields.models !== undefined
         if (draft.create && window.providerDraft.kind === "pi") window.providerModels = window.providerModels.map(function(model) { return !model.id ? Object.assign(ProviderFlow.newModel("pi"), model) : model })
-        codexReasoning.currentIndex = Math.max(0, codexReasoning.find(draft.fields.reasoningEffort || "medium"))
+        codexReasoning.currentIndex = Math.max(0, codexReasoning.find(draft.fields.reasoningEffort || "high"))
         providerJson.text = JSON.stringify(draft.config, null, 2)
         var advanced = draft.config || {}
         if (window.providerDraft.kind === "codex") {
@@ -1059,9 +1059,9 @@ ApplicationWindow {
                                     SoftCheckBox { text: "推理"; visible: window.providerDraft.kind === "pi"; checked: modelData.reasoning === true; onToggled: window.updateProviderModel(index, "reasoning", checked) }
                                     SoftCheckBox { text: "图像输入"; checked: Array.isArray(modelData.input) && modelData.input.indexOf("image") >= 0; onToggled: window.updateProviderModel(index, "input", checked ? ["text", "image"] : ["text"]) }
                                     Label { text: "上下文"; color: "#4b5d78" }
-                                    Field { Layout.fillWidth: true; text: modelData.contextWindow === undefined ? "" : String(modelData.contextWindow); placeholderText: "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "contextWindow", text) }
+                                    Field { Layout.fillWidth: true; text: modelData.contextWindow === undefined ? "" : String(modelData.contextWindow); placeholderText: window.providerDraft.kind === "pi" ? "128000" : window.providerDraft.kind === "dsh" ? "262144" : "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "contextWindow", text) }
                                     Label { text: "最大输出"; color: "#4b5d78" }
-                                    Field { Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "maxTokens", text) }
+                                    Field { Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: window.providerDraft.kind === "pi" ? "16384" : window.providerDraft.kind === "dsh" ? "32768" : "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "maxTokens", text) }
                                 }
                                 SoftTextArea { visible: window.providerDraft.kind === "pi"; Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "思考档位映射（留空使用 Pi 默认值）"; text: modelData.thinkingLevelMap === undefined ? "" : JSON.stringify(modelData.thinkingLevelMap); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updateProviderModel(index, "thinkingLevelMap", text) }
                                 Label { visible: window.providerDraft.kind === "dsh"; text: "推理档位映射（JSON；false 表示不支持，留空继承原生能力）"; color: "#4b5d78" }
