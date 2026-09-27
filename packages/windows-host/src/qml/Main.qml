@@ -262,13 +262,15 @@ ApplicationWindow {
     component SoftSwitch: Switch {
         id: softSwitch
         property bool marksProviderDirty: true
+        readonly property string stateLabel: checked ? "开" : "关"
+        Accessible.name: (text || "开关") + "，当前状态：" + stateLabel
         onToggled: if (marksProviderDirty && providerDialog.visible && !window.loadingProviderDraft) window.providerFormDirty = true
         spacing: 12
-        implicitHeight: 38
+        implicitHeight: 40
         readonly property real knobSize: 34 // fills the groove height, as the reference does
         readonly property real knobRadius: 12 // large radius with a flat edge: the reference thumb is a rounded square, not a circle
         indicator: Item {
-            implicitWidth: 68; implicitHeight: 34
+            implicitWidth: 80; implicitHeight: 36
             opacity: softSwitch.enabled ? 1 : 0.45
             x: softSwitch.leftPadding
             y: (softSwitch.height - height) / 2
@@ -277,13 +279,34 @@ ApplicationWindow {
                 anchors.fill: parent; margin: 0; cornerRadius: 13
                 inset: true; depth: 5; focused: softSwitch.activeFocus
             }
+            // The two engraved labels keep the available states visible even when the thumb moves.
+            Label {
+                text: "关"
+                x: 9; width: 22; height: parent.height
+                verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter
+                color: softSwitch.checked ? "#9aa7b9" : "#536681"
+                font.pixelSize: 12; font.weight: softSwitch.checked ? Font.Normal : Font.DemiBold
+            }
+            Label {
+                text: "开"
+                x: parent.width - width - 9; width: 22; height: parent.height
+                verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter
+                color: softSwitch.checked ? "#2459D3" : "#9aa7b9"
+                font.pixelSize: 12; font.weight: softSwitch.checked ? Font.DemiBold : Font.Normal
+            }
             // Raised knob. The item is inflated by the shadow margin so the blur has room inside its own image.
             Item {
                 width: softSwitch.knobSize + 24; height: width
                 x: (softSwitch.checked ? indicator.width - softSwitch.knobSize : 0) - 12
                 y: (indicator.height - height) / 2
                 Behavior on x { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-                NeuSurface { anchors.fill: parent; margin: 12; cornerRadius: softSwitch.knobRadius; surface: "#F7F9FD"; depth: 2.2; blur: 0.55 }
+                NeuSurface { anchors.fill: parent; margin: 12; cornerRadius: softSwitch.knobRadius; surface: softSwitch.checked ? "#EEF4FF" : "#F7F9FD"; depth: softSwitch.checked ? 1.8 : 2.2; blur: 0.55 }
+                Label {
+                    anchors.centerIn: parent
+                    text: softSwitch.stateLabel
+                    color: softSwitch.checked ? "#2459D3" : "#536681"
+                    font.pixelSize: 12; font.weight: Font.DemiBold
+                }
             }
         }
         contentItem: Label { text: softSwitch.text; leftPadding: softSwitch.indicator.width + softSwitch.spacing; verticalAlignment: Text.AlignVCenter; color: softSwitch.enabled ? "#40516c" : "#8995a9" }
