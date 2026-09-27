@@ -2,7 +2,7 @@ import { parse } from "smol-toml";
 import { parseDocument, stringify as yaml } from "yaml";
 import type { AgentKind } from "@pi-remote/protocol";
 import { ProviderError, type ProviderProfile } from "./provider-manager.js";
-import { codexToken } from "./provider-codex.js";
+import { codexOfficial, codexToken } from "./provider-codex.js";
 import { setToml } from "./provider-toml.js";
 import { catalogSpecs } from "./provider-catalog.js";
 import { upstreamFormat, validateCodexRouting } from "./provider-proxy-config.js";
@@ -12,14 +12,14 @@ const isObject = (value: unknown): value is Obj => value !== null && typeof valu
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
 const dshDefaultSelection = (rows: Obj[]): Obj => object((rows.find(row => row.id === "agent-default-model") ?? rows.find(row => row.id === "acp"))?.config);
 export type ProviderFields = { baseUrl: string; apiKey: string; model: string; api: string; providerKey: string; headers?: Record<string, string>; compat?: Obj; models?: Obj[]; catalog?: Obj[]; reasoningEffort?: string; routing?: Obj };
-export function providerFields(profile: ProviderProfile): ProviderFields {
+export function providerFields(profile: ProviderProfile, allowIncomplete = false): ProviderFields {
   const config = profile.config;
   if (profile.kind === "codex") {
     const toml = parse(String(config.config ?? ""));
     const key = String(toml.model_provider ?? "openai");
     const provider = object(object(toml.model_providers)[key]);
     const routing = { isFullUrl: (config.isFullUrl ?? config.fullUrl) === true, promptCacheRouting: config.promptCacheRouting ?? "auto", codexChatReasoning: object(config.codexChatReasoning), chatOptions: object(config.chatOptions), requestOverrides: object(config.requestOverrides) };
-    return { providerKey: key, baseUrl: String(provider.base_url ?? ""), apiKey: codexToken(config), model: String(toml.model ?? ""), api: ({ responses: "openai-responses", openai_chat: "openai-completions", anthropic: "anthropic-messages" })[upstreamFormat(config)], headers: object(provider.http_headers) as Record<string, string>, catalog: structuredClone(catalogSpecs(config)), reasoningEffort: String(toml.model_reasoning_effort ?? ""), routing: structuredClone(routing) };
+    return { providerKey: key, baseUrl: String(provider.base_url ?? ""), apiKey: codexToken(config), model: String(toml.model ?? ""), api: ({ responses: "openai-responses", openai_chat: "openai-completions", anthropic: "anthropic-messages" })[upstreamFormat(config)], headers: object(provider.http_headers) as Record<string, string>, catalog: structuredClone(catalogSpecs(config, allowIncomplete)), reasoningEffort: String(toml.model_reasoning_effort ?? ""), routing: structuredClone(routing) };
   }
   if (profile.kind === "pi") return { providerKey: profile.id, baseUrl: String(config.baseUrl ?? ""), apiKey: String(config.apiKey ?? ""), model: String(object((config.models as unknown[] | undefined)?.[0]).id ?? ""), api: String(config.api ?? ""), headers: object(config.headers) as Record<string, string>, compat: object(config.compat), models: Array.isArray(config.models) ? structuredClone(config.models.map(object)) : [] };
   const document = parseDocument(String(config.patch ?? ""));
@@ -32,11 +32,12 @@ export function providerFields(profile: ProviderProfile): ProviderFields {
   return { providerKey: key, baseUrl: String(route.baseURL ?? ""), apiKey: String(object(config.env)[String(route.apiKeyEnv ?? "ORBIS_DSH_API_KEY")] ?? ""), model: String(selection.model ?? ""), api: String(route.api ?? "openai-completions") };
 }
 /** Basic form is a projection over the complete native config; advanced mode retains all fields. */
-export function applyProviderFields(kind: AgentKind, previous: Obj, fields: ProviderFields, create = false): Obj {
+export function applyProviderFields(kind: AgentKind, previous: Obj, fields: ProviderFields, create = false, validateRequired = true): Obj {
   if (!isObject(previous) || !isObject(fields) || [fields.model, fields.providerKey, fields.baseUrl, fields.apiKey, fields.api].some(value => typeof value !== "string")) throw new ProviderError("供应商表单格式无效");
   if (fields.headers !== undefined && (!isObject(fields.headers) || !Object.values(fields.headers).every(value => typeof value === "string"))) throw new ProviderError("请求头必须是字符串映射");
-  if (kind !== "pi" && !fields.model.trim()) throw new ProviderError("请填写供应商支持的模型 ID");
-  if (!fields.providerKey.trim() || fields.providerKey.length > 128 || ["__proto__", "prototype", "constructor"].includes(fields.providerKey)) throw new ProviderError("请填写有效的供应商标识");
+  const official = kind === "codex" && codexOfficial(previous) && fields.providerKey === "openai";
+  if (validateRequired && kind !== "pi" && !official && !fields.model.trim()) throw new ProviderError("请填写供应商支持的模型 ID");
+  if ((validateRequired && !fields.providerKey.trim()) || fields.providerKey.length > 128 || ["__proto__", "prototype", "constructor"].includes(fields.providerKey)) throw new ProviderError("请填写有效的供应商标识");
   if (fields.baseUrl) {
     let url: URL;
     try { url = new URL(fields.baseUrl); } catch { throw new ProviderError("API 地址格式无效"); }
@@ -45,22 +46,34 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
   const config = structuredClone(previous);
   if (kind === "codex") {
     if (!["openai-responses", "openai-completions", "anthropic-messages"].includes(fields.api)) throw new ProviderError("Codex 上游格式必须是 Responses、Chat Completions 或 Anthropic Messages");
-    config.apiFormat = fields.api === "openai-completions" ? "openai_chat" : fields.api === "anthropic-messages" ? "anthropic" : "responses";
+    if (!official && (create || fields.api !== providerFields({ kind, id: "", name: "", config: previous }, !validateRequired).api)) config.apiFormat = fields.api === "openai-completions" ? "openai_chat" : fields.api === "anthropic-messages" ? "anthropic" : "responses";
     if (fields.routing !== undefined) {
       if (!isObject(fields.routing)) throw new ProviderError("路由配置必须是 JSON 对象");
       for (const key of ["isFullUrl", "promptCacheRouting", "codexChatReasoning", "chatOptions", "requestOverrides"])
         if (Object.hasOwn(fields.routing, key)) config[key] = structuredClone(fields.routing[key]);
       validateCodexRouting(config);
     }
-    if (["openai", "ollama", "lmstudio"].includes(fields.providerKey)) throw new ProviderError("内置供应商请使用原生账号或高级配置；自定义供应商请使用独立标识");
-    if (!fields.baseUrl) throw new ProviderError("请填写自定义供应商 API 地址");
     let toml = String(config.config ?? "");
-    const route = ["model_providers", fields.providerKey];
-    for (const [key, value] of Object.entries({ name: fields.providerKey, base_url: fields.baseUrl, wire_api: "responses", requires_openai_auth: true })) toml = setToml(toml, [...route, key], value);
-    for (const key of ["auth", "env_key", "experimental_bearer_token"]) toml = setToml(toml, [...route, key], undefined);
-    if (fields.headers !== undefined) toml = setToml(toml, [...route, "http_headers"], fields.headers);
-    toml = setToml(toml, ["model_provider"], fields.providerKey);
-    toml = setToml(toml, ["model"], fields.model);
+    const initial = providerFields({ kind, id: "", name: "", config: previous }, !validateRequired);
+    if (!official) {
+      if (["openai", "ollama", "lmstudio", "amazon-bedrock", "amazon-bedrock-runtime"].includes(fields.providerKey)) throw new ProviderError("此内置供应商请使用原生配置；自定义供应商请使用独立标识");
+      if (validateRequired && !fields.baseUrl) throw new ProviderError("请填写自定义供应商 API 地址");
+      const route = ["model_providers", fields.providerKey];
+      if (create || initial.providerKey !== fields.providerKey) {
+        for (const [key, value] of Object.entries({ name: fields.providerKey, wire_api: "responses", requires_openai_auth: true })) toml = setToml(toml, [...route, key], value);
+        toml = setToml(toml, ["model_provider"], fields.providerKey);
+      }
+      if (create || initial.providerKey !== fields.providerKey || fields.baseUrl !== initial.baseUrl) toml = setToml(toml, [...route, "base_url"], fields.baseUrl || undefined);
+      if (fields.headers !== undefined && JSON.stringify(fields.headers) !== JSON.stringify(initial.headers)) toml = setToml(toml, [...route, "http_headers"], fields.headers);
+      if (fields.apiKey !== initial.apiKey) {
+        // Changing a key is explicit; an ordinary edit must not replace env/auth
+        // credentials or flatten an existing native authentication payload.
+        for (const key of ["auth", "env_key", "experimental_bearer_token"]) toml = setToml(toml, [...route, key], undefined);
+        toml = setToml(toml, [...route, "requires_openai_auth"], true);
+        config.auth = { ...object(config.auth), OPENAI_API_KEY: fields.apiKey };
+      }
+    }
+    if (fields.model !== initial.model) toml = setToml(toml, ["model"], fields.model || undefined);
     if (fields.reasoningEffort !== undefined) {
       if (!["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(fields.reasoningEffort)) throw new ProviderError("Codex 思考档位无效");
       toml = setToml(toml, ["model_reasoning_effort"], fields.reasoningEffort || undefined);
@@ -72,10 +85,9 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
         return next;
       });
       config.modelCatalog = { ...object(config.modelCatalog), models };
-      catalogSpecs(config);
+      catalogSpecs(config, !validateRequired);
     }
     config.config = toml;
-    config.auth = { OPENAI_API_KEY: fields.apiKey };
   } else if (kind === "pi") {
     // Explicit built-in overrides may contain only apiKey. Missing fields inherit
     // Pi defaults; inventing an API/base URL/model would change their meaning.
@@ -91,12 +103,12 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
       if (Object.keys(fields.compat).length || Object.hasOwn(previous, "compat")) config.compat = fields.compat;
     }
     const models = fields.models ?? (Array.isArray(config.models) && config.models.length ? [{ ...object(config.models[0]), id: fields.model }, ...config.models.slice(1) as Obj[]] : fields.model ? [{ id: fields.model }] : []);
-    if (!Array.isArray(models) || (create && !models.length) || models.some(model => !isObject(model) || typeof model.id !== "string" || !model.id.length)) throw new ProviderError("请填写有效模型 ID；新建供应商至少需要一个模型");
+    if (!Array.isArray(models) || (validateRequired && create && !models.length) || models.some(model => !isObject(model) || typeof model.id !== "string" || (validateRequired && !model.id.length))) throw new ProviderError("请填写有效模型 ID；新建供应商至少需要一个模型");
     if (new Set(models.map(model => model.id)).size !== models.length) throw new ProviderError("同一供应商的模型 ID 不能重复");
     const normalized = models.map(model => {
       const next = { ...model };
-      if (create && !(typeof next.api === "string" && next.api.trim()) && !fields.api.trim()) throw new ProviderError("请为新建供应商选择 API 格式");
-      if (create && !(typeof next.baseUrl === "string" && next.baseUrl.trim()) && !fields.baseUrl.trim()) throw new ProviderError("请填写新建供应商 API 地址");
+      if (validateRequired && create && !(typeof next.api === "string" && next.api.trim()) && !fields.api.trim()) throw new ProviderError("请为新建供应商选择 API 格式");
+      if (validateRequired && create && !(typeof next.baseUrl === "string" && next.baseUrl.trim()) && !fields.baseUrl.trim()) throw new ProviderError("请填写新建供应商 API 地址");
       for (const key of ["contextWindow", "maxTokens"] as const) {
         if (next[key] === "") { delete next[key]; continue; }
         if (typeof next[key] === "string") {

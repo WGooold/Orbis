@@ -13,9 +13,11 @@ The requested scope is the three Agent types already exposed by Orbis: Pi, Codex
 - Pi edits preserve partial built-in overrides. Editing an existing node with only `apiKey` or other sparse fields does not inject default API, URL, or model fields. New cards still require a complete transport and model.
 - Codex stores provider-owned routing separately from shared TOML settings, preserving comments and unrelated tables where the TOML editor can do so. MCP, common preferences, model catalogs, official login preservation, third-party bearer routing, stale reserved IDs, auth conflicts, and rollback are covered.
 - Codex managed OAuth has a Host-owned account file, device-code flow, account binding, refresh-token rotation, identity checks, native-login import, CLI rotation adoption, and a UI for adding, reauthenticating, selecting, and removing accounts.
-- Provider presets, endpoint checks, authenticated model discovery, bounded QuickJS usage scripts, New API/general/official-balance templates, per-provider usage cache, automatic refresh intervals, and last-good snapshots are implemented.
+- Provider presets, endpoint checks, authenticated model discovery, bounded QuickJS usage scripts, New API/general/official-balance templates, per-provider usage cache, automatic refresh intervals, and last-good snapshots are implemented. Usage querying remains a backend capability; the Windows usage settings, query actions, and result display are deliberately removed.
+- The Windows provider editor uses a single preset/custom entry point, searchable presets, structured fields with native-config round trips, and explicit confirmation before discarding edits or replacing a dirty draft. Incomplete drafts can switch editor modes without weakening save validation. Official Codex profiles expose login-source selection without requiring an API key or custom endpoint; ordinary form edits preserve native authentication.
+- Provider lists support search, persisted drag/arrow ordering, and copies immediately after their source. Connectivity checks have per-card progress and do not block unrelated editing. Model discovery adds all selected Pi/Codex models while retaining existing capability fields and defaults; DSH selects one default model.
 - Codex local routing now follows CC Switch's loopback takeover model: authenticated `127.0.0.1` Responses endpoint, Chat Completions and Anthropic conversion, native Responses passthrough including `/responses/compact`, explicit failover queue, circuit breaker, bounded timeouts, cancellation, prompt-cache routing, vendor reasoning mapping, request overrides, and proxy hot-switching without restarting Codex.
-- The Windows Agent page exposes provider cards plus routing controls, and Android switches saved provider IDs through the existing encrypted provider protocol. Routing credentials and the local bearer token stay on the Host.
+- The Windows Agent page exposes provider cards but no global routing/failover dialog, route-health display, or circuit-reset action. Existing routing configuration and backend conversion/failover remain intact. Android switches saved provider IDs through the existing encrypted provider protocol. Routing credentials and the local bearer token stay on the Host.
 - DSH preserves the complete patch text, existing provider model rows, unknown YAML fields, and the provider's existing environment-variable name while keeping credentials in Host state and syncing them to the native local Web credential store. Browser-only running sessions also block a provider switch.
 - The Android protocol carries only saved Agent/provider IDs and status. It never carries provider credentials, raw native configuration, scripts, or OAuth tokens.
 - Host supports Agent installation/update from pinned package names and isolated managed directories, npm dist-tag checks, exact global npm-prefix updates, validated activation, cancellation, batch operations, installation history, and rollback. DSH requires the published ACP-compatible 0.1.7-rc.1 package when the registry's latest tag is older.
@@ -24,7 +26,18 @@ The requested scope is the three Agent types already exposed by Orbis: Pi, Codex
 
 The parity claim is limited to the three Orbis Agent kinds. CC Switch's Claude, Gemini, OpenCode, xAI OAuth account flow, and other application-specific integrations remain outside this branch. DSH is an adaptation because CC Switch has no DSH backend; its native Web service owns shared sessions; native HMR and credential writes apply provider changes without restarting the service. Official Codex OAuth accounts are deliberately excluded from the proxy failover queue and continue using native routing. Advanced provider fields remain available in the native JSON/TOML editor; the common form covers routing, cache, reasoning, Chat options, and request overrides.
 
-## Evidence
+## Provider flow verification (2026-09-27)
+
+Worktree: `D:/orbis-worktrees/provider-flow-parity`, branch `feat/provider-flow-parity`.
+
+- Windows Node toolchain: `npm run lint` and `npm run check` pass (67 test files, 624 tests). Logs: `.artifacts/provider-flow/check.log`.
+- `scripts/windows/windows-host-build.ps1` builds the Host and passes both native tests. Log: `.artifacts/provider-flow/build.log`.
+- Normal and minimum-window provider smoke tests both exit 0 with empty QML logs. They exercise real mouse drag ordering, Pi create/copy/enable/remove, official Codex form saving, incomplete draft mode round trips, multi-model saving/reopening, and Codex activation.
+- Screenshots and isolated smoke data: `.artifacts/provider-flow/final-normal-20260927-160610/` and `.artifacts/provider-flow/final-compact-20260927-160636/`.
+- The drag test caught a card-sizing defect caused by the added drop layer; setting the card's content height from its layout restored both card geometry and drop hit testing.
+- No running user Host was stopped, restarted, or overwritten. No push, release, or deployment was performed.
+
+## Earlier evidence
 
 - `npm run typecheck` and `npm run lint` pass.
 - The full Vitest suite passes with 561 tests. The final installation-detection adjustment passes 41 focused tests, and release website validation passes 9 tests.

@@ -21,6 +21,33 @@ async function fixture(hooks: ProviderHooks = {}) {
 const codex = (provider: string, key: string) => ({ auth: { OPENAI_API_KEY: key }, config: `model_provider = "${provider}"\nmodel = "test-model"\n[model_providers.${provider}]\nname = "${provider}"\nwire_api = "responses"\nbase_url = "https://example.com/v1"\n` });
 
 describe("CC Switch provider configuration semantics", () => {
+  it("preserves native Codex authentication when editing ordinary form fields", () => {
+    for (const config of [
+      { auth: { tokens: { access_token: "official-secret" } }, config: '# Official defaults\n[features]\nkeep = true\n' },
+      { auth: { OPENAI_API_KEY: "saved-secret", future: true }, config: 'model_provider = "custom"\nmodel = "existing"\n[model_providers.custom]\nname = "Friendly"\nbase_url = "https://example.com/v1"\nenv_key = "CUSTOM_TOKEN"\n' },
+    ]) {
+      const fields = providerFields({ kind: "codex", id: "profile", name: "Profile", config });
+      const next = applyProviderFields("codex", config, { ...fields, model: "updated" });
+      expect(next.auth).toEqual(config.auth);
+      expect(parseToml(String(next.config))).toEqual({ ...parseToml(config.config), model: "updated" });
+    }
+    const config = { auth: null, config: "" };
+    const fields = providerFields({ kind: "codex", id: "official", name: "Official", config });
+    expect(applyProviderFields("codex", config, fields).auth).toBeNull();
+    expect(parseToml(String(applyProviderFields("codex", config, fields).config))).toEqual({});
+  });
+  it("persists catalog order without changing native activation and rejects stale reorder snapshots", async () => {
+    const { manager, paths, root } = await fixture();
+    for (const id of ["a", "b", "c"]) await manager.save("pi", id, id, { models: [{ id }] }, true);
+    const native = await readFile(join(paths.pi, "models.json"), "utf8");
+    expect((await manager.reorder("pi", ["c", "a", "b"])).map(p => p.id)).toEqual(["c", "a", "b"]);
+    expect((await new ProviderManager(join(root, "state"), paths).list("pi")).map(p => p.id)).toEqual(["c", "a", "b"]);
+    expect(await readFile(join(paths.pi, "models.json"), "utf8")).toBe(native);
+    const stored = await readFile(join(root, "state", "providers.json"), "utf8");
+    for (const ids of [["a", "a", "c"], ["a", "b"], ["a", "b", "missing"]]) await expect(manager.reorder("pi", ids)).rejects.toThrow("列表已变化");
+    expect(await readFile(join(root, "state", "providers.json"), "utf8")).toBe(stored);
+    expect((await manager.copy("pi", "a")).map(p => p.id)).toEqual(["c", "a", "a-copy", "b"]);
+  });
   it("round-trips routing form options and rejects malformed overrides before saving", () => {
     const config = { ...codex("custom", "key"), apiFormat: "openai_chat", isFullUrl: true, promptCacheRouting: "disabled", codexChatReasoning: { supportsThinking: false, supportsEffort: true, thinkingParam: "none", effortParam: "reasoning.effort", effortValueMode: "openrouter" }, requestOverrides: { body: { service_tier: "priority" }, headers: { "x-custom": "kept" } }, chatOptions: { supportsStrictMode: false }, future: { value: 42 } };
     const fields = providerFields({ kind: "codex", id: "custom", name: "Custom", config });

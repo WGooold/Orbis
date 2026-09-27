@@ -42,11 +42,12 @@ class HostController : public QObject {
     Q_PROPERTY(QString agentInstallStage READ agentInstallStage NOTIFY changed)
     Q_PROPERTY(QString agentInstallVersion READ agentInstallVersion NOTIFY changed)
     Q_PROPERTY(bool agentInstalling READ agentInstalling NOTIFY changed)
-    Q_PROPERTY(QVariantList providers READ providers NOTIFY changed)
+    Q_PROPERTY(QVariantList providers READ providers NOTIFY providersChanged)
     Q_PROPERTY(QString providerKind READ providerKind NOTIFY changed)
-    Q_PROPERTY(QVariantList providerPresets READ providerPresets NOTIFY changed)
+    Q_PROPERTY(QVariantList providerPresets READ providerPresets NOTIFY providerPresetsChanged)
     Q_PROPERTY(QString piDefaultProvider READ piDefaultProvider NOTIFY changed)
-    Q_PROPERTY(QVariantMap proxyStatus READ proxyStatus NOTIFY changed)
+    Q_PROPERTY(QStringList checkingProviderIds READ checkingProviderIds NOTIFY changed)
+    Q_PROPERTY(bool providerModelsLoading READ providerModelsLoading NOTIFY changed)
 public:
     HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QObject *parent = nullptr);
     ~HostController() override;
@@ -84,7 +85,8 @@ public:
     QString providerKind() const { return m_providerKind; }
     QVariantList providerPresets() const { return m_providerPresets; }
     QString piDefaultProvider() const { return m_piDefaultProvider; }
-    QVariantMap proxyStatus() const { return m_proxyStatus; }
+    QStringList checkingProviderIds() const;
+    bool providerModelsLoading() const { return m_methods.values().contains("provider.models"); }
     Q_INVOKABLE void requestCode(const QString &email);
     Q_INVOKABLE void activate(const QString &email, const QString &code);
     Q_INVOKABLE void activateWithoutEmail();
@@ -101,20 +103,14 @@ public:
     Q_INVOKABLE void activateInstallation(const QString &kind, const QString &id);
     Q_INVOKABLE void cancelInstall();
     Q_INVOKABLE void loadProviders(const QString &kind);
+    Q_INVOKABLE void reorderProviders(const QVariantList &ids);
     Q_INVOKABLE void editProvider(const QString &id);
     Q_INVOKABLE void presetProvider(const QString &id);
     Q_INVOKABLE void previewProvider(const QVariantMap &draft);
     Q_INVOKABLE void loadCodexPreferences();
     Q_INVOKABLE void saveCodexPreferences(const QVariantMap &preferences);
-    Q_INVOKABLE void loadProxyStatus(bool open = false);
-    Q_INVOKABLE void saveProxyPreferences(const QVariantMap &preferences);
-    Q_INVOKABLE void resetProxyHealth(const QString &id);
     Q_INVOKABLE void checkProvider(const QString &id);
     Q_INVOKABLE void fetchProviderModels(const QVariantMap &draft);
-    Q_INVOKABLE void editProviderUsage(const QString &id);
-    Q_INVOKABLE void saveProviderUsage(const QString &id, const QVariantMap &script);
-    Q_INVOKABLE void queryProviderUsage(const QString &id);
-    Q_INVOKABLE void loadUsageTemplate(const QString &id, const QString &type, const QString &baseUrl);
     Q_INVOKABLE void oauthAccount(const QString &operation, const QString &id = "");
     Q_INVOKABLE void openProvider(const QString &id);
     Q_INVOKABLE void saveProvider(const QVariantMap &draft);
@@ -134,17 +130,14 @@ public:
     void shutdown();
 signals:
     void changed();
+    void providersChanged();
+    void providerPresetsChanged();
     void paired();
     void providerDraftReady(const QVariantMap &draft);
     void providerPreviewReady(const QVariantMap &draft);
     void codexPreferencesReady(const QVariantMap &preferences);
     void codexPreferencesSaved();
-    void proxyPreferencesReady(const QVariantMap &preferences);
-    void proxyPreferencesSaved();
     void providerModelsReady(const QVariantList &models);
-    void providerUsageReady(const QString &id, const QVariantMap &script);
-    void providerUsageSaved();
-    void usageTemplateReady(const QVariantMap &value);
     void oauthAccountResult(const QString &operation, const QVariant &value);
     void providerInfoReady(const QString &title, const QString &text);
     void providerSaved();
@@ -157,6 +150,8 @@ private:
     void api(const QString &endpoint, const QJsonObject &body, Callback done);
     void saveActivation(const QJsonValue &value, const QString &successMessage);
     void setMessage(const QString &message);
+    void setProviders(const QVariantList &providers);
+    void setProviderPresets(const QVariantList &presets);
     void appendLog(QString message);
     QJsonObject agentSettings() const;
     QString diagnostics() const;
@@ -168,6 +163,8 @@ private:
     QByteArray m_stdout;
     QHash<int, Callback> m_pending;
     QHash<int, QString> m_methods;
+    QHash<int, QJsonObject> m_requestParams;
+    int m_draftGeneration = 0;
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_challenge, m_challengeEmail;
     QStringList m_logs;
     QVariantList m_devices, m_agents;
@@ -176,7 +173,6 @@ private:
     QVariantList m_providerPresets;
     QString m_providerKind = "codex";
     QString m_piDefaultProvider;
-    QVariantMap m_proxyStatus;
     int m_nextId = 1, m_busy = 0, m_cooldown = 0, m_runtimeCount = 0, m_crashes = 0;
     int m_policyTicks = 0;
     qint64 m_pairExpires = 0;

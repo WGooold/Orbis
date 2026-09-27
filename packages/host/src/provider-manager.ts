@@ -408,6 +408,16 @@ export class ProviderManager {
       return store.codexPreferences;
     });
   }
+  reorder(kind: AgentKind, ids: unknown): Promise<ProviderSummary[]> {
+    return this.#run(async () => {
+      const store = await this.#load(); const live = await this.#sync(store, kind);
+      const profiles = store.providers.filter(p => p.kind === kind);
+      if (!Array.isArray(ids) || ids.length !== profiles.length || new Set(ids).size !== ids.length || ids.some(id => typeof id !== "string" || !profiles.some(p => p.id === id))) throw new ProviderError("供应商列表已变化，请刷新后重新排序");
+      for (const [index, id] of ids.entries()) profiles.find(p => p.id === id)!.sortIndex = index;
+      await atomicWrite(this.#file, json(store));
+      return this.#summaries(store, kind, live);
+    });
+  }
   copy(kind: AgentKind, id: string): Promise<ProviderSummary[]> {
     return this.#run(async () => {
       const store = await this.#load(); const live = await this.#sync(store, kind);
@@ -418,6 +428,9 @@ export class ProviderManager {
       if (copyId.length > 128) throw new ProviderError("供应商标识过长，无法复制；请先缩短标识");
       const copy = { ...structuredClone(source), id: copyId, name: `${source.name} 副本`.slice(0, 80) };
       if (kind === "pi" && Object.hasOwn(copy.config, "name")) copy.config.name = copy.name;
+      const ordered = store.providers.filter(p => p.kind === kind).sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0));
+      ordered.splice(ordered.indexOf(source) + 1, 0, copy);
+      ordered.forEach((profile, index) => { profile.sortIndex = index; });
       store.providers.push(copy);
       await atomicWrite(this.#file, json(store));
       return this.#summaries(store, kind, live);

@@ -86,7 +86,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         if (error == QProcess::FailedToStart) { m_state = "error"; setMessage("无法启动内置 Host：" + m_bridge.errorString()); }
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
-        m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_busy = 0; m_qr.clear();
+        m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_requestParams.clear(); ++m_draftGeneration; m_busy = 0; m_qr.clear();
         if (agentInstalling()) m_agentInstallStage = "error";
         if (m_shutdown) return;
         m_state = "error";
@@ -119,10 +119,22 @@ void HostController::launchBridge() {
     m_stdout.clear();
     m_bridge.start();
 }
+static bool isProviderBackgroundRequest(const QString &method) {
+    return method == "provider.check" || method == "provider.models";
+}
+QStringList HostController::checkingProviderIds() const {
+    QStringList ids;
+    for (auto it = m_methods.cbegin(); it != m_methods.cend(); ++it) {
+        const auto params = m_requestParams.value(it.key());
+        if (it.value() == "provider.check" && params.value("kind").toString() == m_providerKind) ids.append(params.value("id").toString());
+    }
+    return ids;
+}
 void HostController::command(const QString &method, const QJsonObject &params, Callback done) {
     if (m_bridge.state() != QProcess::Running) { setMessage("Host 核心尚未就绪"); return; }
     int id = m_nextId++;
-    m_pending.insert(id, std::move(done)); m_methods.insert(id, method); ++m_busy;
+    m_pending.insert(id, std::move(done)); m_methods.insert(id, method); m_requestParams.insert(id, params);
+    if (!isProviderBackgroundRequest(method)) ++m_busy;
     m_bridge.write(QJsonDocument(QJsonObject{{"id", id}, {"method", method}, {"params", params}}).toJson(QJsonDocument::Compact) + '\n');
     emit changed();
 }
@@ -130,7 +142,8 @@ void HostController::receiveLine(const QJsonObject &line) {
     if (line.contains("id")) {
         int id = line.value("id").toInt();
         if (!m_pending.contains(id)) return;
-        auto callback = m_pending.take(id); auto method = m_methods.take(id); m_busy = qMax(0, m_busy - 1);
+        auto callback = m_pending.take(id); auto method = m_methods.take(id); m_requestParams.remove(id);
+        if (!isProviderBackgroundRequest(method)) m_busy = qMax(0, m_busy - 1);
         if (line.contains("error")) {
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
             if (method == "install" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; detectAgents(); }
@@ -142,13 +155,6 @@ void HostController::receiveLine(const QJsonObject &line) {
         if (event == "state") { m_state = line.value("state").toString(); if (m_state == "error") m_desiredRunning = false; if (line.contains("message")) setMessage(line.value("message").toString()); }
         else if (event == "log") appendLog(line.value("message").toString());
         else if (event == "providersChanged" && line.value("kind").toString() == m_providerKind) loadProviders(m_providerKind);
-        else if (event == "proxyStatusChanged" && m_providerKind == "codex") loadProxyStatus();
-        else if (event == "providerUsageChanged" && line.value("kind").toString() == m_providerKind) {
-            for (auto &entry : m_providers) {
-                auto provider = entry.toMap();
-                if (provider.value("id").toString() == line.value("providerId").toString()) { provider["usage"] = line.value("usage").toObject().toVariantMap(); entry = provider; }
-            }
-        }
         else if (event == "agentInstall") {
             m_agentInstallKind = line.value("kind").toString();
             m_agentInstallStage = line.value("stage").toString();
@@ -286,26 +292,42 @@ void HostController::activateInstallation(const QString &kind, const QString &id
         setMessage("已切换到 Agent " + value.toObject().value("version").toString()); detectAgents();
     });
 }
+void HostController::setProviders(const QVariantList &providers) {
+    if (m_providers == providers) return;
+    m_providers = providers; emit providersChanged();
+}
+void HostController::setProviderPresets(const QVariantList &presets) {
+    if (m_providerPresets == presets) return;
+    m_providerPresets = presets; emit providerPresetsChanged();
+}
 void HostController::loadProviders(const QString &kind) {
-    if (m_providerKind != kind) m_providers.clear();
+    if (m_providerKind != kind) { setProviders({}); setProviderPresets({}); ++m_draftGeneration; }
     m_providerKind = kind; emit changed();
-    if (kind == "codex") loadProxyStatus();
     command("provider.list", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
-        if (m_providerKind == kind) { m_providers = value.toArray().toVariantList(); emit changed(); }
+        if (m_providerKind == kind) setProviders(value.toArray().toVariantList());
     });
     command("provider.presets", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
-        if (m_providerKind == kind) { m_providerPresets = value.toArray().toVariantList(); emit changed(); }
+        if (m_providerKind == kind) setProviderPresets(value.toArray().toVariantList());
     });
     if (kind == "pi") command("provider.piDefault", {}, [this](const QJsonValue &value) { m_piDefaultProvider = value.toString(); emit changed(); });
 }
+void HostController::reorderProviders(const QVariantList &ids) {
+    const auto kind = m_providerKind;
+    command("provider.reorder", {{"kind", kind}, {"ids", QJsonArray::fromVariantList(ids)}}, [this, kind](const QJsonValue &value) {
+        if (kind == m_providerKind) setProviders(value.toArray().toVariantList());
+    });
+}
 void HostController::editProvider(const QString &id) {
-    command("provider.draft", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) { emit providerDraftReady(value.toObject().toVariantMap()); });
+    const auto generation = ++m_draftGeneration;
+    command("provider.draft", {{"kind", m_providerKind}, {"id", id}}, [this, generation](const QJsonValue &value) { if (generation == m_draftGeneration) emit providerDraftReady(value.toObject().toVariantMap()); });
 }
 void HostController::presetProvider(const QString &id) {
-    command("provider.draft", {{"kind", m_providerKind}, {"presetId", id}}, [this](const QJsonValue &value) { emit providerDraftReady(value.toObject().toVariantMap()); });
+    const auto generation = ++m_draftGeneration;
+    command("provider.draft", {{"kind", m_providerKind}, {"presetId", id == "custom" ? QString() : id}}, [this, generation](const QJsonValue &value) { if (generation == m_draftGeneration) emit providerDraftReady(value.toObject().toVariantMap()); });
 }
 void HostController::previewProvider(const QVariantMap &draft) {
-    command("provider.preview", QJsonObject::fromVariantMap(draft), [this](const QJsonValue &value) { emit providerPreviewReady(value.toObject().toVariantMap()); });
+    const auto generation = m_draftGeneration;
+    command("provider.preview", QJsonObject::fromVariantMap(draft), [this, generation](const QJsonValue &value) { if (generation == m_draftGeneration) emit providerPreviewReady(value.toObject().toVariantMap()); });
 }
 void HostController::loadCodexPreferences() {
     command("provider.codexPreferences", {}, [this](const QJsonValue &value) { emit codexPreferencesReady(value.toObject().toVariantMap()); });
@@ -313,41 +335,20 @@ void HostController::loadCodexPreferences() {
 void HostController::saveCodexPreferences(const QVariantMap &preferences) {
     command("provider.saveCodexPreferences", QJsonObject::fromVariantMap(preferences), [this](const QJsonValue &) { emit codexPreferencesSaved(); setMessage("Codex 通用配置已保存"); });
 }
-void HostController::loadProxyStatus(bool open) {
-    command("provider.proxyStatus", {}, [this, open](const QJsonValue &value) {
-        m_proxyStatus = value.toObject().toVariantMap(); emit changed();
-        if (open) emit proxyPreferencesReady(value.toObject().value("preferences").toObject().toVariantMap());
-    });
-}
-void HostController::saveProxyPreferences(const QVariantMap &preferences) {
-    command("provider.saveProxyPreferences", QJsonObject::fromVariantMap(preferences), [this](const QJsonValue &value) {
-        m_proxyStatus = value.toObject().toVariantMap(); emit changed(); emit proxyPreferencesSaved(); setMessage("Codex 本地路由配置已保存");
-    });
-}
-void HostController::resetProxyHealth(const QString &id) {
-    command("provider.resetProxyHealth", {{"id", id}}, [this](const QJsonValue &value) { m_proxyStatus = value.toObject().toVariantMap(); emit changed(); });
-}
 void HostController::checkProvider(const QString &id) {
-    command("provider.check", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) {
+    if (checkingProviderIds().contains(id)) return;
+    const auto kind = m_providerKind;
+    command("provider.check", {{"kind", kind}, {"id", id}}, [this, kind](const QJsonValue &value) {
+        if (kind != m_providerKind) return;
         const auto result = value.toObject();
         const bool failed = result.value("status").toString() == "failed";
         emit providerInfoReady("端点连通性", failed ? "端点无法连接或请求超时" : QString("端点可达 · %1 ms · HTTP %2\n此检查不验证 API Key 或模型权限。").arg(result.value("latencyMs").toInt()).arg(result.value("httpStatus").toInt()));
     });
 }
 void HostController::fetchProviderModels(const QVariantMap &draft) {
-    command("provider.models", QJsonObject::fromVariantMap(draft), [this](const QJsonValue &value) { emit providerModelsReady(value.toArray().toVariantList()); });
-}
-void HostController::editProviderUsage(const QString &id) {
-    command("provider.get", {{"kind", m_providerKind}, {"id", id}}, [this, id](const QJsonValue &value) { emit providerUsageReady(id, value.toObject().value("usageScript").toObject().toVariantMap()); });
-}
-void HostController::saveProviderUsage(const QString &id, const QVariantMap &script) {
-    command("provider.saveUsage", {{"kind", m_providerKind}, {"id", id}, {"script", QJsonObject::fromVariantMap(script)}}, [this](const QJsonValue &) { emit providerUsageSaved(); setMessage("用量查询配置已保存"); });
-}
-void HostController::queryProviderUsage(const QString &id) {
-    command("provider.usage", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) { emit providerInfoReady("供应商用量", QString::fromUtf8(QJsonDocument(value.toArray()).toJson(QJsonDocument::Indented))); });
-}
-void HostController::loadUsageTemplate(const QString &id, const QString &type, const QString &baseUrl) {
-    command("provider.usageTemplate", {{"kind", m_providerKind}, {"id", id}, {"template", type}, {"baseUrl", baseUrl}}, [this](const QJsonValue &value) { emit usageTemplateReady(value.toObject().toVariantMap()); });
+    if (providerModelsLoading()) return;
+    const auto generation = m_draftGeneration;
+    command("provider.models", QJsonObject::fromVariantMap(draft), [this, generation](const QJsonValue &value) { if (generation == m_draftGeneration) emit providerModelsReady(value.toArray().toVariantList()); });
 }
 void HostController::oauthAccount(const QString &operation, const QString &id) {
     command("provider.oauth", {{"operation", operation}, {"accountId", id}}, [this, operation](const QJsonValue &value) { emit oauthAccountResult(operation, value.toVariant()); });
@@ -356,21 +357,27 @@ void HostController::openProvider(const QString &id) {
     command("provider.open", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &) { setMessage("供应商已启用，已打开 Agent。Pi 请使用 /model 选择模型。"); });
 }
 void HostController::saveProvider(const QVariantMap &draft) {
-    command("provider.save", QJsonObject::fromVariantMap(draft), [this](const QJsonValue &value) {
-        m_providers = value.toArray().toVariantList(); emit providerSaved(); setMessage("供应商已保存；已启用配置会同步到 Agent");
+    const auto kind = draft.value("kind").toString();
+    command("provider.save", QJsonObject::fromVariantMap(draft), [this, kind](const QJsonValue &value) {
+        if (kind != m_providerKind) return;
+        setProviders(value.toArray().toVariantList()); emit providerSaved(); setMessage("供应商已保存；已启用配置会同步到 Agent");
     });
 }
 void HostController::switchProvider(const QString &id, bool enabled) {
-    command("provider.switch", {{"kind", m_providerKind}, {"id", id}, {"enabled", enabled}}, [this](const QJsonValue &value) {
-        m_providers = value.toArray().toVariantList();
-        setMessage(m_providerKind == "pi" ? "Pi 显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : m_providerKind == "codex" && m_proxyStatus.value("takeover").toBool() ? "本地路由已切换，后续请求使用新供应商" : "供应商已切换。请重新打开会话；独立终端也需重启。");
+    const auto kind = m_providerKind;
+    command("provider.switch", {{"kind", kind}, {"id", id}, {"enabled", enabled}}, [this, kind](const QJsonValue &value) {
+        if (kind != m_providerKind) return;
+        setProviders(value.toArray().toVariantList());
+        setMessage(kind == "pi" ? "Pi 显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : "供应商已切换。请重新打开会话；独立终端也需重启。");
     });
 }
 void HostController::removeProvider(const QString &id) {
-    command("provider.remove", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) { m_providers = value.toArray().toVariantList(); setMessage("供应商已删除"); });
+    const auto kind = m_providerKind;
+    command("provider.remove", {{"kind", kind}, {"id", id}}, [this, kind](const QJsonValue &value) { if (kind == m_providerKind) { setProviders(value.toArray().toVariantList()); setMessage("供应商已删除"); } });
 }
 void HostController::copyProvider(const QString &id) {
-    command("provider.copy", {{"kind", m_providerKind}, {"id", id}}, [this](const QJsonValue &value) { m_providers = value.toArray().toVariantList(); setMessage("供应商已复制，请编辑副本后启用"); });
+    const auto kind = m_providerKind;
+    command("provider.copy", {{"kind", kind}, {"id", id}}, [this, kind](const QJsonValue &value) { if (kind == m_providerKind) { setProviders(value.toArray().toVariantList()); setMessage("供应商已复制，请编辑副本后启用"); } });
 }
 void HostController::openAgent(const QString &kind) { command("openAgent", {{"kind", kind}}); }
 void HostController::openAgentTui(const QString &kind) {

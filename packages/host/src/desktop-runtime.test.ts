@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,6 +8,22 @@ import { loadDeviceStore, saveDeviceStore } from "@pi-remote/e2e";
 import { DesktopRuntime, validateDesktopRelay, type DesktopEvent } from "./desktop-runtime.js";
 
 describe("desktop Host lifecycle", () => {
+  it("previews incomplete provider drafts without weakening save validation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-provider-drafts-"));
+    const runtime = new DesktopRuntime(() => {}, join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    try {
+      for (const kind of ["pi", "codex", "dsh"]) {
+        const draft = await runtime.providerDraft(kind) as { id: string; fields: Record<string, unknown>; config: Record<string, unknown> };
+        if (kind === "codex") draft.fields.catalog = [{ model: "", displayName: "Work in progress" }];
+        const params = { ...draft, kind, name: "Draft", create: true };
+        const preview = runtime.providerPreview(params) as { fields: Record<string, unknown> };
+        expect(preview.fields.model).toBe(draft.fields.model);
+        if (kind === "codex") expect(preview.fields.catalog).toEqual(draft.fields.catalog);
+        await expect(runtime.mutateProvider(kind, "save", params)).rejects.toThrow();
+        expect(await runtime.listProviders(kind)).toEqual([]);
+      }
+    } finally { await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
   it("can rename and revoke a paired device while the local Host is stopped", async () => {
     const state = await mkdtemp(join(tmpdir(), "orbis-desktop-devices-"));
     await saveDeviceStore(state, { version: 1, devices: [{ deviceId: "phone", devicePub: "public", pskRoot: "secret", label: "old", createdAt: 1, revoked: false }] });

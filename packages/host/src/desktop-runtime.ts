@@ -21,7 +21,7 @@ import { installAgentPackage, activateManagedAgent, activeManagedEntry, findAgen
 import { randomUUID } from "node:crypto";
 import { newProviderConfig, providerFields, applyProviderFields, type ProviderFields } from "./provider-form.js";
 import { providerPresets } from "./provider-presets.js";
-import type { CodexPreferences } from "./provider-codex.js";
+import { codexOfficial, type CodexPreferences } from "./provider-codex.js";
 import { checkProviderEndpoint, fetchProviderModels } from "./provider-network.js";
 import { ProviderUsageCache, type UsageSnapshot } from "./provider-usage-cache.js";
 import { usageTemplate } from "./provider-usage-templates.js";
@@ -393,7 +393,7 @@ export class DesktopRuntime {
   getProvider(kind: string, id: string): ReturnType<ProviderManager["get"]> { return this.#providers.get(agentKind(kind), id); }
   oauth(operation: string, id: string): Promise<unknown> { return this.#providers.oauth(operation, id); }
   providerPresets(kind: string): unknown {
-    return providerPresets.filter(p => p.kind === agentKind(kind)).map(p => ({ id: p.id, name: p.name, requiresOAuth: p.requiresOAuth === true, requiresProxy: p.apiFormat !== undefined && !["responses", "openai_responses"].includes(p.apiFormat) }));
+    return providerPresets.filter(p => p.kind === agentKind(kind)).map(p => ({ id: p.id, name: p.name, category: p.category, websiteUrl: p.websiteUrl, requiresOAuth: p.requiresOAuth === true, requiresProxy: p.apiFormat !== undefined && !["responses", "openai_responses"].includes(p.apiFormat) }));
   }
   async providerDraft(kind: string, id?: string, presetId?: string): Promise<unknown> {
     const selected = agentKind(kind);
@@ -406,15 +406,18 @@ export class DesktopRuntime {
       if (selected === "codex") profile.config.apiFormat = preset.apiFormat === "openai_chat" ? "openai_chat" : "responses";
       if (selected === "pi") profile.id = preset.providerKey ?? "";
     }
-    return { ...profile, fields: providerFields(profile), create: !id, accounts: selected === "codex" ? await this.#providers.oauth("list") : [] };
+    const fields = providerFields(profile);
+    const official = selected === "codex" && codexOfficial(profile.config);
+    const nativeOnly = selected === "codex" ? !official && ["openai", "ollama", "lmstudio", "amazon-bedrock", "amazon-bedrock-runtime"].includes(fields.providerKey) : selected === "dsh" && fields.providerKey === "";
+    return { ...profile, fields, official, nativeOnly, presetId: presetId ?? "custom", create: !id, accounts: selected === "codex" ? await this.#providers.oauth("list") : [] };
   }
   providerPreview(params: Record<string, unknown>): unknown {
     const kind = agentKind(params.kind);
     let config: unknown;
     try { config = typeof params.config === "string" ? JSON.parse(params.config) : params.config; } catch { throw new ProviderError("原生 JSON 格式无效"); }
     if (!config || typeof config !== "object" || Array.isArray(config)) throw new ProviderError("配置必须是对象");
-    if (params.fields) config = applyProviderFields(kind, config as Record<string, unknown>, params.fields as ProviderFields, params.create === true);
-    return { config, fields: providerFields({ kind, id: String(params.id ?? ""), name: String(params.name ?? ""), config: config as Record<string, unknown> }) };
+    if (params.fields) config = applyProviderFields(kind, config as Record<string, unknown>, params.fields as ProviderFields, params.create === true, false);
+    return { config, official: kind === "codex" && codexOfficial(config as Record<string, unknown>), fields: providerFields({ kind, id: String(params.id ?? ""), name: String(params.name ?? ""), config: config as Record<string, unknown> }, true) };
   }
   codexPreferences(): Promise<CodexPreferences> { return this.#providers.codexPreferences(); }
   proxyStatus(): Promise<object> { return this.#providers.proxyStatus(); }
@@ -435,6 +438,11 @@ export class DesktopRuntime {
       return result;
     };
     return this.#service ? this.#service.changeProvider("codex", work) : work();
+  }
+  async reorderProviders(kind: string, ids: unknown): Promise<ProviderSummary[]> {
+    const result = await this.#providers.reorder(agentKind(kind), ids);
+    this.#service?.announceProviderChange(agentKind(kind));
+    return result;
   }
   async mutateProvider(kind: string, operation: "save" | "switch" | "remove" | "copy", params: Record<string, unknown>): Promise<ProviderSummary[]> {
     const selected = agentKind(kind);

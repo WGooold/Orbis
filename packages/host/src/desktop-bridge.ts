@@ -48,6 +48,7 @@ input.on("line", line => {
         case "installAll": result = await runtime.installAll(String(p.action)); break;
         case "activateInstallation": result = await runtime.activateInstallation(String(p.kind), String(p.id)); break;
         case "provider.list": result = await runtime.listProviders(String(p.kind)); break;
+        case "provider.reorder": result = await runtime.reorderProviders(String(p.kind), p.ids); break;
         case "provider.get": result = await runtime.getProvider(String(p.kind), String(p.id)); break;
         case "provider.draft": result = await runtime.providerDraft(String(p.kind), p.id ? String(p.id) : undefined, p.presetId ? String(p.presetId) : undefined); break;
         case "provider.presets": result = runtime.providerPresets(String(p.kind)); break;

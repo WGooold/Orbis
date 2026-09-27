@@ -14,6 +14,15 @@
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#ifdef ORBIS_SMOKE_INTERACTION
+#include <QQuickItem>
+#include <QTest>
+static QQuickItem *findVisualItem(QQuickItem *root, const QString &name) {
+    if (root->objectName() == name) return root;
+    for (auto *child : root->childItems()) if (auto *match = findVisualItem(child, name)) return match;
+    return nullptr;
+}
+#endif
 #include <QStandardPaths>
 #include <QSystemTrayIcon>
 #include <cstdio>
@@ -139,11 +148,83 @@ int main(int argc, char *argv[]) {
                     const auto providers = controller.providers();
                     if (providers.size() != 1) { app.exit(11); return; }
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".pi-list.png")) app.exit(7);
+                    controller.copyProvider(providers.first().toMap().value("id").toString());
+                });
+                QTimer::singleShot(8500, &app, [&] {
+                    const auto providers = controller.providers();
+                    if (providers.size() != 2) { app.exit(13); return; }
+#ifdef ORBIS_SMOKE_INTERACTION
+                    auto *source = findVisualItem(window->contentItem(), "providerDragHandle-" + providers.last().toMap().value("id").toString());
+                    auto *target = findVisualItem(window->contentItem(), "providerDragHandle-" + providers.first().toMap().value("id").toString());
+                    if (!source || !target) { app.exit(22); return; }
+                    const auto from = source->mapToScene(QPointF(source->width() / 2, source->height() / 2)).toPoint();
+                    const auto to = target->mapToScene(QPointF(target->width() / 2, target->height() / 2)).toPoint();
+                    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from);
+                    QTest::mouseMove(window, from + QPoint(0, -24), 60);
+                    QTest::mouseMove(window, to, 100);
+                    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, to, 100);
+#else
+                    QMetaObject::invokeMethod(window, "moveProvider", Q_ARG(QVariant, providers.last().toMap().value("id")), Q_ARG(QVariant, providers.first().toMap().value("id")));
+#endif
+                });
+                QTimer::singleShot(9300, &app, [&] {
+                    const auto providers = controller.providers();
+                    if (!providers.first().toMap().value("id").toString().endsWith("-copy") || providers.first().toMap().value("enabled").toBool()) { app.exit(14); return; }
                     QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "codex"));
                 });
-                QTimer::singleShot(8500, &app, [&] { controller.loadProxyStatus(true); });
-                QTimer::singleShot(9300, &app, [&] {
-                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".routing.png")) app.exit(7);
+                QTimer::singleShot(10000, &app, [&] { controller.presetProvider("codex-0"); });
+                QTimer::singleShot(10800, &app, [&] {
+                    auto *nativeMode = window->findChild<QObject *>("providerNativeMode");
+                    auto *apiKey = window->findChild<QObject *>("providerApiKey");
+                    if (!nativeMode || nativeMode->property("checked").toBool() || !apiKey || apiKey->property("visible").toBool()) { app.exit(15); return; }
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".official-editor.png")) app.exit(7);
+                    QMetaObject::invokeMethod(window, "saveProviderEditor");
+                });
+                QTimer::singleShot(11600, &app, [&] {
+                    const auto providers = controller.providers();
+                    if (providers.size() != 1 || !providers.first().toMap().value("enabled").toBool()) { app.exit(16); return; }
+                    controller.editProvider("");
+                });
+                QTimer::singleShot(12400, &app, [&] {
+                    // An incomplete new form must still be able to open native configuration.
+                    QMetaObject::invokeMethod(window, "setProviderEditorMode", Q_ARG(QVariant, true));
+                });
+                QTimer::singleShot(13200, &app, [&] {
+                    auto *nativeMode = window->findChild<QObject *>("providerNativeMode");
+                    if (!nativeMode || !nativeMode->property("checked").toBool()) { app.exit(17); return; }
+                    QMetaObject::invokeMethod(window, "setProviderEditorMode", Q_ARG(QVariant, false));
+                });
+                QTimer::singleShot(14000, &app, [&] {
+                    const QMap<QString, QString> fields{{"providerName", "Smoke API"}, {"providerUrl", "https://example.com/v1"}, {"providerApiKey", "smoke-only"}};
+                    for (auto it = fields.cbegin(); it != fields.cend(); ++it) {
+                        auto *field = window->findChild<QObject *>(it.key());
+                        if (!field) { app.exit(18); return; }
+                        field->setProperty("text", it.value());
+                    }
+                    window->setProperty("fetchedModels", QVariantList{
+                        QVariantMap{{"id", "smoke-a"}, {"name", "Model A"}, {"selected", true}},
+                        QVariantMap{{"id", "smoke-b"}, {"name", "Model B"}, {"selected", true}}
+                    });
+                    QMetaObject::invokeMethod(window, "acceptDiscoveredModels");
+                    QMetaObject::invokeMethod(window, "saveProviderEditor");
+                });
+                QTimer::singleShot(14800, &app, [&] {
+                    const auto providers = controller.providers();
+                    if (providers.size() != 2 || providers.last().toMap().value("enabled").toBool()) { app.exit(19); return; }
+                    controller.editProvider(providers.last().toMap().value("id").toString());
+                });
+                QTimer::singleShot(15600, &app, [&] {
+                    auto *nativeMode = window->findChild<QObject *>("providerNativeMode");
+                    auto *model = window->findChild<QObject *>("providerDefaultModel");
+                    if (!nativeMode || nativeMode->property("checked").toBool() || !model || model->property("text").toString() != "smoke-a" || window->property("codexModels").toList().size() != 2) { app.exit(20); return; }
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".custom-editor.png")) app.exit(7);
+                    QMetaObject::invokeMethod(window, "closeProviderEditor");
+                    controller.switchProvider(controller.providers().last().toMap().value("id").toString(), true);
+                });
+                QTimer::singleShot(16400, &app, [&] {
+                    const auto providers = controller.providers();
+                    if (providers.size() != 2 || providers.first().toMap().value("enabled").toBool() || !providers.last().toMap().value("enabled").toBool()) { app.exit(21); return; }
+                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".codex-list.png")) app.exit(7);
                     app.exit(0);
                 });
             } else if (parser.isSet("smoke-agents")) {

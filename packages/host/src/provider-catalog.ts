@@ -16,13 +16,13 @@ export function ownedCatalog(config: string, dir: string): boolean {
   const pointer = parse(config).model_catalog_json;
   return typeof pointer === "string" && basename(pointer) === catalogFilename && resolve(dir, pointer).toLowerCase() === resolve(dir, catalogFilename).toLowerCase();
 }
-export function catalogSpecs(config: Obj): Obj[] {
+export function catalogSpecs(config: Obj, allowIncomplete = false): Obj[] {
   const rows = Array.isArray(config.modelCatalog) ? config.modelCatalog : object(config.modelCatalog).models;
   if (rows === undefined) return [];
   if (!Array.isArray(rows)) throw new ProviderError("Codex modelCatalog.models 必须是数组");
   const result = rows.map(object);
   const ids = result.map(row => text(row.model).trim());
-  if (ids.some(id => !id) || new Set(ids).size !== ids.length) throw new ProviderError("Codex 模型目录需要不重复的模型 ID");
+  if ((!allowIncomplete && ids.some(id => !id)) || new Set(ids.filter(Boolean)).size !== ids.filter(Boolean).length) throw new ProviderError("Codex 模型目录需要不重复的模型 ID");
   for (const row of result) if (row.contextWindow !== undefined && !positive(row.contextWindow)) throw new ProviderError("模型上下文窗口必须为正整数");
   return result;
 }
