@@ -2053,6 +2053,58 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     } finally { await runtime.stop(); }
   });
 
+  it("reopens a quit DSH browser session over E2E when Codex is also enabled", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-reopen-host-"));
+    relay = await startRelayLocal(stateDir);
+    const codexRequest = vi.fn(async (method: string) => {
+      if (method === "thread/resume") throw new Error("Codex cannot resume a DSH session");
+      return { data: [] };
+    });
+    const codex = new CodexRuntime({
+      server: { request: codexRequest, notify: vi.fn() } as unknown as CodexAppServer,
+      onEvent: () => {}, rolloutRoot: join(stateDir, "codex-sessions"),
+    });
+    const request = vi.fn(async (method: string) => {
+      if (method === "session/list") return { items: [{ sessionId: "browser", cwd: stateDir, agentAvailable: true, running: false }] };
+      if (method === "workspace/create") return { workspace: { workspaceId: "workspace" } };
+      return {};
+    });
+    const client: DshWebConnection = {
+      onEvent: undefined, onExit: undefined, onReconnect: undefined,
+      request: request as DshWebConnection["request"], respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+      subscribe(method, _args, frame) {
+        if (method === "workspace/follow") queueMicrotask(() => frame({ type: "baseline", value: { archivedSessionIds: [] } }));
+        return () => {};
+      },
+    };
+    const runtime = new DshRuntime(client);
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, codexRuntime: codex, dshRuntime: runtime });
+    try {
+      await host.start();
+      const ready = await readyDeviceCapturing({ host, relay }); device = ready.device;
+      expect(ready.ready).toMatchObject({ agents: ["pi", "codex", "dsh"], runtimes: [expect.objectContaining({ runtimeId: "dsh:browser" })] });
+      const until = async (predicate: (message: Record<string, unknown>) => boolean) => {
+        for (let i = 0; i < 30; i++) {
+          const message = await device!.receiveMessage() as Record<string, unknown>;
+          if (message.type === "protocol.error" || predicate(message)) return message;
+        }
+        throw new Error("Expected DSH reopen response not received");
+      };
+      sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "dsh:browser", commandId: "quit-dsh",
+        command: { type: "slash.execute", name: "quit", args: "" } });
+      expect(await until(message => message.type === "runtime.offline")).toMatchObject({ type: "runtime.offline", runtimeId: "dsh:browser" });
+      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "reopen-dsh",
+        target: { type: "resume", sessionId: "dsh:browser" }, spawnMode: "tui" });
+      expect(await until(message => message.type === "runtime.online")).toMatchObject({ type: "runtime.online", runtime: { runtimeId: "dsh:browser" } });
+      expect(await until(message => message.type === "session.activated")).toMatchObject({ type: "session.activated", requestId: "reopen-dsh", agentKind: "dsh", sessionId: "dsh:browser" });
+      expect(codexRequest.mock.calls.some(([method]) => method === "thread/resume")).toBe(false);
+      sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "dsh:browser", commandId: "reopened-send",
+        command: { type: "user_message", text: "after quit", messageId: "reopened-send" } });
+      await vi.waitFor(() => expect(request).toHaveBeenCalledWith("session/prompt", { request: expect.objectContaining({ sessionId: "browser", content: [{ type: "text", text: "after quit" }] }) }));
+    } finally { await runtime.stop(); }
+  });
+
   it("device.ready 带上这台电脑支持的 agent：没启用 Codex 就只有 pi", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
     relay = await startRelayLocal(stateDir);

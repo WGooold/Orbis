@@ -59,6 +59,7 @@ import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
 import { CODEX_PERMISSION_COMMANDS, codexErrorMessage, codexPermissionUpdate, codexPermissions } from "./codex-permissions.js";
 import { SessionArchiveError } from "./session-archive.js";
+import { ActivationError } from "./spawner.js";
 
 /** 审批窗口。手机在 expiresAt 前不响应就按 decline 处理，防止 turn 挂死。 */
 const APPROVAL_TTL_MS = 5 * 60 * 1_000;
@@ -837,6 +838,11 @@ export class CodexRuntime implements AgentBackend {
    * 有头终端窗口（官方 TUI attach 上来，与手机双同步）。
    */
   async activate(target: AgentActivateTarget): Promise<BackendActivation> {
+    // Native Codex thread IDs are unprefixed. Let Host try the owning backend
+    // instead of sending another backend's namespaced ID to thread/resume.
+    if (target.type === "resume" && target.sessionId.includes(":")) {
+      throw new ActivationError("session_not_found", "不属于 Codex 的会话");
+    }
     // 在途计数：activate 的 thread/start|resume 广播可能先于 RPC 响应到达，此刻
     // thread 还没进 #threads。计数 >0 时切换检测先宽限，避免把自家广播当 TUI 切换。
     this.#activating += 1;
