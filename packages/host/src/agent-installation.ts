@@ -258,7 +258,7 @@ export async function queryAgentStatus(kind: AgentKind, root: string, local: Loc
   if (checkLatest) {
     const latest = await fetchNpmLatestVersion(agentPackages[kind]);
     if (latest) { status.latestVersion = latest; status.updateAvailable = compareAgentVersions(latest, local.version ?? "") === 1; }
-    else status.latestError = "最新版本查询失败，可重试或直接指定版本安装";
+    else status.latestError = "最新版本查询失败，请检查网络后重试";
   }
   const recommended = recommendedAgentVersion(kind, status.latestVersion);
   if (recommended) {

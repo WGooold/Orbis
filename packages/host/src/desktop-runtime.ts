@@ -19,7 +19,7 @@ import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
 import { defaultStunServers } from "./config.js";
 import { ProviderManager, ProviderError, agentKind, providerMetadata, type ProviderPaths, type ProviderProfile, type ProviderSummary } from "./provider-manager.js";
-import { installAgentPackage, activateManagedAgent, activeManagedEntry, findAgentCopies, queryAgentStatus, recommendedAgentVersion, extractAgentVersion, compareAgentVersions, installationSource, type AgentInstallProgress, type AgentInstallStatus, type LocalAgent } from "./agent-installation.js";
+import { installAgentPackage, activateManagedAgent, activeManagedEntry, findAgentCopies, fetchNpmLatestVersion, agentPackages, queryAgentStatus, recommendedAgentVersion, extractAgentVersion, compareAgentVersions, installationSource, type AgentInstallProgress, type AgentInstallStatus, type LocalAgent } from "./agent-installation.js";
 import { randomUUID } from "node:crypto";
 import { newProviderConfig, providerFields, applyProviderFields, type ProviderFields } from "./provider-form.js";
 import { providerPresets } from "./provider-presets.js";
@@ -331,10 +331,7 @@ export class DesktopRuntime {
   async install(kind: string, version = "latest", mode = "current"): Promise<{ entry: string; version: string }> {
     const selected = agentKind(kind);
     if (!["current", "managed"].includes(mode)) throw new Error("未知安装方式");
-    if (selected === "dsh") {
-      if (version === "latest") version = this.#detected.get(selected)?.recommendedVersion ?? DSH_VERSION;
-      if (compareAgentVersions(version, DSH_VERSION) === -1) throw new Error(`Orbis 手机接入需要 DeepSeek Harness ${DSH_VERSION} 或兼容版本`);
-    }
+    if (selected === "dsh" && version !== "latest" && compareAgentVersions(version, DSH_VERSION) === -1) throw new Error(`Orbis 手机接入需要 DeepSeek Harness ${DSH_VERSION} 或兼容版本`);
     if (this.#desired || this.#starting) throw new Error("请先暂停 Host，再安装或更新 Agent");
     if (this.#installation) throw new Error("另一个安装正在进行");
     const managed = this.#managedRoot();
@@ -343,8 +340,14 @@ export class DesktopRuntime {
     const signal = this.#installation.signal;
     this.#installationTask = (async () => {
       await this.#checkExistingHost();
+      if (selected === "dsh" && version === "latest") {
+        const latest = await fetchNpmLatestVersion(agentPackages.dsh, signal);
+        signal.throwIfAborted();
+        if (!latest) throw new Error("最新版本查询失败，请检查网络后重试");
+        version = recommendedAgentVersion(selected, latest)!;
+      }
       const current = this.#detected.get(kind);
-      const entry = process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] ?? current?.entry;
+      const entry = process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] || current?.entry;
       const result = await installAgentPackage(selected, version, managed, signal, progress => this.#agentInstallProgress(progress),
         mode === "current" && entry && installationSource(entry, managed) !== "managed" ? { existingEntry: entry } : {});
       if (selected === "codex") await this.#syncCodexSelection(result.entry);
@@ -355,6 +358,14 @@ export class DesktopRuntime {
     })();
     try { return await this.#installationTask; }
     finally { this.#installation = undefined; this.#installationTask = undefined; }
+  }
+
+  async updateAgent(kind: string): Promise<{ entry: string; version: string }> {
+    const selected = agentKind(kind);
+    let status = this.#detected.get(selected);
+    if (!status) status = (await this.detect()).find(candidate => candidate.kind === selected);
+    const mode = status?.installationSource === "npm" ? "current" : "managed";
+    return this.install(selected, "latest", mode);
   }
 
   async activateInstallation(kind: string, id: string): Promise<{ entry: string; version: string }> {
@@ -405,12 +416,12 @@ export class DesktopRuntime {
     this.#batchCancelled = false;
     const targets = (["pi", "codex", "dsh"] as const).flatMap(kind => {
       const status = this.#detected.get(kind);
-      return status && (action === "update" ? status.updateAvailable : !status.installed) ? [status] : [];
+      return status && (action === "update" ? !status.installed || status.updateAvailable || status.installedButBroken : !status.installed) ? [status] : [];
     });
     const failures: string[] = []; let succeeded = 0;
     for (const target of targets) {
       if (this.#batchCancelled) break;
-      try { await this.install(target.kind, target.recommendedVersion ?? target.latestVersion ?? "latest", target.installationSource === "custom" ? "managed" : "current"); succeeded += 1; }
+      try { await this.updateAgent(target.kind); succeeded += 1; }
       catch (error) { failures.push(`${target.kind}: ${error instanceof Error ? error.message : String(error)}`); }
     }
     return { succeeded, failures, cancelled: this.#batchCancelled };

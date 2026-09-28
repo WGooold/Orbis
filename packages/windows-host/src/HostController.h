@@ -98,7 +98,7 @@ public:
     Q_INVOKABLE void revoke(const QString &deviceId);
     Q_INVOKABLE void renameDevice(const QString &deviceId, const QString &label);
     Q_INVOKABLE void detectAgents(bool checkLatest = false);
-    Q_INVOKABLE void installAgent(const QString &kind, const QString &version = "latest", const QString &mode = "current");
+    Q_INVOKABLE void updateAgent(const QString &kind);
     Q_INVOKABLE void installAllAgents(const QString &action);
     Q_INVOKABLE void activateInstallation(const QString &kind, const QString &id);
     Q_INVOKABLE void enableCodexTerminal();

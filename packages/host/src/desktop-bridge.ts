@@ -31,7 +31,7 @@ input.on("line", line => {
     try {
       request = JSON.parse(line) as typeof request;
       if (!request || !Number.isSafeInteger(request.id) || typeof request.method !== "string") throw new Error("Invalid request");
-      if (["install", "installAll", "activateInstallation"].includes(request.method) && cancellationAtEnqueue !== installCancellation) throw new Error("安装已取消");
+      if (["installAll", "activateInstallation", "updateAgent"].includes(request.method) && cancellationAtEnqueue !== installCancellation) throw new Error("安装已取消");
       const p = request.params ?? {};
       let result: unknown = {};
       switch (request.method) {
@@ -44,7 +44,7 @@ input.on("line", line => {
         case "revoke": await runtime.revoke(String(p.deviceId)); break;
         case "renameDevice": await runtime.renameDevice(String(p.deviceId), String(p.label)); break;
         case "rename": await runtime.renameHost(String(p.name)); break;
-        case "install": result = await runtime.install(String(p.kind), String(p.version ?? "latest"), String(p.mode ?? "current")); break;
+        case "updateAgent": result = await runtime.updateAgent(String(p.kind)); break;
         case "installAll": result = await runtime.installAll(String(p.action)); break;
         case "activateInstallation": result = await runtime.activateInstallation(String(p.kind), String(p.id)); break;
         case "selectCodexEntry": result = await runtime.selectCodexEntry(String(p.entry)); break;

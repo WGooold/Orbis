@@ -399,14 +399,9 @@ int main(int argc, char *argv[]) {
                 QTimer::singleShot(3200, &app, [&] {
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-install.png")) app.exit(7);
                     QMetaObject::invokeMethod(window, "closeAgentDialogs");
-                    QMetaObject::invokeMethod(window, "showAgentHistory", Q_ARG(QVariant, controller.agents().first()));
+                    QMetaObject::invokeMethod(window, "showAgentBatch");
                 });
                 QTimer::singleShot(4000, &app, [&] {
-                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-history.png")) app.exit(7);
-                    QMetaObject::invokeMethod(window, "closeAgentDialogs");
-                    QMetaObject::invokeMethod(window, "showAgentBatch", Q_ARG(QVariant, "update"));
-                });
-                QTimer::singleShot(4800, &app, [&] {
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-batch.png")) app.exit(7);
                     app.exit(0);
                 });

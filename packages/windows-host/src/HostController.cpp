@@ -146,7 +146,7 @@ void HostController::receiveLine(const QJsonObject &line) {
         if (!isProviderBackgroundRequest(method)) m_busy = qMax(0, m_busy - 1);
         if (line.contains("error")) {
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
-            if (method == "install" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; detectAgents(); }
+            if (method == "updateAgent" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; detectAgents(); }
             setMessage(line.value("error").toString());
         }
         else if (callback) callback(line.value("result"));
@@ -260,14 +260,14 @@ void HostController::detectAgents(bool checkLatest) {
     auto params = agentSettings(); params.insert("checkLatest", checkLatest);
     command("detect", params, [this](const QJsonValue &value) { m_agents = value.toArray().toVariantList(); emit changed(); });
 }
-void HostController::installAgent(const QString &kind, const QString &version, const QString &mode) {
+void HostController::updateAgent(const QString &kind) {
     if (!m_bridgeReady || busy()) return;
-    m_agentInstallKind = kind; m_agentInstallStage = "queued"; m_agentInstallVersion = version.trimmed(); emit changed();
-    command("install", {{"kind", kind}, {"version", version.trimmed()}, {"mode", mode}}, [this, kind](const QJsonValue &value) {
+    m_agentInstallKind = kind; m_agentInstallStage = "queued"; m_agentInstallVersion = "latest"; emit changed();
+    command("updateAgent", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
         const auto result = value.toObject();
         m_settings.setValue(kind + "Entry", result.value("entry").toString()); m_settings.sync();
         m_agentInstallStage = "done"; m_agentInstallVersion = result.value("version").toString();
-        setMessage(kind + " " + result.value("version").toString() + " 已安装并选中"); detectAgents();
+        setMessage(kind + " " + result.value("version").toString() + " 已更新到最新版本"); detectAgents();
     });
 }
 void HostController::cancelInstall() {

@@ -52,6 +52,22 @@ describe("desktop Agent installation commands", () => {
     await runtime.close();
   });
 
+  it("updates the detected Agent to latest without requiring a source choice", async () => {
+    const { runtime, prefix } = await fixture();
+    await runtime.detect();
+    const entry = join(prefix, "node_modules", agentPackages.codex, agentEntries.codex);
+    installation.run.mockResolvedValue({ entry, version: "2.0.0" });
+    expect(await runtime.updateAgent("codex")).toEqual({ entry, version: "2.0.0" });
+    expect(installation.run.mock.calls[0]?.[1]).toBe("latest");
+    expect(installation.run.mock.calls[0]?.[5]).toEqual({ existingEntry: entry });
+    // Bundled/project dependencies must get a managed update instead of an in-place npm install.
+    await writeFile(join(prefix, "package.json"), "{}");
+    await runtime.detect();
+    await runtime.updateAgent("codex");
+    expect(installation.run.mock.calls[1]?.[5]).toEqual({});
+    await runtime.close();
+  });
+
   it("preserves a successful Codex download when terminal selection storage fails", async () => {
     const { runtime, root, events } = await fixture();
     await runtime.detect();
@@ -133,7 +149,7 @@ describe("desktop Agent installation commands", () => {
     await rejected;
   });
 
-  it("selects the supported DSH version when latest is behind and rejects incompatible manual installs", async () => {
+  it("resolves current DSH latest at install time while enforcing phone compatibility", async () => {
     const { runtime, prefix } = await fixture();
     vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response('{"latest":"0.1.5-rc.3"}')));
     await runtime.detect({}, true);
@@ -141,6 +157,12 @@ describe("desktop Agent installation commands", () => {
     await runtime.install("dsh", "latest");
     expect(installation.run.mock.calls[0]?.[1]).toBe("0.1.7-rc.1");
     await expect(runtime.install("dsh", "0.1.5-rc.3")).rejects.toThrow("手机接入需要");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response('{"latest":"0.1.7-rc.2"}')));
+    await runtime.updateAgent("dsh");
+    expect(installation.run.mock.calls[1]?.[1]).toBe("0.1.7-rc.2");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    await expect(runtime.updateAgent("dsh")).rejects.toThrow("最新版本查询失败");
+    expect(installation.run).toHaveBeenCalledTimes(2);
     await runtime.close();
   });
 });

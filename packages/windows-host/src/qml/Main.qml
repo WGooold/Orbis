@@ -18,15 +18,13 @@ ApplicationWindow {
     property string revokeId: ""
     property string installKind: ""
     property var installAgentData: ({})
-    property string batchInstallAction: "update"
     property bool agentVersionsChecked: false
     readonly property bool canInstallAgents: host.state === "stopped" || host.state === "error"
     function agentName(kind) { return ({pi:"Pi", codex:"Codex", dsh:"DeepSeek Harness"})[kind] || kind }
     function installationStage() { return ({queued:"准备安装", resolving:"检查安装位置", downloading:"下载与安装依赖", verifying:"验证 CLI 和版本", activating:"保存新版本", cancelling:"正在取消并清理", cancelled:"已取消", error:"安装失败", done:"安装完成"})[host.agentInstallStage] || "" }
-    function showAgentInstaller(agent) { installKind = agent.kind; installAgentData = agent; installVersion.text = agent.recommendedVersion || agent.latestVersion || "latest"; installLocation.currentIndex = agent.installationSource === "npm" ? 0 : 1; installDialog.open() }
-    function showAgentHistory(agent) { installKind = agent.kind; installAgentData = agent; installationHistory.open() }
-    function showAgentBatch(action) { batchInstallAction = action; batchInstallDialog.open() }
-    function closeAgentDialogs() { installDialog.close(); installationHistory.close(); batchInstallDialog.close() }
+    function showAgentInstaller(agent) { installKind = agent.kind; installAgentData = agent; installDialog.open() }
+    function showAgentBatch() { batchInstallDialog.open() }
+    function closeAgentDialogs() { installDialog.close(); batchInstallDialog.close() }
     property bool providersOpen: false
     property bool providerFormDirty: false
     property bool loadingProviderDraft: false
@@ -681,8 +679,7 @@ ApplicationWindow {
                         visible: window.page === 2 && !window.providersOpen; Layout.fillWidth: true; spacing: 16
                         RowLayout { Layout.fillWidth: true; Heading { text: "你的 Agent" } Item { Layout.fillWidth: true } ActionButton { text: "检查更新"; enabled: host.bridgeReady && !host.busy; onClicked: host.detectAgents(true) } }
                         RowLayout { Layout.fillWidth: true
-                            ActionButton { text: "全部更新（" + host.agents.filter(a => a.updateAvailable).length + "）"; enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.updateAvailable); onClicked: window.showAgentBatch("update") }
-                            ActionButton { text: "安装缺失的 Agent"; enabled: host.bridgeReady && !host.busy && host.agents.some(a => !a.installed); onClicked: window.showAgentBatch("install") }
+                            ActionButton { text: "全部更新到最新（" + host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken).length + "）"; enabled: host.bridgeReady && !host.busy && host.agents.some(a => !a.installed || a.updateAvailable || a.installedButBroken); onClicked: window.showAgentBatch() }
                             Item { Layout.fillWidth: true }
                         }
                         RowLayout { visible: host.agentInstalling; Layout.fillWidth: true
@@ -704,22 +701,18 @@ ApplicationWindow {
                                         Hint { text: modelData.installed ? "可用" : modelData.installedButBroken ? "已安装 · 需要修复" : "尚未安装"; color: modelData.installed ? "#278868" : "#8b7790" }
                                     }
                                     Hint { text: "当前 " + (modelData.version || "—") + " · 最新 " + (modelData.latestVersion || "未知") + (modelData.updateAvailable ? " · 有可用更新" : ""); Layout.fillWidth: true; color: modelData.updateAvailable ? "#b46b19" : "#60728e" }
-                                    Hint { visible: !!modelData.entry; text: "来源：" + (({managed:"Orbis 独立安装", npm:"npm", custom:"自定义 / 其他包管理器", unknown:"未知"})[modelData.installationSource] || "未知"); Layout.fillWidth: true }
                                     Hint { visible: modelData.kind === "codex"; text: "终端接入：" + (({enabled: "已启用", pending: "等待新终端", repair: "需要修复", disabled: "未启用"})[modelData.terminalIntegration] || "未检测") + " · Host 后端：" + (modelData.connected ? "已连接" : "未连接"); Layout.fillWidth: true; color: modelData.terminalIntegration === "enabled" ? "#278868" : "#b46b19" }
                                     Hint { visible: modelData.kind === "codex"; text: modelData.terminalIntegrationDetail || ""; Layout.fillWidth: true }
                                     Hint { visible: modelData.kind === "codex" && modelData.terminalCompatible === false; text: modelData.terminalCompatibilityDetail || ""; Layout.fillWidth: true; color: "#b46b19" }
                                     Hint { visible: !!modelData.error || !!modelData.latestError; text: modelData.error || modelData.latestError || ""; Layout.fillWidth: true; color: "#b46b19" }
                                     Hint { visible: !!modelData.compatibilityNote; text: modelData.compatibilityNote || ""; Layout.fillWidth: true }
-                                    Hint { visible: !!modelData.path; text: modelData.path || ""; Layout.fillWidth: true; font.pixelSize: 12; elide: Text.ElideMiddle; maximumLineCount: 2 }
                                     RowLayout {
                                         spacing: 10
                                         ActionButton { text: modelData.kind === "pi" ? "打开 Pi 并接入" : modelData.kind === "dsh" ? "打开 DeepSeek Harness" : "打开 Codex 登录"; primary: true; visible: modelData.installed; enabled: !host.busy; onClicked: host.openAgent(modelData.kind) }
-                                        ActionButton { text: modelData.installedButBroken ? "重新安装修复" : modelData.installed ? (modelData.updateAvailable ? "下载更新" : "安装版本") : "安装 Agent"; enabled: !host.busy; onClicked: window.showAgentInstaller(modelData) }
+                                        ActionButton { text: modelData.installedButBroken ? "修复到最新版本" : !modelData.installed ? "安装最新版本" : !modelData.latestVersion || modelData.updateAvailable ? "更新到最新版本" : "已是最新版本"; enabled: host.bridgeReady && !host.busy && (!modelData.installed || !modelData.latestVersion || modelData.updateAvailable || modelData.installedButBroken); onClicked: window.showAgentInstaller(modelData) }
                                         ActionButton { text: modelData.kind === "codex" && modelData.terminalIntegration !== "enabled" ? "启用 / 修复终端接入" : ""; visible: modelData.kind === "codex" && modelData.terminalIntegration !== "enabled"; enabled: host.bridgeReady && !host.busy && modelData.installed && modelData.terminalCompatible === true; onClicked: host.enableCodexTerminal() }
                                         ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders(modelData.kind) }
-                                        ActionButton { text: "安装记录"; enabled: !host.busy; onClicked: window.showAgentHistory(modelData) }
                                     }
-                                    Hint { visible: (modelData.copies || []).length > 1; text: "检测到多处安装，Host 当前使用上方路径。可在安装记录中查看其他副本。"; Layout.fillWidth: true; color: "#b46b19" }
                                 }
                             }
                         }
@@ -877,47 +870,25 @@ ApplicationWindow {
         onAccepted: host.revoke(window.revokeId)
     }
     SoftDialog {
-        id: installDialog; title: "安装 / 更新 " + window.agentName(window.installKind); anchors.centerIn: parent; modal: true; width: 540
-        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "开始安装"; enabled: window.canInstallAgents && !host.busy && (installLocation.currentIndex === 1 || window.installAgentData.installationSource === "npm"); primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
+        id: installDialog; title: (window.installAgentData.installed ? "更新 " : "安装 ") + window.agentName(window.installKind) + " 到最新版本"; anchors.centerIn: parent; modal: true; width: 540
+        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: window.installAgentData.installed ? "更新到最新版本" : "安装最新版本"; enabled: window.canInstallAgents && !host.busy; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
             Hint { text: "当前 " + (window.installAgentData.version || "未安装") + " · 最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
             Hint { visible: !!window.installAgentData.compatibilityNote; text: window.installAgentData.compatibilityNote || ""; Layout.fillWidth: true }
-            SoftComboBox { id: installLocation; model: ["更新当前 npm 安装", "Orbis 独立安装"]; Layout.fillWidth: true }
-            Hint { text: installLocation.currentIndex === 0 ? "更新当前 npm 目录；终端中使用这份安装的 Agent 也会更新。请先关闭使用它的终端。" : "下载到独立目录，验证后设为 Host 使用的版本。旧版保留，可从安装记录切回。"; Layout.fillWidth: true }
-            Hint { visible: installLocation.currentIndex === 0; text: window.installAgentData.entry || "没有可更新的 npm 安装，请选择独立安装。"; Layout.fillWidth: true }
+            Hint { text: "Orbis 会自动下载、验证并使用最新兼容版本。安装前请先关闭使用该 Agent 的终端。"; Layout.fillWidth: true }
             Hint { visible: !window.canInstallAgents; text: "请先在概览中暂停 Host，再开始安装。暂停会中断连接及运行中的会话。"; Layout.fillWidth: true; color: "#b46b19" }
-            Field { id: installVersion; text: "latest"; placeholderText: "latest / 0.1.7-rc.1"; Layout.fillWidth: true }
         }
-        onAccepted: host.installAgent(window.installKind, installVersion.text, installLocation.currentIndex === 0 ? "current" : "managed")
+        onAccepted: host.updateAgent(window.installKind)
     }
     SoftDialog {
-        id: batchInstallDialog; title: window.batchInstallAction === "update" ? "更新所有可更新的 Agent" : "安装缺失的 Agent"; anchors.centerIn: parent; modal: true; width: 540
-        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "开始"; primary: true; enabled: window.canInstallAgents && !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
+        id: batchInstallDialog; title: "全部更新到最新版本"; anchors.centerIn: parent; modal: true; width: 540
+        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "全部更新到最新版本"; primary: true; enabled: window.canInstallAgents && !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
-            Hint { text: "逐个安装并验证，一个失败后会继续其余项目。npm 安装更新到原目录；独立安装保留旧版本。"; Layout.fillWidth: true }
-            Repeater { model: host.agents.filter(a => window.batchInstallAction === "update" ? a.updateAvailable : !a.installed); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → " + (modelData.recommendedVersion || modelData.latestVersion || "latest") + " · " + (modelData.installationSource === "npm" ? "原 npm 目录" : "独立安装"); Layout.fillWidth: true } }
+            Hint { text: "逐个下载、验证并使用每个 Agent 的最新兼容版本；一个失败后会继续其余项目。"; Layout.fillWidth: true }
+            Repeater { model: host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → 最新兼容版本"; Layout.fillWidth: true } }
             Hint { visible: !window.canInstallAgents; text: "请先在概览中暂停 Host；暂停会中断连接及运行中的会话。"; Layout.fillWidth: true; color: "#b46b19" }
         }
-        onAccepted: host.installAllAgents(window.batchInstallAction)
-    }
-    SoftDialog {
-        id: installationHistory; title: window.agentName(window.installKind) + " · 安装记录"; anchors.centerIn: parent; modal: true; width: 700; height: Math.min(window.height - 100, 570)
-        footer: SoftDialogButtons { ActionButton { text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } onRejected: installationHistory.reject() }
-        contentItem: ScrollView { clip: true; contentWidth: availableWidth
-            ColumnLayout { width: installationHistory.width - 48; spacing: 15
-                Hint { text: "切回旧版前请先暂停 Host。切换会重新验证该版本能否运行。"; Layout.fillWidth: true }
-                Repeater { model: window.installAgentData.installations || []; delegate: ColumnLayout { required property var modelData; Layout.fillWidth: true
-                    RowLayout { Layout.fillWidth: true; Heading { text: modelData.version + (modelData.entry === window.installAgentData.entry ? " · 当前使用" : ""); font.pixelSize: 16 } Item { Layout.fillWidth: true } ActionButton { text: "使用此版本"; enabled: window.canInstallAgents && !host.busy && modelData.entry !== window.installAgentData.entry; onClicked: { host.activateInstallation(window.installKind, modelData.id); installationHistory.close() } } }
-                    Hint { text: modelData.entry; Layout.fillWidth: true }
-                } }
-                Hint { visible: !(window.installAgentData.installations || []).length; text: "暂无 Orbis 独立安装记录。" }
-                Heading { text: "本机 npm 安装"; font.pixelSize: 16 }
-                Repeater { model: window.installAgentData.copies || []; delegate: RowLayout { required property var modelData; Layout.fillWidth: true
-                    Hint { text: (modelData.version || "版本未知") + " · " + modelData.entry; Layout.fillWidth: true }
-                    ActionButton { text: "使用此版本"; visible: window.installKind === "codex"; enabled: window.canInstallAgents && !host.busy && modelData.entry !== window.installAgentData.entry; onClicked: { host.selectCodexEntry(modelData.entry); installationHistory.close() } }
-                } }
-            }
-        }
+        onAccepted: host.installAllAgents("update")
     }
     SoftDialog {
         id: providerDialog; title: window.providerDraft.create ? "添加供应商" : "编辑供应商"
