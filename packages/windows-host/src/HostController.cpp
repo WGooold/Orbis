@@ -266,12 +266,14 @@ void HostController::updateAgent(const QString &kind) {
     command("updateAgent", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
         const auto result = value.toObject();
         m_settings.setValue(kind + "Entry", result.value("entry").toString()); m_settings.sync();
-        m_agentInstallStage = "done"; m_agentInstallVersion = result.value("version").toString();
-        setMessage(kind + " " + result.value("version").toString() + " 已更新到最新版本"); detectAgents();
+        const auto warning = result.value("restartWarning").toString();
+        m_agentInstallStage = warning.isEmpty() ? "done" : "restartFailed"; m_agentInstallVersion = result.value("version").toString();
+        setMessage(warning.isEmpty() ? kind + " " + result.value("version").toString() + " 已更新到最新版本" +
+            (result.value("restarted").toBool() ? "，后台已自动重启。请从 Host 重新打开网页。" : "") : warning); detectAgents();
     });
 }
 void HostController::cancelInstall() {
-    if (!agentInstalling() || m_agentInstallStage == "cancelling") return;
+    if (!agentInstalling() || m_agentInstallStage == "cancelling" || m_agentInstallStage == "restarting") return;
     m_agentInstallStage = "cancelling"; emit changed();
     command("cancelInstall");
 }
@@ -281,8 +283,10 @@ void HostController::installAllAgents(const QString &action) {
     command("installAll", {{"action", action}}, [this](const QJsonValue &value) {
         const auto result = value.toObject();
         const auto failures = result.value("failures").toArray().toVariantList();
+        const auto warnings = result.value("warnings").toArray().toVariantList();
         QStringList details; for (const auto &failure : failures) details.append(failure.toString());
-        m_agentInstallStage = result.value("cancelled").toBool() ? "cancelled" : failures.isEmpty() ? "done" : "error";
+        for (const auto &warning : warnings) details.append(warning.toString());
+        m_agentInstallStage = result.value("cancelled").toBool() ? "cancelled" : !failures.isEmpty() ? "error" : !warnings.isEmpty() ? "restartFailed" : "done";
         setMessage(QString("%1：成功 %2 项，失败 %3 项%4").arg(m_agentInstallStage == "cancelled" ? "批量操作已取消" : "批量操作完成").arg(result.value("succeeded").toInt()).arg(failures.size()).arg(details.isEmpty() ? "" : "\n" + details.join('\n')));
         detectAgents();
     });

@@ -1,10 +1,11 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink, type FileHandle } from "node:fs/promises";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import { record, resolveDshCommand } from "./dsh-client.js";
 import type { PiCommand } from "./spawner.js";
 import { dshWebLaunchEnvironment } from "./dsh-web-provider.js";
@@ -20,6 +21,7 @@ export interface DshWebService {
 type Options = { cli?: PiCommand; timeoutMs?: number; port?: number };
 type Descriptor = { version: 1; owner: "orbis"; home: string; pid: number; url: string; cli: PiCommand };
 const starting = new Map<string, Promise<DshWebService>>();
+const execute = promisify(execFile);
 
 export function validateDshWebUrl(value: string): string {
   let url: URL;
@@ -103,12 +105,55 @@ export async function ensureDshWebService(env: NodeJS.ProcessEnv = process.env, 
 
 async function ensureLocalService(home: string, env: NodeJS.ProcessEnv, options: Options): Promise<DshWebService> {
   const path = join(home, "cache", "orbis-web.json");
-  const existing = await readDescriptor(path, home);
-  if (existing) return handle(existing.url, existing.cli);
+  return withServiceLock(home, options.timeoutMs ?? 60_000, async deadline => {
+    const current = await readDescriptor(path, home);
+    return current ? handle(current.url, current.cli) : startLocalService(home, env, options, deadline);
+  });
+}
+
+/** Update completion is the explicit exception to leaving the persistent browser service running. */
+export async function restartDshWebServiceAfterUpdate(env: NodeJS.ProcessEnv, cli: PiCommand): Promise<boolean> {
+  const home = dshHome(env);
+  return withServiceLock(home, 60_000, async deadline => {
+    const path = join(home, "cache", "orbis-web.json");
+    // Explicit endpoints belong to their launcher, even when a different Orbis service exists.
+    if (env.ORBIS_DSH_WEB_URL?.trim()) throw new Error("当前使用手动配置的 DeepSeek Web 服务，请在其启动位置重启，并更新启动链接");
+    const current = await readDescriptor(path, home);
+    if (!current) {
+      // A live but unauthenticated descriptor must not be treated as a successful restart.
+      let stored: Record<string, unknown> = {};
+      try { stored = record(JSON.parse(await readFile(path, "utf8"))); }
+      catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+      if (typeof stored.pid === "number" && Number.isSafeInteger(stored.pid) && stored.pid > 0 && alive(stored.pid)) {
+        throw new Error("无法验证正在运行的 DeepSeek Web 服务，请手动重启");
+      }
+      return false;
+    }
+    const port = Number(new URL(current.url).port || "80");
+    // Authentication identifies the service; its listening socket also has to belong to this PID.
+    // Never kill a recycled descriptor PID, another Host, or an externally started Web service.
+    if (process.platform !== "win32" || current.pid === process.pid) throw new Error("无法安全识别 DeepSeek Web 进程，请手动重启");
+    const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      `Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess`],
+    { windowsHide: true, timeout: 10_000 });
+    if (!stdout.trim().split(/\s+/).includes(String(current.pid))) throw new Error("DeepSeek Web 进程记录已失效，请手动重启");
+    process.kill(current.pid);
+    const stoppedBy = Math.min(deadline, Date.now() + 10_000);
+    while ((alive(current.pid) || await existsPort(port)) && Date.now() < stoppedBy) await delay(100);
+    if (alive(current.pid) || await existsPort(port)) throw new Error("DeepSeek Web 尚未退出或端口未释放，请稍后重试");
+    await unlink(path);
+    // Keep the same port/home, but always launch the newly verified CLI and publish its fresh token.
+    await startLocalService(home, env, { cli, port }, deadline);
+    return true;
+  });
+}
+
+async function withServiceLock<T>(home: string, timeoutMs: number, action: (deadline: number) => Promise<T>): Promise<T> {
+  const path = join(home, "cache", "orbis-web.json");
   await mkdir(dirname(path), { recursive: true });
   const lockPath = `${path}.lock`;
   const lockId = randomUUID();
-  const deadline = Date.now() + (options.timeoutMs ?? 60_000);
+  const deadline = Date.now() + timeoutMs;
   let lock: FileHandle | undefined;
   while (!lock) {
     try {
@@ -116,8 +161,6 @@ async function ensureLocalService(home: string, env: NodeJS.ProcessEnv, options:
       await lock.writeFile(JSON.stringify({ pid: process.pid, id: lockId }));
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-      const current = await readDescriptor(path, home);
-      if (current) return handle(current.url, current.cli);
       try {
         const owner = record(JSON.parse(await readFile(lockPath, "utf8")));
         if (typeof owner.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0 && !alive(owner.pid)) { await unlink(lockPath); continue; }
@@ -127,53 +170,56 @@ async function ensureLocalService(home: string, env: NodeJS.ProcessEnv, options:
     }
   }
   try {
-    const current = await readDescriptor(path, home);
-    if (current) return handle(current.url, current.cli);
-    const port = options.port ?? 3080;
-    if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("DeepSeek Web 端口无效");
-    if (await existsPort(port)) throw new Error(`本机 ${port} 端口已有服务。请在设置中填写现有 DeepSeek Web 启动时输出的完整链接，接入同一会话`);
-    const cli = options.cli ?? await resolveDshCommand(env);
-    const outputPath = join(dirname(path), "orbis-web-output.log");
-    const output = await open(outputPath, "w", 0o600);
-    let child: ChildProcess;
-    let failed = false;
-    try {
-      child = spawn(cli.command, [...cli.prefixArgs, "--profile", "web", "--host", "127.0.0.1", "--port", String(port), "--no-open"], {
-        detached: true, windowsHide: true, cwd: homedir(), env: dshWebLaunchEnvironment(env), stdio: ["ignore", output.fd, output.fd],
-      });
-      child.once("error", () => { failed = true; });
-    } finally { await output.close(); }
-    try {
-      while (Date.now() < deadline) {
-        if (failed || child.exitCode !== null || child.signalCode !== null) throw new Error("DeepSeek Web 启动失败，请检查本机 DSH 配置");
-        const text = await readFile(outputPath, "utf8");
-        const printed = /(?:^|\r?\n)dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_-]+)/.exec(text)?.[1];
-        if (printed && await authenticated(printed, 3_000)) {
-          if (child.pid === undefined) throw new Error("DeepSeek Web 启动失败");
-          const descriptor: Descriptor = { version: 1, owner: "orbis", home, pid: child.pid, url: validateDshWebUrl(printed), cli };
-          const temporary = `${path}.${lockId}.tmp`;
-          const file = await open(temporary, "wx", 0o600);
-          try { await file.writeFile(JSON.stringify(descriptor)); } finally { await file.close(); }
-          await rename(temporary, path);
-          child.unref();
-          return handle(descriptor.url, cli);
-        }
-        await delay(100);
-      }
-      throw new Error("DeepSeek Web 启动超时，请检查本机 DSH 配置");
-    } catch (error) {
-      // Only a service that has never been published is ours to terminate.
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
-        const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
-        child.kill();
-        await Promise.race([exited, delay(3_000)]);
-      }
-      throw error;
-    }
+    return await action(deadline);
   } finally {
     await lock.close();
     try {
       if (record(JSON.parse(await readFile(lockPath, "utf8"))).id === lockId) await unlink(lockPath);
     } catch { /* A competing process may have reclaimed the lock after our close. */ }
+  }
+}
+
+async function startLocalService(home: string, env: NodeJS.ProcessEnv, options: Options, deadline: number): Promise<DshWebService> {
+  const path = join(home, "cache", "orbis-web.json");
+  const port = options.port ?? 3080;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("DeepSeek Web 端口无效");
+  if (await existsPort(port)) throw new Error(`本机 ${port} 端口已有服务。请在设置中填写现有 DeepSeek Web 启动时输出的完整链接，接入同一会话`);
+  const cli = options.cli ?? await resolveDshCommand(env);
+  const outputPath = join(dirname(path), "orbis-web-output.log");
+  const output = await open(outputPath, "w", 0o600);
+  let child: ChildProcess;
+  let failed = false;
+  try {
+    child = spawn(cli.command, [...cli.prefixArgs, "--profile", "web", "--host", "127.0.0.1", "--port", String(port), "--no-open"], {
+      detached: true, windowsHide: true, cwd: homedir(), env: dshWebLaunchEnvironment(env), stdio: ["ignore", output.fd, output.fd],
+    });
+    child.once("error", () => { failed = true; });
+  } finally { await output.close(); }
+  try {
+    while (Date.now() < deadline) {
+      if (failed || child.exitCode !== null || child.signalCode !== null) throw new Error("DeepSeek Web 启动失败，请检查本机 DSH 配置");
+      const text = await readFile(outputPath, "utf8");
+      const printed = /(?:^|\r?\n)dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_-]+)/.exec(text)?.[1];
+      if (printed && await authenticated(printed, 3_000)) {
+        if (child.pid === undefined) throw new Error("DeepSeek Web 启动失败");
+        const descriptor: Descriptor = { version: 1, owner: "orbis", home, pid: child.pid, url: validateDshWebUrl(printed), cli };
+        const temporary = `${path}.${randomUUID()}.tmp`;
+        const file = await open(temporary, "wx", 0o600);
+        try { await file.writeFile(JSON.stringify(descriptor)); } finally { await file.close(); }
+        await rename(temporary, path);
+        child.unref();
+        return handle(descriptor.url, cli);
+      }
+      await delay(100);
+    }
+    throw new Error("DeepSeek Web 启动超时，请检查本机 DSH 配置");
+  } catch (error) {
+    // Only a service that has never been published is ours to terminate.
+    if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+      child.kill();
+      await Promise.race([exited, delay(3_000)]);
+    }
+    throw error;
   }
 }

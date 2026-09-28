@@ -13,7 +13,7 @@ import { codexShimStatus, installCodexShim } from "./codex-shim-install.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DSH_VERSION } from "./dsh-client.js";
-import { ensureDshWebService, validateDshWebUrl } from "./dsh-web-service.js";
+import { ensureDshWebService, restartDshWebServiceAfterUpdate, validateDshWebUrl } from "./dsh-web-service.js";
 import { DshWebClient } from "./dsh-web-client.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
@@ -35,6 +35,7 @@ export type DesktopSettings = {
   lanPort?: number; stunServers?: string[];
 };
 export type DesktopEvent = { event: string; [key: string]: unknown };
+type AgentInstallResult = { entry: string; version: string; restarted?: boolean; restartWarning?: string };
 
 export function validateDesktopRelay(value: unknown): string {
   if (typeof value !== "string") throw new Error("请填写中继服务器地址");
@@ -66,7 +67,8 @@ export class DesktopRuntime {
   #lastStatus = "";
   #lastSeen = new Map<string, number>();
   #installation: AbortController | undefined;
-  #installationTask: Promise<{ entry: string; version: string }> | undefined;
+  #installationTask: Promise<AgentInstallResult> | undefined;
+  #installationCommitted = false;
   #batchCancelled = false;
   #selectionError = false;
   #detected = new Map<string, AgentInstallStatus>();
@@ -328,7 +330,7 @@ export class DesktopRuntime {
     await rename(`${path}.tmp`, path);
   }
 
-  async install(kind: string, version = "latest", mode = "current"): Promise<{ entry: string; version: string }> {
+  async install(kind: string, version = "latest", mode = "current"): Promise<AgentInstallResult> {
     const selected = agentKind(kind);
     if (!["current", "managed"].includes(mode)) throw new Error("未知安装方式");
     if (selected === "dsh" && version !== "latest" && compareAgentVersions(version, DSH_VERSION) === -1) throw new Error(`Orbis 手机接入需要 DeepSeek Harness ${DSH_VERSION} 或兼容版本`);
@@ -337,6 +339,7 @@ export class DesktopRuntime {
     const managed = this.#managedRoot();
     this.log(`正在安装 ${kind} ${version}，下载可能需要几分钟…`);
     this.#installation = new AbortController();
+    this.#installationCommitted = false;
     const signal = this.#installation.signal;
     this.#installationTask = (async () => {
       await this.#checkExistingHost();
@@ -348,19 +351,41 @@ export class DesktopRuntime {
       }
       const current = this.#detected.get(kind);
       const entry = process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] || current?.entry;
-      const result = await installAgentPackage(selected, version, managed, signal, progress => this.#agentInstallProgress(progress),
+      const result: AgentInstallResult = await installAgentPackage(selected, version, managed, signal, progress => {
+        // The desktop operation completes only after the persistent backend has adopted the new version.
+        if (progress.stage !== "done") this.#agentInstallProgress(progress);
+      },
         mode === "current" && entry && installationSource(entry, managed) !== "managed" ? { existingEntry: entry } : {});
+      this.#installationCommitted = true;
       if (selected === "codex") await this.#syncCodexSelection(result.entry);
       process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] = result.entry;
       this.#emit({ event: "agentInstalled", kind: selected, entry: result.entry, version: result.version });
+      if (selected === "dsh") {
+        this.#agentInstallProgress({ kind: selected, stage: "restarting", version: result.version });
+        try {
+          const env = await this.#providers.environment("dsh");
+          result.restarted = await restartDshWebServiceAfterUpdate(env, { command: process.execPath, prefixArgs: [result.entry] });
+          if (result.restarted) {
+            const service = await ensureDshWebService(env);
+            const client = await DshWebClient.connect({ url: service.url, env, ...(service.cli ? { cli: service.cli } : {}) });
+            try { await applyDshWebProvider(client, env); } finally { await client.stop(); }
+            this.log("DeepSeek Web 已使用新版本自动重启，请从 Host 重新打开网页");
+          }
+        } catch {
+          // Installation has committed. Keep its selected entry and distinguish a restart failure from a failed download.
+          result.restartWarning = "DeepSeek 已更新，但后台未能自动就绪。请手动重启 DeepSeek Web，再从 Host 重新打开网页；手动配置的服务需更新启动链接。";
+          this.log(result.restartWarning);
+        }
+      }
+      this.#agentInstallProgress({ kind: selected, stage: result.restartWarning ? "restartFailed" : "done", version: result.version });
       this.log(`${kind} ${result.version} 安装完成，已选中新版本`);
       return result;
     })();
     try { return await this.#installationTask; }
-    finally { this.#installation = undefined; this.#installationTask = undefined; }
+    finally { this.#installation = undefined; this.#installationTask = undefined; this.#installationCommitted = false; }
   }
 
-  async updateAgent(kind: string): Promise<{ entry: string; version: string }> {
+  async updateAgent(kind: string): Promise<AgentInstallResult> {
     const selected = agentKind(kind);
     let status = this.#detected.get(selected);
     if (!status) status = (await this.detect()).find(candidate => candidate.kind === selected);
@@ -410,7 +435,7 @@ export class DesktopRuntime {
     return this.detect();
   }
 
-  async installAll(action: string): Promise<{ succeeded: number; failures: string[]; cancelled: boolean }> {
+  async installAll(action: string): Promise<{ succeeded: number; failures: string[]; warnings: string[]; cancelled: boolean }> {
     if (!["install", "update"].includes(action)) throw new Error("未知安装操作");
     if (this.#desired || this.#starting) throw new Error("请先暂停 Host，再安装或更新 Agent");
     this.#batchCancelled = false;
@@ -418,13 +443,17 @@ export class DesktopRuntime {
       const status = this.#detected.get(kind);
       return status && (action === "update" ? !status.installed || status.updateAvailable || status.installedButBroken : !status.installed) ? [status] : [];
     });
-    const failures: string[] = []; let succeeded = 0;
+    const failures: string[] = []; const warnings: string[] = []; let succeeded = 0;
     for (const target of targets) {
       if (this.#batchCancelled) break;
-      try { await this.updateAgent(target.kind); succeeded += 1; }
+      try {
+        const result = await this.updateAgent(target.kind);
+        succeeded += 1;
+        if (result.restartWarning) warnings.push(result.restartWarning);
+      }
       catch (error) { failures.push(`${target.kind}: ${error instanceof Error ? error.message : String(error)}`); }
     }
-    return { succeeded, failures, cancelled: this.#batchCancelled };
+    return { succeeded, failures, warnings, cancelled: this.#batchCancelled };
   }
 
   #agentInstallProgress(progress: AgentInstallProgress): void {
@@ -599,6 +628,10 @@ export class DesktopRuntime {
     await Promise.all([this.#usage.close(), this.stop()]);
     await this.#providers.closeRouting();
   }
-  cancelInstall(): void { this.#batchCancelled = true; this.#installation?.abort(); }
+  cancelInstall(): void {
+    this.#batchCancelled = true;
+    // Once the verified installation is selected, finish adopting it before shutting down or cancelling the rest of a batch.
+    if (!this.#installationCommitted) this.#installation?.abort();
+  }
   log(message: string): void { this.#emit({ event: "log", message: message.replace(/orbis_host_[\w-]+/g, "[redacted]").slice(0, 1500) }); }
 }

@@ -58,6 +58,8 @@ Harness home 默认是 `~/.dsh`，可用 `DSH_HOME` 覆盖。Orbis 默认连接 
 
 桌面「打开 DeepSeek Harness」打开 Host 使用的同一个 `dsh web` 工作台。Orbis 会复用已有的 loopback Web 服务；没有时在 `127.0.0.1` 启动持久服务并保存带 token 的 descriptor。Host 断开不会关闭 Web 服务，浏览器可继续使用；手机需要 Host 恢复在线后才能重新接回同一会话。Web 的模型选择、消息、实时流和队列操作会同步给所有客户端。
 
+在 Host 的 Agent 页更新 DeepSeek 后，安装包验证成功会自动重启 Orbis 启动且仍在运行的 Web 服务，使用新 CLI、原端口和原数据目录，并刷新启动链接，避免旧进程与新版前端插件混用。更新窗口会提前说明网页连接与运行中任务将中断；完成后从 Host 重新打开网页。未运行的服务不会因安装而启动，手动配置的外部 Web 服务需自行重启并更新启动链接。下载失败或提交前取消不会触发重启；安装成功但重启或供应商同步失败时保留已安装版本，并单独显示恢复提示。暂停或退出 Host 仍只断开 Web 连接。
+
 Host 启动时读取原生会话目录，只对 `agentAvailable=true` 的普通、未归档会话建立 `session/follow`。之后持续处理 DSH 的会话新增、状态、活动和移除通知，因此在网页创建或恢复的 Agent 会自动显示为 APP 在线会话，无需先在 APP 激活。`running=false` 表示实例空闲，仍保持在线；实例移除才断开对应 runtime。重连时先重新核对目录，再恢复仍存活实例的订阅，不通过重放旧订阅唤醒冷历史。APP 打开会话时会补发当前 turn 和已生成的回复前缀，后续消息继续使用同一个 DSH session ID。
 
 Web runtime 不读取本地 sessions 目录作为会话来源；会话目录和历史由 Web RPC（`session/list`、`session/page`、`session/follow`）提供。`$DSH_HOME/sessions` 以及 `ORBIS_DSH_SESSIONS_ROOT` 只供旧 ACP 兼容运行时读取；设置该变量只改变 Orbis 的历史读取位置，不会改写 dsh profile。仍使用 ACP 适配时，Orbis 从所选 CLI 安装位置加载同版本持久化库，并以只读 handle 读取日志。

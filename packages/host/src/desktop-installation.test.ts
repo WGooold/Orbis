@@ -1,10 +1,18 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const installation = vi.hoisted(() => ({ run: vi.fn() }));
+const web = vi.hoisted(() => ({ restart: vi.fn(), ensure: vi.fn(), connect: vi.fn(), apply: vi.fn(), stop: vi.fn() }));
 vi.mock("./agent-installation.js", async original => ({
   ...await original<typeof import("./agent-installation.js")>(), installAgentPackage: installation.run,
+}));
+vi.mock("./dsh-web-service.js", async original => ({
+  ...await original<typeof import("./dsh-web-service.js")>(), restartDshWebServiceAfterUpdate: web.restart, ensureDshWebService: web.ensure,
+}));
+vi.mock("./dsh-web-client.js", () => ({ DshWebClient: { connect: web.connect } }));
+vi.mock("./dsh-web-provider.js", async original => ({
+  ...await original<typeof import("./dsh-web-provider.js")>(), applyDshWebProvider: web.apply,
 }));
 import { agentEntries, agentPackages } from "./agent-installation.js";
 import { DesktopRuntime, type DesktopEvent } from "./desktop-runtime.js";
@@ -12,6 +20,13 @@ import { resolveCodexCommand } from "./codex-daemon.js";
 import { readCodexSelection } from "./codex-selection.js";
 
 const roots: string[] = [];
+beforeEach(() => {
+  installation.run.mockReset();
+  web.restart.mockReset().mockResolvedValue(false);
+  web.ensure.mockReset().mockResolvedValue({ url: "http://127.0.0.1:3080/?token=test-updated-service-token" });
+  web.connect.mockReset().mockResolvedValue({ stop: web.stop });
+  web.apply.mockReset().mockResolvedValue(undefined);
+});
 afterEach(async () => {
   vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.clearAllMocks();
   await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true, maxRetries: 3 })));
@@ -112,7 +127,7 @@ describe("desktop Agent installation commands", () => {
       if (kind === "codex") throw new Error("download failed");
       return { entry: join(prefix, "node_modules", agentPackages[kind], agentEntries[kind]), version: "2.0.0", id: "install-record-id" };
     });
-    expect(await runtime.installAll("update")).toEqual({ succeeded: 2, failures: ["codex: download failed"], cancelled: false });
+    expect(await runtime.installAll("update")).toEqual({ succeeded: 2, failures: ["codex: download failed"], warnings: [], cancelled: false });
     expect(installation.run.mock.calls.map(call => call[0])).toEqual(["pi", "codex", "dsh"]);
     const installed = events.filter(event => event.event === "agentInstalled");
     expect(installed).toHaveLength(2);
@@ -163,6 +178,71 @@ describe("desktop Agent installation commands", () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
     await expect(runtime.updateAgent("dsh")).rejects.toThrow("最新版本查询失败");
     expect(installation.run).toHaveBeenCalledTimes(2);
+    await runtime.close();
+  });
+
+  it("finishes the DSH restart and provider synchronization before reporting installation done", async () => {
+    const { runtime, prefix, root, events } = await fixture();
+    await runtime.detect();
+    const entry = join(prefix, "node_modules", agentPackages.dsh, agentEntries.dsh);
+    installation.run.mockImplementation(async (_kind, _version, _root, _signal, progress) => {
+      progress({ kind: "dsh", stage: "done", version: "2.0.0" });
+      return { entry, version: "2.0.0" };
+    });
+    let restarted!: (value: boolean) => void;
+    web.restart.mockImplementation(() => new Promise(resolve => { restarted = resolve; }));
+    const pending = runtime.updateAgent("dsh");
+    await vi.waitFor(() => expect(web.restart).toHaveBeenCalled());
+    expect(web.restart).toHaveBeenCalledWith(expect.objectContaining({ DSH_HOME: join(root, "dsh"), ORBIS_DSH_ENTRY: entry }), { command: process.execPath, prefixArgs: [entry] });
+    expect(events.filter(event => event.event === "agentInstall").map(event => event.stage)).toEqual(["restarting"]);
+    // A close/cancel arriving after commit must wait for adoption, rather than leave old code running.
+    runtime.cancelInstall();
+    expect((installation.run.mock.calls[0]![3] as AbortSignal).aborted).toBe(false);
+    restarted(true);
+    expect(await pending).toEqual({ entry, version: "2.0.0", restarted: true });
+    expect(web.apply).toHaveBeenCalledWith(expect.objectContaining({ stop: web.stop }), expect.objectContaining({ DSH_HOME: join(root, "dsh") }));
+    expect(web.stop).toHaveBeenCalledOnce();
+    expect(events.filter(event => event.event === "agentInstall").map(event => event.stage)).toEqual(["restarting", "done"]);
+    await runtime.close();
+  });
+
+  it("does not restart DSH after a failed or cancelled installation", async () => {
+    const { runtime } = await fixture();
+    installation.run.mockRejectedValueOnce(new Error("verification failed"));
+    await expect(runtime.install("dsh", "2.0.0", "managed")).rejects.toThrow("verification failed");
+    installation.run.mockImplementation(async (_kind, _version, _root, signal: AbortSignal) => {
+      runtime.cancelInstall(); signal.throwIfAborted();
+    });
+    await expect(runtime.install("dsh", "2.0.0", "managed")).rejects.toThrow();
+    expect(web.restart).not.toHaveBeenCalled();
+    await runtime.close();
+  });
+
+  it("keeps the verified selection and reports restart warnings separately in a batch", async () => {
+    const { runtime, prefix, events } = await fixture();
+    await runtime.detect({}, true);
+    installation.run.mockImplementation(async (kind: "pi" | "codex" | "dsh") => ({
+      entry: join(prefix, "node_modules", agentPackages[kind], agentEntries[kind]), version: "2.0.0",
+    }));
+    web.restart.mockRejectedValue(new Error("private-service-diagnostic"));
+    const result = await runtime.installAll("update");
+    expect(result).toMatchObject({ succeeded: 3, failures: [], cancelled: false });
+    expect(result.warnings).toEqual([expect.stringContaining("后台未能自动就绪")]);
+    expect(JSON.stringify(events)).not.toContain("private-service-diagnostic");
+    expect(events).toContainEqual({ event: "agentInstalled", kind: "dsh", entry: process.env.ORBIS_DSH_ENTRY, version: "2.0.0" });
+    expect(web.restart).toHaveBeenCalledOnce();
+    expect(web.connect).not.toHaveBeenCalled();
+    expect(events.filter(event => event.event === "agentInstall" && event.kind === "dsh").map(event => event.stage)).toEqual(["restarting", "restartFailed"]);
+    await runtime.close();
+  });
+
+  it("does not start a Web service when DSH was not running", async () => {
+    const { runtime, prefix } = await fixture();
+    const entry = join(prefix, "node_modules", agentPackages.dsh, agentEntries.dsh);
+    installation.run.mockResolvedValue({ entry, version: "2.0.0" });
+    expect(await runtime.install("dsh", "2.0.0", "managed")).toMatchObject({ restarted: false });
+    expect(web.ensure).not.toHaveBeenCalled();
+    expect(web.connect).not.toHaveBeenCalled();
     await runtime.close();
   });
 });

@@ -21,7 +21,7 @@ ApplicationWindow {
     property bool agentVersionsChecked: false
     readonly property bool canInstallAgents: host.state === "stopped" || host.state === "error"
     function agentName(kind) { return ({pi:"Pi", codex:"Codex", dsh:"DeepSeek Harness"})[kind] || kind }
-    function installationStage() { return ({queued:"准备安装", resolving:"检查安装位置", downloading:"下载与安装依赖", verifying:"验证 CLI 和版本", activating:"保存新版本", cancelling:"正在取消并清理", cancelled:"已取消", error:"安装失败", done:"安装完成"})[host.agentInstallStage] || "" }
+    function installationStage() { return ({queued:"准备安装", resolving:"检查安装位置", downloading:"下载与安装依赖", verifying:"验证 CLI 和版本", activating:"保存新版本", restarting:"正在重启 Agent 后台", restartFailed:"已更新，后台需手动重启", cancelling:"正在取消并清理", cancelled:"已取消", error:"安装失败", done:"安装完成"})[host.agentInstallStage] || "" }
     function showAgentInstaller(agent) { installKind = agent.kind; installAgentData = agent; installDialog.open() }
     function showAgentBatch() { batchInstallDialog.open() }
     function closeAgentDialogs() { installDialog.close(); batchInstallDialog.close() }
@@ -685,7 +685,7 @@ ApplicationWindow {
                         RowLayout { visible: host.agentInstalling; Layout.fillWidth: true
                             BusyIndicator { running: visible; Layout.preferredWidth: 30; Layout.preferredHeight: 30 }
                             Hint { text: window.agentName(host.agentInstallKind) + " · " + window.installationStage() + " · " + host.agentInstallVersion; Layout.fillWidth: true }
-                            ActionButton { text: "取消安装"; enabled: host.bridgeReady && host.agentInstallStage !== "cancelling"; danger: true; onClicked: host.cancelInstall() }
+                            ActionButton { text: "取消安装"; enabled: host.bridgeReady && host.agentInstallStage !== "cancelling" && host.agentInstallStage !== "restarting"; danger: true; onClicked: host.cancelInstall() }
                         }
                         Repeater {
                             model: host.agents
@@ -876,6 +876,7 @@ ApplicationWindow {
             Hint { text: "当前 " + (window.installAgentData.version || "未安装") + " · 最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
             Hint { visible: !!window.installAgentData.compatibilityNote; text: window.installAgentData.compatibilityNote || ""; Layout.fillWidth: true }
             Hint { text: "Orbis 会自动下载、验证并使用最新兼容版本。安装前请先关闭使用该 Agent 的终端。"; Layout.fillWidth: true }
+            Hint { visible: window.installKind === "dsh"; text: "更新成功后会自动重启 Orbis 启动的 DeepSeek 网页后台，中断网页连接及运行中的任务。完成后请从 Host 重新打开网页；手动接入的服务需自行重启。"; Layout.fillWidth: true }
             Hint { visible: !window.canInstallAgents; text: "请先在概览中暂停 Host，再开始安装。暂停会中断连接及运行中的会话。"; Layout.fillWidth: true; color: "#b46b19" }
         }
         onAccepted: host.updateAgent(window.installKind)
@@ -885,6 +886,7 @@ ApplicationWindow {
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "全部更新到最新版本"; primary: true; enabled: window.canInstallAgents && !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
             Hint { text: "逐个下载、验证并使用每个 Agent 的最新兼容版本；一个失败后会继续其余项目。"; Layout.fillWidth: true }
+            Hint { text: "DeepSeek 更新成功后会自动重启 Orbis 启动的网页后台，中断网页连接及运行中的任务。完成后请从 Host 重新打开网页；手动接入的服务需自行重启。"; Layout.fillWidth: true }
             Repeater { model: host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → 最新兼容版本"; Layout.fillWidth: true } }
             Hint { visible: !window.canInstallAgents; text: "请先在概览中暂停 Host；暂停会中断连接及运行中的会话。"; Layout.fillWidth: true; color: "#b46b19" }
         }

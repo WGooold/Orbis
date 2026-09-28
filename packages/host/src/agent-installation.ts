@@ -12,7 +12,7 @@ export const agentPackages = { pi: "@earendil-works/pi-coding-agent", codex: "@o
 export const agentEntries = { pi: "dist/bundle/cli.js", codex: "bin/codex.js", dsh: "lib/bin.js" } as const;
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 export type AgentInstallation = { id: string; kind: AgentKind; version: string; entry: string; installedAt: string; active: boolean };
-export type AgentInstallProgress = { kind: AgentKind; stage: "resolving" | "downloading" | "verifying" | "activating" | "done" | "cancelled" | "error"; version?: string; message?: string };
+export type AgentInstallProgress = { kind: AgentKind; stage: "resolving" | "downloading" | "verifying" | "activating" | "restarting" | "restartFailed" | "done" | "cancelled" | "error"; version?: string; message?: string };
 export type LocalAgent = { installed: boolean; installedButBroken: boolean; version?: string; entry?: string; error?: string };
 export type AgentInstallStatus = LocalAgent & {
   kind: AgentKind; package: string; latestVersion?: string; recommendedVersion?: string; compatibilityNote?: string; updateAvailable: boolean; latestError?: string;

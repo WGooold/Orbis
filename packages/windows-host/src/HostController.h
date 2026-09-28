@@ -80,7 +80,7 @@ public:
     QString agentInstallKind() const { return m_agentInstallKind; }
     QString agentInstallStage() const { return m_agentInstallStage; }
     QString agentInstallVersion() const { return m_agentInstallVersion; }
-    bool agentInstalling() const { return QStringList{"queued", "resolving", "downloading", "verifying", "activating", "cancelling"}.contains(m_agentInstallStage); }
+    bool agentInstalling() const { return QStringList{"queued", "resolving", "downloading", "verifying", "activating", "restarting", "cancelling"}.contains(m_agentInstallStage); }
     QVariantList providers() const { return m_providers; }
     QString providerKind() const { return m_providerKind; }
     QVariantList providerPresets() const { return m_providerPresets; }
