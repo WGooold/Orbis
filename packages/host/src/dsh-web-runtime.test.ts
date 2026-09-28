@@ -51,23 +51,25 @@ afterEach(async () => {
 });
 
 describe("DeepSeek Web runtime adapter", () => {
-  it("discovers existing browser Agents at startup without activating cold, archived, or child sessions", async () => {
+  it("only follows Agents that are working at startup and keeps cold, idle, archived, and child sessions in the catalog", async () => {
     const f = discoveryFixture();
     f.list([f.live("busy", true), f.live("idle"), { ...f.live("cold"), agentAvailable: false }, f.live("archived"), { ...f.live("child"), origin: "subagent" }]);
     await f.runtime.start();
     expect(f.runtime.directoryEntries()).toEqual([
       expect.objectContaining({ sessionId: "dsh:busy", status: "running", sessionName: "Title busy" }),
-      expect.objectContaining({ sessionId: "dsh:idle", status: "idle" }),
     ]);
-    expect(f.follows()).toHaveLength(2);
+    expect(f.follows()).toHaveLength(1);
+    expect((await f.runtime.catalog()).map(item => item.sessionId)).toContain("dsh:idle");
     expect(f.request.mock.calls.some(([method]) => method === "session/create" || method === "workspace/create")).toBe(false);
     expect(f.metadata).toHaveBeenCalled();
   });
 
-  it("discovers browser activity, shares both directions, and distinguishes idle from disposed", async () => {
+  it("follows a browser Agent once it starts working, shares both directions, and keeps it online after it finishes", async () => {
     const f = discoveryFixture(); await f.runtime.start();
     f.emit("api-session/added", f.live("browser"));
     f.emit("api-session/added", f.live("browser"));
+    expect(f.follows()).toHaveLength(0);
+    expect(f.runtime.ownsRuntime("dsh:browser")).toBe(false);
     f.emit("api-session/status", "browser", true);
     expect(f.follows()).toHaveLength(1);
     expect(f.runtime.directoryEntries()[0]?.status).toBe("running");
@@ -87,7 +89,7 @@ describe("DeepSeek Web runtime adapter", () => {
   });
 
   it("reconciles missed additions and removals when the Web connection reconnects", async () => {
-    const f = discoveryFixture(); f.list([f.live("old")]); await f.runtime.start();
+    const f = discoveryFixture(); f.list([f.live("old", true)]); await f.runtime.start();
     f.list([f.live("new", true), { ...f.live("old"), agentAvailable: false }]);
     f.client.onReconnect?.();
     f.subscriptions[0]!.frame({ type: "baseline", value: { archivedSessionIds: [] } });
@@ -112,7 +114,7 @@ describe("DeepSeek Web runtime adapter", () => {
   });
 
   it("waits for the fresh archive baseline before following Agents after reconnect", async () => {
-    const f = discoveryFixture(); f.list([f.live("browser")]); await f.runtime.start();
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
     f.client.onReconnect?.();
     await vi.waitFor(() => expect(f.changed).toHaveBeenCalledTimes(2));
     expect(f.follows()).toHaveLength(0);
@@ -122,7 +124,7 @@ describe("DeepSeek Web runtime adapter", () => {
   });
 
   it("retries a failed follow only after rechecking that its native Agent is still live", async () => {
-    const f = discoveryFixture(); f.list([f.live("browser")]); await f.runtime.start();
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
     vi.useFakeTimers();
     try {
       f.follows()[0]!.fail!(new Error("follow interrupted"));
@@ -137,8 +139,8 @@ describe("DeepSeek Web runtime adapter", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("mirrors browser archive changes and keeps local quit detached until explicitly reopened", async () => {
-    const f = discoveryFixture(); f.list([f.live("browser")]); await f.runtime.start();
+  it("mirrors browser archive changes and keeps a quit Agent detached until it works again or the APP reopens it", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
     const workspace = f.subscriptions.find(item => item.method === "workspace/follow")!;
     workspace.frame({ type: "archived", archivedSessionIds: ["browser"] });
     expect(f.runtime.directoryEntries()).toEqual([]);
@@ -147,7 +149,9 @@ describe("DeepSeek Web runtime adapter", () => {
     expect(f.runtime.ownsRuntime("dsh:browser")).toBe(true);
     f.runtime.dispatchCommand("dsh:browser", "quit", { type: "slash.execute", name: "quit", args: "" });
     await vi.waitFor(() => expect(f.runtime.ownsRuntime("dsh:browser")).toBe(false));
-    f.emit("api-session/added", f.live("browser"));
+    // The work this Agent already had running is not new activity, so it stays detached.
+    f.emit("api-session/added", f.live("browser", true));
+    f.emit("api-session/status", "browser", true);
     f.client.onReconnect?.();
     workspace.frame({ type: "baseline", value: { archivedSessionIds: [] } });
     await vi.waitFor(() => expect(f.request.mock.calls.filter(([method]) => method === "session/list")).toHaveLength(2));
@@ -155,6 +159,12 @@ describe("DeepSeek Web runtime adapter", () => {
     workspace.frame({ type: "archived", archivedSessionIds: ["browser"] });
     workspace.frame({ type: "archived", archivedSessionIds: [] });
     expect(f.runtime.ownsRuntime("dsh:browser")).toBe(false);
+    // New browser work revives it without an APP action, and an explicit APP reopen always works.
+    f.emit("api-session/status", "browser", false);
+    f.emit("api-session/status", "browser", true);
+    expect(f.runtime.ownsRuntime("dsh:browser")).toBe(true);
+    f.runtime.dispatchCommand("dsh:browser", "quit", { type: "slash.execute", name: "quit", args: "" });
+    await vi.waitFor(() => expect(f.runtime.ownsRuntime("dsh:browser")).toBe(false));
     await f.runtime.activate({ type: "resume", sessionId: "dsh:browser" });
     expect(f.follows()).toHaveLength(1);
     expect(f.request.mock.calls.some(([method]) => method === "workspace/archiveSession")).toBe(false);

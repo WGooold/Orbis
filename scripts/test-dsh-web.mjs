@@ -141,7 +141,8 @@ try {
   const mobileEvents = [];
   mobile.setEventSink((event, runtimeId) => mobileEvents.push({ event, runtimeId }));
   await mobile.start();
-  assert.ok(mobile.ownsRuntime(`dsh:${sessionId}`), "Host discovers the pre-existing browser Agent without APP activation");
+  assert.equal(mobile.ownsRuntime(`dsh:${sessionId}`), false, "an idle browser Session occupies no online card");
+  assert.ok((await mobile.catalog()).some(item => item.sessionId === `dsh:${sessionId}`), "it is still listed in the Session catalog");
   assert.equal(mobile.ownsRuntime(`dsh:${coldId}`), false);
   await first.request("session/page", { request: { address: { kind: "session", sessionId: coldId }, throughSeq: -1, maxMessages: 10 } });
   assert.equal((await first.request("session/list", { _request: {} })).items.find(item => item.sessionId === coldId)?.agentAvailable, false,
@@ -149,6 +150,7 @@ try {
   const frames = [];
   const dispose = second.subscribe("session/follow", { request: { address: { kind: "session", sessionId }, assistantStream: true } }, frame => frames.push(frame), error => { throw error; });
   await first.request("session/prompt", { request: { sessionId, requestId: "web-first", mode: "queue", content: [{ type: "text", text: "WEB_SMOKE_FIRST" }] } });
+  await waitFor(() => mobile.ownsRuntime(`dsh:${sessionId}`));
   await waitFor(() => modelRequests >= 1);
   const queued = await second.request("session/prompt", { request: { sessionId, requestId: "web-queued", mode: "queue", content: [{ type: "text", text: "WEB_SMOKE_QUEUED" }] } });
   assert.equal(queued.accepted, true);
@@ -167,7 +169,8 @@ try {
   await waitFor(() => modelRequests >= 3 && frames.some(frame => JSON.stringify(frame).includes("WEB_SMOKE_TOOL_DONE")));
   await waitFor(() => mobile.directoryEntries().find(item => item.sessionId === `dsh:${sessionId}`)?.status === "idle");
   const fresh = await first.request("session/create", { request: { cwd: workspace } });
-  await waitFor(() => mobile.ownsRuntime(`dsh:${fresh.sessionId}`));
+  assert.equal(mobile.ownsRuntime(`dsh:${fresh.sessionId}`), false, "a new idle Session waits for someone to open it");
+  await mobile.activate({ type: "resume", sessionId: `dsh:${fresh.sessionId}` });
   const browserFrames = [];
   const closeBrowser = first.subscribe("session/follow", { request: { address: { kind: "session", sessionId: fresh.sessionId }, assistantStream: true } }, frame => browserFrames.push(frame));
   assert.equal(mobile.dispatchCommand(`dsh:${fresh.sessionId}`, "app-prompt", { type: "user_message", text: "APP_TO_BROWSER", messageId: "app-prompt" }), "handled");
@@ -176,7 +179,9 @@ try {
   await first.request("workspace/archiveSession", { request: { sessionId: fresh.sessionId } });
   await waitFor(() => !mobile.ownsRuntime(`dsh:${fresh.sessionId}`));
   await first.request("workspace/unarchiveSession", { request: { sessionId: fresh.sessionId } });
-  await waitFor(() => mobile.ownsRuntime(`dsh:${fresh.sessionId}`));
+  await delay(500);
+  assert.equal(mobile.ownsRuntime(`dsh:${fresh.sessionId}`), false, "unarchiving an idle Session leaves it a catalog row");
+  assert.ok((await mobile.catalog()).some(item => item.sessionId === `dsh:${fresh.sessionId}`));
   closeBrowser();
   await first.request("session/prompt", { request: { sessionId: coldId, requestId: "web-resume", mode: "queue", content: [{ type: "text", text: "RESUME_COLD_HISTORY" }] } });
   await waitFor(() => mobile.ownsRuntime(`dsh:${coldId}`));
@@ -189,7 +194,7 @@ try {
   await waitFor(() => modelRequests > beforeSwitch);
   assert.equal(lastModelPath, "/v2/chat/completions");
   dispose();
-  console.log("PASS: isolated DSH Web launch, automatic existing/new/restored Agent discovery, cold history stays inactive, browser-to-APP and APP-to-browser messages, archive/unarchive, streamed token/tool, queue mutation, stop, and live provider URL/key switch");
+  console.log("PASS: isolated DSH Web launch, working Agents attached while idle ones stay catalog rows, cold history stays inactive, browser-to-APP and APP-to-browser messages, archive/unarchive, streamed token/tool, queue mutation, stop, and live provider URL/key switch");
 } finally {
   await mobile?.stop().catch(() => {});
   await mobileClient?.stop().catch(() => {});

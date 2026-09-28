@@ -1999,13 +1999,13 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     } finally { await runtime.stop(); }
   });
 
-  it("announces browser DSH sessions and shares messages over E2E without APP activation", async () => {
+  it("announces a working browser DSH session and shares messages over E2E without APP activation", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-discovery-host-"));
     relay = await startRelayLocal(stateDir);
     const follows = new Map<string, (value: unknown) => void>();
     let workspace: ((value: unknown) => void) | undefined;
-    const row = (sessionId: string) => ({ sessionId, cwd: stateDir, agentAvailable: true, running: false, updatedAt: 1000 });
-    const request = vi.fn<(method: string, args?: unknown) => Promise<unknown>>(async method => method === "session/list" ? { items: [row("existing")] } : {});
+    const row = (sessionId: string, running = false) => ({ sessionId, cwd: stateDir, agentAvailable: true, running, updatedAt: 1000 });
+    const request = vi.fn<(method: string, args?: unknown) => Promise<unknown>>(async method => method === "session/list" ? { items: [row("existing", true)] } : {});
     const client: DshWebConnection = {
       onEvent: undefined, onExit: undefined, onReconnect: undefined,
       request: request as DshWebConnection["request"], respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
@@ -2035,9 +2035,9 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         }
         throw new Error("Expected DSH discovery message not received");
       };
-      client.onEvent?.({ type: "emit", event: "api-session/added", args: [row("browser")] });
+      client.onEvent?.({ type: "emit", event: "api-session/added", args: [row("browser", true)] });
       expect(await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata)?.runtimeId === "dsh:browser"))
-        .toMatchObject({ runtime: { sessionId: "dsh:browser", status: "idle" } });
+        .toMatchObject({ runtime: { sessionId: "dsh:browser", status: "running" } });
       follows.get("browser")!({ type: "event", event: { seq: 0, time: 1000, type: "user/message",
         data: { role: "user", source: { kind: "user", rpcId: "web-1" }, content: [{ type: "text", text: "browser message" }] } } });
       expect(await until(message => message.runtimeId === "dsh:browser" && (message.event as RuntimeEvent)?.type === "message.finished"))
@@ -2065,7 +2065,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       onEvent: () => {}, rolloutRoot: join(stateDir, "codex-sessions"),
     });
     const request = vi.fn(async (method: string) => {
-      if (method === "session/list") return { items: [{ sessionId: "browser", cwd: stateDir, agentAvailable: true, running: false }] };
+      if (method === "session/list") return { items: [{ sessionId: "browser", cwd: stateDir, agentAvailable: true, running: true }] };
       if (method === "workspace/create") return { workspace: { workspaceId: "workspace" } };
       return {};
     });

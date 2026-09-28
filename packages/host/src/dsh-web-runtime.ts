@@ -56,6 +56,8 @@ export class DshWebRuntime implements AgentBackend {
   readonly #decoder: DshStreamDecoder | undefined;
   readonly #discovery: DshWebDiscovery;
   readonly #detached = new Set<string>();
+  /** Last observed `running` per native Session: false→true is new browser work. */
+  readonly #running = new Map<string, boolean>();
   readonly #sessions = new Map<string, WebSession>();
   readonly #activating = new Map<string, Promise<BackendActivation>>();
   readonly #approvals = new Map<string, Approval>();
@@ -71,9 +73,9 @@ export class DshWebRuntime implements AgentBackend {
     this.#client = client;
     this.#decoder = decoder;
     this.#discovery = new DshWebDiscovery(client, {
-      live: item => { if (!this.#detached.has(item.sessionId)) this.#attach(item); },
+      live: item => this.#observe(item),
       offline: (id, removed) => {
-        if (removed) this.#detached.delete(id);
+        if (removed) { this.#detached.delete(id); this.#running.delete(id); }
         const session = this.#sessions.get(publicId(id));
         if (session) this.#detachSession(session, "DeepSeek Web 实例已离线");
       },
@@ -203,6 +205,22 @@ export class DshWebRuntime implements AgentBackend {
     this.#detached.delete(id);
     this.#attach({ sessionId: id, cwd, createdAt, running: this.#sessions.get(publicId(id))?.running ?? false });
     return { sessionId: publicId(id), spawnMode: "headless" };
+  }
+
+  /**
+   * Discovery publishes every live Session, but only work in progress occupies an
+   * online card: an idle Agent stays a catalog row until the phone opens it.
+   * `running` flipping false→true is new browser work, which also revives a
+   * Session the phone had quit — an already-busy Session it quit stays detached.
+   */
+  #observe(item: DshLiveSession): void {
+    const previous = this.#running.get(item.sessionId);
+    this.#running.set(item.sessionId, item.running);
+    if (this.#sessions.has(publicId(item.sessionId))) { this.#attach(item); return; }
+    if (!item.running) return;
+    if (this.#detached.has(item.sessionId) && previous !== false) return;
+    this.#detached.delete(item.sessionId);
+    this.#attach(item);
   }
 
   #attach(item: DshLiveSession): void {
@@ -682,5 +700,5 @@ export class DshWebRuntime implements AgentBackend {
   }
   #emit(session: WebSession, event: RuntimeEvent): void { this.#sink(event, publicId(session.id)); }
   #report(message: string, runtimeId?: string): void { if (runtimeId) { const session = this.#sessions.get(runtimeId); if (session) this.#emit(session, { type: "runtime.error", message, recoverable: true }); } }
-  async stop(): Promise<void> { if (this.#stopping) return this.#stopping; this.#stopping = (async () => { this.#ready = false; this.#discovery.stop(); for (const id of this.#approvals.keys()) this.#cancelApproval(id, "owner_closed"); for (const session of this.#sessions.values()) session.unsubscribe(); this.#sessions.clear(); await this.#client.stop(); })(); return this.#stopping; }
+  async stop(): Promise<void> { if (this.#stopping) return this.#stopping; this.#stopping = (async () => { this.#ready = false; this.#discovery.stop(); for (const id of this.#approvals.keys()) this.#cancelApproval(id, "owner_closed"); for (const session of this.#sessions.values()) session.unsubscribe(); this.#sessions.clear(); this.#running.clear(); this.#detached.clear(); await this.#client.stop(); })(); return this.#stopping; }
 }

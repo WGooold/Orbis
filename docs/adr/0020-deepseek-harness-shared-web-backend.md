@@ -4,6 +4,8 @@ Date: 2026-09-26
 
 Status: accepted; supersedes ADR-0018 for the default DSH backend.
 
+Update (2026-09-27): attaching every live Agent at startup scaled badly (dozens of Sessions meant dozens of follows and metadata broadcasts). Only working Agents now occupy an online card.
+
 ## Context
 
 The ACP backend could not share live execution with the DSH browser. Orbis now attaches both browser and mobile workflows to the same native Web service and Session.
@@ -18,7 +20,7 @@ The CLI installation supplies matching protocol validators and the assistant-str
 
 The slash `/quit` operation only detaches the phone's active runtime and preserves the Session. Archiving is a separate sidebar operation that calls the native Workspace archive RPC; a successful archive also detaches any local runtime for that Session.
 
-The Host discovers native live Agents at startup and follows ordinary, unarchived Sessions whose summaries report `agentAvailable`. Forwarded Session additions, removals, activity and status updates keep that directory current; an idle Agent remains online. Persistent Workspace observation also mirrors browser archive changes. Reconnection reconciles native membership before reopening Session follows, because following a cold ordinary Session can activate its Agent. Explicit `/quit` suppresses automatic attachment to that instance until the app reopens it or its native instance is removed. Follow openings and app history synchronization replay the current assistant prefix so joining a browser turn midway preserves already-generated text.
+The Host discovers native Agents at startup and follows the ones already working (`running`). An idle Agent stays a catalog row: it occupies no online card and costs no per-Session follow, skills or model RPC until the browser starts new work in it or the app opens it. A Session that is already attached stays online after its turn finishes. Reconnection reconciles native membership before reopening Session follows, because following a cold ordinary Session can activate its Agent. Explicit `/quit` suppresses automatic attachment until new browser work starts in that instance (idle→running), the app reopens it, or its native instance is removed. Follow openings and app history synchronization replay the current assistant prefix so joining a browser turn midway preserves already-generated text.
 
 Provider management retains the complete native home patch. Native DSH HMR applies it; Orbis waits until the live provider route/default descriptors match before reporting success. Managed keys are excluded from the persistent child environment and synchronized through the native credential API, whose values are resolved per model request. Existing environment overrides are not silently replaced: native refusal causes the provider transaction to roll back. Active browser-only sessions are checked as well as Orbis sessions before switching. The shared process is never killed to apply a provider change.
 
