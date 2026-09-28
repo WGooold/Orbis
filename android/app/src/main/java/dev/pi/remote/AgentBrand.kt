@@ -44,7 +44,8 @@ internal val LocalAgentBrand = staticCompositionLocalOf { AgentBrand.Pi }
 internal fun AgentBrand.accent(): Color = when (this) {
     AgentBrand.Pi -> if (isSystemInDarkTheme()) Color(0xFFF2AD90) else Color(0xFF99482F)
     AgentBrand.Codex -> if (isSystemInDarkTheme()) Color(0xFF77D6C7) else Color(0xFF006C64)
-    AgentBrand.DeepSeek -> if (isSystemInDarkTheme()) Color(0xFFA1B5FF) else Color(0xFF4361D8)
+    // DeepSeek brand blue; the dark theme keeps a light tint of the same hue for contrast.
+    AgentBrand.DeepSeek -> if (isSystemInDarkTheme()) Color(0xFFA1B5FF) else Color(0xFF4D6BFE)
 }
 
 /** Keep the shared soft base; focus rings, actions and selection inherit the agent accent. */

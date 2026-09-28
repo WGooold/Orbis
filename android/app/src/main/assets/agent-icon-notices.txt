@@ -7,7 +7,8 @@ Codex mark (Lobe Icons)
 Source: https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/codex.svg
 Copyright (c) 2023 LobeHub
 
-Both assets are distributed under the following MIT License. Their product names and marks identify the corresponding third-party agents.
+The Pi and Codex marks are distributed under the following MIT License. Their
+product names and marks identify the corresponding third-party agents.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -26,3 +27,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+DeepSeek mark
+Source: https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.1/apps/web/public/favicon.svg
+Brand asset usage guidelines: https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.1/BRAND_GUIDELINES.md
+
+"DeepSeek", "DeepSeek Harness" and the DeepSeek mark are trademarks of
+DeepSeek. The mark is bundled only to identify the DeepSeek Harness agent that
+this app connects to, and is not covered by the MIT License above. Orbis is
+independently maintained and claims no endorsement, partnership or
+authorization from DeepSeek.
