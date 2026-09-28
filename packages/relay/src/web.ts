@@ -14,6 +14,7 @@ const assets = {
   "/assets/orbis.png": ["orbis.png", "image/png"],
 } as const;
 export const downloadNames = [
+  "OrbisHost-0.1.8-windows-x64-setup.exe", "OrbisHost-0.1.8-windows-x64.zip",
   "OrbisHost-0.1.7-windows-x64-setup.exe", "OrbisHost-0.1.7-windows-x64.zip",
   "OrbisHost-0.1.6-windows-x64-setup.exe", "OrbisHost-0.1.6-windows-x64.zip",
   "OrbisHost-0.1.5-windows-x64-setup.exe", "OrbisHost-0.1.5-windows-x64.zip",
@@ -42,7 +43,7 @@ export async function createWebHandler(downloadsDir?: string): Promise<(request:
   return async (request, response, path) => {
     if (request.method !== "GET" && request.method !== "HEAD") return false;
     if (path === "/admin") { response.writeHead(308, { location: "admin/", "cache-control": "no-store" }).end(); return true; }
-    if (path === "/v1/site") { jsonResponse(response, 200, { version: downloads[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.7", windows: downloads, android: "https://orbising.com/downloads/orbis.apk" }); return true; }
+    if (path === "/v1/site") { jsonResponse(response, 200, { version: downloads[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.8", windows: downloads, android: "https://orbising.com/downloads/orbis.apk" }); return true; }
     if (path.startsWith("/downloads/")) {
       const name = path.slice("/downloads/".length);
       const release = downloads.find(file => name === file.name || name === `${file.name}.sha256`);
