@@ -560,6 +560,7 @@ ApplicationWindow {
                                     ActionButton {
                                         objectName: "overviewOpenPiTui"
                                         text: "打开 Pi"
+                                        primary: true
                                         enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "pi" && a.installed)
                                         Accessible.name: "打开 Pi 终端界面"
                                         onClicked: host.openAgentTui("pi")
@@ -567,6 +568,7 @@ ApplicationWindow {
                                     ActionButton {
                                         objectName: "overviewOpenCodexTui"
                                         text: "打开 Codex"
+                                        primary: true
                                         enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "codex" && a.installed)
                                         Accessible.name: "打开 Codex 终端界面"
                                         onClicked: host.openAgentTui("codex")
@@ -574,13 +576,14 @@ ApplicationWindow {
                                     ActionButton {
                                         objectName: "overviewOpenDsh"
                                         text: "打开 DeepSeek Harness"
+                                        primary: true
                                         enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "dsh" && a.installed)
                                         Accessible.name: "打开 DeepSeek Harness 网页工作台"
                                         onClicked: host.openAgent("dsh")
                                     }
                                     Item { Layout.fillWidth: true }
                                 }
-                                Hint { text: "Pi 和 Codex 会先让你选择工作区，DeepSeek 使用网页工作台。按钮不可用时，请到 Agent 页检测或安装；模型登录也可在那里完成。"; Layout.fillWidth: true; font.pixelSize: 11 }
+                                Hint { text: "Pi 和 Codex 会先让你选择工作区，DeepSeek 使用网页工作台。按钮不可用时，请到 Agent 页检测或安装。模型登录可在供应商配置或已打开的 agent 终端中完成。"; Layout.fillWidth: true; font.pixelSize: 11 }
                                 RowLayout {
                                     visible: !host.dshEnabled && host.agents.some(a => a.kind === "dsh" && a.installed)
                                     Layout.fillWidth: true; spacing: 16
@@ -708,7 +711,6 @@ ApplicationWindow {
                                     Hint { visible: !!modelData.compatibilityNote; text: modelData.compatibilityNote || ""; Layout.fillWidth: true }
                                     RowLayout {
                                         spacing: 10
-                                        ActionButton { text: modelData.kind === "pi" ? "打开 Pi 并接入" : modelData.kind === "dsh" ? "打开 DeepSeek Harness" : "打开 Codex 登录"; primary: true; visible: modelData.installed; enabled: !host.busy; onClicked: host.openAgent(modelData.kind) }
                                         ActionButton { text: modelData.installedButBroken ? "修复到最新版本" : !modelData.installed ? "安装最新版本" : !modelData.latestVersion || modelData.updateAvailable ? "更新到最新版本" : "已是最新版本"; enabled: host.bridgeReady && !host.busy && (!modelData.installed || !modelData.latestVersion || modelData.updateAvailable || modelData.installedButBroken); onClicked: window.showAgentInstaller(modelData) }
                                         ActionButton { text: modelData.kind === "codex" && modelData.terminalIntegration !== "enabled" ? "启用 / 修复终端接入" : ""; visible: modelData.kind === "codex" && modelData.terminalIntegration !== "enabled"; enabled: host.bridgeReady && !host.busy && modelData.installed && modelData.terminalCompatible === true; onClicked: host.enableCodexTerminal() }
                                         ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders(modelData.kind) }
@@ -716,7 +718,7 @@ ApplicationWindow {
                                 }
                             }
                         }
-                        Hint { text: "在供应商配置中添加 API 地址、密钥与模型，并在 Host 或 APP 启用。原生账号登录仍可从 Agent 终端完成。安装更新前请先暂停 Host。"; Layout.fillWidth: true }
+                        Hint { text: "在供应商配置中添加 API 地址、密钥与模型，并在 Host 或 APP 启用。原生账号登录可在供应商配置（Codex 的「账号管理」）或已打开的 agent 终端中完成。安装更新前请先暂停 Host。"; Layout.fillWidth: true }
                         Hint { visible: host.busy && !host.agentInstalling; text: "正在检测 Agent，请稍候…"; Layout.fillWidth: true }
                     }
 
