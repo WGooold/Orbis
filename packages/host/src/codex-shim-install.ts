@@ -50,7 +50,12 @@ export async function uninstallCodexShim(): Promise<void> {
   await rm(manifestPath(), { force: true });
 }
 
-export type CodexTerminalIntegration = { state: "enabled" | "pending" | "repair" | "disabled"; detail: string };
+export type CodexTerminalIntegration = {
+  state: "enabled" | "pending" | "repair" | "disabled";
+  detail: string;
+  /** 机器 PATH 抢在用户 PATH 前面：只有一次提权能修，所以交给设置页的用户确认。 */
+  needsElevation?: boolean;
+};
 export async function codexShimStatus(expectedRuntimeRoot?: string): Promise<CodexTerminalIntegration> {
   if (process.platform !== "win32") return { state: "disabled", detail: "仅支持 Windows 终端" };
   let manifest: { runtimeRoot?: unknown };
@@ -78,7 +83,7 @@ export async function codexShimStatus(expectedRuntimeRoot?: string): Promise<Cod
       // 已经修过就只是当前进程还没重读环境变量。
       const freshFirst = await firstCodexOnPath([...await readRegistryPath(MACHINE_ENVIRONMENT_KEY), ...userPath].join(";"));
       if (freshFirst !== undefined && samePath(freshFirst, shimPath())) return { state: "pending", detail: "已调整系统 PATH 顺序；重新打开终端后生效" };
-      return { state: "repair", detail: `系统 PATH 里的 ${first ?? "其他入口"} 抢先于 Orbis；点「启用 / 修复终端接入」修复` };
+      return { state: "repair", detail: `系统 PATH 里的 ${first ?? "其他入口"} 抢先于 Orbis`, needsElevation: true };
     }
     return { state: "pending", detail: "已写入用户 PATH；请重新打开终端后检查 codex 命中位置" };
   } catch {

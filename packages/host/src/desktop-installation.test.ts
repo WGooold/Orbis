@@ -7,6 +7,10 @@ const web = vi.hoisted(() => ({ restart: vi.fn(), ensure: vi.fn(), connect: vi.f
 vi.mock("./agent-installation.js", async original => ({
   ...await original<typeof import("./agent-installation.js")>(), installAgentPackage: installation.run,
 }));
+const shim = vi.hoisted(() => ({ status: vi.fn(), install: vi.fn(), elevate: vi.fn() }));
+vi.mock("./codex-shim-install.js", () => ({
+  codexShimStatus: shim.status, installCodexShim: shim.install, ensureCodexShimWinsPath: shim.elevate,
+}));
 vi.mock("./dsh-web-service.js", async original => ({
   ...await original<typeof import("./dsh-web-service.js")>(), restartDshWebServiceAfterUpdate: web.restart, ensureDshWebService: web.ensure,
 }));
@@ -22,6 +26,9 @@ import { readCodexSelection } from "./codex-selection.js";
 const roots: string[] = [];
 beforeEach(() => {
   installation.run.mockReset();
+  shim.status.mockReset().mockResolvedValue({ state: "disabled", detail: "尚未启用终端接入" });
+  shim.install.mockReset().mockResolvedValue(undefined);
+  shim.elevate.mockReset().mockResolvedValue(false);
   web.restart.mockReset().mockResolvedValue(false);
   web.ensure.mockReset().mockResolvedValue({ url: "http://127.0.0.1:3080/?token=test-updated-service-token" });
   web.connect.mockReset().mockResolvedValue({ stop: web.stop });
@@ -64,6 +71,16 @@ describe("desktop Agent installation commands", () => {
     expect((await resolveCodexCommand()).prefixArgs).toEqual([alternate]);
     expect(events).toContainEqual({ event: "agentInstalled", kind: "codex", entry: alternate, version: "2.0.0" });
     expect((await runtime.detect({ codexEntry: alternate })).find(status => status.kind === "codex")?.entry).toBe(alternate);
+    await runtime.close();
+  });
+
+  it("surfaces a machine PATH that needs one elevation so Settings can offer the repair", async () => {
+    const { runtime } = await fixture();
+    shim.status.mockResolvedValue({ state: "repair", detail: "系统 PATH 里的 nvm codex 抢先于 Orbis", needsElevation: true });
+    expect((await runtime.detect()).find(status => status.kind === "codex")).toMatchObject({ terminalIntegration: "repair", terminalNeedsElevation: true });
+    // 不需要提权的普通修复不该让界面给出管理员入口。
+    shim.status.mockResolvedValue({ state: "repair", detail: "终端入口与当前安装不一致" });
+    expect((await runtime.detect()).find(status => status.kind === "codex")?.terminalNeedsElevation).toBe(false);
     await runtime.close();
   });
 

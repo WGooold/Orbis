@@ -9,7 +9,7 @@ import QRCode from "qrcode";
 import { HostService } from "./host-service.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
-import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim } from "./codex-shim-install.js";
+import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DSH_VERSION } from "./dsh-client.js";
@@ -45,6 +45,29 @@ export function validateDesktopRelay(value: unknown): string {
   return url.toString().replace(/\/$/, "");
 }
 
+async function firstExisting(candidates: readonly (string | undefined)[]): Promise<string | undefined> {
+  for (const candidate of candidates) {
+    if (candidate && await stat(candidate).then(value => value.isFile()).catch(() => false)) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * 终端接入默认启用，但只在 Host 真的在跑、Codex 已安装且兼容、且不缺提权时动手。
+ * 检测会被界面、诊断和测试调用，没有用户意图时绝不能改写用户 PATH；提权也永不自动。
+ */
+export function shouldAutoEnableCodexTerminal(input: {
+  platform: NodeJS.Platform;
+  hostRunning: boolean;
+  installed: boolean;
+  compatible: boolean | undefined;
+  state: CodexTerminalIntegration["state"];
+  needsElevation: boolean | undefined;
+}): boolean {
+  return input.platform === "win32" && input.hostRunning && input.installed && input.compatible === true
+    && input.needsElevation !== true && (input.state === "disabled" || input.state === "repair");
+}
+
 async function terminalWorkspace(cwd: string | undefined): Promise<string> {
   if (!cwd || !isAbsolute(cwd)) throw new Error("请先选择工作区目录");
   if (!(await stat(cwd).catch(() => undefined))?.isDirectory()) throw new Error("工作区目录不存在或无法访问，请重新选择");
@@ -61,6 +84,8 @@ export class DesktopRuntime {
   #dshRuntime: DshRuntime | undefined;
   #retry: NodeJS.Timeout | undefined;
   #poll: NodeJS.Timeout | undefined;
+  /** 终端 shim 自动启用的在途守卫，避免并发 detect 重复写 PATH。 */
+  #terminalSetup: Promise<void> | undefined;
   #desired: DesktopSettings | undefined;
   #attempt = 0;
   #starting = false;
@@ -112,8 +137,14 @@ export class DesktopRuntime {
       let active: string | undefined;
       try { active = await activeManagedEntry(kind, managed); }
       catch { this.log(`${kind} 安装记录不可读，请检查文件权限和 installations.json`); }
-      // The manifest survives a UI crash between installation and saving QSettings.
-      const entry = configured && installationSource(configured, managed) !== "managed" ? configured : active ?? (kind === "codex" ? selectedCodex : undefined) ?? configured;
+      // 入口由 Orbis 自己维护（安装、激活和终端共享记录写回），不再由用户指定；
+      // 记录随时可能先于目录失效，所以按优先级挑第一个仍然存在的入口，
+      // 全部失效时交给下面的自动检测，而不是把一个死路径当成“已安装但无法运行”。
+      const shared = kind === "codex" ? selectedCodex : undefined;
+      const ordered = configured && installationSource(configured, managed) !== "managed"
+        ? [configured, active, shared]
+        : [active, shared, configured];
+      const entry = await firstExisting(ordered);
       const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
       if (entry) process.env[key] = entry; else delete process.env[key];
       if (kind === "codex" && entry && entry !== selectedCodex) await this.#syncCodexSelection(entry);
@@ -142,7 +173,19 @@ export class DesktopRuntime {
 
   async #syncCodexSelection(entry: string): Promise<void> {
     try { await saveCodexSelection(entry); this.#selectionError = false; }
-    catch { this.#selectionError = true; this.log("Codex 已安装，但终端版本选择未同步；请在 Agent 页修复终端接入"); }
+    catch { this.#selectionError = true; this.log("Codex 已安装，但终端版本选择未同步"); }
+  }
+
+  /** 静默装好终端 shim；失败只记日志（终端仍可手动用独立 codex）。 */
+  async #autoEnableCodexTerminal(runtimeRoot: string, entry: string): Promise<void> {
+    if (this.#terminalSetup !== undefined) return;
+    this.#terminalSetup = (async () => {
+      await this.#syncCodexSelection(entry);
+      await installCodexShim(runtimeRoot);
+      this.log("Codex 终端接入已自动启用");
+    })().catch(error => { this.log(`Codex 终端接入自动启用失败：${error instanceof Error ? error.message : String(error)}`); })
+      .finally(() => { this.#terminalSetup = undefined; });
+    await this.#terminalSetup;
   }
 
   async detect(settings?: Partial<DesktopSettings>, checkLatest = false): Promise<AgentInstallStatus[]> {
@@ -178,9 +221,11 @@ export class DesktopRuntime {
       }
       status.copies = copies;
       if (kind === "codex") {
-        const shim = await codexShimStatus(fileURLToPath(new URL("../../../", import.meta.url)));
+        const runtimeRoot = fileURLToPath(new URL("../../../", import.meta.url));
+        const shim = await codexShimStatus(runtimeRoot);
         status = { ...status, terminalIntegration: this.#selectionError ? "repair" : shim.state,
-          terminalIntegrationDetail: this.#selectionError ? "版本选择未同步，请修复终端接入" : shim.detail };
+          terminalIntegrationDetail: this.#selectionError ? "版本选择未同步" : shim.detail,
+          terminalNeedsElevation: shim.needsElevation === true };
         if (local.installed && entry) {
           try {
             const [cli, server] = await Promise.all([
@@ -189,7 +234,12 @@ export class DesktopRuntime {
             ]);
             status.terminalCompatible = /--remote\b/u.test(cli.stdout + cli.stderr) && /--listen\b/u.test(server.stdout + server.stderr);
           } catch { status.terminalCompatible = false; }
-          if (!status.terminalCompatible) status.terminalCompatibilityDetail = "此 Codex 版本缺少 remote 或 app-server 能力；CLI 可用，但手机接入需要兼容版本";
+        }
+        // 终端接入默认启用：Host 真的在跑（用户在用它）且 Codex 兼容时静默装好 shim，
+        // 不再让普通用户看到“终端接入”这个概念。需要提权的系统 PATH 冲突不在这里弹 UAC。
+        if (entry !== undefined && shouldAutoEnableCodexTerminal({ platform: process.platform, hostRunning: this.#desired !== undefined,
+          installed: local.installed, compatible: status.terminalCompatible, state: shim.state, needsElevation: shim.needsElevation })) {
+          await this.#autoEnableCodexTerminal(runtimeRoot, entry);
         }
       }
       this.#detected.set(kind, status);
@@ -257,6 +307,8 @@ export class DesktopRuntime {
       } finally { if (deadline) clearTimeout(deadline); }
       this.#attempt = 0;
       this.status();
+      // Host 跑起来后跑一次检测：既把 Agent 状态推给界面，也顺便静默修复终端接入。
+      void this.detect(settings).catch(error => this.log(`Agent 检测失败：${error instanceof Error ? error.message : String(error)}`));
     } catch (error) {
       await this.#dispose();
       const message = error instanceof Error ? error.message : String(error);
@@ -428,7 +480,7 @@ export class DesktopRuntime {
     if (process.platform !== "win32") throw new Error("终端接入仅支持 Windows");
     const codex = this.#detected.get("codex");
     if (!codex?.installed || !codex.entry) throw new Error("请先检测并安装可运行的 Codex");
-    if (!codex.terminalCompatible) throw new Error(codex.terminalCompatibilityDetail ?? "此 Codex 版本不支持 Host 终端接入");
+    if (!codex.terminalCompatible) throw new Error("此 Codex 版本不支持 Host 终端接入，请先更新到最新版本");
     await this.#syncCodexSelection(codex.entry);
     if (this.#selectionError) throw new Error("无法写入 Codex 版本选择，请检查 Orbis agents 目录权限");
     await installCodexShim(runtimeRoot);

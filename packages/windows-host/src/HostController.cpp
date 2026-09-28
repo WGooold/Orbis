@@ -299,7 +299,7 @@ void HostController::activateInstallation(const QString &kind, const QString &id
 void HostController::enableCodexTerminal() {
     command("enableCodexTerminal", {{"runtimeRoot", m_runtimeRoot}}, [this](const QJsonValue &value) {
         m_agents = value.toArray().toVariantList(); emit changed();
-        setMessage("Codex 终端入口已设置。请重新打开终端，确认 codex 命中 Orbis。");
+        setMessage("终端接入已修复。请重新打开终端。");
     });
 }
 void HostController::selectCodexEntry(const QString &entry) {
@@ -425,7 +425,7 @@ void HostController::openAgentTui(const QString &kind) {
         setMessage(kind == "dsh" ? "已打开 DeepSeek Harness 网页工作台" : QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(kind == "pi" ? "Pi" : "Codex"));
     });
 }
-void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &piPath, const QString &codexPath, const QString &name, bool dsh, const QString &dshPath, const QString &dshUrl) {
+void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl) {
     QString normalized = relay.trimmed(); while (normalized.endsWith('/')) normalized.chop(1);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }
     if (m_desiredRunning) { setMessage("请先在概览中暂停连接，再修改设置"); return; }
@@ -439,9 +439,10 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
         }
     }
     if (normalized != relayUrl()) { m_credential.clear(); m_email.clear(); m_challenge.clear(); m_verificationRequired = true; m_registrationAvailable = false; QFile::remove(m_dataDir + "/activation.dat"); }
+    // Agent 入口由 Orbis 自己维护（安装、激活、共享记录），设置里不再提供路径字段。
     m_settings.setValue("relayUrl", normalized); m_settings.setValue("autoStart", startup); m_settings.setValue("codexEnabled", codex);
-    m_settings.setValue("piEntry", piPath.trimmed()); m_settings.setValue("codexEntry", codexPath.trimmed()); m_settings.sync();
-    m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshEntry", dshPath.trimmed()); m_settings.setValue("dshWebUrl", dshUrl.trimmed()); m_settings.sync();
+    m_settings.sync();
+    m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed()); m_settings.sync();
 #ifdef Q_OS_WIN
     QSettings startupRegistry("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", QSettings::NativeFormat);
     if (startup) startupRegistry.setValue("OrbisHost", '"' + QDir::toNativeSeparators(QCoreApplication::applicationFilePath()) + "\" --tray");

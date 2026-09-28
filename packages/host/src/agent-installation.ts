@@ -19,7 +19,9 @@ export type AgentInstallStatus = LocalAgent & {
   installationSource: "managed" | "npm" | "custom" | "unknown";
   installations: AgentInstallation[]; copies: { entry: string; version?: string }[];
   terminalIntegration?: "enabled" | "pending" | "repair" | "disabled"; terminalIntegrationDetail?: string;
-  terminalCompatible?: boolean; terminalCompatibilityDetail?: string;
+  terminalCompatible?: boolean;
+  /** 机器 PATH 抢先，只有提权能修；界面只在为真时给出一次修复入口。 */
+  terminalNeedsElevation?: boolean;
 };
 export type InstallRun = (command: string, args: string[], options: { signal: AbortSignal; timeout: number; cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
 

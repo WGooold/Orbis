@@ -704,15 +704,11 @@ ApplicationWindow {
                                         Hint { text: modelData.installed ? "可用" : modelData.installedButBroken ? "已安装 · 需要修复" : "尚未安装"; color: modelData.installed ? "#278868" : "#8b7790" }
                                     }
                                     Hint { text: "当前 " + (modelData.version || "—") + " · 最新 " + (modelData.latestVersion || "未知") + (modelData.updateAvailable ? " · 有可用更新" : ""); Layout.fillWidth: true; color: modelData.updateAvailable ? "#b46b19" : "#60728e" }
-                                    Hint { visible: modelData.kind === "codex"; text: "终端接入：" + (({enabled: "已启用", pending: "等待新终端", repair: "需要修复", disabled: "未启用"})[modelData.terminalIntegration] || "未检测") + " · Host 后端：" + (modelData.connected ? "已连接" : "未连接"); Layout.fillWidth: true; color: modelData.terminalIntegration === "enabled" ? "#278868" : "#b46b19" }
-                                    Hint { visible: modelData.kind === "codex"; text: modelData.terminalIntegrationDetail || ""; Layout.fillWidth: true }
-                                    Hint { visible: modelData.kind === "codex" && modelData.terminalCompatible === false; text: modelData.terminalCompatibilityDetail || ""; Layout.fillWidth: true; color: "#b46b19" }
                                     Hint { visible: !!modelData.error || !!modelData.latestError; text: modelData.error || modelData.latestError || ""; Layout.fillWidth: true; color: "#b46b19" }
                                     Hint { visible: !!modelData.compatibilityNote; text: modelData.compatibilityNote || ""; Layout.fillWidth: true }
                                     RowLayout {
                                         spacing: 10
                                         ActionButton { text: modelData.installedButBroken ? "修复到最新版本" : !modelData.installed ? "安装最新版本" : !modelData.latestVersion || modelData.updateAvailable ? "更新到最新版本" : "已是最新版本"; enabled: host.bridgeReady && !host.busy && (!modelData.installed || !modelData.latestVersion || modelData.updateAvailable || modelData.installedButBroken); onClicked: window.showAgentInstaller(modelData) }
-                                        ActionButton { text: modelData.kind === "codex" && modelData.terminalIntegration !== "enabled" ? "启用 / 修复终端接入" : ""; visible: modelData.kind === "codex" && modelData.terminalIntegration !== "enabled"; enabled: host.bridgeReady && !host.busy && modelData.installed && modelData.terminalCompatible === true; onClicked: host.enableCodexTerminal() }
                                         ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders(modelData.kind) }
                                     }
                                 }
@@ -799,7 +795,7 @@ ApplicationWindow {
                     Card {
                         id: settingsPane
                         visible: window.page === 3; Layout.fillWidth: true
-                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; piPathField.text = host.piEntry; codexPathField.text = host.codexEntry; dshPathField.text = host.dshEntry; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled }
+                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled }
                         ColumnLayout {
                             anchors.fill: parent; spacing: 15
                             Heading { text: "常规" }
@@ -808,17 +804,18 @@ ApplicationWindow {
                             SoftSwitch { id: startupSwitch; text: "登录 Windows 后自动启动" }
                             SoftSwitch { id: codexSwitch; text: "启动 Host 时启用 Codex" }
                             SoftSwitch { id: dshSwitch; text: "启动 Host 时启用 DeepSeek Harness" }
+                            RowLayout {
+                                visible: host.agents.some(a => a.kind === "codex" && a.terminalNeedsElevation === true)
+                                Layout.fillWidth: true; spacing: 12
+                                Hint { text: "系统 PATH 里其他 codex 抢先于 Orbis，终端接入无法生效。修复需要一次管理员确认，完成后请重新打开终端。"; Layout.fillWidth: true; color: "#b46b19" }
+                                ActionButton { text: "修复终端接入"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.enableCodexTerminal() }
+                            }
                             Heading { text: "中继服务器"; Layout.topMargin: 10 }
                             Field { id: relayField; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
                             Hint { text: "支持默认中继或自建中继。更换服务器后需按新服务器设置重新激活，并为手机重新配对。"; Layout.fillWidth: true }
-                            Heading { text: "Agent 路径"; Layout.topMargin: 10 }
-                            Hint { text: "留空时自动检测。安装了多个版本时，可指定对应的 CLI JavaScript 入口文件。"; Layout.fillWidth: true }
-                            Field { id: piPathField; Layout.fillWidth: true; placeholderText: "Pi：自动检测" }
-                            Field { id: codexPathField; Layout.fillWidth: true; placeholderText: "Codex：自动检测" }
-                            Field { id: dshPathField; Layout.fillWidth: true; placeholderText: "DeepSeek Harness：自动检测" }
                             Label { text: "DeepSeek Web 启动链接（可选）"; color: "#4b5d78" }
                             Field { id: dshWebUrlField; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
-                            ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, piPathField.text, codexPathField.text, nameField.text, dshSwitch.checked, dshPathField.text, dshWebUrlField.text) }
+                            ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text) }
                             Hint { text: "修改设置前请先在概览中暂停连接。"; Layout.fillWidth: true }
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#e5eaf2"; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }

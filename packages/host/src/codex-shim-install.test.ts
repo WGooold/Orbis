@@ -44,7 +44,7 @@ describe("Codex user PATH registration", () => {
         const machine = args[1]?.startsWith("HKLM") === true;
         callback(null, { stdout: args[0] === "query" ? `HKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    ${machine ? competing : bin}\r\n` : "", stderr: "" });
       });
-      expect(await codexShimStatus(runtime)).toMatchObject({ state: "repair", detail: expect.stringContaining(join(competing, "codex.cmd")) });
+      expect(await codexShimStatus(runtime)).toMatchObject({ state: "repair", detail: expect.stringContaining(join(competing, "codex.cmd")), needsElevation: true });
     }
     registry.exec.mockReset();
     registry.exec.mockImplementation((_program, _args, _options, callback: (error: Error) => void) => callback(new Error("Registry unavailable")));

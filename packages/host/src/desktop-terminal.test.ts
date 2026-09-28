@@ -14,7 +14,7 @@ vi.mock("./spawner.js", async importOriginal => ({
 vi.mock("./codex-daemon.js", async importOriginal => ({
   ...await importOriginal<typeof import("./codex-daemon.js")>(), resolveCodexCommand: terminal.codex,
 }));
-import { DesktopRuntime } from "./desktop-runtime.js";
+import { DesktopRuntime, shouldAutoEnableCodexTerminal } from "./desktop-runtime.js";
 
 describe("desktop terminal shortcuts", () => {
   let workspace: string;
@@ -91,8 +91,21 @@ describe("desktop terminal shortcuts", () => {
     expect(terminal.spawn).not.toHaveBeenCalled();
   });
 
-  it("reports terminal startup failures back to the desktop", async () => {
-    terminal.spawn.mockImplementation(() => {
+  it("enables the terminal shim by itself only while the Host runs on Windows", () => {
+    const base = { platform: "win32" as NodeJS.Platform, hostRunning: true, installed: true, compatible: true, state: "disabled" as const, needsElevation: false };
+    expect(shouldAutoEnableCodexTerminal(base)).toBe(true);
+    expect(shouldAutoEnableCodexTerminal({ ...base, state: "repair" })).toBe(true);
+    // 检测不等于用户意图：Host 没跑就不改写用户 PATH；提权也永不自动。
+    expect(shouldAutoEnableCodexTerminal({ ...base, hostRunning: false })).toBe(false);
+    expect(shouldAutoEnableCodexTerminal({ ...base, needsElevation: true })).toBe(false);
+    expect(shouldAutoEnableCodexTerminal({ ...base, platform: "linux" })).toBe(false);
+    // 已经装好、尚未安装或版本不兼容都不需要（且不应该）再动 PATH。
+    expect(shouldAutoEnableCodexTerminal({ ...base, state: "enabled" })).toBe(false);
+    expect(shouldAutoEnableCodexTerminal({ ...base, installed: false })).toBe(false);
+    expect(shouldAutoEnableCodexTerminal({ ...base, compatible: false })).toBe(false);
+  });
+
+  it("reports terminal startup failures back to the desktop", async () => {    terminal.spawn.mockImplementation(() => {
       const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
       queueMicrotask(() => child.emit("error", new Error("Terminal unavailable")));
       return child;
