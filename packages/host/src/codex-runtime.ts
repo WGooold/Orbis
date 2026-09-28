@@ -63,6 +63,12 @@ import { ActivationError } from "./spawner.js";
 
 /** 审批窗口。手机在 expiresAt 前不响应就按 decline 处理，防止 turn 挂死。 */
 const APPROVAL_TTL_MS = 5 * 60 * 1_000;
+/**
+ * 终端启动登记的存活时间。官方 TUI 建 thread 之前可能先问「是否信任这个目录」，
+ * 用户答复前不会发出 `thread/started`；登记过早过期就等于静默放弃收编。
+ * 同一 cwd 的陈旧登记无害：收编本来就只按 cwd 认领。
+ */
+const TERMINAL_LAUNCH_TTL_MS = 30 * 60 * 1_000;
 /** 无 `resume <id>` 的 shim TUI 在进程命令行上的共享标记。 */
 const REMOTE_TUI_PROCESS = "__orbis_remote_tui__";
 
@@ -506,11 +512,13 @@ export class CodexRuntime implements AgentBackend {
     const timer = setTimeout(() => {
       const pending = this.#pendingTerminalLaunches.get(key);
       if (pending?.timer === timer) this.#pendingTerminalLaunches.delete(key);
-    }, 60_000);
+    }, TERMINAL_LAUNCH_TTL_MS);
     timer.unref?.();
     this.#pendingTerminalLaunches.set(key, { cwd, timer });
     this.#options.log?.(`已登记 Codex 终端启动（cwd=${cwd}）`);
-    return { endpoint, command: command.command, prefixArgs: [...command.prefixArgs] };
+    // `-C` 是必需的：不带它时官方 TUI 用 app-server 自己的工作目录建 thread，
+    // 既让会话跑错目录，也让下面的 cwd 收编永远匹配不上这条登记。
+    return { endpoint, command: command.command, prefixArgs: [...command.prefixArgs, "-C", cwd] };
   }
 
   /** 标记已就绪（host-service 在 server 握手成功后调用）。 */

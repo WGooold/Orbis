@@ -9,7 +9,7 @@ import QRCode from "qrcode";
 import { HostService } from "./host-service.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
-import { codexShimStatus, installCodexShim } from "./codex-shim-install.js";
+import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim } from "./codex-shim-install.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DSH_VERSION } from "./dsh-client.js";
@@ -432,6 +432,7 @@ export class DesktopRuntime {
     await this.#syncCodexSelection(codex.entry);
     if (this.#selectionError) throw new Error("无法写入 Codex 版本选择，请检查 Orbis agents 目录权限");
     await installCodexShim(runtimeRoot);
+    await ensureCodexShimWinsPath();
     return this.detect();
   }
 

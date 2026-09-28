@@ -1956,7 +1956,7 @@ describe("CodexRuntime TUI 切换会话", () => {
   it("shim 终端的首个 thread/started 会按 cwd 收编，不要求预先落盘 rollout", async () => {
     const h = makeSwitchHarness();
     const launch = await h.runtime.prepareTerminalLaunch("D:/terminal-repo");
-    expect(launch).toEqual({ endpoint: "ws://127.0.0.1:9931", command: "node.exe", prefixArgs: ["codex.js"] });
+    expect(launch).toEqual({ endpoint: "ws://127.0.0.1:9931", command: "node.exe", prefixArgs: ["codex.js", "-C", "D:/terminal-repo"] });
 
     h.notify("thread/started", { thread: { id: "th-terminal", cwd: "D:/terminal-repo" } });
     await vi.waitFor(() => expect(h.queue.length).toBeGreaterThan(0));
