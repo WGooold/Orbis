@@ -42,33 +42,99 @@ async function loadRegistration() {
   }
 }
 
-function setupShowcase() {
-  const tablist = document.querySelector(".showcase-tabs");
-  const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
-  function selectTab(selected) {
-    for (const tab of tabs) {
-      const active = tab === selected;
-      tab.setAttribute("aria-selected", String(active));
-      tab.tabIndex = active ? 0 : -1;
-      document.getElementById(tab.getAttribute("aria-controls")).hidden = !active;
-    }
+function setupFeatureTour() {
+  const tour = document.querySelector(".feature-tour");
+  const slides = Array.from(document.querySelectorAll(".feature-slide"));
+  const tabs = Array.from(document.querySelectorAll(".feature-tab"));
+  if (!tour || !slides.length || slides.length !== tabs.length) return;
+  const counter = tour.querySelector(".tour-counter");
+  const progress = tour.querySelector(".tour-progress-line");
+  const toggle = tour.querySelector(".tour-toggle");
+  const toggleLabel = toggle?.querySelector("span:last-child");
+  const directionButtons = Array.from(tour.querySelectorAll("[data-tour-direction]"));
+  const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  let activeIndex = 0;
+  let paused = reducedMotion;
+  let timer;
+
+  function schedule() {
+    globalThis.clearTimeout(timer);
+    if (paused) return;
+    timer = globalThis.setTimeout(() => selectFeature(slides[(activeIndex + 1) % slides.length].dataset.featureSlide), 6500);
   }
-  for (const [index, tab] of tabs.entries()) {
-    tab.addEventListener("click", () => selectTab(tab));
-    tab.addEventListener("keydown", event => {
-      let next;
-      if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
-      else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
-      else if (event.key === "Home") next = 0;
-      else if (event.key === "End") next = tabs.length - 1;
-      else return;
-      event.preventDefault();
-      selectTab(tabs[next]);
-      tabs[next].focus();
+
+  function selectFeature(name, { updateHash = false } = {}) {
+    const nextIndex = slides.findIndex(slide => slide.dataset.featureSlide === name);
+    if (nextIndex < 0) return;
+    activeIndex = nextIndex;
+    for (const [index, slide] of slides.entries()) {
+      const active = index === activeIndex;
+      slide.classList.toggle("is-active", active);
+      slide.setAttribute("aria-hidden", String(!active));
+    }
+    for (const [index, tab] of tabs.entries()) {
+      const active = index === activeIndex;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", String(active));
+    }
+    if (counter) counter.textContent = `${String(activeIndex + 1).padStart(2, "0")} / ${String(slides.length).padStart(2, "0")}`;
+    if (progress) progress.style.setProperty("--feature-progress", `${((activeIndex + 1) / slides.length) * 100}%`);
+    if (updateHash) globalThis.history.replaceState(null, "", `#${slides[activeIndex].id}`);
+    schedule();
+  }
+
+  for (const tab of tabs) tab.addEventListener("click", () => selectFeature(tab.dataset.featureTab));
+  for (const button of directionButtons) {
+    button.addEventListener("click", () => {
+      const step = button.dataset.tourDirection === "previous" ? -1 : 1;
+      selectFeature(slides[(activeIndex + step + slides.length) % slides.length].dataset.featureSlide);
     });
   }
-  tablist.hidden = false;
+  toggle?.addEventListener("click", () => {
+    paused = !paused;
+    tour.classList.toggle("is-paused", paused);
+    toggle.setAttribute("aria-label", paused ? "继续自动播放" : "暂停自动播放");
+    if (toggleLabel) toggleLabel.textContent = paused ? "播放" : "暂停";
+    schedule();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) schedule();
+  });
+  for (const anchor of document.querySelectorAll("a[href^=\"#\"]")) {
+    const target = anchor.getAttribute("href")?.slice(1);
+    const slide = slides.find(item => item.id === target);
+    if (!slide) continue;
+    anchor.addEventListener("click", event => {
+      event.preventDefault();
+      selectFeature(slide.dataset.featureSlide, { updateHash: true });
+      tour.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+  const initialTarget = slides.find(slide => slide.id === globalThis.location.hash.slice(1));
+  selectFeature(initialTarget?.dataset.featureSlide ?? slides[0].dataset.featureSlide);
 }
-setupShowcase();
+
+function setupUseCases() {
+  const steps = Array.from(document.querySelectorAll(".use-case-step"));
+  const screens = Array.from(document.querySelectorAll(".use-case-screen"));
+  if (!steps.length || !screens.length) return;
+  function selectUseCase(name) {
+    for (const step of steps) step.classList.toggle("is-active", step.dataset.useCase === name);
+    for (const screen of screens) {
+      const active = screen.dataset.useScreen === name;
+      screen.classList.toggle("is-active", active);
+      screen.setAttribute("aria-hidden", String(!active));
+    }
+  }
+  selectUseCase(steps[0].dataset.useCase);
+  if (!("IntersectionObserver" in globalThis)) return;
+  const observer = new globalThis.IntersectionObserver(entries => {
+    const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+    if (visible) selectUseCase(visible.target.dataset.useCase);
+  }, { rootMargin: "-38% 0px -42%", threshold: [0, .25, .6] });
+  for (const step of steps) observer.observe(step);
+}
+setupFeatureTour();
+setupUseCases();
 void loadDownloads();
 void loadRegistration();
