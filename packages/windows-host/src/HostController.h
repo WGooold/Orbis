@@ -123,6 +123,7 @@ public:
     Q_INVOKABLE void exportDiagnostics();
     Q_INVOKABLE void copyDiagnostics();
     Q_INVOKABLE void checkUpdates();
+    Q_INVOKABLE void updateHost();
     Q_INVOKABLE void openDownloads();
     Q_INVOKABLE void openDataDirectory();
     Q_INVOKABLE void clearMessage();
@@ -178,4 +179,5 @@ private:
     qint64 m_pairExpires = 0;
     bool m_bridgeReady = false, m_shutdown = false, m_desiredRunning = false;
     bool m_verificationRequired = true, m_registrationAvailable = false;
+    QString m_updateVersion, m_updateInstallerUrl, m_updateChecksumUrl;
 };

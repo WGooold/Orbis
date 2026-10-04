@@ -16,6 +16,7 @@
 #include <QStandardPaths>
 #include <QUrlQuery>
 #include <QVersionNumber>
+#include <QCryptographicHash>
 
 static QString friendlyError(const QString &code) {
     static const QHash<QString, QString> messages{
@@ -480,20 +481,79 @@ void HostController::exportDiagnostics() {
     if (file.open(QIODevice::WriteOnly) && file.write(diagnostics().toUtf8()) >= 0 && file.commit()) setMessage("诊断信息已导出"); else setMessage("无法写入诊断文件");
 }
 void HostController::checkUpdates() {
-    QNetworkRequest request(QUrl("https://api.github.com/repos/WGooold/Orbis/releases/latest")); request.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION); request.setTransferTimeout(15000);
+    const QUrl siteUrl("https://orbising.com/v1/site");
+    QNetworkRequest request(siteUrl); request.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION); request.setTransferTimeout(15000);
     auto *reply = m_network.get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
-        auto result = QJsonDocument::fromJson(reply->readAll()).object();
-        if (reply->error() != QNetworkReply::NoError) setMessage("暂时无法获取公开版本信息，请在下载页查看发布状态");
+        const auto payload = reply->readAll();
+        const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const auto document = QJsonDocument::fromJson(payload);
+        const auto result = document.object();
+        if (reply->error() != QNetworkReply::NoError || (status != 0 && (status < 200 || status >= 300)) || !document.isObject()) setMessage("暂时无法获取公开版本信息，请在下载页查看发布状态");
         else {
-            auto tag = result.value("tag_name").toString(); if (tag.startsWith('v')) tag.remove(0, 1);
-            if (QVersionNumber::fromString(tag) > QVersionNumber::fromString(version())) setMessage("发现新版本 " + tag + "，请打开下载页查看更新说明并安装");
+            auto tag = result.value("version").toString(); if (tag.startsWith('v')) tag.remove(0, 1);
+            QString installerUrl, checksumUrl;
+            const auto expectedName = QString("OrbisHost-%1-windows-x64-setup.exe").arg(tag);
+            const auto windows = result.value("windows").toArray();
+            for (const auto &fileValue : windows) {
+                const auto file = fileValue.toObject();
+                if (file.value("name").toString() != expectedName) continue;
+                const QUrl base("https://orbising.com/");
+                installerUrl = base.resolved(QUrl(file.value("url").toString())).toString();
+                checksumUrl = base.resolved(QUrl(file.value("checksumUrl").toString())).toString();
+                break;
+            }
+            if (QVersionNumber::fromString(tag) > QVersionNumber::fromString(version()) && !installerUrl.isEmpty() && !checksumUrl.isEmpty()) {
+                m_updateVersion = tag; m_updateInstallerUrl = installerUrl; m_updateChecksumUrl = checksumUrl;
+                setMessage("发现新版本 " + tag + "，点击“更新 Host”下载安装");
+            }
             else setMessage("当前已是最新公开版本");
         }
         reply->deleteLater();
     });
 }
-void HostController::openDownloads() { QDesktopServices::openUrl(QUrl("https://github.com/WGooold/Orbis/releases")); }
+void HostController::updateHost() {
+    if (m_updateInstallerUrl.isEmpty() || m_updateChecksumUrl.isEmpty()) { checkUpdates(); return; }
+    setMessage("正在下载 Host 更新 " + m_updateVersion + "…");
+    QNetworkRequest installerRequest(QUrl(m_updateInstallerUrl));
+    installerRequest.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION);
+    installerRequest.setTransferTimeout(120000);
+    auto *installerReply = m_network.get(installerRequest);
+    connect(installerReply, &QNetworkReply::finished, this, [this, installerReply] {
+        const auto installer = installerReply->readAll();
+        const auto error = installerReply->error();
+        const auto errorText = installerReply->errorString();
+        const auto status = installerReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        installerReply->deleteLater();
+        if (error != QNetworkReply::NoError || (status != 0 && (status < 200 || status >= 300)) || installer.isEmpty()) {
+            setMessage("Host 更新下载失败：" + (errorText.isEmpty() ? QString("HTTP %1").arg(status) : errorText)); return;
+        }
+        QNetworkRequest checksumRequest(QUrl(m_updateChecksumUrl));
+        checksumRequest.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION);
+        checksumRequest.setTransferTimeout(15000);
+        auto *checksumReply = m_network.get(checksumRequest);
+        connect(checksumReply, &QNetworkReply::finished, this, [this, checksumReply, installer] {
+            const auto checksumText = QString::fromUtf8(checksumReply->readAll()).trimmed();
+            const auto error = checksumReply->error();
+            const auto errorText = checksumReply->errorString();
+            const auto status = checksumReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            checksumReply->deleteLater();
+            if (error != QNetworkReply::NoError || (status != 0 && (status < 200 || status >= 300))) {
+                setMessage("Host 更新校验文件下载失败：" + (errorText.isEmpty() ? QString("HTTP %1").arg(status) : errorText)); return;
+            }
+            const auto expected = checksumText.section(QRegularExpression("\\s+"), 0, 0).toLower();
+            const auto actual = QCryptographicHash::hash(installer, QCryptographicHash::Sha256).toHex().toLower();
+            if (expected.size() != 64 || expected != actual) { setMessage("Host 更新校验失败，已取消安装"); return; }
+            const auto path = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath(QString("OrbisHost-%1-setup.exe").arg(m_updateVersion));
+            QFile file(path); if (!file.open(QIODevice::WriteOnly) || file.write(installer) != installer.size()) { setMessage("无法保存 Host 更新安装包"); return; }
+            file.close();
+            setMessage("更新包已校验，Host 即将退出并安装 " + m_updateVersion);
+            if (!QProcess::startDetached(path, {"/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"})) { setMessage("无法启动 Host 更新安装器"); return; }
+            QTimer::singleShot(500, qApp, &QCoreApplication::quit);
+        });
+    });
+}
+void HostController::openDownloads() { QDesktopServices::openUrl(QUrl("https://orbising.com/")); }
 void HostController::openDataDirectory() { QDesktopServices::openUrl(QUrl::fromLocalFile(m_dataDir)); }
 void HostController::clearMessage() { m_message.clear(); emit changed(); }
 void HostController::setMessage(const QString &message) { m_message = message; appendLog(message); emit changed(); }
