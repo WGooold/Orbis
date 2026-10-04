@@ -14,6 +14,7 @@ const assets = {
   "/assets/orbis.png": ["orbis.png", "image/png"],
 } as const;
 export const downloadNames = [
+  "OrbisHost-0.1.9-windows-x64-setup.exe", "OrbisHost-0.1.9-windows-x64.zip",
   "OrbisHost-0.1.8-windows-x64-setup.exe", "OrbisHost-0.1.8-windows-x64.zip",
   "OrbisHost-0.1.7-windows-x64-setup.exe", "OrbisHost-0.1.7-windows-x64.zip",
   "OrbisHost-0.1.6-windows-x64-setup.exe", "OrbisHost-0.1.6-windows-x64.zip",
