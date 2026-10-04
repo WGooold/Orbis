@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
-import { readFile, writeFile, rename, stat } from "node:fs/promises";
+import { readFile, writeFile, rename, rm, stat } from "node:fs/promises";
+import { Socket } from "node:net";
 import { homedir } from "node:os";
 import { join, delimiter, isAbsolute } from "node:path";
 import { promisify } from "node:util";
@@ -29,6 +30,22 @@ import { ProviderUsageCache, type UsageSnapshot } from "./provider-usage-cache.j
 import { usageTemplate } from "./provider-usage-templates.js";
 
 const execute = promisify(execFile);
+
+async function loopbackPortAlive(value: unknown): Promise<boolean> {
+  if (typeof value !== "string") return false;
+  let url: URL;
+  try { url = new URL(value); } catch { return false; }
+  if (url.protocol !== "ws:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || url.port.length === 0) return false;
+  return await new Promise(resolve => {
+    const socket = new Socket();
+    const finish = (alive: boolean) => { socket.destroy(); resolve(alive); };
+    socket.setTimeout(500, () => finish(false));
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+    socket.connect(Number(url.port), url.hostname);
+  });
+}
+
 export type DesktopSettings = {
   relayUrl: string; credential: string; codexEnabled?: boolean; piEntry?: string; codexEntry?: string;
   dshEnabled?: boolean; dshEntry?: string; dshWebUrl?: string;
@@ -260,13 +277,14 @@ export class DesktopRuntime {
   }
 
   async #checkExistingHost(): Promise<void> {
-    let descriptor: { pid?: number };
+    let descriptor: { pid?: number; url?: string };
     try { descriptor = JSON.parse(await readFile(join(this.#stateDir, "loopback.json"), "utf8")) as { pid?: number }; }
     catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return; throw error; }
     if (descriptor.pid && descriptor.pid !== process.pid) {
       let alive = true;
       try { process.kill(descriptor.pid, 0); } catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") alive = false; }
-      if (alive) throw new Error("已有另一个 Host 正在运行。请先在原窗口退出，再从客户端启动。");
+      if (alive && await loopbackPortAlive(descriptor.url)) throw new Error("已有另一个 Host 正在运行。请先在原窗口退出，再从客户端启动。");
+      await rm(join(this.#stateDir, "loopback.json"), { force: true });
     }
   }
 

@@ -12,7 +12,8 @@
  * 临时 token 的性质是**防手滑，不是安全边界**（见 `LoopbackDescriptorSchema` 的注释）。
  */
 import { randomBytes } from "node:crypto";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
@@ -74,6 +75,7 @@ export class HostLoopbackServer {
   #wss: WebSocketServer | undefined;
   #descriptor: LoopbackDescriptor | undefined;
   #descriptorPath: string | undefined;
+  #exitCleanup: (() => void) | undefined;
 
   constructor(options: HostLoopbackServerOptions) {
     this.#options = options;
@@ -144,6 +146,14 @@ export class HostLoopbackServer {
     this.#descriptor = descriptor;
     this.#descriptorPath = join(this.#options.stateDir, LOOPBACK_DESCRIPTOR_FILE);
     await writePrivateJson(this.#descriptorPath, descriptor);
+    const descriptorPath = this.#descriptorPath;
+    this.#exitCleanup = () => {
+      try {
+        const current = JSON.parse(readFileSync(descriptorPath, "utf8")) as Partial<LoopbackDescriptor>;
+        if (current.pid === descriptor.pid && current.token === descriptor.token && current.url === descriptor.url) rmSync(descriptorPath, { force: true });
+      } catch { /* The descriptor may already be gone or unreadable during process exit. */ }
+    };
+    process.once("exit", this.#exitCleanup);
     this.#options.log?.(`loopback 监听 ${descriptor.url}${LOOPBACK_PATH}`);
     return descriptor;
   }
@@ -154,6 +164,10 @@ export class HostLoopbackServer {
     }
     this.#runtimes.clear();
 
+    const descriptor = this.#descriptor;
+    const descriptorPath = this.#descriptorPath;
+    if (this.#exitCleanup !== undefined) process.removeListener("exit", this.#exitCleanup);
+    this.#exitCleanup = undefined;
     const wss = this.#wss;
     const server = this.#server;
     this.#wss = undefined;
@@ -164,8 +178,11 @@ export class HostLoopbackServer {
     await new Promise<void>((resolve) => server?.close(() => resolve()) ?? resolve());
 
     // 发现文件必须比服务先消失：留着一个指向死端口的文件，扩展会连上去然后空等。
-    if (this.#descriptorPath !== undefined) {
-      await rm(this.#descriptorPath, { force: true });
+    if (descriptorPath !== undefined && descriptor !== undefined) {
+      try {
+        const current = JSON.parse(await readFile(descriptorPath, "utf8")) as Partial<LoopbackDescriptor>;
+        if (current.pid === descriptor.pid && current.token === descriptor.token && current.url === descriptor.url) await rm(descriptorPath, { force: true });
+      } catch { /* The descriptor may already be gone. */ }
       this.#descriptorPath = undefined;
     }
   }
