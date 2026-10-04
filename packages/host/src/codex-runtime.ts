@@ -211,6 +211,10 @@ type ThreadState = {
   entries: RemoteSessionEntry[];
   historyError?: string;
   rolloutPath?: string;
+  /** TUI-created threads need a Host subscription before their events/settings are visible. */
+  tuiAttachPending?: boolean;
+  tuiAttachPromise?: Promise<void>;
+  tuiAttachNotifications?: Array<{ method: string; params: unknown }>;
   itemOrder: string[];
   committedItemCount: number;
   completedItems: Map<string, { item: Record<string, unknown>; turnId: string | undefined }>;
@@ -969,6 +973,8 @@ export class CodexRuntime implements AgentBackend {
       const key = this.#windowKeyByThread.get(id) ?? id;
       if (alive.has(key) || (key.startsWith("terminal:") && alive.has(REMOTE_TUI_PROCESS))) {
         this.#headWindowSeen.add(key);
+        const thread = this.#threads.get(id);
+        if (thread?.tuiAttachPending) void this.#attachTuiThread(thread);
         continue;
       }
       if (!this.#headWindowSeen.has(key)) continue; // TUI 还没被 powershell 拉起来，先放过
@@ -1906,16 +1912,9 @@ export class CodexRuntime implements AgentBackend {
     const cwd = typeof snapshot?.cwd === "string" ? snapshot.cwd : pending.cwd;
     const thread = this.#newThreadState(threadId, cwd, { name: codexSessionName(snapshot?.name) });
     this.#threads.set(threadId, thread);
-    void this.#refreshIntegrationCatalog(thread);
-    try {
-      this.#replayTurns(thread, { ...(snapshot ?? {}), turns: await this.#listAllTurns(threadId) });
-    } catch (error) {
-      this.#options.log?.(`拉取终端会话历史失败（thread=${threadId}）：${describeError(error)}`);
-    }
-    if (thread.itemOrder.length === 0) await this.#replayFromRollout(thread);
     this.#trackHeadWindow(threadId, windowKey, false);
     this.#headWindowSeen.add(windowKey);
-    this.#publishMetadataEvent(thread);
+    await this.#initializeTuiThread(thread, snapshot);
     this.#options.log?.(`Codex 终端会话已接入：thread=${threadId} cwd=${cwd}`);
   }
 
@@ -1947,23 +1946,91 @@ export class CodexRuntime implements AgentBackend {
     this.#deactivateThread(victim.oldThreadId, "Codex TUI 已切换到其他会话");
     const thread = this.#newThreadState(threadId, cwd, { name: codexSessionName(snapshot?.name) });
     this.#threads.set(threadId, thread);
-    void this.#refreshIntegrationCatalog(thread);
-    try {
-      this.#replayTurns(thread, { ...snapshot, turns: await this.#listAllTurns(threadId) });
-    } catch (error) {
-      // turns/list 失败不挡收编：条目图还有磁盘 rollout 兜底。
-      this.#options.log?.(`拉取切换会话历史失败（thread=${threadId}）：${describeError(error)}`);
-    }
-    if (thread.itemOrder.length === 0) await this.#replayFromRollout(thread);
     this.#windowKeyByThread.set(threadId, victim.key);
     this.#windowActivity.set(victim.key, Date.now());
     this.#headWindows.add(threadId);
     this.#headWindowSeen.add(victim.key);
-    this.#publishMetadataEvent(thread);
+    await this.#initializeTuiThread(thread, snapshot);
 
     this.#options.log?.(
       `Codex TUI 切换会话：${victim.oldThreadId} → ${threadId}（窗口 key=${victim.key}，cwd=${cwd}）`,
     );
+  }
+
+  async #initializeTuiThread(thread: ThreadState, snapshot: Record<string, unknown> | undefined): Promise<void> {
+    this.#replayTurns(thread, snapshot);
+    thread.tuiAttachPending = true;
+    thread.historyError = "codex_attach_pending";
+    await this.#attachTuiThread(thread);
+    if (this.#threads.get(thread.id) !== thread) return;
+    void this.#refreshIntegrationCatalog(thread);
+    this.#publishMetadataEvent(thread);
+  }
+
+  /**
+   * thread/started and status changes are global broadcasts; turns/items/settings are not.
+   * Reading turns alone never subscribes this Host connection. Resume without overrides to
+   * join the TUI's existing thread and read its effective settings as well as its history.
+   * Before the first message Codex has no rollout and refuses resume. Retry on status changes
+   * and the existing window watcher, so even a fast first turn is recovered from the snapshot.
+   */
+  #attachTuiThread(thread: ThreadState): Promise<void> {
+    if (thread.tuiAttachPromise !== undefined) return thread.tuiAttachPromise;
+    if (!thread.tuiAttachPending || this.#threads.get(thread.id) !== thread) return Promise.resolve();
+    thread.tuiAttachNotifications = [];
+    const attaching = (async () => {
+      try {
+        const result = object(await this.#server.request("thread/resume", { threadId: thread.id }));
+        if (this.#threads.get(thread.id) !== thread) return;
+        const snapshot = object(result.thread);
+        if (snapshot.id !== thread.id) throw new Error("app-server 的 thread/resume 响应缺少匹配的 thread.id");
+        if (typeof snapshot.cwd === "string") thread.cwd = snapshot.cwd;
+        thread.name = codexSessionName(snapshot.name) ?? thread.name;
+        if (typeof result.model === "string") thread.model = result.model;
+        if (typeof result.modelProvider === "string") thread.modelProvider = result.modelProvider;
+        if (typeof result.reasoningEffort === "string") thread.effort = result.reasoningEffort;
+        thread.permissions = codexPermissions(result) ?? thread.permissions;
+        if (codexPermissions(result)) this.#effectiveSettings.set(thread.id, result);
+        this.#replayTurns(thread, snapshot);
+        if (thread.itemOrder.length === 0) {
+          const empty = Array.isArray(snapshot.turns) && snapshot.turns.length === 0;
+          await this.#replayFromRollout(thread, empty);
+        }
+        if (this.#threads.get(thread.id) !== thread) return;
+        const status = object(snapshot.status);
+        thread.turnInProgress = status.type === "active";
+        thread.waitingForApproval = Array.isArray(status.activeFlags)
+          && status.activeFlags.some(flag => flag === "waitingOnApproval" || flag === "waitingOnUserInput");
+        const activeTurn = Array.isArray(snapshot.turns)
+          ? snapshot.turns.map(object).find(turn => turn.status === "inProgress") : undefined;
+        if (typeof activeTurn?.id === "string") thread.turnId = activeTurn.id;
+        thread.tuiAttachPending = false;
+        void this.#checkSandboxReadiness(thread);
+      } catch (error) {
+        if (this.#threads.get(thread.id) !== thread) return;
+        const message = describeError(error);
+        // An unmaterialized thread is an empty session, not a permanently broken history.
+        // Other failures remain visible and are retried while its TUI is still alive.
+        if (/no rollout found for thread id|not materialized yet/u.test(message) && thread.entries.length === 0) {
+          delete thread.historyError;
+        } else {
+          thread.historyError = "codex_attach_pending";
+          this.#options.log?.(`接入 TUI 会话失败，将重试（thread=${thread.id}）：${message}`);
+        }
+      } finally {
+        const notifications = thread.tuiAttachNotifications ?? [];
+        delete thread.tuiAttachNotifications;
+        delete thread.tuiAttachPromise;
+        if (this.#threads.get(thread.id) === thread) {
+          // Notifications may arrive ahead of the resume response. Apply them after replay
+          // so a newer item, permission or turn state cannot be erased by that snapshot.
+          for (const notification of notifications) await this.#handleNotification(notification.method, notification.params);
+          this.#publishMetadataEvent(thread);
+        }
+      }
+    })();
+    thread.tuiAttachPromise = attaching;
+    return attaching;
   }
 
   /**
@@ -1995,7 +2062,7 @@ export class CodexRuntime implements AgentBackend {
     }
   }
 
-  /** 全量拉一个 thread 的 turns（itemsView full，分页取尽）。revert 与 TUI 切换收编共用。 */
+  /** 全量拉一个 thread 的 turns（itemsView full，分页取尽），用于回退后重建历史。 */
   async #listAllTurns(threadId: string): Promise<unknown[]> {
     const turns: unknown[] = [];
     let cursor: string | undefined;
@@ -2054,6 +2121,10 @@ export class CodexRuntime implements AgentBackend {
       this.#handleUnmanagedNotification(method, record, typeof threadId === "string" ? threadId : undefined);
       return;
     }
+    if (thread.tuiAttachNotifications !== undefined) {
+      thread.tuiAttachNotifications.push({ method, params });
+      return;
+    }
     // 该 thread 所属窗口有动静：TUI 切换归属时按「最近有动静」挑窗口用。
     const windowKey = this.#windowKeyByThread.get(thread.id);
     if (windowKey !== undefined) this.#windowActivity.set(windowKey, Date.now());
@@ -2093,6 +2164,7 @@ export class CodexRuntime implements AgentBackend {
         if (status.type === "idle") thread.turnInProgress = false;
         else if (status.type === "active") thread.turnInProgress = true;
         this.#publishMetadataEvent(thread);
+        if (thread.tuiAttachPending) void this.#attachTuiThread(thread);
         return;
       }
       case "item/started": {

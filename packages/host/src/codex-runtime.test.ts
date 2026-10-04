@@ -1960,7 +1960,7 @@ describe("CodexRuntime TUI 切换会话", () => {
 
     h.notify("thread/started", { thread: { id: "th-terminal", cwd: "D:/terminal-repo" } });
     await vi.waitFor(() => expect(h.queue.length).toBeGreaterThan(0));
-    h.queue.shift()!.resolve({ data: [] });
+    h.queue.shift()!.resolve({ thread: { id: "th-terminal", cwd: "D:/terminal-repo", turns: [] } });
     await flush();
 
     expect(h.events).toContainEqual(expect.objectContaining({
@@ -1994,12 +1994,14 @@ describe("CodexRuntime TUI 切换会话", () => {
 
     // TUI 在窗口里 /new：广播 thread/started（带完整 thread 对象，含 cwd）。
     h.notify("thread/started", { thread: { id: "th-tui-new", cwd: "D:/repo2" } });
-    // 宽限窗口后：cwd 来自广播，无需 thread/list；第一笔在途请求是 thread/turns/list。
+    // 宽限窗口后：cwd 来自广播，无需 thread/list；thread/resume 接入同一会话的事件流。
     await vi.waitFor(() => {
       expect(h.queue.length).toBeGreaterThan(0);
     });
     h.queue.shift()!.resolve({
-      data: [{ id: "t9", items: [{ type: "userMessage", id: "u9", content: [{ type: "text", text: "TUI 里说的" }] }] }],
+      thread: { id: "th-tui-new", cwd: "D:/repo2",
+        turns: [{ id: "t9", items: [{ type: "userMessage", id: "u9", content: [{ type: "text", text: "TUI 里说的" }] }] }],
+      },
     });
     await flush();
 
@@ -2041,7 +2043,7 @@ describe("CodexRuntime TUI 切换会话", () => {
     await vi.waitFor(() => {
       expect(h.queue.length).toBeGreaterThan(0);
     });
-    h.queue.shift()!.resolve({ data: [] }); // thread/turns/list：空历史
+    h.queue.shift()!.resolve({ thread: { id: "th-other", cwd: "D:/repo3", turns: [] } });
     await flush();
 
     expect(h.offline).toHaveLength(1);
