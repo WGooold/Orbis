@@ -515,7 +515,7 @@ void HostController::checkUpdates() {
 void HostController::updateHost() {
     if (m_updateInstallerUrl.isEmpty() || m_updateChecksumUrl.isEmpty()) { checkUpdates(); return; }
     setMessage("正在下载 Host 更新 " + m_updateVersion + "…");
-    QNetworkRequest installerRequest(QUrl(m_updateInstallerUrl));
+    QNetworkRequest installerRequest{QUrl(m_updateInstallerUrl)};
     installerRequest.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION);
     installerRequest.setTransferTimeout(120000);
     auto *installerReply = m_network.get(installerRequest);
@@ -528,7 +528,7 @@ void HostController::updateHost() {
         if (error != QNetworkReply::NoError || (status != 0 && (status < 200 || status >= 300)) || installer.isEmpty()) {
             setMessage("Host 更新下载失败：" + (errorText.isEmpty() ? QString("HTTP %1").arg(status) : errorText)); return;
         }
-        QNetworkRequest checksumRequest(QUrl(m_updateChecksumUrl));
+        QNetworkRequest checksumRequest{QUrl(m_updateChecksumUrl)};
         checksumRequest.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION);
         checksumRequest.setTransferTimeout(15000);
         auto *checksumReply = m_network.get(checksumRequest);
