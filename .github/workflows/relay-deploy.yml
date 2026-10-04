@@ -123,8 +123,11 @@ jobs:
           from pathlib import Path
           import hashlib, os, tarfile
           root = Path('/tmp/orbis-windows-artifact')
+          cmake = Path('packages/windows-host/CMakeLists.txt').read_text()
+          import re
+          version = re.search(r'project\(OrbisHost VERSION ([0-9]+\.[0-9]+\.[0-9]+)', cmake).group(1)
           with tarfile.open('/tmp/orbis-downloads-' + os.environ['RELEASE'] + '.tar.gz', 'w:gz') as archive:
-              for name in ['OrbisHost-0.1.8-windows-x64-setup.exe', 'OrbisHost-0.1.8-windows-x64.zip']:
+              for name in [f'OrbisHost-{version}-windows-x64-setup.exe', f'OrbisHost-{version}-windows-x64.zip']:
                   matches = list(root.rglob(name))
                   assert len(matches) == 1, name
                   file = matches[0]
