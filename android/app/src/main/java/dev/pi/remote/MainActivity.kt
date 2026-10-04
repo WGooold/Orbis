@@ -667,10 +667,12 @@ internal fun NewSessionSheet(
     var agentKind by rememberSaveable { mutableStateOf("pi") }
     // 电脑端说得很清楚时不让人白点：做不到的 agent 直接置灰（未知=不限制，见 RemoteState）。
     val codexSupported = state.supportedAgents?.contains("codex") != false
+    val codexDesktopSupported = state.launchableAgents?.contains("codexDesktop") == true
     val dshSupported = state.supportedAgents?.contains("dsh") == true
-    LaunchedEffect(codexSupported, dshSupported) {
+    LaunchedEffect(codexSupported, codexDesktopSupported, dshSupported) {
         // chip 可能停在上一轮选中的 Codex 上（rememberSaveable），电脑不支持就拉回来。
         if (!codexSupported && agentKind == "codex") agentKind = "pi"
+        if (!codexDesktopSupported && agentKind == "codexDesktop") agentKind = "pi"
         if (!dshSupported && agentKind == "dsh") agentKind = "pi"
     }
     LaunchedEffect(Unit) {
@@ -699,8 +701,9 @@ internal fun NewSessionSheet(
             )
             Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 AgentChoice(AgentBrand.Pi, agentKind == "pi", { agentKind = "pi" }, Modifier.weight(1f))
-                AgentChoice(AgentBrand.Codex, agentKind == "codex", { agentKind = "codex" }, Modifier.weight(1f), codexSupported)
+                AgentChoice(AgentBrand.Codex, agentKind == "codex", { agentKind = "codex" }, Modifier.weight(1f), codexSupported, "Codex 终端")
             }
+            AgentChoice(AgentBrand.Codex, agentKind == "codexDesktop", { agentKind = "codexDesktop" }, Modifier.fillMaxWidth(), codexDesktopSupported, "Codex 桌面版")
             AgentChoice(AgentBrand.DeepSeek, agentKind == "dsh", { agentKind = "dsh" }, Modifier.fillMaxWidth(), dshSupported)
             if (agentKind == "dsh") {
                 Text("DeepSeek Harness 会话在后台运行，支持模型切换与工具审批", style = MaterialTheme.typography.bodySmall)

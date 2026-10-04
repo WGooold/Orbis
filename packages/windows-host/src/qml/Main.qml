@@ -554,7 +554,7 @@ ApplicationWindow {
                             ColumnLayout {
                                 anchors.fill: parent; spacing: 13
                                 Heading { text: "打开 AI 工作台" }
-                                Hint { text: "打开 Pi、Codex 或 DeepSeek Harness，直接开始对话。"; Layout.fillWidth: true }
+                                Hint { text: "打开 Pi、Codex 终端、Codex 桌面版或 DeepSeek Harness，直接开始对话。"; Layout.fillWidth: true }
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 16
                                     ActionButton {
@@ -574,6 +574,14 @@ ApplicationWindow {
                                         onClicked: host.openAgentTui("codex")
                                     }
                                     ActionButton {
+                                        objectName: "overviewOpenCodexDesktop"
+                                        text: "打开 Codex 桌面版"
+                                        primary: true
+                                        enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "codex" && a.desktopInstalled)
+                                        Accessible.name: "打开 Codex 桌面版"
+                                        onClicked: host.openAgent("codexDesktop")
+                                    }
+                                    ActionButton {
                                         objectName: "overviewOpenDsh"
                                         text: "打开 DeepSeek Harness"
                                         primary: true
@@ -583,7 +591,7 @@ ApplicationWindow {
                                     }
                                     Item { Layout.fillWidth: true }
                                 }
-                                Hint { text: "Pi 和 Codex 会先让你选择工作区，DeepSeek 使用网页工作台。按钮不可用时，请到 Agent 页检测或安装。模型登录可在供应商配置或已打开的 agent 终端中完成。"; Layout.fillWidth: true; font.pixelSize: 11 }
+                                Hint { text: "Pi 和 Codex 终端会先让你选择工作区，Codex 桌面版直接打开独立应用，DeepSeek 使用网页工作台。按钮不可用时，请到 Agent 页检测或安装。模型登录可在供应商配置或已打开的 agent 中完成。"; Layout.fillWidth: true; font.pixelSize: 11 }
                                 RowLayout {
                                     visible: !host.dshEnabled && host.agents.some(a => a.kind === "dsh" && a.installed)
                                     Layout.fillWidth: true; spacing: 16

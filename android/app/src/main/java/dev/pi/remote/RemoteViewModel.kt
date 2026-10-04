@@ -435,6 +435,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         activateTarget(buildJsonObject {
             put("type", "resume")
             put("sessionId", sessionId)
+            mutableState.value.sessions[sessionId]?.agentKind?.let { put("agentKind", it) }
         })
     }
 

@@ -10,6 +10,8 @@
  * 会话目录聚合、进程激活能力（`browse` / L1 / L2）见 `sessions.ts` / `spawner.ts`（spec §8）。
  */
 import { homedir, hostname } from "node:os";
+import { readFile, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import {
   E2eError,
@@ -146,6 +148,11 @@ export type HostServiceOptions = {
    * （CLI 在 `--codex` 时创建并 stop）；缺省/未传 = 不启用 Codex。
    */
   codexRuntime?: CodexRuntime;
+  codexDesktopRuntime?: CodexRuntime;
+  /** 按需启动并连接 Codex 桌面版；返回的 runtime 会被动态挂载到本服务。 */
+  ensureCodexDesktop?: () => Promise<CodexRuntime | undefined>;
+  /** Codex 桌面版已安装，可在手机新建会话时按需启动；不代表 GUI 当前在线。 */
+  codexDesktopLaunchable?: boolean;
   /** 终端 shim 通过 loopback 请求官方 Codex TUI 接入 Host app-server。 */
   codexLaunch?: (request: CodexLaunchRequest) => Promise<CodexLaunchResult>;
   dshRuntime?: DshRuntime;
@@ -185,7 +192,7 @@ export class HostService {
    * Pi 在前（磁盘会话），Codex 在后（thread 空间）。分派只面向 `AgentBackend`
    * 接口，不为单个后端写特判。
    */
-  readonly #backends: readonly AgentBackend[];
+  #backends: AgentBackend[];
   readonly #downloads: HostDownloadService;
   readonly #uploads: HostUploadService;
   /**
@@ -214,6 +221,8 @@ export class HostService {
   #sessionMutation: Promise<void> = Promise.resolve();
   readonly #gitReads = new Map<string, ReturnType<typeof readGitBranch>>();
   #providerChanging: AgentKind | undefined;
+  readonly #desktopOwnedIds = new Set<string>();
+  #desktopLedgerWrite: Promise<void> = Promise.resolve();
 
   private constructor(
     options: HostServiceOptions,
@@ -282,34 +291,9 @@ export class HostService {
         ...(options.log === undefined ? {} : { log: options.log }),
       }),
     ];
-    if (options.codexRuntime !== undefined) {
-      const codex = options.codexRuntime;
-      codex.setEventSink((event, threadId) => {
-        // 每个活跃 thread 一条独立进程：对外 runtimeId 是 `codex:<threadId>`，
-        // 序号也按这个粒度记（APP 按 runtimeId+channel+sequence 去重防丢）。
-        const runtimeId = threadId === undefined ? codex.runtimeId : codex.runtimeIdFor(threadId);
-        this.#publishRuntimeEvent(runtimeId, event);
-      });
-      // Codex 的 cwd/状态会随会话激活与 turn 起止变化；目录里那份快照不会自己更新，
-      // 这里跟着重播 runtime.online（APP 按 runtimeId upsert）让主页面卡片保持如实。
-      // 多 thread 并发时每次把整组条目重播一遍：upsert 幂等，多播不重复建卡。
-      codex.onMetadataChange = () => {
-        for (const runtime of codex.directoryEntries()) {
-          this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
-        }
-      };
-      // app-server 进程退出 = Codex 全部会话掉线：用退出前的目录快照逐个广播，
-      // 别让手机端永远「在线」。
-      codex.onOffline = (reason, runtimes) => {
-        for (const runtime of runtimes) {
-          this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
-        }
-      };
-      codex.onArchiveChange = (sessionId, archived) => {
-        this.#invalidateCatalog();
-        this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: "codex", sessionId, archived });
-      };
-      backends.push(codex);
+    this.#backends = backends;
+    for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
+      if (codex !== undefined) this.#attachCodexBackend(codex);
     }
     if (options.dshRuntime !== undefined) {
       const dsh = options.dshRuntime;
@@ -328,7 +312,56 @@ export class HostService {
       };
       backends.push(dsh);
     }
-    this.#backends = backends;
+  }
+
+  /** Wire a Codex runtime once. Desktop runtimes can be attached after relay startup. */
+  #attachCodexBackend(codex: CodexRuntime): void {
+    if (this.#backends.includes(codex)) return;
+    codex.seedDesktopThreads(this.#desktopOwnedIds);
+    codex.setEventSink((event, threadId) => {
+      const runtimeId = threadId === undefined ? codex.runtimeId : codex.runtimeIdFor(threadId);
+      this.#publishRuntimeEvent(runtimeId, event);
+    });
+    codex.onMetadataChange = () => {
+      if (codex.kind === "codexDesktop") this.#invalidateCatalog();
+      for (const runtime of codex.directoryEntries()) this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+    };
+    codex.onOffline = (reason, runtimes) => {
+      if (codex.kind === "codexDesktop") {
+        this.#invalidateCatalog();
+        this.#broadcastDeviceReady();
+      }
+      for (const runtime of runtimes) this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
+    };
+    codex.onArchiveChange = (sessionId, archived) => {
+      this.#invalidateCatalog();
+      this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: codex.kind, sessionId, archived });
+    };
+    if (codex.kind === "codexDesktop") codex.onDesktopThread = id => this.#recordDesktopThread(id);
+    this.#backends.push(codex);
+  }
+
+  /** Attach a newly connected desktop proxy and immediately publish its capability. */
+  attachCodexDesktopRuntime(runtime: CodexRuntime): void {
+    const existing = this.#backends.find(backend => backend.kind === "codexDesktop");
+    if (existing !== undefined && existing !== runtime) this.detachCodexDesktopRuntime(existing as CodexRuntime);
+    this.#attachCodexBackend(runtime);
+    runtime.markStarted();
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
+  }
+
+  /** Remove a closed desktop proxy. Terminal Codex remains untouched. */
+  detachCodexDesktopRuntime(runtime: CodexRuntime): void {
+    const index = this.#backends.indexOf(runtime);
+    if (index < 0 || runtime.kind !== "codexDesktop") return;
+    runtime.onMetadataChange = undefined;
+    runtime.onOffline = undefined;
+    runtime.onArchiveChange = undefined;
+    runtime.onDesktopThread = undefined;
+    this.#backends.splice(index, 1);
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
   }
 
   static async create(options: HostServiceOptions): Promise<HostService> {
@@ -337,7 +370,18 @@ export class HostService {
     // 那必须让用户看到，而不是悄悄重建。
     const identity = await loadOrCreateHostIdentity({ dir: stateDir });
     const store = await loadDeviceStore(stateDir);
-    return new HostService(options, stateDir, identity, store);
+    const service = new HostService(options, stateDir, identity, store);
+    try {
+      const ids: unknown = JSON.parse(await readFile(join(stateDir, "codex-desktop-threads.json"), "utf8"));
+      if (Array.isArray(ids)) {
+        for (const id of ids) if (typeof id === "string" && id.length > 0 && id.length <= 128 && !id.includes(":")) service.#desktopOwnedIds.add(id);
+      }
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) options.log?.(`读取 Codex 桌面会话归属失败：${describeError(error)}`);
+    }
+    options.codexRuntime?.seedDesktopThreads(service.#desktopOwnedIds);
+    options.codexDesktopRuntime?.seedDesktopThreads(service.#desktopOwnedIds);
+    return service;
   }
 
   get hostId(): string {
@@ -380,7 +424,12 @@ export class HostService {
 
   async assertProviderSwitchReady(kind: AgentKind): Promise<void> {
     try {
-      if (kind === "codex") this.#options.codexRuntime?.assertProviderSwitchReady();
+      if (kind === "codex") {
+        this.#options.codexRuntime?.assertProviderSwitchReady();
+        for (const backend of this.#backends) {
+          if (backend.kind === "codexDesktop" && backend.isReady()) (backend as CodexRuntime).assertProviderSwitchReady();
+        }
+      }
       if (kind === "dsh") await this.#options.dshRuntime?.assertProviderSwitchReady();
     } catch (error) { throw new ProviderError(error instanceof Error ? error.message : "Agent 正在工作"); }
   }
@@ -394,7 +443,13 @@ export class HostService {
   changeProvider<T>(kind: AgentKind, operation: () => Promise<T>): Promise<T> {
     const result = this.#sessionMutation.then(async () => {
       this.#providerChanging = kind;
-      try { if (!(kind === "codex" && this.#options.providers?.proxyTakeoverActive)) await this.assertProviderSwitchReady(kind); return await operation(); }
+      try {
+        const desktopReady = this.#backends.some(backend => backend.kind === "codexDesktop" && backend.isReady());
+        if (!(kind === "codex" && this.#options.providers?.proxyTakeoverActive && !desktopReady)) {
+          await this.assertProviderSwitchReady(kind);
+        }
+        return await operation();
+      }
       finally { this.#providerChanging = undefined; }
     });
     this.#sessionMutation = result.then(() => {}, () => {});
@@ -444,6 +499,26 @@ export class HostService {
    */
   #agentsSnapshot(): AgentKind[] {
     return this.#backends.filter((backend) => backend.isReady()).map((backend) => backend.kind);
+  }
+
+  #launchableAgentsSnapshot(): AgentKind[] {
+    const agents = this.#agentsSnapshot();
+    if (this.#options.codexDesktopLaunchable === true && !agents.includes("codexDesktop")) agents.push("codexDesktop");
+    return agents;
+  }
+
+  /** Re-send the authoritative capability list after a desktop GUI state change. */
+  #broadcastDeviceReady(): void {
+    for (const deviceId of this.#links.keys()) {
+      this.#sendToDevice(deviceId, {
+        type: "device.ready",
+        protocolVersion: PROTOCOL_VERSION,
+        deviceId,
+        runtimes: this.#runtimesSnapshot(),
+        agents: this.#agentsSnapshot(),
+        launchableAgents: this.#launchableAgentsSnapshot(),
+      });
+    }
   }
 
   /** 某台设备此刻生效的路径（§14 B4 要显示的那个事实）。 */
@@ -582,6 +657,10 @@ export class HostService {
       this.#options.codexRuntime.markStarted();
       this.#options.log?.(`Codex 后端已就绪（runtimeId=${this.#options.codexRuntime.runtimeId}）`);
     }
+    if (this.#options.codexDesktopRuntime !== undefined) {
+      this.#options.codexDesktopRuntime.markStarted();
+      this.#options.log?.(`Codex 桌面后端已就绪（runtimeId=${this.#options.codexDesktopRuntime.runtimeId}）`);
+    }
 
     try { await this.#options.dshRuntime?.start(); }
     catch (error) { this.#options.log?.(`DeepSeek Web 会话发现暂时失败，将自动重试：${describeError(error)}`); }
@@ -589,6 +668,7 @@ export class HostService {
   }
 
   async stop(): Promise<void> {
+    await this.#desktopLedgerWrite;
     this.#sessionSync.close();
     this.#pairing.close();
     await this.#lan?.stop();
@@ -986,8 +1066,21 @@ export class HostService {
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${describeError(error)}`);
       }
     }
-    // 目录是发给手机的单条 E2E 消息，历史太久会撑成大帧（中继可能拒收）。
-    return sessions.slice(0, 2_000);
+    const desktopIds = this.#desktopOwnedIds;
+    return sessions.filter(entry => entry.agentKind !== "codex" || !desktopIds.has(entry.sessionId)).slice(0, 2_000);
+  }
+
+  #recordDesktopThread(id: string): void {
+    if (this.#desktopOwnedIds.has(id)) return;
+    this.#desktopOwnedIds.add(id);
+    this.#options.codexRuntime?.seedDesktopThreads([id]);
+    this.#invalidateCatalog();
+    const path = join(this.#stateDir, "codex-desktop-threads.json");
+    const body = JSON.stringify([...this.#desktopOwnedIds]);
+    this.#desktopLedgerWrite = this.#desktopLedgerWrite.then(async () => {
+      await writeFile(`${path}.tmp`, body, "utf8");
+      await rename(`${path}.tmp`, path);
+    }).catch(error => this.#options.log?.(`保存 Codex 桌面会话归属失败：${describeError(error)}`));
   }
 
   /** 激活或归档操作后失效目录缓存：状态变化必须马上出现在手机侧栏。 */
@@ -1076,12 +1169,21 @@ export class HostService {
         ...(message.spawnMode === undefined ? {} : { spawnMode: message.spawnMode }),
       };
       if (target.type === "new") {
-        const backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
+        let backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
+        if ((backend === undefined || !backend.isReady()) && target.agentKind === "codexDesktop") {
+          const runtime = await this.#options.ensureCodexDesktop?.();
+          if (runtime !== undefined) {
+            this.attachCodexDesktopRuntime(runtime);
+            backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
+          }
+        }
         if (backend === undefined) {
           throw new ActivationError(
             "agent_unsupported",
             target.agentKind === "codex"
               ? "Codex 后端未启用：请用 `pi-remote host --codex` 启动"
+              : target.agentKind === "codexDesktop"
+                ? "Codex 桌面版未运行，已尝试启动但未就绪"
               : target.agentKind === "dsh" ? "DeepSeek Harness 后端未启用：请用 `pi-remote host --dsh` 启动" : "未知的 agent 类型",
           );
         }
@@ -1095,8 +1197,15 @@ export class HostService {
         this.#sendActivated(deviceId, requestId, backend.kind, activated);
         return;
       }
+      const resumeKind = target.agentKind ?? (target.sessionId.startsWith("codex-desktop:") ? "codexDesktop" : undefined);
+      if (resumeKind === "codexDesktop" && this.#backends.every(backend => backend.kind !== "codexDesktop" || !backend.isReady())) {
+        const runtime = await this.#options.ensureCodexDesktop?.();
+        if (runtime !== undefined) this.attachCodexDesktopRuntime(runtime);
+      }
       for (const backend of this.#backends) {
         if (!backend.isReady()) continue;
+        if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
+        if (resumeKind === undefined && backend.kind === "codexDesktop") continue;
         try {
           const activated = await backend.activate({ type: "resume", sessionId: target.sessionId }, context);
           // 恢复会话会把它带进活跃 thread 目录（Codex），同样要失效缓存。
@@ -1149,6 +1258,7 @@ export class HostService {
       deviceId,
       runtimes: this.#runtimesSnapshot(),
       agents: this.#agentsSnapshot(),
+      launchableAgents: this.#launchableAgentsSnapshot(),
     });
     const rttMs = this.#links.get(deviceId)?.activeRttMs;
     this.#sendToDeviceOn(deviceId, kind, {
@@ -1161,10 +1271,9 @@ export class HostService {
     // 钩子来重播 capabilities——重连后 `runtime.online` 会把 capabilities 清掉，slash 菜单
     // 就再也不出来。这里趁刚握手完成、这条路确定能通，把每个活跃 codex thread 的
     // capabilities + metadata 补发给这台设备（走运行中事件通道，序号照常递增防丢）。
-    const codex = this.#options.codexRuntime;
-    if (codex !== undefined && codex.isReady()) {
-      for (const threadId of codex.activeThreadIds()) {
-        codex.announce(threadId);
+    for (const backend of this.#backends) {
+      if (backend instanceof CodexRuntime && backend.isReady()) {
+        for (const threadId of backend.activeThreadIds()) backend.announce(threadId);
       }
     }
     this.#options.dshRuntime?.announce();

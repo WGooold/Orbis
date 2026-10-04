@@ -2,13 +2,13 @@
  * Codex app-server 的 JSON-RPC 客户端（spec §7.4 的 M4 接入）。
  *
  * 设计要点与坑：
- * - **传输走 WebSocket，不走 stdio**：`codex app-server --listen ws://127.0.0.1:<port>`
+ * - **终端 backend 传输走 WebSocket**：`codex app-server --listen ws://127.0.0.1:<port>`
  *   会**取代** stdio（实测 stdio 上不再有任何 JSON-RPC 帧）。开 listen 是有意的——
  *   只有这样官方 TUI 才能 `codex resume <id> --remote ws://…` attach 上来，与手机
  *   订阅**同一个内存里的 thread**（双同步的关键，spec §7.4）。
- * - **Windows 上没有 daemon**：`codex app-server daemon` 只支持 Unix。所以 Host 直接
- *   spawn `codex app-server --listen ws://127.0.0.1:<port>`——仍然是一个进程服务全部
- *   thread，会话数增长不带来进程数增长。
+ * - Desktop mode uses `codex app-server proxy` to join an existing daemon through
+ *   its control socket. The proxy's official stdio stream carries newline-delimited
+ *   JSON frames. The Host owns only the proxy connection, never the daemon.
  * - `.cmd` 禁令：Windows 上全局安装的 `codex` 是 `.cmd`，spawn 必须经 shell；所以和
  *   pi 一样定位 JS 入口用 node 直接拉（见 `resolveCodexCommand`）。
  * - 线格式是**不带 `jsonrpc:"2.0"` 键**的 JSON-RPC：请求 `{id, method, params}`、
@@ -23,11 +23,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
 import { platform } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
+import WebSocket from "ws";
 
 import { resolveNodePackageCli } from "./spawner.js";
 import { readCodexSelection } from "./codex-selection.js";
 
 export const CODEX_RUNTIME_ID = "codex";
+export const CODEX_DESKTOP_RUNTIME_ID = "codex-desktop";
 
 /** 一条服务端 → 客户端的请求（审批等）。`respond` / `fail` 只生效一次。 */
 export type CodexServerRequest = {
@@ -39,7 +41,8 @@ export type CodexServerRequest = {
 };
 
 /**
- * JSON-RPC 的底层传输。生产是 WebSocket（一帧一条消息）；测试注入假传输。
+ * JSON-RPC 的底层传输。终端 backend 生产是 WebSocket（一帧一条消息），桌面
+ * proxy 生产是 stdio 行协议；测试可注入假传输。
  * 文本容忍一帧多行（按行拆分解析），与旧 stdio 行协议兼容。
  */
 export type CodexTransport = {
@@ -50,6 +53,8 @@ export type CodexTransport = {
 };
 
 export type CodexAppServerOptions = {
+  /** Connect to the already-running Codex desktop daemon; never own its lifecycle. */
+  mode?: "owned" | "desktop";
   /**
    * 注入传输（测试）：提供后**不 spawn 子进程、不探测 healthz**。
    * 缺省 spawn `codex app-server --listen ws://127.0.0.1:<空闲端口>` 并连上它。
@@ -79,7 +84,7 @@ export class CodexAppServer {
   readonly #pending = new Map<string | number, PendingRequest>();
   #child: ChildProcess | undefined;
   #transport: CodexTransport | undefined;
-  #endpoint: string;
+  #endpoint: string | undefined;
   #codexCommand: CodexCommand | undefined;
   #nextId = 0;
   #stopped = false;
@@ -92,12 +97,16 @@ export class CodexAppServer {
 
   private constructor(options: CodexAppServerOptions) {
     this.#options = options;
-    this.#endpoint = options.endpointOverride ?? "ws://127.0.0.1:0";
+    this.#endpoint = options.endpointOverride ?? (options.mode === "desktop" ? undefined : "ws://127.0.0.1:0");
   }
 
   /** TUI attach 用的端点：`codex resume <id> --remote <endpoint>`。 */
-  get endpoint(): string {
+  get endpoint(): string | undefined {
     return this.#endpoint;
+  }
+
+  get mode(): "owned" | "desktop" {
+    return this.#options.mode ?? "owned";
   }
 
   /** Exact CLI entry used by the app-server, for TUI attach on Windows. */
@@ -112,35 +121,53 @@ export class CodexAppServer {
   static async create(options: CodexAppServerOptions = {}): Promise<CodexAppServer> {
     const server = new CodexAppServer(options);
     const timeoutMs = options.requestTimeoutMs ?? 30_000;
-    if (options.transportImpl !== undefined) {
-      server.#transport = await options.transportImpl();
-    } else {
-      const { command, prefixArgs } = await resolveCodexCommand();
-      server.#codexCommand = { command, prefixArgs: [...prefixArgs] };
-      const port = await freePort();
-      server.#endpoint = `ws://127.0.0.1:${port}`;
-      const spawnFn = options.spawnImpl ?? ((cmd: string, args: readonly string[]) =>
-        spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true }));
-      const child = spawnFn(command, [...prefixArgs, "app-server", "--listen", server.#endpoint]);
-      server.#child = child;
-      server.#attachChildLogging(child);
-      await waitHealthz(port, timeoutMs);
-      server.#transport = await wsTransport(server.#endpoint, timeoutMs);
+    try {
+      if (options.transportImpl !== undefined) {
+        server.#transport = await options.transportImpl();
+      } else if (options.mode === "desktop") {
+        server.#transport = await desktopTransport(options, timeoutMs);
+      } else {
+        const { command, prefixArgs } = await resolveCodexCommand();
+        server.#codexCommand = { command, prefixArgs: [...prefixArgs] };
+        const port = await freePort();
+        server.#endpoint = `ws://127.0.0.1:${port}`;
+        const spawnFn = options.spawnImpl ?? ((cmd: string, args: readonly string[]) =>
+          spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true }));
+        const child = spawnFn(command, [...prefixArgs, "app-server", "--listen", server.#endpoint]);
+        server.#child = child;
+        server.#attachChildLogging(child);
+        await waitHealthz(port, timeoutMs);
+        server.#transport = await wsTransport(server.#endpoint, timeoutMs);
+      }
+      server.#attachTransport();
+      await server.request("initialize", {
+        capabilities: { experimentalApi: true },
+        clientInfo: {
+          name: options.clientName ?? "pi-remote-host",
+          title: "Orbis Host",
+          version: "0.1.0",
+        },
+      }, timeoutMs);
+      server.notify("initialized");
+      return server;
+    } catch (error) {
+      await server.stop();
+      throw error;
     }
-    server.#attachTransport();
-    await server.request("initialize", {
-      capabilities: { experimentalApi: true },
-      clientInfo: {
-        name: options.clientName ?? "pi-remote-host",
-        title: "Orbis Host",
-        version: "0.1.0",
-      },
-    }, timeoutMs);
-    server.notify("initialized");
-    return server;
   }
 
-  /** 子进程还在，但 RPC 走 WS：stdout/stderr 只当日志看。 */
+  static async createDesktop(options: CodexAppServerOptions = {}): Promise<CodexAppServer> {
+    const desktop = await CodexAppServer.create({ ...options, mode: "desktop", requestTimeoutMs: 4_000 });
+    try {
+      await desktop.request("thread/loaded/list", {}, 4_000);
+      return desktop;
+    } catch (error) {
+      await desktop.stop();
+      throw error;
+    }
+  }
+
+  /** 自有终端 app-server 的 RPC 走 WS；其 stdout/stderr 只当日志看。 */
   #attachChildLogging(child: ChildProcess): void {
     (child.stderr ?? process.stdin).on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8").trim();
@@ -348,6 +375,70 @@ function wsTransport(url: string, timeoutMs: number): Promise<CodexTransport> {
       reject(new Error(`连接 app-server WebSocket 失败（${url}）`));
     });
   });
+}
+
+async function desktopTransport(options: CodexAppServerOptions, _timeoutMs: number): Promise<CodexTransport> {
+  const { command, prefixArgs } = await resolveCodexCommand();
+  const child = (options.spawnImpl ?? ((cmd, args) => spawn(cmd, args, {
+    stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+  })))(command, [...prefixArgs, "app-server", "proxy"]);
+  const stdin = child.stdin;
+  const stdout = child.stdout;
+  if (stdin === null || stdout === null) {
+    child.kill();
+    throw new Error("Codex desktop proxy 未提供 stdio 通道");
+  }
+  child.stderr?.on("data", (chunk: Buffer) => options.log?.(`[codex:proxy] ${chunk.toString("utf8").trim().slice(0, 300)}`));
+
+  // `codex app-server proxy` is the official stdio bridge to the desktop
+  // daemon. It forwards the app-server's newline-delimited JSON frames; it
+  // does not speak WebSocket on its stdio streams.
+  const messageHandlers: Array<(text: string) => void> = [];
+  const closeHandlers: Array<(code: number | null) => void> = [];
+  let buffer = "";
+  let closed = false;
+  const emitClose = (code: number | null): void => {
+    if (closed) return;
+    closed = true;
+    const trailing = buffer.trim();
+    buffer = "";
+    if (trailing.length > 0) for (const handler of [...messageHandlers]) handler(trailing);
+    for (const handler of [...closeHandlers]) handler(code);
+  };
+  stdout.on("data", (chunk: Buffer) => {
+    buffer += chunk.toString("utf8");
+    let newline = buffer.indexOf("\n");
+    while (newline >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line.length > 0) for (const handler of [...messageHandlers]) handler(line);
+      newline = buffer.indexOf("\n");
+    }
+  });
+  child.on("error", error => {
+    options.log?.(`Codex desktop proxy 进程错误：${error.message}`);
+    emitClose(null);
+  });
+  child.on("exit", code => emitClose(code));
+
+  return {
+    send: text => {
+      if (closed || stdin.destroyed) throw new Error("Codex desktop proxy 已关闭");
+      stdin.write(`${text}\n`);
+    },
+    close: async () => {
+      if (closed) return;
+      try { stdin.end(); } catch { /* 进程可能已先退出。 */ }
+      if (child.exitCode === null) child.kill();
+      await new Promise<void>(resolve => {
+        if (child.exitCode !== null) { resolve(); return; }
+        child.once("exit", () => resolve());
+        setTimeout(resolve, 1_000).unref();
+      });
+    },
+    onMessage: handler => messageHandlers.push(handler),
+    onClose: handler => closeHandlers.push(handler),
+  };
 }
 
 function makeTransport(socket: WebSocket): CodexTransport {

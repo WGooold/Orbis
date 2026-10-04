@@ -50,6 +50,7 @@ function makeHarness(options?: {
           : options?.mcpServerStatusList ?? [],
       });
     }
+    if (method === "thread/unsubscribe") return Promise.resolve({});
     return new Promise<unknown>((resolve, reject) => {
       queue.push({ resolve, reject });
     });
@@ -1651,7 +1652,11 @@ describe("CodexRuntime", () => {
   it("TUI 窗口关闭 → 该 thread 下线（onOffline 广播 + 目录移除）", async () => {
     const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-closewin-"));
     const queue: Array<{ resolve: (v: unknown) => void }> = [];
-    const server = { request: (method: string) => method === "model/list" ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] }) : new Promise((res) => queue.push({ resolve: res })), notify: vi.fn(), endpoint: "ws://127.0.0.1:9997" } as unknown as CodexAppServer;
+    const unsubscribe = vi.fn(async () => ({}));
+    const server = { request: (method: string) => method === "model/list"
+      ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] })
+      : method === "thread/unsubscribe" ? unsubscribe() : new Promise((res) => queue.push({ resolve: res })),
+    notify: vi.fn(), endpoint: "ws://127.0.0.1:9997" } as unknown as CodexAppServer;
     // 看门狗：先回报「TUI 在线」（标 seen），再回报「空」（触发下线）。
     const pollResults: Set<string>[] = [new Set(["th-close"]), new Set()];
     let watcherTick: () => void = () => {};
@@ -1685,6 +1690,7 @@ describe("CodexRuntime", () => {
     expect(removed[0]!.reason).toContain("已关闭");
     expect(removed[0]!.runtimes[0]).toMatchObject({ runtimeId: "codex:th-close" });
     expect(afterRemoveDirectory).toEqual([]);
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
   it("turn 进行中收到 followUp：入队（message.queued accepted），turn/completed 后补跑", async () => {
@@ -1909,6 +1915,7 @@ describe("CodexRuntime TUI 切换会话", () => {
           return Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] });
         }
         if (method === "skills/list" || method === "mcpServerStatus/list") return Promise.resolve({ data: [] });
+        if (method === "thread/unsubscribe") return Promise.resolve({});
         return new Promise((resolve) => queue.push({ resolve }));
       },
       notify: vi.fn(),
@@ -1976,6 +1983,17 @@ describe("CodexRuntime TUI 切换会话", () => {
     h.watcher();
     await flush();
     expect(h.offline).toHaveLength(1);
+  });
+
+  it("TUI 切到已登记的桌面 thread 时终端后端不认领它", async () => {
+    const h = makeSwitchHarness();
+    await h.activateDefault();
+    h.runtime.seedDesktopThreads(["desktop-thread"]);
+    h.notify("thread/started", { thread: { id: "desktop-thread", cwd: "D:/repo" } });
+    await flush();
+    expect(h.offline.map(item => item.runtimeIds)).toEqual([["codex:th-1"]]);
+    expect(h.runtime.directoryEntries()).toEqual([]);
+    expect(h.queue).toEqual([]);
   });
 
   it("TUI /new（thread/started 广播）→ 旧会话下线、新会话收编且不重开窗口", async () => {

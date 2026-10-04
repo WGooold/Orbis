@@ -62,7 +62,7 @@ data class RuntimeSummary(
      * 只用于展示层（命令来源徽标、侧栏角标），不参与协议语义。
      */
     val isCodex: Boolean
-        get() = runtimeId == CODEX_RUNTIME_ID || runtimeId.startsWith("$CODEX_RUNTIME_ID:")
+        get() = runtimeId == CODEX_RUNTIME_ID || runtimeId.startsWith("$CODEX_RUNTIME_ID:") || runtimeId.startsWith("codex-desktop:")
 }
 
 @Serializable
@@ -353,7 +353,9 @@ data class RemoteState(
      * **null = 未知**，此时不对新建会话的选项做限制：Relay 那份种子 `device.ready` 里没有
      * 这一项（它不知道电脑装没装 codex），旧版 Host 也不会发；只有 Host 发的才是权威答案。
      */
-    val supportedAgents: Set<String>? = null,
+     val supportedAgents: Set<String>? = null,
+    /** Agent kinds that can be started on demand, including an installed but currently closed desktop GUI. */
+    val launchableAgents: Set<String>? = null,
     /** Effective Host configuration; do not infer it from a historical session or model name. */
     val currentProviders: Map<String, String> = emptyMap(),
     val agentProviders: AgentProvidersState = AgentProvidersState(),
@@ -820,6 +822,7 @@ private fun RuntimeSummary.catalogEntry(): SessionCatalogEntry? = sessionId?.let
 const val CODEX_RUNTIME_ID = "codex"
 
 internal fun runtimeAgentKind(runtimeId: String?): String = when {
+    runtimeId?.startsWith("codex-desktop:") == true -> "codexDesktop"
     runtimeId == CODEX_RUNTIME_ID || runtimeId?.startsWith("$CODEX_RUNTIME_ID:") == true -> "codex"
     runtimeId?.startsWith("dsh:") == true -> "dsh"
     else -> "pi"
@@ -830,7 +833,7 @@ internal val CachedSessionRow.agentKind: String get() = catalogEntry?.agentKind 
 
 /** 该侧栏行是不是 codex 会话：目录条目优先，在线 runtime 兜底（session.list 未刷新时条目可能为 null）。 */
 internal val CachedSessionRow.isCodex: Boolean
-    get() = catalogEntry?.agentKind == "codex" || runtimeId == CODEX_RUNTIME_ID || runtimeId?.startsWith("$CODEX_RUNTIME_ID:") == true
+    get() = catalogEntry?.agentKind in setOf("codex", "codexDesktop") || runtimeId == CODEX_RUNTIME_ID || runtimeId?.startsWith("$CODEX_RUNTIME_ID:") == true || runtimeId?.startsWith("codex-desktop:") == true
 
 internal val CachedSessionRow.isArchived: Boolean
     get() = catalogEntry?.archived == true
@@ -1247,6 +1250,11 @@ class RelayReducer(
                     ?.takeIf { it !is JsonNull }
                     ?.let { element -> json.decodeFromJsonElement<List<String>>(element).toSet() }
                     ?: state.supportedAgents
+                val launchableAgents = message["launchableAgents"]
+                    ?.takeIf { it !is JsonNull }
+                    ?.let { element -> json.decodeFromJsonElement<List<String>>(element).toSet() }
+                    ?: state.launchableAgents
+                    ?: supportedAgents
                 val sessionChanged = runtimes.keys.associateWith { runtimeId ->
                     val previousRuntime = state.runtimes[runtimeId]
                     val hasPrevious = previousRuntime != null ||
@@ -1318,6 +1326,7 @@ class RelayReducer(
                     sessions = sessions,
                     runtimes = runtimes,
                     supportedAgents = supportedAgents,
+                    launchableAgents = launchableAgents,
                     sessionListRequests = emptySet(),
                     sessionListRequestEpochs = emptyMap(),
                     sessionArchiveRequests = emptyMap(),

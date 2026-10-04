@@ -7,7 +7,7 @@ param(
 
     [switch] $StopOnly,
 
-    [ValidatePattern('^emulator-\d+$')]
+    [ValidatePattern('^[A-Za-z0-9._:-]+$')]
     [string] $InstallSerial,
 
     [switch] $LaunchActivity,

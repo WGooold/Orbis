@@ -187,7 +187,7 @@ export type SessionCatalogEntry = z.infer<typeof SessionCatalogEntrySchema>;
  * `pi` 的历史会话由 Host 直接扫磁盘（§8.1）；`codex` 走 M4 的 daemon。手机侧只按
  * agentKind 画角标，分组逻辑（以 cwd 分组）不因它分叉（§7.5）。
  */
-export const AgentKindSchema = z.enum(["pi", "codex", "dsh"]);
+export const AgentKindSchema = z.enum(["pi", "codex", "codexDesktop", "dsh"]);
 export type AgentKind = z.infer<typeof AgentKindSchema>;
 
 /**
@@ -846,7 +846,7 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
     requestId: z.string().min(1).max(128),
     /** L1 = 继续已有会话（cwd 来自会话记录）；L2 = 在指定目录新建（cwd 由手机选，§8.1）。 */
     target: z.discriminatedUnion("type", [
-      z.strictObject({ type: z.literal("resume"), sessionId: z.string().min(1).max(256) }),
+      z.strictObject({ type: z.literal("resume"), sessionId: z.string().min(1).max(256), agentKind: AgentKindSchema.optional() }),
       z.strictObject({ type: z.literal("new"), agentKind: AgentKindSchema, cwd: z.string().min(1).max(4096) }),
     ]),
     spawnMode: SpawnModeSchema.optional(),
@@ -926,7 +926,9 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
      * 这不是兼容位：`null` 与“空数组”含义不同——空数组是“一台都不支持”，
      * 而 `null` 是“不知道”，手机后者不对能力做限制。
      */
-    agents: z.array(AgentKindSchema).nullable(),
+     agents: z.array(AgentKindSchema).nullable(),
+     /** Agent kinds that can be launched on demand. Unlike `agents`, this can include an offline desktop GUI. */
+     launchableAgents: z.array(AgentKindSchema).nullable().optional(),
   }),
   // P2P 信令（M5）：Host→设备方向的 offer。与 DeviceE2ePayload 里的 request/answer 成对，
   // SDP 里已烧好全部 ICE 候选（非 trickle）。

@@ -42,6 +42,13 @@ describe("desktop terminal shortcuts", () => {
     return { script: Buffer.from(encoded!, "base64").toString("utf16le"), launcher, options };
   }
 
+  function directInvocation(): { script: string; options: Record<string, unknown> } {
+    const [program, args, options] = terminal.spawn.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(program).toBe("powershell.exe");
+    expect(args.slice(0, 3)).toEqual(["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+    return { script: Buffer.from(args[3]!, "base64").toString("utf16le"), options };
+  }
+
   it("opens Pi and Codex in the selected workspace, preserving paths and Pi integration", async () => {
     const runtime = new DesktopRuntime(() => {});
     for (const kind of ["pi", "codex"]) {
@@ -68,6 +75,16 @@ describe("desktop terminal shortcuts", () => {
     expect(options.cwd).toBe(homedir());
   });
 
+  it("opens Codex Desktop as a separate GUI process without a terminal window", async () => {
+    await new DesktopRuntime(() => {}).openAgent("codexDesktop");
+    const { script, options } = directInvocation();
+    expect(script).toContain("Start-Process -FilePath 'C:\\Orbis Tools\\node.exe'");
+    expect(script).toContain("-ArgumentList @('C:\\User''s tools\\codex.js','app')");
+    expect(script).toContain("-WorkingDirectory '" + homedir().replaceAll("'", "''") + "'");
+    expect(script).toContain("-WindowStyle Hidden");
+    expect(options).toMatchObject({ stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000 });
+  });
+
   it("never falls back to the user directory when an interactive workspace is missing or invalid", async () => {
     const file = join(workspace, "not-a-directory.txt");
     await writeFile(file, "not a workspace");
@@ -88,6 +105,7 @@ describe("desktop terminal shortcuts", () => {
     const runtime = new DesktopRuntime(() => {});
     await expect(runtime.openAgent("other", "tui")).rejects.toThrow("未知 agent");
     await expect(runtime.openAgent("codex", "shell-command")).rejects.toThrow("未知打开方式");
+    await expect(runtime.openAgent("codexDesktop", "tui")).rejects.toThrow("未知打开方式");
     expect(terminal.spawn).not.toHaveBeenCalled();
   });
 

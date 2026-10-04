@@ -10,6 +10,7 @@ import QRCode from "qrcode";
 import { HostService } from "./host-service.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
+import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
@@ -98,6 +99,7 @@ export class DesktopRuntime {
   #service: HostService | undefined;
   #codex: CodexAppServer | undefined;
   #codexRuntime: CodexRuntime | undefined;
+  #codexDesktopLifecycle: CodexDesktopLifecycle | undefined;
   #dshRuntime: DshRuntime | undefined;
   #retry: NodeJS.Timeout | undefined;
   #poll: NodeJS.Timeout | undefined;
@@ -121,7 +123,11 @@ export class DesktopRuntime {
     this.#emit = emit;
     this.#stateDir = resolveStateDir(stateDir);
     this.#providers = new ProviderManager(this.#stateDir, providerPaths, {
-      beforeApply: async (kind, hotSwitch) => { if (!hotSwitch) await this.#service?.assertProviderSwitchReady(kind); },
+      beforeApply: async (kind, hotSwitch) => {
+        if (!hotSwitch || (kind === "codex" && this.#codexDesktopLifecycle?.runtime !== undefined)) {
+          await this.#service?.assertProviderSwitchReady(kind);
+        }
+      },
       afterApply: async (kind, hotSwitch) => {
         if (!hotSwitch) await this.#service?.reloadProviderConfiguration(kind, await this.#providers.environment(kind));
         this.#emit({ event: "providersChanged", kind });
@@ -238,6 +244,7 @@ export class DesktopRuntime {
       }
       status.copies = copies;
       if (kind === "codex") {
+        status.desktopInstalled = local.installed && await new CodexDesktopLifecycle().isInstalled();
         const runtimeRoot = fileURLToPath(new URL("../../../", import.meta.url));
         const shim = await codexShimStatus(runtimeRoot);
         status = { ...status, terminalIntegration: this.#selectionError ? "repair" : shim.state,
@@ -297,20 +304,28 @@ export class DesktopRuntime {
       await this.#checkExistingHost();
       if (settings.codexEnabled) {
         try {
-          this.#codex = await CodexAppServer.create({ log: line => this.log(line), onExit: () => this.log("Codex 后端已退出，可暂停后重新启动 Host") });
+          this.#codex = await CodexAppServer.create({ log: line => this.log(line), onExit: () => this.log("Codex 终端后端已断开，可暂停后重新启动 Host") });
           this.#codexRuntime = new CodexRuntime({ server: this.#codex, log: line => this.log(line), onEvent: () => {} });
         } catch (error) { this.log(`Codex 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
+        this.#codexDesktopLifecycle = new CodexDesktopLifecycle({
+          log: line => this.log(line),
+          onReady: runtime => this.#service?.attachCodexDesktopRuntime(runtime),
+          onOffline: runtime => this.#service?.detachCodexDesktopRuntime(runtime),
+        });
       }
       if (settings.dshEnabled) {
         try { this.#dshRuntime = await DshRuntime.create(await this.#providers.environment("dsh")); }
         catch (error) { this.log(`DeepSeek Harness 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
       }
+      const codexDesktopLaunchable = await this.#codexDesktopLifecycle?.isInstalled() ?? false;
       const stunServers = settings.stunServers ?? defaultStunServers(settings.relayUrl);
       this.#service = await HostService.create({
         providers: this.#providers,
         stateDir: this.#stateDir, relayUrl: settings.relayUrl, credential: settings.credential,
         ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }), stunServers,
         ...(this.#codexRuntime === undefined ? {} : { codexRuntime: this.#codexRuntime, codexLaunch: (request: { cwd: string }) => this.#codexRuntime!.prepareTerminalLaunch(request.cwd) }),
+        ...(this.#codexDesktopLifecycle === undefined ? {} : { ensureCodexDesktop: () => this.#codexDesktopLifecycle!.ensureReady() }),
+        ...(this.#codexDesktopLifecycle === undefined ? {} : { codexDesktopLaunchable }),
         ...(this.#dshRuntime === undefined ? {} : { dshRuntime: this.#dshRuntime }),
         log: line => this.log(line),
         onStateChange: state => this.#emit({ event: "state", state }),
@@ -324,6 +339,9 @@ export class DesktopRuntime {
         })]);
       } finally { if (deadline) clearTimeout(deadline); }
       this.#attempt = 0;
+      if (this.#codexDesktopLifecycle !== undefined) {
+        await this.#codexDesktopLifecycle.probe().catch(error => this.log(`Codex 桌面版探测失败：${error instanceof Error ? error.message : String(error)}`));
+      }
       this.status();
       // Host 跑起来后跑一次检测：既把 Agent 状态推给界面，也顺便静默修复终端接入。
       void this.detect(settings).catch(error => this.log(`Agent 检测失败：${error instanceof Error ? error.message : String(error)}`));
@@ -350,7 +368,7 @@ export class DesktopRuntime {
       if (path) this.#lastSeen.set(d.deviceId, Date.now());
       return { deviceId: d.deviceId, label: d.label, createdAt: d.createdAt, path: path ?? "offline", lastSeen: this.#lastSeen.get(d.deviceId) ?? 0 };
     });
-    const status = { event: "status", devices, runtimeCount: service.localRuntimes.length + (this.#codexRuntime?.directoryEntries().length ?? 0) + (this.#dshRuntime?.directoryEntries().length ?? 0), lan: service.lanEndpoints };
+    const status = { event: "status", devices, runtimeCount: service.localRuntimes.length + (this.#codexRuntime?.directoryEntries().length ?? 0) + (this.#codexDesktopLifecycle?.runtime?.directoryEntries().length ?? 0) + (this.#dshRuntime?.directoryEntries().length ?? 0), lan: service.lanEndpoints };
     const text = JSON.stringify(status);
     if (text !== this.#lastStatus) { this.#lastStatus = text; this.#emit(status); }
   }
@@ -652,6 +670,12 @@ export class DesktopRuntime {
       finally { await service.stop(); }
       return;
     }
+    if (kind === "codexDesktop") {
+      if (mode !== "setup") throw new Error("未知打开方式");
+      if (this.#codexDesktopLifecycle !== undefined) await this.#codexDesktopLifecycle.ensureReady();
+      else await launchCodexDesktopApp();
+      return;
+    }
     if (kind !== "pi" && kind !== "codex") throw new Error("未知 agent");
     const workingDirectory = kind === "pi" || mode === "tui" ? await terminalWorkspace(cwd) : homedir();
     const cli = kind === "pi" ? await resolvePiCommand() : await resolveCodexCommand();
@@ -683,6 +707,9 @@ export class DesktopRuntime {
     await service?.stop().catch(error => this.log(String(error)));
     const codex = this.#codex; const codexRuntime = this.#codexRuntime; this.#codex = undefined; this.#codexRuntime = undefined;
     await (codexRuntime ? codexRuntime.stop() : codex?.stop())?.catch(error => this.log(String(error)));
+    const desktopLifecycle = this.#codexDesktopLifecycle;
+    this.#codexDesktopLifecycle = undefined;
+    await desktopLifecycle?.stop().catch(error => this.log(String(error)));
     const dsh = this.#dshRuntime; this.#dshRuntime = undefined;
     await dsh?.stop().catch(error => this.log(String(error)));
   }

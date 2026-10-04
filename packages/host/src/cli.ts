@@ -24,6 +24,7 @@ import { LoopbackDescriptorSchema } from "@pi-remote/protocol";
 import { loadHostConfig } from "./config.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import { CodexDesktopLifecycle } from "./codex-desktop-lifecycle.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { HostService } from "./host-service.js";
 import { ProviderManager } from "./provider-manager.js";
@@ -89,6 +90,7 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
   // Codex 后端按需启用；起不来（未安装/版本太旧）不是致命错误，降级为纯 Pi。
   let codexServer: CodexAppServer | undefined;
   let codexRuntime: CodexRuntime | undefined;
+  let codexDesktopLifecycle: CodexDesktopLifecycle | undefined;
   if (codexEnabled) {
     try {
       codexServer = await CodexAppServer.create({
@@ -103,7 +105,14 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
     } catch (error) {
       console.error(`[codex] 后端未启用：${error instanceof Error ? error.message : String(error)}`);
     }
+    codexDesktopLifecycle = new CodexDesktopLifecycle({
+      log: line => console.log(`[codex-desktop] ${line}`),
+      onReady: runtime => service?.attachCodexDesktopRuntime(runtime),
+      onOffline: runtime => service?.detachCodexDesktopRuntime(runtime),
+    });
   }
+
+  const codexDesktopLaunchable = await codexDesktopLifecycle?.isInstalled() ?? false;
 
   let dshRuntime: DshRuntime | undefined;
   if (dshEnabled) {
@@ -121,6 +130,8 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
       ...(config.lanPort === undefined ? {} : { lanPort: config.lanPort }),
       ...(config.stunServers.length > 0 ? { stunServers: config.stunServers } : {}),
       ...(codexRuntime === undefined ? {} : { codexRuntime, codexLaunch: (request: { cwd: string }) => codexRuntime!.prepareTerminalLaunch(request.cwd) }),
+      ...(codexDesktopLifecycle === undefined ? {} : { ensureCodexDesktop: () => codexDesktopLifecycle!.ensureReady() }),
+      ...(codexDesktopLifecycle === undefined ? {} : { codexDesktopLaunchable }),
       ...(dshRuntime === undefined ? {} : { dshRuntime }),
       log: (line) => console.log(`[host] ${line}`),
       onStateChange: (state) => console.log(`[host] relay ${state}`),
@@ -133,6 +144,7 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
     });
 
     await service.start();
+    await codexDesktopLifecycle?.probe().catch(error => console.log(`[codex-desktop] 探测失败：${error instanceof Error ? error.message : String(error)}`));
     console.log(`[host] hostId=${service.hostId} 已就绪，共 ${service.devices.length} 台已配对设备`);
     if (service.lan !== undefined) {
       const endpoints = service.lan.endpoints.map((entry) => `${entry.host}:${entry.port}`).join("、");
@@ -148,7 +160,7 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
     await waitForSignal();
   } finally {
     try { await service?.stop(); }
-    finally { await Promise.all([codexRuntime ? codexRuntime.stop() : codexServer?.stop(), dshRuntime?.stop()]); }
+    finally { await Promise.all([codexRuntime ? codexRuntime.stop() : codexServer?.stop(), codexDesktopLifecycle?.stop(), dshRuntime?.stop()]); }
   }
   console.log("[host] 已退出");
 }

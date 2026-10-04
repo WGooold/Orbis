@@ -8,8 +8,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $buildDir = Join-Path $repoRoot '.artifacts\windows-host-build'
+$artifactRoot = Join-Path $repoRoot '.artifacts\host'
+$packageSucceeded = $false
 $savedPath = $env:Path
 try {
+    if (Test-Path -LiteralPath $artifactRoot) { Remove-Item -LiteralPath $artifactRoot -Recurse -Force }
     $env:Path = "$CompilerRoot\bin;$QtRoot\bin;$savedPath"
     if (!(Test-Path -LiteralPath "$QtRoot\bin\windeployqt.exe")) { throw 'Qt 6.8.3 is missing. Run windows-host-setup.ps1 first.' }
     if (!(Test-Path -LiteralPath "$CompilerRoot\bin\g++.exe")) { throw 'Matching MinGW 13.1 toolchain is missing.' }
@@ -27,7 +30,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Native tests failed' }
         if ($Package) {
             # Fresh directory per packaging run: no stale dependency can silently survive an upgrade.
-            $releaseRoot = Join-Path $repoRoot ('.artifacts\windows-host\' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+            $releaseRoot = $artifactRoot
             $stage = Join-Path $releaseRoot 'OrbisHost'
             New-Item -ItemType Directory -Path $stage -Force | Out-Null
             Copy-Item -LiteralPath "$buildDir\OrbisHost.exe" -Destination $stage
@@ -47,6 +50,7 @@ try {
             $testProcess = Start-Process -FilePath "$stage\OrbisHost.exe" -ArgumentList '--smoke-test','--smoke-agents','--data-dir',('"' + $smokeDir + '"'),'--screenshot',('"' + $releaseRoot + '\preview.png"') -WindowStyle Hidden -PassThru -Wait -RedirectStandardError "$smokeDir\qml.log"
             $env:Path = "$CompilerRoot\bin;$QtRoot\bin;$savedPath"
             if ($testProcess.ExitCode -ne 0) { throw "Packaged app smoke test failed: $($testProcess.ExitCode). See $smokeDir" }
+            Get-ChildItem -LiteralPath $releaseRoot -File -Filter 'preview.png.*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
             $archive = Join-Path $releaseRoot 'OrbisHost-0.1.9-windows-x64.zip'
             Compress-Archive -LiteralPath $stage -DestinationPath $archive
             [IO.File]::WriteAllText("$archive.sha256", (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $archive) + "`n", [Text.Encoding]::ASCII)
@@ -72,6 +76,15 @@ try {
             }
             Write-Output "Portable release: $archive"
             Write-Output "Executable: $stage\OrbisHost.exe"
+            $packageSucceeded = $true
         }
     } finally { Pop-Location }
-} finally { $env:Path = $savedPath }
+} finally {
+    if (Test-Path -LiteralPath $buildDir) {
+        Remove-Item -LiteralPath $buildDir -Recurse -Force
+    }
+    if ($Package -and -not $packageSucceeded -and (Test-Path -LiteralPath $artifactRoot)) {
+        Remove-Item -LiteralPath $artifactRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $env:Path = $savedPath
+}

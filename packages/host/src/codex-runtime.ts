@@ -53,7 +53,7 @@ import type {
   BackendActivation,
   CommandDispatch,
 } from "./agent-backend.js";
-import { CODEX_RUNTIME_ID, CodexAppServer, type CodexCommand, type CodexServerRequest } from "./codex-daemon.js";
+import { CODEX_DESKTOP_RUNTIME_ID, CODEX_RUNTIME_ID, CodexAppServer, type CodexCommand, type CodexServerRequest } from "./codex-daemon.js";
 import { describeError } from "./describe-error.js";
 import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
@@ -315,6 +315,12 @@ export class CodexRuntime implements AgentBackend {
   readonly #windowActivity = new Map<string, number>();
   /** TUI 切换宽限定时器（规避 Host 自己 activate 的广播竞态）；app-server 退出时统一清。 */
   readonly #switchTimers = new Set<NodeJS.Timeout>();
+  readonly #desktopThreads = new Set<string>();
+  readonly #desktopKnown = new Set<string>();
+  readonly #desktopSuppressed = new Map<string, "active" | "idle">();
+  #desktopWatcher: NodeJS.Timeout | undefined;
+  #desktopRefreshing = false;
+  #desktopRefreshPending = false;
   /** Host 自己的 thread/start|resume|fork 在途计数：>0 时收到的广播先宽限，不当成 TUI 切换。 */
   #activating = 0;
   #watcher: NodeJS.Timeout | undefined;
@@ -325,6 +331,7 @@ export class CodexRuntime implements AgentBackend {
    */
   onMetadataChange: (() => void) | undefined;
   onArchiveChange: ((sessionId: string, archived: boolean) => void) | undefined;
+  onDesktopThread: ((threadId: string) => void) | undefined;
   /**
    * app-server 子进程退出时的通知（Host 借它向手机广播 runtime.offline）。
    * 第二个参数是退出前仍活跃的 thread 目录——thread 状态已随进程消失，
@@ -333,7 +340,7 @@ export class CodexRuntime implements AgentBackend {
   onOffline: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
 
   constructor(options: CodexRuntimeOptions) {
-    this.runtimeId = options.runtimeId ?? CODEX_RUNTIME_ID;
+    this.runtimeId = options.runtimeId ?? (options.server.mode === "desktop" ? CODEX_DESKTOP_RUNTIME_ID : CODEX_RUNTIME_ID);
     this.#options = options;
     this.#eventSink = options.onEvent;
     this.#server = options.server;
@@ -382,6 +389,11 @@ export class CodexRuntime implements AgentBackend {
       for (const timer of this.#switchTimers) clearTimeout(timer);
       this.#switchTimers.clear();
       this.#stopHeadWatcher();
+      if (this.#desktopWatcher !== undefined) clearInterval(this.#desktopWatcher);
+      this.#desktopWatcher = undefined;
+      this.#desktopThreads.clear();
+      this.#desktopSuppressed.clear();
+      this.#desktopRefreshPending = false;
       this.#started = false;
       const reason = `codex app-server 已退出（code=${code ?? "signal"}）`;
       options.log?.(reason);
@@ -394,6 +406,9 @@ export class CodexRuntime implements AgentBackend {
   }
 
   assertProviderSwitchReady(): void {
+    if (this.#server.mode === "desktop") {
+      throw new Error("Codex 桌面版正在使用共享后端；请在桌面版结束连接后切换供应商，避免更改运行中的配置");
+    }
     if (this.#activating > 0 || this.#permissionUpdates.size > 0 || [...this.#threads.values()].some(thread => this.#statusOf(thread) !== "idle" || thread.queue.length > 0)) {
       throw new Error("Codex 正在工作或等待审批，请结束当前任务后切换供应商");
     }
@@ -411,7 +426,13 @@ export class CodexRuntime implements AgentBackend {
     this.markStarted();
   }
 
-  async stop(): Promise<void> { await this.#server.stop(); this.#server.onExit?.(0); }
+  async stop(): Promise<void> {
+    this.#started = false;
+    if (this.#desktopWatcher !== undefined) clearInterval(this.#desktopWatcher);
+    this.#desktopWatcher = undefined;
+    await this.#server.stop();
+    this.#server.onExit?.(0);
+  }
 
   /** 是否挂着活跃 thread：Host 的进程目录只在这时收录 Codex（§8.1）。 */
   get hasActiveThread(): boolean {
@@ -421,6 +442,24 @@ export class CodexRuntime implements AgentBackend {
   /** 某 thread 的对外 runtimeId（每个活跃 thread 一条独立进程卡）。 */
   runtimeIdFor(threadId: string): string {
     return `${this.runtimeId}:${threadId}`;
+  }
+
+  #publicSessionId(threadId: string): string {
+    return this.#server.mode === "desktop" ? `${CODEX_DESKTOP_RUNTIME_ID}:${threadId}` : threadId;
+  }
+
+  seedDesktopThreads(ids: Iterable<string>): void {
+    for (const id of ids) this.#desktopKnown.add(id);
+  }
+
+  #rememberDesktopThread(id: string): void {
+    if (this.#server.mode !== "desktop" || this.#desktopKnown.has(id)) return;
+    this.#desktopKnown.add(id);
+    this.onDesktopThread?.(id);
+  }
+
+  #nativeSessionId(sessionId: string): string {
+    return this.#server.mode === "desktop" ? sessionId.slice(CODEX_DESKTOP_RUNTIME_ID.length + 1) : sessionId;
   }
 
   /** 新建 ThreadState（三处构造点共用，避免漏字段）。 */
@@ -473,7 +512,7 @@ export class CodexRuntime implements AgentBackend {
       name: "Codex",
       cwd: thread.cwd,
       status: this.#statusOf(thread),
-      sessionId: thread.id,
+      sessionId: this.#publicSessionId(thread.id),
       ...(thread.name === undefined ? {} : { sessionName: thread.name }),
       sessionGraphSync: true,
       sessionLeafId: thread.entries.at(-1)?.entryId ?? null,
@@ -529,6 +568,73 @@ export class CodexRuntime implements AgentBackend {
   markStarted(): void {
     this.#started = true;
     void this.#loadModelList().catch(() => undefined);
+    if (this.#server.mode === "desktop" && this.#desktopWatcher === undefined) {
+      void this.#refreshDesktopThreads().catch(error => this.#options.log?.(`Codex 桌面会话发现失败：${describeError(error)}`));
+      this.#desktopWatcher = setInterval(() => {
+        void this.#refreshDesktopThreads().catch(error => this.#options.log?.(`Codex 桌面会话发现失败：${describeError(error)}`));
+      }, 2_000);
+      this.#desktopWatcher.unref();
+    }
+  }
+
+  async #refreshDesktopThreads(): Promise<void> {
+    if (!this.#started || this.#server.mode !== "desktop") return;
+    if (this.#desktopRefreshing) {
+      this.#desktopRefreshPending = true;
+      return;
+    }
+    this.#desktopRefreshing = true;
+    try {
+      const result = object(await this.#server.request("thread/loaded/list", {}));
+      if (!this.#started) return;
+      if (!Array.isArray(result.data)) throw new Error("thread/loaded/list 响应缺少 data");
+      const loaded = new Set(result.data.filter((id): id is string => typeof id === "string"));
+      for (const id of this.#desktopSuppressed.keys()) {
+        if (!loaded.has(id)) this.#desktopSuppressed.delete(id);
+      }
+      for (const id of this.#desktopThreads) {
+        if (!loaded.has(id)) this.#deactivateThread(id, "Codex 桌面会话已卸载");
+      }
+      for (const id of loaded) {
+        if (this.#threads.has(id) && !this.#threads.get(id)?.tuiAttachPending) continue;
+        const result = object(await this.#server.request("thread/read", { threadId: id, includeTurns: false }));
+        if (!this.#started || !loaded.has(id)) return;
+        const snapshot = object(result.thread);
+        if (snapshot.ephemeral === true || typeof snapshot.cwd !== "string"
+          || (typeof snapshot.path === "string" && snapshot.path.split(/[\\/]/).includes("archived_sessions"))) continue;
+        const status = object(snapshot.status);
+        if (status.type !== "active" && status.type !== "idle") continue;
+        const suppressed = this.#desktopSuppressed.get(id);
+        if (suppressed !== undefined) {
+          if (status.type === "idle") this.#desktopSuppressed.set(id, "idle");
+          if (status.type !== "active" || suppressed !== "idle") continue;
+          this.#desktopSuppressed.delete(id);
+        }
+        await this.#adoptDesktopThread(id, snapshot);
+      }
+    } finally {
+      this.#desktopRefreshing = false;
+      if (this.#desktopRefreshPending && this.#started) {
+        this.#desktopRefreshPending = false;
+        void this.#refreshDesktopThreads().catch(error => this.#options.log?.(`Codex 桌面会话发现失败：${describeError(error)}`));
+      }
+    }
+  }
+
+  async #adoptDesktopThread(id: string, snapshot: Record<string, unknown>): Promise<void> {
+    if (this.#threads.has(id)) {
+      const existing = this.#threads.get(id)!;
+      if (existing.tuiAttachPending) await this.#attachTuiThread(existing);
+      return;
+    }
+    const cwd = snapshot.cwd;
+    if (typeof cwd !== "string") return;
+    const thread = this.#newThreadState(id, cwd, { name: codexSessionName(snapshot.name) });
+    this.#threads.set(id, thread);
+    this.#desktopThreads.add(id);
+    this.#rememberDesktopThread(id);
+    await this.#initializeTuiThread(thread, snapshot);
+    this.#options.log?.(`Codex 桌面会话已接入：thread=${id}`);
   }
 
   /**
@@ -708,7 +814,7 @@ export class CodexRuntime implements AgentBackend {
   // ── AgentBackend 统一端口（spec §7.4 的适配器收口） ─────────────────────────
 
   get kind(): AgentKind {
-    return "codex";
+    return this.#server.mode === "desktop" ? "codexDesktop" : "codex";
   }
 
   isReady(): boolean {
@@ -750,6 +856,16 @@ export class CodexRuntime implements AgentBackend {
 
   /** Persistent thread catalog, with a rollout fallback when app-server discovery fails. */
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
+    if (this.#server.mode === "desktop") {
+      const entries = await this.catalogNative(archived);
+      return entries.filter(entry => this.#desktopKnown.has(entry.sessionId)).map(entry => ({
+        ...entry, sessionId: this.#publicSessionId(entry.sessionId), agentKind: "codexDesktop",
+      }));
+    }
+    return (await this.catalogNative(archived)).filter(entry => !this.#desktopKnown.has(entry.sessionId));
+  }
+
+  private async catalogNative(archived = false): Promise<AgentSessionSummary[]> {
     const limit = 200;
     let live: AgentSessionSummary[] = [];
     try {
@@ -824,6 +940,14 @@ export class CodexRuntime implements AgentBackend {
   }
 
   async setArchived(sessionId: string, archived: boolean): Promise<void> {
+    if (this.#server.mode === "desktop") {
+      if (!sessionId.startsWith(`${CODEX_DESKTOP_RUNTIME_ID}:`) || !this.#desktopKnown.has(this.#nativeSessionId(sessionId))) {
+        throw new SessionArchiveError("session_not_found", "不属于 Codex 桌面版的会话");
+      }
+    } else if (this.#desktopKnown.has(sessionId)) {
+      throw new SessionArchiveError("session_not_found", "此会话属于 Codex 桌面版");
+    }
+    sessionId = this.#nativeSessionId(sessionId);
     const thread = this.#threads.get(sessionId);
     if (thread !== undefined && (this.#statusOf(thread) !== "idle" || thread.queue.length > 0)) {
       throw new SessionArchiveError("session_busy", "请等待 Codex 完成当前任务后再归档");
@@ -852,14 +976,17 @@ export class CodexRuntime implements AgentBackend {
   async activate(target: AgentActivateTarget): Promise<BackendActivation> {
     // Native Codex thread IDs are unprefixed. Let Host try the owning backend
     // instead of sending another backend's namespaced ID to thread/resume.
-    if (target.type === "resume" && target.sessionId.includes(":")) {
+    if (target.type === "resume" && (this.#server.mode === "desktop"
+      ? !target.sessionId.startsWith(`${CODEX_DESKTOP_RUNTIME_ID}:`) || !this.#desktopKnown.has(this.#nativeSessionId(target.sessionId))
+      : target.sessionId.includes(":") || this.#desktopKnown.has(target.sessionId))) {
       throw new ActivationError("session_not_found", "不属于 Codex 的会话");
     }
     // 在途计数：activate 的 thread/start|resume 广播可能先于 RPC 响应到达，此刻
     // thread 还没进 #threads。计数 >0 时切换检测先宽限，避免把自家广播当 TUI 切换。
     this.#activating += 1;
     try {
-      return await this.#activateInner(target);
+      return await this.#activateInner(target.type === "resume"
+        ? { type: "resume", sessionId: this.#nativeSessionId(target.sessionId) } : target);
     } finally {
       this.#activating -= 1;
     }
@@ -887,6 +1014,11 @@ export class CodexRuntime implements AgentBackend {
     thread.permissions = codexPermissions(result) ?? thread.permissions;
     if (codexPermissions(result)) this.#effectiveSettings.set(id, object(result));
     this.#threads.set(id, thread);
+    if (this.#server.mode === "desktop") {
+      this.#desktopThreads.add(id);
+      this.#desktopSuppressed.delete(id);
+      this.#rememberDesktopThread(id);
+    }
     void this.#checkSandboxReadiness(thread);
     void this.#refreshIntegrationCatalog(thread);
     this.#replayTurns(thread, threadJson);
@@ -906,7 +1038,7 @@ export class CodexRuntime implements AgentBackend {
     // 历史由设备的有界 session.sync 请求加载，metadata 不附带无人请求的整图。
     this.#openHeadWindow(id, cwd);
     this.#options.log?.(`Codex 会话已激活：${id}（cwd=${cwd}）`);
-    return { sessionId: id, spawnMode: "tui" };
+    return { sessionId: this.#publicSessionId(id), spawnMode: this.#server.mode === "desktop" ? "headless" : "tui" };
   }
 
   /**
@@ -1015,7 +1147,7 @@ export class CodexRuntime implements AgentBackend {
    * 退出口径广播 offline 让手机删卡。onOffline 复用 app-server 整体退出那条路径——
    * 对 Host 而言都是「这几个 runtimeId 掉线了，逐个广播」。
    */
-  #deactivateThread(threadId: string, reason: string): void {
+  #deactivateThread(threadId: string, reason: string, preserveApproval = false): void {
     const thread = this.#threads.get(threadId);
     if (thread === undefined) return;
     const metadata = this.threadMetadata(thread);
@@ -1024,12 +1156,21 @@ export class CodexRuntime implements AgentBackend {
     for (const [requestId, approval] of this.#approvals) {
       if (approval.threadId !== threadId) continue;
       clearTimeout(approval.timer);
-      if (approval.submitted === undefined) approval.serverRequest.respond(approval.interaction.decline);
+      if (approval.submitted === undefined && !preserveApproval) approval.serverRequest.respond(approval.interaction.decline);
       this.#emit(threadId, { type: "interaction.cancelled", requestId, reason: "owner_closed" });
       for (const commandId of approval.submitted?.commandIds ?? []) this.#commandResult(threadId, commandId, false, reason);
       this.#approvals.delete(requestId);
     }
     this.#threads.delete(threadId);
+    this.#desktopThreads.delete(threadId);
+    // A pending resume can subscribe this connection after the window has gone away.
+    // Release only once that request has settled, so it cannot reattach a closed view.
+    void (async () => {
+      try { await thread.tuiAttachPromise; } catch { /* The subscription may still have succeeded. */ }
+      if (!this.#threads.has(threadId)) await this.#server.request("thread/unsubscribe", { threadId });
+    })().catch(error => {
+      this.#options.log?.(`Codex 会话解除订阅失败（thread=${threadId}）：${describeError(error)}`);
+    });
     this.#headWindows.delete(threadId);
     const windowKey = this.#windowKeyByThread.get(threadId);
     this.#windowKeyByThread.delete(threadId);
@@ -1688,13 +1829,17 @@ export class CodexRuntime implements AgentBackend {
     forked.permissions = codexPermissions(result);
     if (forked.permissions) this.#effectiveSettings.set(forked.id, object(result));
     this.#threads.set(id, forked);
+    if (this.#server.mode === "desktop") {
+      this.#desktopThreads.add(id);
+      this.#rememberDesktopThread(id);
+    }
     void this.#refreshIntegrationCatalog(forked);
     this.#replayTurns(forked, result.thread ?? {});
     if (forked.itemOrder.length === 0) await this.#replayFromRollout(forked);
     this.#publishMetadataEvent(forked);
 
     this.#openHeadWindow(id, cwd);
-    return { sessionId: id, spawnMode: "tui" };
+    return { sessionId: this.#publicSessionId(id), spawnMode: this.#server.mode === "desktop" ? "headless" : "tui" };
   }
 
   #slashNoSession(threadId: string | undefined, commandId: string | undefined): boolean {
@@ -1711,6 +1856,11 @@ export class CodexRuntime implements AgentBackend {
    * 而不是「因为查找失败还假装在线」。
    */
   async #quitThread(thread: ThreadState): Promise<void> {
+    if (this.#server.mode === "desktop") {
+      this.#desktopSuppressed.set(thread.id, thread.turnInProgress ? "active" : "idle");
+      this.#deactivateThread(thread.id, "手机已退出 Codex 桌面会话视图", true);
+      return;
+    }
     const endpoint = this.#server.endpoint;
     try {
       if (endpoint === undefined) {
@@ -1837,6 +1987,16 @@ export class CodexRuntime implements AgentBackend {
    * 再复查（Host 操作还在途就再等一轮），已被收编的就是自己人的广播，忽略。
    */
   #handleUnmanagedNotification(method: string, record: Record<string, unknown>, threadId: string | undefined): void {
+    if (this.#server.mode === "desktop") {
+      if (method === "thread/status/changed" && threadId !== undefined
+        && object(record.status).type === "idle" && this.#desktopSuppressed.has(threadId)) {
+        this.#desktopSuppressed.set(threadId, "idle");
+      }
+      if (method === "thread/started" || method === "thread/status/changed") {
+        void this.#refreshDesktopThreads().catch(error => this.#options.log?.(`Codex 桌面会话发现失败：${describeError(error)}`));
+      }
+      return;
+    }
     if (method !== "thread/started" && method !== "thread/status/changed") return;
     const nested = record.thread;
     // app-server 会用 **ephemeral 线程**干一次性的活：会话标题生成、/side、review fork、
@@ -1909,6 +2069,10 @@ export class CodexRuntime implements AgentBackend {
     const snapshot = nested !== null && typeof nested === "object" && typeof (nested as { cwd?: unknown }).cwd === "string"
       ? nested as Record<string, unknown>
       : await this.#threadFromList(threadId);
+    if (this.#desktopKnown.has(threadId)) {
+      this.#options.log?.(`忽略已归属桌面版的 Codex 终端会话：${threadId}`);
+      return;
+    }
     const cwd = typeof snapshot?.cwd === "string" ? snapshot.cwd : pending.cwd;
     const thread = this.#newThreadState(threadId, cwd, { name: codexSessionName(snapshot?.name) });
     this.#threads.set(threadId, thread);
@@ -1938,6 +2102,11 @@ export class CodexRuntime implements AgentBackend {
     const snapshot = nested !== null && typeof nested === "object" && typeof (nested as { cwd?: unknown }).cwd === "string"
       ? nested as Record<string, unknown>
       : await this.#threadFromList(threadId);
+    if (this.#desktopKnown.has(threadId)) {
+      this.#deactivateThread(victim.oldThreadId, "Codex TUI 已切换到桌面版会话");
+      this.#options.log?.(`忽略已归属桌面版的 Codex 终端会话：${threadId}`);
+      return;
+    }
     const cwd = snapshot?.cwd;
     if (typeof cwd !== "string") {
       this.#options.log?.(`无法确定 TUI 切换目标会话的 cwd（thread=${threadId}）；忽略`);
@@ -2110,7 +2279,12 @@ export class CodexRuntime implements AgentBackend {
     if ((method === "thread/archived" || method === "thread/unarchived") && typeof threadId === "string") {
       const archived = method === "thread/archived";
       if (archived) this.#deactivateThread(threadId, "会话已归档");
-      this.onArchiveChange?.(threadId, archived);
+      this.onArchiveChange?.(this.#publicSessionId(threadId), archived);
+      return;
+    }
+    if (method === "thread/closed" && typeof threadId === "string" && this.#server.mode === "desktop") {
+      this.#desktopSuppressed.set(threadId, "active");
+      this.#deactivateThread(threadId, "Codex 桌面会话已关闭");
       return;
     }
     const thread = typeof threadId === "string" ? this.#threads.get(threadId) : undefined;
@@ -2526,7 +2700,7 @@ export class CodexRuntime implements AgentBackend {
   #publishSnapshot(thread: ThreadState, request: Extract<RuntimeCommand, { type: "session.sync" }>): void {
     if (thread.historyError !== undefined) throw new Error(thread.historyError);
     this.#emit(thread.id, selectSessionSyncSnapshot(
-      thread.entries, thread.id, thread.entries.at(-1)?.entryId ?? null, request,
+      thread.entries, this.#publicSessionId(thread.id), thread.entries.at(-1)?.entryId ?? null, request,
     ));
   }
 

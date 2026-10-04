@@ -34,7 +34,7 @@ internal enum class AgentBrand(val title: String, val icon: Int) {
 
 internal fun agentBrand(isCodex: Boolean) = if (isCodex) AgentBrand.Codex else AgentBrand.Pi
 internal fun agentBrand(kind: String?) = when (kind) {
-    "codex" -> AgentBrand.Codex
+    "codex", "codexDesktop" -> AgentBrand.Codex
     "dsh" -> AgentBrand.DeepSeek
     else -> AgentBrand.Pi
 }
@@ -104,7 +104,7 @@ internal fun AgentLabel(brand: AgentBrand, modifier: Modifier = Modifier, suffix
 }
 
 @Composable
-internal fun AgentChoice(brand: AgentBrand, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+internal fun AgentChoice(brand: AgentBrand, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, label: String = brand.title) {
     val interaction = remember { MutableInteractionSource() }
     NeumorphSurface(
         modifier = modifier.selectable(selected, enabled = enabled, role = Role.RadioButton, onClick = onClick, interactionSource = interaction, indication = null),
@@ -120,7 +120,7 @@ internal fun AgentChoice(brand: AgentBrand, selected: Boolean, onClick: () -> Un
             verticalAlignment = Alignment.CenterVertically,
         ) {
             AgentIcon(brand)
-            Text(brand.title, color = if (enabled) brand.accent() else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f), style = MaterialTheme.typography.labelLarge)
+            Text(label, color = if (enabled) brand.accent() else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f), style = MaterialTheme.typography.labelLarge)
         }
     }
 }

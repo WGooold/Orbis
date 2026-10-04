@@ -75,7 +75,8 @@ private enum class DrawerAgentFilter(
 ) {
     All("all", "全部", null),
     Pi("pi", "Pi", "pi"),
-    Codex("codex", "Codex", "codex"),
+    Codex("codex", "Codex 终端", "codex"),
+    CodexDesktop("codexDesktop", "Codex 桌面版", "codexDesktop"),
     DeepSeek("dsh", "DeepSeek", "dsh");
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
@@ -595,7 +596,7 @@ private fun DrawerSessionRow(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     AgentIcon(agentBrand(row.agentKind), modifier = Modifier.size(14.dp))
                     Text(
-                        agentBrand(row.agentKind).title,
+                        if (row.agentKind == "codexDesktop") "Codex 桌面版" else if (row.agentKind == "codex") "Codex 终端" else agentBrand(row.agentKind).title,
                         style = MaterialTheme.typography.labelSmall,
                         color = agentBrand(row.agentKind).accent(),
                     )

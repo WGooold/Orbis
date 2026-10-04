@@ -52,9 +52,9 @@ export function providerMetadata(value: unknown): ProviderMetadata {
   }
   return result;
 }
-export function agentKind(value: unknown): AgentKind {
-  if (!kinds.includes(value as AgentKind)) throw new ProviderError("未知 Agent");
-  return value as AgentKind;
+export function agentKind(value: unknown): Exclude<AgentKind, "codexDesktop"> {
+  if (!kinds.includes(value as Exclude<AgentKind, "codexDesktop">)) throw new ProviderError("未知 Agent");
+  return value as Exclude<AgentKind, "codexDesktop">;
 }
 const missing = (error: unknown): boolean => object(error) && error.code === "ENOENT";
 async function read(path: string): Promise<string | null> {

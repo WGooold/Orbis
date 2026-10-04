@@ -8,8 +8,8 @@ import { agentKind } from "./provider-manager.js";
 import { DSH_VERSION } from "./dsh-client.js";
 
 const execute = promisify(execFile);
-export const agentPackages = { pi: "@earendil-works/pi-coding-agent", codex: "@openai/codex", dsh: "@deepseek-ai/dsh" } as const;
-export const agentEntries = { pi: "dist/bundle/cli.js", codex: "bin/codex.js", dsh: "lib/bin.js" } as const;
+export const agentPackages = { pi: "@earendil-works/pi-coding-agent", codex: "@openai/codex", codexDesktop: "@openai/codex", dsh: "@deepseek-ai/dsh" } as const;
+export const agentEntries = { pi: "dist/bundle/cli.js", codex: "bin/codex.js", codexDesktop: "bin/codex.js", dsh: "lib/bin.js" } as const;
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 export type AgentInstallation = { id: string; kind: AgentKind; version: string; entry: string; installedAt: string; active: boolean };
 export type AgentInstallProgress = { kind: AgentKind; stage: "resolving" | "downloading" | "verifying" | "activating" | "restarting" | "restartFailed" | "done" | "cancelled" | "error"; version?: string; message?: string };
@@ -20,6 +20,8 @@ export type AgentInstallStatus = LocalAgent & {
   installations: AgentInstallation[]; copies: { entry: string; version?: string }[];
   terminalIntegration?: "enabled" | "pending" | "repair" | "disabled"; terminalIntegrationDetail?: string;
   terminalCompatible?: boolean;
+  /** Official Windows desktop package plus a runnable Codex CLI, independent of terminal integration. */
+  desktopInstalled?: boolean;
   /** 机器 PATH 抢先，只有提权能修；界面只在为真时给出一次修复入口。 */
   terminalNeedsElevation?: boolean;
 };

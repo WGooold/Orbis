@@ -9,7 +9,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -2148,6 +2148,43 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(ready).toMatchObject({ type: "device.ready", agents: ["pi", "codex"] });
   });
 
+  it("separates online desktop agents from agents that can be launched on demand", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-desktop-capabilities-"));
+    relay = await startRelayLocal(stateDir);
+    const desktop = new CodexRuntime({
+      server: {
+        mode: "desktop",
+        request: vi.fn(async (method: string) => {
+          if (["model/list", "skills/list", "mcpServerStatus/list", "thread/loaded/list"].includes(method)) return { data: [] };
+          return {};
+        }),
+        notify: vi.fn(),
+        stop: vi.fn(async () => {}),
+      } as unknown as CodexAppServer,
+      onEvent: () => {},
+      rolloutRoot: join(stateDir, "desktop-rollouts"),
+    });
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      reconnect: false, lan: false, codexDesktopLaunchable: true });
+    await host.start();
+    const connected = await readyDeviceCapturing({ host, relay });
+    device = connected.device;
+    expect(connected.ready).toMatchObject({ agents: ["pi"], launchableAgents: ["pi", "codexDesktop"] });
+
+    const nextReady = async () => {
+      for (;;) {
+        const message = await connected.device.receiveMessage() as Record<string, unknown>;
+        if (message.type === "device.ready") return message;
+      }
+    };
+
+    host.attachCodexDesktopRuntime(desktop);
+    expect(await nextReady()).toMatchObject({ type: "device.ready", agents: ["pi", "codexDesktop"], launchableAgents: ["pi", "codexDesktop"] });
+    host.detachCodexDesktopRuntime(desktop);
+    expect(await nextReady()).toMatchObject({ type: "device.ready", agents: ["pi"], launchableAgents: ["pi", "codexDesktop"] });
+    await desktop.stop();
+  });
+
   it("runtime.command 按 runtimeId 路由给 Codex 后端；不支持的命令回 unsupported_command", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
     relay = await startRelayLocal(stateDir);
@@ -2297,6 +2334,80 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       currentProviders: [{ agentKind: "codex", provider: "switched" }],
     });
     expect(listRequests).toHaveLength(2);
+  });
+
+  it("keeps terminal and desktop Codex identities separate over the device protocol", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-dual-codex-host-"));
+    relay = await startRelayLocal(stateDir);
+    const entry = (id: string) => ({ id, cwd: "D:/repo", createdAt: 1_780_000_000, updatedAt: 1_780_000_001, turns: [] });
+    const terminalRequest = vi.fn(async (method: string, params?: { archived?: boolean }) => {
+      if (method === "thread/list") return { data: params?.archived ? [] : [entry("terminal-thread"), entry("desktop-thread")] };
+      if (method === "config/read") return { config: {} };
+      throw new Error(`unexpected terminal RPC: ${method}`);
+    });
+    const desktopRequest = vi.fn(async (method: string, params?: { threadId?: string; archived?: boolean }) => {
+      if (method === "thread/loaded/list") return { data: ["desktop-thread"] };
+      if (method === "thread/list") return { data: params?.archived ? [] : [entry("terminal-thread"), entry("desktop-thread")] };
+      if (method === "model/list" || method === "skills/list" || method === "mcpServerStatus/list") return { data: [] };
+      if (method === "config/read") return { config: {} };
+      if (method === "thread/read" || method === "thread/resume") return {
+        thread: { id: params?.threadId, cwd: "D:/repo", status: { type: "idle" }, turns: [] },
+      };
+      if (method === "thread/unsubscribe") return {};
+      throw new Error(`unexpected desktop RPC: ${method}`);
+    });
+    const terminal = new CodexRuntime({
+      server: { mode: "owned", request: terminalRequest, notify: vi.fn() } as unknown as CodexAppServer,
+      onEvent: () => {}, rolloutRoot: join(stateDir, "terminal-rollouts"),
+    });
+    const desktop = new CodexRuntime({
+      server: { mode: "desktop", request: desktopRequest, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
+      onEvent: () => {}, rolloutRoot: join(stateDir, "desktop-rollouts"),
+    });
+    try {
+      host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+        sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
+        codexRuntime: terminal, codexDesktopRuntime: desktop,
+        providers: { proxyTakeoverActive: true } as ProviderManager });
+      await host.start();
+      await vi.waitFor(() => expect(desktop.directoryEntries().map(item => item.runtimeId)).toEqual(["codex-desktop:desktop-thread"]));
+      await expect(host.changeProvider("codex", async () => {})).rejects.toThrow("共享后端");
+      const connected = await readyDeviceCapturing({ host, relay });
+      device = connected.device;
+      expect(connected.ready).toMatchObject({ agents: ["pi", "codex", "codexDesktop"] });
+      await device.receiveMessage();
+      const response = async (requestId: string): Promise<Record<string, unknown>> => {
+        for (let i = 0; i < 20; i += 1) {
+          const message = await device!.receiveMessage() as Record<string, unknown>;
+          if (message.requestId === requestId) return message;
+        }
+        throw new Error(`no response for ${requestId}`);
+      };
+      sendRequest(device, { type: "session.list", protocolVersion: PROTOCOL_VERSION, requestId: "dual-list" });
+      const listed = await response("dual-list");
+      expect(listed.type).toBe("session.list.result");
+      expect((listed.sessions as Array<{ sessionId: string; agentKind: string }>).map(item => [item.sessionId, item.agentKind]))
+        .toEqual([["terminal-thread", "codex"], ["codex-desktop:desktop-thread", "codexDesktop"]]);
+
+      const terminalResumeCount = terminalRequest.mock.calls.filter(([method]) => method === "thread/resume").length;
+      const desktopResumeCount = desktopRequest.mock.calls.filter(([method]) => method === "thread/resume").length;
+      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "dual-resume",
+        target: { type: "resume", agentKind: "codexDesktop", sessionId: "codex-desktop:desktop-thread" } });
+      expect(await response("dual-resume")).toMatchObject({ type: "session.activated", agentKind: "codexDesktop",
+        sessionId: "codex-desktop:desktop-thread", spawnMode: "headless" });
+      expect(terminalRequest.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(terminalResumeCount);
+      expect(desktopRequest.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(desktopResumeCount + 1);
+
+      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "wrong-backend",
+        target: { type: "resume", agentKind: "codex", sessionId: "desktop-thread" } });
+      expect(await response("wrong-backend")).toMatchObject({ type: "protocol.error", code: "session_not_found" });
+      expect(terminalRequest.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(terminalResumeCount);
+      await host.stop();
+      host = undefined;
+      expect(JSON.parse(await readFile(join(stateDir, "codex-desktop-threads.json"), "utf8"))).toEqual(["desktop-thread"]);
+    } finally {
+      await desktop.stop();
+    }
   });
 
   it("Codex 空壳不进进程目录；会话激活后 runtime.online 如实重播 cwd", async () => {
