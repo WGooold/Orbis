@@ -34,6 +34,7 @@ import { usageTemplate } from "./provider-usage-templates.js";
 
 const execute = promisify(execFile);
 
+const APP_DOWNLOAD_URL = "https://orbising.com/downloads/orbis.apk";
 async function loopbackPortAlive(value: unknown): Promise<boolean> {
   if (typeof value !== "string") return false;
   let url: URL;
@@ -147,7 +148,8 @@ export class DesktopRuntime {
     this.#poll.unref();
     this.#usage.start();
     const devices = (await loadDeviceStore(this.#stateDir)).devices.filter(d => !d.revoked).map(d => ({ deviceId: d.deviceId, label: d.label, createdAt: d.createdAt }));
-    return { hostId: identity.hostId, hostName: identity.hostName, stateDir: this.#stateDir, devices, nodeVersion: process.version };
+    return { hostId: identity.hostId, hostName: identity.hostName, stateDir: this.#stateDir, devices, nodeVersion: process.version,
+      appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }) };
   }
 
   #managedRoot(): string { return process.env.ORBIS_AGENT_INSTALL_ROOT ?? join(process.env.LOCALAPPDATA ?? homedir(), "Orbis", "agents"); }

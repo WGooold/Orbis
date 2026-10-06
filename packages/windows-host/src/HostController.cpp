@@ -62,7 +62,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             const auto obj = result.toObject();
             const auto actualId = obj.value("hostId").toString();
             if (!m_hostId.isEmpty() && m_hostId != actualId) { m_credential.clear(); setMessage("电脑身份与激活凭据不匹配，请重新验证邮箱"); }
-            m_hostId = actualId; m_hostName = obj.value("hostName").toString();
+            m_hostId = actualId; m_hostName = obj.value("hostName").toString(); m_appDownloadQr = obj.value("appDownloadQr").toString();
             m_devices = obj.value("devices").toArray().toVariantList();
             m_bridgeReady = true;
             refreshRegistrationPolicy();

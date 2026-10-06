@@ -19,6 +19,7 @@ class HostController : public QObject {
     Q_PROPERTY(QString relayUrl READ relayUrl NOTIFY changed)
     Q_PROPERTY(QString hostId READ hostId NOTIFY changed)
     Q_PROPERTY(QString qr READ qr NOTIFY changed)
+    Q_PROPERTY(QString appDownloadQr READ appDownloadQr NOTIFY changed)
     Q_PROPERTY(QString logs READ logs NOTIFY changed)
     Q_PROPERTY(QString version READ version CONSTANT)
     Q_PROPERTY(QString dshWebUrl READ dshWebUrl NOTIFY changed)
@@ -56,6 +57,7 @@ public:
     QString relayUrl() const { return m_settings.value("relayUrl", ORBIS_DEFAULT_RELAY).toString(); }
     QString hostId() const { return m_hostId; }
     QString qr() const { return m_qr; }
+    QString appDownloadQr() const { return m_appDownloadQr; }
     QString logs() const { return m_logs.join('\n'); }
     QString version() const { return ORBIS_VERSION; }
     QString piEntry() const { return m_settings.value("piEntry").toString(); }
@@ -168,7 +170,7 @@ private:
     QHash<int, QString> m_methods;
     QHash<int, QJsonObject> m_requestParams;
     int m_draftGeneration = 0;
-    QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_challenge, m_challengeEmail;
+    QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_challenge, m_challengeEmail;
     QStringList m_logs;
     QVariantList m_devices, m_agents;
     QVariantMap m_codexDesktop;

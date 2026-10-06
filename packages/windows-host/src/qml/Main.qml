@@ -645,7 +645,32 @@ ApplicationWindow {
 
                     ColumnLayout {
                         visible: window.page === 1; Layout.fillWidth: true; spacing: 16
-                        RowLayout { Layout.fillWidth: true; Heading { text: "已配对设备" } Item { Layout.fillWidth: true } ActionButton { text: "＋ 添加手机"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() } }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Heading { text: "已配对设备" }
+                            Item { Layout.fillWidth: true }
+                            ToolButton {
+                                visible: host.appDownloadQr.length > 0
+                                Layout.preferredWidth: 42; Layout.preferredHeight: 42
+                                hoverEnabled: true
+                                Accessible.name: "下载 Orbis Android"
+                                onClicked: appDownloadDialog.open()
+                                contentItem: Image {
+                                    anchors.fill: parent; anchors.margins: 7
+                                    source: host.appDownloadQr
+                                    fillMode: Image.PreserveAspectFit
+                                    smooth: false
+                                    mipmap: false
+                                }
+                                background: NeuSurface {
+                                    anchors.fill: parent; anchors.margins: -6; margin: 6
+                                    cornerRadius: 7; inset: parent.down; focused: parent.activeFocus
+                                }
+                                ToolTip.visible: hovered
+                                ToolTip.text: "下载 Orbis Android"
+                            }
+                            ActionButton { text: "＋ 添加手机"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
+                        }
                         Card {
                             visible: host.devices.length === 0; Layout.fillWidth: true
                             Heading { text: "还没有连接的手机" }
@@ -843,6 +868,26 @@ ApplicationWindow {
                     }
                     Item { Layout.preferredHeight: 30 }
                 }
+            }
+        }
+    }
+    SoftDialog {
+        id: appDownloadDialog
+        title: "Orbis Android"
+        anchors.centerIn: parent
+        width: 370
+        modal: true
+        footer: SoftDialogButtons { ActionButton { text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } onRejected: appDownloadDialog.reject() }
+        ColumnLayout {
+            width: parent.width
+            Image {
+                source: host.appDownloadQr
+                sourceSize.width: 320; sourceSize.height: 320
+                Layout.preferredWidth: 320; Layout.preferredHeight: 320
+                Layout.alignment: Qt.AlignHCenter
+                fillMode: Image.PreserveAspectFit
+                smooth: false
+                mipmap: false
             }
         }
     }
