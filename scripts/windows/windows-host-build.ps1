@@ -71,7 +71,7 @@ try {
             $env:Path = "$CompilerRoot\bin;$QtRoot\bin;$savedPath"
             if ($testProcess.ExitCode -ne 0) { throw "Packaged app smoke test failed: $($testProcess.ExitCode). See $smokeDir" }
             Get-ChildItem -LiteralPath $releaseRoot -File -Filter 'preview.png.*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
-            $archive = Join-Path $releaseRoot 'OrbisHost-0.1.10-windows-x64.zip'
+            $archive = Join-Path $releaseRoot 'OrbisHost-0.1.11-windows-x64.zip'
             Compress-Archive -LiteralPath $stage -DestinationPath $archive
             [IO.File]::WriteAllText("$archive.sha256", (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $archive) + "`n", [Text.Encoding]::ASCII)
             if ($InnoCompiler) {
@@ -91,7 +91,7 @@ try {
                 } finally {
                     if ($installerDrive) { & "$env:SystemRoot\System32\subst.exe" $installerDrive /D }
                 }
-                $installer = Join-Path $releaseRoot 'OrbisHost-0.1.10-windows-x64-setup.exe'
+                $installer = Join-Path $releaseRoot 'OrbisHost-0.1.11-windows-x64-setup.exe'
                 [IO.File]::WriteAllText("$installer.sha256", (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $installer) + "`n", [Text.Encoding]::ASCII)
             }
             Write-Output "Portable release: $archive"

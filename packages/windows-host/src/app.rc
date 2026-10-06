@@ -12,9 +12,9 @@ BEGIN
   BEGIN
    VALUE "CompanyName", "Orbis"
    VALUE "FileDescription", "Orbis Host"
-   VALUE "FileVersion", "0.1.10"
+   VALUE "FileVersion", "0.1.11"
    VALUE "ProductName", "Orbis Host"
-   VALUE "ProductVersion", "0.1.10"
+   VALUE "ProductVersion", "0.1.11"
   END
  END
  BLOCK "VarFileInfo"

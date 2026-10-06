@@ -15,6 +15,7 @@ const assets = {
   "/assets/orbis.png": ["orbis.png", "image/png"],
 } as const;
 export const downloadNames = [
+  "OrbisHost-0.1.11-windows-x64-setup.exe", "OrbisHost-0.1.11-windows-x64.zip",
   "OrbisHost-0.1.10-windows-x64-setup.exe", "OrbisHost-0.1.10-windows-x64.zip",
   "OrbisHost-0.1.9-windows-x64-setup.exe", "OrbisHost-0.1.9-windows-x64.zip",
   "OrbisHost-0.1.8-windows-x64-setup.exe", "OrbisHost-0.1.8-windows-x64.zip",
@@ -68,7 +69,7 @@ export async function createWebHandler(downloadsDir?: string, androidDir?: strin
       // 两者路径不同，所以 Android 目录允许单独指定，没指定时退回 Windows 目录。
       const androidRelease = await readAndroidReleaseMetadata(androidDir ?? downloadsDir);
       jsonResponse(response, 200, {
-        version: downloads[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.10",
+        version: downloads[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.11",
         windows: downloads,
         android: "https://orbising.com/downloads/orbis.apk",
         androidVersion: androidRelease?.version ?? null,
