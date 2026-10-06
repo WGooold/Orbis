@@ -144,7 +144,9 @@ describe("Agent download and installation lifecycle", () => {
     const run = vi.fn(packageRunner("codex", "2.0.0"));
     const result = await installAgentPackage("codex", "2.0.0", join(root, "managed"), signal(), undefined, { existingEntry: entry, run });
     expect(result.entry).toBe(entry);
-    expect(run.mock.calls[0]?.[1]).toEqual(expect.arrayContaining(["--global", "--prefix", prefix, "--include=optional", "@openai/codex@2.0.0"]));
+    // 更新已有 npm 安装时仍然要落在原 prefix 上：安装调用不一定是第一次调用（闭包解析会先跑一次）。
+    const installCall = run.mock.calls.map(call => call[1] as string[]).find(args => args.includes("install") && args.includes("--include=optional"));
+    expect(installCall).toEqual(expect.arrayContaining(["--global", "--prefix", prefix, "--include=optional", "@openai/codex@2.0.0"]));
     expect(await listManagedAgentInstallations("codex", join(root, "managed"))).toEqual([]);
   });
 

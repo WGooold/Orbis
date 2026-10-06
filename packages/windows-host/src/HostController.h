@@ -14,6 +14,11 @@ class HostController : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString state READ state NOTIFY changed)
     Q_PROPERTY(QString message READ message NOTIFY changed)
+    /** 正在进行的下载：已收字节 / 总字节（-1 表示当前没有下载；总字节未知时为 0）。 */
+    Q_PROPERTY(qint64 downloadReceived READ downloadReceived NOTIFY changed)
+    Q_PROPERTY(qint64 downloadTotal READ downloadTotal NOTIFY changed)
+    /** 这个进度是在下什么（Host 更新包 / Agent 包）。 */
+    Q_PROPERTY(QString downloadLabel READ downloadLabel NOTIFY changed)
     Q_PROPERTY(QString email READ email NOTIFY changed)
     Q_PROPERTY(QString hostName READ hostName NOTIFY changed)
     Q_PROPERTY(QString relayUrl READ relayUrl NOTIFY changed)
@@ -52,6 +57,9 @@ public:
     ~HostController() override;
     QString state() const { return m_state; }
     QString message() const { return m_message; }
+    qint64 downloadReceived() const { return m_downloadReceived; }
+    qint64 downloadTotal() const { return m_downloadTotal; }
+    QString downloadLabel() const { return m_downloadLabel; }
     QString email() const { return m_email; }
     QString hostName() const { return m_hostName; }
     QString relayUrl() const { return m_settings.value("relayUrl", ORBIS_DEFAULT_RELAY).toString(); }
@@ -154,6 +162,9 @@ private:
     void api(const QString &endpoint, const QJsonObject &body, Callback done);
     void saveActivation(const QJsonValue &value, const QString &successMessage);
     void setMessage(const QString &message);
+    /** 开始/更新/结束一次下载进度（`total <= 0` 表示总大小未知）。 */
+    void setDownload(const QString &label, qint64 received, qint64 total);
+    void clearDownload();
     void setProviders(const QVariantList &providers);
     void setProviderPresets(const QVariantList &presets);
     void appendLog(QString message);
@@ -180,6 +191,8 @@ private:
     QString m_providerKind = "codex";
     QString m_piDefaultProvider;
     int m_nextId = 1, m_busy = 0, m_cooldown = 0, m_runtimeCount = 0, m_crashes = 0;
+    qint64 m_downloadReceived = -1, m_downloadTotal = 0;
+    QString m_downloadLabel;
     int m_policyTicks = 0;
     qint64 m_pairExpires = 0;
     bool m_bridgeReady = false, m_shutdown = false, m_desiredRunning = false;

@@ -163,6 +163,14 @@ void HostController::receiveLine(const QJsonObject &line) {
             m_agentInstallKind = line.value("kind").toString();
             m_agentInstallStage = line.value("stage").toString();
             if (line.contains("version")) m_agentInstallVersion = line.value("version").toString();
+            // 下载进度（同一次安装里由多个事件陆续上报）：终态时收起来。
+            const auto download = line.value("download").toObject();
+            if (m_agentInstallStage == "downloading" && !download.isEmpty()) {
+                const auto label = m_agentInstallKind == "pi" ? "Pi" : m_agentInstallKind == "dsh" ? "DeepSeek Harness" : "Codex";
+                setDownload(label, qint64(download.value("receivedBytes").toDouble()), qint64(download.value("totalBytes").toDouble()));
+            } else if (m_agentInstallStage != "downloading") {
+                clearDownload();
+            }
         }
         else if (event == "agentInstalled") {
             const auto kind = line.value("kind").toString();
@@ -562,6 +570,15 @@ void HostController::openDownloads() { QDesktopServices::openUrl(QUrl("https://o
 void HostController::openDataDirectory() { QDesktopServices::openUrl(QUrl::fromLocalFile(m_dataDir)); }
 void HostController::clearMessage() { m_message.clear(); emit changed(); }
 void HostController::setMessage(const QString &message) { m_message = message; appendLog(message); emit changed(); }
+void HostController::setDownload(const QString &label, qint64 received, qint64 total) {
+    m_downloadLabel = label; m_downloadReceived = qMax<qint64>(0, received); m_downloadTotal = qMax<qint64>(0, total);
+    emit changed();
+}
+void HostController::clearDownload() {
+    if (m_downloadReceived < 0) return;
+    m_downloadReceived = -1; m_downloadTotal = 0; m_downloadLabel.clear();
+    emit changed();
+}
 void HostController::appendLog(QString message) {
     if (message.isEmpty()) return;
     message.replace(QRegularExpression("orbis_host_[A-Za-z0-9_-]+"), "[credential]");

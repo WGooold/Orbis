@@ -1,18 +1,30 @@
 import { execFile, spawn } from "node:child_process";
-import { access, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import type { AgentKind } from "@pi-remote/protocol";
 import { agentKind } from "./provider-manager.js";
 import { DSH_VERSION } from "./dsh-client.js";
+import { createAgentDownloadTracker, planAgentDownload, type AgentDownloadPlan, type AgentDownloadPlanOptions, type AgentDownloadProgress } from "./agent-download-plan.js";
+
+/** 测试注入：默认用真实计划（npm 解析闭包 + 问体积），测试用假计划避开网络。 */
+type PlanDownload = (options: AgentDownloadPlanOptions) => Promise<AgentDownloadPlan | undefined>;
 
 const execute = promisify(execFile);
 export const agentPackages = { pi: "@earendil-works/pi-coding-agent", codex: "@openai/codex", codexDesktop: "@openai/codex", dsh: "@deepseek-ai/dsh" } as const;
 export const agentEntries = { pi: "dist/bundle/cli.js", codex: "bin/codex.js", codexDesktop: "bin/codex.js", dsh: "lib/bin.js" } as const;
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 export type AgentInstallation = { id: string; kind: AgentKind; version: string; entry: string; installedAt: string; active: boolean };
-export type AgentInstallProgress = { kind: AgentKind; stage: "resolving" | "downloading" | "verifying" | "activating" | "restarting" | "restartFailed" | "done" | "cancelled" | "error"; version?: string; message?: string };
+export type AgentInstallProgress = {
+  kind: AgentKind;
+  stage: "resolving" | "downloading" | "verifying" | "activating" | "restarting" | "restartFailed" | "done" | "cancelled" | "error";
+  version?: string;
+  message?: string;
+  /** 已知时才带：npm 不给在途字节，所以这是“已下完的包”累加出来的。 */
+  download?: AgentDownloadProgress;
+};
 export type LocalAgent = { installed: boolean; installedButBroken: boolean; version?: string; entry?: string; error?: string };
 export type AgentInstallStatus = LocalAgent & {
   kind: AgentKind; package: string; latestVersion?: string; recommendedVersion?: string; compatibilityNote?: string; updateAvailable: boolean; latestError?: string;
@@ -25,7 +37,7 @@ export type AgentInstallStatus = LocalAgent & {
   /** 机器 PATH 抢先，只有提权能修；界面只在为真时给出一次修复入口。 */
   terminalNeedsElevation?: boolean;
 };
-export type InstallRun = (command: string, args: string[], options: { signal: AbortSignal; timeout: number; cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
+export type InstallRun = (command: string, args: string[], options: { signal: AbortSignal; timeout: number; cwd?: string; onStderr?: (chunk: string) => void }) => Promise<{ stdout: string; stderr: string }>;
 
 export function parseAgentVersion(value: string): { core: bigint[]; pre: string[] } | undefined {
   const match = versionPattern.exec(value.trim());
@@ -122,7 +134,11 @@ export const runAgentInstaller: InstallRun = async (command, args, options) => {
     const timer = setTimeout(() => stop(new Error("Agent 安装超时")), options.timeout);
     options.signal.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", (data: Buffer) => { stdout = (stdout + data.toString()).slice(-64_000); });
-    child.stderr.on("data", (data: Buffer) => { stderr = (stderr + data.toString()).slice(-64_000); });
+    child.stderr.on("data", (data: Buffer) => {
+      stderr = (stderr + data.toString()).slice(-64_000);
+      // 进度只能从 npm 的实时输出里看：它在非 TTY 下不报字节，只报“哪个 tarball 取完了”。
+      options.onStderr?.(data.toString());
+    });
     child.on("error", error => { stopped ??= error; });
     child.on("close", code => {
       clearTimeout(timer); options.signal.removeEventListener("abort", abort);
@@ -167,13 +183,17 @@ async function verifyPackage(kind: AgentKind, prefix: string, requested: string,
 export async function installAgentPackage(
   kind: AgentKind, version: string, root: string, signal: AbortSignal,
   onProgress?: (progress: AgentInstallProgress) => void,
-  options: { existingEntry?: string; run?: InstallRun } = {},
+  options: { existingEntry?: string; run?: InstallRun; planDir?: string; planDownload?: PlanDownload } = {},
 ): Promise<{ entry: string; version: string; id?: string }> {
   root = resolve(root);
   installPackage(kind, version); signal.throwIfAborted();
   const run = options.run ?? runAgentInstaller;
-  const report = (stage: AgentInstallProgress["stage"], resolvedVersion?: string) => onProgress?.({ kind, stage, ...(resolvedVersion ? { version: resolvedVersion } : {}) });
+  const report = (stage: AgentInstallProgress["stage"], resolvedVersion?: string, download?: AgentDownloadProgress) => onProgress?.({
+    kind, stage, ...(resolvedVersion ? { version: resolvedVersion } : {}), ...(download === undefined ? {} : { download }),
+  });
   const id = randomUUID(); let temporary: string | undefined; let committed = false;
+  /** 只放解析闭包用的 lockfile；catch 里也要清理，所以在 try 之外声明。 */
+  let planDir: string | undefined;
   const external = options.existingEntry !== undefined;
   try {
     report("resolving", version);
@@ -194,7 +214,31 @@ export async function installAgentPackage(
     }
     const npm = await resolveNpmTool(external ? prefix : undefined);
     signal.throwIfAborted(); report("downloading", version);
-    await run(npm.command, [...npm.args, "install", ...(external ? ["--global"] : []), "--prefix", prefix, "--include=optional", "--no-audit", "--no-fund", "--fetch-timeout=60000", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=10000", "--", installPackage(kind, version)], { signal, timeout: 1_800_000, cwd: prefix });
+    // 进度是尽力而为的：先让 npm 自己解析闭包（只取元数据）并问出体积，再按“哪个 tarball 下完了”
+    // 逐包累加。任何一步不配合就只是没有数字，安装本身完全照旧。
+    let plan: AgentDownloadPlan | undefined;
+    try {
+      planDir = options.planDir ?? await mkdtemp(join(tmpdir(), "orbis-plan-"));
+      plan = await (options.planDownload ?? planAgentDownload)({
+        run, npm, spec: installPackage(kind, version), planDir, signal,
+      });
+    } catch { plan = undefined; }
+    if (plan !== undefined && plan.totalBytes > 0) {
+      report("downloading", version, { receivedBytes: 0, totalBytes: plan.totalBytes, donePackages: 0, totalPackages: plan.packages.length });
+    }
+    const track = plan === undefined ? undefined : createAgentDownloadTracker(plan);
+    let lastReported = 0;
+    const onStderr = track === undefined ? undefined : (chunk: string) => {
+      for (const line of chunk.split("\n")) {
+        const progress = track(line);
+        if (progress === undefined) continue;
+        const now = Date.now();
+        if (now - lastReported < 400 && progress.donePackages < progress.totalPackages) continue;
+        lastReported = now;
+        report("downloading", version, progress);
+      }
+    };
+    await run(npm.command, [...npm.args, "install", ...(external ? ["--global"] : []), "--prefix", prefix, "--include=optional", "--no-audit", "--no-fund", "--fetch-timeout=60000", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=10000", "--", installPackage(kind, version)], { signal, timeout: 1_800_000, cwd: prefix, ...(onStderr === undefined ? {} : { onStderr }) });
     signal.throwIfAborted(); report("verifying");
     const result = await verifyPackage(kind, prefix, version, signal, run);
     signal.throwIfAborted(); report("activating", result.version);
@@ -206,9 +250,11 @@ export async function installAgentPackage(
       await saveInstallations(root, kind, installations);
     }
     committed = true; report("done", result.version);
+    if (planDir !== undefined) await rm(planDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }).catch(() => undefined);
     return { ...result, ...(!external ? { id } : {}) };
   } catch (error) {
     let cleanupFailed = false;
+    if (planDir !== undefined) await rm(planDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }).catch(() => undefined);
     if (temporary && !committed) {
       try {
         if (!within(join(root, kind), temporary)) throw new Error("invalid cleanup target");

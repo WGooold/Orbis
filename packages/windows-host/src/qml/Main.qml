@@ -223,6 +223,49 @@ ApplicationWindow {
         onTextEdited: if (marksProviderDirty && providerDialog.visible && !window.loadingProviderDraft) window.providerFormDirty = true
     }
     component Heading: Label { font.pixelSize: 20; font.weight: Font.DemiBold; color: "#172a49" }
+    function formatBytes(value) {
+        if (!(value > 0)) return "0 MB"
+        var mb = value / 1048576
+        return mb >= 100 ? Math.round(mb) + " MB" : mb.toFixed(1) + " MB"
+    }
+    /** 下载已用秒数：npm 不给在途字节，单个大包期间百分比不动，靠它证明“还在下”。 */
+    property int downloadSeconds: 0
+    Timer { interval: 1000; repeat: true; running: host.downloadReceived >= 0; onTriggered: window.downloadSeconds = host.downloadReceived >= 0 ? window.downloadSeconds + 1 : 0 }
+    Connections { target: host; function onChanged() { if (host.downloadReceived < 0) window.downloadSeconds = 0 } }
+    /** 下载进度条：知道总大小就给百分比，不知道就只报已下字节 + 一段来回走的色块。 */
+    component DownloadBar: ColumnLayout {
+        property string label: ""
+        property real received: 0
+        property real total: 0
+        readonly property real ratio: total > 0 ? Math.max(0, Math.min(1, received / total)) : 0
+        spacing: 6
+        RowLayout {
+            Layout.fillWidth: true; spacing: 8
+            Label { text: label; color: "#253651"; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
+            Label {
+                text: total > 0
+                    ? window.formatBytes(received) + " / " + window.formatBytes(total) + "（" + Math.floor(ratio * 100) + "%）"
+                    : "已下载 " + window.formatBytes(received)
+                color: "#60728e"; font.pixelSize: 12
+            }
+            Label { text: "已用 " + window.downloadSeconds + " 秒"; color: "#8f9caf"; font.pixelSize: 12 }
+        }
+        Rectangle {
+            id: track
+            Layout.fillWidth: true; Layout.preferredHeight: 6; radius: 3; color: "#dde3ef"
+            Rectangle { visible: total > 0; width: track.width * ratio; height: track.height; radius: 3; color: "#2459D3"; Behavior on width { NumberAnimation { duration: 200 } } }
+            Rectangle {
+                visible: total <= 0
+                width: track.width * 0.3; height: track.height; radius: 3; color: "#8aa3dd"
+                SequentialAnimation on x {
+                    running: visible
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 0; to: track.width * 0.7; duration: 1100; easing.type: Easing.InOutQuad }
+                    NumberAnimation { from: track.width * 0.7; to: 0; duration: 1100; easing.type: Easing.InOutQuad }
+                }
+            }
+        }
+    }
     component Hint: Label { color: "#73819a"; wrapMode: Text.WordWrap; lineHeight: 1.4; font.pixelSize: 13 }
     component EngravedWordmark: Item {
         id: wordmark
@@ -707,6 +750,7 @@ ApplicationWindow {
                             Hint { text: window.agentName(host.agentInstallKind) + " · " + window.installationStage() + " · " + host.agentInstallVersion; Layout.fillWidth: true }
                             ActionButton { text: "取消安装"; enabled: host.bridgeReady && host.agentInstallStage !== "cancelling" && host.agentInstallStage !== "restarting"; danger: true; onClicked: host.cancelInstall() }
                         }
+                        DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " · 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
                         Repeater {
                             model: host.agents
                             delegate: Card {
@@ -831,6 +875,7 @@ ApplicationWindow {
                             ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text) }
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#e5eaf2"; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "更新 Host"; visible: host.message.indexOf("点击“更新 Host”") >= 0; onClicked: host.updateHost() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
+                            DownloadBar { visible: host.downloadReceived >= 0; label: host.downloadLabel || "Host 更新"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
                         }
                     }
 
@@ -926,6 +971,7 @@ ApplicationWindow {
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "全部更新到最新版本"; primary: true; enabled: window.canInstallAgents && !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
             Repeater { model: host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → 最新兼容版本"; Layout.fillWidth: true } }
+            DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " · 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
             Hint { visible: !window.canInstallAgents; text: "需先暂停 Host"; Layout.fillWidth: true; color: "#b46b19" }
         }
         onAccepted: host.installAllAgents("update")

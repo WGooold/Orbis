@@ -577,7 +577,11 @@ export class DesktopRuntime {
   }
 
   #agentInstallProgress(progress: AgentInstallProgress): void {
-    this.#emit({ event: "agentInstall", kind: progress.kind, stage: progress.stage, ...(progress.version === undefined ? {} : { version: progress.version }) });
+    this.#emit({
+      event: "agentInstall", kind: progress.kind, stage: progress.stage,
+      ...(progress.version === undefined ? {} : { version: progress.version }),
+      ...(progress.download === undefined ? {} : { download: progress.download }),
+    });
   }
 
   async listProviders(kind: string): Promise<(ProviderSummary & { usage?: UsageSnapshot | undefined })[]> {
