@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const PROTOCOL_VERSION = 7 as const;
+export const PROTOCOL_VERSION = 8 as const;
 export const ARTIFACT_CHUNK_BYTES = 1024 * 1024;
 
 /**
@@ -13,6 +13,7 @@ export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 /** 一条消息最多携带几个附件。 */
 export const MAX_MESSAGE_ATTACHMENTS = 10;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
+const AndroidAppVersionSchema = z.string().regex(/^\d+\.\d+\.\d+$/);
 
 const ARTIFACT_FRAME_HEADER_BYTES = 24;
 const ARTIFACT_FRAME_KIND_CHUNK = 1;
@@ -830,6 +831,12 @@ export type DeviceClientMessage = z.infer<typeof DeviceClientMessageSchema>;
  * 只剩 `device.authenticate` 与 v2 帧——命令只存在于 E2E 密文里（ADR-0008）。
  */
 export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("device.version.report"),
+    protocolVersion: z.literal(PROTOCOL_VERSION),
+    version: AndroidAppVersionSchema,
+    versionCode: z.number().int().positive(),
+  }),
   z.strictObject({
     type: z.literal("runtime.command"),
     protocolVersion: z.literal(PROTOCOL_VERSION),

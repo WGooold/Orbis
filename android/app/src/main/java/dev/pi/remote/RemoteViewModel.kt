@@ -1512,6 +1512,19 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     // 只有 Host 的加密 device.ready 才触发刷新；Relay 的明文确认不携带会话目录。
                     // Host 已上线：自动拉一次全量会话索引刷新侧栏
                     // （spec §8 L1 的前提——手机得先知道有哪些会话可继续）。重连后也会重新拉。
+                    if (deviceReadyArrived && currentGeneration == generation) {
+                        val application = getApplication<Application>()
+                        val packageInfo = application.packageManager.getPackageInfo(application.packageName, 0)
+                        val appVersion = packageInfo.versionName
+                        if (!appVersion.isNullOrBlank()) {
+                            relay.sendDeviceMessage(buildJsonObject {
+                                put("type", "device.version.report")
+                                put("protocolVersion", PROTOCOL_VERSION)
+                                put("version", appVersion)
+                                put("versionCode", packageInfo.longVersionCode.toInt())
+                            })
+                        }
+                    }
                     if (deviceReadyArrived && currentGeneration == generation &&
                         mutableState.value.sessionListRequests.isEmpty()
                     ) {

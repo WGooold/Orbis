@@ -397,7 +397,15 @@ export class DesktopRuntime {
     const devices = service.devices.filter(d => !d.revoked).map(d => {
       const path = service.activePathOf(d.deviceId);
       if (path) this.#lastSeen.set(d.deviceId, Date.now());
-      return { deviceId: d.deviceId, label: d.label, createdAt: d.createdAt, path: path ?? "offline", lastSeen: this.#lastSeen.get(d.deviceId) ?? 0 };
+      return {
+        deviceId: d.deviceId,
+        label: d.label,
+        createdAt: d.createdAt,
+        path: path ?? "offline",
+        lastSeen: this.#lastSeen.get(d.deviceId) ?? 0,
+        ...(d.appVersion === undefined ? {} : { appVersion: d.appVersion }),
+        ...(d.appVersionCode === undefined ? {} : { appVersionCode: d.appVersionCode }),
+      };
     });
     const status = { event: "status", devices, runtimeCount: service.localRuntimes.length + (this.#codexRuntime?.directoryEntries().length ?? 0) + (this.#codexDesktopLifecycle?.runtime?.directoryEntries().length ?? 0) + (this.#dshRuntime?.directoryEntries().length ?? 0), lan: service.lanEndpoints };
     const text = JSON.stringify(status);

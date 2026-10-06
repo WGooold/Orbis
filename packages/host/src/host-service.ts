@@ -862,6 +862,15 @@ export class HostService {
       this.#options.onData?.(deviceId, payload);
       return;
     }
+    if (message.type === "device.version.report") {
+      const device = findActiveDeviceRecord(this.#store, deviceId);
+      if (device !== undefined && (device.appVersion !== message.version || device.appVersionCode !== message.versionCode)) {
+        device.appVersion = message.version;
+        device.appVersionCode = message.versionCode;
+        this.#persist();
+      }
+      return;
+    }
     if (message.type === "provider.list" || message.type === "provider.switch") {
       void this.#handleProviderRequest(deviceId, message);
       return;

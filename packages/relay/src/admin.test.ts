@@ -189,12 +189,24 @@ describe("Relay web console", () => {
     const name = "OrbisHost-0.1.0-windows-x64-setup.exe";
     await writeFile(join(directory, name), "test artifact");
     await writeFile(join(directory, `${name}.sha256`), `${"a".repeat(64)}  ${name}`);
+    await writeFile(join(directory, "orbis.apk.version.json"), JSON.stringify({ version: "0.1.49", versionCode: 50, sha256: "b".repeat(64) }));
     await writeFile(join(directory, "secret.env"), "never served");
     relay = await createRelayServer({ downloadsDir: directory });
     const base = relay.url.replace("ws:", "http:");
     const site = await fetch(base);
     expect(site.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(site.headers.get("content-security-policy")).not.toContain("unsafe-inline");
+    await expect(fetch(`${base}/v1/site`).then(response => response.json())).resolves.toMatchObject({
+      androidVersion: "0.1.49",
+      androidVersionCode: 50,
+      androidSha256: "b".repeat(64),
+    });
+    await writeFile(join(directory, "orbis.apk.version.json"), JSON.stringify({ version: "0.1.49", versionCode: 50, sha256: "b".repeat(64), untrusted: true }));
+    await expect(fetch(`${base}/v1/site`).then(response => response.json())).resolves.toMatchObject({
+      androidVersion: null,
+      androidVersionCode: null,
+      androidSha256: null,
+    });
     expect((await fetch(`${base}/assets/admin.js`)).headers.get("content-type")).toContain("javascript");
     const redirect = await fetch(`${base}/admin`, { redirect: "manual" });
     expect(redirect.headers.get("location")).toBe("admin/");

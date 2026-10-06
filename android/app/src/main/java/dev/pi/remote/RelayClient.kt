@@ -34,7 +34,7 @@ import java.net.URI
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-internal const val PROTOCOL_VERSION = 7
+internal const val PROTOCOL_VERSION = 8
 internal const val RELOAD_TRACE_TAG = "PiRemote.ReloadTrace"
 private const val TRACE_LOG_LIMIT = 200
 /** 超过这个长度就不再整棵解析入站帧（见 `traceIncoming`）：大帧是 E2E 密文分片。 */

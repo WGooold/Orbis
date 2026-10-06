@@ -73,12 +73,12 @@ describe("设备记录", () => {
     const dir = await tempDir();
     const store = emptyDeviceStore();
     upsertDeviceRecord(store, base);
-    upsertDeviceRecord(store, { ...base, label: "Pixel 8 Pro" });
+    upsertDeviceRecord(store, { ...base, label: "Pixel 8 Pro", appVersion: "0.1.49", appVersionCode: 50 });
     await saveDeviceStore(dir, store);
 
     const reloaded = await loadDeviceStore(dir);
     expect(reloaded.devices).toHaveLength(1);
-    expect(reloaded.devices[0]?.label).toBe("Pixel 8 Pro");
+    expect(reloaded.devices[0]).toMatchObject({ label: "Pixel 8 Pro", appVersion: "0.1.49", appVersionCode: 50 });
   });
 
   it("撤销是设备级的：只改那一条，其他设备不受影响", () => {

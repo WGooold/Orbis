@@ -372,6 +372,17 @@ describe("receiver-driven range download", () => {
   });
 });
 
+describe("encrypted device version report", () => {
+  it("requires the current protocol and a valid Android version identity", () => {
+    const report = { type: "device.version.report", protocolVersion: PROTOCOL_VERSION, version: "0.1.49", versionCode: 50 };
+    expect(DeviceE2ePayloadSchema.safeParse(report).success).toBe(true);
+    expect(DeviceE2ePayloadSchema.safeParse({ ...report, protocolVersion: PROTOCOL_VERSION - 1 }).success).toBe(false);
+    expect(DeviceE2ePayloadSchema.safeParse({ ...report, version: "0.1" }).success).toBe(false);
+    expect(DeviceE2ePayloadSchema.safeParse({ ...report, versionCode: 0 }).success).toBe(false);
+    expect(DeviceE2ePayloadSchema.safeParse({ ...report, extra: true }).success).toBe(false);
+  });
+});
+
 describe("phone file upload", () => {
   const init = {
     type: "file.upload.init" as const,

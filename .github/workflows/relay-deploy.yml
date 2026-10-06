@@ -115,6 +115,13 @@ jobs:
           run-id: ${{ inputs.windows_build_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Set up Android SDK for APK metadata extraction
+        if: inputs.android_release_tag != ''
+        uses: android-actions/setup-android@v3
+      - name: Install Android build tools
+        if: inputs.android_release_tag != ''
+        run: sdkmanager "build-tools;35.0.0"
+
       - name: Verify and archive Windows downloads
         if: inputs.windows_build_run_id != ''
         run: |
@@ -150,7 +157,7 @@ jobs:
             --pattern orbis.apk --pattern orbis.apk.sha256 --dir /tmp/orbis-android-artifact
           python3 - <<'PY'
           from pathlib import Path
-          import hashlib, os, zipfile
+          import hashlib, json, os, zipfile
           root = Path('/tmp/orbis-android-artifact')
           apk = root / 'orbis.apk'
           expected = os.environ['ANDROID_APK_SHA256']
@@ -159,6 +166,20 @@ jobs:
           with zipfile.ZipFile(apk) as archive:
               assert 'AndroidManifest.xml' in archive.namelist(), 'Missing Android manifest'
               assert 'classes.dex' in archive.namelist(), 'Missing Android code'
+          import re, subprocess
+          aapt = Path(os.environ['ANDROID_HOME']) / 'build-tools' / '35.0.0' / 'aapt'
+          badging = subprocess.check_output([str(aapt), 'dump', 'badging', str(apk)], text=True)
+          package = next(line for line in badging.splitlines() if line.startswith('package:'))
+          version = re.search(r"versionName='([^']+)'", package).group(1)
+          version_code = int(re.search(r"versionCode='([0-9]+)'", package).group(1))
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version), 'Invalid Android versionName'
+          assert version_code > 0, 'Invalid Android versionCode'
+          (root / 'orbis.apk.version.json').write_text(json.dumps({
+              'version': version, 'versionCode': version_code, 'sha256': expected,
+          }, separators=(',', ':')) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'ANDROID_APP_VERSION={version}\nANDROID_APP_VERSION_CODE={version_code}\n')
+          print(f'Verified Android APK version: {version} ({version_code})')
           print('Verified Android APK SHA-256: ' + expected)
           PY
 
@@ -247,7 +268,8 @@ jobs:
           scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
             /tmp/orbis-android-artifact/orbis.apk /tmp/orbis-android-artifact/orbis.apk.sha256 \
+            /tmp/orbis-android-artifact/orbis.apk.version.json \
             "$TARGET:$remote_dir/"
           ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
-            "$TARGET" "bash -s -- '$ANDROID_APK_SHA256'" < deploy/remote-publish-android.sh
+            "$TARGET" "bash -s -- '$ANDROID_APK_SHA256' '$ANDROID_APP_VERSION' '$ANDROID_APP_VERSION_CODE'" < deploy/remote-publish-android.sh

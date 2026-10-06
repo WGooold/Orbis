@@ -147,6 +147,8 @@ export type DeviceRecord = {
   label: string;
   createdAt: number;
   revoked: boolean;
+  appVersion?: string;
+  appVersionCode?: number;
 };
 
 export type DeviceStore = {
@@ -191,6 +193,8 @@ function parseDeviceRecord(raw: unknown): DeviceRecord {
     label: typeof record.label === "string" ? record.label : "",
     createdAt: typeof record.createdAt === "number" ? record.createdAt : 0,
     revoked: record.revoked === true,
+    ...(typeof record.appVersion === "string" && /^\d+\.\d+\.\d+$/.test(record.appVersion) ? { appVersion: record.appVersion } : {}),
+    ...(typeof record.appVersionCode === "number" && Number.isSafeInteger(record.appVersionCode) && record.appVersionCode > 0 ? { appVersionCode: record.appVersionCode } : {}),
   };
 }
 

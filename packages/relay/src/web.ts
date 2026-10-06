@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { z } from "zod";
 import { jsonResponse } from "./http-utils.js";
 
 const assets = {
@@ -26,6 +27,23 @@ export const downloadNames = [
   "OrbisHost-0.1.0-windows-x64-setup.exe", "OrbisHost-0.1.0-windows-x64.zip",
 ] as const;
 
+const AndroidReleaseMetadataSchema = z.strictObject({
+  version: z.string().regex(/^\d+\.\d+\.\d+$/),
+  versionCode: z.number().int().positive(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+async function readAndroidReleaseMetadata(downloadsDir?: string): Promise<z.infer<typeof AndroidReleaseMetadataSchema> | undefined> {
+  if (!downloadsDir) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(await readFile(join(downloadsDir, "orbis.apk.version.json"), "utf8"));
+    const result = AndroidReleaseMetadataSchema.safeParse(parsed);
+    return result.success ? result.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Only explicitly listed web assets and release artifacts can be served. */
 export async function createWebHandler(downloadsDir?: string): Promise<(request: IncomingMessage, response: ServerResponse, path: string) => Promise<boolean>> {
   const contents = new Map(await Promise.all(Object.entries(assets).map(async ([path, [file, type]]) => [path, { data: await readFile(new URL(`./web/${file}`, import.meta.url)), type }] as const)));
@@ -45,7 +63,18 @@ export async function createWebHandler(downloadsDir?: string): Promise<(request:
   return async (request, response, path) => {
     if (request.method !== "GET" && request.method !== "HEAD") return false;
     if (path === "/admin") { response.writeHead(308, { location: "admin/", "cache-control": "no-store" }).end(); return true; }
-    if (path === "/v1/site") { jsonResponse(response, 200, { version: downloads[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.10", windows: downloads, android: "https://orbising.com/downloads/orbis.apk" }); return true; }
+    if (path === "/v1/site") {
+      const androidRelease = await readAndroidReleaseMetadata(downloadsDir);
+      jsonResponse(response, 200, {
+        version: downloads[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.10",
+        windows: downloads,
+        android: "https://orbising.com/downloads/orbis.apk",
+        androidVersion: androidRelease?.version ?? null,
+        androidVersionCode: androidRelease?.versionCode ?? null,
+        androidSha256: androidRelease?.sha256 ?? null,
+      });
+      return true;
+    }
     if (path.startsWith("/downloads/")) {
       const name = path.slice("/downloads/".length);
       const release = downloads.find(file => name === file.name || name === `${file.name}.sha256`);

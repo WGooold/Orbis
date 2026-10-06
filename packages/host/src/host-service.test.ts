@@ -26,6 +26,7 @@ import {
   encodePairingQrText,
   fromBase64Url,
   generateX25519KeyPair,
+  loadDeviceStore,
   readHandshakeEnvelope,
   readPairEnvelope,
   verifyPairAccept,
@@ -616,6 +617,32 @@ describe("host end-to-end over relay", () => {
   let runtime: TestRuntime | undefined;
   let stateDir: string | undefined;
   let proxy: TcpProxy | undefined;
+
+  it("persists Android version reports received only through the encrypted device channel", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-android-version-e2e-"));
+    relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start();
+    const paired = await pairDevice({ relay, host });
+    device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await device.receiveMessage();
+    await device.receiveMessage();
+
+    const encrypted = device.sendData(JSON.stringify({
+      type: "device.version.report",
+      protocolVersion: PROTOCOL_VERSION,
+      version: "0.1.49",
+      versionCode: 50,
+    }));
+    expect(JSON.stringify(encrypted)).not.toContain("0.1.49");
+    await vi.waitFor(() => expect(host!.devices.find(item => item.deviceId === device!.deviceId)).toMatchObject({ appVersion: "0.1.49", appVersionCode: 50 }));
+
+    await host.stop();
+    host = undefined;
+    const store = await loadDeviceStore(stateDir);
+    expect(store.devices.find(item => item.deviceId === device!.deviceId)).toMatchObject({ appVersion: "0.1.49", appVersionCode: 50 });
+  });
 
   it("lists and switches local provider profiles over an authenticated encrypted channel without exposing secrets", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-provider-e2e-"));
