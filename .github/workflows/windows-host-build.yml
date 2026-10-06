@@ -40,7 +40,7 @@ jobs:
       - name: Verify installed application
         shell: pwsh
         run: |
-          $setup = Get-ChildItem .artifacts/windows-host -Recurse -Filter '*-setup.exe' | Select-Object -First 1
+          $setup = Get-ChildItem .artifacts/host -Recurse -Filter '*-setup.exe' | Select-Object -First 1
           $installDir = Join-Path $env:RUNNER_TEMP 'OrbisHost-installed'
           $smokeDir = Join-Path $setup.DirectoryName 'installer-smoke'
           New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
@@ -62,9 +62,9 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           path: |
-            .artifacts/windows-host/**/*.zip
-            .artifacts/windows-host/**/*setup.exe
-            .artifacts/windows-host/**/*.sha256
-            .artifacts/windows-host/**/preview.png
-            .artifacts/windows-host/**/smoke-result.json
-            .artifacts/windows-host/**/qml.log
+            .artifacts/host/**/*.zip
+            .artifacts/host/**/*setup.exe
+            .artifacts/host/**/*.sha256
+            .artifacts/host/**/preview.png
+            .artifacts/host/**/smoke-result.json
+            .artifacts/host/**/qml.log

@@ -3,7 +3,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const output = resolve(process.argv[2] ?? ".artifacts/windows-host/OrbisHost/runtime");
+const output = resolve(process.argv[2] ?? ".artifacts/host/OrbisHost/runtime");
 if (!output.startsWith(resolve(root, ".artifacts") + sep)) throw new Error("Runtime output must be inside this worktree's .artifacts directory");
 await mkdir(output, { recursive: true });
 await writeFile(join(output, "package.json"), JSON.stringify({ name: "orbis-host-runtime", private: true, type: "module", version: "0.1.0" }, null, 2));

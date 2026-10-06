@@ -38,7 +38,7 @@ npm ci --ignore-scripts --no-audit --no-fund
 scripts/windows/windows-host-build.ps1 -Package
 ```
 
-The build script uses only two C++ compiler workers and checks the native credential store. Packaging collects the installed runtime dependency closure, preserving exact versions and licenses, then tests the executable with development tooling removed from PATH. Products are under `.artifacts/windows-host/<timestamp>/`.
+The build script uses only two C++ compiler workers and checks the native credential store. Packaging collects the installed runtime dependency closure, preserving exact versions and licenses, then tests the executable with development tooling removed from PATH. Products are written to the repository's `.artifacts/host/` directory, which holds only the latest build.
 
 To build an installer using an independently installed Inno Setup 6 compiler, add `-InnoCompiler 'path\to\ISCC.exe'`. The installer is per-user and does not require administrator privileges. Distributed preview binaries are unsigned until a code-signing certificate is configured.
 
