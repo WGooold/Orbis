@@ -38,6 +38,8 @@ export interface RelayServerOptions {
   registration?: RegistrationAuthority;
   adminStateFile?: string;
   downloadsDir?: string;
+  /** Android APK 与版本元数据所在目录；未设置时与 downloadsDir 相同。 */
+  androidDownloadsDir?: string;
   /** Enable only when a trusted reverse proxy overwrites X-Real-IP. */
   trustProxy?: boolean;
   buildCommit?: string;
@@ -168,7 +170,7 @@ const logProtocolValidationFailure = (value: unknown, issues: readonly { path: P
 };
 
 export async function createRelayServer(options: RelayServerOptions = {}): Promise<RelayServer> {
-  const serveWeb = await createWebHandler(options.downloadsDir);
+  const serveWeb = await createWebHandler(options.downloadsDir, options.androidDownloadsDir);
   const runtimeWss = new WebSocketServer({ noServer: true });
   const deviceWss = new WebSocketServer({ noServer: true });
   const responsiveSockets = new WeakSet<WebSocket>();

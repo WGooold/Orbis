@@ -33,10 +33,10 @@ const AndroidReleaseMetadataSchema = z.strictObject({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
 
-async function readAndroidReleaseMetadata(downloadsDir?: string): Promise<z.infer<typeof AndroidReleaseMetadataSchema> | undefined> {
-  if (!downloadsDir) return undefined;
+async function readAndroidReleaseMetadata(directory?: string): Promise<z.infer<typeof AndroidReleaseMetadataSchema> | undefined> {
+  if (!directory) return undefined;
   try {
-    const parsed: unknown = JSON.parse(await readFile(join(downloadsDir, "orbis.apk.version.json"), "utf8"));
+    const parsed: unknown = JSON.parse(await readFile(join(directory, "orbis.apk.version.json"), "utf8"));
     const result = AndroidReleaseMetadataSchema.safeParse(parsed);
     return result.success ? result.data : undefined;
   } catch {
@@ -45,7 +45,7 @@ async function readAndroidReleaseMetadata(downloadsDir?: string): Promise<z.infe
 }
 
 /** Only explicitly listed web assets and release artifacts can be served. */
-export async function createWebHandler(downloadsDir?: string): Promise<(request: IncomingMessage, response: ServerResponse, path: string) => Promise<boolean>> {
+export async function createWebHandler(downloadsDir?: string, androidDir?: string): Promise<(request: IncomingMessage, response: ServerResponse, path: string) => Promise<boolean>> {
   const contents = new Map(await Promise.all(Object.entries(assets).map(async ([path, [file, type]]) => [path, { data: await readFile(new URL(`./web/${file}`, import.meta.url)), type }] as const)));
   const downloads: Array<{ name: string; bytes: number; sha256: string; url: string; checksumUrl: string }> = [];
   if (downloadsDir) {
@@ -64,7 +64,9 @@ export async function createWebHandler(downloadsDir?: string): Promise<(request:
     if (request.method !== "GET" && request.method !== "HEAD") return false;
     if (path === "/admin") { response.writeHead(308, { location: "admin/", "cache-control": "no-store" }).end(); return true; }
     if (path === "/v1/site") {
-      const androidRelease = await readAndroidReleaseMetadata(downloadsDir);
+      // Windows 下载来自 CI 归档，Android 的 APK 和版本元数据由 nginx 直接从另一个目录服务；
+      // 两者路径不同，所以 Android 目录允许单独指定，没指定时退回 Windows 目录。
+      const androidRelease = await readAndroidReleaseMetadata(androidDir ?? downloadsDir);
       jsonResponse(response, 200, {
         version: downloads[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.10",
         windows: downloads,

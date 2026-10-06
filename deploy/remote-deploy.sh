@@ -77,6 +77,17 @@ if [[ -n "$downloads_archive" ]]; then
   chmod 644 "$downloads_dir"/*
 fi
 
+# Android 的 APK 和版本元数据由 nginx 直接从 /var/www/orbis-downloads 服务（见
+# nginx-orbis.conf 的 `try_files $uri @relay_download`），和 CI 归档的 Windows 下载不是
+# 同一个目录。容器必须单独看到它，否则 /v1/site 的 androidVersion 永远是 null。
+android_downloads=/var/www/orbis-downloads
+android_mount=()
+android_env=()
+if [[ -d "$android_downloads" ]]; then
+  android_mount=(-v "$android_downloads:/android-downloads:ro")
+  android_env=(-e ORBIS_ANDROID_DOWNLOADS_DIR=/android-downloads)
+fi
+
 rm -rf "$release_dir"
 install -d -m 755 "$release_dir"
 tar -xzf "$archive" -C "$release_dir"
@@ -94,6 +105,7 @@ docker run -d \
   --env-file "$env_file" \
   -v "$data_dir:/data" \
   -v "$downloads_dir:/downloads:ro" -e ORBIS_DOWNLOADS_DIR=/downloads \
+  "${android_mount[@]}" "${android_env[@]}" \
   "$image" >/dev/null
 
 candidate_healthy=0
@@ -126,6 +138,7 @@ docker run -d \
   --env-file "$env_file" \
   -v "$data_dir:/data" \
   -v "$downloads_dir:/downloads:ro" -e ORBIS_DOWNLOADS_DIR=/downloads \
+  "${android_mount[@]}" "${android_env[@]}" \
   -p 127.0.0.1:8787:8787 \
   "$image" >/dev/null
 new_started=1

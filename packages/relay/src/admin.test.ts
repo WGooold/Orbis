@@ -186,12 +186,16 @@ describe("Relay web console", () => {
 
   it("serves only allowlisted web assets and verified download names", async () => {
     const directory = await mkdtemp(join(tmpdir(), "orbis-downloads-"));
+    // Android 的 APK 和版本元数据由另一个目录服务（nginx 的 /var/www/orbis-downloads），
+    // /v1/site 必须读那一份，而不是凑巧放在 Windows 下载目录里的同名文件。
+    const androidDirectory = await mkdtemp(join(tmpdir(), "orbis-android-downloads-"));
     const name = "OrbisHost-0.1.0-windows-x64-setup.exe";
     await writeFile(join(directory, name), "test artifact");
     await writeFile(join(directory, `${name}.sha256`), `${"a".repeat(64)}  ${name}`);
-    await writeFile(join(directory, "orbis.apk.version.json"), JSON.stringify({ version: "0.1.49", versionCode: 50, sha256: "b".repeat(64) }));
+    await writeFile(join(directory, "orbis.apk.version.json"), JSON.stringify({ version: "0.1.48", versionCode: 49, sha256: "c".repeat(64) }));
+    await writeFile(join(androidDirectory, "orbis.apk.version.json"), JSON.stringify({ version: "0.1.49", versionCode: 50, sha256: "b".repeat(64) }));
     await writeFile(join(directory, "secret.env"), "never served");
-    relay = await createRelayServer({ downloadsDir: directory });
+    relay = await createRelayServer({ downloadsDir: directory, androidDownloadsDir: androidDirectory });
     const base = relay.url.replace("ws:", "http:");
     const site = await fetch(base);
     expect(site.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
@@ -201,7 +205,7 @@ describe("Relay web console", () => {
       androidVersionCode: 50,
       androidSha256: "b".repeat(64),
     });
-    await writeFile(join(directory, "orbis.apk.version.json"), JSON.stringify({ version: "0.1.49", versionCode: 50, sha256: "b".repeat(64), untrusted: true }));
+    await writeFile(join(androidDirectory, "orbis.apk.version.json"), JSON.stringify({ version: "0.1.49", versionCode: 50, sha256: "b".repeat(64), untrusted: true }));
     await expect(fetch(`${base}/v1/site`).then(response => response.json())).resolves.toMatchObject({
       androidVersion: null,
       androidVersionCode: null,
