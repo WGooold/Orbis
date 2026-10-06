@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$QtRoot = 'D:\Qt\6.8.3\mingw_64',
     [string]$CompilerRoot = 'D:\Qt\Tools\mingw1310_64',
     [string]$DefaultRelay = 'wss://orbising.com/relay',
