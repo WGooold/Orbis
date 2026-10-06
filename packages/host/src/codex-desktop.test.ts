@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
@@ -86,14 +86,23 @@ describe("Codex desktop attachment", () => {
       stdout.write(`${JSON.stringify({ id: frame.id, result })}\n`);
     });
 
-    const server = await CodexAppServer.createDesktop({
-      spawnImpl: (_command, args) => {
-        expect(args.slice(-2)).toEqual(["app-server", "proxy"]);
-        return child;
-      },
-    });
-    expect(sent.map(line => JSON.parse(line).method)).toEqual(["initialize", "initialized", "thread/loaded/list"]);
-    await server.stop();
+    // 解析 CLI 只是为了真实拉起进程；注入了 spawn 的测试用文档化的 ORBIS_CODEX_ENTRY 指向一个
+    // 临时入口，这样没装 codex 的 CI 不会因为“找不到 codex”而失败（本地装着则永远发现不了）。
+    const entry = join(mkdtempSync(join(tmpdir(), "orbis-proxy-cli-")), "codex.js");
+    writeFileSync(entry, "");
+    vi.stubEnv("ORBIS_CODEX_ENTRY", entry);
+    try {
+      const server = await CodexAppServer.createDesktop({
+        spawnImpl: (_command, args) => {
+          expect(args.slice(-2)).toEqual(["app-server", "proxy"]);
+          return child;
+        },
+      });
+      expect(sent.map(line => JSON.parse(line).method)).toEqual(["initialize", "initialized", "thread/loaded/list"]);
+      await server.stop();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("rejects an incompatible desktop daemon without creating an owned server", async () => {
