@@ -18,6 +18,13 @@ export type CodexDesktopPresence = {
   pid?: number;
   title?: string;
   reason: string;
+  /**
+   * 探测本身失败（查询安装位置或进程表出错）时的原始原因。
+   *
+   * 它与「桌面版没打开」必须是两件事：把子进程查询的失败读成「没开窗」，用户会去
+   * 重开一个本来就开着的桌面版，而真正坏掉的是这条查询。
+   */
+  scanError?: string;
 };
 
 export type CodexDesktopPresenceOptions = {
@@ -33,9 +40,19 @@ export type CodexDesktopPresenceOptions = {
  */
 export async function detectCodexDesktopPresence(options: CodexDesktopPresenceOptions = {}): Promise<CodexDesktopPresence> {
   if ((options.platform ?? platform()) !== "win32") return { ready: false, reason: "Codex 桌面版只支持 Windows" };
-  const executable = await (options.resolveExecutable ?? resolveCodexDesktopExecutable)();
+  let executable: string | undefined;
+  try {
+    executable = await (options.resolveExecutable ?? resolveCodexDesktopExecutable)();
+  } catch (error) {
+    return { ready: false, reason: "无法查询 Codex 桌面版安装位置", scanError: describeError(error) };
+  }
   if (executable === undefined) return { ready: false, reason: "未找到 Codex 桌面版安装包" };
-  const processes = await (options.listProcesses ?? listCodexDesktopProcesses)();
+  let processes: readonly CodexDesktopProcess[];
+  try {
+    processes = await (options.listProcesses ?? listCodexDesktopProcesses)();
+  } catch (error) {
+    return { ready: false, executable, reason: "无法查询 Codex 桌面版进程", scanError: describeError(error) };
+  }
   const normalized = executable.toLowerCase().replaceAll("/", "\\");
   const process = processes.find(candidate => candidate.executable.toLowerCase().replaceAll("/", "\\") === normalized
     && candidate.mainWindowHandle !== 0);
@@ -50,47 +67,84 @@ export async function waitForCodexDesktop(options: CodexDesktopPresenceOptions =
     await new Promise(resolve => setTimeout(resolve, intervalMs));
     latest = await detectCodexDesktopPresence(options);
   }
-  if (!latest.ready) throw new Error(`Codex 桌面版启动后未就绪：${latest.reason}`);
+  if (!latest.ready) throw new Error(`Codex 桌面版启动后未就绪：${latest.reason}${latest.scanError === undefined ? "" : `（${latest.scanError}）`}`);
   return latest;
 }
 
+/** 查不到安装位置是「没装」；查询本身报错必须抛出，那是两种不同的结论。 */
 async function resolveCodexDesktopExecutable(): Promise<string | undefined> {
-  try {
-    const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-      "(Get-AppxPackage -Name OpenAI.Codex | Select-Object -First 1 -ExpandProperty InstallLocation)"],
-      { windowsHide: true, timeout: 10_000, maxBuffer: 16_000 });
-    const root = stdout.trim();
-    return root.length === 0 ? undefined : join(root, "app", "ChatGPT.exe");
-  } catch {
-    return undefined;
-  }
+  const { stdout, stderr } = await runPowerShell(
+    "(Get-AppxPackage -Name OpenAI.Codex | Select-Object -First 1 -ExpandProperty InstallLocation)",
+  );
+  const root = stdout.trim();
+  if (root.length > 0) return join(root, "app", "ChatGPT.exe");
+  if (stderr.trim().length > 0) throw new Error(stderr.trim().slice(0, 300));
+  return undefined;
 }
 
-async function listCodexDesktopProcesses(): Promise<readonly CodexDesktopProcess[]> {
+/**
+ * 桌面版的 GUI 可执行文件。包装器模式要直接 CreateProcess 它：只有直接创建才能把
+ * `CODEX_CLI_PATH` 交给它（走 `codex://` 协议激活会把环境丢掉）。
+ */
+export async function resolveCodexDesktopExecutablePath(options: CodexDesktopPresenceOptions = {}): Promise<string | undefined> {
+  if ((options.platform ?? platform()) !== "win32") return undefined;
+  return (options.resolveExecutable ?? resolveCodexDesktopExecutable)();
+}
+
+/** 导出给回归测试：这条查询脚本的语句边界必须留在文本里（见 `runPowerShell`）。 */
+export async function listCodexDesktopProcesses(): Promise<readonly CodexDesktopProcess[]> {
   const script = [
     "$items = Get-CimInstance Win32_Process -Filter \"Name='ChatGPT.exe'\" -ErrorAction SilentlyContinue | ForEach-Object {",
     "  $p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue",
     "  if ($null -ne $p) { [pscustomobject]@{ pid = [int]$_.ProcessId; executable = [string]$_.ExecutablePath; mainWindowHandle = [int64]$p.MainWindowHandle; title = [string]$p.MainWindowTitle } }",
     "}",
     "$items | ConvertTo-Json -Compress",
-  ].join(" ");
-  try {
-    const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script],
-      { windowsHide: true, timeout: 10_000, maxBuffer: 64_000 });
-    const parsed: unknown = JSON.parse(stdout.trim() || "[]");
-    const items = Array.isArray(parsed) ? parsed : [parsed];
-    return items.flatMap(item => {
-      if (item === null || typeof item !== "object") return [];
-      const value = item as Record<string, unknown>;
-      const pid = Number(value.pid);
-      const executable = typeof value.executable === "string" ? value.executable : "";
-      const mainWindowHandle = Number(value.mainWindowHandle);
-      const title = typeof value.title === "string" ? value.title : "";
-      return Number.isInteger(pid) && executable.length > 0 && Number.isFinite(mainWindowHandle)
-        ? [{ pid, executable, mainWindowHandle, title }]
-        : [];
-    });
-  } catch {
+  ].join("\n");
+  const { stdout, stderr } = await runPowerShell(script);
+  const text = stdout.trim();
+  if (text.length === 0) {
+    if (stderr.trim().length > 0) throw new Error(stderr.trim().slice(0, 300));
     return [];
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`Codex 桌面版进程查询结果不是 JSON：${text.slice(0, 200)}`);
+  }
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  return items.flatMap(item => {
+    if (item === null || typeof item !== "object") return [];
+    const value = item as Record<string, unknown>;
+    const pid = Number(value.pid);
+    const executable = typeof value.executable === "string" ? value.executable : "";
+    const mainWindowHandle = Number(value.mainWindowHandle);
+    const title = typeof value.title === "string" ? value.title : "";
+    return Number.isInteger(pid) && executable.length > 0 && Number.isFinite(mainWindowHandle)
+      ? [{ pid, executable, mainWindowHandle, title }]
+      : [];
+  });
+}
+
+/**
+ * `-Command` 收到的是一段**脚本文本**，多条语句必须各自占一行（或显式用 `;` 分隔）。
+ *
+ * 用空格把它们拼成一行会吃掉语句边界：`Get-Process -Id $_.ProcessId ... if (...) { ... }`
+ * 会被解析成一整条命令，PowerShell 报「Id 是空值」到 stderr、stdout 为空、退出码却是 0。
+ * 那份历史实现把这种结果当成「没有这个进程」，于是桌面版开着一律显示未接入。
+ * 所以这里同时读 stderr：非空即视为查询失败，绝不静默降级成空表。
+ */
+async function runPowerShell(script: string): Promise<{ stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script],
+      { windowsHide: true, timeout: 10_000, maxBuffer: 64_000 });
+    return { stdout, stderr };
+  } catch (error) {
+    const stderr = (error as { stderr?: unknown }).stderr;
+    throw new Error(typeof stderr === "string" && stderr.trim().length > 0 ? stderr.trim().slice(0, 300) : describeError(error));
+  }
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

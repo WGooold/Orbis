@@ -36,6 +36,7 @@ import {
   PROTOCOL_VERSION,
   decodeArtifactChunkFrame,
   encodeArtifactChunkFrame,
+  type CodexDesktopAttach,
   type EnvelopeV2,
   type PathKind,
   type RuntimeEvent,
@@ -2164,12 +2165,14 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       onEvent: () => {},
       rolloutRoot: join(stateDir, "desktop-rollouts"),
     });
+    // 桌面接入分档由 Host 下发给手机，且它变了就要主动重播：手机别的地方看不到它。
+    let attach: CodexDesktopAttach = { state: "closed", reason: "Codex 桌面版未打开可见窗口" };
     host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
-      reconnect: false, lan: false, codexDesktopLaunchable: true });
+      reconnect: false, lan: false, codexDesktopLaunchable: true, codexDesktopStatus: () => attach });
     await host.start();
     const connected = await readyDeviceCapturing({ host, relay });
     device = connected.device;
-    expect(connected.ready).toMatchObject({ agents: ["pi"], launchableAgents: ["pi", "codexDesktop"] });
+    expect(connected.ready).toMatchObject({ agents: ["pi"], launchableAgents: ["pi", "codexDesktop"], codexDesktop: attach });
 
     const nextReady = async () => {
       for (;;) {
@@ -2178,10 +2181,15 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       }
     };
 
+    // 接入分档与进程目录是两件事：错误分档不会走 attach/detach，所以它需要单独的入口。
+    // 手机状态页只读分档，会话列表只读目录，两者必须能各自单独更新。
+    attach = { state: "attached", reason: "已接入 Codex 桌面版 app-server" };
+    host.announceCodexDesktopStatus();
+    expect(await nextReady()).toMatchObject({ type: "device.ready", agents: ["pi"], launchableAgents: ["pi", "codexDesktop"], codexDesktop: attach });
     host.attachCodexDesktopRuntime(desktop);
-    expect(await nextReady()).toMatchObject({ type: "device.ready", agents: ["pi", "codexDesktop"], launchableAgents: ["pi", "codexDesktop"] });
+    expect(await nextReady()).toMatchObject({ type: "device.ready", agents: ["pi", "codexDesktop"], launchableAgents: ["pi", "codexDesktop"], codexDesktop: attach });
     host.detachCodexDesktopRuntime(desktop);
-    expect(await nextReady()).toMatchObject({ type: "device.ready", agents: ["pi"], launchableAgents: ["pi", "codexDesktop"] });
+    expect(await nextReady()).toMatchObject({ type: "device.ready", agents: ["pi"], launchableAgents: ["pi", "codexDesktop"], codexDesktop: attach });
     await desktop.stop();
   });
 

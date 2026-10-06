@@ -12,6 +12,20 @@ $artifactRoot = Join-Path $repoRoot '.artifacts\host'
 $packageSucceeded = $false
 $savedPath = $env:Path
 try {
+    # 半删比不删更糟：先确认没有进程正从产物目录里跑，再动它。
+    # （Orbis Host 自己、以及任何从该目录启动的 Codex 桌面版都会锁住 exe/dll。）
+    $blockers = @()
+    foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
+        try {
+            $path = $process.Path
+            if ($path -and $path.StartsWith($artifactRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                $blockers += "$($process.ProcessName)($($process.Id))"
+            }
+        } catch { }
+    }
+    if ($blockers.Count -gt 0) {
+        throw "进程正在从产物目录运行，无法替换：$($blockers -join ', ')。请先关闭 Orbis Host，再重新构建。"
+    }
     if (Test-Path -LiteralPath $artifactRoot) { Remove-Item -LiteralPath $artifactRoot -Recurse -Force }
     $env:Path = "$CompilerRoot\bin;$QtRoot\bin;$savedPath"
     if (!(Test-Path -LiteralPath "$QtRoot\bin\windeployqt.exe")) { throw 'Qt 6.8.3 is missing. Run windows-host-setup.ps1 first.' }
@@ -38,6 +52,12 @@ try {
             if ($LASTEXITCODE -ne 0) { throw 'Qt deployment failed' }
             node scripts/package-host-runtime.mjs "$stage\runtime"
             if ($LASTEXITCODE -ne 0) { throw 'Runtime packaging failed' }
+            # Codex 桌面版包装器的入口必须是 PE（桌面版不带 shell 启动 CLI），
+            # 所以它随运行时一起编译并放进 runtime\bin。
+            $launcherBin = Join-Path $stage 'runtime\bin'
+            New-Item -ItemType Directory -Path $launcherBin -Force | Out-Null
+            & "$CompilerRoot\bin\g++.exe" -O2 -o (Join-Path $launcherBin 'codex-launcher.exe') "$repoRoot\packages\host\native\codex-launcher.c" -lshell32
+            if ($LASTEXITCODE -ne 0) { throw 'Codex desktop wrapper launcher build failed' }
             Copy-Item -LiteralPath "$repoRoot\LICENSE" -Destination $stage
             Copy-Item -LiteralPath "$repoRoot\packages\windows-host\README.md" -Destination "$stage\README.md"
             Copy-Item -LiteralPath "$repoRoot\packages\windows-host\THIRD-PARTY-NOTICES.md" -Destination $stage
@@ -51,7 +71,7 @@ try {
             $env:Path = "$CompilerRoot\bin;$QtRoot\bin;$savedPath"
             if ($testProcess.ExitCode -ne 0) { throw "Packaged app smoke test failed: $($testProcess.ExitCode). See $smokeDir" }
             Get-ChildItem -LiteralPath $releaseRoot -File -Filter 'preview.png.*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
-            $archive = Join-Path $releaseRoot 'OrbisHost-0.1.9-windows-x64.zip'
+            $archive = Join-Path $releaseRoot 'OrbisHost-0.1.10-windows-x64.zip'
             Compress-Archive -LiteralPath $stage -DestinationPath $archive
             [IO.File]::WriteAllText("$archive.sha256", (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $archive) + "`n", [Text.Encoding]::ASCII)
             if ($InnoCompiler) {
@@ -71,7 +91,7 @@ try {
                 } finally {
                     if ($installerDrive) { & "$env:SystemRoot\System32\subst.exe" $installerDrive /D }
                 }
-                $installer = Join-Path $releaseRoot 'OrbisHost-0.1.9-windows-x64-setup.exe'
+                $installer = Join-Path $releaseRoot 'OrbisHost-0.1.10-windows-x64-setup.exe'
                 [IO.File]::WriteAllText("$installer.sha256", (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $installer) + "`n", [Text.Encoding]::ASCII)
             }
             Write-Output "Portable release: $archive"

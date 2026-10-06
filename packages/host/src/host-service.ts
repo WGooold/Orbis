@@ -33,6 +33,7 @@ import {
   PROTOCOL_VERSION,
   type AgentKind,
   type AgentSessionSummary,
+  type CodexDesktopAttach,
   type DeviceE2ePayload,
   type EnvelopeChannel,
   type EnvelopeV2,
@@ -153,6 +154,11 @@ export type HostServiceOptions = {
   ensureCodexDesktop?: () => Promise<CodexRuntime | undefined>;
   /** Codex 桌面版已安装，可在手机新建会话时按需启动；不代表 GUI 当前在线。 */
   codexDesktopLaunchable?: boolean;
+  /**
+   * Codex 桌面版 app-server 此刻的接入分档（ADR-0022），随 `device.ready` 下发。
+   * 缺省/返回 `undefined` 时下发 `null`：手机端只能知道「不知道」，不能把它当成未接入。
+   */
+  codexDesktopStatus?: () => CodexDesktopAttach | undefined;
   /** 终端 shim 通过 loopback 请求官方 Codex TUI 接入 Host app-server。 */
   codexLaunch?: (request: CodexLaunchRequest) => Promise<CodexLaunchResult>;
   dshRuntime?: DshRuntime;
@@ -507,18 +513,37 @@ export class HostService {
     return agents;
   }
 
+  #codexDesktopSnapshot(): CodexDesktopAttach | null {
+    return this.#options.codexDesktopStatus?.() ?? null;
+  }
+
   /** Re-send the authoritative capability list after a desktop GUI state change. */
   #broadcastDeviceReady(): void {
     for (const deviceId of this.#links.keys()) {
-      this.#sendToDevice(deviceId, {
-        type: "device.ready",
-        protocolVersion: PROTOCOL_VERSION,
-        deviceId,
-        runtimes: this.#runtimesSnapshot(),
-        agents: this.#agentsSnapshot(),
-        launchableAgents: this.#launchableAgentsSnapshot(),
-      });
+      this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
     }
+  }
+
+  /**
+   * 握手完成或接入分档变化时重播的同一份权威载荷。
+   *
+   * 放在一处是因为这三项都只能由 Host 回答（能力、可拉起、桌面接入），而手机把
+   * `device.ready` 当整体快照覆盖——分开发就会互相抹掉。
+   */
+  #deviceReadyPayload(deviceId: string): Omit<Extract<RelayToDeviceMessage, { type: "device.ready" }>, "type"> {
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      deviceId,
+      runtimes: this.#runtimesSnapshot(),
+      agents: this.#agentsSnapshot(),
+      launchableAgents: this.#launchableAgentsSnapshot(),
+      codexDesktop: this.#codexDesktopSnapshot(),
+    };
+  }
+
+  /** 接入分档变了（探测结果、握手成功、接入失败）：让已配对的手机马上看到。 */
+  announceCodexDesktopStatus(): void {
+    this.#broadcastDeviceReady();
   }
 
   /** 某台设备此刻生效的路径（§14 B4 要显示的那个事实）。 */
@@ -1254,11 +1279,7 @@ export class HostService {
     // （手机换了网、或干脆被杀掉，中继不会替它转告），而这条路刚刚证明过自己能通。
     this.#sendToDeviceOn(deviceId, kind, {
       type: "device.ready",
-      protocolVersion: PROTOCOL_VERSION,
-      deviceId,
-      runtimes: this.#runtimesSnapshot(),
-      agents: this.#agentsSnapshot(),
-      launchableAgents: this.#launchableAgentsSnapshot(),
+      ...this.#deviceReadyPayload(deviceId),
     });
     const rttMs = this.#links.get(deviceId)?.activeRttMs;
     this.#sendToDeviceOn(deviceId, kind, {

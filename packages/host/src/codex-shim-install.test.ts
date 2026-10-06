@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const registry = vi.hoisted(() => ({ exec: vi.fn() }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFile: registry.exec }));
-import { installCodexShim, codexShimStatus, ensureCodexShimWinsPath } from "./codex-shim-install.js";
+import { installCodexShim, codexShimStatus, ensureCodexShimWinsPath, codexDesktopEntryDecision, looksLikeOrbisWrapperEntry } from "./codex-shim-install.js";
 
 let root: string | undefined;
 afterEach(async () => {
@@ -81,5 +81,31 @@ describe("Codex user PATH registration", () => {
     stubRegistry(`%LOCALAPPDATA%\\Orbis\\bin;${competing}`);
     expect(await ensureCodexShimWinsPath()).toBe(false);
     expect(launchers()).toEqual([]);
+  });
+});
+
+// 桌面版接入的入口写在用户级 CODEX_CLI_PATH 上，这是「用户自己打开桌面版也能接入」的
+// 唯一支点；它的所有权规则必须写死：空就写、是我的就指向最新位置、**是别人的绝不动**。
+describe("Codex desktop entry ownership", () => {
+  const launcher = "C:\\Users\\x\\AppData\\Local\\Orbis\\wrapper\\bin\\codex-launcher.exe";
+
+  it("takes an empty slot, repoints its own stale value, and never overwrites a foreign one", () => {
+    expect(codexDesktopEntryDecision(undefined, launcher)).toMatchObject({ state: "enabled", write: launcher });
+    expect(codexDesktopEntryDecision("   ", launcher)).toMatchObject({ state: "enabled", write: launcher });
+    expect(codexDesktopEntryDecision(launcher, launcher)).toMatchObject({ state: "enabled" });
+    expect(codexDesktopEntryDecision(launcher, launcher).write).toBeUndefined();
+
+    // 旧安装位置（同样是我们自己的文件）→ 重新指向，不留下一个死路径。
+    const moved = "D:\\old\\Orbis\\wrapper\\bin\\codex-launcher.exe";
+    expect(looksLikeOrbisWrapperEntry(moved)).toBe(true);
+    expect(codexDesktopEntryDecision(moved, launcher)).toMatchObject({ state: "enabled", write: launcher });
+
+    // 别人的 CLI（例如用户自己包的 wrapper）：只报告，绝不改。
+    const foreign = "C:\\Users\\x\\tools\\my-codex.exe";
+    expect(looksLikeOrbisWrapperEntry(foreign)).toBe(false);
+    const decision = codexDesktopEntryDecision(foreign, launcher);
+    expect(decision.state).toBe("foreign");
+    expect(decision.write).toBeUndefined();
+    expect(decision.detail).toContain("CODEX_CLI_PATH");
   });
 });

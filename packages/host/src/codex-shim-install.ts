@@ -41,6 +41,7 @@ export async function installCodexShim(runtimeRoot: string): Promise<void> {
 }
 
 export async function uninstallCodexShim(): Promise<void> {
+  await removeCodexDesktopEntry();
   const current = await readUserPath();
   await updateUserPath(current, path => path.filter(entry => !samePath(entry, orbisBin())));
   // 提权失败不该让卸载失败：临时 PATH 项没了，杀余的机器 PATH 项只是指向不存在的目录。
@@ -183,6 +184,71 @@ async function readRegistryPath(key: string): Promise<string[]> {
   return match ? splitPath(match[1]!) : [];
 }
 function splitPath(value: string): string[] { return value.split(";").map(entry => entry.trim()).filter(Boolean); }
+
+/**
+ * 「用户自己打开 Codex 桌面版」的接入入口。
+ *
+ * 桌面版在 Windows 上永远用 stdio 起它自己的 app-server，而它认一个 CLI 覆盖环境变量
+ * `CODEX_CLI_PATH`（asar 里的 `gc()`）。把它指到包装器，用户从开始菜单直接打开桌面版也
+ * 会被包装——不依赖 Orbis 拉起，也不分先后顺序。
+ */
+export const CODEX_DESKTOP_ENTRY_NAME = "CODEX_CLI_PATH";
+
+export type CodexDesktopEntry =
+  | { state: "enabled"; detail: string }
+  /** 变量已被别人占用：绝不覆盖，只报告（与机器 PATH 冲突同一处理方式）。 */
+  | { state: "foreign"; detail: string }
+  | { state: "unsupported"; detail: string };
+
+/** 这个值像不像 Orbis 自己的桌面版包装器入口（接管与卸载都靠它判断）。 */
+export function looksLikeOrbisWrapperEntry(value: string): boolean {
+  const normalized = value.trim().replaceAll("/", "\\").toLowerCase();
+  return normalized.endsWith("\\codex-launcher.exe") && normalized.includes("\\orbis");
+}
+
+/**
+ * 读到的当前值与目标不一致时该怎么办。纯函数：不碰注册表，便于把规则钉在测试里。
+ */
+export function codexDesktopEntryDecision(current: string | undefined, launcher: string): { state: "enabled" | "foreign"; write?: string; detail: string } {
+  const value = current?.trim() ?? "";
+  if (value.length === 0) return { state: "enabled", write: launcher, detail: "从开始菜单直接打开 Codex 桌面版即可接入" };
+  if (samePath(value, launcher)) return { state: "enabled", detail: "从开始菜单直接打开 Codex 桌面版即可接入" };
+  if (looksLikeOrbisWrapperEntry(value)) return { state: "enabled", write: launcher, detail: "包装器位置已更新，已重新指向" };
+  return { state: "foreign", detail: `${CODEX_DESKTOP_ENTRY_NAME} 已被其他程序占用（${value}），未改动；桌面版需由 Orbis 打开才能接入` };
+}
+
+async function readUserEnvironmentValue(name: string): Promise<string | undefined> {
+  const { stdout } = await execFileAsync("reg.exe", ["query", "HKCU\\Environment", "/v", name], { windowsHide: true }).catch(() => ({ stdout: "" }));
+  const match = stdout.match(new RegExp(`^\\s*${name}\\s+REG_\\w+\\s+(.*)$`, "imu"));
+  return match ? expandVariables(match[1]!.trim()) : undefined;
+}
+
+async function writeUserEnvironmentValue(name: string, value: string | undefined): Promise<void> {
+  if (value === undefined) await execFileAsync("reg.exe", ["delete", "HKCU\\Environment", "/v", name, "/f"], { windowsHide: true });
+  else await execFileAsync("reg.exe", ["add", "HKCU\\Environment", "/v", name, "/t", "REG_SZ", "/d", value, "/f"], { windowsHide: true });
+  // 广播只是尽力而为：注册表已改好，本来就没开的程序下次启动也会读到。
+  await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ENVIRONMENT_BROADCAST], { windowsHide: true, timeout: 10_000 }).catch(() => {});
+}
+
+/** 幂等地把桌面版接入入口指向包装器。 */
+export async function ensureCodexDesktopEntry(launcher: string): Promise<CodexDesktopEntry> {
+  if (process.platform !== "win32") return { state: "unsupported", detail: "Codex 桌面版只支持 Windows" };
+  const current = await readUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME);
+  const decision = codexDesktopEntryDecision(current, launcher);
+  if (decision.write !== undefined) {
+    try { await writeUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME, decision.write); }
+    catch { return { state: "foreign", detail: `无法写入用户环境变量 ${CODEX_DESKTOP_ENTRY_NAME}；桌面版需由 Orbis 打开才能接入` }; }
+  }
+  return { state: decision.state, detail: decision.detail };
+}
+
+/** 只在值确实是我们的时候才删：用户自己设过别的 CLI，不该被顺手抹掉。 */
+export async function removeCodexDesktopEntry(): Promise<void> {
+  if (process.platform !== "win32") return;
+  const current = await readUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME);
+  if (current === undefined || !looksLikeOrbisWrapperEntry(current)) return;
+  await writeUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME, undefined).catch(() => {});
+}
 function samePath(left: string, right: string): boolean {
   return resolve(left).replaceAll("/", "\\").replace(/[\\]+$/u, "").toLowerCase()
     === resolve(right).replaceAll("/", "\\").replace(/[\\]+$/u, "").toLowerCase();

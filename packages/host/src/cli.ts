@@ -24,7 +24,9 @@ import { LoopbackDescriptorSchema } from "@pi-remote/protocol";
 import { loadHostConfig } from "./config.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
-import { CodexDesktopLifecycle } from "./codex-desktop-lifecycle.js";
+import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
+import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper, stageCodexWrapper } from "./codex-desktop-launcher.js";
+import { ensureCodexDesktopEntry } from "./codex-shim-install.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { HostService } from "./host-service.js";
 import { ProviderManager } from "./provider-manager.js";
@@ -105,10 +107,22 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
     } catch (error) {
       console.error(`[codex] 后端未启用：${error instanceof Error ? error.message : String(error)}`);
     }
+    const wrapper = resolveCodexWrapper();
+    const endpointPath = codexDesktopEndpointPath(stateDir);
+    const staged = wrapper === undefined ? undefined : stageCodexWrapper(wrapper);
+    if (wrapper === undefined) console.error("[codex-desktop] 未找到 Orbis 包装器（codex-launcher.exe），本轮无法接入");
+    if (staged !== undefined) {
+      void ensureCodexDesktopEntry(staged.launcher).then(entry => console.log(`[codex-desktop] ${entry.state}：${entry.detail}`))
+        .catch(error => console.error(`[codex-desktop] 设置接入入口失败：${error instanceof Error ? error.message : String(error)}`));
+    }
     codexDesktopLifecycle = new CodexDesktopLifecycle({
       log: line => console.log(`[codex-desktop] ${line}`),
       onReady: runtime => service?.attachCodexDesktopRuntime(runtime),
       onOffline: runtime => service?.detachCodexDesktopRuntime(runtime),
+      resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
+      launchApp: staged === undefined
+        ? () => launchCodexDesktopApp()
+        : async () => { if (!await launchCodexDesktopThroughWrapper(staged, endpointPath)) await launchCodexDesktopApp(); },
     });
   }
 
@@ -132,6 +146,7 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
       ...(codexRuntime === undefined ? {} : { codexRuntime, codexLaunch: (request: { cwd: string }) => codexRuntime!.prepareTerminalLaunch(request.cwd) }),
       ...(codexDesktopLifecycle === undefined ? {} : { ensureCodexDesktop: () => codexDesktopLifecycle!.ensureReady() }),
       ...(codexDesktopLifecycle === undefined ? {} : { codexDesktopLaunchable }),
+      ...(codexDesktopLifecycle === undefined ? {} : { codexDesktopStatus: () => codexDesktopLifecycle!.status }),
       ...(dshRuntime === undefined ? {} : { dshRuntime }),
       log: (line) => console.log(`[host] ${line}`),
       onStateChange: (state) => console.log(`[host] relay ${state}`),

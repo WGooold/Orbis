@@ -26,7 +26,7 @@ function transport(reply: (frame: Record<string, unknown>) => Record<string, unk
   return { value, close };
 }
 
-function desktopHarness() {
+function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: string) {
   const loaded = new Set<string>();
   const native = new Set<string>();
   const archived = new Set<string>();
@@ -50,6 +50,7 @@ function desktopHarness() {
       else archived.delete(id);
       return {};
     }
+    if (method === "thread/start") return { thread: { id: "fresh", cwd: "D:/repo", name: "fresh", path: "D:/sessions/rollout.jsonl", status: { type: "idle" }, turns: [] }, model: "gpt-5.5" };
     if (method === "thread/unsubscribe") return {};
     if (method === "thread/resume") {
       if (pauseResume) await new Promise<void>(resolve => { releaseResume = resolve; });
@@ -57,10 +58,11 @@ function desktopHarness() {
     }
     throw new Error(`unexpected RPC: ${method}`);
   });
-  const server = { mode: "desktop", endpoint: undefined, request, stop, notify: vi.fn() } as unknown as CodexAppServer;
-  const runtime = new CodexRuntime({ server, onEvent: () => {}, rolloutRoot: mkdtempSync(join(tmpdir(), "orbis-desktop-test-")) });
+  const server = { mode, endpoint, request, stop, notify: vi.fn() } as unknown as CodexAppServer;
+  const opened: string[] = [];
+  const runtime = new CodexRuntime({ server, onEvent: () => {}, rolloutRoot: mkdtempSync(join(tmpdir(), "orbis-desktop-test-")), openHeadWindow: ({ sessionId }) => { opened.push(sessionId); } });
   const notify = (method: string, params: unknown) => server.onNotification?.(method, params);
-  return { loaded, native, archived, status, calls, stop, request, server, runtime, notify,
+  return { loaded, native, archived, status, calls, stop, request, server, runtime, notify, opened,
     pause: () => { pauseResume = true; },
     release: () => { releaseResume?.(); },
   };
@@ -124,6 +126,32 @@ describe("Codex desktop attachment", () => {
     expect(h.request).toHaveBeenCalledWith("thread/unsubscribe", { threadId: "first" });
     await h.runtime.stop();
     expect(h.stop).toHaveBeenCalledOnce();
+  });
+
+  // Orbis 包装器给的是外部端点（mode=external）而不是官方 proxy。如果只有 proxy 才算
+  // “桌面版后端”，这套后端会退回成终端语义：runtimeId 变成 `codex`、桌面 thread 发现
+  // 根本不启动——端点接上了，手机却什么也看不到。
+  // 桌面版的「有头」就是它的 GUI。当初只有 proxy 模式（endpoint 为空）时这条被“恰好”跳过，
+  // 换成包装器的外部端点后 endpoint 非空，Host 就会给桌面会话再开一个终端 TUI：
+  // 用户那边凭空多一个客户端，而且 GUI 永远不在 `--remote` 进程名单里。
+  it("never opens a terminal head window for a desktop session", async () => {
+    const h = desktopHarness("external", "ws://127.0.0.1:59069");
+    const activated = await h.runtime.activate({ type: "new", cwd: "D:/repo" });
+    expect(activated.spawnMode).toBe("headless");
+    expect(h.opened).toEqual([]);
+    await h.runtime.stop();
+  });
+
+  it("treats an external app-server endpoint as the desktop backend", async () => {
+    const h = desktopHarness("external");
+    h.loaded.add("wrapped");
+    h.runtime.markStarted();
+    await vi.waitFor(() => expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["codex-desktop:wrapped"]));
+    expect(h.runtime.kind).toBe("codexDesktop");
+    expect(h.runtime.runtimeId).toBe("codex-desktop");
+    expect(h.runtime.directoryEntries()[0]?.runtimeId).toBe("codex-desktop:wrapped");
+    expect(h.calls).toContain("thread/resume");
+    await h.runtime.stop();
   });
 
   it("unsubscribes after an in-flight resume settles when a view closes", async () => {

@@ -53,7 +53,7 @@ import type {
   BackendActivation,
   CommandDispatch,
 } from "./agent-backend.js";
-import { CODEX_DESKTOP_RUNTIME_ID, CODEX_RUNTIME_ID, CodexAppServer, type CodexCommand, type CodexServerRequest } from "./codex-daemon.js";
+import { CODEX_DESKTOP_RUNTIME_ID, CODEX_RUNTIME_ID, CodexAppServer, isDesktopAppServer, type CodexCommand, type CodexServerRequest } from "./codex-daemon.js";
 import { describeError } from "./describe-error.js";
 import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
@@ -340,7 +340,7 @@ export class CodexRuntime implements AgentBackend {
   onOffline: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
 
   constructor(options: CodexRuntimeOptions) {
-    this.runtimeId = options.runtimeId ?? (options.server.mode === "desktop" ? CODEX_DESKTOP_RUNTIME_ID : CODEX_RUNTIME_ID);
+    this.runtimeId = options.runtimeId ?? (isDesktopAppServer(options.server) ? CODEX_DESKTOP_RUNTIME_ID : CODEX_RUNTIME_ID);
     this.#options = options;
     this.#eventSink = options.onEvent;
     this.#server = options.server;
@@ -406,7 +406,7 @@ export class CodexRuntime implements AgentBackend {
   }
 
   assertProviderSwitchReady(): void {
-    if (this.#server.mode === "desktop") {
+    if (isDesktopAppServer(this.#server)) {
       throw new Error("Codex 桌面版正在使用共享后端；请在桌面版结束连接后切换供应商，避免更改运行中的配置");
     }
     if (this.#activating > 0 || this.#permissionUpdates.size > 0 || [...this.#threads.values()].some(thread => this.#statusOf(thread) !== "idle" || thread.queue.length > 0)) {
@@ -445,7 +445,7 @@ export class CodexRuntime implements AgentBackend {
   }
 
   #publicSessionId(threadId: string): string {
-    return this.#server.mode === "desktop" ? `${CODEX_DESKTOP_RUNTIME_ID}:${threadId}` : threadId;
+    return isDesktopAppServer(this.#server) ? `${CODEX_DESKTOP_RUNTIME_ID}:${threadId}` : threadId;
   }
 
   seedDesktopThreads(ids: Iterable<string>): void {
@@ -453,13 +453,13 @@ export class CodexRuntime implements AgentBackend {
   }
 
   #rememberDesktopThread(id: string): void {
-    if (this.#server.mode !== "desktop" || this.#desktopKnown.has(id)) return;
+    if (!isDesktopAppServer(this.#server) || this.#desktopKnown.has(id)) return;
     this.#desktopKnown.add(id);
     this.onDesktopThread?.(id);
   }
 
   #nativeSessionId(sessionId: string): string {
-    return this.#server.mode === "desktop" ? sessionId.slice(CODEX_DESKTOP_RUNTIME_ID.length + 1) : sessionId;
+    return isDesktopAppServer(this.#server) ? sessionId.slice(CODEX_DESKTOP_RUNTIME_ID.length + 1) : sessionId;
   }
 
   /** 新建 ThreadState（三处构造点共用，避免漏字段）。 */
@@ -568,7 +568,7 @@ export class CodexRuntime implements AgentBackend {
   markStarted(): void {
     this.#started = true;
     void this.#loadModelList().catch(() => undefined);
-    if (this.#server.mode === "desktop" && this.#desktopWatcher === undefined) {
+    if (isDesktopAppServer(this.#server) && this.#desktopWatcher === undefined) {
       void this.#refreshDesktopThreads().catch(error => this.#options.log?.(`Codex 桌面会话发现失败：${describeError(error)}`));
       this.#desktopWatcher = setInterval(() => {
         void this.#refreshDesktopThreads().catch(error => this.#options.log?.(`Codex 桌面会话发现失败：${describeError(error)}`));
@@ -578,7 +578,7 @@ export class CodexRuntime implements AgentBackend {
   }
 
   async #refreshDesktopThreads(): Promise<void> {
-    if (!this.#started || this.#server.mode !== "desktop") return;
+    if (!this.#started || !isDesktopAppServer(this.#server)) return;
     if (this.#desktopRefreshing) {
       this.#desktopRefreshPending = true;
       return;
@@ -814,7 +814,7 @@ export class CodexRuntime implements AgentBackend {
   // ── AgentBackend 统一端口（spec §7.4 的适配器收口） ─────────────────────────
 
   get kind(): AgentKind {
-    return this.#server.mode === "desktop" ? "codexDesktop" : "codex";
+    return isDesktopAppServer(this.#server) ? "codexDesktop" : "codex";
   }
 
   isReady(): boolean {
@@ -856,7 +856,7 @@ export class CodexRuntime implements AgentBackend {
 
   /** Persistent thread catalog, with a rollout fallback when app-server discovery fails. */
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
-    if (this.#server.mode === "desktop") {
+    if (isDesktopAppServer(this.#server)) {
       const entries = await this.catalogNative(archived);
       return entries.filter(entry => this.#desktopKnown.has(entry.sessionId)).map(entry => ({
         ...entry, sessionId: this.#publicSessionId(entry.sessionId), agentKind: "codexDesktop",
@@ -940,7 +940,7 @@ export class CodexRuntime implements AgentBackend {
   }
 
   async setArchived(sessionId: string, archived: boolean): Promise<void> {
-    if (this.#server.mode === "desktop") {
+    if (isDesktopAppServer(this.#server)) {
       if (!sessionId.startsWith(`${CODEX_DESKTOP_RUNTIME_ID}:`) || !this.#desktopKnown.has(this.#nativeSessionId(sessionId))) {
         throw new SessionArchiveError("session_not_found", "不属于 Codex 桌面版的会话");
       }
@@ -976,7 +976,7 @@ export class CodexRuntime implements AgentBackend {
   async activate(target: AgentActivateTarget): Promise<BackendActivation> {
     // Native Codex thread IDs are unprefixed. Let Host try the owning backend
     // instead of sending another backend's namespaced ID to thread/resume.
-    if (target.type === "resume" && (this.#server.mode === "desktop"
+    if (target.type === "resume" && (isDesktopAppServer(this.#server)
       ? !target.sessionId.startsWith(`${CODEX_DESKTOP_RUNTIME_ID}:`) || !this.#desktopKnown.has(this.#nativeSessionId(target.sessionId))
       : target.sessionId.includes(":") || this.#desktopKnown.has(target.sessionId))) {
       throw new ActivationError("session_not_found", "不属于 Codex 的会话");
@@ -1014,7 +1014,7 @@ export class CodexRuntime implements AgentBackend {
     thread.permissions = codexPermissions(result) ?? thread.permissions;
     if (codexPermissions(result)) this.#effectiveSettings.set(id, object(result));
     this.#threads.set(id, thread);
-    if (this.#server.mode === "desktop") {
+    if (isDesktopAppServer(this.#server)) {
       this.#desktopThreads.add(id);
       this.#desktopSuppressed.delete(id);
       this.#rememberDesktopThread(id);
@@ -1038,7 +1038,7 @@ export class CodexRuntime implements AgentBackend {
     // 历史由设备的有界 session.sync 请求加载，metadata 不附带无人请求的整图。
     this.#openHeadWindow(id, cwd);
     this.#options.log?.(`Codex 会话已激活：${id}（cwd=${cwd}）`);
-    return { sessionId: this.#publicSessionId(id), spawnMode: this.#server.mode === "desktop" ? "headless" : "tui" };
+    return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
   }
 
   /**
@@ -1048,6 +1048,10 @@ export class CodexRuntime implements AgentBackend {
    * endpoint 未知（测试桩 / app-server 未就绪）时静默跳过；`PI_REMOTE_CODEX_HEAD=0` 关掉。
    */
   #openHeadWindow(sessionId: string, cwd: string): void {
+    // 桌面版那条后端自己就是「有头」：Codex 桌面版 GUI 就是它的窗口。再开一个终端 TUI
+    // 会在用户那里凭空多出一个客户端，而且存活检测靠轮询 `--remote <端点>` 的 TUI 进程
+    // ——GUI 永远不会出现在那份名单里，窗口“消失”后还会把会话误标成离线。
+    if (isDesktopAppServer(this.#server)) return;
     const endpoint = this.#server.endpoint;
     if (endpoint === undefined) return;
     const opener = this.#options.openHeadWindow ?? defaultOpenHeadWindow;
@@ -1829,7 +1833,7 @@ export class CodexRuntime implements AgentBackend {
     forked.permissions = codexPermissions(result);
     if (forked.permissions) this.#effectiveSettings.set(forked.id, object(result));
     this.#threads.set(id, forked);
-    if (this.#server.mode === "desktop") {
+    if (isDesktopAppServer(this.#server)) {
       this.#desktopThreads.add(id);
       this.#rememberDesktopThread(id);
     }
@@ -1839,7 +1843,7 @@ export class CodexRuntime implements AgentBackend {
     this.#publishMetadataEvent(forked);
 
     this.#openHeadWindow(id, cwd);
-    return { sessionId: this.#publicSessionId(id), spawnMode: this.#server.mode === "desktop" ? "headless" : "tui" };
+    return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
   }
 
   #slashNoSession(threadId: string | undefined, commandId: string | undefined): boolean {
@@ -1856,7 +1860,7 @@ export class CodexRuntime implements AgentBackend {
    * 而不是「因为查找失败还假装在线」。
    */
   async #quitThread(thread: ThreadState): Promise<void> {
-    if (this.#server.mode === "desktop") {
+    if (isDesktopAppServer(this.#server)) {
       this.#desktopSuppressed.set(thread.id, thread.turnInProgress ? "active" : "idle");
       this.#deactivateThread(thread.id, "手机已退出 Codex 桌面会话视图", true);
       return;
@@ -1987,7 +1991,7 @@ export class CodexRuntime implements AgentBackend {
    * 再复查（Host 操作还在途就再等一轮），已被收编的就是自己人的广播，忽略。
    */
   #handleUnmanagedNotification(method: string, record: Record<string, unknown>, threadId: string | undefined): void {
-    if (this.#server.mode === "desktop") {
+    if (isDesktopAppServer(this.#server)) {
       if (method === "thread/status/changed" && threadId !== undefined
         && object(record.status).type === "idle" && this.#desktopSuppressed.has(threadId)) {
         this.#desktopSuppressed.set(threadId, "idle");
@@ -2282,7 +2286,7 @@ export class CodexRuntime implements AgentBackend {
       this.onArchiveChange?.(this.#publicSessionId(threadId), archived);
       return;
     }
-    if (method === "thread/closed" && typeof threadId === "string" && this.#server.mode === "desktop") {
+    if (method === "thread/closed" && typeof threadId === "string" && isDesktopAppServer(this.#server)) {
       this.#desktopSuppressed.set(threadId, "active");
       this.#deactivateThread(threadId, "Codex 桌面会话已关闭");
       return;

@@ -191,7 +191,9 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
     LaunchedEffect(state.sessionActivation) {
         state.sessionActivation?.let { activation ->
             val kind = agentBrand(activation.agentKind).title
-            val suffix = if (activation.spawnMode == "headless") "，此会话无头（电脑上无窗口）" else ""
+            // 桌面版的“无头”是相对终端说的：它本来就有窗口（桌面版 GUI 就是那个窗口）。
+            // 对它说“电脑上无窗口”会把人叫去开一个终端，而那正是它不该做的事。
+            val suffix = if (activation.spawnMode == "headless" && activation.agentKind != "codexDesktop") "，此会话无头（电脑上无窗口）" else ""
             Toast.makeText(context, "已在电脑上拉起 $kind 进程$suffix，等待会话上线…", Toast.LENGTH_LONG).show()
             model.clearActivationNotice()
         }
@@ -331,11 +333,6 @@ private fun PairingScreen(error: String?, pair: (String, String, String?) -> Uni
             }
             Spacer(Modifier.height(18.dp))
             Text("连接你的电脑", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            Text(
-                "扫描电脑上的配对二维码，访问你的 Agent 会话",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
-            )
             Spacer(Modifier.height(24.dp))
             NeumorphActionButton(
                 onClick = {
@@ -531,19 +528,6 @@ private fun RuntimeListScreen(
                         )
                         Spacer(Modifier.height(14.dp))
                         Text("暂无在线会话", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "从会话目录打开记录，或新建一个会话",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        if (state.sessions.values.any(SessionCatalogEntry::hasHistoryCache)) {
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                "可从左上方菜单查看已缓存的历史记录",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
                     }
                 } else {
                     LazyColumn(
@@ -705,9 +689,6 @@ internal fun NewSessionSheet(
             }
             AgentChoice(AgentBrand.Codex, agentKind == "codexDesktop", { agentKind = "codexDesktop" }, Modifier.fillMaxWidth(), codexDesktopSupported, "Codex 桌面版")
             AgentChoice(AgentBrand.DeepSeek, agentKind == "dsh", { agentKind = "dsh" }, Modifier.fillMaxWidth(), dshSupported)
-            if (agentKind == "dsh") {
-                Text("DeepSeek Harness 会话在后台运行，支持模型切换与工具审批", style = MaterialTheme.typography.bodySmall)
-            }
             if (!codexSupported) {
                 Text(
                     "这台电脑没启用 Codex 后端",
@@ -718,7 +699,7 @@ internal fun NewSessionSheet(
             val offline = !state.canOperateSessions
             if (offline) {
                 Text(
-                    "未连接到电脑：连接建立后才能浏览目录与新建会话",
+                    "未连接到电脑",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1943,12 +1924,6 @@ internal fun AllDownloadsScreen(
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            Text(
-                "浏览电脑目录，选择文件下载到手机",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = RemoteUi.PagePadding, vertical = 12.dp),
-            )
             NeumorphActionButton(
                 text = "浏览电脑文件",
                 icon = Icons.Rounded.Folder,
@@ -2258,6 +2233,21 @@ private fun StatusScreen(
                 StatusFact("Host 公钥指纹", pairing.hostPublicKeyFingerprint ?: "—")
                 StatusFact("配对根密钥", if (pairing.pskRootPresent) "已保存" else "缺失")
             }
+
+            StatusSectionTitle("电脑 Agent 服务")
+            StatusCard {
+                // 这一行只回答「Host 接上了 Codex 桌面版的 app-server 吗」。装了没开、开了
+                // 接不上是两件不同的事，所以分档和原因都由 Host 下发，手机不自己推断。
+                StatusRow("Codex 桌面版接入", codexDesktopText(state.codexDesktop), codexDesktopTone(state.codexDesktop))
+                state.codexDesktop?.reason?.let { reason ->
+                    Text(
+                        reason,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
         }
     }
     rawLog?.let { text ->
@@ -2330,17 +2320,10 @@ private fun SettingsScreen(model: RemoteViewModel, onBack: () -> Unit) {
         ) {
             StatusSectionTitle("Agent 供应商")
             StatusCard {
-                Text("切换电脑上已保存的供应商。API 地址、密钥与模型在 Host 的 Agent 页面配置。", style = MaterialTheme.typography.bodySmall)
                 TextButton(onClick = { providersOpen = true; model.loadAgentProviders("codex") }) { Text("供应商配置与切换") }
             }
             StatusSectionTitle("连接优先级")
             StatusCard {
-                Text(
-                    "越靠上越优先。更高优先级的路径一建立就顶替当前路径；当前路径断开时立刻回落到剩下最靠上的那条。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 6.dp),
-                )
                 order.forEachIndexed { index, kind ->
                     PriorityOrderRow(
                         rank = index + 1,
@@ -2381,11 +2364,10 @@ private fun AgentProvidersScreen(state: RemoteState, model: RemoteViewModel, onB
                     FilterChip(selected = catalog.kind == kind, onClick = { model.loadAgentProviders(kind) }, label = { Text(label) }, enabled = !catalog.loading)
                 }
             }
-            Text(if (catalog.kind == "pi") "可同时启用多个供应商。更改后重新打开 Pi，再用 /model 选择模型。" else "切换后重新打开会话。正在工作的 Agent 需先结束当前任务。", style = MaterialTheme.typography.bodySmall)
             if (catalog.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             catalog.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             catalog.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-            if (!catalog.loading && catalog.error == null && catalog.providers.isEmpty()) Text("还没有供应商，请先在 Host 的 Agent 页面添加。")
+            if (!catalog.loading && catalog.error == null && catalog.providers.isEmpty()) Text("还没有供应商")
             catalog.providers.forEach { provider ->
                 StatusCard {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -2518,6 +2500,28 @@ internal fun pairingText(pairing: PairingStatus): String = when {
     pairing.hostId == null -> "未配对"
     !pairing.pskRootPresent -> "缺少加密材料"
     else -> "完整"
+}
+
+/**
+ * Codex 桌面版 app-server 的接入分档（ADR-0022）。
+ *
+ * Host 没下发（未启用 Codex、电脑离线、旧版本）时只能是「未知」：把未知说成未接入
+ * 会让人去重开桌面版，而真正的问题在别处。
+ */
+internal fun codexDesktopText(attach: CodexDesktopAttach?): String = when (attach?.state) {
+    "attached" -> "已接入"
+    "closed" -> "未接入"
+    "notInstalled" -> "未安装"
+    "unsupported" -> "不可用"
+    "error" -> "接入失败"
+    else -> "未知"
+}
+
+internal fun codexDesktopTone(attach: CodexDesktopAttach?): StatusTone = when (attach?.state) {
+    "attached" -> StatusTone.Good
+    "closed" -> StatusTone.Warn
+    "error" -> StatusTone.Bad
+    else -> StatusTone.Neutral
 }
 
 internal fun pairingTone(pairing: PairingStatus): StatusTone =

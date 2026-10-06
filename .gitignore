@@ -25,6 +25,8 @@ android/.kotlin/
 # Native Windows Host build and release products
 /.artifacts/
 aqtinstall.log
+# codex-launcher.exe 由构建脚本用 MinGW 现场编译，不进版本库。
+/packages/host/native/bin/
 
 # Local browser validation artifacts
 /.playwright-cli/

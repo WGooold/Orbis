@@ -191,6 +191,20 @@ export const AgentKindSchema = z.enum(["pi", "codex", "codexDesktop", "dsh"]);
 export type AgentKind = z.infer<typeof AgentKindSchema>;
 
 /**
+ * Codex 桌面版 app-server 的接入分档（ADR-0022）。
+ *
+ * 它描述的是 **Host 到桌面版 daemon 的 proxy 连接**，不是进程目录：`attached` 时
+ * 桌面会话才算这条后端的在线会话，`closed` / `notInstalled` 时它只是不可用，
+ * 不影响终端 Codex。
+ */
+export const CodexDesktopAttachSchema = z.strictObject({
+  state: z.enum(["unsupported", "notInstalled", "closed", "attached", "error"]),
+  /** 为什么是这一档，含用户可照做的下一步；由 Host 一处生成，两端不再各自拼文案。 */
+  reason: z.string().min(1).max(256),
+});
+export type CodexDesktopAttach = z.infer<typeof CodexDesktopAttachSchema>;
+
+/**
  * 拉起形态（spec §8.3）。结果一律随响应回执，手机不推断。
  *
  * - `tui`：明确要求在电脑上开一个可见窗口。手机要「有头」时用这一档——它不依赖
@@ -929,6 +943,14 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
      agents: z.array(AgentKindSchema).nullable(),
      /** Agent kinds that can be launched on demand. Unlike `agents`, this can include an offline desktop GUI. */
      launchableAgents: z.array(AgentKindSchema).nullable().optional(),
+     /**
+      * Codex 桌面版 app-server 的接入状态（ADR-0022）。
+      *
+      * `null` = 这台 Host 没有跑这条后端（未启用 Codex、非 Windows，或客户端与 Host
+      * 版本不一致）；`launchableAgents` 只说明桌面版装没装，说不清「装了但没打开」
+      * 与「打开了但接入失败」——那是这张状态卡唯一要回答的问题，所以必须由 Host 下发。
+      */
+     codexDesktop: CodexDesktopAttachSchema.nullable().optional(),
   }),
   // P2P 信令（M5）：Host→设备方向的 offer。与 DeviceE2ePayload 里的 request/answer 成对，
   // SDP 里已烧好全部 ICE 候选（非 trickle）。

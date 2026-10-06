@@ -31,6 +31,15 @@ import { readCodexSelection } from "./codex-selection.js";
 export const CODEX_RUNTIME_ID = "codex";
 export const CODEX_DESKTOP_RUNTIME_ID = "codex-desktop";
 
+/**
+ * 这条连接是不是「桌面版那条后端」：官方 proxy（`desktop`）与 Orbis 包装器给的外部端点
+ * （`external`）都是桌面版自己的 app-server，于是命名空间、桌面 thread 发现、headless
+ * 拉起这些语义对两者完全一样。只有它才用 `codex-desktop:` 前缀。
+ */
+export function isDesktopAppServer(server: { mode: CodexAppServer["mode"] }): boolean {
+  return server.mode === "desktop" || server.mode === "external";
+}
+
 /** 一条服务端 → 客户端的请求（审批等）。`respond` / `fail` 只生效一次。 */
 export type CodexServerRequest = {
   id: string | number;
@@ -53,8 +62,13 @@ export type CodexTransport = {
 };
 
 export type CodexAppServerOptions = {
-  /** Connect to the already-running Codex desktop daemon; never own its lifecycle. */
-  mode?: "owned" | "desktop";
+  /**
+   * `owned` = 自己 spawn 一个 app-server；`desktop` = 用官方 proxy 接桌面版守护进程；
+   * `external` = 接一个已经在跑的 ws 端点（`endpoint` 必填），自己不拥有任何进程。
+   */
+  mode?: "owned" | "desktop" | "external";
+  /** `external` 模式下要接的 WebSocket 端点。 */
+  endpoint?: string;
   /**
    * 注入传输（测试）：提供后**不 spawn 子进程、不探测 healthz**。
    * 缺省 spawn `codex app-server --listen ws://127.0.0.1:<空闲端口>` 并连上它。
@@ -97,7 +111,9 @@ export class CodexAppServer {
 
   private constructor(options: CodexAppServerOptions) {
     this.#options = options;
-    this.#endpoint = options.endpointOverride ?? (options.mode === "desktop" ? undefined : "ws://127.0.0.1:0");
+    // `external` 用的是别人给的端点：不是自己选的端口，更不该被“owned 的占位端口”盖掉。
+    this.#endpoint = options.endpointOverride
+      ?? (options.mode === "external" ? options.endpoint : options.mode === "desktop" ? undefined : "ws://127.0.0.1:0");
   }
 
   /** TUI attach 用的端点：`codex resume <id> --remote <endpoint>`。 */
@@ -105,7 +121,7 @@ export class CodexAppServer {
     return this.#endpoint;
   }
 
-  get mode(): "owned" | "desktop" {
+  get mode(): "owned" | "desktop" | "external" {
     return this.#options.mode ?? "owned";
   }
 
@@ -124,8 +140,11 @@ export class CodexAppServer {
     try {
       if (options.transportImpl !== undefined) {
         server.#transport = await options.transportImpl();
+      } else if (options.mode === "external") {
+        if (options.endpoint === undefined || options.endpoint.length === 0) throw new Error("external app-server 缺少端点");
+        server.#transport = await wsTransport(options.endpoint, timeoutMs);
       } else if (options.mode === "desktop") {
-        server.#transport = await desktopTransport(options, timeoutMs);
+        server.#transport = await desktopTransport(options);
       } else {
         const { command, prefixArgs } = await resolveCodexCommand();
         server.#codexCommand = { command, prefixArgs: [...prefixArgs] };
@@ -163,6 +182,23 @@ export class CodexAppServer {
       return desktop;
     } catch (error) {
       await desktop.stop();
+      throw error;
+    }
+  }
+
+  /**
+   * 接一个别人已经在跑的 app-server（桌面版包装器开的 `--listen` 端点）。
+   *
+   * 与 `createDesktop` 一样，只有 `initialize` 与 `thread/loaded/list` 都成功才算接上：
+   * 端口开着但不是一个能用的 app-server，不能算接入成功。
+   */
+  static async createExternal(options: CodexAppServerOptions & { endpoint: string }): Promise<CodexAppServer> {
+    const external = await CodexAppServer.create({ ...options, mode: "external", requestTimeoutMs: options.requestTimeoutMs ?? 8_000 });
+    try {
+      await external.request("thread/loaded/list", {}, 8_000);
+      return external;
+    } catch (error) {
+      await external.stop();
       throw error;
     }
   }
@@ -377,7 +413,7 @@ function wsTransport(url: string, timeoutMs: number): Promise<CodexTransport> {
   });
 }
 
-async function desktopTransport(options: CodexAppServerOptions, _timeoutMs: number): Promise<CodexTransport> {
+async function desktopTransport(options: CodexAppServerOptions): Promise<CodexTransport> {
   const { command, prefixArgs } = await resolveCodexCommand();
   const child = (options.spawnImpl ?? ((cmd, args) => spawn(cmd, args, {
     stdio: ["pipe", "pipe", "pipe"], windowsHide: true,

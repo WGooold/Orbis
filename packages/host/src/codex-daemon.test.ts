@@ -193,4 +193,35 @@ describe("CodexAppServer", () => {
     await expect(pending).rejects.toThrow("已被关闭");
     expect(exited).toBeUndefined();
   });
+
+  // 外部端点（桌面版包装器开的 --listen）不能“端口开着就算接上”：一个只会回 initialize 的
+  // 端口不是可用的 app-server，报成已接入会让手机对着一个空会话目录发呆。
+  it("accepts an external endpoint only after initialize and thread/loaded/list both answer", async () => {
+    const harness = fakeTransport();
+    const creating = CodexAppServer.createExternal({
+      endpoint: "ws://127.0.0.1:43210",
+      transportImpl: async () => harness.transport,
+    });
+    await vi.waitFor(() => expect(harness.sent.some(frame => frame.includes('"initialize"'))).toBe(true));
+    harness.emit(JSON.stringify({ id: 1, result: {} }));
+    await vi.waitFor(() => expect(harness.sent.some(frame => frame.includes('"thread/loaded/list"'))).toBe(true));
+    harness.emit(JSON.stringify({ id: 2, result: { data: ["thread-1"] } }));
+    const server = await creating;
+    expect(server.mode).toBe("external");
+    expect(server.endpoint).toBe("ws://127.0.0.1:43210");
+    await server.stop();
+
+    const halfBaked = fakeTransport();
+    const rejected = CodexAppServer.createExternal({
+      endpoint: "ws://127.0.0.1:43211",
+      transportImpl: async () => halfBaked.transport,
+    });
+    await vi.waitFor(() => expect(halfBaked.sent.some(frame => frame.includes('"initialize"'))).toBe(true));
+    halfBaked.emit(JSON.stringify({ id: 1, result: {} }));
+    await vi.waitFor(() => expect(halfBaked.sent.some(frame => frame.includes('"thread/loaded/list"'))).toBe(true));
+    halfBaked.emit(JSON.stringify({ id: 2, error: { code: -32601, message: "unsupported" } }));
+    await expect(rejected).rejects.toThrow("unsupported");
+
+    await expect(CodexAppServer.createExternal({ endpoint: "" })).rejects.toThrow("缺少端点");
+  });
 });

@@ -8,6 +8,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -307,9 +308,12 @@ class RelayReducerTest {
         var state = reducer.reduce(RemoteState(), """
           {"type":"device.ready","deviceId":"phone-1","runtimes":[
             {"runtimeId":"runtime-a","name":"A","cwd":"/a","status":"idle","sessionId":"session-1"}
-          ]}
+          ],"codexDesktop":{"state":"attached","reason":"已接入 Codex 桌面版 app-server"}}
         """.trimIndent(), channel = "ctl")
         state = state.copy(e2eReady = true, pendingCommands = mapOf("cmd-1" to "runtime-a"))
+        // 接入分档只在 Host 那条加密 device.ready 里权威；电脑掉线后它还写着「已接入」，
+        // 用户会去点一个根本收不到会话的入口。
+        assertEquals("attached", state.codexDesktop?.state)
 
         state = reducer.reduce(state, """{"type":"host.offline","hostId":"host-1","reason":"disconnected"}""")
 
@@ -317,6 +321,7 @@ class RelayReducerTest {
         assertTrue(state.runtimes.isEmpty())
         assertTrue(state.pendingCommands.isEmpty())
         assertEquals("cancelled", state.commandResults["cmd-1"]?.status)
+        assertNull(state.codexDesktop)
 
         // host.online 本身不改状态：等重握手后的 device.ready 把目录重新对齐。
         val before = state

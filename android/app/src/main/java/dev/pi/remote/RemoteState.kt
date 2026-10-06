@@ -27,6 +27,18 @@ data class RuntimeModelInfo(
     val displayName: String get() = name?.takeIf(String::isNotBlank) ?: id
 }
 
+/**
+ * Host 到 Codex 桌面版 app-server 的接入状态（ADR-0022）。
+ *
+ * 它只描述那条 proxy 连接：`attached` 时桌面会话才会出现在目录里，其余分档只是
+ * 那条后端不可用，终端 Codex 不受影响。[reason] 由 Host 给出，含可照做的下一步。
+ */
+@Serializable
+data class CodexDesktopAttach(
+    val state: String,
+    val reason: String,
+)
+
 @Serializable
 data class RuntimeContextUsage(
     /** Estimated tokens in the active context; null while Pi cannot estimate them yet. */
@@ -356,6 +368,11 @@ data class RemoteState(
      val supportedAgents: Set<String>? = null,
     /** Agent kinds that can be started on demand, including an installed but currently closed desktop GUI. */
     val launchableAgents: Set<String>? = null,
+    /**
+     * Codex 桌面版 app-server 的接入状态；null = 未知或这台电脑没跑这条后端。
+     * 它比 [launchableAgents] 多回答一个问题：桌面版装了但没打开、还是打开了却接入失败。
+     */
+    val codexDesktop: CodexDesktopAttach? = null,
     /** Effective Host configuration; do not infer it from a historical session or model name. */
     val currentProviders: Map<String, String> = emptyMap(),
     val agentProviders: AgentProvidersState = AgentProvidersState(),
@@ -1255,6 +1272,11 @@ class RelayReducer(
                     ?.let { element -> json.decodeFromJsonElement<List<String>>(element).toSet() }
                     ?: state.launchableAgents
                     ?: supportedAgents
+                // 只有 Host 那条经过端到端加密的 device.ready 会走到这里（中继的明文种子在
+                // 上面直接 return 了），所以缺这项就是“不知道”，清回 null 而不是保留旧值。
+                val codexDesktop = message["codexDesktop"]
+                    ?.takeIf { it !is JsonNull }
+                    ?.let { element -> json.decodeFromJsonElement<CodexDesktopAttach>(element) }
                 val sessionChanged = runtimes.keys.associateWith { runtimeId ->
                     val previousRuntime = state.runtimes[runtimeId]
                     val hasPrevious = previousRuntime != null ||
@@ -1327,6 +1349,7 @@ class RelayReducer(
                     runtimes = runtimes,
                     supportedAgents = supportedAgents,
                     launchableAgents = launchableAgents,
+                    codexDesktop = codexDesktop,
                     sessionListRequests = emptySet(),
                     sessionListRequestEpochs = emptyMap(),
                     sessionArchiveRequests = emptyMap(),
@@ -1487,6 +1510,7 @@ class RelayReducer(
                     e2eReady = false,
                     currentProviders = emptyMap(),
                     runtimes = emptyMap(),
+                    codexDesktop = null,
                     pendingCommands = emptyMap(),
                     commandResults = state.commandResults + interrupted.filterNot { it.isSessionSyncCommandId() }.associateWith {
                         CommandResult(ok = false, status = "cancelled")
