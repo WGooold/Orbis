@@ -692,26 +692,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Heading { text: "已配对设备" }
                             Item { Layout.fillWidth: true }
-                            ToolButton {
-                                visible: host.appDownloadQr.length > 0
-                                Layout.preferredWidth: 42; Layout.preferredHeight: 42
-                                hoverEnabled: true
-                                Accessible.name: "下载 Orbis Android"
-                                onClicked: appDownloadDialog.open()
-                                contentItem: Image {
-                                    anchors.fill: parent; anchors.margins: 7
-                                    source: host.appDownloadQr
-                                    fillMode: Image.PreserveAspectFit
-                                    smooth: false
-                                    mipmap: false
-                                }
-                                background: NeuSurface {
-                                    anchors.fill: parent; anchors.margins: -6; margin: 6
-                                    cornerRadius: 7; inset: parent.down; focused: parent.activeFocus
-                                }
-                                ToolTip.visible: hovered
-                                ToolTip.text: "下载 Orbis Android"
-                            }
+                            ActionButton { text: "下载 Android"; visible: host.appDownloadQr.length > 0; onClicked: appDownloadDialog.open() }
                             ActionButton { text: "＋ 添加手机"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
                         }
                         Card {
