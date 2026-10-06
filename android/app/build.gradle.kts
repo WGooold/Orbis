@@ -10,7 +10,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.pi.remote"
+        applicationId = "com.orbising.orbis"
         minSdk = 26
         targetSdk = 35
         versionCode = 50
