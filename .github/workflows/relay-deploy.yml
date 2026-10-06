@@ -118,6 +118,11 @@ jobs:
       - name: Set up Android SDK for APK metadata extraction
         if: inputs.android_release_tag != ''
         uses: android-actions/setup-android@v3
+        with:
+          # 上游 SDK 已移除 `tools` 包；保留默认的 `tools platform-tools` 会让
+          # sdkmanager 直接以 exit 1 退出（Failed to find package 'tools'）。
+          # 这里只需要 aapt，build-tools 由下一步显式安装。
+          packages: 'platform-tools'
       - name: Install Android build tools
         if: inputs.android_release_tag != ''
         run: sdkmanager "build-tools;35.0.0"
