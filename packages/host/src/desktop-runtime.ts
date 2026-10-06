@@ -349,7 +349,7 @@ export class DesktopRuntime {
       }
       const codexDesktopLaunchable = await this.#codexDesktopLifecycle?.isInstalled() ?? false;
       const stunServers = settings.stunServers ?? defaultStunServers(settings.relayUrl);
-      this.#service = await HostService.create({
+      const service = await HostService.create({
         providers: this.#providers,
         stateDir: this.#stateDir, relayUrl: settings.relayUrl, credential: settings.credential,
         ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }), stunServers,
@@ -359,10 +359,16 @@ export class DesktopRuntime {
         ...(this.#codexDesktopLifecycle === undefined ? {} : { codexDesktopStatus: () => this.#codexDesktopLifecycle!.status }),
         ...(this.#dshRuntime === undefined ? {} : { dshRuntime: this.#dshRuntime }),
         log: line => this.log(line),
-        onStateChange: state => this.#emit({ event: "state", state }),
+        // 只有“当前这次连接”的链路状态才会到界面：暂停或重启后被作废的尝试还在收尾巴，
+        // 它事后发出的 closed/reconnecting 会盖掉“已暂停”，把界面卡在“连接已断开”。
+        onStateChange: state => { if (this.#desired === settings) this.#emit({ event: "state", state }); },
         onPaired: device => { this.#emit({ event: "paired", deviceId: device.deviceId }); this.status(); },
         onPathChange: () => this.status(),
       });
+      // 建服务可能跨越一次 stop()：这时它已经不属于任何一次运行，起它只会留下一个没人管的
+      // 后台（并接着把状态捅给界面）。自己收掉，然后让 #connect 的 finally 放掉 #starting。
+      if (this.#desired !== settings) { await service.stop().catch(error => this.log(String(error))); return; }
+      this.#service = service;
       let deadline: NodeJS.Timeout | undefined;
       try {
         await Promise.race([this.#service.start(), new Promise<never>((_resolve, reject) => {
@@ -378,6 +384,7 @@ export class DesktopRuntime {
       void this.detect(settings).catch(error => this.log(`Agent 检测失败：${error instanceof Error ? error.message : String(error)}`));
     } catch (error) {
       await this.#dispose();
+      if (this.#desired !== settings) return;
       const message = error instanceof Error ? error.message : String(error);
       this.log(`Host 启动失败：${message}`);
       if (/unauthorized|credential|已有另一个 Host/i.test(message)) {
@@ -461,7 +468,7 @@ export class DesktopRuntime {
     const selected = agentKind(kind);
     if (!["current", "managed"].includes(mode)) throw new Error("未知安装方式");
     if (selected === "dsh" && version !== "latest" && compareAgentVersions(version, DSH_VERSION) === -1) throw new Error(`Orbis 手机接入需要 DeepSeek Harness ${DSH_VERSION} 或兼容版本`);
-    if (this.#desired || this.#starting) throw new Error("请先暂停 Host，再安装或更新 Agent");
+    if (this.#desired) throw new Error("请先暂停 Host，再安装或更新 Agent");
     if (this.#installation) throw new Error("另一个安装正在进行");
     const managed = this.#managedRoot();
     this.log(`正在安装 ${kind} ${version}，下载可能需要几分钟…`);
@@ -522,7 +529,7 @@ export class DesktopRuntime {
 
   async activateInstallation(kind: string, id: string): Promise<{ entry: string; version: string }> {
     const selected = agentKind(kind);
-    if (this.#desired || this.#starting || this.#installation) throw new Error("请先暂停 Host，并等待当前安装完成");
+    if (this.#desired || this.#installation) throw new Error("请先暂停 Host，并等待当前安装完成");
     this.#installation = new AbortController();
     const signal = this.#installation.signal;
     this.#installationTask = (async () => {
@@ -538,7 +545,7 @@ export class DesktopRuntime {
   }
 
   async selectCodexEntry(entry: string): Promise<{ entry: string; version: string }> {
-    if (this.#desired || this.#starting || this.#installation) throw new Error("请先暂停 Host，再切换 Codex 版本");
+    if (this.#desired || this.#installation) throw new Error("请先暂停 Host，再切换 Codex 版本");
     await this.#checkExistingHost();
     const copies = await findAgentCopies("codex", process.env);
     if (!copies.some(copy => copy.entry === entry)) throw new Error("Codex 入口未在当前 npm 安装中找到");
@@ -565,7 +572,7 @@ export class DesktopRuntime {
 
   async installAll(action: string): Promise<{ succeeded: number; failures: string[]; warnings: string[]; cancelled: boolean }> {
     if (!["install", "update"].includes(action)) throw new Error("未知安装操作");
-    if (this.#desired || this.#starting) throw new Error("请先暂停 Host，再安装或更新 Agent");
+    if (this.#desired) throw new Error("请先暂停 Host，再安装或更新 Agent");
     this.#batchCancelled = false;
     const targets = (["pi", "codex", "dsh"] as const).flatMap(kind => {
       const status = this.#detected.get(kind);
