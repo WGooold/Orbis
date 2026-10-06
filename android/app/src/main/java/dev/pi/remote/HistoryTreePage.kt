@@ -538,7 +538,7 @@ private fun HistoryPreviewPanel(
             ) {
                 when {
                     preview.unavailable -> Text(
-                        "本机还没有这个节点的对话缓存，只能执行底部动作。",
+                        "本机还没有这个节点的对话缓存",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -630,7 +630,7 @@ private fun HistoryPreviewActions(
             )
 
             null -> Text(
-                hint ?: "这条记录只能预览，不能作为继续对话的位置。",
+                hint ?: "这条记录只能预览",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

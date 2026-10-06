@@ -35,6 +35,7 @@ class HostController : public QObject {
     Q_PROPERTY(int runtimeCount READ runtimeCount NOTIFY changed)
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
+    Q_PROPERTY(QVariantMap codexDesktop READ codexDesktop NOTIFY changed)
     Q_PROPERTY(QString agentInstallKind READ agentInstallKind NOTIFY changed)
     Q_PROPERTY(QString agentInstallStage READ agentInstallStage NOTIFY changed)
     Q_PROPERTY(QString agentInstallVersion READ agentInstallVersion NOTIFY changed)
@@ -74,6 +75,7 @@ public:
     int runtimeCount() const { return m_runtimeCount; }
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
+    QVariantMap codexDesktop() const { return m_codexDesktop; }
     QString agentInstallKind() const { return m_agentInstallKind; }
     QString agentInstallStage() const { return m_agentInstallStage; }
     QString agentInstallVersion() const { return m_agentInstallVersion; }
@@ -169,6 +171,7 @@ private:
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_challenge, m_challengeEmail;
     QStringList m_logs;
     QVariantList m_devices, m_agents;
+    QVariantMap m_codexDesktop;
     QString m_agentInstallKind, m_agentInstallStage, m_agentInstallVersion;
     QVariantList m_providers;
     QVariantList m_providerPresets;

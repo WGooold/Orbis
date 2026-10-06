@@ -126,7 +126,7 @@ internal fun RuntimePermissionsStatus(
     val current = command?.let { permissionSettingValue(permissions, it.name) }
     LaunchedEffect(pendingId, commandResults[pendingId]) {
         val result = commandResults[pendingId] ?: return@LaunchedEffect
-        feedback = if (result.ok) "已应用到当前会话，后续任务使用新设置" else result.error ?: "设置未确认，请检查当前权限后重试"
+        feedback = if (result.ok) "已应用到当前会话" else result.error ?: "设置未确认，请检查当前权限后重试"
         pendingId = null
         if (result.ok) selectedValue = null
     }
@@ -169,8 +169,7 @@ internal fun RuntimePermissionsStatus(
     if (expanded) SessionControlDialog("当前会话权限", onClose = { expanded = false }) {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             if (permissions == null) {
-                Text("当前会话未提供可查询的沙箱和审批策略。工具权限由电脑端的运行环境和扩展管理。")
-                Text("结构化审批和问答可在 App 的待处理面板完成；电脑端原生交互会单独提示。")
+                Text("当前会话未提供可查询的沙箱和审批策略")
             } else {
                 Text("当前生效", style = MaterialTheme.typography.labelLarge)
                 Text(permissionSummary(permissions), style = MaterialTheme.typography.titleMedium)
@@ -202,10 +201,9 @@ internal fun RuntimePermissionsStatus(
                     }
                 }
                 if (command?.name == "network" && permissions?.sandbox in listOf("dangerFullAccess", "danger-full-access")) {
-                    Text("完全访问模式包含联网权限。限制联网前，请先切换为只读或工作区可写。")
+                    Text("完全访问模式包含联网权限")
                 }
-                Text("一次应用一项设置，仅作用于当前会话的后续任务。", style = MaterialTheme.typography.bodySmall)
-            } else if (permissions != null) Text("当前会话未提供手机端权限设置，请在电脑端调整。")
+            } else if (permissions != null) Text("当前会话未提供手机端权限设置")
         }
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!connected) Text("连接已断开，连接后可应用设置", color = MaterialTheme.colorScheme.error)

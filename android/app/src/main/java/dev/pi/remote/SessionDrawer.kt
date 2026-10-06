@@ -118,12 +118,6 @@ private fun DrawerAgentFilterMenu(
                     leadingIcon = { Icon(Icons.Rounded.ArrowBack, contentDescription = "返回会话筛选", modifier = Modifier.size(18.dp)) },
                     onClick = { showProviders = false },
                 )
-                Text(
-                    "会话绑定所属 provider；打开其他 provider 的会话前，请先在电脑端切换。",
-                    modifier = Modifier.width(248.dp).padding(horizontal = 8.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
                 providerOptions.forEach { option ->
                     NeumorphMenuItem(
                         text = { Text(option.label) },
@@ -351,16 +345,6 @@ internal fun SessionDrawer(
                                     else "没有${agentFilter.label}会话"
                                 } else "没有找到匹配的目录或会话",
                                 style = MaterialTheme.typography.bodyMedium,
-                            )
-                            Text(
-                                if (searchTerm.isEmpty()) {
-                                    if (showArchived) "通过筛选菜单返回未归档会话"
-                                    else if (agentFilter == DrawerAgentFilter.Codex && providerKey == CURRENT_CODEX_PROVIDER && currentProvider == null) "连接电脑获取当前配置，或在筛选菜单中选择其他 provider"
-                                    else if (agentFilter == DrawerAgentFilter.All) "新建一个会话，从选择目录开始"
-                                    else "切换筛选条件，或新建一个${agentFilter.label}会话"
-                                } else "试试目录名、完整路径或会话标题",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }

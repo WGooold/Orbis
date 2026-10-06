@@ -88,6 +88,9 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
         m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_requestParams.clear(); ++m_draftGeneration; m_busy = 0; m_qr.clear();
+        // 接入分档说的是「现在接上了吗」：Host 核心没了就没有现在，留着会在诊断页上
+        // 显示一个已经不成立的「已接入」。
+        m_codexDesktop.clear();
         if (agentInstalling()) m_agentInstallStage = "error";
         if (m_shutdown) return;
         m_state = "error";
@@ -168,6 +171,8 @@ void HostController::receiveLine(const QJsonObject &line) {
             }
         }
         else if (event == "status") { m_devices = line.value("devices").toArray().toVariantList(); m_runtimeCount = line.value("runtimeCount").toInt(); }
+        // Codex 桌面版 app-server 的接入分档（ADR-0022）：分档真的变了才会到这条事件。
+        else if (event == "codexDesktop") { m_codexDesktop = line.value("status").toObject().toVariantMap(); }
         else if (event == "paired") { m_qr.clear(); m_pairExpires = 0; setMessage("手机配对成功，现在可以在手机上使用 Orbis"); emit paired(); emit notification("Orbis", "新手机已配对"); }
     }
     emit changed();
@@ -470,7 +475,7 @@ QString HostController::diagnostics() const {
         for (const auto &key : {"path", "entry", "error", "installations", "copies"}) agent.remove(key);
         agents.append(agent);
     }
-    QJsonObject result{{"version", version()}, {"state", m_state}, {"activated", activated()}, {"devices", m_devices.size()}, {"agents", agents}, {"logs", QJsonArray::fromStringList(m_logs)}};
+    QJsonObject result{{"version", version()}, {"state", m_state}, {"activated", activated()}, {"devices", m_devices.size()}, {"agents", agents}, {"codexDesktop", QJsonObject::fromVariantMap(m_codexDesktop)}, {"logs", QJsonArray::fromStringList(m_logs)}};
     return QString::fromUtf8(QJsonDocument(result).toJson());
 }
 void HostController::copyDiagnostics() { QApplication::clipboard()->setText(diagnostics()); setMessage("脱敏诊断信息已复制"); }

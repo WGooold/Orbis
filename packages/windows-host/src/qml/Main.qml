@@ -21,6 +21,12 @@ ApplicationWindow {
     property bool agentVersionsChecked: false
     readonly property bool canInstallAgents: host.state === "stopped" || host.state === "error"
     function agentName(kind) { return ({pi:"Pi", codex:"Codex", dsh:"DeepSeek Harness"})[kind] || kind }
+    // Codex 桌面版接入卡只是把 Host 下发的分档换成人话；文案本身全部来自 Host，
+    // 两个客户端不各自拼，免得同一件事在电脑和手机上说法不一。
+    function codexDesktopState() { return (host.codexDesktop && host.codexDesktop.state) ? host.codexDesktop.state : "" }
+    function codexDesktopLabel() { return ({attached:"已接入", closed:"未接入", notInstalled:"未安装", unsupported:"不可用", error:"接入失败"})[window.codexDesktopState()] || (!host.bridgeReady ? "未知" : host.codexEnabled ? "正在检测" : "未启用") }
+    function codexDesktopColor() { return ({attached:"#278868", closed:"#b46b19", error:"#a63838", notInstalled:"#73819a", unsupported:"#73819a"})[window.codexDesktopState()] || "#73819a" }
+    function codexDesktopReason() { return (host.codexDesktop && host.codexDesktop.reason) ? host.codexDesktop.reason : "" }
     function installationStage() { return ({queued:"准备安装", resolving:"检查安装位置", downloading:"下载与安装依赖", verifying:"验证 CLI 和版本", activating:"保存新版本", restarting:"正在重启 Agent 后台", restartFailed:"已更新，后台需手动重启", cancelling:"正在取消并清理", cancelled:"已取消", error:"安装失败", done:"安装完成"})[host.agentInstallStage] || "" }
     function showAgentInstaller(agent) { installKind = agent.kind; installAgentData = agent; installDialog.open() }
     function showAgentBatch() { batchInstallDialog.open() }
@@ -543,7 +549,7 @@ ApplicationWindow {
                                     Layout.fillWidth: true; spacing: 9
                                     Hint { text: "这台电脑" }
                                     Heading { text: host.hostName || "正在准备你的 Host" }
-                                    Hint { text: host.activated ? (host.email ? "已通过 " + host.email + " 激活" : "这台电脑已激活") : (host.verificationRequired ? "使用 QQ 邮箱激活，开始连接你的手机。" : "激活这台电脑，开始连接你的手机。") }
+                                    Hint { text: host.activated ? (host.email ? "已通过 " + host.email + " 激活" : "这台电脑已激活") : "" }
                                 }
                                 ActionButton { visible: host.activated; text: host.state === "connected" || host.state === "connecting" || host.state === "reconnecting" ? "暂停连接" : "开始连接"; enabled: !host.busy; onClicked: { if (host.state === "connected" || host.state === "connecting" || host.state === "reconnecting") host.stopHost(); else host.startHost() } }
                                 ActionButton { visible: host.activated; text: "＋ 添加手机"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
@@ -554,7 +560,6 @@ ApplicationWindow {
                             ColumnLayout {
                                 anchors.fill: parent; spacing: 13
                                 Heading { text: "打开 AI 工作台" }
-                                Hint { text: "打开 Pi、Codex 终端、Codex 桌面版或 DeepSeek Harness，直接开始对话。"; Layout.fillWidth: true }
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 16
                                     ActionButton {
@@ -591,11 +596,9 @@ ApplicationWindow {
                                     }
                                     Item { Layout.fillWidth: true }
                                 }
-                                Hint { text: "Pi 和 Codex 终端会先让你选择工作区，Codex 桌面版直接打开独立应用，DeepSeek 使用网页工作台。按钮不可用时，请到 Agent 页检测或安装。模型登录可在供应商配置或已打开的 agent 中完成。"; Layout.fillWidth: true; font.pixelSize: 11 }
                                 RowLayout {
                                     visible: !host.dshEnabled && host.agents.some(a => a.kind === "dsh" && a.installed)
                                     Layout.fillWidth: true; spacing: 16
-                                    Hint { text: "手机端 DeepSeek 尚未启用，请在设置中开启接入后重新连接 Host。"; Layout.fillWidth: true }
                                     ActionButton { text: "前往设置"; onClicked: window.selectPage(3) }
                                 }
                             }
@@ -608,7 +611,7 @@ ApplicationWindow {
                                 ColumnLayout {
                                     anchors.fill: parent; spacing: 15
                                     Heading { text: "连接，从这里开始" }
-                                    Hint { text: host.verificationRequired ? "通过 QQ 邮箱验证码激活这台电脑。" : "当前服务器允许直接激活，无需邮箱验证码。"; Layout.fillWidth: true; Layout.bottomMargin: 9 }
+                                    Hint { visible: host.verificationRequired && !host.registrationAvailable; text: "邮箱注册暂未开放"; Layout.fillWidth: true; Layout.bottomMargin: 9 }
                                     Label { visible: host.verificationRequired; text: "QQ 邮箱"; color: "#40516c"; font.pixelSize: 13 }
                                     Field { id: emailField; visible: host.verificationRequired; objectName: "registrationEmail"; placeholderText: "你的邮箱@qq.com"; Layout.fillWidth: true; inputMethodHints: Qt.ImhEmailCharactersOnly; enabled: !host.busy; Accessible.name: "QQ 邮箱" }
                                     Label { visible: host.verificationRequired; text: "邮箱验证码"; color: "#40516c"; font.pixelSize: 13 }
@@ -618,32 +621,14 @@ ApplicationWindow {
                                         ActionButton { text: host.cooldown > 0 ? host.cooldown + " 秒后重发" : "获取验证码"; enabled: host.bridgeReady && host.registrationAvailable && !host.busy && host.cooldown === 0; onClicked: host.requestCode(emailField.text) }
                                     }
                                     ActionButton { text: host.busy ? "正在处理…" : host.verificationRequired ? "注册并激活" : "直接激活"; primary: true; Layout.fillWidth: true; Layout.topMargin: 7; enabled: host.bridgeReady && host.registrationAvailable && !host.busy; onClicked: { if (host.verificationRequired) host.activate(emailField.text, codeField.text); else host.activateWithoutEmail() } }
-                                    Hint { visible: host.verificationRequired; text: host.registrationAvailable ? "只验证邮箱所有权，无需提供 QQ 密码。" : "邮箱注册暂未开放，请等待邮件服务配置完成。"; Layout.fillWidth: true }
-                                }
-                            }
-                            Card {
-                                Layout.preferredWidth: 270; Layout.fillHeight: true
-                                ColumnLayout {
-                                    anchors.fill: parent; spacing: 17
-                                    Label { text: "三步，随处开始"; font.pixelSize: 18; font.weight: Font.DemiBold; color: "#223757"; Layout.bottomMargin: 6 }
-                                    Repeater {
-                                        model: [{n: "01", title: "激活这台电脑", detail: host.verificationRequired ? "用 QQ 邮箱验证并注册。" : "按当前服务器设置直接激活。"}, {n: "02", title: "接入你的 Agent", detail: "复用本机已有的 Agent 安装。"}, {n: "03", title: "手机扫码连接", detail: "在 Orbis Android 中扫码配对。"}]
-                                        delegate: ColumnLayout {
-                                            required property var modelData
-                                            Layout.fillWidth: true; spacing: 6
-                                            Label { text: modelData.n + "   " + modelData.title; color: "#345cdb"; font.weight: Font.DemiBold; font.pixelSize: 14 }
-                                            Hint { text: modelData.detail; Layout.fillWidth: true }
-                                        }
-                                    }
-                                    Item { Layout.fillHeight: true; Layout.minimumHeight: 18 }
-                                    Hint { text: "配对后端到端加密，手机与电脑安全连接。"; Layout.fillWidth: true }
+                                    Hint { visible: host.verificationRequired && !host.registrationAvailable; text: "邮箱注册暂未开放"; Layout.fillWidth: true }
                                 }
                             }
                         }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 16
                             Repeater {
-                                model: [{label: "已配对设备", value: String(host.devices.length), detail: "每台设备均可独立撤销"}, {label: "在线会话", value: String(host.runtimeCount), detail: "由这台电脑上的 Host 提供"}, {label: "Agent 接入", value: String(host.agents.filter(a => a.installed).length), detail: "Pi / Codex / DeepSeek"}]
+                                model: [{label: "已配对设备", value: String(host.devices.length), detail: ""}, {label: "在线会话", value: String(host.runtimeCount), detail: "由这台电脑上的 Host 提供"}, {label: "Agent 接入", value: String(host.agents.filter(a => a.installed).length), detail: "Pi / Codex / DeepSeek"}]
                                 delegate: Card {
                                     required property var modelData
                                     Layout.fillWidth: true; Layout.preferredWidth: 1
@@ -656,7 +641,6 @@ ApplicationWindow {
                                 }
                             }
                         }
-                        Hint { text: "关闭窗口后，Orbis 会继续在系统托盘中运行。电脑需保持开机，才能从手机操作 Agent。"; Layout.fillWidth: true }
                     }
 
                     ColumnLayout {
@@ -664,7 +648,7 @@ ApplicationWindow {
                         RowLayout { Layout.fillWidth: true; Heading { text: "已配对设备" } Item { Layout.fillWidth: true } ActionButton { text: "＋ 添加手机"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() } }
                         Card {
                             visible: host.devices.length === 0; Layout.fillWidth: true
-                            ColumnLayout { anchors.fill: parent; spacing: 16; Heading { text: "还没有连接的手机" } Hint { text: "激活并启动 Host 后，点击“添加手机”，使用 Orbis Android 扫描二维码。"; Layout.fillWidth: true } }
+                            Heading { text: "还没有连接的手机" }
                         }
                         Repeater {
                             model: host.devices
@@ -722,8 +706,7 @@ ApplicationWindow {
                                 }
                             }
                         }
-                        Hint { text: "在供应商配置中添加 API 地址、密钥与模型，并在 Host 或 APP 启用。原生账号登录可在供应商配置（Codex 的「账号管理」）或已打开的 agent 终端中完成。安装更新前请先暂停 Host。"; Layout.fillWidth: true }
-                        Hint { visible: host.busy && !host.agentInstalling; text: "正在检测 Agent，请稍候…"; Layout.fillWidth: true }
+                        Hint { visible: host.busy && !host.agentInstalling; text: "正在检测 Agent…"; Layout.fillWidth: true }
                     }
 
                     ColumnLayout {
@@ -745,12 +728,10 @@ ApplicationWindow {
                             Field { id: providerSearch; objectName: "providerSearch"; Layout.fillWidth: true; placeholderText: "搜索名称、标识、备注或网站"; Accessible.name: "搜索供应商" }
                             Hint { text: String(window.visibleProviders.length) + " / " + host.providers.length }
                         }
-                        Hint { Layout.fillWidth: true; text: host.providerKind === "pi" ? "Pi 可同时启用多个供应商。刷新会同步 models.json 中的显式配置；移除保留卡片，不更改原生登录与默认模型。拖动卡片左侧手柄调整顺序。" : "保存未启用的配置不会切换当前供应商。点击“启用”后生效；已有会话和独立终端需重新打开。拖动左侧手柄调整顺序。" }
                         Card {
                             visible: host.providers.length === 0; Layout.fillWidth: true
                             ColumnLayout { anchors.fill: parent; spacing: 12
                                 Heading { text: "添加第一个供应商" }
-                                Hint { text: "支持自定义兼容 API，以及高级原生配置。已有本机配置会自动导入。"; Layout.fillWidth: true }
                             }
                         }
                         Hint { visible: host.providers.length > 0 && window.visibleProviders.length === 0; text: "没有匹配的供应商"; Layout.fillWidth: true }
@@ -815,16 +796,14 @@ ApplicationWindow {
                             RowLayout {
                                 visible: host.agents.some(a => a.kind === "codex" && a.terminalNeedsElevation === true)
                                 Layout.fillWidth: true; spacing: 12
-                                Hint { text: "系统 PATH 里其他 codex 抢先于 Orbis，终端接入无法生效。修复需要一次管理员确认，完成后请重新打开终端。"; Layout.fillWidth: true; color: "#b46b19" }
+                                Hint { text: "系统 PATH 里其他 codex 抢先于 Orbis，终端接入无法生效"; Layout.fillWidth: true; color: "#b46b19" }
                                 ActionButton { text: "修复终端接入"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.enableCodexTerminal() }
                             }
                             Heading { text: "中继服务器"; Layout.topMargin: 10 }
                             Field { id: relayField; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
-                            Hint { text: "支持默认中继或自建中继。更换服务器后需按新服务器设置重新激活，并为手机重新配对。"; Layout.fillWidth: true }
                             Label { text: "DeepSeek Web 启动链接（可选）"; color: "#4b5d78" }
                             Field { id: dshWebUrlField; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
                             ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text) }
-                            Hint { text: "修改设置前请先在概览中暂停连接。"; Layout.fillWidth: true }
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#e5eaf2"; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "更新 Host"; visible: host.message.indexOf("点击“更新 Host”") >= 0; onClicked: host.updateHost() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
                         }
@@ -837,8 +816,20 @@ ApplicationWindow {
                             ColumnLayout {
                                 anchors.fill: parent; spacing: 16
                                 Heading { text: "连接诊断" }
-                                Hint { text: "检查中继是否可达，并重新检测本机 Agent。诊断导出会隐藏激活凭据、邮箱和用户目录。"; Layout.fillWidth: true }
                                 RowLayout { spacing: 10; ActionButton { text: "运行检查"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.diagnose() } ActionButton { text: "复制诊断"; onClicked: host.copyDiagnostics() } ActionButton { text: "导出文件"; onClicked: host.exportDiagnostics() } ActionButton { text: "数据目录"; onClicked: host.openDataDirectory() } }
+                            }
+                        }
+                        Card {
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                anchors.fill: parent; spacing: 12
+                                Heading { text: "Codex 桌面版接入" }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 10
+                                    Rectangle { width: 7; height: 7; radius: 4; color: window.codexDesktopColor() }
+                                    Label { text: window.codexDesktopLabel(); color: window.codexDesktopColor(); font.pixelSize: 15; font.weight: Font.DemiBold }
+                                }
+                                Hint { text: window.codexDesktopReason(); Layout.fillWidth: true }
                             }
                         }
                         Card {
@@ -867,13 +858,12 @@ ApplicationWindow {
             width: parent.width; spacing: 16
             Image { source: host.qr; Layout.preferredWidth: 300; Layout.preferredHeight: 300; Layout.alignment: Qt.AlignHCenter }
             Label { text: "二维码将在 " + host.pairSeconds + " 秒后失效"; Layout.alignment: Qt.AlignHCenter; color: "#60728e" }
-            Hint { text: "在 Orbis Android 中选择“扫码配对”。二维码仅可使用一次。"; Layout.fillWidth: true }
         }
     }
     SoftDialog {
         id: revokeDialog; title: "撤销这台手机的配对？"; anchors.centerIn: parent; modal: true; width: 410
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "撤销配对"; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: revokeDialog.accept(); onRejected: revokeDialog.reject() }
-        Label { width: parent.width; text: "连接会立即失效。再次使用时，需要重新扫码配对。"; wrapMode: Text.WordWrap }
+        Label { width: parent.width; text: "连接会立即失效。"; wrapMode: Text.WordWrap }
         onAccepted: host.revoke(window.revokeId)
     }
     SoftDialog {
@@ -882,9 +872,7 @@ ApplicationWindow {
         ColumnLayout { width: parent.width; spacing: 12
             Hint { text: "当前 " + (window.installAgentData.version || "未安装") + " · 最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
             Hint { visible: !!window.installAgentData.compatibilityNote; text: window.installAgentData.compatibilityNote || ""; Layout.fillWidth: true }
-            Hint { text: "Orbis 会自动下载、验证并使用最新兼容版本。安装前请先关闭使用该 Agent 的终端。"; Layout.fillWidth: true }
-            Hint { visible: window.installKind === "dsh"; text: "更新成功后会自动重启 Orbis 启动的 DeepSeek 网页后台，中断网页连接及运行中的任务。完成后请从 Host 重新打开网页；手动接入的服务需自行重启。"; Layout.fillWidth: true }
-            Hint { visible: !window.canInstallAgents; text: "请先在概览中暂停 Host，再开始安装。暂停会中断连接及运行中的会话。"; Layout.fillWidth: true; color: "#b46b19" }
+            Hint { visible: !window.canInstallAgents; text: "需先暂停 Host"; Layout.fillWidth: true; color: "#b46b19" }
         }
         onAccepted: host.updateAgent(window.installKind)
     }
@@ -892,10 +880,8 @@ ApplicationWindow {
         id: batchInstallDialog; title: "全部更新到最新版本"; anchors.centerIn: parent; modal: true; width: 540
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "全部更新到最新版本"; primary: true; enabled: window.canInstallAgents && !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
-            Hint { text: "逐个下载、验证并使用每个 Agent 的最新兼容版本；一个失败后会继续其余项目。"; Layout.fillWidth: true }
-            Hint { text: "DeepSeek 更新成功后会自动重启 Orbis 启动的网页后台，中断网页连接及运行中的任务。完成后请从 Host 重新打开网页；手动接入的服务需自行重启。"; Layout.fillWidth: true }
             Repeater { model: host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → 最新兼容版本"; Layout.fillWidth: true } }
-            Hint { visible: !window.canInstallAgents; text: "请先在概览中暂停 Host；暂停会中断连接及运行中的会话。"; Layout.fillWidth: true; color: "#b46b19" }
+            Hint { visible: !window.canInstallAgents; text: "需先暂停 Host"; Layout.fillWidth: true; color: "#b46b19" }
         }
         onAccepted: host.installAllAgents("update")
     }
@@ -925,7 +911,6 @@ ApplicationWindow {
                             }
                         }
                     }
-                    Hint { text: "预设会填写接口、地址和模型；选择后补充密钥即可。更换预设前会确认未保存的修改。"; Layout.fillWidth: true }
                     Rectangle { Layout.fillWidth: true; height: 1; color: "#C8D3E2" }
                 }
                 Label { text: "名称"; color: "#4b5d78" }
@@ -936,7 +921,6 @@ ApplicationWindow {
                 Label { text: "ChatGPT 登录来源"; visible: window.officialProvider; color: "#4b5d78" }
                 SoftComboBox { id: providerAccount; visible: window.officialProvider; Layout.fillWidth: true; textRole: "label"; valueRole: "id"; model: [] }
                 RowLayout { visible: window.officialProvider; Layout.fillWidth: true
-                    Hint { text: "官方登录不需要填写 API Key 或接口地址。可跟随本机 Codex 登录，或绑定托管账号。"; Layout.fillWidth: true }
                     ActionButton { text: "管理账号"; enabled: !host.busy; onClicked: { host.oauthAccount("list"); oauthDialog.open() } }
                 }
                 SoftSwitch { id: providerDetails; marksProviderDirty: false; text: "显示其他信息与高级标识" }
@@ -969,7 +953,7 @@ ApplicationWindow {
                     checked = !target
                     window.setProviderEditorMode(target)
                 } }
-                Hint { visible: !!window.providerDraft.nativeOnly; text: "此配置使用原生专有字段或 YAML 标签，请在原生编辑器中修改。"; Layout.fillWidth: true }
+                Hint { visible: !!window.providerDraft.nativeOnly; text: "原生专有字段或 YAML 标签，只能在原生编辑器修改"; Layout.fillWidth: true }
                 ColumnLayout { visible: !advancedProvider.checked; Layout.fillWidth: true; spacing: 12
                     Label { text: "API 地址"; visible: !window.officialProvider; color: "#4b5d78" }
                     Field { id: providerUrl; objectName: "providerUrl"; visible: !window.officialProvider; Layout.fillWidth: true; placeholderText: "例如 https://api.example.com/v1" }
@@ -986,7 +970,7 @@ ApplicationWindow {
                     }
                     Label { text: "接口格式"; visible: !window.officialProvider; color: "#4b5d78" }
                     SoftComboBox { id: providerApi; visible: !window.officialProvider; Layout.fillWidth: true; model: [] }
-                    Hint { visible: window.providerDraft.kind === "codex" && !window.officialProvider && providerApi.currentText !== "openai-responses"; text: "此接口格式需要已有的 Codex 本地 API 转换配置；未配置时可以保存，不能直接启用。"; Layout.fillWidth: true }
+                    Hint { visible: window.providerDraft.kind === "codex" && !window.officialProvider && providerApi.currentText !== "openai-responses"; text: "需要已有的 Codex 本地 API 转换配置"; Layout.fillWidth: true }
                     SoftSwitch { id: providerProxyDetails; marksProviderDirty: false; text: "接口兼容与推理参数"; visible: window.providerDraft.kind === "codex" && !window.officialProvider }
                     ColumnLayout { visible: window.providerDraft.kind === "codex" && providerProxyDetails.checked; Layout.fillWidth: true; spacing: 8
                         SoftSwitch { id: providerFullUrl; text: "使用完整 API 端点地址" }
@@ -1022,7 +1006,6 @@ ApplicationWindow {
                             ActionButton { objectName: "fetchCatalogModels"; text: host.providerModelsLoading ? "获取中…" : "获取模型列表"; enabled: !host.busy && !host.providerModelsLoading && providerUrl.text.trim().length > 0; onClicked: window.requestProviderModels(-1) }
                             ActionButton { text: "＋ 添加模型"; enabled: !host.providerModelsLoading; onClicked: window.addProviderModel() }
                         }
-                        Hint { Layout.fillWidth: true; text: "可手填模型 ID，或获取列表后选择。新模型会填入可修改的默认能力参数，请按供应商实际能力调整。" }
                         Repeater { model: window.providerModels
                             delegate: ColumnLayout {
                                 required property var modelData
@@ -1103,7 +1086,6 @@ ApplicationWindow {
         id: oauthDialog; title: "Codex · ChatGPT 账号"; anchors.centerIn: parent; modal: true; width: 700; height: 560
         contentItem: ScrollView { clip: true; contentWidth: availableWidth
             ColumnLayout { width: oauthDialog.width - 44; spacing: 12
-                Hint { text: "登录完成后，在官方供应商卡片中选择托管账号。切换前会刷新凭据，并同步本机 Codex 更新过的登录。"; Layout.fillWidth: true }
                 RowLayout {
                     ActionButton { text: "添加账号"; primary: true; enabled: !host.busy && !window.oauthPending.deviceCode; onClicked: host.oauthAccount("start") }
                     ActionButton { text: "导入本机登录"; enabled: !host.busy; onClicked: host.oauthAccount("import") }
@@ -1111,7 +1093,6 @@ ApplicationWindow {
                 }
                 ColumnLayout { visible: !!window.oauthPending.deviceCode; Layout.fillWidth: true
                     Label { text: window.oauthPending.userCode || ""; font.pixelSize: 24; font.bold: true; color: "#21314d" }
-                    Hint { text: "在浏览器登录并输入上方授权码。完成后会自动显示账号。"; Layout.fillWidth: true }
                     RowLayout {
                         ActionButton { text: "打开授权页"; onClicked: Qt.openUrlExternally(window.oauthPending.verificationUrl) }
                         ActionButton { text: "取消登录"; enabled: !host.busy; onClicked: { host.oauthAccount("cancel", window.oauthPending.deviceCode); window.oauthPending = ({}) } }
@@ -1147,7 +1128,6 @@ ApplicationWindow {
     SoftDialog {
         id: codexPreferencesDialog; title: "Codex 通用配置"; anchors.centerIn: parent; modal: true; width: 660; height: 480
         ColumnLayout { width: parent.width; spacing: 12
-            Hint { text: "勾选“使用 Codex 通用配置”的供应商共用这些偏好；切换前会同步当前原生配置中的共享改动。MCP 配置继续保留。"; Layout.fillWidth: true }
             SoftTextArea { id: codexCommonText; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
             SoftSwitch { id: preserveCodexLogin; text: "切换第三方供应商时保留官方登录" }
             Hint { text: host.message; visible: text.length > 0; Layout.fillWidth: true; color: "#a34d4d" }
@@ -1169,7 +1149,6 @@ ApplicationWindow {
         contentItem: ScrollView { clip: true; contentWidth: availableWidth
             ColumnLayout { width: fetchedModelsDialog.width - 40; spacing: 8
                 Hint { text: window.singleModelSelection ? "选择一个模型，确认后回填当前模型栏。" : "所选模型会加入模型目录，保留已有模型的能力设置。"; Layout.fillWidth: true }
-                Hint { text: "接口没有返回模型，可返回表单手动添加。"; visible: window.fetchedModels.length === 0; Layout.fillWidth: true }
                 ButtonGroup { id: discoveredModelGroup }
                 Repeater { model: window.fetchedModels
                     SoftCheckBox {
@@ -1190,13 +1169,13 @@ ApplicationWindow {
     }
     SoftDialog {
         id: removeProviderDialog; title: "从 Pi 移除供应商？"; anchors.centerIn: parent; modal: true; width: 440
-        Label { width: parent.width; text: "仅移除 models.json 中的节点，卡片和最新配置仍保留。" + (host.piDefaultProvider === window.removeProviderId ? "\n这是 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。" : ""); wrapMode: Text.WordWrap }
+        Label { width: parent.width; text: "仅移除 models.json 中的节点，卡片和最新配置仍保留。" + (host.piDefaultProvider === window.removeProviderId ? "\n这是 Pi 的全局默认供应商。" : ""); wrapMode: Text.WordWrap }
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: host.switchProvider(window.removeProviderId, false)
     }
     SoftDialog {
         id: deleteProviderDialog; title: "删除供应商？"; anchors.centerIn: parent; modal: true; width: 410
-        Label { width: parent.width; text: host.providerKind === "pi" ? "删除卡片和 models.json 中的对应供应商。" + (host.piDefaultProvider === window.deleteProviderId ? "\n这是 Pi 的全局默认供应商，删除后请在 Pi 中重新选择模型。" : "") : "删除这个未启用的供应商配置。"; wrapMode: Text.WordWrap }
+        Label { width: parent.width; text: host.providerKind === "pi" ? "删除卡片和 models.json 中的对应供应商。" + (host.piDefaultProvider === window.deleteProviderId ? "\n这是 Pi 的全局默认供应商。" : "") : "删除这个未启用的供应商配置。"; wrapMode: Text.WordWrap }
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: host.removeProvider(window.deleteProviderId)
     }

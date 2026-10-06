@@ -172,8 +172,6 @@ internal fun DownloadFileSheet(
             .padding(horizontal = RemoteUi.PagePadding).padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("选择电脑上的文件", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(if (connected) "进入目录，选中文件后下载到手机" else "未连接到电脑，连接后可继续浏览",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             RemoteDirectoryBrowser(
                 browse, connected, onBrowse, onBrowseInto, onBrowseUp,
                 modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
