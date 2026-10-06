@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { createServer, Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
 
@@ -53,18 +54,64 @@ export function isAppServerInvocation(args: readonly string[]): boolean {
   return args.includes("app-server");
 }
 
+/** The desktop CLI enables this when its app-server needs the separate code-mode host. */
+export function requestsCodeModeHost(args: readonly string[]): boolean {
+  return isAppServerInvocation(args) && args.some(arg => arg.replaceAll(" ", "") === "features.code_mode_host=true");
+}
+
+export type ResolveRealCodexOptions = {
+  requireCodeModeHost?: boolean;
+  waitMs?: number;
+  pollMs?: number;
+};
+
+const DEFAULT_CODE_MODE_RUNTIME_WAIT_MS = 120_000;
+const DEFAULT_CODE_MODE_RUNTIME_POLL_MS = 100;
+const CODE_MODE_HOST_NAME = "codex-code-mode-host.exe";
+
 /**
  * 真正的 CLI：Host 会把桌面版本该用的那份显式交给我们；没交就找桌面版自己下载的
  * 最新副本（`%LOCALAPPDATA%\OpenAI\Codex\bin\...`），最后才退回 PATH 上的 codex。
+ *
+ * Desktop can start this wrapper before its primary runtime installer has finished. When
+ * code-mode is enabled, starting an older CLI during that window is not equivalent to
+ * starting no CLI: the app-server comes up, but its later code-mode host spawn is doomed.
  */
-export async function resolveRealCodex(env: NodeJS.ProcessEnv = process.env): Promise<CodexCommand> {
+export async function resolveRealCodex(
+  env: NodeJS.ProcessEnv = process.env,
+  options: ResolveRealCodexOptions = {},
+): Promise<CodexCommand> {
   const explicit = env.ORBIS_CODEX_REAL?.trim();
   if (explicit) {
     if (!existsSync(explicit)) throw new Error(`ORBIS_CODEX_REAL 指向的文件不存在：${explicit}`);
     return { command: explicit, prefixArgs: [] };
   }
-  const root = join(homedir(), "AppData", "Local", "OpenAI", "Codex", "bin");
-  if (existsSync(root)) {
+
+  const root = join(env.LOCALAPPDATA?.trim() || join(homedir(), "AppData", "Local"), "OpenAI", "Codex", "bin");
+  const requireCodeModeHost = options.requireCodeModeHost === true;
+  const waitMs = options.waitMs ?? DEFAULT_CODE_MODE_RUNTIME_WAIT_MS;
+  const pollMs = options.pollMs ?? DEFAULT_CODE_MODE_RUNTIME_POLL_MS;
+  const deadline = Date.now() + (requireCodeModeHost ? waitMs : 0);
+
+  while (true) {
+    const candidates = findCodexCandidates(root);
+    const compatible = requireCodeModeHost
+      ? candidates.filter(candidate => existsSync(join(dirname(candidate), CODE_MODE_HOST_NAME)))
+      : candidates;
+    const selected = newestCodex(compatible);
+    if (selected !== undefined) return { command: selected, prefixArgs: [] };
+    if (!requireCodeModeHost || candidates.length === 0 || Date.now() >= deadline) break;
+    await delay(Math.min(pollMs, Math.max(1, deadline - Date.now())));
+  }
+
+  const fallback = newestCodex(findCodexCandidates(root));
+  if (fallback !== undefined) return { command: fallback, prefixArgs: [] };
+  return resolveCodexCommand(env);
+}
+
+function findCodexCandidates(root: string): string[] {
+  if (!existsSync(root)) return [];
+  try {
     const candidates: string[] = [];
     for (const entry of readdirSync(root)) {
       const direct = join(root, entry, "codex.exe");
@@ -72,12 +119,15 @@ export async function resolveRealCodex(env: NodeJS.ProcessEnv = process.env): Pr
     }
     const top = join(root, "codex.exe");
     if (existsSync(top)) candidates.push(top);
-    if (candidates.length > 0) {
-      const newest = candidates.sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)[0]!;
-      return { command: newest, prefixArgs: [] };
-    }
+    return candidates;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+    throw error;
   }
-  return resolveCodexCommand(env);
+}
+
+function newestCodex(candidates: readonly string[]): string | undefined {
+  return [...candidates].sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)[0];
 }
 
 async function freePort(): Promise<number> {
@@ -219,7 +269,7 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
   const endpointFile = endpointFilePath(env);
   let codex: CodexCommand;
   try {
-    codex = await resolveRealCodex(env);
+    codex = await resolveRealCodex(env, { requireCodeModeHost: requestsCodeModeHost(argv) });
   } catch (error) {
     log(`找不到真实 Codex CLI：${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 127;
