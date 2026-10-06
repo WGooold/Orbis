@@ -18,6 +18,8 @@ ApplicationWindow {
     property string revokeId: ""
     property string installKind: ""
     property var installAgentData: ({})
+    // “发现可用更新”提示条只在本轮运行里露一次：关掉后仍可从侧边栏圆点和各页面按钮进入。
+    property bool updateNoticeDismissed: false
     readonly property bool canInstallAgents: host.state === "stopped" || host.state === "error"
     function agentName(kind) { return ({pi:"Pi", codex:"Codex", dsh:"DeepSeek Harness"})[kind] || kind }
     // Codex 桌面版接入卡只是把 Host 下发的分档换成人话；文案本身全部来自 Host，
@@ -590,7 +592,7 @@ ApplicationWindow {
                 }
             }
             Rectangle {
-                visible: host.hostUpdateAvailable || window.agentUpdatesAvailable() || window.androidUpdatesAvailable()
+                visible: !window.updateNoticeDismissed && (host.hostUpdateAvailable || window.agentUpdatesAvailable() || window.androidUpdatesAvailable())
                 Layout.fillWidth: true; Layout.leftMargin: 36; Layout.rightMargin: 36; Layout.bottomMargin: 14
                 implicitHeight: updateNoticeRow.implicitHeight + 22; radius: 6; color: "#fff3df"
                 RowLayout {
@@ -600,6 +602,7 @@ ApplicationWindow {
                     ActionButton { text: "更新 Host"; visible: host.hostUpdateAvailable; enabled: !host.busy; onClicked: host.updateHost() }
                     ActionButton { text: "查看 Agent"; visible: window.agentUpdatesAvailable(); onClicked: window.selectPage(2) }
                     ActionButton { text: "查看设备"; visible: window.androidUpdatesAvailable(); onClicked: window.selectPage(1) }
+                    SoftToolButton { text: "×"; onClicked: window.updateNoticeDismissed = true; implicitWidth: 30; implicitHeight: 28; Accessible.name: "关闭更新提示" }
                 }
             }
             ScrollView {
@@ -724,7 +727,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Heading { text: "已配对设备" }
                             Item { Layout.fillWidth: true }
-                            ActionButton { text: "下载 Android"; visible: host.appDownloadQr.length > 0; onClicked: appDownloadDialog.open() }
+                            ActionButton { text: window.androidUpdatesAvailable() ? "更新Android客户端" : "下载Android客户端"; visible: host.appDownloadQr.length > 0; onClicked: appDownloadDialog.open() }
                             ActionButton { text: "＋ 添加手机"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
                         }
                         Card {
@@ -745,7 +748,6 @@ ApplicationWindow {
                                         Hint { text: modelData.lastSeen ? "最近连接：" + new Date(modelData.lastSeen).toLocaleString(Qt.locale(), "MM-dd hh:mm") : "配对时间：" + new Date(modelData.createdAt * 1000).toLocaleDateString(); font.pixelSize: 12 }
                                         Hint { visible: modelData.androidUpdateAvailable; text: "Android " + modelData.appVersion + " → " + modelData.latestAndroidVersion; color: "#b46b19" }
                                     }
-                                    ActionButton { text: "获取 Android 更新"; visible: modelData.androidUpdateAvailable; onClicked: appDownloadDialog.open() }
                                     ActionButton { text: "重命名"; enabled: host.bridgeReady && !host.busy; onClicked: { window.revokeId = modelData.deviceId; deviceNameField.text = modelData.label || ""; renameDialog.open() } }
                                     ActionButton { text: "撤销配对"; danger: true; enabled: host.bridgeReady && !host.busy; onClicked: { window.revokeId = modelData.deviceId; revokeDialog.open() } }
                                 }
@@ -939,7 +941,8 @@ ApplicationWindow {
         modal: true
         footer: SoftDialogButtons { ActionButton { text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } onRejected: appDownloadDialog.reject() }
         ColumnLayout {
-            width: parent.width
+            width: parent.width; spacing: 12
+            Label { text: "扫描下方二维码下载"; Layout.alignment: Qt.AlignHCenter; color: "#40516c"; font.pixelSize: 13 }
             Image {
                 source: host.appDownloadQr
                 sourceSize.width: 320; sourceSize.height: 320
