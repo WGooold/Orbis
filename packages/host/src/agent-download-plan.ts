@@ -7,13 +7,15 @@
  * 不下 tarball），再用范围请求问每个 tarball 的大小，最后按 npm 日志里"哪个 tarball 取完了"
  * 逐包累加。
  *
- * 粒度就是"每个包"：单个巨大的 tarball（例如 Codex 的平台包有 200MB 级）在下载期间不会推进
- * 百分比——这是 npm 不给在途字节的直接后果，不是这里漏了什么。所以进度里同时带着"已完成/总数"
+ * 粒度就是"每个包"：单个巨大的 tarball（例如 Codex 的平台包有 200MB 级）只靠这一条会在下载期间
+ * 一动不动。所以另一条腿是采样 npm 缓存写盘量：cacache 把每个正在下载的 tarball 写进
+ * `_cacache/tmp`，下完才移进 content-v2，两个来源相加就有在途字节了。进度里同时带着"已完成/总数"
  * 与时间，让用户看得出它还在动。
  *
- * 一切都是尽力而为：计划拿不到、大小问不出来、日志格式变了，都只是没有进度数字，安装本身照常。
+ * 一切都是尽力而为：计划拿不到、大小问不出来、日志格式变了、缓存目录找不到，都只是没有进度数字，
+ * 安装本身照常。
  */
-import { readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { InstallRun } from "./agent-installation.js";
@@ -173,4 +175,43 @@ export function createAgentDownloadTracker(plan: AgentDownloadPlan): (line: stri
     donePackages += 1;
     return { receivedBytes, totalBytes: plan.totalBytes, donePackages, totalPackages: plan.packages.length };
   };
+}
+
+/**
+ * 把两条来源合成一个单调的进度：已下完的包（npm 日志）加上正在写盘的字节（npm 缓存临时目录）。
+ * 只增不减、不越过总大小；没有新信息时返回 undefined，调用方据此决定要不要上报。
+ */
+export function createAgentDownloadMeter(totalBytes: number, totalPackages: number): (completedBytes: number, inflightBytes: number, donePackages: number) => AgentDownloadProgress | undefined {
+  let highestBytes = 0;
+  let highestPackages = 0;
+  return (completedBytes, inflightBytes, donePackages) => {
+    const receivedBytes = Math.max(0, Math.min(totalBytes, Math.round(completedBytes + inflightBytes)));
+    if (receivedBytes <= highestBytes && donePackages <= highestPackages) return undefined;
+    highestBytes = Math.max(highestBytes, receivedBytes);
+    highestPackages = Math.max(highestPackages, donePackages);
+    return { receivedBytes: highestBytes, totalBytes, donePackages: highestPackages, totalPackages };
+  };
+}
+
+/**
+ * npm 缓存的临时目录里是"已经开始下、还没下完"的 tarball 字节，相加就是在途量。
+ * 目录不存在或读不到都返回 0：只是没有数字，不影响安装。
+ */
+export async function npmCacheInflightBytes(cacheDir: string): Promise<number> {
+  const temporary = join(cacheDir, "_cacache", "tmp");
+  let entries;
+  try { entries = await readdir(temporary, { withFileTypes: true }); } catch { return 0; }
+  let total = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    try { total += (await stat(join(temporary, entry.name))).size; } catch { /* 采样期间正好被移走 */ }
+  }
+  return total;
+}
+
+/** npm 的默认缓存目录。自定义 npmrc 换了位置时只是取不到在途字节，进度退回按包计数。 */
+export function defaultNpmCacheDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | undefined {
+  if (env.npm_config_cache) return env.npm_config_cache;
+  if (platform === "win32") return env.LOCALAPPDATA ? join(env.LOCALAPPDATA, "npm-cache") : undefined;
+  return env.HOME ? join(env.HOME, ".npm") : undefined;
 }

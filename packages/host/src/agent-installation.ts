@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import type { AgentKind } from "@pi-remote/protocol";
 import { agentKind } from "./provider-manager.js";
 import { DSH_VERSION } from "./dsh-client.js";
-import { createAgentDownloadTracker, planAgentDownload, type AgentDownloadPlan, type AgentDownloadPlanOptions, type AgentDownloadProgress } from "./agent-download-plan.js";
+import { createAgentDownloadMeter, createAgentDownloadTracker, defaultNpmCacheDir, npmCacheInflightBytes, planAgentDownload, type AgentDownloadPlan, type AgentDownloadPlanOptions, type AgentDownloadProgress } from "./agent-download-plan.js";
 
 /** 测试注入：默认用真实计划（npm 解析闭包 + 问体积），测试用假计划避开网络。 */
 type PlanDownload = (options: AgentDownloadPlanOptions) => Promise<AgentDownloadPlan | undefined>;
@@ -183,7 +183,7 @@ async function verifyPackage(kind: AgentKind, prefix: string, requested: string,
 export async function installAgentPackage(
   kind: AgentKind, version: string, root: string, signal: AbortSignal,
   onProgress?: (progress: AgentInstallProgress) => void,
-  options: { existingEntry?: string; run?: InstallRun; planDir?: string; planDownload?: PlanDownload } = {},
+  options: { existingEntry?: string; run?: InstallRun; planDir?: string; planDownload?: PlanDownload; sampleInflightBytes?: () => Promise<number> } = {},
 ): Promise<{ entry: string; version: string; id?: string }> {
   root = resolve(root);
   installPackage(kind, version); signal.throwIfAborted();
@@ -194,6 +194,8 @@ export async function installAgentPackage(
   const id = randomUUID(); let temporary: string | undefined; let committed = false;
   /** 只放解析闭包用的 lockfile；catch 里也要清理，所以在 try 之外声明。 */
   let planDir: string | undefined;
+  /** 下载采样的定时器同样要在 catch 之前可见，否则取消/失败会漏掉它。 */
+  let stopSampling: (() => void) | undefined;
   const external = options.existingEntry !== undefined;
   try {
     report("resolving", version);
@@ -215,7 +217,8 @@ export async function installAgentPackage(
     const npm = await resolveNpmTool(external ? prefix : undefined);
     signal.throwIfAborted(); report("downloading", version);
     // 进度是尽力而为的：先让 npm 自己解析闭包（只取元数据）并问出体积，再按“哪个 tarball 下完了”
-    // 逐包累加。任何一步不配合就只是没有数字，安装本身完全照旧。
+    // 逐包累加；同时采样 npm 缓存里正在写盘的字节，否则单个巨大的 tarball 会让百分比长时间卡住。
+    // 任何一步不配合就只是没有数字，安装本身完全照旧。
     let plan: AgentDownloadPlan | undefined;
     try {
       planDir = options.planDir ?? await mkdtemp(join(tmpdir(), "orbis-plan-"));
@@ -223,22 +226,44 @@ export async function installAgentPackage(
         run, npm, spec: installPackage(kind, version), planDir, signal,
       });
     } catch { plan = undefined; }
+    let onStderr: ((chunk: string) => void) | undefined;
     if (plan !== undefined && plan.totalBytes > 0) {
       report("downloading", version, { receivedBytes: 0, totalBytes: plan.totalBytes, donePackages: 0, totalPackages: plan.packages.length });
-    }
-    const track = plan === undefined ? undefined : createAgentDownloadTracker(plan);
-    let lastReported = 0;
-    const onStderr = track === undefined ? undefined : (chunk: string) => {
-      for (const line of chunk.split("\n")) {
-        const progress = track(line);
-        if (progress === undefined) continue;
+      const track = createAgentDownloadTracker(plan);
+      const meter = createAgentDownloadMeter(plan.totalBytes, plan.packages.length);
+      let completedBytes = 0, donePackages = 0, inflightBytes = 0, lastReported = 0;
+      const publish = (): void => {
+        const progress = meter(completedBytes, inflightBytes, donePackages);
+        if (progress === undefined) return;
         const now = Date.now();
-        if (now - lastReported < 400 && progress.donePackages < progress.totalPackages) continue;
+        if (now - lastReported < 400 && progress.donePackages < progress.totalPackages) return;
         lastReported = now;
         report("downloading", version, progress);
+      };
+      onStderr = (chunk: string) => {
+        for (const line of chunk.split("\n")) {
+          const progress = track(line);
+          if (progress === undefined) continue;
+          completedBytes = progress.receivedBytes; donePackages = progress.donePackages;
+          publish();
+        }
+      };
+      // 在途字节只能采样：npm 不报，但 cacache 会把正在下载的 tarball 写进缓存的临时目录。
+      let sampleInflightBytes = options.sampleInflightBytes;
+      if (sampleInflightBytes === undefined) {
+        const cacheDir = defaultNpmCacheDir();
+        if (cacheDir !== undefined) sampleInflightBytes = () => npmCacheInflightBytes(cacheDir);
       }
-    };
-    await run(npm.command, [...npm.args, "install", ...(external ? ["--global"] : []), "--prefix", prefix, "--include=optional", "--no-audit", "--no-fund", "--fetch-timeout=60000", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=10000", "--", installPackage(kind, version)], { signal, timeout: 1_800_000, cwd: prefix, ...(onStderr === undefined ? {} : { onStderr }) });
+      if (sampleInflightBytes !== undefined) {
+        const timer = setInterval(() => { void sampleInflightBytes!().then(bytes => { inflightBytes = bytes; publish(); }).catch(() => undefined); }, 500);
+        stopSampling = () => clearInterval(timer);
+      }
+    }
+    try {
+      await run(npm.command, [...npm.args, "install", ...(external ? ["--global"] : []), "--prefix", prefix, "--include=optional", "--no-audit", "--no-fund", "--fetch-timeout=60000", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=10000", "--", installPackage(kind, version)], { signal, timeout: 1_800_000, cwd: prefix, ...(onStderr === undefined ? {} : { onStderr }) });
+    } finally {
+      stopSampling?.();
+    }
     signal.throwIfAborted(); report("verifying");
     const result = await verifyPackage(kind, prefix, version, signal, run);
     signal.throwIfAborted(); report("activating", result.version);
@@ -253,6 +278,7 @@ export async function installAgentPackage(
     if (planDir !== undefined) await rm(planDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }).catch(() => undefined);
     return { ...result, ...(!external ? { id } : {}) };
   } catch (error) {
+    stopSampling?.();
     let cleanupFailed = false;
     if (planDir !== undefined) await rm(planDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }).catch(() => undefined);
     if (temporary && !committed) {

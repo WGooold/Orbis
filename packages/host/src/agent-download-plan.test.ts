@@ -1,14 +1,15 @@
 /**
- * 下载进度的两个不变量：
+ * 下载进度的三个不变量：
  * 1. 计划/探测失败只是"没有数字"，绝不能让安装失败或改变安装方式；
- * 2. 一个包只计一次字节，且只认 npm 日志里真正取完的那一行。
+ * 2. 一个包只计一次字节，且只认 npm 日志里真正取完的那一行；
+ * 3. 缓存在途字节计入进度，但整体只增不减、不越过总量。
  */
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { createAgentDownloadTracker, parseLockTarballs, planAgentDownload, type AgentDownloadPlan } from "./agent-download-plan.js";
+import { createAgentDownloadTracker, npmCacheInflightBytes, parseLockTarballs, planAgentDownload, type AgentDownloadPlan } from "./agent-download-plan.js";
 
 const lock = (packages: Record<string, unknown>): string => JSON.stringify({ lockfileVersion: 3, packages: { "": { name: "root" }, ...packages } });
 
@@ -133,5 +134,52 @@ describe("install progress wiring", () => {
     expect(withDownload[0]?.download).toMatchObject({ receivedBytes: 0, totalBytes: 500, donePackages: 0, totalPackages: 1 });
     expect(withDownload.at(-1)?.download).toMatchObject({ receivedBytes: 500, donePackages: 1 });
     expect(seen).toContain("downloading");
+  });
+
+  it("counts the bytes npm is still writing to its cache, never backwards and never past the total", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    try {
+      const { installAgentPackage } = await import("./agent-installation.js");
+      const plan: AgentDownloadPlan = { totalBytes: 1000, packages: [{ name: "codex", version: "9.9.9", url: "https://r/codex.tgz", size: 1000 }] };
+      const received: number[] = [];
+      let inflight = 0;
+      // npm 只在包下完时才打日志：巨大 tarball 在途期间，唯一的数字来源是缓存里正在写盘的字节。
+      const run = async (_command: string, _args: string[], options: { onStderr?: (chunk: string) => void }) => {
+        inflight = 400;
+        await vi.advanceTimersByTimeAsync(600);
+        inflight = 200; // 采样抖动（包刚被移进 content-v2）不得让进度倒退
+        await vi.advanceTimersByTimeAsync(600);
+        options.onStderr?.("npm http fetch GET 200 https://r/codex.tgz 900ms (cache miss)\n");
+        inflight = 9999; // 采样偏大也不得越过总量
+        await vi.advanceTimersByTimeAsync(600);
+        return { stdout: "", stderr: "" };
+      };
+      const planDir = await mkdtemp(join(tmpdir(), "orbis-install-inflight-"));
+      try {
+        await expect(installAgentPackage(
+          "pi", "9.9.9", planDir, new AbortController().signal,
+          event => { if (event.download) received.push(event.download.receivedBytes); },
+          { run, planDir, planDownload: async () => plan, sampleInflightBytes: async () => inflight },
+        )).rejects.toThrow();
+      } finally { await rm(planDir, { recursive: true, force: true }); }
+
+      expect(received[0]).toBe(0);
+      expect(received).toContain(400);
+      expect(received.at(-1)).toBe(1000);
+      expect(received).toEqual([...received].sort((left, right) => left - right));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("reads in-flight bytes from npm's cache tmp directory and reports zero when the cache is elsewhere", async () => {
+    const cache = await mkdtemp(join(tmpdir(), "orbis-cache-"));
+    try {
+      expect(await npmCacheInflightBytes(cache)).toBe(0);
+      const temporary = join(cache, "_cacache", "tmp");
+      await mkdir(temporary, { recursive: true });
+      await writeFile(join(temporary, "aa"), Buffer.alloc(300));
+      await writeFile(join(temporary, "bb"), Buffer.alloc(200));
+      expect(await npmCacheInflightBytes(cache)).toBe(500);
+    } finally { await rm(cache, { recursive: true, force: true }); }
   });
 });
