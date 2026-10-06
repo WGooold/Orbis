@@ -29,6 +29,7 @@ function transport(reply: (frame: Record<string, unknown>) => Record<string, unk
 function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: string) {
   const loaded = new Set<string>();
   const native = new Set<string>();
+  const subagents = new Set<string>();
   const archived = new Set<string>();
   const status = new Map<string, "idle" | "active">();
   const calls: string[] = [];
@@ -41,9 +42,11 @@ function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: str
     if (method === "thread/loaded/list") return { data: [...loaded] };
     if (method === "thread/list") return { data: [...native].filter(id => archived.has(id) === (params?.archived === true)).map(id => ({
       id, cwd: "D:/repo", name: id, createdAt: 1_780_000_000, updatedAt: 1_780_000_001, turns: [],
+      ...(subagents.has(id) ? { source: { subAgent: "review" } } : {}),
     })) };
     const id = params?.threadId ?? "";
-    const thread = { id, cwd: "D:/repo", name: id, path: archived.has(id) ? "D:/archived_sessions/rollout.jsonl" : "D:/sessions/rollout.jsonl", status: { type: status.get(id) ?? "idle" }, turns: [] };
+    const thread = { id, cwd: "D:/repo", name: id, path: archived.has(id) ? "D:/archived_sessions/rollout.jsonl" : "D:/sessions/rollout.jsonl", status: { type: status.get(id) ?? "idle" }, turns: [],
+      ...(subagents.has(id) ? { source: { subAgent: "review" } } : {}) };
     if (method === "thread/read") return { thread };
     if (method === "thread/archive" || method === "thread/unarchive") {
       if (method === "thread/archive") archived.add(id);
@@ -62,7 +65,7 @@ function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: str
   const opened: string[] = [];
   const runtime = new CodexRuntime({ server, onEvent: () => {}, rolloutRoot: mkdtempSync(join(tmpdir(), "orbis-desktop-test-")), openHeadWindow: ({ sessionId }) => { opened.push(sessionId); } });
   const notify = (method: string, params: unknown) => server.onNotification?.(method, params);
-  return { loaded, native, archived, status, calls, stop, request, server, runtime, notify, opened,
+  return { loaded, native, subagents, archived, status, calls, stop, request, server, runtime, notify, opened,
     pause: () => { pauseResume = true; },
     release: () => { releaseResume?.(); },
   };
@@ -137,7 +140,21 @@ describe("Codex desktop attachment", () => {
     expect(h.stop).toHaveBeenCalledOnce();
   });
 
-  // Orbis 包装器给的是外部端点（mode=external）而不是官方 proxy。如果只有 proxy 才算
+  it("does not expose subagent threads from loaded or persistent desktop catalogs", async () => {
+    const h = desktopHarness();
+    h.native.add("parent");
+    h.native.add("child");
+    h.loaded.add("parent");
+    h.loaded.add("child");
+    h.subagents.add("child");
+    h.runtime.markStarted();
+
+    await vi.waitFor(() => expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["codex-desktop:parent"]));
+    expect((await h.runtime.catalog()).map(entry => entry.sessionId)).toEqual(["codex-desktop:parent"]);
+    expect(h.request).toHaveBeenCalledWith("thread/read", { threadId: "child", includeTurns: false });
+    await h.runtime.stop();
+  });
+
   // “桌面版后端”，这套后端会退回成终端语义：runtimeId 变成 `codex`、桌面 thread 发现
   // 根本不启动——端点接上了，手机却什么也看不到。
   // 桌面版的「有头」就是它的 GUI。当初只有 proxy 模式（endpoint 为空）时这条被“恰好”跳过，

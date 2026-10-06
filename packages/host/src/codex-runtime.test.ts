@@ -374,6 +374,14 @@ describe("CodexRuntime", () => {
           updatedAt: 1_782_812_800,
           turns: [{ id: "t1", items: [], status: "completed" }],
         },
+        {
+          id: "019f-subagent-1",
+          cwd: "D:/repo",
+          createdAt: 1_782_812_706,
+          updatedAt: 1_782_812_801,
+          source: { subAgent: { thread_spawn: { depth: 1, parent_thread_id: "019f-thread-1" } } },
+          turns: [{ id: "t2", items: [], status: "completed" }],
+        },
       ],
     });
     const sessions: AgentSessionSummary[] = await pending;
@@ -1996,6 +2004,29 @@ describe("CodexRuntime TUI 切换会话", () => {
     expect(h.queue).toEqual([]);
   });
 
+  it("TUI 子代理的广播和 item 通知不会替换或创建用户会话", async () => {
+    const h = makeSwitchHarness();
+    await h.activateDefault();
+    h.events.length = 0;
+
+    const source = { subAgent: { thread_spawn: { depth: 1, parent_thread_id: "th-1" } } };
+    h.notify("thread/started", { thread: { id: "th-subagent", cwd: "D:/repo", source } });
+    await flush();
+    expect(h.offline).toEqual([]);
+    expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1"]);
+    expect(h.queue).toEqual([]);
+
+    h.notify("thread/status/changed", { threadId: "th-subagent", status: { type: "idle" } });
+    await vi.waitFor(() => expect(h.queue.length).toBeGreaterThan(0));
+    h.queue.shift()!.resolve({ data: [{ id: "th-subagent", cwd: "D:/repo", source, createdAt: 1, updatedAt: 2, turns: [] }] });
+    await flush();
+    expect(h.offline).toEqual([]);
+    expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1"]);
+
+    h.notify("item/started", { threadId: "th-subagent", item: { id: "child-item", type: "agentMessage", text: "内部任务" } });
+    expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1"]);
+    expect(h.queue).toEqual([]);
+  });
   it("TUI /new（thread/started 广播）→ 旧会话下线、新会话收编且不重开窗口", async () => {
     const h = makeSwitchHarness();
     await h.activateDefault();

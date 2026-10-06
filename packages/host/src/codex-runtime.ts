@@ -600,6 +600,7 @@ export class CodexRuntime implements AgentBackend {
         const result = object(await this.#server.request("thread/read", { threadId: id, includeTurns: false }));
         if (!this.#started || !loaded.has(id)) return;
         const snapshot = object(result.thread);
+        if (isCodexSubagentSource(snapshot.source)) continue;
         if (snapshot.ephemeral === true || typeof snapshot.cwd !== "string"
           || (typeof snapshot.path === "string" && snapshot.path.split(/[\\/]/).includes("archived_sessions"))) continue;
         const status = object(snapshot.status);
@@ -622,6 +623,10 @@ export class CodexRuntime implements AgentBackend {
   }
 
   async #adoptDesktopThread(id: string, snapshot: Record<string, unknown>): Promise<void> {
+    if (isCodexSubagentSource(snapshot.source)) {
+      this.#options.log?.(`忽略 Codex 子代理线程：${id}`);
+      return;
+    }
     if (this.#threads.has(id)) {
       const existing = this.#threads.get(id)!;
       if (existing.tuiAttachPending) await this.#attachTuiThread(existing);
@@ -873,6 +878,7 @@ export class CodexRuntime implements AgentBackend {
         data?: Array<Record<string, unknown>>;
       };
       live = (result.data ?? []).flatMap((thread): AgentSessionSummary[] => {
+        if (isCodexSubagentSource(thread.source)) return [];
         const id = thread.id;
         const cwd = thread.cwd;
         const createdAt = toMillis(thread.createdAt);
@@ -1005,6 +1011,9 @@ export class CodexRuntime implements AgentBackend {
     const cwd = threadJson?.cwd;
     if (typeof id !== "string" || typeof cwd !== "string") {
       throw new Error(`app-server 的 ${method} 响应缺少 thread.id/cwd`);
+    }
+    if (isCodexSubagentSource(threadJson?.source)) {
+      throw new ActivationError("session_not_found", "不属于 Codex 的用户会话");
     }
     const thread: ThreadState = this.#newThreadState(id, cwd, {
       name: codexSessionName(threadJson?.name),
@@ -2073,6 +2082,10 @@ export class CodexRuntime implements AgentBackend {
     const snapshot = nested !== null && typeof nested === "object" && typeof (nested as { cwd?: unknown }).cwd === "string"
       ? nested as Record<string, unknown>
       : await this.#threadFromList(threadId);
+    if (isCodexSubagentSource(snapshot?.source)) {
+      this.#options.log?.(`忽略 Codex 子代理线程：${threadId}`);
+      return;
+    }
     if (this.#desktopKnown.has(threadId)) {
       this.#options.log?.(`忽略已归属桌面版的 Codex 终端会话：${threadId}`);
       return;
@@ -2106,6 +2119,10 @@ export class CodexRuntime implements AgentBackend {
     const snapshot = nested !== null && typeof nested === "object" && typeof (nested as { cwd?: unknown }).cwd === "string"
       ? nested as Record<string, unknown>
       : await this.#threadFromList(threadId);
+    if (isCodexSubagentSource(snapshot?.source)) {
+      this.#options.log?.(`忽略 Codex 子代理线程：${threadId}`);
+      return;
+    }
     if (this.#desktopKnown.has(threadId)) {
       this.#deactivateThread(victim.oldThreadId, "Codex TUI 已切换到桌面版会话");
       this.#options.log?.(`忽略已归属桌面版的 Codex 终端会话：${threadId}`);
