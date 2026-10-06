@@ -18,7 +18,6 @@ ApplicationWindow {
     property string revokeId: ""
     property string installKind: ""
     property var installAgentData: ({})
-    property bool agentVersionsChecked: false
     readonly property bool canInstallAgents: host.state === "stopped" || host.state === "error"
     function agentName(kind) { return ({pi:"Pi", codex:"Codex", dsh:"DeepSeek Harness"})[kind] || kind }
     // Codex 桌面版接入卡只是把 Host 下发的分档换成人话；文案本身全部来自 Host，
@@ -198,7 +197,7 @@ ApplicationWindow {
         return draft
     }
     onVisibleChanged: if (visible) host.refreshRegistrationPolicy()
-    function selectPage(index) { page = index; if (index === 3) settingsPane.load(); if (index === 2 && host.bridgeReady && !host.busy && !agentVersionsChecked) { agentVersionsChecked = true; host.detectAgents(true) } }
+    function selectPage(index) { page = index; if (index === 3) settingsPane.load() }
     function openProviders(kind) { page = 2; providersOpen = true; providerSearch.text = ""; host.loadProviders(kind) }
     function closeProviderEditor() { providerDialog.close() }
     function requestCloseProviderEditor() { if (providerFormDirty) discardProviderDialog.open(); else closeProviderEditor() }
@@ -209,6 +208,25 @@ ApplicationWindow {
     function saveProviderEditor() { var draft = buildProviderDraft(!advancedProvider.checked); if (draft !== null) host.saveProvider(draft) }
     function stateText() {
         return ({connected: "已连接", connecting: "正在连接", reconnecting: "正在重连", closed: "连接已断开", stopped: "已暂停", error: "需要处理"})[host.state] || "正在准备"
+    }
+    function agentUpdatesAvailable() { return host.agents.some(function(agent) { return agent.installed && agent.updateAvailable }) }
+    function androidUpdatesAvailable() { return host.devices.some(function(device) { return device.androidUpdateAvailable }) }
+    function pageHasUpdate(index) {
+        if (index === 1) return window.androidUpdatesAvailable()
+        if (index === 2) return window.agentUpdatesAvailable()
+        if (index === 3) return host.hostUpdateAvailable
+        return false
+    }
+    function availableUpdatesText() {
+        var updates = []
+        if (host.hostUpdateAvailable) updates.push("Orbis Host " + host.hostUpdateVersion)
+        host.agents.filter(function(agent) { return agent.installed && agent.updateAvailable }).forEach(function(agent) {
+            updates.push(window.agentName(agent.kind) + " " + (agent.recommendedVersion || agent.latestVersion))
+        })
+        host.devices.filter(function(device) { return device.androidUpdateAvailable }).forEach(function(device) {
+            updates.push((device.label || "Android 设备") + " " + device.appVersion + " → " + device.latestAndroidVersion)
+        })
+        return updates.join("、")
     }
     onClosing: function(close) { if (trayAvailable) { close.accepted = false; window.hide() } }
 
@@ -526,6 +544,7 @@ ApplicationWindow {
                             spacing: 15
                             Label { text: ["◈", "▣", "⌘", "⚙", "≡"][index]; color: window.page === index ? "#2459D3" : "#627591"; font.family: "Segoe UI Symbol"; font.pixelSize: 20; Layout.leftMargin: 13; Layout.preferredWidth: 22 }
                             Label { text: modelData; color: window.page === index ? "#2459D3" : "#50617b"; font.weight: window.page === index ? Font.DemiBold : Font.Normal; Layout.fillWidth: true }
+                            Rectangle { Layout.preferredWidth: 7; Layout.preferredHeight: 7; radius: 4; color: "#bd6320"; visible: window.pageHasUpdate(index) }
                         }
                         background: NeuSurface { anchors.fill: parent; anchors.margins: -12; margin: 12; cornerRadius: 6; inset: window.page === index || parent.down; visible: window.page === index || parent.hovered || parent.activeFocus; focused: parent.activeFocus }
                     }
@@ -568,6 +587,19 @@ ApplicationWindow {
                     anchors.fill: parent; anchors.margins: 12
                     Label { id: messageLabel; text: host.message; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#365485"; font.pixelSize: 13 }
                     SoftToolButton { text: "×"; onClicked: host.clearMessage(); implicitWidth: 30; implicitHeight: 28; Accessible.name: "关闭提示" }
+                }
+            }
+            Rectangle {
+                visible: host.hostUpdateAvailable || window.agentUpdatesAvailable() || window.androidUpdatesAvailable()
+                Layout.fillWidth: true; Layout.leftMargin: 36; Layout.rightMargin: 36; Layout.bottomMargin: 14
+                implicitHeight: updateNoticeRow.implicitHeight + 22; radius: 6; color: "#fff3df"
+                RowLayout {
+                    id: updateNoticeRow
+                    anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 10; anchors.topMargin: 8; anchors.bottomMargin: 8; spacing: 12
+                    Label { text: "发现可用更新：" + window.availableUpdatesText(); Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#76511c"; font.pixelSize: 13 }
+                    ActionButton { text: "更新 Host"; visible: host.hostUpdateAvailable; enabled: !host.busy; onClicked: host.updateHost() }
+                    ActionButton { text: "查看 Agent"; visible: window.agentUpdatesAvailable(); onClicked: window.selectPage(2) }
+                    ActionButton { text: "查看设备"; visible: window.androidUpdatesAvailable(); onClicked: window.selectPage(1) }
                 }
             }
             ScrollView {
@@ -711,7 +743,9 @@ ApplicationWindow {
                                         Heading { text: modelData.label || "手机 · " + modelData.deviceId.slice(0, 8); font.pixelSize: 17 }
                                         Hint { text: "连接方式：" + (({lan: "局域网直连", p2p: "P2P 直连", relay: "中继", offline: "离线"})[modelData.path || "offline"]) }
                                         Hint { text: modelData.lastSeen ? "最近连接：" + new Date(modelData.lastSeen).toLocaleString(Qt.locale(), "MM-dd hh:mm") : "配对时间：" + new Date(modelData.createdAt * 1000).toLocaleDateString(); font.pixelSize: 12 }
+                                        Hint { visible: modelData.androidUpdateAvailable; text: "Android " + modelData.appVersion + " → " + modelData.latestAndroidVersion; color: "#b46b19" }
                                     }
+                                    ActionButton { text: "获取 Android 更新"; visible: modelData.androidUpdateAvailable; onClicked: appDownloadDialog.open() }
                                     ActionButton { text: "重命名"; enabled: host.bridgeReady && !host.busy; onClicked: { window.revokeId = modelData.deviceId; deviceNameField.text = modelData.label || ""; renameDialog.open() } }
                                     ActionButton { text: "撤销配对"; danger: true; enabled: host.bridgeReady && !host.busy; onClicked: { window.revokeId = modelData.deviceId; revokeDialog.open() } }
                                 }

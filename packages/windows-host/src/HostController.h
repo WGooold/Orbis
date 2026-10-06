@@ -27,6 +27,8 @@ class HostController : public QObject {
     Q_PROPERTY(QString appDownloadQr READ appDownloadQr NOTIFY changed)
     Q_PROPERTY(QString logs READ logs NOTIFY changed)
     Q_PROPERTY(QString version READ version CONSTANT)
+    Q_PROPERTY(bool hostUpdateAvailable READ hostUpdateAvailable NOTIFY changed)
+    Q_PROPERTY(QString hostUpdateVersion READ hostUpdateVersion NOTIFY changed)
     Q_PROPERTY(QString dshWebUrl READ dshWebUrl NOTIFY changed)
     Q_PROPERTY(bool activated READ activated NOTIFY changed)
     Q_PROPERTY(bool verificationRequired READ verificationRequired NOTIFY changed)
@@ -68,6 +70,8 @@ public:
     QString appDownloadQr() const { return m_appDownloadQr; }
     QString logs() const { return m_logs.join('\n'); }
     QString version() const { return ORBIS_VERSION; }
+    bool hostUpdateAvailable() const { return !m_updateVersion.isEmpty() && !m_updateInstallerUrl.isEmpty() && !m_updateChecksumUrl.isEmpty(); }
+    QString hostUpdateVersion() const { return m_updateVersion; }
     QString piEntry() const { return m_settings.value("piEntry").toString(); }
     QString codexEntry() const { return m_settings.value("codexEntry").toString(); }
     QString dshEntry() const { return m_settings.value("dshEntry").toString(); }
@@ -162,6 +166,8 @@ private:
     void api(const QString &endpoint, const QJsonObject &body, Callback done);
     void saveActivation(const QJsonValue &value, const QString &successMessage);
     void setMessage(const QString &message);
+    void checkUpdatesInternal(bool announce);
+    void refreshDeviceUpdateIndicators();
     /** 开始/更新/结束一次下载进度（`total <= 0` 表示总大小未知）。 */
     void setDownload(const QString &label, qint64 received, qint64 total);
     void clearDownload();
@@ -198,4 +204,6 @@ private:
     bool m_bridgeReady = false, m_shutdown = false, m_desiredRunning = false;
     bool m_verificationRequired = true, m_registrationAvailable = false;
     QString m_updateVersion, m_updateInstallerUrl, m_updateChecksumUrl;
+    QString m_androidLatestVersion;
+    int m_androidLatestVersionCode = 0;
 };

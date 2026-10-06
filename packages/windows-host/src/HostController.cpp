@@ -64,10 +64,12 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             if (!m_hostId.isEmpty() && m_hostId != actualId) { m_credential.clear(); setMessage("电脑身份与激活凭据不匹配，请重新验证邮箱"); }
             m_hostId = actualId; m_hostName = obj.value("hostName").toString(); m_appDownloadQr = obj.value("appDownloadQr").toString();
             m_devices = obj.value("devices").toArray().toVariantList();
+            refreshDeviceUpdateIndicators();
             m_bridgeReady = true;
             refreshRegistrationPolicy();
             appendLog("Host 核心已就绪 · " + obj.value("nodeVersion").toString());
-            detectAgents();
+            detectAgents(true);
+            checkUpdatesInternal(false);
             if (activated() && m_settings.value("runHost", true).toBool()) startHost();
             emit changed();
         });
@@ -178,7 +180,7 @@ void HostController::receiveLine(const QJsonObject &line) {
                 m_settings.setValue(kind + "Entry", line.value("entry").toString()); m_settings.sync();
             }
         }
-        else if (event == "status") { m_devices = line.value("devices").toArray().toVariantList(); m_runtimeCount = line.value("runtimeCount").toInt(); }
+        else if (event == "status") { m_devices = line.value("devices").toArray().toVariantList(); refreshDeviceUpdateIndicators(); m_runtimeCount = line.value("runtimeCount").toInt(); }
         // Codex 桌面版 app-server 的接入分档（ADR-0022）：分档真的变了才会到这条事件。
         else if (event == "codexDesktop") { m_codexDesktop = line.value("status").toObject().toVariantMap(); }
         else if (event == "paired") { m_qr.clear(); m_pairExpires = 0; setMessage("手机配对成功，现在可以在手机上使用 Orbis"); emit paired(); emit notification("Orbis", "新手机已配对"); }
@@ -493,17 +495,23 @@ void HostController::exportDiagnostics() {
     QSaveFile file(path);
     if (file.open(QIODevice::WriteOnly) && file.write(diagnostics().toUtf8()) >= 0 && file.commit()) setMessage("诊断信息已导出"); else setMessage("无法写入诊断文件");
 }
-void HostController::checkUpdates() {
+void HostController::checkUpdates() { checkUpdatesInternal(true); }
+void HostController::checkUpdatesInternal(bool announce) {
     const QUrl siteUrl("https://orbising.com/v1/site");
     QNetworkRequest request(siteUrl); request.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION); request.setTransferTimeout(15000);
     auto *reply = m_network.get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, announce] {
         const auto payload = reply->readAll();
         const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const auto document = QJsonDocument::fromJson(payload);
         const auto result = document.object();
-        if (reply->error() != QNetworkReply::NoError || (status != 0 && (status < 200 || status >= 300)) || !document.isObject()) setMessage("暂时无法获取公开版本信息，请在下载页查看发布状态");
+        if (reply->error() != QNetworkReply::NoError || (status != 0 && (status < 200 || status >= 300)) || !document.isObject()) {
+            if (announce) setMessage("暂时无法获取公开版本信息，请在下载页查看发布状态");
+        }
         else {
+            m_androidLatestVersion = result.value("androidVersion").toString();
+            m_androidLatestVersionCode = result.value("androidVersionCode").toInt();
+            refreshDeviceUpdateIndicators();
             auto tag = result.value("version").toString(); if (tag.startsWith('v')) tag.remove(0, 1);
             QString installerUrl, checksumUrl;
             const auto expectedName = QString("OrbisHost-%1-windows-x64-setup.exe").arg(tag);
@@ -518,13 +526,36 @@ void HostController::checkUpdates() {
             }
             if (QVersionNumber::fromString(tag) > QVersionNumber::fromString(version()) && !installerUrl.isEmpty() && !checksumUrl.isEmpty()) {
                 m_updateVersion = tag; m_updateInstallerUrl = installerUrl; m_updateChecksumUrl = checksumUrl;
-                setMessage("发现新版本 " + tag + "，点击“更新 Host”下载安装");
+                if (announce) setMessage("发现新版本 " + tag + "，点击“更新 Host”下载安装");
             }
-            else setMessage("当前已是最新公开版本");
+            else {
+                m_updateVersion.clear(); m_updateInstallerUrl.clear(); m_updateChecksumUrl.clear();
+                if (announce) setMessage("当前已是最新公开版本");
+            }
+            emit changed();
         }
         reply->deleteLater();
     });
 }
+void HostController::refreshDeviceUpdateIndicators() {
+    const auto latestVersion = QVersionNumber::fromString(m_androidLatestVersion);
+    QVariantList updated;
+    updated.reserve(m_devices.size());
+    for (const auto &entry : m_devices) {
+        auto device = entry.toMap();
+        const auto installedVersion = QVersionNumber::fromString(device.value("appVersion").toString());
+        const auto installedCode = device.value("appVersionCode").toInt();
+        const bool hasLatest = !latestVersion.isNull() && m_androidLatestVersionCode > 0;
+        const bool hasInstalled = !installedVersion.isNull() && installedCode > 0;
+        device.insert("latestAndroidVersion", m_androidLatestVersion);
+        device.insert("androidUpdateAvailable", hasLatest && (hasInstalled
+            ? m_androidLatestVersionCode > installedCode
+            : !installedVersion.isNull() && QVersionNumber::compare(latestVersion, installedVersion) > 0));
+        updated.append(device);
+    }
+    m_devices = updated;
+}
+
 void HostController::updateHost() {
     if (m_updateInstallerUrl.isEmpty() || m_updateChecksumUrl.isEmpty()) { checkUpdates(); return; }
     setMessage("正在下载 Host 更新 " + m_updateVersion + "…");
