@@ -18,6 +18,37 @@ function literal(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(literal).join(", ")}]`;
   return stringify({ value } as Parameters<typeof stringify>[0]).replace(/^value\s*=\s*/, "").trimEnd();
 }
+/**
+ * Render a table subtree as standard tables. Codex's own writers promote an inline table by splitting
+ * its header (`[\nmcp_servers ]`), which is invalid TOML, so a table is never written inline; only
+ * objects that hold scalars (headers, credentials) stay inline, as native configurations write them.
+ */
+function tableBlocks(path: string[], value: Obj): string[] {
+  const lines: string[] = [];
+  const children: string[] = [];
+  for (const [key, item] of Object.entries(value)) {
+    if (isObject(item) && Object.values(item).some(isObject)) children.push(...tableBlocks([...path, key], item));
+    else lines.push(`${quoteKey(key)} = ${literal(item)}`);
+  }
+  const header = `[${path.map(quoteKey).join(".")}]`;
+  return (lines.length || !children.length ? [[header, ...lines].join("\n")] : []).concat(children);
+}
+function appendTables(text: string, path: string[], value: Obj): string {
+  const blocks = tableBlocks(path, value);
+  const body = text.replace(/\s+$/, "");
+  return `${body ? `${body}\n\n` : ""}${blocks.join("\n\n")}\n`;
+}
+/** Rewrite top-level inline tables that arrived from an older config, so Codex cannot split their headers. */
+export function normalizeTomlTables(text: string): string {
+  const nodes = parseTOML(text).body[0].body
+    .filter((node): node is AST.TOMLKeyValue => node.type === "TOMLKeyValue" && node.value.type === "TOMLInlineTable" && keyParts(node.key).length === 1);
+  // Descending order keeps the offsets of the remaining nodes valid as each one is replaced.
+  return nodes.reverse().reduce((source, node) => {
+    const path = keyParts(node.key);
+    const value = at(parse(source), path);
+    return isObject(value) ? appendTables(source.slice(0, node.range[0]) + source.slice(node.range[1]), path, value) : source;
+  }, text);
+}
 function at(value: unknown, path: string[]): unknown {
   for (const key of path) value = isObject(value) && Object.hasOwn(value, key) ? value[key] : undefined;
   return value;
@@ -61,7 +92,9 @@ export function setToml(text: string, path: string[], value: unknown): string {
           if (!isObject(replacement)) throw new Error("Scalar parent");
           assign(replacement, path.slice(container.path.length), value);
         }
-        result = text.slice(0, container.node.value.range[0]) + literal(replacement) + text.slice(container.node.value.range[1]);
+        // A top-level key holding an object is a table; writing it inline would let Codex corrupt the file.
+        result = container.path.length === 1 && isObject(replacement) ? appendTables(text.slice(0, container.node.range[0]) + text.slice(container.node.range[1]), container.path, replacement)
+          : text.slice(0, container.node.value.range[0]) + literal(replacement) + text.slice(container.node.value.range[1]);
       }
     } else {
       const removedTables = tables.filter(table => prefix(path, table.resolvedKey.map(String)));
@@ -73,6 +106,7 @@ export function setToml(text: string, path: string[], value: unknown): string {
         result = ranges.reduce((source, [start, end]) => source.slice(0, start) + source.slice(end), text);
         if (value !== undefined) result = setToml(result, path, value);
       } else if (value === undefined) return text;
+      else if (isObject(value)) result = appendTables(text, path, value);
       else {
         const table = tables.filter(item => item.kind === "standard" && prefix(item.resolvedKey.map(String), path) && item.resolvedKey.length < path.length)
           .sort((a, b) => b.resolvedKey.length - a.resolvedKey.length)[0];

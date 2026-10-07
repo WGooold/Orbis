@@ -1,7 +1,7 @@
 // Behavior ported from farion1231/cc-switch f8788719, MIT. See THIRD-PARTY-NOTICES.md.
 import { parse } from "smol-toml";
 import { ProviderError } from "./provider-error.js";
-import { mergeToml, removeToml, setToml } from "./provider-toml.js";
+import { mergeToml, removeToml, normalizeTomlTables, setToml } from "./provider-toml.js";
 
 type Obj = Record<string, unknown>;
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
@@ -50,6 +50,8 @@ export function prepareCodex(config: Obj, category: string | undefined, preferen
   let result = text(config.config);
   if (useCommon && preferences.commonConfig.trim()) result = mergeToml(result, preferences.commonConfig);
   const official = category === "official" || (category === undefined && codexOfficial(config));
+  // The native file must never hold a top-level inline table; Codex splits those headers into invalid TOML.
+  const finish = (extra: { auth?: unknown } = {}): { config: string; auth?: unknown } => ({ ...extra, config: normalizeTomlTables(result) });
   const key = codexToken(config);
   let doc = parse(result);
   let providers = object(doc.model_providers);
@@ -81,9 +83,9 @@ export function prepareCodex(config: Obj, category: string | undefined, preferen
       } catch { return undefined; }
     };
     const savedIdentity = identity(auth);
-    if (savedIdentity && savedIdentity === identity(live.auth)) return { config: result }; // Adopt CLI rotation in place.
+    if (savedIdentity && savedIdentity === identity(live.auth)) return finish(); // Adopt CLI rotation in place.
     const material = Object.entries(auth).some(([key, value]) => key !== "auth_mode" && value !== null && value !== "" && (typeof value !== "object" || Object.keys(object(value)).length > 0));
-    return material ? { config: result, auth } : { config: result };
+    return material ? finish({ auth }) : finish();
   }
   doc = parse(result);
   if (key && (!doc.model_provider || doc.model_provider === "openai") && text(doc.openai_base_url)) {
@@ -103,5 +105,5 @@ export function prepareCodex(config: Obj, category: string | undefined, preferen
   if (!key && (fallsBack || ((!id || id === "openai") && doc.openai_base_url))) throw new ProviderError("此第三方配置会回退使用官方登录；请填写 API 密钥或移除 requires_openai_auth");
   if (key && !ownAuth) result = setToml(result, ["model_providers", id, "experimental_bearer_token"], key);
   if (route.env_key !== undefined || route.experimental_bearer_token !== undefined || (key && !ownAuth)) result = setToml(result, ["model_providers", id, "requires_openai_auth"], preferences.preserveOfficialLogin);
-  return preferences.preserveOfficialLogin ? { config: result } : { config: result, auth: null };
+  return preferences.preserveOfficialLogin ? finish() : finish({ auth: null });
 }

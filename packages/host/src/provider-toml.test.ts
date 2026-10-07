@@ -28,6 +28,22 @@ describe("Codex source-preserving configuration", () => {
     expect(result).toContain('[features]\nfoo = true # keep');
     expect((parse(result).model_providers as Record<string, unknown>)["my.provider"]).toMatchObject({ http_headers: { "X-Key": "new-key", "X-Other": "two" }, experimental_bearer_token: "secret" });
   });
+  it("never writes a table inline, because Codex splits those headers into invalid TOML", () => {
+    const merged = mergeToml('model_provider = "custom"\n', '[projects."D:/orbis"]\ntrust_level = "trusted"\n[mcp_servers.local]\ncommand = "server"\n[mcp_servers.local.env]\nKEY = "value"\n');
+    expect(parse(merged)).toMatchObject({ model_provider: "custom", projects: { "D:/orbis": { trust_level: "trusted" } }, mcp_servers: { local: { command: "server", env: { KEY: "value" } } } });
+    expect(merged).toContain("[projects]");
+    expect(merged).toContain("[mcp_servers.local]");
+    expect(merged).not.toMatch(/^(projects|mcp_servers)\s*=/m);
+    // A saved inline table is normalized too: Orbis has written those before, and Codex promotes them.
+    const normalized = setToml('projects = { "D:/orbis" = { trust_level = "trusted" } }\n', ["projects", "D:/agent", "trust_level"], "trusted");
+    expect(parse(normalized).projects).toEqual({ "D:/orbis": { trust_level: "trusted" }, "D:/agent": { trust_level: "trusted" } });
+    expect(normalized).not.toMatch(/^projects\s*=/m);
+    // A card that already stores an inline table is written back as a header.
+    const card = 'projects = { "D:/orbis" = { trust_level = "trusted" } }\nmodel_provider = "custom"\nmodel = "example"\n[model_providers.custom]\nname = "custom"\nwire_api = "responses"\nbase_url = "https://example.test/v1"\n';
+    const prepared = prepareCodex({ auth: { OPENAI_API_KEY: "key" }, config: card }, "custom", defaultCodexPreferences(), false, { auth: null, config: card });
+    expect(parse(prepared.config)).toMatchObject({ projects: { "D:/orbis": { trust_level: "trusted" } }, model_provider: "custom", model_providers: { custom: { base_url: "https://example.test/v1" } } });
+    expect(prepared.config).not.toMatch(/^projects\s*=/m);
+  });
   it("merges and strips common settings by value, preserving provider overrides", () => {
     const input = 'model = "example"\n[tui]\nnotifications = false # mine\n';
     const snippet = '[tui]\nnotifications = true\n[features]\na = true\n';
