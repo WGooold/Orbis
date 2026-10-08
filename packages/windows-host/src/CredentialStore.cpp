@@ -1,7 +1,7 @@
 #include "CredentialStore.h"
 #include <QFile>
 #include <QSaveFile>
-#include <QJsonDocument>
+#include <QJsonDocument>`r`n#include <QProcess>`r`n#include <QFileInfo>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <wincrypt.h>

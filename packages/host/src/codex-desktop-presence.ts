@@ -83,8 +83,8 @@ async function resolveCodexDesktopExecutable(): Promise<string | undefined> {
 }
 
 /**
- * 桌面版的 GUI 可执行文件。包装器模式要直接 CreateProcess 它：只有直接创建才能把
- * `CODEX_CLI_PATH` 交给它（走 `codex://` 协议激活会把环境丢掉）。
+ * 桌面版的 GUI 可执行文件路径，仅供安装探测和进程匹配。
+ * GUI 启动应使用注册的应用标识，避免任务栏固定到带版本号的 EXE 路径。
  */
 export async function resolveCodexDesktopExecutablePath(options: CodexDesktopPresenceOptions = {}): Promise<string | undefined> {
   if ((options.platform ?? platform()) !== "win32") return undefined;

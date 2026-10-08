@@ -85,7 +85,7 @@ export function shouldAutoEnableCodexTerminal(input: {
   state: CodexTerminalIntegration["state"];
   needsElevation: boolean | undefined;
 }): boolean {
-  return input.platform === "win32" && input.hostRunning && input.installed && input.compatible === true
+  return (input.platform === "win32" || input.platform === "darwin") && input.hostRunning && input.installed && input.compatible === true
     && input.needsElevation !== true && (input.state === "disabled" || input.state === "repair");
 }
 
@@ -315,7 +315,7 @@ export class DesktopRuntime {
         // 官方 `app-server proxy` 那条路在 Windows 上被上游关掉了（ADR-0022）。
         const wrapper = resolveCodexWrapper();
         const endpointPath = codexDesktopEndpointPath(this.#stateDir);
-        const staged = wrapper === undefined ? undefined : stageCodexWrapper(wrapper);
+        const staged = wrapper === undefined ? undefined : stageCodexWrapper(wrapper, undefined, endpointPath);
         if (wrapper === undefined) this.log("未找到 Orbis 包装器（codex-launcher.exe），本轮无法接入 Codex 桌面版");
         // 桌面版接入的入口是用户级 CODEX_CLI_PATH：这样用户从开始菜单直接打开桌面版也会
         // 走包装器，不依赖 Orbis 拉起，也不分先后。幂等，且不覆盖别人的值。

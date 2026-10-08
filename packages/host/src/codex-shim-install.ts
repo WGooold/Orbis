@@ -58,7 +58,7 @@ export type CodexTerminalIntegration = {
   needsElevation?: boolean;
 };
 export async function codexShimStatus(expectedRuntimeRoot?: string): Promise<CodexTerminalIntegration> {
-  if (process.platform !== "win32") return { state: "disabled", detail: "仅支持 Windows 终端" };
+  if (process.platform !== "win32") return { state: "disabled", detail: "macOS 使用原生终端，不需要 PATH shim" };
   let manifest: { runtimeRoot?: unknown };
   let script: string;
   try {
