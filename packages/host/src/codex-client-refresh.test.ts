@@ -1,4 +1,5 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +16,11 @@ import {
   type CodexRefreshRequest,
   type CodexRefreshThread,
 } from "./codex-client-refresh.js";
+
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rename: vi.fn(actual.rename) };
+});
 
 const request: CodexRefreshRequest = { operationId: "revert-1", backendId: "desktop", threadId: "parent", historyRevision: "generation-7" };
 function thread(threadId: string, archived = false, loaded = true, subscribed = true): CodexRefreshThread {
@@ -404,11 +410,18 @@ describe("Codex client refresh recovery", () => {
 });
 
 const directories: string[] = [];
-afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
+afterEach(async () => {
+  vi.mocked(rename).mockReset();
+  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
+});
 async function directory() {
   const path = await mkdtemp(join(tmpdir(), "orbis-codex-refresh-"));
   directories.push(path);
   return path;
+}
+
+function journalName(operationId: string): string {
+  return `sha256.${createHash("sha256").update(operationId).digest("hex")}.json`;
 }
 
 describe("file refresh journal", () => {
@@ -419,11 +432,11 @@ describe("file refresh journal", () => {
     const first = new CodexClientRefreshCoordinator(journal, h.driver);
     expect((await first.start(request)).status).toBe("awaiting_confirmation");
     expect((await journal.list())[0]!.kind).toBe("operation");
-    expect(await readdir(path)).toEqual(["revert-1.json"]);
+    expect(await readdir(path)).toEqual([journalName(request.operationId)]);
     h.observed.hydratedHistoryRevision = request.historyRevision;
     expect((await new CodexClientRefreshCoordinator(new FileCodexRefreshJournal(path), h.driver).recover(request.operationId)).status).toBe("complete");
     expect((await journal.list())[0]!.kind).toBe("receipt");
-    expect(await readdir(path)).toEqual(["revert-1.json"]);
+    expect(await readdir(path)).toEqual([journalName(request.operationId)]);
   });
 
   it("leaves corrupt records untouched and blocks new mutations", async () => {
@@ -445,8 +458,86 @@ describe("file refresh journal", () => {
     const coordinator = new CodexClientRefreshCoordinator(journal, h.driver);
     await expect(coordinator.start({ ...request, operationId: "../elsewhere" })).rejects.toThrow("codex_refresh_journal_invalid");
     await coordinator.start(request);
-    const text = await readFile(join(path, "revert-1.json"), "utf8");
+    const text = await readFile(join(path, journalName(request.operationId)), "utf8");
     await writeFile(join(path, "wrong.json"), text);
     await expect(journal.list()).rejects.toThrow("codex_refresh_journal_identity_mismatch");
+  });
+
+  it("stores distinct case-sensitive IDs without Windows filename collisions or reserved names", async () => {
+    const path = await directory();
+    const journal = new FileCodexRefreshJournal(path);
+    const ids = ["revert-1", "Revert-1", "CON", "NUL", "a".repeat(128)];
+    for (const operationId of ids) {
+      await journal.save({ schema: 1, kind: "receipt", request: { ...request, operationId },
+        result: { operationId, historyReverted: true, status: "complete" } });
+    }
+    expect((await journal.list()).map(entry => entry.request.operationId).sort()).toEqual([...ids].sort());
+    expect((await readdir(path)).sort()).toEqual(ids.map(journalName).sort());
+    expect(new Set(ids.map(id => journalName(id).toLowerCase())).size).toBe(ids.length);
+  });
+
+  it("preserves a legacy lower-case operation while saving and recovering its mixed-case neighbor", async () => {
+    const path = await directory();
+    const lower = harness();
+    await lower.coordinator.start(request);
+    const upper = harness();
+    upper.plan.affected[0]!.threadId = "second";
+    upper.observed.threads = structuredClone(upper.plan.affected);
+    const upperRequest = { ...request, operationId: "Revert-1", threadId: "second" };
+    await upper.coordinator.start(upperRequest);
+    const legacy = JSON.stringify(lower.entries.get(request.operationId));
+    await writeFile(join(path, "revert-1.json"), legacy);
+    const journal = new FileCodexRefreshJournal(path);
+    await journal.save(upper.entries.get(upperRequest.operationId)!);
+    expect(await readFile(join(path, "revert-1.json"), "utf8")).toBe(legacy);
+    expect(await journal.list()).toHaveLength(2);
+    lower.observed.hydratedHistoryRevision = request.historyRevision;
+    expect((await new CodexClientRefreshCoordinator(journal, lower.driver).recover(request.operationId)).status).toBe("complete");
+    upper.observed.hydratedHistoryRevision = upperRequest.historyRevision;
+    expect((await new CodexClientRefreshCoordinator(journal, upper.driver).recover(upperRequest.operationId)).status).toBe("complete");
+    expect((await journal.list()).every(entry => entry.kind === "receipt")).toBe(true);
+    expect((await readdir(path)).sort()).toEqual([journalName(request.operationId), journalName(upperRequest.operationId)].sort());
+    expect(lower.actions.filter(action => action.kind === "archive")).toHaveLength(1);
+    expect(upper.actions.filter(action => action.kind === "archive")).toHaveLength(1);
+  });
+
+  it("recovers the old operation if Host exit interrupts migration before the next record is written", async () => {
+    const path = await directory();
+    const h = harness();
+    await h.coordinator.start(request);
+    const old = h.entries.get(request.operationId)!;
+    await writeFile(join(path, "revert-1.json"), JSON.stringify(old));
+    h.observed.hydratedHistoryRevision = request.historyRevision;
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    vi.mocked(rename).mockImplementationOnce(async (source, destination) => {
+      await actual.rename(source, destination);
+      throw new Error("Host exited after legacy record moved");
+    });
+    const journal = new FileCodexRefreshJournal(path);
+    expect(await journal.list()).toEqual([old]);
+    await expect(new CodexClientRefreshCoordinator(journal, h.driver).recover(request.operationId)).rejects.toThrow("Host exited after legacy record moved");
+    expect(await readdir(path)).toEqual([journalName(request.operationId)]);
+    expect(await journal.list()).toEqual([old]);
+    expect((await new CodexClientRefreshCoordinator(new FileCodexRefreshJournal(path), h.driver).recover(request.operationId)).status).toBe("complete");
+    expect((await journal.list())[0]!.kind).toBe("receipt");
+    expect(h.actions.filter(action => action.kind === "archive")).toHaveLength(1);
+  });
+
+  it("refuses duplicate legacy and hashed operation IDs without overwriting either record", async () => {
+    const path = await directory();
+    const h = harness();
+    await h.coordinator.start(request);
+    const operation = h.entries.get(request.operationId)!;
+    const original = JSON.stringify(operation);
+    await writeFile(join(path, "revert-1.json"), original);
+    await writeFile(join(path, journalName(request.operationId)), original);
+    const journal = new FileCodexRefreshJournal(path);
+    await expect(journal.list()).rejects.toThrow("codex_refresh_journal_duplicate_operation");
+    h.observed.hydratedHistoryRevision = request.historyRevision;
+    await h.coordinator.recover(request.operationId);
+    await expect(journal.save(h.entries.get(request.operationId)!)).rejects.toThrow("codex_refresh_journal_duplicate_operation");
+    expect(await readFile(join(path, "revert-1.json"), "utf8")).toBe(original);
+    expect(await readFile(join(path, journalName(request.operationId)), "utf8")).toBe(original);
+    expect((await readdir(path)).sort()).toEqual(["revert-1.json", journalName(request.operationId)].sort());
   });
 });

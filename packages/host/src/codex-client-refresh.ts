@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -82,6 +82,7 @@ export type CodexRefreshReceipt = {
 };
 
 export type CodexRefreshJournalEntry = CodexRefreshOperation | CodexRefreshReceipt;
+/** One coordinator must own each journal; atomic saves do not provide a multi-writer transaction. */
 export interface CodexRefreshJournal {
   list(): Promise<CodexRefreshJournalEntry[]>;
   save(entry: CodexRefreshJournalEntry): Promise<void>;
@@ -132,6 +133,8 @@ export interface CodexRefreshDriver {
 /**
  * ADR-0023 refresh/recovery only. There deliberately is no thread/revert capability here.
  * Native ownership/hydration adapters are separate; callers must not invent their evidence.
+ * Serialization covers this instance only. Callers must ensure exclusive journal ownership
+ * across coordinator instances and processes, including recovery during Host startup.
  */
 export class CodexClientRefreshCoordinator {
   readonly #journal: CodexRefreshJournal;
@@ -392,7 +395,10 @@ function restorationAction(operation: CodexRefreshOperation, observed: CodexRefr
   return changes.find(action => action.kind === "unarchive") ?? changes.find(action => action.kind === "load") ?? changes[0];
 }
 
-/** An atomic file journal. Invalid records fail closed and are left untouched for diagnosis. */
+/**
+ * Atomic writes without a locking protocol: one coordinator/process must own the directory.
+ * Invalid or duplicate records fail closed and are left untouched for diagnosis.
+ */
 export class FileCodexRefreshJournal implements CodexRefreshJournal {
   readonly #directory: string;
   constructor(directory: string) { this.#directory = directory; }
@@ -401,19 +407,37 @@ export class FileCodexRefreshJournal implements CodexRefreshJournal {
     let names: string[];
     try { names = await readdir(this.#directory); }
     catch (error) { if (errorCode(error) === "ENOENT") return []; throw error; }
-    return Promise.all(names.filter(name => name.endsWith(".json")).map(async name => {
-      const entry: unknown = JSON.parse(await readFile(join(this.#directory, name), "utf8"));
-      validateEntry(entry);
-      if (`${entry.request.operationId}.json` !== name) throw new Error("codex_refresh_journal_identity_mismatch");
-      return entry;
-    }));
+    const entries = await Promise.all(names.filter(name => name.endsWith(".json")).map(
+      name => readJournalEntry(this.#directory, name),
+    ));
+    const ids = new Set<string>();
+    for (const entry of entries) {
+      if (ids.has(entry.request.operationId)) throw new Error("codex_refresh_journal_duplicate_operation");
+      ids.add(entry.request.operationId);
+    }
+    return entries;
   }
 
   async save(entry: CodexRefreshJournalEntry): Promise<void> {
     validateEntry(entry);
     await mkdir(this.#directory, { recursive: true });
-    const destination = join(this.#directory, `${entry.request.operationId}.json`);
-    const temporary = join(this.#directory, `${entry.request.operationId}.${randomUUID()}.tmp`);
+    const name = journalFilename(entry.request.operationId);
+    const legacyName = `${entry.request.operationId}.json`;
+    const candidates = (await readdir(this.#directory)).filter(candidate => candidate.toLowerCase() === name
+      || candidate.toLowerCase() === legacyName.toLowerCase());
+    const records = await Promise.all(candidates.map(async candidate => ({
+      name: candidate, entry: await readJournalEntry(this.#directory, candidate),
+    })));
+    const existing = records.filter(record => record.entry.request.operationId === entry.request.operationId);
+    if (existing.length > 1) throw new Error("codex_refresh_journal_duplicate_operation");
+    if (existing.some(record => !sameRequest(record.entry.request, entry.request))
+      || records.some(record => record.name === name && record.entry.request.operationId !== entry.request.operationId)) {
+      throw new Error("codex_refresh_journal_identity_mismatch");
+    }
+    const destination = join(this.#directory, name);
+    // Moving the old record first leaves one recoverable record if updating it is interrupted.
+    if (existing[0] !== undefined && existing[0].name !== name) await rename(join(this.#directory, existing[0].name), destination);
+    const temporary = join(this.#directory, `${name}.${randomUUID()}.tmp`);
     try {
       const file = await open(temporary, "wx", 0o600);
       try { await file.writeFile(JSON.stringify(entry)); await file.sync(); }
@@ -421,6 +445,20 @@ export class FileCodexRefreshJournal implements CodexRefreshJournal {
       await rename(temporary, destination);
     } finally { await rm(temporary, { force: true }); }
   }
+}
+
+function journalFilename(operationId: string): string {
+  // The dot excludes overlap with legacy IDs, whose allowed alphabet contains no dots.
+  return `sha256.${createHash("sha256").update(operationId, "utf8").digest("hex")}.json`;
+}
+
+async function readJournalEntry(directory: string, name: string): Promise<CodexRefreshJournalEntry> {
+  const entry: unknown = JSON.parse(await readFile(join(directory, name), "utf8"));
+  validateEntry(entry);
+  if (name !== journalFilename(entry.request.operationId) && name !== `${entry.request.operationId}.json`) {
+    throw new Error("codex_refresh_journal_identity_mismatch");
+  }
+  return entry;
 }
 
 function describe(error: unknown): string { return error instanceof Error ? error.message : String(error); }
