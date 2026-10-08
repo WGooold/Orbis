@@ -1,0 +1,119 @@
+name: macOS Host build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # The complete existing suite has Windows filesystem and launcher assumptions.
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npx vitest run --maxWorkers=1 --retry=1 --testTimeout=30000
+
+  macos-host:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+            artifact: macos-arm64
+            node_architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+            artifact: macos-x64
+            node_architecture: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.23.2'
+          architecture: ${{ matrix.node_architecture }}
+          cache: npm
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: clang_64
+          archives: 'qtbase qtdeclarative qttools qtsvg qttranslations'
+          cache: true
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Verify native runner and portable behavior
+        run: |
+          node -e 'if (process.arch !== "${{ matrix.node_architecture }}") throw new Error("Node architecture mismatch")'
+          npx vitest run packages/protocol/src packages/relay/src/admin.test.ts packages/host/src/macos-terminal.test.ts --maxWorkers=1 --testTimeout=30000
+      - name: Build and package macOS app
+        shell: bash
+        run: |
+          set -euo pipefail
+          build="$RUNNER_TEMP/orbis-macos-build"
+          dmg_root="$RUNNER_TEMP/orbis-dmg-root"
+          cleanup() {
+            status=$?
+            rm -rf "$build" "$dmg_root"
+            if [ "$status" -ne 0 ]; then rm -rf .artifacts/host; fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          rm -rf .artifacts/host "$build" "$dmg_root"
+          npm run build
+          cmake -S packages/windows-host -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DCMAKE_OSX_ARCHITECTURES="${{ matrix.architecture }}" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          cmake --build "$build" --parallel 2
+          ctest --test-dir "$build" --output-on-failure
+          mkdir -p .artifacts/host
+          cp -R "$build/Orbis Host.app" ".artifacts/host/OrbisHost.app"
+          "$QT_ROOT_DIR/bin/macdeployqt" .artifacts/host/OrbisHost.app -qmldir="$GITHUB_WORKSPACE/packages/windows-host/src/qml" -verbose=1
+          node scripts/package-host-runtime.mjs ".artifacts/host/OrbisHost.app/Contents/Resources/runtime"
+          chmod +x .artifacts/host/OrbisHost.app/Contents/Resources/runtime/node/node
+          cp LICENSE .artifacts/host/OrbisHost.app/Contents/Resources/LICENSE
+          cp packages/windows-host/README.md .artifacts/host/OrbisHost.app/Contents/Resources/README.md
+          cp packages/windows-host/THIRD-PARTY-NOTICES.md .artifacts/host/OrbisHost.app/Contents/Resources/THIRD-PARTY-NOTICES.md
+          cp -R packages/windows-host/licenses .artifacts/host/OrbisHost.app/Contents/Resources/licenses
+          # Ad-hoc signing permits native arm64 execution; these are unnotarized previews.
+          codesign --force --deep --sign - .artifacts/host/OrbisHost.app
+          codesign --verify --deep --strict .artifacts/host/OrbisHost.app
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          root = pathlib.Path('.artifacts/host').resolve()
+          smoke = root / 'smoke'
+          smoke.mkdir()
+          env = dict(os.environ, PATH='/usr/bin:/bin:/usr/sbin:/sbin')
+          with (smoke / 'qml.log').open('w') as log:
+              subprocess.run([str(root / 'OrbisHost.app/Contents/MacOS/Orbis Host'),
+                              '--smoke-test', '--data-dir', str(smoke),
+                              '--screenshot', str(smoke / 'preview.png')],
+                             env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
+          PY
+          version=$(sed -nE 's/^project\(OrbisHost VERSION ([0-9.]+).*$/\1/p' packages/windows-host/CMakeLists.txt)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          dmg="OrbisHost-$version-${{ matrix.artifact }}.dmg"
+          mkdir -p "$dmg_root"
+          cp -R .artifacts/host/OrbisHost.app "$dmg_root/"
+          ln -s /Applications "$dmg_root/Applications"
+          hdiutil create -volname "Orbis Host" -srcfolder "$dmg_root" -ov -format UDZO ".artifacts/host/$dmg"
+          (cd .artifacts/host && shasum -a 256 "$dmg" > "$dmg.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OrbisHost-${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            .artifacts/host/*.dmg
+            .artifacts/host/*.sha256
+            .artifacts/host/smoke/*.log
+            .artifacts/host/smoke/*.png

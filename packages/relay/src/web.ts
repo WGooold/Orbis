@@ -16,6 +16,8 @@ const assets = {
 } as const;
 export const downloadNames = [
   "OrbisHost-0.1.11-windows-x64-setup.exe", "OrbisHost-0.1.11-windows-x64.zip",
+  "OrbisHost-0.1.11-macos-arm64.dmg",
+  "OrbisHost-0.1.11-macos-x64.dmg",
   "OrbisHost-0.1.10-windows-x64-setup.exe", "OrbisHost-0.1.10-windows-x64.zip",
   "OrbisHost-0.1.9-windows-x64-setup.exe", "OrbisHost-0.1.9-windows-x64.zip",
   "OrbisHost-0.1.8-windows-x64-setup.exe", "OrbisHost-0.1.8-windows-x64.zip",
@@ -65,12 +67,15 @@ export async function createWebHandler(downloadsDir?: string, androidDir?: strin
     if (request.method !== "GET" && request.method !== "HEAD") return false;
     if (path === "/admin") { response.writeHead(308, { location: "admin/", "cache-control": "no-store" }).end(); return true; }
     if (path === "/v1/site") {
-      // Windows 下载来自 CI 归档，Android 的 APK 和版本元数据由 nginx 直接从另一个目录服务；
-      // 两者路径不同，所以 Android 目录允许单独指定，没指定时退回 Windows 目录。
+      // 电脑端下载来自 CI 归档，Android 的 APK 和版本元数据由 nginx 从另一个目录服务。
       const androidRelease = await readAndroidReleaseMetadata(androidDir ?? downloadsDir);
+      const windows = downloads.filter(file => /-windows-/u.test(file.name));
+      const macos = downloads.filter(file => /-macos-/u.test(file.name));
       jsonResponse(response, 200, {
-        version: downloads[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.11",
-        windows: downloads,
+        // 保留 Windows Host 更新检查使用的版本字段，Mac 发布不应覆盖它。
+        version: windows[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.11",
+        windows,
+        macos,
         android: "https://orbising.com/downloads/orbis.apk",
         androidVersion: androidRelease?.version ?? null,
         androidVersionCode: androidRelease?.versionCode ?? null,

@@ -113,8 +113,13 @@ HostController::~HostController() { shutdown(); }
 int HostController::pairSeconds() const { return int(qMax<qint64>(0, (m_pairExpires - QDateTime::currentMSecsSinceEpoch() + 999) / 1000)); }
 void HostController::launchBridge() {
     if (m_bridge.state() != QProcess::NotRunning) return;
-    QString node = m_runtimeRoot + "/node/node.exe";
+    QString node = m_runtimeRoot + "/node/node";
+#ifdef Q_OS_WIN
+    node = m_runtimeRoot + "/node/node.exe";
     if (!QFile::exists(node)) node = QStandardPaths::findExecutable("node.exe");
+#else
+    if (!QFile::exists(node)) node = QStandardPaths::findExecutable("node");
+#endif
     const auto entry = m_runtimeRoot + "/packages/host/dist/desktop-bridge.js";
     if (node.isEmpty() || !QFile::exists(entry)) { m_state = "error"; setMessage("安装不完整：未找到内置 Host 或 Node.js，请重新安装客户端"); return; }
     auto env = QProcessEnvironment::systemEnvironment();
@@ -454,16 +459,26 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
             setMessage("请填写本机 dsh web 启动时输出的完整 http://127.0.0.1:端口/?token=... 链接"); return;
         }
     }
-    if (normalized != relayUrl()) { m_credential.clear(); m_email.clear(); m_challenge.clear(); m_verificationRequired = true; m_registrationAvailable = false; QFile::remove(m_dataDir + "/activation.dat"); }
     // Agent 入口由 Orbis 自己维护（安装、激活、共享记录），设置里不再提供路径字段。
-    m_settings.setValue("relayUrl", normalized); m_settings.setValue("autoStart", startup); m_settings.setValue("codexEnabled", codex);
-    m_settings.sync();
-    m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed()); m_settings.sync();
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN)
     QSettings startupRegistry("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", QSettings::NativeFormat);
     if (startup) startupRegistry.setValue("OrbisHost", '"' + QDir::toNativeSeparators(QCoreApplication::applicationFilePath()) + "\" --tray");
     else startupRegistry.remove("OrbisHost");
+#elif defined(Q_OS_MACOS)
+    const auto launchDir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation) + "/Library/LaunchAgents";
+    const auto plist = launchDir + "/com.orbis.host.plist";
+    if (startup) {
+        if (!QDir().mkpath(launchDir)) { setMessage("无法创建 macOS 登录启动目录，设置未保存"); return; }
+        const auto program = QCoreApplication::applicationFilePath();
+        const auto xml = QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>com.orbis.host</string><key>ProgramArguments</key><array><string>%1</string><string>--tray</string></array><key>RunAtLoad</key><true/></dict></plist>").arg(program.toHtmlEscaped());
+        const auto bytes = xml.toUtf8();
+        QSaveFile file(plist);
+        if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) { setMessage("无法保存 macOS 登录启动设置：" + file.errorString()); return; }
+    } else if (QFile::exists(plist) && !QFile::remove(plist)) { setMessage("无法关闭 macOS 登录启动，设置未保存"); return; }
 #endif
+    if (normalized != relayUrl()) { m_credential.clear(); m_email.clear(); m_challenge.clear(); m_verificationRequired = true; m_registrationAvailable = false; QFile::remove(m_dataDir + "/activation.dat"); }
+    m_settings.setValue("relayUrl", normalized); m_settings.setValue("autoStart", startup); m_settings.setValue("codexEnabled", codex);
+    m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed()); m_settings.sync();
     if (!name.trimmed().isEmpty() && name.trimmed() != m_hostName) command("rename", {{"name", name.trimmed()}}, [this, name](const QJsonValue &) { m_hostName = name.trimmed(); emit changed(); });
     setMessage("设置已保存"); detectAgents(); refreshRegistrationPolicy();
 }
@@ -515,11 +530,24 @@ void HostController::checkUpdatesInternal(bool announce) {
             auto tag = result.value("version").toString(); if (tag.startsWith('v')) tag.remove(0, 1);
             QString installerUrl, checksumUrl;
 #ifdef Q_OS_MACOS
-            const auto expectedName = QString("OrbisHost-%1-macos-universal.dmg").arg(tag);
             const auto releaseFiles = result.value("macos").toArray();
+#if defined(Q_PROCESSOR_ARM_64)
+            const QString suffix = "-macos-arm64.dmg";
 #else
-            const auto expectedName = QString("OrbisHost-%1-windows-x64-setup.exe").arg(tag);
+            const QString suffix = "-macos-x64.dmg";
+#endif
+            // macOS versions are independent of the Windows updater's version field.
+            tag.clear();
+            for (const auto &fileValue : releaseFiles) {
+                const auto name = fileValue.toObject().value("name").toString();
+                if (!name.startsWith("OrbisHost-") || !name.endsWith(suffix)) continue;
+                const auto candidate = name.mid(10, name.size() - 10 - suffix.size());
+                if (QVersionNumber::fromString(candidate) > QVersionNumber::fromString(tag)) tag = candidate;
+            }
+            const auto expectedName = QString("OrbisHost-%1%2").arg(tag, suffix);
+#else
             const auto releaseFiles = result.value("windows").toArray();
+            const auto expectedName = QString("OrbisHost-%1-windows-x64-setup.exe").arg(tag);
 #endif
             for (const auto &fileValue : releaseFiles) {
                 const auto file = fileValue.toObject();
@@ -593,18 +621,23 @@ void HostController::updateHost() {
             const auto expected = checksumText.section(QRegularExpression("\\s+"), 0, 0).toLower();
             const auto actual = QCryptographicHash::hash(installer, QCryptographicHash::Sha256).toHex().toLower();
             if (expected.size() != 64 || expected != actual) { setMessage("Host 更新校验失败，已取消安装"); return; }
-            const auto path = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath(QString("OrbisHost-%1-setup.%2").arg(m_updateVersion).arg(
+            const auto path = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath(
 #ifdef Q_OS_MACOS
-        "dmg"
+                QUrl(m_updateInstallerUrl).fileName()
 #else
-        "exe"
+                QString("OrbisHost-%1-setup.exe").arg(m_updateVersion)
 #endif
-    ));
+            );
             QFile file(path); if (!file.open(QIODevice::WriteOnly) || file.write(installer) != installer.size()) { setMessage("无法保存 Host 更新安装包"); return; }
             file.close();
+#ifdef Q_OS_MACOS
+            if (!QProcess::startDetached("open", {path})) { setMessage("无法打开 Host 更新磁盘映像"); return; }
+            setMessage("更新包已校验并打开。请退出 Host 后，将新版拖入 Applications 完成更新");
+#else
             setMessage("更新包已校验，Host 即将退出并安装 " + m_updateVersion);
             if (!QProcess::startDetached(path, {"/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"})) { setMessage("无法启动 Host 更新安装器"); return; }
             QTimer::singleShot(500, qApp, &QCoreApplication::quit);
+#endif
         });
     });
 }

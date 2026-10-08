@@ -76,7 +76,14 @@ int main(int argc, char *argv[]) {
     }
     QLocalServer instance; instance.setSocketOptions(QLocalServer::UserAccessOption);
     if (!instance.listen(serverName)) return 2;
-    QString runtimeRoot = parser.value("runtime-root"); if (runtimeRoot.isEmpty()) runtimeRoot = app.applicationDirPath() + "/runtime";
+    QString runtimeRoot = parser.value("runtime-root");
+    if (runtimeRoot.isEmpty()) {
+#ifdef Q_OS_MACOS
+        runtimeRoot = app.applicationDirPath() + "/../Resources/runtime";
+#else
+        runtimeRoot = app.applicationDirPath() + "/runtime";
+#endif
+    }
     QString hostStateDir = parser.value("host-state-dir");
     if (parser.isSet("smoke-test") && hostStateDir.isEmpty()) hostStateDir = dataDir + "/test-host";
     HostController controller(QDir(runtimeRoot).absolutePath(), dataDir, hostStateDir);
