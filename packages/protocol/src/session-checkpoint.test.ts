@@ -14,15 +14,15 @@ const checkpoint = () => selectSessionSyncSnapshot([], "session", null, {
 }, [], source);
 
 describe("source state contract", () => {
-  it("keeps historical pages independent from the current checkpoint", () => {
+  it.each(["history", "catchup"] as const)("keeps %s pages independent from the current checkpoint", (range) => {
     const page = selectSessionSyncSnapshot([], "session", null, {
-      sessionId: "session", syncId: "history", range: "history",
+      sessionId: "session", syncId: range, range,
     }, [], source);
     expect(page).not.toHaveProperty("source");
     expect(page).not.toHaveProperty("checkpoint");
     expect(page).not.toHaveProperty("live");
     expect(RuntimeEventSchema.safeParse(page).success).toBe(true);
-    expect(RuntimeEventSchema.safeParse({ ...checkpoint(), range: "history" }).success).toBe(false);
+    expect(RuntimeEventSchema.safeParse({ ...checkpoint(), range }).success).toBe(false);
   });
 
   it("rejects partial state envelopes and missing head instead of guessing current state", () => {
