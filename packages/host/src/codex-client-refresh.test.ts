@@ -315,6 +315,92 @@ describe("Codex client refresh recovery", () => {
     expect(h.actions.filter(action => action.kind === "close_tui")).toHaveLength(1);
     expect(h.actions.filter(action => action.kind === "open_tui")).toHaveLength(1);
   });
+
+  it.each(["desktop", "tui"] as const)("retains a proven failed %s open if the Host exits after saving its outcome", async kind => {
+    const h = harness(kind);
+    const openKind = kind === "desktop" ? "open_desktop" : "open_tui";
+    let attempts = 0;
+    h.driver.perform = vi.fn<CodexRefreshDriver["perform"]>(async (operation, action) => {
+      if (action.kind === openKind && attempts++ === 0) {
+        h.actions.push(action);
+        return { outcome: "not_applied", reason: "launcher unavailable" };
+      }
+      return h.performDefault(operation, action);
+    });
+    const save = h.journal.save;
+    let crashed = false;
+    h.journal.save = vi.fn<CodexRefreshJournal["save"]>(async entry => {
+      await save(entry);
+      if (!crashed && entry.kind === "operation" && entry.inFlight?.kind === openKind && entry.inFlightOutcome === "not_applied") {
+        crashed = true;
+        throw new Error("Host exited after action outcome persisted");
+      }
+    });
+    await expect(h.coordinator.start(request)).rejects.toThrow("Host exited after action outcome persisted");
+    expect(h.entries.get(request.operationId)).toMatchObject({ inFlight: { kind: openKind }, inFlightOutcome: "not_applied" });
+    const restarted = new CodexClientRefreshCoordinator(h.journal, h.driver);
+    expect(await restarted.recover(request.operationId)).toMatchObject({ status: "recovery_pending", reason: "launcher unavailable" });
+    expect((await restarted.recover(request.operationId)).status).toBe("awaiting_confirmation");
+    expect(h.actions.filter(action => action.kind === openKind)).toHaveLength(2);
+    expect(h.actions.filter(action => action.kind === (kind === "desktop" ? "archive" : "close_tui"))).toHaveLength(1);
+  });
+
+  it.each(["desktop", "tui"] as const)("atomically advances a settled failed %s open to its retry phase", async kind => {
+    const h = harness(kind);
+    const openKind = kind === "desktop" ? "open_desktop" : "open_tui";
+    let attempts = 0;
+    h.driver.perform = vi.fn<CodexRefreshDriver["perform"]>(async (operation, action) => {
+      if (action.kind === openKind && attempts++ === 0) {
+        h.actions.push(action);
+        return { outcome: "unknown" };
+      }
+      return h.performDefault(operation, action);
+    });
+    expect((await h.coordinator.start(request)).status).toBe("recovery_pending");
+    h.observed.inFlightStatus = "not_applied";
+    const save = h.journal.save;
+    let crashed = false;
+    h.journal.save = vi.fn<CodexRefreshJournal["save"]>(async entry => {
+      await save(entry);
+      if (!crashed && entry.kind === "operation" && entry.inFlight === undefined) {
+        crashed = true;
+        throw new Error("Host exited after action settlement persisted");
+      }
+    });
+    await expect(h.coordinator.recover(request.operationId)).rejects.toThrow("Host exited after action settlement persisted");
+    expect(h.entries.get(request.operationId)).toMatchObject({ phase: kind === "desktop" ? "opening" : "reopening" });
+    delete h.observed.inFlightStatus;
+    expect((await new CodexClientRefreshCoordinator(h.journal, h.driver).recover(request.operationId)).status).toBe("awaiting_confirmation");
+    expect(h.actions.filter(action => action.kind === openKind)).toHaveLength(2);
+    expect(h.actions.filter(action => action.kind === (kind === "desktop" ? "archive" : "close_tui"))).toHaveLength(1);
+  });
+
+  it.each(["rpc", "inspection"] as const)("retains a failed TUI close proven by %s until the terminal receipt is saved", async source => {
+    const h = harness("tui");
+    h.driver.perform = vi.fn<CodexRefreshDriver["perform"]>(async (_operation, action) => {
+      h.actions.push(action);
+      return { outcome: source === "rpc" ? "not_applied" : "unknown" };
+    });
+    const save = h.journal.save;
+    let crashed = false;
+    h.journal.save = vi.fn<CodexRefreshJournal["save"]>(async entry => {
+      if (!crashed && entry.kind === "receipt") {
+        crashed = true;
+        throw new Error("Host exited before terminal receipt persisted");
+      }
+      await save(entry);
+    });
+    if (source === "inspection") {
+      expect((await h.coordinator.start(request)).status).toBe("recovery_pending");
+      h.observed.inFlightStatus = "not_applied";
+      await expect(h.coordinator.recover(request.operationId)).rejects.toThrow("Host exited before terminal receipt persisted");
+    } else {
+      await expect(h.coordinator.start(request)).rejects.toThrow("Host exited before terminal receipt persisted");
+    }
+    expect((await new CodexClientRefreshCoordinator(h.journal, h.driver).recover(request.operationId)).status).toBe("manual_required");
+    expect(h.entries.get(request.operationId)!.kind).toBe("receipt");
+    expect(h.actions).toEqual([{ kind: "close_tui" }]);
+  });
 });
 
 const directories: string[] = [];

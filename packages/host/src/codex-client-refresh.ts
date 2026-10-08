@@ -61,6 +61,8 @@ export type CodexRefreshOperation = {
   archiveConfirmed: boolean;
   /** Written before the side effect. Recovery must inspect it, never blindly replay it. */
   inFlight?: CodexRefreshAction;
+  /** Retain a known outcome until its next phase or terminal receipt is durable. */
+  inFlightOutcome?: "applied" | "not_applied";
   problem?: string;
 };
 
@@ -205,19 +207,21 @@ export class CodexClientRefreshCoordinator {
         return this.#problem(operation, "manual_required", "client_refresh_lifecycle_changed_after_restore");
       }
       if (operation.inFlight !== undefined) {
-        if (observed.inFlightStatus !== "applied" && observed.inFlightStatus !== "partially_applied" && observed.inFlightStatus !== "not_applied") {
+        const settled = operation.inFlightOutcome ?? observed.inFlightStatus;
+        if (settled !== "applied" && settled !== "partially_applied" && settled !== "not_applied") {
           return this.#problem(operation, "recovery_pending", "client_refresh_action_result_unknown");
         }
-        const notApplied = observed.inFlightStatus === "not_applied";
+        const notApplied = settled === "not_applied";
         const action = operation.inFlight;
-        delete operation.inFlight;
-        await this.#save(operation);
         if (notApplied && action.kind === "close_tui") return this.#finish(operation, "manual_required", "managed_tui_close_not_applied");
+        delete operation.inFlight;
+        delete operation.inFlightOutcome;
         if (notApplied && (action.kind === "open_tui" || action.kind === "open_desktop")) {
           operation.phase = action.kind === "open_tui" ? "reopening" : "opening";
           await this.#save(operation);
-          return this.#problem(operation, "recovery_pending", "client_refresh_open_not_applied");
+          return this.#problem(operation, "recovery_pending", operation.problem ?? "client_refresh_open_not_applied");
         }
+        await this.#save(operation);
       }
 
       switch (operation.phase) {
@@ -262,12 +266,7 @@ export class CodexClientRefreshCoordinator {
           break;
         }
         case "opening": {
-          const outcome = await this.#act(operation, { kind: "open_desktop" }, "open_requested");
-          if (outcome === "not_applied") {
-            operation.phase = "opening";
-            await this.#save(operation);
-            return this.#problem(operation, "recovery_pending", operation.problem ?? "desktop_open_failed");
-          }
+          await this.#act(operation, { kind: "open_desktop" }, "open_requested");
           break;
         }
         case "close_requested": {
@@ -282,12 +281,7 @@ export class CodexClientRefreshCoordinator {
             return this.#problem(operation, "manual_required", "managed_tui_exit_ownership_unknown");
           }
           if (observed.tui.replacement !== "not_started") return this.#problem(operation, "manual_required", "managed_tui_replacement_ownership_unknown");
-          const outcome = await this.#act(operation, { kind: "open_tui" }, "reopen_requested");
-          if (outcome === "not_applied") {
-            operation.phase = "reopening";
-            await this.#save(operation);
-            return this.#problem(operation, "recovery_pending", operation.problem ?? "managed_tui_reopen_failed");
-          }
+          await this.#act(operation, { kind: "open_tui" }, "reopen_requested");
           break;
         }
         case "reopen_requested":
@@ -318,12 +312,13 @@ export class CodexClientRefreshCoordinator {
   async #act(operation: CodexRefreshOperation, action: CodexRefreshAction, phase: Phase): Promise<"applied" | "not_applied" | "unknown"> {
     operation.phase = phase;
     operation.inFlight = action;
+    delete operation.inFlightOutcome;
     delete operation.problem;
     await this.#save(operation); // Failure here MUST prevent the side effect.
     let outcome: Awaited<ReturnType<CodexRefreshDriver["perform"]>>;
     try { outcome = await this.#driver.perform(structuredClone(operation), action); }
     catch (error) { outcome = { outcome: "unknown", reason: describe(error) }; }
-    if (outcome.outcome !== "unknown") delete operation.inFlight;
+    if (outcome.outcome !== "unknown") operation.inFlightOutcome = outcome.outcome;
     if (outcome.reason !== undefined) operation.problem = outcome.reason;
     await this.#save(operation);
     return outcome.outcome;
@@ -487,6 +482,8 @@ function validateEntry(value: unknown): asserts value is CodexRefreshJournalEntr
     };
     if (phaseByAction[String(action.kind)] !== value.phase) invalid();
   }
+  if (value.inFlightOutcome !== undefined
+    && (value.inFlight === undefined || (value.inFlightOutcome !== "applied" && value.inFlightOutcome !== "not_applied"))) invalid();
   const desktop = value.plan.client.kind === "desktop";
   if ((!desktop && ["archive_requested", "restoring", "opening", "open_requested"].includes(String(value.phase)))
     || (desktop && ["close_requested", "reopening", "reopen_requested"].includes(String(value.phase)))) invalid();
