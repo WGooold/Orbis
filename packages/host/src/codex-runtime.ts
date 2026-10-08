@@ -2618,12 +2618,12 @@ export class CodexRuntime implements AgentBackend {
             thread.reconcileNotifications.push(...notifications.slice(0, 512));
             thread.tuiAttachPending = false;
             this.#reconcileExternalRevert(thread);
-            return;
+          } else {
+            // Notifications may arrive ahead of the resume response. Apply them after replay
+            // so a newer item, permission or turn state cannot be erased by that snapshot.
+            for (const notification of notifications) await this.#handleNotification(notification.method, notification.params);
+            this.#publishMetadataEvent(thread);
           }
-          // Notifications may arrive ahead of the resume response. Apply them after replay
-          // so a newer item, permission or turn state cannot be erased by that snapshot.
-          for (const notification of notifications) await this.#handleNotification(notification.method, notification.params);
-          this.#publishMetadataEvent(thread);
         }
       }
     })();
