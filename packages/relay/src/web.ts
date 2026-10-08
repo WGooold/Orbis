@@ -70,7 +70,8 @@ export async function createWebHandler(downloadsDir?: string, androidDir?: strin
       const androidRelease = await readAndroidReleaseMetadata(androidDir ?? downloadsDir);
       jsonResponse(response, 200, {
         version: downloads[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.11",
-        windows: downloads.filter(file => /-windows-/u.test(file.name)),`r`n        macos: downloads.filter(file => /-macos-/u.test(file.name)),
+        windows: downloads.filter(file => /-windows-/u.test(file.name)),
+        macos: downloads.filter(file => /-macos-/u.test(file.name)),
         android: "https://orbising.com/downloads/orbis.apk",
         androidVersion: androidRelease?.version ?? null,
         androidVersionCode: androidRelease?.versionCode ?? null,
