@@ -85,7 +85,7 @@ export function shouldAutoEnableCodexTerminal(input: {
   state: CodexTerminalIntegration["state"];
   needsElevation: boolean | undefined;
 }): boolean {
-  return input.platform === "win32" && input.hostRunning && input.installed && input.compatible === true
+  return (input.platform === "win32" || input.platform === "darwin") && input.hostRunning && input.installed && input.compatible === true
     && input.needsElevation !== true && (input.state === "disabled" || input.state === "repair");
 }
 
@@ -559,7 +559,7 @@ export class DesktopRuntime {
   }
 
   async enableCodexTerminal(runtimeRoot: string): Promise<AgentInstallStatus[]> {
-    if (process.platform !== "win32") throw new Error("终端接入仅支持 Windows");
+    if (process.platform !== "win32" && process.platform !== "darwin") throw new Error("终端接入仅支持 Windows 和 macOS");
     const codex = this.#detected.get("codex");
     if (!codex?.installed || !codex.entry) throw new Error("请先检测并安装可运行的 Codex");
     if (!codex.terminalCompatible) throw new Error("此 Codex 版本不支持 Host 终端接入，请先更新到最新版本");
@@ -715,7 +715,8 @@ export class DesktopRuntime {
       try { await applyDshWebProvider(client, env); } finally { await client.stop(); }
       const script = `Start-Process -FilePath '${service.url.replaceAll("'", "''")}' -ErrorAction Stop`;
       try {
-        await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15_000 });
+      if (process.platform === "darwin") await execute("open", [service.url], { timeout: 15_000 });
+      else await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15_000 });
       } catch { throw new Error("无法打开 DeepSeek 网页工作台，请检查默认浏览器"); }
       finally { await service.stop(); }
       return;
@@ -737,6 +738,9 @@ export class DesktopRuntime {
     const script = `& ${[command, ...args].map(quote).join(" ")}`;
     // A detached Node child with ignored stdio has no usable console on some
     // Windows hosts. Let Windows create the visible terminal with its own input.
+    if (process.platform === "darwin") {
+      const child = spawn(command, args, { stdio: "inherit", cwd: workingDirectory, detached: true }); child.unref(); return;
+    }
     const encoded = Buffer.from(script, "utf16le").toString("base64");
     const launcher = `$ErrorActionPreference = 'Stop'; Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-NoExit','-EncodedCommand',${quote(encoded)} -WorkingDirectory ${quote(workingDirectory)} -WindowStyle Normal -ErrorAction Stop`;
     const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(launcher, "utf16le").toString("base64")], { stdio: "ignore", windowsHide: true, cwd: workingDirectory, timeout: 15_000 });

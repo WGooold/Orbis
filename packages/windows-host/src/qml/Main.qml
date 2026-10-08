@@ -558,7 +558,7 @@ ApplicationWindow {
                     Rectangle { width: 7; height: 7; radius: 4; color: host.state === "connected" ? "#6dd7b5" : "#97a7bf" }
                     Label { text: stateText(); color: "#627591"; font.pixelSize: 12 }
                 }
-                Label { text: "Windows · v" + host.version; color: "#6f85a6"; font.pixelSize: 11; Layout.bottomMargin: 10 }
+                Label { text: Qt.platform.os === "osx" ? "macOS · v" + host.version : "Windows · v" + host.version; color: "#6f85a6"; font.pixelSize: 11; Layout.bottomMargin: 10 }
             }
         }
         ColumnLayout {
@@ -876,7 +876,7 @@ ApplicationWindow {
                             Heading { text: "常规" }
                             Label { text: "电脑名称"; color: "#4b5d78" }
                             Field { id: nameField; Layout.fillWidth: true; maximumLength: 80 }
-                            SoftSwitch { id: startupSwitch; text: "登录 Windows 后自动启动" }
+                            SoftSwitch { id: startupSwitch; text: Qt.platform.os === "osx" ? "登录 macOS 后自动启动" : "登录 Windows 后自动启动" }
                             SoftSwitch { id: codexSwitch; text: "启动 Host 时启用 Codex" }
                             SoftSwitch { id: dshSwitch; text: "启动 Host 时启用 DeepSeek Harness" }
                             RowLayout {
