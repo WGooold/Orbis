@@ -262,6 +262,14 @@ type ThreadState = {
   approvalItems: Map<string, Record<string, unknown>>;
   lastError: string | undefined;
   waitingForApproval: boolean;
+  /**
+   * Monotonic guard for native-history reconciliation. A completed list request may only
+   * commit when it still belongs to the latest generation for this thread.
+   */
+  reconcileGeneration: number;
+  reconcilePromise: Promise<void> | undefined;
+  reconcileNotifications: Array<{ method: string; params: unknown }>;
+  reconcileDraining: boolean;
 };
 
 export class CodexRuntime implements AgentBackend {
@@ -491,6 +499,10 @@ export class CodexRuntime implements AgentBackend {
       approvalItems: new Map(),
       lastError: undefined,
       waitingForApproval: false,
+      reconcileGeneration: 0,
+      reconcilePromise: undefined,
+      reconcileNotifications: [],
+      reconcileDraining: false,
     };
   }
 
@@ -1204,20 +1216,54 @@ export class CodexRuntime implements AgentBackend {
    * 这是**重建**：先清掉既有条目再按 turns 顺序重灌。历史回退（`thread/revert`）之后也走
    * 这里——那次调用拿到的就是截断后的新前缀，不能只往旧条目上追加。
    */
-  #replayTurns(thread: ThreadState, threadJson: Record<string, unknown> | undefined): void {
+  #replayTurns(thread: ThreadState, threadJson: Record<string, unknown> | undefined): boolean {
     if (typeof threadJson?.path === "string" && isAbsolute(threadJson.path)) thread.rolloutPath = threadJson.path;
     const turns = threadJson?.turns;
-    if (!Array.isArray(turns)) return;
+    if (!Array.isArray(turns)) return false;
+    // The previous graph is only a conflict-check baseline. It must never contribute parent
+    // edges or ordering to the new graph; those come exclusively from the current native turns.
     const previous = new Map(thread.entries.map((entry) => [entry.entryId, entry]));
+    const prior = {
+      entries: thread.entries,
+      itemOrder: thread.itemOrder,
+      committedItemCount: thread.committedItemCount,
+      completedItems: thread.completedItems,
+      entryTurns: thread.entryTurns,
+      turnOrder: thread.turnOrder,
+      historyError: thread.historyError,
+    };
     thread.entries = [];
     delete thread.historyError;
     thread.itemOrder = [];
-    thread.completedItems.clear();
+    // Replace mutable indexes instead of clearing them in place. `prior` keeps the old Map
+    // for conflict rollback; mutating it here would make rollback lose completed-item state.
+    thread.completedItems = new Map();
     thread.committedItemCount = 0;
-    thread.entryTurns.clear();
+    thread.entryTurns = new Map();
     thread.turnOrder = [];
+    // A replay replaces the native source projection, including its running lifecycle. Do not
+    // carry the previous turn identity into a reverted/resumed history: a later completion event
+    // must be accepted only for the turn represented by this snapshot.
+    thread.turnInProgress = false;
+    thread.turnId = undefined;
+    thread.turnStartedAt = undefined;
+    thread.streamingMessageId = undefined;
+    thread.persistedMessageMappings = [];
     for (const turn of turns) {
       if (turn === null || typeof turn !== "object") continue;
+      const turnRecord = turn as Record<string, unknown>;
+      const turnStatus = turnRecord.status;
+      const turnRunning = turnStatus === "inProgress" || turnStatus === "in_progress";
+      const activeTurnId = turnRecord.id;
+      if (turnRunning && typeof activeTurnId === "string" && activeTurnId.length > 0) {
+        thread.turnInProgress = true;
+        thread.turnId = activeTurnId;
+        const startedAt = turnRecord.startedAt;
+        if (typeof startedAt === "number" && Number.isFinite(startedAt) && startedAt >= 0) {
+          // app-server notifications use epoch seconds; tolerate millisecond snapshots too.
+          thread.turnStartedAt = startedAt < 1_000_000_000_000 ? startedAt * 1_000 : startedAt;
+        }
+      }
       const items = (turn as { items?: unknown }).items;
       if (!Array.isArray(items)) continue;
       // turn.id 就是历史回退的边界单位（`thread/revert` 的 beforeTurnId），顺手记下来。
@@ -1228,7 +1274,6 @@ export class CodexRuntime implements AgentBackend {
         if (item !== null && typeof item === "object") {
           const record = item as Record<string, unknown>;
           this.#noteItem(thread, record);
-          const turnRunning = (turn as { status?: unknown }).status === "inProgress";
           const itemRunning = record.status === "inProgress" || record.status === "in_progress";
           const itemFinished = record.status === "completed" || record.status === "failed" || record.status === "declined";
           if (!itemRunning && (!turnRunning || itemFinished || record.type === "userMessage")) {
@@ -1237,44 +1282,26 @@ export class CodexRuntime implements AgentBackend {
         }
       }
     }
-    // A previously cached snapshot may have been assembled from live item/started events,
-    // whereas turns/list returns the same items after completion.  Their message payloads are
-    // authoritative and equal, but concurrent tools can have different adjacent parents. Keep
-    // an old parent while that parent still belongs to this replay and while the resulting graph
-    // stays acyclic. This lets a running Host converge to the phone's existing cache without
-    // weakening the content conflict check below.
-    const replayIds = new Set(thread.entries.map((entry) => entry.entryId));
-    const parentById = new Map(thread.entries.map((entry) => [entry.entryId, entry.parentId]));
-    const replayParents = new Map(parentById);
-    for (const entry of thread.entries) {
-      const old = previous.get(entry.entryId);
-      const oldParent = old?.parentId;
-      if (old === undefined ||
-        (oldParent !== null && oldParent !== undefined && !replayIds.has(oldParent)) ||
-        oldParent === entry.entryId) continue;
-      parentById.set(entry.entryId, oldParent ?? null);
-    }
-    // Validate the complete candidate graph after all edges have been replaced. Checking one
-    // edge at a time would reject an otherwise valid old chain when its parent is visited later.
-    for (const entry of thread.entries) {
-      if (parentGraphHasCycle(entry.entryId, parentById)) {
-        parentById.set(entry.entryId, replayParents.get(entry.entryId) ?? null);
-      }
-    }
-    for (const entry of thread.entries) {
-      if (parentById.has(entry.entryId)) entry.parentId = parentById.get(entry.entryId) ?? null;
-    }
-    // Keep the retained branch's previous linear order as well. The snapshot cursor is the last
-    // entry in this array; leaving completion order here could make an older item appear to be the
-    // new leaf even after its immutable parent edge was restored.
-    const previousOrder = new Map([...previous.keys()].map((id, index) => [id, index]));
-    thread.entries.sort((left, right) =>
-      (previousOrder.get(left.entryId) ?? Number.MAX_SAFE_INTEGER) -
-      (previousOrder.get(right.entryId) ?? Number.MAX_SAFE_INTEGER));
+    // Replaying the same native history must reproduce the exact immutable Entry. A changed
+    // payload, parent, or generated order is a source-side canonical conflict; keeping an old
+    // representation would hide the divergence and make a later Host restart disagree again.
     for (const entry of thread.entries) {
       const old = previous.get(entry.entryId);
       if (old !== undefined && !isDeepStrictEqual(old, entry)) thread.historyError = "canonical_entry_conflict";
     }
+    if (thread.historyError === "canonical_entry_conflict") {
+      // A conflict is diagnostic state, not permission to replace the last known good
+      // graph. Keep the old graph available for retry and make the error observable.
+      thread.entries = prior.entries;
+      thread.itemOrder = prior.itemOrder;
+      thread.committedItemCount = prior.committedItemCount;
+      thread.completedItems = prior.completedItems;
+      thread.entryTurns = prior.entryTurns;
+      thread.turnOrder = prior.turnOrder;
+      thread.historyError = "canonical_entry_conflict";
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -1791,6 +1818,70 @@ export class CodexRuntime implements AgentBackend {
   }
 
   /**
+   * Native history reads are not snapshots of the adapter. Serialize them per thread and
+   * invalidate a read as soon as a newer revert/notification starts. This keeps a late
+   * turns/list response from resurrecting the pre-revert branch.
+   */
+  #queueReconcile(thread: ThreadState, operation: (generation: number) => Promise<void>): Promise<void> {
+    const generation = ++thread.reconcileGeneration;
+    const previous = thread.reconcilePromise ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(async () => {
+      if (!this.#isCurrentReconcile(thread, generation)) return;
+      await operation(generation);
+    });
+    const tracked = run.finally(() => {
+      if (thread.reconcilePromise === tracked) thread.reconcilePromise = undefined;
+    });
+    thread.reconcilePromise = tracked;
+    return tracked;
+  }
+
+  #isCurrentReconcile(thread: ThreadState, generation: number): boolean {
+    return this.#threads.get(thread.id) === thread && thread.reconcileGeneration === generation;
+  }
+
+  async #drainReconcileNotifications(thread: ThreadState): Promise<void> {
+    if (thread.reconcileNotifications.length === 0) return;
+    const pending = thread.reconcileNotifications.splice(0, 512);
+    thread.reconcileDraining = true;
+    try {
+      for (const notification of pending) {
+        if (this.#threads.get(thread.id) !== thread) return;
+        await this.#handleNotification(notification.method, notification.params);
+      }
+    } finally {
+      thread.reconcileDraining = false;
+    }
+    if (thread.reconcileNotifications.length > 0) await this.#drainReconcileNotifications(thread);
+  }
+
+  /** Re-read the source after a revert performed by another Codex client. */
+  #reconcileExternalRevert(thread: ThreadState): void {
+    void this.#queueReconcile(thread, async (generation) => {
+      const turns = await this.#listAllTurns(thread.id);
+      if (!this.#isCurrentReconcile(thread, generation)) return;
+      const replayed = this.#replayTurns(thread, { turns });
+      if (!this.#isCurrentReconcile(thread, generation)) return;
+      if (!replayed) {
+        this.#publishMetadataEvent(thread);
+        // The native revert has already committed.  A canonical replay conflict is a
+        // separate projection failure: keep the last known-good graph and let the command
+        // acknowledge the native operation while session.sync exposes the conflict.
+        return;
+      }
+      await this.#drainReconcileNotifications(thread);
+      if (!this.#isCurrentReconcile(thread, generation)) return;
+      this.#publishMetadataEvent(thread);
+    }).catch((error: unknown) => {
+      this.#options.log?.(`Codex 外部回退协调失败（thread=${thread.id}）：${describeError(error)}`);
+      if (this.#threads.get(thread.id) === thread) {
+        thread.historyError = "codex_reconcile_failed";
+        this.#publishMetadataEvent(thread);
+      }
+    });
+  }
+
+  /**
    * 原地把 thread 的历史截断到某一轮之前，然后重建条目图并广播。
    *
    * `thread/revert` 的响应里 `turns` 恒为空（协议原文：hydrate retained history through
@@ -1798,10 +1889,24 @@ export class CodexRuntime implements AgentBackend {
    * app-server 的权威视图，而不是重新解析磁盘 rollout——rollout 什么时候落盘不由我们控制。
    */
   async #revertThread(thread: ThreadState, beforeTurnId: string): Promise<void> {
-    await this.#server.request("thread/revert", { threadId: thread.id, beforeTurnId });
-    this.#replayTurns(thread, { turns: await this.#listAllTurns(thread.id) });
-    // metadata 事件里会一并补发 capabilities：树上少掉的那些节点立刻从手机菜单消失。
-    this.#publishMetadataEvent(thread);
+    await this.#queueReconcile(thread, async (generation) => {
+      await this.#server.request("thread/revert", { threadId: thread.id, beforeTurnId });
+      const turns = await this.#listAllTurns(thread.id);
+      if (!this.#isCurrentReconcile(thread, generation)) return;
+      const replayed = this.#replayTurns(thread, { turns });
+      if (!this.#isCurrentReconcile(thread, generation)) return;
+      if (!replayed) {
+        this.#publishMetadataEvent(thread);
+        // Native history has already been reverted. Keep the last canonical graph and
+        // report the projection conflict to /tree without retrying the destructive native
+        // operation. The caller can then reconcile or explicitly retry the read phase.
+        throw new Error(thread.historyError ?? "canonical_entry_conflict");
+      }
+      await this.#drainReconcileNotifications(thread);
+      if (!this.#isCurrentReconcile(thread, generation)) return;
+      // metadata 事件里会一并补发 capabilities：树上少掉的那些节点立刻从手机菜单消失。
+      this.#publishMetadataEvent(thread);
+    });
 
   }
 
@@ -2150,7 +2255,7 @@ export class CodexRuntime implements AgentBackend {
   async #initializeTuiThread(thread: ThreadState, snapshot: Record<string, unknown> | undefined): Promise<void> {
     this.#replayTurns(thread, snapshot);
     thread.tuiAttachPending = true;
-    thread.historyError = "codex_attach_pending";
+    if (thread.historyError === undefined) thread.historyError = "codex_attach_pending";
     await this.#attachTuiThread(thread);
     if (this.#threads.get(thread.id) !== thread) return;
     void this.#refreshIntegrationCatalog(thread);
@@ -2195,6 +2300,7 @@ export class CodexRuntime implements AgentBackend {
           ? snapshot.turns.map(object).find(turn => turn.status === "inProgress") : undefined;
         if (typeof activeTurn?.id === "string") thread.turnId = activeTurn.id;
         thread.tuiAttachPending = false;
+        if (thread.historyError === "codex_attach_pending") delete thread.historyError;
         void this.#checkSandboxReadiness(thread);
       } catch (error) {
         if (this.#threads.get(thread.id) !== thread) return;
@@ -2320,6 +2426,14 @@ export class CodexRuntime implements AgentBackend {
       thread.tuiAttachNotifications.push({ method, params });
       return;
     }
+    if (thread.reconcilePromise !== undefined && !thread.reconcileDraining && method !== "thread/reverted") {
+      if (thread.reconcileNotifications.length < 512) thread.reconcileNotifications.push({ method, params });
+      else {
+        this.#options.log?.(`Codex 协调期间通知缓冲已满，触发下一轮核对（thread=${thread.id}）`);
+        this.#reconcileExternalRevert(thread);
+      }
+      return;
+    }
     // 该 thread 所属窗口有动静：TUI 切换归属时按「最近有动静」挑窗口用。
     const windowKey = this.#windowKeyByThread.get(thread.id);
     if (windowKey !== undefined) this.#windowActivity.set(windowKey, Date.now());
@@ -2328,6 +2442,12 @@ export class CodexRuntime implements AgentBackend {
       return;
     }
     switch (method) {
+      case "thread/reverted":
+        // The notification is evidence that the native source changed. It is not a
+        // request to issue another revert; one authoritative turns/list reconciliation
+        // is enough and duplicate notifications collapse through the generation queue.
+        this.#reconcileExternalRevert(thread);
+        return;
       case "thread/name/updated": {
         if (record.threadName !== undefined && record.threadName !== null && typeof record.threadName !== "string") return;
         thread.name = codexSessionName(record.threadName);
@@ -2889,17 +3009,6 @@ function resultText(value: unknown, canonical = false): string {
   } catch {
     return String(value);
   }
-}
-
-function parentGraphHasCycle(start: string, parents: Map<string, string | null>): boolean {
-  const seen = new Set<string>();
-  let current: string | null | undefined = start;
-  while (typeof current === "string") {
-    if (seen.has(current)) return true;
-    seen.add(current);
-    current = parents.get(current);
-  }
-  return false;
 }
 
 function skillCommands(value: unknown): DynamicSlashCommand[] {

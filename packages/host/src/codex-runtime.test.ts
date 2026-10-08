@@ -673,6 +673,17 @@ describe("CodexRuntime", () => {
     expect(turnFinished).toMatchObject({
       persistedMessages: [{ messageId: "live-user", entryId: "entry-user" }],
     });
+
+    // The started event used the native item id before completion supplied clientId. A
+    // checkpoint must not retain that raw alias as a second live row after the canonical entry
+    // has been committed.
+    h.runtime.handleCommand(
+      { type: "session.sync", sessionId: "th-1", syncId: "client-id-checkpoint", range: "preview" },
+      "client-id-checkpoint-command",
+      "th-1",
+    );
+    const checkpoint = h.events.find((event) => event.type === "session.snapshot" && event.syncId === "client-id-checkpoint");
+    expect(checkpoint).toMatchObject({ live: { messages: [] } });
   });
 
   it("旧版 app-server 未带回 clientId 时，userMessage 仍以 entry id 单条上屏", async () => {
@@ -1399,7 +1410,7 @@ describe("CodexRuntime", () => {
     });
   });
 
-  it("tree replay keeps immutable parents when concurrent items return in a different order", async () => {
+  it("tree replay rejects a source order change that would alter immutable parents", async () => {
     const h = makeHarness();
     h.runtime.markStarted();
     const first = [
@@ -1426,12 +1437,45 @@ describe("CodexRuntime", () => {
       { type: "agentMessage", id: "a", text: "a" },
     ] }] });
     await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({
-      type: "command.result", commandId: "c-tree", ok: true, status: "success",
+      type: "command.result", commandId: "c-tree", ok: false, status: "failure",
+      error: "canonical_entry_conflict",
     })));
     const finalSnapshot = syncHistory(h);
-    expect(finalSnapshot?.entries.map((entry) => [entry.entryId, entry.parentId])).toEqual([
-      ["a", null], ["b", "a"],
-    ]);
+    expect(finalSnapshot).toBeUndefined();
+    expect(h.events.at(-1)).toMatchObject({
+      type: "command.result", commandId: "sync-command", ok: false, error: "canonical_entry_conflict",
+    });
+  });
+
+  it("reconciles an external thread/reverted notification without issuing another revert", async () => {
+    const h = makeHarness();
+    h.runtime.markStarted();
+    await activateWithTurns(h, TREE_TURNS);
+    const revertCount = () => h.requests.mock.calls.filter(([method]) => method === "thread/revert").length;
+    const turnsCount = () => h.requests.mock.calls.filter(([method]) => method === "thread/turns/list").length;
+
+    h.notify("thread/reverted", { threadId: "th-1" });
+    await vi.waitFor(() => expect(turnsCount()).toBe(1));
+    expect(revertCount()).toBe(0);
+    h.resolveNext({ data: [TREE_TURNS[0]] });
+    await vi.waitFor(() => expect(syncHistory(h)).toMatchObject({
+      cursor: { leafId: "a1" },
+      entries: expect.arrayContaining([expect.objectContaining({ entryId: "u1" })]),
+    }));
+  });
+
+  it("drops a stale external history read when a newer reconcile generation arrives", async () => {
+    const h = makeHarness();
+    h.runtime.markStarted();
+    await activateWithTurns(h, TREE_TURNS);
+
+    h.notify("thread/reverted", { threadId: "th-1" });
+    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(1));
+    h.notify("thread/reverted", { threadId: "th-1" });
+    h.resolveNext({ data: [TREE_TURNS[0]] });
+    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(2));
+    h.resolveNext({ data: TREE_TURNS });
+    await vi.waitFor(() => expect(syncHistory(h)).toMatchObject({ cursor: { leafId: "a2" } }));
   });
 
   it("slash.execute /tree <最后一条回复>：历史已经停在这一点，不发任何 RPC", async () => {
