@@ -85,7 +85,7 @@ export function shouldAutoEnableCodexTerminal(input: {
   state: CodexTerminalIntegration["state"];
   needsElevation: boolean | undefined;
 }): boolean {
-  return (input.platform === "win32" || input.platform === "darwin") && input.hostRunning && input.installed && input.compatible === true
+  return input.platform === "win32" && input.hostRunning && input.installed && input.compatible === true
     && input.needsElevation !== true && (input.state === "disabled" || input.state === "repair");
 }
 
@@ -715,7 +715,8 @@ export class DesktopRuntime {
       try { await applyDshWebProvider(client, env); } finally { await client.stop(); }
       const script = `Start-Process -FilePath '${service.url.replaceAll("'", "''")}' -ErrorAction Stop`;
       try {
-        await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15_000 });
+        if (process.platform === "darwin") await execute("open", [service.url], { timeout: 15_000 });
+        else await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15_000 });
       } catch { throw new Error("无法打开 DeepSeek 网页工作台，请检查默认浏览器"); }
       finally { await service.stop(); }
       return;
@@ -734,6 +735,18 @@ export class DesktopRuntime {
     const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
     const args = kind === "pi" ? [...cli.prefixArgs, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : remote ? [...remote.prefixArgs, "--remote", remote.endpoint] : cli.prefixArgs;
     const command = remote?.command ?? cli.command;
+    if (process.platform === "darwin") {
+      // Pass shell text as an argument, never as interpolated AppleScript source.
+      const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+      const shell = `cd -- ${shellQuote(workingDirectory)} && ${[command, ...args].map(shellQuote).join(" ")}`;
+      const appleScript = 'on run argv\ntell application "Terminal"\nactivate\ndo script (item 1 of argv)\nend tell\nend run';
+      const child = spawn("osascript", ["-e", appleScript, "--", shell], { stdio: "ignore", cwd: workingDirectory, timeout: 15_000 });
+      await new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开 macOS 终端，请检查自动化权限")));
+      });
+      return;
+    }
     const script = `& ${[command, ...args].map(quote).join(" ")}`;
     // A detached Node child with ignored stdio has no usable console on some
     // Windows hosts. Let Windows create the visible terminal with its own input.

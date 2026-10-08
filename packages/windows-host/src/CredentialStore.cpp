@@ -2,31 +2,82 @@
 #include <QFile>
 #include <QSaveFile>
 #include <QJsonDocument>
-#include <QProcess>
 #include <QFileInfo>
+#include <QUuid>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <wincrypt.h>
 #endif
 
 #ifdef Q_OS_MACOS
-static QString keychainService() { return QStringLiteral("com.orbis.host.activation"); }
-static QString keychainAccount(const QString &path) { return QFileInfo(path).absoluteFilePath(); }
+#include <Security/Security.h>
+
+// activation.dat contains only a random reference; secrets stay in the user's Keychain.
+// Stage a new item before atomically replacing the reference, so a failed save keeps
+// the previous credential usable. Never put credentials in a subprocess command line.
+static CFMutableDictionaryRef keychainQuery(const QString &path, const QByteArray &reference) {
+    auto query = CFDictionaryCreateMutable(nullptr, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    const auto account = QFileInfo(path).absoluteFilePath().toUtf8() + ":" + reference;
+    auto accountString = CFStringCreateWithBytes(nullptr, reinterpret_cast<const UInt8 *>(account.constData()), account.size(), kCFStringEncodingUTF8, false);
+    CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword);
+    CFDictionarySetValue(query, kSecAttrService, CFSTR("com.orbis.host.activation"));
+    CFDictionarySetValue(query, kSecAttrAccount, accountString);
+    CFRelease(accountString);
+    return query;
+}
+static bool validReference(const QByteArray &reference) {
+    return reference.size() == 36 && QUuid(QString::fromLatin1(reference)).toString(QUuid::WithoutBraces).toLatin1() == reference;
+}
+static void keychainRemove(const QString &path, const QByteArray &reference) {
+    if (!validReference(reference)) return;
+    auto query = keychainQuery(path, reference);
+    SecItemDelete(query);
+    CFRelease(query);
+}
 static bool keychainWrite(const QString &path, const QByteArray &plain, QString *error) {
-    const auto account = keychainAccount(path);
-    QProcess remove;
-    remove.start("security", {"delete-generic-password", "-s", keychainService(), "-a", account});
-    remove.waitForFinished(5000);
-    QProcess process;
-    process.start("security", {"add-generic-password", "-U", "-s", keychainService(), "-a", account, "-w", QString::fromUtf8(plain)});
-    if (!process.waitForFinished(10000) || process.exitCode() != 0) { if (error) *error = QStringLiteral("无法保存 macOS 钥匙串中的激活凭据"); return false; }
+    QByteArray previous;
+    QFile oldFile(path);
+    if (oldFile.open(QIODevice::ReadOnly)) previous = oldFile.readAll();
+    oldFile.close();
+    const auto reference = QUuid::createUuid().toString(QUuid::WithoutBraces).toLatin1();
+    auto query = keychainQuery(path, reference);
+    auto data = CFDataCreate(nullptr, reinterpret_cast<const UInt8 *>(plain.constData()), plain.size());
+    CFDictionarySetValue(query, kSecValueData, data);
+    const auto status = SecItemAdd(query, nullptr);
+    CFRelease(data);
+    CFRelease(query);
+    if (status != errSecSuccess) {
+        if (error) *error = QStringLiteral("无法保存 macOS 钥匙串中的激活凭据（%1）").arg(status);
+        return false;
+    }
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(reference) != reference.size() || !file.commit()) {
+        keychainRemove(path, reference);
+        if (error) *error = QStringLiteral("无法保存激活凭据引用：") + file.errorString();
+        return false;
+    }
+    keychainRemove(path, previous);
     return true;
 }
-static QByteArray keychainRead(const QString &path, QString *error) {
-    QProcess process;
-    process.start("security", {"find-generic-password", "-w", "-s", keychainService(), "-a", keychainAccount(path)});
-    if (!process.waitForFinished(10000) || process.exitCode() != 0) { if (error) *error = QStringLiteral("无法读取 macOS 钥匙串中的激活凭据"); return {}; }
-    return process.readAllStandardOutput().trimmed();
+static QByteArray keychainRead(const QString &path, const QByteArray &reference, QString *error) {
+    if (!validReference(reference)) {
+        if (error) *error = QStringLiteral("激活凭据引用已损坏，请重新验证邮箱");
+        return {};
+    }
+    auto query = keychainQuery(path, reference);
+    CFDictionarySetValue(query, kSecReturnData, kCFBooleanTrue);
+    CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);
+    CFTypeRef result = nullptr;
+    const auto status = SecItemCopyMatching(query, &result);
+    CFRelease(query);
+    if (status != errSecSuccess) {
+        if (error) *error = QStringLiteral("无法读取 macOS 钥匙串中的激活凭据（%1）").arg(status);
+        return {};
+    }
+    const auto data = static_cast<CFDataRef>(result);
+    const QByteArray plain(reinterpret_cast<const char *>(CFDataGetBytePtr(data)), CFDataGetLength(data));
+    CFRelease(result);
+    return plain;
 }
 #endif
 
@@ -73,7 +124,7 @@ QJsonObject CredentialStore::load(const QString &path, QString *error) {
     return value;
 #else
 #ifdef Q_OS_MACOS
-    const auto plain = keychainRead(path, error); if (plain.isEmpty()) return {};
+    const auto plain = keychainRead(path, file.readAll(), error); if (plain.isEmpty()) return {};
     QJsonParseError parseError;
     const auto value = QJsonDocument::fromJson(plain, &parseError).object();
     if (parseError.error != QJsonParseError::NoError && error) *error = QStringLiteral("激活凭据已损坏，请重新验证邮箱");

@@ -1,4 +1,4 @@
-import { access, cp, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,13 +52,36 @@ async function bundle(source, target) {
 for (const name of ["host", "pi-extension"]) await bundle(join(root, "packages", name), join(output, "packages", name));
 const nodeRoot = dirname(process.execPath);
 await mkdir(join(output, "node", "node_modules"), { recursive: true });
-await cp(process.execPath, join(output, "node", "node.exe"));
-await cp(join(nodeRoot, "node_modules", "npm"), join(output, "node", "node_modules", "npm"), { recursive: true, dereference: true });
+const windows = process.platform === "win32";
+const bundledNode = join(output, "node", windows ? "node.exe" : "node");
+await cp(process.execPath, bundledNode);
+const npmCandidates = [join(nodeRoot, "node_modules", "npm"), join(nodeRoot, "..", "lib", "node_modules", "npm")];
+try { npmCandidates.push(dirname(dirname(await realpath(join(nodeRoot, "npm"))))); } catch { /* not every Node installation has a launcher */ }
+let npmRoot;
+for (const candidate of npmCandidates) {
+  try { await access(join(candidate, "bin", "npm-cli.js")); npmRoot = candidate; break; } catch { /* try the next installation layout */ }
+}
+if (!npmRoot) throw new Error("Cannot locate npm next to the pinned Node installation");
+await cp(npmRoot, join(output, "node", "node_modules", "npm"), { recursive: true, dereference: true });
 // npm lifecycle scripts may invoke npm/npx themselves; keep those launchers next to the pinned Node.
-for (const launcher of ["npm.cmd", "npx.cmd", "npm", "npx"]) {
+for (const launcher of windows ? ["npm.cmd", "npx.cmd", "npm", "npx"] : []) {
   try { await access(join(nodeRoot, launcher)); } catch { continue; }
   await cp(join(nodeRoot, launcher), join(output, "node", launcher));
 }
+if (!windows) {
+  await chmod(bundledNode, 0o755);
+  for (const name of ["npm", "npx"]) {
+    const launcher = join(output, "node", name);
+    await writeFile(launcher, `#!/bin/sh\nbasedir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$basedir/node" "$basedir/node_modules/npm/bin/${name}-cli.js" "$@"\n`);
+    await chmod(launcher, 0o755);
+  }
+}
 for (const file of await readdir(nodeRoot)) if (/^(LICENSE|LICENSE\.txt)$/i.test(file)) await cp(join(nodeRoot, file), join(output, "node", file));
+if (!windows) {
+  // Official Unix Node archives put the license above bin/node.
+  const license = join(nodeRoot, "..", "LICENSE");
+  await access(license);
+  await cp(license, join(output, "node", "LICENSE"));
+}
 await writeFile(join(output, "DEPENDENCIES.json"), JSON.stringify({ node: process.version, packages: inventory }, null, 2));
 console.log(`Packaged Node ${process.version} and ${inventory.length} runtime packages into ${output}`);

@@ -44,6 +44,14 @@ To build an installer using an independently installed Inno Setup 6 compiler, ad
 
 For development, run the built executable with `--runtime-root <repository>`. `--data-dir <directory> --host-state-dir <directory>` isolate desktop/Host data. `--smoke-test --screenshot <png>` renders the actual QML window, checks the bundled Host and exits; add `--smoke-agents` to capture the latest-version and batch update dialogs without accepting them. Smoke tests automatically isolate Host identity if no state directory was supplied; they do not send emails or start agent sessions. `ORBIS_AGENT_INSTALL_ROOT` isolates downloaded Agent versions when testing the install lifecycle.
 
+## macOS preview builds
+
+The same Qt sources are packaged by `.github/workflows/macos-host-build.yml`, triggered manually with `workflow_dispatch`. Separate native runners produce `macos-arm64.dmg` for Apple Silicon and `macos-x64.dmg` for Intel, with SHA-256 files. The deployment target is macOS 12 or later. The workflow runs the complete existing test suite on Windows, portable tests and native CTest on each Mac, and a bundled application smoke test with development Node removed from PATH.
+
+The `.app` includes Qt, Node, npm and the runtime dependency closure in `Contents/Resources/runtime`. Activation credentials use the native macOS Keychain; the local activation file contains only an opaque reference. Login startup uses a per-user LaunchAgent. Pi and Codex terminal shortcuts open Terminal, which may request macOS automation permission. The Windows Codex PATH shim and Codex Desktop wrapper integration are not available on macOS in this preview.
+
+These previews are ad-hoc signed, without Developer ID signing or Apple notarization. Native execution and clean-machine installation still need validation on Macs. Updates open the verified DMG; quit Host and drag the replacement app into Applications to install. A build uploads CI artifacts only: it does not create a Release, upload website downloads or deploy the Relay. Publishing the two DMGs and their checksum files to the website remains a separate authorized operation.
+
 ## Registration service
 
 The Relay provides these endpoints under its existing URL prefix:

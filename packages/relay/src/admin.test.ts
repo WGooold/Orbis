@@ -192,10 +192,13 @@ describe("Relay web console", () => {
     const androidDirectory = await mkdtemp(join(tmpdir(), "orbis-android-downloads-"));
     const name = "OrbisHost-0.1.0-windows-x64-setup.exe";
     const macName = "OrbisHost-0.1.11-macos-arm64.dmg";
+    const intelName = "OrbisHost-0.1.11-macos-x64.dmg";
     await writeFile(join(directory, name), "test artifact");
     await writeFile(join(directory, `${name}.sha256`), `${"a".repeat(64)}  ${name}`);
     await writeFile(join(directory, macName), "macOS artifact");
     await writeFile(join(directory, `${macName}.sha256`), `${"d".repeat(64)}  ${macName}`);
+    await writeFile(join(directory, intelName), "Intel macOS artifact");
+    await writeFile(join(directory, `${intelName}.sha256`), `${"f".repeat(64)}  ${intelName}`);
     const unlistedName = "OrbisHost-0.1.11-macos-universal.dmg";
     await writeFile(join(directory, unlistedName), "not released");
     await writeFile(join(directory, `${unlistedName}.sha256`), `${"e".repeat(64)}  ${unlistedName}`);
@@ -210,7 +213,10 @@ describe("Relay web console", () => {
     await expect(fetch(`${base}/v1/site`).then(response => response.json())).resolves.toMatchObject({
       version: "0.1.0",
       windows: [{ name, url: `downloads/${name}`, checksumUrl: `downloads/${name}.sha256` }],
-      macos: [{ name: macName, url: `downloads/${macName}`, checksumUrl: `downloads/${macName}.sha256` }],
+      macos: [
+        { name: macName, url: `downloads/${macName}`, checksumUrl: `downloads/${macName}.sha256` },
+        { name: intelName, url: `downloads/${intelName}`, checksumUrl: `downloads/${intelName}.sha256` },
+      ],
       androidVersion: "0.1.49",
       androidVersionCode: 50,
       androidSha256: "b".repeat(64),
@@ -236,5 +242,8 @@ describe("Relay web console", () => {
     expect(macRelease.headers.get("content-disposition")).toContain(macName);
     expect((await fetch(`${base}/downloads/${macName}`, { method: "HEAD" })).headers.get("content-length")).toBe("14");
     expect(await fetch(`${base}/downloads/${macName}.sha256`).then(response => response.text())).toBe(`${"d".repeat(64)}  ${macName}\n`);
+    expect(await fetch(`${base}/downloads/${intelName}`).then(response => response.text())).toBe("Intel macOS artifact");
+    expect((await fetch(`${base}/downloads/${intelName}`, { method: "HEAD" })).headers.get("content-length")).toBe("20");
+    expect(await fetch(`${base}/downloads/${intelName}.sha256`).then(response => response.text())).toBe(`${"f".repeat(64)}  ${intelName}\n`);
   });
 });

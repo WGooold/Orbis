@@ -22,7 +22,7 @@ function renderDesktopDownloads(platform, files) {
     container.textContent = `${label} 预览包正在准备，发布后即可在这里下载。`;
     return;
   }
-  for (const release of releases.filter(file => file.version === version).sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const release of releases.filter(file => file.version === version)) {
     const portable = release.name.endsWith(".zip");
     const link = document.createElement("a");
     link.className = portable ? "text-link portable-link" : "button primary";

@@ -26,6 +26,17 @@ private slots:
         QVERIFY(CredentialStore::load(path, &error).isEmpty());
         QVERIFY(!error.isEmpty());
     }
+    void updatedCredentialsReplacePreviousValue() {
+        QTemporaryDir temp;
+        const auto path = temp.path() + "/activation.dat";
+        QString error;
+        QVERIFY2(CredentialStore::save(path, {{"credential", "old-secret"}}, &error), qPrintable(error));
+        const QJsonObject updated{{"credential", "new-secret"}};
+        QVERIFY2(CredentialStore::save(path, updated, &error), qPrintable(error));
+        QCOMPARE(CredentialStore::load(path, &error), updated);
+        QVERIFY(QFile::remove(path));
+        QVERIFY(CredentialStore::load(path, &error).isEmpty());
+    }
 };
 QTEST_GUILESS_MAIN(CredentialStoreTest)
 #include "CredentialStoreTest.moc"

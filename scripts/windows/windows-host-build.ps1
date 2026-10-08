@@ -69,7 +69,13 @@ try {
             $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
             $testProcess = Start-Process -FilePath "$stage\OrbisHost.exe" -ArgumentList '--smoke-test','--smoke-agents','--data-dir',('"' + $smokeDir + '"'),'--screenshot',('"' + $releaseRoot + '\preview.png"') -WindowStyle Hidden -PassThru -Wait -RedirectStandardError "$smokeDir\qml.log"
             $env:Path = "$CompilerRoot\bin;$QtRoot\bin;$savedPath"
-            if ($testProcess.ExitCode -ne 0) { throw "Packaged app smoke test failed: $($testProcess.ExitCode). See $smokeDir" }
+            if ($testProcess.ExitCode -ne 0) {
+                foreach ($diagnostic in @('qml.log', 'smoke-result.json')) {
+                    $diagnosticPath = Join-Path $smokeDir $diagnostic
+                    if (Test-Path -LiteralPath $diagnosticPath) { Get-Content -LiteralPath $diagnosticPath | Write-Output }
+                }
+                throw "Packaged app smoke test failed: $($testProcess.ExitCode). Diagnostics printed above."
+            }
             Get-ChildItem -LiteralPath $releaseRoot -File -Filter 'preview.png.*.png' -ErrorAction SilentlyContinue | Remove-Item -Force
             $archive = Join-Path $releaseRoot 'OrbisHost-0.1.11-windows-x64.zip'
             Compress-Archive -LiteralPath $stage -DestinationPath $archive
