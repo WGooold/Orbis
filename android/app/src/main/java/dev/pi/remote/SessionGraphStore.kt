@@ -10,6 +10,11 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class SessionGraphStoreException(message: String) : IllegalStateException(message)
 
@@ -56,7 +61,10 @@ class SessionGraphStore(
         database.beginTransaction()
         try {
             if (writeGuard?.invoke() == false) throw SessionGraphStoreException(STALE_SESSION_GRAPH_WRITE)
-            if (agentKind == "codex") migrateCodexRows(database, sessionId)
+            if (agentKind == "codex") {
+                rebuildCodexGraph(database, sessionId)
+                migrateCodexRows(database, sessionId)
+            }
             val received = validateCanonicalEntries(
                 entries,
                 lookup = { find(database, sessionId, it) },
@@ -309,6 +317,7 @@ class SessionGraphStore(
             database.delete("session_turn_timings", "session_id = ?", arrayOf(sessionId))
             database.delete("session_sync_progress", "session_id = ?", arrayOf(sessionId))
             database.delete("session_legacy_entries", "session_id = ?", arrayOf(sessionId))
+            database.delete("codex_canonical_rebuilds", "session_id = ?", arrayOf(sessionId))
             database.setTransactionSuccessful()
         } finally {
             database.endTransaction()
@@ -330,21 +339,68 @@ class SessionGraphStore(
             if (cursor.moveToFirst()) cursor.getString(0) else null
         }
 
-    /** Migration must run before loading old Codex rows into the in-memory canonical tree. */
+    /** Returns true when the old graph was archived; callers must discard its memory projection. */
     @Synchronized
-    fun prepareSession(device: DeviceCredential, sessionId: String, agentKind: String?) {
-        if (agentKind != "codex") return
+    fun prepareSession(device: DeviceCredential, sessionId: String, agentKind: String?): Boolean {
+        if (agentKind != "codex") return false
         val db = database(device).writableDatabase
         db.beginTransaction()
         try {
+            val rebuilt = rebuildCodexGraph(db, sessionId)
             migrateCodexRows(db, sessionId)
             db.setTransactionSuccessful()
+            return rebuilt
         } catch (error: IllegalArgumentException) {
             throw SessionGraphStoreException(error.message ?: "legacy_codex_shape_unknown")
         } finally {
             db.endTransaction()
         }
     }
+
+    /** Only an explicit database upgrade can schedule this, never an ordinary sync conflict. */
+    private fun rebuildCodexGraph(db: SQLiteDatabase, sessionId: String): Boolean {
+        val pending = db.rawQuery(
+            "SELECT prior_database_version FROM codex_canonical_rebuilds WHERE session_id = ? AND completed_at IS NULL",
+            arrayOf(sessionId),
+        ).use { if (it.moveToFirst()) it.getInt(0) else null } ?: return false
+        val archive = buildJsonObject {
+            put("targetCanonicalFormat", "codex-native-item-order-v1")
+            put("priorDatabaseVersion", pending)
+            put("entries", archiveRows(db, "session_entries", sessionId,
+                listOf("entry_id", "parent_id", "type", "timestamp", "payload", "verified_depth", "legacy_format")))
+            put("timings", archiveRows(db, "session_turn_timings", sessionId, listOf("turn_id", "payload", "updated_at")))
+            put("cursor", archiveRows(db, "session_cursors", sessionId, listOf("leaf_id", "updated_at")))
+            put("coverage", archiveRows(db, "session_sync_progress", sessionId, listOf("leaf_id")))
+            put("legacyEntries", archiveRows(db, "session_legacy_entries", sessionId,
+                listOf("entry_id", "parent_id", "type", "timestamp", "payload")))
+        }
+        // Keep the exact old representation for diagnosis. Native facts, rather than these
+        // parent edges, will seed the new canonical cache on the next bounded sync.
+        db.execSQL(
+            "UPDATE codex_canonical_rebuilds SET archive = ?, completed_at = ? WHERE session_id = ?",
+            arrayOf<Any>(archive.toString(), System.currentTimeMillis(), sessionId),
+        )
+        for (table in listOf("session_entries", "session_turn_timings", "session_cursors", "session_sync_progress")) {
+            db.delete(table, "session_id = ?", arrayOf(sessionId))
+        }
+        return true
+    }
+
+    private fun archiveRows(db: SQLiteDatabase, table: String, sessionId: String, columns: List<String>) =
+        db.query(table, columns.toTypedArray(), "session_id = ?", arrayOf(sessionId), null, null, null).use { cursor ->
+            buildJsonArray {
+                while (cursor.moveToNext()) add(buildJsonObject {
+                    columns.forEachIndexed { index, name ->
+                        put(name, when (cursor.getType(index)) {
+                            android.database.Cursor.FIELD_TYPE_NULL -> JsonNull
+                            android.database.Cursor.FIELD_TYPE_INTEGER -> JsonPrimitive(cursor.getLong(index))
+                            android.database.Cursor.FIELD_TYPE_FLOAT -> JsonPrimitive(cursor.getDouble(index))
+                            else -> JsonPrimitive(cursor.getString(index))
+                        })
+                    }
+                })
+            }
+        }
 
     @Synchronized
     fun continuousLeaf(device: DeviceCredential, sessionId: String): String? =
@@ -621,6 +677,7 @@ class SessionGraphStore(
                 """.trimIndent(),
             )
             createCoverageTables(database)
+            createCodexRebuildTable(database)
         }
 
         override fun onUpgrade(database: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -659,6 +716,24 @@ class SessionGraphStore(
                     promoteCoverage(database, session, ids, null)
                 }
             }
+            if (oldVersion < 5) {
+                createCodexRebuildTable(database)
+                // The database did not persist agent kind. Register existing Sessions as
+                // candidates, then rebuild only those classified as Codex by prepareSession.
+                database.execSQL("""INSERT INTO codex_canonical_rebuilds(session_id, prior_database_version)
+                    SELECT session_id, ? FROM session_entries
+                    UNION SELECT session_id, ? FROM session_turn_timings
+                    UNION SELECT session_id, ? FROM session_cursors
+                    UNION SELECT session_id, ? FROM session_sync_progress
+                    UNION SELECT session_id, ? FROM session_legacy_entries""",
+                    arrayOf(oldVersion, oldVersion, oldVersion, oldVersion, oldVersion))
+            }
+        }
+
+        private fun createCodexRebuildTable(database: SQLiteDatabase) {
+            database.execSQL("""CREATE TABLE codex_canonical_rebuilds(
+                session_id TEXT PRIMARY KEY, prior_database_version INTEGER NOT NULL,
+                archive TEXT, completed_at INTEGER)""")
         }
 
         private fun createCoverageTables(database: SQLiteDatabase) {
@@ -671,7 +746,7 @@ class SessionGraphStore(
     }
 
     private companion object {
-        const val DATABASE_VERSION = 4
+        const val DATABASE_VERSION = 5
         const val DEFAULT_MAX_ENTRIES = 2_000
         const val MAX_TRAVERSAL_ENTRIES = 100_000
         const val MAX_TITLE_SCAN_ENTRIES = 2_000

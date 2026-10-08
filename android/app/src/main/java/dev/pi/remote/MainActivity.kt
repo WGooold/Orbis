@@ -835,6 +835,7 @@ private fun OfflineHistoryScreen(
             // 轮次间距与在线会话一致。
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
+            historyKey?.let { state.conversations[it]?.systemNotice }?.let { notice -> item { NoticeCard(notice) } }
             projection.error?.let { item { WarningCard("历史记录加载失败：$it") } }
             items(chatItems, key = ChatListItem::key) { item ->
                 when (item) {
@@ -1540,6 +1541,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
                     item { WarningCard("此交互必须在电脑端完成。停止操作仅为尽力而为。") }
                 }
                 conversation.interactionNotice?.let { notice -> item { NoticeCard(notice) } }
+                conversation.systemNotice?.let { notice -> item { NoticeCard(notice) } }
                 items(chatItems, key = ChatListItem::key) { item ->
                     when (item) {
                         is ChatListItem.UserMessage -> UserMessageCard(

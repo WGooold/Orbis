@@ -2,7 +2,7 @@
 
 日期：2026-10-08
 
-Status: proposed（供讨论；尚未实现，也未通过故障注入验证）
+Status: accepted（设计已采纳；Codex 与 APP 分阶段实现，尚未完成全部后端及真实链路验收）
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0023](0023-codex-revert-and-client-refresh.md)、[ADR-0008](0008-drop-backward-compatibility.md)。实施跟踪：[Issue #2](https://github.com/WGooold/Orbis/issues/2)、[Issue #3](https://github.com/WGooold/Orbis/issues/3)。
 
@@ -20,7 +20,7 @@ Status: proposed（供讨论；尚未实现，也未通过故障注入验证）
 
 ## 现有处理为什么不能只放开 running 限制
 
-以下是本轮代码审查确认的处理路径，不表示已经完成运行复现：
+以下是设计时通过代码审查确认的处理路径；部分已由下述实施阶段修正，不表示每项均已完成真实链路复现：
 
 | 现有处理 | 可能产生的具体问题 |
 | --- | --- |
@@ -144,6 +144,8 @@ v22（追加“！”）到达，要求 baseSeq=21。
 
 保留现有有界 `session.sync` 入口与统一 Entry ingestion。协议上明确区分状态 checkpoint 与历史 page；可以共用一个命令的不同目的参数，不能再让 `replace/append/prepend` 隐式决定当前运行态。
 
+首版命令范围固定为：`preview` 返回当前状态 checkpoint 及有界 tail；`history` 和 `catchup` 仅返回 canonical page，不携带当前 source/head/live checkpoint。page 的 cursor 描述请求目标，不具有切换当前 head 的权限。新 head 尚未缓存时请求 preview 或缺失范围，不能用 catchup 到达顺序决定当前分支。
+
 - 当前 head 只由 checkpoint/状态事务决定。历史页携带固定 `targetLeaf`、anchor、任务归属和 coverage，只补节点及连续覆盖事实。
 - 分页响应不会清 turn、结束工具、合并 live、移动当前 head。旧页即使晚于 revert 到达，也不能把当前聊天切回旧尾部。
 - 失去有效任务归属的页丢弃。合法旧目标页是否继续缓存，由有界后台任务明确决定；缓存旧分支从来不等于切换当前分支。
@@ -217,7 +219,16 @@ running 时允许 sync 不意味着 running 时允许 revert；后者仍按原�
 
 实施顺序：先确定源端可恢复状态和 canonical 稳定性，再接入 checkpoint/patch 与 APP 单一 reducer，最后启用 running sync 和自动恢复。不能先删 guard，再把已经发生的损坏逐个补回来。
 
-遵循 ADR-0008 同步升级相关组件与硬协议门槛，不维持一套新旧事件共同决定聊天状态的隐式兼容路径。本文件为 proposed，不直接修改 CONTEXT.md 中当前已采纳的定义。
+遵循 ADR-0008 同步升级相关组件与硬协议门槛，不维持一套新旧事件共同决定聊天状态的隐式兼容路径。一个 Session 建立 source checkpoint 后，聊天状态仅随版本化 checkpoint/patch 更新；旧 message/turn/tool 事件和 metadata 不得绕过版本检查。
+
+## 实施进度与启用范围
+
+- Protocol 已升级到版本 9，校验完整 source/checkpoint/live envelope、显式 head 和 patch 版本边界；状态 checkpoint 只由 preview 返回。
+- 首阶段接入 Codex adapter 和 APP reducer。APP 在建立版本化基线后隔离旧生命周期事件；Pi 与 DSH 尚未提供这套 source 状态，仍使用其原有同步路径，不能据此宣称它们已满足本 ADR 的恢复保证。
+- Codex 的确定性重建、协调代次与版本化 live/checkpoint 已有实现和单测。原生通知的 canonical 提交及 live/tool 移除作为一次状态事务发布；每 15 秒、重新 announce 以及到期 preview 核对原生 `thread/turns/list`，可以发现静默回退和遗漏的完成通知。首版会读取完整 turns，长会话和多会话的读取成本仍需优化；原生多页没有 revision token 时要求连续读取一致，不把无法确认的结果发布为 ready。
+- APP 已实现缺口恢复、完整 checkpoint 后重放连续 patch、history/catchup 只补缓存和旧生命周期隔离。旧 Codex 表示采用 ADR-0023 的数据库版本 5 显式重建，普通 conflict 仍硬失败。
+- Codex GUI/TUI 自动刷新由 ADR-0023 / Issue #4 跟踪。刷新协调器和持久 journal 不等于生产 driver 已接入，也不等于真实 GUI 已完成 hydration。
+- 单测覆盖和真实链路验收分别记录；尚未完成的 Pi/DSH 接入、大 checkpoint 分块、旧缓存迁移的设备验证及设备断连验收继续保留为明确限制。
 
 ## 故障注入验收
 
@@ -241,4 +252,4 @@ running 时允许 sync 不意味着 running 时允许 revert；后者仍按原�
 | 手机崩溃于 Entry 入库后、内存 seq 更新前 | 重启 checkpoint 后幂等恢复，不依赖未持久化的 live/seq |
 | outbox 确认丢失、另一设备收到定向页 | pending 不被 live 替换删除；定向响应不制造共享版本假缺口 |
 
-需要 reducer/adapter 故障测试、Android SQLite 事务验证及真实链路断连/延迟验证；当前只完成设计与静态审查，尚未执行这些验收。
+需要 reducer/adapter 故障测试、Android SQLite 事务验证及真实链路断连/延迟验证。当前已执行部分 Protocol、Codex adapter、Android reducer 和刷新恢复单测；全部故障矩阵及真实 GUI/TUI、设备链路验收尚未完成，不能将单测通过视为全流程完成。

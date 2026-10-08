@@ -749,9 +749,9 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
     live: SessionLiveStateSchema.optional(),
   }).refine(snapshot => {
     const count = [snapshot.source, snapshot.checkpoint, snapshot.live].filter(value => value !== undefined).length;
-    return count === 0 || (count === 3 && snapshot.range !== "history" &&
+    return count === 0 || (count === 3 && snapshot.range === "preview" &&
       snapshot.checkpoint!.inventoryComplete === snapshot.live!.complete);
-  }, { message: "A state checkpoint requires source, head, and matching live inventory; history pages carry no current state" }),
+  }, { message: "A state checkpoint requires source, head, and matching live inventory; only preview carries current state" }),
   SessionPatchSchema,
   z.strictObject({ type: z.literal("message.started"), message: ChatMessageSchema, queueId: z.string().min(1).optional() }),
   z.strictObject({

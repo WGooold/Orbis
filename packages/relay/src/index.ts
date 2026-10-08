@@ -147,6 +147,15 @@ const reject = (socket: WebSocket, code: string, message: string): void => {
   setTimeout(() => socket.close(1008, code), 0);
 };
 
+const hasIncompatibleProtocolVersion = (value: unknown, authenticateType: string): boolean => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const message = value as Record<string, unknown>;
+  return message.type === authenticateType
+    && typeof message.protocolVersion === "number"
+    && Number.isInteger(message.protocolVersion)
+    && message.protocolVersion !== PROTOCOL_VERSION;
+};
+
 const protocolValidationMessage = (value: unknown, issues: readonly { path: PropertyKey[] }[]): string => {
   const message = value && typeof value === "object" ? value as Record<string, unknown> : undefined;
   const type = typeof message?.type === "string" ? message.type : "<missing>";
@@ -508,6 +517,10 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
       }
       const parsed = RuntimeClientMessageSchema.safeParse(decoded);
       if (!parsed.success) {
+        if (!runtimeId && hasIncompatibleProtocolVersion(decoded, "runtime.authenticate")) {
+          reject(socket, "protocol_version_mismatch", "Protocol version mismatch. Update Orbis Host to the latest version.");
+          return;
+        }
         logProtocolValidationFailure(decoded, parsed.error.issues);
         reject(socket, "invalid_message", protocolValidationMessage(decoded, parsed.error.issues));
         return;
@@ -614,13 +627,19 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         return;
       }
       let parsed: ReturnType<typeof DeviceClientMessageSchema.safeParse>;
+      let decoded: unknown;
       try {
-        parsed = DeviceClientMessageSchema.safeParse(decodeJson(raw));
+        decoded = decodeJson(raw);
+        parsed = DeviceClientMessageSchema.safeParse(decoded);
       } catch {
         reject(socket, "invalid_message", "Message must be valid JSON");
         return;
       }
       if (!parsed.success) {
+        if (!connection && hasIncompatibleProtocolVersion(decoded, "device.authenticate")) {
+          reject(socket, "protocol_version_mismatch", "Protocol version mismatch. Update Orbis App to the latest version.");
+          return;
+        }
         reject(socket, "invalid_message", "Message does not match the device protocol");
         return;
       }

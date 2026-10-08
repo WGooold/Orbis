@@ -219,7 +219,7 @@ class RelayReducerTest {
         // 是 OFFLINE 还是 CONNECTING 不重要，将来改了也不该让这条测试变红）。
         val stale = reducer.reduce(RemoteState(), ready(PROTOCOL_VERSION - 1))
         assertNotEquals(RelayConnection.ONLINE, stale.connection)
-        assertEquals("收到不兼容的协议版本，请升级 Orbis", stale.error)
+        assertEquals(PROTOCOL_VERSION_MISMATCH_ERROR, stale.error)
     }
 
     // issue 02 验收：事件按 ctl/msg 分道投递，`ctl` 插队是常态。水位线若按 runtimeId
@@ -3131,7 +3131,7 @@ class RelayReducerTest {
           {"type":"runtime.event","protocolVersion":99,"runtimeId":"runtime-a","sequence":1,
            "event":{"type":"message.delta","messageId":"x","contentType":"text","delta":"y"}}
         """.trimIndent())
-        assertEquals("收到不兼容的协议版本，请升级 Orbis", incompatible.error)
+        assertEquals("Orbis 协议版本不兼容，请将手机 App 和电脑 Host 更新到最新版本", incompatible.error)
         val unknownEvent = reducer.reduce(RemoteState(), """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{"type":"future.event"}}
         """.trimIndent())
@@ -3148,6 +3148,14 @@ class RelayReducerTest {
           {"type":"protocol.error","code":"unauthorized","message":"Invalid device credential"}
         """.trimIndent())
         assertEquals("Relay 拒绝了设备凭据，请重新扫码配对", unauthorized.error)
+
+        val versionMismatch = reducer.reduce(RemoteState(), """
+          {"type":"protocol.error","code":"protocol_version_mismatch","message":"Protocol version mismatch"}
+        """.trimIndent())
+        assertEquals(
+            PROTOCOL_VERSION_MISMATCH_ERROR,
+            versionMismatch.error,
+        )
 
         val invalidMessage = reducer.reduce(RemoteState(), """
           {"type":"protocol.error","code":"invalid_message","message":"Message does not match the device protocol"}

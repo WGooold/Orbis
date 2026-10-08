@@ -39,8 +39,7 @@ export type CodexDesktopPresenceOptions = {
  * closed.
  */
 export async function detectCodexDesktopPresence(options: CodexDesktopPresenceOptions = {}): Promise<CodexDesktopPresence> {
-  const currentPlatform = options.platform ?? platform();
-  if (currentPlatform !== "win32" && currentPlatform !== "darwin") return { ready: false, reason: "Codex 桌面版仅支持 Windows 和 macOS" };
+  if ((options.platform ?? platform()) !== "win32") return { ready: false, reason: "Codex 桌面版只支持 Windows" };
   let executable: string | undefined;
   try {
     executable = await (options.resolveExecutable ?? resolveCodexDesktopExecutable)();
@@ -74,12 +73,6 @@ export async function waitForCodexDesktop(options: CodexDesktopPresenceOptions =
 
 /** 查不到安装位置是「没装」；查询本身报错必须抛出，那是两种不同的结论。 */
 async function resolveCodexDesktopExecutable(): Promise<string | undefined> {
-  if (platform() === "darwin") {
-    for (const candidate of ["/Applications/Codex.app/Contents/MacOS/Codex", join(process.env.HOME ?? "", "Applications/Codex.app/Contents/MacOS/Codex")]) {
-      try { await import("node:fs/promises").then(fs => fs.access(candidate)); return candidate; } catch { /* continue */ }
-    }
-    return undefined;
-  }
   const { stdout, stderr } = await runPowerShell(
     "(Get-AppxPackage -Name OpenAI.Codex | Select-Object -First 1 -ExpandProperty InstallLocation)",
   );
@@ -90,20 +83,16 @@ async function resolveCodexDesktopExecutable(): Promise<string | undefined> {
 }
 
 /**
- * 桌面版的 GUI 可执行文件。包装器模式要直接 CreateProcess 它：只有直接创建才能把
- * `CODEX_CLI_PATH` 交给它（走 `codex://` 协议激活会把环境丢掉）。
+ * 桌面版的 GUI 可执行文件路径，仅供安装探测和进程匹配。
+ * GUI 启动应使用注册的应用标识，避免任务栏固定到带版本号的 EXE 路径。
  */
 export async function resolveCodexDesktopExecutablePath(options: CodexDesktopPresenceOptions = {}): Promise<string | undefined> {
-  if (!["win32", "darwin"].includes(options.platform ?? platform())) return undefined;
+  if ((options.platform ?? platform()) !== "win32") return undefined;
   return (options.resolveExecutable ?? resolveCodexDesktopExecutable)();
 }
 
 /** 导出给回归测试：这条查询脚本的语句边界必须留在文本里（见 `runPowerShell`）。 */
 export async function listCodexDesktopProcesses(): Promise<readonly CodexDesktopProcess[]> {
-  if (platform() === "darwin") {
-    const { stdout } = await execute("pgrep", ["-x", "Codex"]);
-    return stdout.trim().split(/\s+/u).filter(Boolean).map(pid => ({ pid: Number(pid), executable: "/Applications/Codex.app/Contents/MacOS/Codex", mainWindowHandle: 1, title: "Codex" }));
-  }
   const script = [
     "$items = Get-CimInstance Win32_Process -Filter \"Name='ChatGPT.exe'\" -ErrorAction SilentlyContinue | ForEach-Object {",
     "  $p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue",

@@ -6,11 +6,12 @@ import { type CodexAppServer } from "./codex-daemon.js";
 const cleanups: Array<() => void> = [];
 afterEach(() => { cleanups.splice(0).forEach((fn) => fn()); vi.useRealTimers(); });
 
-async function harness() {
+async function harness(nativeTurns: unknown[] = []) {
   const events: RuntimeEvent[] = [];
   const request = vi.fn(async (method: string, params: Record<string, unknown>) => method === "thread/resume"
     ? { thread: { id: params.threadId, cwd: "D:/test", turns: [] }, model: "test", approvalPolicy: "never",
-      sandbox: { type: "readOnly" }, approvalsReviewer: "user" } : { data: [] });
+      sandbox: { type: "readOnly" }, approvalsReviewer: "user" }
+    : { data: method === "thread/turns/list" ? nativeTurns : [] });
   const server = { request } as unknown as CodexAppServer;
   const runtime = new CodexRuntime({ server, onEvent: (event) => events.push(event), rolloutRoot: "D:/not-existing-codex-audit-rollouts" });
   runtime.markStarted();
@@ -108,6 +109,40 @@ describe("Codex approval lifecycle", () => {
     expect(h.events).toContainEqual({ type: "interaction.cancelled", requestId: prompt.requestId, reason: "cancelled" });
     expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "answer-1", ok: false }));
     expect(h.events.some((e) => e.type === "interaction.resolved")).toBe(false);
+  });
+
+  it("settles a late completion after native reconciliation has cleared the active turn", async () => {
+    const h = await harness([{ id: "turn-1", status: "completed", items: [] }]);
+    h.server.onNotification?.("turn/started", { threadId: "a", turn: { id: "turn-1", startedAt: 1_800_000_000 } });
+    h.approval(); const prompt = h.latest(); h.answer(prompt);
+    h.runtime.announce("a");
+    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({
+      type: "session.patch", source: expect.objectContaining({ ready: true }),
+      live: expect.objectContaining({ turn: null }),
+    })));
+
+    h.server.onNotification?.("turn/completed", {
+      threadId: "a", turn: { id: "turn-1", status: "failed", error: { message: "provider unavailable" } },
+    });
+    await vi.waitFor(() => expect(h.events).toContainEqual({
+      type: "interaction.cancelled", requestId: prompt.requestId, reason: "cancelled",
+    }));
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "answer-1", ok: false }));
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "runtime.error", message: "provider unavailable" }));
+    expect(h.events.some((event) => event.type === "interaction.resolved")).toBe(false);
+  });
+
+  it("does not let an older completion finish a different active turn or its approval", async () => {
+    const h = await harness();
+    h.server.onNotification?.("turn/started", { threadId: "a", turn: { id: "turn-2", startedAt: 1_800_000_000 } });
+    h.approval({ turnId: "turn-2" }); const prompt = h.latest(); h.events.length = 0;
+    h.server.onNotification?.("turn/completed", {
+      threadId: "a", turn: { id: "turn-1", status: "failed", error: { message: "old failure" } },
+    });
+    expect(h.events).toEqual([]);
+    h.server.onNotification?.("serverRequest/resolved", { threadId: "a", requestId: 42 });
+    expect(h.events).toContainEqual({ type: "interaction.resolved", requestId: prompt.requestId, source: "local" });
+    expect(h.runtime.directoryEntries()[0]?.status).toBe("running");
   });
 
   it("surfaces nested effective settings and sandbox failures including failed turns", async () => {

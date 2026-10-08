@@ -1,11 +1,13 @@
-import { spawn } from "node:child_process";
-import { homedir, platform } from "node:os";
+import { platform } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { CodexDesktopAttach } from "@pi-remote/protocol";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import { launchCodexDesktopApp } from "./codex-desktop-app.js";
 import { detectCodexDesktopPresence, waitForCodexDesktop, type CodexDesktopPresence, type CodexDesktopPresenceOptions } from "./codex-desktop-presence.js";
+
+export { launchCodexDesktopApp } from "./codex-desktop-app.js";
 
 export type CodexDesktopLifecycleOptions = {
   log?: (line: string) => void;
@@ -318,17 +320,4 @@ export class CodexDesktopLifecycle {
     if (endpoint !== undefined) await this.probe().catch(() => undefined);
     else await this.#reportNoEndpoint();
   }
-}
-
-export async function launchCodexDesktopApp(): Promise<void> {
-  const cli = await resolveCodexCommand();
-  const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-  const script = `$ErrorActionPreference = 'Stop'; Start-Process -FilePath ${quote(cli.command)} -ArgumentList @(${[...cli.prefixArgs, "app"].map(quote).join(",")}) -WorkingDirectory ${quote(homedir())} -WindowStyle Hidden -ErrorAction Stop`;
-  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
-    stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000,
-  });
-  await new Promise<void>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开 Codex 桌面版，请重试")));
-  });
 }

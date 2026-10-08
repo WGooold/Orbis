@@ -55,6 +55,37 @@ describe("relay online runtime discovery", () => {
     await relay?.close();
   });
 
+  it("reports a protocol version mismatch on both authentication routes", async () => {
+    relay = await createRelayServer({ port: 0 });
+    const runtime = await openSocket(`${relay.url}/v1/runtime`);
+    sockets.push(runtime);
+    runtime.send(JSON.stringify({
+      type: "runtime.authenticate",
+      protocolVersion: PROTOCOL_VERSION - 1,
+      credential: "runtime-secret",
+      role: "host",
+      runtime: { runtimeId: "host-1", name: "desktop", cwd: "/", status: "idle" },
+    }));
+    await expect(nextMessage(runtime)).resolves.toMatchObject({
+      type: "protocol.error",
+      code: "protocol_version_mismatch",
+      message: expect.stringContaining("Update Orbis Host"),
+    });
+
+    const device = await openSocket(`${relay.url}/v1/device`);
+    sockets.push(device);
+    device.send(JSON.stringify({
+      type: "device.authenticate",
+      protocolVersion: PROTOCOL_VERSION - 1,
+      credential: "device-secret",
+    }));
+    await expect(nextMessage(device)).resolves.toMatchObject({
+      type: "protocol.error",
+      code: "protocol_version_mismatch",
+      message: expect.stringContaining("Update Orbis App"),
+    });
+  });
+
   // (a) 的不变量：中继上的"运行时"入口会把该连接的事件**明文**广播给设备，
   // 所以它只能由网关（Host）使用。agent 身份一律拒之门外——扩展在找不到本机 Host 时
   // 也不再回落到中继（见 pi-extension 的 resolveRuntimeTransport）。

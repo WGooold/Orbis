@@ -132,6 +132,218 @@ function syncHistory(h: ReturnType<typeof makeHarness>, options: Partial<Session
   return h.events.slice(start).find((event) => event.type === "session.snapshot");
 }
 
+describe("Codex recoverable source checkpoints", () => {
+  const agent = (id: string, text = id) => ({ id, type: "agentMessage", text });
+  const tool = (id: string, status?: string) => ({ id, type: "commandExecution", command: "dir", ...(status === undefined ? {} : { status }) });
+  const resume = async (h: ReturnType<typeof makeHarness>, turns: unknown[]) => {
+    const activating = h.runtime.activate({ type: "resume", sessionId: "th-1" });
+    h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", turns } });
+    await activating;
+  };
+  const nativeReads = (h: ReturnType<typeof makeHarness>) => h.requests.mock.calls.filter(([method]) => method === "thread/turns/list");
+
+  it("publishes tool commit and removal from live as one source version", async () => {
+    const h = makeHarness();
+    await activate(h);
+    h.notify("item/started", { threadId: "th-1", item: tool("tool") });
+    h.events.length = 0;
+    h.notify("item/completed", { threadId: "th-1", item: tool("tool", "completed") });
+    const patches = h.events.filter(event => event.type === "session.patch");
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({
+      head: { leafId: "tool:result" }, live: { messages: [], tools: [] },
+    });
+    expect(syncHistory(h)?.entries.map(entry => entry.entryId)).toEqual(["tool", "tool:result"]);
+  });
+
+  it("removes every newly canonical live item when an earlier item unblocks ordered commit", async () => {
+    const h = makeHarness();
+    await activate(h);
+    h.notify("item/started", { threadId: "th-1", item: agent("a", "partial") });
+    h.notify("item/started", { threadId: "th-1", item: tool("b") });
+    h.notify("item/completed", { threadId: "th-1", item: tool("b", "completed") });
+    expect(syncHistory(h)).toMatchObject({
+      entries: [], live: { messages: expect.arrayContaining([expect.objectContaining({ persistedEntryId: "b", finished: true })]),
+        tools: [expect.objectContaining({ toolCallId: "b", state: "finished" })] },
+    });
+    h.events.length = 0;
+    h.notify("item/completed", { threadId: "th-1", item: agent("a", "final") });
+    const patches = h.events.filter(event => event.type === "session.patch");
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({ head: { leafId: "b:result" }, live: { messages: [], tools: [] } });
+    expect(syncHistory(h)?.entries.map(entry => entry.entryId)).toEqual(["a", "b", "b:result"]);
+  });
+
+  it("preserves running items with unknown native completion and marks unknown turn time", async () => {
+    const h = makeHarness();
+    await resume(h, [{ id: "running", status: "inProgress", items: [agent("a", "partial"), tool("b")] }]);
+    expect(syncHistory(h)).toMatchObject({
+      entries: [], source: { ready: true },
+      checkpoint: { head: { leafId: null }, inventoryComplete: false },
+      live: { complete: false, turn: null,
+        messages: expect.arrayContaining([expect.objectContaining({ message: expect.objectContaining({ messageId: "a" }), finished: false, contentComplete: false })]),
+        tools: [expect.objectContaining({ toolCallId: "b", state: "started" })] },
+    });
+  });
+
+  it("keeps finished items awaiting an active prefix recoverable after native replay", async () => {
+    const h = makeHarness();
+    await resume(h, [{ id: "running", status: "inProgress", startedAt: 1_800_000_000,
+      items: [agent("a", "partial"), tool("b", "completed")] }]);
+    expect(syncHistory(h)).toMatchObject({
+      entries: [], live: { complete: true,
+        messages: expect.arrayContaining([expect.objectContaining({ persistedEntryId: "b", finished: true, contentComplete: true })]),
+        tools: [expect.objectContaining({ toolCallId: "b", state: "finished" })] },
+    });
+  });
+
+  it("keeps a finished tool recoverable when turn completion arrives before an earlier item commit", async () => {
+    const h = makeHarness();
+    await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1_800_000_000 } });
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: agent("a", "partial") });
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: tool("b") });
+    h.notify("item/completed", { threadId: "th-1", turnId: "t", item: tool("b", "completed") });
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "t" } });
+    expect(syncHistory(h)).toMatchObject({ entries: [], live: { turn: null,
+      tools: [expect.objectContaining({ toolCallId: "b", state: "finished" })] } });
+  });
+
+  it("repairs a silent native revert through the 15 second native check", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const h = makeHarness();
+      h.runtime.markStarted();
+      const first = { id: "t1", status: "completed", items: [agent("a")] };
+      await resume(h, [first, { id: "t2", status: "completed", items: [agent("b")] }]);
+      const epoch = syncHistory(h)?.source?.epoch;
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(nativeReads(h)).toHaveLength(1);
+      h.resolveNext({ data: [first] });
+      await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1))
+        .toMatchObject({ head: { leafId: "a" }, source: { ready: true, epoch } }));
+      expect(syncHistory(h)?.entries.map(entry => entry.entryId)).toEqual(["a"]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers missing final completion and idle even when no later notification arrives", async () => {
+    const h = makeHarness();
+    await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1_800_000_000 } });
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: agent("a", "") });
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "a", delta: "prefix" });
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+    h.resolveNext({ data: [{ id: "t", status: "completed", items: [agent("a", "prefix and final")] }] });
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1))
+      .toMatchObject({ source: { ready: true }, head: { leafId: "a" }, live: { turn: null, messages: [], tools: [] } }));
+    expect(syncHistory(h)).toMatchObject({ entries: [{ data: { message: { content: [{ type: "text", text: "prefix and final" }] } } }] });
+    expect(h.events.filter(event => event.type === "runtime.status").at(-1)).toMatchObject({ status: "idle" });
+  });
+
+  it("detects a silent revert to the same native history that existed before later notifications", async () => {
+    const h = makeHarness();
+    await activate(h);
+    h.notify("item/completed", { threadId: "th-1", turnId: "t", item: agent("a") });
+    expect(syncHistory(h)?.cursor.leafId).toBe("a");
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+    h.resolveNext({ data: [] });
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1))
+      .toMatchObject({ source: { ready: true }, head: { leafId: null } }));
+    expect(syncHistory(h)?.entries).toEqual([]);
+  });
+
+  it("keeps legacy retained entries unknown when native full history cannot hydrate their items", async () => {
+    const h = makeHarness();
+    await resume(h, [{ id: "t", status: "completed", items: [agent("a")] }]);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+    h.resolveNext({ data: [{ id: "t", status: "completed", items: [] }] });
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1))
+      .toMatchObject({ source: { ready: false }, head: { leafId: null }, headCompleteness: "unknown" }));
+    expect(syncHistory(h, { range: "history" })?.entries.map(entry => entry.entryId)).toEqual(["a"]);
+  });
+
+  it("retains the observed prefix through native checks and distinguishes a late delta", async () => {
+    const h = makeHarness();
+    await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1_800_000_000 } });
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: agent("a", "") });
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "a", delta: "observed" });
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: tool("tool") });
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+    h.resolveNext({ data: [{ id: "t", status: "inProgress", items: [agent("a", ""), tool("tool")] }] });
+    await vi.waitFor(() => expect(syncHistory(h)).toMatchObject({
+      entries: [], live: { complete: true, turn: { turnId: "t", startedAt: 1_800_000_000_000 },
+        messages: expect.arrayContaining([expect.objectContaining({ contentComplete: true, message: expect.objectContaining({ content: [{ type: "text", text: "observed" }] }) })]) },
+    }));
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "a", delta: " suffix" });
+    await vi.waitFor(() => expect(syncHistory(h)?.live?.messages.find(message => message.message.messageId === "a"))
+      .toMatchObject({ contentComplete: true, message: { content: [{ type: "text", text: "observed suffix" }] } }));
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "late", delta: "suffix" });
+    await vi.waitFor(() => expect(syncHistory(h)?.live?.messages.find(message => message.message.messageId === "late")?.contentComplete).toBe(false));
+  });
+
+  it("merges overdue previews and reconnect reads while history pages remain cache reads", async () => {
+    const h = makeHarness();
+    await resume(h, [{ id: "t", status: "completed", items: [agent("a")] }]);
+    const now = Date.now();
+    const date = vi.spyOn(Date, "now").mockReturnValue(now + 16_000);
+    try {
+      expect(syncHistory(h, { range: "history" })?.entries).toHaveLength(1);
+      expect(syncHistory(h, { range: "catchup", knownLeafId: "a" })?.entries).toEqual([]);
+      expect(nativeReads(h)).toHaveLength(0);
+      expect(syncHistory(h, { syncId: "preview-1" })).toBeUndefined();
+      expect(syncHistory(h, { syncId: "preview-2" })).toBeUndefined();
+      h.runtime.announce("th-1");
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+      h.resolveNext({ data: [{ id: "t", status: "completed", items: [agent("a")] }] });
+      await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.snapshot" && event.range === "preview"))
+        .toHaveLength(2));
+      expect(nativeReads(h)).toHaveLength(1);
+    } finally { date.mockRestore(); }
+  });
+
+  it("publishes null unknown head while native reconciliation is not ready", async () => {
+    const h = makeHarness();
+    await resume(h, [{ id: "t", status: "completed", items: [agent("a")] }]);
+    h.notify("thread/reverted", { threadId: "th-1" });
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+    expect(syncHistory(h)).toMatchObject({
+      source: { ready: false }, checkpoint: { head: { leafId: null }, headCompleteness: "unknown", inventoryComplete: false },
+      live: { complete: false },
+    });
+    h.resolveNext({ data: [] });
+    await vi.waitFor(() => expect(syncHistory(h)?.source?.ready).toBe(true));
+  });
+
+  it("rechecks a paged native history before publishing after a silent revert between pages", async () => {
+    const h = makeHarness();
+    const first = { id: "t1", status: "completed", items: [agent("a")] };
+    const second = { id: "t2", status: "completed", items: [agent("b")] };
+    await resume(h, [first, second]);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+    h.resolveNext({ data: [first], nextCursor: "page-2" });
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(2));
+    expect(nativeReads(h)[1]?.[1]).toMatchObject({ cursor: "page-2" });
+    h.resolveNext({ data: [second] });
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(3));
+    h.resolveNext({ data: [first] });
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(4));
+    expect(h.events.filter(event => event.type === "session.patch")).toEqual([]);
+    h.resolveNext({ data: [first] });
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1))
+      .toMatchObject({ source: { ready: true }, head: { leafId: "a" } }));
+    expect(syncHistory(h)?.entries.map(entry => entry.entryId)).toEqual(["a"]);
+  });
+});
+
 describe("Codex bounded canonical history", () => {
   const item = (id: string, text = id) => ({ id, type: "agentMessage", text });
 

@@ -101,9 +101,9 @@ export function selectSessionSyncSnapshot(
       complete: rangeStatus === "complete" && !remaining,
       rangeStatus: rangeStatus !== "complete" ? rangeStatus
         : remaining ? range === "history" ? "older_available" : "limit_reached" : "complete",
-      // Historical ranges fill the immutable cache only. Capturing the current live
-      // inventory on each old page both wastes bandwidth and creates a second state writer.
-      ...(source === undefined || range === "history" ? {} : {
+      // Only preview establishes current state. History and catchup pages fill the
+      // immutable cache without moving the active head or replacing live inventory.
+      ...(source === undefined || range !== "preview" ? {} : {
         source: source.version,
         live: source.live,
         checkpoint: source.checkpoint,
