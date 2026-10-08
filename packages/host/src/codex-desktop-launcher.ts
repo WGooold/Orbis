@@ -2,17 +2,16 @@
  * Orbis 包装器在 Host 这一侧的接线：找到它、用它拉起桌面版、读它发布的端点。
  *
  * 包装器本体是 `codex-launcher.exe` + `codex-desktop-wrapper.js`（随 Host 运行时
- * 一起分发）。桌面版只认一个「CLI 可执行文件」入口，而 `CODEX_CLI_PATH` 是进程
- * 环境变量，所以**必须由我们直接 CreateProcess 桌面版**才能生效——走 `codex://`
- * 协议激活会把环境丢掉（`codex app` 就是那条路）。
+ * 一起分发）。通过用户级 `CODEX_CLI_PATH` 接入包装器，GUI 使用 Windows 注册的
+ * 应用标识启动，保留正式图标和不依赖安装版本目录的任务栏快捷方式。
  */
-import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { resolveCodexDesktopExecutablePath } from "./codex-desktop-presence.js";
+import { launchCodexDesktopApp } from "./codex-desktop-app.js";
+import { ensureCodexDesktopEntry } from "./codex-shim-install.js";
 
 export type CodexDesktopWrapper = {
   /** 桌面版要启动的 CLI（我们的包装器，不是真 codex）。 */
@@ -57,7 +56,7 @@ type WrapperStamp = Record<string, { size: number; mtimeMs: number }>;
  * 放一个转发到真实实现的 stub：launcher 的“相对自身解析”回退因此仍然能用（用户自己带
  * 持久环境变量启动桌面版的场景）。
  */
-export function stageCodexWrapper(wrapper: CodexDesktopWrapper, root = codexWrapperRoot()): CodexDesktopWrapper {
+export function stageCodexWrapper(wrapper: CodexDesktopWrapper, root = codexWrapperRoot(), endpointPath?: string): CodexDesktopWrapper {
   // 已经是暂存目录里的那份：再 stage 一次会把 stub 指向它自己（自引用 import → 包装器
   // 进程爆栈 → 桌面版 app-server 起不来 → 应用退到内存兜底 → “组织设置无法加载”。
   if (isInsideDirectory(wrapper.launcher, root)) return wrapper;
@@ -92,10 +91,13 @@ export function stageCodexWrapper(wrapper: CodexDesktopWrapper, root = codexWrap
   const source = statSync(wrapper.script, { throwIfNoEntry: false });
   if (source !== undefined && !isInsideDirectory(wrapper.script, root)) {
     const known = stamp.script;
-    if (known === undefined || known.size !== source.size || known.mtimeMs !== source.mtimeMs || !existsSync(staged.script)) {
+    const stub = wrapperStub(wrapper.script, endpointPath);
+    let currentStub: string | undefined;
+    try { currentStub = readFileSync(staged.script, "utf8"); } catch { /* 首次暂存 */ }
+    if (known === undefined || known.size !== source.size || known.mtimeMs !== source.mtimeMs || currentStub !== stub) {
       try {
         mkdirSync(dirname(staged.script), { recursive: true });
-        writeFileSync(staged.script, wrapperStub(wrapper.script));
+        writeFileSync(staged.script, stub);
         next.script = { size: source.size, mtimeMs: source.mtimeMs };
       } catch { /* 写不了就靠 Host 传的 ORBIS_CODEX_WRAPPER_SCRIPT */ }
     } else {
@@ -120,10 +122,12 @@ function isInsideDirectory(path: string, directory: string): boolean {
 }
 
 /** 转发到安装目录里那份实现；自己跑 `main`，不依赖“模块即入口”的判定。 */
-function wrapperStub(source: string): string {
+function wrapperStub(source: string, endpointPath?: string): string {
   return [
     "// 由 Orbis Host 生成：真正的包装器实现住在 Host 安装目录里（只读一次，不会被锁住）。",
     `import { main } from ${JSON.stringify(pathToFileURL(source).href)};`,
+    // Shell 激活不依赖 Host 的临时环境；自定义状态目录也必须让包装器找得到。
+    ...(endpointPath === undefined ? [] : [`process.env.ORBIS_CODEX_DESKTOP_ENDPOINT ??= ${JSON.stringify(endpointPath)};`]),
     "await main(process.argv.slice(2));",
     "",
   ].join("\n");
@@ -179,12 +183,12 @@ export function readCodexDesktopEndpoint(path: string): CodexDesktopEndpoint | u
 }
 
 /**
- * 带包装器环境直接拉起桌面版 GUI。
+ * 准备包装器后通过 Windows 注册的应用标识打开桌面版 GUI。
  *
  * 用的是安装目录之外的那份包装器运行时（见 `stageCodexWrapper`），所以桌面版活着的时候
  * 不会锁住 Host 安装目录里任何文件。
  *
- * 返回 `false` 时调用方应回退到 `codex app`：宁可打开一个接不上的桌面版，
+ * 返回 `false` 时调用方应回退到普通应用激活：宁可打开一个接不上的桌面版，
  * 也不要因为包装器缺失而让用户打不开它。
  */
 export async function launchCodexDesktopThroughWrapper(
@@ -192,31 +196,22 @@ export async function launchCodexDesktopThroughWrapper(
   endpointPath: string,
   root?: string,
 ): Promise<boolean> {
-  let executable: string | undefined;
-  try { executable = await resolveCodexDesktopExecutablePath(); }
-  catch { return false; }
-  if (executable === undefined) return false;
   // 两个二进制擕不过去（目标被占/权限）就用安装目录里那份现成副本：宁可暂时锁着，
   // 也不要因为“刷新失败”而不开窗。JS 一直用安装目录里的真实实现（只读一次，不会被锁）。
-  const staged = stageCodexWrapper(wrapper, root);
+  const staged = stageCodexWrapper(wrapper, root, endpointPath);
   const effective = [staged.launcher, staged.node].every(existsSync)
-    ? { launcher: staged.launcher, node: staged.node, script: wrapper.script }
+    ? staged
     : wrapper;
   try {
-    const child = spawn(executable, [], {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: false,
-      cwd: homedir(),
-      env: {
-        ...process.env,
-        CODEX_CLI_PATH: effective.launcher,
-        ORBIS_CODEX_WRAPPER_NODE: effective.node,
-        ORBIS_CODEX_WRAPPER_SCRIPT: effective.script,
-        ORBIS_CODEX_DESKTOP_ENDPOINT: endpointPath,
-      },
+    // 等待用户入口就位，避免首次打开时 Shell 先启动了未包装的 GUI。
+    await ensureCodexDesktopEntry(effective.launcher);
+    await launchCodexDesktopApp({
+      ...process.env,
+      CODEX_CLI_PATH: effective.launcher,
+      ORBIS_CODEX_WRAPPER_NODE: effective.node,
+      ORBIS_CODEX_WRAPPER_SCRIPT: effective.script,
+      ORBIS_CODEX_DESKTOP_ENDPOINT: endpointPath,
     });
-    child.unref();
   } catch {
     return false;
   }

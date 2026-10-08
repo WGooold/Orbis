@@ -4,12 +4,18 @@
  * 对着死端口反复重试，要么被指向一个不该连的地址。
  */
 import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { promisify } from "node:util";
+import { describe, expect, it, vi } from "vitest";
 
-import { codexWrapperRoot, readCodexDesktopEndpoint, stageCodexWrapper } from "./codex-desktop-launcher.js";
+const activation = vi.hoisted(() => ({ launch: vi.fn(), ensureEntry: vi.fn() }));
+vi.mock("./codex-desktop-app.js", () => ({ launchCodexDesktopApp: activation.launch }));
+vi.mock("./codex-shim-install.js", () => ({ ensureCodexDesktopEntry: activation.ensureEntry }));
+
+import { codexWrapperRoot, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, stageCodexWrapper } from "./codex-desktop-launcher.js";
 
 async function descriptor(value: unknown): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "orbis-desktop-endpoint-"));
@@ -93,5 +99,46 @@ describe("staged Codex wrapper runtime", () => {
     expect(stub).toContain("wrapper.js");
     expect(stub).not.toContain(staged.script.replaceAll("\\", "/"));
     expect(stub).not.toContain(staged.script.replaceAll("/", "\\"));
+  });
+
+  it("keeps the custom Host endpoint available when Shell activation does not inherit Host environment", async () => {
+    const wrapper = await source();
+    const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-shell-"));
+    const endpointPath = join(root, "状态目录's", "codex-desktop-endpoint.json");
+    await writeFile(wrapper.script, "export function main() { console.log(process.env.ORBIS_CODEX_DESKTOP_ENDPOINT); }");
+    await writeFile(join(root, "package.json"), '{"type":"module"}');
+    const staged = stageCodexWrapper(wrapper, root, endpointPath);
+    const env = { ...process.env };
+    delete env.ORBIS_CODEX_DESKTOP_ENDPOINT;
+    const run = promisify(execFile);
+    await expect(run(process.execPath, [staged.script], { env })).resolves.toMatchObject({ stdout: endpointPath + "\n" });
+    // A caller's explicit endpoint still wins over the staged default.
+    await expect(run(process.execPath, [staged.script], { env: { ...env, ORBIS_CODEX_DESKTOP_ENDPOINT: "explicit-endpoint" } })).resolves.toMatchObject({ stdout: "explicit-endpoint\n" });
+    const changed = join(root, "next-state", "codex-desktop-endpoint.json");
+    stageCodexWrapper(wrapper, root, changed);
+    await expect(run(process.execPath, [staged.script], { env })).resolves.toMatchObject({ stdout: changed + "\n" });
+  });
+
+  it("waits for the user wrapper entry before activating the registered application", async () => {
+    const wrapper = await source();
+    const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-activate-"));
+    const endpointPath = join(root, "state", "codex-desktop-endpoint.json");
+    let enabled!: () => void;
+    activation.ensureEntry.mockReset().mockImplementation(() => new Promise<void>(resolve => { enabled = resolve; }));
+    activation.launch.mockReset().mockResolvedValue(undefined);
+    const opened = launchCodexDesktopThroughWrapper(wrapper, endpointPath, root);
+    expect(activation.launch).not.toHaveBeenCalled();
+    enabled();
+    await expect(opened).resolves.toBe(true);
+    const staged = stageCodexWrapper(wrapper, root, endpointPath);
+    expect(activation.ensureEntry).toHaveBeenCalledWith(staged.launcher);
+    expect(activation.launch).toHaveBeenCalledWith(expect.objectContaining({
+      CODEX_CLI_PATH: staged.launcher,
+      ORBIS_CODEX_WRAPPER_SCRIPT: staged.script,
+      ORBIS_CODEX_DESKTOP_ENDPOINT: endpointPath,
+    }));
+    activation.launch.mockRejectedValueOnce(new Error("activation failed"));
+    activation.ensureEntry.mockResolvedValue(undefined);
+    await expect(launchCodexDesktopThroughWrapper(wrapper, endpointPath, root)).resolves.toBe(false);
   });
 });

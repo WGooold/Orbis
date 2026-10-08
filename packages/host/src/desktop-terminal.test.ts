@@ -78,11 +78,12 @@ describe("desktop terminal shortcuts", () => {
   it("opens Codex Desktop as a separate GUI process without a terminal window", async () => {
     await new DesktopRuntime(() => {}).openAgent("codexDesktop");
     const { script, options } = directInvocation();
-    expect(script).toContain("Start-Process -FilePath 'C:\\Orbis Tools\\node.exe'");
-    expect(script).toContain("-ArgumentList @('C:\\User''s tools\\codex.js','app')");
-    expect(script).toContain("-WorkingDirectory '" + homedir().replaceAll("'", "''") + "'");
-    expect(script).toContain("-WindowStyle Hidden");
-    expect(options).toMatchObject({ stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000 });
+    expect(script).toContain("Get-AppxPackage -Name OpenAI.Codex");
+    expect(script).toContain("$package.PackageFamilyName + '!' + $application.Id");
+    expect(script).toContain("ActivateApplication(appId");
+    expect(script).not.toContain("Start-Process");
+    expect(terminal.codex).not.toHaveBeenCalled();
+    expect(options).toMatchObject({ stdio: ["ignore", "ignore", "pipe"], windowsHide: true, cwd: homedir(), timeout: 15_000 });
   });
 
   it("never falls back to the user directory when an interactive workspace is missing or invalid", async () => {
