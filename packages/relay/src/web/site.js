@@ -1,30 +1,56 @@
+function renderDesktopDownloads(platform, files) {
+  const container = document.getElementById(`${platform}-downloads`);
+  const versionLabel = document.getElementById(`${platform}-version`);
+  const label = platform === "windows" ? "Windows" : "macOS";
+  const pattern = platform === "windows"
+    ? /^OrbisHost-(\d+\.\d+\.\d+)-windows-x64(?:-setup\.exe|\.zip)$/
+    : /^OrbisHost-(\d+\.\d+\.\d+)-macos-arm64\.dmg$/;
+  const releases = (Array.isArray(files) ? files : []).flatMap(file => {
+    const match = typeof file?.name === "string" ? file.name.match(pattern) : null;
+    return match && typeof file.url === "string" && typeof file.checksumUrl === "string"
+      ? [{ ...file, version: match[1] }] : [];
+  }).sort((a, b) => {
+    const left = a.version.split(".").map(Number);
+    const right = b.version.split(".").map(Number);
+    return right[0] - left[0] || right[1] - left[1] || right[2] - left[2]
+      || Number(b.name.endsWith(".exe")) - Number(a.name.endsWith(".exe"));
+  });
+  container.replaceChildren();
+  const version = releases[0]?.version;
+  versionLabel.textContent = version ? `预览版 · ${version}` : "预览包准备中";
+  if (!version) {
+    container.textContent = `${label} 预览包正在准备，发布后即可在这里下载。`;
+    return;
+  }
+  for (const release of releases.filter(file => file.version === version)) {
+    const portable = release.name.endsWith(".zip");
+    const link = document.createElement("a");
+    link.className = portable ? "text-link portable-link" : "button primary";
+    link.href = release.url;
+    const size = Number.isFinite(release.bytes) && release.bytes > 0 ? ` · ${(release.bytes / 1048576).toFixed(0)} MB` : "";
+    link.textContent = portable ? "下载免安装版 ZIP ↗" : `下载 ${label === "macOS" ? "Apple Silicon 版" : "Windows 安装版"}${size} ↓`;
+    const checksum = document.createElement("a");
+    checksum.className = "checksum-link";
+    checksum.href = release.checksumUrl;
+    checksum.textContent = portable ? "免安装版 SHA-256 校验文件" : "SHA-256 校验文件";
+    container.append(link, checksum);
+  }
+}
+
 async function loadDownloads() {
-  const container = document.getElementById("windows-downloads");
   try {
     const response = await fetch("v1/site", { cache: "no-store" });
     if (!response.ok) throw new Error("unavailable");
     const data = await response.json();
-    container.replaceChildren();
-    const releases = data.windows.filter(item => item.name.startsWith(`OrbisHost-${data.version}-`));
-    if (!releases.length) {
-      const message = document.createElement("p");
-      message.textContent = "Windows 预览包正在准备，请稍后再来。";
-      container.append(message);
-    }
-    document.getElementById("site-version").textContent = `预览版 · ${data.version}`;
-    for (const release of releases) {
-      const link = document.createElement("a");
-      link.className = release.name.endsWith(".exe") ? "button primary" : "text-link portable-link";
-      link.href = release.url;
-      link.textContent = release.name.endsWith(".exe") ? `免费下载 Windows 版 · ${(release.bytes / 1048576).toFixed(0)} MB ↓` : "下载免安装版 ↗";
-      const checksum = document.createElement("a");
-      checksum.className = "checksum-link";
-      checksum.href = release.checksumUrl;
-      checksum.textContent = "下载完整性校验文件";
-      container.append(link, checksum);
-    }
+    renderDesktopDownloads("windows", data.windows);
+    renderDesktopDownloads("macos", data.macos);
+    document.getElementById("android-version").textContent = typeof data.androidVersion === "string"
+      ? `预览版 · ${data.androidVersion}` : "预览版";
   } catch {
-    container.textContent = "暂时无法读取 Windows 下载信息，请刷新页面重试。";
+    for (const platform of ["windows", "macos"]) {
+      document.getElementById(`${platform}-downloads`).textContent = "暂时无法读取下载信息，请刷新重试或前往 GitHub 版本页。";
+      document.getElementById(`${platform}-version`).textContent = "版本信息暂不可用";
+    }
   }
 }
 async function loadRegistration() {

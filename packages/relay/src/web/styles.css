@@ -75,6 +75,16 @@
 .site .future-grid h3{font-size:19px;line-height:1.5;margin-bottom:11px;font-weight:650}
 .site .future-grid p{font-size:12px;color:var(--muted);line-height:1.85}
 .site .download-note{font-size:12px;line-height:1.9;color:var(--muted);margin-top:25px}
+.site .download-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}
+.site .download-card{display:flex;flex-direction:column;padding:28px;min-width:0}
+.site .download-platform{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+.site .download-platform .platform-mark{margin:0}
+.site .download-kind{font-size:11px;color:var(--muted)}
+.site .download-card .version-tag{align-self:flex-start;margin-top:16px;font-size:10px;letter-spacing:.5px}
+.site .download-card .download-detail{margin:20px 0 24px}
+.site .platform-downloads{flex:1;font-size:12px;line-height:1.9;color:var(--muted)}
+.site .platform-downloads .button{padding:14px 16px;gap:10px;max-width:100%;font-size:12px}
+@media(max-width:1000px){.site .download-grid{grid-template-columns:1fr}}
 .site .faq-list a,.site noscript a{color:var(--primary);text-decoration:underline;text-underline-offset:3px}
 @media(max-width:1050px){.site .showcase-panel{gap:25px;padding:27px;grid-template-columns:.85fr 1.25fr}.site .showcase-copy h3{font-size:24px}.site .scene-workspace{grid-template-columns:114px 1fr}.site .scene-conversation{padding:16px 13px}.site .scene-sidebar{padding:18px 8px}.site .commitment-section{gap:45px}.site .future-grid article{padding:23px}.site .future-grid h3{font-size:17px}}
 @media(max-width:760px){.site .showcase-tabs{gap:4px;padding:6px;margin-bottom:24px}.site .showcase-tabs button{font-size:12px;padding:12px 5px}.site .showcase-tabs button span{display:block;margin:0 0 2px}.site .showcase-panel{grid-template-columns:1fr;padding:25px;gap:28px;min-height:0}.site .showcase-copy h3{font-size:25px;margin-bottom:12px}.site .showcase-copy>p{font-size:13px}.site .scene-benefits{margin-top:18px;gap:9px}.site .scene-screen{min-height:326px}.site .scene-workspace{grid-template-columns:120px 1fr}.site .scene-conversation{padding:18px 15px}.site .scene-topbar{padding:12px 14px}.site .showcase-caption{text-align:left;font-size:10px}.site .commitment-section{grid-template-columns:1fr;gap:35px;margin-top:55px;padding-top:47px}.site .commitment-intro h2{font-size:29px}.site .commitment-intro>p:last-child{font-size:13px;margin-top:18px}.site .commitment-list h3{font-size:18px}.site .future-grid{grid-template-columns:1fr;gap:18px}.site .future-grid article{padding:25px}.site .future-grid h3{font-size:20px}.site .future-monogram{margin-bottom:19px}.site .future-grid p{font-size:13px}.site .roadmap-note{font-size:11px}.site .download-note{font-size:11px}}
