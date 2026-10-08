@@ -249,6 +249,29 @@ describe("Codex bounded canonical history", () => {
     expect(h.events.at(-1)).toMatchObject({ type: "command.result", commandId: "sync-command", ok: false, error: "canonical_entry_conflict" });
   });
 
+  it("replays rollout started order when parallel items finish in the opposite order", async () => {
+    const live = makeHarness();
+    await activate(live);
+    const a = item("a");
+    const b = item("b");
+    live.notify("item/started", { threadId: "th-1", turnId: "t", item: a });
+    live.notify("item/started", { threadId: "th-1", turnId: "t", item: b });
+    live.notify("item/completed", { threadId: "th-1", turnId: "t", item: b });
+    live.notify("item/completed", { threadId: "th-1", turnId: "t", item: a });
+    const replay = makeHarness();
+    const path = join(replay.rolloutRoot, "rollout-th-1.jsonl");
+    const event = (type: string, value: unknown) => JSON.stringify({ type: "event_msg", payload: { type, turn_id: "t", item: value } });
+    writeFileSync(path, [
+      JSON.stringify({ type: "session_meta", payload: { id: "th-1" } }),
+      event("item_started", a), event("item_started", b),
+      event("item_completed", b), event("item_completed", a),
+    ].join("\n"));
+    const activating = replay.runtime.activate({ type: "resume", sessionId: "th-1" });
+    replay.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", turns: [], path } });
+    await activating;
+    expect(syncHistory(replay)?.entries).toEqual(syncHistory(live)?.entries);
+  });
+
   it("returns a correlated error for oversized data and invalid Session identity", async () => {
     const h = makeHarness();
     await activate(h);
@@ -1473,7 +1496,7 @@ describe("CodexRuntime", () => {
     await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(1));
     // The item is delivered while turns/list is in flight. It must be buffered and
     // replayed after the new canonical graph replaces the old one.
-    h.notify("item/agentMessage/delta", { threadId: "th-1", itemId: "live-1", delta: "仍在生成" });
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "turn-1", itemId: "live-1", delta: "仍在生成" });
     h.resolveNext({ data: [TREE_TURNS[0]] });
 
     await vi.waitFor(() => {
@@ -1501,6 +1524,64 @@ describe("CodexRuntime", () => {
     await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(2));
     h.resolveNext({ data: TREE_TURNS });
     await vi.waitFor(() => expect(syncHistory(h)).toMatchObject({ cursor: { leafId: "a2" } }));
+  });
+
+  it("invalidates an in-flight history read when a new native turn starts", async () => {
+    const h = makeHarness();
+    await activateWithTurns(h, TREE_TURNS);
+    h.notify("thread/reverted", { threadId: "th-1" });
+    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(1));
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "new-turn", startedAt: 1_800_000_000 } });
+    h.resolveNext({ data: [TREE_TURNS[0]] });
+    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(2));
+    expect(h.events.filter(event => event.type === "session.patch" && event.source.ready)).toHaveLength(0);
+    h.resolveNext({ data: [TREE_TURNS[0], { id: "new-turn", status: "inProgress", startedAt: 1_800_000_000, items: [] }] });
+    await vi.waitFor(() => expect(syncHistory(h)).toMatchObject({
+      cursor: { leafId: "a1" }, source: { ready: true }, live: { turn: { turnId: "new-turn" } },
+    }));
+  });
+
+  it("rejects buffered and delayed items from a turn removed by revert", async () => {
+    const h = makeHarness();
+    await activateWithTurns(h, TREE_TURNS);
+    h.notify("thread/reverted", { threadId: "th-1" });
+    await vi.waitFor(() => expect(h.requests).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
+    h.notify("item/completed", { threadId: "th-1", turnId: "turn-2", item: { id: "old-buffered", type: "agentMessage", text: "old" } });
+    h.resolveNext({ data: [TREE_TURNS[0]] });
+    await vi.waitFor(() => expect(syncHistory(h)).toMatchObject({ cursor: { leafId: "a1" }, source: { ready: true } }));
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "new-turn", startedAt: 1_800_000_000 } });
+    h.notify("item/completed", { threadId: "th-1", turnId: "turn-2", item: { id: "old-delayed", type: "agentMessage", text: "old" } });
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "turn-2" } });
+    expect(syncHistory(h)).toMatchObject({ cursor: { leafId: "a1" }, live: { turn: { turnId: "new-turn" } } });
+  });
+
+  it("keeps newer reconcile state when an older resume response arrives", async () => {
+    const h = makeHarness();
+    await activateWithTurns(h, TREE_TURNS);
+    const resuming = h.runtime.activate({ type: "resume", sessionId: "th-1" });
+    h.notify("thread/reverted", { threadId: "th-1" });
+    await vi.waitFor(() => expect(h.requests).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
+    h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", turns: TREE_TURNS } });
+    h.resolveNext({ data: [TREE_TURNS[0]] });
+    await resuming;
+    expect(syncHistory(h)?.cursor.leafId).toBe("a1");
+  });
+
+  it("coalesces duplicate local revert and waits to start a new turn until hydrate completes", async () => {
+    const h = makeHarness();
+    await activateWithTurns(h, TREE_TURNS);
+    h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-1", "th-1");
+    h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-2", "th-1");
+    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/revert")).toHaveLength(1));
+    h.runtime.handleCommand({ type: "user_message", text: "after revert" }, "send", "th-1");
+    expect(h.requests.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(0);
+    h.resolveNext({});
+    await vi.waitFor(() => expect(h.requests).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
+    h.resolveNext({ data: [TREE_TURNS[0]] });
+    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(1));
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-1", ok: true }));
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-2", ok: true }));
+    h.resolveNext({ turn: { id: "new-turn" } });
   });
 
   it("slash.execute /tree <最后一条回复>：历史已经停在这一点，不发任何 RPC", async () => {
@@ -1776,6 +1857,7 @@ describe("CodexRuntime", () => {
     h.events.length = 0;
 
     h.runtime.handleCommand({ type: "user_message", text: "第一条" }, "c1");
+    h.resolveNext({ turn: { id: "turn-1" } });
     h.notify("turn/started", { threadId: "th-1", turn: { id: "turn-1", startedAt: 1_800_000_000 } });
 
     h.runtime.handleCommand(
@@ -1828,6 +1910,7 @@ describe("CodexRuntime", () => {
     h.events.length = 0;
 
     h.runtime.handleCommand({ type: "user_message", text: "跑偏了" }, "c1");
+    h.resolveNext({ turn: { id: "turn-1" } });
     h.notify("turn/started", { threadId: "th-1", turn: { id: "turn-1", startedAt: 1_800_000_000 } });
 
     h.runtime.handleCommand(

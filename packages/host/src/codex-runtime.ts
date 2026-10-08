@@ -275,6 +275,11 @@ type ThreadState = {
   reconcilePromise: Promise<void> | undefined;
   reconcileNotifications: Array<{ method: string; params: unknown }>;
   reconcileDraining: boolean;
+  retiredTurnIds: Set<string>;
+  retiredItemIds: Set<string>;
+  nativeMutationPromise: Promise<void> | undefined;
+  turnStartPending: boolean;
+  revertOperations: Map<string, Promise<void>>;
   /** Source-side checkpoint identity; independent from transport sequence numbers. */
   sourceEpoch: string;
   sourceSeq: number;
@@ -514,6 +519,11 @@ export class CodexRuntime implements AgentBackend {
       reconcilePromise: undefined,
       reconcileNotifications: [],
       reconcileDraining: false,
+      retiredTurnIds: new Set(),
+      retiredItemIds: new Set(),
+      nativeMutationPromise: undefined,
+      turnStartPending: false,
+      revertOperations: new Map(),
       sourceEpoch: randomUUID(),
       sourceSeq: 0,
       sourceReady: false,
@@ -1027,6 +1037,9 @@ export class CodexRuntime implements AgentBackend {
   }
 
   async #activateInner(target: AgentActivateTarget): Promise<BackendActivation> {
+    const existing = target.type === "resume" ? this.#threads.get(target.sessionId) : undefined;
+    if (existing?.reconcilePromise !== undefined) await this.#waitForReconcile(existing);
+    const existingGeneration = existing === undefined ? undefined : ++existing.reconcileGeneration;
     const method = target.type === "resume" ? "thread/resume" : "thread/start";
     const params = target.type === "resume" ? { threadId: target.sessionId } : { cwd: target.cwd };
     const result = (await this.#server.request(method, params)) as {
@@ -1042,6 +1055,11 @@ export class CodexRuntime implements AgentBackend {
     }
     if (isCodexSubagentSource(threadJson?.source)) {
       throw new ActivationError("session_not_found", "不属于 Codex 的用户会话");
+    }
+    if (existing !== undefined && !this.#isCurrentReconcile(existing, existingGeneration!)) {
+      // A native turn/revert observed while resume was pending owns the newer projection.
+      await this.#waitForReconcile(existing);
+      return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
     }
     const thread: ThreadState = this.#newThreadState(id, cwd, {
       name: codexSessionName(threadJson?.name),
@@ -1059,6 +1077,7 @@ export class CodexRuntime implements AgentBackend {
     void this.#checkSandboxReadiness(thread);
     void this.#refreshIntegrationCatalog(thread);
     this.#replayTurns(thread, threadJson);
+    const generation = thread.reconcileGeneration;
     // thread/resume 对旧 rollout 只给 turns 骨架（items 全空），app-server v2 拿不出 UI
     // item——磁盘兜底重建条目图给手机端用。TUI 端对旧会话也渲染不出历史（codex 限制），
     // 但仍要开窗：「在线」严格绑定「电脑上有 TUI 窗口在」，不开窗就会变成「没 TUI 却
@@ -1069,6 +1088,11 @@ export class CodexRuntime implements AgentBackend {
       // therefore an expected empty history for `thread/start`; an existing session
       // still treats the same condition as an unreadable history.
       await this.#replayFromRollout(thread, target.type === "new");
+    }
+    if (!this.#isCurrentReconcile(thread, generation)) {
+      this.#reconcileExternalRevert(thread);
+      if (thread.reconcilePromise !== undefined) await this.#waitForReconcile(thread);
+      return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
     }
     // A replay/rollout failure is an unresolved source state. Keep the thread visible so
     // the adapter can retry, but never publish a ready checkpoint for an unverified graph.
@@ -1252,6 +1276,11 @@ export class CodexRuntime implements AgentBackend {
       liveMessages: thread.liveMessages,
       liveTools: thread.liveTools,
       historyError: thread.historyError,
+      turnInProgress: thread.turnInProgress,
+      turnId: thread.turnId,
+      turnStartedAt: thread.turnStartedAt,
+      streamingMessageId: thread.streamingMessageId,
+      persistedMessageMappings: thread.persistedMessageMappings,
     };
     thread.entries = [];
     delete thread.historyError;
@@ -1343,9 +1372,18 @@ export class CodexRuntime implements AgentBackend {
       thread.turnOrder = prior.turnOrder;
       thread.liveMessages = prior.liveMessages;
       thread.liveTools = prior.liveTools;
+      thread.turnInProgress = prior.turnInProgress;
+      thread.turnId = prior.turnId;
+      thread.turnStartedAt = prior.turnStartedAt;
+      thread.streamingMessageId = prior.streamingMessageId;
+      thread.persistedMessageMappings = prior.persistedMessageMappings;
       thread.historyError = "canonical_entry_conflict";
       return false;
     }
+    for (const id of prior.turnOrder) if (!thread.turnOrder.includes(id)) thread.retiredTurnIds.add(id);
+    for (const id of prior.itemOrder) if (!thread.itemOrder.includes(id)) thread.retiredItemIds.add(id);
+    for (const id of thread.turnOrder) thread.retiredTurnIds.delete(id);
+    for (const id of thread.itemOrder) thread.retiredItemIds.delete(id);
     return true;
   }
 
@@ -1358,6 +1396,7 @@ export class CodexRuntime implements AgentBackend {
    * 是 PascalCase（UserMessage/AgentMessage…），映射前先归一化成 camelCase。
    */
   async #replayFromRollout(thread: ThreadState, allowMissing = false): Promise<void> {
+    const generation = thread.reconcileGeneration;
     const root = this.#options.rolloutRoot ?? join(homedir(), ".codex", "sessions");
     let paths: string[];
     try {
@@ -1392,6 +1431,7 @@ export class CodexRuntime implements AgentBackend {
       if (paths.length > 0) thread.historyError = "rollout_session_mismatch";
       return;
     }
+    if (!this.#isCurrentReconcile(thread, generation)) return;
     // 同一趟扫描里顺带划出 turn 边界：rollout 的 `turn_context` / `task_started` 都带
     // `turn_id`，item 就归到最近一个边界上。不这么做，磁盘回放出来的条目就没法参与
     // 历史树的「从这里继续」（revert 要的是 turn id）。
@@ -1413,10 +1453,13 @@ export class CodexRuntime implements AgentBackend {
         ? payload.turn_id
         : undefined;
       if (turnId !== undefined) currentTurnId = turnId;
-      if ((payload as { type?: unknown } | undefined)?.type !== "item_completed") continue;
+      const eventType = (payload as { type?: unknown } | undefined)?.type;
+      if (eventType !== "item_started" && eventType !== "item_completed") continue;
       const item = payload?.item;
       if (item === null || typeof item !== "object") continue;
-      this.#completeItem(thread, normalizeItemTypes(item as Record<string, unknown>), currentTurnId);
+      const normalized = normalizeItemTypes(item as Record<string, unknown>);
+      this.#noteItem(thread, normalized);
+      if (eventType === "item_completed") this.#completeItem(thread, normalized, currentTurnId);
     }
   }
 
@@ -1440,7 +1483,7 @@ export class CodexRuntime implements AgentBackend {
           this.#commandResult(threadId, commandId, false, "没有活跃的 Codex 会话，请重新激活");
           return true;
         }
-        if (thread.turnInProgress) {
+        if (thread.turnInProgress || thread.turnStartPending) {
           return this.#enqueueWhileBusy(thread, command, commandId);
         }
         // 空闲：起一个新 turn。用户气泡不再由本地合成回显——app-server 持久化后发出的
@@ -1695,7 +1738,7 @@ export class CodexRuntime implements AgentBackend {
           this.#commandResult(threadId, commandId, true, undefined, "success");
           return true;
         }
-        if (thread.turnInProgress) {
+        if (thread.turnInProgress || thread.turnStartPending || thread.waitingForApproval || thread.queue.length > 0) {
           // 进行中的 turn 不能当回退边界，等它跑完再说。
           this.#commandResult(threadId, commandId, false, "runtime_busy", "failure");
           return true;
@@ -1867,12 +1910,13 @@ export class CodexRuntime implements AgentBackend {
    * invalidate a read as soon as a newer revert/notification starts. This keeps a late
    * turns/list response from resurrecting the pre-revert branch.
    */
-  #queueReconcile(thread: ThreadState, operation: (generation: number) => Promise<void>): Promise<void> {
+  #queueReconcile(thread: ThreadState, operation: (generation: number) => Promise<void>, required = false): Promise<void> {
     const generation = ++thread.reconcileGeneration;
     const previous = thread.reconcilePromise ?? Promise.resolve();
     const run = previous.catch(() => undefined).then(async () => {
-      if (!this.#isCurrentReconcile(thread, generation)) return;
-      await operation(generation);
+      if (this.#threads.get(thread.id) !== thread) return;
+      if (!required && !this.#isCurrentReconcile(thread, generation)) return;
+      await operation(required ? thread.reconcileGeneration : generation);
     });
     const tracked = run.finally(() => {
       if (thread.reconcilePromise === tracked) thread.reconcilePromise = undefined;
@@ -1883,6 +1927,39 @@ export class CodexRuntime implements AgentBackend {
 
   #isCurrentReconcile(thread: ThreadState, generation: number): boolean {
     return this.#threads.get(thread.id) === thread && thread.reconcileGeneration === generation;
+  }
+
+  async #waitForReconcile(thread: ThreadState): Promise<void> {
+    while (thread.reconcilePromise !== undefined) await thread.reconcilePromise;
+  }
+
+  #runNativeMutation(thread: ThreadState, operation: () => Promise<void>): Promise<void> {
+    const previous = thread.nativeMutationPromise;
+    const run = (async () => {
+      if (previous !== undefined) await previous.catch(() => undefined);
+      if (thread.reconcilePromise !== undefined) await this.#waitForReconcile(thread);
+      if (this.#threads.get(thread.id) !== thread) throw new Error("session_not_found");
+      await operation();
+    })();
+    const tracked = run.finally(() => {
+      if (thread.nativeMutationPromise === tracked) thread.nativeMutationPromise = undefined;
+    });
+    thread.nativeMutationPromise = tracked;
+    return tracked;
+  }
+
+  #retiredNotification(thread: ThreadState, method: string, record: Record<string, unknown>): boolean {
+    const turnId = typeof record.turnId === "string" ? record.turnId
+      : typeof object(record.turn).id === "string" ? object(record.turn).id as string : undefined;
+    if (turnId !== undefined && thread.retiredTurnIds.has(turnId)) return true;
+    const itemId = typeof record.itemId === "string" ? record.itemId : object(record.item).id;
+    if (typeof itemId === "string" && thread.retiredItemIds.has(itemId)) return true;
+    if ((method === "item/started" || method.endsWith("/delta") || method.endsWith("/outputDelta"))
+      && typeof itemId === "string" && thread.entries.some(entry => entry.entryId === itemId)) return true;
+    if (method === "turn/started" && turnId !== undefined && thread.turnOrder.includes(turnId) && thread.turnId !== turnId) return true;
+    // An older completed turn may remain in the retained prefix, but it cannot finish the
+    // currently running turn. Its item duplicates still go through immutable conflict checks.
+    return method === "turn/completed" && turnId !== undefined && thread.turnId !== turnId;
   }
 
   /**
@@ -1911,6 +1988,13 @@ export class CodexRuntime implements AgentBackend {
     try {
       for (const notification of pending) {
         if (this.#threads.get(thread.id) !== thread) return;
+        const record = object(notification.params);
+        if (this.#retiredNotification(thread, notification.method, record)) continue;
+        if (notification.method.startsWith("item/") && typeof record.turnId !== "string") {
+          // A buffered item without a native turn identity cannot be assigned to a new view.
+          // The next authoritative read can recover it; never guess that it is current.
+          continue;
+        }
         await this.#handleNotification(notification.method, notification.params);
       }
     } finally {
@@ -1921,6 +2005,7 @@ export class CodexRuntime implements AgentBackend {
 
   /** Re-read the source after a revert performed by another Codex client. */
   #reconcileExternalRevert(thread: ThreadState): void {
+    const generation = thread.reconcileGeneration + 1;
     void this.#queueReconcile(thread, async (generation) => {
       this.#beginSourceReconcile(thread);
       const turns = await this.#listAllTurns(thread.id);
@@ -1936,14 +2021,14 @@ export class CodexRuntime implements AgentBackend {
         // acknowledge the native operation while session.sync exposes the conflict.
         return;
       }
-      thread.sourceReady = true;
-      this.#touchSource(thread);
       await this.#drainReconcileNotifications(thread);
       if (!this.#isCurrentReconcile(thread, generation)) return;
+      thread.sourceReady = true;
+      this.#touchSource(thread);
       this.#publishMetadataEvent(thread);
     }).catch((error: unknown) => {
       this.#options.log?.(`Codex 外部回退协调失败（thread=${thread.id}）：${describeError(error)}`);
-      if (this.#threads.get(thread.id) === thread) {
+      if (this.#isCurrentReconcile(thread, generation)) {
         thread.historyError = "codex_reconcile_failed";
         this.#publishMetadataEvent(thread);
       }
@@ -1958,30 +2043,37 @@ export class CodexRuntime implements AgentBackend {
    * app-server 的权威视图，而不是重新解析磁盘 rollout——rollout 什么时候落盘不由我们控制。
    */
   async #revertThread(thread: ThreadState, beforeTurnId: string): Promise<void> {
-    await this.#queueReconcile(thread, async (generation) => {
-      this.#beginSourceReconcile(thread);
-      await this.#server.request("thread/revert", { threadId: thread.id, beforeTurnId });
-      const turns = await this.#listAllTurns(thread.id);
-      if (!this.#isCurrentReconcile(thread, generation)) return;
-      const replayed = this.#replayTurns(thread, { turns });
-      if (!this.#isCurrentReconcile(thread, generation)) return;
-      if (!replayed) {
-        thread.sourceReady = false;
+    const existing = thread.revertOperations.get(beforeTurnId);
+    if (existing !== undefined) return existing;
+    const reverting = this.#runNativeMutation(thread, async () => {
+      if (thread.turnInProgress || thread.waitingForApproval) throw new Error("runtime_busy");
+      await this.#queueReconcile(thread, async (generation) => {
+        this.#beginSourceReconcile(thread);
+        await this.#server.request("thread/revert", { threadId: thread.id, beforeTurnId });
+        const turns = await this.#listAllTurns(thread.id);
+        if (!this.#isCurrentReconcile(thread, generation)) return;
+        const replayed = this.#replayTurns(thread, { turns });
+        if (!this.#isCurrentReconcile(thread, generation)) return;
+        if (!replayed) {
+          thread.sourceReady = false;
+          this.#touchSource(thread);
+          this.#publishMetadataEvent(thread);
+          // Native revert has committed; only the projection read may be retried.
+          throw new Error(thread.historyError ?? "canonical_entry_conflict");
+        }
+        await this.#drainReconcileNotifications(thread);
+        if (!this.#isCurrentReconcile(thread, generation)) return;
+        thread.sourceReady = true;
         this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
-        // Native history has already been reverted. Keep the last canonical graph and
-        // report the projection conflict to /tree without retrying the destructive native
-        // operation. The caller can then reconcile or explicitly retry the read phase.
-        throw new Error(thread.historyError ?? "canonical_entry_conflict");
-      }
-      thread.sourceReady = true;
-      this.#touchSource(thread);
-      await this.#drainReconcileNotifications(thread);
-      if (!this.#isCurrentReconcile(thread, generation)) return;
-      // metadata 事件里会一并补发 capabilities：树上少掉的那些节点立刻从手机菜单消失。
-      this.#publishMetadataEvent(thread);
+      }, true);
+      await this.#waitForReconcile(thread);
     });
-
+    const tracked = reverting.finally(() => {
+      if (thread.revertOperations.get(beforeTurnId) === tracked) thread.revertOperations.delete(beforeTurnId);
+    });
+    thread.revertOperations.set(beforeTurnId, tracked);
+    return tracked;
   }
 
   /**
@@ -2149,21 +2241,30 @@ export class CodexRuntime implements AgentBackend {
   }
 
   async #startTurnWithInput(thread: ThreadState, input: unknown[], clientUserMessageId?: string): Promise<void> {
-    thread.turnInProgress = true;
-    this.#publishMetadataEvent(thread);
-    await this.#server.request("turn/start", {
-      threadId: thread.id,
-      input,
+    thread.turnStartPending = true;
+    try {
+      await this.#runNativeMutation(thread, async () => {
+        if (thread.turnInProgress) throw new Error("runtime_busy");
+        ++thread.reconcileGeneration;
+        thread.turnInProgress = true;
+        this.#publishMetadataEvent(thread);
+        await this.#server.request("turn/start", {
+          threadId: thread.id,
+          input,
       // 把 App 的 messageId 钉到本次 turn 的 userMessage item 上：app-server 会在
       // item/started / item/completed 的 UserMessageThreadItem.clientId 原样带回，
       // 用户气泡的上屏与落盘收敛（persistedMessages）都靠这一个 id。App 没带
       // messageId（测试直调 / 合成 id 场景）时不传，item 仍会以 entry id 正常上屏。
-      ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
+          ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
       // 会话级覆盖（`/model`/`/thinking` 写入）：turn/start 的 model/effort 是 turn 级
       // 覆盖并延续后续 turn，所以每个 turn 都带上（未设置时不传，用 app-server 缺省）。
-      ...(thread.model === undefined ? {} : { model: thread.model }),
-      ...(thread.effort === undefined ? {} : { effort: thread.effort }),
-    });
+          ...(thread.model === undefined ? {} : { model: thread.model }),
+          ...(thread.effort === undefined ? {} : { effort: thread.effort }),
+        });
+      });
+    } finally {
+      thread.turnStartPending = false;
+    }
     // turn/start 的响应只代表 turn 被接受；结束由 turn/completed 通知驱动。
   }
 
@@ -2349,10 +2450,11 @@ export class CodexRuntime implements AgentBackend {
     if (thread.tuiAttachPromise !== undefined) return thread.tuiAttachPromise;
     if (!thread.tuiAttachPending || this.#threads.get(thread.id) !== thread) return Promise.resolve();
     thread.tuiAttachNotifications = [];
+    const generation = ++thread.reconcileGeneration;
     const attaching = (async () => {
       try {
         const result = object(await this.#server.request("thread/resume", { threadId: thread.id }));
-        if (this.#threads.get(thread.id) !== thread) return;
+        if (!this.#isCurrentReconcile(thread, generation)) return;
         const snapshot = object(result.thread);
         if (snapshot.id !== thread.id) throw new Error("app-server 的 thread/resume 响应缺少匹配的 thread.id");
         if (typeof snapshot.cwd === "string") thread.cwd = snapshot.cwd;
@@ -2367,7 +2469,7 @@ export class CodexRuntime implements AgentBackend {
           const empty = Array.isArray(snapshot.turns) && snapshot.turns.length === 0;
           await this.#replayFromRollout(thread, empty);
         }
-        if (this.#threads.get(thread.id) !== thread) return;
+        if (!this.#isCurrentReconcile(thread, generation)) return;
         const status = object(snapshot.status);
         thread.turnInProgress = status.type === "active";
         thread.waitingForApproval = Array.isArray(status.activeFlags)
@@ -2381,7 +2483,7 @@ export class CodexRuntime implements AgentBackend {
         this.#touchSource(thread);
         void this.#checkSandboxReadiness(thread);
       } catch (error) {
-        if (this.#threads.get(thread.id) !== thread) return;
+        if (!this.#isCurrentReconcile(thread, generation)) return;
         const message = describeError(error);
         // An unmaterialized thread is an empty session, not a permanently broken history.
         // Other failures remain visible and are retried while its TUI is still alive.
@@ -2396,6 +2498,12 @@ export class CodexRuntime implements AgentBackend {
         delete thread.tuiAttachNotifications;
         delete thread.tuiAttachPromise;
         if (this.#threads.get(thread.id) === thread) {
+          if (!this.#isCurrentReconcile(thread, generation)) {
+            thread.reconcileNotifications.push(...notifications.slice(0, 512));
+            thread.tuiAttachPending = false;
+            this.#reconcileExternalRevert(thread);
+            return;
+          }
           // Notifications may arrive ahead of the resume response. Apply them after replay
           // so a newer item, permission or turn state cannot be erased by that snapshot.
           for (const notification of notifications) await this.#handleNotification(notification.method, notification.params);
@@ -2500,6 +2608,17 @@ export class CodexRuntime implements AgentBackend {
       this.#handleUnmanagedNotification(method, record, typeof threadId === "string" ? threadId : undefined);
       return;
     }
+    if (this.#retiredNotification(thread, method, record)) return;
+    const incomingTurn = method === "turn/started" ? object(record.turn).id : undefined;
+    if (typeof incomingTurn === "string" && incomingTurn !== thread.turnId && !thread.reconcileDraining) {
+      if (thread.reconcilePromise !== undefined) {
+        if (thread.reconcileNotifications.length < 512) thread.reconcileNotifications.push({ method, params });
+        this.#reconcileExternalRevert(thread);
+        return;
+      }
+      ++thread.reconcileGeneration;
+    }
+    if (method === "thread/reverted" && thread.tuiAttachNotifications !== undefined) ++thread.reconcileGeneration;
     if (thread.tuiAttachNotifications !== undefined) {
       thread.tuiAttachNotifications.push({ method, params });
       return;
