@@ -293,6 +293,17 @@ data class RuntimeConversation(
     val finishedMessageIds: Set<String> = emptySet(),
     val streamingSessionId: String? = null,
     val hasLiveSnapshot: Boolean = false,
+    /** Source-side checkpoint identity. It is independent from relay message sequence. */
+    val sourceEpoch: String? = null,
+    val sourceSeq: Long = -1L,
+    /** Canonical source head observed with the current checkpoint. */
+    val sourceHeadLeafId: String? = null,
+    /** False means the current source epoch is being reconciled and its projection is unknown. */
+    val sourceReady: Boolean = true,
+    /** Epochs superseded by an accepted checkpoint; delayed responses from these epochs are stale. */
+    val retiredSourceEpochs: Set<String> = emptySet(),
+    /** Out-of-order source patches are retained only until a bounded checkpoint recovery. */
+    val sourcePatchBuffer: Map<Long, SessionPatch> = emptyMap(),
     val isChatSyncing: Boolean = false,
     val chatSyncError: String? = null,
     /** Runtime-level diagnostics belong to this runtime, not to the app-wide error channel. */
@@ -734,9 +745,10 @@ internal fun RemoteState.requestRuntimeRefresh(runtimeId: String): RemoteState {
         conversations[runtimeId]?.chatSyncError != null) return this
     val runtime = runtimes[runtimeId] ?: return this
     val conversation = conversations[runtimeId] ?: RuntimeConversation()
-    // A refresh response is a replacement projection. Never start one while Pi is producing
-    // deltas, because its asynchronous snapshot can race the live message lifecycle events.
-    if (runtime.status == "running" || conversation.streamingMessageIds.isNotEmpty()) return this
+    // A refresh response is a persisted projection, while the current turn is a separate live
+    // overlay. They can be reconciled while the Runtime is running: seedCachedSessionView keeps
+    // the active turn/live rows and projects the snapshot underneath them. Blocking here made a
+    // dropped event during a running turn unrecoverable until the turn became idle.
     val alreadyPending = sessionSyncCommands.values.any { it.runtimeId == runtimeId }
     if (alreadyPending || !runtime.sessionGraphSync) return this
     // A periodic refresh reconciles the Session Graph in the background. Once the conversation
@@ -1098,6 +1110,12 @@ private fun RuntimeConversation.bindActiveTurn(message: ChatMessage): RuntimeCon
 
 private fun remapMessageId(messages: List<ChatMessage>, from: String, to: String): List<ChatMessage> {
     if (from == to) return messages
+    // The entry id is canonical. A duplicate remap can arrive after the canonical row was already
+    // projected; never replace or delete that row with a stale live representation. This also
+    // makes the operation idempotent when the same turn.finished is replayed.
+    if (messages.any { it.messageId == to }) {
+        return messages.filterNot { it.messageId == from }
+    }
     return messages.mapNotNull { message ->
         when (message.messageId) {
             from -> message.copy(messageId = to)
@@ -1144,8 +1162,82 @@ internal fun mergeProjectedWithStreaming(
     val projectedIds = projectedMessages.mapTo(mutableSetOf(), ChatMessage::messageId)
     val retainedOverlays = conversation.messages
         .filter { it.messageId in conversation.streamingMessageIds }
-        .filter { it.messageId !in projectedIds && !projectedMessages.represents(it) }
+        .filter {
+            it.messageId !in projectedIds &&
+                // An unfinished stream has no stable canonical body. Text equality is not an
+                // identity signal here: a partial reply can equal an older persisted message.
+                // Only a message that reached its terminal event may use the narrow fallback.
+                (it.messageId !in conversation.finishedMessageIds || !projectedMessages.represents(it))
+        }
     return projectedMessages + retainedOverlays to retainedOverlays.map(ChatMessage::messageId).toSet()
+}
+
+/** Apply a complete source checkpoint after the canonical projection has been built. */
+private fun RuntimeConversation.applySourceLiveCheckpoint(
+    source: SessionSourceEpoch,
+    live: SessionLiveState,
+    replaceInventory: Boolean = live.complete,
+): RuntimeConversation {
+    val canonicalIds = messages.mapTo(mutableSetOf(), ChatMessage::messageId)
+    val incomingById = live.messages.associateBy { it.message.messageId }
+    val previousOverlayIds = streamingMessageIds
+    val retained = messages.filter { message ->
+        message.messageId !in previousOverlayIds || !replaceInventory || message.messageId in incomingById
+    }.toMutableList()
+    val overlayIds = if (replaceInventory) mutableSetOf() else previousOverlayIds.toMutableSet()
+    val finished = if (replaceInventory) mutableSetOf() else finishedMessageIds.toMutableSet()
+    for (item in live.messages) {
+        val liveId = item.message.messageId
+        val canonicalId = item.persistedEntryId
+        if (canonicalId != null && canonicalId in canonicalIds) {
+            // Canonical projection wins over a stale or partial live representation.
+            retained.removeAll { it.messageId == liveId }
+            overlayIds.remove(liveId)
+            finished.remove(liveId)
+            continue
+        }
+        val index = retained.indexOfFirst { it.messageId == liveId }
+        if (index >= 0) retained[index] = item.message
+        else retained += item.message
+        overlayIds += liveId
+        if (item.finished) finished += liveId else finished -= liveId
+    }
+    val displayed = retained
+    val checkpointTurn = live.turn
+    val retainedTimings = if (replaceInventory) {
+        turnTimings.filterValues { it.durationMs != null }
+    } else {
+        turnTimings
+    }.toMutableMap()
+    if (checkpointTurn != null) {
+        retainedTimings[checkpointTurn.turnId] = TurnTiming(
+            checkpointTurn.turnId, checkpointTurn.startedAt, checkpointTurn.durationMs,
+        )
+    }
+    val checkpointTools = live.tools.associate { tool ->
+        tool.toolCallId to ToolActivity(
+            toolCallId = tool.toolCallId,
+            toolName = tool.toolName,
+            state = tool.state,
+            detail = tool.detail?.toString(),
+            isError = tool.isError == true,
+        )
+    }
+    val mergedTools = if (replaceInventory) checkpointTools else tools + checkpointTools
+    return copy(
+        messages = displayed,
+        streamingMessageIds = overlayIds.filter { id -> displayed.any { it.messageId == id } }.toSet(),
+        finishedMessageIds = finished,
+        streamingSessionId = source.epoch.takeIf { overlayIds.isNotEmpty() },
+        sourceEpoch = source.epoch,
+        sourceSeq = source.seq,
+        sourceReady = source.ready,
+        hasLiveSnapshot = true,
+        turnTimings = retainedTimings,
+        activeTurnId = checkpointTurn?.takeIf { it.durationMs == null }?.turnId
+            ?: activeTurnId.takeIf { !replaceInventory },
+        tools = mergedTools,
+    )
 }
 
 /**
@@ -1658,7 +1750,7 @@ class RelayReducer(
             }
         if (sequence <= (state.lastSequence[sequenceKey] ?: -1) && !snapshotStillOwned) return state
         val supportedEvents = setOf(
-            "runtime.status", "runtime.metadata", "runtime.capabilities", "session.catalog", "message.queued", "session.snapshot", "message.started", "message.delta",
+            "runtime.status", "runtime.metadata", "runtime.capabilities", "session.catalog", "message.queued", "session.snapshot", "session.patch", "message.started", "message.delta",
             "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished", "artifact.started",
             "artifact.failed", "interaction.requested", "interaction.snapshot",
             "interaction.resolved", "interaction.cancelled", "local_interaction.required", "command.result", "runtime.error",
@@ -1685,6 +1777,110 @@ class RelayReducer(
         var nextPendingDownloads = state.pendingDownloads
 
         when (eventType) {
+            "session.patch" -> {
+                val patch = runCatching { json.decodeFromJsonElement<SessionPatch>(event) }.getOrNull()
+                    ?: return state.copy(error = "收到无效的 Session 状态 patch")
+                val activeSessionId = state.runtimes[runtimeId]?.sessionId
+                    ?: state.knownRuntimeSessions[runtimeId]
+                if (activeSessionId != null && activeSessionId != patch.sessionId) {
+                    return state
+                }
+                fun requestRecovery(next: RuntimeConversation): Unit {
+                    nextConversation = next.copy(isChatSyncing = true, chatSyncError = null)
+                    nextSessionSyncRequests = state.sessionSyncRequests + runtimeId
+                }
+                val currentEpoch = conversation.sourceEpoch
+                if (patch.source.epoch in conversation.retiredSourceEpochs) {
+                    // An epoch that was already replaced can arrive after a newer checkpoint.
+                    // Keep the current projection intact and recover the active epoch instead of
+                    // allowing the delayed patch to reopen the old branch.
+                    requestRecovery(conversation.copy(sourcePatchBuffer = emptyMap()))
+                } else if (currentEpoch == null || currentEpoch != patch.source.epoch) {
+                    if (patch.source.ready) {
+                        // A ready patch cannot establish a new epoch's canonical head. Keep the
+                        // current projection until a checkpoint explicitly performs the epoch
+                        // handshake; this also prevents a delayed ready patch from reviving an
+                        // old source after a restart.
+                        requestRecovery(conversation.copy(sourcePatchBuffer = emptyMap()))
+                    } else {
+                        // `ready=false` is the source's explicit unknown boundary. Isolate the
+                        // old projection and use the next ready checkpoint as the handshake.
+                        requestRecovery(conversation.copy(
+                            messages = emptyList(),
+                            streamingMessageIds = emptySet(),
+                            finishedMessageIds = emptySet(),
+                            streamingSessionId = null,
+                            hasLiveSnapshot = false,
+                            activeTurnId = null,
+                            turnTimings = emptyMap(),
+                            tools = emptyMap(),
+                        sourceEpoch = patch.source.epoch,
+                        sourceSeq = -1L,
+                        sourceHeadLeafId = null,
+                        sourceReady = false,
+                            retiredSourceEpochs = conversation.sourceEpoch?.let {
+                                conversation.retiredSourceEpochs + it
+                            } ?: conversation.retiredSourceEpochs,
+                            sourcePatchBuffer = emptyMap(),
+                            revision = conversation.revision + 1,
+                        ))
+                    }
+                } else if (patch.source.seq <= conversation.sourceSeq) {
+                    nextConversation = conversation
+                } else {
+                    val buffered = conversation.sourcePatchBuffer + (patch.seq to patch)
+                    val canonicalHeadChanged = conversation.sourceReady && patch.source.ready &&
+                        patch.headCompleteness == "complete" && patch.live.complete &&
+                        conversation.sourceHeadLeafId != null &&
+                        conversation.sourceHeadLeafId != patch.head.leafId
+                    if (canonicalHeadChanged) {
+                        // A live patch cannot carry the canonical Entry graph. A changed source
+                        // head therefore invalidates the current projection and must be followed
+                        // by a history checkpoint, even when no source epoch changed.
+                        requestRecovery(conversation.copy(
+                            messages = emptyList(),
+                            streamingMessageIds = emptySet(),
+                            finishedMessageIds = emptySet(),
+                            streamingSessionId = null,
+                            hasLiveSnapshot = false,
+                            activeTurnId = null,
+                            turnTimings = emptyMap(),
+                            tools = emptyMap(),
+                            sourceReady = false,
+                            sourceHeadLeafId = null,
+                            sourcePatchBuffer = emptyMap(),
+                            revision = conversation.revision + 1,
+                        ))
+                    } else if (!conversation.sourceReady || patch.baseSeq != conversation.sourceSeq ||
+                        patch.source.seq != patch.seq || patch.seq <= patch.baseSeq ||
+                        patch.source.ready.not() || patch.headCompleteness != "complete" || !patch.live.complete
+                    ) {
+                        val bounded = buffered.toSortedMap().entries.toList().takeLast(64).associate { it.toPair() }
+                        requestRecovery(conversation.copy(sourcePatchBuffer = bounded))
+                    } else {
+                        var applied = conversation
+                        var nextPatch: SessionPatch? = patch
+                        while (nextPatch != null && nextPatch!!.source.epoch == currentEpoch &&
+                            nextPatch!!.baseSeq == applied.sourceSeq && nextPatch!!.source.ready &&
+                            nextPatch!!.headCompleteness == "complete" && nextPatch!!.live.complete
+                        ) {
+                            applied = applied.applySourceLiveCheckpoint(nextPatch!!.source, nextPatch!!.live, replaceInventory = true)
+                                .copy(sourcePatchBuffer = applied.sourcePatchBuffer - nextPatch!!.seq,
+                                    sourceHeadLeafId = nextPatch!!.head.leafId,
+                                    sourceReady = true, isChatSyncing = false, chatSyncError = null,
+                                    revision = applied.revision + 1)
+                            nextPatch = applied.sourcePatchBuffer.values.firstOrNull { it.baseSeq == applied.sourceSeq }
+                        }
+                        nextConversation = applied
+                        if (applied.sourceReady && applied.sourceSeq > conversation.sourceSeq) {
+                            // A buffered gap has now been closed by a contiguous ready patch.
+                            // Do not leave the scheduler believing that the checkpoint is still
+                            // missing; a new gap will add the request again.
+                            nextSessionSyncRequests = nextSessionSyncRequests - runtimeId
+                        }
+                    }
+                }
+            }
             "runtime.status" -> {
                 val status = event.string("status") ?: return state
                 state.runtimes[runtimeId]?.let { runtime ->
@@ -1835,13 +2031,42 @@ class RelayReducer(
                     ?.takeIf { it >= 0 } ?: return state
                 val current = conversation.turnTimings[turnId]
                 val liveMessageId = event.string("messageId")
-                if (current == null || current.startedAt != startedAt || current.durationMs != null ||
+                val persistedMessageId = event.string("persistedMessageId")
+                val eventRemaps = (event.persistedMessageRemaps() +
+                    listOfNotNull(
+                        liveMessageId?.let { live ->
+                            persistedMessageId?.let { entry -> MessageIdRemap(live, entry) }
+                        },
+                    )).distinctBy(MessageIdRemap::liveId)
+                if (current == null) {
+                    if (eventRemaps.isEmpty()) {
+                        return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
+                    }
+                    var messages = conversation.messages
+                    var streamingMessageIds = conversation.streamingMessageIds
+                    var finishedMessageIds = conversation.finishedMessageIds
+                    for (remap in eventRemaps) {
+                        messages = remapMessageId(messages, remap.liveId, remap.entryId)
+                        streamingMessageIds = streamingMessageIds - remap.liveId + remap.entryId
+                        finishedMessageIds = finishedMessageIds - remap.liveId + remap.entryId
+                    }
+                    nextConversation = conversation.copy(
+                        messages = messages,
+                        streamingMessageIds = streamingMessageIds,
+                        finishedMessageIds = finishedMessageIds,
+                        revision = conversation.revision + 1,
+                    )
+                    return@reduceRuntimeEvent state.copy(
+                        conversations = state.conversations + (runtimeId to nextConversation),
+                        lastSequence = state.lastSequence + (sequenceKey to sequence),
+                    )
+                }
+                if (current.startedAt != startedAt ||
                     current.messageId != null && liveMessageId != null && current.messageId != liveMessageId
                 ) {
                     return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
                 }
                 val currentMessageId = current.messageId ?: liveMessageId
-                val persistedMessageId = event.string("persistedMessageId")
                 // The Runtime publishes the exact live-id -> entry-id mapping for every message this
                 // turn persisted, so streamed rows converge on their canonical id by themselves. The
                 // single `persistedMessageId` pair remains for Runtimes that predate that mapping.
@@ -1851,6 +2076,9 @@ class RelayReducer(
                             persistedMessageId?.let { entry -> MessageIdRemap(live, entry) }
                         },
                     )).distinctBy(MessageIdRemap::liveId)
+                if (current.durationMs != null && remaps.isEmpty()) {
+                    return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
+                }
                 val anchorMessageId = remaps.firstOrNull { it.liveId == currentMessageId }?.entryId
                     ?: currentMessageId
                 var messages = conversation.messages
@@ -1916,8 +2144,9 @@ class RelayReducer(
                 }
             }
             "session.snapshot" -> {
-                val snapshot = runCatching { json.decodeFromJsonElement<SessionGraphSnapshot>(event) }.getOrNull()
-                    ?: return state.copy(error = "收到无效的 Session graph 快照")
+                val snapshot = runCatching { json.decodeFromJsonElement<SessionGraphSnapshot>(event) }.getOrElse {
+                    return state.copy(error = "收到无效的 Session graph 快照")
+                }
                 val pending = state.sessionSyncCommands.values.firstOrNull {
                     it.runtimeId == runtimeId && it.syncId == snapshot.syncId
                 }
@@ -1955,9 +2184,53 @@ class RelayReducer(
                     else responseTargetLeafId
                 val liveLeafId = state.runtimes[runtimeId]?.sessionLeafId
                 val isHistory = pending.range == "history"
+                val incomingSource = snapshot.source
+                val incomingCheckpoint = snapshot.checkpoint
+                val sourceRetired = incomingSource != null && incomingSource.epoch in conversation.retiredSourceEpochs
+                val sourceEpochChanged = incomingSource != null && conversation.sourceEpoch != null &&
+                    conversation.sourceEpoch != incomingSource.epoch
+                val sourceSameEpoch = incomingSource == null || conversation.sourceEpoch == null ||
+                    conversation.sourceEpoch == incomingSource.epoch
+                val sourceStale = incomingSource != null && sourceSameEpoch &&
+                    conversation.sourceEpoch == incomingSource.epoch && incomingSource.seq < conversation.sourceSeq
+                val sourceReadyCheckpoint = incomingSource != null && incomingCheckpoint != null && !sourceStale &&
+                    incomingSource.ready && incomingCheckpoint.headCompleteness == "complete" &&
+                    incomingCheckpoint.inventoryComplete && snapshot.live?.complete == true
+                // `ready=false` is the source's explicit unknown boundary. A partial live
+                // inventory is still useful and must merge without deleting objects omitted from
+                // that inventory.
+                val sourceBlocked = incomingSource != null && !sourceStale && !sourceRetired && !incomingSource.ready
                 val commandId = state.sessionSyncCommands.entries.first { it.value === pending }.key
+                val epochSwitchRejected = sourceEpochChanged && !sourceRetired &&
+                    incomingSource?.ready == true && conversation.sourceReady && !conversation.isChatSyncing
+                if (epochSwitchRejected) {
+                    // A ready response from an unrelated epoch is not a recovery handshake. It
+                    // may be a delayed snapshot from before a source restart, so preserve the
+                    // current projection and force a fresh checkpoint request. The retry is the
+                    // explicit recovery boundary that permits the next epoch to be installed.
+                    val rejectedCommandIds = state.sessionSyncCommands
+                        .filterValues { it.runtimeId == runtimeId && it.syncId == snapshot.syncId }
+                        .keys
+                    val released = state.releaseHistoryRequest(commandId)
+                    return released.copy(
+                        pendingCommands = released.pendingCommands - rejectedCommandIds,
+                        sessionSyncCommands = released.sessionSyncCommands - rejectedCommandIds,
+                        sessionSyncRequests = released.sessionSyncRequests + runtimeId,
+                        conversations = released.conversations + (
+                            runtimeId to conversation.copy(
+                                isChatSyncing = true,
+                                chatSyncError = null,
+                                revision = conversation.revision + 1,
+                            )
+                        ),
+                        lastSequence = released.lastSequence + (
+                            sequenceKey to maxOf(released.lastSequence[sequenceKey] ?: -1L, sequence)
+                        ),
+                    )
+                }
                 val staleTarget = !state.ownsSessionSnapshot(commandId, runtimeId, snapshot.sessionId,
-                    snapshot.syncId, responseTargetLeafId, snapshot.range, snapshot.beforeEntryId)
+                    snapshot.syncId, responseTargetLeafId, snapshot.range, snapshot.beforeEntryId) ||
+                    sourceStale || sourceRetired
                 // A preview can resolve a newer live leaf only if metadata has not advanced since
                 // it was requested. A catch-up target can be an old ancestor/cache hole.
                 if (pending.range == "preview" && !staleTarget && targetLeafId != null &&
@@ -1969,13 +2242,31 @@ class RelayReducer(
                 // Every successful range joins the same canonical graph. Projection state remains
                 // separate from the realtime overlay below.
                 val isCatchUp = pending.range == "catchup" && !isHistory
-                val currentGraph = state.sessionGraphs[snapshot.sessionId] ?: SessionGraph(snapshot.sessionId)
+                // A changed source epoch is a new canonical world. Keep the old graph in the
+                // local cache until this response is accepted, but never merge it into the new
+                // epoch or use its branch as the current projection.
+                val currentGraph = if (sourceEpochChanged) SessionGraph(snapshot.sessionId)
+                    else state.sessionGraphs[snapshot.sessionId] ?: SessionGraph(snapshot.sessionId)
+                val projectionConversation = if (sourceEpochChanged && !sourceRetired) conversation.copy(
+                    messages = emptyList(),
+                    streamingMessageIds = emptySet(),
+                    finishedMessageIds = emptySet(),
+                    streamingSessionId = null,
+                    hasLiveSnapshot = false,
+                    activeTurnId = null,
+                    turnTimings = emptyMap(),
+                    tools = emptyMap(),
+                    sourceHeadLeafId = null,
+                    retiredSourceEpochs = conversation.sourceEpoch?.let {
+                        conversation.retiredSourceEpochs + it
+                    } ?: conversation.retiredSourceEpochs,
+                ) else conversation
                 val snapshotForProjection = snapshot.copy(
                     entries = persistedSessionEntries ?: snapshot.entries,
                     cursor = SessionBranchCursor(targetLeafId),
                     targetLeafId = targetLeafId,
                 )
-                val mergedGraph = if (staleTarget) currentGraph else {
+                val mergedGraph = if (staleTarget || sourceBlocked) currentGraph else {
                     runCatching { currentGraph.merge(snapshotForProjection) }.getOrElse { error ->
                         return@reduceRuntimeEvent state.failSessionSync(commandId,
                             "Session 历史同步失败：${error.message}").copy(
@@ -2003,14 +2294,14 @@ class RelayReducer(
                             .withHistoryCache(state.runtimes[runtimeId]?.hostname)
                     )
                 }
-                val currentViewLeaf = state.runtimeSessionViews[runtimeId]
+                val currentViewLeaf = if (sourceEpochChanged) null else state.runtimeSessionViews[runtimeId]
                     ?.takeIf { it.sessionId == snapshot.sessionId }?.leafId
                 val hasRenderableCurrentView = currentViewLeaf != null && currentGraph.entries.containsKey(currentViewLeaf)
                 val hasRenderableTarget = targetLeafId != null && mergedGraph.entries.containsKey(targetLeafId)
                 val retainAdvancedView = pending.viewLeafId != null && liveLeafId != pending.viewLeafId &&
                     currentViewLeaf == liveLeafId && currentViewLeaf != targetLeafId
                 val targetIsOlder = currentViewLeaf != targetLeafId && mergedGraph.isDescendant(currentViewLeaf, targetLeafId)
-                val shouldMoveView = !staleTarget && !isHistory && targetLeafId != null &&
+                val shouldMoveView = !staleTarget && !sourceBlocked && !isHistory && targetLeafId != null &&
                     !retainAdvancedView && !targetIsOlder &&
                     (snapshot.complete != false || !hasRenderableCurrentView || hasRenderableTarget)
                 val viewLeafId = when {
@@ -2081,7 +2372,28 @@ class RelayReducer(
                 val emptyPreview = pending.range == "preview" && targetLeafId == null &&
                     snapshot.entries.isEmpty() && snapshot.complete == true &&
                     snapshot.rangeStatus in setOf(null, "complete") && liveLeafId == pending.viewLeafId
-                if (!staleTarget && emptyPreview) {
+                if (!staleTarget && sourceBlocked) {
+                    // A not-ready source checkpoint is an explicit unknown boundary. Keep the
+                    // canonical graph in the cache, but atomically hide the previous epoch's
+                    // head, live messages, tools, and timing until a complete ready checkpoint.
+                    nextConversation = projectionConversation.copy(
+                        messages = emptyList(),
+                        streamingMessageIds = emptySet(),
+                        finishedMessageIds = emptySet(),
+                        streamingSessionId = null,
+                        hasLiveSnapshot = false,
+                        sourceEpoch = incomingSource?.epoch ?: conversation.sourceEpoch,
+                        sourceSeq = incomingSource?.seq ?: conversation.sourceSeq,
+                        sourceHeadLeafId = null,
+                        sourceReady = false,
+                        activeTurnId = null,
+                        turnTimings = emptyMap(),
+                        tools = emptyMap(),
+                        isChatSyncing = true,
+                        chatSyncError = null,
+                        revision = conversation.revision + 1,
+                    )
+                } else if (!staleTarget && emptyPreview) {
                     nextRuntimes[runtimeId]?.let { runtime ->
                         nextRuntimes = nextRuntimes + (runtimeId to runtime.copy(sessionLeafId = null))
                     }
@@ -2089,17 +2401,17 @@ class RelayReducer(
                         (runtimeId to RuntimeSessionView(runtimeId, snapshot.sessionId, null))
                     nextSessionHistory = nextSessionHistory +
                         (runtimeId to SessionHistoryState(snapshot.sessionId, null, null, false))
-                    val (messages, overlayIds) = mergeProjectedWithStreaming(emptyList(), conversation)
-                    nextConversation = conversation.applyProjection(SessionProjectionResult(emptyList()), messages, keepLiveTiming = true)
+                    val (messages, overlayIds) = mergeProjectedWithStreaming(emptyList(), projectionConversation)
+                    nextConversation = projectionConversation.applyProjection(SessionProjectionResult(emptyList()), messages, keepLiveTiming = true)
                         .copy(hasLiveSnapshot = true, isChatSyncing = false, chatSyncError = null,
                             streamingMessageIds = overlayIds,
                             streamingSessionId = snapshot.sessionId.takeIf { overlayIds.isNotEmpty() },
                             revision = conversation.revision + 1)
                 } else if (!staleTarget && viewLeafId != null && canProject) {
-                    val oldLeaf = state.runtimeSessionViews[runtimeId]
+                    val oldLeaf = if (sourceEpochChanged) null else state.runtimeSessionViews[runtimeId]
                         ?.takeIf { it.sessionId == snapshot.sessionId }?.leafId
-                    val baseMessages = conversation.messages.filterNot {
-                        it.messageId in conversation.streamingMessageIds
+                    val baseMessages = projectionConversation.messages.filterNot {
+                        it.messageId in projectionConversation.streamingMessageIds
                     }
                     val projection = if (isHistory) {
                         // History entries are older than the existing boundary. Keep the current
@@ -2117,7 +2429,7 @@ class RelayReducer(
                             messages = full.messages + baseMessages.filterNot {
                                 it.messageId in projectedIds
                             },
-                            turnTimings = (full.turnTimings + conversation.turnTimings.values +
+                            turnTimings = (full.turnTimings + projectionConversation.turnTimings.values +
                             snapshotForProjection.turnTimings.orEmpty())
                                 .associateBy(TurnTiming::turnId).values.toList(),
                         )
@@ -2136,9 +2448,21 @@ class RelayReducer(
                             deltaProjection
                         }
                     }
-                    val (displayedMessages, overlayIds) = mergeProjectedWithStreaming(projection.messages, conversation)
-                    nextConversation = conversation
-                        .applyProjection(projection, displayedMessages, keepLiveTiming = isHistory)
+                    val (displayedMessages, overlayIds) = mergeProjectedWithStreaming(projection.messages, projectionConversation)
+                    nextConversation = projectionConversation
+                        // A running sync is a canonical-history refresh, not proof that the
+                        // active turn ended. Preserve unfinished timing until the source live
+                        // checkpoint below confirms its terminal state; otherwise a late
+                        // turn.finished loses its identity mapping and cannot converge.
+                        .applyProjection(
+                            projection,
+                            displayedMessages,
+                            // Running/waiting sync keeps the live turn until the source
+                            // checkpoint proves it finished; an idle refresh may clear stale
+                            // timing from a previously lost completion event.
+                            keepLiveTiming = !sourceEpochChanged &&
+                                state.runtimes[runtimeId]?.status != "idle",
+                        )
                         .copy(
                             streamingMessageIds = overlayIds,
                             streamingSessionId = snapshot.sessionId.takeIf { overlayIds.isNotEmpty() },
@@ -2150,11 +2474,57 @@ class RelayReducer(
                             revision = conversation.revision + 1,
                         )
                 } else if (staleTarget) {
-                    nextConversation = conversation.copy(
+                    nextConversation = projectionConversation.copy(
                         isChatSyncing = false,
                         chatSyncError = "Session 已产生更新，正在重新加载最新范围",
                         revision = conversation.revision + 1,
                     )
+                }
+                if (!staleTarget && sourceReadyCheckpoint && snapshot.live != null &&
+                    (sourceEpochChanged || nextConversation.sourceEpoch == null ||
+                        nextConversation.sourceEpoch == incomingSource?.epoch)
+                ) {
+                    nextConversation = nextConversation.applySourceLiveCheckpoint(incomingSource!!, snapshot.live, replaceInventory = true)
+                        .copy(
+                            sourceHeadLeafId = incomingCheckpoint?.head?.leafId ?: targetLeafId,
+                            sourcePatchBuffer = emptyMap(),
+                            revision = nextConversation.revision + 1,
+                        )
+                } else if (!staleTarget && incomingSource != null && !sourceStale &&
+                    incomingSource.ready && snapshot.live != null
+                ) {
+                    // Partial checkpoints update known rows and watermarks while preserving
+                    // live rows/tools that were outside the returned inventory.
+                    nextConversation = nextConversation.applySourceLiveCheckpoint(
+                        incomingSource, snapshot.live, replaceInventory = false,
+                    ).copy(
+                        sourceHeadLeafId = incomingCheckpoint?.head?.leafId ?: nextConversation.sourceHeadLeafId,
+                        sourcePatchBuffer = nextConversation.sourcePatchBuffer.filterKeys { it > incomingSource.seq },
+                        revision = nextConversation.revision + 1,
+                    )
+                } else if (!staleTarget && incomingSource != null && !sourceStale && !sourceBlocked) {
+                    nextConversation = nextConversation.copy(
+                        sourceEpoch = incomingSource.epoch,
+                        sourceSeq = maxOf(nextConversation.sourceSeq, incomingSource.seq),
+                        sourceHeadLeafId = incomingCheckpoint?.head?.leafId ?: nextConversation.sourceHeadLeafId,
+                        sourceReady = incomingSource.ready,
+                    )
+                }
+                if (!staleTarget && incomingSource != null &&
+                    nextConversation.sourceEpoch == incomingSource.epoch
+                ) {
+                    // A snapshot is also a patch recovery boundary when it carries no live
+                    // inventory. Do not leave patches at or below the accepted checkpoint to be
+                    // replayed after the next reconnect; a changed epoch has no transferable
+                    // patch history at all.
+                    val retainedPatchBuffer = if (sourceEpochChanged || sourceReadyCheckpoint) {
+                        emptyMap()
+                    } else {
+                        nextConversation.sourcePatchBuffer.filterKeys { it > incomingSource.seq }
+                    }
+                    if (retainedPatchBuffer != nextConversation.sourcePatchBuffer) {
+                        nextConversation = nextConversation.copy(sourcePatchBuffer = retainedPatchBuffer)
+                    }
                 }
             }
             "artifact.started" -> {

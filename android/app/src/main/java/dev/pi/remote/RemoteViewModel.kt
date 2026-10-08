@@ -128,8 +128,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     private val sessionSyncLoadLock = Mutex()
     private val pendingSessionLoadRuntimes = linkedMapOf<String, RuntimeSummary>()
     private var sessionLoadWorker: Job? = null
-    private val historyPageSize = 100
-    private val previewPageSize = 100
+    private val historyPageSize = 30
+    private val previewPageSize = 30
 
     /** 握手看门狗超时：连上中继后多久还没等到加密通道就认定「电脑没在听」（spec §5）。 */
     private val e2eHandshakeTimeoutMs = 8_000L

@@ -101,14 +101,20 @@ class RelayReducerTest {
             ),
             conversations = mapOf(
                 "runtime-a" to RuntimeConversation(
-                    messages = listOf(ChatMessage("stream", "assistant", emptyList(), 1)),
-                    streamingMessageIds = setOf("stream"),
-                    hasLiveSnapshot = true,
-                ),
+                messages = listOf(ChatMessage("stream", "assistant", emptyList(), 1)),
+                streamingMessageIds = setOf("stream"),
+                activeTurnId = "turn-1",
+                turnTimings = mapOf("turn-1" to TurnTiming("turn-1", 1_000)),
+                hasLiveSnapshot = true,
+            ),
             ),
         )
 
-        assertEquals(streaming, streaming.requestRuntimeRefresh("runtime-a"))
+        val runningRefresh = streaming.requestRuntimeRefresh("runtime-a")
+        assertTrue("runtime-a" in runningRefresh.sessionSyncRequests)
+        assertEquals(setOf("stream"), runningRefresh.conversations["runtime-a"]?.streamingMessageIds)
+        assertEquals(streaming.conversations["runtime-a"]?.messages, runningRefresh.conversations["runtime-a"]?.messages)
+        assertEquals("turn-1", runningRefresh.conversations["runtime-a"]?.activeTurnId)
     }
 
     @Test
@@ -929,6 +935,7 @@ class RelayReducerTest {
             RuntimeConversation(
                 messages = listOf(assistantOverlay),
                 streamingMessageIds = setOf("assistant-live"),
+                finishedMessageIds = setOf("assistant-live"),
             ),
         )
 
@@ -956,11 +963,50 @@ class RelayReducerTest {
             RuntimeConversation(
                 messages = listOf(overlay),
                 streamingMessageIds = setOf("live-user"),
+                finishedMessageIds = setOf("live-user"),
             ),
         )
 
         assertEquals(listOf("entry-user"), messages.map(ChatMessage::messageId))
         assertTrue(overlays.isEmpty())
+    }
+
+    @Test
+    fun `remap keeps an already projected canonical row and is idempotent`() {
+        val canonical = ChatMessage("entry", "assistant", listOf(RemoteContent("text", "canonical")), 2_000)
+        val live = ChatMessage("live", "assistant", listOf(RemoteContent("text", "stale live")), 2_000)
+        val initial = RemoteState(
+            runtimes = mapOf("runtime-a" to RuntimeSummary("runtime-a", "A", "/a", "running", "session-1")),
+            conversations = mapOf("runtime-a" to RuntimeConversation(
+                messages = listOf(canonical, live),
+                streamingMessageIds = setOf("live"),
+                activeTurnId = "turn-1",
+                turnTimings = mapOf("turn-1" to TurnTiming("turn-1", 1_000, messageId = "live")),
+            )),
+        )
+        val finished = liveEvent(1, """{
+          "type":"turn.finished","turnId":"turn-1","startedAt":1000,"durationMs":1000,
+          "messageId":"live","persistedMessageId":"entry"
+        }""")
+
+        val reduced = reducer.reduce(initial, finished)
+        assertEquals(listOf("entry"), reduced.conversations.getValue("runtime-a").messages.map(ChatMessage::messageId))
+        assertEquals(setOf("entry"), reduced.conversations.getValue("runtime-a").streamingMessageIds)
+        assertEquals("entry", reduced.conversations.getValue("runtime-a").turnTimings.getValue("turn-1").messageId)
+        assertEquals(reduced, reducer.reduce(reduced, finished))
+    }
+
+    @Test
+    fun `incomplete streaming row is not absorbed by equal persisted text`() {
+        val persisted = ChatMessage("entry", "assistant", listOf(RemoteContent("text", "same")), 2)
+        val live = ChatMessage("live", "assistant", listOf(RemoteContent("text", "same")), 3)
+        val (messages, overlays) = mergeProjectedWithStreaming(
+            listOf(persisted),
+            RuntimeConversation(messages = listOf(live), streamingMessageIds = setOf("live")),
+        )
+
+        assertEquals(listOf("entry", "live"), messages.map(ChatMessage::messageId))
+        assertEquals(setOf("live"), overlays)
     }
 
     @Test
@@ -2321,6 +2367,7 @@ class RelayReducerTest {
                         ChatMessage("assistant-live", "assistant", listOf(RemoteContent("text", "done")), 3),
                     ),
                     streamingMessageIds = setOf("user-live", "assistant-live"),
+                    finishedMessageIds = setOf("user-live", "assistant-live"),
                 ),
             ),
             sessionGraphs = mapOf(
@@ -2376,6 +2423,646 @@ class RelayReducerTest {
         assertEquals(250L, restored.conversations["runtime-a"]?.turnTimings?.get("turn-1")?.durationMs)
         assertEquals(null, restored.conversations["runtime-a"]?.turnTimings?.get("active"))
         assertEquals(null, restored.conversations["runtime-a"]?.activeTurnId)
+    }
+
+    @Test
+    fun `not ready checkpoint isolates the previous source head and live state`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "running", "session-1", sessionGraphSync = true,
+                    sessionLeafId = "old-leaf",
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    messages = listOf(
+                        ChatMessage("old-leaf", "assistant", listOf(RemoteContent("text", "old")), 1),
+                        ChatMessage("live-old", "assistant", listOf(RemoteContent("text", "partial")), 2),
+                    ),
+                    streamingMessageIds = setOf("live-old"),
+                    activeTurnId = "turn-old",
+                    turnTimings = mapOf("turn-old" to TurnTiming("turn-old", 2)),
+                    tools = mapOf("tool-old" to ToolActivity("tool-old", "bash", "started")),
+                    sourceEpoch = "epoch-old",
+                    sourceSeq = 7,
+                    hasLiveSnapshot = true,
+                ),
+            ),
+            sessionSyncCommands = mapOf(
+                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-1", "preview"),
+            ),
+        )
+
+        val restoring = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
+            "type":"session.snapshot","sessionId":"session-1","syncId":"sync-1","mode":"replace",
+            "range":"preview","complete":true,"cursor":{"leafId":null},
+            "source":{"epoch":"epoch-new","seq":1,"ready":false},
+            "checkpoint":{"checkpointId":"epoch-new:1","headCompleteness":"unknown","inventoryComplete":false},
+            "live":{"complete":false,"turn":null,"messages":[],"tools":[]}
+          }}
+        """.trimIndent())
+
+        val conversation = restoring.conversations.getValue("runtime-a")
+        assertTrue(conversation.messages.isEmpty())
+        assertTrue(conversation.streamingMessageIds.isEmpty())
+        assertTrue(conversation.tools.isEmpty())
+        assertEquals(null, conversation.activeTurnId)
+        assertTrue(conversation.turnTimings.isEmpty())
+        assertEquals("epoch-new", conversation.sourceEpoch)
+        assertEquals(1, conversation.sourceSeq)
+        assertEquals(false, conversation.sourceReady)
+        assertTrue(conversation.isChatSyncing)
+    }
+
+    @Test
+    fun `ready complete checkpoint restores message turn and tool atomically`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "running", "session-1", sessionGraphSync = true,
+                    sessionLeafId = null,
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    sourceEpoch = "epoch-new",
+                    sourceSeq = 1,
+                    sourceReady = false,
+                    isChatSyncing = true,
+                ),
+            ),
+            sessionSyncCommands = mapOf(
+                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-2", "preview"),
+            ),
+        )
+
+        val restored = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
+            "type":"session.snapshot","sessionId":"session-1","syncId":"sync-2","mode":"replace",
+            "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
+            "source":{"epoch":"epoch-new","seq":2,"ready":true},
+            "checkpoint":{"checkpointId":"epoch-new:2","headCompleteness":"complete","inventoryComplete":true},
+            "live":{"complete":true,
+              "turn":{"turnId":"turn-new","startedAt":100},
+              "messages":[{"message":{"messageId":"live-new","role":"assistant",
+                "content":[{"type":"text","text":"answer"}],"timestamp":100},
+                "finished":false,"contentComplete":false}],
+              "tools":[{"toolCallId":"tool-new","toolName":"bash","state":"started",
+                "detail":{"command":"pwd"}}]
+            }
+          }}
+        """.trimIndent())
+
+        val conversation = restored.conversations.getValue("runtime-a")
+        assertEquals(listOf("live-new"), conversation.messages.map(ChatMessage::messageId))
+        assertEquals(setOf("live-new"), conversation.streamingMessageIds)
+        assertEquals("turn-new", conversation.activeTurnId)
+        assertEquals(100L, conversation.turnTimings.getValue("turn-new").startedAt)
+        assertEquals("bash", conversation.tools.getValue("tool-new").toolName)
+        assertEquals("epoch-new", conversation.sourceEpoch)
+        assertEquals(2, conversation.sourceSeq)
+        assertTrue(conversation.sourceReady)
+        assertFalse(conversation.isChatSyncing)
+    }
+
+    @Test
+    fun `new epoch ready checkpoint replaces isolated state and clears buffered patches`() {
+        val bufferedPatch = SessionPatch(
+            sessionId = "session-1",
+            source = SessionSourceEpoch("epoch-old", 3, ready = true),
+            baseSeq = 2,
+            seq = 3,
+            checkpointId = "epoch-old:3",
+            head = SessionBranchCursor(),
+            headCompleteness = "complete",
+            live = SessionLiveState(complete = true),
+        )
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "running", "session-1", sessionGraphSync = true,
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    messages = listOf(ChatMessage("old-live", "assistant", listOf(RemoteContent("text", "old")), 1)),
+                    streamingMessageIds = setOf("old-live"),
+                    sourceEpoch = "epoch-old",
+                    sourceSeq = 2,
+                    sourceReady = false,
+                    isChatSyncing = true,
+                    sourcePatchBuffer = mapOf(3L to bufferedPatch),
+                ),
+            ),
+            sessionSyncCommands = mapOf(
+                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-new", "preview"),
+            ),
+        )
+
+        val restored = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{
+            "type":"session.snapshot","sessionId":"session-1","syncId":"sync-new","mode":"replace",
+            "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
+            "source":{"epoch":"epoch-new","seq":1,"ready":true},
+            "checkpoint":{"checkpointId":"epoch-new:1","headCompleteness":"complete","inventoryComplete":true},
+            "live":{"complete":true,"turn":null,
+              "messages":[{"message":{"messageId":"new-live","role":"assistant",
+                "content":[{"type":"text","text":"new"}],"timestamp":2},
+                "finished":false,"contentComplete":false}],"tools":[]}
+          }}
+        """.trimIndent())
+
+        val conversation = restored.conversations.getValue("runtime-a")
+        assertEquals("epoch-new", conversation.sourceEpoch)
+        assertEquals(1, conversation.sourceSeq)
+        assertTrue(conversation.sourceReady)
+        assertEquals(setOf("new-live"), conversation.streamingMessageIds)
+        assertEquals(listOf("new-live"), conversation.messages.map(ChatMessage::messageId))
+        assertTrue(conversation.sourcePatchBuffer.isEmpty())
+        assertFalse(conversation.isChatSyncing)
+    }
+
+    @Test
+    fun `older source sequence cannot roll back the current checkpoint`() {
+        val current = ChatMessage("current", "assistant", listOf(RemoteContent("text", "new")), 2)
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "idle", "session-1", sessionGraphSync = true,
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    messages = listOf(current),
+                    sourceEpoch = "epoch-1",
+                    sourceSeq = 4,
+                    sourceReady = true,
+                    hasLiveSnapshot = true,
+                ),
+            ),
+            sessionSyncCommands = mapOf(
+                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-old", "preview"),
+            ),
+        )
+
+        val changed = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{
+            "type":"session.snapshot","sessionId":"session-1","syncId":"sync-old","mode":"replace",
+            "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
+            "source":{"epoch":"epoch-1","seq":3,"ready":true},
+            "checkpoint":{"checkpointId":"epoch-1:3","headCompleteness":"complete","inventoryComplete":true},
+            "live":{"complete":true,"turn":null,
+              "messages":[{"message":{"messageId":"stale","role":"assistant",
+                "content":[{"type":"text","text":"old"}],"timestamp":1},
+                "finished":true,"contentComplete":true}],"tools":[]}
+          }}
+        """.trimIndent())
+
+        assertEquals(listOf("current"), changed.conversations.getValue("runtime-a").messages.map(ChatMessage::messageId))
+        assertEquals(4, changed.conversations.getValue("runtime-a").sourceSeq)
+        assertTrue(changed.sessionSyncRequests.contains("runtime-a"))
+    }
+
+    @Test
+    fun `retired source epoch snapshot cannot replace the active projection`() {
+        val current = ChatMessage("current", "assistant", listOf(RemoteContent("text", "new")), 2)
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "idle", "session-1", sessionGraphSync = true,
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    messages = listOf(current),
+                    sourceEpoch = "epoch-new",
+                    sourceSeq = 4,
+                    sourceReady = true,
+                    retiredSourceEpochs = setOf("epoch-old"),
+                    hasLiveSnapshot = true,
+                ),
+            ),
+            sessionSyncCommands = mapOf(
+                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-old", "preview"),
+            ),
+        )
+
+        val changed = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":5,"event":{
+            "type":"session.snapshot","sessionId":"session-1","syncId":"sync-old","mode":"replace",
+            "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
+            "source":{"epoch":"epoch-old","seq":8,"ready":true},
+            "checkpoint":{"checkpointId":"epoch-old:8","headCompleteness":"complete","inventoryComplete":true},
+            "live":{"complete":true,"turn":null,"messages":[],"tools":[]}
+          }}
+        """.trimIndent())
+
+        val conversation = changed.conversations.getValue("runtime-a")
+        assertEquals(listOf("current"), conversation.messages.map(ChatMessage::messageId))
+        assertEquals("epoch-new", conversation.sourceEpoch)
+        assertEquals(4, conversation.sourceSeq)
+        assertTrue(changed.sessionSyncRequests.contains("runtime-a"))
+    }
+
+    @Test
+    fun `ready snapshot from an unannounced source epoch preserves the current projection`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "idle", "session-1", sessionGraphSync = true,
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    messages = listOf(ChatMessage("current", "assistant", listOf(RemoteContent("text", "new")), 2)),
+                    sourceEpoch = "epoch-current",
+                    sourceSeq = 5,
+                    sourceReady = true,
+                    hasLiveSnapshot = true,
+                ),
+            ),
+            sessionSyncCommands = mapOf(
+                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-new", "preview"),
+            ),
+        )
+
+        val recovered = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":6,"event":{
+            "type":"session.snapshot","sessionId":"session-1","syncId":"sync-new","mode":"replace",
+            "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
+            "source":{"epoch":"epoch-delayed","seq":9,"ready":true},
+            "checkpoint":{"checkpointId":"epoch-delayed:9","headCompleteness":"complete","inventoryComplete":true},
+            "live":{"complete":true,"turn":null,
+              "messages":[{"message":{"messageId":"delayed","role":"assistant",
+                "content":[{"type":"text","text":"wrong epoch"}],"timestamp":1},
+                "finished":true,"contentComplete":true}],"tools":[]}
+          }}
+        """.trimIndent())
+
+        val conversation = recovered.conversations.getValue("runtime-a")
+        assertEquals(listOf("current"), conversation.messages.map(ChatMessage::messageId))
+        assertEquals("epoch-current", conversation.sourceEpoch)
+        assertEquals(5, conversation.sourceSeq)
+        assertTrue(conversation.sourceReady)
+        assertTrue(conversation.isChatSyncing)
+        assertTrue("runtime-a" in recovered.sessionSyncRequests)
+        assertFalse(recovered.sessionSyncCommands.containsKey("checkpoint"))
+    }
+
+    @Test
+    fun `partial live inventory preserves objects omitted from the checkpoint`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf("runtime-a" to RuntimeSummary(
+                "runtime-a", "A", "/a", "running", "session-1", sessionGraphSync = true,
+            )),
+            conversations = mapOf("runtime-a" to RuntimeConversation(
+                messages = listOf(
+                    ChatMessage("live-1", "assistant", listOf(RemoteContent("text", "one")), 1),
+                    ChatMessage("live-2", "assistant", listOf(RemoteContent("text", "two")), 2),
+                ),
+                streamingMessageIds = setOf("live-1", "live-2"),
+                tools = mapOf(
+                    "tool-1" to ToolActivity("tool-1", "bash", "updated"),
+                    "tool-2" to ToolActivity("tool-2", "grep", "started"),
+                ),
+                sourceEpoch = "epoch-1", sourceSeq = 4, sourceReady = true,
+            )),
+            sessionSyncCommands = mapOf(
+                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-partial", "preview"),
+            ),
+        )
+
+        val changed = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":4,"event":{
+            "type":"session.snapshot","sessionId":"session-1","syncId":"sync-partial","mode":"replace",
+            "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
+            "source":{"epoch":"epoch-1","seq":5,"ready":true},
+            "checkpoint":{"checkpointId":"epoch-1:5","headCompleteness":"unknown","inventoryComplete":false},
+            "live":{"complete":false,"turn":null,
+              "messages":[{"message":{"messageId":"live-1","role":"assistant",
+                "content":[{"type":"text","text":"one updated"}],"timestamp":3},
+                "finished":false,"contentComplete":false}],
+              "tools":[{"toolCallId":"tool-1","toolName":"bash","state":"finished"}]
+            }
+          }}
+        """.trimIndent())
+
+        val conversation = changed.conversations.getValue("runtime-a")
+        assertEquals(setOf("live-1", "live-2"), conversation.streamingMessageIds)
+        assertEquals("one updated", conversation.messages.first { it.messageId == "live-1" }.content.single().text)
+        assertTrue(conversation.messages.any { it.messageId == "live-2" })
+        assertTrue(conversation.tools.containsKey("tool-2"))
+        assertEquals(5, conversation.sourceSeq)
+    }
+
+    @Test
+    fun `complete live inventory removes omitted live objects`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf("runtime-a" to RuntimeSummary(
+                "runtime-a", "A", "/a", "running", "session-1", sessionGraphSync = true,
+            )),
+            conversations = mapOf("runtime-a" to RuntimeConversation(
+                messages = listOf(
+                    ChatMessage("live-1", "assistant", listOf(RemoteContent("text", "one")), 1),
+                    ChatMessage("live-2", "assistant", listOf(RemoteContent("text", "two")), 2),
+                ),
+                streamingMessageIds = setOf("live-1", "live-2"),
+                tools = mapOf(
+                    "tool-1" to ToolActivity("tool-1", "bash", "updated"),
+                    "tool-2" to ToolActivity("tool-2", "grep", "started"),
+                ),
+                sourceEpoch = "epoch-1", sourceSeq = 4, sourceReady = true,
+            )),
+            sessionSyncCommands = mapOf(
+                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-complete", "preview"),
+            ),
+        )
+
+        val changed = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":5,"event":{
+            "type":"session.snapshot","sessionId":"session-1","syncId":"sync-complete","mode":"replace",
+            "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
+            "source":{"epoch":"epoch-1","seq":6,"ready":true},
+            "checkpoint":{"checkpointId":"epoch-1:6","headCompleteness":"complete","inventoryComplete":true},
+            "live":{"complete":true,"turn":null,
+              "messages":[{"message":{"messageId":"live-1","role":"assistant",
+                "content":[{"type":"text","text":"one"}],"timestamp":1},
+                "finished":false,"contentComplete":false}],
+              "tools":[{"toolCallId":"tool-1","toolName":"bash","state":"updated"}]
+            }
+          }}
+        """.trimIndent())
+
+        val conversation = changed.conversations.getValue("runtime-a")
+        assertEquals(setOf("live-1"), conversation.streamingMessageIds)
+        assertFalse(conversation.messages.any { it.messageId == "live-2" })
+        assertFalse(conversation.tools.containsKey("tool-2"))
+        assertEquals(6, conversation.sourceSeq)
+    }
+
+    @Test
+    fun `source patch gap is buffered and applied only after the missing base arrives`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "running", "session-1", sessionGraphSync = true,
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    messages = listOf(ChatMessage("live", "assistant", listOf(RemoteContent("text", "one")), 1)),
+                    streamingMessageIds = setOf("live"),
+                    sourceEpoch = "epoch-1",
+                    sourceSeq = 1,
+                    sourceReady = true,
+                    hasLiveSnapshot = true,
+                ),
+            ),
+        )
+
+        val withGap = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
+            "type":"session.patch","sessionId":"session-1",
+            "source":{"epoch":"epoch-1","seq":3,"ready":true},"baseSeq":2,"seq":3,
+            "checkpointId":"epoch-1:3","head":{"leafId":null},
+            "headCompleteness":"complete","live":{"complete":true,"turn":null,
+              "messages":[{"message":{"messageId":"live","role":"assistant",
+                "content":[{"type":"text","text":"three"}],"timestamp":3},
+                "finished":false,"contentComplete":false}],"tools":[]}
+          }}
+        """.trimIndent())
+        assertEquals(1, withGap.conversations.getValue("runtime-a").sourceSeq)
+        assertEquals(setOf(3L), withGap.conversations.getValue("runtime-a").sourcePatchBuffer.keys)
+        assertTrue("runtime-a" in withGap.sessionSyncRequests)
+        assertEquals("one", withGap.conversations.getValue("runtime-a").messages.single().content.single().text)
+
+        val recovered = reducer.reduce(withGap, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{
+            "type":"session.patch","sessionId":"session-1",
+            "source":{"epoch":"epoch-1","seq":2,"ready":true},"baseSeq":1,"seq":2,
+            "checkpointId":"epoch-1:2","head":{"leafId":null},
+            "headCompleteness":"complete","live":{"complete":true,"turn":null,
+              "messages":[{"message":{"messageId":"live","role":"assistant",
+                "content":[{"type":"text","text":"two"}],"timestamp":2},
+                "finished":false,"contentComplete":false}],"tools":[]}
+          }}
+        """.trimIndent())
+        val conversation = recovered.conversations.getValue("runtime-a")
+        assertEquals(3, conversation.sourceSeq)
+        assertTrue(conversation.sourcePatchBuffer.isEmpty())
+        assertFalse(conversation.isChatSyncing)
+        assertFalse("runtime-a" in recovered.sessionSyncRequests)
+        assertEquals("three", conversation.messages.single().content.single().text)
+    }
+
+    @Test
+    fun `ready patch from a new source epoch waits for checkpoint recovery`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "running", "session-1", sessionGraphSync = true,
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    messages = listOf(ChatMessage("old", "assistant", listOf(RemoteContent("text", "old")), 1)),
+                    streamingMessageIds = setOf("old"),
+                    activeTurnId = "turn-old",
+                    turnTimings = mapOf("turn-old" to TurnTiming("turn-old", 1)),
+                    tools = mapOf("tool-old" to ToolActivity("tool-old", "bash", "started")),
+                    sourceEpoch = "epoch-old",
+                    sourceSeq = 4,
+                    sourceReady = true,
+                    hasLiveSnapshot = true,
+                ),
+            ),
+        )
+
+        val restoring = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
+            "type":"session.patch","sessionId":"session-1",
+            "source":{"epoch":"epoch-new","seq":1,"ready":true},"baseSeq":0,"seq":1,
+            "checkpointId":"epoch-new:1","head":{"leafId":null},
+            "headCompleteness":"complete","live":{"complete":true,"turn":null,"messages":[],"tools":[]}
+          }}
+        """.trimIndent())
+        val conversation = restoring.conversations.getValue("runtime-a")
+        assertEquals(listOf("old"), conversation.messages.map(ChatMessage::messageId))
+        assertEquals(setOf("old"), conversation.streamingMessageIds)
+        assertEquals(setOf("tool-old"), conversation.tools.keys)
+        assertEquals("turn-old", conversation.activeTurnId)
+        assertEquals("epoch-old", conversation.sourceEpoch)
+        assertEquals(4, conversation.sourceSeq)
+        assertTrue(conversation.sourceReady)
+        assertTrue(conversation.isChatSyncing)
+        assertTrue("runtime-a" in restoring.sessionSyncRequests)
+    }
+
+    @Test
+    fun `ready patch with a changed canonical head triggers history recovery`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "running", "session-1", sessionGraphSync = true,
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    messages = listOf(ChatMessage("old", "assistant", listOf(RemoteContent("text", "old")), 1)),
+                    streamingMessageIds = setOf("old"),
+                    sourceEpoch = "epoch-1",
+                    sourceSeq = 4,
+                    sourceHeadLeafId = "old-head",
+                    sourceReady = true,
+                    hasLiveSnapshot = true,
+                ),
+            ),
+        )
+
+        val recovering = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
+            "type":"session.patch","sessionId":"session-1",
+            "source":{"epoch":"epoch-1","seq":5,"ready":true},"baseSeq":4,"seq":5,
+            "checkpointId":"epoch-1:5","head":{"leafId":"new-head"},
+            "headCompleteness":"complete","live":{"complete":true,"turn":null,"messages":[],"tools":[]}
+          }}
+        """.trimIndent())
+        val conversation = recovering.conversations.getValue("runtime-a")
+        assertTrue(conversation.messages.isEmpty())
+        assertTrue(conversation.streamingMessageIds.isEmpty())
+        assertFalse(conversation.sourceReady)
+        assertTrue(conversation.isChatSyncing)
+        assertTrue("runtime-a" in recovering.sessionSyncRequests)
+    }
+
+    @Test
+    fun `ready complete checkpoint switches epoch and replaces the previous live inventory`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "running", "session-1", sessionGraphSync = true,
+                ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(
+                    messages = listOf(ChatMessage(
+                        "old-live", "assistant", listOf(RemoteContent("text", "old")), 1,
+                    )),
+                    streamingMessageIds = setOf("old-live"),
+                    activeTurnId = "turn-old",
+                    turnTimings = mapOf("turn-old" to TurnTiming("turn-old", 1)),
+                    tools = mapOf("tool-old" to ToolActivity("tool-old", "bash", "started")),
+                    sourceEpoch = "epoch-old",
+                    sourceSeq = 4,
+                    sourceReady = true,
+                    isChatSyncing = true,
+                    sourcePatchBuffer = emptyMap(),
+                ),
+            ),
+            sessionSyncCommands = mapOf(
+                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-new", "preview"),
+            ),
+        )
+
+        val switched = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
+            "type":"session.snapshot","sessionId":"session-1","syncId":"sync-new","mode":"replace",
+            "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
+            "source":{"epoch":"epoch-new","seq":2,"ready":true},
+            "checkpoint":{"checkpointId":"epoch-new:2","headCompleteness":"complete","inventoryComplete":true},
+            "live":{"complete":true,"turn":{"turnId":"turn-new","startedAt":10},
+              "messages":[{"message":{"messageId":"new-live","role":"assistant",
+                "content":[{"type":"text","text":"new"}],"timestamp":10},
+                "finished":false,"contentComplete":false}],
+              "tools":[{"toolCallId":"tool-new","toolName":"python","state":"started"}]}
+          }}
+        """.trimIndent())
+
+        val conversation = switched.conversations.getValue("runtime-a")
+        assertEquals("epoch-new", conversation.sourceEpoch)
+        assertEquals(2, conversation.sourceSeq)
+        assertTrue(conversation.sourceReady)
+        assertEquals(listOf("new-live"), conversation.messages.map(ChatMessage::messageId))
+        assertEquals(setOf("new-live"), conversation.streamingMessageIds)
+        assertEquals(setOf("tool-new"), conversation.tools.keys)
+        assertEquals("turn-new", conversation.activeTurnId)
+        assertTrue(conversation.sourcePatchBuffer.isEmpty())
+    }
+
+    @Test
+    fun `checkpoint clears a patch gap before the next contiguous patch`() {
+        val initial = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "running", "session-1", sessionGraphSync = true,
+                ),
+            ),
+            conversations = mapOf("runtime-a" to RuntimeConversation(
+                messages = listOf(ChatMessage("live", "assistant", listOf(RemoteContent("text", "one")), 1)),
+                streamingMessageIds = setOf("live"),
+                sourceEpoch = "epoch-1",
+                sourceSeq = 1,
+                sourceReady = true,
+                hasLiveSnapshot = true,
+            )),
+        )
+        val withGap = reducer.reduce(initial, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
+            "type":"session.patch","sessionId":"session-1",
+            "source":{"epoch":"epoch-1","seq":3,"ready":true},"baseSeq":2,"seq":3,
+            "checkpointId":"epoch-1:3","head":{"leafId":null},"headCompleteness":"complete",
+            "live":{"complete":true,"turn":null,"messages":[{"message":{"messageId":"live","role":"assistant",
+              "content":[{"type":"text","text":"three"}],"timestamp":3},
+              "finished":false,"contentComplete":false}],"tools":[]}
+          }}
+        """.trimIndent())
+        val checkpointState = withGap.copy(
+            sessionSyncCommands = mapOf(
+                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-checkpoint", "preview"),
+            ),
+        )
+        val afterCheckpoint = reducer.reduce(checkpointState, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{
+            "type":"session.snapshot","sessionId":"session-1","syncId":"sync-checkpoint","mode":"replace",
+            "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
+            "source":{"epoch":"epoch-1","seq":2,"ready":true},
+            "checkpoint":{"checkpointId":"epoch-1:2","headCompleteness":"complete","inventoryComplete":true},
+            "live":{"complete":true,"turn":null,"messages":[{"message":{"messageId":"live","role":"assistant",
+              "content":[{"type":"text","text":"two"}],"timestamp":2},
+              "finished":false,"contentComplete":false}],"tools":[]}
+          }}
+        """.trimIndent())
+        val afterPatch = reducer.reduce(afterCheckpoint, """
+          {"type":"runtime.event","runtimeId":"runtime-a","sequence":4,"event":{
+            "type":"session.patch","sessionId":"session-1",
+            "source":{"epoch":"epoch-1","seq":3,"ready":true},"baseSeq":2,"seq":3,
+            "checkpointId":"epoch-1:3","head":{"leafId":null},"headCompleteness":"complete",
+            "live":{"complete":true,"turn":null,"messages":[{"message":{"messageId":"live","role":"assistant",
+              "content":[{"type":"text","text":"three"}],"timestamp":3},
+              "finished":false,"contentComplete":false}],"tools":[]}
+          }}
+        """.trimIndent())
+
+        val conversation = afterPatch.conversations.getValue("runtime-a")
+        assertEquals(3, conversation.sourceSeq)
+        assertEquals("three", conversation.messages.single().content.single().text)
+        assertTrue(conversation.sourcePatchBuffer.isEmpty())
+        assertFalse(conversation.isChatSyncing)
     }
 
     @Test

@@ -2,6 +2,7 @@ package dev.pi.remote
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -27,12 +28,72 @@ data class SessionBranchCursor(
 )
 
 @Serializable
+data class SessionSourceEpoch(
+    val epoch: String,
+    val seq: Long,
+    val ready: Boolean,
+)
+
+@Serializable
+data class SessionCheckpoint(
+    val checkpointId: String,
+    val head: SessionBranchCursor? = null,
+    val headCompleteness: String,
+    val inventoryComplete: Boolean,
+)
+
+@Serializable
+data class SessionLiveMessage(
+    val message: ChatMessage,
+    val finished: Boolean,
+    val contentComplete: Boolean,
+    val persistedEntryId: String? = null,
+)
+
+@Serializable
+data class SessionLiveTool(
+    val toolCallId: String,
+    val toolName: String,
+    val state: String,
+    val detail: JsonElement? = null,
+    val isError: Boolean? = null,
+)
+
+@Serializable
+data class SessionLiveTurn(
+    val turnId: String,
+    val startedAt: Long,
+    val durationMs: Long? = null,
+)
+
+@Serializable
+data class SessionLiveState(
+    val complete: Boolean,
+    val turn: SessionLiveTurn? = null,
+    val messages: List<SessionLiveMessage> = emptyList(),
+    val tools: List<SessionLiveTool> = emptyList(),
+)
+
+@Serializable
+data class SessionPatch(
+    val type: String = "session.patch",
+    val sessionId: String,
+    val source: SessionSourceEpoch,
+    val baseSeq: Long,
+    val seq: Long,
+    val checkpointId: String,
+    val head: SessionBranchCursor,
+    val headCompleteness: String,
+    val live: SessionLiveState,
+)
+
+@Serializable
 data class SessionGraphSnapshot(
     val sessionId: String,
     val syncId: String,
     val cursor: SessionBranchCursor,
     val mode: String,
-    val entries: List<SessionGraphEntry>,
+    val entries: List<SessionGraphEntry> = emptyList(),
     val range: String? = null,
     val targetLeafId: String? = null,
     val beforeEntryId: String? = null,
@@ -41,6 +102,9 @@ data class SessionGraphSnapshot(
     val rangeStatus: String? = null,
     /** Timing metadata accompanying this page, merged independently of canonical Entries. */
     val turnTimings: List<TurnTiming>? = null,
+    val source: SessionSourceEpoch? = null,
+    val checkpoint: SessionCheckpoint? = null,
+    val live: SessionLiveState? = null,
 )
 
 @Serializable
