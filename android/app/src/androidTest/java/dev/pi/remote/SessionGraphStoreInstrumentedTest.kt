@@ -6,6 +6,12 @@ import java.io.File
 import java.security.MessageDigest
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.long
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.serialization.json.buildJsonObject
@@ -249,6 +255,33 @@ class SessionGraphStoreInstrumentedTest {
         }
     }
 
+    private fun createVersion4(entries: List<SessionGraphEntry>, leaf: String) {
+        createVersion3(entries, leaf)
+        SQLiteDatabase.openDatabase(databaseFile().path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL("ALTER TABLE session_entries ADD COLUMN verified_depth INTEGER")
+            db.execSQL("ALTER TABLE session_entries ADD COLUMN legacy_format INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("CREATE TABLE session_sync_progress(session_id TEXT PRIMARY KEY, leaf_id TEXT NOT NULL)")
+            db.execSQL("""CREATE TABLE session_legacy_entries(session_id TEXT NOT NULL, entry_id TEXT NOT NULL,
+                parent_id TEXT, type TEXT NOT NULL, timestamp TEXT NOT NULL, payload TEXT NOT NULL,
+                PRIMARY KEY(session_id, entry_id))""")
+            db.execSQL("UPDATE session_entries SET verified_depth = 0 WHERE parent_id IS NULL")
+            db.execSQL("INSERT INTO session_sync_progress VALUES ('s', ?)", arrayOf(leaf))
+            db.execSQL("INSERT INTO session_turn_timings VALUES ('s', 'turn', ?, 7)",
+                arrayOf(Json.encodeToString(TurnTiming("turn", 100, 50, messageId = leaf))))
+            db.execSQL("INSERT INTO session_legacy_entries SELECT session_id, entry_id, parent_id, type, timestamp, payload FROM session_entries")
+            db.version = 4
+        }
+    }
+
+    private fun rebuildArchive(sessionId: String = "s"): JsonObject? {
+        store.close()
+        return SQLiteDatabase.openDatabase(databaseFile().path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+            db.rawQuery("SELECT archive FROM codex_canonical_rebuilds WHERE session_id = ?", arrayOf(sessionId)).use { c ->
+                if (!c.moveToFirst() || c.isNull(0)) null else Json.parseToJsonElement(c.getString(0)).jsonObject
+            }
+        }
+    }
+
     @Test
     fun upgradeVerifiesLegacyCursorAndPreservesUnconnectedRows() {
         createVersion3(listOf(entry("root", null), entry("tail", "missing")), "tail")
@@ -260,42 +293,139 @@ class SessionGraphStoreInstrumentedTest {
     }
 
     @Test
-    fun codexMigrationArchivesOriginalAndDoesNotExcuseBodyConflicts() {
+    fun codexRebuildArchivesOriginalAndDoesNotExcuseLaterConflicts() {
         val old = entry("root", null).copy(data = buildJsonObject {
             put("message", buildJsonObject {
                 put("messageId", "root"); put("role", "assistant"); put("content", "old body"); put("timestamp", 123L)
             })
         })
         createVersion3(listOf(old), "root")
-        store.prepareSession(device, "s", "pi")
+        assertFalse(store.prepareSession(device, "s", "pi"))
+        assertFalse(store.prepareSession(device, "s", "dsh"))
         assertEquals(old, store.readEntries(device, "s", listOf("root")).single())
-        store.prepareSession(device, "s", "codex")
+        assertTrue(store.prepareSession(device, "s", "codex"))
+        assertFalse(store.contains(device, "s", "root"))
+        assertEquals(null, store.latestLeaf(device, "s"))
+        assertEquals(null, store.continuousLeaf(device, "s"))
         val stable = migrateLegacyCodexEntry(old)
-        assertEquals(stable, store.readEntries(device, "s", listOf("root")).single())
-        store.upsert(device, "s", listOf(stable), agentKind = "codex")
+        store.upsert(device, "s", listOf(stable), leafId = "root", agentKind = "codex")
+        assertFalse(store.prepareSession(device, "s", "codex"))
         assertEquals("entry_conflict", runCatching {
             store.upsert(device, "s", listOf(stable.copy(data = buildJsonObject { put("body", "changed") })), agentKind = "codex")
         }.exceptionOrNull()?.message)
-        store.close()
-        SQLiteDatabase.openDatabase(databaseFile().path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
-            db.rawQuery("SELECT timestamp, payload FROM session_legacy_entries", null).use { c ->
-                assertTrue(c.moveToFirst())
-                assertEquals(old.timestamp, c.getString(0))
-                assertEquals(Json.encodeToString(old.data), c.getString(1))
-                assertFalse(c.moveToNext())
-            }
-        }
+        val archived = rebuildArchive()!!
+        assertEquals(3, archived.getValue("priorDatabaseVersion").jsonPrimitive.int)
+        val rows = archived.getValue("entries").jsonArray
+        assertEquals(1, rows.size)
+        assertEquals(old.timestamp, rows.single().jsonObject.getValue("timestamp").jsonPrimitive.content)
+        assertEquals(Json.encodeToString(old.data), rows.single().jsonObject.getValue("payload").jsonPrimitive.content)
+        assertFalse(store.prepareSession(device, "s", "codex"))
         assertEquals(stable, store.readEntries(device, "s", listOf("root")).single())
+        assertEquals("root", store.latestLeaf(device, "s"))
+        assertEquals(archived, rebuildArchive())
     }
 
     @Test
-    fun unknownLegacyCodexShapePreservesEveryOriginalRow() {
+    fun unknownLegacyCodexShapeIsArchivedWithoutInventingANewRepresentation() {
         val old = entry("root", null)
         createVersion3(listOf(old), "root")
-        assertEquals("legacy_codex_shape_unknown", runCatching {
-            store.prepareSession(device, "s", "codex")
+        assertTrue(store.prepareSession(device, "s", "codex"))
+        assertFalse(store.contains(device, "s", "root"))
+        assertEquals(Json.encodeToString(old.data), rebuildArchive()!!.getValue("entries")
+            .jsonArray.single().jsonObject.getValue("payload").jsonPrimitive.content)
+    }
+
+    @Test
+    fun version4RebuildArchivesEvenPreviouslyNonLegacyParentEdgesAndAllMetadata() {
+        val old = entry("root", null)
+        val tail = entry("tail", "root")
+        createVersion4(listOf(old, tail), "tail")
+        store.upsert(device, "pi-session", listOf(entry("pi-root", null)), leafId = "pi-root", agentKind = "pi")
+        assertTrue(store.prepareSession(device, "s", "codex"))
+        assertFalse(store.contains(device, "s", "tail"))
+        assertEquals(emptyList<TurnTiming>(), store.readTurnTimings(device, "s"))
+        val archived = rebuildArchive()!!
+        assertEquals(4, archived.getValue("priorDatabaseVersion").jsonPrimitive.int)
+        assertEquals(2, archived.getValue("entries").jsonArray.size)
+        assertTrue(archived.getValue("entries").jsonArray.all { it.jsonObject.getValue("legacy_format").jsonPrimitive.int == 0 })
+        val archivedTail = archived.getValue("entries").jsonArray.single { it.jsonObject.getValue("entry_id").jsonPrimitive.content == "tail" }
+        assertEquals("root", archivedTail.jsonObject.getValue("parent_id").jsonPrimitive.content)
+        assertEquals("tail", archived.getValue("cursor").jsonArray.single().jsonObject.getValue("leaf_id").jsonPrimitive.content)
+        assertEquals("tail", archived.getValue("coverage").jsonArray.single().jsonObject.getValue("leaf_id").jsonPrimitive.content)
+        assertEquals(7L, archived.getValue("timings").jsonArray.single().jsonObject.getValue("updated_at").jsonPrimitive.long)
+        assertEquals(2, archived.getValue("legacyEntries").jsonArray.size)
+        // Native history can now seed a corrected stable parent for the same ID.
+        store.upsert(device, "s", listOf(tail.copy(parentId = null)), leafId = "tail", agentKind = "codex")
+        assertEquals(listOf(tail.copy(parentId = null)), store.readBranch(device, "s", "tail").entries)
+        assertEquals("pi-root", store.latestLeaf(device, "pi-session"))
+        assertEquals(listOf(entry("pi-root", null)), store.readBranch(device, "pi-session", "pi-root").entries)
+    }
+
+    @Test
+    fun staleRebuildBatchRollsBackArchiveOldGraphTimingAndCoverageTogether() {
+        val old = entry("root", null)
+        createVersion4(listOf(old), "root")
+        var checks = 0
+        assertEquals("stale_snapshot", runCatching {
+            store.upsert(device, "s", listOf(entry("replacement", null)), leafId = "replacement",
+                agentKind = "codex", writeGuard = { ++checks < 3 })
         }.exceptionOrNull()?.message)
-        assertEquals(old, store.readEntries(device, "s", listOf("root")).single())
+        assertEquals(listOf(old), store.readEntries(device, "s", listOf("root")))
+        assertFalse(store.contains(device, "s", "replacement"))
+        assertEquals("root", store.latestLeaf(device, "s"))
+        assertEquals("root", store.continuousLeaf(device, "s"))
+        assertEquals(listOf(TurnTiming("turn", 100, 50, messageId = "root")), store.readTurnTimings(device, "s"))
+        assertEquals(null, rebuildArchive())
+        assertTrue(store.prepareSession(device, "s", "codex"))
+        assertFalse(store.prepareSession(device, "s", "codex"))
+    }
+
+    @Test
+    fun invalidRebuildBatchKeepsPendingMigrationAndOriginalRowsForRetry() {
+        val old = entry("root", null)
+        createVersion4(listOf(old), "root")
+        assertEquals("self_parent", runCatching {
+            store.upsert(device, "s", listOf(entry("self", "self")), agentKind = "codex")
+        }.exceptionOrNull()?.message)
+        assertEquals(null, rebuildArchive())
+        assertEquals(listOf(old), store.readEntries(device, "s", listOf("root")))
+        store.upsert(device, "s", listOf(entry("replacement", null)), leafId = "replacement", agentKind = "codex")
+        assertFalse(store.contains(device, "s", "root"))
+        assertEquals("replacement", store.continuousLeaf(device, "s"))
+        assertEquals(1, rebuildArchive()!!.getValue("entries").jsonArray.size)
+    }
+
+    @Test
+    fun brandNewCodexCacheDoesNotScheduleARebuildOnConflicts() {
+        val root = entry("root", null)
+        store.upsert(device, "s", listOf(root), leafId = "root", agentKind = "codex")
+        assertFalse(store.prepareSession(device, "s", "codex"))
+        assertEquals("entry_conflict", runCatching {
+            store.upsert(device, "s", listOf(root.copy(parentId = "unknown")), agentKind = "codex")
+        }.exceptionOrNull()?.message)
+        assertEquals(listOf(root), store.readEntries(device, "s", listOf("root")))
+        assertEquals(null, rebuildArchive())
+    }
+
+    @Test
+    fun upgradeLeavesExistingPiAndDshGraphsAndCoverageIntact() {
+        val root = entry("root", null)
+        createVersion4(listOf(root), "root")
+        SQLiteDatabase.openDatabase(databaseFile().path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            for (session in listOf("pi", "dsh")) {
+                db.execSQL("INSERT INTO session_entries SELECT ?, entry_id, parent_id, type, timestamp, payload, verified_depth, legacy_format FROM session_entries WHERE session_id = 's'", arrayOf(session))
+                db.execSQL("INSERT INTO session_cursors VALUES (?, 'root', 0)", arrayOf(session))
+                db.execSQL("INSERT INTO session_sync_progress VALUES (?, 'root')", arrayOf(session))
+            }
+        }
+        assertTrue(store.prepareSession(device, "s", "codex"))
+        for (kind in listOf("pi", "dsh")) {
+            assertFalse(store.prepareSession(device, kind, kind))
+            assertEquals(listOf(root), store.readBranch(device, kind, "root").entries)
+            assertEquals("root", store.latestLeaf(device, kind))
+            assertEquals("root", store.continuousLeaf(device, kind))
+            assertEquals(null, rebuildArchive(kind))
+        }
     }
 
     @Test
@@ -372,4 +502,5 @@ class SessionGraphStoreInstrumentedTest {
         assertTrue(partial.hasOlder)
         assertEquals(SessionGraphRangeStatus.MISSING_PARENT, partial.status)
     }
+
 }

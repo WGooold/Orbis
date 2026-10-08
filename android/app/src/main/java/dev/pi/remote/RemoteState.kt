@@ -319,6 +319,7 @@ data class RuntimeConversation(
     val interactions: Map<String, PendingInteraction> = emptyMap(),
     val waitingLocalInteraction: Boolean = false,
     val interactionNotice: String? = null,
+    val systemNotice: String? = null,
 )
 
 enum class RelayConnection { OFFLINE, CONNECTING, ONLINE, RECONNECTING }
@@ -1282,6 +1283,7 @@ private fun RuntimeConversation.applyCompleteSourceState(
             isChatSyncing = !headAvailable,
             chatSyncError = null,
             sourceRecoveryRetryAt = 0,
+            systemNotice = null,
             revision = revision + 1,
         )
 }

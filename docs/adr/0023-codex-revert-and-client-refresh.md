@@ -114,6 +114,8 @@ ADR-0024 的 checkpoint、patch 和 running sync 只能复制 Codex adapter 已�
 
 修正 parent/order 算法可能与 APP 已缓存的旧表示冲突。上线前必须选择一次性的 canonical schema/namespace 迁移，或在受控维护流程中重建受影响缓存；不能把旧表示静默转换成新表示，也不能让正常 sync 无限重试同一冲突。迁移完成后仍保留硬冲突检测。
 
+本次选择 Android Session Tree Cache 的数据库版本 5 显式重建：升级时为已有 Session 登记候选，首次确认其 `agentKind=codex` 后，在同一 SQLite 事务中保存旧 Entry、timing、cursor、coverage 和旧格式记录，再清除该 Session 的活动图与游标。原数据保存在同库的迁移记录中，不改写旧 parent/order 来冒充原生事实。Pi/DSH 不执行重建；新建数据库没有候选；普通 conflict 不触发迁移。事务失败保留原图及待迁移标记，已完成标记使重启和重试幂等。APP 同时作废该 Session 的旧内存投影和在途分页，通过 preview 重新取得当前原生状态，并保留配对及待发送消息。后续同 ID 不同表示仍然硬失败。
+
 #### 8.2 每 thread 的协调代次和串行提交
 
 每个 Codex thread 维护一个历史协调代次和阶段状态。`thread/revert` 成功后的 turns 读取、外部回退后的 hydrate、resume/attach 重建都必须绑定当前代次；新 revert、新 turn、原生历史变化或确认到的外部操作会使旧读取结果失效。

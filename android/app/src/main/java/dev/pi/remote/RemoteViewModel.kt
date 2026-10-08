@@ -741,7 +741,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         )
         val pairedDevice = device ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            loadCachedSessionGraph(pairedDevice, sessionId, null)
+            relayStateLock.withLock { loadCachedSessionGraph(pairedDevice, sessionId, null) }
         }
     }
 
@@ -774,6 +774,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         val job = viewModelScope.launch(Dispatchers.IO) {
             relayStateLock.withLock {
                 if (requestGeneration != generation || branchGeneration != (mutableState.value.sessionBranchGenerations[id] ?: 0)) return@launch
+                if (prepareSessionCache(pairedDevice, sessionId, runtime?.agentKind ?: mutableState.value.sessions[sessionId]?.agentKind)) return@launch
                 val local = runCatching {
                     sessionGraphStore.readBranch(
                         device = pairedDevice,
@@ -897,6 +898,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         fixedTarget: String? = runtime.sessionLeafId,
     ) {
         val sessionId = runtime.sessionId ?: return
+        if (runCatching { prepareSessionCache(pairedDevice, sessionId, runtime.agentKind) }.getOrElse {
+                reportSessionLoadFailure(runtime.runtimeId, it)
+                return
+            }) return
         val targetLeafId = fixedTarget ?: return
         val current = mutableState.value
         if (device != pairedDevice || !shouldConnect || current.runtimes[runtime.runtimeId]?.sessionId != sessionId ||
@@ -920,6 +925,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun sendSessionSync(pairedDevice: DeviceCredential, commandId: String, pending: PendingSessionSync) {
+        val agentKind = mutableState.value.runtimes[pending.runtimeId]?.agentKind
+            ?: mutableState.value.sessions[pending.sessionId]?.agentKind
+        if (prepareSessionCache(pairedDevice, pending.sessionId, agentKind)) return
         updateState { current ->
             if (device != pairedDevice || !shouldConnect || pending.connectionGeneration != generation ||
                 current.runtimes[pending.runtimeId]?.sessionId != pending.sessionId ||
@@ -1845,7 +1853,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         sessionId: String,
         runtimeId: String?,
     ) {
-        sessionGraphStore.prepareSession(pairedDevice, sessionId, mutableState.value.sessions[sessionId]?.agentKind)
+        prepareSessionCache(pairedDevice, sessionId, mutableState.value.sessions[sessionId]?.agentKind)
         val existingGraph = mutableState.value.sessionGraphs[sessionId]
         if (runtimeId != null && existingGraph != null) return
         if (runtimeId == null && mutableState.value.selectedOfflineSessionId != sessionId) return
@@ -1926,6 +1934,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         commandId: String,
         snapshot: SessionGraphSnapshot,
     ): PersistedSessionSnapshotResult {
+        prepareSessionCache(pairedDevice, snapshot.sessionId, mutableState.value.runtimes[runtimeId]?.agentKind)
         val entries = ingestSessionSnapshot(
             sessionGraphStore, pairedDevice, runtimeId, commandId, snapshot,
             currentState = { mutableState.value },
@@ -1940,9 +1949,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         initial: RemoteState,
     ): SessionGraph? {
         val sessionId = runtime.sessionId ?: return null
-        sessionGraphStore.prepareSession(pairedDevice, sessionId, runtime.agentKind)
+        prepareSessionCache(pairedDevice, sessionId, runtime.agentKind)
         val observedLeaf = sessionGraphStore.latestLeaf(pairedDevice, sessionId)
-        var graph = initial.sessionGraphs[sessionId] ?: SessionGraph(sessionId)
+        var graph = mutableState.value.sessionGraphs[sessionId] ?: SessionGraph(sessionId)
         for (leaf in listOfNotNull(runtime.sessionLeafId, observedLeaf).distinct()) {
             val range = sessionGraphStore.readBranch(pairedDevice, sessionId, leaf, maxEntries = previewPageSize)
             graph = graph.merge(SessionGraphSnapshot(sessionId, "local", SessionBranchCursor(leaf), "prepend", range.entries))
@@ -1996,6 +2005,17 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /** Runs before any old canonical content can be seeded or validated in memory. */
+    private fun prepareSessionCache(pairedDevice: DeviceCredential, sessionId: String, agentKind: String?): Boolean {
+        if (device != pairedDevice || !sessionGraphStore.prepareSession(pairedDevice, sessionId, agentKind)) return false
+        val current = mutableState.value
+        val historyKeys = current.sessionHistory.filterValues { it.sessionId == sessionId }.keys
+        historyKeys.forEach { historyJobs.remove(it)?.cancel() }
+        updateState { state -> if (device != pairedDevice) state else state.afterSessionCacheRebuild(sessionId) }
+        scheduleSessionGraphLoad(pairedDevice, mutableState.value.runtimes.values.filter { it.sessionId == sessionId && it.sessionGraphSync })
+        return true
+    }
+
     /**
      * Publishes a state transform without losing a concurrent writer's update.
      *
@@ -2046,12 +2066,13 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             relayStateLock.withLock {
                 if (device != pairedDevice || !shouldConnect || generation != connectionGeneration ||
                     mutableState.value.connection != RelayConnection.ONLINE) return
-                val initial = mutableState.value
-                val runtime = initial.runtimes[requested.runtimeId]?.takeIf { it.sessionId == requested.sessionId }
+                val runtime = mutableState.value.runtimes[requested.runtimeId]?.takeIf { it.sessionId == requested.sessionId }
                     ?: return@withLock
                 val sessionId = runtime.sessionId ?: return@withLock
-                if (runtime.runtimeId in initial.sessionSyncFailures || initial.conversations[runtime.runtimeId]?.chatSyncError != null) return@withLock
                 try {
+                    prepareSessionCache(pairedDevice, sessionId, runtime.agentKind)
+                    val initial = mutableState.value
+                    if (runtime.runtimeId in initial.sessionSyncFailures || initial.conversations[runtime.runtimeId]?.chatSyncError != null) return@withLock
                     val loaded = if (runtime.sessionLeafId == null) SessionGraph(sessionId)
                         else loadLocalGraphForRuntime(pairedDevice, runtime, initial)
                     if (loaded != null) updateState { current ->
