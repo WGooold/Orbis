@@ -46,7 +46,7 @@ export function selectSessionSyncSnapshot(
   liveLeaf: string | null,
   request: Omit<SessionSyncRequest, "type">,
   turnTimings: readonly RuntimeTurnTiming[] = [],
-  source?: { version: SessionSourceEpoch; live?: SessionLiveState; checkpoint?: SessionCheckpoint },
+  source?: { version: SessionSourceEpoch; live: SessionLiveState; checkpoint: SessionCheckpoint },
 ): SessionSyncSnapshot {
   if (request.sessionId !== sessionId) throw new Error("session_mismatch");
   const range = request.range;
@@ -101,10 +101,12 @@ export function selectSessionSyncSnapshot(
       complete: rangeStatus === "complete" && !remaining,
       rangeStatus: rangeStatus !== "complete" ? rangeStatus
         : remaining ? range === "history" ? "older_available" : "limit_reached" : "complete",
-      ...(source === undefined ? {} : {
+      // Historical ranges fill the immutable cache only. Capturing the current live
+      // inventory on each old page both wastes bandwidth and creates a second state writer.
+      ...(source === undefined || range === "history" ? {} : {
         source: source.version,
-        ...(source.live === undefined ? {} : { live: source.live }),
-        ...(source.checkpoint === undefined ? {} : { checkpoint: source.checkpoint }),
+        live: source.live,
+        checkpoint: source.checkpoint,
       }),
     };
   };

@@ -92,7 +92,7 @@ describe("bounded Session ranges", () => {
       ...request, range: "preview",
     }, [], {
       version: { epoch: "codex-epoch-7", seq: 42, ready: true },
-      checkpoint: { checkpointId: "codex-epoch-7:42", headCompleteness: "complete", inventoryComplete: true },
+      checkpoint: { checkpointId: "codex-epoch-7:42", head: { leafId: "1" }, headCompleteness: "complete", inventoryComplete: true },
       live: {
         complete: true,
         turn: { turnId: "turn-1", startedAt: 10 },
