@@ -2505,7 +2505,7 @@ class RelayReducerTest {
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-2","mode":"replace",
             "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
             "source":{"epoch":"epoch-new","seq":2,"ready":true},
-            "checkpoint":{"checkpointId":"epoch-new:2","headCompleteness":"complete","inventoryComplete":true},
+            "checkpoint":{"checkpointId":"epoch-new:2","head":{"leafId":null},"headCompleteness":"complete","inventoryComplete":true},
             "live":{"complete":true,
               "turn":{"turnId":"turn-new","startedAt":100},
               "messages":[{"message":{"messageId":"live-new","role":"assistant",
@@ -2569,7 +2569,7 @@ class RelayReducerTest {
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-new","mode":"replace",
             "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
             "source":{"epoch":"epoch-new","seq":1,"ready":true},
-            "checkpoint":{"checkpointId":"epoch-new:1","headCompleteness":"complete","inventoryComplete":true},
+            "checkpoint":{"checkpointId":"epoch-new:1","head":{"leafId":null},"headCompleteness":"complete","inventoryComplete":true},
             "live":{"complete":true,"turn":null,
               "messages":[{"message":{"messageId":"new-live","role":"assistant",
                 "content":[{"type":"text","text":"new"}],"timestamp":2},
@@ -2616,7 +2616,7 @@ class RelayReducerTest {
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-old","mode":"replace",
             "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
             "source":{"epoch":"epoch-1","seq":3,"ready":true},
-            "checkpoint":{"checkpointId":"epoch-1:3","headCompleteness":"complete","inventoryComplete":true},
+            "checkpoint":{"checkpointId":"epoch-1:3","head":{"leafId":null},"headCompleteness":"complete","inventoryComplete":true},
             "live":{"complete":true,"turn":null,
               "messages":[{"message":{"messageId":"stale","role":"assistant",
                 "content":[{"type":"text","text":"old"}],"timestamp":1},
@@ -2659,7 +2659,7 @@ class RelayReducerTest {
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-old","mode":"replace",
             "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
             "source":{"epoch":"epoch-old","seq":8,"ready":true},
-            "checkpoint":{"checkpointId":"epoch-old:8","headCompleteness":"complete","inventoryComplete":true},
+            "checkpoint":{"checkpointId":"epoch-old:8","head":{"leafId":null},"headCompleteness":"complete","inventoryComplete":true},
             "live":{"complete":true,"turn":null,"messages":[],"tools":[]}
           }}
         """.trimIndent())
@@ -2699,7 +2699,7 @@ class RelayReducerTest {
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-new","mode":"replace",
             "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
             "source":{"epoch":"epoch-delayed","seq":9,"ready":true},
-            "checkpoint":{"checkpointId":"epoch-delayed:9","headCompleteness":"complete","inventoryComplete":true},
+            "checkpoint":{"checkpointId":"epoch-delayed:9","head":{"leafId":null},"headCompleteness":"complete","inventoryComplete":true},
             "live":{"complete":true,"turn":null,
               "messages":[{"message":{"messageId":"delayed","role":"assistant",
                 "content":[{"type":"text","text":"wrong epoch"}],"timestamp":1},
@@ -2761,7 +2761,9 @@ class RelayReducerTest {
         assertEquals("one updated", conversation.messages.first { it.messageId == "live-1" }.content.single().text)
         assertTrue(conversation.messages.any { it.messageId == "live-2" })
         assertTrue(conversation.tools.containsKey("tool-2"))
-        assertEquals(5, conversation.sourceSeq)
+        // The incomplete inventory may update known rows, but cannot establish a whole-state v5.
+        assertEquals(4, conversation.sourceSeq)
+        assertTrue(conversation.isChatSyncing)
     }
 
     @Test
@@ -2793,7 +2795,7 @@ class RelayReducerTest {
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-complete","mode":"replace",
             "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
             "source":{"epoch":"epoch-1","seq":6,"ready":true},
-            "checkpoint":{"checkpointId":"epoch-1:6","headCompleteness":"complete","inventoryComplete":true},
+            "checkpoint":{"checkpointId":"epoch-1:6","head":{"leafId":null},"headCompleteness":"complete","inventoryComplete":true},
             "live":{"complete":true,"turn":null,
               "messages":[{"message":{"messageId":"live-1","role":"assistant",
                 "content":[{"type":"text","text":"one"}],"timestamp":1},
@@ -2943,7 +2945,10 @@ class RelayReducerTest {
         val conversation = recovering.conversations.getValue("runtime-a")
         assertTrue(conversation.messages.isEmpty())
         assertTrue(conversation.streamingMessageIds.isEmpty())
-        assertFalse(conversation.sourceReady)
+        assertTrue(conversation.sourceReady)
+        assertFalse(conversation.hasLiveSnapshot)
+        assertEquals("new-head", conversation.sourceHeadLeafId)
+        assertEquals(5, conversation.sourceSeq)
         assertTrue(conversation.isChatSyncing)
         assertTrue("runtime-a" in recovering.sessionSyncRequests)
     }
@@ -2983,7 +2988,7 @@ class RelayReducerTest {
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-new","mode":"replace",
             "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
             "source":{"epoch":"epoch-new","seq":2,"ready":true},
-            "checkpoint":{"checkpointId":"epoch-new:2","headCompleteness":"complete","inventoryComplete":true},
+            "checkpoint":{"checkpointId":"epoch-new:2","head":{"leafId":null},"headCompleteness":"complete","inventoryComplete":true},
             "live":{"complete":true,"turn":{"turnId":"turn-new","startedAt":10},
               "messages":[{"message":{"messageId":"new-live","role":"assistant",
                 "content":[{"type":"text","text":"new"}],"timestamp":10},
@@ -3041,7 +3046,7 @@ class RelayReducerTest {
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-checkpoint","mode":"replace",
             "range":"preview","targetLeafId":null,"complete":true,"cursor":{"leafId":null},
             "source":{"epoch":"epoch-1","seq":2,"ready":true},
-            "checkpoint":{"checkpointId":"epoch-1:2","headCompleteness":"complete","inventoryComplete":true},
+            "checkpoint":{"checkpointId":"epoch-1:2","head":{"leafId":null},"headCompleteness":"complete","inventoryComplete":true},
             "live":{"complete":true,"turn":null,"messages":[{"message":{"messageId":"live","role":"assistant",
               "content":[{"type":"text","text":"two"}],"timestamp":2},
               "finished":false,"contentComplete":false}],"tools":[]}

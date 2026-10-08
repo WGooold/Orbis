@@ -28,7 +28,9 @@ internal fun ingestSessionSnapshot(
     }) { "session_range_mode_mismatch" }
     // Validate the same immutable content against the published window before committing disk.
     (state.sessionGraphs[snapshot.sessionId] ?: SessionGraph(snapshot.sessionId)).merge(snapshot)
-    val observed = if (pending.range == "history") null else
+    val cacheOnly = pending.range == "history" || state.conversations[runtimeId]?.sourceEpoch != null &&
+        (pending.range != "preview" || snapshot.source == null)
+    val observed = if (cacheOnly) null else
         (pending.targetLeafId ?: snapshot.targetLeafId ?: snapshot.cursor.leafId)?.takeIf { id ->
             snapshot.entries.any { it.entryId == id } || store.contains(device, snapshot.sessionId, id)
         }

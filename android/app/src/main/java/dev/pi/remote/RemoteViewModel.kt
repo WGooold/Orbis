@@ -2072,6 +2072,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     val current = mutableState.value
                     if (current.sessionSyncCommands.values.any { it.runtimeId == runtime.runtimeId }) return@withLock
+                    val recovery = current.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
+                    if (recovery != null) {
+                        sendSessionSync(pairedDevice, newSessionSyncCommandId(), recovery)
+                        return@withLock
+                    }
                     val conversation = current.conversations[runtime.runtimeId]
                     if (conversation?.hasLiveSnapshot == true) {
                         startBranchCatchUp(pairedDevice, runtime)

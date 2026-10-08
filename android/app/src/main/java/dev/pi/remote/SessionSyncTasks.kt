@@ -17,6 +17,25 @@ internal const val SESSION_SYNC_TIMEOUT_MESSAGE = "同步暂未完成，请重�
 internal data class SessionSyncDispatch(val commandId: String, val task: PendingSessionSync)
 internal data class SessionSyncTick(val state: RemoteState, val send: List<SessionSyncDispatch>)
 
+/** Recovery always reads the source, even if SQLite already covers the advertised leaf. */
+internal fun RemoteState.requestedSessionRecovery(
+    runtimeId: String,
+    connectionGeneration: Int,
+    syncId: String,
+): PendingSessionSync? {
+    val runtime = runtimes[runtimeId] ?: return null
+    val sessionId = runtime.sessionId ?: return null
+    if (runtimeId !in sessionSyncRequests || !runtime.sessionGraphSync || runtimeId in sessionSyncFailures ||
+        sessionSyncCommands.values.any { it.runtimeId == runtimeId }) return null
+    return PendingSessionSync(
+        runtimeId, sessionId, syncId, range = "preview", targetLeafId = null,
+        viewLeafId = runtime.sessionLeafId,
+        branchGeneration = sessionBranchGenerations[runtimeId] ?: 0,
+        connectionGeneration = connectionGeneration,
+        notBefore = conversations[runtimeId]?.sourceRecoveryRetryAt ?: 0,
+    )
+}
+
 /** Pure clock-driven policy. Mark sends before emitting effects so another tick cannot enqueue
  * the same request twice. A backend acknowledgement is deliberately absent from this policy. */
 internal fun advanceSessionSyncTasks(state: RemoteState, now: Long, connectionGeneration: Int? = null): SessionSyncTick {
@@ -53,7 +72,7 @@ internal fun advanceSessionSyncTasks(state: RemoteState, now: Long, connectionGe
     var active = next.sessionSyncCommands.values.count { it.attempts > 0 && it.exhaustedAt == null }
     var catchup = next.sessionSyncCommands.values.count { it.attempts > 0 && it.exhaustedAt == null && it.range == "catchup" }
     // Foreground requests get the second slot while a background request continues in its own slot.
-    val queued = next.sessionSyncCommands.entries.filter { it.value.attempts == 0 }
+    val queued = next.sessionSyncCommands.entries.filter { it.value.attempts == 0 && now >= it.value.notBefore }
         .sortedWith(compareBy<Map.Entry<String, PendingSessionSync>> { it.value.range == "catchup" }
             .thenBy { it.value.runtimeId != next.selectedRuntimeId })
     for ((id, task) in queued) {
