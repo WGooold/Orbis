@@ -225,9 +225,10 @@ running 时允许 sync 不意味着 running 时允许 revert；后者仍按原�
 
 - Protocol 已升级到版本 9，校验完整 source/checkpoint/live envelope、显式 head 和 patch 版本边界；状态 checkpoint 只由 preview 返回。
 - 首阶段接入 Codex adapter 和 APP reducer。APP 在建立版本化基线后隔离旧生命周期事件；Pi 与 DSH 尚未提供这套 source 状态，仍使用其原有同步路径，不能据此宣称它们已满足本 ADR 的恢复保证。
-- Codex 的确定性重建、协调代次与版本化 live/checkpoint 已有实现和单测；源端周期对账、APP 故障序列和恢复任务继续由 Issue #1～#3 跟踪。旧 canonical 表示迁移尚须落实，冲突检测保持严格。
+- Codex 的确定性重建、协调代次与版本化 live/checkpoint 已有实现和单测。原生通知的 canonical 提交及 live/tool 移除作为一次状态事务发布；每 15 秒、重新 announce 以及到期 preview 核对原生 `thread/turns/list`，可以发现静默回退和遗漏的完成通知。首版会读取完整 turns，长会话和多会话的读取成本仍需优化；原生多页没有 revision token 时要求连续读取一致，不把无法确认的结果发布为 ready。
+- APP 已实现缺口恢复、完整 checkpoint 后重放连续 patch、history/catchup 只补缓存和旧生命周期隔离。旧 Codex 表示采用 ADR-0023 的数据库版本 5 显式重建，普通 conflict 仍硬失败。
 - Codex GUI/TUI 自动刷新由 ADR-0023 / Issue #4 跟踪。刷新协调器和持久 journal 不等于生产 driver 已接入，也不等于真实 GUI 已完成 hydration。
-- 单测覆盖和真实链路验收分别记录；尚未完成的 Pi/DSH 接入、大 checkpoint 分块、旧缓存迁移及设备断连验收继续保留为明确限制。
+- 单测覆盖和真实链路验收分别记录；尚未完成的 Pi/DSH 接入、大 checkpoint 分块、旧缓存迁移的设备验证及设备断连验收继续保留为明确限制。
 
 ## 故障注入验收
 
