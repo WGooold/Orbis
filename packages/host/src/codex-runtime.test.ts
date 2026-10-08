@@ -1464,6 +1464,31 @@ describe("CodexRuntime", () => {
     }));
   });
 
+  it("keeps live notifications received during an authoritative replay", async () => {
+    const h = makeHarness();
+    h.runtime.markStarted();
+    await activateWithTurns(h, TREE_TURNS);
+
+    h.notify("thread/reverted", { threadId: "th-1" });
+    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(1));
+    // The item is delivered while turns/list is in flight. It must be buffered and
+    // replayed after the new canonical graph replaces the old one.
+    h.notify("item/agentMessage/delta", { threadId: "th-1", itemId: "live-1", delta: "仍在生成" });
+    h.resolveNext({ data: [TREE_TURNS[0]] });
+
+    await vi.waitFor(() => {
+      const snapshot = syncHistory(h);
+      expect(snapshot).toMatchObject({ cursor: { leafId: "a1" } });
+      if (snapshot?.type !== "session.snapshot") return;
+      expect(snapshot.live?.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.objectContaining({ messageId: "live-1" }),
+          finished: false,
+        }),
+      ]));
+    });
+  });
+
   it("drops a stale external history read when a newer reconcile generation arrives", async () => {
     const h = makeHarness();
     h.runtime.markStarted();

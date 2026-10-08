@@ -86,4 +86,27 @@ describe("bounded Session ranges", () => {
     expect(selectSessionSyncSnapshot([], "s", null, { ...request, range: "preview" }))
       .toMatchObject({ entries: [], complete: true, rangeStatus: "complete" });
   });
+
+  it("carries a source version and recoverable live state independently of transport sequence", () => {
+    const snapshot = selectSessionSyncSnapshot(entries(1), "s", "1", {
+      ...request, range: "preview",
+    }, [], {
+      version: { epoch: "codex-epoch-7", seq: 42, ready: true },
+      checkpoint: { checkpointId: "codex-epoch-7:42", headCompleteness: "complete", inventoryComplete: true },
+      live: {
+        complete: true,
+        turn: { turnId: "turn-1", startedAt: 10 },
+        messages: [{
+          message: { messageId: "live-1", role: "assistant", content: [{ type: "text", text: "partial" }], timestamp: 10 },
+          finished: false,
+          contentComplete: false,
+        }],
+        tools: [],
+      },
+    });
+    expect(snapshot.source).toEqual({ epoch: "codex-epoch-7", seq: 42, ready: true });
+    expect(snapshot.checkpoint?.inventoryComplete).toBe(true);
+    expect(snapshot.live?.messages[0]?.message.messageId).toBe("live-1");
+    expect(RuntimeEventSchema.safeParse(snapshot).success).toBe(true);
+  });
 });

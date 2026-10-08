@@ -82,6 +82,29 @@ describe("runtime command protocol", () => {
         data: { message: { role: "user", content: "hello" } },
       }],
     }).success).toBe(true);
+    expect(RuntimeEventSchema.safeParse({
+      type: "session.patch",
+      sessionId: "session-1",
+      source: { epoch: "epoch-1", seq: 2, ready: true },
+      baseSeq: 1,
+      seq: 2,
+      checkpointId: "epoch-1:2",
+      head: { leafId: "entry-2" },
+      headCompleteness: "complete",
+      live: { complete: true, turn: null, messages: [], tools: [] },
+    }).success).toBe(true);
+    expect(RuntimeEventSchema.safeParse({
+      type: "session.patch",
+      sessionId: "session-1",
+      source: { epoch: "epoch-1", seq: 2, ready: true },
+      baseSeq: 0,
+      seq: 2,
+      checkpointId: "epoch-1:2",
+      head: { leafId: null },
+      headCompleteness: "complete",
+      live: { complete: true, turn: null, messages: [], tools: [] },
+      unexpected: true,
+    }).success).toBe(false);
   });
 
   it("keeps ordinary user messages separate from slash command execution", () => {

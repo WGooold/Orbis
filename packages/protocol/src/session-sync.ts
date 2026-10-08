@@ -1,5 +1,6 @@
 import type {
-  RemoteSessionEntry, RuntimeCommand, RuntimeEvent, RuntimeTurnTiming, SessionSyncRange, SessionSyncRangeStatus,
+  RemoteSessionEntry, RuntimeCommand, RuntimeEvent, RuntimeTurnTiming, SessionCheckpoint, SessionLiveState, SessionSourceEpoch,
+  SessionSyncRange, SessionSyncRangeStatus,
 } from "./index.js";
 
 export type SessionSyncRequest = Extract<RuntimeCommand, { type: "session.sync" }>;
@@ -12,6 +13,7 @@ export type SessionSyncSnapshot = Omit<Extract<RuntimeEvent, { type: "session.sn
   hasOlder: boolean;
   complete: boolean;
   rangeStatus: SessionSyncRangeStatus;
+  checkpoint?: SessionCheckpoint;
 };
 export const SESSION_SYNC_PAGE_BYTES = 256 * 1024;
 export const SESSION_SYNC_MAX_BYTES = 1024 * 1024;
@@ -44,11 +46,14 @@ export function selectSessionSyncSnapshot(
   liveLeaf: string | null,
   request: Omit<SessionSyncRequest, "type">,
   turnTimings: readonly RuntimeTurnTiming[] = [],
+  source?: { version: SessionSourceEpoch; live?: SessionLiveState; checkpoint?: SessionCheckpoint },
 ): SessionSyncSnapshot {
   if (request.sessionId !== sessionId) throw new Error("session_mismatch");
   const range = request.range;
   if (range === undefined) throw new Error("session_sync_range_required");
-  const maxEntries = request.maxEntries ?? 100;
+  // Keep the default response bounded for first paint; callers can request a larger history page
+  // explicitly, subject to the byte limits below.
+  const maxEntries = request.maxEntries ?? 30;
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > 2000) throw new Error("invalid_max_entries");
   const byId = new Map<string, RemoteSessionEntry>();
   for (const entry of entries) {
@@ -96,6 +101,11 @@ export function selectSessionSyncSnapshot(
       complete: rangeStatus === "complete" && !remaining,
       rangeStatus: rangeStatus !== "complete" ? rangeStatus
         : remaining ? range === "history" ? "older_available" : "limit_reached" : "complete",
+      ...(source === undefined ? {} : {
+        source: source.version,
+        ...(source.live === undefined ? {} : { live: source.live }),
+        ...(source.checkpoint === undefined ? {} : { checkpoint: source.checkpoint }),
+      }),
     };
   };
   const bytes = (snapshot: SessionSyncSnapshot): number =>

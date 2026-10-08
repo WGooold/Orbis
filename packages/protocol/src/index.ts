@@ -507,6 +507,83 @@ export const RuntimeTurnTimingSchema = z.strictObject({
 });
 export type RuntimeTurnTiming = z.infer<typeof RuntimeTurnTimingSchema>;
 
+/**
+ * Recoverable source-side state carried by a session checkpoint.
+ *
+ * `epoch` changes when the source rebuilds/reloads a thread (for example after
+ * Codex revert). `seq` is monotonic within that epoch and belongs to the source
+ * state, not to the relay transport. A checkpoint may be marked not ready while
+ * the source is reconciling its native history; clients must isolate the old
+ * epoch until a ready checkpoint arrives.
+ */
+export const SessionSourceEpochSchema = z.strictObject({
+  epoch: z.string().min(1).max(256),
+  seq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  ready: z.boolean(),
+});
+export type SessionSourceEpoch = z.infer<typeof SessionSourceEpochSchema>;
+
+/** Completeness is separate from transport success: an accepted response may still be partial. */
+export const SessionCheckpointSchema = z.strictObject({
+  checkpointId: z.string().min(1).max(256),
+  /** Canonical source head at the same capture point as the live inventory. */
+  head: SessionBranchCursorSchema.optional(),
+  headCompleteness: z.enum(["complete", "unknown"]),
+  inventoryComplete: z.boolean(),
+});
+export type SessionCheckpoint = z.infer<typeof SessionCheckpointSchema>;
+
+export const SessionLiveTurnSchema = z.strictObject({
+  turnId: z.string().min(1).max(256),
+  startedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  durationMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+});
+export type SessionLiveTurn = z.infer<typeof SessionLiveTurnSchema>;
+
+export const SessionLiveMessageSchema = z.strictObject({
+  message: ChatMessageSchema,
+  finished: z.boolean(),
+  contentComplete: z.boolean(),
+  persistedEntryId: z.string().min(1).max(256).optional(),
+});
+export type SessionLiveMessage = z.infer<typeof SessionLiveMessageSchema>;
+
+export const SessionLiveToolSchema = z.strictObject({
+  toolCallId: z.string().min(1).max(256),
+  toolName: z.string().min(1).max(256),
+  state: z.enum(["started", "updated", "finished"]),
+  detail: z.unknown().optional(),
+  isError: z.boolean().optional(),
+});
+export type SessionLiveTool = z.infer<typeof SessionLiveToolSchema>;
+
+/** The source checkpoint overlay. Empty arrays are authoritative only when complete is true. */
+export const SessionLiveStateSchema = z.strictObject({
+  complete: z.boolean(),
+  turn: SessionLiveTurnSchema.nullable(),
+  messages: z.array(SessionLiveMessageSchema).max(256),
+  tools: z.array(SessionLiveToolSchema).max(256),
+});
+export type SessionLiveState = z.infer<typeof SessionLiveStateSchema>;
+
+/**
+ * A source-versioned live-state transition. It is deliberately self-contained: a client may
+ * apply it only when `baseSeq` is its current source sequence, otherwise it must recover from a
+ * checkpoint instead of guessing a missing delta.
+ */
+export const SessionPatchSchema = z.strictObject({
+  type: z.literal("session.patch"),
+  sessionId: z.string().min(1).max(256),
+  source: SessionSourceEpochSchema,
+  baseSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  seq: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  checkpointId: z.string().min(1).max(256),
+  head: SessionBranchCursorSchema,
+  headCompleteness: z.enum(["complete", "unknown"]),
+  live: SessionLiveStateSchema,
+});
+export type SessionPatch = z.infer<typeof SessionPatchSchema>;
+
 const InteractionBaseSchema = z.strictObject({
   runtimeId: z.string().min(1),
   requestId: z.string().min(1),
@@ -665,7 +742,11 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
     hasOlder: z.boolean().optional(),
     complete: z.boolean().optional(),
     rangeStatus: SessionSyncRangeStatusSchema.optional(),
+    source: SessionSourceEpochSchema.optional(),
+    checkpoint: SessionCheckpointSchema.optional(),
+    live: SessionLiveStateSchema.optional(),
   }),
+  SessionPatchSchema,
   z.strictObject({ type: z.literal("message.started"), message: ChatMessageSchema, queueId: z.string().min(1).optional() }),
   z.strictObject({
     type: z.literal("message.delta"),

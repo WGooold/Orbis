@@ -45,6 +45,11 @@ import type {
   RuntimeSlashCommand,
   RuntimeSlashCommandOption,
   RuntimeStatus,
+  SessionLiveMessage,
+  SessionLiveState,
+  SessionLiveTool,
+  SessionCheckpoint,
+  SessionSourceEpoch,
 } from "@pi-remote/protocol";
 
 import type {
@@ -270,6 +275,12 @@ type ThreadState = {
   reconcilePromise: Promise<void> | undefined;
   reconcileNotifications: Array<{ method: string; params: unknown }>;
   reconcileDraining: boolean;
+  /** Source-side checkpoint identity; independent from transport sequence numbers. */
+  sourceEpoch: string;
+  sourceSeq: number;
+  sourceReady: boolean;
+  liveMessages: Map<string, SessionLiveMessage>;
+  liveTools: Map<string, SessionLiveTool>;
 };
 
 export class CodexRuntime implements AgentBackend {
@@ -503,6 +514,11 @@ export class CodexRuntime implements AgentBackend {
       reconcilePromise: undefined,
       reconcileNotifications: [],
       reconcileDraining: false,
+      sourceEpoch: randomUUID(),
+      sourceSeq: 0,
+      sourceReady: false,
+      liveMessages: new Map(),
+      liveTools: new Map(),
     };
   }
 
@@ -1054,6 +1070,9 @@ export class CodexRuntime implements AgentBackend {
       // still treats the same condition as an unreadable history.
       await this.#replayFromRollout(thread, target.type === "new");
     }
+    // A replay/rollout failure is an unresolved source state. Keep the thread visible so
+    // the adapter can retry, but never publish a ready checkpoint for an unverified graph.
+    thread.sourceReady = thread.historyError === undefined;
     // #publishMetadataEvent 里会一并补发 capabilities（按 thread 粒度），无需重复。
     this.#publishMetadataEvent(thread);
     // 历史由设备的有界 session.sync 请求加载，metadata 不附带无人请求的整图。
@@ -1230,6 +1249,8 @@ export class CodexRuntime implements AgentBackend {
       completedItems: thread.completedItems,
       entryTurns: thread.entryTurns,
       turnOrder: thread.turnOrder,
+      liveMessages: thread.liveMessages,
+      liveTools: thread.liveTools,
       historyError: thread.historyError,
     };
     thread.entries = [];
@@ -1249,6 +1270,8 @@ export class CodexRuntime implements AgentBackend {
     thread.turnStartedAt = undefined;
     thread.streamingMessageId = undefined;
     thread.persistedMessageMappings = [];
+    thread.liveMessages = new Map();
+    thread.liveTools = new Map();
     for (const turn of turns) {
       if (turn === null || typeof turn !== "object") continue;
       const turnRecord = turn as Record<string, unknown>;
@@ -1276,6 +1299,26 @@ export class CodexRuntime implements AgentBackend {
           this.#noteItem(thread, record);
           const itemRunning = record.status === "inProgress" || record.status === "in_progress";
           const itemFinished = record.status === "completed" || record.status === "failed" || record.status === "declined";
+          if (turnRunning && itemRunning) {
+            const itemMessage = itemToMessage(record);
+            if (itemMessage !== undefined) {
+              thread.streamingMessageId = typeof record.id === "string" ? record.id : thread.streamingMessageId;
+              thread.liveMessages.set(itemMessage.messageId, {
+                message: itemMessage,
+                finished: false,
+                contentComplete: record.type !== "agentMessage",
+              });
+            }
+            const itemTool = toolCallInfo(record);
+            if (itemTool !== undefined) {
+              thread.liveTools.set(itemTool.toolCallId, {
+                toolCallId: itemTool.toolCallId,
+                toolName: itemTool.toolName,
+                state: "started",
+                detail: { arguments: itemTool.arguments },
+              });
+            }
+          }
           if (!itemRunning && (!turnRunning || itemFinished || record.type === "userMessage")) {
             this.#completeItem(thread, record, owner);
           }
@@ -1298,6 +1341,8 @@ export class CodexRuntime implements AgentBackend {
       thread.completedItems = prior.completedItems;
       thread.entryTurns = prior.entryTurns;
       thread.turnOrder = prior.turnOrder;
+      thread.liveMessages = prior.liveMessages;
+      thread.liveTools = prior.liveTools;
       thread.historyError = "canonical_entry_conflict";
       return false;
     }
@@ -1840,6 +1885,25 @@ export class CodexRuntime implements AgentBackend {
     return this.#threads.get(thread.id) === thread && thread.reconcileGeneration === generation;
   }
 
+  /**
+   * Establish a new source generation before native history is rebuilt. A revert changes the
+   * canonical head and may invalidate every live item that was observed under the old source
+   * view, so continuing the old sequence would let delayed patches bridge two histories.
+   */
+  #beginSourceReconcile(thread: ThreadState): void {
+    thread.sourceEpoch = randomUUID();
+    thread.sourceSeq = 0;
+    thread.sourceReady = false;
+    thread.liveMessages = new Map();
+    thread.liveTools = new Map();
+    thread.turnInProgress = false;
+    thread.turnId = undefined;
+    thread.turnStartedAt = undefined;
+    thread.streamingMessageId = undefined;
+    thread.persistedMessageMappings = [];
+    this.#touchSource(thread);
+  }
+
   async #drainReconcileNotifications(thread: ThreadState): Promise<void> {
     if (thread.reconcileNotifications.length === 0) return;
     const pending = thread.reconcileNotifications.splice(0, 512);
@@ -1858,17 +1922,22 @@ export class CodexRuntime implements AgentBackend {
   /** Re-read the source after a revert performed by another Codex client. */
   #reconcileExternalRevert(thread: ThreadState): void {
     void this.#queueReconcile(thread, async (generation) => {
+      this.#beginSourceReconcile(thread);
       const turns = await this.#listAllTurns(thread.id);
       if (!this.#isCurrentReconcile(thread, generation)) return;
       const replayed = this.#replayTurns(thread, { turns });
       if (!this.#isCurrentReconcile(thread, generation)) return;
       if (!replayed) {
+        thread.sourceReady = false;
+        this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
         // The native revert has already committed.  A canonical replay conflict is a
         // separate projection failure: keep the last known-good graph and let the command
         // acknowledge the native operation while session.sync exposes the conflict.
         return;
       }
+      thread.sourceReady = true;
+      this.#touchSource(thread);
       await this.#drainReconcileNotifications(thread);
       if (!this.#isCurrentReconcile(thread, generation)) return;
       this.#publishMetadataEvent(thread);
@@ -1890,18 +1959,23 @@ export class CodexRuntime implements AgentBackend {
    */
   async #revertThread(thread: ThreadState, beforeTurnId: string): Promise<void> {
     await this.#queueReconcile(thread, async (generation) => {
+      this.#beginSourceReconcile(thread);
       await this.#server.request("thread/revert", { threadId: thread.id, beforeTurnId });
       const turns = await this.#listAllTurns(thread.id);
       if (!this.#isCurrentReconcile(thread, generation)) return;
       const replayed = this.#replayTurns(thread, { turns });
       if (!this.#isCurrentReconcile(thread, generation)) return;
       if (!replayed) {
+        thread.sourceReady = false;
+        this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
         // Native history has already been reverted. Keep the last canonical graph and
         // report the projection conflict to /tree without retrying the destructive native
         // operation. The caller can then reconcile or explicitly retry the read phase.
         throw new Error(thread.historyError ?? "canonical_entry_conflict");
       }
+      thread.sourceReady = true;
+      this.#touchSource(thread);
       await this.#drainReconcileNotifications(thread);
       if (!this.#isCurrentReconcile(thread, generation)) return;
       // metadata 事件里会一并补发 capabilities：树上少掉的那些节点立刻从手机菜单消失。
@@ -1954,6 +2028,7 @@ export class CodexRuntime implements AgentBackend {
     void this.#refreshIntegrationCatalog(forked);
     this.#replayTurns(forked, result.thread ?? {});
     if (forked.itemOrder.length === 0) await this.#replayFromRollout(forked);
+    forked.sourceReady = forked.historyError === undefined;
     this.#publishMetadataEvent(forked);
 
     this.#openHeadWindow(id, cwd);
@@ -2258,6 +2333,7 @@ export class CodexRuntime implements AgentBackend {
     if (thread.historyError === undefined) thread.historyError = "codex_attach_pending";
     await this.#attachTuiThread(thread);
     if (this.#threads.get(thread.id) !== thread) return;
+    thread.sourceReady = thread.historyError === undefined;
     void this.#refreshIntegrationCatalog(thread);
     this.#publishMetadataEvent(thread);
   }
@@ -2301,6 +2377,8 @@ export class CodexRuntime implements AgentBackend {
         if (typeof activeTurn?.id === "string") thread.turnId = activeTurn.id;
         thread.tuiAttachPending = false;
         if (thread.historyError === "codex_attach_pending") delete thread.historyError;
+        thread.sourceReady = thread.historyError === undefined;
+        this.#touchSource(thread);
         void this.#checkSandboxReadiness(thread);
       } catch (error) {
         if (this.#threads.get(thread.id) !== thread) return;
@@ -2492,6 +2570,11 @@ export class CodexRuntime implements AgentBackend {
         this.#noteItem(thread, data);
         const raw = toolCallMessage(data) ?? itemToMessage(data);
         if (raw === undefined) return;
+        this.#setLiveMessage(thread, {
+          message: raw,
+          finished: false,
+          contentComplete: data.type !== "agentMessage",
+        });
         // userMessage item（turn/start 带了 clientUserMessageId 时 clientId = App 的
         // messageId）在此处完成唯一一次上屏——本地不再合成回显。
         const message = withClientMessageId(data, raw);
@@ -2499,6 +2582,12 @@ export class CodexRuntime implements AgentBackend {
         const tool = toolCallInfo(data);
         if (tool !== undefined) {
           thread.toolNames.set(tool.toolCallId, tool.toolName);
+          this.#setLiveTool(thread, {
+            toolCallId: tool.toolCallId,
+            toolName: tool.toolName,
+            state: "started",
+            detail: { arguments: tool.arguments },
+          });
           this.#emit(thread.id, {
             type: "tool.started",
             toolCallId: tool.toolCallId,
@@ -2509,8 +2598,15 @@ export class CodexRuntime implements AgentBackend {
         return;
       }
       case "item/commandExecution/outputDelta":
-      case "item/fileChange/outputDelta":
+      case "item/fileChange/outputDelta": {
         if (typeof record.itemId !== "string" || typeof record.delta !== "string") return;
+        const existingCommandTool = thread.liveTools.get(record.itemId);
+        if (existingCommandTool !== undefined) {
+          const detail = existingCommandTool.detail !== null && typeof existingCommandTool.detail === "object"
+            ? existingCommandTool.detail as Record<string, unknown> : {};
+          const output = typeof detail.output === "string" ? detail.output : "";
+          this.#setLiveTool(thread, { ...existingCommandTool, state: "updated", detail: { ...detail, output: output + record.delta } });
+        }
         this.#emit(thread.id, {
           type: "tool.updated",
           toolCallId: record.itemId,
@@ -2519,8 +2615,17 @@ export class CodexRuntime implements AgentBackend {
           partialResult: record.delta,
         });
         return;
+      }
       case "item/mcpToolCall/progress":
+      {
         if (typeof record.itemId !== "string" || typeof record.message !== "string") return;
+        const existingMcpTool = thread.liveTools.get(record.itemId);
+        if (existingMcpTool !== undefined) {
+          const detail = existingMcpTool.detail !== null && typeof existingMcpTool.detail === "object"
+            ? existingMcpTool.detail as Record<string, unknown> : {};
+          const output = typeof detail.output === "string" ? detail.output : "";
+          this.#setLiveTool(thread, { ...existingMcpTool, state: "updated", detail: { ...detail, output: output + record.message } });
+        }
         this.#emit(thread.id, {
           type: "tool.updated",
           toolCallId: record.itemId,
@@ -2528,14 +2633,26 @@ export class CodexRuntime implements AgentBackend {
           partialResult: record.message,
         });
         return;
+      }
       case "item/agentMessage/delta": {
         const delta = record.delta;
         if (typeof delta !== "string" || typeof record.itemId !== "string") return;
         if (thread.streamingMessageId !== record.itemId) {
           thread.streamingMessageId = record.itemId;
+          this.#setLiveMessage(thread, {
+            message: assistantMessage(record.itemId), finished: false, contentComplete: false,
+          });
           this.#emit(thread.id, {
             type: "message.started",
             message: assistantMessage(record.itemId),
+          });
+        }
+        const live = thread.liveMessages.get(record.itemId);
+        if (live !== undefined) {
+          const text = live.message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("");
+          this.#setLiveMessage(thread, {
+            ...live,
+            message: { ...live.message, content: [{ type: "text", text: text + delta }] },
           });
         }
         this.#emit(thread.id, { type: "message.delta", messageId: record.itemId, contentType: "text", delta });
@@ -2553,6 +2670,22 @@ export class CodexRuntime implements AgentBackend {
         const raw = toolCallMessage(data) ?? itemToMessage(data);
         if (raw !== undefined) {
           const message = withClientMessageId(data, raw);
+          // item/started is keyed by the native item id. A completed UserMessage may also
+          // carry the App's client id, so its emitted message has a second identity. Remove
+          // both aliases before deciding whether the canonical entry already exists; otherwise
+          // a completed item can leave the raw live overlay beside its persisted entry.
+          thread.liveMessages.delete(raw.messageId);
+          thread.liveMessages.delete(message.messageId);
+          if (thread.entries.some(entry => entry.entryId === raw.messageId)) {
+            this.#touchSource(thread);
+          } else {
+            this.#setLiveMessage(thread, {
+              message,
+              finished: true,
+              contentComplete: true,
+              persistedEntryId: raw.messageId,
+            });
+          }
           if (message !== raw) {
             // clientUserMessageId 已带回：记 live id -> entry id 映射，turn.finished 时
             // App 端 remap 把气泡改名为权威 entry id（与 Pi 的 persistedMessageMappings 一致）。
@@ -2563,6 +2696,13 @@ export class CodexRuntime implements AgentBackend {
         const tool = toolCallInfo(data);
         if (tool !== undefined) {
           thread.toolNames.set(tool.toolCallId, tool.toolName);
+          this.#setLiveTool(thread, {
+            toolCallId: tool.toolCallId,
+            toolName: tool.toolName,
+            state: "finished",
+            detail: { arguments: tool.arguments, result: tool.result },
+            isError: tool.isError,
+          });
           this.#emit(thread.id, {
             type: "tool.finished",
             toolCallId: tool.toolCallId,
@@ -2591,8 +2731,10 @@ export class CodexRuntime implements AgentBackend {
             turnId: started.id.slice(0, 256),
             startedAt: thread.turnStartedAt,
           });
+          this.#touchSource(thread);
         }
         thread.turnInProgress = true;
+        this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
         return;
       }
@@ -2625,6 +2767,13 @@ export class CodexRuntime implements AgentBackend {
         thread.turnInProgress = false;
         thread.streamingMessageId = undefined;
         thread.persistedMessageMappings = [];
+        for (const [id, live] of thread.liveMessages) {
+          if (live.persistedEntryId !== undefined && thread.entries.some(entry => entry.entryId === live.persistedEntryId)) {
+            thread.liveMessages.delete(id);
+          }
+        }
+        for (const [id, tool] of thread.liveTools) if (tool.state === "finished") thread.liveTools.delete(id);
+        this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
         // turn 结束（含被 steer/interrupt 打断）：补跑排队的下一条消息。
         this.#drainQueue(thread);
@@ -2837,11 +2986,69 @@ export class CodexRuntime implements AgentBackend {
     }
   }
 
+  #touchSource(thread: ThreadState): void {
+    thread.sourceSeq = Math.min(Number.MAX_SAFE_INTEGER, thread.sourceSeq + 1);
+    this.#publishSourcePatch(thread);
+  }
+
+  /** Publish a complete versioned live projection. Missing or late patches are recoverable via sync. */
+  #publishSourcePatch(thread: ThreadState): void {
+    const source = this.#sourceCheckpoint(thread);
+    this.#emit(thread.id, {
+      type: "session.patch",
+      sessionId: this.#publicSessionId(thread.id),
+      source: source.version,
+      baseSeq: Math.max(0, source.version.seq - 1),
+      seq: source.version.seq,
+      checkpointId: source.checkpoint.checkpointId,
+      head: { leafId: source.version.ready ? thread.entries.at(-1)?.entryId ?? null : null },
+      headCompleteness: source.checkpoint.headCompleteness,
+      live: source.live,
+    });
+  }
+
+  #setLiveMessage(thread: ThreadState, value: SessionLiveMessage): void {
+    thread.liveMessages.set(value.message.messageId, value);
+    this.#touchSource(thread);
+  }
+
+  #setLiveTool(thread: ThreadState, value: SessionLiveTool): void {
+    thread.liveTools.set(value.toolCallId, value);
+    this.#touchSource(thread);
+  }
+
+  #liveCheckpoint(thread: ThreadState): SessionLiveState {
+    const turn = thread.turnId === undefined || thread.turnStartedAt === undefined
+      ? null
+      : { turnId: thread.turnId, startedAt: thread.turnStartedAt };
+    return {
+      complete: thread.sourceReady,
+      turn,
+      messages: [...thread.liveMessages.values()],
+      tools: [...thread.liveTools.values()],
+    };
+  }
+
+  #sourceCheckpoint(thread: ThreadState): { version: SessionSourceEpoch; live: SessionLiveState; checkpoint: SessionCheckpoint } {
+    const checkpointId = `${thread.sourceEpoch}:${thread.sourceSeq}`;
+    return {
+      version: { epoch: thread.sourceEpoch, seq: thread.sourceSeq, ready: thread.sourceReady },
+      live: this.#liveCheckpoint(thread),
+      checkpoint: {
+        checkpointId,
+        head: { leafId: thread.entries.at(-1)?.entryId ?? null },
+        headCompleteness: thread.sourceReady ? "complete" : "unknown",
+        inventoryComplete: thread.sourceReady,
+      },
+    };
+  }
+
   /** 快照。手机发来的 session.sync 带 syncId 时**必须原样回显**（快照按 syncId 关联）。 */
   #publishSnapshot(thread: ThreadState, request: Extract<RuntimeCommand, { type: "session.sync" }>): void {
     if (thread.historyError !== undefined) throw new Error(thread.historyError);
+    const source = this.#sourceCheckpoint(thread);
     this.#emit(thread.id, selectSessionSyncSnapshot(
-      thread.entries, this.#publicSessionId(thread.id), thread.entries.at(-1)?.entryId ?? null, request,
+      thread.entries, this.#publicSessionId(thread.id), thread.entries.at(-1)?.entryId ?? null, request, [], source,
     ));
   }
 
