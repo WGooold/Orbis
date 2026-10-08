@@ -34,7 +34,7 @@ class SessionSourceRecoveryTest {
     )
     private fun checkpoint(state: RemoteState, seq: Long, entries: List<SessionGraphEntry> = emptyList(), head: String? = null): RemoteState {
         val pending = state.copy(sessionSyncCommands = mapOf("request" to PendingSessionSync(
-            "runtime", "session", "sync", range = "preview",
+            "runtime", "session", "sync", range = "preview", branchGeneration = state.sessionBranchGenerations["runtime"] ?: 0,
         )))
         val snapshot = SessionGraphSnapshot("session", "sync", SessionBranchCursor(head), "replace", entries,
             range = "preview", complete = true, source = SessionSourceEpoch("epoch", seq, true),
@@ -275,5 +275,66 @@ class SessionSourceRecoveryTest {
         val queued = current.queueSessionSync("request", task)
         assertTrue(advanceSessionSyncTasks(queued, 4_999, 7).send.isEmpty())
         assertEquals(1, advanceSessionSyncTasks(queued, 5_000, 7).send.size)
+    }
+
+    @Test fun `cache rebuild invalidates old pages but preserves pairing and queued interaction state`() {
+        val entry = entry("head")
+        val pendingPage = PendingSessionSync("runtime", "session", "old-page", "catchup", "old-tail")
+        val queued = QueuedMessage("queue", "after current turn", "followUp", "accepted")
+        val interaction = PendingInteraction(
+            requestId = "interaction", extensionId = "ext", kind = "confirm", title = "Confirm",
+            description = null, options = emptyList(), placeholder = null,
+        )
+        val original = initial("head").copy(
+            hostId = "host-paired",
+            sessions = mapOf("session" to SessionCatalogEntry("session", hasHistoryCache = true)),
+            sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("head" to entry), SessionBranchCursor("head"))),
+            sessionSyncCommands = mapOf("old-command" to pendingPage),
+            pendingCommands = mapOf("old-command" to "runtime", "send-pending" to "runtime"),
+            conversations = initial("head").conversations.mapValues { (_, conversation) ->
+                conversation.copy(queuedMessages = mapOf(queued.queueId to queued), interactions = mapOf(interaction.requestId to interaction))
+            },
+        )
+
+        val rebuilt = original.afterSessionCacheRebuild("session")
+        assertTrue("session" !in rebuilt.sessionGraphs)
+        assertFalse(rebuilt.sessions.getValue("session").hasHistoryCache)
+        assertTrue(rebuilt.sessionSyncCommands.isEmpty())
+        assertEquals(mapOf("send-pending" to "runtime"), rebuilt.pendingCommands)
+        assertEquals("host-paired", rebuilt.hostId)
+        assertEquals(mapOf(queued.queueId to queued), rebuilt.conversations.getValue("runtime").queuedMessages)
+        assertEquals(mapOf(interaction.requestId to interaction), rebuilt.conversations.getValue("runtime").interactions)
+        assertTrue(rebuilt.conversations.getValue("runtime").isChatSyncing)
+        assertTrue("runtime" in rebuilt.sessionSyncRequests)
+        val task = rebuilt.requestedSessionRecovery("runtime", 7, "fresh-checkpoint")
+        assertEquals("preview", task?.range)
+        assertNull(task?.targetLeafId)
+        assertFalse(rebuilt.ownsSessionSnapshot("old-command", "runtime", "session", "old-page", "old-tail", "catchup"))
+        val latePage = reducer.reduce(rebuilt, """{"type":"runtime.event","runtimeId":"runtime","sequence":50,"event":{
+            "type":"session.snapshot","sessionId":"session","syncId":"old-page","range":"catchup","mode":"append",
+            "cursor":{"leafId":"old-tail"},"complete":true,"entries":[
+              {"entryId":"old-tail","parentId":null,"type":"message","timestamp":"1","data":{"message":{"role":"assistant","content":"obsolete"}}}
+            ]}}""")
+        assertTrue("session" !in latePage.sessionGraphs)
+        assertEquals(rebuilt.conversations, latePage.conversations)
+    }
+
+    @Test fun `same source epoch and sequence checkpoint restores a cache-rebuilt projection`() {
+        val original = initial("head").copy(sessionGraphs = mapOf(
+            "session" to SessionGraph("session", mapOf("head" to entry("head")), SessionBranchCursor("head")),
+        ))
+        val rebuilt = original.afterSessionCacheRebuild("session")
+        assertEquals("epoch", rebuilt.conversations.getValue("runtime").sourceEpoch)
+        assertEquals(1L, rebuilt.conversations.getValue("runtime").sourceSeq)
+
+        val recovered = checkpoint(rebuilt, 1, entries = listOf(entry("head")), head = "head")
+        val conversation = recovered.conversations.getValue("runtime")
+        assertEquals("epoch", conversation.sourceEpoch)
+        assertEquals(1L, conversation.sourceSeq)
+        assertTrue(conversation.sourceReady)
+        assertTrue(conversation.hasLiveSnapshot)
+        assertFalse(conversation.isChatSyncing)
+        assertNull(conversation.systemNotice)
+        assertEquals("head", recovered.runtimeSessionViews.getValue("runtime").leafId)
     }
 }
