@@ -4,7 +4,7 @@ function renderDesktopDownloads(platform, files) {
   const label = platform === "windows" ? "Windows" : "macOS";
   const pattern = platform === "windows"
     ? /^OrbisHost-(\d+\.\d+\.\d+)-windows-x64(?:-setup\.exe|\.zip)$/
-    : /^OrbisHost-(\d+\.\d+\.\d+)-macos-arm64\.dmg$/;
+    : /^OrbisHost-(\d+\.\d+\.\d+)-macos-(arm64|x64)\.dmg$/;
   const releases = (Array.isArray(files) ? files : []).flatMap(file => {
     const match = typeof file?.name === "string" ? file.name.match(pattern) : null;
     return match && typeof file.url === "string" && typeof file.checksumUrl === "string"
@@ -22,13 +22,14 @@ function renderDesktopDownloads(platform, files) {
     container.textContent = `${label} 预览包正在准备，发布后即可在这里下载。`;
     return;
   }
-  for (const release of releases.filter(file => file.version === version)) {
+  for (const release of releases.filter(file => file.version === version).sort((a, b) => a.name.localeCompare(b.name))) {
     const portable = release.name.endsWith(".zip");
     const link = document.createElement("a");
     link.className = portable ? "text-link portable-link" : "button primary";
     link.href = release.url;
     const size = Number.isFinite(release.bytes) && release.bytes > 0 ? ` · ${(release.bytes / 1048576).toFixed(0)} MB` : "";
-    link.textContent = portable ? "下载免安装版 ZIP ↗" : `下载 ${label === "macOS" ? "Apple Silicon 版" : "Windows 安装版"}${size} ↓`;
+    const macLabel = release.name.includes("-x64.") ? "Intel 版" : "Apple Silicon 版";
+    link.textContent = portable ? "下载免安装版 ZIP ↗" : `下载 ${label === "macOS" ? macLabel : "Windows 安装版"}${size} ↓`;
     const checksum = document.createElement("a");
     checksum.className = "checksum-link";
     checksum.href = release.checksumUrl;

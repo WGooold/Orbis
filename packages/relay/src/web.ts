@@ -17,6 +17,7 @@ const assets = {
 export const downloadNames = [
   "OrbisHost-0.1.11-windows-x64-setup.exe", "OrbisHost-0.1.11-windows-x64.zip",
   "OrbisHost-0.1.11-macos-arm64.dmg",
+  "OrbisHost-0.1.11-macos-x64.dmg",
   "OrbisHost-0.1.10-windows-x64-setup.exe", "OrbisHost-0.1.10-windows-x64.zip",
   "OrbisHost-0.1.9-windows-x64-setup.exe", "OrbisHost-0.1.9-windows-x64.zip",
   "OrbisHost-0.1.8-windows-x64-setup.exe", "OrbisHost-0.1.8-windows-x64.zip",

@@ -196,7 +196,7 @@ describe("Relay web console", () => {
     await writeFile(join(directory, `${name}.sha256`), `${"a".repeat(64)}  ${name}`);
     await writeFile(join(directory, macName), "macOS artifact");
     await writeFile(join(directory, `${macName}.sha256`), `${"d".repeat(64)}  ${macName}`);
-    const unlistedName = "OrbisHost-0.1.11-macos-x64.dmg";
+    const unlistedName = "OrbisHost-0.1.11-macos-universal.dmg";
     await writeFile(join(directory, unlistedName), "not released");
     await writeFile(join(directory, `${unlistedName}.sha256`), `${"e".repeat(64)}  ${unlistedName}`);
     await writeFile(join(directory, "orbis.apk.version.json"), JSON.stringify({ version: "0.1.48", versionCode: 49, sha256: "c".repeat(64) }));
