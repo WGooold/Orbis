@@ -30,6 +30,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 握手看门狗写的告警（见 [RemoteViewModel.connect] 里那个 8s 看门狗）。
@@ -1393,6 +1394,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         val currentGeneration = ++generation
         var preserveErrorOnClose = false
         var stopReconnectOnClose = false
+        // Relay closes immediately after protocol.error; the async reducer may run after onClosed.
+        val protocolVersionMismatch = AtomicBoolean(false)
         // 入站帧按 channel 分两条优先级通道（见 `InboundFrameLanes`）。
         //
         // 以前这里是一条**无界** FIFO，文本帧与二进制分片挤在一起按到达顺序消费。分片落盘比网络
@@ -1466,7 +1469,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                                 }
                                 if (message?.get("protocolVersion")?.jsonPrimitive?.intOrNull != null &&
                                     message["protocolVersion"]?.jsonPrimitive?.intOrNull != PROTOCOL_VERSION ||
-                                    protocolCode in setOf("unauthorized", "invalid_message", "runtime_mismatch") ||
+                                    protocolCode in setOf("unauthorized", "invalid_message", "protocol_version_mismatch", "runtime_mismatch") ||
                                     runtimeError?.get("recoverable")?.jsonPrimitive?.contentOrNull == "false"
                                 ) {
                                     stopReconnectOnClose = true
@@ -1592,6 +1595,17 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             credential,
             onMessage = message@{ payload, channel ->
                 if (currentGeneration != generation) return@message
+                if (payload.contains("protocol_version_mismatch")) {
+                    val isMismatch = runCatching {
+                        val message = messageJson.parseToJsonElement(payload).jsonObject
+                        message["type"]?.jsonPrimitive?.contentOrNull == "protocol.error" &&
+                            message["code"]?.jsonPrimitive?.contentOrNull == "protocol_version_mismatch"
+                    }.getOrDefault(false)
+                    if (isMismatch) {
+                        protocolVersionMismatch.set(true)
+                        mutableState.value = mutableState.value.copy(error = PROTOCOL_VERSION_MISMATCH_ERROR)
+                    }
+                }
                 // 队列关闭/溢出只说明这条连接正在收尾：重连是自动的，而 connection 已经切成
                 // RECONNECTING 在界面上表达过了。以前这里往 error 里写「正在重新连接」，可
                 // error 是模态框通道——于是一抖动就弹窗，用户点掉又弹，看起来就是「一直提示」。
@@ -1613,6 +1627,18 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             },
             onClosed = closed@{ reason ->
                 lanes.close()
+                if (currentGeneration != generation) return@closed
+                if (protocolVersionMismatch.get() || reason == "protocol_version_mismatch") {
+                    pairingAwaitingAccept = false
+                    shouldConnect = false
+                    val current = mutableState.value
+                    mutableState.value = current.copy(
+                        connection = RelayConnection.OFFLINE,
+                        deviceId = if (device == null) null else current.deviceId,
+                        error = PROTOCOL_VERSION_MISMATCH_ERROR,
+                    )
+                    return@closed
+                }
                 if (pairingAwaitingAccept) {
                     // 配对连接在 Host 的 pair-accept 到达之前就断了：这次配对没成。
                     // 不落盘、不进主界面，把人留在配对页重试。
@@ -1625,7 +1651,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     )
                     return@closed
                 }
-                if (currentGeneration != generation || !shouldConnect) return@closed
+                if (!shouldConnect) return@closed
                 mutableState.value = mutableState.value.copy(path = null, pathRttMs = null)
                 val pausedDownloads = mutableState.value.downloads.mapValues { (_, task) ->
                     if (task.status in setOf("queued", "downloading")) {

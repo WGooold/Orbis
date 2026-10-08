@@ -16,6 +16,9 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.util.UUID
 
+internal const val PROTOCOL_VERSION_MISMATCH_ERROR =
+    "Orbis 协议版本不兼容，请将手机 App 和电脑 Host 更新到最新版本"
+
 @Serializable
 data class RuntimeModelInfo(
     val provider: String,
@@ -1409,7 +1412,7 @@ class RelayReducer(
         // 用常量而不是字面量：写死版本号会在协议升级时**静默**把每条消息都变成错误，
         // 现象是界面永远停在「正在连接」+ 弹「不兼容的协议版本」，而链路其实是通的。
         if (protocolVersion != null && protocolVersion != PROTOCOL_VERSION) {
-            return state.copy(error = "收到不兼容的协议版本，请升级 Orbis")
+            return state.copy(error = PROTOCOL_VERSION_MISMATCH_ERROR)
         }
         return when (messageType) {
             "provider.result" -> if (channel != null) state.withProviderResult(message) else state
@@ -3032,6 +3035,7 @@ class RelayReducer(
         val chinese = detail?.takeIf { it.containsCjk() }
         return when (code) {
             "unauthorized" -> "Relay 拒绝了设备凭据，请重新扫码配对"
+            "protocol_version_mismatch" -> PROTOCOL_VERSION_MISMATCH_ERROR
             // 不再写死版本号：协议升到 4 之后这句话还在说 v3，把排查方向直接带偏——而
             // `invalid_message` 其实也可能来自「帧结构非法」（两端同版本照样会发生，比如
             // `hdr` 里混进了 null），版本号到底是多少得由常量说了算。

@@ -33,6 +33,7 @@ export type HostRelayClientOptions = {
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const DEFAULT_MAX_RECONNECT_DELAY_MS = 30_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+const PROTOCOL_MISMATCH_MESSAGE = "Host 与 Relay 的协议版本不兼容，请将 Orbis Host 和 Relay 更新到最新版本后重试。";
 
 type PendingReady = {
   resolve: () => void;
@@ -166,12 +167,20 @@ export class HostRelayClient {
 
   #handleMessage(raw: WebSocket.RawData): void {
     let parsed: ReturnType<typeof RelayToRuntimeMessageSchema.safeParse>;
+    let decoded: unknown;
     try {
-      parsed = RelayToRuntimeMessageSchema.safeParse(JSON.parse(raw.toString()) as unknown);
+      decoded = JSON.parse(raw.toString()) as unknown;
+      parsed = RelayToRuntimeMessageSchema.safeParse(decoded);
     } catch {
       return;
     }
-    if (!parsed.success) return;
+    if (!parsed.success) {
+      if (decoded !== null && typeof decoded === "object" && "type" in decoded && decoded.type === "runtime.ready" &&
+        "protocolVersion" in decoded && decoded.protocolVersion !== PROTOCOL_VERSION) {
+        this.#pendingReady?.reject(new Error(PROTOCOL_MISMATCH_MESSAGE));
+      }
+      return;
+    }
     const message = parsed.data;
     switch (message.type) {
       case "runtime.ready":
@@ -185,6 +194,11 @@ export class HostRelayClient {
         return;
       case "protocol.error":
         this.#options.onProtocolError?.(message.code, message.message, message.transferId, message.targetDeviceId);
+        if (this.#pendingReady !== undefined) {
+          const versionMismatch = message.code === "protocol_version_mismatch" ||
+            (message.code === "invalid_message" && /issuePaths=[^)]*\bprotocolVersion\b/u.test(message.message));
+          this.#pendingReady.reject(new Error(versionMismatch ? PROTOCOL_MISMATCH_MESSAGE : `Relay 认证失败：${message.code} ${message.message}`));
+        }
         return;
       default:
         return;
