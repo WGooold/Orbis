@@ -2014,9 +2014,11 @@ export class CodexRuntime implements AgentBackend {
     if ((method === "item/started" || method.endsWith("/delta") || method.endsWith("/outputDelta"))
       && typeof itemId === "string" && thread.entries.some(entry => entry.entryId === itemId)) return true;
     if (method === "turn/started" && turnId !== undefined && thread.turnOrder.includes(turnId) && thread.turnId !== turnId) return true;
-    // An older completed turn may remain in the retained prefix, but it cannot finish the
-    // currently running turn. Its item duplicates still go through immutable conflict checks.
-    return method === "turn/completed" && turnId !== undefined && thread.turnId !== turnId;
+    // An older completed turn may remain in the retained prefix, but it cannot finish a
+    // different currently running turn. When reconciliation has already cleared turnId,
+    // accept the completion so pending approvals and failed-turn diagnostics are settled.
+    return method === "turn/completed" && turnId !== undefined
+      && thread.turnId !== undefined && thread.turnId !== turnId;
   }
 
   /**
@@ -2750,6 +2752,12 @@ export class CodexRuntime implements AgentBackend {
       }
       ++thread.reconcileGeneration;
     }
+    if (method === "serverRequest/resolved") {
+      for (const [requestId, approval] of this.#approvals) {
+        if (approval.threadId === thread.id && approval.serverRequest.id === record.requestId) this.#finishApproval(requestId);
+      }
+      return;
+    }
     if (method === "thread/reverted" && thread.tuiAttachNotifications !== undefined) ++thread.reconcileGeneration;
     if (thread.tuiAttachNotifications !== undefined) {
       thread.tuiAttachNotifications.push({ method, params });
@@ -2797,12 +2805,6 @@ export class CodexRuntime implements AgentBackend {
         if (typeof settings.cwd === "string") thread.cwd = settings.cwd;
         thread.permissions = codexPermissions(settings) ?? thread.permissions;
         this.#publishMetadataEvent(thread);
-        return;
-      }
-      case "serverRequest/resolved": {
-        for (const [requestId, approval] of this.#approvals) {
-          if (approval.threadId === thread.id && approval.serverRequest.id === record.requestId) this.#finishApproval(requestId);
-        }
         return;
       }
       case "thread/status/changed": {
