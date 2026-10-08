@@ -32,7 +32,7 @@ jobs:
           set -euo pipefail
           rm -rf .artifacts/host .artifacts/macos-host-build
           npm run build
-          cmake -S packages/windows-host -B .artifacts/macos-host-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          cmake -S packages/windows-host -B .artifacts/macos-host-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DCMAKE_OSX_ARCHITECTURES="arm64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
           cmake --build .artifacts/macos-host-build --parallel 2
           ctest --test-dir .artifacts/macos-host-build --output-on-failure
           mkdir -p .artifacts/host
@@ -46,11 +46,11 @@ jobs:
           mkdir -p .artifacts/host/dmg-root
           cp -R .artifacts/host/OrbisHost.app .artifacts/host/dmg-root/
           ln -s /Applications .artifacts/host/dmg-root/Applications
-          hdiutil create -volname "Orbis Host" -srcfolder .artifacts/host/dmg-root -ov -format UDZO ".artifacts/host/OrbisHost-0.1.11-macos-universal.dmg"
-          shasum -a 256 ".artifacts/host/OrbisHost-0.1.11-macos-universal.dmg" | awk '{print tolower($1) "  " $2}' > ".artifacts/host/OrbisHost-0.1.11-macos-universal.dmg.sha256"
+          hdiutil create -volname "Orbis Host" -srcfolder .artifacts/host/dmg-root -ov -format UDZO ".artifacts/host/OrbisHost-0.1.11-macos-arm64.dmg"
+          shasum -a 256 ".artifacts/host/OrbisHost-0.1.11-macos-arm64.dmg" | awk '{print tolower($1) "  " $2}' > ".artifacts/host/OrbisHost-0.1.11-macos-arm64.dmg.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: OrbisHost-macos-universal
+          name: OrbisHost-macos-arm64
           if-no-files-found: error
           path: |
             .artifacts/host/*.dmg
