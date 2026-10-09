@@ -40,8 +40,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 错误，唯一的出路是手动点「确定」。
  */
 internal const val HANDSHAKE_STALLED_ERROR =
-    "已连上中继，但电脑没有回应端到端加密握手：这台手机在电脑上的配对多半已经失效。" +
-        "请点右上角「取消配对」，再扫电脑上的新二维码重新配对"
+    "电脑端 Host 没有打开：这台手机已经连上中继，但电脑一直没有回应端到端加密握手。" +
+        "请在电脑上启动 Orbis Host，打开后 APP 会自动重新连上"
 
 /** pull 下载调度器的 tick 间隔：既要及时补超时的洞，又不要空转太频繁。 */
 internal const val PULL_TICK_MS = 200L

@@ -2449,7 +2449,7 @@ internal fun statusAdvice(state: RemoteState, pairing: PairingStatus): String? =
     pairing.hostId == null || !pairing.pskRootPresent ->
         "配对不完整（缺少端到端加密材料）：请在主界面点「取消配对」，再扫电脑上的新二维码"
     state.connection == RelayConnection.ONLINE && !state.e2eReady ->
-        "已连上中继，但电脑没有回应端到端加密握手：请确认电脑上的 Pi 正在运行；若已运行，这台手机的配对可能已失效"
+        "已连上中继，但电脑没有回应端到端加密握手：请先在电脑上打开 Orbis Host，打开后 APP 会自动重连"
     state.connection == RelayConnection.OFFLINE -> "未连接到中继服务器：请检查网络与 Relay 地址"
     else -> null
 }

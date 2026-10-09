@@ -19,6 +19,14 @@ import java.util.UUID
 internal const val PROTOCOL_VERSION_MISMATCH_ERROR =
     "Orbis 协议版本不兼容，请将手机 App 和电脑 Host 更新到最新版本"
 
+/**
+ * Host 为「P2P 走不通、继续走中继」发的 protocol.error 码。
+ *
+ * 这些不是失败请求：它们描述的是尽力而为的支线路径没起来，业务已经在中继上正常跑。
+ * reducer 看到它们直接丢弃，不当模态错误弹给用户。
+ */
+internal val P2P_FALLBACK_ERROR_CODES = setOf("p2p_cooling_down", "p2p_unavailable")
+
 @Serializable
 data class RuntimeModelInfo(
     val provider: String,
@@ -1747,6 +1755,10 @@ class RelayReducer(
                 )))
             }
             "protocol.error" -> {
+                // P2P 是尽力而为的支线：打洞失败 / Host 未启用都已自动回落中继，业务照常。
+                // 这两条当模态错误弹出来，只会让每次跨网抖动的连续失败计数达标都变成一次要用户
+                // 点「确定」的噪音，所以静默丢弃；路径现状在连接状态页仍有体现。
+                if (message.string("code") in P2P_FALLBACK_ERROR_CODES) return state
                 val commandId = message.string("commandId")
                 val requestId = message.string("requestId")
                 val syncError = protocolErrorText(message.string("code"), message.string("message"))
@@ -3043,7 +3055,6 @@ class RelayReducer(
                 "Relay 拒绝了协议消息，请确认手机端与电脑端都是最新版（protocol v$PROTOCOL_VERSION）"
             "runtime_mismatch" -> "Relay 拒绝了运行实例身份，请重启电脑端 Pi"
             "runtime_offline" -> chinese ?: "目标运行实例已离线"
-            "p2p_unavailable" -> chinese ?: "电脑端未启用 P2P，继续走中继"
             "unsupported_command" -> chinese ?: "电脑端不支持该命令"
             // 会话/进程类失败（§8）：电脑端自己的问题，别挂到中继头上。
             "agent_unsupported", "spawn_failed", "spawn_limit_reached",

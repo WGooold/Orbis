@@ -1456,6 +1456,23 @@ class RelayReducerTest {
     }
 
     @Test
+    fun `p2p fallback protocol errors stay silent`() {
+        // P2P 只是支线：打洞失败/未启用都会回落中继。它们绝不能进模态错误通道，
+        // 否则每次跨网抖动的连续失败计数达标都会弹一个要用户点「确定」的噪音。
+        val state = RemoteState(connection = RelayConnection.ONLINE, e2eReady = true)
+
+        val coolingDown = reducer.reduce(state, """
+          {"type":"protocol.error","code":"p2p_cooling_down","message":"P2P 连续打洞失败，10 秒内不再尝试，继续走中继"}
+        """.trimIndent())
+        val unavailable = reducer.reduce(state, """
+          {"type":"protocol.error","code":"p2p_unavailable","message":"Host 未启用 P2P（缺少 STUN 配置），继续走中继"}
+        """.trimIndent())
+
+        assertEquals(state, coolingDown)
+        assertEquals(state, unavailable)
+    }
+
+    @Test
     fun `history protocol error releases paging without cancelling the forward catch-up`() {
         val state = RemoteState(
             selectedRuntimeId = "runtime-a",
