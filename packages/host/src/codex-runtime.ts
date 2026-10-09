@@ -62,6 +62,7 @@ import { CODEX_DESKTOP_RUNTIME_ID, CODEX_RUNTIME_ID, CodexAppServer, isDesktopAp
 import { describeError } from "./describe-error.js";
 import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
+import { CodexAsyncInputs, codexAsyncQuestionText, codexQuestionReplyText } from "./codex-async-input.js";
 import { CODEX_PERMISSION_COMMANDS, codexErrorMessage, codexPermissionUpdate, codexPermissions } from "./codex-permissions.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { CodexClientRefreshCoordinator, FileCodexRefreshJournal, type CodexRefreshResult } from "./codex-client-refresh.js";
@@ -270,6 +271,7 @@ type ThreadState = {
   modelName: string | undefined;
   permissions: RuntimePermissions | undefined;
   approvalItems: Map<string, Record<string, unknown>>;
+  asyncInputs: CodexAsyncInputs;
   lastError: string | undefined;
   waitingForApproval: boolean;
   /**
@@ -441,6 +443,7 @@ export class CodexRuntime implements AgentBackend {
         }
       }
       this.#approvals.clear();
+      for (const thread of this.#threads.values()) thread.asyncInputs.close("disconnected");
       for (const pending of this.#permissionUpdates.values()) pending.reject(new Error("Codex 已断开，无法确认权限设置"));
       this.#permissionUpdates.clear();
       this.#effectiveSettings.clear();
@@ -563,6 +566,7 @@ export class CodexRuntime implements AgentBackend {
       modelName: undefined,
       permissions: this.#observedSettings.get(id),
       approvalItems: new Map(),
+      asyncInputs: new CodexAsyncInputs(this.runtimeIdFor(id), event => this.#emit(id, event)),
       lastError: undefined,
       waitingForApproval: false,
       reconcileGeneration: 0,
@@ -1280,6 +1284,7 @@ export class CodexRuntime implements AgentBackend {
     const thread = this.#threads.get(threadId);
     if (thread === undefined) return;
     const metadata = this.threadMetadata(thread);
+    thread.asyncInputs.close("owner_closed");
     this.#permissionUpdates.get(threadId)?.reject(new Error(reason));
     this.#effectiveSettings.delete(threadId);
     for (const [requestId, approval] of this.#approvals) {
@@ -1507,6 +1512,10 @@ export class CodexRuntime implements AgentBackend {
       rewritten || !previous.has(entry.entryId));
     thread.nativeSourceDirty = false;
     thread.lastNativeCheckAt = Date.now();
+    thread.asyncInputs.replace(turns.flatMap(turn => {
+      const items = object(turn).items;
+      return Array.isArray(items) ? items : [];
+    }));
     return true;
   }
 
@@ -1654,6 +1663,15 @@ export class CodexRuntime implements AgentBackend {
         return true;
       }
       case "interaction.respond": {
+        if (thread?.asyncInputs.has(command.requestId)) {
+          try {
+            if (command.extensionId !== "codex") throw new Error("提问不属于当前会话");
+            thread.asyncInputs.respond(command.requestId, command.response, commandId,
+              (text, messageId) => this.#sendAsyncAnswer(thread, text, messageId));
+            this.#publishInteractions(thread.id);
+          } catch (error) { this.#commandResult(thread.id, commandId, false, describeError(error)); }
+          return true;
+        }
         this.#resolveApproval(command, commandId, thread?.id);
         return true;
       }
@@ -2517,6 +2535,35 @@ export class CodexRuntime implements AgentBackend {
     );
   }
 
+  async #sendAsyncAnswer(thread: ThreadState, text: string, messageId: string): Promise<void> {
+    await this.#runNativeMutation(thread, async () => {
+      if (this.#desktopClientProtected.has(thread.id)) throw new Error("桌面刷新正在恢复，请稍后重试");
+      if (!thread.asyncInputs.has(messageId)) throw new Error("提问已失效，请刷新会话");
+      if (thread.turnInProgress) {
+        if (!thread.turnId) throw new Error("正在同步当前轮次，请稍后重试");
+        await this.#server.request("turn/steer", { threadId: thread.id, expectedTurnId: thread.turnId,
+          input: [{ type: "text", text }], clientUserMessageId: messageId });
+      } else {
+        // Do not nest #startTurn inside the native mutation lock.
+        ++thread.reconcileGeneration;
+        thread.turnStartPending = true;
+        thread.turnInProgress = true;
+        this.#publishMetadataEvent(thread);
+        try {
+          await this.#server.request("turn/start", { threadId: thread.id, input: [{ type: "text", text }],
+            clientUserMessageId: messageId,
+            ...(thread.model === undefined ? {} : { model: thread.model }),
+            ...(thread.effort === undefined ? {} : { effort: thread.effort }),
+          });
+        } catch (error) {
+          thread.turnInProgress = false;
+          this.#publishMetadataEvent(thread);
+          throw error;
+        } finally { thread.turnStartPending = false; }
+      }
+    });
+  }
+
   async #startTurnWithInput(thread: ThreadState, input: unknown[], clientUserMessageId?: string): Promise<void> {
     thread.turnStartPending = true;
     try {
@@ -2997,6 +3044,7 @@ export class CodexRuntime implements AgentBackend {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
         const data = item as Record<string, unknown>;
+        thread.asyncInputs.upsert(data);
         if ((data.type === "fileChange" || data.type === "commandExecution") && typeof data.id === "string") {
           thread.approvalItems.set(data.id, data);
         }
@@ -3096,6 +3144,7 @@ export class CodexRuntime implements AgentBackend {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
         const data = item as Record<string, unknown>;
+        thread.asyncInputs.upsert(data);
         if (data.type === "agentMessage" && thread.streamingMessageId === data.id) {
           thread.streamingMessageId = undefined;
         }
@@ -3329,8 +3378,11 @@ export class CodexRuntime implements AgentBackend {
   }
 
   #publishInteractions(threadId: string): void {
-    this.#emit(threadId, { type: "interaction.snapshot", requests: [...this.#approvals.values()]
-      .filter((a) => a.threadId === threadId).map((a) => ({ ...a.interaction.request, submitted: a.submitted !== undefined })) });
+    this.#emit(threadId, { type: "interaction.snapshot", requests: [
+      ...[...this.#approvals.values()].filter((a) => a.threadId === threadId)
+        .map((a) => ({ ...a.interaction.request, submitted: a.submitted !== undefined })),
+      ...(this.#threads.get(threadId)?.asyncInputs.snapshot() ?? []),
+    ].slice(0, 64) });
   }
 
   #reportError(thread: ThreadState, error: unknown): void {
@@ -3857,13 +3909,13 @@ function itemToMessage(item: Record<string, unknown>): ChatMessage | undefined {
   const timestamp = Date.now();
   switch (type) {
     case "userMessage": {
-      const text = extractContentText(item);
+      const text = codexQuestionReplyText(extractContentText(item));
       return { messageId: id, role: "user", content: [{ type: "text", text }], timestamp };
     }
     case "agentMessage":
       // 旧格式 rollout 的 AgentMessage 把文本放在 content[].type="Text"（大写 T）；
       // app-server v2 的在线 item/completed 用 item.text（字符串）。两种都兜。
-      return { messageId: id, role: "assistant", content: [{ type: "text", text: extractContentText(item) }], timestamp };
+      return { messageId: id, role: "assistant", content: [{ type: "text", text: codexAsyncQuestionText(item) || extractContentText(item) }], timestamp };
     case "reasoning":
       // Reasoning item 的摘要在 summary_text[]（字符串数组）；content/text 兜底。
       return { messageId: id, role: "assistant", content: [{ type: "thinking", text: extractReasoningText(item) }], timestamp };
