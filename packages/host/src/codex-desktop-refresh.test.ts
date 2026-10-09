@@ -147,6 +147,25 @@ describe("real desktop refresh driver", () => {
     expect(h.lifecycle).toEqual(["archive", "unarchive", "resume"]);
   });
 
+  it("accepts the GUI's queue read while confirming its reopened history", async () => {
+    const h = await harness();
+    await h.coordinator.start(h.operation);
+    h.gui("thread/queue/list", { threadId: "session" }, 13);
+    h.response(13, { data: [] });
+    h.hydrate();
+    expect((await h.coordinator.recover(h.operation.operationId)).status).toBe("complete");
+    expect(h.lifecycle).toEqual(["archive", "unarchive", "resume"]);
+    expect(await h.bridge.command({ ...h.operation, action: "inspect" })).toMatchObject({ conflict: false, guiReloaded: true });
+  });
+
+  it.each(["add", "update", "delete", "reorder", "start"])("still rejects a concurrent GUI queue %s", async action => {
+    const h = await harness();
+    await h.coordinator.start(h.operation);
+    h.gui(`thread/queue/${action}`, { threadId: "session" });
+    expect((await h.coordinator.recover(h.operation.operationId)).status).toBe("manual_required");
+    expect(h.lifecycle).toEqual(["archive", "unarchive", "resume"]);
+  });
+
   it("keeps an uncertain unarchive result for inspection instead of repeating the native mutation", async () => {
     const h = await harness();
     h.failUnarchive();
@@ -197,6 +216,22 @@ describe("real desktop refresh driver", () => {
 });
 
 describe("phone tree to desktop lifecycle", () => {
+  it("does not tell the phone to archive manually when GUI reopening queries its queue", async () => {
+    const h = await harness();
+    app.open.mockImplementation(async () => {
+      h.gui("thread/queue/list", { threadId: "session" }, 13);
+      h.response(13, { data: [] });
+      h.hydrate();
+    });
+    h.runtime.markStarted();
+    await vi.waitFor(() => expect(h.runtime.directoryEntries()).toHaveLength(1));
+    h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-queue", "session");
+    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-queue", ok: true })));
+    expect(h.lifecycle).toEqual(["resume", "revert", "archive", "unarchive", "resume"]);
+    expect((await h.journal.list())[0]).toMatchObject({ kind: "receipt", result: { status: "complete" } });
+    expect(h.events.filter(event => event.type === "runtime.error")).toEqual([]);
+  });
+
   it("wires real refresh after committed tree, retaining the mobile session throughout temporary archive", async () => {
     const h = await harness();
     h.runtime.markStarted();

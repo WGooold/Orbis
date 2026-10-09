@@ -152,7 +152,10 @@ export class CodexDesktopRefreshBridge {
     const params = object(frame.params);
     const threadId = params.threadId;
     if (typeof threadId !== "string") return;
-    if (typeof frame.method === "string" && (/^(turn\/|thread\/(archive|unarchive|delete|revert|queue\/))/.test(frame.method))) {
+    // The desktop reads its queue when reopening. A read cannot invalidate the
+    // refresh's ownership; actual queue edits and turn/lifecycle mutations still can.
+    if (typeof frame.method === "string" && frame.method !== "thread/queue/list"
+      && (/^(turn\/|thread\/(archive|unarchive|delete|revert|queue\/))/.test(frame.method))) {
       for (const operation of this.#operations.values()) if (operation.threadId === threadId) operation.conflict = true;
     }
     if ((frame.method === "thread/resume" || frame.method === "thread/read" || frame.method === "thread/turns/list" || frame.method === "thread/items/list")
