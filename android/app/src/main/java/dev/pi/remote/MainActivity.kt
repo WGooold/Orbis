@@ -101,8 +101,10 @@ import androidx.compose.material3.Text
 import dev.pi.remote.RemoteTopAppBar as TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -868,7 +870,7 @@ private fun OfflineHistoryScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
+internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState: LazyListState? = null) {
     val runtimeId = state.selectedRuntimeId ?: return
     val runtime = state.runtimes[runtimeId]
     val sessionId = runtime?.sessionId
@@ -905,7 +907,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
         it.runtimeId == runtimeId && (runtime == null || it.sessionId == runtime.sessionId)
     }
     val activeDownloadCount = runtimeDownloads.count { it.status == "queued" || it.status == "downloading" }
-    val listState = remember(runtimeId, sessionId) { LazyListState() }
+    val listState = scrollState ?: remember(runtimeId, sessionId) { LazyListState() }
+    val refreshTasksPending = state.sessionSyncCommands.values.any { it.runtimeId == runtimeId }
     val historyState = state.sessionHistory[runtimeId]
     val chatHeaderCount = listOf(
         runtime == null,
@@ -917,10 +920,17 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
     ).count { it }
     // A catch-up can connect a large cached prefix in one projection. LazyColumn's nearby-key
     // lookup may then lose the old row. Capture its key before the new list is laid out.
-    val projectionAnchor = remember(listState, chatItemKeys, chatHeaderCount, orphanTools.size, conversation.isChatSyncing) {
-        listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById }
-            ?.let { (it.key as String) to -it.offset }
+    val previousItemKeys = remember(runtimeId, sessionId) { mutableSetOf<String>() }
+    val projectionAnchor = remember(listState, chatItemKeys, chatHeaderCount, orphanTools.size, conversation.isChatSyncing, refreshTasksPending) {
+        listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById || it.key in previousItemKeys }
+            ?.let { Triple(it.key as String, it.index, -it.offset) }
     }
+    SideEffect {
+        previousItemKeys.clear()
+        previousItemKeys.addAll(chatItemKeys)
+    }
+    // Capture before a replacement is laid out, including when the new projection is empty.
+    val refreshStartAnchor = remember(runtimeId, sessionId, conversation.isChatSyncing) { projectionAnchor }
     var historyAnchorMessageId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     var historyAnchorIndex by remember(runtimeId, sessionId) { mutableStateOf<Int?>(null) }
     var historyAnchorPending by remember(runtimeId, sessionId) { mutableStateOf(false) }
@@ -1143,7 +1153,15 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
         return
     }
 
-    LaunchedEffect(runtimeId, sessionId, conversation.isChatSyncing, chatItemKeys, chatHeaderCount, orphanTools.size) {
+    LaunchedEffect(runtimeId, sessionId, conversation.isChatSyncing, chatItemKeys, chatHeaderCount, orphanTools.size, refreshTasksPending) {
+        if (conversation.isChatSyncing && initialPositioned && !refreshAnchorArmed && !followNewestAfterSync) {
+            refreshStartAnchor?.let { (key, index, offset) ->
+                refreshAnchorMessageId = key
+                refreshAnchorIndex = index
+                refreshAnchorOffset = offset
+                refreshAnchorArmed = true
+            }
+        }
         if (chatItems.isEmpty()) return@LaunchedEffect
         // Slow/error notices are list rows too. They cannot establish the initial chat anchor;
         // wait until an actual message row has been laid out before enabling history paging.
@@ -1152,18 +1170,6 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
                 layout.visibleItemsInfo.any { it.key in chatItemIndexById }
         }.totalItemsCount
         if (conversation.isChatSyncing) {
-            // A refresh replaces the visible conversation with a fresh projection. Capture the row
-            // the user is looking at here, not when the refresh is requested, so every round of a
-            // multi-round sync re-anchors and an externally requested sync cannot jump the list
-            // either. An explicit send opts out: it wants the newest row instead.
-            if (initialPositioned && !refreshAnchorArmed && !followNewestAfterSync) {
-                val firstVisible = listState.firstVisibleItemIndex
-                val anchor = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById }
-                refreshAnchorMessageId = anchor?.key as? String
-                refreshAnchorIndex = anchor?.index ?: firstVisible
-                refreshAnchorOffset = anchor?.let { -it.offset } ?: listState.firstVisibleItemScrollOffset
-                refreshAnchorArmed = true
-            }
             // A background catch-up can run for a long time. It must not keep the viewport
             // "unpositioned": that hid the jump-to-latest button for the whole sync. Still open
             // a freshly selected conversation on its newest message the first time items appear.
@@ -1186,7 +1192,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
             // A refresh completes in several rounds (preview, then catch-up pages). Stay pinned
             // until every sync for this runtime has finished so a later round cannot yank the list
             // to the newest message.
-            if (state.sessionSyncCommands.values.none { it.runtimeId == runtimeId }) {
+            if (!refreshTasksPending) {
                 refreshAnchorArmed = false
             }
             initialPositioned = true
@@ -1197,9 +1203,14 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel) {
         if (!initialPositioned || followNewestAfterSync) {
             listState.scrollToItem(itemCount - 1)
         } else if (!historyAnchorPending) {
-            projectionAnchor?.let { (key, offset) ->
+            projectionAnchor?.let { (key, _, offset) ->
                 chatItemIndexById[key]?.let { index ->
-                    listState.scrollToItem(chatHeaderCount + index, offset)
+                    // LazyColumn already preserves an unchanged visible key. Reposition only
+                    // when a large prefix replacement actually lost it, never on each tool update.
+                    val first = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById }
+                    if (!listState.isScrollInProgress && first?.key != key) {
+                        listState.scrollToItem(chatHeaderCount + index, offset)
+                    }
                 }
             }
         }
@@ -2840,15 +2851,17 @@ internal fun AssistantTurnCard(
                 turnTiming?.let { TurnStartLabel(it.startedAt) }
             }
             messages.forEach { message ->
-                AssistantTurnMessage(
-                    runtimeId = runtimeId,
-                    message = message,
-                    toolActivities = toolActivities,
-                    toolResults = toolResults,
-                    downloads = downloads,
-                    downloadArtifact = downloadArtifact,
-                    downloadFile = downloadFile,
-                )
+                key(runtimeId, message.messageId) {
+                    AssistantTurnMessage(
+                        runtimeId = runtimeId,
+                        message = message,
+                        toolActivities = toolActivities,
+                        toolResults = toolResults,
+                        downloads = downloads,
+                        downloadArtifact = downloadArtifact,
+                        downloadFile = downloadFile,
+                    )
+                }
             }
             turnTiming?.let { TurnDurationLabel(it, nowMs) }
         }
@@ -2897,7 +2910,8 @@ private fun MessageBlocks(
     downloadFile: (String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        message.content.forEach { block ->
+        message.content.forEachIndexed { index, block ->
+            key(block.toolCallId ?: "${message.messageId}:$index:${block.type}") {
             if (block.type == "artifact" && block.artifact != null) {
                 ArtifactCard(
                     artifact = block.artifact,
@@ -2925,6 +2939,7 @@ private fun MessageBlocks(
                         live = live,
                     )
                 }
+            }
             }
         }
     }
@@ -2978,7 +2993,7 @@ private fun formatByteCount(bytes: Long): String = when {
 
 @Composable
 private fun CollapsedThinking(text: String) {
-    var expanded by remember(text) { mutableStateOf(false) }
+    var expanded by rememberSaveable { mutableStateOf(false) }
     CompactDisclosure(
         icon = Icons.Rounded.Psychology,
         title = "思考",
@@ -2997,7 +3012,7 @@ private fun CollapsedTool(
     result: ChatMessage?,
     live: Boolean = false,
 ) {
-    var expanded by remember(toolName, arguments, result?.messageId) { mutableStateOf(false) }
+    var expanded by rememberSaveable { mutableStateOf(false) }
     val resultText = result?.content.orEmpty().mapNotNull { it.text }.joinToString("\n").trim()
     val detail = resultText.ifBlank { activity?.detail }
     val failed = activity?.isError == true || result?.isError == true

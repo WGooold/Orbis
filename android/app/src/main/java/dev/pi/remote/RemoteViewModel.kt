@@ -1431,7 +1431,12 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 val interactive = frame as InboundFrameLanes.InteractiveFrame
                 val payload = interactive.payload
                 val interactiveChannel = interactive.channel
-                if (isSessionSnapshotPayload(payload)) {
+                val incomingMessage = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
+                val sessionEvent = runCatching {
+                    incomingMessage?.takeIf { it["type"]?.jsonPrimitive?.contentOrNull == "runtime.event" }
+                        ?.get("event")?.jsonObject
+                }.getOrNull()
+                if (sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull == "session.snapshot") {
                     // 单帧失败不能让消费协程死掉（viewModelScope 里的未捕获异常会崩进程）。
                     runCatching { handleSessionSnapshotPayload(payload, currentGeneration) }
                         .onFailure { error ->
@@ -1443,15 +1448,38 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     relayStateLock.withLock {
                         if (currentGeneration != generation) return@withLock
                         val previous = mutableState.value
+                        val committedEntries = if (sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull == "session.patch") {
+                            val patch = runCatching { messageJson.decodeFromJsonElement<SessionPatch>(sessionEvent) }.getOrNull()
+                            val runtimeId = incomingMessage?.get("runtimeId")?.jsonPrimitive?.contentOrNull
+                            val pairedDevice = device
+                            if (patch != null && patch.entries.isNotEmpty() && runtimeId != null && pairedDevice != null &&
+                                previous.ownsSessionPatch(runtimeId, patch)
+                            ) {
+                                runCatching {
+                                    prepareSessionCache(pairedDevice, patch.sessionId, previous.runtimes[runtimeId]?.agentKind)
+                                    ingestSessionPatch(sessionGraphStore, pairedDevice, runtimeId, patch,
+                                        currentState = { mutableState.value },
+                                        connectionCurrent = { currentGeneration == generation && device == pairedDevice && shouldConnect })
+                                }.getOrElse { error ->
+                                    val failure = "Session 历史缓存写入失败：${error.message ?: "未知错误"}"
+                                    mutableState.value = previous.copy(
+                                        sessionSyncFailures = previous.sessionSyncFailures + (runtimeId to failure),
+                                        conversations = previous.conversations + (runtimeId to
+                                            (previous.conversations[runtimeId] ?: RuntimeConversation()).copy(chatSyncError = failure)),
+                                    )
+                                    return@withLock
+                                } ?: return@withLock
+                            } else null
+                        } else null
                         val artifactResult = runCatching { processArtifactPayload(payload) }
-                        runCatching { reducer.reduce(previous, payload, channel = interactiveChannel) }
+                        runCatching { reducer.reduce(previous, payload, committedEntries, channel = interactiveChannel) }
                             .onFailure { error ->
                                 // reducer 抛异常过去是**静默吞掉**的：界面会永远停在「正在连接」，
                                 // 而现场没有任何线索。宁可吵也不能哑。
                                 Log.e(RELOAD_TRACE_TAG, "reducer.failed ${error::class.simpleName}: ${error.message}", error)
                             }
                             .onSuccess { reduced ->
-                                val message = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
+                                val message = incomingMessage
                                 val messageType = message?.get("type")?.jsonPrimitive?.contentOrNull
                                 val protocolCode = message?.get("code")?.jsonPrimitive?.contentOrNull
                                 if (interactiveChannel != null && messageType == "provider.changed") {
@@ -1712,12 +1740,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             mutableState.value = mutableState.value.copy(error = HANDSHAKE_STALLED_ERROR)
         }
     }
-
-    private fun isSessionSnapshotPayload(payload: String): Boolean = runCatching {
-        val message = messageJson.parseToJsonElement(payload).jsonObject
-        message["type"]?.jsonPrimitive?.contentOrNull == "runtime.event" &&
-            message["event"]?.jsonObject?.get("type")?.jsonPrimitive?.contentOrNull == "session.snapshot"
-    }.getOrDefault(false)
 
     /**
      * Session snapshots cross the canonical store before replacing the stable projection. This

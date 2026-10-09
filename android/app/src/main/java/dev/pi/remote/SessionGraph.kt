@@ -85,6 +85,12 @@ data class SessionPatch(
     val head: SessionBranchCursor,
     val headCompleteness: String,
     val live: SessionLiveState,
+    val entries: List<SessionGraphEntry> = emptyList(),
+)
+
+/** Cache supplementation only; the version gate, not this page, owns the active head. */
+internal fun SessionPatch.canonicalPage(entries: List<SessionGraphEntry> = this.entries) = SessionGraphSnapshot(
+    sessionId, checkpointId, SessionBranchCursor(), "prepend", entries,
 )
 
 @Serializable
@@ -407,7 +413,7 @@ private data class PiMessageProjection(
 
 private fun PiMessageProjection.toChatMessage(messageId: String, failure: String? = null): ChatMessage? {
     if (role == "custom" && display == false) return null
-    if (role !in setOf("user", "assistant", "toolResult", "custom", "bashExecution")) return null
+    if (role !in setOf("user", "assistant", "toolResult", "tool", "custom", "bashExecution")) return null
     val blocks = if (role == "bashExecution") {
         val shellOutput = buildString {
             command?.takeIf(String::isNotBlank)?.let { append("$ ").append(it) }
@@ -424,7 +430,8 @@ private fun PiMessageProjection.toChatMessage(messageId: String, failure: String
             val obj = raw as? JsonObject ?: return@flatMap emptyList()
             when (obj["type"]?.jsonPrimitive?.contentOrNull) {
                 "text" -> listOf(RemoteContent(type = "text", text = obj["text"]?.jsonPrimitive?.contentOrNull.orEmpty()))
-                "thinking" -> listOf(RemoteContent(type = "thinking", text = obj["thinking"]?.jsonPrimitive?.contentOrNull.orEmpty()))
+                "thinking" -> listOf(RemoteContent(type = "thinking", text =
+                    obj["thinking"]?.jsonPrimitive?.contentOrNull ?: obj["text"]?.jsonPrimitive?.contentOrNull.orEmpty()))
                 "toolCall", "tool_call" -> listOf(RemoteContent(
                     type = "tool_call",
                     toolCallId = obj["toolCallId"]?.jsonPrimitive?.contentOrNull
@@ -451,7 +458,7 @@ private fun PiMessageProjection.toChatMessage(messageId: String, failure: String
         messageId = messageId,
         role = when (role) {
             "user", "assistant" -> role
-            "toolResult" -> "tool"
+            "toolResult", "tool" -> "tool"
             "custom" -> "custom"
             "bashExecution" -> "system"
             else -> return null

@@ -157,6 +157,83 @@ class SessionSourceRecoveryTest {
         assertEquals("2", conversation.messages.single().content.single().text)
     }
 
+    @Test fun `tool commit installs canonical entries before removing live without display recovery`() {
+        val root = entry("root")
+        val call = row("tool").copy(content = listOf(RemoteContent("tool_call", toolCallId = "tool", toolName = "bash")))
+        val result = row("tool:result", "complete output").copy(role = "tool", toolCallId = "tool")
+        fun canonical(message: ChatMessage, parent: String) = SessionGraphEntry(message.messageId, parent, "message", "1",
+            buildJsonObject { put("message", json.encodeToJsonElement(ChatMessage.serializer(), message)) })
+        val current = initial("root").copy(
+            sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("root" to root))),
+            conversations = mapOf("runtime" to initial("root").conversations.getValue("runtime").copy(
+                messages = listOf(row("root"), call), streamingMessageIds = setOf("tool"))),
+        )
+        val commit = patch(2, head = "tool:result").copy(
+            entries = listOf(canonical(call, "root"), canonical(result, "tool")),
+            live = SessionLiveState(true, turn = SessionLiveTurn("turn", 1)),
+        )
+        val changed = receive(current, commit)
+        val conversation = changed.conversations.getValue("runtime")
+        assertEquals(listOf("root", "tool", "tool:result"), conversation.messages.map(ChatMessage::messageId))
+        assertEquals(listOf("root", "tool"), buildConversationPresentation(conversation.messages).messages.map(ChatMessage::messageId))
+        assertEquals("complete output", buildConversationPresentation(conversation.messages).toolResults.getValue("tool").content.single().text)
+        assertFalse(conversation.isChatSyncing)
+        assertTrue(conversation.hasLiveSnapshot)
+        assertTrue(conversation.streamingMessageIds.isEmpty())
+        assertFalse("runtime" in changed.sessionSyncRequests)
+        assertEquals("turn", conversation.activeTurnId)
+    }
+
+    @Test fun `out of order commit entries supplement cache without bypassing source version gate`() {
+        val current = initial("root").copy(sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("root" to entry("root")))))
+        val waiting = receive(current, patch(3, head = "b").copy(entries = listOf(entry("b", "a"))))
+        assertEquals(1L, waiting.conversations.getValue("runtime").sourceSeq)
+        assertEquals("root", waiting.runtimeSessionViews.getValue("runtime").leafId)
+        assertTrue("b" in waiting.sessionGraphs.getValue("session").entries)
+        val recovered = receive(waiting, patch(2, head = "a").copy(entries = listOf(entry("a", "root"))), sequence = 4)
+        assertEquals(3L, recovered.conversations.getValue("runtime").sourceSeq)
+        assertEquals(listOf("root", "a", "b", "live"), recovered.conversations.getValue("runtime").messages.map(ChatMessage::messageId))
+        assertFalse(recovered.conversations.getValue("runtime").isChatSyncing)
+    }
+
+    @Test fun `canonical thinking keeps the first assistant card identity after commit`() {
+        val thinking = row("thinking").copy(content = listOf(RemoteContent("thinking", "full thought")))
+        val canonical = SessionGraphEntry("thinking", null, "message", "1", buildJsonObject {
+            put("message", json.encodeToJsonElement(ChatMessage.serializer(), thinking))
+        })
+        val current = initial().copy(conversations = mapOf("runtime" to initial().conversations.getValue("runtime").copy(
+            messages = listOf(thinking), streamingMessageIds = setOf("thinking"))))
+        val changed = receive(current, patch(2, head = "thinking").copy(entries = listOf(canonical), live = SessionLiveState(true)))
+        val shown = buildChatListItems(buildConversationPresentation(changed.conversations.getValue("runtime").messages).messages)
+        assertEquals("thinking", shown.single().key)
+        assertEquals(thinking.content, changed.conversations.getValue("runtime").messages.single().content)
+        assertFalse(changed.conversations.getValue("runtime").isChatSyncing)
+    }
+
+    @Test fun `conflicting commit rejects the entire display transition`() {
+        val current = initial("root").copy(sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("root" to entry("root")))))
+        val changed = receive(current, patch(2, head = "next").copy(entries = listOf(entry("next", "root"), entry("root", "different"))))
+        assertEquals(current.sessionGraphs, changed.sessionGraphs)
+        assertEquals(current.runtimeSessionViews, changed.runtimeSessionViews)
+        assertEquals(1L, changed.conversations.getValue("runtime").sourceSeq)
+        assertEquals(current.conversations.getValue("runtime").messages, changed.conversations.getValue("runtime").messages)
+        assertTrue("runtime" in changed.sessionSyncFailures)
+    }
+
+    @Test fun `forward commit retains paged ancestors while rewind removes them`() {
+        val base = initial("root")
+        val current = base.copy(sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("root" to entry("root")))),
+            conversations = mapOf("runtime" to base.conversations.getValue("runtime").copy(
+                messages = listOf(row("paged"), row("root"), row("live")))))
+        val advanced = receive(current, patch(2, head = "next").copy(entries = listOf(entry("next", "root"))))
+        assertEquals(listOf("paged", "root", "next", "live"), advanced.conversations.getValue("runtime").messages.map(ChatMessage::messageId))
+        val rewound = receive(advanced, patch(3, head = "root"))
+        assertEquals(listOf("root", "live"), rewound.conversations.getValue("runtime").messages.map(ChatMessage::messageId))
+        val late = receive(rewound, patch(2, head = "next").copy(entries = listOf(entry("next", "root"))), sequence = 4)
+        assertEquals(rewound.conversations, late.conversations)
+        assertEquals("root", late.runtimeSessionViews.getValue("runtime").leafId)
+    }
+
     @Test fun `metadata cannot revert a versioned source head`() {
         val current = initial("current")
         val changed = reducer.reduce(current, """{"type":"runtime.event","runtimeId":"runtime","sequence":1,"event":{

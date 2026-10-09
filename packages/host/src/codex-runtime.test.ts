@@ -171,6 +171,8 @@ describe("Codex recoverable source checkpoints", () => {
     expect(patches[0]).toMatchObject({
       head: { leafId: "tool:result" }, live: { messages: [], tools: [] },
     });
+    expect(patches[0]?.entries?.map(entry => entry.entryId)).toEqual(["tool", "tool:result"]);
+    expect(patches[0]?.entries?.[1]?.parentId).toBe("tool");
     expect(syncHistory(h)?.entries.map(entry => entry.entryId)).toEqual(["tool", "tool:result"]);
   });
 
@@ -189,7 +191,36 @@ describe("Codex recoverable source checkpoints", () => {
     const patches = h.events.filter(event => event.type === "session.patch");
     expect(patches).toHaveLength(1);
     expect(patches[0]).toMatchObject({ head: { leafId: "b:result" }, live: { messages: [], tools: [] } });
+    expect(patches[0]?.entries?.map(entry => entry.entryId)).toEqual(["a", "b", "b:result"]);
     expect(syncHistory(h)?.entries.map(entry => entry.entryId)).toEqual(["a", "b", "b:result"]);
+  });
+
+  it("sends each committed node once and keeps output updates free of canonical payloads", async () => {
+    const h = makeHarness();
+    await activate(h);
+    h.notify("item/started", { threadId: "th-1", item: tool("a") });
+    h.notify("item/completed", { threadId: "th-1", item: tool("a", "completed") });
+    h.notify("item/started", { threadId: "th-1", item: tool("b") });
+    h.events.length = 0;
+    h.notify("item/commandExecution/outputDelta", { threadId: "th-1", itemId: "b", delta: "output" });
+    expect(h.events.filter(event => event.type === "session.patch").at(-1)?.entries).toBeUndefined();
+    h.notify("item/completed", { threadId: "th-1", item: tool("b", "completed") });
+    const committed = h.events.filter(event => event.type === "session.patch").at(-1);
+    expect(committed?.entries?.map(entry => entry.entryId)).toEqual(["b", "b:result"]);
+    expect(committed?.entries?.[0]?.parentId).toBe("a:result");
+  });
+
+  it("recovers oversized commits through sync without truncating canonical tool output", async () => {
+    const h = makeHarness();
+    await activate(h);
+    const output = "x".repeat(300 * 1024);
+    h.notify("item/started", { threadId: "th-1", item: tool("large") });
+    h.notify("item/completed", { threadId: "th-1", item: { ...tool("large", "completed"), output } });
+    const committed = h.events.filter(event => event.type === "session.patch").at(-1);
+    expect(committed).toMatchObject({ head: { leafId: "large:result" } });
+    expect(committed?.entries).toBeUndefined();
+    const snapshot = syncHistory(h);
+    expect(JSON.stringify(snapshot?.entries)).toContain(output);
   });
 
   it("preserves running items with unknown native completion and marks unknown turn time", async () => {

@@ -54,4 +54,16 @@ describe("source state contract", () => {
       expect(schema.safeParse({ ...patch, baseSeq: 11 }).success).toBe(false);
     }
   });
+
+  it("accepts bounded canonical commits in the same state transaction", () => {
+    const entry = { entryId: "tool", parentId: null, type: "message", timestamp: "1", data: {} };
+    const patch = { type: "session.patch", sessionId: "session", source: source.version,
+      baseSeq: 9, seq: 10, checkpointId: "capture-10", head: { leafId: "tool" },
+      headCompleteness: "complete", live: source.live, entries: [entry] };
+    for (const schema of [SessionPatchSchema, RuntimeEventSchema]) {
+      expect(schema.safeParse(patch).success).toBe(true);
+      expect(schema.safeParse({ ...patch, entries: [{ ...entry, entryId: "" }] }).success).toBe(false);
+      expect(schema.safeParse({ ...patch, entries: Array(257).fill(entry) }).success).toBe(false);
+    }
+  });
 });

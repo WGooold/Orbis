@@ -581,6 +581,8 @@ export const SessionPatchSchema = z.strictObject({
   head: SessionBranchCursorSchema,
   headCompleteness: z.enum(["complete", "unknown"]),
   live: SessionLiveStateSchema,
+  /** Immutable nodes committed by this transition; ingest before switching head/live. */
+  entries: z.array(RemoteSessionEntrySchema).max(256).optional(),
 }).refine(patch => patch.source.seq === patch.seq && patch.baseSeq < patch.seq, {
   message: "Source patch must advance from baseSeq to the matching source sequence",
 });

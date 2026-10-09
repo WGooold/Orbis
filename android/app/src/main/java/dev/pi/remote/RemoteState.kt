@@ -1280,8 +1280,10 @@ private fun RuntimeConversation.applyCompleteSourceState(
     val headAvailable = head.leafId == null || head.leafId in graph.entries
     val projection = if (!headAvailable) SessionProjectionResult(emptyList())
         else projectSessionGraph(graph.copy(cursor = head), sessionMessageJson)
-    // Retain previously paged canonical ancestors only when the authoritative head did not move.
-    val canonical = if (sourceEpoch == source.epoch && sourceHeadLeafId == head.leafId && headAvailable) {
+    // A proven forward append keeps older paged ancestors just like an unchanged head. A rewind
+    // or another branch must still remove rows outside its authoritative path.
+    val sameBranch = sourceHeadLeafId == head.leafId || graph.isDescendant(head.leafId, sourceHeadLeafId)
+    val canonical = if (sourceEpoch == source.epoch && sameBranch && headAvailable) {
         mergeTemporaryOlderMessages(projection, graph, messages.filterNot { it.messageId in streamingMessageIds })
     } else projection
     return applyProjection(canonical, keepLiveTiming = false)
@@ -1896,6 +1898,23 @@ class RelayReducer(
                 if (activeSessionId != null && activeSessionId != patch.sessionId) {
                     return state
                 }
+                if (runtimeId in state.sessionSyncFailures) return state.copy(
+                    lastSequence = state.lastSequence + (sequenceKey to sequence),
+                )
+                val graph = if (patch.source.epoch !in conversation.retiredSourceEpochs &&
+                    (patch.source.epoch != conversation.sourceEpoch || patch.seq > conversation.sourceSeq)
+                ) {
+                    runCatching {
+                        (state.sessionGraphs[patch.sessionId] ?: SessionGraph(patch.sessionId))
+                            .merge(patch.canonicalPage(persistedSessionEntries ?: patch.entries))
+                    }.getOrElse { error ->
+                        val failure = "Session 历史缓存写入失败：${error.message ?: "无效条目"}"
+                        return state.copy(
+                            sessionSyncFailures = state.sessionSyncFailures + (runtimeId to failure),
+                            conversations = state.conversations + (runtimeId to conversation.copy(chatSyncError = failure)),
+                        )
+                    }.also { nextSessionGraphs = nextSessionGraphs + (patch.sessionId to it) }
+                } else state.sessionGraphs[patch.sessionId] ?: SessionGraph(patch.sessionId)
                 fun requestRecovery(next: RuntimeConversation): Unit {
                     nextConversation = next.copy(isChatSyncing = true, chatSyncError = null)
                     nextSessionSyncRequests = state.sessionSyncRequests + runtimeId
@@ -1943,7 +1962,7 @@ class RelayReducer(
                 } else {
                     val buffered = boundedSourcePatches(conversation.sourcePatchBuffer + (patch.seq to patch))
                     val applied = conversation.copy(sourcePatchBuffer = buffered).replaySourcePatches(
-                        patch.sessionId, state.sessionGraphs[patch.sessionId] ?: SessionGraph(patch.sessionId),
+                        patch.sessionId, graph,
                     )
                     // Overflow also requires recovery even if retaining the earliest contiguous
                     // prefix temporarily emptied the bounded buffer.

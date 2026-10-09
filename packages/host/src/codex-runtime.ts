@@ -28,7 +28,7 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { selectSessionSyncSnapshot } from "@pi-remote/protocol";
+import { selectSessionSyncSnapshot, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES } from "@pi-remote/protocol";
 
 import type {
   AgentKind,
@@ -295,6 +295,7 @@ type ThreadState = {
   sourceEpoch: string;
   sourceSeq: number;
   sourceReady: boolean;
+  sourceCommittedEntries: RemoteSessionEntry[];
   liveMessages: Map<string, SessionLiveMessage>;
   liveTools: Map<string, SessionLiveTool>;
 };
@@ -582,6 +583,7 @@ export class CodexRuntime implements AgentBackend {
       sourceEpoch: randomUUID(),
       sourceSeq: 0,
       sourceReady: false,
+      sourceCommittedEntries: [],
       liveMessages: new Map(),
       liveTools: new Map(),
     };
@@ -1347,6 +1349,7 @@ export class CodexRuntime implements AgentBackend {
     const previous = new Map(thread.entries.map((entry) => [entry.entryId, entry]));
     const prior = {
       entries: thread.entries,
+      sourceCommittedEntries: thread.sourceCommittedEntries,
       itemOrder: thread.itemOrder,
       committedItemCount: thread.committedItemCount,
       completedItems: thread.completedItems,
@@ -1362,6 +1365,7 @@ export class CodexRuntime implements AgentBackend {
       persistedMessageMappings: thread.persistedMessageMappings,
     };
     thread.entries = [];
+    thread.sourceCommittedEntries = [];
     delete thread.historyError;
     thread.itemOrder = [];
     // Replace mutable indexes instead of clearing them in place. `prior` keeps the old Map
@@ -1463,6 +1467,7 @@ export class CodexRuntime implements AgentBackend {
       // A conflict is diagnostic state, not permission to replace the last known good
       // graph. Keep the old graph available for retry and make the error observable.
       thread.entries = prior.entries;
+      thread.sourceCommittedEntries = prior.sourceCommittedEntries;
       thread.itemOrder = prior.itemOrder;
       thread.committedItemCount = prior.committedItemCount;
       thread.completedItems = prior.completedItems;
@@ -1483,6 +1488,7 @@ export class CodexRuntime implements AgentBackend {
     for (const id of thread.turnOrder) thread.retiredTurnIds.delete(id);
     for (const id of thread.itemOrder) thread.retiredItemIds.delete(id);
     thread.nativeHistorySignature = resultText(turns, true);
+    thread.sourceCommittedEntries = thread.sourceCommittedEntries.filter(entry => !previous.has(entry.entryId));
     thread.nativeSourceDirty = false;
     thread.lastNativeCheckAt = Date.now();
     return true;
@@ -3398,7 +3404,10 @@ export class CodexRuntime implements AgentBackend {
           thread.historyError = "canonical_entry_conflict";
           return;
         }
-      } else entries.push(entry);
+      } else {
+        entries.push(entry);
+        thread.sourceCommittedEntries.push(entry);
+      }
       // 知道这个条目属于哪一轮，历史树上的「从这里继续」才能换算成 revert 的轮次边界。
       if (typeof turnId === "string" && turnId.length > 0) {
         thread.entryTurns.set(part.entryId, turnId);
@@ -3429,7 +3438,9 @@ export class CodexRuntime implements AgentBackend {
   /** Publish a complete versioned live projection. Missing or late patches are recoverable via sync. */
   #publishSourcePatch(thread: ThreadState): void {
     const source = this.#sourceCheckpoint(thread);
-    this.#emit(thread.id, {
+    const committed = thread.sourceCommittedEntries;
+    thread.sourceCommittedEntries = [];
+    const patch: Extract<RuntimeEvent, { type: "session.patch" }> = {
       type: "session.patch",
       sessionId: this.#publicSessionId(thread.id),
       source: source.version,
@@ -3439,7 +3450,16 @@ export class CodexRuntime implements AgentBackend {
       head: { leafId: source.version.ready ? thread.entries.at(-1)?.entryId ?? null : null },
       headCompleteness: source.checkpoint.headCompleteness,
       live: source.live,
-    });
+    };
+    // A normal commit hands live content to canonical storage in one transaction. Large native
+    // replays still use bounded checkpoint/pages; never truncate an immutable Entry to fit here.
+    if (source.version.ready && committed.length > 0 && committed.length <= 256) {
+      const withEntries = { ...patch, entries: committed };
+      if (Buffer.byteLength(JSON.stringify(withEntries), "utf8") + SESSION_SYNC_WRAPPER_BYTES <= SESSION_SYNC_PAGE_BYTES) {
+        patch.entries = committed;
+      }
+    }
+    this.#emit(thread.id, patch);
   }
 
   #setLiveMessage(thread: ThreadState, value: SessionLiveMessage): void {

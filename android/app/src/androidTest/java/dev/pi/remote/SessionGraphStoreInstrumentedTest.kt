@@ -555,4 +555,39 @@ class SessionGraphStoreInstrumentedTest {
         assertEquals(SessionGraphRangeStatus.MISSING_PARENT, partial.status)
     }
 
+    @Test
+    fun sourceCommitUsesCanonicalTransactionBeforeDisplayAndRejectsConflicts() {
+        val root = entry("root", null)
+        store.upsert(device, "s", listOf(root), leafId = "root")
+        val state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "running", "s")),
+            conversations = mapOf("r" to RuntimeConversation(sourceEpoch = "epoch", sourceSeq = 1)),
+            sessionGraphs = mapOf("s" to SessionGraph("s", mapOf("root" to root))))
+        val patch = SessionPatch(sessionId = "s", source = SessionSourceEpoch("epoch", 2, true), baseSeq = 1, seq = 2,
+            checkpointId = "epoch:2", head = SessionBranchCursor("result"), headCompleteness = "complete",
+            live = SessionLiveState(true), entries = listOf(entry("call", "root"), entry("result", "call")))
+        val persisted = ingestSessionPatch(store, device, "r", patch, { state }, { true })
+        assertEquals(patch.entries, persisted)
+        assertTrue(store.hasContinuousCoverage(device, "s", "result"))
+        val conflicted = patch.copy(entries = listOf(entry("new", "result"), entry("root", "wrong-parent")))
+        val failure = runCatching { ingestSessionPatch(store, device, "r", conflicted, { state }, { true }) }
+        assertTrue(failure.isFailure)
+        assertFalse(store.contains(device, "s", "new"))
+        assertEquals(root, store.readEntries(device, "s", listOf("root")).single())
+    }
+
+    @Test
+    fun staleSourceCommitCannotEnterCanonicalCache() {
+        val state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "running", "s")),
+            conversations = mapOf("r" to RuntimeConversation(sourceEpoch = "epoch", sourceSeq = 1, retiredSourceEpochs = setOf("retired"))))
+        val patch = SessionPatch(sessionId = "s", source = SessionSourceEpoch("epoch", 2, true), baseSeq = 1, seq = 2,
+            checkpointId = "epoch:2", head = SessionBranchCursor("new"), headCompleteness = "complete",
+            live = SessionLiveState(true), entries = listOf(entry("new", null)))
+        assertEquals(null, ingestSessionPatch(store, device, "r", patch, { state }, { false }))
+        assertEquals(null, ingestSessionPatch(store, device, "r", patch.copy(sessionId = "other"), { state }, { true }))
+        assertEquals(null, ingestSessionPatch(store, device, "r", patch.copy(source = SessionSourceEpoch("retired", 2, true)), { state }, { true }))
+        assertEquals(null, ingestSessionPatch(store, device, "r", patch, { state.copy(conversations = mapOf("r" to
+            state.conversations.getValue("r").copy(sourceSeq = 2))) }, { true }))
+        assertFalse(store.contains(device, "s", "new"))
+    }
+
 }

@@ -91,6 +91,8 @@ changes
 - 正文 append 只有在本地版本恰好等于 `baseSeq` 时才能执行；对不存在的对象不能盲目创建后缀。最初创建带完整实体，后续可带 delta，也可用完整实体 upsert。
 - turn、工具完成、计时信息不再依赖另一条通知先到。ctl 上的运行状态可用于目录提示，不能清除这套状态中的 turn、live 或映射。
 
+状态事务可附带有界的不可变 `entries`（最多 256 个，Codex adapter 将整个事务限制在正常页预算内）。手机复用 canonical ingestion 校验并提交 SQLite 后，才整体应用该版本的 head/live；正常 commit 因此不会先删除 live、再等待另一轮 preview。超预算时不截断 Entry，继续通过 checkpoint/pages 恢复；乱序事务中的节点可以补缓存，但不能绕过版本门槛移动当前状态。该字段是协议 v9 的可选补充，缺省仍使用原有恢复路径。
+
 外层加密/传输 sequence 继续服务现有传输安全与调度；不拿它充当 `seq`，也不放松现有重放保护。
 
 同 epoch 的旧事务幂等忽略；未来事务存在缺口时缓冲并恢复。不比较 UUID 的大小来判断 epoch 新旧：只有当前连接/恢复任务确认的源端握手能建立新 epoch，旧任务响应不能把 epoch 切回去。
