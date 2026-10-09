@@ -164,7 +164,7 @@ void HostController::receiveLine(const QJsonObject &line) {
     } else {
         const auto event = line.value("event").toString();
         if (event == "state") { m_state = line.value("state").toString(); if (m_state == "error") m_desiredRunning = false; if (line.contains("message")) setMessage(line.value("message").toString()); }
-        else if (event == "log") appendLog(line.value("message").toString());
+        else if (event == "log") { appendLog(line.value("message").toString()); return; }
         else if (event == "providersChanged" && line.value("kind").toString() == m_providerKind) loadProviders(m_providerKind);
         else if (event == "agentInstall") {
             m_agentInstallKind = line.value("kind").toString();
@@ -500,7 +500,7 @@ QString HostController::diagnostics() const {
         for (const auto &key : {"path", "entry", "error", "installations", "copies"}) agent.remove(key);
         agents.append(agent);
     }
-    QJsonObject result{{"version", version()}, {"state", m_state}, {"activated", activated()}, {"devices", m_devices.size()}, {"agents", agents}, {"codexDesktop", QJsonObject::fromVariantMap(m_codexDesktop)}, {"logs", QJsonArray::fromStringList(m_logs)}};
+    QJsonObject result{{"version", version()}, {"state", m_state}, {"activated", activated()}, {"devices", m_devices.size()}, {"agents", agents}, {"codexDesktop", QJsonObject::fromVariantMap(m_codexDesktop)}, {"logs", QJsonArray::fromStringList(m_logs.snapshot())}};
     return QString::fromUtf8(QJsonDocument(result).toJson());
 }
 void HostController::copyDiagnostics() { QApplication::clipboard()->setText(diagnostics()); setMessage("脱敏诊断信息已复制"); }
@@ -662,8 +662,6 @@ void HostController::appendLog(QString message) {
     message.replace(QDir::toNativeSeparators(QDir::homePath()), "[user]", Qt::CaseInsensitive);
     if (!m_credential.isEmpty()) message.replace(m_credential, "[credential]");
     m_logs.append(QDateTime::currentDateTime().toString("HH:mm:ss") + "  " + message.left(1500));
-    while (m_logs.size() > 300) m_logs.removeFirst();
-    emit changed();
 }
 void HostController::shutdown() {
     if (m_shutdown) return;

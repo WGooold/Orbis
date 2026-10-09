@@ -924,7 +924,12 @@ ApplicationWindow {
                             ColumnLayout {
                                 anchors.fill: parent; spacing: 16
                                 Heading { text: "本次运行日志" }
-                                SoftTextArea { text: host.logs || "暂无日志"; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; color: "#50617b"; font.family: "Consolas"; font.pixelSize: 12; Layout.fillWidth: true }
+                                Loader {
+                                    active: window.visible && window.page === 4
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 320
+                                    sourceComponent: DiagnosticLogView { logModel: host.logModel }
+                                }
                             }
                         }
                     }

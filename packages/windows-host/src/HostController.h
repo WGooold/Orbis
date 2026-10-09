@@ -9,6 +9,7 @@
 #include <QVariantList>
 #include <QHash>
 #include <functional>
+#include "DiagnosticLogModel.h"
 
 class HostController : public QObject {
     Q_OBJECT
@@ -25,7 +26,7 @@ class HostController : public QObject {
     Q_PROPERTY(QString hostId READ hostId NOTIFY changed)
     Q_PROPERTY(QString qr READ qr NOTIFY changed)
     Q_PROPERTY(QString appDownloadQr READ appDownloadQr NOTIFY changed)
-    Q_PROPERTY(QString logs READ logs NOTIFY changed)
+    Q_PROPERTY(QAbstractItemModel *logModel READ logModel CONSTANT)
     Q_PROPERTY(QString version READ version CONSTANT)
     Q_PROPERTY(bool hostUpdateAvailable READ hostUpdateAvailable NOTIFY changed)
     Q_PROPERTY(QString hostUpdateVersion READ hostUpdateVersion NOTIFY changed)
@@ -68,7 +69,7 @@ public:
     QString hostId() const { return m_hostId; }
     QString qr() const { return m_qr; }
     QString appDownloadQr() const { return m_appDownloadQr; }
-    QString logs() const { return m_logs.join('\n'); }
+    QAbstractItemModel *logModel() { return &m_logs; }
     QString version() const { return ORBIS_VERSION; }
     bool hostUpdateAvailable() const { return !m_updateVersion.isEmpty() && !m_updateInstallerUrl.isEmpty() && !m_updateChecksumUrl.isEmpty(); }
     QString hostUpdateVersion() const { return m_updateVersion; }
@@ -188,7 +189,7 @@ private:
     QHash<int, QJsonObject> m_requestParams;
     int m_draftGeneration = 0;
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_challenge, m_challengeEmail;
-    QStringList m_logs;
+    DiagnosticLogModel m_logs;
     QVariantList m_devices, m_agents;
     QVariantMap m_codexDesktop;
     QString m_agentInstallKind, m_agentInstallStage, m_agentInstallVersion;
