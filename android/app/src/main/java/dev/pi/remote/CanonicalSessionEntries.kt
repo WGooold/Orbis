@@ -6,11 +6,12 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 
 /** One validation rule for SQLite and the bounded in-memory canonical tree. Missing parents are
- * allowed; an existing identity can never be rewritten by a display mode or arrival order. */
+ * allowed. Versioned authority may correct cached rows; display mode alone cannot. */
 internal fun validateCanonicalEntries(
     incoming: Collection<SessionGraphEntry>,
     lookup: (String) -> SessionGraphEntry?,
     parentOf: (String) -> String? = { lookup(it)?.parentId },
+    authoritative: Boolean = false,
 ): Map<String, SessionGraphEntry> {
     val received = linkedMapOf<String, SessionGraphEntry>()
     for (entry in incoming) {
@@ -21,7 +22,7 @@ internal fun validateCanonicalEntries(
         val duplicate = received.putIfAbsent(entry.entryId, entry)
         require(duplicate == null || duplicate == entry) { "entry_conflict" }
         val existing = lookup(entry.entryId)
-        require(existing == null || existing == entry) { "entry_conflict" }
+        require(authoritative || existing == null || existing == entry) { "entry_conflict" }
     }
     val checked = mutableSetOf<String>()
     for (id in received.keys) {

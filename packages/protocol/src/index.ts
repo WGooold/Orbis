@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const PROTOCOL_VERSION = 9 as const;
+export const PROTOCOL_VERSION = 10 as const;
 export const ARTIFACT_CHUNK_BYTES = 1024 * 1024;
 
 /**
@@ -751,6 +751,9 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
     live: SessionLiveStateSchema.optional(),
   }).refine(snapshot => {
     const count = [snapshot.source, snapshot.checkpoint, snapshot.live].filter(value => value !== undefined).length;
+    if (snapshot.range === "history" || snapshot.range === "catchup") {
+      return snapshot.checkpoint === undefined && snapshot.live === undefined;
+    }
     return count === 0 || (count === 3 && snapshot.range === "preview" &&
       snapshot.checkpoint!.inventoryComplete === snapshot.live!.complete);
   }, { message: "A state checkpoint requires source, head, and matching live inventory; only preview carries current state" }),

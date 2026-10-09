@@ -10,6 +10,8 @@ import org.junit.Test
 class SessionSourceRecoveryTest {
     private val json = Json { encodeDefaults = true }
     private val reducer = RelayReducer()
+    private fun cachedGraph(sessionId: String, entries: Map<String, SessionGraphEntry>, cursor: SessionBranchCursor = SessionBranchCursor()) =
+        SessionGraph(sessionId, entries, cursor, cacheEpoch = "epoch")
     private fun row(id: String, text: String = id) = ChatMessage(id, "assistant", listOf(RemoteContent("text", text)), 1)
     private fun entry(id: String, parent: String? = null) = SessionGraphEntry(id, parent, "message", "1", buildJsonObject {
         put("message", json.encodeToJsonElement(ChatMessage.serializer(), row(id)))
@@ -32,16 +34,40 @@ class SessionSourceRecoveryTest {
     private fun receive(state: RemoteState, patch: SessionPatch, sequence: Long = patch.seq): RemoteState = reducer.reduce(
         state, """{"type":"runtime.event","runtimeId":"runtime","sequence":$sequence,"event":${json.encodeToString(patch)}}""",
     )
-    private fun checkpoint(state: RemoteState, seq: Long, entries: List<SessionGraphEntry> = emptyList(), head: String? = null): RemoteState {
+    private fun checkpoint(state: RemoteState, seq: Long, entries: List<SessionGraphEntry> = emptyList(), head: String? = null, epoch: String = "epoch"): RemoteState {
         val pending = state.copy(sessionSyncCommands = mapOf("request" to PendingSessionSync(
             "runtime", "session", "sync", range = "preview", branchGeneration = state.sessionBranchGenerations["runtime"] ?: 0,
         )))
         val snapshot = SessionGraphSnapshot("session", "sync", SessionBranchCursor(head), "replace", entries,
-            range = "preview", complete = true, source = SessionSourceEpoch("epoch", seq, true),
-            checkpoint = SessionCheckpoint("epoch:$seq", SessionBranchCursor(head), "complete", true),
+            range = "preview", complete = true, source = SessionSourceEpoch(epoch, seq, true),
+            checkpoint = SessionCheckpoint("$epoch:$seq", SessionBranchCursor(head), "complete", true),
             live = SessionLiveState(true, messages = listOf(SessionLiveMessage(row("live", "$seq"), false, true))),
         )
         return reducer.reduce(pending, """{"type":"runtime.event","runtimeId":"runtime","sequence":100,"event":${json.encodeToString(snapshot).dropLast(1)},"type":"session.snapshot"}}""")
+    }
+
+    @Test fun `new epoch handshake corrects cached parent and removes obsolete tail`() {
+        val current = initial("c").copy(sessionGraphs = mapOf("session" to cachedGraph("session",
+            mapOf("a" to entry("a"), "b" to entry("b", "a"), "c" to entry("c", "b")))))
+        val boundary = receive(current, patch(1).copy(source = SessionSourceEpoch("new", 1, false)))
+        val recovered = checkpoint(boundary, 2, listOf(entry("a"), entry("c", "a")), "c", "new")
+        assertEquals(setOf("a", "c"), recovered.sessionGraphs.getValue("session").entries.keys)
+        assertEquals("a", recovered.sessionGraphs.getValue("session").entries.getValue("c").parentId)
+        assertEquals(listOf("a", "c", "live"), recovered.conversations.getValue("runtime").messages.map { it.messageId })
+        assertEquals("new", recovered.conversations.getValue("runtime").sourceEpoch)
+        assertFalse(recovered.conversations.getValue("runtime").isChatSyncing)
+        val old = receive(recovered, patch(9, head = "b").copy(entries = listOf(entry("b", "a"))))
+        assertEquals(recovered.sessionGraphs, old.sessionGraphs)
+    }
+
+    @Test fun `patch entries buffered before first checkpoint commit after handshake`() {
+        val current = initial().copy(conversations = emptyMap())
+        val waiting = receive(current, patch(3, head = "b").copy(entries = listOf(entry("b", "a"))))
+        assertTrue(waiting.sessionGraphs.isEmpty())
+        val recovered = checkpoint(waiting, 2, listOf(entry("a")), "a")
+        assertEquals(listOf("a", "b", "live"), recovered.conversations.getValue("runtime").messages.map { it.messageId })
+        assertEquals(3L, recovered.conversations.getValue("runtime").sourceSeq)
+        assertFalse(recovered.conversations.getValue("runtime").isChatSyncing)
     }
 
     @Test fun `checkpoint retains and replays patches received after its capture`() {
@@ -78,7 +104,7 @@ class SessionSourceRecoveryTest {
 
     @Test fun `history page does not install its attached live checkpoint`() {
         val current = initial("current").copy(
-            sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("current" to entry("current", "older")), SessionBranchCursor("current"))),
+            sessionGraphs = mapOf("session" to cachedGraph("session", mapOf("current" to entry("current", "older")), SessionBranchCursor("current"))),
             sessionSyncCommands = mapOf("history" to PendingSessionSync("runtime", "session", "history", "history", "current", "current")),
         )
         val changed = reducer.reduce(current, """{"type":"runtime.event","runtimeId":"runtime","sequence":1,"event":{
@@ -97,7 +123,7 @@ class SessionSourceRecoveryTest {
         assertEquals("turn", conversation.activeTurnId)
         assertEquals(current.conversations.getValue("runtime").tools, conversation.tools)
         assertTrue(conversation.messages.any { it.messageId == "live" })
-        assertTrue(changed.sessionGraphs.getValue("session").entries.containsKey("older"))
+        assertFalse(changed.sessionGraphs.getValue("session").entries.containsKey("older"))
     }
 
     @Test fun `late legacy lifecycle and ctl idle cannot change the replicated turn`() {
@@ -135,7 +161,7 @@ class SessionSourceRecoveryTest {
     }
 
     @Test fun `patch changes head to a cached ancestor atomically`() {
-        val current = initial("tail").copy(sessionGraphs = mapOf("session" to SessionGraph(
+        val current = initial("tail").copy(sessionGraphs = mapOf("session" to cachedGraph(
             "session", mapOf("root" to entry("root"), "tail" to entry("tail", "root")), SessionBranchCursor("tail"),
         )))
         val changed = receive(current, patch(2, head = "root"))
@@ -164,7 +190,7 @@ class SessionSourceRecoveryTest {
         fun canonical(message: ChatMessage, parent: String) = SessionGraphEntry(message.messageId, parent, "message", "1",
             buildJsonObject { put("message", json.encodeToJsonElement(ChatMessage.serializer(), message)) })
         val current = initial("root").copy(
-            sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("root" to root))),
+            sessionGraphs = mapOf("session" to cachedGraph("session", mapOf("root" to root))),
             conversations = mapOf("runtime" to initial("root").conversations.getValue("runtime").copy(
                 messages = listOf(row("root"), call), streamingMessageIds = setOf("tool"))),
         )
@@ -184,12 +210,12 @@ class SessionSourceRecoveryTest {
         assertEquals("turn", conversation.activeTurnId)
     }
 
-    @Test fun `out of order commit entries supplement cache without bypassing source version gate`() {
-        val current = initial("root").copy(sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("root" to entry("root")))))
+    @Test fun `out of order commits buffer entries until the source version gap closes`() {
+        val current = initial("root").copy(sessionGraphs = mapOf("session" to cachedGraph("session", mapOf("root" to entry("root")))))
         val waiting = receive(current, patch(3, head = "b").copy(entries = listOf(entry("b", "a"))))
         assertEquals(1L, waiting.conversations.getValue("runtime").sourceSeq)
         assertEquals("root", waiting.runtimeSessionViews.getValue("runtime").leafId)
-        assertTrue("b" in waiting.sessionGraphs.getValue("session").entries)
+        assertFalse("b" in waiting.sessionGraphs.getValue("session").entries)
         val recovered = receive(waiting, patch(2, head = "a").copy(entries = listOf(entry("a", "root"))), sequence = 4)
         assertEquals(3L, recovered.conversations.getValue("runtime").sourceSeq)
         assertEquals(listOf("root", "a", "b", "live"), recovered.conversations.getValue("runtime").messages.map(ChatMessage::messageId))
@@ -210,9 +236,9 @@ class SessionSourceRecoveryTest {
         assertFalse(changed.conversations.getValue("runtime").isChatSyncing)
     }
 
-    @Test fun `conflicting commit rejects the entire display transition`() {
-        val current = initial("root").copy(sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("root" to entry("root")))))
-        val changed = receive(current, patch(2, head = "next").copy(entries = listOf(entry("next", "root"), entry("root", "different"))))
+    @Test fun `cyclic authoritative commit rejects the entire display transition`() {
+        val current = initial("root").copy(sessionGraphs = mapOf("session" to cachedGraph("session", mapOf("root" to entry("root")))))
+        val changed = receive(current, patch(2, head = "next").copy(entries = listOf(entry("next", "root"), entry("root", "next"))))
         assertEquals(current.sessionGraphs, changed.sessionGraphs)
         assertEquals(current.runtimeSessionViews, changed.runtimeSessionViews)
         assertEquals(1L, changed.conversations.getValue("runtime").sourceSeq)
@@ -222,7 +248,7 @@ class SessionSourceRecoveryTest {
 
     @Test fun `forward commit retains paged ancestors while rewind removes them`() {
         val base = initial("root")
-        val current = base.copy(sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("root" to entry("root")))),
+        val current = base.copy(sessionGraphs = mapOf("session" to cachedGraph("session", mapOf("root" to entry("root")))),
             conversations = mapOf("runtime" to base.conversations.getValue("runtime").copy(
                 messages = listOf(row("paged"), row("root"), row("live")))))
         val advanced = receive(current, patch(2, head = "next").copy(entries = listOf(entry("next", "root"))))
@@ -246,7 +272,7 @@ class SessionSourceRecoveryTest {
 
     @Test fun `source recovery requests a checkpoint even with a fully covered cached leaf`() {
         val current = initial("root").copy(
-            sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("root" to entry("root")))),
+            sessionGraphs = mapOf("session" to cachedGraph("session", mapOf("root" to entry("root")))),
         ).requestRuntimeRefresh("runtime")
         val task = current.requestedSessionRecovery("runtime", 7, "new-sync")!!
         assertEquals("preview", task.range)
@@ -263,9 +289,9 @@ class SessionSourceRecoveryTest {
         assertTrue(changed.conversations.getValue("runtime").sourcePatchBuffer.isEmpty())
     }
 
-    @Test fun `delayed catchup fills the old branch without moving a reverted head`() {
+    @Test fun `unversioned delayed catchup cannot refill a versioned cache`() {
         val current = initial("root").copy(
-            sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("root" to entry("root")), SessionBranchCursor("root"))),
+            sessionGraphs = mapOf("session" to cachedGraph("session", mapOf("root" to entry("root")), SessionBranchCursor("root"))),
             sessionSyncCommands = mapOf("page" to PendingSessionSync("runtime", "session", "old-page", "catchup", "old-tail")),
         )
         val changed = reducer.reduce(current, """{"type":"runtime.event","runtimeId":"runtime","sequence":1,"event":{
@@ -279,7 +305,7 @@ class SessionSourceRecoveryTest {
         assertEquals("root", changed.runtimeSessionViews.getValue("runtime").leafId)
         assertFalse(conversation.messages.any { it.messageId == "old-tail" })
         assertTrue(conversation.messages.any { it.messageId == "live" })
-        assertTrue(changed.sessionGraphs.getValue("session").entries.containsKey("old-tail"))
+        assertFalse(changed.sessionGraphs.getValue("session").entries.containsKey("old-tail"))
     }
 
     @Test fun `canonical page cannot close a recovery gap without the current head entry`() {
@@ -365,7 +391,7 @@ class SessionSourceRecoveryTest {
         val original = initial("head").copy(
             hostId = "host-paired",
             sessions = mapOf("session" to SessionCatalogEntry("session", hasHistoryCache = true)),
-            sessionGraphs = mapOf("session" to SessionGraph("session", mapOf("head" to entry), SessionBranchCursor("head"))),
+            sessionGraphs = mapOf("session" to cachedGraph("session", mapOf("head" to entry), SessionBranchCursor("head"))),
             sessionSyncCommands = mapOf("old-command" to pendingPage),
             pendingCommands = mapOf("old-command" to "runtime", "send-pending" to "runtime"),
             conversations = initial("head").conversations.mapValues { (_, conversation) ->
@@ -398,7 +424,7 @@ class SessionSourceRecoveryTest {
 
     @Test fun `same source epoch and sequence checkpoint restores a cache-rebuilt projection`() {
         val original = initial("head").copy(sessionGraphs = mapOf(
-            "session" to SessionGraph("session", mapOf("head" to entry("head")), SessionBranchCursor("head")),
+            "session" to cachedGraph("session", mapOf("head" to entry("head")), SessionBranchCursor("head")),
         ))
         val rebuilt = original.afterSessionCacheRebuild("session")
         assertEquals("epoch", rebuilt.conversations.getValue("runtime").sourceEpoch)

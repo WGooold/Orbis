@@ -21,7 +21,7 @@ class SessionGraphStoreException(message: String) : IllegalStateException(messag
 private val SESSION_GRAPH_CONFLICT_MESSAGES = setOf("entry_conflict", "turn_timing_conflict")
 
 /**
- * Conflicting remote data must roll back as one batch, preserving the previously committed tree.
+ * Invalid remote batches roll back; accepted source corrections replace stale cached rows.
  */
 internal fun isSessionGraphConflict(error: Throwable?): Boolean =
     error is SessionGraphStoreException && error.message in SESSION_GRAPH_CONFLICT_MESSAGES
@@ -52,8 +52,10 @@ class SessionGraphStore(
         turnTimings: Collection<TurnTiming> = emptyList(),
         writeGuard: (() -> Boolean)? = null,
         agentKind: String? = null,
+        source: SessionSourceEpoch? = null,
+        activateSource: Boolean = false,
     ) {
-        if (entries.isEmpty() && leafId == null && turnTimings.isEmpty()) return
+        if (entries.isEmpty() && leafId == null && turnTimings.isEmpty() && source == null) return
         require(sessionId.isNotBlank()) { "session_id_required" }
         turnTimings.forEach(::validateTurnTiming)
         if (writeGuard?.invoke() == false) throw SessionGraphStoreException(STALE_SESSION_GRAPH_WRITE)
@@ -65,23 +67,54 @@ class SessionGraphStore(
                 rebuildCodexGraph(database, sessionId)
                 migrateCodexRows(database, sessionId)
             }
+            if (source != null) {
+                require(source.ready) { "source_not_ready" }
+                val epoch = cacheEpoch(database, sessionId)
+                if (epoch != source.epoch) {
+                    require(activateSource) { "source_epoch_not_accepted" }
+                    for (table in listOf("session_entries", "session_cursors", "session_turn_timings", "session_sync_progress")) {
+                        database.delete(table, "session_id = ?", arrayOf(sessionId))
+                    }
+                    database.execSQL("INSERT OR REPLACE INTO session_cache_epochs(session_id, epoch) VALUES (?, ?)",
+                        arrayOf(sessionId, source.epoch))
+                }
+            }
+            val batch = validateCanonicalEntries(entries, { null })
+            val effective = batch.values.map { entry ->
+                if (source != null && source.seq < storedSourceSeq(database, sessionId, entry.entryId))
+                    find(database, sessionId, entry.entryId) ?: entry else entry
+            }
             val received = validateCanonicalEntries(
-                entries,
+                effective,
                 lookup = { find(database, sessionId, it) },
                 parentOf = { id ->
-                    // A previously verified immutable chain cannot acquire a cycle. Stop there
-                    // instead of walking all the way to the root again for every forward page.
-                    if (storedDepth(database, sessionId, id) != null) null else storedParent(database, sessionId, id)
+                    // Only the unversioned immutable path can stop at a previously verified
+                    // ancestor. Authority corrections must check the complete affected chain.
+                    if (source == null && storedDepth(database, sessionId, id) != null) null else storedParent(database, sessionId, id)
                 },
+                authoritative = source != null,
             )
+            val corrected = received.values.any { entry ->
+                find(database, sessionId, entry.entryId)?.let { it != entry } == true
+            }
+            if (corrected) {
+                // Parent corrections invalidate every depth derived from the previous graph.
+                database.execSQL("UPDATE session_entries SET verified_depth = NULL WHERE session_id = ?", arrayOf(sessionId))
+                database.delete("session_sync_progress", "session_id = ?", arrayOf(sessionId))
+            }
             for (entry in received.values) {
                 val existing = find(database, sessionId, entry.entryId)
-                if (existing == entry) continue
+                if (existing == entry) {
+                    if (source != null) database.execSQL(
+                        "UPDATE session_entries SET source_seq = MAX(source_seq, ?) WHERE session_id = ? AND entry_id = ?",
+                        arrayOf(source.seq, sessionId, entry.entryId))
+                    continue
+                }
                 database.execSQL(
                     """
-                    INSERT INTO session_entries(
-                        session_id, entry_id, parent_id, type, timestamp, payload, legacy_format
-                    ) VALUES (?, ?, ?, ?, ?, ?, 0)
+                    INSERT OR REPLACE INTO session_entries(
+                        session_id, entry_id, parent_id, type, timestamp, payload, legacy_format, source_seq
+                    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?)
                     """.trimIndent(),
                     arrayOf<Any?>(
                         sessionId,
@@ -90,23 +123,31 @@ class SessionGraphStore(
                         entry.type,
                         entry.timestamp,
                         json.encodeToString(entry.data),
+                        source?.seq ?: -1L,
                     ),
                 )
             }
             for (timing in turnTimings) {
                 val existing = findStoredTiming(database, sessionId, timing.turnId)
-                val merged = mergeCanonicalTiming(existing, timing)
-                if (existing == merged) continue
+                if (source != null && source.seq < storedTimingSourceSeq(database, sessionId, timing.turnId)) continue
+                val merged = mergeCanonicalTiming(existing.takeIf { source == null }, timing)
+                if (existing == merged) {
+                    if (source != null) database.execSQL(
+                        "UPDATE session_turn_timings SET source_seq = MAX(source_seq, ?) WHERE session_id = ? AND turn_id = ?",
+                        arrayOf(source.seq, sessionId, timing.turnId))
+                    continue
+                }
                 database.execSQL(
                     """
-                    INSERT OR REPLACE INTO session_turn_timings(session_id, turn_id, payload, updated_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT OR REPLACE INTO session_turn_timings(session_id, turn_id, payload, updated_at, source_seq)
+                    VALUES (?, ?, ?, ?, ?)
                     """.trimIndent(),
                     arrayOf<Any?>(
                         sessionId,
                         timing.turnId,
                         json.encodeToString(merged),
                         System.currentTimeMillis(),
+                        source?.seq ?: -1L,
                     ),
                 )
             }
@@ -114,7 +155,7 @@ class SessionGraphStore(
                 val storedLeaf = findStored(database, sessionId, leafId)
                 if (storedLeaf == null) throw SessionGraphStoreException("leaf_not_found")
                 val previousLeaf = latestLeaf(device, sessionId)
-                if (previousLeaf == null || !isAncestor(database, sessionId, leafId, previousLeaf)) database.execSQL(
+                if (source != null || previousLeaf == null || !isAncestor(database, sessionId, leafId, previousLeaf)) database.execSQL(
                     """
                     INSERT OR REPLACE INTO session_cursors(session_id, leaf_id, updated_at)
                     VALUES (?, ?, ?)
@@ -122,7 +163,10 @@ class SessionGraphStore(
                     arrayOf<Any?>(sessionId, leafId, System.currentTimeMillis()),
                 )
             }
-            promoteCoverage(database, sessionId, received.keys, leafId)
+            val coverageIds = if (corrected) database.rawQuery(
+                "SELECT entry_id FROM session_entries WHERE session_id = ? AND parent_id IS NULL", arrayOf(sessionId),
+            ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getString(0)) } } else received.keys
+            promoteCoverage(database, sessionId, coverageIds, leafId)
             if (writeGuard?.invoke() == false) throw SessionGraphStoreException(STALE_SESSION_GRAPH_WRITE)
             database.setTransactionSuccessful()
         } catch (error: IllegalArgumentException) {
@@ -318,6 +362,7 @@ class SessionGraphStore(
             database.delete("session_sync_progress", "session_id = ?", arrayOf(sessionId))
             database.delete("session_legacy_entries", "session_id = ?", arrayOf(sessionId))
             database.delete("codex_canonical_rebuilds", "session_id = ?", arrayOf(sessionId))
+            database.delete("session_cache_epochs", "session_id = ?", arrayOf(sessionId))
             database.setTransactionSuccessful()
         } finally {
             database.endTransaction()
@@ -408,6 +453,30 @@ class SessionGraphStore(
     @Synchronized
     fun continuousLeaf(device: DeviceCredential, sessionId: String): String? =
         continuousLeaf(database(device).readableDatabase, sessionId)
+
+    @Synchronized
+    fun cacheEpoch(device: DeviceCredential, sessionId: String): String? = cacheEpoch(database(device).readableDatabase, sessionId)
+
+    /** Attach persisted ownership when loading a bounded window for offline/reconnected use. */
+    @Synchronized
+    fun withCacheVersions(device: DeviceCredential, graph: SessionGraph): SessionGraph {
+        val db = database(device).readableDatabase
+        return graph.copy(cacheEpoch = cacheEpoch(db, graph.sessionId),
+            entryVersions = graph.entries.keys.associateWith { storedSourceSeq(db, graph.sessionId, it) },
+            timingVersions = graph.turnTimings.keys.associateWith { storedTimingSourceSeq(db, graph.sessionId, it) })
+    }
+
+    private fun cacheEpoch(db: SQLiteDatabase, sessionId: String): String? = db.rawQuery(
+        "SELECT epoch FROM session_cache_epochs WHERE session_id = ?", arrayOf(sessionId),
+    ).use { if (it.moveToFirst()) it.getString(0) else null }
+
+    private fun storedSourceSeq(db: SQLiteDatabase, sessionId: String, id: String): Long = db.rawQuery(
+        "SELECT source_seq FROM session_entries WHERE session_id = ? AND entry_id = ?", arrayOf(sessionId, id),
+    ).use { if (it.moveToFirst()) it.getLong(0) else -1L }
+
+    private fun storedTimingSourceSeq(db: SQLiteDatabase, sessionId: String, id: String): Long = db.rawQuery(
+        "SELECT source_seq FROM session_turn_timings WHERE session_id = ? AND turn_id = ?", arrayOf(sessionId, id),
+    ).use { if (it.moveToFirst()) it.getLong(0) else -1L }
 
     @Synchronized
     fun hasContinuousCoverage(device: DeviceCredential, sessionId: String, leafId: String?): Boolean =
@@ -652,6 +721,7 @@ class SessionGraphStore(
                     payload TEXT NOT NULL,
                     verified_depth INTEGER,
                     legacy_format INTEGER NOT NULL DEFAULT 0,
+                    source_seq INTEGER NOT NULL DEFAULT -1,
                     PRIMARY KEY(session_id, entry_id)
                 )
                 """.trimIndent(),
@@ -675,6 +745,7 @@ class SessionGraphStore(
                     turn_id TEXT NOT NULL,
                     payload TEXT NOT NULL,
                     updated_at INTEGER NOT NULL,
+                    source_seq INTEGER NOT NULL DEFAULT -1,
                     PRIMARY KEY(session_id, turn_id)
                 )
                 """.trimIndent(),
@@ -682,6 +753,7 @@ class SessionGraphStore(
             createCoverageTables(database)
             createCodexRebuildTable(database)
             upgradeCodexRebuildTable(database)
+            createCacheEpochTable(database)
         }
 
         override fun onUpgrade(database: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -745,6 +817,15 @@ class SessionGraphStore(
                     UNION SELECT session_id, 'codex-native-item-ids-v2', ? FROM codex_canonical_rebuilds WHERE completed_at IS NULL""",
                     arrayOf(oldVersion, oldVersion, oldVersion, oldVersion, oldVersion, oldVersion))
             }
+            if (oldVersion < 7) {
+                database.execSQL("ALTER TABLE session_entries ADD COLUMN source_seq INTEGER NOT NULL DEFAULT -1")
+                database.execSQL("ALTER TABLE session_turn_timings ADD COLUMN source_seq INTEGER NOT NULL DEFAULT -1")
+                createCacheEpochTable(database)
+            }
+        }
+
+        private fun createCacheEpochTable(database: SQLiteDatabase) {
+            database.execSQL("CREATE TABLE session_cache_epochs(session_id TEXT PRIMARY KEY, epoch TEXT NOT NULL)")
         }
 
         private fun upgradeCodexRebuildTable(database: SQLiteDatabase) {
@@ -775,7 +856,7 @@ class SessionGraphStore(
     }
 
     private companion object {
-        const val DATABASE_VERSION = 6
+        const val DATABASE_VERSION = 7
         const val DEFAULT_MAX_ENTRIES = 2_000
         const val MAX_TRAVERSAL_ENTRIES = 100_000
         const val MAX_TITLE_SCAN_ENTRIES = 2_000

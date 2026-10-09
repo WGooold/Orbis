@@ -18,7 +18,7 @@ describe("source state contract", () => {
     const page = selectSessionSyncSnapshot([], "session", null, {
       sessionId: "session", syncId: range, range,
     }, [], source);
-    expect(page).not.toHaveProperty("source");
+    expect(page.source).toEqual(source.version);
     expect(page).not.toHaveProperty("checkpoint");
     expect(page).not.toHaveProperty("live");
     expect(RuntimeEventSchema.safeParse(page).success).toBe(true);
@@ -39,6 +39,14 @@ describe("source state contract", () => {
     expect(RuntimeEventSchema.safeParse({
       ...snapshot, live: { ...source.live, complete: false },
     }).success).toBe(false);
+  });
+
+  it("rejects current-state fields on a history page but accepts its source ownership", () => {
+    const page = selectSessionSyncSnapshot([], "session", null, {
+      sessionId: "session", syncId: "page", range: "history",
+    }, [], source);
+    expect(RuntimeEventSchema.safeParse({ ...page, live: source.live }).success).toBe(false);
+    expect(RuntimeEventSchema.safeParse({ ...page, checkpoint: source.checkpoint }).success).toBe(false);
   });
 
   it("validates the same source boundary through direct and runtime event parsing", () => {

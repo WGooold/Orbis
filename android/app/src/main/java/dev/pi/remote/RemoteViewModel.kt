@@ -1452,7 +1452,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                             val patch = runCatching { messageJson.decodeFromJsonElement<SessionPatch>(sessionEvent) }.getOrNull()
                             val runtimeId = incomingMessage?.get("runtimeId")?.jsonPrimitive?.contentOrNull
                             val pairedDevice = device
-                            if (patch != null && patch.entries.isNotEmpty() && runtimeId != null && pairedDevice != null &&
+                            if (patch != null && runtimeId != null && pairedDevice != null &&
                                 previous.ownsSessionPatch(runtimeId, patch)
                             ) {
                                 runCatching {
@@ -1920,20 +1920,21 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
         }
-        val loadedGraph = graph ?: existingGraph ?: return
+        val loadedGraph = graph?.let { sessionGraphStore.withCacheVersions(pairedDevice, it) } ?: existingGraph ?: return
         val current = mutableState.value
-        val mergedGraph = if (existingGraph == null || loadedGraph === existingGraph) {
+        val mergedGraph = if (existingGraph == null || loadedGraph === existingGraph || existingGraph.cacheEpoch != loadedGraph.cacheEpoch) {
             loadedGraph
         } else {
             loadedGraph.copy(
                 entries = LinkedHashMap<String, SessionGraphEntry>().apply {
                     existingGraph.entries.forEach { (entryId, entry) -> put(entryId, entry) }
                     loadedGraph.entries.forEach { (entryId, entry) ->
-                        val previous = putIfAbsent(entryId, entry)
-                        require(previous == null || previous == entry) { "entry_conflict" }
+                        put(entryId, entry)
                     }
                 },
                 turnTimings = existingGraph.turnTimings + loadedGraph.turnTimings,
+                entryVersions = existingGraph.entryVersions + loadedGraph.entryVersions,
+                timingVersions = existingGraph.timingVersions + loadedGraph.timingVersions,
             )
         }
         val conversations = if (runtimeId == null) current.conversations else {
@@ -2000,12 +2001,15 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         prepareSessionCache(pairedDevice, sessionId, runtime.agentKind)
         val observedLeaf = sessionGraphStore.latestLeaf(pairedDevice, sessionId)
         var graph = mutableState.value.sessionGraphs[sessionId] ?: SessionGraph(sessionId)
+        val diskEpoch = sessionGraphStore.cacheEpoch(pairedDevice, sessionId)
+        if (graph.cacheEpoch != diskEpoch) graph = SessionGraph(sessionId, cacheEpoch = diskEpoch)
         for (leaf in listOfNotNull(runtime.sessionLeafId, observedLeaf).distinct()) {
             val range = sessionGraphStore.readBranch(pairedDevice, sessionId, leaf, maxEntries = previewPageSize)
             graph = graph.merge(SessionGraphSnapshot(sessionId, "local", SessionBranchCursor(leaf), "prepend", range.entries))
         }
         graph = graph.merge(SessionGraphSnapshot(sessionId, "local", SessionBranchCursor(), "prepend", emptyList(),
             turnTimings = sessionGraphStore.readTurnTimings(pairedDevice, sessionId)))
+        graph = sessionGraphStore.withCacheVersions(pairedDevice, graph)
         return graph.takeIf { it.entries.isNotEmpty() }?.let {
             if (it.cursor.leafId == null) it.copy(cursor = SessionBranchCursor(observedLeaf)) else it
         }

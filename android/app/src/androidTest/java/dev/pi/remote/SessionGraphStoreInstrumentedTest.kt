@@ -75,6 +75,124 @@ class SessionGraphStoreInstrumentedTest {
     }
 
     @Test
+    fun authoritativeEpochSwitchCorrectsSameIdAndPersistsOwnership() {
+        val old = listOf(entry("a", null), entry("b", "a"), entry("c", "b"))
+        store.upsert(device, "s", old, "c", source = SessionSourceEpoch("old", 4, true), activateSource = true)
+        val corrected = entry("c", "a").copy(timestamp = "corrected")
+        store.upsert(device, "s", listOf(corrected), "c", source = SessionSourceEpoch("new", 2, true), activateSource = true)
+        assertFalse(store.contains(device, "s", "b"))
+        assertFalse(store.hasContinuousCoverage(device, "s", "c"))
+        assertEquals("new", store.cacheEpoch(device, "s"))
+        store.close()
+        store.upsert(device, "s", listOf(entry("a", null), entry("c", "wrong")), source = SessionSourceEpoch("new", 1, true))
+        assertEquals(listOf(corrected), store.readEntries(device, "s", listOf("c")))
+        assertTrue(store.hasContinuousCoverage(device, "s", "c"))
+        assertEquals("c", store.latestLeaf(device, "s"))
+        val cached = store.withCacheVersions(device, SessionGraph("s", mapOf("c" to corrected)))
+        assertEquals("new", cached.cacheEpoch)
+        assertEquals(2L, cached.entryVersions["c"])
+    }
+
+    @Test
+    fun authoritativeParentCorrectionInvalidatesDescendantCoverageAndPreservesOtherRows() {
+        store.upsert(device, "s", listOf(entry("a", null), entry("b", "a"), entry("c", "b")), "c",
+            source = SessionSourceEpoch("e", 1, true), activateSource = true)
+        store.upsert(device, "s", listOf(entry("b", "gap")), source = SessionSourceEpoch("e", 2, true))
+        assertFalse(store.hasContinuousCoverage(device, "s", "c"))
+        assertTrue(store.contains(device, "s", "a"))
+        assertTrue(store.contains(device, "s", "c"))
+        store.upsert(device, "s", listOf(entry("gap", "a")), source = SessionSourceEpoch("e", 3, true))
+        assertTrue(store.hasContinuousCoverage(device, "s", "c"))
+        assertEquals(listOf("a", "gap", "b", "c"), store.readBranch(device, "s", "c").entries.map { it.entryId })
+    }
+
+    @Test
+    fun invalidAuthorityAndLostOwnershipRollBackEpochCursorAndCoverage() {
+        val root = entry("root", null)
+        store.upsert(device, "s", listOf(root), "root", source = SessionSourceEpoch("old", 1, true), activateSource = true)
+        assertEquals("cycle_detected", runCatching {
+            store.upsert(device, "s", listOf(entry("a", "b"), entry("b", "a")), "b",
+                source = SessionSourceEpoch("new", 1, true), activateSource = true)
+        }.exceptionOrNull()?.message)
+        var checks = 0
+        assertEquals("stale_snapshot", runCatching {
+            store.upsert(device, "s", emptyList(), source = SessionSourceEpoch("new", 1, true), activateSource = true,
+                writeGuard = { ++checks < 3 })
+        }.exceptionOrNull()?.message)
+        assertEquals("old", store.cacheEpoch(device, "s"))
+        assertEquals("root", store.latestLeaf(device, "s"))
+        assertTrue(store.hasContinuousCoverage(device, "s", "root"))
+        assertEquals(listOf(root), store.readEntries(device, "s", listOf("root")))
+    }
+
+    @Test
+    fun emptyAuthoritativeCheckpointClearsOnlyItsSession() {
+        store.upsert(device, "s", listOf(entry("root", null)), "root", source = SessionSourceEpoch("old", 1, true), activateSource = true)
+        store.upsert(device, "other", listOf(entry("other", null)), "other")
+        store.upsert(device, "s", emptyList(), source = SessionSourceEpoch("new", 1, true), activateSource = true)
+        assertEquals("new", store.cacheEpoch(device, "s"))
+        assertEquals(null, store.latestLeaf(device, "s"))
+        assertEquals(null, store.continuousLeaf(device, "s"))
+        assertFalse(store.contains(device, "s", "root"))
+        assertTrue(store.contains(device, "other", "other"))
+    }
+
+    @Test
+    fun rejectedReadyEpochAndRetiredHistoryNeverWriteDisk() {
+        val root = entry("root", null)
+        store.upsert(device, "s", listOf(root), "root", source = SessionSourceEpoch("e", 5, true), activateSource = true)
+        val conversation = RuntimeConversation(sourceEpoch = "e", sourceSeq = 5, sourceReady = true, retiredSourceEpochs = setOf("old"))
+        for ((range, epoch) in listOf("preview" to "future", "history" to "old")) {
+            val pending = PendingSessionSync("r", "s", "sync", range, beforeEntryId = "root".takeIf { range == "history" })
+            val state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s")),
+                conversations = mapOf("r" to conversation), sessionSyncCommands = mapOf("cmd" to pending))
+            val snapshot = SessionGraphSnapshot("s", "sync", SessionBranchCursor("root"),
+                if (range == "history") "prepend" else "replace", listOf(root.copy(timestamp = "wrong")), range = range,
+                beforeEntryId = pending.beforeEntryId, source = SessionSourceEpoch(epoch, 99, true),
+                checkpoint = SessionCheckpoint("id", SessionBranchCursor("root"), "complete", true), live = SessionLiveState(true))
+            assertEquals(emptyList<SessionGraphEntry>(), ingestSessionSnapshot(store, device, "r", "cmd", snapshot, { state }, { true }))
+            assertEquals("e", store.cacheEpoch(device, "s"))
+            assertEquals(listOf(root), store.readEntries(device, "s", listOf("root")))
+        }
+    }
+
+    @Test
+    fun checkpointAndBufferedCanonicalSuffixCommitAsOneCacheGeneration() {
+        val old = entry("obsolete", null)
+        store.upsert(device, "s", listOf(old), "obsolete", source = SessionSourceEpoch("old", 1, true), activateSource = true)
+        val root = entry("a", null)
+        val child = entry("b", "a")
+        val patch = SessionPatch(sessionId = "s", source = SessionSourceEpoch("e", 3, true), baseSeq = 2, seq = 3,
+            checkpointId = "e:3", head = SessionBranchCursor("b"), headCompleteness = "complete",
+            live = SessionLiveState(true), entries = listOf(child))
+        val state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s")),
+            conversations = mapOf("r" to RuntimeConversation(sourceEpoch = "e", sourceReady = false,
+                sourcePatchBuffer = mapOf(3L to patch))),
+            sessionGraphs = mapOf("s" to SessionGraph("s", mapOf("obsolete" to old), cacheEpoch = "old")),
+            sessionSyncCommands = mapOf("cmd" to PendingSessionSync("r", "s", "sync", "preview")))
+        val snapshot = SessionGraphSnapshot("s", "sync", SessionBranchCursor("a"), "replace", listOf(root), range = "preview",
+            source = SessionSourceEpoch("e", 2, true), checkpoint = SessionCheckpoint("e:2", SessionBranchCursor("a"), "complete", true),
+            live = SessionLiveState(true))
+        val persisted = ingestSessionSnapshot(store, device, "r", "cmd", snapshot, { state }, { true })!!
+        assertEquals(listOf(root, child), persisted)
+        assertEquals("e", store.cacheEpoch(device, "s"))
+        assertEquals("b", store.latestLeaf(device, "s"))
+        assertTrue(store.hasContinuousCoverage(device, "s", "b"))
+        assertFalse(store.contains(device, "s", "obsolete"))
+        val event = buildJsonObject {
+            put("type", "runtime.event"); put("runtimeId", "r"); put("sequence", 1)
+            put("event", buildJsonObject {
+                (Json.encodeToJsonElement(SessionGraphSnapshot.serializer(), snapshot) as JsonObject).forEach { (key, value) -> put(key, value) }
+                put("type", "session.snapshot")
+            })
+        }
+        val reduced = RelayReducer().reduce(state, event.toString(), persisted)
+        assertEquals(3L, reduced.conversations.getValue("r").sourceSeq)
+        assertEquals("b", reduced.runtimeSessionViews.getValue("r").leafId)
+        assertEquals(listOf("a", "b"), reduced.conversations.getValue("r").messages.map { it.messageId })
+    }
+
+    @Test
     fun sharesCanonicalAncestorsAcrossSiblingBranches() {
         val root = entry("root", null)
         val shared = entry("shared", "root")
@@ -556,19 +674,19 @@ class SessionGraphStoreInstrumentedTest {
     }
 
     @Test
-    fun sourceCommitUsesCanonicalTransactionBeforeDisplayAndRejectsConflicts() {
+    fun sourceCommitUsesCanonicalTransactionBeforeDisplayAndRejectsCycles() {
         val root = entry("root", null)
-        store.upsert(device, "s", listOf(root), leafId = "root")
+        store.upsert(device, "s", listOf(root), leafId = "root", source = SessionSourceEpoch("epoch", 1, true), activateSource = true)
         val state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "running", "s")),
             conversations = mapOf("r" to RuntimeConversation(sourceEpoch = "epoch", sourceSeq = 1)),
-            sessionGraphs = mapOf("s" to SessionGraph("s", mapOf("root" to root))))
+            sessionGraphs = mapOf("s" to SessionGraph("s", mapOf("root" to root), cacheEpoch = "epoch")))
         val patch = SessionPatch(sessionId = "s", source = SessionSourceEpoch("epoch", 2, true), baseSeq = 1, seq = 2,
             checkpointId = "epoch:2", head = SessionBranchCursor("result"), headCompleteness = "complete",
             live = SessionLiveState(true), entries = listOf(entry("call", "root"), entry("result", "call")))
         val persisted = ingestSessionPatch(store, device, "r", patch, { state }, { true })
         assertEquals(patch.entries, persisted)
         assertTrue(store.hasContinuousCoverage(device, "s", "result"))
-        val conflicted = patch.copy(entries = listOf(entry("new", "result"), entry("root", "wrong-parent")))
+        val conflicted = patch.copy(entries = listOf(entry("new", "result"), entry("root", "new")))
         val failure = runCatching { ingestSessionPatch(store, device, "r", conflicted, { state }, { true }) }
         assertTrue(failure.isFailure)
         assertFalse(store.contains(device, "s", "new"))

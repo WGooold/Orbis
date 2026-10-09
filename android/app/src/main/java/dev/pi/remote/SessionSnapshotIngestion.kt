@@ -1,5 +1,48 @@
 package dev.pi.remote
 
+/** The reducer and SQLite writer must agree before authority can replace a cache generation. */
+internal data class SessionSnapshotSourceGate(
+    val cacheAllowed: Boolean,
+    val stale: Boolean,
+    val epochSwitchRejected: Boolean,
+)
+
+internal fun contiguousSourcePatches(epoch: String, seq: Long, patches: Collection<SessionPatch>): List<SessionPatch> {
+    val result = mutableListOf<SessionPatch>()
+    var base = seq
+    for (patch in patches.filter { it.source.epoch == epoch && it.seq > seq }.sortedBy { it.seq }) {
+        if (patch.baseSeq != base || patch.source.seq != patch.seq || patch.seq <= base ||
+            !patch.source.ready || patch.headCompleteness != "complete" || !patch.live.complete) break
+        result.add(patch)
+        base = patch.seq
+    }
+    return result
+}
+
+internal fun mergedPatchEntries(entries: List<SessionGraphEntry>, patches: List<SessionPatch>): List<SessionGraphEntry> {
+    val merged = validateCanonicalEntries(entries, { null }).toMutableMap()
+    patches.forEach { patch -> merged.putAll(validateCanonicalEntries(patch.entries, { null })) }
+    return merged.values.toList()
+}
+
+internal fun RuntimeConversation.snapshotSourceGate(snapshot: SessionGraphSnapshot, range: String): SessionSnapshotSourceGate {
+    val source = snapshot.source
+    val cacheOnly = range != "preview" || source == null
+    if (source == null) return SessionSnapshotSourceGate(sourceEpoch == null, sourceEpoch != null, false)
+    val retired = source.epoch in retiredSourceEpochs
+    if (cacheOnly) return SessionSnapshotSourceGate(
+        source.ready && sourceReady && source.epoch == sourceEpoch && !retired,
+        retired || source.epoch != sourceEpoch || !sourceReady || !source.ready, false,
+    )
+    val changed = sourceEpoch != null && sourceEpoch != source.epoch
+    val stale = retired || sourceEpoch == source.epoch && source.seq < sourceSeq
+    val rejected = changed && !retired && source.ready && sourceReady && !isChatSyncing
+    val complete = source.ready && snapshot.checkpoint?.head != null &&
+        snapshot.checkpoint.headCompleteness == "complete" && snapshot.checkpoint.inventoryComplete &&
+        snapshot.live?.complete == true
+    return SessionSnapshotSourceGate(!stale && !rejected && complete, stale, rejected)
+}
+
 /** One remote ingestion path, shared by all three ranges and exercised with real SQLite.
  * The caller serializes state changes around this operation; the guard is also checked inside
  * the transaction and after commit before publishing a projection. Null means obsolete work. */
@@ -26,14 +69,26 @@ internal fun ingestSessionSnapshot(
         "catchup" -> snapshot.mode in setOf("replace", "append")
         else -> false
     }) { "session_range_mode_mismatch" }
+    val gate = (state.conversations[runtimeId] ?: RuntimeConversation()).snapshotSourceGate(snapshot, pending.range)
+    // Leave rejected/unknown boundaries to the reducer; neither can modify persistent rows.
+    if (!gate.cacheAllowed) return emptyList()
     val cacheOnly = pending.range == "history" || state.conversations[runtimeId]?.sourceEpoch != null &&
         (pending.range != "preview" || snapshot.source == null)
     val observed = if (cacheOnly) null else
         (pending.targetLeafId ?: snapshot.targetLeafId ?: snapshot.cursor.leafId)?.takeIf { id ->
             snapshot.entries.any { it.entryId == id } || store.contains(device, snapshot.sessionId, id)
         }
-    return ingestCanonicalPage(store, device, snapshot, state, observed, ::owns,
-        state.runtimes.getValue(runtimeId).agentKind)
+    val patches = snapshot.source?.takeIf { !cacheOnly }?.let { source ->
+        contiguousSourcePatches(source.epoch, source.seq, state.conversations[runtimeId]?.sourcePatchBuffer?.values.orEmpty())
+    }.orEmpty()
+    val page = if (patches.isEmpty()) snapshot else snapshot.copy(
+        entries = mergedPatchEntries(snapshot.entries, patches), source = patches.last().source,
+    )
+    val finalObserved = if (patches.isEmpty()) observed else patches.last().head.leafId?.takeIf { id ->
+        page.entries.any { it.entryId == id } || store.contains(device, snapshot.sessionId, id)
+    }
+    return ingestCanonicalPage(store, device, page, state, finalObserved, ::owns,
+        state.runtimes.getValue(runtimeId).agentKind, activateSource = !cacheOnly)
 }
 
 internal fun RemoteState.ownsSessionPatch(runtimeId: String, patch: SessionPatch): Boolean {
@@ -45,8 +100,8 @@ internal fun RemoteState.ownsSessionPatch(runtimeId: String, patch: SessionPatch
         patch.source.seq == patch.seq && patch.baseSeq >= 0 && patch.seq > patch.baseSeq
 }
 
-/** State transactions share the exact canonical validation/SQLite commit path with sync pages.
- * A future version can supplement the cache, but only the reducer's version gate moves the view. */
+/** State transactions share validation/SQLite with sync pages. Future patches stay buffered until
+ * their version gap closes; a checkpoint can commit the same contiguous buffered suffix. */
 internal fun ingestSessionPatch(
     store: SessionGraphStore,
     device: DeviceCredential,
@@ -60,12 +115,16 @@ internal fun ingestSessionPatch(
     require(patch.entries.size <= 256) { "session_patch_too_many_entries" }
     val state = currentState()
     val conversation = state.conversations[runtimeId]
-    val applies = conversation?.sourceEpoch == patch.source.epoch && conversation.sourceReady &&
-        conversation.sourceSeq == patch.baseSeq && patch.source.ready &&
-        patch.headCompleteness == "complete" && patch.live.complete
-    val observed = patch.head.leafId?.takeIf { id -> applies &&
-        (patch.entries.any { it.entryId == id } || store.contains(device, patch.sessionId, id)) }
-    return ingestCanonicalPage(store, device, patch.canonicalPage(), state, observed, ::owns,
+    // Future epochs are recovery signals, not permission to modify the current cache.
+    if (patch.source.epoch != conversation?.sourceEpoch || !patch.source.ready || !conversation.sourceReady)
+        return emptyList()
+    val patches = contiguousSourcePatches(patch.source.epoch, conversation.sourceSeq,
+        (conversation.sourcePatchBuffer + (patch.seq to patch)).values)
+    if (patches.isEmpty()) return emptyList()
+    val page = patches.last().canonicalPage(mergedPatchEntries(emptyList(), patches))
+    val observed = patches.last().head.leafId?.takeIf { id ->
+        page.entries.any { it.entryId == id } || store.contains(device, patch.sessionId, id) }
+    return ingestCanonicalPage(store, device, page, state, observed, ::owns,
         state.runtimes.getValue(runtimeId).agentKind)
 }
 
@@ -77,12 +136,16 @@ private fun ingestCanonicalPage(
     observed: String?,
     owns: () -> Boolean,
     agentKind: String?,
+    activateSource: Boolean = false,
 ): List<SessionGraphEntry>? {
-    // Validate the same immutable content against the published window before committing disk.
-    (state.sessionGraphs[snapshot.sessionId] ?: SessionGraph(snapshot.sessionId)).merge(snapshot)
+    // SQLite owns persisted row versions. A bounded memory window may not know the newer
+    // version of a disk row, so it cannot veto an authoritative page before disk filters it.
+    if (snapshot.source == null) (state.sessionGraphs[snapshot.sessionId] ?: SessionGraph(snapshot.sessionId)).merge(snapshot)
+    else validateCanonicalEntries(snapshot.entries, { null })
     try {
         store.upsert(device, snapshot.sessionId, snapshot.entries, observed,
-            snapshot.turnTimings.orEmpty(), writeGuard = owns, agentKind = agentKind)
+            snapshot.turnTimings.orEmpty(), writeGuard = owns, agentKind = agentKind,
+            source = snapshot.source, activateSource = activateSource)
     } catch (error: SessionGraphStoreException) {
         if (error.message == "stale_snapshot") return null
         throw error

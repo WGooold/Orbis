@@ -90,7 +90,7 @@ data class SessionPatch(
 
 /** Cache supplementation only; the version gate, not this page, owns the active head. */
 internal fun SessionPatch.canonicalPage(entries: List<SessionGraphEntry> = this.entries) = SessionGraphSnapshot(
-    sessionId, checkpointId, SessionBranchCursor(), "prepend", entries,
+    sessionId, checkpointId, SessionBranchCursor(), "prepend", entries, source = source,
 )
 
 @Serializable
@@ -121,6 +121,10 @@ data class SessionGraph(
     val cursor: SessionBranchCursor = SessionBranchCursor(),
     /** Timing metadata is kept outside the Entry tree and projected by persisted message ID. */
     val turnTimings: Map<String, TurnTiming> = emptyMap(),
+    /** Local cache generation, distinct from the conversation's active live watermark. */
+    val cacheEpoch: String? = null,
+    val entryVersions: Map<String, Long> = emptyMap(),
+    val timingVersions: Map<String, Long> = emptyMap(),
 )
 
 internal fun SessionGraph.hasCompleteEntryChain(leafId: String?): Boolean {
@@ -172,22 +176,36 @@ data class RuntimeSessionView(
 internal fun SessionGraph.merge(snapshot: SessionGraphSnapshot): SessionGraph {
     require(sessionId == snapshot.sessionId) { "session_mismatch" }
     require(snapshot.mode in setOf("replace", "append", "prepend")) { "unknown_merge_mode" }
-    val received = validateCanonicalEntries(snapshot.entries, entries::get)
-    val mergedEntries = entries + received
-    val timings = turnTimings.toMutableMap()
+    val authority = snapshot.source?.takeIf { it.ready }
+    val baseline = if (authority != null && cacheEpoch != authority.epoch) SessionGraph(sessionId) else this
+    // Validate the packet itself even when some rows are too old to replace cached values.
+    val batch = validateCanonicalEntries(snapshot.entries, { null })
+    val effective = batch.values.map { entry ->
+        if (authority != null && authority.seq < (baseline.entryVersions[entry.entryId] ?: -1L))
+            baseline.entries[entry.entryId] ?: entry else entry
+    }
+    val received = validateCanonicalEntries(effective, baseline.entries::get, authoritative = authority != null)
+    val mergedEntries = baseline.entries + received
+    val timings = baseline.turnTimings.toMutableMap()
     snapshot.turnTimings.orEmpty().forEach { timing ->
-        timings[timing.turnId] = mergeCanonicalTiming(timings[timing.turnId], timing)
+        if (authority == null || authority.seq >= (baseline.timingVersions[timing.turnId] ?: -1L))
+            timings[timing.turnId] = mergeCanonicalTiming(timings[timing.turnId].takeIf { authority == null }, timing)
     }
     val observed = snapshot.cursor.leafId?.takeIf(mergedEntries::containsKey)
         ?: snapshot.entries.lastOrNull()?.entryId?.takeIf { snapshot.range == "catchup" }
-    val merged = copy(
+    val merged = baseline.copy(
         entries = mergedEntries,
         // This is the observed/display cursor only. Durable continuity comes from the store.
         cursor = if (snapshot.mode != "prepend" && observed != null &&
-            !copy(entries = mergedEntries).isDescendant(cursor.leafId, observed)) {
+            !baseline.copy(entries = mergedEntries).isDescendant(baseline.cursor.leafId, observed)) {
             SessionBranchCursor(observed)
-        } else cursor,
+        } else baseline.cursor,
         turnTimings = timings,
+        cacheEpoch = authority?.epoch ?: baseline.cacheEpoch,
+        entryVersions = if (authority == null) baseline.entryVersions else baseline.entryVersions +
+            received.keys.associateWith { maxOf(authority.seq, baseline.entryVersions[it] ?: -1L) },
+        timingVersions = if (authority == null) baseline.timingVersions else baseline.timingVersions +
+            snapshot.turnTimings.orEmpty().associate { it.turnId to maxOf(authority.seq, baseline.timingVersions[it.turnId] ?: -1L) },
     )
     return merged
 }

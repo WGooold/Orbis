@@ -1901,12 +1901,14 @@ class RelayReducer(
                 if (runtimeId in state.sessionSyncFailures) return state.copy(
                     lastSequence = state.lastSequence + (sequenceKey to sequence),
                 )
-                val graph = if (patch.source.epoch !in conversation.retiredSourceEpochs &&
-                    (patch.source.epoch != conversation.sourceEpoch || patch.seq > conversation.sourceSeq)
+                val cachePatches = contiguousSourcePatches(patch.source.epoch, conversation.sourceSeq,
+                    (conversation.sourcePatchBuffer + (patch.seq to patch)).values)
+                val graph = if (cachePatches.isNotEmpty() && patch.source.epoch !in conversation.retiredSourceEpochs && patch.source.ready &&
+                    conversation.sourceReady && patch.source.epoch == conversation.sourceEpoch && patch.seq > conversation.sourceSeq
                 ) {
                     runCatching {
                         (state.sessionGraphs[patch.sessionId] ?: SessionGraph(patch.sessionId))
-                            .merge(patch.canonicalPage(persistedSessionEntries ?: patch.entries))
+                            .merge(cachePatches.last().canonicalPage(persistedSessionEntries ?: mergedPatchEntries(emptyList(), cachePatches)))
                     }.getOrElse { error ->
                         val failure = "Session 历史缓存写入失败：${error.message ?: "无效条目"}"
                         return state.copy(
@@ -2295,6 +2297,7 @@ class RelayReducer(
                 val isCanonicalPage = isHistory || conversation.sourceEpoch != null && (pending.range != "preview" || snapshot.source == null)
                 val incomingSource = snapshot.source.takeUnless { isCanonicalPage }
                 val incomingCheckpoint = snapshot.checkpoint.takeUnless { isCanonicalPage }
+                val cacheGate = conversation.snapshotSourceGate(snapshot, pending.range)
                 val sourceRetired = incomingSource != null && incomingSource.epoch in conversation.retiredSourceEpochs
                 val sourceEpochChanged = incomingSource != null && conversation.sourceEpoch != null &&
                     conversation.sourceEpoch != incomingSource.epoch
@@ -2310,8 +2313,7 @@ class RelayReducer(
                 // that inventory.
                 val sourceBlocked = incomingSource != null && !sourceStale && !sourceRetired && !incomingSource.ready
                 val commandId = state.sessionSyncCommands.entries.first { it.value === pending }.key
-                val epochSwitchRejected = sourceEpochChanged && !sourceRetired &&
-                    incomingSource?.ready == true && conversation.sourceReady && !conversation.isChatSyncing
+                val epochSwitchRejected = cacheGate.epochSwitchRejected
                 if (epochSwitchRejected) {
                     // A ready response from an unrelated epoch is not a recovery handshake. It
                     // may be a delayed snapshot from before a source restart, so preserve the
@@ -2339,7 +2341,7 @@ class RelayReducer(
                 }
                 val staleTarget = !state.ownsSessionSnapshot(commandId, runtimeId, snapshot.sessionId,
                     snapshot.syncId, responseTargetLeafId, snapshot.range, snapshot.beforeEntryId) ||
-                    sourceStale || sourceRetired
+                    sourceStale || sourceRetired || cacheGate.stale
                 // A preview can resolve a newer live leaf only if metadata has not advanced since
                 // it was requested. A catch-up target can be an old ancestor/cache hole.
                 if (pending.range == "preview" && !isCanonicalPage && !staleTarget && targetLeafId != null &&
@@ -2351,8 +2353,7 @@ class RelayReducer(
                 // Every successful range joins the same canonical graph. Projection state remains
                 // separate from the realtime overlay below.
                 val isCatchUp = pending.range == "catchup" && !isHistory
-                // Epoch changes do not change canonical identity. Always validate against the
-                // existing immutable entries; only the current projection is replaced below.
+                // Cache generation changes invalidate old edges, not the native Entry identity.
                 val currentGraph = state.sessionGraphs[snapshot.sessionId] ?: SessionGraph(snapshot.sessionId)
                 val projectionConversation = if (sourceEpochChanged && !sourceRetired) conversation.copy(
                     messages = emptyList(),
@@ -2373,8 +2374,13 @@ class RelayReducer(
                     cursor = SessionBranchCursor(targetLeafId),
                     targetLeafId = targetLeafId,
                 )
-                val mergedGraph = if (staleTarget || sourceBlocked) currentGraph else {
-                    runCatching { currentGraph.merge(snapshotForProjection) }.getOrElse { error ->
+                val mergedGraph = if (staleTarget || sourceBlocked || !cacheGate.cacheAllowed) currentGraph else {
+                    runCatching {
+                        val base = currentGraph.merge(snapshotForProjection)
+                        if (isCanonicalPage || incomingSource == null || !sourceReadyCheckpoint) base else
+                            contiguousSourcePatches(incomingSource.epoch, incomingSource.seq, conversation.sourcePatchBuffer.values)
+                                .fold(base) { graph, patch -> graph.merge(patch.canonicalPage()) }
+                    }.getOrElse { error ->
                         return@reduceRuntimeEvent state.failSessionSync(commandId,
                             "Session 历史同步失败：${error.message}").copy(
                             lastSequence = state.lastSequence + (sequenceKey to sequence),
@@ -2434,7 +2440,8 @@ class RelayReducer(
                     // UI re-request the same page forever). Appending to the branch never
                     // invalidates its ancestors, so only the paging target leaf is refreshed.
                     val continuedHistory = existingHistory?.takeIf {
-                        !isHistory && it.sessionId == snapshot.sessionId && it.oldestEntryId != null
+                        !sourceEpochChanged && currentGraph.cacheEpoch == mergedGraph.cacheEpoch &&
+                            !isHistory && it.sessionId == snapshot.sessionId && it.oldestEntryId != null
                     }
                     val nextHistory = if (continuedHistory != null) {
                         // Filling a gap can expose an older cached prefix in the projection.
