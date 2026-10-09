@@ -27,7 +27,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
 
-import { resolveCodexCommand, type CodexCommand } from "./codex-daemon.js";
+import { CodexAppServer, resolveCodexCommand, type CodexCommand } from "./codex-daemon.js";
+import { CodexDesktopRefreshBridge, type DesktopRefreshEndpoint } from "./codex-desktop-refresh-bridge.js";
 
 /** 端点描述文件：Host 每 2s 读它，所以它必须是原子、只属于当前桥接的一份。 */
 export type CodexDesktopEndpointFile = {
@@ -36,6 +37,7 @@ export type CodexDesktopEndpointFile = {
   codexPid: number | undefined;
   bridgePid: number;
   startedAt: string;
+  refresh?: DesktopRefreshEndpoint;
 };
 
 function log(line: string): void {
@@ -184,9 +186,23 @@ export async function runBridge({ codex, args, endpointFile, maxPayloadBytes = 6
   await waitForPort(port);
   const socket = await openSocket(url, maxPayloadBytes);
   const descriptor: CodexDesktopEndpointFile = { schema: 1, url, codexPid: child.pid, bridgePid: process.pid, startedAt: new Date().toISOString() };
+  let refresh: CodexDesktopRefreshBridge | undefined;
+  let controlServer: CodexAppServer | undefined;
+  try {
+    controlServer = await CodexAppServer.createExternal({ endpoint: url, clientName: "orbis-desktop-refresh" });
+    const server = controlServer;
+    refresh = new CodexDesktopRefreshBridge((method, params) => server.request(method, params, 0));
+    descriptor.refresh = await refresh.listen();
+  } catch (error) {
+    refresh?.close();
+    await controlServer?.stop();
+    refresh = undefined;
+    log(`桌面刷新控制不可用，仍保留正常桥接：${error instanceof Error ? error.message : String(error)}`);
+  }
   writeEndpointFile(endpointFile, descriptor);
   log(`已就绪：桌面版走 stdio，Orbis 可接 ${url}`);
-  await bridgeStdio(child, socket, endpointFile, descriptor);
+  try { await bridgeStdio(child, socket, endpointFile, descriptor, refresh); }
+  finally { refresh?.close(); await controlServer?.stop(); }
 }
 
 /** 读回自己发布的内容，用来判断是否需要重发。 */
@@ -220,7 +236,7 @@ function openSocket(url: string, maxPayload: number): Promise<WebSocket> {
 }
 
 /** GUI 的 stdio 与 app-server 的 ws 帧一一对应：两边都是「一帧一行」。 */
-async function bridgeStdio(child: ChildProcess, socket: WebSocket, endpointFile: string, descriptor: CodexDesktopEndpointFile): Promise<void> {
+async function bridgeStdio(child: ChildProcess, socket: WebSocket, endpointFile: string, descriptor: CodexDesktopEndpointFile, refresh?: CodexDesktopRefreshBridge): Promise<void> {
   await new Promise<void>(resolve => {
     let pending = "";
     let finished = false;
@@ -248,12 +264,15 @@ async function bridgeStdio(child: ChildProcess, socket: WebSocket, endpointFile:
       while (index >= 0) {
         const line = pending.slice(0, index).trim();
         pending = pending.slice(index + 1);
-        if (line.length > 0 && socket.readyState === socket.OPEN) socket.send(line);
+        if (line.length > 0 && socket.readyState === socket.OPEN) { refresh?.guiRequest(line); socket.send(line); }
         index = pending.indexOf("\n");
       }
     });
     process.stdin.on("end", () => { log("桌面版关闭了 stdio，收起桥接"); finish(); });
-    socket.on("message", data => { process.stdout.write(`${data.toString()}\n`); });
+    socket.on("message", data => {
+      const line = data.toString();
+      process.stdout.write(`${line}\n`, error => { if (error == null) refresh?.guiResponse(line); });
+    });
     socket.on("close", () => { log("app-server 连接已关闭"); finish(); });
     socket.on("error", error => { log(`WebSocket 错误：${error.message}`); finish(); });
     child.on("exit", (code, signal) => {

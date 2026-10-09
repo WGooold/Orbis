@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { launchCodexDesktopApp } from "./codex-desktop-app.js";
 import { ensureCodexDesktopEntry } from "./codex-shim-install.js";
+import type { DesktopRefreshEndpoint } from "./codex-desktop-refresh-bridge.js";
 
 export type CodexDesktopWrapper = {
   /** 桌面版要启动的 CLI（我们的包装器，不是真 codex）。 */
@@ -147,7 +148,7 @@ export function resolveCodexWrapper(env: NodeJS.ProcessEnv = process.env): Codex
 }
 
 /** 包装器发布端点、Host 读端点，两边靠同一个文件对齐。 */
-export type CodexDesktopEndpoint = { url: string; bridgePid: number };
+export type CodexDesktopEndpoint = { url: string; bridgePid: number; refresh?: DesktopRefreshEndpoint };
 
 function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -175,10 +176,16 @@ export function readCodexDesktopEndpoint(path: string): CodexDesktopEndpoint | u
   try { parsed = JSON.parse(text); }
   catch { return undefined; }
   if (parsed === null || typeof parsed !== "object") return undefined;
-  const value = parsed as { url?: unknown; bridgePid?: unknown; schema?: unknown };
+  const value = parsed as { url?: unknown; bridgePid?: unknown; schema?: unknown; refresh?: unknown };
   if (value.schema !== 1 || typeof value.url !== "string" || !/^ws:\/\/127\.0\.0\.1:\d{1,5}$/.test(value.url)) return undefined;
   const bridgePid = Number(value.bridgePid);
   if (!Number.isInteger(bridgePid) || !processAlive(bridgePid)) return undefined;
+  const refresh = value.refresh as Partial<DesktopRefreshEndpoint> | undefined;
+  if (refresh != null && typeof refresh === "object" && typeof refresh.url === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(refresh.url)
+    && typeof refresh.token === "string" && /^[a-f0-9-]{36}$/u.test(refresh.token)
+    && typeof refresh.instanceId === "string" && /^[a-f0-9-]{36}$/u.test(refresh.instanceId)) {
+    return { url: value.url, bridgePid, refresh: refresh as DesktopRefreshEndpoint };
+  }
   return { url: value.url, bridgePid };
 }
 

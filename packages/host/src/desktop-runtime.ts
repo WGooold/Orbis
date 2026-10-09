@@ -330,6 +330,7 @@ export class DesktopRuntime {
           onReady: runtime => this.#service?.attachCodexDesktopRuntime(runtime),
           onOffline: runtime => this.#service?.detachCodexDesktopRuntime(runtime),
           resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
+          desktopRefresh: { journalDirectory: join(this.#stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
           launchApp: staged === undefined
             ? () => launchCodexDesktopApp()
             : async () => { if (!await launchCodexDesktopThroughWrapper(staged, endpointPath)) await launchCodexDesktopApp(); },

@@ -155,7 +155,7 @@ export class CodexClientRefreshCoordinator {
         if (!sameRequest(existing.request, request)) return result(request, "manual_required", "refresh_operation_identity_mismatch");
         return existing.kind === "receipt" ? existing.result : this.#drive(existing);
       }
-      const duplicate = entries.find(entry => entry.request.backendId === request.backendId
+      const duplicate = entries.find(entry => entry.kind === "operation" && entry.request.backendId === request.backendId
         && entry.request.threadId === request.threadId && entry.request.historyRevision === request.historyRevision);
       if (duplicate !== undefined) return duplicate.kind === "receipt" ? duplicate.result : this.#drive(duplicate);
       const prepared = await this.#driver.prepare(request);
@@ -203,10 +203,33 @@ export class CodexClientRefreshCoordinator {
       try { observed = await this.#driver.inspect(structuredClone(operation)); }
       catch (error) { return this.#problem(operation, "recovery_pending", `refresh_inspection_failed: ${describe(error)}`); }
       const unsafe = unsafeObservation(operation, observed);
-      if (unsafe !== undefined) return this.#problem(operation, "manual_required", unsafe);
+      if (unsafe !== undefined) {
+        // A restored client may legitimately start new work before hydration is observed.
+        // End that obsolete confirmation record; it must not block a later real revert to
+        // the same retained prefix. Never discard an operation with unfinished side effects.
+        if (operation.phase === "confirming" && operation.inFlight === undefined
+          && observed.ownership === "verified" && observed.scopeComplete && sameOriginalState(operation, observed)) {
+          return this.#finish(operation, "manual_required", unsafe);
+        }
+        return this.#problem(operation, "manual_required", unsafe);
+      }
       const target = observed.threads.find(thread => thread.threadId === operation.request.threadId)!;
       if (operation.plan.client.kind === "desktop" && ["opening", "open_requested", "confirming"].includes(operation.phase)
         && !sameOriginalState(operation, observed)) {
+        // A new Host connection has no subscription even when native loading and archive
+        // state were fully restored. Restore only its own proven association, without
+        // repeating archive or touching a GUI that has begun new work.
+        const subscriptionOnly = operation.plan.affected.every(original => {
+          const current = observed.threads.find(t => t.threadId === original.threadId)!;
+          return current.archived === original.archived && current.loaded === original.loaded
+            && (current.subscribed === original.subscribed || original.subscribed && !current.subscribed
+              && current.unsubscribedBy === operation.request.operationId);
+        });
+        if (subscriptionOnly && operation.inFlight === undefined) {
+          operation.phase = "restoring";
+          await this.#save(operation);
+          continue;
+        }
         return this.#problem(operation, "manual_required", "client_refresh_lifecycle_changed_after_restore");
       }
       if (operation.inFlight !== undefined) {
@@ -356,8 +379,8 @@ function sameRequest(left: CodexRefreshRequest, right: CodexRefreshRequest): boo
 
 function sameOriginalState(operation: CodexRefreshOperation, observed: CodexRefreshObservation): boolean {
   return operation.plan.affected.every(original => {
-    const current = observed.threads.find(thread => thread.threadId === original.threadId)!;
-    return original.archived === current.archived && original.loaded === current.loaded && original.subscribed === current.subscribed;
+    const current = observed.threads.find(thread => thread.threadId === original.threadId);
+    return current !== undefined && original.archived === current.archived && original.loaded === current.loaded && original.subscribed === current.subscribed;
   });
 }
 

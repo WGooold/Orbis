@@ -5,6 +5,7 @@ import type { CodexDesktopAttach } from "@pi-remote/protocol";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { launchCodexDesktopApp } from "./codex-desktop-app.js";
+import type { CodexDesktopRefreshOptions } from "./codex-desktop-refresh.js";
 import { detectCodexDesktopPresence, waitForCodexDesktop, type CodexDesktopPresence, type CodexDesktopPresenceOptions } from "./codex-desktop-presence.js";
 
 export { launchCodexDesktopApp } from "./codex-desktop-app.js";
@@ -29,6 +30,7 @@ export type CodexDesktopLifecycleOptions = {
   pollIntervalMs?: number;
   /** 端点模式下等桌面版把端点交出来的时长（手机按需拉起时会打开 GUI）。 */
   endpointWaitMs?: number;
+  desktopRefresh?: CodexDesktopRefreshOptions;
 };
 
 /**
@@ -237,7 +239,8 @@ export class CodexDesktopLifecycle {
 
   /** 挂载一条已握手的 app-server 连接：Host 先装事件出口，再标记就绪。 */
   async #mount(server: CodexAppServer, reason: string): Promise<CodexRuntime> {
-    const runtime = new CodexRuntime({ server, ...(this.#options.log === undefined ? {} : { log: this.#options.log }), onEvent: () => {} });
+    const runtime = new CodexRuntime({ server, ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
+      ...(this.#options.desktopRefresh === undefined ? {} : { desktopRefresh: this.#options.desktopRefresh }), onEvent: () => {} });
     try {
       if (this.#stopping) throw new Error("Codex 桌面版正在关闭");
       // HostService attaches the runtime and its event handlers in onReady. Marking it

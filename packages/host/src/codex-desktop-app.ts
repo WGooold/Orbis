@@ -1,6 +1,21 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 
+/** Open the target on the verified local Windows desktop, without restarting the app. */
+export async function openCodexDesktopThread(threadId: string, hostId: string): Promise<void> {
+  if (process.platform !== "win32" || hostId !== "local" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(threadId)) {
+    throw new Error("desktop_refresh_route_unverified");
+  }
+  const uri = `codex://threads/${encodeURIComponent(threadId)}?hostId=local`;
+  const script = `$ErrorActionPreference = 'Stop'\nStart-Process -FilePath '${uri}' -WindowStyle Hidden`;
+  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    { stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000 });
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法重新打开 Codex 桌面会话")));
+  });
+}
+
 /**
  * Activate the registered MSIX application, as the Start menu does. Starting its
  * versioned ChatGPT.exe directly gives the taskbar an executable shortcut and

@@ -111,19 +111,27 @@ describe("Codex client refresh recovery", () => {
     expect(await h.coordinator.pending()).toEqual([]);
   });
 
-  it("coalesces duplicate and reordered callers by the committed history revision", async () => {
+  it("coalesces repeated callers by the committed operation identity", async () => {
     const h = harness();
     h.observed.hydratedHistoryRevision = request.historyRevision;
     const results = await Promise.all([
       h.coordinator.start(request),
-      h.coordinator.start({ ...request, operationId: "notification-1" }),
-      h.coordinator.start({ ...request, operationId: "reconnect-1" }),
+      h.coordinator.start(request),
+      h.coordinator.start(request),
     ]);
     expect(results.map(candidate => candidate.status)).toEqual(["complete", "complete", "complete"]);
     expect(h.actions.filter(action => action.kind === "archive")).toHaveLength(1);
     expect(h.actions.filter(action => action.kind === "open_desktop")).toHaveLength(1);
     expect(h.driver.prepare).toHaveBeenCalledTimes(1);
     expect(await h.coordinator.start({ ...request, threadId: "wrong" })).toMatchObject({ status: "manual_required", reason: "refresh_operation_identity_mismatch" });
+  });
+
+  it("refreshes a later revert to the same retained history rather than reusing an old receipt", async () => {
+    const h = harness();
+    h.observed.hydratedHistoryRevision = request.historyRevision;
+    expect((await h.coordinator.start(request)).status).toBe("complete");
+    expect((await h.coordinator.start({ ...request, operationId: "later-revert" })).status).toBe("complete");
+    expect(h.actions.filter(action => action.kind === "archive")).toHaveLength(2);
   });
 
   it("restarts after an unknown archive result, inspects first, and never repeats archive", async () => {

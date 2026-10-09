@@ -120,6 +120,7 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
       onReady: runtime => service?.attachCodexDesktopRuntime(runtime),
       onOffline: runtime => service?.detachCodexDesktopRuntime(runtime),
       resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
+      desktopRefresh: { journalDirectory: join(stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
       launchApp: staged === undefined
         ? () => launchCodexDesktopApp()
         : async () => { if (!await launchCodexDesktopThroughWrapper(staged, endpointPath)) await launchCodexDesktopApp(); },

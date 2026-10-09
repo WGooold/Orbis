@@ -64,6 +64,8 @@ import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
 import { CODEX_PERMISSION_COMMANDS, codexErrorMessage, codexPermissionUpdate, codexPermissions } from "./codex-permissions.js";
 import { SessionArchiveError } from "./session-archive.js";
+import { CodexClientRefreshCoordinator, FileCodexRefreshJournal, type CodexRefreshResult } from "./codex-client-refresh.js";
+import { CodexDesktopRefreshDriver, desktopHistoryRevision, type CodexDesktopRefreshOptions } from "./codex-desktop-refresh.js";
 import { ActivationError } from "./spawner.js";
 
 /** 审批窗口。手机在 expiresAt 前不响应就按 decline 处理，防止 turn 挂死。 */
@@ -155,6 +157,8 @@ export type CodexRuntimeOptions = {
    * 窗口再复查，已被收编的就是自己人的广播。测试注入小值。
    */
   tuiSwitchGraceMs?: number;
+  /** Windows wrapper evidence and the Host-owned durable recovery journal. */
+  desktopRefresh?: CodexDesktopRefreshOptions;
 };
 
 /** 只读 rollout 文件头部找 meta 和第一条用户消息；指令前导很长，128KB 足够覆盖。 */
@@ -352,6 +356,13 @@ export class CodexRuntime implements AgentBackend {
   #nativeWatcher: NodeJS.Timeout | undefined;
   #desktopRefreshing = false;
   #desktopRefreshPending = false;
+  readonly #desktopClientProtected = new Set<string>();
+  readonly #desktopClientPending = new Map<string, string>();
+  readonly #desktopClientProblems = new Map<string, string>();
+  #desktopClientRefresh: CodexClientRefreshCoordinator | undefined;
+  #desktopClientRecovery: Promise<void> | undefined;
+  #desktopClientWatcher: NodeJS.Timeout | undefined;
+  #desktopClientRecovering = false;
   /** Host 自己的 thread/start|resume|fork 在途计数：>0 时收到的广播先宽限，不当成 TUI 切换。 */
   #activating = 0;
   #watcher: NodeJS.Timeout | undefined;
@@ -375,6 +386,28 @@ export class CodexRuntime implements AgentBackend {
     this.#options = options;
     this.#eventSink = options.onEvent;
     this.#server = options.server;
+    if (isDesktopAppServer(options.server) && options.desktopRefresh !== undefined) {
+      const driver = new CodexDesktopRefreshDriver({
+        ...options.desktopRefresh, server: options.server,
+        revision: async threadId => desktopHistoryRevision(await this.#listAllTurns(threadId)),
+        localBusy: threadId => {
+          const thread = this.#threads.get(threadId);
+          return thread !== undefined && (thread.turnInProgress || thread.turnStartPending || thread.waitingForApproval || thread.queue.length > 0)
+            || [...this.#approvals.values()].some(a => a.threadId === threadId);
+        },
+        isSubscribed: threadId => this.#threads.has(threadId),
+        protect: threadId => { this.#desktopClientProtected.add(threadId); },
+        restored: (threadId, snapshot) => {
+          const thread = this.#threads.get(threadId);
+          if (thread !== undefined) {
+            if (typeof snapshot.path === "string") thread.rolloutPath = snapshot.path;
+            else delete thread.rolloutPath;
+            this.#desktopSuppressed.delete(threadId);
+          }
+        },
+      });
+      this.#desktopClientRefresh = new CodexClientRefreshCoordinator(new FileCodexRefreshJournal(options.desktopRefresh.journalDirectory), driver);
+    }
     this.#attachServer(options.server);
   }
 
@@ -424,6 +457,8 @@ export class CodexRuntime implements AgentBackend {
       this.#desktopWatcher = undefined;
       if (this.#nativeWatcher !== undefined) clearInterval(this.#nativeWatcher);
       this.#nativeWatcher = undefined;
+      if (this.#desktopClientWatcher !== undefined) clearInterval(this.#desktopClientWatcher);
+      this.#desktopClientWatcher = undefined;
       this.#desktopThreads.clear();
       this.#desktopSuppressed.clear();
       this.#desktopRefreshPending = false;
@@ -465,6 +500,8 @@ export class CodexRuntime implements AgentBackend {
     this.#desktopWatcher = undefined;
     if (this.#nativeWatcher !== undefined) clearInterval(this.#nativeWatcher);
     this.#nativeWatcher = undefined;
+    if (this.#desktopClientWatcher !== undefined) clearInterval(this.#desktopClientWatcher);
+    this.#desktopClientWatcher = undefined;
     await this.#server.stop();
     this.#server.onExit?.(0);
   }
@@ -622,9 +659,20 @@ export class CodexRuntime implements AgentBackend {
   /** 标记已就绪（host-service 在 server 握手成功后调用）。 */
   markStarted(): void {
     this.#started = true;
+    if (this.#desktopClientRefresh !== undefined && this.#desktopClientRecovery === undefined) {
+      this.#desktopClientRecovery = this.#initializeDesktopRefreshRecovery().catch(error => {
+        this.#options.log?.(`Codex 桌面刷新恢复记录无法读取：${describeError(error)}`);
+        // Do not enable fresh lifecycle mutations over a corrupt/ambiguous journal.
+        this.#desktopClientRefresh = undefined;
+      });
+      this.#desktopClientWatcher = setInterval(() => { void this.#recoverDesktopClients().catch(error => {
+        this.#options.log?.(`Codex 桌面刷新恢复失败：${describeError(error)}`);
+      }); }, 2_000);
+      this.#desktopClientWatcher.unref?.();
+    }
     if (this.#nativeWatcher === undefined) {
       this.#nativeWatcher = setInterval(() => {
-        for (const thread of this.#threads.values()) void this.#checkNativeSource(thread).catch(() => undefined);
+        for (const thread of this.#threads.values()) if (!this.#desktopClientProtected.has(thread.id)) void this.#checkNativeSource(thread).catch(() => undefined);
       }, 15_000);
       this.#nativeWatcher.unref?.();
     }
@@ -639,6 +687,7 @@ export class CodexRuntime implements AgentBackend {
   }
 
   async #refreshDesktopThreads(): Promise<void> {
+    await this.#desktopClientRecovery;
     if (!this.#started || !isDesktopAppServer(this.#server)) return;
     if (this.#desktopRefreshing) {
       this.#desktopRefreshPending = true;
@@ -654,9 +703,10 @@ export class CodexRuntime implements AgentBackend {
         if (!loaded.has(id)) this.#desktopSuppressed.delete(id);
       }
       for (const id of this.#desktopThreads) {
-        if (!loaded.has(id)) this.#deactivateThread(id, "Codex 桌面会话已卸载");
+        if (!loaded.has(id) && !this.#desktopClientProtected.has(id)) this.#deactivateThread(id, "Codex 桌面会话已卸载");
       }
       for (const id of loaded) {
+        if (this.#desktopClientProtected.has(id)) continue;
         if (this.#threads.has(id) && !this.#threads.get(id)?.tuiAttachPending) continue;
         const result = object(await this.#server.request("thread/read", { threadId: id, includeTurns: false }));
         if (!this.#started || !loaded.has(id)) return;
@@ -1521,6 +1571,11 @@ export class CodexRuntime implements AgentBackend {
     const thread = threadId !== undefined
       ? this.#threads.get(threadId)
       : [...this.#threads.values()].at(-1);
+    if (thread !== undefined && this.#desktopClientProtected.has(thread.id)
+      && (command.type === "user_message" || command.type === "slash.execute")) {
+      this.#commandResult(thread.id, commandId, false, "历史已回退，桌面刷新正在恢复；请稍后重试", "failure");
+      return true;
+    }
     switch (command.type) {
       case "user_message": {
         if (thread === undefined) {
@@ -2184,12 +2239,70 @@ export class CodexRuntime implements AgentBackend {
         this.#publishMetadataEvent(thread);
       }, true);
       await this.#waitForReconcile(thread);
+      if (isDesktopAppServer(this.#server)) await this.#refreshDesktopClient(thread);
     });
     const tracked = reverting.finally(() => {
       if (thread.revertOperations.get(beforeTurnId) === tracked) thread.revertOperations.delete(beforeTurnId);
     });
     thread.revertOperations.set(beforeTurnId, tracked);
     return tracked;
+  }
+
+  async #refreshDesktopClient(thread: ThreadState): Promise<void> {
+    const coordinator = this.#desktopClientRefresh;
+    if (coordinator === undefined) {
+      this.#reportError(thread, "历史已回退；电脑画面需要手动归档、撤销归档并重新打开会话");
+      return;
+    }
+    try {
+      await this.#recoverDesktopClients();
+      const result = await coordinator.start({ operationId: randomUUID(), backendId: this.runtimeId, threadId: thread.id,
+        historyRevision: desktopHistoryRevision(await this.#listAllTurns(thread.id)) });
+      this.#desktopRefreshResult(thread.id, result);
+    } catch (error) {
+      this.#options.log?.(`历史已回退，Codex 桌面刷新失败：${describeError(error)}`);
+      this.#reportError(thread, "历史已回退，但桌面刷新失败；请手动归档、撤销归档并重新打开会话");
+      // If the durable record exists, continue only its refresh stage. Never revert again.
+      await this.#initializeDesktopRefreshRecovery().catch(() => undefined);
+      if (![...this.#desktopClientPending.values()].includes(thread.id)) this.#desktopClientProtected.delete(thread.id);
+    }
+  }
+
+  async #initializeDesktopRefreshRecovery(): Promise<void> {
+    const pending = await this.#desktopClientRefresh?.pending() ?? [];
+    for (const operation of pending) {
+      this.#desktopClientPending.set(operation.request.operationId, operation.request.threadId);
+      if (operation.phase !== "confirming") this.#desktopClientProtected.add(operation.request.threadId);
+    }
+    await this.#recoverDesktopClients();
+  }
+
+  async #recoverDesktopClients(): Promise<void> {
+    if (this.#desktopClientRecovering || this.#desktopClientRefresh === undefined) return;
+    this.#desktopClientRecovering = true;
+    try {
+      for (const [operationId, threadId] of this.#desktopClientPending) {
+        const result = await this.#desktopClientRefresh.recover(operationId);
+        this.#desktopRefreshResult(threadId, result);
+      }
+    } finally { this.#desktopClientRecovering = false; }
+  }
+
+  #desktopRefreshResult(threadId: string, result: CodexRefreshResult): void {
+    if (result.status === "complete" || result.status === "manual_required") this.#desktopClientPending.delete(result.operationId);
+    else this.#desktopClientPending.set(result.operationId, threadId);
+    if (result.status !== "recovery_pending") this.#desktopClientProtected.delete(threadId);
+    const description = `${result.status}:${result.reason ?? ""}`;
+    if (this.#desktopClientProblems.get(result.operationId) === description) return;
+    this.#desktopClientProblems.set(result.operationId, description);
+    this.#options.log?.(`Codex 历史已回退，桌面刷新：${description}（thread=${threadId}）`);
+    const thread = this.#threads.get(threadId);
+    if (thread !== undefined && (result.status === "manual_required" || result.status === "recovery_pending")) {
+      const hint = result.reason === "desktop_refresh_wrapper_upgrade_required"
+        ? "请更新 Host，并关闭后重新打开 Codex 桌面版以加载新包装器"
+        : "请手动归档、撤销归档并重新打开该会话";
+      this.#reportError(thread, `历史已回退，但桌面刷新尚未完成；${hint}`);
+    }
   }
 
   /**
@@ -2724,12 +2837,18 @@ export class CodexRuntime implements AgentBackend {
       }
     }
     if ((method === "thread/archived" || method === "thread/unarchived") && typeof threadId === "string") {
+      if (this.#desktopClientProtected.has(threadId)) {
+        const refreshing = this.#threads.get(threadId);
+        if (refreshing !== undefined) delete refreshing.rolloutPath;
+        return;
+      }
       const archived = method === "thread/archived";
       if (archived) this.#deactivateThread(threadId, "会话已归档");
       this.onArchiveChange?.(this.#publicSessionId(threadId), archived);
       return;
     }
     if (method === "thread/closed" && typeof threadId === "string" && isDesktopAppServer(this.#server)) {
+      if (this.#desktopClientProtected.has(threadId)) return;
       this.#desktopSuppressed.set(threadId, "active");
       this.#deactivateThread(threadId, "Codex 桌面会话已关闭");
       return;
