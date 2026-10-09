@@ -67,6 +67,7 @@ import { SessionArchiveError } from "./session-archive.js";
 import { CodexClientRefreshCoordinator, FileCodexRefreshJournal, type CodexRefreshResult } from "./codex-client-refresh.js";
 import { CodexDesktopRefreshDriver, desktopHistoryRevision, type CodexDesktopRefreshOptions } from "./codex-desktop-refresh.js";
 import { ActivationError } from "./spawner.js";
+import { CodexNotificationBuffer, type CodexBufferedNotification } from "./codex-notification-buffer.js";
 
 /** 审批窗口。手机在 expiresAt 前不响应就按 decline 处理，防止 turn 挂死。 */
 const APPROVAL_TTL_MS = 5 * 60 * 1_000;
@@ -223,7 +224,7 @@ type ThreadState = {
   /** TUI-created threads need a Host subscription before their events/settings are visible. */
   tuiAttachPending?: boolean;
   tuiAttachPromise?: Promise<void>;
-  tuiAttachNotifications?: Array<{ method: string; params: unknown }>;
+  tuiAttachNotifications?: CodexNotificationBuffer;
   itemOrder: string[];
   committedItemCount: number;
   completedItems: Map<string, { item: Record<string, unknown>; turnId: string | undefined }>;
@@ -277,7 +278,7 @@ type ThreadState = {
    */
   reconcileGeneration: number;
   reconcilePromise: Promise<void> | undefined;
-  reconcileNotifications: Array<{ method: string; params: unknown }>;
+  reconcileNotifications: CodexNotificationBuffer;
   reconcileDraining: boolean;
   retiredTurnIds: Set<string>;
   retiredItemIds: Set<string>;
@@ -565,7 +566,7 @@ export class CodexRuntime implements AgentBackend {
       waitingForApproval: false,
       reconcileGeneration: 0,
       reconcilePromise: undefined,
-      reconcileNotifications: [],
+      reconcileNotifications: new CodexNotificationBuffer(),
       reconcileDraining: false,
       retiredTurnIds: new Set(),
       retiredItemIds: new Set(),
@@ -2104,11 +2105,13 @@ export class CodexRuntime implements AgentBackend {
 
   async #drainReconcileNotifications(thread: ThreadState): Promise<void> {
     if (thread.reconcileNotifications.length === 0) return;
-    const pending = thread.reconcileNotifications.splice(0, 512);
+    const pending = thread.reconcileNotifications.take();
+    const generation = thread.reconcileGeneration;
     thread.reconcileDraining = true;
+    ++thread.sourceBatchDepth;
     try {
       for (const notification of pending) {
-        if (this.#threads.get(thread.id) !== thread) return;
+        if (!this.#isCurrentReconcile(thread, generation)) return;
         const record = object(notification.params);
         if (this.#retiredNotification(thread, notification.method, record)) continue;
         if (!thread.sourceReady && thread.historyError !== undefined
@@ -2123,10 +2126,18 @@ export class CodexRuntime implements AgentBackend {
           // The next authoritative read can recover it; never guess that it is current.
           continue;
         }
-        await this.#handleNotification(notification.method, notification.params);
+        await this.#handleNotification(notification.method, notification.params, true);
       }
     } finally {
       thread.reconcileDraining = false;
+      --thread.sourceBatchDepth;
+      if (thread.sourceBatchDepth === 0 && thread.sourceDirty) {
+        thread.sourceDirty = false;
+        thread.nativeSourceDirty = true;
+        // The caller publishes the ready state after the entire native reconciliation.
+        // Replaying hundreds of buffered chunks must not expose hundreds of partial states.
+        if (thread.sourceReady && this.#isCurrentReconcile(thread, generation)) this.#touchSource(thread);
+      }
     }
     if (thread.reconcileNotifications.length > 0) await this.#drainReconcileNotifications(thread);
   }
@@ -2135,6 +2146,7 @@ export class CodexRuntime implements AgentBackend {
   #reconcileExternalRevert(thread: ThreadState): void {
     const generation = thread.reconcileGeneration + 1;
     void this.#queueReconcile(thread, async (generation) => {
+      if (thread.reconcileNotifications.overflowed) thread.reconcileNotifications.reset();
       this.#beginSourceReconcile(thread);
       const turns = await this.#listAllTurns(thread.id);
       if (!this.#isCurrentReconcile(thread, generation)) return;
@@ -2193,7 +2205,9 @@ export class CodexRuntime implements AgentBackend {
         const signature = resultText(turns, true);
         if (signature !== thread.nativeHistorySignature || thread.nativeSourceDirty || !thread.sourceReady) {
           thread.sourceReady = false;
-          this.#touchSource(thread);
+          // A successful periodic read is committed with its buffered notifications below.
+          // Publishing the transient rebuild state here makes every native check look like
+          // a source failure to the phone and starts unnecessary checkpoint recovery.
           if (!this.#replayTurns(thread, { turns })) {
             this.#touchSource(thread);
             throw new Error(thread.historyError ?? "codex_reconcile_failed");
@@ -2692,7 +2706,7 @@ export class CodexRuntime implements AgentBackend {
   #attachTuiThread(thread: ThreadState): Promise<void> {
     if (thread.tuiAttachPromise !== undefined) return thread.tuiAttachPromise;
     if (!thread.tuiAttachPending || this.#threads.get(thread.id) !== thread) return Promise.resolve();
-    thread.tuiAttachNotifications = [];
+    thread.tuiAttachNotifications = new CodexNotificationBuffer();
     const generation = ++thread.reconcileGeneration;
     const attaching = (async () => {
       try {
@@ -2730,18 +2744,18 @@ export class CodexRuntime implements AgentBackend {
           this.#options.log?.(`接入 TUI 会话失败，将重试（thread=${thread.id}）：${message}`);
         }
       } finally {
-        const notifications = thread.tuiAttachNotifications ?? [];
+        const notifications = thread.tuiAttachNotifications?.take() ?? [];
         delete thread.tuiAttachNotifications;
         delete thread.tuiAttachPromise;
         if (this.#threads.get(thread.id) === thread) {
           if (!this.#isCurrentReconcile(thread, generation)) {
-            thread.reconcileNotifications.push(...notifications.slice(0, 512));
+            for (const notification of notifications) this.#bufferNotification(thread, thread.reconcileNotifications, notification);
             thread.tuiAttachPending = false;
             this.#reconcileExternalRevert(thread);
           } else {
             // Notifications may arrive ahead of the resume response. Apply them after replay
             // so a newer item, permission or turn state cannot be erased by that snapshot.
-            thread.reconcileNotifications.push(...notifications);
+            for (const notification of notifications) this.#bufferNotification(thread, thread.reconcileNotifications, notification);
             await this.#drainReconcileNotifications(thread);
             this.#publishMetadataEvent(thread);
           }
@@ -2817,7 +2831,18 @@ export class CodexRuntime implements AgentBackend {
     throw new Error("codex_native_history_unstable");
   }
 
-  async #handleNotification(method: string, params: unknown): Promise<void> {
+  #bufferNotification(thread: ThreadState, buffer: CodexNotificationBuffer,
+    notification: CodexBufferedNotification, attaching = false): void {
+    if (buffer.push(notification) !== "overflow") return;
+    thread.nativeSourceDirty = true;
+    this.#options.log?.(`Codex 协调期间通知缓冲已满，合并为一次原生核对（thread=${thread.id}）`);
+    // Freeze and discard the incomplete prefix. Further notifications cannot queue more
+    // reads or invalidate this repair until its fresh native read actually starts.
+    if (attaching) ++thread.reconcileGeneration;
+    else this.#reconcileExternalRevert(thread);
+  }
+
+  async #handleNotification(method: string, params: unknown, replaying = false): Promise<void> {
     const record = (params ?? {}) as Record<string, unknown>;
     if (method === "windowsSandbox/setupCompleted") {
       for (const active of this.#threads.values()) {
@@ -2872,15 +2897,15 @@ export class CodexRuntime implements AgentBackend {
     if (this.#retiredNotification(thread, method, record)) return;
     if (thread.tuiAttachNotifications !== undefined) {
       if (method === "thread/reverted") ++thread.reconcileGeneration;
-      if (thread.tuiAttachNotifications.length < 512) thread.tuiAttachNotifications.push({ method, params });
-      else ++thread.reconcileGeneration; // Overflow must force another native read, never a partial ready view.
+      this.#bufferNotification(thread, thread.tuiAttachNotifications, { method, params }, true);
       return;
     }
     const incomingTurn = method === "turn/started" ? object(record.turn).id : undefined;
-    if (typeof incomingTurn === "string" && incomingTurn !== thread.turnId && !thread.reconcileDraining) {
+    if (typeof incomingTurn === "string" && incomingTurn !== thread.turnId && !replaying) {
       if (thread.reconcilePromise !== undefined) {
-        if (thread.reconcileNotifications.length < 512) thread.reconcileNotifications.push({ method, params });
-        this.#reconcileExternalRevert(thread);
+        const overflowed = thread.reconcileNotifications.overflowed;
+        this.#bufferNotification(thread, thread.reconcileNotifications, { method, params });
+        if (!overflowed && !thread.reconcileNotifications.overflowed) this.#reconcileExternalRevert(thread);
         return;
       }
       ++thread.reconcileGeneration;
@@ -2891,12 +2916,8 @@ export class CodexRuntime implements AgentBackend {
       }
       return;
     }
-    if (thread.reconcilePromise !== undefined && !thread.reconcileDraining && method !== "thread/reverted") {
-      if (thread.reconcileNotifications.length < 512) thread.reconcileNotifications.push({ method, params });
-      else {
-        this.#options.log?.(`Codex 协调期间通知缓冲已满，触发下一轮核对（thread=${thread.id}）`);
-        this.#reconcileExternalRevert(thread);
-      }
+    if (thread.reconcilePromise !== undefined && !replaying && method !== "thread/reverted") {
+      this.#bufferNotification(thread, thread.reconcileNotifications, { method, params });
       return;
     }
     if (!thread.sourceReady && thread.historyError !== undefined

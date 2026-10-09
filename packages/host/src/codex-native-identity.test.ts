@@ -19,6 +19,7 @@ afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.useRea
 
 function harness(desktop = false) {
   const events: RuntimeEvent[] = [];
+  const logs: string[] = [];
   const root = mkdtempSync(join(tmpdir(), "orbis-native-identity-"));
   let native = turns(true) as unknown[];
   const read = vi.fn((): Promise<unknown> => Promise.resolve({ data: native }));
@@ -32,7 +33,7 @@ function harness(desktop = false) {
     return { data: [] };
   });
   const server = { request, ...(desktop ? { mode: "desktop" } : {}), notify: vi.fn() } as unknown as CodexAppServer;
-  const runtime = new CodexRuntime({ server, rolloutRoot: root, onEvent: event => events.push(event) });
+  const runtime = new CodexRuntime({ server, rolloutRoot: root, onEvent: event => events.push(event), log: line => logs.push(line) });
   cleanups.push(() => { server.onExit?.(0); rmSync(root, { recursive: true, force: true }); });
   const notify = (method: string, params: unknown) => server.onNotification?.(method, params);
   const sync = (sessionId = "session") => {
@@ -41,10 +42,75 @@ function harness(desktop = false) {
       syncId: "sync", range: "preview" }, "sync", sessionId);
     return events.slice(start).find(event => event.type === "session.snapshot");
   };
-  return { runtime, events, request, read, notify, sync, root, setNative: (value: unknown[]) => { native = value; } };
+  return { runtime, events, logs, request, read, notify, sync, root, setNative: (value: unknown[]) => { native = value; } };
 }
 
 describe("Codex canonical native item identity", () => {
+  it("coalesces a large stream during a slow native read and publishes the replay as one ready version", async () => {
+    const h = harness();
+    await h.runtime.activate({ type: "resume", sessionId: "session" });
+    h.notify("turn/started", { threadId: "session", turn: { id: "running", startedAt: 1_800_000_000 } });
+    h.notify("item/started", { threadId: "session", turnId: "running", item: answer("draft") });
+    h.setNative([...turns(true), { id: "running", status: "inProgress", startedAt: 1_800_000_000, items: [answer("draft")] }]);
+    let resolve!: (value: unknown) => void;
+    h.read.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    h.runtime.announce("session");
+    await vi.waitFor(() => expect(h.read).toHaveBeenCalledTimes(2));
+    h.events.length = 0;
+    for (let i = 0; i < 5000; ++i) h.notify("item/agentMessage/delta", {
+      threadId: "session", turnId: "running", itemId: "draft", delta: "x",
+    });
+    resolve({ data: [...turns(true), { id: "running", status: "inProgress", startedAt: 1_800_000_000, items: [answer("draft")] }] });
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1)?.source.ready).toBe(true));
+    const snapshot = h.sync();
+    expect(snapshot?.live?.messages.find(item => item.message.messageId === "draft")).toMatchObject({
+      contentComplete: true, message: { content: [{ type: "text", text: "same answer" + "x".repeat(5000) }] },
+    });
+    expect(h.events.filter(event => event.type === "session.patch" && event.source.ready)).toHaveLength(1);
+    expect(h.events.filter(event => event.type === "session.patch" && !event.source.ready)).toHaveLength(0);
+    expect(h.logs.filter(line => line.includes("缓冲已满"))).toHaveLength(0);
+    expect(h.read).toHaveBeenCalledTimes(2);
+  });
+
+  it("queues one repair for thousands of overflowing notifications and never commits their truncated prefix", async () => {
+    const h = harness();
+    await h.runtime.activate({ type: "resume", sessionId: "session" });
+    const originalEpoch = h.sync()?.source?.epoch;
+    let resolve!: (value: unknown) => void;
+    h.read.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    h.runtime.announce("session");
+    await vi.waitFor(() => expect(h.read).toHaveBeenCalledTimes(2));
+    for (let i = 0; i < 5000; ++i) h.notify("item/completed", {
+      threadId: "session", turnId: "turn", item: answer(`discarded-${i}`),
+    });
+    const repaired = [{ id: "turn", status: "completed", items: [...turns(true)[0]!.items, answer("native-final")] }];
+    h.setNative(repaired);
+    resolve({ data: turns(true) });
+    await vi.waitFor(() => expect(h.sync()?.entries.at(-1)?.entryId).toBe("native-final"));
+    expect(h.logs.filter(line => line.includes("缓冲已满"))).toHaveLength(1);
+    expect(h.read).toHaveBeenCalledTimes(3);
+    expect(h.sync()?.source).toMatchObject({ ready: true });
+    expect(h.sync()?.source?.epoch).not.toBe(originalEpoch);
+    expect(h.sync()?.entries.some(entry => entry.entryId.startsWith("discarded-"))).toBe(false);
+  });
+
+  it("repairs an overflowing desktop attach once instead of invalidating it for every incoming chunk", async () => {
+    const h = harness(true);
+    let resolve!: (value: unknown) => void;
+    h.read.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    h.runtime.markStarted();
+    h.notify("thread/started", { threadId: "session" });
+    await vi.waitFor(() => expect(h.read).toHaveBeenCalledTimes(1));
+    for (let i = 0; i < 5000; ++i) h.notify("item/completed", {
+      threadId: "session", turnId: "turn", item: answer(`discarded-${i}`),
+    });
+    resolve({ data: turns(true) });
+    await vi.waitFor(() => expect(h.sync()?.source?.ready).toBe(true));
+    expect(h.read).toHaveBeenCalledTimes(2);
+    expect(h.logs.filter(line => line.includes("缓冲已满"))).toHaveLength(1);
+    expect(h.sync()?.entries.map(entry => entry.entryId)).toEqual(["uuid-user", "msg-answer", "exec-native", "exec-native:result"]);
+  });
+
   it("never resurrects reverted disk history and confines legacy fallback to native retained turns", async () => {
     const h = harness();
     writeFileSync(join(h.root, "rollout-session.jsonl"), [
