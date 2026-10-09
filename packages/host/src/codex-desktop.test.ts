@@ -55,6 +55,7 @@ function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: str
     }
     if (method === "thread/start") return { thread: { id: "fresh", cwd: "D:/repo", name: "fresh", path: "D:/sessions/rollout.jsonl", status: { type: "idle" }, turns: [] }, model: "gpt-5.5" };
     if (method === "thread/unsubscribe") return {};
+    if (method === "thread/turns/list") return { data: [] };
     if (method === "thread/resume") {
       if (pauseResume) await new Promise<void>(resolve => { releaseResume = resolve; });
       return { thread, model: "gpt-5.5" };

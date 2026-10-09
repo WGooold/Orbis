@@ -19,7 +19,11 @@ function harness() {
     status: { type: "idle" }, turns: [] as unknown[] };
   const resume = vi.fn<() => Promise<unknown>>(() => Promise.resolve({ ...settings, thread: snapshot }));
   const request = vi.fn((method: string) => {
-    if (method === "thread/resume") return resume();
+    if (method === "thread/resume") return resume().then(value => {
+      snapshot.turns = (value as { thread: { turns: unknown[] } }).thread.turns;
+      return value;
+    });
+    if (method === "thread/turns/list") return Promise.resolve({ data: snapshot.turns });
     if (method === "turn/start") return Promise.resolve({ turn: { id: "phone-turn" } });
     return Promise.resolve({ data: [] });
   });

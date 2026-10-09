@@ -31,7 +31,7 @@ async function harness(nativeTurns: unknown[] = []) {
     runtime.dispatchCommand(`codex:${threadId}`, commandId, { type: "interaction.respond", requestId: prompt.requestId,
       extensionId, response: { kind: "select", value } });
   };
-  return { events, server, runtime, approval, latest, answer };
+  return { events, server, runtime, approval, latest, answer, setNativeTurns: (turns: unknown[]) => { nativeTurns = turns; } };
 }
 
 describe("Codex approval lifecycle", () => {
@@ -112,9 +112,10 @@ describe("Codex approval lifecycle", () => {
   });
 
   it("settles a late completion after native reconciliation has cleared the active turn", async () => {
-    const h = await harness([{ id: "turn-1", status: "completed", items: [] }]);
+    const h = await harness();
     h.server.onNotification?.("turn/started", { threadId: "a", turn: { id: "turn-1", startedAt: 1_800_000_000 } });
     h.approval(); const prompt = h.latest(); h.answer(prompt);
+    h.setNativeTurns([{ id: "turn-1", status: "completed", items: [] }]);
     h.runtime.announce("a");
     await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({
       type: "session.patch", source: expect.objectContaining({ ready: true }),

@@ -1149,24 +1149,9 @@ export class CodexRuntime implements AgentBackend {
     }
     void this.#checkSandboxReadiness(thread);
     void this.#refreshIntegrationCatalog(thread);
-    this.#replayTurns(thread, threadJson);
-    const generation = thread.reconcileGeneration;
-    // thread/resume 对旧 rollout 只给 turns 骨架（items 全空），app-server v2 拿不出 UI
-    // item——磁盘兜底重建条目图给手机端用。TUI 端对旧会话也渲染不出历史（codex 限制），
-    // 但仍要开窗：「在线」严格绑定「电脑上有 TUI 窗口在」，不开窗就会变成「没 TUI 却
-    // 在线」的假象（关窗即下线靠看门狗轮询）。空窗的代价低于显示/状态不一致。
-    if (thread.itemOrder.length === 0) {
-      // A new app-server thread gets its rollout path before the first turn, but Codex
-      // does not create that file until the first message is sent. An absent path is
-      // therefore an expected empty history for `thread/start`; an existing session
-      // still treats the same condition as an unreadable history.
-      await this.#replayFromRollout(thread, target.type === "new");
-    }
-    if (!this.#isCurrentReconcile(thread, generation)) {
-      this.#reconcileExternalRevert(thread);
-      if (thread.reconcilePromise !== undefined) await this.#waitForReconcile(thread);
-      return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
-    }
+    await this.#queueReconcile(thread, generation =>
+      this.#hydrateNativeHistory(thread, threadJson, generation));
+    await this.#waitForReconcile(thread);
     // A replay/rollout failure is an unresolved source state. Keep the thread visible so
     // the adapter can retry, but never publish a ready checkpoint for an unverified graph.
     thread.sourceReady = thread.historyError === undefined;
@@ -1326,11 +1311,31 @@ export class CodexRuntime implements AgentBackend {
     this.onOffline?.(reason, [metadata]);
   }
 
-  /**
-   * thread/resume|start 返回的 turns → 条目图（只回放，不重发流式事件）。
-   *
-   * 这是**重建**：先清掉既有条目再按 turns 顺序重灌。历史回退（`thread/revert`）之后也走
-   * 这里——那次调用拿到的就是截断后的新前缀，不能只往旧条目上追加。
+  /** Resume/start/fork subscribe and supply settings, but their item IDs are view-local.
+   * Only full turns/list (also used by reconciliation and revert) can seed canonical IDs.
+   * Caller buffers notifications and owns the generation throughout this native read.
+   */
+  async #hydrateNativeHistory(thread: ThreadState, snapshot: Record<string, unknown> | undefined,
+    generation: number): Promise<void> {
+    try {
+      const turns = await this.#listAllTurns(thread.id);
+      if (!this.#isCurrentReconcile(thread, generation)) return;
+      this.#replayTurns(thread, { path: snapshot?.path, turns });
+      // Legacy rollouts can have no native items. Never use the synthesized resume view
+      // as fallback; full native items always take precedence over on-disk history.
+      if (thread.historyError === undefined && thread.itemOrder.length === 0 && turns.length > 0) {
+        await this.#replayFromRollout(thread, new Set(turns.map(turn => object(turn).id as string)));
+      }
+    } catch (error) {
+      if (!this.#isCurrentReconcile(thread, generation)) return;
+      thread.historyError = describeError(error);
+      thread.sourceReady = false;
+      this.#options.log?.(`Codex 原生历史加载失败（thread=${thread.id}）：${thread.historyError}`);
+    }
+  }
+
+  /** Rebuild from full native turns, including after revert. Previous Entries are only
+   * a conflict-check baseline; they never supply the current parent edges or order.
    */
   #replayTurns(thread: ThreadState, threadJson: Record<string, unknown> | undefined): boolean {
     if (typeof threadJson?.path === "string" && isAbsolute(threadJson.path)) thread.rolloutPath = threadJson.path;
@@ -1490,7 +1495,7 @@ export class CodexRuntime implements AgentBackend {
    * 但 rollout 文件里每条 `event_msg(item_completed)` 都有完整 item——只是 item.type
    * 是 PascalCase（UserMessage/AgentMessage…），映射前先归一化成 camelCase。
    */
-  async #replayFromRollout(thread: ThreadState, allowMissing = false): Promise<void> {
+  async #replayFromRollout(thread: ThreadState, retainedTurns: Set<string>): Promise<void> {
     const generation = thread.reconcileGeneration;
     const root = this.#options.rolloutRoot ?? join(homedir(), ".codex", "sessions");
     let paths: string[];
@@ -1512,8 +1517,7 @@ export class CodexRuntime implements AgentBackend {
         const first = parseJsonLine(text.split("\n", 1)[0] ?? "");
         const meta = first?.type === "session_meta" ? first.payload as { id?: unknown } | undefined : undefined;
         if (meta?.id === thread.id) matches.push(text);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT" && allowMissing) return;
+      } catch {
         thread.historyError = "rollout_unreadable";
         return;
       }
@@ -1552,6 +1556,9 @@ export class CodexRuntime implements AgentBackend {
       if (eventType !== "item_started" && eventType !== "item_completed") continue;
       const item = payload?.item;
       if (item === null || typeof item !== "object") continue;
+      // Even a legacy fallback must stay inside the authoritative retained prefix.
+      // Disk writes may lag a revert and still contain removed turns.
+      if (currentTurnId === undefined || !retainedTurns.has(currentTurnId)) continue;
       const normalized = normalizeItemTypes(item as Record<string, unknown>);
       this.#noteItem(thread, normalized);
       if (eventType === "item_completed") this.#completeItem(thread, normalized, currentTurnId);
@@ -2104,6 +2111,13 @@ export class CodexRuntime implements AgentBackend {
         if (this.#threads.get(thread.id) !== thread) return;
         const record = object(notification.params);
         if (this.#retiredNotification(thread, notification.method, record)) continue;
+        if (!thread.sourceReady && thread.historyError !== undefined
+          && (notification.method.startsWith("item/") || notification.method.startsWith("turn/"))) {
+          // No verified prefix exists after a failed hydration. Committing buffered items
+          // here would assign them guessed parents and poison the next authoritative replay.
+          thread.nativeSourceDirty = true;
+          continue;
+        }
         if (notification.method.startsWith("item/") && typeof record.turnId !== "string") {
           // A buffered item without a native turn identity cannot be assigned to a new view.
           // The next authoritative read can recover it; never guess that it is current.
@@ -2347,8 +2361,8 @@ export class CodexRuntime implements AgentBackend {
       this.#rememberDesktopThread(id);
     }
     void this.#refreshIntegrationCatalog(forked);
-    this.#replayTurns(forked, result.thread ?? {});
-    if (forked.itemOrder.length === 0) await this.#replayFromRollout(forked);
+    await this.#queueReconcile(forked, generation => this.#hydrateNativeHistory(forked, result.thread, generation));
+    await this.#waitForReconcile(forked);
     forked.sourceReady = forked.historyError === undefined;
     this.#publishMetadataEvent(forked);
 
@@ -2658,7 +2672,7 @@ export class CodexRuntime implements AgentBackend {
   }
 
   async #initializeTuiThread(thread: ThreadState, snapshot: Record<string, unknown> | undefined): Promise<void> {
-    this.#replayTurns(thread, snapshot);
+    if (typeof snapshot?.path === "string" && isAbsolute(snapshot.path)) thread.rolloutPath = snapshot.path;
     thread.tuiAttachPending = true;
     if (thread.historyError === undefined) thread.historyError = "codex_attach_pending";
     await this.#attachTuiThread(thread);
@@ -2693,19 +2707,12 @@ export class CodexRuntime implements AgentBackend {
         if (typeof result.reasoningEffort === "string") thread.effort = result.reasoningEffort;
         thread.permissions = codexPermissions(result) ?? thread.permissions;
         if (codexPermissions(result)) this.#effectiveSettings.set(thread.id, result);
-        this.#replayTurns(thread, snapshot);
-        if (thread.itemOrder.length === 0) {
-          const empty = Array.isArray(snapshot.turns) && snapshot.turns.length === 0;
-          await this.#replayFromRollout(thread, empty);
-        }
+        await this.#hydrateNativeHistory(thread, snapshot, generation);
         if (!this.#isCurrentReconcile(thread, generation)) return;
         const status = object(snapshot.status);
-        thread.turnInProgress = status.type === "active";
+        thread.turnInProgress ||= status.type === "active";
         thread.waitingForApproval = Array.isArray(status.activeFlags)
           && status.activeFlags.some(flag => flag === "waitingOnApproval" || flag === "waitingOnUserInput");
-        const activeTurn = Array.isArray(snapshot.turns)
-          ? snapshot.turns.map(object).find(turn => turn.status === "inProgress") : undefined;
-        if (typeof activeTurn?.id === "string") thread.turnId = activeTurn.id;
         thread.tuiAttachPending = false;
         if (thread.historyError === "codex_attach_pending") delete thread.historyError;
         thread.sourceReady = thread.historyError === undefined;
@@ -2734,7 +2741,8 @@ export class CodexRuntime implements AgentBackend {
           } else {
             // Notifications may arrive ahead of the resume response. Apply them after replay
             // so a newer item, permission or turn state cannot be erased by that snapshot.
-            for (const notification of notifications) await this.#handleNotification(notification.method, notification.params);
+            thread.reconcileNotifications.push(...notifications);
+            await this.#drainReconcileNotifications(thread);
             this.#publishMetadataEvent(thread);
           }
         }
@@ -2862,6 +2870,12 @@ export class CodexRuntime implements AgentBackend {
       return;
     }
     if (this.#retiredNotification(thread, method, record)) return;
+    if (thread.tuiAttachNotifications !== undefined) {
+      if (method === "thread/reverted") ++thread.reconcileGeneration;
+      if (thread.tuiAttachNotifications.length < 512) thread.tuiAttachNotifications.push({ method, params });
+      else ++thread.reconcileGeneration; // Overflow must force another native read, never a partial ready view.
+      return;
+    }
     const incomingTurn = method === "turn/started" ? object(record.turn).id : undefined;
     if (typeof incomingTurn === "string" && incomingTurn !== thread.turnId && !thread.reconcileDraining) {
       if (thread.reconcilePromise !== undefined) {
@@ -2877,17 +2891,18 @@ export class CodexRuntime implements AgentBackend {
       }
       return;
     }
-    if (method === "thread/reverted" && thread.tuiAttachNotifications !== undefined) ++thread.reconcileGeneration;
-    if (thread.tuiAttachNotifications !== undefined) {
-      thread.tuiAttachNotifications.push({ method, params });
-      return;
-    }
     if (thread.reconcilePromise !== undefined && !thread.reconcileDraining && method !== "thread/reverted") {
       if (thread.reconcileNotifications.length < 512) thread.reconcileNotifications.push({ method, params });
       else {
         this.#options.log?.(`Codex 协调期间通知缓冲已满，触发下一轮核对（thread=${thread.id}）`);
         this.#reconcileExternalRevert(thread);
       }
+      return;
+    }
+    if (!thread.sourceReady && thread.historyError !== undefined
+      && (method.startsWith("item/") || method.startsWith("turn/"))) {
+      thread.nativeSourceDirty = true;
+      if (!thread.tuiAttachPending && !thread.reconcileDraining) void this.#checkNativeSource(thread).catch(() => undefined);
       return;
     }
     // 该 thread 所属窗口有动静：TUI 切换归属时按「最近有动静」挑窗口用。

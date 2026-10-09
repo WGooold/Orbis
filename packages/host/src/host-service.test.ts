@@ -2461,6 +2461,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
               path: join(stateDir!, "not-yet-created", "rollout-th-new-1.jsonl"),
             } };
           }
+          if (method === "thread/turns/list") return { data: [] };
           throw new Error(`unexpected ${method}`);
         }),
         notify: vi.fn(),
@@ -2543,6 +2544,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         request: vi.fn(async (method: string) => {
           if (method === "model/list") return { data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] };
           if (method === "thread/start") return { thread: { id: "th-reann", cwd: "D:/work/demo", turns: [] } };
+          if (method === "thread/turns/list") return { data: [] };
           throw new Error(`unexpected ${method}`);
         }),
         notify: vi.fn(),

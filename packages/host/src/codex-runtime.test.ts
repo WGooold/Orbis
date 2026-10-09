@@ -20,20 +20,27 @@ function makeHarness(options?: {
   modelListFails?: boolean;
   skillsList?: unknown;
   mcpServerStatusList?: unknown;
+  initialTurns?: unknown[];
+  holdInitialHistory?: boolean;
 }): {
   runtime: CodexRuntime;
   server: CodexAppServer;
   rolloutRoot: string;
   events: RuntimeEvent[];
   requests: ReturnType<typeof vi.fn>;
+  historyReads: ReturnType<typeof vi.fn>;
   resolveNext: (result: unknown) => void;
   rejectNext: (error: unknown) => void;
   serverRequest: (frame: { id: string; method: string; params: unknown }) => { result: unknown };
   notify: (method: string, params: unknown) => void;
 } {
   const events: RuntimeEvent[] = [];
-  const queue: Array<{ resolve: (value: unknown) => void; reject: (error: unknown) => void }> = [];
-  const request = vi.fn((method: string) => {
+  const queue: Array<{ method: string; resolve: (value: unknown) => void; reject: (error: unknown) => void }> = [];
+  const initialHistory = new Map<string, unknown[]>();
+  // Keep subsequent reconciliation reads separate from the initial native hydration.
+  // Existing race tests explicitly resolve those reads; initial hydration uses the fixture.
+  const historyReads = vi.fn();
+  const request = vi.fn((method: string, params?: { threadId?: string }) => {
     // markStarted 会探一次 model/list 来缓存默认模型名（用于 runtime.metadata 的 model
     // 字段）。它不属于被测的请求序列，直接就地回一个固定的模型表，不占用 queue——
     // 否则每个用例的 resolveNext 都会错位。
@@ -51,8 +58,14 @@ function makeHarness(options?: {
       });
     }
     if (method === "thread/unsubscribe") return Promise.resolve({});
+    if (method === "thread/turns/list" && initialHistory.has(params?.threadId ?? "")) {
+      const data = initialHistory.get(params!.threadId!);
+      initialHistory.delete(params!.threadId!);
+      if (!options?.holdInitialHistory) return Promise.resolve({ data });
+    }
+    if (method === "thread/turns/list") historyReads(method, params);
     return new Promise<unknown>((resolve, reject) => {
-      queue.push({ resolve, reject });
+      queue.push({ method, resolve, reject });
     });
   });
   const server = {
@@ -73,9 +86,14 @@ function makeHarness(options?: {
     rolloutRoot,
     events,
     requests: request,
+    historyReads,
     resolveNext: (result) => {
       const next = queue.shift();
       if (next === undefined) throw new Error("没有在途请求");
+      if (["thread/resume", "thread/start", "thread/fork"].includes(next.method)) {
+        const thread = (result as { thread?: { id?: string; turns?: unknown[] } })?.thread;
+        if (thread?.id) initialHistory.set(thread.id, options?.initialTurns ?? thread.turns ?? []);
+      }
       next.resolve(result);
     },
     rejectNext: (error: unknown) => {
@@ -140,7 +158,7 @@ describe("Codex recoverable source checkpoints", () => {
     h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", turns } });
     await activating;
   };
-  const nativeReads = (h: ReturnType<typeof makeHarness>) => h.requests.mock.calls.filter(([method]) => method === "thread/turns/list");
+  const nativeReads = (h: ReturnType<typeof makeHarness>) => h.historyReads.mock.calls;
 
   it("publishes tool commit and removal from live as one source version", async () => {
     const h = makeHarness();
@@ -379,28 +397,22 @@ describe("Codex bounded canonical history", () => {
     expect(h.events.at(-1)).toMatchObject({ type: "command.result", commandId: "sync-command", ok: true });
   });
 
-  it("still reports an unreadable rollout when resuming an existing thread", async () => {
+  it("accepts authoritative empty history even when an existing rollout path is missing", async () => {
     const h = makeHarness();
     const activating = h.runtime.activate({ type: "resume", sessionId: "th-1" });
     h.resolveNext({ thread: {
       id: "th-1", cwd: "D:/repo", turns: [], path: join(h.rolloutRoot, "missing-th-1.jsonl"),
     } });
     await activating;
-    expect(syncHistory(h)).toBeUndefined();
-    expect(h.events.at(-1)).toMatchObject({
-      type: "command.result", commandId: "sync-command", ok: false, error: "rollout_unreadable",
-    });
+    expect(syncHistory(h)).toMatchObject({ entries: [], source: { ready: true } });
   });
 
-  it("does not suppress other rollout read failures for a new thread", async () => {
+  it("does not consult rollout when full native history verifies an empty new thread", async () => {
     const h = makeHarness();
     const activating = h.runtime.activate({ type: "new", cwd: "D:/repo" });
     h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", turns: [], path: h.rolloutRoot } });
     await activating;
-    expect(syncHistory(h)).toBeUndefined();
-    expect(h.events.at(-1)).toMatchObject({
-      type: "command.result", commandId: "sync-command", ok: false, error: "rollout_unreadable",
-    });
+    expect(syncHistory(h)).toMatchObject({ entries: [], source: { ready: true } });
   });
 
   it("responds to all range parameters and never pushes an unsolicited full graph", async () => {
@@ -470,7 +482,7 @@ describe("Codex bounded canonical history", () => {
     live.notify("item/started", { threadId: "th-1", turnId: "t", item: b });
     live.notify("item/completed", { threadId: "th-1", turnId: "t", item: b });
     live.notify("item/completed", { threadId: "th-1", turnId: "t", item: a });
-    const replay = makeHarness();
+    const replay = makeHarness({ initialTurns: [{ id: "t", items: [] }] });
     const path = join(replay.rolloutRoot, "rollout-th-1.jsonl");
     const event = (type: string, value: unknown) => JSON.stringify({ type: "event_msg", payload: { type, turn_id: "t", item: value } });
     writeFileSync(path, [
@@ -495,7 +507,7 @@ describe("Codex bounded canonical history", () => {
   });
 
   it("validates rollout Session identity and requires an authoritative path for ambiguous copies", async () => {
-    const h = makeHarness();
+    const h = makeHarness({ initialTurns: [{ id: "t", items: [] }] });
     const rollout = (text: string, id = "th-1") => [
       JSON.stringify({ type: "session_meta", payload: { id, cwd: "D:/repo" } }),
       JSON.stringify({ type: "event_msg", payload: { type: "item_completed", turn_id: "t", item: { type: "AgentMessage", id: "a", content: [{ type: "Text", text }] } } }),
@@ -519,10 +531,10 @@ describe("Codex bounded canonical history", () => {
   });
 
   it("does not splice across corrupt rollout records and tolerates an unfinished final append", async () => {
-    const h = makeHarness();
+    const h = makeHarness({ initialTurns: [{ id: "t", items: [] }] });
     const file = join(h.rolloutRoot, "th-1.jsonl");
     const meta = JSON.stringify({ type: "session_meta", payload: { id: "th-1" } });
-    const completed = (id: string) => JSON.stringify({ type: "event_msg", payload: { type: "item_completed", item: item(id) } });
+    const completed = (id: string) => JSON.stringify({ type: "event_msg", payload: { type: "item_completed", turn_id: "t", item: item(id) } });
     writeFileSync(file, [meta, completed("a"), '{"type":"event_msg","payload":{"type":"item_completed"'].join("\n"));
     await activate(h);
     expect(syncHistory(h)?.entries.map((entry) => entry.entryId)).toEqual(["a"]);
@@ -1603,7 +1615,7 @@ describe("CodexRuntime", () => {
     // revert 的响应不带 turns，历史得自己重新拉一遍。
     h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo" } });
     await vi.waitFor(() => {
-      expect(h.requests).toHaveBeenCalledWith("thread/turns/list", {
+      expect(h.historyReads).toHaveBeenCalledWith("thread/turns/list", {
         threadId: "th-1",
         itemsView: "full",
         sortDirection: "asc",
@@ -1633,7 +1645,7 @@ describe("CodexRuntime", () => {
       expect(h.requests).toHaveBeenCalledWith("thread/revert", { threadId: "th-1", beforeTurnId: "turn-2" });
     });
     h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo" } });
-    await vi.waitFor(() => expect(h.requests).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
     h.resolveNext({ data: [TREE_TURNS[0]] });
     await vi.waitFor(() => {
       expect(h.events).toContainEqual({
@@ -1666,7 +1678,7 @@ describe("CodexRuntime", () => {
       threadId: "th-1", beforeTurnId: "turn-2",
     }));
     h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo" } });
-    await vi.waitFor(() => expect(h.requests).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
     h.resolveNext({ data: [{ id: "turn-1", status: "completed", items: [
       { type: "agentMessage", id: "b", text: "b" },
       { type: "agentMessage", id: "a", text: "a" },
@@ -1687,7 +1699,7 @@ describe("CodexRuntime", () => {
     h.runtime.markStarted();
     await activateWithTurns(h, TREE_TURNS);
     const revertCount = () => h.requests.mock.calls.filter(([method]) => method === "thread/revert").length;
-    const turnsCount = () => h.requests.mock.calls.filter(([method]) => method === "thread/turns/list").length;
+    const turnsCount = () => h.historyReads.mock.calls.length;
 
     h.notify("thread/reverted", { threadId: "th-1" });
     await vi.waitFor(() => expect(turnsCount()).toBe(1));
@@ -1705,7 +1717,7 @@ describe("CodexRuntime", () => {
     await activateWithTurns(h, TREE_TURNS);
 
     h.notify("thread/reverted", { threadId: "th-1" });
-    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(1));
+    await vi.waitFor(() => expect(h.historyReads.mock.calls).toHaveLength(1));
     // The item is delivered while turns/list is in flight. It must be buffered and
     // replayed after the new canonical graph replaces the old one.
     h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "turn-1", itemId: "live-1", delta: "仍在生成" });
@@ -1730,10 +1742,10 @@ describe("CodexRuntime", () => {
     await activateWithTurns(h, TREE_TURNS);
 
     h.notify("thread/reverted", { threadId: "th-1" });
-    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(1));
+    await vi.waitFor(() => expect(h.historyReads.mock.calls).toHaveLength(1));
     h.notify("thread/reverted", { threadId: "th-1" });
     h.resolveNext({ data: [TREE_TURNS[0]] });
-    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(2));
+    await vi.waitFor(() => expect(h.historyReads.mock.calls).toHaveLength(2));
     h.resolveNext({ data: TREE_TURNS });
     await vi.waitFor(() => expect(syncHistory(h)).toMatchObject({ cursor: { leafId: "a2" } }));
   });
@@ -1742,10 +1754,10 @@ describe("CodexRuntime", () => {
     const h = makeHarness();
     await activateWithTurns(h, TREE_TURNS);
     h.notify("thread/reverted", { threadId: "th-1" });
-    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(1));
+    await vi.waitFor(() => expect(h.historyReads.mock.calls).toHaveLength(1));
     h.notify("turn/started", { threadId: "th-1", turn: { id: "new-turn", startedAt: 1_800_000_000 } });
     h.resolveNext({ data: [TREE_TURNS[0]] });
-    await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "thread/turns/list")).toHaveLength(2));
+    await vi.waitFor(() => expect(h.historyReads.mock.calls).toHaveLength(2));
     expect(h.events.filter(event => event.type === "session.patch" && event.source.ready)).toHaveLength(0);
     h.resolveNext({ data: [TREE_TURNS[0], { id: "new-turn", status: "inProgress", startedAt: 1_800_000_000, items: [] }] });
     await vi.waitFor(() => expect(syncHistory(h)).toMatchObject({
@@ -1757,7 +1769,7 @@ describe("CodexRuntime", () => {
     const h = makeHarness();
     await activateWithTurns(h, TREE_TURNS);
     h.notify("thread/reverted", { threadId: "th-1" });
-    await vi.waitFor(() => expect(h.requests).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
     h.notify("item/completed", { threadId: "th-1", turnId: "turn-2", item: { id: "old-buffered", type: "agentMessage", text: "old" } });
     h.resolveNext({ data: [TREE_TURNS[0]] });
     await vi.waitFor(() => expect(syncHistory(h)).toMatchObject({ cursor: { leafId: "a1" }, source: { ready: true } }));
@@ -1772,7 +1784,7 @@ describe("CodexRuntime", () => {
     await activateWithTurns(h, TREE_TURNS);
     const resuming = h.runtime.activate({ type: "resume", sessionId: "th-1" });
     h.notify("thread/reverted", { threadId: "th-1" });
-    await vi.waitFor(() => expect(h.requests).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
     h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", turns: TREE_TURNS } });
     h.resolveNext({ data: [TREE_TURNS[0]] });
     await resuming;
@@ -1788,7 +1800,7 @@ describe("CodexRuntime", () => {
     h.runtime.handleCommand({ type: "user_message", text: "after revert" }, "send", "th-1");
     expect(h.requests.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(0);
     h.resolveNext({});
-    await vi.waitFor(() => expect(h.requests).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledWith("thread/turns/list", expect.anything()));
     h.resolveNext({ data: [TREE_TURNS[0]] });
     await vi.waitFor(() => expect(h.requests.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(1));
     expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-1", ok: true }));
@@ -1839,7 +1851,7 @@ describe("CodexRuntime", () => {
     const server = {
       request: (method: string) => method === "model/list"
         ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] })
-        : new Promise((res) => queue.push({ resolve: res })),
+        : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })),
       notify: vi.fn(),
       endpoint,
     } as unknown as CodexAppServer;
@@ -1984,7 +1996,7 @@ describe("CodexRuntime", () => {
       "utf8",
     );
     const queue: Array<{ resolve: (v: unknown) => void }> = [];
-    const server = { request: (method: string) => method === "model/list" ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] }) : new Promise((res) => queue.push({ resolve: res })), notify: vi.fn(), endpoint: "ws://127.0.0.1:9999" } as unknown as CodexAppServer;
+    const server = { request: (method: string) => method === "model/list" ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] }) : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })), notify: vi.fn(), endpoint: "ws://127.0.0.1:9999" } as unknown as CodexAppServer;
     const opened: string[] = [];
     const runtime = new CodexRuntime({
       server,
@@ -2003,7 +2015,7 @@ describe("CodexRuntime", () => {
   it("新格式 thread（turns 带 items）正常开有头窗口", async () => {
     const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-openwin-"));
     const queue: Array<{ resolve: (v: unknown) => void }> = [];
-    const server = { request: (method: string) => method === "model/list" ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] }) : new Promise((res) => queue.push({ resolve: res })), notify: vi.fn(), endpoint: "ws://127.0.0.1:9998" } as unknown as CodexAppServer;
+    const server = { request: (method: string) => method === "model/list" ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] }) : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })), notify: vi.fn(), endpoint: "ws://127.0.0.1:9998" } as unknown as CodexAppServer;
     const opened: string[] = [];
     const runtime = new CodexRuntime({
       server,
@@ -2025,7 +2037,7 @@ describe("CodexRuntime", () => {
     const unsubscribe = vi.fn(async () => ({}));
     const server = { request: (method: string) => method === "model/list"
       ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] })
-      : method === "thread/unsubscribe" ? unsubscribe() : new Promise((res) => queue.push({ resolve: res })),
+      : method === "thread/unsubscribe" ? unsubscribe() : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })),
     notify: vi.fn(), endpoint: "ws://127.0.0.1:9997" } as unknown as CodexAppServer;
     // 看门狗：先回报「TUI 在线」（标 seen），再回报「空」（触发下线）。
     const pollResults: Set<string>[] = [new Set(["th-close"]), new Set()];
@@ -2281,14 +2293,20 @@ describe("CodexRuntime TUI 切换会话", () => {
     const opened: string[] = [];
     const offline: { reason: string; runtimeIds: string[] }[] = [];
     const pollResults: Set<string>[] = [];
+    const nativeTurns = new Map<string, unknown[]>();
     const server = {
-      request: (method: string): Promise<unknown> => {
+      request: (method: string, params?: { threadId?: string }): Promise<unknown> => {
         if (method === "model/list") {
           return Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] });
         }
         if (method === "skills/list" || method === "mcpServerStatus/list") return Promise.resolve({ data: [] });
         if (method === "thread/unsubscribe") return Promise.resolve({});
-        return new Promise((resolve) => queue.push({ resolve }));
+        if (method === "thread/turns/list") return Promise.resolve({ data: nativeTurns.get(params?.threadId ?? "") ?? [] });
+        return new Promise((resolve) => queue.push({ resolve: value => {
+          const thread = (value as { thread?: { id: string; turns?: unknown[] } }).thread;
+          if (thread) nativeTurns.set(thread.id, thread.turns ?? []);
+          resolve(value);
+        } }));
       },
       notify: vi.fn(),
       endpoint: "ws://127.0.0.1:9931",
@@ -2491,6 +2509,6 @@ describe("CodexRuntime TUI 切换会话", () => {
       event.type === "runtime.metadata"
       && (event as { metadata?: { runtimeId?: string } }).metadata?.runtimeId === "codex:th-stray",
     )).toBe(false);
-    expect(h.requests).not.toHaveBeenCalledWith("thread/turns/list", expect.anything());
+    expect(h.historyReads).not.toHaveBeenCalledWith("thread/turns/list", expect.anything());
   });
 });

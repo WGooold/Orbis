@@ -360,26 +360,29 @@ class SessionGraphStore(
     /** Only an explicit database upgrade can schedule this, never an ordinary sync conflict. */
     private fun rebuildCodexGraph(db: SQLiteDatabase, sessionId: String): Boolean {
         val pending = db.rawQuery(
-            "SELECT prior_database_version FROM codex_canonical_rebuilds WHERE session_id = ? AND completed_at IS NULL",
+            "SELECT canonical_format, prior_database_version FROM codex_canonical_rebuilds WHERE session_id = ? AND completed_at IS NULL",
             arrayOf(sessionId),
-        ).use { if (it.moveToFirst()) it.getInt(0) else null } ?: return false
-        val archive = buildJsonObject {
-            put("targetCanonicalFormat", "codex-native-item-order-v1")
-            put("priorDatabaseVersion", pending)
-            put("entries", archiveRows(db, "session_entries", sessionId,
-                listOf("entry_id", "parent_id", "type", "timestamp", "payload", "verified_depth", "legacy_format")))
-            put("timings", archiveRows(db, "session_turn_timings", sessionId, listOf("turn_id", "payload", "updated_at")))
-            put("cursor", archiveRows(db, "session_cursors", sessionId, listOf("leaf_id", "updated_at")))
-            put("coverage", archiveRows(db, "session_sync_progress", sessionId, listOf("leaf_id")))
-            put("legacyEntries", archiveRows(db, "session_legacy_entries", sessionId,
-                listOf("entry_id", "parent_id", "type", "timestamp", "payload")))
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getString(0) to cursor.getInt(1)) } }
+        if (pending.isEmpty()) return false
+        for ((format, priorVersion) in pending) {
+            val archive = buildJsonObject {
+                put("targetCanonicalFormat", format)
+                put("priorDatabaseVersion", priorVersion)
+                put("entries", archiveRows(db, "session_entries", sessionId,
+                    listOf("entry_id", "parent_id", "type", "timestamp", "payload", "verified_depth", "legacy_format")))
+                put("timings", archiveRows(db, "session_turn_timings", sessionId, listOf("turn_id", "payload", "updated_at")))
+                put("cursor", archiveRows(db, "session_cursors", sessionId, listOf("leaf_id", "updated_at")))
+                put("coverage", archiveRows(db, "session_sync_progress", sessionId, listOf("leaf_id")))
+                put("legacyEntries", archiveRows(db, "session_legacy_entries", sessionId,
+                    listOf("entry_id", "parent_id", "type", "timestamp", "payload")))
+            }
+            // Keep the exact old representation for diagnosis. Native facts, rather than these
+            // parent edges, will seed the new canonical cache on the next bounded sync.
+            db.execSQL(
+                "UPDATE codex_canonical_rebuilds SET archive = ?, completed_at = ? WHERE session_id = ? AND canonical_format = ?",
+                arrayOf<Any>(archive.toString(), System.currentTimeMillis(), sessionId, format),
+            )
         }
-        // Keep the exact old representation for diagnosis. Native facts, rather than these
-        // parent edges, will seed the new canonical cache on the next bounded sync.
-        db.execSQL(
-            "UPDATE codex_canonical_rebuilds SET archive = ?, completed_at = ? WHERE session_id = ?",
-            arrayOf<Any>(archive.toString(), System.currentTimeMillis(), sessionId),
-        )
         for (table in listOf("session_entries", "session_turn_timings", "session_cursors", "session_sync_progress")) {
             db.delete(table, "session_id = ?", arrayOf(sessionId))
         }
@@ -678,6 +681,7 @@ class SessionGraphStore(
             )
             createCoverageTables(database)
             createCodexRebuildTable(database)
+            upgradeCodexRebuildTable(database)
         }
 
         override fun onUpgrade(database: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -728,6 +732,31 @@ class SessionGraphStore(
                     UNION SELECT session_id, ? FROM session_legacy_entries""",
                     arrayOf(oldVersion, oldVersion, oldVersion, oldVersion, oldVersion))
             }
+            if (oldVersion < 6) {
+                upgradeCodexRebuildTable(database)
+                // Resume used synthesized item IDs even after the v5 order migration.
+                // Keep every earlier archive and schedule a separate, explicit format rebuild.
+                database.execSQL("""INSERT INTO codex_canonical_rebuilds(session_id, canonical_format, prior_database_version)
+                    SELECT session_id, 'codex-native-item-ids-v2', ? FROM session_entries
+                    UNION SELECT session_id, 'codex-native-item-ids-v2', ? FROM session_turn_timings
+                    UNION SELECT session_id, 'codex-native-item-ids-v2', ? FROM session_cursors
+                    UNION SELECT session_id, 'codex-native-item-ids-v2', ? FROM session_sync_progress
+                    UNION SELECT session_id, 'codex-native-item-ids-v2', ? FROM session_legacy_entries
+                    UNION SELECT session_id, 'codex-native-item-ids-v2', ? FROM codex_canonical_rebuilds WHERE completed_at IS NULL""",
+                    arrayOf(oldVersion, oldVersion, oldVersion, oldVersion, oldVersion, oldVersion))
+            }
+        }
+
+        private fun upgradeCodexRebuildTable(database: SQLiteDatabase) {
+            database.execSQL("ALTER TABLE codex_canonical_rebuilds RENAME TO codex_canonical_rebuilds_v5")
+            database.execSQL("""CREATE TABLE codex_canonical_rebuilds(
+                session_id TEXT NOT NULL, canonical_format TEXT NOT NULL,
+                prior_database_version INTEGER NOT NULL, archive TEXT, completed_at INTEGER,
+                PRIMARY KEY(session_id, canonical_format))""")
+            database.execSQL("""INSERT INTO codex_canonical_rebuilds
+                SELECT session_id, 'codex-native-item-order-v1', prior_database_version, archive, completed_at
+                FROM codex_canonical_rebuilds_v5""")
+            database.execSQL("DROP TABLE codex_canonical_rebuilds_v5")
         }
 
         private fun createCodexRebuildTable(database: SQLiteDatabase) {
@@ -746,7 +775,7 @@ class SessionGraphStore(
     }
 
     private companion object {
-        const val DATABASE_VERSION = 5
+        const val DATABASE_VERSION = 6
         const val DEFAULT_MAX_ENTRIES = 2_000
         const val MAX_TRAVERSAL_ENTRIES = 100_000
         const val MAX_TITLE_SCAN_ENTRIES = 2_000

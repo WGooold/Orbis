@@ -110,11 +110,15 @@ ADR-0024 的 checkpoint、patch 和 running sync 只能复制 Codex adapter 已�
 
 `thread/turns/list`、resume、rollout 回放以及实时 item 汇合必须从同一份原生历史事实，按确定的 turn/item 顺序生成 Entry。不得从上一次 `ThreadState` 的 parent、顺序、接收时间或请求时间推断当前 Entry。
 
+2026-10-09 实机确认 `thread/resume` 的历史视图会把部分消息 ID 合成为 `item-1/2/3`，而 `thread/turns/list(itemsView=full)` 为同一消息返回原生 UUID/message ID；同一工具 ID 因而可能接在两个不同父节点下。`thread/start/resume/fork` 响应只用于订阅、会话身份和设置，不能作为 canonical Entry 的来源。初次激活、自动接入和 fork 均须完成 full turns hydrate，再按当前协调代次处理缓冲通知；失败期间不能从通知猜测缺失的历史前缀。原生完整历史为空时保持空图，不用可能滞后的 rollout 复活已回退的尾部；旧格式仅在原生保留 turn 骨架无 items 时使用 rollout，且只接受保留 turn 范围内的记录。
+
 对同一个原生 thread，重复读取、Host 重启、回退后重建必须得到相同的 `entryId`、`parentId`、`type`、`timestamp` 和 `data`。同 ID 的不同表示继续报告 `canonical_entry_conflict`，不能通过换 `sourceEpoch`、清空手机缓存或后到版本覆盖来绕过 ADR-0013 的不可变节点约束。
 
 修正 parent/order 算法可能与 APP 已缓存的旧表示冲突。上线前必须选择一次性的 canonical schema/namespace 迁移，或在受控维护流程中重建受影响缓存；不能把旧表示静默转换成新表示，也不能让正常 sync 无限重试同一冲突。迁移完成后仍保留硬冲突检测。
 
 本次选择 Android Session Tree Cache 的数据库版本 5 显式重建：升级时为已有 Session 登记候选，首次确认其 `agentKind=codex` 后，在同一 SQLite 事务中保存旧 Entry、timing、cursor、coverage 和旧格式记录，再清除该 Session 的活动图与游标。原数据保存在同库的迁移记录中，不改写旧 parent/order 来冒充原生事实。Pi/DSH 不执行重建；新建数据库没有候选；普通 conflict 不触发迁移。事务失败保留原图及待迁移标记，已完成标记使重启和重试幂等。APP 同时作废该 Session 的旧内存投影和在途分页，通过 preview 重新取得当前原生状态，并保留配对及待发送消息。后续同 ID 不同表示仍然硬失败。
+
+本次原生 ID 来源修复使用数据库版本 6、格式 `codex-native-item-ids-v2` 再执行一次显式重建。迁移记录主键改为 `(session_id, canonical_format)`，保留 v5 已完成的旧格式原始归档；v5 中已缓存的临时 ID 和父节点关系另存为新格式迁移归档。直接从更早版本升级时，一次事务处理所有待迁移标记，之后不得因旧标记再次清掉已恢复的图。新库及升级后新建的 Session 无迁移候选，Pi/DSH、配对和待发送消息不受影响；失败或过时写入回滚归档、图、timing、游标和 coverage 一整批。
 
 #### 8.2 每 thread 的协调代次和串行提交
 

@@ -273,13 +273,65 @@ class SessionGraphStoreInstrumentedTest {
         }
     }
 
-    private fun rebuildArchive(sessionId: String = "s"): JsonObject? {
+    private fun createVersion5(entries: List<SessionGraphEntry>, leaf: String, completedV4Archive: String? = null) {
+        createVersion4(entries, leaf)
+        SQLiteDatabase.openDatabase(databaseFile().path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL("""CREATE TABLE codex_canonical_rebuilds(session_id TEXT PRIMARY KEY,
+                prior_database_version INTEGER NOT NULL, archive TEXT, completed_at INTEGER)""")
+            if (completedV4Archive != null) db.execSQL(
+                "INSERT INTO codex_canonical_rebuilds VALUES ('s', 4, ?, 9)", arrayOf(completedV4Archive))
+            db.version = 5
+        }
+    }
+
+    private fun rebuildArchive(sessionId: String = "s", format: String = "codex-native-item-ids-v2"): JsonObject? {
         store.close()
         return SQLiteDatabase.openDatabase(databaseFile().path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
-            db.rawQuery("SELECT archive FROM codex_canonical_rebuilds WHERE session_id = ?", arrayOf(sessionId)).use { c ->
+            db.rawQuery("SELECT archive FROM codex_canonical_rebuilds WHERE session_id = ? AND canonical_format = ?", arrayOf(sessionId, format)).use { c ->
                 if (!c.moveToFirst() || c.isNull(0)) null else Json.parseToJsonElement(c.getString(0)).jsonObject
             }
         }
+    }
+
+    @Test
+    fun version5RebuildPreservesEarlierArchiveAndRehydratesNativeParentsOnce() {
+        val priorArchive = buildJsonObject { put("original", "v4 exact archive") }
+        val oldUser = entry("item-3", null)
+        val sharedTool = entry("exec-native", "item-3")
+        createVersion5(listOf(oldUser, sharedTool), "exec-native", priorArchive.toString())
+        assertFalse(store.prepareSession(device, "s", "pi"))
+        assertEquals(listOf(oldUser, sharedTool), store.readBranch(device, "s", "exec-native").entries)
+        assertTrue(store.prepareSession(device, "s", "codex"))
+        val archive = rebuildArchive()!!
+        assertEquals(5, archive.getValue("priorDatabaseVersion").jsonPrimitive.int)
+        assertEquals(2, archive.getValue("entries").jsonArray.size)
+        assertEquals(priorArchive, rebuildArchive(format = "codex-native-item-order-v1"))
+        val nativeUser = entry("uuid-user", null)
+        val nativeTool = sharedTool.copy(parentId = "uuid-user")
+        store.upsert(device, "s", listOf(nativeUser, nativeTool), leafId = "exec-native", agentKind = "codex")
+        store.close()
+        assertFalse(store.prepareSession(device, "s", "codex"))
+        assertEquals(listOf(nativeUser, nativeTool), store.readBranch(device, "s", "exec-native").entries)
+        assertEquals(archive, rebuildArchive())
+        assertEquals(priorArchive, rebuildArchive(format = "codex-native-item-order-v1"))
+        assertEquals("entry_conflict", runCatching {
+            store.upsert(device, "s", listOf(sharedTool), agentKind = "codex")
+        }.exceptionOrNull()?.message)
+    }
+
+    @Test
+    fun version5InvalidRebuildRollsBackWithoutOverwritingPriorArchive() {
+        val priorArchive = buildJsonObject { put("original", "v4") }
+        val old = entry("item-1", null)
+        createVersion5(listOf(old), "item-1", priorArchive.toString())
+        assertEquals("self_parent", runCatching {
+            store.upsert(device, "s", listOf(entry("bad", "bad")), agentKind = "codex")
+        }.exceptionOrNull()?.message)
+        assertEquals(listOf(old), store.readEntries(device, "s", listOf("item-1")))
+        assertEquals(null, rebuildArchive())
+        assertEquals(priorArchive, rebuildArchive(format = "codex-native-item-order-v1"))
+        assertTrue(store.prepareSession(device, "s", "codex"))
+        assertFalse(store.prepareSession(device, "s", "codex"))
     }
 
     @Test
