@@ -2,6 +2,8 @@
 
 日期：2026-10-07
 
+2026-10-10：[ADR-0025](0025-native-history-authority-and-versioned-caches.md) 替代本文第 6、8.1 节及验收项中的同 ID 永久不可变、旧缓存冲突必须拒绝的决定。原生权威重建可以修正缓存，并通过缓存代次隔离旧数据；确定性生成、协调和客户端刷新边界保留。
+
 Status: accepted（设计已采纳；实施分阶段进行，本 ADR 不代表全部流程已经实现）
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0021](0021-codex-terminal-host-attachment.md)、[ADR-0022](0022-codex-desktop-daemon-attachment.md)、[ADR-0024](0024-recoverable-session-state-sync.md)。实施跟踪：[Issue #1](https://github.com/WGooold/Orbis/issues/1)（源端一致性）、[Issue #4](https://github.com/WGooold/Orbis/issues/4)（桌面/TUI 刷新）。桌面接入以 ADR-0022 中 2026-10-05 的 wrapper 替代决定为准。

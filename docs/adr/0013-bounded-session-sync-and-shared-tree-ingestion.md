@@ -8,6 +8,8 @@ Status: accepted（设计已采纳；实施状态以关联 tickets 为准）
 
 取代旧 早期内部设计记录（不包含在公开仓库中） 和 早期内部设计记录（不包含在公开仓库中） 中“preview/history 不落盘、catchup 是唯一远程 Entry 写入者”的决定。保留 canonical Entry 身份、分支按 parent 关系查询、实时显示与缓存分离的约束。
 
+2026-10-10：[ADR-0025](0025-native-history-authority-and-versioned-caches.md) 替代本 ADR 中 Codex 版本化同步的不可变缓存及同 ID 硬冲突条款。确定性生成、结构校验、范围和事务要求保留；下文不可变规则仅继续适用于尚未版本化的路径。
+
 ## Context
 
 `preview`、`history`、`catchup` 是同一个 `session.sync` 命令的范围参数，均返回 `session.snapshot` 和同一种 `RemoteSessionEntry`。它们的显示目的不同，不代表节点内容不同。目前 preview/history 显示后丢弃，catchup 需要再次下载相同节点。

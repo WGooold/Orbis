@@ -1338,13 +1338,27 @@ export class CodexRuntime implements AgentBackend {
   }
 
   /** Rebuild from full native turns, including after revert. Previous Entries are only
-   * a conflict-check baseline; they never supply the current parent edges or order.
+   * an invalidation baseline; they never supply the current parent edges or order.
    */
-  #replayTurns(thread: ThreadState, threadJson: Record<string, unknown> | undefined): boolean {
+  #replayTurns(thread: ThreadState, threadJson: Record<string, unknown> | undefined, epochStarted = false): boolean {
     if (typeof threadJson?.path === "string" && isAbsolute(threadJson.path)) thread.rolloutPath = threadJson.path;
     const turns = threadJson?.turns;
     if (!Array.isArray(turns)) return false;
-    // The previous graph is only a conflict-check baseline. It must never contribute parent
+    const nativeIds = new Set<string>();
+    for (const value of turns) {
+      const items = object(value).items;
+      if (!Array.isArray(items)) continue;
+      for (const item of items) {
+        const id = object(item).id;
+        if (typeof id !== "string") continue;
+        if (nativeIds.has(id)) {
+          thread.historyError = "codex_native_history_invalid";
+          return false;
+        }
+        nativeIds.add(id);
+      }
+    }
+    // The previous graph is only an invalidation baseline. It must never contribute parent
     // edges or ordering to the new graph; those come exclusively from the current native turns.
     const previous = new Map(thread.entries.map((entry) => [entry.entryId, entry]));
     const prior = {
@@ -1456,16 +1470,8 @@ export class CodexRuntime implements AgentBackend {
         detail: { arguments: tool.arguments, result: tool.result }, isError: tool.isError,
       });
     }
-    // Replaying the same native history must reproduce the exact immutable Entry. A changed
-    // payload, parent, or generated order is a source-side canonical conflict; keeping an old
-    // representation would hide the divergence and make a later Host restart disagree again.
-    for (const entry of thread.entries) {
-      const old = previous.get(entry.entryId);
-      if (old !== undefined && !isDeepStrictEqual(old, entry)) thread.historyError = "canonical_entry_conflict";
-    }
-    if (thread.historyError === "canonical_entry_conflict") {
-      // A conflict is diagnostic state, not permission to replace the last known good
-      // graph. Keep the old graph available for retry and make the error observable.
+    if (thread.historyError !== undefined) {
+      // Invalid native batches still roll back; disagreement with our cache does not.
       thread.entries = prior.entries;
       thread.sourceCommittedEntries = prior.sourceCommittedEntries;
       thread.itemOrder = prior.itemOrder;
@@ -1480,15 +1486,25 @@ export class CodexRuntime implements AgentBackend {
       thread.turnStartedAt = prior.turnStartedAt;
       thread.streamingMessageId = prior.streamingMessageId;
       thread.persistedMessageMappings = prior.persistedMessageMappings;
-      thread.historyError = "canonical_entry_conflict";
       return false;
+    }
+    const rewritten = prior.entries.some((old, index) =>
+      !isDeepStrictEqual(thread.entries[index], old));
+    if (rewritten && !epochStarted) {
+      // A missed revert or corrected native item invalidates the old cache generation.
+      // Announce the boundary before ready; delayed pages/patches cannot restore old edges.
+      thread.sourceEpoch = randomUUID();
+      thread.sourceSeq = 0;
+      thread.sourceReady = false;
+      this.#touchSource(thread);
     }
     for (const id of prior.turnOrder) if (!thread.turnOrder.includes(id)) thread.retiredTurnIds.add(id);
     for (const id of prior.itemOrder) if (!thread.itemOrder.includes(id)) thread.retiredItemIds.add(id);
     for (const id of thread.turnOrder) thread.retiredTurnIds.delete(id);
     for (const id of thread.itemOrder) thread.retiredItemIds.delete(id);
     thread.nativeHistorySignature = resultText(turns, true);
-    thread.sourceCommittedEntries = thread.sourceCommittedEntries.filter(entry => !previous.has(entry.entryId));
+    thread.sourceCommittedEntries = thread.sourceCommittedEntries.filter(entry =>
+      rewritten || !previous.has(entry.entryId));
     thread.nativeSourceDirty = false;
     thread.lastNativeCheckAt = Date.now();
     return true;
@@ -2156,15 +2172,13 @@ export class CodexRuntime implements AgentBackend {
       this.#beginSourceReconcile(thread);
       const turns = await this.#listAllTurns(thread.id);
       if (!this.#isCurrentReconcile(thread, generation)) return;
-      const replayed = this.#replayTurns(thread, { turns });
+      const replayed = this.#replayTurns(thread, { turns }, true);
       if (!this.#isCurrentReconcile(thread, generation)) return;
       if (!replayed) {
         thread.sourceReady = false;
         this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
-        // The native revert has already committed.  A canonical replay conflict is a
-        // separate projection failure: keep the last known-good graph and let the command
-        // acknowledge the native operation while session.sync exposes the conflict.
+        // Native revert has committed; only the failed projection read may be retried.
         return;
       }
       await this.#drainReconcileNotifications(thread);
@@ -2257,14 +2271,14 @@ export class CodexRuntime implements AgentBackend {
         await this.#server.request("thread/revert", { threadId: thread.id, beforeTurnId });
         const turns = await this.#listAllTurns(thread.id);
         if (!this.#isCurrentReconcile(thread, generation)) return;
-        const replayed = this.#replayTurns(thread, { turns });
+        const replayed = this.#replayTurns(thread, { turns }, true);
         if (!this.#isCurrentReconcile(thread, generation)) return;
         if (!replayed) {
           thread.sourceReady = false;
           this.#touchSource(thread);
           this.#publishMetadataEvent(thread);
           // Native revert has committed; only the projection read may be retried.
-          throw new Error(thread.historyError ?? "canonical_entry_conflict");
+          throw new Error(thread.historyError ?? "codex_reconcile_failed");
         }
         await this.#drainReconcileNotifications(thread);
         if (!this.#isCurrentReconcile(thread, generation)) return;
@@ -3401,7 +3415,18 @@ export class CodexRuntime implements AgentBackend {
       };
       if (existing >= 0) {
         if (!isDeepStrictEqual(entries[existing], entry)) {
-          thread.historyError = "canonical_entry_conflict";
+          thread.nativeSourceDirty = true;
+          thread.sourceReady = false;
+          // Notifications are hints. Re-read native history rather than permanently vetoing
+          // the authoritative result or assigning guessed parents to a replacement item.
+          if (thread.reconcilePromise === undefined) {
+            void this.#checkNativeSource(thread).catch(() => undefined);
+          } else {
+            // A buffered completion may be newer than the read it overlaps. Invalidate that
+            // read and serialize another authoritative reconciliation instead of publishing
+            // ready with a guessed update or a permanent cache-conflict error.
+            this.#reconcileExternalRevert(thread);
+          }
           return;
         }
       } else {

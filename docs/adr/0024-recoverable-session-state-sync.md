@@ -2,6 +2,8 @@
 
 日期：2026-10-08
 
+2026-10-10：[ADR-0025](0025-native-history-authority-and-versioned-caches.md) 替代本文的不可变缓存与同 ID 硬冲突条款。版本化历史页携带 source 所有权；原生权威修正通过新 epoch 与 APP 缓存事务生效。checkpoint/patch、running sync 和恢复调度继续遵守本文。
+
 Status: accepted（设计已采纳；Codex 与 APP 分阶段实现，尚未完成全部后端及真实链路验收）
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0023](0023-codex-revert-and-client-refresh.md)、[ADR-0008](0008-drop-backward-compatibility.md)。实施跟踪：[Issue #2](https://github.com/WGooold/Orbis/issues/2)、[Issue #3](https://github.com/WGooold/Orbis/issues/3)。
@@ -183,7 +185,7 @@ live checkpoint 同样有预算：小状态单响应返回；大状态在固定 
 3. 确认后用新的状态版本一次性发布 head 和完整当前 live/turn/tools。旧 canonical 节点可以留在手机缓存，但不再属于当前分支。
 4. 旧 patch 因版本/epoch 被丢弃，旧历史页没有切换 head 的权限。adapter 必须依据原生 turn/item 归属排除旧轮次迟到通知，不能替它们重新分配较大 seq 再接回旧内容。
 
-一般 revert 只推进 seq，不需要改 epoch；只有源端复制状态确实不能连续衔接时才重建 epoch。**更换 epoch 不会改变 canonical Entry 身份，更不能豁免同 ID 内容冲突。** 真正的旧表示错误需要显式迁移/隔离；规范化方式调整要有迁移版本，不能按到达顺序覆盖。
+按 ADR-0025，Codex revert、共享节点修正或旧尾部删除建立新的缓存 epoch；纯追加只推进 seq。Entry ID 保持原生身份，但已验证原生历史可以修正旧 parent/data。新 epoch 必须通过 APP 的接受检查与缓存事务生效；不能按到达顺序覆盖。未版本化路径继续使用原有不可变规则。
 
 锁只能串行化本 adapter 的工作，不能锁住外部 GUI/TUI。若原生接口没有一致快照或可校验 revision，分页读取必须结合通知缓冲、边界重读和过期结果作废；不能把未经核对的混合历史提交为新基线。无可靠核验手段时标记正在协调，在源稳定后重新读取，不能宣称每次读取都具备全局原子性。
 
@@ -214,10 +216,10 @@ running 时允许 sync 不意味着 running 时允许 revert；后者仍按原�
 | DSH adapter | 复用已有累计 stream 状态，将完整 turn/tool/live 纳入 checkpoint；保留原生 fork 语义 |
 | Host/Relay | Host 保留定向响应、去重背压及状态事务转发；Relay 继续转发不透明密文，不接管 Session 语义 |
 | APP reducer | 单一版本化状态入口；完整恢复替代正文猜合并/一次性 mapping；outbox独立；取消 running sync 禁令 |
-| APP SQLite / ingestion | 复用不可变 Entry 校验、事务和 coverage；历史页面不再直接控制当前 head 或运行态 |
+| APP SQLite / ingestion | 按 ADR-0025 校验权威版本与结构、事务更新缓存和 coverage；历史页面不直接控制当前 head 或运行态 |
 | APP sync scheduler | checkpoint 恢复与历史补页分责；前台周期源端探测真正发请求；有界缓冲与单任务合并 |
 
-保留 ADR-0013 的不可变身份、统一写入、连续覆盖、分页预算、定向返回和背压。若本提案采纳，显式替代其中“snapshot mode 决定当前显示合并”的相关部分：当前状态由版本化 checkpoint/patch 决定，mode 只描述历史范围。旧任务仍遵守严格归属。
+保留 ADR-0013 的原生身份、统一写入、连续覆盖、分页预算、定向返回和背压。同 ID 与旧缓存的差异按 ADR-0025 处理。当前状态由版本化 checkpoint/patch 决定，mode 只描述历史范围；旧任务仍遵守严格归属。
 
 实施顺序：先确定源端可恢复状态和 canonical 稳定性，再接入 checkpoint/patch 与 APP 单一 reducer，最后启用 running sync 和自动恢复。不能先删 guard，再把已经发生的损坏逐个补回来。
 
@@ -225,10 +227,10 @@ running 时允许 sync 不意味着 running 时允许 revert；后者仍按原�
 
 ## 实施进度与启用范围
 
-- Protocol 已升级到版本 9，校验完整 source/checkpoint/live envelope、显式 head 和 patch 版本边界；状态 checkpoint 只由 preview 返回。
+- Protocol 已升级到版本 10，校验完整 source/checkpoint/live envelope、显式 head 和 patch 版本边界；状态 checkpoint 只由 preview 返回，history/catchup 携带 source 所有权。
 - 首阶段接入 Codex adapter 和 APP reducer。APP 在建立版本化基线后隔离旧生命周期事件；Pi 与 DSH 尚未提供这套 source 状态，仍使用其原有同步路径，不能据此宣称它们已满足本 ADR 的恢复保证。
 - Codex 的确定性重建、协调代次与版本化 live/checkpoint 已有实现和单测。原生通知的 canonical 提交及 live/tool 移除作为一次状态事务发布；每 15 秒、重新 announce 以及到期 preview 核对原生 `thread/turns/list`，可以发现静默回退和遗漏的完成通知。首版会读取完整 turns，长会话和多会话的读取成本仍需优化；原生多页没有 revision token 时要求连续读取一致，不把无法确认的结果发布为 ready。
-- APP 已实现缺口恢复、完整 checkpoint 后重放连续 patch、history/catchup 只补缓存和旧生命周期隔离。旧 Codex 表示采用 ADR-0023 的数据库版本 5 显式重建，普通 conflict 仍硬失败。
+- APP 已实现缺口恢复、完整 checkpoint 后重放连续 patch、history/catchup 只补缓存和旧生命周期隔离。SQLite 版本 7 按 ADR-0025 持久化缓存 epoch/行 seq 并允许权威修正；保留旧 Codex 表示迁移记录，非法结构仍整批失败。
 - Codex GUI/TUI 自动刷新由 ADR-0023 / Issue #4 跟踪。刷新协调器和持久 journal 不等于生产 driver 已接入，也不等于真实 GUI 已完成 hydration。
 - 单测覆盖和真实链路验收分别记录；尚未完成的 Pi/DSH 接入、大 checkpoint 分块、旧缓存迁移的设备验证及设备断连验收继续保留为明确限制。
 
@@ -249,7 +251,7 @@ running 时允许 sync 不意味着 running 时允许 revert；后者仍按原�
 | Host/adapter 重建，旧 live 与新 epoch 共存于网络 | 新握手建立基线，旧 epoch 不复活；原生未知前缀明确标记 |
 | 原生 revert 通知缺失；原生运行态变化但 head 不变 | 源端周期权威对账发现差异，手机恢复到新状态 |
 | revert 读取期间外部启动新 turn/再次 revert | 过期读取不提交，不把旧 item 接回新历史 |
-| 同 ID 不同 canonical 内容 | 整批回滚并定位源端规范化问题，不换 epoch 或清库掩盖 |
+| 权威重建修正同 ID 的 parent/data | 新 epoch 通过 checkpoint 事务修正缓存；旧响应不覆盖，非法重复/循环仍回滚 |
 | 超大 checkpoint、分块丢失、慢链路、缓冲超限 | 不应用半份完整集合；资源有界，恢复可重试，不无限积压 |
 | 手机崩溃于 Entry 入库后、内存 seq 更新前 | 重启 checkpoint 后幂等恢复，不依赖未持久化的 live/seq |
 | outbox 确认丢失、另一设备收到定向页 | pending 不被 live 替换删除；定向响应不制造共享版本假缺口 |

@@ -62,7 +62,7 @@ function complete(h: ReturnType<typeof harness>, turnId: string, ...items: Item[
 }
 
 describe("Codex tree replay", () => {
-  it("rejects a replay whose source order changes an immutable parent", async () => {
+  it("accepts native source order corrections after revert", async () => {
     const h = harness();
     await h.activate();
     const a = reply("a");
@@ -78,13 +78,15 @@ describe("Codex tree replay", () => {
 
     h.setTurns([{ id: "turn-1", status: "completed", items: [a, c, b] }]);
     await h.tree("c");
-    expect(h.sync({ range: "catchup", targetLeafId: "c" })).toBeUndefined();
-    expect(h.events.at(-1)).toMatchObject({
-      type: "command.result", commandId: "sync", ok: false, error: "canonical_entry_conflict",
-    });
+    const after = h.sync();
+    expect(after?.entries.map(entry => [entry.entryId, entry.parentId])).toEqual([
+      ["a", null], ["c", "a"], ["b", "c"],
+    ]);
+    expect(after?.source?.epoch).not.toBe(before?.source?.epoch);
+    expect(after?.source?.ready).toBe(true);
   });
 
-  it("reports a canonical conflict when a retained item changes data", async () => {
+  it("trusts native retained item data over the prior cache", async () => {
     const h = harness();
     await h.activate();
     const a = reply("a");
@@ -96,13 +98,10 @@ describe("Codex tree replay", () => {
 
     h.setTurns([{ id: "turn-1", status: "completed", items: [a, { ...b, text: "after" }] }]);
     await h.tree("b");
-    expect(h.sync()).toBeUndefined();
-    expect(h.events.at(-1)).toMatchObject({
-      type: "command.result", commandId: "sync", ok: false, error: "canonical_entry_conflict",
-    });
+    expect(h.sync()?.entries.at(-1)?.data.message).toMatchObject({ content: [{ text: "after" }] });
   });
 
-  it("keeps the previous canonical graph usable after a conflicting replay", async () => {
+  it("accepts successive native corrections without retaining the rejected old graph", async () => {
     const h = harness();
     await h.activate();
     const a = reply("a");
@@ -114,11 +113,9 @@ describe("Codex tree replay", () => {
 
     h.setTurns([{ id: "turn-1", status: "completed", items: [a, { ...b, text: "after" }] }]);
     await h.tree("b");
-    expect(h.sync()).toBeUndefined();
-    expect(h.events.at(-1)).toMatchObject({ error: "canonical_entry_conflict" });
+    expect(h.sync()?.entries.at(-1)?.data.message).toMatchObject({ content: [{ text: "after" }] });
 
-    // A later authoritative replay can recover from the retained graph; the failed candidate
-    // must not have replaced the old entry or mutated its completion indexes.
+    // A later authoritative read is also authoritative; cache history has no veto.
     h.setTurns([{ id: "turn-1", status: "completed", items: [a, b] }]);
     await h.tree("b");
     await vi.waitFor(() => expect(h.events.filter(event => event.type === "command.result" && event.commandId === "tree")).toHaveLength(2));

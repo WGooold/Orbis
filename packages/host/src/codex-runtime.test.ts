@@ -270,7 +270,8 @@ describe("Codex recoverable source checkpoints", () => {
       expect(nativeReads(h)).toHaveLength(1);
       h.resolveNext({ data: [first] });
       await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1))
-        .toMatchObject({ head: { leafId: "a" }, source: { ready: true, epoch } }));
+        .toMatchObject({ head: { leafId: "a" }, source: { ready: true } }));
+      expect(syncHistory(h)?.source?.epoch).not.toBe(epoch);
       expect(syncHistory(h)?.entries.map(entry => entry.entryId)).toEqual(["a"]);
     } finally {
       vi.clearAllTimers();
@@ -304,6 +305,66 @@ describe("Codex recoverable source checkpoints", () => {
     await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1))
       .toMatchObject({ source: { ready: true }, head: { leafId: null } }));
     expect(syncHistory(h)?.entries).toEqual([]);
+  });
+
+  it("repairs stale parents after a missed revert and retires the old source epoch", async () => {
+    const h = makeHarness();
+    await resume(h, [{ id: "t1", status: "completed", items: [agent("a")] },
+      { id: "t2", status: "completed", items: [agent("b"), agent("r")] }]);
+    const before = syncHistory(h);
+    // Native edit removed B/R but its revert notification was not delivered to this adapter.
+    h.notify("item/completed", { threadId: "th-1", turnId: "t3", item: agent("c") });
+    expect(syncHistory(h)?.entries.at(-1)).toMatchObject({ entryId: "c", parentId: "r" });
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+    h.resolveNext({ data: [{ id: "t1", status: "completed", items: [agent("a")] },
+      { id: "t3", status: "completed", items: [agent("c"), agent("d")] }] });
+    await vi.waitFor(() => expect(syncHistory(h)?.entries.map(entry => [entry.entryId, entry.parentId]))
+      .toEqual([["a", null], ["c", "a"], ["d", "c"]]));
+    const after = syncHistory(h);
+    expect(after?.source?.epoch).not.toBe(before?.source?.epoch);
+    expect(after?.source?.ready).toBe(true);
+    h.notify("item/completed", { threadId: "th-1", turnId: "t2", item: agent("r") });
+    expect(syncHistory(h)?.entries).toEqual(after?.entries);
+  });
+
+  it("keeps the source epoch during a verified native append", async () => {
+    const h = makeHarness();
+    await resume(h, [{ id: "t1", status: "completed", items: [agent("a")] }]);
+    const before = syncHistory(h);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+    h.resolveNext({ data: [{ id: "t1", status: "completed", items: [agent("a")] },
+      { id: "t2", status: "completed", items: [agent("b")] }] });
+    await vi.waitFor(() => expect(syncHistory(h)?.cursor.leafId).toBe("b"));
+    expect(syncHistory(h)?.source?.epoch).toBe(before?.source?.epoch);
+  });
+
+  it("rereads a buffered completed item that differs from the overlapping native read", async () => {
+    const h = makeHarness();
+    await resume(h, [{ id: "t", status: "completed", items: [agent("a", "original")] }]);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+    h.notify("item/completed", { threadId: "th-1", turnId: "t", item: agent("a", "changed") });
+    h.resolveNext({ data: [{ id: "t", status: "completed", items: [agent("a", "original")] }] });
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(2));
+    h.resolveNext({ data: [{ id: "t", status: "completed", items: [agent("a", "native")] }] });
+    await vi.waitFor(() => expect(syncHistory(h)?.entries[0]?.data.message)
+      .toMatchObject({ content: [{ text: "native" }] }));
+    expect(syncHistory(h)?.source?.ready).toBe(true);
+  });
+
+  it("rejects duplicate IDs in a native batch instead of starting recursive recovery", async () => {
+    const h = makeHarness();
+    await resume(h, [{ id: "t", status: "completed", items: [agent("a")] }]);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+    h.resolveNext({ data: [{ id: "t", status: "completed", items: [agent("a"), agent("a", "changed")] }] });
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1))
+      .toMatchObject({ source: { ready: false } }));
+    expect(syncHistory(h)).toBeUndefined();
+    expect(h.events.at(-1)).toMatchObject({ error: "codex_native_history_invalid" });
+    expect(nativeReads(h)).toHaveLength(1);
   });
 
   it("keeps legacy retained entries unknown when native full history cannot hydrate their items", async () => {
@@ -494,14 +555,16 @@ describe("Codex bounded canonical history", () => {
     expect(syncHistory(replay)?.entries).toHaveLength(1);
   });
 
-  it("fails conflicting completed Entries without publishing overwritten canonical data", async () => {
+  it("recovers differing duplicate notifications through native history", async () => {
     const h = makeHarness();
     await activate(h);
     h.notify("item/completed", { threadId: "th-1", item: item("a", "original") });
     expect(syncHistory(h)?.entries).toHaveLength(1);
     h.notify("item/completed", { threadId: "th-1", item: item("a", "changed") });
-    expect(syncHistory(h)).toBeUndefined();
-    expect(h.events.at(-1)).toMatchObject({ type: "command.result", commandId: "sync-command", ok: false, error: "canonical_entry_conflict" });
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalled());
+    h.resolveNext({ data: [{ id: "turn", status: "completed", items: [item("a", "native")] }] });
+    await vi.waitFor(() => expect(syncHistory(h)?.source?.ready).toBe(true));
+    expect(syncHistory(h)?.entries[0]?.data.message).toMatchObject({ content: [{ text: "native" }] });
   });
 
   it("replays rollout started order when parallel items finish in the opposite order", async () => {
@@ -1688,7 +1751,7 @@ describe("CodexRuntime", () => {
     });
   });
 
-  it("tree replay rejects a source order change that would alter immutable parents", async () => {
+  it("tree replay accepts the native order instead of vetoing corrected parents", async () => {
     const h = makeHarness();
     h.runtime.markStarted();
     const first = [
@@ -1715,14 +1778,11 @@ describe("CodexRuntime", () => {
       { type: "agentMessage", id: "a", text: "a" },
     ] }] });
     await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({
-      type: "command.result", commandId: "c-tree", ok: false, status: "failure",
-      error: "canonical_entry_conflict",
+      type: "command.result", commandId: "c-tree", ok: true, status: "success",
     })));
     const finalSnapshot = syncHistory(h);
-    expect(finalSnapshot).toBeUndefined();
-    expect(h.events.at(-1)).toMatchObject({
-      type: "command.result", commandId: "sync-command", ok: false, error: "canonical_entry_conflict",
-    });
+    expect(finalSnapshot?.entries.map(entry => [entry.entryId, entry.parentId])).toEqual([["b", null], ["a", "b"]]);
+    expect(finalSnapshot?.source?.epoch).not.toBe(replayed?.source?.epoch);
   });
 
   it("reconciles an external thread/reverted notification without issuing another revert", async () => {

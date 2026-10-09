@@ -99,11 +99,11 @@ _Avoid_: Port file, lock file
 ## Conversation, commands, and activation
 
 **Chat snapshot**:
-A bounded range of canonical Session Entries returned by `session.sync` for preview, older history, or forward catch-up. Its replace/append/prepend mode describes range and display behavior, not permission to overwrite canonical Entries.
+A bounded range of canonical Session Entries returned by `session.sync` for preview, older history, or forward catch-up. Its replace/append/prepend mode describes range and display behavior; authority and source versions determine cache updates.
 _Avoid_: Full history
 
 **Canonical Session Entry**:
-A stable node identified by Session ID and Entry ID within one paired Host's cache namespace. Its parent relation and content do not change between preview, history, and catch-up responses; conflicting versions are rejected rather than selected by arrival order.
+A native-history node identified by Session ID and Entry ID within one paired Host's cache namespace. Verified source versions may correct cached parent relations and content; caches do not veto authoritative history. See ADR-0025 for the Codex versioned path.
 
 **Session Tree Cache**:
 The persistent collection of canonical Session Entries. All three synchronization ranges use one transactional ingestion path; branches are queries along parent relationships, not separate copies of shared ancestors. See ADR-0013.
