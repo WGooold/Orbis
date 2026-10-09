@@ -317,6 +317,8 @@ data class RuntimeConversation(
     val sourcePatchBuffer: Map<Long, SessionPatch> = emptyMap(),
     /** Incomplete source snapshots are retried with a pause instead of a response/request loop. */
     val sourceRecoveryRetryAt: Long = 0,
+    /** Explicit retry must obtain a full baseline even if a previous one is still displayable. */
+    val forceSourceSnapshot: Boolean = false,
     val isChatSyncing: Boolean = false,
     val chatSyncError: String? = null,
     /** Runtime-level diagnostics belong to this runtime, not to the app-wide error channel. */
@@ -465,6 +467,12 @@ data class PendingSessionSync(
     val slow: Boolean = false,
     val exhaustedAt: Long? = null,
     val notBefore: Long = 0,
+    /** This request establishes a source baseline, independently of the display loading state. */
+    val sourceRecovery: Boolean = false,
+    /** A recovery becomes obsolete for epoch switching once a different baseline is installed. */
+    val sourceRecoveryEpoch: String? = null,
+    /** Fixed at task creation so retry never changes its immutable request parameters. */
+    val knownState: SessionAppliedState? = null,
 )
 
 data class SessionHistoryState(
@@ -705,7 +713,8 @@ internal fun RemoteState.seedCachedSessionView(runtimeId: String, graph: Session
         sessionBranchGenerations = if (branchChanged) sessionBranchGenerations +
             (runtimeId to ((sessionBranchGenerations[runtimeId] ?: 0) + 1)) else sessionBranchGenerations,
         conversations = conversations + (runtimeId to source.applyProjection(projection, messages, keepLiveTiming = !branchChanged).copy(
-            hasLiveSnapshot = true, isChatSyncing = false, streamingMessageIds = overlay,
+            // Cached rows can render the old head, but cannot complete source recovery.
+            hasLiveSnapshot = true, isChatSyncing = source.sourceEpoch != null && source.isChatSyncing, streamingMessageIds = overlay,
             streamingSessionId = graph.sessionId.takeIf { overlay.isNotEmpty() }, revision = conversation.revision + 1,
         )),
         runtimeSessionViews = runtimeSessionViews + (runtimeId to RuntimeSessionView(runtimeId, graph.sessionId, leaf)),
@@ -2290,6 +2299,15 @@ class RelayReducer(
                 val responseTargetLeafId = snapshot.targetLeafId ?: snapshot.cursor.leafId
                 val targetLeafId = if (pending.range == "catchup") pending.targetLeafId ?: responseTargetLeafId
                     else responseTargetLeafId
+                val selectionError = runCatching { pending.validatePreviewSelection(snapshot) }.exceptionOrNull()
+                if (selectionError != null) {
+                    val id = state.sessionSyncCommands.entries.first { it.value === pending }.key
+                    return state.failSessionSync(id, "Session 同步响应无效：${selectionError.message}")
+                }
+                if (snapshot.selection == "unchanged") {
+                    val id = state.sessionSyncCommands.entries.first { it.value === pending }.key
+                    return state.completeUnchangedSessionSync(id, snapshot, sequenceKey, sequence)
+                }
                 val liveLeafId = state.runtimes[runtimeId]?.sessionLeafId
                 val isHistory = pending.range == "history"
                 // Historical ranges fill immutable cache only. Even an older server's attached
@@ -2297,7 +2315,7 @@ class RelayReducer(
                 val isCanonicalPage = isHistory || conversation.sourceEpoch != null && (pending.range != "preview" || snapshot.source == null)
                 val incomingSource = snapshot.source.takeUnless { isCanonicalPage }
                 val incomingCheckpoint = snapshot.checkpoint.takeUnless { isCanonicalPage }
-                val cacheGate = conversation.snapshotSourceGate(snapshot, pending.range)
+                val cacheGate = conversation.snapshotSourceGate(snapshot, pending.range, pending.sourceRecovery, pending.sourceRecoveryEpoch)
                 val sourceRetired = incomingSource != null && incomingSource.epoch in conversation.retiredSourceEpochs
                 val sourceEpochChanged = incomingSource != null && conversation.sourceEpoch != null &&
                     conversation.sourceEpoch != incomingSource.epoch
@@ -2305,6 +2323,13 @@ class RelayReducer(
                     conversation.sourceEpoch == incomingSource.epoch
                 val sourceStale = incomingSource != null && sourceSameEpoch &&
                     conversation.sourceEpoch == incomingSource.epoch && incomingSource.seq < conversation.sourceSeq
+                // A conditional response captured before a newer patch is already superseded.
+                // Finish its task without introducing an error that would block future recovery.
+                if (snapshot.selection in setOf("state", "delta") &&
+                    (sourceStale || sourceRetired || sourceEpochChanged || !conversation.sourceReady)) {
+                    val id = state.sessionSyncCommands.entries.first { it.value === pending }.key
+                    return state.completeUnchangedSessionSync(id, snapshot, sequenceKey, sequence)
+                }
                 val sourceReadyCheckpoint = incomingSource != null && incomingCheckpoint?.head != null && !sourceStale &&
                     incomingSource.ready && incomingCheckpoint.headCompleteness == "complete" &&
                     incomingCheckpoint.inventoryComplete && snapshot.live?.complete == true
@@ -2331,6 +2356,7 @@ class RelayReducer(
                             runtimeId to conversation.copy(
                                 isChatSyncing = true,
                                 chatSyncError = null,
+                                sourceRecoveryRetryAt = System.currentTimeMillis() + 2_000,
                                 revision = conversation.revision + 1,
                             )
                         ),
@@ -2617,7 +2643,7 @@ class RelayReducer(
                     val head = incomingCheckpoint?.head ?: SessionBranchCursor(targetLeafId)
                     nextConversation = nextConversation.applyCompleteSourceState(
                         snapshot.sessionId, incomingSource!!, head, snapshot.live, graphForProjection,
-                    ).copy(sourcePatchBuffer = conversation.sourcePatchBuffer.filterValues {
+                    ).copy(forceSourceSnapshot = false, sourcePatchBuffer = conversation.sourcePatchBuffer.filterValues {
                         it.source.epoch == incomingSource.epoch && it.seq > incomingSource.seq
                     }).replaySourcePatches(snapshot.sessionId, graphForProjection)
                     nextRuntimeSessionViews = nextRuntimeSessionViews + (runtimeId to

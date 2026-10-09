@@ -17,6 +17,49 @@ internal const val SESSION_SYNC_TIMEOUT_MESSAGE = "同步暂未完成，请重�
 internal data class SessionSyncDispatch(val commandId: String, val task: PendingSessionSync)
 internal data class SessionSyncTick(val state: RemoteState, val send: List<SessionSyncDispatch>)
 
+/** Source metadata and buffered packets cannot acknowledge a committed client baseline. */
+internal fun RemoteState.appliedSessionState(runtimeId: String): SessionAppliedState? {
+    val runtime = runtimes[runtimeId] ?: return null
+    val conversation = conversations[runtimeId] ?: return null
+    val epoch = conversation.sourceEpoch ?: return null
+    if (!conversation.sourceReady || !conversation.hasLiveSnapshot || conversation.isChatSyncing ||
+        conversation.forceSourceSnapshot || conversation.sourceSeq < 0 || conversation.sourcePatchBuffer.isNotEmpty()) return null
+    val sessionId = runtime.sessionId ?: return null
+    val graph = sessionGraphs[sessionId] ?: return null
+    if (graph.cacheEpoch != epoch || runtimeSessionViews[runtimeId]?.sessionId != sessionId ||
+        runtimeSessionViews[runtimeId]?.leafId != conversation.sourceHeadLeafId ||
+        conversation.sourceHeadLeafId?.let { it !in graph.entries } == true) return null
+    return SessionAppliedState(epoch, conversation.sourceSeq, SessionBranchCursor(conversation.sourceHeadLeafId))
+}
+
+/** Complete an unchanged or already superseded conditional response without replacing state. */
+internal fun RemoteState.completeUnchangedSessionSync(
+    commandId: String,
+    snapshot: SessionGraphSnapshot,
+    sequenceKey: String,
+    sequence: Long,
+): RemoteState {
+    val task = sessionSyncCommands[commandId] ?: return this
+    val owned = ownsSessionSnapshot(commandId, task.runtimeId, snapshot.sessionId, snapshot.syncId,
+        snapshot.targetLeafId ?: snapshot.cursor.leafId, snapshot.range, snapshot.beforeEntryId)
+    val conversation = conversations[task.runtimeId] ?: RuntimeConversation()
+    val applied = appliedSessionState(task.runtimeId)
+    val known = task.knownState
+    val valid = owned && applied != null && known != null && applied.epoch == known.epoch && applied.seq >= known.seq &&
+        (applied.seq > known.seq || applied.head == known.head)
+    val next = copy(
+        sessionSyncCommands = sessionSyncCommands - commandId,
+        pendingCommands = pendingCommands - commandId,
+        sessionSyncRequests = if (valid) sessionSyncRequests - task.runtimeId else sessionSyncRequests + task.runtimeId,
+        lastSequence = lastSequence + (sequenceKey to maxOf(lastSequence[sequenceKey] ?: -1L, sequence)),
+    )
+    if (!valid) return next
+    return next.copy(
+        sessionSyncFailures = next.sessionSyncFailures - task.runtimeId,
+        conversations = next.conversations + (task.runtimeId to conversation.copy(chatSyncError = null)),
+    )
+}
+
 /** Recovery always reads the source, even if SQLite already covers the advertised leaf. */
 internal fun RemoteState.requestedSessionRecovery(
     runtimeId: String,
@@ -33,6 +76,9 @@ internal fun RemoteState.requestedSessionRecovery(
         branchGeneration = sessionBranchGenerations[runtimeId] ?: 0,
         connectionGeneration = connectionGeneration,
         notBefore = conversations[runtimeId]?.sourceRecoveryRetryAt ?: 0,
+        sourceRecovery = true,
+        sourceRecoveryEpoch = conversations[runtimeId]?.sourceEpoch,
+        knownState = appliedSessionState(runtimeId),
     )
 }
 
@@ -133,6 +179,6 @@ internal fun RemoteState.retrySessionSync(runtimeId: String): RemoteState {
     return released.copy(
         sessionSyncCommands = released.sessionSyncCommands - ids, pendingCommands = released.pendingCommands - ids,
         sessionSyncFailures = released.sessionSyncFailures - runtimeId,
-        conversations = released.conversations + (runtimeId to conversation.copy(chatSyncError = null)),
+        conversations = released.conversations + (runtimeId to conversation.copy(chatSyncError = null, forceSourceSnapshot = true)),
     )
 }

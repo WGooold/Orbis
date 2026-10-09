@@ -141,7 +141,8 @@ class SessionGraphStoreInstrumentedTest {
     fun rejectedReadyEpochAndRetiredHistoryNeverWriteDisk() {
         val root = entry("root", null)
         store.upsert(device, "s", listOf(root), "root", source = SessionSourceEpoch("e", 5, true), activateSource = true)
-        val conversation = RuntimeConversation(sourceEpoch = "e", sourceSeq = 5, sourceReady = true, retiredSourceEpochs = setOf("old"))
+        val conversation = RuntimeConversation(sourceEpoch = "e", sourceSeq = 5, sourceReady = true,
+            isChatSyncing = true, retiredSourceEpochs = setOf("old"))
         for ((range, epoch) in listOf("preview" to "future", "history" to "old")) {
             val pending = PendingSessionSync("r", "s", "sync", range, beforeEntryId = "root".takeIf { range == "history" })
             val state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s")),
@@ -154,6 +155,44 @@ class SessionGraphStoreInstrumentedTest {
             assertEquals("e", store.cacheEpoch(device, "s"))
             assertEquals(listOf(root), store.readEntries(device, "s", listOf("root")))
         }
+    }
+
+    @Test
+    fun cachedRowsCannotPreventRecoveryCheckpointFromActivatingNewEpoch() {
+        val old = listOf(entry("root", null), entry("obsolete", "root"))
+        store.upsert(device, "s", old, "obsolete", source = SessionSourceEpoch("old", 5, true), activateSource = true)
+        val graph = store.withCacheVersions(device, SessionGraph("s", old.associateBy { it.entryId }, SessionBranchCursor("obsolete")))
+        val current = RemoteState(
+            selectedRuntimeId = "r",
+            runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s", sessionGraphSync = true, sessionLeafId = "obsolete")),
+            conversations = mapOf("r" to RuntimeConversation(sourceEpoch = "old", sourceSeq = 5,
+                sourceHeadLeafId = "obsolete", sourceReady = true, hasLiveSnapshot = true, isChatSyncing = true)),
+            runtimeSessionViews = mapOf("r" to RuntimeSessionView("r", "s", "obsolete")),
+            sessionGraphs = mapOf("s" to graph), sessionSyncRequests = setOf("r"),
+        ).seedCachedSessionView("r", graph)
+        assertTrue(current.conversations.getValue("r").isChatSyncing)
+        val task = current.requestedSessionRecovery("r", 7, "recovery")!!
+        val state = advanceSessionSyncTasks(current.queueSessionSync("request", task), System.currentTimeMillis(), 7).state
+        val corrected = entry("root", null).copy(timestamp = "corrected")
+        val snapshot = SessionGraphSnapshot("s", "recovery", SessionBranchCursor("root"), "replace", listOf(corrected),
+            range = "preview", complete = true, source = SessionSourceEpoch("new", 2, true),
+            checkpoint = SessionCheckpoint("new:2", SessionBranchCursor("root"), "complete", true), live = SessionLiveState(true))
+
+        val persisted = ingestSessionSnapshot(store, device, "r", "request", snapshot, { state }, { true })!!
+        val payload = """{"type":"runtime.event","runtimeId":"r","sequence":100,"event":${Json.encodeToString(snapshot).dropLast(1)},"type":"session.snapshot"}}"""
+        val recovered = RelayReducer().reduce(state, payload, persisted)
+        assertEquals(listOf(corrected), persisted)
+        assertEquals("new", store.cacheEpoch(device, "s"))
+        assertEquals("root", store.latestLeaf(device, "s"))
+        assertFalse(store.contains(device, "s", "obsolete"))
+        assertTrue(store.hasContinuousCoverage(device, "s", "root"))
+        assertEquals("new", recovered.conversations.getValue("r").sourceEpoch)
+        assertEquals(listOf("root"), recovered.conversations.getValue("r").messages.map { it.messageId })
+        assertFalse(recovered.conversations.getValue("r").isChatSyncing)
+        assertFalse("r" in recovered.sessionSyncRequests)
+        assertTrue(recovered.sessionSyncCommands.isEmpty())
+        assertEquals(null, recovered.seedCachedSessionView("r", recovered.sessionGraphs.getValue("s"))
+            .requestedSessionRecovery("r", 7, "unexpected-next-request"))
     }
 
     @Test

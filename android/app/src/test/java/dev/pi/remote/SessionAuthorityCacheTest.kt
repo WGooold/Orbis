@@ -50,7 +50,10 @@ class SessionAuthorityCacheTest {
             checkpoint = SessionCheckpoint("id", SessionBranchCursor(), "complete", true), live = SessionLiveState(true))
         assertTrue(conversation.snapshotSourceGate(checkpoint, "preview").epochSwitchRejected)
         assertFalse(conversation.snapshotSourceGate(checkpoint, "preview").cacheAllowed)
-        assertTrue(conversation.copy(isChatSyncing = true).snapshotSourceGate(checkpoint, "preview").cacheAllowed)
-        assertFalse(conversation.copy(isChatSyncing = true).snapshotSourceGate(checkpoint.copy(live = SessionLiveState(false)), "preview").cacheAllowed)
+        assertTrue(conversation.copy(isChatSyncing = true).snapshotSourceGate(checkpoint, "preview").epochSwitchRejected)
+        assertTrue(conversation.snapshotSourceGate(checkpoint, "preview", sourceRecovery = true).cacheAllowed)
+        assertTrue(conversation.snapshotSourceGate(checkpoint, "preview", sourceRecovery = true, sourceRecoveryEpoch = "stale").epochSwitchRejected)
+        assertFalse(conversation.snapshotSourceGate(checkpoint.copy(live = SessionLiveState(false)), "preview", sourceRecovery = true).cacheAllowed)
+        assertFalse(conversation.snapshotSourceGate(checkpoint.copy(source = SessionSourceEpoch("old", 99, true)), "preview", sourceRecovery = true).cacheAllowed)
     }
 }

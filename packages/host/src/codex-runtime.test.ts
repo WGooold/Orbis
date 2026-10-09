@@ -419,6 +419,31 @@ describe("Codex recoverable source checkpoints", () => {
     } finally { date.mockRestore(); }
   });
 
+  it("checks native history before acknowledging an applied watermark and detects a missed revert", async () => {
+    const h = makeHarness();
+    const turns = [{ id: "t", status: "completed", items: [agent("a"), agent("b")] }];
+    await resume(h, turns);
+    const baseline = syncHistory(h)!;
+    const knownState = { epoch: baseline.source!.epoch, seq: baseline.source!.seq, head: baseline.checkpoint!.head };
+    const now = Date.now();
+    const date = vi.spyOn(Date, "now").mockReturnValue(now + 16_000);
+    try {
+      expect(syncHistory(h, { syncId: "probe", knownState })).toBeUndefined();
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+      h.resolveNext({ data: turns });
+      await vi.waitFor(() => expect(h.events.find(event => event.type === "session.snapshot" && event.syncId === "probe"))
+        .toMatchObject({ selection: "unchanged", entries: [], source: baseline.source }));
+      date.mockReturnValue(now + 32_000);
+      expect(syncHistory(h, { syncId: "after-missed-revert", knownState })).toBeUndefined();
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(2));
+      h.resolveNext({ data: [{ id: "t", status: "completed", items: [agent("a")] }] });
+      await vi.waitFor(() => expect(h.events.find(event => event.type === "session.snapshot" && event.syncId === "after-missed-revert"))
+        .toMatchObject({ selection: "snapshot", entries: [expect.objectContaining({ entryId: "a" })] }));
+      const response = h.events.find(event => event.type === "session.snapshot" && event.syncId === "after-missed-revert");
+      expect(response?.type === "session.snapshot" && response.source?.epoch).not.toBe(knownState.epoch);
+    } finally { date.mockRestore(); }
+  });
+
   it("publishes null unknown head while native reconciliation is not ready", async () => {
     const h = makeHarness();
     await resume(h, [{ id: "t", status: "completed", items: [agent("a")] }]);

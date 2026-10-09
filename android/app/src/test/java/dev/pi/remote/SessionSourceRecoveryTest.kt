@@ -276,9 +276,76 @@ class SessionSourceRecoveryTest {
         ).requestRuntimeRefresh("runtime")
         val task = current.requestedSessionRecovery("runtime", 7, "new-sync")!!
         assertEquals("preview", task.range)
+        assertTrue(task.sourceRecovery)
+        assertEquals("epoch", task.sourceRecoveryEpoch)
         assertNull(task.targetLeafId)
         assertEquals(7, task.connectionGeneration)
         assertNull(current.queueSessionSync("request", task).requestedSessionRecovery("runtime", 7, "duplicate"))
+    }
+
+    @Test fun `cached projection preserves source recovery and its retry deadline`() {
+        val graph = cachedGraph("session", mapOf("head" to entry("head")), SessionBranchCursor("head"))
+        val current = initial("head").copy(
+            sessionGraphs = mapOf("session" to graph), sessionSyncRequests = setOf("runtime"),
+            conversations = initial("head").conversations.mapValues { (_, conversation) ->
+                conversation.copy(isChatSyncing = true, sourceRecoveryRetryAt = 5_000,
+                    sourcePatchBuffer = mapOf(3L to patch(3)))
+            },
+        )
+
+        val seeded = current.seedCachedSessionView("runtime", graph)
+        val conversation = seeded.conversations.getValue("runtime")
+        assertTrue(conversation.isChatSyncing)
+        assertEquals(5_000L, conversation.sourceRecoveryRetryAt)
+        assertEquals(current.conversations.getValue("runtime").sourcePatchBuffer, conversation.sourcePatchBuffer)
+        assertTrue("runtime" in seeded.sessionSyncRequests)
+        val task = seeded.requestedSessionRecovery("runtime", 7, "recovery")!!
+        assertTrue(advanceSessionSyncTasks(seeded.queueSessionSync("request", task), 4_999, 7).send.isEmpty())
+    }
+
+    @Test fun `fresh recovery after cache loading accepts a new epoch and stops requesting previews`() {
+        val head = entry("head")
+        val graph = cachedGraph("session", mapOf("head" to head), SessionBranchCursor("head"))
+        val current = initial("head").copy(sessionGraphs = mapOf("session" to graph))
+            .requestRuntimeRefresh("runtime").seedCachedSessionView("runtime", graph)
+        assertFalse(current.conversations.getValue("runtime").isChatSyncing)
+        val recovery = current.requestedSessionRecovery("runtime", 7, "recovery")!!
+        val tick = advanceSessionSyncTasks(current.queueSessionSync("request", recovery), System.currentTimeMillis(), 7)
+        assertEquals(1, tick.send.size)
+        val snapshot = SessionGraphSnapshot("session", "recovery", SessionBranchCursor("head"), "replace", listOf(head),
+            range = "preview", complete = true, source = SessionSourceEpoch("new", 2, true),
+            checkpoint = SessionCheckpoint("new:2", SessionBranchCursor("head"), "complete", true),
+            live = SessionLiveState(true),
+        )
+
+        val recovered = reducer.reduce(tick.state,
+            """{"type":"runtime.event","runtimeId":"runtime","sequence":100,"event":${json.encodeToString(snapshot).dropLast(1)},"type":"session.snapshot"}}""")
+        val conversation = recovered.conversations.getValue("runtime")
+        assertEquals("new", conversation.sourceEpoch)
+        assertEquals("new", recovered.sessionGraphs.getValue("session").cacheEpoch)
+        assertTrue("epoch" in conversation.retiredSourceEpochs)
+        assertFalse(conversation.isChatSyncing)
+        assertTrue(recovered.sessionSyncCommands.isEmpty())
+        assertFalse("runtime" in recovered.sessionSyncRequests)
+        val reloaded = recovered.seedCachedSessionView("runtime", recovered.sessionGraphs.getValue("session"))
+        assertNull(reloaded.requestedSessionRecovery("runtime", 7, "unexpected-next-request"))
+    }
+
+    @Test fun `rejected epoch waits before the next recovery even after loading cached rows`() {
+        val graph = cachedGraph("session", mapOf("head" to entry("head")), SessionBranchCursor("head"))
+        val current = initial("head").copy(sessionGraphs = mapOf("session" to graph))
+        val before = System.currentTimeMillis()
+        val rejected = checkpoint(current, 2, listOf(entry("head")), "head", "unannounced")
+        assertEquals("epoch", rejected.conversations.getValue("runtime").sourceEpoch)
+        val retryAt = rejected.conversations.getValue("runtime").sourceRecoveryRetryAt
+        assertTrue(retryAt >= before + 2_000)
+        val seeded = rejected.seedCachedSessionView("runtime", graph)
+        val task = seeded.requestedSessionRecovery("runtime", 7, "next")!!
+        assertTrue(task.sourceRecovery)
+        assertEquals(retryAt, task.notBefore)
+        val queued = seeded.queueSessionSync("request", task)
+        assertTrue(advanceSessionSyncTasks(queued, retryAt - 1, 7).send.isEmpty())
+        assertEquals(1, advanceSessionSyncTasks(queued, retryAt, 7).send.size)
     }
 
     @Test fun `malformed patch versions cannot establish or advance the source state`() {

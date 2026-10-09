@@ -52,7 +52,8 @@ export class SessionSyncTasks {
     this.#expire();
     const key = this.#key(deviceId, commandId);
     const fingerprint = JSON.stringify([runtimeId, command.sessionId, command.syncId, command.range,
-      command.knownLeafId ?? null, command.targetLeafId ?? null, command.beforeEntryId ?? null, command.maxEntries ?? 30]);
+      command.knownLeafId ?? null, command.targetLeafId ?? null, command.beforeEntryId ?? null, command.maxEntries ?? 30,
+      command.knownState === undefined ? null : [command.knownState.epoch, command.knownState.seq, command.knownState.head.leafId]]);
     const existing = this.#tasks.get(key);
     const duplicateSync = [...this.#tasks.values()].find((task) => task.deviceId === deviceId &&
       task.command.syncId === command.syncId && task !== existing);

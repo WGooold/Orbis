@@ -12,6 +12,8 @@ Status: accepted（设计已采纳；实施状态以关联 tickets 为准）
 
 ## Context
 
+2026-10-10：[ADR-0026](0026-host-selected-session-sync.md) 将 preview 的固定 tail 改为源端根据 APP 已应用基线选择 unchanged、state、delta 或恢复 snapshot；本 ADR 的历史分页、预算、事务、归属和背压要求继续有效。
+
 `preview`、`history`、`catchup` 是同一个 `session.sync` 命令的范围参数，均返回 `session.snapshot` 和同一种 `RemoteSessionEntry`。它们的显示目的不同，不代表节点内容不同。目前 preview/history 显示后丢弃，catchup 需要再次下载相同节点。
 
 与此同时，Codex 忽略范围参数，反复发送整份 Entry 图；APP 等待 8 秒后删除请求归属并重新生成请求；Host 已排队的响应不随之取消。慢链路下可能形成“超时、重复整图、排队增长、迟到响应被拒”的循环。2026-09-19 已观察到 GB 级应用队列；2026-09-21 仅 Codex 异常的现场尚未量出响应耗时，不能把两次现场的初始原因等同。

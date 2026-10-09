@@ -7,6 +7,48 @@ internal data class SessionSnapshotSourceGate(
     val epochSwitchRejected: Boolean,
 )
 
+/** Validate conditional responses before either SQLite or the reducer can consume them. */
+internal fun PendingSessionSync.validatePreviewSelection(snapshot: SessionGraphSnapshot) {
+    require(snapshot.targetLeafId == null || snapshot.targetLeafId == snapshot.cursor.leafId) { "session_target_mismatch" }
+    if (range != "preview") {
+        require(snapshot.selection == null) { "session_selection_range_mismatch" }
+        return
+    }
+    when (snapshot.selection ?: "snapshot") {
+        "snapshot" -> require(snapshot.mode == "replace") { "session_range_mode_mismatch" }
+        "state", "delta", "unchanged" -> {
+            val known = requireNotNull(knownState) { "session_applied_state_missing" }
+            val source = requireNotNull(snapshot.source) { "session_source_missing" }
+            val checkpoint = requireNotNull(snapshot.checkpoint) { "session_checkpoint_missing" }
+            require(snapshot.mode == "append" && source.ready && source.epoch == known.epoch &&
+                checkpoint.headCompleteness == "complete" && checkpoint.inventoryComplete &&
+                checkpoint.head == snapshot.cursor && snapshot.complete == true && snapshot.rangeStatus == "complete") {
+                "session_conditional_response_invalid"
+            }
+            if (snapshot.selection == "unchanged") {
+                require(source.seq == known.seq && checkpoint.head == known.head && snapshot.entries.isEmpty() &&
+                    snapshot.turnTimings.orEmpty().isEmpty() && snapshot.live == null) { "session_unchanged_mismatch" }
+            } else {
+                require(source.seq > known.seq && snapshot.live?.complete == true) { "session_conditional_version_invalid" }
+                if (snapshot.selection == "state") {
+                    require(checkpoint.head == known.head && snapshot.entries.isEmpty() && snapshot.turnTimings.orEmpty().isEmpty()) {
+                        "session_state_range_invalid"
+                    }
+                } else {
+                    var parent = known.head.leafId
+                    require(snapshot.entries.isNotEmpty()) { "session_delta_empty" }
+                    snapshot.entries.forEach { entry ->
+                        require(entry.parentId == parent) { "session_delta_gap" }
+                        parent = entry.entryId
+                    }
+                    require(parent == checkpoint.head?.leafId) { "session_delta_head_mismatch" }
+                }
+            }
+        }
+        else -> error("session_selection_invalid")
+    }
+}
+
 internal fun contiguousSourcePatches(epoch: String, seq: Long, patches: Collection<SessionPatch>): List<SessionPatch> {
     val result = mutableListOf<SessionPatch>()
     var base = seq
@@ -25,7 +67,12 @@ internal fun mergedPatchEntries(entries: List<SessionGraphEntry>, patches: List<
     return merged.values.toList()
 }
 
-internal fun RuntimeConversation.snapshotSourceGate(snapshot: SessionGraphSnapshot, range: String): SessionSnapshotSourceGate {
+internal fun RuntimeConversation.snapshotSourceGate(
+    snapshot: SessionGraphSnapshot,
+    range: String,
+    sourceRecovery: Boolean = false,
+    sourceRecoveryEpoch: String? = sourceEpoch,
+): SessionSnapshotSourceGate {
     val source = snapshot.source
     val cacheOnly = range != "preview" || source == null
     if (source == null) return SessionSnapshotSourceGate(sourceEpoch == null, sourceEpoch != null, false)
@@ -36,7 +83,10 @@ internal fun RuntimeConversation.snapshotSourceGate(snapshot: SessionGraphSnapsh
     )
     val changed = sourceEpoch != null && sourceEpoch != source.epoch
     val stale = retired || sourceEpoch == source.epoch && source.seq < sourceSeq
-    val rejected = changed && !retired && source.ready && sourceReady && !isChatSyncing
+    // Only the correlated recovery task can authorize a new source baseline. Display loading
+    // can change while reading cached rows and cannot identify a recovery handshake.
+    val currentRecovery = sourceRecovery && sourceRecoveryEpoch == sourceEpoch
+    val rejected = changed && !retired && source.ready && sourceReady && !currentRecovery
     val complete = source.ready && snapshot.checkpoint?.head != null &&
         snapshot.checkpoint.headCompleteness == "complete" && snapshot.checkpoint.inventoryComplete &&
         snapshot.live?.complete == true
@@ -62,14 +112,23 @@ internal fun ingestSessionSnapshot(
     if (!owns()) return null
     val state = currentState()
     val pending = state.sessionSyncCommands.getValue(commandId)
+    pending.validatePreviewSelection(snapshot)
+    // No data is carried: this acknowledges a fixed baseline and never writes a cache epoch.
+    if (snapshot.selection == "unchanged") return emptyList()
     require(snapshot.targetLeafId == null || snapshot.targetLeafId == snapshot.cursor.leafId) { "session_target_mismatch" }
     require(when (pending.range) {
-        "preview" -> snapshot.mode == "replace"
+        "preview" -> snapshot.mode in setOf("replace", "append")
         "history" -> snapshot.mode == "prepend"
         "catchup" -> snapshot.mode in setOf("replace", "append")
         else -> false
     }) { "session_range_mode_mismatch" }
-    val gate = (state.conversations[runtimeId] ?: RuntimeConversation()).snapshotSourceGate(snapshot, pending.range)
+    val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
+    // A conditional reply cannot authorize a new baseline after its original one was invalidated.
+    if (snapshot.selection in setOf("state", "delta") &&
+        (!conversation.sourceReady || conversation.sourceEpoch != pending.knownState?.epoch)) return emptyList()
+    val gate = conversation.snapshotSourceGate(
+        snapshot, pending.range, pending.sourceRecovery, pending.sourceRecoveryEpoch,
+    )
     // Leave rejected/unknown boundaries to the reducer; neither can modify persistent rows.
     if (!gate.cacheAllowed) return emptyList()
     val cacheOnly = pending.range == "history" || state.conversations[runtimeId]?.sourceEpoch != null &&

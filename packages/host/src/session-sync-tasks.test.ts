@@ -38,6 +38,16 @@ function harness(synchronous = false) {
 }
 
 describe("SessionSyncTasks", () => {
+  it("keeps the applied baseline immutable across retry and rejects changed progress on the same ID", () => {
+    const h = harness();
+    const command = { ...request(), knownState: { epoch: "epoch", seq: 7, head: { leafId: "leaf" } } };
+    h.manager.request("a", "runtime", "cmd", command);
+    h.manager.tick();
+    expect(h.dispatches[0]?.command.knownState).toEqual(command.knownState);
+    h.manager.request("a", "runtime", "cmd", { ...command, knownState: { ...command.knownState, seq: 8 } });
+    expect(h.error).toHaveBeenLastCalledWith("a", "cmd", "session_sync_id_conflict");
+    expect(h.dispatches).toHaveLength(1);
+  });
   it("registers before synchronous dispatch and only sends to the requesting device", () => {
     const h = harness(true);
     h.manager.request("a", "runtime", "cmd", request());

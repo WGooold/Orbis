@@ -34,7 +34,7 @@ import java.net.URI
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-internal const val PROTOCOL_VERSION = 10
+internal const val PROTOCOL_VERSION = 11
 internal const val RELOAD_TRACE_TAG = "PiRemote.ReloadTrace"
 private const val TRACE_LOG_LIMIT = 200
 /** 超过这个长度就不再整棵解析入站帧（见 `traceIncoming`）：大帧是 E2E 密文分片。 */
@@ -656,6 +656,7 @@ class RelayClient(
         beforeEntryId: String? = null,
         maxEntries: Int? = null,
         range: String? = null,
+        knownState: SessionAppliedState? = null,
         commandId: String = UUID.randomUUID().toString(),
     ): String? = sendCommand(runtimeId, buildJsonObject {
         put("type", "session.sync")
@@ -666,6 +667,11 @@ class RelayClient(
         beforeEntryId?.let { put("beforeEntryId", it) }
         maxEntries?.let { put("maxEntries", it) }
         range?.let { put("range", it) }
+        knownState?.let { known -> put("knownState", buildJsonObject {
+            put("epoch", known.epoch)
+            put("seq", known.seq)
+            put("head", buildJsonObject { put("leafId", known.head.leafId?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull) })
+        }) }
     }, commandId)
 
     fun sendUserMessage(

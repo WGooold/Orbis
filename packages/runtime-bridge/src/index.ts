@@ -12,6 +12,10 @@ import {
   type RuntimeTurnTiming,
   type SessionSyncRange,
   type SessionSyncRangeStatus,
+  type SessionAppliedState,
+  type SessionSourceEpoch,
+  type SessionCheckpoint,
+  type SessionLiveState,
 } from "@pi-remote/protocol";
 
 export type RuntimeSessionSyncRequest = {
@@ -22,6 +26,7 @@ export type RuntimeSessionSyncRequest = {
   beforeEntryId?: string | null;
   maxEntries?: number;
   range?: SessionSyncRange;
+  knownState?: SessionAppliedState;
 };
 
 export type RuntimeSessionSync = {
@@ -36,6 +41,10 @@ export type RuntimeSessionSync = {
   hasOlder?: boolean;
   complete?: boolean;
   rangeStatus?: SessionSyncRangeStatus;
+  selection?: "snapshot" | "delta" | "state" | "unchanged" | undefined;
+  source?: SessionSourceEpoch | undefined;
+  checkpoint?: SessionCheckpoint | undefined;
+  live?: SessionLiveState | undefined;
 };
 
 export type RuntimeSlashCommandCompletion = {
@@ -378,6 +387,7 @@ export class RuntimeBridge {
             ...(command.beforeEntryId === undefined ? {} : { beforeEntryId: command.beforeEntryId }),
             ...(command.maxEntries === undefined ? {} : { maxEntries: command.maxEntries }),
             ...(command.range === undefined ? {} : { range: command.range }),
+            ...(command.knownState === undefined ? {} : { knownState: command.knownState }),
           });
           if (sync.sessionId !== command.sessionId) {
             throw new Error(`Session sync returned ${sync.sessionId} for ${command.sessionId}`);
@@ -406,6 +416,10 @@ export class RuntimeBridge {
             ...(sync.hasOlder === undefined ? {} : { hasOlder: sync.hasOlder }),
             ...(sync.complete === undefined ? {} : { complete: sync.complete }),
             ...(sync.rangeStatus === undefined ? {} : { rangeStatus: sync.rangeStatus }),
+            ...(sync.selection === undefined ? {} : { selection: sync.selection }),
+            ...(sync.source === undefined ? {} : { source: sync.source }),
+            ...(sync.checkpoint === undefined ? {} : { checkpoint: sync.checkpoint }),
+            ...(sync.live === undefined ? {} : { live: sync.live }),
           });
         } catch (error) {
           this.publish({

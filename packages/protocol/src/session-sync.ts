@@ -51,6 +51,7 @@ export function selectSessionSyncSnapshot(
   if (request.sessionId !== sessionId) throw new Error("session_mismatch");
   const range = request.range;
   if (range === undefined) throw new Error("session_sync_range_required");
+  if (request.knownState !== undefined && range !== "preview") throw new Error("session_known_state_range_mismatch");
   // Keep the default response bounded for first paint; callers can request a larger history page
   // explicitly, subject to the byte limits below.
   const maxEntries = request.maxEntries ?? 30;
@@ -65,6 +66,42 @@ export function selectSessionSyncSnapshot(
   let candidates = path;
   let rangeStatus = status;
   let mode: SessionSyncSnapshot["mode"] = range === "history" ? "prepend" : "replace";
+  let selection: SessionSyncSnapshot["selection"] = range === "preview" ? "snapshot" : undefined;
+  const known = request.knownState;
+  // A head ID alone is not a live-state watermark. Only a complete source checkpoint and a
+  // committed same-epoch client baseline permit content suppression.
+  const conditional = range === "preview" && status === "complete" && source !== undefined &&
+    source.version.ready && source.checkpoint.headCompleteness === "complete" &&
+    source.checkpoint.inventoryComplete && source.live.complete &&
+    source.checkpoint.head.leafId === targetLeafId && known?.epoch === source.version.epoch &&
+    known.seq <= source.version.seq;
+  if (conditional && known !== undefined && source !== undefined) {
+    if (known.head.leafId === targetLeafId && known.seq === source.version.seq) {
+      return {
+        type: "session.snapshot", sessionId, syncId: request.syncId,
+        range, selection: "unchanged", cursor: { leafId: targetLeafId }, targetLeafId,
+        mode: "append", entries: [], turnTimings: [], hasOlder: false, complete: true,
+        rangeStatus: "complete", source: source.version, checkpoint: source.checkpoint,
+      };
+    }
+    if (known.seq < source.version.seq) {
+      if (known.head.leafId === targetLeafId) {
+        candidates = [];
+        selection = "state";
+        mode = "append";
+      } else {
+        const index = known.head.leafId === null ? -1 : path.findIndex(entry => entry.entryId === known.head.leafId);
+        if (known.head.leafId === null || index >= 0) {
+          const suffix = path.slice(index + 1);
+          if (suffix.length <= maxEntries) {
+            candidates = suffix;
+            selection = "delta";
+            mode = "append";
+          }
+        }
+      }
+    }
+  }
   if (range === "history") {
     const boundary = request.beforeEntryId ?? null;
     const index = boundary === null ? path.length : path.findIndex((entry) => entry.entryId === boundary);
@@ -88,7 +125,7 @@ export function selectSessionSyncSnapshot(
     if (timing.messageId === undefined) unanchored.push(timing);
     else timingsByMessage.set(timing.messageId, [...(timingsByMessage.get(timing.messageId) ?? []), timing]);
   }
-  let timings = new Map(unanchored.map((timing) => [timing.turnId, timing]));
+  let timings = new Map((selection === "state" ? [] : unanchored).map((timing) => [timing.turnId, timing]));
   let selected: RemoteSessionEntry[] = [];
   const response = (page: RemoteSessionEntry[], pageTimings: ReadonlyMap<string, RuntimeTurnTiming>): SessionSyncSnapshot => {
     const remaining = candidates.length > page.length;
@@ -101,6 +138,7 @@ export function selectSessionSyncSnapshot(
       complete: rangeStatus === "complete" && !remaining,
       rangeStatus: rangeStatus !== "complete" ? rangeStatus
         : remaining ? range === "history" ? "older_available" : "limit_reached" : "complete",
+      ...(selection === undefined ? {} : { selection }),
       // All pages carry cache ownership. Only preview establishes head/live state.
       ...(source === undefined ? {} : { source: source.version }),
       ...(source === undefined || range !== "preview" ? {} : {
@@ -130,6 +168,11 @@ export function selectSessionSyncSnapshot(
     timings = nextTimings;
     snapshot = nextSnapshot;
     if (size > SESSION_SYNC_PAGE_BYTES) break;
+  }
+  // Never label a truncated suffix as a complete incremental recovery. Existing cache-hole
+  // paging can fill the ancestors of a bounded recovery snapshot without changing live state.
+  if (selection === "delta" && !snapshot.complete) {
+    return selectSessionSyncSnapshot(entries, sessionId, liveLeaf, { ...request, knownState: undefined }, turnTimings, source);
   }
   return snapshot;
 }

@@ -35,6 +35,13 @@ data class SessionSourceEpoch(
 )
 
 @Serializable
+data class SessionAppliedState(
+    val epoch: String,
+    val seq: Long,
+    val head: SessionBranchCursor,
+)
+
+@Serializable
 data class SessionCheckpoint(
     val checkpointId: String,
     val head: SessionBranchCursor? = null,
@@ -111,6 +118,7 @@ data class SessionGraphSnapshot(
     val source: SessionSourceEpoch? = null,
     val checkpoint: SessionCheckpoint? = null,
     val live: SessionLiveState? = null,
+    val selection: String? = null,
 )
 
 @Serializable

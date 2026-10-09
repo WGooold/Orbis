@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const PROTOCOL_VERSION = 10 as const;
+export const PROTOCOL_VERSION = 11 as const;
 export const ARTIFACT_CHUNK_BYTES = 1024 * 1024;
 
 /**
@@ -523,6 +523,14 @@ export const SessionSourceEpochSchema = z.strictObject({
 });
 export type SessionSourceEpoch = z.infer<typeof SessionSourceEpochSchema>;
 
+/** A committed client baseline, never a received/advertised high-water mark. */
+export const SessionAppliedStateSchema = z.strictObject({
+  epoch: z.string().min(1).max(256),
+  seq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  head: SessionBranchCursorSchema,
+});
+export type SessionAppliedState = z.infer<typeof SessionAppliedStateSchema>;
+
 /** Completeness is separate from transport success: an accepted response may still be partial. */
 export const SessionCheckpointSchema = z.strictObject({
   checkpointId: z.string().min(1).max(256),
@@ -746,10 +754,28 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
     hasOlder: z.boolean().optional(),
     complete: z.boolean().optional(),
     rangeStatus: SessionSyncRangeStatusSchema.optional(),
+    selection: z.enum(["snapshot", "delta", "state", "unchanged"]).optional(),
     source: SessionSourceEpochSchema.optional(),
     checkpoint: SessionCheckpointSchema.optional(),
     live: SessionLiveStateSchema.optional(),
   }).refine(snapshot => {
+    if (snapshot.selection !== undefined && snapshot.range !== "preview") return false;
+    if (snapshot.selection === "unchanged") {
+      return snapshot.mode === "append" && snapshot.entries.length === 0 &&
+        (snapshot.turnTimings?.length ?? 0) === 0 && snapshot.live === undefined &&
+        snapshot.complete === true && snapshot.rangeStatus === "complete" &&
+        snapshot.source?.ready === true && snapshot.checkpoint?.headCompleteness === "complete" &&
+        snapshot.checkpoint.inventoryComplete && snapshot.checkpoint.head.leafId === snapshot.cursor.leafId;
+    }
+    if (snapshot.selection === "state" && (snapshot.mode !== "append" || snapshot.entries.length !== 0)) return false;
+    if (snapshot.selection === "delta" && snapshot.mode !== "append") return false;
+    if (snapshot.selection === "snapshot" && snapshot.mode !== "replace") return false;
+    if (snapshot.selection === "state" || snapshot.selection === "delta") {
+      if (snapshot.source?.ready !== true || snapshot.checkpoint?.headCompleteness !== "complete" ||
+          !snapshot.checkpoint.inventoryComplete || snapshot.live?.complete !== true ||
+          snapshot.checkpoint.head.leafId !== snapshot.cursor.leafId || snapshot.complete !== true ||
+          snapshot.rangeStatus !== "complete") return false;
+    }
     const count = [snapshot.source, snapshot.checkpoint, snapshot.live].filter(value => value !== undefined).length;
     if (snapshot.range === "history" || snapshot.range === "catchup") {
       return snapshot.checkpoint === undefined && snapshot.live === undefined;
@@ -845,7 +871,9 @@ export const RuntimeCommandSchema = z.discriminatedUnion("type", [
     beforeEntryId: z.string().max(256).nullable().optional(),
     maxEntries: z.number().int().positive().max(2_000).optional(),
     range: SessionSyncRangeSchema.optional(),
-  }),
+    knownState: SessionAppliedStateSchema.optional(),
+  }).refine(command => command.knownState === undefined || command.range === "preview",
+    { message: "An applied baseline is only valid for preview reconciliation" }),
   z.strictObject({
     type: z.literal("user_message"),
     text: z.string().min(1).max(100_000)

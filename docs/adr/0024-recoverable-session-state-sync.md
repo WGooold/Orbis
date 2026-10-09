@@ -10,6 +10,8 @@ Status: accepted（设计已采纳；Codex 与 APP 分阶段实现，尚未完�
 
 ## 要解决的问题
 
+2026-10-10：[ADR-0026](0026-host-selected-session-sync.md) 实现周期轻量核对，并让源端选择 preview 的实际内容。preview 不再每次固定下载 tail，完整 checkpoint、epoch 恢复和历史页职责仍遵守本文。
+
 允许 running 时同步，而且在事件缺失、延迟、重复、断线、换路、回退之后，手机能重新得到正确的当前聊天状态。正确性不能依赖手机恰好收到了某一次 `started`、`finished` 或 ID mapping。
 
 核心决定：**实时传输和 sync 复制同一份会话状态。实时事务用于低延迟更新，checkpoint 用于重新建立正确基线，历史页用于补齐不可变内容。**

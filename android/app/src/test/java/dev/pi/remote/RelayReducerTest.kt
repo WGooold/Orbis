@@ -2996,7 +2996,8 @@ class RelayReducerTest {
                 ),
             ),
             sessionSyncCommands = mapOf(
-                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-new", "preview"),
+                "checkpoint" to PendingSessionSync("runtime-a", "session-1", "sync-new", "preview",
+                    sourceRecovery = true, sourceRecoveryEpoch = "epoch-old"),
             ),
         )
 

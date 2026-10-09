@@ -1774,7 +1774,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             "session.snapshot.received runtimeId=$runtimeId sessionId=${snapshot.sessionId} " +
                 "pendingRange=${pending.range} snapshotRange=${snapshot.range ?: "<none>"} " +
                 "syncId=${snapshot.syncId} entries=${snapshot.entries.size} " +
-                "complete=${snapshot.complete} status=${snapshot.rangeStatus ?: "<none>"}",
+                "selection=${snapshot.selection} " +
+                "complete=${snapshot.complete} status=${snapshot.rangeStatus ?: "<none>"} " +
+                "recovery=${pending.sourceRecovery} sourceEpoch=${snapshot.source?.epoch} " +
+                "sourceSeq=${snapshot.source?.seq} sourceReady=${snapshot.source?.ready} " +
+                "inventoryComplete=${snapshot.checkpoint?.inventoryComplete}",
         )
         relayStateLock.withLock {
             if (connectionGeneration != generation || device != pairedDevice || !shouldConnect) {
@@ -2107,6 +2111,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 beforeEntryId = pending.beforeEntryId,
                 maxEntries = if (pending.range == "history") historyPageSize else previewPageSize,
                 range = pending.range, commandId = commandId,
+                knownState = pending.knownState,
             ) }.getOrNull()
             // A temporary lack of path consumes an attempt; the bounded policy owns retry timing.
             Log.i(RELOAD_TRACE_TAG, "session.sync.send syncId=${pending.syncId} range=${pending.range} attempt=${pending.attempts} sent=${sent != null}")
@@ -2125,6 +2130,15 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     prepareSessionCache(pairedDevice, sessionId, runtime.agentKind)
                     val initial = mutableState.value
                     if (runtime.runtimeId in initial.sessionSyncFailures || initial.conversations[runtime.runtimeId]?.chatSyncError != null) return@withLock
+                    // An applied baseline already owns its display and cached head. Periodic
+                    // reconciliation can ask the source directly without decrypting the same
+                    // local tail again before every unchanged acknowledgement.
+                    val conditional = initial.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
+                        ?.takeIf { it.knownState != null }
+                    if (conditional != null) {
+                        sendSessionSync(pairedDevice, newSessionSyncCommandId(), conditional)
+                        return@withLock
+                    }
                     val loaded = if (runtime.sessionLeafId == null) SessionGraph(sessionId)
                         else loadLocalGraphForRuntime(pairedDevice, runtime, initial)
                     if (loaded != null) updateState { current ->

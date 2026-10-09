@@ -99,7 +99,7 @@ _Avoid_: Port file, lock file
 ## Conversation, commands, and activation
 
 **Chat snapshot**:
-A bounded range of canonical Session Entries returned by `session.sync` for preview, older history, or forward catch-up. Its replace/append/prepend mode describes range and display behavior; authority and source versions determine cache updates.
+A bounded response returned by `session.sync` for current-state reconciliation, older history, or forward catch-up. The source selects an unchanged acknowledgement, live checkpoint, missing Entry suffix, or recovery tail from the client's applied baseline; see ADR-0026. Its replace/append/prepend mode describes range and display behavior; authority and source versions determine cache updates.
 _Avoid_: Full history
 
 **Canonical Session Entry**:
@@ -111,6 +111,10 @@ The persistent collection of canonical Session Entries. All three synchronizatio
 **Continuous coverage**:
 The ancestor chain the persistent cache has verified as complete. Cached nodes beyond a missing parent are useful partial data but do not advance this fact until the gap is filled and committed.
 _Avoid_: Last received Entry, display leaf
+
+**Applied Session state**:
+The source epoch, sequence and head whose complete current state the mobile client has successfully applied after committing its referenced Entries. It permits conditional synchronization, but does not prove that every historical ancestor is cached. Metadata and buffered future patches do not advance it. See ADR-0026.
+_Avoid_: Received watermark, full history coverage
 
 **Runtime operational control**:
 Control exercised over conversation, queue, Session, context, model, commands, interactions, file transfer, and session activation, without authority to run arbitrary commands or to manage processes the Host did not start.

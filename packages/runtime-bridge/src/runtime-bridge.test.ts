@@ -62,6 +62,20 @@ const makeRuntime = (overrides: Partial<RuntimePort> = {}): RuntimePort => ({
 });
 
 describe("RuntimeBridge", () => {
+  it("forwards the applied baseline and preserves the backend conditional selection", async () => {
+    const transport = new FakeTransport();
+    const knownState = { epoch: "epoch", seq: 10, head: { leafId: null } };
+    const checkpoint = { checkpointId: "epoch:10", head: knownState.head, headCompleteness: "complete" as const, inventoryComplete: true };
+    const syncSession = vi.fn(async () => ({ sessionId: "session-1", cursor: knownState.head, mode: "append" as const,
+      entries: [], range: "preview" as const, selection: "unchanged" as const,
+      source: { epoch: "epoch", seq: 10, ready: true }, checkpoint, complete: true, rangeStatus: "complete" as const }));
+    const bridge = new RuntimeBridge(makeRuntime({ syncSession }), transport);
+    await bridge.start();
+    transport.commandHandler?.("cmd", "runtime-a", { type: "session.sync", sessionId: "session-1", syncId: "sync",
+      range: "preview", knownState });
+    await vi.waitFor(() => expect(syncSession).toHaveBeenCalledWith({ sessionId: "session-1", syncId: "sync", range: "preview", knownState }));
+    expect(transport.events).toContainEqual({ type: "session.snapshot", syncId: "sync", ...await syncSession() });
+  });
   it("publishes a correlated session graph snapshot without changing the legacy chat path", async () => {
     const transport = new FakeTransport();
     const syncSession = vi.fn(async () => ({
