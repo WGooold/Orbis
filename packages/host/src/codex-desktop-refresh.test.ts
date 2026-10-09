@@ -35,7 +35,8 @@ async function harness() {
   const bridge = new CodexDesktopRefreshBridge((method, params) => request(method, params));
   const response = (id: number, result: unknown) => bridge.guiResponse(JSON.stringify({ id, result }));
   const gui = (method: string, params: unknown, id = 1) => bridge.guiRequest(JSON.stringify({ id, method, params }));
-  gui("initialize", { clientInfo: { name: "codex_desktop", version: "26.1002.7124" } });
+  // Captured from the actual GUI handshake of Windows MSIX 26.1002.7124.0.
+  gui("initialize", { clientInfo: { name: "codex_desktop", version: "26.1002.52244" } });
   const request = vi.fn(async (method: string, params: Record<string, unknown> = {}): Promise<unknown> => {
     if (method === "thread/list") return { data: params.ancestorThreadId ? child ? [{ id: "child" }] : []
       : [{ id: "session", cwd: "D:/repo", path: "D:/codex/sessions/rollout.jsonl", status: { type: "idle" } }], nextCursor: null };
@@ -103,6 +104,15 @@ describe("real desktop refresh driver", () => {
     h.hydrate();
     expect((await h.coordinator.recover(h.operation.operationId)).status).toBe("complete");
     expect((await h.journal.list())[0]?.kind).toBe("receipt");
+  });
+
+  it("checks the observed GUI protocol version independently of the Windows package version", async () => {
+    const h = await harness();
+    const first = await h.coordinator.start(h.operation);
+    expect(first.status).toBe("awaiting_confirmation");
+    const record = (await h.journal.list())[0];
+    expect(record).toMatchObject({ plan: { client: { compatibilityVersion: "26.1002.52244" } } });
+    expect(h.lifecycle).toEqual(["archive", "unarchive", "resume"]);
   });
 
   it("recovers a settled archive after Host reconstruction without archiving or reverting again", async () => {

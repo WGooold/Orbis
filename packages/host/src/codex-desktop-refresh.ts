@@ -19,9 +19,10 @@ type Options = CodexDesktopRefreshOptions & {
 };
 
 const SOURCE_KINDS = ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"];
-// Archive eviction and local deep links verified from these desktop bundles. Unknown
-// versions retain native revert and phone reconciliation, but require manual GUI reopening.
-const COMPATIBLE_CLIENTS = new Set(["26.930.7945", "26.1002.7124"]);
+// Match initialize.clientInfo.version, not the MSIX package version. The verified
+// 26.1002.7124.0 package advertises 26.1002.52244 over its GUI protocol connection.
+// Unknown versions retain native revert and phone reconciliation with manual reopening.
+const COMPATIBLE_CLIENTS = new Set(["26.930.7945", "26.1002.7124", "26.1002.52244"]);
 
 export function desktopHistoryRevision(turns: unknown): string {
   return createHash("sha256").update(JSON.stringify(turns, (_key, child: unknown) => {

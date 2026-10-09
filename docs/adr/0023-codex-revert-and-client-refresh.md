@@ -151,7 +151,7 @@ ADR-0024 的 checkpoint、patch 和 running sync 只能复制 Codex adapter 已�
 
 包装器提供带随机凭据的回环控制端点，记录本次 archive/unarchive RPC 的 pending/applied/unknown 结果及 GUI 自身请求；Host 的 journal 在副作用前落盘。Host 重连复用同一个包装器实例的操作证据，恢复订阅或未完成阶段；结果未知时只查询，不重发 archive。包装器实例变化、用户并发归档/新 turn、来源版本变化时停止自动补偿并报告待人工确认。GUI 重新读取 history/items 的响应确已交付，才确认数据重新加载；这不是像素绘制证明，单独的 resume 或协议链接成功不算 GUI hydration。
 
-首版自动刷新仅支持已经核对缓存清理和本地路由的 Windows 桌面版本 `26.930.7945`、`26.1002.7124`，且目标必须没有原生派生子 threads。执行前及包装器提交前分别用显式全部 sourceKinds、ancestorThreadId 查询活动和归档子树；任何派生 thread、未知状态、排队工作、审批或不兼容版本均保留已完成回退并提示手动重开，不执行自动 archive。完整 subtree 补偿和 TUI 生产 driver 仍待实现，通用协调器及 journal 不代表它们已接入。
+首版自动刷新仅支持已经核对缓存清理和本地路由的 Windows 桌面版本 `26.930.7945`、`26.1002.7124`，且目标必须没有原生派生子 threads。兼容检查使用 GUI 的 `initialize.clientInfo.version`；2026-10-09 实机确认安装包 `26.1002.7124.0` 实际上报 `26.1002.52244`，不能用安装包版本号替代协议版本，否则已验证版本也会在 archive 前被拒绝。执行前及包装器提交前分别用显式全部 sourceKinds、ancestorThreadId 查询活动和归档子树；任何派生 thread、未知状态、排队工作、审批或不兼容版本均保留已完成回退并提示手动重开，不执行自动 archive。完整 subtree 补偿和 TUI 生产 driver 仍待实现，通用协调器及 journal 不代表它们已接入。
 
 已通过真实 Codex CLI `0.162.0` 的隔离双客户端实验：本地测试 provider 生成两轮，回退后保留一轮，GUI 协议客户端接收 archive/unarchive、重新加载 paginated turns/items，恢复完成。该实验验证实际原生协议及 driver，不替代真实桌面 GUI 画面验收。已有运行中的旧包装器需关闭后重新打开 Codex 桌面版才加载新增控制端点；Host 也需更新后重启。
 
