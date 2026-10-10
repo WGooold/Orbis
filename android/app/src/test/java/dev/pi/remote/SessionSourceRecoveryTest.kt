@@ -104,6 +104,9 @@ class SessionSourceRecoveryTest {
 
     @Test fun `history page does not install its attached live checkpoint`() {
         val current = initial("current").copy(
+            conversations = initial("current").conversations.mapValues { (_, conversation) ->
+                conversation
+            },
             sessionGraphs = mapOf("session" to cachedGraph("session", mapOf("current" to entry("current", "older")), SessionBranchCursor("current"))),
             sessionSyncCommands = mapOf("history" to PendingSessionSync("runtime", "session", "history", "history", "current", "current")),
         )

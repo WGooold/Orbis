@@ -667,6 +667,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
           type: "device.ready",
           protocolVersion: PROTOCOL_VERSION,
           deviceId: credential.deviceId,
+          notificationEpoch: null,
           // 中继只认网关，它手里没有手机该看见的进程目录——那由 Host 自己给。
           runtimes: [],
           // 中继不知道电脑装没装 codex：`null` = 不知道，Host 自己的 device.ready 会给权威数组。

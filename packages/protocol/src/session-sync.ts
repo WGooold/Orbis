@@ -47,6 +47,8 @@ export function selectSessionSyncSnapshot(
   request: Omit<SessionSyncRequest, "type">,
   turnTimings: readonly RuntimeTurnTiming[] = [],
   source?: { version: SessionSourceEpoch; live: SessionLiveState; checkpoint: SessionCheckpoint },
+  /** Verified native tail boundary; omitted for graphs that claim complete ancestor coverage. */
+  historyBoundaryParentId?: string,
 ): SessionSyncSnapshot {
   if (request.sessionId !== sessionId) throw new Error("session_mismatch");
   const range = request.range;
@@ -62,7 +64,12 @@ export function selectSessionSyncSnapshot(
     byId.set(entry.entryId, entry);
   }
   const targetLeafId = request.targetLeafId ?? liveLeaf;
-  const { path, status } = branchPath(byId, targetLeafId);
+  const branch = branchPath(byId, targetLeafId);
+  const path = branch.path;
+  let status = branch.status;
+  const boundedPrefix = status === "missing_parent" && source?.version.ready === true &&
+    historyBoundaryParentId !== undefined && path[0]?.parentId === historyBoundaryParentId;
+  if (boundedPrefix) status = "complete";
   let candidates = path;
   let rangeStatus = status;
   let mode: SessionSyncSnapshot["mode"] = range === "history" ? "prepend" : "replace";
@@ -129,15 +136,16 @@ export function selectSessionSyncSnapshot(
   let selected: RemoteSessionEntry[] = [];
   const response = (page: RemoteSessionEntry[], pageTimings: ReadonlyMap<string, RuntimeTurnTiming>): SessionSyncSnapshot => {
     const remaining = candidates.length > page.length;
+    const olderOutsideWindow = boundedPrefix && range !== "catchup" && selection !== "state" && selection !== "delta";
     return {
       type: "session.snapshot", sessionId, syncId: request.syncId,
       cursor: { leafId: targetLeafId }, mode, entries: page,
       turnTimings: [...pageTimings.values()], range, targetLeafId,
       ...(range === "history" ? { beforeEntryId: request.beforeEntryId ?? null } : {}),
-      hasOlder: backwards && remaining,
-      complete: rangeStatus === "complete" && !remaining,
+      hasOlder: backwards && (remaining || olderOutsideWindow),
+      complete: rangeStatus === "complete" && !remaining && !olderOutsideWindow,
       rangeStatus: rangeStatus !== "complete" ? rangeStatus
-        : remaining ? range === "history" ? "older_available" : "limit_reached" : "complete",
+        : remaining || olderOutsideWindow ? range === "history" ? "older_available" : "limit_reached" : "complete",
       ...(selection === undefined ? {} : { selection }),
       // All pages carry cache ownership. Only preview establishes head/live state.
       ...(source === undefined ? {} : { source: source.version }),
@@ -172,7 +180,7 @@ export function selectSessionSyncSnapshot(
   // Never label a truncated suffix as a complete incremental recovery. Existing cache-hole
   // paging can fill the ancestors of a bounded recovery snapshot without changing live state.
   if (selection === "delta" && !snapshot.complete) {
-    return selectSessionSyncSnapshot(entries, sessionId, liveLeaf, { ...request, knownState: undefined }, turnTimings, source);
+    return selectSessionSyncSnapshot(entries, sessionId, liveLeaf, { ...request, knownState: undefined }, turnTimings, source, historyBoundaryParentId);
   }
   return snapshot;
 }

@@ -159,7 +159,7 @@ try {
   await second.request("session/updateQueue", { request: { sessionId, itemId: "web-queued", action: { kind: "remove" } } }).catch(error => assert.match(String(error), /queue-item-not-found|pending/));
   releaseFirst();
   await waitFor(() => frames.some(frame => JSON.stringify(frame).includes("WEB_SMOKE_TOKEN")));
-  await waitFor(() => mobileEvents.some(({ event }) => event.type === "message.finished" && JSON.stringify(event).includes("WEB_SMOKE_TOKEN")));
+  await waitFor(() => mobileEvents.some(({ event }) => event.type === "session.patch" && event.entries?.some(entry => JSON.stringify(entry).includes("WEB_SMOKE_TOKEN"))));
   await first.request("session/prompt", { request: { sessionId, requestId: "web-follow", mode: "queue", content: [{ type: "text", text: "WEB_SMOKE_FOLLOW" }] } });
   await waitFor(() => modelRequests >= 2);
   await second.request("session/cancel", { request: { sessionId } });
@@ -175,7 +175,7 @@ try {
   const closeBrowser = first.subscribe("session/follow", { request: { address: { kind: "session", sessionId: fresh.sessionId }, assistantStream: true } }, frame => browserFrames.push(frame));
   assert.equal(mobile.dispatchCommand(`dsh:${fresh.sessionId}`, "app-prompt", { type: "user_message", text: "APP_TO_BROWSER", messageId: "app-prompt" }), "handled");
   await waitFor(() => browserFrames.some(frame => frame.type === "event" && frame.event.type === "user/message" && frame.event.data.source.rpcId === "app-prompt"));
-  await waitFor(() => mobileEvents.some(({ event, runtimeId }) => runtimeId === `dsh:${fresh.sessionId}` && event.type === "turn.finished"));
+  await waitFor(() => mobileEvents.some(({ event, runtimeId }) => runtimeId === `dsh:${fresh.sessionId}` && event.type === "session.patch" && event.live.turn === null && event.entries?.some(entry => entry.data.dshEvent === "turn/end")));
   await first.request("workspace/archiveSession", { request: { sessionId: fresh.sessionId } });
   await waitFor(() => !mobile.ownsRuntime(`dsh:${fresh.sessionId}`));
   await first.request("workspace/unarchiveSession", { request: { sessionId: fresh.sessionId } });
@@ -185,7 +185,17 @@ try {
   closeBrowser();
   await first.request("session/prompt", { request: { sessionId: coldId, requestId: "web-resume", mode: "queue", content: [{ type: "text", text: "RESUME_COLD_HISTORY" }] } });
   await waitFor(() => mobile.ownsRuntime(`dsh:${coldId}`));
-  await waitFor(() => mobileEvents.some(({ event, runtimeId }) => runtimeId === `dsh:${coldId}` && event.type === "turn.finished"));
+  await waitFor(() => mobileEvents.some(({ event, runtimeId }) => runtimeId === `dsh:${coldId}` && event.type === "session.patch" && event.live.turn === null && event.entries?.some(entry => entry.data.dshEvent === "turn/end")));
+  mobile.dispatchCommand(`dsh:${coldId}`, "recover-cold", { type: "session.sync", sessionId: `dsh:${coldId}`, syncId: "recover-cold", range: "preview" });
+  await waitFor(() => mobileEvents.some(({ event }) => event.type === "session.snapshot" && event.syncId === "recover-cold"));
+  const recovered = mobileEvents.find(({ event }) => event.type === "session.snapshot" && event.syncId === "recover-cold").event;
+  assert.equal(recovered.source.ready, true);
+  assert.equal(recovered.live.complete, true);
+  assert.deepEqual(recovered.live.messages, []);
+  assert.equal(recovered.live.turn, null);
+  mobile.dispatchCommand(`dsh:${coldId}`, "confirm-cold", { type: "session.sync", sessionId: `dsh:${coldId}`, syncId: "confirm-cold", range: "preview",
+    knownState: { epoch: recovered.source.epoch, seq: recovered.source.seq, head: recovered.checkpoint.head } });
+  await waitFor(() => mobileEvents.some(({ event }) => event.type === "session.snapshot" && event.syncId === "confirm-cold" && event.selection === "unchanged"));
   const switched = (await (await import("node:fs/promises")).readFile(patch, "utf8")).replace("/v1\n", "/v2\n");
   await writeFile(patch, switched);
   await applyDshWebProvider(first, { ...env, ORBIS_DSH_PROVIDER_ENV: JSON.stringify({ ORBIS_DSH_WEB_TEST_KEY: "switched-local-key" }) });
@@ -194,7 +204,7 @@ try {
   await waitFor(() => modelRequests > beforeSwitch);
   assert.equal(lastModelPath, "/v2/chat/completions");
   dispose();
-  console.log("PASS: isolated DSH Web launch, working Agents attached while idle ones stay catalog rows, cold history stays inactive, browser-to-APP and APP-to-browser messages, archive/unarchive, streamed token/tool, queue mutation, stop, and live provider URL/key switch");
+  console.log("PASS: isolated DSH Web launch, working Agents attached while idle ones stay catalog rows, cold history stays inactive, browser-to-APP and APP-to-browser messages, archive/unarchive, streamed token/tool, versioned canonical handoff and checkpoint/unchanged recovery, queue mutation, stop, and live provider URL/key switch");
 } finally {
   await mobile?.stop().catch(() => {});
   await mobileClient?.stop().catch(() => {});

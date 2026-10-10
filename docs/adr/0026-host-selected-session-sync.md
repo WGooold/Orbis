@@ -37,7 +37,7 @@ Status: accepted
 
 同 epoch 的历史演进必须是纯追加；已提交节点的正文、parent 或顺序修正遵守 ADR-0025，切换 epoch。否则“head 不变时只传 live”的判断无法恢复被修正的旧节点。
 
-源端不能证明完整当前状态时，不得返回 unchanged/state/delta。尚未提供 source checkpoint 的 Pi/DSH 后端继续返回明确 snapshot；这是原生可恢复状态尚未实现的边界，不以 head 相同伪造版本一致。共享选择器可在后端具备 checkpoint 后直接使用上述决策。
+源端不能证明完整当前状态时，不得返回 unchanged/state/delta。Pi、DSH 已接入 source checkpoint（接入与晚接入完整性边界见 ADR-0024），与 Codex 复用共享选择器。Pi 运行中 reload、DSH 未覆盖当前 turn 的有界 tail、来源断开或原生读取失败时仍返回明确 snapshot / unknown；不能以 head 相同伪造版本一致。
 
 ### 3. 原生核对、事务和迟到响应保持有效
 
@@ -65,7 +65,7 @@ APP 显式重试强制完整恢复；普通周期核对允许条件响应。断�
 
 ### 实施与验证记录（2026-10-10）
 
-- 已完成协议 11、共享响应选择器、Host 任务参数固定、RuntimeBridge 转发及 Android 已应用基线/事务接入。Codex 使用条件响应；Pi/DSH 当前仍返回明确 snapshot，未宣称获得相同的带宽优化。
+- 已完成协议 11 的共享响应选择器、Host 任务参数固定、RuntimeBridge 转发及 Android 已应用基线/事务接入。Codex 为首阶段条件响应生产方；2026-10-10 Pi/DSH 接入同一 source 契约后也可返回 unchanged/state/delta。Pi 每次 preview 核对 SessionManager；DSH 到期重新读取原生 follow opening，无变化核对不推进 seq。接入验证和当前协议版本见 ADR-0024。
 - Windows workspace build、typecheck、lint 通过；`npm test -- --maxWorkers=2` 全量通过 85 个文件、837 项测试。覆盖相同版本确认、live 变化、纯追加、预算回退、固定重试参数及先核对 Codex 原生历史再确认 unchanged。
 - Android Windows 构建完成，368 项单测通过；模拟器上 36 项真实 SQLite instrumentation 测试通过，其中 5 项验证条件响应。覆盖 unchanged 不写库、delta 事务提交、过期请求/unknown 边界拒绝写入及断链 delta 不推进版本。模拟器和构建 daemon 已关闭，占用已释放。
 - 以构建后的选择器和每条 1,000 字符的合成 Entry 测量响应 JSON：30 条 snapshot 为 33,907 bytes，unchanged 为 420 bytes，空 live 的 state 为 478 bytes，3 条 delta 为 3,825 bytes。这是合成数据的序列化大小，不代表实际加密网络流量。

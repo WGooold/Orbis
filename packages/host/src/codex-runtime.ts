@@ -28,7 +28,7 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { selectSessionSyncSnapshot, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES } from "@pi-remote/protocol";
+import { NotificationSource, selectSessionSyncSnapshot, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES } from "@pi-remote/protocol";
 
 import type {
   AgentKind,
@@ -272,7 +272,9 @@ type ThreadState = {
   permissions: RuntimePermissions | undefined;
   approvalItems: Map<string, Record<string, unknown>>;
   asyncInputs: CodexAsyncInputs;
-  lastError: string | undefined;
+  lastError: { message: string; willRetry: boolean; turnId?: string } | undefined;
+  notifications: NotificationSource;
+  sandboxGeneration: number;
   waitingForApproval: boolean;
   /**
    * Monotonic guard for native-history reconciliation. A completed list request may only
@@ -427,7 +429,7 @@ export class CodexRuntime implements AgentBackend {
     };
     options.server.onDiagnostic = (message) => {
       for (const thread of this.#threads.values()) {
-        if (thread.turnInProgress) this.#reportError(thread, message);
+        if (thread.turnInProgress) this.#sandboxProblem(thread, message);
       }
     };
     options.server.onExit = (code: number | null) => {
@@ -568,6 +570,8 @@ export class CodexRuntime implements AgentBackend {
       approvalItems: new Map(),
       asyncInputs: new CodexAsyncInputs(this.runtimeIdFor(id), event => this.#emit(id, event)),
       lastError: undefined,
+      notifications: new NotificationSource(randomUUID(), this.#publicSessionId(id), event => this.#emit(id, event)),
+      sandboxGeneration: 0,
       waitingForApproval: false,
       reconcileGeneration: 0,
       reconcilePromise: undefined,
@@ -1512,10 +1516,20 @@ export class CodexRuntime implements AgentBackend {
       rewritten || !previous.has(entry.entryId));
     thread.nativeSourceDirty = false;
     thread.lastNativeCheckAt = Date.now();
-    thread.asyncInputs.replace(turns.flatMap(turn => {
-      const items = object(turn).items;
-      return Array.isArray(items) ? items : [];
-    }));
+    thread.asyncInputs.replace(turns);
+    // Reconciliation can recover a missed completion/new turn as well as history. Keep
+    // turn diagnostics bound to that native owner instead of carrying a stale retry forever.
+    const latestTurn = object(turns.at(-1));
+    if (thread.lastError?.turnId !== undefined && thread.lastError.turnId !== latestTurn.id) {
+      thread.lastError = undefined;
+    }
+    if (latestTurn.status === "failed" && latestTurn.error != null && typeof latestTurn.id === "string") {
+      thread.lastError = { message: codexErrorMessage(latestTurn.error), willRetry: false, turnId: latestTurn.id };
+    } else if (thread.lastError?.willRetry === true
+      && latestTurn.status !== "inProgress" && latestTurn.status !== "in_progress") {
+      thread.lastError = undefined;
+    }
+    this.#syncTurnNotification(thread);
     return true;
   }
 
@@ -2317,7 +2331,7 @@ export class CodexRuntime implements AgentBackend {
   async #refreshDesktopClient(thread: ThreadState): Promise<void> {
     const coordinator = this.#desktopClientRefresh;
     if (coordinator === undefined) {
-      this.#reportError(thread, "历史已回退；电脑画面需要手动归档、撤销归档并重新打开会话");
+      thread.notifications.outcome({ code: "codex.refresh", occurrenceId: randomUUID(), scope: {}, severity: "warning", message: "历史已回退；电脑画面需要手动归档、撤销归档并重新打开会话" });
       return;
     }
     try {
@@ -2327,7 +2341,7 @@ export class CodexRuntime implements AgentBackend {
       this.#desktopRefreshResult(thread.id, result);
     } catch (error) {
       this.#options.log?.(`历史已回退，Codex 桌面刷新失败：${describeError(error)}`);
-      this.#reportError(thread, "历史已回退，但桌面刷新失败；请手动归档、撤销归档并重新打开会话");
+      thread.notifications.outcome({ code: "codex.refresh", occurrenceId: randomUUID(), scope: {}, severity: "error", message: "历史已回退，但桌面刷新失败；请手动归档、撤销归档并重新打开会话" });
       // If the durable record exists, continue only its refresh stage. Never revert again.
       await this.#initializeDesktopRefreshRecovery().catch(() => undefined);
       if (![...this.#desktopClientPending.values()].includes(thread.id)) this.#desktopClientProtected.delete(thread.id);
@@ -2363,11 +2377,13 @@ export class CodexRuntime implements AgentBackend {
     this.#desktopClientProblems.set(result.operationId, description);
     this.#options.log?.(`Codex 历史已回退，桌面刷新：${description}（thread=${threadId}）`);
     const thread = this.#threads.get(threadId);
-    if (thread !== undefined && (result.status === "manual_required" || result.status === "recovery_pending")) {
+    if (thread !== undefined && result.status === "complete") thread.notifications.resolve("codex.refresh", result.operationId);
+    if (thread !== undefined && result.status !== "complete") {
       const hint = result.reason === "desktop_refresh_wrapper_upgrade_required"
         ? "请更新 Host，并关闭后重新打开 Codex 桌面版以加载新包装器"
         : "请手动归档、撤销归档并重新打开该会话";
-      this.#reportError(thread, `历史已回退，但桌面刷新尚未完成；${hint}`);
+      thread.notifications.upsert({ code: "codex.refresh", occurrenceId: result.operationId,
+        scope: { operationId: result.operationId }, severity: "warning", lifecycle: "condition", message: `历史已回退，但桌面刷新尚未完成；${hint}` });
     }
   }
 
@@ -2538,29 +2554,10 @@ export class CodexRuntime implements AgentBackend {
   async #sendAsyncAnswer(thread: ThreadState, text: string, messageId: string): Promise<void> {
     await this.#runNativeMutation(thread, async () => {
       if (this.#desktopClientProtected.has(thread.id)) throw new Error("桌面刷新正在恢复，请稍后重试");
-      if (!thread.asyncInputs.has(messageId)) throw new Error("提问已失效，请刷新会话");
-      if (thread.turnInProgress) {
-        if (!thread.turnId) throw new Error("正在同步当前轮次，请稍后重试");
-        await this.#server.request("turn/steer", { threadId: thread.id, expectedTurnId: thread.turnId,
-          input: [{ type: "text", text }], clientUserMessageId: messageId });
-      } else {
-        // Do not nest #startTurn inside the native mutation lock.
-        ++thread.reconcileGeneration;
-        thread.turnStartPending = true;
-        thread.turnInProgress = true;
-        this.#publishMetadataEvent(thread);
-        try {
-          await this.#server.request("turn/start", { threadId: thread.id, input: [{ type: "text", text }],
-            clientUserMessageId: messageId,
-            ...(thread.model === undefined ? {} : { model: thread.model }),
-            ...(thread.effort === undefined ? {} : { effort: thread.effort }),
-          });
-        } catch (error) {
-          thread.turnInProgress = false;
-          this.#publishMetadataEvent(thread);
-          throw error;
-        } finally { thread.turnStartPending = false; }
-      }
+      const turnId = thread.asyncInputs.turnId(messageId);
+      if (!turnId || !thread.turnInProgress || thread.turnId !== turnId) throw new Error("提问已失效，请刷新会话");
+      await this.#server.request("turn/steer", { threadId: thread.id, expectedTurnId: turnId,
+        input: [{ type: "text", text }], clientUserMessageId: messageId });
     });
   }
 
@@ -2914,15 +2911,17 @@ export class CodexRuntime implements AgentBackend {
     if (method === "windowsSandbox/setupCompleted") {
       for (const active of this.#threads.values()) {
         if (record.success === true) {
+          ++active.sandboxGeneration;
           if (active.permissions) delete active.permissions.problem;
-          active.lastError = undefined;
+          active.notifications.resolve("codex.sandbox");
           this.#publishMetadataEvent(active);
-        } else this.#reportError(active, `Windows sandbox setup failed: ${String(record.error ?? "请在电脑端检查沙箱设置")}`);
+        } else this.#sandboxProblem(active, `Windows sandbox setup failed: ${String(record.error ?? "请在电脑端检查沙箱设置")}`);
       }
       return;
     }
     if (method === "configWarning") {
-      for (const active of this.#threads.values()) this.#reportError(active, [record.summary, record.details].filter((v) => typeof v === "string").join("\n"));
+      for (const active of this.#threads.values()) active.notifications.outcome({ code: "codex.config", occurrenceId: randomUUID(),
+        scope: {}, severity: "warning", message: [record.summary, record.details].filter((v) => typeof v === "string").join("\n") || "Codex 配置警告" });
       return;
     }
     const threadId = record.threadId;
@@ -3005,6 +3004,14 @@ export class CodexRuntime implements AgentBackend {
     ++thread.sourceBatchDepth;
     try {
     switch (method) {
+      case "model/rerouted": {
+        const from = String(record.fromModel ?? record.originalModel ?? "原模型");
+        const to = String(record.toModel ?? record.model ?? "其他模型");
+        const turnId = typeof record.turnId === "string" ? record.turnId : thread.turnId;
+        thread.notifications.outcome({ code: "codex.model.rerouted", occurrenceId: String(record.itemId ?? turnId ?? randomUUID()),
+          scope: turnId === undefined ? {} : { turnId }, severity: "info", message: `模型已从 ${from} 切换为 ${to}` });
+        return;
+      }
       case "thread/reverted":
         // The notification is evidence that the native source changed. It is not a
         // request to issue another revert; one authoritative turns/list reconciliation
@@ -3044,7 +3051,8 @@ export class CodexRuntime implements AgentBackend {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
         const data = item as Record<string, unknown>;
-        thread.asyncInputs.upsert(data);
+        if (typeof data.type === "string" && data.type !== "userMessage") this.#clearRetryError(thread, record.turnId);
+        if (typeof record.turnId === "string") thread.asyncInputs.upsert(data, record.turnId);
         if ((data.type === "fileChange" || data.type === "commandExecution") && typeof data.id === "string") {
           thread.approvalItems.set(data.id, data);
         }
@@ -3116,9 +3124,15 @@ export class CodexRuntime implements AgentBackend {
         });
         return;
       }
+      case "item/reasoning/textDelta":
+      case "item/reasoning/summaryTextDelta": {
+        if (typeof record.delta === "string" && record.delta.length > 0) this.#clearRetryError(thread, record.turnId);
+        return;
+      }
       case "item/agentMessage/delta": {
         const delta = record.delta;
         if (typeof delta !== "string" || typeof record.itemId !== "string") return;
+        if (delta.length > 0) this.#clearRetryError(thread, record.turnId);
         if (!thread.liveMessages.has(record.itemId)) {
           thread.streamingMessageId = record.itemId;
           this.#setLiveMessage(thread, {
@@ -3144,7 +3158,7 @@ export class CodexRuntime implements AgentBackend {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
         const data = item as Record<string, unknown>;
-        thread.asyncInputs.upsert(data);
+        if (typeof record.turnId === "string") thread.asyncInputs.upsert(data, record.turnId);
         if (data.type === "agentMessage" && thread.streamingMessageId === data.id) {
           thread.streamingMessageId = undefined;
         }
@@ -3202,12 +3216,13 @@ export class CodexRuntime implements AgentBackend {
         return;
       }
       case "turn/started": {
-        thread.lastError = undefined;
+        this.#clearError(thread);
         // app-server 把 turn 嵌在 `turn` 下（`{ threadId, turn: { id, startedAt } }`），
         // 不是顶层 turnId——读错了整条 turn 生命周期就静默失效（没有 turn.started/finished，
         // 手机端也就没有「耗时」那一行）。
         const started = turnRecord(record.turn);
         if (started !== undefined) {
+          thread.asyncInputs.updateTurn(started.id, "inProgress");
           thread.turnId = started.id;
           // app-server 的 startedAt 是秒级 epoch；本端事件用毫秒，统一乘 1000。
           thread.turnStartedAt = started.startedAt === undefined
@@ -3228,7 +3243,10 @@ export class CodexRuntime implements AgentBackend {
       case "turn/completed": {
         const completed = turnRecord(record.turn);
         const completedTurn = object(record.turn);
-        if (completedTurn.status === "failed") this.#reportError(thread, completedTurn.error);
+        const completedTurnId = completed?.id ?? thread.turnId;
+        if (completedTurnId !== undefined) thread.asyncInputs.updateTurn(completedTurnId, completedTurn.status ?? "completed");
+        if (completedTurn.status === "failed") this.#reportError(thread, completedTurn.error, false, completedTurnId);
+        else this.#clearRetryError(thread, completedTurnId);
         for (const [requestId, approval] of this.#approvals) {
           if (approval.threadId === thread.id && approval.turnId === (completed?.id ?? thread.turnId)) this.#finishApproval(requestId, false);
         }
@@ -3281,7 +3299,9 @@ export class CodexRuntime implements AgentBackend {
         return;
       }
       case "error": {
-        this.#reportError(thread, record.error);
+        if (typeof record.turnId === "string" && thread.turnId !== undefined && record.turnId !== thread.turnId) return;
+        this.#reportError(thread, record.error, record.willRetry === true,
+          typeof record.turnId === "string" ? record.turnId : undefined);
         return;
       }
       default:
@@ -3335,7 +3355,8 @@ export class CodexRuntime implements AgentBackend {
       if (decline === undefined) request.fail(describeError(error));
       else request.respond(decline);
       this.#options.log?.(`Codex 交互 ${request.method} 未受理：${describeError(error)}`);
-      if (thread !== undefined) this.#reportError(thread, `交互未受理：${describeError(error)}`);
+      if (thread !== undefined) thread.notifications.outcome({ code: "codex.interaction.rejected", occurrenceId: String(request.id),
+        scope: { requestId: String(request.id) }, severity: "error", message: `交互未受理：${describeError(error)}` });
     }
   }
 
@@ -3385,27 +3406,66 @@ export class CodexRuntime implements AgentBackend {
     ].slice(0, 64) });
   }
 
-  #reportError(thread: ThreadState, error: unknown): void {
+  #clearError(thread: ThreadState): void {
+    if (thread.lastError === undefined) return;
+    thread.lastError = undefined;
+    this.#syncTurnNotification(thread);
+  }
+
+  #clearRetryError(thread: ThreadState, turnId: unknown): void {
+    if (thread.lastError?.willRetry !== true) return;
+    if (thread.lastError.turnId !== undefined && thread.lastError.turnId !== turnId) return;
+    this.#clearError(thread);
+  }
+
+  #reportError(thread: ThreadState, error: unknown, willRetry = false, turnId?: string): void {
     const message = codexErrorMessage(error);
-    if (thread.lastError === message) return;
-    thread.lastError = message;
-    if (/沙箱/.test(message)) {
-      thread.permissions = { ...(thread.permissions ?? { sandbox: "unknown", approvalPolicy: "unknown" }), problem: message };
-      this.#publishMetadataEvent(thread);
-    }
-    this.#emit(thread.id, { type: "runtime.error", message, recoverable: true });
+    if (object(error).codexErrorInfo === "sandboxError") this.#sandboxProblem(thread, message);
+    const diagnostic = { message, willRetry,
+      ...(turnId === undefined ? {} : { turnId: turnId.slice(0, 256) }) };
+    if (isDeepStrictEqual(thread.lastError, diagnostic)) return;
+    thread.lastError = diagnostic;
+    this.#syncTurnNotification(thread);
     this.#options.log?.(`app-server 报错：${message}`);
+  }
+
+  #syncTurnNotification(thread: ThreadState): void {
+    thread.notifications.batch(() => {
+      for (const item of thread.notifications.snapshot().notifications) {
+        if ((item.code === "codex.turn.retry" || item.code === "codex.turn.failed")
+          && (thread.lastError === undefined || item.occurrenceId !== (thread.lastError.turnId ?? thread.turnId ?? "current")
+            || item.code !== (thread.lastError.willRetry ? "codex.turn.retry" : "codex.turn.failed"))) {
+          thread.notifications.resolve(item.code, item.occurrenceId);
+        }
+      }
+      const error = thread.lastError;
+      if (error !== undefined) thread.notifications.upsert({ code: error.willRetry ? "codex.turn.retry" : "codex.turn.failed",
+        occurrenceId: error.turnId ?? thread.turnId ?? "current", scope: error.turnId === undefined ? {} : { turnId: error.turnId },
+        severity: error.willRetry ? "warning" : "error", lifecycle: error.willRetry ? "condition" : "outcome", message: error.message });
+    });
+  }
+
+  #sandboxProblem(thread: ThreadState, message: string): void {
+    ++thread.sandboxGeneration;
+    thread.permissions = { ...(thread.permissions ?? { sandbox: "unknown", approvalPolicy: "unknown" }), problem: message };
+    thread.notifications.upsert({ code: "codex.sandbox", occurrenceId: "sandbox", scope: {}, severity: "error", lifecycle: "condition", message });
+    this.#publishMetadataEvent(thread);
   }
 
   async #checkSandboxReadiness(thread: ThreadState): Promise<void> {
     // Checking readiness is read-only. Installation and Windows/UAC setup stay on the computer.
     if (process.platform !== "win32" || this.#server.codexCommand === undefined
       || thread.permissions === undefined || ["dangerFullAccess", "externalSandbox"].includes(thread.permissions.sandbox)) return;
+    const generation = ++thread.sandboxGeneration;
     try {
       const result = object(await this.#server.request("windowsSandbox/readiness", {}));
-      if (this.#threads.get(thread.id) !== thread) return;
+      if (this.#threads.get(thread.id) !== thread || generation !== thread.sandboxGeneration) return;
       if (result.status === "notConfigured" || result.status === "updateRequired") {
-        this.#reportError(thread, `Windows sandbox ${result.status === "notConfigured" ? "尚未配置" : "需要更新"}，请在电脑端完成沙箱设置。`);
+        this.#sandboxProblem(thread, `Windows sandbox ${result.status === "notConfigured" ? "尚未配置" : "需要更新"}，请在电脑端完成沙箱设置。`);
+      } else if (result.status === "ready") {
+        thread.notifications.resolve("codex.sandbox");
+        if (thread.permissions) delete thread.permissions.problem;
+        this.#publishMetadataEvent(thread);
       }
     } catch (error) {
       this.#options.log?.(`无法检查 Windows 沙箱状态：${describeError(error)}`);
@@ -3596,6 +3656,7 @@ export class CodexRuntime implements AgentBackend {
     // 之前那份 capabilities，靠这里重新声明，保证命令菜单一直在（防手滑）。
     this.#publishCapabilities(thread);
     this.onMetadataChange?.();
+    thread.notifications.announce();
   }
 
   /**
@@ -3612,6 +3673,7 @@ export class CodexRuntime implements AgentBackend {
     this.#publishCapabilities(thread);
     this.#emit(thread.id, { type: "runtime.metadata", metadata: this.threadMetadata(thread) });
     this.#publishInteractions(thread.id);
+    thread.notifications.announce();
     void this.#checkNativeSource(thread).catch(() => undefined);
   }
 
@@ -3620,7 +3682,17 @@ export class CodexRuntime implements AgentBackend {
     return [...this.#threads.keys()];
   }
 
+  syncNotifications(runtimeId: string): void {
+    for (const thread of this.#threads.values()) if (this.runtimeIdFor(thread.id) === runtimeId) {
+      thread.notifications.announce();
+      if (Date.now() - thread.lastNativeCheckAt >= 15_000) void this.#checkNativeSource(thread).catch(() => undefined);
+      if (thread.notifications.snapshot().notifications.some(item => item.code === "codex.sandbox")) void this.#checkSandboxReadiness(thread);
+    }
+  }
+
   #emit(threadId: string | undefined, event: RuntimeEvent): void {
+    if (event.type === "notification.source" && (threadId === undefined
+      || this.#threads.get(threadId)?.notifications.epoch !== event.producerEpoch)) return;
     this.#eventSink?.(event, threadId);
   }
 }

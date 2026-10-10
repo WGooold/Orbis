@@ -129,7 +129,7 @@ describe("Codex approval lifecycle", () => {
       type: "interaction.cancelled", requestId: prompt.requestId, reason: "cancelled",
     }));
     expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "answer-1", ok: false }));
-    expect(h.events).toContainEqual(expect.objectContaining({ type: "runtime.error", message: "provider unavailable" }));
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "notification.source", notifications: expect.arrayContaining([expect.objectContaining({ code: "codex.turn.failed", message: "provider unavailable" })]) }));
     expect(h.events.some((event) => event.type === "interaction.resolved")).toBe(false);
   });
 
@@ -154,10 +154,10 @@ describe("Codex approval lifecycle", () => {
     } });
     expect(h.runtime.directoryEntries()[0]?.permissions).toMatchObject({ sandbox: "workspaceWrite", reviewer: "auto_review", networkAccess: true });
     h.server.onNotification?.("error", { threadId: "a", error: { message: "windows sandbox: setup refresh had errors", codexErrorInfo: "sandboxError" } });
-    expect(h.events).toContainEqual(expect.objectContaining({ type: "runtime.error", message: expect.stringContaining("电脑端修复") }));
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "notification.source", notifications: expect.arrayContaining([expect.objectContaining({ code: "codex.sandbox", message: expect.stringContaining("电脑端修复") })]) }));
     expect(h.runtime.directoryEntries()[0]?.permissions?.problem).toContain("setup refresh");
     h.server.onNotification?.("turn/completed", { threadId: "a", turn: { id: "turn-1", status: "failed", error: { message: "provider unavailable" } } });
-    expect(h.events).toContainEqual(expect.objectContaining({ type: "runtime.error", message: "provider unavailable" }));
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "notification.source", notifications: expect.arrayContaining([expect.objectContaining({ code: "codex.turn.failed", message: "provider unavailable" })]) }));
   });
 
   it("dispatches user input and returns proper JSON-RPC errors for unknown methods", async () => {

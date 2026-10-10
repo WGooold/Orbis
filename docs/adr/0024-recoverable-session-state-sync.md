@@ -4,7 +4,7 @@
 
 2026-10-10：[ADR-0025](0025-native-history-authority-and-versioned-caches.md) 替代本文的不可变缓存与同 ID 硬冲突条款。版本化历史页携带 source 所有权；原生权威修正通过新 epoch 与 APP 缓存事务生效。checkpoint/patch、running sync 和恢复调度继续遵守本文。
 
-Status: accepted（设计已采纳；Codex 与 APP 分阶段实现，尚未完成全部后端及真实链路验收）
+Status: accepted（Pi、Codex、DSH 与 APP 已接入源端状态复制；大 checkpoint 分块及完整设备故障矩阵仍待验收）
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0023](0023-codex-revert-and-client-refresh.md)、[ADR-0008](0008-drop-backward-compatibility.md)。实施跟踪：[Issue #2](https://github.com/WGooold/Orbis/issues/2)、[Issue #3](https://github.com/WGooold/Orbis/issues/3)。
 
@@ -229,12 +229,31 @@ running 时允许 sync 不意味着 running 时允许 revert；后者仍按原�
 
 ## 实施进度与启用范围
 
-- Protocol 已升级到版本 10，校验完整 source/checkpoint/live envelope、显式 head 和 patch 版本边界；状态 checkpoint 只由 preview 返回，history/catchup 携带 source 所有权。
-- 首阶段接入 Codex adapter 和 APP reducer。APP 在建立版本化基线后隔离旧生命周期事件；Pi 与 DSH 尚未提供这套 source 状态，仍使用其原有同步路径，不能据此宣称它们已满足本 ADR 的恢复保证。
+- Protocol 的 checkpoint/patch 契约已接入全部后端；当前工作树协议版本为 12（条件响应见 ADR-0026，通知集合另见 ADR-0028）。状态 checkpoint 只由 preview 返回，history/catchup 携带 source 所有权，不接管当前 head/live。
+- Codex adapter 和 APP reducer 为首阶段实现；2026-10-10 继续接入 Pi extension、默认 DSH Web adapter 及 legacy/test ACP adapter。APP 复用已有版本化入口；这些源端不再向手机发布旧 message/turn/tool 生命周期事件，不存在新旧事件共同写聊天状态的回落路径。
 - Codex 的确定性重建、协调代次与版本化 live/checkpoint 已有实现和单测。原生通知的 canonical 提交及 live/tool 移除作为一次状态事务发布；每 15 秒、重新 announce 以及到期 preview 核对原生 `thread/turns/list`，可以发现静默回退和遗漏的完成通知。首版会读取完整 turns，长会话和多会话的读取成本仍需优化；原生多页没有 revision token 时要求连续读取一致，不把无法确认的结果发布为 ready。
 - APP 已实现缺口恢复、完整 checkpoint 后重放连续 patch、history/catchup 只补缓存和旧生命周期隔离。SQLite 版本 7 按 ADR-0025 持久化缓存 epoch/行 seq 并允许权威修正；保留旧 Codex 表示迁移记录，非法结构仍整批失败。
 - Codex GUI/TUI 自动刷新由 ADR-0023 / Issue #4 跟踪。刷新协调器和持久 journal 不等于生产 driver 已接入，也不等于真实 GUI 已完成 hydration。
-- 单测覆盖和真实链路验收分别记录；尚未完成的 Pi/DSH 接入、大 checkpoint 分块、旧缓存迁移的设备验证及设备断连验收继续保留为明确限制。
+- 单测覆盖和真实链路验收分别记录。此前 Android SQLite 设备测试 20 项通过，覆盖旧 Codex 缓存迁移、迁移失败整批回滚、不可变冲突与 coverage 恢复；本次 Pi/DSH 的源端与隔离原生链路验证见下节。大 checkpoint 分块、真实手机断连/换路及全部故障矩阵仍是明确限制。
+
+### Pi / DSH 接入与验证（2026-10-10）
+
+**共同机制**：`RecoverableSessionSource` 在传输之前持有累计消息、工具、turn 和版本。同步读取得到独立 checkpoint，不受之后的对象修改影响。canonical 新增与 live 副本移除在一笔 source 事务中发布；结束但未持久化的消息仍可恢复。历史祖先补页不推进当前状态版本；原生节点修正、删除或当前 head 回退时建立新 epoch，先发布 unknown，再通过 preview 恢复。只凭正式 ID / 源端映射判定提交，不按正文猜身份。
+
+- **Pi**：extension 从 `message_update` 的原生完整 partial message 累计正文和工具调用，而不是依赖网络 delta 拼接。`message_end` 保留最终正文；SessionManager 的原生对象身份将临时 ID 与 Entry 对应，turn 边界、preview 和 15 秒节拍核对 append。即使 turn_end 通知没有送达手机，后续 checkpoint 仍能移除已 canonical 化的副本。tree/compaction 切换也核对源端。单个 token 更新不重复扫描整棵历史树。
+- **Pi 晚接入边界**：运行中 reload 时，ExtensionContext 不能提供所有已生成内容或完整工具集合，因此 `inventoryComplete=false`，不把未观察对象声明为不存在；后续原生完整消息可以补正文，idle/settled 核对后恢复完整 inventory。源端内存未持久化，进程崩溃后无法恢复原生未保存的 token。
+- **DSH Web**：follow 的原生 snapshot 同时重建历史 tail、当前 turn、assistant prefix 与工具状态。attempt 的结束帧早于 canonical 事件时保留最终正文及其 `outcome.seq` 身份；提交时一次移除副本。preview 至少每 15 秒重新打开所属原生 follow 取得新基线，核对任务合并；无实质变化的重取不推进 seq，仍可返回 unchanged。原生事件跳号、chunk 缺口和来源断开不能冒充完整状态；来源代次检查拒绝旧 follow callback 和迟到页。完成 attempt 的迟到 chunk 不能复活副本。
+- **DSH 有界历史**：原生 follow tail 不保证覆盖 root。选择器接受 adapter 明确声明的已验证 tail parent 边界，保留真实 parent，返回 `hasOlder=true` / 不完整范围，随后由 history 补祖先；不伪造 root、不把任意缺失 parent 当作合法 tail。head/inventory 完整性与祖先覆盖仍是不同事实。running tail 未包含当前 turn 起点时，inventory 保持不完整。
+- **ACP**：legacy/test adapter 同样累计源端状态并在原生历史读回后提交；默认仍是 Web，没有新增 ACP 自动 fallback，也不以 wire chunk 伪造 canonical Entry。
+- **预算**：正常提交的 Entries 只在 256 个节点 / 256 KiB patch 预算内附带，超预算由 checkpoint/pages 恢复。live 数量或正文超预算时明确恢复失败，不截断后声称 inventory 完整；大 checkpoint 分块仍未实现。
+
+验证记录：
+
+- Windows workspace build、typecheck、lint 全部通过；`npm test -- --maxWorkers=2`：88 个文件、876 项测试通过。生产方用例覆盖 Pi 断线恢复 / 缺失 turn_end、结束到 append 的窗口、运行中 reload 的未知 inventory、DSH 静默漏完成后的原生重取、旧 follow 隔离、有界 tail / 历史补页及完成提交。
+- `scripts/windows/android-build.ps1 :app:testDebugUnitTest --console=plain` 输出 BUILD SUCCESSFUL；JUnit XML 确认 41 个文件、378 项测试，failure/error 均为 0。外层命令采集在 Gradle 完成后超时；另行确认 wrapper 已退出、资源 operation lease 已释放。本次没有新增 Android 消费方重复测试，也未重跑设备 SQLite instrumentation。
+- 隔离的真实 Pi CLI + 临时 home + 本地假模型验证：累计正文、message_end 早于 append 时保留 live、原生对象身份提交后移除副本、无旧生命周期事件。临时验证 harness 已删除。
+- `node scripts/test-dsh-web.mjs` 通过：隔离官方 DSH Web、本地假模型、浏览器↔APP 消息、工具、队列、归档，以及新接入的版本化提交、checkpoint 空 live 恢复和 unchanged 确认。未使用用户 Host、正在使用的浏览器服务或付费模型。
+- 本次未 push、发布、安装 APK或重启用户 Host。构建后的 dist 已生成，但正在运行的 Host / Pi 仍使用原先加载的实现；需获得独立更新/重启授权后才在用户会话生效。
 
 ## 故障注入验收
 
@@ -258,4 +277,4 @@ running 时允许 sync 不意味着 running 时允许 revert；后者仍按原�
 | 手机崩溃于 Entry 入库后、内存 seq 更新前 | 重启 checkpoint 后幂等恢复，不依赖未持久化的 live/seq |
 | outbox 确认丢失、另一设备收到定向页 | pending 不被 live 替换删除；定向响应不制造共享版本假缺口 |
 
-需要 reducer/adapter 故障测试、Android SQLite 事务验证及真实链路断连/延迟验证。当前已执行部分 Protocol、Codex adapter、Android reducer 和刷新恢复单测；全部故障矩阵及真实 GUI/TUI、设备链路验收尚未完成，不能将单测通过视为全流程完成。
+需要 reducer/adapter 故障测试、Android SQLite 事务验证及真实链路断连/延迟验证。当前已执行 Protocol、三个 backend 的源端恢复测试、Android reducer 单测及部分隔离原生链路检查；全部故障矩阵及真实 GUI/TUI、设备链路验收尚未完成，不能将这些结果视为全流程完成。

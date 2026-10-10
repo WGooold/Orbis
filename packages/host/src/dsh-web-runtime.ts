@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import {
+  NotificationSource,
+  RecoverableSessionSource,
   selectSessionSyncSnapshot,
   type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
@@ -37,12 +39,18 @@ const webEntrySeqOrUndefined = (entryId: string | null | undefined): number | un
 
 type Approval = { id: string; session: WebSession; interaction: InteractionRequest; timer: NodeJS.Timeout };
 type WebSession = {
+  source: RecoverableSessionSource;
+  sourceCheckedAt: number;
+  sourceCheck?: { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
+  notifications: NotificationSource; skillsGeneration: number; modelGeneration: number; followGeneration: number;
   id: string; cwd: string; createdAt: number; title?: string; entries: RemoteSessionEntry[]; skills: { name: string; description: string }[];
   running: boolean; closing: boolean; options: Obj[]; modelCatalog?: Obj; model?: RuntimeMetadata["model"]; thinkingLevel?: string; usage?: RuntimeMetadata["contextUsage"];
   lastSeq: number; turnId?: string; turnStartedAt?: number;
   queue: Map<string, { itemId: string; text: string; delivery: "steer" | "followUp" }>;
   messages: Map<string, { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled"; entryId?: string }>;
   persistedMappings: Map<string, string>;
+  retiredAttempts: Set<string>;
+  streamIndexes: Map<string, number>;
   unsubscribe: () => void; following: boolean; streamMessages: Map<string, ChatMessage>; tools: Map<string, string>;
 };
 
@@ -105,12 +113,21 @@ export class DshWebRuntime implements AgentBackend {
   start(): Promise<void> { return this.#discovery.start(); }
   announce(): void {
     for (const session of this.#sessions.values()) {
+      session.notifications.announce();
       this.#publishMetadata(session);
       this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
       this.#emit(session, { type: "interaction.snapshot", requests: [...this.#approvals.values()].filter(item => item.session === session).map(item => item.interaction) });
     }
   }
   isReady(): boolean { return this.#ready; }
+  syncNotifications(runtimeId: string): void {
+    const session = this.#sessions.get(runtimeId); if (!session || session.closing) return;
+    session.notifications.announce();
+    const codes = new Set(session.notifications.snapshot().notifications.map(item => item.code));
+    if (codes.has("dsh.skills")) void this.#loadSkills(session);
+    if (codes.has("dsh.models")) void this.#loadModelCatalog(session);
+    if (codes.has("dsh.recovery") && !session.following) this.#discovery.retry();
+  }
   ownsRuntime(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
   directoryEntries(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => this.#metadata(session)); }
   currentProvider(): Promise<string | undefined> { return Promise.resolve("deepseek-web"); }
@@ -237,7 +254,13 @@ export class DshWebRuntime implements AgentBackend {
       return;
     }
     const session: WebSession = { id, cwd: item.cwd, createdAt: item.createdAt, ...(item.title ? { title: item.title } : {}), entries: [], skills: [], running: item.running, closing: false, options: [], lastSeq: -1,
-      queue: new Map(), messages: new Map(), persistedMappings: new Map(), streamMessages: new Map(), tools: new Map(), following: false, unsubscribe: () => {} };
+      source: new RecoverableSessionSource(publicId(id), event => {
+        if (this.#sessions.get(publicId(id)) === session) this.#sink(event, publicId(id));
+      }), sourceCheckedAt: 0,
+      notifications: new NotificationSource(randomUUID(), publicId(id), event => {
+        if (this.#sessions.get(publicId(id))?.notifications.epoch === event.producerEpoch) this.#sink(event, publicId(id));
+      }), skillsGeneration: 0, modelGeneration: 0, followGeneration: 0,
+      queue: new Map(), messages: new Map(), persistedMappings: new Map(), streamMessages: new Map(), streamIndexes: new Map(), retiredAttempts: new Set(), tools: new Map(), following: false, unsubscribe: () => {} };
     this.#sessions.set(runtimeId, session);
     // Announce before follow can deliver messages: APP needs the runtime identity first.
     this.#publishMetadata(session);
@@ -249,9 +272,14 @@ export class DshWebRuntime implements AgentBackend {
 
   #followSession(session: WebSession): void {
     session.following = true;
+    const generation = ++session.followGeneration;
     const fail = (error: unknown) => {
-      if (this.#sessions.get(publicId(session.id)) !== session || session.closing) return;
+      if (this.#sessions.get(publicId(session.id)) !== session || session.closing || generation !== session.followGeneration) return;
+      ++session.followGeneration;
       session.unsubscribe(); session.following = false;
+      session.source.setAvailability(false, false);
+      session.sourceCheckedAt = 0;
+      if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error(textOf(error))); delete session.sourceCheck; }
       this.#report(textOf(error), publicId(session.id));
       this.#discovery.retry();
     };
@@ -259,7 +287,7 @@ export class DshWebRuntime implements AgentBackend {
     // The opening supplies a tail plus the current assistant prefix.
     try {
       session.unsubscribe = this.#client.subscribe("session/follow", { request: { address: { kind: "session", sessionId: session.id }, maxMessages: 2_000, assistantStream: true } },
-        frame => this.#follow(session, frame), fail);
+        frame => { if (generation === session.followGeneration) this.#follow(session, frame); }, fail);
     } catch (error) { fail(error); }
   }
 
@@ -274,10 +302,10 @@ export class DshWebRuntime implements AgentBackend {
     switch (command.type) {
       case "session.sync": {
         if (command.sessionId !== publicId(session.id)) throw new Error("session_mismatch");
+        if (command.range === "preview") await this.#checkSource(session);
         await this.#refreshPage(session, command.maxEntries,
           command.range === "history" ? webEntrySeqOrUndefined(command.beforeEntryId) : undefined);
-        this.#emit(session, selectSessionSyncSnapshot(session.entries, command.sessionId, session.entries.at(-1)?.entryId ?? null, command));
-        if (command.range !== "history") this.#announceLive(session);
+        this.#emit(session, selectSessionSyncSnapshot(session.entries, command.sessionId, session.entries.at(-1)?.entryId ?? null, command, [], session.source.snapshot(), session.entries[0]?.parentId ?? undefined));
         this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
         this.#emit(session, { type: "interaction.snapshot", requests: [...this.#approvals.values()].filter(item => item.session === session).map(item => item.interaction) }); break;
       }
@@ -293,7 +321,7 @@ export class DshWebRuntime implements AgentBackend {
         await this.#client.request("session/cancel", { request: { sessionId: session.id } });
         this.#cancelSessionApprovals(session, "cancelled"); break;
       case "interaction.respond": await this.#respondInteraction(session, command); break;
-      case "slash.execute": await this.#slash(session, command.args, command.name, commandId); break;
+      case "slash.execute": await this.#slash(session, command.args, command.name); break;
       default: throw new Error("不支持的 DSH Web 命令");
     }
     this.#emit(session, { type: "command.result", commandId, ok: true, status: "success" });
@@ -325,16 +353,17 @@ export class DshWebRuntime implements AgentBackend {
     } catch (error) { receipt.status = "failure"; session.queue.delete(requestId); throw error; }
   }
 
-  async #slash(session: WebSession, args: string, name: string, commandId: string): Promise<void> {
+  async #slash(session: WebSession, args: string, name: string): Promise<void> {
     if (name === "quit") { this.#detached.add(session.id); this.#detachSession(session, "DeepSeek Web 会话已关闭"); return; }
     if (name === "name") { const title = args.trim(); if (!title) throw new Error("会话名称不能为空"); await this.#client.request("session/rename", { request: { sessionId: session.id, title } }); session.title = title; this.#publishMetadata(session); return; }
     if (name === "fork" || name === "clone") {
       const parsed = args.trim() === "" ? undefined : Number(args.trim());
       if (parsed !== undefined && !Number.isSafeInteger(parsed)) throw new Error("分支位置必须是有效事件序号");
       const result = object(await this.#client.request("session/fork", { request: { sessionId: session.id, ...(parsed === undefined ? {} : { atSeq: parsed }) } }));
-      if (typeof result.sessionId === "string") this.#emit(session, { type: "runtime.error", message: `已创建分支 dsh:${result.sessionId}`, recoverable: true }); return;
+      if (typeof result.sessionId === "string") session.notifications.outcome({ code: "dsh.fork", occurrenceId: result.sessionId,
+        scope: { operationId: result.sessionId }, severity: "info", message: `已创建分支 dsh:${result.sessionId}` }); return;
     }
-    if (name === "session") { this.#emit(session, { type: "session.snapshot", sessionId: publicId(session.id), syncId: commandId, cursor: { leafId: session.entries.at(-1)?.entryId ?? null }, mode: "replace", entries: session.entries, complete: true }); return; }
+    if (name === "session") return; // Chat recovery uses the owned, bounded session.sync task.
     if (name === "skills") { await this.#client.request("skills/list", { request: { sessionId: session.id } }); return; }
     const skill = session.skills.find(item => item.name === name);
     if (skill) {
@@ -427,8 +456,16 @@ export class DshWebRuntime implements AgentBackend {
 
   #follow(session: WebSession, value: unknown): void {
     if (this.#sessions.get(publicId(session.id)) !== session || session.closing) return;
+    session.source.transaction(() => this.#followFrame(session, value));
+  }
+  #followFrame(session: WebSession, value: unknown): void {
     const frame = object(value);
     if (frame.type === "snapshot") {
+      if (!Array.isArray(frame.records) || frame.header === null || typeof frame.header !== "object"
+        || !Number.isSafeInteger(frame.cursor) || Number(frame.cursor) < -1
+        || frame.records.some(record => { const event = object(object(record).event);
+          return !Number.isSafeInteger(event.seq) || Number(event.seq) < 0 || !Number.isFinite(event.time) || typeof event.type !== "string";
+        })) return;
       const header = object(frame.header); const events = arrayObjects(frame.records).map(record => { const event = object(record.event); return { seq: Number(event.seq), time: Number(event.time), type: String(event.type), data: event.data }; });
       this.#rememberTools(session, events);
       const snapshotEntries = dshWebEntries(session.id, events);
@@ -448,15 +485,41 @@ export class DshWebRuntime implements AgentBackend {
       this.#publishMetadata(session);
       // A phone can attach after the browser already received part of a reply.
       // Restore that prefix before accepting the following live chunks.
-      session.streamMessages.clear();
+      const priorStreams = session.streamMessages;
+      session.streamMessages = new Map();
+      session.streamIndexes.clear();
+      session.source.replaceLive({ complete: false, turn: null, messages: [], tools: [] });
+      session.tools.clear();
+      this.#rememberTools(session, events);
+      for (const event of events) {
+        const data = object(event.data);
+        if (event.type === "tool/result") session.tools.delete(String(object(data.message).toolCallId));
+      }
+      if (session.turnId && session.turnStartedAt !== undefined) session.source.observe({ type: "turn.started", turnId: session.turnId, startedAt: session.turnStartedAt });
+      for (const event of events) {
+        if (event.type !== "tool/call") continue;
+        const data = object(event.data);
+        const toolCallId = String(data.callId ?? dshWebEntryId(session.id, event.seq));
+        if (!session.tools.has(toolCallId)) continue;
+        let args: unknown = data.arguments ?? {};
+        if (typeof args === "string") { try { args = JSON.parse(args); } catch { /* Preserve native text. */ } }
+        session.source.observe({ type: "tool.started", toolCallId, toolName: session.tools.get(toolCallId)!, arguments: args });
+      }
       const attempt = object(object(frame.assistantStream).activeAttempt);
       if (typeof attempt.attemptId === "string") {
-        this.#assistantFrame(session, { type: "start", attemptId: attempt.attemptId });
+        session.retiredAttempts.delete(attempt.attemptId);
+        this.#assistantFrame(session, { type: "start", attemptId: attempt.attemptId,
+          time: Number(attempt.startedAt ?? priorStreams.get(attempt.attemptId)?.timestamp ?? Date.now()) });
         const stream = Array.isArray(attempt.stream) ? attempt.stream : [];
         const records = this.#decoder ? this.#decoder(stream) : arrayObjects(stream);
         for (const record of records) this.#assistantFrame(session, { type: "chunk", attemptId: attempt.attemptId, time: record.time, chunk: record.chunk });
       }
-      this.#announceLive(session);
+      this.#reconcileSource(session);
+      const currentTurnCovered = events.some(event => event.type === "turn/start" && dshWebEntryId(session.id, event.seq) === session.turnId);
+      session.source.setAvailability(true, !session.running || currentTurnCovered);
+      session.sourceCheckedAt = Date.now();
+      if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.resolve(); delete session.sourceCheck; }
+      session.notifications.resolve("dsh.recovery");
       return;
     }
     if (frame.type === "event") { const event = object(frame.event); this.#applyEvent(session, { seq: Number(event.seq), time: Number(event.time), type: String(event.type), data: event.data }); return; }
@@ -465,12 +528,14 @@ export class DshWebRuntime implements AgentBackend {
   async #refreshPage(session: WebSession, maxMessages = 2_000, beforeSeq?: number): Promise<void> {
     // Empty Sessions have a valid `-1` cursor. Sending 0 makes the Web
     // controller reject the page because it is past that Session's log.
+    const generation = session.followGeneration;
     const throughSeq = session.lastSeq < 0 ? -1 : session.lastSeq;
     const result = object(await this.#client.request("session/page", { request: {
       address: { kind: "session", sessionId: session.id },
       throughSeq, ...(beforeSeq === undefined ? {} : { beforeSeq }),
       maxMessages: Math.min(2_000, Math.max(1, maxMessages)),
     } }));
+    if (generation !== session.followGeneration || session.closing || this.#sessions.get(publicId(session.id)) !== session) throw new Error("session_source_changed");
     if (!Array.isArray(result.records)) return;
     const events = arrayObjects(result.records).map(record => {
       const event = object(record.event);
@@ -483,6 +548,7 @@ export class DshWebRuntime implements AgentBackend {
     for (const entry of pageEntries) if (!entries.has(entry.entryId)) entries.set(entry.entryId, entry);
     session.entries = [...entries.values()].sort((left, right) => webEntrySeq(left.entryId) - webEntrySeq(right.entryId));
     session.lastSeq = Math.max(session.lastSeq, ...events.map(event => event.seq));
+    this.#reconcileSource(session);
   }
   #syncSnapshotTurnState(session: WebSession, events: readonly DshWebLogEvent[]): void {
     let start: DshWebLogEvent | undefined;
@@ -513,8 +579,22 @@ export class DshWebRuntime implements AgentBackend {
       if (callId && name) session.tools.set(callId, name);
     }
   }
-  #applyEvent(session: WebSession, event: { seq: number; time: number; type: string; data: unknown }): void {
-    if (!Number.isSafeInteger(event.seq) || event.seq <= session.lastSeq) return; session.lastSeq = event.seq;
+  #applyEvent(session: WebSession, event: DshWebLogEvent): void {
+    session.source.transaction(() => {
+      this.#applyNativeEvent(session, event);
+      this.#reconcileSource(session);
+    });
+  }
+  #applyNativeEvent(session: WebSession, event: { seq: number; time: number; type: string; data: unknown }): void {
+    if (!Number.isSafeInteger(event.seq) || event.seq <= session.lastSeq) return;
+    if (session.lastSeq >= 0 && event.seq !== session.lastSeq + 1) {
+      session.source.setAvailability(false, false);
+      session.sourceCheckedAt = 0;
+      void this.#checkSource(session).catch(error => this.#report(textOf(error), publicId(session.id)));
+      return;
+    }
+    if (session.lastSeq === -1 && event.seq === 0) session.source.setAvailability(true, !session.running);
+    session.lastSeq = event.seq;
     const data = object(event.data);
     if (event.type === "tool/call") {
       const toolCallId = String(data.callId ?? dshWebEntryId(session.id, event.seq));
@@ -527,7 +607,7 @@ export class DshWebRuntime implements AgentBackend {
       this.#emit(session, { type: "tool.started", toolCallId, toolName, arguments: args });
     }
     const existing = dshWebMessage(session.id, event, session.tools);
-    const entry = dshWebEntries(session.id, [event])[0]; if (entry) session.entries.push({ ...entry, parentId: session.entries.at(-1)?.entryId ?? null });
+    const entry = dshWebEntries(session.id, [event])[0]; if (entry) session.entries.push(entry);
     if (entry && (event.type === "assistant/message" || event.type === "tool/result")) {
       const raw = event.type === "assistant/message" ? data.message : object(data.message);
       if (typeof object(raw).id === "string") session.persistedMappings.set(String(object(raw).id), entry.entryId);
@@ -551,6 +631,7 @@ export class DshWebRuntime implements AgentBackend {
       session.running = true;
       session.turnId = dshWebEntryId(session.id, event.seq);
       session.turnStartedAt = event.time;
+      session.source.setAvailability(true, true);
       this.#emit(session, { type: "turn.started", turnId: session.turnId, startedAt: event.time, ...(typeof data.turn === "number" ? { turnIndex: data.turn } : {}) });
     }
     if (event.type === "tool/result") {
@@ -565,23 +646,45 @@ export class DshWebRuntime implements AgentBackend {
       const turnId = session.turnId ?? dshWebEntryId(session.id, event.seq);
       const startedAt = session.turnStartedAt ?? event.time;
       const persistedMessages = [...session.persistedMappings.entries()].map(([messageId, entryId]) => ({ messageId, entryId }));
-      session.persistedMappings.clear();
+      // Keep unresolved attempt identities through turn end; the canonical event can arrive later.
       delete session.turnId;
       delete session.turnStartedAt;
+      session.source.setAvailability(true, true);
       this.#emit(session, { type: "turn.finished", turnId, startedAt, durationMs: Math.max(0, event.time - startedAt), ...(typeof data.turn === "number" ? { turnIndex: data.turn } : {}), ...(persistedMessages.length ? { persistedMessages } : {}) });
     }
     if (existing) this.#emit(session, { type: "message.finished", message: existing });
     this.#publishMetadata(session);
   }
   #assistantFrame(session: WebSession, frame: Obj): void {
+    session.source.transaction(() => {
+      this.#applyAssistantFrame(session, frame);
+      if (frame.type === "end") this.#reconcileSource(session);
+    });
+  }
+  #applyAssistantFrame(session: WebSession, frame: Obj): void {
     const attempt = String(frame.attemptId ?? "assistant");
-    if (frame.type === "start") { const message: ChatMessage = { messageId: attempt, role: "assistant", content: [], timestamp: Number(frame.time ?? Date.now()) }; session.streamMessages.set(attempt, message); this.#emit(session, { type: "message.started", message }); return; }
+    if (session.retiredAttempts.has(attempt)) return;
+    if (frame.type === "start") {
+      if (session.streamMessages.has(attempt)) return;
+      const message: ChatMessage = { messageId: attempt, role: "assistant", content: [], timestamp: Number(frame.time ?? Date.now()) };
+      session.streamMessages.set(attempt, message);
+      session.streamIndexes.set(attempt, 0);
+      this.#emit(session, { type: "message.started", message }); return;
+    }
     if (frame.type === "chunk") {
+      const expected = session.streamIndexes.get(attempt) ?? 0;
+      if (typeof frame.index === "number" && frame.index < expected) return;
+      if (typeof frame.index === "number" && frame.index !== expected) {
+        const live = session.source.snapshot().live;
+        session.source.replaceLive({ ...live, complete: false, messages: live.messages.map(item => item.message.messageId === attempt ? { ...item, contentComplete: false } : item) });
+        session.sourceCheckedAt = 0;
+      }
+      session.streamIndexes.set(attempt, typeof frame.index === "number" ? frame.index + 1 : expected + 1);
       let message = session.streamMessages.get(attempt);
       if (!message) {
         message = { messageId: attempt, role: "assistant", content: [], timestamp: Number(frame.time ?? Date.now()) };
         session.streamMessages.set(attempt, message);
-        this.#emit(session, { type: "message.started", message });
+        session.source.upsertMessage({ message, finished: false, contentComplete: false });
       }
       let chunk = object(frame.chunk);
       if (chunk.type === "chunk" && chunk.chunk !== undefined) chunk = object(chunk.chunk);
@@ -592,45 +695,89 @@ export class DshWebRuntime implements AgentBackend {
         ? String(chunk.text ?? "") : chunk.type === "tool-call-delta" ? String(chunk.argumentsDelta ?? "") : "";
       if (!text) return;
       const contentType = frame.reasoning === true || chunk.type === "reasoning-delta" ? "thinking" : chunk.type === "tool-call-delta" ? "tool_call" : "text";
-      const index = message.content.length;
       if (contentType === "thinking") message.content.push({ type: "thinking", text });
       else if (contentType === "tool_call") message.content.push({ type: "tool_call", toolCallId: String(chunk.id ?? attempt), toolName: String(chunk.name ?? "tool"), arguments: text });
       else message.content.push({ type: "text", text });
-      this.#emit(session, { type: "message.delta", messageId: attempt, contentType, contentIndex: index, delta: text }); return;
+      session.source.upsertMessage({ message, finished: false, contentComplete: session.source.snapshot().live.messages.find(item => item.message.messageId === attempt)?.contentComplete ?? false });
+      return;
     }
     if (frame.type === "end") {
+      session.retiredAttempts.add(attempt);
+      if (session.retiredAttempts.size > 256) session.retiredAttempts.delete(session.retiredAttempts.values().next().value!);
       const message = session.streamMessages.get(attempt);
-      if (message) this.#emit(session, { type: "message.finished", message });
+      if (message) session.source.upsertMessage({ message, finished: true,
+        contentComplete: session.source.snapshot().live.messages.find(item => item.message.messageId === attempt)?.contentComplete ?? false });
       const outcome = object(frame.outcome);
-      if (outcome.kind === "committed" && typeof outcome.seq === "number") session.persistedMappings.set(attempt, dshWebEntryId(session.id, outcome.seq));
-      session.streamMessages.delete(attempt);
+      if (outcome.kind === "committed" && typeof outcome.seq === "number") {
+        session.persistedMappings.set(attempt, dshWebEntryId(session.id, outcome.seq));
+        // Completion can precede its canonical event. Retain its body until that commit.
+      } else {
+        session.streamMessages.delete(attempt);
+        const live = session.source.snapshot().live;
+        session.source.replaceLive({ ...live, messages: live.messages.filter(item => item.message.messageId !== attempt) });
+      }
     }
   }
 
-  #announceLive(session: WebSession): void {
-    if (session.turnId && session.turnStartedAt !== undefined) this.#emit(session, { type: "turn.started", turnId: session.turnId, startedAt: session.turnStartedAt });
-    for (const message of session.streamMessages.values()) this.#emit(session, { type: "message.started", message });
+  #reconcileSource(session: WebSession): void {
+    const mappings = [...session.persistedMappings].map(([messageId, entryId]) => ({ messageId, entryId }));
+    session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null, mappings);
+    const ids = new Set(session.entries.map(entry => entry.entryId));
+    for (const [id, entryId] of session.persistedMappings) if (ids.has(entryId)) {
+      session.streamMessages.delete(id);
+      session.streamIndexes.delete(id);
+      session.persistedMappings.delete(id);
+    }
+  }
+
+  #checkSource(session: WebSession): Promise<void> {
+    if (session.sourceCheck) return session.sourceCheck.promise;
+    if (session.sourceCheckedAt > 0 && Date.now() - session.sourceCheckedAt < 15_000) return Promise.resolve();
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
+    const timer = setTimeout(() => {
+      if (session.sourceCheck?.promise !== promise) return;
+      delete session.sourceCheck;
+      session.source.setAvailability(false, false);
+      reject(new Error("DeepSeek 当前会话状态恢复超时"));
+    }, 15_000);
+    timer.unref();
+    session.sourceCheck = { promise, resolve, reject, timer };
+    // Reopening the native follow atomically captures current history and assistant prefix.
+    session.unsubscribe();
+    this.#followSession(session);
+    return promise;
   }
 
   async #resyncAll(): Promise<void> {
     for (const session of this.#sessions.values()) {
       session.unsubscribe(); session.following = false;
-      this.#emit(session, { type: "runtime.error", message: "DeepSeek Web 已重连，会话流正在恢复", recoverable: true });
+      ++session.followGeneration;
+      session.source.setAvailability(false, false);
+      session.sourceCheckedAt = 0;
+      if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error("native_connection_replaced")); delete session.sourceCheck; }
+      session.notifications.upsert({ code: "dsh.recovery", occurrenceId: "follow", scope: {}, severity: "info", lifecycle: "condition", message: "DeepSeek Web 已重连，会话流正在恢复" });
     }
     await this.#discovery.reconnect();
   }
   #metadata(session: WebSession): RuntimeMetadata { return { runtimeId: publicId(session.id), sessionId: publicId(session.id), name: "DeepSeek Harness Web", ...(session.title ? { sessionName: session.title } : {}), cwd: session.cwd, hostname: localHostname(), status: session.running ? "running" : "idle", sessionGraphSync: true, sessionLeafId: session.entries.at(-1)?.entryId ?? null, ...(session.model === undefined ? {} : { model: session.model }), ...(session.thinkingLevel === undefined ? {} : { thinkingLevel: session.thinkingLevel }), ...(session.usage === undefined ? {} : { contextUsage: session.usage }) }; }
   async #loadSkills(session: WebSession): Promise<void> {
+    const generation = ++session.skillsGeneration;
     try {
       const value = object(await this.#client.request("skills/list", { request: { sessionId: session.id } }));
+      if (generation !== session.skillsGeneration || this.#sessions.get(publicId(session.id)) !== session) return;
       session.skills = arrayObjects(value.skills).flatMap(skill => typeof skill.name === "string" && /^[^\s/]+$/u.test(skill.name)
         ? [{ name: skill.name, description: typeof skill.description === "string" ? skill.description : `DeepSeek skill /${skill.name}` }] : []);
       if (this.#sessions.has(publicId(session.id))) this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
-    } catch (error) { this.#report(`无法读取 DeepSeek Web skills：${textOf(error)}`, publicId(session.id)); }
+      session.notifications.resolve("dsh.skills");
+    } catch (error) { if (generation === session.skillsGeneration && this.#sessions.get(publicId(session.id)) === session) this.#report(`无法读取 DeepSeek Web skills：${textOf(error)}`, publicId(session.id), "dsh.skills"); }
   }
   async #loadModelCatalog(session: WebSession): Promise<void> {
+    const generation = ++session.modelGeneration;
     try {
       const catalog = object(await this.#client.request("session/modelCatalog", {}));
+      if (generation !== session.modelGeneration || this.#sessions.get(publicId(session.id)) !== session) return;
       session.modelCatalog = catalog;
       const current = object(catalog.default);
       if (typeof current.provider === "string" && typeof current.model === "string") {
@@ -638,7 +785,8 @@ export class DshWebRuntime implements AgentBackend {
         if (typeof current.reasoningEffort === "string") session.thinkingLevel = current.reasoningEffort;
       }
       if (this.#sessions.has(publicId(session.id))) { this.#publishMetadata(session); this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) }); }
-    } catch (error) { this.#report(`无法读取 DeepSeek Web 模型目录：${textOf(error)}`, publicId(session.id)); }
+      session.notifications.resolve("dsh.models");
+    } catch (error) { if (generation === session.modelGeneration && this.#sessions.get(publicId(session.id)) === session) this.#report(`无法读取 DeepSeek Web 模型目录：${textOf(error)}`, publicId(session.id), "dsh.models"); }
   }
   #modelInfo(catalog: Obj, provider: string, id: string): RuntimeMetadata["model"] | undefined {
     for (const group of arrayObjects(catalog.groups)) {
@@ -681,12 +829,13 @@ export class DshWebRuntime implements AgentBackend {
     const skills = (session?.skills ?? []).map(skill => ({ name: skill.name, description: skill.description, source: "skill" as const }));
     return { commands: [...builtin, ...skills] };
   }
-  #publishMetadata(session: WebSession): void { if (!this.#sessions.has(publicId(session.id))) return; const metadata = this.#metadata(session); this.#emit(session, { type: "runtime.status", status: metadata.status }); this.#emit(session, { type: "runtime.metadata", metadata }); this.onMetadataChange?.(); }
+  #publishMetadata(session: WebSession): void { if (!this.#sessions.has(publicId(session.id))) return; const metadata = this.#metadata(session); this.#emit(session, { type: "runtime.status", status: metadata.status }); this.#emit(session, { type: "runtime.metadata", metadata }); this.onMetadataChange?.(); session.notifications.announce(); }
   #detachSession(session: WebSession, reason: string): void {
     if (session.closing) return;
     session.closing = true;
     this.#cancelSessionApprovals(session, "owner_closed");
     session.unsubscribe();
+    if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error(reason)); delete session.sourceCheck; }
     this.#sessions.delete(publicId(session.id));
     this.onOffline?.(reason, [this.#metadata(session)]);
   }
@@ -698,7 +847,14 @@ export class DshWebRuntime implements AgentBackend {
     }
     return workspace.workspaceId;
   }
-  #emit(session: WebSession, event: RuntimeEvent): void { this.#sink(event, publicId(session.id)); }
-  #report(message: string, runtimeId?: string): void { if (runtimeId) { const session = this.#sessions.get(runtimeId); if (session) this.#emit(session, { type: "runtime.error", message, recoverable: true }); } }
-  async stop(): Promise<void> { if (this.#stopping) return this.#stopping; this.#stopping = (async () => { this.#ready = false; this.#discovery.stop(); for (const id of this.#approvals.keys()) this.#cancelApproval(id, "owner_closed"); for (const session of this.#sessions.values()) session.unsubscribe(); this.#sessions.clear(); this.#running.clear(); this.#detached.clear(); await this.#client.stop(); })(); return this.#stopping; }
+  #emit(session: WebSession, event: RuntimeEvent): void {
+    if (event.type !== "command.result" && this.#sessions.get(publicId(session.id)) !== session) return;
+    if (!session.source.observe(event)) this.#sink(event, publicId(session.id));
+  }
+  #report(message: string, runtimeId?: string, code = "dsh.recovery"): void {
+    const sessions = runtimeId === undefined ? [...this.#sessions.values()] : [this.#sessions.get(runtimeId)];
+    for (const session of sessions) if (session) session.notifications.upsert({ code, occurrenceId: code === "dsh.recovery" ? "follow" : code,
+      scope: {}, severity: "warning", lifecycle: "condition", message });
+  }
+  async stop(): Promise<void> { if (this.#stopping) return this.#stopping; this.#stopping = (async () => { this.#ready = false; this.#discovery.stop(); for (const id of this.#approvals.keys()) this.#cancelApproval(id, "owner_closed"); for (const session of this.#sessions.values()) { session.unsubscribe(); if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error("backend_stopped")); } } this.#sessions.clear(); this.#running.clear(); this.#detached.clear(); await this.#client.stop(); })(); return this.#stopping; }
 }

@@ -9,6 +9,9 @@ import {
   type RuntimeEvent,
   type RuntimeModelInfo,
   type RuntimeTurnTiming,
+  type SessionCheckpoint,
+  type SessionLiveState,
+  type SessionSourceEpoch,
   type SessionCatalogEntry,
 } from "@pi-remote/protocol";
 import type {
@@ -399,10 +402,11 @@ export function sessionGraphFromEntries(
   leafId: string | null,
   request: RuntimeSessionSyncRequest,
   turnTimings: readonly RuntimeTurnTiming[] = [],
+  source?: { version: SessionSourceEpoch; live: SessionLiveState; checkpoint: SessionCheckpoint },
 ): RuntimeSessionSync {
   return selectSessionSyncSnapshot(
     sessionEntriesFromEntries(entries), sessionId, leafId, request,
-    mergeTurnTimings(turnTimings, turnTimingsFromEntries(entries)),
+    mergeTurnTimings(turnTimings, turnTimingsFromEntries(entries)), source,
   );
 }
 /** Upper bound on remembered persisted entry ids, so a long session cannot grow unbounded. */

@@ -430,9 +430,10 @@ class TestDevice {
   }
 
   /** 收到 Host 发来的明文 JSON 载荷（`device.ready` / `device.path` / `runtime.event` …）。 */
-  async receiveMessage(): Promise<Record<string, unknown>> {
+  async receiveMessage(includeNotifications = false): Promise<Record<string, unknown>> {
     const { payload } = await this.receivePayloadWithPath();
     const message = JSON.parse(payload.toString("utf8")) as Record<string, unknown>;
+    if (!includeNotifications && message.type === "notification.snapshot") return this.receiveMessage();
     // 手机跟着 Host 的宣布切换出站路径——这就是 §14 B4「当前链路可见」背后的机制。
     if (message.type === "device.path" && typeof message.path === "string") {
       this.#active = message.path as PathKind;
@@ -711,6 +712,48 @@ describe("host end-to-end over relay", () => {
     const pskRoot = await connected.device.pair(connected.payload);
     return { device: connected.device, payload: opened.payload, pskRoot };
   };
+
+  it("recovers independent notification state and device dismissals over encrypted relay sockets", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-notices-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    const ready = await device.receiveMessage(); await device.receiveMessage();
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-notices", name: "notices", cwd: "/work", status: "idle", sessionId: "s" } });
+    await runtime.next(); await device.receiveMessage();
+    const notice = (code: string) => ({ code, occurrenceId: "one", scope: { turnId: "t" }, lifecycle: "condition" as const, severity: "warning" as const, message: code });
+    runtime.publish(1, { type: "notification.source", producerEpoch: "source", sessionId: "s", revision: 1, complete: true,
+      notifications: [notice("retry"), notice("sandbox")] });
+    const readSnapshot = async (predicate: (message: Record<string, unknown>) => boolean) => {
+      for (let n = 0; n < 30; ++n) { const message = await device!.receiveMessage(true); if (message.type === "notification.snapshot" && predicate(message)) return message; }
+      throw new Error("notification snapshot not received");
+    };
+    const active = await readSnapshot(message => (message.notifications as unknown[]).length === 2);
+    expect(active.hostEpoch).toBe(ready.notificationEpoch);
+    runtime.publish(2, { type: "notification.source", producerEpoch: "source", sessionId: "s", revision: 4, complete: true, notifications: [notice("sandbox")] });
+    const recovered = await readSnapshot(message => (message.notifications as unknown[]).length === 1);
+    const sandbox = (recovered.notifications as { code: string; notificationId: string }[])[0]!;
+    expect(sandbox.code).toBe("sandbox");
+    device.sendPayload(Buffer.from(JSON.stringify({ type: "notification.sync", protocolVersion: PROTOCOL_VERSION, runtimeId: "pi-notices" })));
+    expect(await readSnapshot(message => message.revision === recovered.revision)).toMatchObject({ notifications: [sandbox] });
+    device.sendPayload(Buffer.from(JSON.stringify({ type: "notification.dismiss", protocolVersion: PROTOCOL_VERSION, runtimeId: "pi-notices", hostEpoch: active.hostEpoch, notificationId: sandbox.notificationId })));
+    await readSnapshot(message => (message.notifications as unknown[]).length === 0);
+    const second = await pairDevice({ relay, host });
+    try {
+      await second.device.openChannel("relay", second.pskRoot, second.payload.hostId, second.payload.hostId);
+      for (let n = 0; n < 10; ++n) {
+        const message = await second.device.receiveMessage(true);
+        if (message.type === "notification.snapshot" && message.runtimeId === "pi-notices") {
+          expect(message.notifications).toEqual([sandbox]); break;
+        }
+        if (n === 9) throw new Error("second device did not receive its notification view");
+      }
+      device.sendPayload(Buffer.from(JSON.stringify({ type: "notification.sync", protocolVersion: PROTOCOL_VERSION, runtimeId: "pi-notices" })));
+      expect(await readSnapshot(message => (message.notifications as unknown[]).length === 0)).toMatchObject({ notifications: [] });
+    } finally { second.device.close(); }
+  });
 
   it("targets sync snapshots and acknowledgements to their requesting device over real encrypted relay sockets", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "pi-remote-sync-"));
@@ -2068,8 +2111,8 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         .toMatchObject({ runtime: { sessionId: "dsh:browser", status: "running" } });
       follows.get("browser")!({ type: "event", event: { seq: 0, time: 1000, type: "user/message",
         data: { role: "user", source: { kind: "user", rpcId: "web-1" }, content: [{ type: "text", text: "browser message" }] } } });
-      expect(await until(message => message.runtimeId === "dsh:browser" && (message.event as RuntimeEvent)?.type === "message.finished"))
-        .toMatchObject({ event: { message: { content: [{ type: "text", text: "browser message" }] } } });
+      expect(await until(message => message.runtimeId === "dsh:browser" && (message.event as RuntimeEvent)?.type === "session.patch"))
+        .toMatchObject({ event: { entries: [expect.objectContaining({ data: { message: expect.objectContaining({ content: [{ type: "text", text: "browser message" }] }) } })], live: { messages: [] } } });
       sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "dsh:browser", commandId: "app-send",
         command: { type: "user_message", text: "phone message", messageId: "app-1" } });
       await vi.waitFor(() => expect(request).toHaveBeenCalledWith("session/prompt", { request: expect.objectContaining({ sessionId: "browser", content: [{ type: "text", text: "phone message" }] }) }));

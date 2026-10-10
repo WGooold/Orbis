@@ -7,6 +7,7 @@ import {
   PI_REMOTE_BROKER_QUERY,
   type InteractionCoordinator,
 } from "@pi-remote/interaction-sdk";
+import { RecoverableSessionSource, type RuntimeEvent } from "@pi-remote/protocol";
 import { RuntimeBridge } from "@pi-remote/runtime-bridge";
 import { loadRemoteControlConfig } from "./config.js";
 import {
@@ -15,6 +16,8 @@ import {
 } from "./runtime-log.js";
 import {
   PiMessageStream,
+  messageToRemote,
+  sessionEntriesFromEntries,
   processRuntimeId,
   runtimeContextSnapshot,
   runtimeHostname,
@@ -75,6 +78,36 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   let slashCommandAdapter: PiSlashCommandAdapter | undefined;
   let activeSessionToken: symbol | undefined;
   let messageStream = new PiMessageStream();
+  let sessionSource: RecoverableSessionSource | undefined;
+  let lastNativeLeaf: string | null | undefined;
+  const reconcileSource = (ctx: ExtensionContext, force = false): void => {
+    if (!sessionSource) return;
+    const leaf = ctx.sessionManager.getLeafId();
+    if (!force && leaf === lastNativeLeaf) return;
+    const entries = ctx.sessionManager.getEntries();
+    const mappings = entries.flatMap(entry => {
+      if (entry.type !== "message") return [];
+      const messageId = messageStream.messageIdFor(entry.message);
+      return messageId === undefined ? [] : [{ messageId, entryId: entry.id }];
+    });
+    sessionSource.transaction(() => {
+      sessionSource?.reconcile(sessionEntriesFromEntries(entries), leaf, mappings);
+      lastNativeLeaf = leaf;
+      if (ctx.isIdle() && sessionSource) {
+        // Native idle is reached after persistence. It also repairs a locally missed message_end;
+        // only history owns eligible messages then, including custom-message entries.
+        sessionSource.replaceLive({ complete: true, turn: null, messages: [], tools: [] });
+        sessionSource.setAvailability(true, true);
+      }
+    });
+  };
+  const publishSessionEvent = (event: RuntimeEvent, ctx = currentContext): void => {
+    if (!sessionSource || !ctx) return;
+    sessionSource.transaction(() => {
+      sessionSource?.observe(event);
+      reconcileSource(ctx, event.type === "message.started" || event.type === "message.finished" || event.type === "turn.finished" || event.type === "tool.finished");
+    });
+  };
   let connectionState: RelayRuntimeConnectionState = "closed";
   let runtimeActivity: RuntimeActivity = "idle";
   let liveTurnTimer: ReturnType<typeof setInterval> | undefined;
@@ -168,6 +201,12 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     const timer = setInterval(() => {
       const status = statusToReconcile(runtimeActivity, currentContext?.isIdle() ?? true);
       if (status !== undefined) bridge?.setStatus(status);
+      if (currentContext && sessionSource) {
+        sessionSource.transaction(() => {
+          reconcileSource(currentContext!, true);
+          if (currentContext!.isIdle()) sessionSource?.setAvailability(true, true);
+        });
+      }
     }, RUNTIME_STATUS_RECONCILE_MS);
     timer.unref?.();
     statusReconcileTimer = timer;
@@ -186,6 +225,8 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     slashCommandAdapter?.close({ cancelPending });
     stopLiveTurn();
     bridge = undefined;
+    sessionSource = undefined;
+    lastNativeLeaf = undefined;
     slashCommandAdapter = undefined;
     broker = undefined;
     turnTiming.reset();
@@ -239,6 +280,15 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     // is replaced by /reload, while the old command may still log completion.
     const sessionLog = createPiExtensionRuntimeDiagnostic(ctx.cwd);
     messageStream = new PiMessageStream();
+    const source = new RecoverableSessionSource(ctx.sessionManager.getSessionId(), patch => {
+      if (activeSessionToken === sessionToken) bridge?.publish(patch);
+    });
+    sessionSource = source;
+    source.transaction(() => {
+      reconcileSource(ctx);
+      // Reloading into a running turn cannot reconstruct its prefix through ExtensionContext.
+      source.setAvailability(true, ctx.isIdle());
+    });
     // 队列接管：忙时的插入消息不交给 Pi 的 deliverAs 队列（它不提供消费回执，
     // Host 只能靠文本匹配猜），由扩展持有、messageId 全程钉在元素上，
     // agent_settled 时亲手出队投递——delivered 是确定性事件。
@@ -292,13 +342,17 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
           ...runtimeContextSnapshot(ctx),
         };
       },
-      syncSession: (request) => sessionGraphFromEntries(
-        ctx.sessionManager.getEntries(),
-        ctx.sessionManager.getSessionId(),
-        ctx.sessionManager.getLeafId(),
-        request,
-        turnTimingStore?.list(),
-      ),
+      syncSession: (request) => {
+        if (activeSessionToken !== sessionToken) throw new Error("session_replaced");
+        source.transaction(() => {
+          reconcileSource(ctx, true);
+          if (ctx.isIdle()) source.setAvailability(true, true);
+        });
+        return sessionGraphFromEntries(
+          ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId(), ctx.sessionManager.getLeafId(),
+          request, turnTimingStore?.list(), source.snapshot(),
+        );
+      },
       sessionCatalog: async () => sessionCatalogFromInfos(await SessionManager.listAll()),
       // 有效忙 = Pi 在跑 || 扩展队列还有压着的消息。否则队列里还有 followUp 时，
       // 手机再来一条无 delivery 的消息会走空闲路径插队，顺序就乱了。
@@ -399,14 +453,16 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   });
 
   // Desktop tree navigation also changes the phone's active path and selected position.
-  pi.on("session_tree", async () => {
+  pi.on("session_tree", async (_event, ctx) => {
+    reconcileSource(ctx, true);
     bridge?.refreshMetadata();
     await bridge?.refreshCapabilities();
   });
 
   // Compaction rewrites the active branch, so the context percentage and tree are stale
   // until the next turn. Refresh them as soon as Pi reports the outcome.
-  pi.on("session_compact", async () => {
+  pi.on("session_compact", async (_event, ctx) => {
+    reconcileSource(ctx, true);
     bridge?.refreshMetadata();
     publishRuntimeStatus(currentContext?.isIdle() === false ? "running" : "idle");
     await bridge?.refreshCapabilities();
@@ -441,6 +497,11 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     // Pi's turn_end is the authoritative completion event. Clear the local
     // correlation state here as a fallback for aborted turns with no end event.
     turnTiming.reset();
+    sessionSource?.transaction(() => {
+      reconcileSource(ctx);
+      sessionSource?.replaceLive({ ...sessionSource.snapshot().live, complete: true, turn: null });
+      sessionSource?.setAvailability(true, true);
+    });
     publishRuntimeStatus("idle");
     // Pi 彻底空闲（没有重试/压缩/排队续跑会再发生）→ 亲手投递队列里压着的消息。
     // 与 codex 的 turn/completed → #drainQueue 边界同构。
@@ -451,7 +512,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   pi.on("turn_start", async (event, ctx) => {
     const started = turnTiming.start(event.turnIndex, event.timestamp);
     startLiveTurn(ctx, started.startedAt);
-    bridge?.publish(started);
+    publishSessionEvent(started, ctx);
   });
 
   pi.on("turn_end", async (event, ctx) => {
@@ -479,9 +540,10 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
         ...(finished.turnIndex === undefined ? {} : { turnIndex: finished.turnIndex }),
         ...(persistedTimingMessageId === undefined ? {} : { messageId: persistedTimingMessageId }),
       }).catch(() => {});
-      bridge?.publish(finished);
+      publishSessionEvent(finished, ctx);
     }
     // Turn completion persists the latest branch entries and can move the leaf.
+    reconcileSource(ctx);
     bridge?.refreshMetadata();
   });
 
@@ -489,16 +551,21 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     const entry = [...ctx.sessionManager.getBranch()].reverse().find((candidate) =>
       candidate.type === "message" && candidate.message === event.message
     );
-    bridge?.publish(messageStream.started(event.message, entry?.id));
+    publishSessionEvent(messageStream.started(event.message, entry?.id), ctx);
   });
 
   pi.on("message_update", async (event) => {
     const update = messageStream.updated(event.assistantMessageEvent, event.message);
-    if (update) bridge?.publish(update);
+    if (!update) return;
+    sessionSource?.transaction(() => {
+      // Full native partial message includes accumulated thinking and parsed tool arguments.
+      // It is independent from which deltas made it across the transport.
+      sessionSource?.upsertMessage({ message: messageToRemote(update.messageId, event.message), finished: false, contentComplete: true });
+    });
   });
 
-  pi.on("message_end", async (event) => {
-    bridge?.publish(messageStream.finished(event.message));
+  pi.on("message_end", async (event, ctx) => {
+    publishSessionEvent(messageStream.finished(event.message), ctx);
   });
 
   pi.on("model_select", async () => {
@@ -511,32 +578,32 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     await bridge?.refreshCapabilities();
   });
 
-  pi.on("tool_execution_start", async (event) => {
-    bridge?.publish({
+  pi.on("tool_execution_start", async (event, ctx) => {
+    publishSessionEvent({
       type: "tool.started",
       toolCallId: event.toolCallId,
       toolName: event.toolName,
       arguments: event.args,
-    });
+    }, ctx);
   });
 
-  pi.on("tool_execution_update", async (event) => {
-    bridge?.publish({
+  pi.on("tool_execution_update", async (event, ctx) => {
+    publishSessionEvent({
       type: "tool.updated",
       toolCallId: event.toolCallId,
       toolName: event.toolName,
       partialResult: event.partialResult,
-    });
+    }, ctx);
   });
 
-  pi.on("tool_execution_end", async (event) => {
-    bridge?.publish({
+  pi.on("tool_execution_end", async (event, ctx) => {
+    publishSessionEvent({
       type: "tool.finished",
       toolCallId: event.toolCallId,
       toolName: event.toolName,
       result: event.result,
       isError: event.isError,
-    });
+    }, ctx);
   });
 
   pi.on("ui_prompt_start", async (event) => {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  NotificationSource,
   type InteractionResponse,
   type RuntimeCommand,
   type RuntimeCapabilities,
@@ -141,6 +142,9 @@ type UserMessageCommandRecord = {
  * The bridge never starts a process and never interprets session tree semantics.
  */
 export class RuntimeBridge {
+  #notifications!: NotificationSource;
+  #capabilitiesGeneration = 0;
+  #catalogGeneration = 0;
   readonly #runtime: RuntimePort;
   readonly #transport: RuntimeBridgeTransport;
   readonly #interactions: RuntimeInteractionPort | undefined;
@@ -169,6 +173,8 @@ export class RuntimeBridge {
     if (this.#started) return;
     this.#started = true;
     const metadata = this.#runtime.metadata();
+    this.#notifications = new NotificationSource(randomUUID(), metadata.sessionId ?? metadata.runtimeId,
+      event => this.#transport.publish(event));
     this.#diagnostic?.("bridge.starting", {
       runtimeId: metadata.runtimeId,
       sessionId: metadata.sessionId,
@@ -177,6 +183,8 @@ export class RuntimeBridge {
       connected: () => {
         if (!this.#started) return;
         this.#transportReady = true;
+        this.#notifications.resolve("pi.transport");
+        this.#notifications.announce();
         this.#diagnostic?.("bridge.transport.connected", { runtimeId: metadata.runtimeId });
         this.#publishCompletedSlashCommands();
         this.#publishQueuedMessages();
@@ -189,6 +197,8 @@ export class RuntimeBridge {
         this.#diagnostic?.("bridge.transport.disconnected", { runtimeId: metadata.runtimeId });
       },
       resync: (reason) => {
+        this.#notifications.announce();
+        this.refreshMetadata();
         this.#diagnostic?.("bridge.transport.resync", { runtimeId: metadata.runtimeId, reason });
         this.#publishQueuedMessages();
         void this.#publishCapabilities();
@@ -206,7 +216,8 @@ export class RuntimeBridge {
       },
       error: (message, recoverable) => {
         this.#diagnostic?.("bridge.transport.error", { message, recoverable });
-        this.publish({ type: "runtime.error", message, recoverable });
+        this.#notifications.upsert({ code: "pi.transport", occurrenceId: "transport", scope: {},
+          severity: recoverable ? "warning" : "error", lifecycle: "condition", message });
       },
     });
   }
@@ -252,10 +263,11 @@ export class RuntimeBridge {
   refreshMetadata(): void {
     try {
       this.publish({ type: "runtime.metadata", metadata: this.#runtime.metadata() });
+      this.#notifications.resolve("pi.metadata");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to refresh runtime metadata";
       this.#diagnostic?.("bridge.metadata.failed", { message });
-      this.publish({ type: "runtime.error", message, recoverable: true });
+      this.#notifications.upsert({ code: "pi.metadata", occurrenceId: "metadata", scope: {}, severity: "warning", lifecycle: "condition", message });
     }
   }
 
@@ -323,30 +335,34 @@ export class RuntimeBridge {
 
   async #publishCapabilities(): Promise<void> {
     if (!this.#runtime.capabilities) return;
+    const generation = ++this.#capabilitiesGeneration;
     try {
-      this.publish({ type: "runtime.capabilities", capabilities: await this.#runtime.capabilities() });
+      const capabilities = await this.#runtime.capabilities();
+      if (generation !== this.#capabilitiesGeneration || !this.#started) return;
+      this.publish({ type: "runtime.capabilities", capabilities });
+      this.#notifications.resolve("pi.capabilities");
     } catch (error) {
-      this.publish({
-        type: "runtime.error",
-        message: error instanceof Error ? error.message : "Unable to publish runtime capabilities",
-        recoverable: true,
-      });
+      if (generation !== this.#capabilitiesGeneration || !this.#started) return;
+      this.#notifications.upsert({ code: "pi.capabilities", occurrenceId: "capabilities", scope: {}, severity: "warning", lifecycle: "condition",
+        message: error instanceof Error ? error.message : "Unable to publish runtime capabilities" });
     }
   }
 
   async #publishSessionCatalog(): Promise<void> {
     if (!this.#runtime.sessionCatalog) return;
+    const generation = ++this.#catalogGeneration;
     try {
-      this.publish({ type: "session.catalog", sessions: await this.#runtime.sessionCatalog() });
+      const sessions = await this.#runtime.sessionCatalog();
+      if (generation !== this.#catalogGeneration || !this.#started) return;
+      this.publish({ type: "session.catalog", sessions });
+      this.#notifications.resolve("pi.catalog");
     } catch (error) {
       this.#diagnostic?.("bridge.session_catalog.failed", {
         message: error instanceof Error ? error.message : "session_catalog_failed",
       });
-      this.publish({
-        type: "runtime.error",
-        message: error instanceof Error ? error.message : "session_catalog_failed",
-        recoverable: true,
-      });
+      if (generation !== this.#catalogGeneration || !this.#started) return;
+      this.#notifications.upsert({ code: "pi.catalog", occurrenceId: "catalog", scope: {}, severity: "warning", lifecycle: "condition",
+        message: error instanceof Error ? error.message : "session_catalog_failed" });
     }
   }
 

@@ -1,0 +1,17 @@
+{
+  "relayUrl": "ws://127.0.0.1:8787",
+  "runtimeCredential": "load-runtime-secret",
+  "hostCount": 100,
+  "devicesPerHost": 5,
+  "messageRatePerDevice": 5,
+  "messageBytes": 2048,
+  "transferBytes": 104857600,
+  "transferRateBytesPerSecond": 5242880,
+  "activeTransfers": 20,
+  "slowDevices": 10,
+  "slowDeviceRateBytesPerSecond": 102400,
+  "rampUpSeconds": 300,
+  "durationSeconds": 1800,
+  "metricsIntervalSeconds": 1,
+  "scenario": "mixed"
+}

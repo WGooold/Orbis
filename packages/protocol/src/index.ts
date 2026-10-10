@@ -1,6 +1,9 @@
 import { z } from "zod";
+import { NotificationSourceEventSchema, NotificationSnapshotSchema } from "./notifications.js";
+export * from "./notifications.js";
+export { RecoverableSessionSource } from "./session-source.js";
 
-export const PROTOCOL_VERSION = 11 as const;
+export const PROTOCOL_VERSION = 12 as const;
 export const ARTIFACT_CHUNK_BYTES = 1024 * 1024;
 
 /**
@@ -725,6 +728,7 @@ export type RuntimeCommandStatus = z.infer<typeof RuntimeCommandStatusSchema>;
  */
 
 export const RuntimeEventSchema = z.discriminatedUnion("type", [
+  NotificationSourceEventSchema,
   z.strictObject({ type: z.literal("runtime.status"), status: RuntimeStatusSchema }),
   z.strictObject({ type: z.literal("runtime.metadata"), metadata: RuntimeMetadataSchema }),
   z.strictObject({ type: z.literal("runtime.capabilities"), capabilities: RuntimeCapabilitiesSchema }),
@@ -951,6 +955,8 @@ export type DeviceClientMessage = z.infer<typeof DeviceClientMessageSchema>;
  * 只剩 `device.authenticate` 与 v2 帧——命令只存在于 E2E 密文里（ADR-0008）。
  */
 export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("notification.sync"), protocolVersion: z.literal(PROTOCOL_VERSION), runtimeId: z.string().min(1).max(256) }),
+  z.strictObject({ type: z.literal("notification.dismiss"), protocolVersion: z.literal(PROTOCOL_VERSION), hostEpoch: z.string().min(1).max(256), runtimeId: z.string().min(1).max(256), notificationId: z.string().min(1).max(256) }),
   z.strictObject({
     type: z.literal("device.version.report"),
     protocolVersion: z.literal(PROTOCOL_VERSION),
@@ -1052,10 +1058,12 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
 export type DeviceE2ePayload = z.infer<typeof DeviceE2ePayloadSchema>;
 
 export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
+  NotificationSnapshotSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({
     type: z.literal("device.ready"),
     protocolVersion: z.literal(PROTOCOL_VERSION),
     deviceId: z.string(),
+    notificationEpoch: z.string().min(1).max(256).nullable(),
     runtimes: z.array(RuntimeMetadataSchema),
     /**
      * 这台电脑支持的 agent 种类（spec §8.4）。

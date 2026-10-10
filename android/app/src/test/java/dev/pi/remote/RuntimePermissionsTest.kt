@@ -4,6 +4,28 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RuntimePermissionsTest {
+    @Test fun `interaction submission failure stays with its request without a duplicate modal`() {
+        val request = PendingInteraction("q", "pi", "confirm", "Question", null, emptyList(), null,
+            responseCommandId = "answer")
+        val state = initial.copy(conversations = mapOf("codex:a" to RuntimeConversation(interactions = mapOf("q" to request))))
+        val failed = reducer.reduce(state, event(1, """{"type":"command.result","commandId":"answer","ok":false,
+            "status":"failure","error":"interaction_not_pending"}"""))
+        assertNull(failed.error)
+        assertNotNull(failed.conversations.getValue("codex:a").interactions.getValue("q").responseError)
+        val ordinaryFailure = reducer.reduce(failed, event(2, """{"type":"command.result","commandId":"other","ok":false,
+            "status":"failure","error":"failed"}"""))
+        assertNotNull(ordinaryFailure.error)
+    }
+    @Test fun `unrelated interactions cannot clear local request rendering failures`() {
+        val state = initial.copy(conversations = mapOf("codex:a" to RuntimeConversation(
+            interactionNotices = mapOf("broken" to "Cannot render"))))
+        val updated = reducer.reduce(state, event(1, """{"type":"interaction.requested","request":{
+            "runtimeId":"codex:a","requestId":"other","extensionId":"pi","kind":"confirm","title":"Question","expiresAt":9000}}"""))
+        assertEquals("Cannot render", updated.conversations.getValue("codex:a").interactionNotice)
+        val recovered = reducer.reduce(updated, event(2, """{"type":"interaction.requested","request":{
+            "runtimeId":"codex:a","requestId":"broken","extensionId":"pi","kind":"confirm","title":"Question","expiresAt":9000}}"""))
+        assertNull(recovered.conversations.getValue("codex:a").interactionNotice)
+    }
     @Test fun `draft persistence removes secret answers but preserves ordinary fields`() {
         val request = PendingInteraction("q", "pi", "questionnaire", "问题", null, emptyList(), null,
             questions = listOf(QuestionnaireQuestion("secret", "Token", emptyList(), secret = true)))
@@ -51,7 +73,7 @@ class RuntimePermissionsTest {
         val resolved = reducer.reduce(submitting, event(2, """{"type":"interaction.resolved","requestId":"approval","source":"local"}"""))
         assertTrue(resolved.conversations.getValue("codex:a").interactions.isEmpty())
         assertTrue(resolved.pendingCommands.isEmpty())
-        assertEquals("交互已在电脑端完成", resolved.conversations.getValue("codex:a").interactionNotice)
+        assertNull(resolved.conversations.getValue("codex:a").interactionNotice)
         val snapshot = reducer.reduce(submitting, event(3, """{"type":"interaction.snapshot","requests":[]}"""))
         assertTrue(snapshot.pendingCommands.isEmpty())
     }
@@ -65,7 +87,7 @@ class RuntimePermissionsTest {
         assertEquals(QuestionnaireAnswer("secret", emptyList(), "value"),
             QuestionnaireDraft(otherSelected = true, other = "value").answer(question))
         val failed = reducer.reduce(state, event(2, """{"type":"runtime.error","message":"Windows 沙箱初始化失败，请在电脑端修复后重试","recoverable":true}"""))
-        assertTrue(failed.conversations.getValue("codex:a").runtimeError!!.contains("电脑端修复"))
+        assertTrue(failed.notificationProjections.isEmpty()) // Only Host snapshots own remote banners.
         assertNull(failed.error)
     }
 }

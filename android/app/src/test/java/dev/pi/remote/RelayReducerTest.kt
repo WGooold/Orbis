@@ -3197,29 +3197,15 @@ class RelayReducerTest {
     }
 
     @Test
-    fun `runtime errors stay in their own runtime conversation`() {
-        val initial = RemoteState(
-            conversations = mapOf("runtime-b" to RuntimeConversation(runtimeError = "other window")),
-        )
-        val state = reducer.reduce(initial, """
+    fun `uncorrelated runtime errors cannot create legacy banners`() {
+        val state = reducer.reduce(RemoteState(), """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"runtime.error","message":"Relay returned an invalid protocol message","recoverable":true
+            "type":"runtime.error","message":"Reconnecting...","recoverable":true
           }}
         """.trimIndent())
-
-        assertEquals("Relay returned an invalid protocol message", state.conversations["runtime-a"]?.runtimeError)
-        assertEquals("other window", state.conversations["runtime-b"]?.runtimeError)
         assertEquals(null, state.error)
-
-        val nextTurn = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"turn.started","turnId":"turn-2","startedAt":123
-          }}
-        """.trimIndent())
-        assertEquals(null, nextTurn.conversations["runtime-a"]?.runtimeError)
-        assertEquals("other window", nextTurn.conversations["runtime-b"]?.runtimeError)
+        assertEquals(emptyMap<String, NoticeProjection>(), state.notificationProjections)
     }
-
 
     @Test
     fun `portable interactions keep every rendering validation and selection field`() {
@@ -3251,7 +3237,7 @@ class RelayReducerTest {
           }
         }""".trimIndent())
         assertFalse(state.conversations["runtime-a"]?.interactions?.containsKey("request-1") == true)
-        assertEquals("交互请求已超时", state.conversations["runtime-a"]?.interactionNotice)
+        assertEquals(null, state.conversations["runtime-a"]?.interactionNotice)
 
         state = reducer.reduce(state, """{
           "type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{

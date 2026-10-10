@@ -6,13 +6,13 @@ import { object } from "./codex-interactions.js";
 const OPEN = "<send_user_message_question_reply>";
 const CLOSE = "</send_user_message_question_reply>";
 type Reply = { questionItemId: string; question: string; answer: string };
-type Question = { request: Extract<InteractionRequest, { kind: "questionnaire" }>; questionItemId: string };
+type Question = { request: Extract<InteractionRequest, { kind: "questionnaire" }>; questionItemId: string; turnId: string };
 type Submission = { text: string; commandIds: Set<string>; accepted: boolean };
 
 /** Native desktop async questions are agentMessage items, not server requests.
  * These IDs and the reply envelope match the desktop client's question projection.
  */
-function questions(item: Record<string, unknown>, runtimeId: string): Question[] {
+function questions(item: Record<string, unknown>, runtimeId: string, turnId: string): Question[] {
   if (item.type !== "agentMessage" || typeof item.id !== "string" || !Array.isArray(item.questions)) return [];
   return item.questions.flatMap((raw, index) => {
     const q = object(raw);
@@ -25,7 +25,7 @@ function questions(item: Record<string, unknown>, runtimeId: string): Question[]
         options: Array.isArray(q.options) ? q.options.map((label, i) => ({ value: String(i), label })) : [],
       }],
     });
-    return parsed.success && parsed.data.kind === "questionnaire" ? [{ request: parsed.data, questionItemId }] : [];
+    return parsed.success && parsed.data.kind === "questionnaire" ? [{ request: parsed.data, questionItemId, turnId }] : [];
   });
 }
 
@@ -66,11 +66,13 @@ export function codexQuestionReplyText(text: string): string {
   return replies.length ? replies.map(r => `${r.question}\n${r.answer}`).join("\n\n") : text;
 }
 
-/** Keeps pending questions recoverable from native history, including desktop answers
- * and revert. An async question survives turn completion and has no approval timeout.
+/** Mirrors desktop answerability: an unanswered question is actionable only while
+ * its own turn is inProgress. The desktop's 30-second panel timer merely minimizes
+ * the composer; it does not expire the question or belong in the shared state.
  */
 export class CodexAsyncInputs {
-  readonly #items = new Map<string, Record<string, unknown>>();
+  readonly #items = new Map<string, { item: Record<string, unknown>; turnId: string }>();
+  readonly #turns = new Map<string, unknown>();
   readonly #pending = new Map<string, Question>();
   readonly #submissions = new Map<string, Submission>();
   readonly #dismissed = new Set<string>();
@@ -80,35 +82,47 @@ export class CodexAsyncInputs {
   constructor(readonly runtimeId: string, readonly emit: (event: RuntimeEvent) => void) {}
 
   has(requestId: string): boolean { return this.#pending.has(requestId); }
+  turnId(requestId: string): string | undefined { return this.#pending.get(requestId)?.turnId; }
   snapshot(): InteractionRequest[] {
     return [...this.#pending.values()].filter(q => !this.#submissions.get(q.request.requestId)?.accepted)
       .map(q => ({ ...q.request, submitted: this.#submissions.has(q.request.requestId) }));
   }
 
-  replace(items: unknown[]): void {
+  replace(turns: unknown[]): void {
     this.#items.clear();
-    for (const item of items) this.#store(object(item));
+    this.#turns.clear();
+    for (const value of turns) {
+      const turn = object(value);
+      if (typeof turn.id !== "string") continue;
+      this.#turns.set(turn.id, turn.status);
+      for (const item of Array.isArray(turn.items) ? turn.items : []) this.#store(object(item), turn.id);
+    }
     this.#reconcile(true);
   }
 
-  upsert(item: Record<string, unknown>): void {
-    if (!this.#store(item)) return;
+  updateTurn(turnId: string, status: unknown): void {
+    this.#turns.set(turnId, status);
     this.#reconcile(false);
   }
 
-  #store(item: Record<string, unknown>): boolean {
+  upsert(item: Record<string, unknown>, turnId: string): void {
+    if (!this.#store(item, turnId)) return;
+    this.#reconcile(false);
+  }
+
+  #store(item: Record<string, unknown>, turnId: string): boolean {
     if (typeof item.id !== "string" || !["agentMessage", "userMessage", "steeringUserMessage"].includes(String(item.type))) return false;
     // Ordinary conversation items need no second history copy.
     if (!Array.isArray(item.questions) && itemReplies(item).length === 0 && !this.#items.has(item.id)) return false;
-    this.#items.set(item.id, item);
+    this.#items.set(item.id, { item, turnId });
     return true;
   }
 
   #reconcile(replaced: boolean): void {
     const native = new Map<string, Question>();
     const answered = new Set<string>();
-    for (const item of this.#items.values()) {
-      for (const q of questions(item, this.runtimeId)) native.set(q.questionItemId, q);
+    for (const { item, turnId } of this.#items.values()) {
+      for (const q of questions(item, this.runtimeId, turnId)) native.set(q.questionItemId, q);
       for (const reply of itemReplies(item)) if (native.has(reply.questionItemId)) answered.add(reply.questionItemId);
     }
     if (replaced) {
@@ -116,7 +130,8 @@ export class CodexAsyncInputs {
       for (const id of this.#answered) if (!answered.has(id)) this.#dismissed.delete(id);
     }
     const available = new Map([...native.values()]
-      .filter(q => !answered.has(q.questionItemId) && !this.#dismissed.has(q.questionItemId))
+      .filter(q => this.#turns.get(q.turnId) === "inProgress"
+        && !answered.has(q.questionItemId) && !this.#dismissed.has(q.questionItemId))
       .slice(-64).map(q => [q.request.requestId, q]));
     for (const [id, q] of this.#pending) {
       if (available.has(id)) continue;
@@ -197,5 +212,6 @@ export class CodexAsyncInputs {
     this.#pending.clear();
     this.#submissions.clear();
     this.#items.clear();
+    this.#turns.clear();
   }
 }

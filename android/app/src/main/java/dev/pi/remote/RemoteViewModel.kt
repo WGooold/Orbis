@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -131,6 +132,36 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     private var sessionLoadWorker: Job? = null
     private val historyPageSize = 30
     private val previewPageSize = 30
+    private val notificationSyncJobs = mutableMapOf<String, Job>()
+
+    fun syncNotifications(runtimeId: String) {
+        notificationSyncJobs.remove(runtimeId)?.cancel()
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            val receipt = mutableState.value.notificationReceipts[runtimeId] ?: 0
+            val epoch = mutableState.value.notificationEpoch
+            for (pause in listOf(0L, 1_000L, 3_000L)) {
+                if (pause > 0) delay(pause)
+                val current = mutableState.value
+                if (!current.e2eReady || current.notificationEpoch != epoch ||
+                    (current.notificationReceipts[runtimeId] ?: 0) != receipt) break
+                relay.sendDeviceMessage(buildJsonObject {
+                    put("type", "notification.sync"); put("protocolVersion", PROTOCOL_VERSION); put("runtimeId", runtimeId)
+                })
+            }
+        }
+        notificationSyncJobs[runtimeId] = job
+        job.invokeOnCompletion { if (notificationSyncJobs[runtimeId] === job) notificationSyncJobs.remove(runtimeId) }
+        job.start()
+    }
+
+    fun dismissNotification(runtimeId: String, notificationId: String) {
+        val epoch = mutableState.value.notificationEpoch ?: return
+        relay.sendDeviceMessage(buildJsonObject {
+            put("type", "notification.dismiss"); put("protocolVersion", PROTOCOL_VERSION)
+            put("runtimeId", runtimeId); put("hostEpoch", epoch); put("notificationId", notificationId)
+        })
+        syncNotifications(runtimeId)
+    }
 
     /** 握手看门狗超时：连上中继后多久还没等到加密通道就认定「电脑没在听」（spec §5）。 */
     private val e2eHandshakeTimeoutMs = 8_000L
@@ -772,10 +803,18 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         }
         val requestGeneration = generation
         val branchGeneration = current.sessionBranchGenerations[id] ?: 0
+        val probe = HistoryLoadProbe.start(runtime?.agentKind ?: "offline", sessionId, beforeEntryId, "history")
         val job = viewModelScope.launch(Dispatchers.IO) {
+            probe?.mark("worker_started")
             relayStateLock.withLock {
+                probe?.mark("lock_acquired")
                 if (requestGeneration != generation || branchGeneration != (mutableState.value.sessionBranchGenerations[id] ?: 0)) return@launch
-                if (prepareSessionCache(pairedDevice, sessionId, runtime?.agentKind ?: mutableState.value.sessions[sessionId]?.agentKind)) return@launch
+                probe?.mark("prepare_begin")
+                if (prepareSessionCache(pairedDevice, sessionId, runtime?.agentKind ?: mutableState.value.sessions[sessionId]?.agentKind)) {
+                    probe?.mark("cache_rebuilt")
+                    return@launch
+                }
+                probe?.mark("cache_read_begin")
                 val local = runCatching {
                     sessionGraphStore.readBranch(
                         device = pairedDevice,
@@ -784,7 +823,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                         beforeEntryId = beforeEntryId,
                         maxEntries = historyPageSize,
                     )
-                }.getOrNull()
+                }.onFailure { probe?.mark("cache_read_error", "type=${it::class.simpleName}") }.getOrNull()
+                probe?.mark("cache_read_end", "entries=${local?.entries?.size ?: 0} status=${local?.status}")
                 if (device != pairedDevice || !shouldConnect ||
                     !isHistoryRequestCurrent(id, sessionId, view.leafId, beforeEntryId)
                 ) return@launch
@@ -841,6 +881,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                         ),
                     )
                     mutableState.value = next
+                    probe?.mark("local_completed", "entries=${local.entries.size}")
                     return@launch
                 }
                 if (local?.status == SessionGraphRangeStatus.COMPLETE) {
@@ -849,9 +890,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                             id to history.copy(hasOlder = false, loading = false)
                         ),
                     )
+                    probe?.mark("local_exhausted")
                     return@launch
                 }
                 if (runtime != null && isHistoryRequestCurrent(id, sessionId, view.leafId, beforeEntryId)) {
+                    probe?.mark("remote_requested")
                     requestHistoryRange(pairedDevice, runtime, sessionId, view.leafId, beforeEntryId, id)
                 } else if (device == pairedDevice && shouldConnect) {
                     mutableState.value = mutableState.value.copy(
@@ -863,7 +906,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 }
         }
         historyJobs[id] = job
-        job.invokeOnCompletion {
+        job.invokeOnCompletion { cause ->
+            probe?.mark("worker_finished", "result=${if (cause == null) "returned" else if (cause is CancellationException) "cancelled" else "failed"}")
             if (historyJobs[id] === job) historyJobs.remove(id)
             val latest = mutableState.value
             val latestHistory = latest.sessionHistory[id]
@@ -1780,7 +1824,12 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 "sourceSeq=${snapshot.source?.seq} sourceReady=${snapshot.source?.ready} " +
                 "inventoryComplete=${snapshot.checkpoint?.inventoryComplete}",
         )
+        val probe = HistoryLoadProbe.start(
+            initial.runtimes[runtimeId]?.agentKind ?: "unknown", snapshot.sessionId, snapshot.beforeEntryId, pending.range,
+        )
+        probe?.mark("snapshot_received", "entries=${snapshot.entries.size}")
         relayStateLock.withLock {
+            probe?.mark("snapshot_lock_acquired")
             if (connectionGeneration != generation || device != pairedDevice || !shouldConnect) {
                 return@withLock
             }
@@ -1791,6 +1840,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             // Keep the ownership check and the SQLite transaction in the same critical
             // section as reducer state publication. Runtime metadata handlers use this lock,
             // so a branch/session change cannot happen between validation and persistence.
+            probe?.mark("persist_begin")
             val persisted = runCatching {
                 persistSessionSnapshot(
                     pairedDevice = pairedDevice,
@@ -1800,6 +1850,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     snapshot = snapshot,
                 )
             }
+            probe?.mark("persist_end", "result=${if (persisted.isSuccess) "ok" else "failed"}")
             val persistence = persisted.getOrNull()
             val persistedEntries = persistence?.entries
             val persistenceError = persisted.exceptionOrNull()
@@ -1849,6 +1900,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 current.copy(error = "收到无效的 Session 历史快照")
             }
             mutableState.value = next
+            probe?.mark("snapshot_applied", "accepted=${pendingCommandId !in next.sessionSyncCommands} loading=${next.sessionHistory[runtimeId]?.loading} error=${next.conversations[runtimeId]?.chatSyncError != null}")
             val runtime = next.runtimes[runtimeId]
             if (runtime != null && runtime.sessionId == pending.sessionId &&
                 pending.branchGeneration == (next.sessionBranchGenerations[runtimeId] ?: 0) &&
@@ -2120,7 +2172,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     private suspend fun loadSessionGraphsFor(pairedDevice: DeviceCredential, runtimes: List<RuntimeSummary>) {
         val connectionGeneration = generation
         for (requested in runtimes.sortedBy { it.runtimeId != mutableState.value.selectedRuntimeId }) {
+            val probe = HistoryLoadProbe.start(requested.agentKind, requested.sessionId.orEmpty(), null, "loader")
             relayStateLock.withLock {
+                probe?.mark("loader_lock_acquired")
                 if (device != pairedDevice || !shouldConnect || generation != connectionGeneration ||
                     mutableState.value.connection != RelayConnection.ONLINE) return
                 val runtime = mutableState.value.runtimes[requested.runtimeId]?.takeIf { it.sessionId == requested.sessionId }
@@ -2139,8 +2193,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                         sendSessionSync(pairedDevice, newSessionSyncCommandId(), conditional)
                         return@withLock
                     }
+                    probe?.mark("local_load_begin")
                     val loaded = if (runtime.sessionLeafId == null) SessionGraph(sessionId)
                         else loadLocalGraphForRuntime(pairedDevice, runtime, initial)
+                    probe?.mark("local_load_end", "entries=${loaded?.entries?.size ?: 0}")
                     if (loaded != null) updateState { current ->
                         if (device != pairedDevice || generation != connectionGeneration ||
                             current.runtimes[runtime.runtimeId]?.sessionId != sessionId ||
@@ -2180,7 +2236,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                         sendSessionSync(pairedDevice, newSessionSyncCommandId(), pending)
                     }
                 } catch (error: Throwable) {
+                    probe?.mark("loader_failed", "type=${error::class.simpleName}")
                     reportSessionLoadFailure(runtime.runtimeId, error)
+                } finally {
+                    probe?.mark("loader_finished")
                 }
             }
         }

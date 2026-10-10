@@ -160,6 +160,45 @@ describe("Codex recoverable source checkpoints", () => {
   };
   const nativeReads = (h: ReturnType<typeof makeHarness>) => h.historyReads.mock.calls;
 
+  const notices = (h: ReturnType<typeof makeHarness>) => h.events.filter(e => e.type === "notification.source").at(-1)?.notifications ?? [];
+  it("keeps independent retry and sandbox conditions and resolves only their owners", async () => {
+    const h = makeHarness(); await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1 } });
+    h.notify("error", { threadId: "th-1", turnId: "t", willRetry: true, error: { message: "Reconnecting... 1/5" } });
+    h.notify("windowsSandbox/setupCompleted", { success: false, error: "sandbox unavailable" });
+    expect(notices(h).map(n => n.code)).toEqual(["codex.turn.retry", "codex.sandbox"]);
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "old", itemId: "old", delta: "late" });
+    expect(notices(h)).toHaveLength(2);
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "answer", delta: "recovered" });
+    expect(notices(h).map(n => n.code)).toEqual(["codex.sandbox"]);
+    h.notify("windowsSandbox/setupCompleted", { success: true });
+    expect(notices(h)).toEqual([]);
+  });
+  it("atomically replaces retry with terminal failure even when the text is identical", async () => {
+    const h = makeHarness(); await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1 } });
+    for (const willRetry of [true, false]) {
+      h.notify("error", { threadId: "th-1", turnId: "t", willRetry, error: { message: "network error" } });
+      expect(notices(h)).toMatchObject([{ code: willRetry ? "codex.turn.retry" : "codex.turn.failed", scope: { turnId: "t" }, lifecycle: willRetry ? "condition" : "outcome" }]);
+      expect(notices(h)).toHaveLength(1);
+    }
+    h.notify("item/reasoning/summaryTextDelta", { threadId: "th-1", turnId: "t", itemId: "r", delta: "thinking" });
+    expect(notices(h)[0]?.code).toBe("codex.turn.failed");
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "next", startedAt: 2 } });
+    expect(notices(h)).toEqual([]);
+  });
+  it("recovers a missed turn settlement through native reconciliation", async () => {
+    for (const status of ["completed", "failed"]) {
+      const h = makeHarness(); await activate(h);
+      h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1 } });
+      h.notify("error", { threadId: "th-1", turnId: "t", willRetry: true, error: { message: "Reconnecting..." } });
+      h.runtime.announce("th-1");
+      await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+      h.resolveNext({ data: [{ id: "t", status, error: status === "failed" ? { message: "provider unavailable" } : null, items: [] }] });
+      await vi.waitFor(() => expect(notices(h).map(n => n.code)).toEqual(status === "failed" ? ["codex.turn.failed"] : []));
+    }
+  });
+
   it("publishes tool commit and removal from live as one source version", async () => {
     const h = makeHarness();
     await activate(h);

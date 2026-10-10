@@ -51,6 +51,34 @@ afterEach(async () => {
 });
 
 describe("DeepSeek Web runtime adapter", () => {
+  it("keeps recovery active until a valid current follow snapshot and isolates catalog recovery", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]);
+    const base = f.request.getMockImplementation()!; let badSkills = true; let badModels = true;
+    f.request.mockImplementation(async (method, args) => {
+      if (method === "skills/list" && badSkills) throw new Error("skills unavailable");
+      if (method === "session/modelCatalog" && badModels) throw new Error("models unavailable");
+      return base(method, args);
+    });
+    await f.runtime.start();
+    const codes = () => f.events.filter(({event}) => event.type === "notification.source").at(-1)!.event;
+    await vi.waitFor(() => expect(codes()).toMatchObject({ notifications: expect.arrayContaining([
+      expect.objectContaining({code: "dsh.skills"}), expect.objectContaining({code: "dsh.models"}),
+    ]) }));
+    const old = f.follows()[0]!; f.client.onReconnect?.();
+    expect(codes()).toMatchObject({ notifications: expect.arrayContaining([expect.objectContaining({code: "dsh.recovery"})]) });
+    const snapshot = { type: "snapshot", header: {createdAt: 1000, cwd: "D:/work"}, cursor: -1, records: [] };
+    old.frame(snapshot);
+    f.subscriptions.find(item => item.method === "workspace/follow")!.frame({ type: "baseline", value: {archivedSessionIds: []} });
+    await vi.waitFor(() => expect(f.follows()).toHaveLength(1));
+    f.follows()[0]!.frame({ type: "snapshot" });
+    expect(codes()).toMatchObject({ notifications: expect.arrayContaining([expect.objectContaining({code: "dsh.recovery"})]) });
+    f.follows()[0]!.frame(snapshot);
+    expect(codes()).toMatchObject({ notifications: expect.not.arrayContaining([expect.objectContaining({code: "dsh.recovery"})]) });
+    badSkills = false; f.runtime.syncNotifications("dsh:browser");
+    await vi.waitFor(() => expect(codes()).toMatchObject({ notifications: [expect.objectContaining({code: "dsh.models"})] }));
+    badModels = false; f.runtime.syncNotifications("dsh:browser");
+    await vi.waitFor(() => expect(codes()).toMatchObject({ notifications: [] }));
+  });
   it("only follows Agents that are working at startup and keeps cold, idle, archived, and child sessions in the catalog", async () => {
     const f = discoveryFixture();
     f.list([f.live("busy", true), f.live("idle"), { ...f.live("cold"), agentAvailable: false }, f.live("archived"), { ...f.live("child"), origin: "subagent" }]);
@@ -75,7 +103,7 @@ describe("DeepSeek Web runtime adapter", () => {
     expect(f.runtime.directoryEntries()[0]?.status).toBe("running");
     const follow = f.follows()[0]!;
     follow.frame({ type: "event", event: { seq: 0, time: 1000, type: "user/message", data: { role: "user", source: { kind: "user", rpcId: "web-1" }, content: [{ type: "text", text: "from browser" }] } } });
-    expect(f.events).toContainEqual(expect.objectContaining({ runtimeId: "dsh:browser", event: expect.objectContaining({ type: "message.finished", message: expect.objectContaining({ content: [{ type: "text", text: "from browser" }] }) }) }));
+    expect(f.events).toContainEqual(expect.objectContaining({ runtimeId: "dsh:browser", event: expect.objectContaining({ type: "session.patch", entries: [expect.objectContaining({ data: { message: expect.objectContaining({ content: [{ type: "text", text: "from browser" }] }) } })], live: expect.objectContaining({ messages: [] }) }) }));
     expect(f.runtime.dispatchCommand("dsh:browser", "mobile-1", { type: "user_message", text: "from phone", messageId: "mobile-1" })).toBe("handled");
     await vi.waitFor(() => expect(f.request).toHaveBeenCalledWith("session/prompt", { request: expect.objectContaining({ sessionId: "browser", content: [{ type: "text", text: "from phone" }] }) }));
     f.emit("api-session/status", "browser", false);
@@ -208,11 +236,72 @@ describe("DeepSeek Web runtime adapter", () => {
     f.events.length = 0;
     f.runtime.dispatchCommand("dsh:browser", "sync", { type: "session.sync", sessionId: "dsh:browser", syncId: "sync", range: "preview" });
     await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot")).toBe(true));
-    const restored = f.events.find(({ event }) => event.type === "message.started")?.event;
-    expect(restored).toMatchObject({ type: "message.started", message: { messageId: "attempt-1", content: [{ type: "text", text: "already sent " }, { type: "text", text: "and still streaming" }] } });
+    const restored = f.events.find(({ event }) => event.type === "session.snapshot")?.event;
+    expect(restored).toMatchObject({ live: { messages: [expect.objectContaining({ message: expect.objectContaining({ messageId: "attempt-1", content: [{ type: "text", text: "already sent " }, { type: "text", text: "and still streaming" }] }) })] } });
     follow.frame({ type: "assistant-stream", frame: { type: "end", attemptId: "attempt-1", outcome: { kind: "committed", seq: 1 } } });
+    // An ended but uncommitted attempt stays recoverable until its canonical record arrives.
+    expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { messages: [expect.objectContaining({ finished: true })] } });
+    follow.frame({ type: "event", event: { seq: 1, time: 1090, type: "assistant/message", data: { message: { id: "native-1", content: [{ type: "text", text: "already sent and still streaming" }] } } } });
+    const commit = f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event;
+    expect(commit).toMatchObject({ entries: [expect.objectContaining({ entryId: "dsh:browser:web:1" })], live: { messages: [] } });
     follow.frame({ type: "event", event: { seq: 2, time: 1100, type: "turn/end", data: { turn: 1 } } });
-    expect(f.events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "turn.finished", persistedMessages: [{ messageId: "attempt-1", entryId: "dsh:browser:web:1" }] }) }));
+    expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { turn: null, messages: [] } });
+  });
+
+  it("repairs silently missed native completion on a periodic check and rejects the replaced follow's late frames", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const opening = f.follows()[0]!;
+    const record = (seq: number, type: string, data: unknown) => ({ event: { seq, time: 1000 + seq, type, data } });
+    opening.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: 0, records: [record(0, "turn/start", { turn: 1 })],
+      assistantStream: { activeAttempt: { attemptId: "attempt", stream: [{ time: 1001, chunk: { type: "text-delta", text: "partial" } }] } } });
+    const original = f.events.filter(({ event }) => event.type === "session.patch").at(-1)!.event;
+    if (original.type !== "session.patch") throw new Error("missing baseline");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16_000);
+    try {
+      f.runtime.dispatchCommand("dsh:browser", "check", { type: "session.sync", sessionId: "dsh:browser", syncId: "check", range: "preview",
+        knownState: { epoch: original.source.epoch, seq: original.seq, head: original.head } });
+      const fresh = f.follows()[0]!;
+      expect(fresh).not.toBe(opening);
+      // The native source contains completion, but its previous notifications never reached adapter.
+      fresh.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: 2, records: [record(0, "turn/start", { turn: 1 }),
+        record(1, "assistant/message", { message: { id: "native", content: [{ type: "text", text: "complete" }] } }),
+        record(2, "turn/end", { turn: 1 })], assistantStream: { revision: 3 } });
+      await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "check")).toBe(true));
+      const repaired = f.events.find(({ event }) => event.type === "session.snapshot" && event.syncId === "check")!.event;
+      expect(repaired).toMatchObject({ source: { ready: true }, live: { complete: true, turn: null, messages: [] } });
+      if (repaired.type !== "session.snapshot") throw new Error("missing repair");
+      expect(repaired.entries.some(entry => entry.entryId === "dsh:browser:web:1")).toBe(true);
+      const count = f.events.length;
+      opening.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId: "attempt", chunk: { type: "text-delta", text: "late" } } });
+      expect(f.events).toHaveLength(count);
+      clock.mockReturnValue(Date.now() + 16_000);
+      f.runtime.dispatchCommand("dsh:browser", "same", { type: "session.sync", sessionId: "dsh:browser", syncId: "same", range: "preview",
+        knownState: { epoch: repaired.source!.epoch, seq: repaired.source!.seq, head: repaired.checkpoint!.head } });
+      f.follows()[0]!.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: 2, records: [record(0, "turn/start", { turn: 1 }),
+        record(1, "assistant/message", { message: { id: "native", content: [{ type: "text", text: "complete" }] } }),
+        record(2, "turn/end", { turn: 1 })], assistantStream: { revision: 3 } });
+      await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "same" && event.selection === "unchanged")).toBe(true));
+    } finally { clock.mockRestore(); }
+  });
+
+  it("returns a verified bounded native tail without claiming its missing ancestors are cached", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const record = (seq: number, type = "custom") => ({ event: { seq, time: 1000 + seq, type, data: {} } });
+    f.follows()[0]!.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 12,
+      records: [record(10), record(11), record(12, "turn/end")], assistantStream: { revision: 0 } });
+    f.runtime.dispatchCommand("dsh:browser", "tail", { type: "session.sync", sessionId: "dsh:browser", syncId: "tail", range: "preview" });
+    await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "tail")).toBe(true));
+    const tail = f.events.find(({ event }) => event.type === "session.snapshot" && event.syncId === "tail")!.event;
+    expect(tail).toMatchObject({ entries: [expect.objectContaining({ entryId: "dsh:browser:web:10", parentId: "dsh:browser:web:9" }), expect.anything(), expect.anything()], hasOlder: true, complete: false, live: { complete: true } });
+    f.request.mockImplementation(async method => method === "session/page" ? { records: Array.from({ length: 10 }, (_, seq) => record(seq)) } : {});
+    f.runtime.dispatchCommand("dsh:browser", "history", { type: "session.sync", sessionId: "dsh:browser", syncId: "history", range: "history", beforeEntryId: "dsh:browser:web:10" });
+    await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "history")).toBe(true));
+    const history = f.events.find(({ event }) => event.type === "session.snapshot" && event.syncId === "history")!.event;
+    expect(history).toMatchObject({ complete: true, hasOlder: false });
+    if (history.type !== "session.snapshot") throw new Error("missing history");
+    expect(history.live).toBeUndefined();
+    expect(history.checkpoint).toBeUndefined();
+    expect(history.entries).toHaveLength(10);
   });
 
   it("reads the native archive set and blocks switching during browser-only work", async () => {
@@ -302,17 +391,14 @@ describe("DeepSeek Web runtime adapter", () => {
     event(3, "tool/result", { turn: 1, step: 1, message: { id: "tool-1", role: "tool", source: { kind: "tool", callId: "call-1" }, toolCallId: "call-1", content: [{ type: "text", text: "ok" }] } });
     event(4, "assistant/message", { turn: 1, step: 1, message: { id: "a1", role: "assistant", source: { kind: "model", provider: "p", model: "m" }, content: [{ type: "text", text: "done" }] }, stream: [] });
     event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }, 1200);
-    await vi.waitFor(() => expect(events.some(item => item.type === "turn.finished")).toBe(true));
+    const final = events.filter(item => item.type === "session.patch").at(-1);
+    expect(final).toMatchObject({ live: { turn: null, messages: [], tools: [] }, head: { leafId: "dsh:web-1:web:5" } });
     expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "tool.started", toolCallId: "call-1", toolName: "bash" }),
-      expect.objectContaining({ type: "tool.finished", toolCallId: "call-1", toolName: "bash", isError: false }),
+      expect.objectContaining({ type: "session.patch", live: expect.objectContaining({ tools: [expect.objectContaining({ toolCallId: "call-1", toolName: "bash", state: "started" })] }) }),
       expect.objectContaining({ type: "message.queued", queueId: "mobile-1", state: "delivered" }),
-      expect.objectContaining({
-        type: "turn.finished",
-        persistedMessages: expect.arrayContaining([{ messageId: "mobile-1", entryId: "dsh:web-1:web:1" }]),
-        durationMs: 100,
-      }),
     ]));
+    const committed = events.flatMap(item => item.type === "session.patch" ? item.entries ?? [] : []);
+    expect(committed.find(entry => entry.entryId === "dsh:web-1:web:3")?.data.message).toMatchObject({ toolCallId: "call-1", isError: false });
     expect(request).toHaveBeenCalledWith("session/prompt", expect.objectContaining({ request: expect.objectContaining({ requestId: "mobile-1", mode: "queue" }) }));
   });
 

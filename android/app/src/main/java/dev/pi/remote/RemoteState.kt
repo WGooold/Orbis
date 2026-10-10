@@ -321,8 +321,6 @@ data class RuntimeConversation(
     val forceSourceSnapshot: Boolean = false,
     val isChatSyncing: Boolean = false,
     val chatSyncError: String? = null,
-    /** Runtime-level diagnostics belong to this runtime, not to the app-wide error channel. */
-    val runtimeError: String? = null,
     val revision: Long = 0,
     val tools: Map<String, ToolActivity> = emptyMap(),
     val turnTimings: Map<String, TurnTiming> = emptyMap(),
@@ -331,9 +329,11 @@ data class RuntimeConversation(
     val deliveredQueueIds: Set<String> = emptySet(),
     val interactions: Map<String, PendingInteraction> = emptyMap(),
     val waitingLocalInteraction: Boolean = false,
-    val interactionNotice: String? = null,
+    val interactionNotices: Map<String, String> = emptyMap(),
     val systemNotice: String? = null,
-)
+) {
+    val interactionNotice: String? get() = interactionNotices.values.distinct().takeIf { it.isNotEmpty() }?.joinToString("\n")
+}
 
 enum class RelayConnection { OFFLINE, CONNECTING, ONLINE, RECONNECTING }
 
@@ -364,6 +364,9 @@ data class SessionActivationInfo(
 )
 
 data class RemoteState(
+    val notificationEpoch: String? = null,
+    val notificationProjections: Map<String, NoticeProjection> = emptyMap(),
+    val notificationReceipts: Map<String, Long> = emptyMap(),
     val connection: RelayConnection = RelayConnection.OFFLINE,
     val sessions: Map<String, SessionCatalogEntry> = emptyMap(),
     val deviceId: String? = null,
@@ -1417,7 +1420,7 @@ class RelayReducer(
         val message = json.parseToJsonElement(payload).jsonObject
         val messageType = message.string("type")
         if (messageType !in setOf(
-                "device.ready", "runtime.online", "runtime.offline", "runtime.event", "runtime.git",
+                "device.ready", "runtime.online", "runtime.offline", "runtime.event", "runtime.git", "notification.snapshot",
                 "protocol.error", "provider.result", "provider.changed",
                 "artifact.read.failed",
                 // 上传的入站消息：状态由 ViewModel 的上传处理器维护，reducer 只需不把它当非法消息。
@@ -1434,6 +1437,7 @@ class RelayReducer(
             return state.copy(error = PROTOCOL_VERSION_MISMATCH_ERROR)
         }
         return when (messageType) {
+            "notification.snapshot" -> if (channel != null) state.withNotificationSnapshot(message, json) else state
             "provider.result" -> if (channel != null) state.withProviderResult(message) else state
             "provider.changed" -> state
             "runtime.git" -> state.withWorkingBranch(message)
@@ -1536,6 +1540,7 @@ class RelayReducer(
                 state.copy(
                     connection = RelayConnection.ONLINE,
                     deviceId = message.string("deviceId"),
+                    notificationEpoch = message.string("notificationEpoch") ?: state.notificationEpoch,
                     sessions = sessions,
                     runtimes = runtimes,
                     supportedAgents = supportedAgents,
@@ -2136,7 +2141,6 @@ class RelayReducer(
                 nextConversation = conversation.copy(
                     turnTimings = retainedTimings + (turnId to TurnTiming(turnId, startedAt, turnIndex = turnIndex)),
                     activeTurnId = turnId,
-                    runtimeError = null,
                     revision = conversation.revision + 1,
                 )
             }
@@ -2855,11 +2859,11 @@ class RelayReducer(
                 nextConversation = if (interaction != null) {
                     conversation.copy(
                         interactions = conversation.interactions + (interaction.requestId to interaction),
-                        interactionNotice = null,
+                        interactionNotices = conversation.interactionNotices - interaction.requestId,
                     )
                 } else {
                     conversation.copy(
-                        interactionNotice = "手机无法安全渲染此交互，请在电脑端处理。",
+                        interactionNotices = conversation.interactionNotices + ((requestId ?: "invalid-request") to "手机无法安全渲染此交互，请在电脑端处理。"),
                     )
                 }
             }
@@ -2878,11 +2882,11 @@ class RelayReducer(
                         .filter { it.requestId !in retained }.mapNotNull { it.responseCommandId }.toSet()
                     conversation.copy(
                         interactions = interactions.orEmpty().associateBy(PendingInteraction::requestId),
-                        interactionNotice = null,
+                        interactionNotices = emptyMap(),
                     )
                 } else {
                     conversation.copy(
-                        interactionNotice = "手机无法安全恢复此交互，请在电脑端处理。",
+                        interactionNotices = conversation.interactionNotices + ("invalid-snapshot" to "手机无法安全恢复此交互，请在电脑端处理。"),
                     )
                 }
             }
@@ -2892,17 +2896,9 @@ class RelayReducer(
                     conversation.interactions[requestId]?.responseCommandId?.let {
                         nextPendingCommands = nextPendingCommands - it
                     }
-                    val notice = if (event.string("type") == "interaction.resolved") {
-                        when (event.string("source")) {
-                            "local" -> "交互已在电脑端完成"
-                            else -> "交互已完成"
-                        }
-                    } else {
-                        interactionCancellationText(event.string("reason"))
-                    }
                     nextConversation = conversation.copy(
                         interactions = conversation.interactions - requestId,
-                        interactionNotice = notice,
+                        interactionNotices = conversation.interactionNotices - requestId,
                     )
                 }
             }
@@ -2964,7 +2960,7 @@ class RelayReducer(
                         nextConversation = if (succeeded) {
                             conversation.copy(
                                 interactions = conversation.interactions - responseInteraction.key,
-                                interactionNotice = null,
+                                interactionNotices = conversation.interactionNotices - responseInteraction.key,
                             )
                         } else {
                             conversation.copy(
@@ -2972,12 +2968,14 @@ class RelayReducer(
                                     responseInteraction.key to responseInteraction.value.copy(responseCommandId = null, submitted = false,
                                         responseError = commandErrorText(event.string("error")))
                                 ),
-                                interactionNotice = event.string("error") ?: "回答未送达，请重新提交。",
+                                // Remote submission feedback comes from the device-scoped Host outcome.
+                                interactionNotices = conversation.interactionNotices,
                             )
                         }
                     }
                 }
-                if (!succeeded && status !in setOf("pending", "cancelled")) {
+                val isInteractionResponse = conversation.interactions.values.any { it.responseCommandId == commandId }
+                if (!succeeded && !isInteractionResponse && status !in setOf("pending", "cancelled")) {
                     nextError = commandErrorText(event.string("error"))
                 }
             }
@@ -2994,13 +2992,8 @@ class RelayReducer(
                         lastSequence = state.lastSequence + (sequenceKey to sequence),
                     )
                 }
-                // Runtime diagnostics are scoped by the envelope runtimeId. Keeping them
-                // in RemoteState.error made an error from one Codex window pop over every
-                // other window through the root AlertDialog.
-                nextConversation = conversation.copy(
-                    runtimeError = runtimeError,
-                    revision = conversation.revision + 1,
-                )
+                // Remote banners have one authority: the Host notification inventory.
+                // Correlated synchronization failures above still belong to their task.
             }
         }
 

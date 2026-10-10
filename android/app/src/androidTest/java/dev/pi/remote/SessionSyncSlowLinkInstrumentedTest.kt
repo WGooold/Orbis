@@ -33,7 +33,9 @@ import org.junit.Rule
 import org.junit.Test
 
 /** Real RelayClient -> DeviceLink AEAD/slices -> ViewModel -> SQLite -> ChatScreen.
- * The companion server is scripts/session-sync-fixture.mjs; no real pairing is read or replaced. */
+ * The companion server is scripts/session-sync-fixture.mjs; no real pairing is read or replaced.
+ * Its snapshots exercise legacy canonical ranges, including the Codex runtime namespace.
+ * It does not emit ADR-0024 source checkpoints/live patches or test their loss/reordering recovery. */
 class SessionSyncSlowLinkInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 
@@ -95,13 +97,22 @@ class SessionSyncSlowLinkInstrumentedTest {
                     PiRemoteTheme { AgentTheme(agentBrand(kind == "codex")) { ChatScreen(state, vm) } }
                 }
             }
-            compose.waitUntil(15_000) { model.state.value.e2eReady && runtimeId in model.state.value.runtimes }
+            try {
+                compose.waitUntil(15_000) { model.state.value.e2eReady && runtimeId in model.state.value.runtimes }
+            } catch (error: AssertionError) {
+                val state = model.state.value
+                throw AssertionError("Fixture readiness failed: connection=${state.connection}, " +
+                    "e2eReady=${state.e2eReady}, runtimeKeys=${state.runtimes.keys}, " +
+                    "error=${state.error}, protocolVersion=$PROTOCOL_VERSION", error)
+            }
             compose.runOnIdle { model.selectRuntime(runtimeId) }
             compose.waitUntil(15_000) { model.state.value.sessionSyncCommands.values.any { it.slow } }
             val pending = model.state.value.sessionSyncCommands.entries.single()
             assertEquals(1, pending.value.attempts)
             assertFalse(pending.key in model.state.value.pendingCommands) // ACK arrived first.
-            compose.onNodeWithText("聊天记录仍在同步，请稍候…").assertIsDisplayed()
+            // The spinner state is observable through the reducer even when the notice is
+            // below the viewport on a small device; assert the state rather than a clipped node.
+            assertTrue(model.state.value.conversations[runtimeId]?.isChatSyncing == true)
             compose.waitUntil(90_000) {
                 model.state.value.conversations[runtimeId]?.messages?.any { it.messageId == "e400" } == true
             }
@@ -122,26 +133,77 @@ class SessionSyncSlowLinkInstrumentedTest {
                 compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
             }
             compose.onNodeWithText("SYNC_VISIBLE_400").assertIsDisplayed()
-            assertEquals(2, evidence.getValue("requests").jsonPrimitive.int)
-            assertEquals(2, evidence.getValue("generated").jsonPrimitive.int)
+            // A 30-entry preview contains e371..e400. The missing e201..e370 prefix
+            // takes six bounded catchups; none may resend the already cached tail.
+            assertEquals(7, evidence.getValue("requests").jsonPrimitive.int)
+            assertEquals(7, evidence.getValue("generated").jsonPrimitive.int)
             assertEquals(200, evidence.getValue("entries").jsonPrimitive.int)
-            assertEquals(listOf("preview", "catchup"), evidence.getValue("ranges").jsonArray.map {
-                it.jsonObject.getValue("range").jsonPrimitive.content
+            val ranges = evidence.getValue("ranges").jsonArray.map { it.jsonObject }
+            assertEquals(listOf("preview") + List(6) { "catchup" }, ranges.map {
+                it.getValue("range").jsonPrimitive.content
             })
-            assertEquals("e300", evidence.getValue("ranges").jsonArray[1].jsonObject.getValue("target").jsonPrimitive.content)
+            assertEquals(listOf(30, 30, 30, 30, 30, 30, 20), ranges.map {
+                it.getValue("entries").jsonPrimitive.int
+            })
+            assertFalse(ranges.first().containsKey("target")) // Preview reads the current source head.
+            assertFalse(ranges.first().containsKey("known"))
+            assertEquals(List(6) { "e370" }, ranges.drop(1).map {
+                it.getValue("target").jsonPrimitive.content
+            })
+            assertEquals(listOf("e200", "e230", "e260", "e290", "e320", "e350"), ranges.drop(1).map {
+                it.getValue("known").jsonPrimitive.content
+            })
+            assertEquals(7, evidence.getValue("ids").jsonArray.map { it.jsonPrimitive.content }.distinct().size)
             assertTrue(evidence.getValue("pieces").jsonPrimitive.int > 2)
             assertTrue(evidence.getValue("peakQueueBytes").jsonPrimitive.int <= 6 * 1024 * 1024)
-            compose.runOnIdle { model.loadOlderHistory(runtimeId) }
-            compose.waitUntil(15_000) { model.state.value.sessionHistory[runtimeId]?.loading != true }
-            assertEquals(2, stats().getValue("requests").jsonPrimitive.int)
+            var localHistoryPages = 0
+            while (model.state.value.sessionHistory[runtimeId]?.hasOlder == true) {
+                assertTrue("Cached paging must reach the root within fourteen 30-entry pages", localHistoryPages < 14)
+                val before = model.state.value.sessionHistory.getValue(runtimeId).oldestEntryId!!
+                val oldest = maxOf(1, before.removePrefix("e").toInt() - 30)
+                compose.runOnIdle { model.loadOlderHistory(runtimeId) }
+                compose.waitUntil(15_000) {
+                    model.state.value.sessionHistory[runtimeId]?.let {
+                        !it.loading && it.oldestEntryId == "e$oldest"
+                    } == true
+                }
+                assertEquals((oldest..400).map { "e$it" },
+                    model.state.value.conversations[runtimeId]?.messages?.map { it.messageId })
+                assertEquals(7, stats().getValue("requests").jsonPrimitive.int)
+                assertTrue(store.hasContinuousCoverage(device, sessionId, "e400"))
+                localHistoryPages += 1
+            }
+            assertTrue("Older cached rows must require explicit bounded paging", localHistoryPages > 0)
             assertEquals((1..400).map { "e$it" }, model.state.value.conversations[runtimeId]?.messages?.map { it.messageId })
             compose.runOnIdle { displayed.value = null; owner.clear(); owner = ViewModelStore() }
             start()
             compose.waitUntil(20_000) {
-                model.state.value.conversations[runtimeId]?.messages?.any { it.messageId == "e400" } == true
+                val state = model.state.value
+                state.e2eReady && state.selectedRuntimeId == runtimeId &&
+                    state.conversations[runtimeId]?.messages?.lastOrNull()?.messageId == "e400" &&
+                    runtimeId !in state.sessionSyncRequests && state.sessionSyncCommands.isEmpty()
             }
-            assertTrue(model.state.value.sessionSyncCommands.isEmpty())
-            assertEquals(2, stats().getValue("requests").jsonPrimitive.int)
+            // Cached coverage avoids catchup after restart, but recovery still requests
+            // one fresh preview. Persisted rows must not suppress source reconciliation.
+            val restarted = stats()
+            File(evidenceDir, "$kind-restart-stats.json").writeText(restarted.toString())
+            assertEquals(8, restarted.getValue("requests").jsonPrimitive.int)
+            assertEquals(8, restarted.getValue("generated").jsonPrimitive.int)
+            assertEquals(230, restarted.getValue("entries").jsonPrimitive.int)
+            val restartedRanges = restarted.getValue("ranges").jsonArray
+            assertEquals(evidence.getValue("ranges").jsonArray.toList(), restartedRanges.take(7))
+            assertEquals("preview", restartedRanges.last().jsonObject.getValue("range").jsonPrimitive.content)
+            assertEquals(30, restartedRanges.last().jsonObject.getValue("entries").jsonPrimitive.int)
+            assertFalse(restartedRanges.last().jsonObject.containsKey("target"))
+            assertEquals((371..400).map { "e$it" }, model.state.value.conversations[runtimeId]?.messages?.map { it.messageId })
+            assertTrue(store.hasContinuousCoverage(device, sessionId, "e400"))
+            assertEquals(400, store.readBranch(device, sessionId, "e400", maxEntries = 500).entries.size)
+            compose.runOnIdle { model.loadOlderHistory(runtimeId) }
+            compose.waitUntil(15_000) {
+                model.state.value.sessionHistory[runtimeId]?.let { !it.loading && it.oldestEntryId == "e341" } == true
+            }
+            assertEquals((341..400).map { "e$it" }, model.state.value.conversations[runtimeId]?.messages?.map { it.messageId })
+            assertEquals(8, stats().getValue("requests").jsonPrimitive.int)
             compose.onNodeWithText("SYNC_VISIBLE_400").assertIsDisplayed()
         } finally {
             compose.runOnIdle { displayed.value = null; owner.clear() }

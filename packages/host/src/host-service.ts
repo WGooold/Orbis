@@ -60,6 +60,7 @@ import { HostPairingService, requestPairingCode, type OpenedPairingWindow } from
 import { describePath, normalizePreference, type PathChange } from "./path.js";
 import { parsePathPreferenceMessage, type PathPreferenceMessage } from "./path-preference.js";
 import { SessionSyncTasks } from "./session-sync-tasks.js";
+import { NotificationStore } from "./notification-store.js";
 import { HostRelayClient, type HostRelayState } from "./relay-client.js";
 import { browseDirectory, listPiSessions } from "./sessions.js";
 import { ActivationError, SessionSpawner } from "./spawner.js";
@@ -214,6 +215,12 @@ export class HostService {
    * 更小的 `msg` 序号。按道各记一份之后，插队变得无害。
    */
   readonly #eventSequences = new Map<string, number>();
+  readonly #notifications = new NotificationStore(runtimeId => {
+    for (const deviceId of this.#links.keys()) this.#sendNotificationSnapshot(deviceId, runtimeId);
+  });
+  readonly #commandOwners = new Map<string, { deviceId: string; requestId?: string; at: number; fingerprint: string; terminal?: boolean }>();
+  readonly #interactionIds = new Map<string, Set<string>>();
+  readonly #notificationChecks = new Map<string, number>();
   /** 同一台设备的离线回绝只报一次的时间戳（详见 `#shouldReportOfflineDevice`）。 */
   readonly #offlineDeviceReportedAt = new Map<string, number>();
   #persistChain: Promise<void> = Promise.resolve();
@@ -310,11 +317,17 @@ export class HostService {
         this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: "dsh", sessionId, archived });
       };
       dsh.onMetadataChange = () => {
-        for (const runtime of dsh.directoryEntries()) this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+        for (const runtime of dsh.directoryEntries()) {
+          if (!this.#notifications.has(runtime.runtimeId) || this.#notifications.needsAttach(runtime.runtimeId)) this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
+          this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+        }
       };
       dsh.onOffline = (reason, runtimes) => {
         this.#invalidateCatalog();
-        for (const runtime of runtimes) this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
+        for (const runtime of runtimes) {
+          this.#notifications.end(runtime.runtimeId);
+          this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
+        }
       };
       backends.push(dsh);
     }
@@ -330,14 +343,20 @@ export class HostService {
     });
     codex.onMetadataChange = () => {
       if (codex.kind === "codexDesktop") this.#invalidateCatalog();
-      for (const runtime of codex.directoryEntries()) this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+      for (const runtime of codex.directoryEntries()) {
+        if (!this.#notifications.has(runtime.runtimeId) || this.#notifications.needsAttach(runtime.runtimeId)) this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
+        this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+      }
     };
     codex.onOffline = (reason, runtimes) => {
       if (codex.kind === "codexDesktop") {
         this.#invalidateCatalog();
         this.#broadcastDeviceReady();
       }
-      for (const runtime of runtimes) this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
+      for (const runtime of runtimes) {
+        this.#notifications.end(runtime.runtimeId);
+        this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
+      }
     };
     codex.onArchiveChange = (sessionId, archived) => {
       this.#invalidateCatalog();
@@ -534,6 +553,7 @@ export class HostService {
     return {
       protocolVersion: PROTOCOL_VERSION,
       deviceId,
+      notificationEpoch: this.#notifications.hostEpoch,
       runtimes: this.#runtimesSnapshot(),
       agents: this.#agentsSnapshot(),
       launchableAgents: this.#launchableAgentsSnapshot(),
@@ -620,12 +640,14 @@ export class HostService {
         ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
         ...(this.#options.codexLaunch === undefined ? {} : { onCodexLaunch: this.#options.codexLaunch }),
         onRuntimeOnline: (metadata) => {
+          this.#notifications.attach(metadata.runtimeId, metadata.sessionId);
           this.#broadcastDeviceMessage({
             type: "runtime.online",
             runtime: metadata,
           });
         },
         onRuntimeOffline: (runtimeId, reason) => {
+          this.#notifications.offline(runtimeId);
           this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason });
         },
         onRuntimeEvent: (runtimeId, _piSequence, event) => {
@@ -693,6 +715,7 @@ export class HostService {
   }
 
   async stop(): Promise<void> {
+    this.#notifications.close();
     await this.#desktopLedgerWrite;
     this.#sessionSync.close();
     this.#pairing.close();
@@ -791,6 +814,7 @@ export class HostService {
     this.#p2p?.stop(deviceId);
     this.#p2p?.forget(deviceId);
     this.#sessionSync.clearDevice(deviceId);
+    this.#notifications.releaseDevice(deviceId);
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
     this.#persist();
@@ -944,6 +968,22 @@ export class HostService {
       } else this.#p2p.acceptAnswer(deviceId, message.sdp);
       return;
     }
+    if (message.type === "notification.sync" || message.type === "notification.dismiss") {
+      if (!this.#notifications.has(message.runtimeId) && !this.#runtimesSnapshot().some(item => item.runtimeId === message.runtimeId)) return;
+      if (message.type === "notification.dismiss" && message.hostEpoch === this.#notifications.hostEpoch) {
+        this.#notifications.dismiss(message.runtimeId, deviceId, message.notificationId);
+      }
+      // Notification recovery does not depend on agent command availability.
+      this.#sendNotificationSnapshot(deviceId, message.runtimeId);
+      const at = Date.now();
+      if (at - (this.#notificationChecks.get(message.runtimeId) ?? 0) >= 10_000) {
+        if (this.#notificationChecks.size >= 2048) this.#notificationChecks.delete(this.#notificationChecks.keys().next().value!);
+        this.#notificationChecks.set(message.runtimeId, at);
+        this.#loopback?.sendResync(message.runtimeId, "notification_sync");
+        for (const backend of this.#backends) if (backend.isReady() && backend.ownsRuntime(message.runtimeId)) backend.syncNotifications?.(message.runtimeId);
+      }
+      return;
+    }
     if (message.type !== "runtime.command") {
       this.#options.onData?.(deviceId, payload);
       return;
@@ -1012,6 +1052,18 @@ export class HostService {
       this.#sessionSync.request(deviceId, runtimeId, commandId, command);
       return;
     }
+    for (const [key, owner] of this.#commandOwners) if (owner.at < Date.now() - 300_000) this.#commandOwners.delete(key);
+    if (this.#commandOwners.size >= 4096) {
+      this.#sendToDevice(deviceId, { type: "protocol.error", code: "host_busy", message: "Host 命令任务过多，请稍后重试", commandId });
+      return;
+    }
+    const commandKey = JSON.stringify([runtimeId, commandId]); const fingerprint = JSON.stringify(command);
+    const priorOwner = this.#commandOwners.get(commandKey);
+    if (priorOwner !== undefined && (priorOwner.deviceId !== deviceId || priorOwner.fingerprint !== fingerprint)) {
+      this.#sendToDevice(deviceId, { type: "protocol.error", code: "command_id_conflict", message: "命令身份与已有请求冲突", commandId }); return;
+    }
+    this.#commandOwners.set(commandKey, { ...priorOwner, deviceId, at: Date.now(), fingerprint,
+      ...(command.type === "interaction.respond" ? { requestId: command.requestId } : {}) });
     for (const backend of this.#backends) {
       if (!backend.isReady() || !backend.ownsRuntime(runtimeId)) continue;
       const result = backend.dispatchCommand(runtimeId, commandId, command);
@@ -1290,6 +1342,9 @@ export class HostService {
       type: "device.ready",
       ...this.#deviceReadyPayload(deviceId),
     });
+    for (const runtime of this.#runtimesSnapshot()) {
+      this.#sendToDeviceOn(deviceId, kind, this.#notifications.snapshot(runtime.runtimeId, deviceId));
+    }
     const rttMs = this.#links.get(deviceId)?.activeRttMs;
     this.#sendToDeviceOn(deviceId, kind, {
       type: "device.path",
@@ -1383,7 +1438,48 @@ export class HostService {
 
   #publishRuntimeEvent(runtimeId: string, event: RuntimeEvent): void {
     if (this.#sessionSync.handleEvent(runtimeId, event)) return;
+    if (event.type === "runtime.metadata" && (!this.#notifications.has(runtimeId) || this.#notifications.needsAttach(runtimeId))) {
+      this.#notifications.attach(runtimeId, event.metadata.sessionId);
+    }
+    if (event.type === "notification.source") {
+      if (!this.#notifications.apply(runtimeId, event)) this.#options.log?.(`通知来源尚未核对或被拒绝 (${runtimeId})`);
+      return;
+    }
+    if (event.type === "interaction.requested") {
+      const ids = this.#interactionIds.get(runtimeId) ?? new Set<string>();
+      if (ids.size < 64) ids.add(event.request.requestId); this.#interactionIds.set(runtimeId, ids);
+    }
+    if (event.type === "interaction.snapshot") this.#interactionIds.set(runtimeId, new Set(event.requests.map(item => item.requestId)));
+    if (event.type === "interaction.resolved" || event.type === "interaction.cancelled") {
+      if (this.#interactionIds.get(runtimeId)?.delete(event.requestId)) {
+        const failed = event.type === "interaction.cancelled" && event.reason === "timeout";
+        this.#notifications.outcome(runtimeId, { code: "interaction.result", occurrenceId: event.requestId,
+          scope: { requestId: event.requestId }, lifecycle: "outcome", severity: failed ? "warning" : "info",
+          message: event.type === "interaction.resolved" ? (event.source === "local" ? "交互已在电脑端完成" : "交互已完成")
+            : event.reason === "timeout" ? "交互已超时" : "交互已取消" });
+      }
+    }
+    if (event.type === "command.result" || (event.type === "runtime.error" && event.commandId !== undefined)) {
+      const key = JSON.stringify([runtimeId, event.commandId]); const owner = this.#commandOwners.get(key);
+      if (owner !== undefined) {
+        // Retain the bounded receipt for duplicate terminal replies and device ownership.
+        if (!owner.terminal && owner.requestId !== undefined && (event.type === "runtime.error" || !event.ok && event.status !== "pending")) {
+          this.#notifications.outcome(runtimeId, { code: "interaction.submit", occurrenceId: event.commandId!,
+            scope: { requestId: owner.requestId, commandId: event.commandId! }, lifecycle: "outcome", severity: "error",
+            message: event.type === "runtime.error" ? event.message : event.error ?? "回答未送达，请重新提交。" }, owner.deviceId);
+        }
+        if (event.type === "runtime.error" || event.status !== "pending") owner.terminal = true;
+        this.#sendToDevice(owner.deviceId, this.#runtimeEventMessage(runtimeId, event)); return;
+      }
+      return;
+    }
+    // All current remote notices have one authority. Uncorrelated legacy errors cannot revive them.
+    if (event.type === "runtime.error") { this.#options.log?.(`未关联 runtime.error (${runtimeId}): ${event.message}`); return; }
     this.#broadcastDeviceMessage(this.#runtimeEventMessage(runtimeId, event));
+  }
+
+  #sendNotificationSnapshot(deviceId: string, runtimeId: string): void {
+    this.#sendToDevice(deviceId, this.#notifications.snapshot(runtimeId, deviceId));
   }
 
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {

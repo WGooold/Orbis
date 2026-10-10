@@ -44,6 +44,8 @@ export interface AgentBackend {
   isReady(): boolean;
   /** 该 runtimeId 是否归本后端（命令路由的归属判定，一次命中）。 */
   ownsRuntime(runtimeId: string): boolean;
+  /** Reconcile a backend-owned notification inventory without issuing a chat command. */
+  syncNotifications?(runtimeId: string): void;
   /** 本后端名下的会话目录（§7.5）。失败抛错，由上层聚合（单后端失败不拖垮整个列表）。 */
   catalog(archived?: boolean): Promise<AgentSessionSummary[]>;
   /** Effective configured provider, independent of any open session. Unknown on failure. */

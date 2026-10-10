@@ -107,6 +107,7 @@ describe("runtime command protocol", () => {
     }).success).toBe(false);
   });
 
+
   it("keeps ordinary user messages separate from slash command execution", () => {
     expect(RuntimeCommandSchema.safeParse({
       type: "user_message",

@@ -1032,9 +1032,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(runtimeId, sessionId, runtime?.cwd, state.e2eReady, lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            model.syncNotifications(runtimeId)
             refreshConversation()
             while (isActive) {
                 delay(15_000)
+                model.syncNotifications(runtimeId)
                 refreshConversation()
             }
         }
@@ -1521,9 +1523,21 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            conversation.runtimeError?.let { runtimeError ->
-                Box(Modifier.fillMaxWidth().padding(start = 16.dp, top = 12.dp, end = 16.dp)) {
-                    WarningCard(runtimeError)
+            state.notificationProjections[runtimeId]?.takeIf { it.sessionId == sessionId }?.let { projection ->
+                if (projection.items.isNotEmpty() || !projection.complete) Column(Modifier.fillMaxWidth().heightIn(max = 192.dp)
+                    .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (projection.verification == "unknown" || projection.hostEpoch != state.notificationEpoch) {
+                        Text("通知状态待核对", style = MaterialTheme.typography.labelSmall)
+                    }
+                    projection.items.forEach { notice ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.weight(1f)) {
+                                if (notice.severity == "info") NoticeCard(notice.message) else WarningCard(notice.message)
+                            }
+                            TextButton(onClick = { model.dismissNotification(runtimeId, notice.notificationId) }) { Text("关闭") }
+                        }
+                    }
                 }
             }
             LazyColumn(

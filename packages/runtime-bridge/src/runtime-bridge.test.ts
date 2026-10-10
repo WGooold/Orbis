@@ -62,6 +62,35 @@ const makeRuntime = (overrides: Partial<RuntimePort> = {}): RuntimePort => ({
 });
 
 describe("RuntimeBridge", () => {
+  it("replays independent read failures and only resolves the successful read", async () => {
+    const transport = new FakeTransport(); let badCapabilities = true;
+    const bridge = new RuntimeBridge(makeRuntime({
+      capabilities: async () => { if (badCapabilities) throw new Error("capabilities unavailable"); return { commands: [] }; },
+      sessionCatalog: async () => { throw new Error("catalog unavailable"); },
+    }), transport);
+    await bridge.start();
+    const latest = () => transport.events.filter(event => event.type === "notification.source").at(-1)!;
+    await vi.waitFor(() => expect(latest().notifications.map(item => item.code).sort()).toEqual(["pi.capabilities", "pi.catalog"]));
+    const revision = latest().revision;
+    transport.events.length = 0; transport.connectedHandler?.();
+    expect(latest()).toMatchObject({ revision, notifications: expect.arrayContaining([expect.objectContaining({ code: "pi.catalog" })]) });
+    badCapabilities = false; await bridge.refreshCapabilities();
+    expect(latest().notifications.map(item => item.code)).toEqual(["pi.catalog"]);
+    bridge.close();
+  });
+  it("a late capability success cannot clear a newer failure", async () => {
+    const transport = new FakeTransport(); let resolve!: (value: { commands: [] }) => void;
+    const first = new Promise<{ commands: [] }>(done => { resolve = done; }); let calls = 0;
+    const bridge = new RuntimeBridge(makeRuntime({ capabilities: async () => {
+      if (++calls === 1) return first;
+      throw new Error("new capability failure");
+    } }), transport);
+    await bridge.start(); await bridge.refreshCapabilities(); resolve({ commands: [] });
+    await first; await Promise.resolve();
+    expect(transport.events.filter(event => event.type === "notification.source").at(-1)?.notifications)
+      .toEqual([expect.objectContaining({ code: "pi.capabilities", message: "new capability failure" })]);
+    bridge.close();
+  });
   it("forwards the applied baseline and preserves the backend conditional selection", async () => {
     const transport = new FakeTransport();
     const knownState = { epoch: "epoch", seq: 10, head: { leafId: null } };
@@ -105,7 +134,7 @@ describe("RuntimeBridge", () => {
       syncId: "sync-1",
       knownLeafId: "entry-1",
     }));
-    expect(transport.events).toEqual([{
+    expect(transport.events.filter(event => event.type === "session.snapshot")).toEqual([{
       type: "session.snapshot",
       sessionId: "session-1",
       syncId: "sync-1",
@@ -136,7 +165,7 @@ describe("RuntimeBridge", () => {
 
     await bridge.start();
     await vi.waitFor(() => expect(sessionCatalog).toHaveBeenCalledTimes(1));
-    expect(transport.events).toEqual([{
+    expect(transport.events.filter(event => event.type === "session.catalog")).toEqual([{
       type: "session.catalog",
       sessions: [{
         sessionId: "session-1",
@@ -161,7 +190,10 @@ describe("RuntimeBridge", () => {
 
     transport.resyncHandler?.("device_connected");
 
-    expect(transport.events).toEqual([]);
+    expect(transport.events.filter(event => event.type === "session.snapshot")).toEqual([]);
+    expect(transport.events.filter(event => event.type === "runtime.metadata")).toEqual([
+      { type: "runtime.metadata", metadata: makeRuntime().metadata() },
+    ]);
   });
 
   it("rejects a download addressed to a runtime instead of the Host", async () => {
@@ -247,11 +279,7 @@ describe("RuntimeBridge", () => {
 
     bridge.refreshMetadata();
 
-    expect(transport.events).toEqual([{
-      type: "runtime.error",
-      message: "metadata_failed",
-      recoverable: true,
-    }]);
+    expect(transport.events).toMatchObject([{ type: "notification.source", notifications: [{ code: "pi.metadata", message: "metadata_failed", lifecycle: "condition" }] }]);
     expect(diagnostics).toHaveBeenCalledWith("bridge.metadata.failed", { message: "metadata_failed" });
   });
 

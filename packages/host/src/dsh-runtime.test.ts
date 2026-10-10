@@ -106,9 +106,12 @@ describe("DeepSeek Harness backend", () => {
     });
     const prompt: RuntimeCommand = { type: "user_message", text: "hello", messageId: "phone-1", attachments: ["C:\\note.txt"] };
     expect((await command(prompt)).ok).toBe(true);
-    expect(events).toContainEqual({ runtimeId: "dsh:one", event: { type: "message.delta", messageId: "a1", contentType: "text", contentIndex: 0, delta: "你好" } });
-    const finished = events.find(item => item.event.type === "turn.finished")!.event;
-    expect(finished).toMatchObject({ persistedMessages: expect.arrayContaining([{ messageId: "phone-1", entryId: "dsh:one:1" }, { messageId: "a1", entryId: "dsh:one:2" }]) });
+    expect(events).toContainEqual(expect.objectContaining({ runtimeId: "dsh:one", event: expect.objectContaining({
+      type: "session.patch", live: expect.objectContaining({ messages: [expect.objectContaining({ message: expect.objectContaining({ messageId: "a1", content: [{ type: "text", text: "你好" }] }) })] }),
+    }) }));
+    await command({ type: "session.sync", sessionId: "dsh:one", syncId: "recovered", range: "preview" }, "sync");
+    const recovered = events.find(item => item.event.type === "session.snapshot" && item.event.syncId === "recovered")!.event;
+    expect(recovered).toMatchObject({ live: { complete: true, turn: null, messages: [] }, entries: [expect.objectContaining({ entryId: "dsh:one:1" }), expect.objectContaining({ entryId: "dsh:one:2" })] });
     expect((await command(prompt, "retry")).ok).toBe(true);
     expect(vi.mocked(client.request).mock.calls.filter(args => args[0] === "session/prompt")).toHaveLength(1);
     expect((await command({ ...prompt, text: "changed" }, "conflict")).status).toBe("message_id_conflict");
@@ -139,14 +142,14 @@ describe("DeepSeek Harness backend", () => {
     await vi.waitFor(() => expect(events.some(item => item.event.type === "command.result" && item.event.commandId === "admission" && item.event.status === "cancelled")).toBe(true));
     expect(vi.mocked(client.request).mock.calls.filter(args => args[0] === "session/prompt")).toHaveLength(0);
     expect((await command(prompt, "retry-cancelled")).status).toBe("cancelled");
-    expect(events.filter(item => item.event.type === "turn.finished")).toHaveLength(1);
+    expect(events.filter(item => item.event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { turn: null } });
   });
 
   it("finishes the turn even when history cannot be read", async () => {
     const { runtime, history, command, events } = await fixture();
     vi.mocked(history.read).mockRejectedValue(new Error("history unavailable"));
     expect((await command({ type: "user_message", text: "work" })).ok).toBe(false);
-    expect(events.filter(item => item.event.type === "turn.finished")).toHaveLength(1);
+    expect(events.filter(item => item.event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { turn: null } });
     expect(runtime.directoryEntries()[0]?.status).toBe("idle");
   });
 

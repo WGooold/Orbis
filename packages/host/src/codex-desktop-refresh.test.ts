@@ -216,6 +216,18 @@ describe("real desktop refresh driver", () => {
 });
 
 describe("phone tree to desktop lifecycle", () => {
+  it("ends only the matching refresh condition after native GUI hydration is confirmed", async () => {
+    const h = await harness(); h.runtime.markStarted();
+    await vi.waitFor(() => expect(h.runtime.directoryEntries()).toHaveLength(1));
+    h.server.onNotification?.("windowsSandbox/setupCompleted", { success: false, error: "sandbox failure" });
+    h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-notice", "session");
+    const inventory = () => h.events.filter(event => event.type === "notification.source").at(-1)?.notifications ?? [];
+    await vi.waitFor(() => expect(inventory().map(item => item.code).sort()).toEqual(["codex.refresh", "codex.sandbox"]));
+    expect(inventory().find(item => item.code === "codex.refresh")?.scope.operationId).toBeTruthy();
+    h.hydrate();
+    await vi.waitFor(() => expect(inventory().map(item => item.code)).toEqual(["codex.sandbox"]), { timeout: 4000 });
+    expect(h.lifecycle.filter(item => item === "revert")).toHaveLength(1);
+  });
   it("does not tell the phone to archive manually when GUI reopening queries its queue", async () => {
     const h = await harness();
     app.open.mockImplementation(async () => {

@@ -4,6 +4,8 @@ import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  NotificationSource,
+  RecoverableSessionSource,
   selectSessionSyncSnapshot,
   type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
@@ -20,6 +22,8 @@ import { localHostname } from "./sessions.js";
 import { ActivationError } from "./spawner.js";
 
 type Session = {
+  source: RecoverableSessionSource;
+  notifications: NotificationSource;
   id: string; cwd: string; createdAt: number; options: JsonObject[]; entries: RemoteSessionEntry[];
   running: boolean; closing: boolean; cancelRequested: boolean; updates: Promise<void>; streamed: Map<string, ChatMessage>;
   tools: Map<string, { name: string; input: unknown }>; lastSeq: number; usage?: RuntimeMetadata["contextUsage"];
@@ -94,12 +98,14 @@ export class DshAcpRuntime implements AgentBackend {
   ownsRuntime(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
   directoryEntries(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => this.#metadata(session)); }
   announce(): void {
+    for (const session of this.#sessions.values()) session.notifications.announce();
     for (const session of this.#sessions.values()) {
       this.#publishMetadata(session);
       this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
       this.#emit(session, { type: "interaction.snapshot", requests: [...this.#approvals.values()].filter(item => item.session === session).map(item => item.interaction) });
     }
   }
+  syncNotifications(runtimeId: string): void { this.#sessions.get(runtimeId)?.notifications.announce(); }
 
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
     if (archived) return [];
@@ -177,10 +183,18 @@ export class DshAcpRuntime implements AgentBackend {
       if (!this.#ready) throw new Error("DSH 后端正在停止");
       const log = await this.#history.read(id);
       const session: Session = {
+        source: new RecoverableSessionSource(publicId(id), event => this.#sink(event, publicId(id!))),
+        notifications: new NotificationSource(randomUUID(), publicId(id), event => {
+          if (this.#sessions.get(publicId(id!))?.notifications.epoch === event.producerEpoch) this.#sink(event, publicId(id!));
+        }),
         id, cwd, createdAt: log.header.createdAt, options: objects(response.configOptions), entries: dshEntries(log),
         running: false, closing: false, cancelRequested: false, updates: Promise.resolve(), streamed: new Map(), tools: new Map(), messages: new Map(), lastSeq: log.events.at(-1)?.seq ?? -1,
       };
       this.#sessions.set(publicId(id), session);
+      session.source.transaction(() => {
+        session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null);
+        session.source.setAvailability(true, true);
+      });
       this.#publishMetadata(session);
       this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
       return { sessionId: publicId(id), spawnMode: "headless" };
@@ -206,7 +220,7 @@ export class DshAcpRuntime implements AgentBackend {
       case "session.sync": {
         if (command.sessionId !== publicId(session.id)) throw new Error("session_mismatch");
         await this.#refresh(session);
-        this.#emit(session, selectSessionSyncSnapshot(session.entries, publicId(session.id), session.entries.at(-1)?.entryId ?? null, command));
+        this.#emit(session, selectSessionSyncSnapshot(session.entries, publicId(session.id), session.entries.at(-1)?.entryId ?? null, command, [], session.source.snapshot()));
         this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
         this.#emit(session, { type: "interaction.snapshot", requests: [...this.#approvals.values()].filter(item => item.session === session).map(item => item.interaction) });
         break;
@@ -320,7 +334,11 @@ export class DshAcpRuntime implements AgentBackend {
       for (const entry of fresh) this.#emit(session, { type: "message.finished", message: entry.data.message as ChatMessage });
     } catch (error) { failure ??= error; }
     finally {
-      this.#emit(session, { type: "turn.finished", turnId, startedAt, durationMs: Date.now() - startedAt, persistedMessages });
+      session.source.transaction(() => {
+        for (const message of session.streamed.values()) session.source.upsertMessage({ message, finished: true, contentComplete: true });
+        this.#emit(session, { type: "turn.finished", turnId, startedAt, durationMs: Date.now() - startedAt, persistedMessages });
+        session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null, persistedMessages);
+      });
       session.running = false;
       session.streamed.clear();
       session.tools.clear();
@@ -370,7 +388,7 @@ export class DshAcpRuntime implements AgentBackend {
         session.usage = { tokens: Math.floor(update.used), contextWindow: Math.floor(update.size), percent: Math.min(100, update.used / update.size * 100) };
         this.#publishMetadata(session);
       }
-    }).catch(error => this.#emit(session, { type: "runtime.error", message: errorText(error), recoverable: true }));
+    }).catch(error => session.notifications.outcome({ code: "dsh.update.failed", occurrenceId: randomUUID(), scope: {}, severity: "error", message: errorText(error) }));
   }
 
   #permission(request: DshRequest): void {
@@ -408,21 +426,34 @@ export class DshAcpRuntime implements AgentBackend {
     for (const [id, pending] of this.#approvals) if (pending.session === session) this.#cancelApproval(id, reason);
   }
   async #refresh(session: Session) {
-    const log = await this.#history.read(session.id);
+    let log: Awaited<ReturnType<DshHistory["read"]>>;
+    try { log = await this.#history.read(session.id); }
+    catch (error) { session.source.setAvailability(false, false); throw error; }
     // Concurrent history requests must not move the announced leaf backwards.
     if ((log.events.at(-1)?.seq ?? -1) >= session.lastSeq) {
-      session.entries = dshEntries(log);
-      session.lastSeq = log.events.at(-1)?.seq ?? -1;
+      session.source.transaction(() => {
+        session.entries = dshEntries(log);
+        session.lastSeq = log.events.at(-1)?.seq ?? -1;
+        session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null);
+        session.source.setAvailability(true, true);
+      });
     }
     return log;
   }
-  #emit(session: Session, event: RuntimeEvent): void { this.#sink(event, publicId(session.id)); }
+  #emit(session: Session, event: RuntimeEvent): void {
+    if (event.type !== "command.result" && this.#sessions.get(publicId(session.id)) !== session) return;
+    session.source.transaction(() => {
+      if (!session.source.observe(event)) this.#sink(event, publicId(session.id));
+      else session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null);
+    });
+  }
   #publishMetadata(session: Session): void {
     if (!this.#sessions.has(publicId(session.id))) return;
     const metadata = this.#metadata(session);
     this.#emit(session, { type: "runtime.status", status: metadata.status });
     this.#emit(session, { type: "runtime.metadata", metadata });
     this.onMetadataChange?.();
+    session.notifications.announce();
   }
   #metadata(session: Session): RuntimeMetadata {
     const model = session.options.find(option => option.id === "model");
@@ -536,6 +567,7 @@ export class DshRuntime implements AgentBackend {
     return this.#implementation.dispatchCommand(runtimeId, commandId, command);
   }
   directoryEntries(): RuntimeMetadata[] { return this.#implementation.directoryEntries?.() ?? []; }
+  syncNotifications(runtimeId: string): void { this.#implementation.syncNotifications?.(runtimeId); }
   announce(): void {
     this.#implementation.announce?.();
   }
