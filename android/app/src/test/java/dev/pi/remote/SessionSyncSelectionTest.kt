@@ -31,7 +31,9 @@ class SessionSyncSelectionTest {
     }
     private fun queued(state: RemoteState = initial()): RemoteState {
         val pending = state.copy(sessionSyncRequests = state.sessionSyncRequests + "r")
+            .beginSessionRead("r", SessionReadKind.SOURCE, "source-read").state
         val request = pending.requestedSessionRecovery("r", 0, "sync")!!
+            .copy(historyOperationId = "source-read")
         return advanceSessionSyncTasks(pending.queueSessionSync("request", request), 1_000, 0).state
     }
     private fun response(selection: String = "unchanged", seq: Long = 10, head: String = "a",
@@ -40,9 +42,9 @@ class SessionSyncSelectionTest {
         hasOlder = false, complete = true, rangeStatus = "complete", source = SessionSourceEpoch("epoch", seq, true),
         checkpoint = SessionCheckpoint("epoch:$seq", SessionBranchCursor(head), "complete", true), live = live, selection = selection,
     )
-    private fun receive(state: RemoteState, snapshot: SessionGraphSnapshot): RemoteState {
+    private fun receive(state: RemoteState, snapshot: SessionGraphSnapshot, sequence: Int = 100): RemoteState {
         val body = json.encodeToString(snapshot).dropLast(1) + ",\"type\":\"session.snapshot\"}"
-        return reducer.reduce(state, """{"type":"runtime.event","runtimeId":"r","sequence":100,"event":$body}""")
+        return reducer.reduce(state, """{"type":"runtime.event","runtimeId":"r","sequence":$sequence,"event":$body}""")
     }
     private fun patch(state: RemoteState, seq: Long, base: Long) = reducer.reduce(state,
         """{"type":"runtime.event","runtimeId":"r","sequence":$seq,"event":{
@@ -77,7 +79,9 @@ class SessionSyncSelectionTest {
         assertEquals(state.runtimes, changed.runtimes)
         assertEquals(state.runtimeSessionViews, changed.runtimeSessionViews)
         assertTrue(changed.sessionSyncCommands.isEmpty())
-        assertTrue(changed.sessionSyncRequests.isEmpty())
+        assertTrue("Remaining demands=${changed.sessionSyncRequests}; captured=${state.sessionSyncCommands["request"]?.demandGeneration}; generations=${state.sessionSyncDemandGenerations}",
+            changed.sessionSyncRequests.isEmpty())
+        assertEquals(SessionReadPhase.SUCCEEDED, changed.sessionReads.getValue("source-read").phase)
     }
 
     @Test fun `late unchanged preserves newer applied patches and cannot complete a newer gap`() {
@@ -92,6 +96,32 @@ class SessionSyncSelectionTest {
         assertEquals(gap.conversations, waiting.conversations)
         assertTrue("r" in waiting.sessionSyncRequests)
         assertTrue(waiting.sessionSyncCommands.isEmpty())
+        // A new intent for the same live head also survives the old response. Retry continues
+        // to advertise the task's captured baseline, never the newer demand's parameters.
+        val newDemand = state.requestRuntimeRefresh("r")
+        val cancelled = newDemand.cancelForegroundSessionSyncs(null).copy(selectedRuntimeId = null)
+            .trackSessionReadDemands(newDemand).reconcileHistoryReads()
+        assertTrue(cancelled.sessionSyncRequests.isEmpty())
+        assertFalse(cancelled.ownsHistoryRead("source-read"))
+        val oldFailed = newDemand.failSessionSync("request", "source unavailable")
+        assertTrue("r" in oldFailed.sessionSyncRequests)
+        val budgetExpired = newDemand.copy(sessionSyncCommands = emptyMap(), pendingCommands = emptyMap(),
+            sessionReads = newDemand.sessionReads.mapValues { (_, read) -> read.copy(startedAt = 0) })
+            .reconcileHistoryReads().expireWaitingSessionReads(150_000)
+        assertTrue("r" in budgetExpired.sessionSyncRequests)
+        assertFalse(budgetExpired.ownsHistoryRead("source-read"))
+        val retried = advanceSessionSyncTasks(newDemand, 31_000, 0).send.single().task
+        assertEquals(state.sessionSyncCommands.getValue("request").knownState, retried.knownState)
+        val oldCompleted = receive(newDemand, response())
+        assertTrue("r" in oldCompleted.sessionSyncRequests)
+        val nextOperation = oldCompleted.beginSessionRead("r", SessionReadKind.SOURCE, "next").state
+        val nextTask = nextOperation.requestedSessionRecovery("r", 0, "sync")!!
+            .copy(historyOperationId = "next")
+        val nextSent = advanceSessionSyncTasks(nextOperation.queueSessionSync("next-request", nextTask), 32_000, 0).state
+        val currentCompleted = receive(nextSent, response(), sequence = 101)
+        assertTrue("Remaining demands=${currentCompleted.sessionSyncRequests}; operations=${currentCompleted.sessionReads}",
+            currentCompleted.sessionSyncRequests.isEmpty())
+        assertEquals(SessionReadPhase.SUCCEEDED, currentCompleted.sessionReads.getValue("next").phase)
     }
 
     @Test fun `late unchanged cannot install another epoch or mutate an unknown source`() {
@@ -154,6 +184,10 @@ class SessionSyncSelectionTest {
 
     @Test fun `forged acknowledgement and broken delta cannot consume a baseline`() {
         val state = queued()
+        val unsent = state.copy(sessionSyncCommands = state.sessionSyncCommands.mapValues { (_, task) -> task.copy(attempts = 0) })
+        val unowned = receive(unsent, response())
+        assertTrue("r" in unowned.sessionSyncRequests)
+        assertTrue(unowned.sessionReads.getValue("source-read").phase.active)
         for (bad in listOf(response(seq = 11), response(head = "other"), response(entries = listOf(entry("b", "a"))),
             response(live = SessionLiveState(true)), response("delta", 11, "b", listOf(entry("b", "wrong")), SessionLiveState(true)))) {
             val result = receive(state, bad)

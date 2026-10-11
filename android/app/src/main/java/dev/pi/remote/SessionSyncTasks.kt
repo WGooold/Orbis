@@ -2,6 +2,8 @@ package dev.pi.remote
 
 import java.util.UUID
 
+internal fun sessionRangeFailureKey(runtimeId: String, range: String): String = "$runtimeId\u0000$range"
+
 internal fun newSessionSyncCommandId(): String = "session-sync:${UUID.randomUUID()}"
 internal fun String.isSessionSyncCommandId(): Boolean = startsWith("session-sync:")
 
@@ -79,19 +81,21 @@ internal fun RemoteState.requestedSessionRecovery(
         sourceRecovery = true,
         sourceRecoveryEpoch = conversations[runtimeId]?.sourceEpoch,
         knownState = appliedSessionState(runtimeId),
+        demandGeneration = sessionSyncDemandGenerations[runtimeId] ?: 0,
     )
 }
 
 /** Pure clock-driven policy. Mark sends before emitting effects so another tick cannot enqueue
  * the same request twice. A backend acknowledgement is deliberately absent from this policy. */
 internal fun advanceSessionSyncTasks(state: RemoteState, now: Long, connectionGeneration: Int? = null): SessionSyncTick {
-    var next = state
+    var next = state.expireWaitingSessionReads(now)
     val send = mutableListOf<SessionSyncDispatch>()
-    for ((id, task) in state.sessionSyncCommands) {
+    for ((id, task) in next.sessionSyncCommands.toMap()) {
         val runtime = next.runtimes[task.runtimeId]
         val obsolete = runtime?.sessionId != task.sessionId ||
             (connectionGeneration != null && task.connectionGeneration != connectionGeneration) ||
-            task.branchGeneration != (next.sessionBranchGenerations[task.runtimeId] ?: 0)
+            task.branchGeneration != (next.sessionBranchGenerations[task.runtimeId] ?: 0) ||
+            (task.historyOperationId != null && task.exhaustedAt == null && !next.ownsHistoryRead(task.historyOperationId))
         if (obsolete || (task.exhaustedAt != null && now - task.firstSentAt >= RETAIN_UNTIL_MS)) {
             next = next.releaseHistoryRequest(id).copy(
                 sessionSyncCommands = next.sessionSyncCommands - id, pendingCommands = next.pendingCommands - id,
@@ -127,18 +131,19 @@ internal fun advanceSessionSyncTasks(state: RemoteState, now: Long, connectionGe
         if (task.range != "catchup" && active >= MAX_ACTIVE - 1 && catchup == 0 &&
             queued.any { it.value.range == "catchup" && it.value.runtimeId !in next.sessionSyncFailures }) continue
         if (task.range == "catchup" && catchup >= MAX_CATCHUP) continue
-        if (task.runtimeId in next.sessionSyncFailures) continue
+        if (task.runtimeId in next.sessionSyncFailures && task.range == "preview") continue
         val started = task.copy(attempts = 1, firstSentAt = now, sentAt = now)
         next = next.copy(sessionSyncCommands = next.sessionSyncCommands + (id to started))
         send += SessionSyncDispatch(id, started)
         active += 1
         if (task.range == "catchup") catchup += 1
     }
-    return SessionSyncTick(next, send)
+    return SessionSyncTick(next.expireWaitingSessionReads(now).reconcileHistoryReads(), send)
 }
 
 internal fun RemoteState.queueSessionSync(commandId: String, task: PendingSessionSync): RemoteState {
-    if (task.runtimeId in sessionSyncFailures || sessionSyncCommands.values.any {
+    if (task.historyOperationId?.let { !ownsHistoryRead(it) } == true) return this
+    if ((task.runtimeId in sessionSyncFailures && task.range == "preview") || sessionSyncCommands.values.any {
             it.runtimeId == task.runtimeId && it.sessionId == task.sessionId && it.range == task.range
         }) return this
     var next = this
@@ -150,35 +155,44 @@ internal fun RemoteState.queueSessionSync(commandId: String, task: PendingSessio
     if (next.sessionSyncCommands.size >= SESSION_SYNC_TASK_LIMIT) {
         val conversation = next.conversations[task.runtimeId] ?: RuntimeConversation()
         val message = "同步任务已满，请稍后重试"
-        return next.copy(
+        if (task.range != "preview") return next.finishHistoryRead(
+            task.historyOperationId ?: "", HistoryReadPhase.FAILED, message,
+        ).copy(sessionRangeFailures = next.sessionRangeFailures + (sessionRangeFailureKey(task.runtimeId, task.range) to message))
+        return next.finishHistoryRead(task.historyOperationId ?: "", SessionReadPhase.FAILED, message).copy(
             sessionSyncFailures = next.sessionSyncFailures + (task.runtimeId to message),
-            sessionSyncRequests = next.sessionSyncRequests - task.runtimeId,
+            sessionSyncRequests = if (task.demandGeneration != null &&
+                task.demandGeneration != (next.sessionSyncDemandGenerations[task.runtimeId] ?: 0L)) next.sessionSyncRequests
+                else next.sessionSyncRequests - task.runtimeId,
             conversations = next.conversations + (task.runtimeId to conversation.copy(isChatSyncing = false, chatSyncError = message)),
-            sessionHistory = next.sessionHistory.mapValues { (id, history) ->
-                if (id == task.runtimeId && history.requestId == null) history.copy(loading = false) else history
-            },
         )
     }
     return next.copy(
         sessionSyncCommands = next.sessionSyncCommands + (commandId to task.copy(attempts = 0)),
         pendingCommands = next.pendingCommands + (commandId to task.runtimeId),
-    )
+    ).let { queued -> task.historyOperationId?.let { queued.bindHistoryRead(it, commandId) } ?: queued }
 }
 
 internal fun RemoteState.cancelForegroundSessionSyncs(exceptRuntimeId: String?): RemoteState {
     val ids = sessionSyncCommands.filterValues { it.runtimeId != exceptRuntimeId && it.range != "catchup" }.keys
-    val released = ids.fold(this) { current, id -> current.releaseHistoryRequest(id) }
+    val released = ids.fold(cancelHistoryReads(exceptRuntimeId)) { current, id -> current.releaseHistoryRequest(id) }
     return released.copy(sessionSyncCommands = released.sessionSyncCommands - ids, pendingCommands = released.pendingCommands - ids,
         sessionSyncRequests = released.sessionSyncRequests.filterTo(mutableSetOf()) { it == exceptRuntimeId })
 }
 
 internal fun RemoteState.retrySessionSync(runtimeId: String): RemoteState {
     val ids = sessionSyncCommands.filterValues { it.runtimeId == runtimeId }.keys
-    val released = ids.fold(this) { current, id -> current.releaseHistoryRequest(id) }
+    val terminated = sessionReads.values.filter { it.historyKey == runtimeId && it.phase.active &&
+        it.kind in setOf(SessionReadKind.SOURCE, SessionReadKind.CATCHUP) }.fold(this) { next, operation ->
+        next.finishHistoryRead(operation.operationId, SessionReadPhase.SUPERSEDED)
+    }
+    val released = ids.fold(terminated) { current, id ->
+        current.finishRemoteHistoryRead(id, HistoryReadPhase.SUPERSEDED).releaseHistoryRequest(id)
+    }
     val conversation = released.conversations[runtimeId] ?: RuntimeConversation()
     return released.copy(
         sessionSyncCommands = released.sessionSyncCommands - ids, pendingCommands = released.pendingCommands - ids,
         sessionSyncFailures = released.sessionSyncFailures - runtimeId,
+        sessionRangeFailures = released.sessionRangeFailures.filterKeys { !it.startsWith("$runtimeId\u0000") },
         conversations = released.conversations + (runtimeId to conversation.copy(chatSyncError = null, forceSourceSnapshot = true)),
     )
 }

@@ -12,6 +12,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 - `android/docs/agent-icons.md`: bundled agent icon sources and notices.
 - `android/docs/neumorphism-audit.md`: Android surface-material implementation audit.
 - `android/docs/markdown-smoke.md`: manual Markdown rendering fixture.
+- `android/docs/history-reload-probe.md`: opt-in history reload E2E scripts, device safety, evidence and verdicts.
 
 ## Reference snapshots
 

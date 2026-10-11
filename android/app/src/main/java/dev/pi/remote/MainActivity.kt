@@ -779,27 +779,46 @@ private fun OfflineHistoryScreen(
     }
     val historyKey = sessionId?.let { "offline:$it" }
     val historyState = historyKey?.let(state.sessionHistory::get)
+    val historyRead = historyKey?.let(state::historyReadForWindow)
+    val firstRead = historyKey?.let { state.sessionReadForWindow(it, SessionReadKind.FIRST_PAGE) }
     val listState = remember(historyKey) { LazyListState() }
     var historyAnchorIndex by remember(historyKey) { mutableStateOf<Int?>(null) }
     var historyAnchorOffset by remember(historyKey) { mutableStateOf(0) }
     var historyAnchorCount by remember(historyKey) { mutableStateOf(0) }
-    LaunchedEffect(historyKey, historyState?.hasOlder, historyState?.loading) {
-        if (historyKey == null || historyState?.hasOlder != true || historyState.loading) return@LaunchedEffect
+    var historyAnchorOperationId by remember(historyKey) { mutableStateOf<String?>(null) }
+    fun loadHistoryPage() {
+        val key = historyKey ?: return
+        val index = listState.firstVisibleItemIndex
+        val offset = listState.firstVisibleItemScrollOffset
+        val count = listState.layoutInfo.totalItemsCount
+        val accepted = model.loadOlderHistory(key)
+        if (accepted.operationId == null) return
+        historyAnchorIndex = index
+        historyAnchorOffset = offset
+        historyAnchorCount = count
+        historyAnchorOperationId = accepted.operationId
+    }
+    LaunchedEffect(historyKey, historyState?.hasOlder, historyRead?.operationId, historyRead?.phase) {
+        if (historyKey == null || historyState?.hasOlder != true || historyRead?.phase?.active == true ||
+            historyRead?.phase == HistoryReadPhase.FAILED) return@LaunchedEffect
         snapshotFlow { listState.firstVisibleItemIndex }.collect { firstVisibleIndex ->
-            if (firstVisibleIndex <= 1 && historyAnchorIndex == null) {
-                historyAnchorIndex = firstVisibleIndex
-                historyAnchorOffset = listState.firstVisibleItemScrollOffset
-                historyAnchorCount = listState.layoutInfo.totalItemsCount
-                model.loadOlderHistory(historyKey)
-            }
+            if (firstVisibleIndex <= 1 && historyAnchorIndex == null) loadHistoryPage()
         }
     }
-    LaunchedEffect(presentation.messages.size, historyState?.loading) {
+    LaunchedEffect(presentation.messages.size, state.historyReads, historyAnchorOperationId) {
         val anchorIndex = historyAnchorIndex ?: return@LaunchedEffect
-        val itemCount = listState.layoutInfo.totalItemsCount
-        if (historyState?.loading == true || itemCount <= historyAnchorCount) return@LaunchedEffect
-        listState.scrollToItem(anchorIndex + itemCount - historyAnchorCount, historyAnchorOffset)
-        historyAnchorIndex = null
+        val operation = historyAnchorOperationId?.let(state.historyReads::get)
+        if (operation?.phase?.active == true) return@LaunchedEffect
+        try {
+            val itemCount = listState.layoutInfo.totalItemsCount
+            if (operation?.phase in setOf(HistoryReadPhase.SUCCEEDED, HistoryReadPhase.END_REACHED) &&
+                itemCount > historyAnchorCount) {
+                listState.scrollToItem(anchorIndex + itemCount - historyAnchorCount, historyAnchorOffset)
+            }
+        } finally {
+            historyAnchorIndex = null
+            historyAnchorOperationId = null
+        }
     }
     Scaffold(
         topBar = {
@@ -838,7 +857,15 @@ private fun OfflineHistoryScreen(
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             historyKey?.let { state.conversations[it]?.systemNotice }?.let { notice -> item { NoticeCard(notice) } }
-            projection.error?.let { item { WarningCard("历史记录加载失败：$it") } }
+            if (firstRead?.phase?.active == true) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            if (firstRead?.phase == SessionReadPhase.FAILED) item {
+                WarningCard(firstRead.error ?: "本地首屏读取失败")
+                TextButton(onClick = { model.selectOfflineSession(sessionId) }) { Text("重试读取") }
+            } else if (firstRead?.phase?.active != true) projection.error?.let { item { WarningCard("历史记录加载失败：$it") } }
+            if (historyRead?.phase == HistoryReadPhase.FAILED) item {
+                WarningCard(historyRead.error ?: "历史记录加载失败")
+                TextButton(onClick = { loadHistoryPage() }) { Text("重试历史加载") }
+            }
             items(chatItems, key = ChatListItem::key) { item ->
                 when (item) {
                     is ChatListItem.UserMessage -> UserMessageCard(
@@ -908,11 +935,21 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
     val activeDownloadCount = runtimeDownloads.count { it.status == "queued" || it.status == "downloading" }
     val listState = scrollState ?: remember(runtimeId, sessionId) { LazyListState() }
-    val refreshTasksPending = state.sessionSyncCommands.values.any { it.runtimeId == runtimeId }
+    val sourceRead = state.sessionReadForWindow(runtimeId, SessionReadKind.SOURCE)
+    val firstRead = state.sessionReadForWindow(runtimeId, SessionReadKind.FIRST_PAGE)
+    val firstReadError = firstRead?.takeIf { it.phase == SessionReadPhase.FAILED &&
+        conversation.messages.isEmpty() && sourceRead?.phase?.active != true }?.error
+    val refreshTasksPending = sourceRead?.phase?.active == true
+    val displayReadPending = refreshTasksPending || firstRead?.phase?.active == true
     val historyState = state.sessionHistory[runtimeId]
+    val historyRead = state.historyReadForWindow(runtimeId)
+    val rangeError = state.sessionRangeFailures[sessionRangeFailureKey(runtimeId, "catchup")]
     val chatHeaderCount = listOf(
         runtime == null,
         historyState?.loading == true,
+        historyRead?.phase == HistoryReadPhase.FAILED,
+        firstReadError != null,
+        rangeError != null,
         (state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError) != null,
         state.sessionSyncCommands.values.any { it.runtimeId == runtimeId && it.slow && it.exhaustedAt == null },
         conversation.waitingLocalInteraction,
@@ -921,7 +958,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     // A catch-up can connect a large cached prefix in one projection. LazyColumn's nearby-key
     // lookup may then lose the old row. Capture its key before the new list is laid out.
     val previousItemKeys = remember(runtimeId, sessionId) { mutableSetOf<String>() }
-    val projectionAnchor = remember(listState, chatItemKeys, chatHeaderCount, orphanTools.size, conversation.isChatSyncing, refreshTasksPending) {
+    val projectionAnchor = remember(listState, chatItemKeys, chatHeaderCount, orphanTools.size, displayReadPending) {
         listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById || it.key in previousItemKeys }
             ?.let { Triple(it.key as String, it.index, -it.offset) }
     }
@@ -930,10 +967,12 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         previousItemKeys.addAll(chatItemKeys)
     }
     // Capture before a replacement is laid out, including when the new projection is empty.
-    val refreshStartAnchor = remember(runtimeId, sessionId, conversation.isChatSyncing) { projectionAnchor }
+    var refreshAnchorOperationId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
+    val refreshStartAnchor = remember(runtimeId, sessionId, sourceRead?.operationId) { projectionAnchor }
     var historyAnchorMessageId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     var historyAnchorIndex by remember(runtimeId, sessionId) { mutableStateOf<Int?>(null) }
     var historyAnchorPending by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    var historyAnchorOperationId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     var historyAnchorOffset by remember(runtimeId, sessionId) { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
     var initialPositioned by remember(runtimeId, sessionId) { mutableStateOf(false) }
@@ -1041,31 +1080,40 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             }
         }
     }
-    LaunchedEffect(runtimeId, sessionId, historyState?.hasOlder, historyState?.loading, initialPositioned) {
-        if (!initialPositioned || historyState?.hasOlder != true || historyState.loading) return@LaunchedEffect
+    fun loadHistoryPage() {
+        val anchor = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById }
+        val index = anchor?.index ?: listState.firstVisibleItemIndex
+        val offset = anchor?.let { -it.offset } ?: listState.firstVisibleItemScrollOffset
+        val accepted = model.loadOlderHistory(runtimeId)
+        if (accepted.operationId == null) return
+        historyAnchorMessageId = anchor?.key as? String
+        historyAnchorIndex = index
+        historyAnchorPending = true
+        historyAnchorOffset = offset
+        historyAnchorOperationId = accepted.operationId
+    }
+    LaunchedEffect(runtimeId, sessionId, historyState?.hasOlder, historyRead?.operationId, historyRead?.phase, initialPositioned) {
+        if (!initialPositioned || historyState?.hasOlder != true || historyRead?.phase?.active == true ||
+            historyRead?.phase == HistoryReadPhase.FAILED) return@LaunchedEffect
         snapshotFlow { listState.firstVisibleItemIndex }.collect { firstVisibleIndex ->
-            if (firstVisibleIndex <= 1 && !historyAnchorPending) {
-                val anchor = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById }
-                historyAnchorMessageId = anchor?.key as? String
-                historyAnchorIndex = anchor?.index ?: firstVisibleIndex
-                historyAnchorPending = true
-                historyAnchorOffset = anchor?.let { -it.offset } ?: listState.firstVisibleItemScrollOffset
-                model.loadOlderHistory(runtimeId)
-            }
+            if (firstVisibleIndex <= 1 && !historyAnchorPending) loadHistoryPage()
         }
     }
-    LaunchedEffect(chatItems, historyState?.loading) {
-        if (!historyAnchorPending || historyState?.loading == true) return@LaunchedEffect
-        val anchorId = historyAnchorMessageId
-        val newIndex = anchorId?.let { id -> chatItemIndexById[id] }
-            ?.let { it + chatHeaderCount }
-            ?: historyAnchorIndex
-        if (newIndex != null && newIndex >= 0) {
-            listState.scrollToItem(newIndex, historyAnchorOffset)
+    LaunchedEffect(chatItems, state.historyReads, historyAnchorOperationId) {
+        val operation = historyAnchorOperationId?.let(state.historyReads::get)
+        if (!historyAnchorPending || operation?.phase?.active == true) return@LaunchedEffect
+        try {
+            if (operation?.phase in setOf(HistoryReadPhase.SUCCEEDED, HistoryReadPhase.END_REACHED)) {
+                val newIndex = historyAnchorMessageId?.let { chatItemIndexById[it] }
+                    ?.let { it + chatHeaderCount } ?: historyAnchorIndex
+                if (newIndex != null && newIndex >= 0) listState.scrollToItem(newIndex, historyAnchorOffset)
+            }
+        } finally {
+            historyAnchorMessageId = null
+            historyAnchorIndex = null
+            historyAnchorPending = false
+            historyAnchorOperationId = null
         }
-        historyAnchorMessageId = null
-        historyAnchorIndex = null
-        historyAnchorPending = false
     }
     BackHandler {
         if (historyOpen) {
@@ -1155,24 +1203,34 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         return
     }
 
-    LaunchedEffect(runtimeId, sessionId, conversation.isChatSyncing, chatItemKeys, chatHeaderCount, orphanTools.size, refreshTasksPending) {
-        if (conversation.isChatSyncing && initialPositioned && !refreshAnchorArmed && !followNewestAfterSync) {
+    LaunchedEffect(runtimeId, sessionId, displayReadPending, chatItemKeys, chatHeaderCount, orphanTools.size,
+        sourceRead?.operationId, sourceRead?.phase) {
+        if (refreshTasksPending && initialPositioned && !refreshAnchorArmed && !followNewestAfterSync) {
             refreshStartAnchor?.let { (key, index, offset) ->
                 refreshAnchorMessageId = key
                 refreshAnchorIndex = index
                 refreshAnchorOffset = offset
+                refreshAnchorOperationId = sourceRead?.operationId
                 refreshAnchorArmed = true
             }
         }
-        if (chatItems.isEmpty()) return@LaunchedEffect
+        val anchorRead = refreshAnchorOperationId?.let(state.sessionReads::get)
+        val refreshFinished = refreshAnchorArmed && anchorRead?.phase?.active != true
+        if (chatItems.isEmpty()) {
+            if (refreshFinished) {
+                refreshAnchorArmed = false
+                refreshAnchorOperationId = null
+            }
+            return@LaunchedEffect
+        }
         // Slow/error notices are list rows too. They cannot establish the initial chat anchor;
         // wait until an actual message row has been laid out before enabling history paging.
         val itemCount = snapshotFlow { listState.layoutInfo }.first { layout ->
             layout.totalItemsCount == chatHeaderCount + chatItems.size + orphanTools.size &&
                 layout.visibleItemsInfo.any { it.key in chatItemIndexById }
         }.totalItemsCount
-        if (conversation.isChatSyncing) {
-            // A background catch-up can run for a long time. It must not keep the viewport
+        if (displayReadPending && !refreshFinished) {
+            // Recovery can run for a long time. It must not keep the viewport
             // "unpositioned": that hid the jump-to-latest button for the whole sync. Still open
             // a freshly selected conversation on its newest message the first time items appear.
             if (!initialPositioned) {
@@ -1188,14 +1246,17 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 ?.let { id -> chatItemIndexById[id] }
                 ?.let { it + chatHeaderCount }
                 ?: refreshAnchorIndex
-            if (anchorIndex != null && anchorIndex >= 0) {
-                listState.scrollToItem(anchorIndex.coerceAtMost(itemCount - 1), refreshAnchorOffset)
-            }
-            // A refresh completes in several rounds (preview, then catch-up pages). Stay pinned
-            // until every sync for this runtime has finished so a later round cannot yank the list
-            // to the newest message.
-            if (!refreshTasksPending) {
-                refreshAnchorArmed = false
+            try {
+                if (anchorIndex != null && anchorIndex >= 0) {
+                    listState.scrollToItem(anchorIndex.coerceAtMost(itemCount - 1), refreshAnchorOffset)
+                }
+            } finally {
+                // The viewport belongs to this source read, not to unrelated history/background
+                // ranges or a replacement source read. Every terminal outcome releases it.
+                if (refreshFinished) {
+                    refreshAnchorArmed = false
+                    refreshAnchorOperationId = null
+                }
             }
             initialPositioned = true
             return@LaunchedEffect
@@ -1259,7 +1320,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                         }
                         ChatRuntimeStatus(
                             status = runtime?.status ?: "error",
-                            isChatSyncing = conversation.isChatSyncing,
+                            isChatSyncing = displayReadPending,
                             modelLabel = runtime?.model?.let(::modelLabel),
                             thinkingLevel = runtime?.thinkingLevel,
                         )
@@ -1551,6 +1612,22 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 if (historyState?.loading == true) {
                     item { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
                 }
+                if (historyRead?.phase == HistoryReadPhase.FAILED) item {
+                    Column {
+                        WarningCard(historyRead.error ?: "历史记录加载失败")
+                        TextButton(onClick = { loadHistoryPage() }) { Text("重试历史加载") }
+                    }
+                }
+                firstReadError?.let { message -> item {
+                    WarningCard(message)
+                    TextButton(onClick = { model.refreshRuntime(runtimeId, explicitRetry = true) }) { Text("重试读取") }
+                } }
+                rangeError?.let { message -> item {
+                    Column {
+                        WarningCard(message)
+                        TextButton(onClick = { model.refreshRuntime(runtimeId, explicitRetry = true) }) { Text("重试补齐") }
+                    }
+                } }
                 (state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError)?.let { syncError ->
                     item {
                         Column {
