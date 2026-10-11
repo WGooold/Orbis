@@ -251,6 +251,8 @@ data class ArtifactDownload(
     val taskId: String,
     val runtimeId: String,
     val sessionId: String? = null,
+    /** The paired Host that serves this transfer; null only for records written before multi-Host. */
+    val hostId: String? = null,
     val displayName: String,
     val commandId: String? = null,
     val transferId: String? = null,
@@ -1030,6 +1032,13 @@ internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
         )
     return listOf(CachedHostGroup(host.hostId, host.name, directories))
 }
+
+/**
+ * The sidebar tree for every paired computer. Ownership stays in the group's `hostId`, so a
+ * Session ID that exists on two computers resolves to two distinct rows instead of collapsing.
+ */
+internal fun cachedHistoryTree(states: List<RemoteState>): List<CachedHostGroup> =
+    states.flatMap(::cachedHistoryTree)
 
 /**
  * Newest-first sort key for a row. Online Sessions are treated as freshest (current time) so they

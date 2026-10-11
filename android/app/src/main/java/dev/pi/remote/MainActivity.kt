@@ -161,15 +161,24 @@ class MainActivity : ComponentActivity() {
             PiRemoteTheme {
                 val model: RemoteViewModel = viewModel()
                 val state by model.state.collectAsStateWithLifecycle()
-                RemoteApp(state, model)
+                val hosts by model.hosts.collectAsStateWithLifecycle()
+                val pairingError by model.pairingError.collectAsStateWithLifecycle()
+                RemoteApp(state, hosts, pairingError, model)
             }
         }
     }
 }
 
 @Composable
-private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
-    val appearsPaired = state.deviceId != null || state.connection != RelayConnection.OFFLINE
+private fun RemoteApp(
+    state: RemoteState,
+    hosts: List<HostSnapshot>,
+    pairingError: String?,
+    model: RemoteViewModel,
+) {
+    val appearsPaired = hosts.isNotEmpty() || state.deviceId != null || state.connection != RelayConnection.OFFLINE
+    // 添加电脑：已经配对过也能再扫一台；取消只是回主界面，不动已有连接。
+    var addingHost by rememberSaveable { mutableStateOf(false) }
     var allDownloadsOpen by rememberSaveable { mutableStateOf(false) }
     var statusOpen by rememberSaveable { mutableStateOf(false) }
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
@@ -201,7 +210,14 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
         }
     }
     when {
-        !appearsPaired -> PairingScreen(state.error, model::pair, model::clearError)
+        !appearsPaired || addingHost -> PairingScreen(
+            error = pairingError ?: state.error,
+            pair = model::pair,
+            clearError = { model.clearPairingError(); model.clearError() },
+            onCancel = if (hosts.isNotEmpty()) {
+                { addingHost = false; model.clearPairingError() }
+            } else null,
+        )
         state.selectedRuntimeId == null && state.selectedOfflineSessionId != null -> AgentTheme(
             agentBrand(state.sessions[state.selectedOfflineSessionId]?.agentKind),
         ) {
@@ -239,24 +255,35 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
             runtimeListStateHolder.SaveableStateProvider("runtime-list") {
                 RuntimeListScreen(
                     state = state,
-                    selectRuntime = { runtimeId ->
+                    hosts = hosts,
+                    onOpenRuntime = { hostId, runtimeId ->
                         allDownloadsOpen = false
-                        model.selectRuntime(runtimeId)
+                        model.openRuntime(hostId, runtimeId)
                     },
-                    setSessionAlias = model::setSessionAlias,
+                    setSessionAlias = { hostId, runtimeId, alias ->
+                        model.setSessionAliasOn(hostId, runtimeId, alias)
+                    },
                     onOpenDownloads = { allDownloadsOpen = true },
-                    unpair = model::unpair,
-                    onOpenHistory = { sessionId ->
+                    onUnpairHost = { hostId -> model.unpair(hostId) },
+                    onOpenSession = { hostId, sessionId ->
                         allDownloadsOpen = false
-                        model.selectOfflineSession(sessionId)
+                        model.openSession(hostId, sessionId)
                     },
-                    onNewSession = { cwd ->
-                        newSessionHostId = state.hostId
+                    onOpenHistory = { hostId, sessionId ->
+                        allDownloadsOpen = false
+                        model.openOfflineSession(hostId, sessionId)
+                    },
+                    onNewSession = { hostId, cwd ->
+                        model.selectHost(hostId)
+                        newSessionHostId = hostId
                         newSessionCwd = cwd
                         newSessionOpen = true
                     },
-                    onActivateSession = model::activateSession,
-                    onSetArchived = model::setSessionArchived,
+                    onSetArchived = { hostId, sessionId, archived ->
+                        model.setSessionArchivedOn(hostId, sessionId, archived)
+                    },
+                    onSelectHost = model::selectHost,
+                    onAddHost = { addingHost = true },
                     onOpenStatus = { statusOpen = true },
                 )
             }
@@ -308,7 +335,12 @@ private fun RemoteApp(state: RemoteState, model: RemoteViewModel) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PairingScreen(error: String?, pair: (String, String, String?) -> Unit, clearError: () -> Unit) {
+private fun PairingScreen(
+    error: String?,
+    pair: (String, String, String?) -> Unit,
+    clearError: () -> Unit,
+    onCancel: (() -> Unit)? = null,
+) {
     var relayUrl by remember { mutableStateOf("") }
     var pairingCode by remember { mutableStateOf("") }
     var qrRaw by remember { mutableStateOf<String?>(null) }
@@ -316,7 +348,20 @@ private fun PairingScreen(error: String?, pair: (String, String, String?) -> Uni
     var scanError by remember { mutableStateOf<String?>(null) }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        topBar = { TopAppBar(title = { Text("Orbis", fontWeight = FontWeight.SemiBold) }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Orbis", fontWeight = FontWeight.SemiBold) },
+                navigationIcon = {
+                    if (onCancel != null) {
+                        NeumorphIconButton(
+                            onClick = onCancel,
+                            icon = Icons.Rounded.Close,
+                            contentDescription = "取消添加电脑",
+                        )
+                    }
+                },
+            )
+        },
     ) { padding ->
         Column(
             modifier = Modifier.fillMaxSize().padding(padding)
@@ -414,42 +459,52 @@ private fun PairingScreen(error: String?, pair: (String, String, String?) -> Uni
 @Composable
 private fun RuntimeListScreen(
     state: RemoteState,
-    selectRuntime: (String?) -> Unit,
-    setSessionAlias: (String, String) -> Unit,
+    hosts: List<HostSnapshot>,
+    onOpenRuntime: (String, String) -> Unit,
+    setSessionAlias: (String, String, String) -> Unit,
     onOpenDownloads: () -> Unit,
-    unpair: () -> Unit,
-    onOpenHistory: (String) -> Unit,
-    onNewSession: (String?) -> Unit,
-    onActivateSession: (String) -> Unit,
-    onSetArchived: (String, Boolean) -> Unit,
+    onUnpairHost: (String) -> Unit,
+    onOpenSession: (String, String) -> Unit,
+    onOpenHistory: (String, String) -> Unit,
+    onNewSession: (String, String?) -> Unit,
+    onSetArchived: (String, String, Boolean) -> Unit,
+    onSelectHost: (String) -> Unit,
+    onAddHost: () -> Unit,
     onOpenStatus: () -> Unit,
 ) {
-    var aliasEditorRuntime by remember { mutableStateOf<RuntimeSummary?>(null) }
+    var aliasEditor by remember { mutableStateOf<Pair<String, RuntimeSummary>?>(null) }
     var moreMenuOpen by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val onlineRuntimesBySession = remember(state.runtimes, state.sessionAliases) {
-        state.runtimes.values
-            .filter { it.sessionId != null }
-            .sortedBy(state::runtimeDisplayName)
-            .groupBy { it.sessionId.orEmpty() }
+    // 主页卡片来自所有已配对电脑：每行都带上 Host 名字，才分得清两台电脑上同名的会话。
+    val visibleRuntimes = remember(hosts) {
+        hosts.flatMap { snapshot ->
+            snapshot.state.runtimes.values
+                .sortedBy(snapshot.state::runtimeDisplayName)
+                .map { HostRuntimeRow(snapshot.hostId, snapshot.name, it, snapshot.state) }
+        }
     }
+    val activeHostId = state.hostId
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
             SessionDrawer(
                 state = state,
+                hosts = hosts,
+                onSelectHost = onSelectHost,
+                onUnpairHost = onUnpairHost,
+                onAddHost = onAddHost,
                 onSetArchived = onSetArchived,
-                onOpenSession = { sessionId ->
+                // 打开别的电脑的会话前先切过去：交互命令永远只发给当前电脑。
+                onOpenSession = { hostId, sessionId ->
                     scope.launch { drawerState.close() }
-                    val runtime = onlineRuntimesBySession[sessionId]?.firstOrNull()
-                    if (runtime != null) selectRuntime(runtime.runtimeId) else onActivateSession(sessionId)
+                    onOpenSession(hostId, sessionId)
                 },
                 // History temporarily replaces this page; return to the still-open drawer.
                 onOpenHistory = onOpenHistory,
-                onNewSession = { cwd ->
+                onNewSession = { hostId, cwd ->
                     scope.launch { drawerState.close() }
-                    onNewSession(cwd)
+                    onNewSession(hostId, cwd)
                 },
             )
         },
@@ -504,8 +559,13 @@ private fun RuntimeListScreen(
                                     onClick = { moreMenuOpen = false; onOpenStatus() },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("取消配对", color = MaterialTheme.colorScheme.error) },
-                                    onClick = { moreMenuOpen = false; unpair() },
+                                    text = { Text("添加电脑") },
+                                    leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null) },
+                                    onClick = { moreMenuOpen = false; onAddHost() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("取消配对当前电脑", color = MaterialTheme.colorScheme.error) },
+                                    onClick = { moreMenuOpen = false; activeHostId?.let(onUnpairHost) },
                                 )
                             }
                         }
@@ -515,7 +575,6 @@ private fun RuntimeListScreen(
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = RemoteUi.PagePadding)) {
                 ConnectionStatus(state.connection, state.e2eReady, state.path)
-                val visibleRuntimes = state.runtimes.values.sortedBy(state::runtimeDisplayName)
                 if (visibleRuntimes.isEmpty()) {
                     Column(
                         modifier = Modifier.fillMaxSize().padding(bottom = 48.dp),
@@ -538,13 +597,14 @@ private fun RuntimeListScreen(
                     ) {
                         items(
                             visibleRuntimes,
-                            key = RuntimeSummary::runtimeId,
-                        ) { runtime ->
+                            key = { "${it.hostId}:${it.runtime.runtimeId}" },
+                        ) { row ->
+                            val runtime = row.runtime
                             NeumorphSurface(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(20.dp),
                                 shadowScale = 0.8f,
-                                onClick = { selectRuntime(runtime.runtimeId) },
+                                onClick = { onOpenRuntime(row.hostId, runtime.runtimeId) },
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -560,8 +620,9 @@ private fun RuntimeListScreen(
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
+                                        // Host 名放在目录前面：两台电脑上同名目录的会话在这里区分。
                                         Text(
-                                            runtime.runtimeDisplayPath(),
+                                            "${row.hostName}-${runtime.cwd}",
                                             fontFamily = FontFamily.Monospace,
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -571,8 +632,11 @@ private fun RuntimeListScreen(
                                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                             Text(agentBrand(runtime.agentKind).title, color = agentBrand(runtime.agentKind).accent(), style = MaterialTheme.typography.labelMedium)
                                             RuntimeStatus(runtime.status)
+                                            if (hosts.size > 1 && row.hostId != activeHostId) {
+                                                Text(row.hostName, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                                            }
                                         }
-                                        if (state.hasPendingInteraction(runtime.runtimeId)) {
+                                        if (row.state.hasPendingInteraction(runtime.runtimeId)) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -602,7 +666,7 @@ private fun RuntimeListScreen(
                                         }
                                     }
                                     NeumorphIconButton(
-                                        onClick = { aliasEditorRuntime = runtime },
+                                        onClick = { aliasEditor = row.hostId to runtime },
                                         icon = Icons.Rounded.Edit,
                                         contentDescription = "修改会话别名",
                                         size = 40.dp,
@@ -616,22 +680,31 @@ private fun RuntimeListScreen(
             }
         }
     }
-    aliasEditorRuntime?.let { runtime ->
+    aliasEditor?.let { (hostId, runtime) ->
         SessionAliasDialog(
             runtime = runtime,
-            currentAlias = state.sessionAliases[runtime.sessionAliasIdentity()],
-            onDismiss = { aliasEditorRuntime = null },
+            currentAlias = hosts.firstOrNull { it.hostId == hostId }
+                ?.state?.sessionAliases?.get(runtime.sessionAliasIdentity()),
+            onDismiss = { aliasEditor = null },
             onSave = { alias ->
-                setSessionAlias(runtime.runtimeId, alias)
-                aliasEditorRuntime = null
+                setSessionAlias(hostId, runtime.runtimeId, alias)
+                aliasEditor = null
             },
             onClear = {
-                setSessionAlias(runtime.runtimeId, "")
-                aliasEditorRuntime = null
+                setSessionAlias(hostId, runtime.runtimeId, "")
+                aliasEditor = null
             },
         )
     }
 }
+
+/** One home-screen card: the Runtime plus the computer that serves it. */
+private data class HostRuntimeRow(
+    val hostId: String,
+    val hostName: String,
+    val runtime: RuntimeSummary,
+    val state: RemoteState,
+)
 
 /**
  * L2 新建会话（spec §8.1 / §8.2）：选 agent 类型 → 浏览电脑目录（session.browse 逐层下钻，

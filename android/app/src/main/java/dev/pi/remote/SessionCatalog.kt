@@ -53,22 +53,34 @@ private data class PersistedSessionCatalog(
 class SessionCatalogStore internal constructor(
     private val file: File,
     private val json: Json = Json { ignoreUnknownKeys = true },
+    /**
+     * Single-Host installs wrote one `catalog.cache`. Multi-Host keeps one file per Host, so the
+     * old file is only read when this Host has none of its own, then migrated on first save.
+     */
+    private val legacyFile: File? = null,
 ) {
-    constructor(context: Context, json: Json = Json { ignoreUnknownKeys = true }) :
-        this(File(context.applicationContext.filesDir, "session-catalog/catalog.cache"), json)
+    constructor(context: Context, hostId: String, json: Json = Json { ignoreUnknownKeys = true }) :
+        this(
+            file = File(context.applicationContext.filesDir, "session-catalog/${
+                hostId.replace(Regex("[^A-Za-z0-9._-]"), "_")
+            }.cache"),
+            json = json,
+            legacyFile = File(context.applicationContext.filesDir, "session-catalog/catalog.cache"),
+        )
 
     @Synchronized
     fun load(device: DeviceCredential, hostId: String): List<SessionCatalogEntry> {
-        if (hostId.isBlank() || !file.isFile) return emptyList()
+        if (hostId.isBlank()) return emptyList()
+        val source = file.takeIf(File::isFile) ?: legacyFile?.takeIf(File::isFile) ?: return emptyList()
         val stored = runCatching {
-            json.decodeFromString<PersistedSessionCatalog>(file.readText(Charsets.UTF_8))
+            json.decodeFromString<PersistedSessionCatalog>(source.readText(Charsets.UTF_8))
         }.getOrNull()?.takeIf {
             it.schemaVersion == 1 && it.relayUrl == device.relayUrl && it.deviceId == device.deviceId &&
                 (it.hostId == null || it.hostId == hostId)
         } ?: return emptyList()
         // Old catalogs already belong to this exact pairing's device/Relay namespace.
         // Bind that namespace once, preserving all sessions, including empty and offline ones.
-        if (stored.hostId == null) runCatching { save(device, hostId, stored.sessions) }
+        if (stored.hostId == null || source !== file) runCatching { save(device, hostId, stored.sessions) }
         return stored.sessions
     }
 
@@ -98,7 +110,7 @@ class SessionCatalogStore internal constructor(
 
     @Synchronized
     fun clear() {
-        file.parentFile?.listFiles()?.forEach(File::delete)
+        file.delete()
     }
 
     private fun replaceAtomically(source: File, target: File) {

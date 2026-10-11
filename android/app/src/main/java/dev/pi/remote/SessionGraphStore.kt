@@ -623,6 +623,16 @@ class SessionGraphStore(
         directory.listFiles()?.forEach(File::delete)
     }
 
+    /** Removes exactly one pairing's cache; unpairing one Host must not touch the others. */
+    @Synchronized
+    fun clearDevice(device: DeviceCredential) {
+        val identity = cacheIdentity(device)
+        databases.remove(identity)?.close()
+        File(directory, "$identity.db").delete()
+        File(directory, "$identity.db-wal").delete()
+        File(directory, "$identity.db-shm").delete()
+    }
+
     private fun database(device: DeviceCredential): GraphDatabase {
         directory.mkdirs()
         val identity = cacheIdentity(device)

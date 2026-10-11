@@ -614,6 +614,7 @@ export class CodexRuntime implements AgentBackend {
       runtimeId: this.runtimeIdFor(thread.id),
       name: "Codex",
       cwd: thread.cwd,
+      hostname: localHostname(),
       status: this.#statusOf(thread),
       sessionId: this.#publicSessionId(thread.id),
       ...(thread.name === undefined ? {} : { sessionName: thread.name }),

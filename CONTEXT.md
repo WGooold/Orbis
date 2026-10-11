@@ -46,6 +46,14 @@ _Avoid_: Host management server, conversation dashboard
 **Device**:
 A paired phone installation identified by a unique, revocable pairing record held by the Host.
 
+**Paired Host**:
+One computer a phone installation holds a pairing record for. A phone may hold several at once; `hostId` is the identity that dedupes them, and re-pairing a computer replaces its record instead of adding another.
+_Avoid_: Account, server
+
+**Current Host**:
+The one paired Host whose state the phone's interactive screens operate on. Switching it changes where commands are addressed; it does not connect or disconnect the other paired Hosts.
+_Avoid_: Active connection
+
 **Runtime event**:
 An ordered state update emitted for one runtime connection toward its paired devices.
 

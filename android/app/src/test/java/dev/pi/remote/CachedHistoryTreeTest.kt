@@ -313,4 +313,26 @@ class CachedHistoryTreeTest {
 
         assertNull(graph.firstUserMessageTitle(json))
     }
+
+    @Test
+    fun `sessions with the same sessionId on two Hosts stay two separate rows`() {
+        val first = RemoteState(
+            hostId = "host-1",
+            hostName = "Desktop",
+            sessions = mapOf("shared" to session("shared", "D:\\work", modifiedAt = 1)),
+        )
+        val second = RemoteState(
+            hostId = "host-2",
+            hostName = "Laptop",
+            sessions = mapOf("shared" to session("shared", "D:\\work", modifiedAt = 2)),
+        )
+
+        val tree = cachedHistoryTree(listOf(first, second))
+
+        assertEquals(listOf("host-1", "host-2"), tree.map { it.hostId })
+        assertEquals(listOf("Desktop", "Laptop"), tree.map { it.hostname })
+        // Session identity is only unique inside one Host's directory: two computers that happen
+        // to name a Session the same must not collapse into one sidebar row.
+        assertEquals(2, tree.sumOf { host -> host.directories.sumOf { it.sessions.size } })
+    }
 }

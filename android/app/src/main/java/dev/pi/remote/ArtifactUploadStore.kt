@@ -21,6 +21,8 @@ import kotlinx.serialization.json.Json
 data class UploadTask(
     val taskId: String,
     val runtimeId: String,
+    /** The paired Host this upload was addressed to; null only for legacy records. */
+    val hostId: String? = null,
     /** 手机上的 `content://` URI。进程重启后靠它续传。 */
     val sourceUri: String,
     val displayName: String,
@@ -105,6 +107,18 @@ class ArtifactUploadStore(context: Context) {
     @Synchronized
     fun register(task: UploadTask) {
         tasks[task.taskId] = task
+        persistTasks()
+    }
+
+    /**
+     * Stamps records written before multi-Host with their owning Host. Only called when exactly
+     * one Host is paired, which is every install that existed before this change.
+     */
+    @Synchronized
+    fun adoptHostId(hostId: String) {
+        val legacy = tasks.values.filter { it.hostId == null }
+        if (legacy.isEmpty()) return
+        legacy.forEach { tasks[it.taskId] = it.copy(hostId = hostId) }
         persistTasks()
     }
 

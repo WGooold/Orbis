@@ -52,6 +52,18 @@ class ArtifactDownloadStore(context: Context) {
         persistTasks()
     }
 
+    /**
+     * Stamps records written before multi-Host with their owning Host. Only called when exactly
+     * one Host is paired, which is every install that existed before this change.
+     */
+    @Synchronized
+    fun adoptHostId(hostId: String) {
+        val legacy = tasks.values.filter { it.hostId == null }
+        if (legacy.isEmpty()) return
+        legacy.forEach { tasks[it.taskId] = it.copy(hostId = hostId) }
+        persistTasks()
+    }
+
     @Synchronized
     fun resumeOffset(task: ArtifactDownload): Long {
         if (task.status == "completed") return 0
@@ -77,6 +89,7 @@ class ArtifactDownloadStore(context: Context) {
         transferId: String,
         offset: Long,
         artifact: RemoteArtifact,
+        hostId: String? = null,
     ): String {
         require(artifact.size >= 0) { "下载文件大小无效" }
         require(offset in 0..artifact.size) { "下载起点无效" }
@@ -135,6 +148,7 @@ class ArtifactDownloadStore(context: Context) {
             // Direct downloads are served by Host, while the task runtimeId is the source
             // session shown in the UI. Keep that source identity once the command is bound.
             runtimeId = existing?.runtimeId ?: runtimeId,
+            hostId = existing?.hostId ?: hostId,
             displayName = existing?.displayName ?: artifact.fileName,
             commandId = commandId,
             sourcePath = existing?.sourcePath ?: artifact.path,

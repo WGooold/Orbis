@@ -161,78 +161,105 @@ private fun DrawerAgentFilterMenu(
     }
 }
 
+/** One Host's slice of the merged sidebar tree. */
+private data class DrawerHostSection(
+    val hostId: String,
+    val hostName: String,
+    val directories: List<CachedDirectoryGroup>,
+)
+
 /** Host context, raised directory headers, and inset session leaves each have their own level. */
 @Composable
 internal fun SessionDrawer(
     state: RemoteState,
-    onOpenSession: (String) -> Unit,
-    onOpenHistory: (String) -> Unit,
-    onNewSession: (String?) -> Unit,
-    onSetArchived: (String, Boolean) -> Unit,
+    hosts: List<HostSnapshot>,
+    onSelectHost: (String) -> Unit,
+    onUnpairHost: (String) -> Unit,
+    onAddHost: () -> Unit,
+    onOpenSession: (String, String) -> Unit,
+    onOpenHistory: (String, String) -> Unit,
+    onNewSession: (String, String?) -> Unit,
+    onSetArchived: (String, String, Boolean) -> Unit,
 ) {
-    val tree = remember(state.hostId, state.hostName, state.sessions, state.runtimes, state.sessionAliases, state.sessionGraphs, state.conversations) {
-        cachedHistoryTree(state)
+    val tree = remember(hosts) {
+        cachedHistoryTree(hosts.map { it.state })
     }
+    val activeHostId = state.hostId
     var agentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
     val agentFilter = drawerAgentFilter(agentFilterKey)
     val currentProvider = state.currentProviders["codex"]
-    var requestedProviderKey by rememberSaveable(state.hostId) { mutableStateOf(CURRENT_CODEX_PROVIDER) }
+    val currentProviders = remember(hosts) { hosts.associate { it.hostId to it.state.currentProviders["codex"] } }
+    var requestedProviderKey by rememberSaveable(activeHostId) { mutableStateOf(CURRENT_CODEX_PROVIDER) }
     val providerOptions = remember(tree, currentProvider) { codexProviderOptions(tree, currentProvider) }
     val providerKey = requestedProviderKey.takeIf { key -> providerOptions.any { it.key == key } } ?: CURRENT_CODEX_PROVIDER
     val providerLabel = providerOptions.first { it.key == providerKey }.label
     var showArchived by rememberSaveable { mutableStateOf(false) }
-    var blockedSessionId by remember { mutableStateOf<String?>(null) }
-    val filteredTree = remember(tree, agentFilterKey, showArchived, providerKey, currentProvider) {
+    var blockedSession by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val filteredTree = remember(tree, agentFilterKey, showArchived, providerKey, currentProviders, activeHostId) {
         tree.mapNotNull { host ->
+            // The provider filter is meaningful only where the APP knows the active provider; rows
+            // from other computers stay visible instead of being filtered by a foreign catalogue.
+            val hostProvider = if (host.hostId == activeHostId) currentProviders[host.hostId] else null
             host.copy(
                 directories = host.directories.mapNotNull { directory ->
                     directory.copy(sessions = directory.sessions.filter {
                         agentFilter.matches(it) && it.isArchived == showArchived &&
-                            (agentFilter != DrawerAgentFilter.Codex || matchesCodexProvider(it, providerKey, currentProvider))
+                            (agentFilter != DrawerAgentFilter.Codex || hostProvider == null ||
+                                matchesCodexProvider(it, providerKey, hostProvider))
                     })
                         .takeIf { it.sessions.isNotEmpty() }
                 },
             ).takeIf { it.directories.isNotEmpty() }
         }
     }
-    val host = state.sessionHost
-    val selectedHost = host?.hostId
-    val activeHost = filteredTree.singleOrNull()
     var query by rememberSaveable { mutableStateOf("") }
     val searchTerm = query.trim()
-    val directories = remember(activeHost, searchTerm) {
-        activeHost?.directories.orEmpty().mapNotNull { directory ->
-            if (searchTerm.isEmpty() || directory.cwd.contains(searchTerm, ignoreCase = true)) {
-                directory
-            } else {
-                directory.sessions.filter { it.title.contains(searchTerm, ignoreCase = true) }
-                    .takeIf { it.isNotEmpty() }?.let { directory.copy(sessions = it) }
-            }
-        }
+    val sections = remember(filteredTree, searchTerm) {
+        filteredTree.map { host ->
+            DrawerHostSection(
+                hostId = host.hostId,
+                hostName = host.hostname,
+                directories = host.directories.mapNotNull { directory ->
+                    if (searchTerm.isEmpty() || directory.cwd.contains(searchTerm, ignoreCase = true)) {
+                        directory
+                    } else {
+                        directory.sessions.filter { it.title.contains(searchTerm, ignoreCase = true) }
+                            .takeIf { it.isNotEmpty() }?.let { directory.copy(sessions = it) }
+                    }
+                },
+            )
+        }.filter { it.directories.isNotEmpty() }
     }
+    val directoryCount = sections.sumOf { it.directories.size }
+    val sessionCount = sections.sumOf { section -> section.directories.sumOf { it.sessions.size } }
+    val showHostHeaders = sections.size > 1
     // Keep only one branch open. Searching reveals the first result without losing its parent.
-    var expandedCwd by rememberSaveable(selectedHost, searchTerm, agentFilterKey, providerKey, currentProvider) {
-        mutableStateOf(directories.firstOrNull()?.cwd)
+    var expandedKey by rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider) {
+        mutableStateOf(
+            sections.firstOrNull()?.let { section ->
+                section.directories.firstOrNull()?.let { section.hostId + '\u0000' + it.cwd }
+            },
+        )
     }
-    var showAllSessions by rememberSaveable(selectedHost, searchTerm, agentFilterKey, providerKey, currentProvider, expandedCwd) { mutableStateOf(false) }
+    var showAllSessions by rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, expandedKey) { mutableStateOf(false) }
     // Reset only when browsing a different catalog, not when restoring this page from history.
-    val listState = rememberSaveable(selectedHost, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, saver = LazyListState.Saver) {
+    val listState = rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, saver = LazyListState.Saver) {
         LazyListState()
     }
-    val connected = state.canOperateSessions
-    val canCreate = state.canCreateSessionOn(selectedHost)
+    val canCreate = state.canCreateSessionOn(activeHostId)
     val focusManager = LocalFocusManager.current
     val drawerWidth = (LocalConfiguration.current.screenWidthDp.dp - 32.dp).coerceAtMost(384.dp)
 
-    blockedSessionId?.let { sessionId ->
-        val reason = state.codexProviderMismatch(sessionId)
+    blockedSession?.let { (hostId, sessionId) ->
+        val snapshot = hosts.firstOrNull { it.hostId == hostId }
+        val reason = if (hostId == activeHostId) snapshot?.state?.codexProviderMismatch(sessionId) else null
         if (reason != null) NeumorphDialog(
-            onDismissRequest = { blockedSessionId = null },
+            onDismissRequest = { blockedSession = null },
             title = { Text("需要切换 provider") },
             text = { Text(reason) },
-            confirmButton = { NeumorphTextButton("知道了", { blockedSessionId = null }) },
-            dismissButton = if (state.sessions[sessionId]?.hasHistoryCache == true) {
-                { NeumorphTextButton("查看只读历史", { blockedSessionId = null; onOpenHistory(sessionId) }) }
+            confirmButton = { NeumorphTextButton("知道了", { blockedSession = null }) },
+            dismissButton = if (snapshot?.state?.sessions?.get(sessionId)?.hasHistoryCache == true) {
+                { NeumorphTextButton("查看只读历史", { blockedSession = null; onOpenHistory(hostId, sessionId) }) }
             } else null,
         )
     }
@@ -288,7 +315,7 @@ internal fun SessionDrawer(
                         onSelectProvider = { requestedProviderKey = it; agentFilterKey = DrawerAgentFilter.Codex.key },
                     )
                     NeumorphIconButton(
-                        onClick = { onNewSession(null) },
+                        onClick = { activeHostId?.let { onNewSession(it, null) } },
                         icon = Icons.Rounded.Add,
                         contentDescription = "新建会话",
                         enabled = canCreate,
@@ -314,7 +341,7 @@ internal fun SessionDrawer(
                     modifier = Modifier.semantics { heading() },
                 )
                 Text(
-                    "${directories.size} 个目录 · ${directories.sumOf { it.sessions.size }} 个会话",
+                    "$directoryCount 个目录 · $sessionCount 个会话",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -324,7 +351,7 @@ internal fun SessionDrawer(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 16.dp),
             ) {
-                if (directories.isEmpty()) {
+                if (sections.isEmpty()) {
                     item {
                         Column(
                             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 28.dp),
@@ -349,76 +376,95 @@ internal fun SessionDrawer(
                         }
                     }
                 }
-                directories.forEach { directory ->
-                    val expanded = directory.cwd == expandedCwd
-                    item(key = "directory:${directory.cwd}") {
-                        DrawerDirectoryHeader(
-                            directory = directory,
-                            expanded = expanded,
-                            createEnabled = canCreate && directory.cwd.isNotBlank(),
-                            onCreate = { onNewSession(directory.cwd) },
-                        ) {
-                            expandedCwd = if (expanded) null else directory.cwd
-                            focusManager.clearFocus()
+                sections.forEach { section ->
+                    val hostSnapshot = hosts.firstOrNull { it.hostId == section.hostId }
+                    val isActiveHost = section.hostId == activeHostId
+                    if (showHostHeaders) {
+                        item(key = "host:${section.hostId}") {
+                            DrawerHostHeader(section.hostName, isActiveHost)
                         }
                     }
-                    if (expanded) {
-                        val visibleSessions = if (showAllSessions || searchTerm.isNotEmpty()) {
-                            directory.sessions
-                        } else directory.sessions.take(5)
-                        items(visibleSessions, key = { "session:${it.sessionId}" }) { row ->
-                            DrawerBranch {
-                                DrawerSessionRow(
-                                    row = row,
-                                    onOpenSession = {
-                                        if (state.codexProviderMismatch(row.sessionId) != null) blockedSessionId = row.sessionId
-                                        else onOpenSession(row.sessionId)
-                                    },
-                                    onOpenHistory = { onOpenHistory(row.sessionId) },
-                                    archiveEnabled = connected && state.e2eReady &&
-                                        row.catalogEntry?.agentKind != null &&
-                                        row.sessionId !in state.sessionArchiveRequests.values &&
-                                        (row.isArchived || !row.isOnline ||
-                                            (row.isCodex && state.runtimes[row.runtimeId]?.status == "idle") ||
-                                            (row.agentKind == "dsh" && state.runtimes[row.runtimeId]?.status == "idle")),
-                                    archivePending = row.sessionId in state.sessionArchiveRequests.values,
-                                    onSetArchived = { onSetArchived(row.sessionId, !row.isArchived) },
-                                )
+                    section.directories.forEach { directory ->
+                        val branchKey = section.hostId + '\u0000' + directory.cwd
+                        val expanded = branchKey == expandedKey
+                        item(key = "directory:$branchKey") {
+                            DrawerDirectoryHeader(
+                                directory = directory,
+                                expanded = expanded,
+                                createEnabled = isActiveHost && canCreate && directory.cwd.isNotBlank(),
+                                onCreate = { onNewSession(section.hostId, directory.cwd) },
+                            ) {
+                                expandedKey = if (expanded) null else branchKey
+                                focusManager.clearFocus()
                             }
                         }
-                        if (directory.sessions.size > 5 && searchTerm.isEmpty()) {
-                            item(key = "more:${directory.cwd}") {
+                        if (expanded) {
+                            val visibleSessions = if (showAllSessions || searchTerm.isNotEmpty()) {
+                                directory.sessions
+                            } else directory.sessions.take(5)
+                            items(visibleSessions, key = { "session:${section.hostId}:${it.sessionId}" }) { row ->
                                 DrawerBranch {
-                                    NeumorphTextButton(
-                                        text = if (showAllSessions) "收起较早会话" else "再显示 ${directory.sessions.size - 5} 个会话",
-                                        onClick = { showAllSessions = !showAllSessions },
-                                        icon = if (showAllSessions) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                                        modifier = Modifier.fillMaxWidth(),
+                                    DrawerSessionRow(
+                                        row = row,
+                                        onOpenSession = {
+                                            if (isActiveHost && state.codexProviderMismatch(row.sessionId) != null) {
+                                                blockedSession = section.hostId to row.sessionId
+                                            } else {
+                                                onOpenSession(section.hostId, row.sessionId)
+                                            }
+                                        },
+                                        onOpenHistory = { onOpenHistory(section.hostId, row.sessionId) },
+                                        archiveEnabled = isActiveHost && hostSnapshot?.state?.e2eReady == true &&
+                                            row.catalogEntry?.agentKind != null &&
+                                            row.sessionId !in state.sessionArchiveRequests.values &&
+                                            (row.isArchived || !row.isOnline ||
+                                                (row.isCodex && state.runtimes[row.runtimeId]?.status == "idle") ||
+                                                (row.agentKind == "dsh" && state.runtimes[row.runtimeId]?.status == "idle")),
+                                        archivePending = row.sessionId in state.sessionArchiveRequests.values,
+                                        onSetArchived = { onSetArchived(section.hostId, row.sessionId, !row.isArchived) },
                                     )
                                 }
                             }
+                            if (directory.sessions.size > 5 && searchTerm.isEmpty()) {
+                                item(key = "more:$branchKey") {
+                                    DrawerBranch {
+                                        NeumorphTextButton(
+                                            text = if (showAllSessions) "收起较早会话" else "再显示 ${directory.sessions.size - 5} 个会话",
+                                            onClick = { showAllSessions = !showAllSessions },
+                                            icon = if (showAllSessions) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                    }
+                                }
+                            }
                         }
+                        item(key = "gap:$branchKey") { Spacer(Modifier.height(14.dp)) }
                     }
-                    item(key = "gap:${directory.cwd}") { Spacer(Modifier.height(14.dp)) }
                 }
             }
-            // 「电脑」贴着抽屉底部：它是当前所在的主机，不是列表的筛选条件，
-            // 放到顶部会先于「你看哪个目录」被读到，也让搜索框离拇指更远。
-            if (host != null) {
+            // 「电脑」贴着抽屉底部：它是当前所在的主机，不是列表的筛选条件。
+            // 多 Host 后它同时是切换入口：点开选另一台电脑，或取消当前这台。
+            if (hosts.isNotEmpty()) {
                 // 细线给列表收口：页脚必须被读成列表之外的一段，而不是最后一张目录卡片。
                 HorizontalDivider(
                     modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp),
                     thickness = 1.dp,
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
                 )
-                DrawerHostLabel(host.name)
+                DrawerHostSwitcher(
+                    hosts = hosts,
+                    activeHostId = activeHostId,
+                    onSelectHost = onSelectHost,
+                    onUnpairHost = onUnpairHost,
+                    onAddHost = onAddHost,
+                )
             }
         }
     }
 }
 
 /**
- * 抽屉页脚：当前电脑。
+ * 抽屉页脚：当前电脑，同时是多 Host 的切换入口。
  *
  * 它曾经和列表共用同一条水平带、同一种凹陷材质、同样的「标签 + 值」两行结构，
  * 于是被读成又一张目录卡片。页脚不是列表里的一行，它得在三个维度上和列表断开：
@@ -426,7 +472,15 @@ internal fun SessionDrawer(
  * 「你正站在哪台电脑上」是底座，不是筛选条件。
  */
 @Composable
-private fun DrawerHostLabel(name: String) {
+private fun DrawerHostSwitcher(
+    hosts: List<HostSnapshot>,
+    activeHostId: String?,
+    onSelectHost: (String) -> Unit,
+    onUnpairHost: (String) -> Unit,
+    onAddHost: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val active = hosts.firstOrNull { it.hostId == activeHostId }
     Box(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 12.dp, bottom = 4.dp),
     ) {
@@ -435,6 +489,7 @@ private fun DrawerHostLabel(name: String) {
             style = NeumorphStyle.Raised,
             shape = RemoteUi.ControlShape,
             shadowScale = 0.8f,
+            onClick = { expanded = true },
         ) {
             Row(
                 Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(horizontal = 16.dp, vertical = 6.dp),
@@ -453,13 +508,89 @@ private fun DrawerHostLabel(name: String) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    name,
+                    active?.name ?: "未连接",
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (hosts.size > 1) {
+                    Text(
+                        "${hosts.size} 台",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Icon(
+                    Icons.Rounded.ExpandMore,
+                    contentDescription = "切换电脑",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
+        }
+        NeumorphMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            hosts.forEach { host ->
+                NeumorphMenuItem(
+                    text = { Text(host.name) },
+                    onClick = { expanded = false; onSelectHost(host.hostId) },
+                    leadingIcon = {
+                        if (host.hostId == activeHostId) {
+                            Icon(Icons.Rounded.Check, contentDescription = "当前电脑", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        } else {
+                            Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                    },
+                    trailingIcon = {
+                        Text(
+                            if (host.state.e2eReady) "在线" else "离线",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (host.state.e2eReady) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                )
+            }
+            HorizontalDivider()
+            NeumorphMenuItem(
+                text = { Text("添加电脑") },
+                onClick = { expanded = false; onAddHost() },
+                leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
+            )
+            active?.let { host ->
+                NeumorphMenuItem(
+                    text = { Text("取消配对「${host.name}」", color = MaterialTheme.colorScheme.error) },
+                    onClick = { expanded = false; onUnpairHost(host.hostId) },
+                    leadingIcon = { Icon(Icons.Rounded.Close, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error) },
+                )
+            }
+        }
+    }
+}
+
+/** Host name above its directories when the sidebar shows more than one computer. */
+@Composable
+private fun DrawerHostHeader(name: String, active: Boolean) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 4.dp, top = 8.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            Icons.Rounded.Computer,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            name,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (active) {
+            Text("当前", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
     }
 }
