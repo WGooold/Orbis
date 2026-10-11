@@ -124,6 +124,10 @@ _Avoid_: Last received Entry, display leaf
 The source epoch, sequence and head whose complete current state the mobile client has successfully applied after committing its referenced Entries. It permits conditional synchronization, but does not prove that every historical ancestor is cached. Metadata and buffered future patches do not advance it. See ADR-0026.
 _Avoid_: Received watermark, full history coverage
 
+**Session read operation**:
+A mobile-client operation with a defined goal for reading a Session range or reconciling its current state. Its lifecycle spans the work needed for that goal; it is distinct from a network attempt, source version, or visible loading indicator. See ADR-0029.
+_Avoid_: History Job, loading flag, wire request
+
 **Runtime operational control**:
 Control exercised over conversation, queue, Session, context, model, commands, interactions, file transfer, and session activation, without authority to run arbitrary commands or to manage processes the Host did not start.
 _Avoid_: Machine control

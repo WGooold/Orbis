@@ -37,9 +37,10 @@ internal fun RemoteState.afterSessionCacheRebuild(sessionId: String): RemoteStat
         sessionSyncCommands = sessionSyncCommands - commandIds,
         pendingCommands = pendingCommands - commandIds,
         sessionSyncFailures = sessionSyncFailures - runtimeIds,
+        sessionRangeFailures = sessionRangeFailures.filterKeys { key -> runtimeIds.none { key.startsWith("$it\u0000") } },
         sessionSyncRequests = (sessionSyncRequests - runtimeIds) + runtimes.values
             .filter { it.sessionId == sessionId && it.sessionGraphSync }.map(RuntimeSummary::runtimeId),
-        sessionBranchGenerations = sessionBranchGenerations + runtimeIds.associateWith {
+        sessionBranchGenerations = sessionBranchGenerations + (runtimeIds + offlineKey).associateWith {
             (sessionBranchGenerations[it] ?: 0) + 1
         },
         conversations = conversations + refreshed,

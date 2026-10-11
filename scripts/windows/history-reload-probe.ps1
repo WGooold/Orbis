@@ -2,12 +2,13 @@
 param(
     [Parameter(Mandatory = $true)] [ValidatePattern('^[A-Za-z0-9._:-]+$')] [string] $Serial,
     [string] $LeaseOwner,
-    # Exact visible sidebar titles. Used in memory only, never included in evidence.
-    [Parameter(Mandatory = $true)] [ValidateCount(1, 4)] [string[]] $SessionTitles,
+    # Exact online runtime-card titles. Used in memory only, never included in evidence.
+    [ValidateCount(1, 4)] [string[]] $SessionTitles,
     [ValidateRange(1, 10)] [int] $Reloads = 3,
     [ValidateRange(1, 10)] [int] $Pages = 2,
     [ValidateRange(100, 60000)] [int] $MaxCachedLoadMs = 3000,
     [ValidateRange(5, 180)] [int] $TimeoutSeconds = 45,
+    [ValidateRange(60, 1800)] [int] $TotalTimeoutSeconds = 180,
     [switch] $ValidateOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -17,11 +18,26 @@ $package = 'com.orbising.orbis'
 $activity = "$package/dev.pi.remote.MainActivity"
 $evidence = Join-Path $repo '.artifacts\app'
 $adb = Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe'
-$leaseDir = if ($env:ORBIS_ANDROID_LEASE_DIR) { $env:ORBIS_ANDROID_LEASE_DIR } else { 'D:\android-emulators\leases' }
+$leaseDir = if ($env:ORBIS_ANDROID_LEASE_DIR) { $env:ORBIS_ANDROID_LEASE_DIR } elseif (Test-Path 'D:\android-emulators') { 'D:\android-emulators\leases' } else { Join-Path $env:LOCALAPPDATA 'Orbis\android-leases' }
 $leasePath = Join-Path $leaseDir "$Serial.json"
 $results = [Collections.Generic.List[object]]::new()
+$probeClock = $null
+$probeFinishing = $false
+$lastMemorySample = -15
+$runId = [guid]::NewGuid().ToString()
 
 function Invoke-Adb([string[]] $Arguments) {
+    if (-not $script:probeFinishing -and $null -ne $script:probeClock -and
+        $script:probeClock.Elapsed.TotalSeconds -ge $TotalTimeoutSeconds) {
+        throw 'INCONCLUSIVE: UI probe total deadline reached; no more device actions will be scheduled.'
+    }
+    if (-not $script:probeFinishing -and $null -ne $script:probeClock -and
+        $script:probeClock.Elapsed.TotalSeconds - $script:lastMemorySample -ge 15) {
+        $script:lastMemorySample = $script:probeClock.Elapsed.TotalSeconds
+        $free = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
+        Write-Host ('UI_PROBE_SECONDS={0:N0} FREE_GB={1:N2}' -f $script:lastMemorySample, $free)
+        if ($free -lt 1.5) { throw 'INCONCLUSIVE: stopped device probe for physical memory pressure.' }
+    }
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName = $adb
     $info.Arguments = (@('-s', $Serial) + $Arguments | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join ' '
@@ -67,7 +83,11 @@ function Read-Layout {
     $xmlStart = $dump.IndexOf('<?xml')
     $xmlEnd = $dump.LastIndexOf('</hierarchy>')
     if ($xmlStart -lt 0 -or $xmlEnd -lt $xmlStart) { throw 'Cannot read UI hierarchy; unlock the phone.' }
-    return [xml]$dump.Substring($xmlStart, $xmlEnd + '</hierarchy>'.Length - $xmlStart)
+    $layout = [xml]$dump.Substring($xmlStart, $xmlEnd + '</hierarchy>'.Length - $xmlStart)
+    if (@($layout.SelectNodes('//node') | Where-Object { $_.text -like '*Session 范围加载失败：limit_reached*' }).Count -gt 0) {
+        throw 'REPRODUCED_LIMIT_REACHED_UI_ERROR: a bounded page was displayed as a Session range failure.'
+    }
+    return $layout
 }
 function Tap-Node($Node) {
     if ($Node.bounds -notmatch '^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$') { throw 'Invalid UI bounds' }
@@ -75,51 +95,96 @@ function Tap-Node($Node) {
     $y = [int](([int]$Matches[2] + [int]$Matches[4]) / 2)
     Invoke-Adb @('shell', 'input', 'tap', "$x", "$y") | Out-Null
 }
-function Open-Session([string] $Title) {
-    $layout = Read-Layout
-    $open = @($layout.SelectNodes('//node') | Where-Object { $_.'content-desc' -eq '打开会话目录' })
-    if ($open.Count -eq 0) {
+function Read-OnlineHome {
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        $layout = Read-Layout
+        $directoryFilter = @($layout.SelectNodes('//node') | Where-Object { $_.'content-desc' -like '筛选会话：*' })
+        $open = @($layout.SelectNodes('//node') | Where-Object { $_.'content-desc' -eq '打开会话目录' })
+        if ($open.Count -eq 1 -and $directoryFilter.Count -eq 0) { return $layout }
         Invoke-Adb @('shell', 'input', 'keyevent', '4') | Out-Null
         Start-Sleep -Milliseconds 700
-        $layout = Read-Layout
-        $open = @($layout.SelectNodes('//node') | Where-Object { $_.'content-desc' -eq '打开会话目录' })
     }
-    if ($open.Count -eq 1) { Tap-Node $open[0]; Start-Sleep -Milliseconds 700 }
-    $layout = Read-Layout
-    $nodes = @($layout.SelectNodes('//node') | Where-Object { $_.text -eq $Title })
-    if ($nodes.Count -ne 1) { throw 'Session title is not uniquely visible in the sidebar; expand its directory or use a unique alias. No arbitrary row was tapped.' }
-    # Refuse offline history / activation: test only an already-online Codex or Pi row.
+    throw 'INCONCLUSIVE: online runtime home was not reached; no arbitrary control was tapped.'
+}
+function Find-OnlineSessions {
+    $titles = [Collections.Generic.List[string]]::new()
+    for ($page = 0; $page -lt 4; $page++) {
+        $layout = Read-OnlineHome
+        $beforeCount = $titles.Count
+        foreach ($alias in @($layout.SelectNodes('//node') | Where-Object { $_.'content-desc' -eq '修改会话别名' })) {
+            $row = $alias.ParentNode
+            while ($row.Name -eq 'node' -and $null -ne $row.ParentNode) {
+                $texts = @($row.SelectNodes('.//node') | Where-Object { $_.text } | ForEach-Object { [string]$_.text })
+                if ($row.clickable -eq 'true' -and @($texts | Where-Object { $_ -in @('Codex','Codex 终端','Codex 桌面版') }).Count -gt 0) { break }
+                $row = $row.ParentNode
+            }
+            if ($row.Name -ne 'node' -or $row.clickable -ne 'true') { continue }
+            $texts = @($row.SelectNodes('.//node') | Where-Object { $_.text } | ForEach-Object { [string]$_.text })
+            if (@($texts | Where-Object { $_ -in @('Codex','Codex 终端','Codex 桌面版') }).Count -eq 0) { continue }
+            if ($texts.Count -gt 0 -and -not $titles.Contains($texts[0])) { $titles.Add($texts[0]) }
+        }
+        if ($page -gt 0 -and $titles.Count -eq $beforeCount) { break }
+        $viewport = Get-ChatViewport
+        Invoke-Adb @('shell', 'input', 'swipe', "$($viewport[0])", "$($viewport[2])", "$($viewport[0])", "$($viewport[1])", '250') | Out-Null
+        Start-Sleep -Milliseconds 700
+    }
+    if ($titles.Count -eq 0) { throw 'INCONCLUSIVE: no verifiable Codex runtime card visible; no offline row was activated.' }
+    Write-Host "VERIFIED_ONLINE_CODEX_ROWS=$($titles.Count)"
+    return @($titles.ToArray() | Select-Object -First 3)
+}
+function Open-Session([string] $Title) {
+    # Runtime home cards invoke only selectRuntime. Unlike catalog rows they cannot activate
+    # an offline backend; the alias control proves we are in the runtime-only card surface.
+    $nodes = @()
+    for ($page = 0; $page -lt 4; $page++) {
+        $layout = Read-OnlineHome
+        $nodes = @($layout.SelectNodes('//node') | Where-Object { $_.text -eq $Title })
+        if ($nodes.Count -gt 0) { break }
+        $viewport = Get-ChatViewport
+        Invoke-Adb @('shell', 'input', 'swipe', "$($viewport[0])", "$($viewport[2])", "$($viewport[0])", "$($viewport[1])", '250') | Out-Null
+        Start-Sleep -Milliseconds 700
+    }
+    if ($nodes.Count -ne 1) { throw 'Runtime title is not uniquely visible; no arbitrary row was tapped.' }
     $row = $nodes[0]
-    while ($null -ne $row.ParentNode -and $row.Name -eq 'node' -and $row.clickable -ne 'true') { $row = $row.ParentNode }
-    $online = @($row.SelectNodes('.//node') | Where-Object { $_.text -eq '在线' })
-    if ($row.Name -ne 'node' -or $online.Count -eq 0) { throw 'Selected row is not verifiably online; refusing to activate a session.' }
+    while ($row.Name -eq 'node' -and $row.clickable -ne 'true' -and $null -ne $row.ParentNode) { $row = $row.ParentNode }
+    $aliases = @($row.SelectNodes('.//node') | Where-Object { $_.'content-desc' -eq '修改会话别名' })
+    if ($row.Name -ne 'node' -or $row.clickable -ne 'true' -or $aliases.Count -ne 1) { throw 'Not a verified runtime-only card; refusing to activate a session.' }
+    # Capture before selection: Compose may start and finish cached pages before
+    # Open-Session's initial settling delay or the next Measure-Page call returns.
+    $script:roundTraces = @{}
+    foreach ($record in @(Read-Probe)) { $script:roundTraces[$record.trace] = $true }
     Tap-Node $nodes[0]
     Start-Sleep -Seconds 5
 }
 function Restart-App {
     # Intentional process restart, not pm clear: pairing, SQLite and drafts remain intact.
     Invoke-Adb @('shell', 'am', 'force-stop', $package) | Out-Null
+    $stopped = (Invoke-Adb @('shell', 'ps', '-A', '-o', 'NAME')).Trim() -split "`n"
+    if (@($stopped | Where-Object { $_.Trim() -eq $package }).Count -gt 0) {
+        throw 'Process did not stop; this is not a verified process-reopen run.'
+    }
     Invoke-Adb @('shell', 'am', 'start', '-n', $activity) | Out-Null
     Start-Sleep -Seconds 5
 }
-function Swipe-Older {
+function Get-ChatViewport {
     $layout = Read-Layout
-    $node = $layout.SelectSingleNode('/hierarchy/node')
-    if ($null -eq $node -or $node.bounds -notmatch '^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$') { throw 'Cannot determine app viewport' }
+    $scroll = @($layout.SelectNodes('//node') | Where-Object { $_.scrollable -eq 'true' })
+    $node = $scroll | Sort-Object { if ($_.bounds -match '^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$') { ([int]$Matches[4] - [int]$Matches[2]) * ([int]$Matches[3] - [int]$Matches[1]) } else { 0 } } -Descending | Select-Object -First 1
+    if ($null -eq $node) { $node = $layout.SelectSingleNode('/hierarchy/node') }
+    if ($null -eq $node -or $node.bounds -notmatch '^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$') { throw 'Cannot determine chat viewport' }
     $left = [int]$Matches[1]; $top = [int]$Matches[2]
     $width = [int]$Matches[3] - $left; $height = [int]$Matches[4] - $top
-    $x = $left + [int]($width * 0.5)
-    $from = $top + [int]($height * 0.3); $to = $top + [int]($height * 0.72)
-    Invoke-Adb @('shell', 'input', 'swipe', "$x", "$from", "$x", "$to", '250') | Out-Null
+    return @(($left + [int]($width * 0.5)), ($top + [int]($height * 0.18)), ($top + [int]($height * 0.85)))
+}
+function Swipe-Older([int[]] $Viewport) {
+    Invoke-Adb @('shell', 'input', 'swipe', "$($Viewport[0])", "$($Viewport[1])", "$($Viewport[0])", "$($Viewport[2])", '120') | Out-Null
 }
 function Measure-Page([int] $SessionNumber, [int] $Round, [int] $Page) {
-    $before = @(Read-Probe)
-    $existing = @{}; foreach ($record in $before) { $existing[$record.trace] = $true }
+    $existing = $script:roundTraces
+    $viewport = Get-ChatViewport
     $timer = [Diagnostics.Stopwatch]::StartNew()
-    $start = $null; $end = $null; $records = @()
+    $start = $null; $end = $null; $records = @(); $swipes = 0
     while ($timer.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
-        if ($null -eq $start) { Swipe-Older }
-        Start-Sleep -Milliseconds 300
         $records = @(Read-Probe)
         $newStarts = @($records | Where-Object {
             $_.stage -eq 'start' -and $_.range -eq 'history' -and -not $existing.ContainsKey($_.trace)
@@ -143,33 +208,46 @@ function Measure-Page([int] $SessionNumber, [int] $Round, [int] $Page) {
             }
             if ($null -ne $end) { break }
         }
+        if ($null -eq $start) { Swipe-Older $viewport; $swipes++ }
+        Start-Sleep -Milliseconds 300
     }
+    if ($null -ne $start) { $script:roundTraces[$start.trace] = $true }
+    # Validate the visible UI after observing completion as well as before gestures.
+    $null = Read-Layout
     $trace = if ($null -eq $start) { @() } else { @($records | Where-Object { $_.trace -eq $start.trace }) }
     $lock = $trace | Where-Object { $_.stage -eq 'lock_acquired' } | Select-Object -First 1
     $worker = $trace | Where-Object { $_.stage -eq 'worker_started' } | Select-Object -First 1
     $readBegin = $trace | Where-Object { $_.stage -eq 'cache_read_begin' } | Select-Object -First 1
     $readEnd = $trace | Where-Object { $_.stage -eq 'cache_read_end' } | Select-Object -First 1
-    $source = if ($null -eq $end) { 'timeout' } elseif ($end.stage -eq 'local_completed') { 'local' } elseif ($end.stage -eq 'snapshot_applied') { 'remote' } else { $end.stage }
+    $source = if ($null -eq $end) { 'timeout' } elseif ($end.stage -in @('local_completed', 'local_exhausted')) { 'local' } elseif ($end.stage -eq 'snapshot_applied') { 'remote' } else { $end.stage }
     $result = [ordered]@{
+        runId = $runId
         sessionNumber = $SessionNumber; round = $Round; page = $Page
         kind = if ($null -ne $start) { $start.kind } else { $null }
         session = if ($null -ne $start) { $start.session } else { $null }
         boundary = if ($null -ne $start) { $start.boundary } else { $null }
+        leaf = if ($null -ne $start) { $start.leaf } else { $null }
+        epoch = if ($null -ne $start) { $start.epoch } else { $null }
         source = $source
         elapsedMs = if ($source -eq 'local') { [long]$end.elapsedMs } else { $null }
         observationMs = [long]$timer.ElapsedMilliseconds
+        additionalSwipes = $swipes
+        processRestartVerified = $true
         lockWaitMs = if ($null -ne $lock -and $null -ne $worker) { [long]$lock.elapsedMs - [long]$worker.elapsedMs } else { $null }
         cacheReadMs = if ($null -ne $readEnd -and $null -ne $readBegin) { [long]$readEnd.elapsedMs - [long]$readBegin.elapsedMs } else { $null }
         verdict = 'INCONCLUSIVE'
     }
     if ($null -ne $start -and $start.kind -notin @('codex', 'codexDesktop', 'pi')) { throw 'Unexpected backend selected' }
     if ($Round -gt 0) {
-        $warm = @($results | Where-Object { $_.round -eq 0 -and $_.session -eq $result.session -and $_.boundary -eq $result.boundary -and $_.source -in @('local', 'remote') })
+        $warm = @($results | Where-Object { $_.round -eq 0 -and $_.session -eq $result.session -and $_.boundary -eq $result.boundary -and $_.leaf -eq $result.leaf -and $_.epoch -eq $result.epoch -and $_.source -in @('local', 'remote') })
         if ($warm.Count -gt 0) {
             $result.verdict = if ($source -eq 'local' -and $result.elapsedMs -le $MaxCachedLoadMs) { 'PASS' } else { 'FAIL' }
         }
     }
     $results.Add([pscustomobject]$result)
+    # Checkpoint per page; an interrupted shell must not leave an old run's results
+    # looking like the latest evidence.
+    $results.ToArray() | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $evidence 'history-probe-results.json')
     Write-Host ("session={0} round={1} page={2} source={3} lockMs={4} readMs={5} verdict={6}" -f $SessionNumber, $Round, $Page, $source, $result.lockWaitMs, $result.cacheReadMs, $result.verdict)
     return $source
 }
@@ -183,12 +261,24 @@ if ((Invoke-Adb @('get-state')).Trim() -ne 'device') { throw 'Device is not auth
 $oldLevel = (Invoke-Adb @('shell', 'getprop', 'log.tag.OrbisHistory')).Trim()
 New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 $initialTraces = @{}; foreach ($record in @(Read-Probe)) { $initialTraces[$record.trace] = $true }
+[IO.File]::WriteAllText((Join-Path $evidence 'history-probe-results.json'), '[]')
+$probeClock = [Diagnostics.Stopwatch]::StartNew()
 try {
     Invoke-Adb @('shell', 'setprop', 'log.tag.OrbisHistory', 'DEBUG') | Out-Null
+    if (-not $SessionTitles -or $SessionTitles.Count -eq 0) {
+        Restart-App
+        $SessionTitles = @(Find-OnlineSessions)
+    }
     for ($session = 0; $session -lt $SessionTitles.Count; $session++) {
         for ($round = 0; $round -le $Reloads; $round++) {
+            # Return to the runtime home before stopping so every measured selection
+            # starts from a fresh window, not a wider auto-restored in-memory page.
+            $null = Read-OnlineHome
             Restart-App
             Open-Session $SessionTitles[$session]
+            # Exercise a real gesture even when short cached projections have already
+            # auto-paged. Completed operations remain observable through roundTraces.
+            Swipe-Older (Get-ChatViewport)
             for ($page = 1; $page -le $Pages; $page++) {
                 $source = Measure-Page ($session + 1) $round $page
                 if ($source -notin @('local', 'remote')) { break }
@@ -196,6 +286,7 @@ try {
         }
     }
 } finally {
+    $probeFinishing = $true
     try {
         $results.ToArray() | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $evidence 'history-probe-results.json')
         # Persist ONLY our content-free diagnostic records, never generic logcat or UI XML.
@@ -203,6 +294,7 @@ try {
     } finally {
         $restore = if ($oldLevel) { $oldLevel } else { '""' }
         Invoke-Adb @('shell', 'setprop', 'log.tag.OrbisHistory', $restore) | Out-Null
+        Invoke-Adb @('shell', 'am', 'start', '-n', $activity) | Out-Null
     }
 }
 $failures = @($results | Where-Object { $_.verdict -eq 'FAIL' })

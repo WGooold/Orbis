@@ -18,10 +18,12 @@ internal class HistoryLoadProbe private constructor(private val id: String) {
     companion object {
         private const val TAG = "OrbisHistory"
 
-        fun start(kind: String, sessionId: String, boundary: String?, range: String): HistoryLoadProbe? {
+        fun start(kind: String, sessionId: String, boundary: String?, range: String,
+                  leafId: String? = null, cacheEpoch: String? = null): HistoryLoadProbe? {
             if (!Log.isLoggable(TAG, Log.DEBUG)) return null
             return HistoryLoadProbe(UUID.randomUUID().toString()).also {
-                it.mark("start", "kind=$kind session=${key(sessionId)} boundary=${key(boundary.orEmpty())} range=$range")
+                it.mark("start", "kind=$kind session=${key(sessionId)} boundary=${key(boundary.orEmpty())} range=$range " +
+                    "leaf=${key(leafId.orEmpty())} epoch=${key(cacheEpoch.orEmpty())}")
             }
         }
 

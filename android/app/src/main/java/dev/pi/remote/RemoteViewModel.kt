@@ -329,9 +329,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun selectOfflineSession(sessionId: String?) = active()?.selectOfflineSession(sessionId)
 
-    fun loadOlderHistory(runtimeId: String? = null) {
-        val connection = active() ?: return
-        if (runtimeId == null) connection.loadOlderHistory() else connection.loadOlderHistory(runtimeId)
+    fun loadOlderHistory(runtimeId: String? = null): HistoryReadAcceptance {
+        val connection = active() ?: return HistoryReadAcceptance(rejection = "没有选中的历史窗口")
+        return if (runtimeId == null) connection.loadOlderHistory() else connection.loadOlderHistory(runtimeId)
     }
 
     fun loadDraft(runtimeId: String): String = active()?.loadDraft(runtimeId).orEmpty()

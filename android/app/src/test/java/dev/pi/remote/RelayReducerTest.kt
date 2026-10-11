@@ -1434,14 +1434,14 @@ class RelayReducerTest {
     }
 
     @Test
-    fun `sync protocol error ends loading with a runtime error`() {
+    fun `sync protocol error ends preview loading with a source recovery error`() {
         val loading = RemoteState(
             conversations = mapOf("runtime-a" to RuntimeConversation(isChatSyncing = true)),
             sessionSyncCommands = mapOf("sync-1" to PendingSessionSync(
                 runtimeId = "runtime-a",
                 sessionId = "session-1",
                 syncId = "session-sync-1",
-                range = "catchup",
+                range = "preview",
                 targetLeafId = "leaf",
             )),
         )
@@ -1506,7 +1506,9 @@ class RelayReducerTest {
 
         assertEquals(false, failed.sessionHistory["runtime-a"]?.loading)
         assertEquals(null, failed.sessionHistory["runtime-a"]?.requestId)
-        assertTrue(failed.sessionSyncRequests.isEmpty())
+        assertEquals(state.sessionSyncRequests, failed.sessionSyncRequests)
+        assertTrue(failed.sessionSyncFailures.isEmpty())
+        assertTrue(failed.sessionRangeFailures[sessionRangeFailureKey("runtime-a", "history")] != null)
         assertTrue("history-command" !in failed.sessionSyncCommands)
     }
 
@@ -1571,7 +1573,8 @@ class RelayReducerTest {
         assertEquals(initial.sessionHistory, changed.sessionHistory)
         assertFalse("runtime-a" in changed.sessionSyncRequests)
         assertTrue("catchup-1" !in changed.sessionSyncCommands)
-        assertTrue(changed.conversations["runtime-a"]?.chatSyncError?.contains("entry_conflict") == true)
+        assertNull(changed.conversations["runtime-a"]?.chatSyncError)
+        assertTrue(changed.sessionRangeFailures[sessionRangeFailureKey("runtime-a", "catchup")]?.contains("entry_conflict") == true)
     }
 
     @Test

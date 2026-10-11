@@ -9,6 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -33,7 +35,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 握手看门狗写的告警（见 [RemoteViewModel.connect] 里那个 8s 看门狗）。
+ * 握手看门狗写的告警（见 [HostConnection.connect] 里那个 8s 看门狗）。
  *
  * 抽成常量是为了**能在握手成功时把它撤掉**：`error` 是一条会弹出模态框的通道，而这条文案
  * 描述的处境（没有加密通道）可能下一秒就不成立了。撤不掉的话，用户会一直盯着一个已经过期的
@@ -130,7 +132,7 @@ internal class HostConnection(
     private val device: DeviceCredential = initial.credential()
     private var reconnectJob: Job? = null
     private var reconnectDelayMs = 500L
-    private var shouldConnect = true
+    @Volatile private var shouldConnect = true
 
     /**
      * 已发出 pair 帧、正在等 Host 的 pair-accept。这期间必须独占连接：
@@ -140,13 +142,13 @@ internal class HostConnection(
      */
     @Volatile
     private var pairingAwaitingAccept = false
-    private var generation = 0
+    @Volatile private var generation = 0
     private val catalogWriteLock = Mutex()
-    /** Serializes state publication and the bounded Session snapshot transaction. */
+    /** Serializes inbound cache commits and remote scheduling effects. */
     private val relayStateLock = Mutex()
-    private val sessionSyncLoadLock = Mutex()
-    private val pendingSessionLoadRuntimes = linkedMapOf<String, RuntimeSummary>()
-    private var sessionLoadWorker: Job? = null
+    /** Pure state publication only; neither decrypting queries nor SQLite writes hold it. */
+    private val stateWriterLock = Any()
+    private val sessionLoads = SessionLoadQueue()
     private val historyPageSize = 30
     private val previewPageSize = 30
     private val notificationSyncJobs = mutableMapOf<String, Job>()
@@ -197,6 +199,7 @@ internal class HostConnection(
     private var restoreSettled = false
     private var restoreAttempts = 0
 
+    /** Local execution handles, keyed by logical ID; first-page/history share one cleanup rule. */
     private val historyJobs = mutableMapOf<String, Job>()
     /** Serializes all text events from one WebSocket connection in arrival order. */
     private var relayEventJob: Job? = null
@@ -216,6 +219,10 @@ internal class HostConnection(
         // 而目录可能来自中继的第一份 device.ready（此时还没有 Pi runtime）之后才补齐。
         scope.launch {
             mutableState.collect { current ->
+                val abandoned = synchronized(historyJobs) {
+                    historyJobs.filterKeys { mutableState.value.historyReads[it]?.phase?.active != true }.values.toList()
+                }
+                abandoned.forEach(Job::cancel)
                 if (!restoreSettled &&
                     current.connection == RelayConnection.ONLINE &&
                     current.runtimes.isNotEmpty()
@@ -358,7 +365,7 @@ internal class HostConnection(
     }
 
     fun dismissBrowse() {
-        mutableState.value = mutableState.value.copy(sessionBrowse = null)
+        updateState { it.copy(sessionBrowse = null) }
     }
 
     /** L1：继续已有会话——cwd 与 agentKind 都来自会话记录，手机只需要 sessionId。 */
@@ -450,7 +457,7 @@ internal class HostConnection(
     }
 
     fun clearActivationNotice() {
-        mutableState.value = mutableState.value.copy(sessionActivation = null)
+        updateState { it.copy(sessionActivation = null) }
     }
 
     private fun sendSessionPayload(
@@ -461,14 +468,13 @@ internal class HostConnection(
     ) {
         val current = mutableState.value
         if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank()) {
-            mutableState.value = mutableState.value.copy(error = "尚未连接到电脑，连接建立后才能操作会话")
+            updateState { it.copy(error = "尚未连接到电脑，连接建立后才能操作会话") }
             return
         }
         // 先登记再发送：响应走独立协程回来，登记必须先于 reducer 可能看到响应。
-        mutableState.value = register(mutableState.value)
+        updateState(register)
         if (!relay.sendDeviceMessage(payload)) {
-            mutableState.value = rollback(mutableState.value)
-                .copy(error = "当前连接没有端到端加密通道，会话操作未发送")
+            updateState { rollback(it).copy(error = "当前连接没有端到端加密通道，会话操作未发送") }
         }
     }
 
@@ -478,6 +484,9 @@ internal class HostConnection(
      */
     fun shutdown() {
         shouldConnect = false
+        updateState { state -> state.sessionReads.values.filter { it.phase.active }.fold(state) { next, read ->
+            next.finishHistoryRead(read.operationId, SessionReadPhase.CANCELLED)
+        } }
         pairingAwaitingAccept = false
         handshakeStalled = false
         generation += 1
@@ -532,25 +541,30 @@ internal class HostConnection(
 
     /** Runtime is the interaction window; its current session follows its metadata. */
     fun selectRuntime(runtimeId: String?) {
-        val current = mutableState.value
-        val runtime = runtimeId?.let(current.runtimes::get)
-        val conversation = runtimeId?.let(current.conversations::get)
-        val graph = runtime?.sessionId?.let(current.sessionGraphs::get)
-        // The loader verifies this runtime's current leaf against SQLite before seeding a page.
-        val needsSessionRefresh = runtime?.sessionGraphSync == true &&
-            (conversation?.hasLiveSnapshot != true ||
-                current.runtimeSessionViews[runtimeId]?.leafId != runtime.sessionLeafId ||
-                runtime.sessionLeafId != null && graph?.hasCompleteEntryChain(runtime.sessionLeafId) != true)
-        val selectedState = current.cancelForegroundSessionSyncs(runtimeId).copy(
-            selectedRuntimeId = runtimeId,
-            selectedOfflineSessionId = null,
-            sessionSyncRequests = if (needsSessionRefresh) {
-                current.sessionSyncRequests + runtimeId
-            } else {
-                current.sessionSyncRequests
-            },
-        )
-        mutableState.value = selectedState
+        var runtime: RuntimeSummary? = null
+        var conversation: RuntimeConversation? = null
+        var graph: SessionGraph? = null
+        var needsSessionRefresh = false
+        updateState { latest ->
+            val candidate = runtimeId?.let(latest.runtimes::get)
+            val candidateConversation = runtimeId?.let(latest.conversations::get)
+            val candidateGraph = candidate?.sessionId?.let(latest.sessionGraphs::get)
+            runtime = candidate
+            conversation = candidateConversation
+            graph = candidateGraph
+            needsSessionRefresh = candidate?.sessionGraphSync == true &&
+                (candidateConversation?.hasLiveSnapshot != true ||
+                    latest.runtimeSessionViews[runtimeId]?.leafId != candidate.sessionLeafId ||
+                    candidate.sessionLeafId != null && candidateGraph?.hasCompleteEntryChain(candidate.sessionLeafId) != true ||
+                    candidateConversation?.sourceEpoch != null && latest.appliedSessionState(candidate.runtimeId) == null)
+            val selected = latest.cancelForegroundSessionSyncs(runtimeId)
+            selected.copy(
+                selectedRuntimeId = runtimeId,
+                selectedOfflineSessionId = null,
+                sessionSyncRequests = if (needsSessionRefresh && runtimeId != null) selected.sessionSyncRequests + runtimeId
+                    else selected.sessionSyncRequests,
+            )
+        }
         // 用户（或被恢复流程）已经选定了去处，恢复逻辑不再介入；同时记下这一处，
         // 供掉线重连/APP 重启后自动回到这里（spec 第 16 行、§14 B7）。
         restoreSettled = true
@@ -651,246 +665,234 @@ internal class HostConnection(
         // 用户（或恢复流程）已经选定了去处，别再被「恢复上次会话」拽走。
         restoreSettled = true
         if (sessionId == null) {
-            mutableState.value = current.copy(selectedOfflineSessionId = null)
+            updateState { it.copy(selectedOfflineSessionId = null) }
             return
         }
         if (current.runtimes.values.any { it.sessionId == sessionId }) {
-            mutableState.value = current.copy(error = "该 Session 当前由在线 Runtime 打开，请从 Runtime 列表进入")
+            updateState { it.copy(error = "该 Session 当前由在线 Runtime 打开，请从 Runtime 列表进入") }
             return
         }
         if (current.sessions[sessionId]?.hasHistoryCache != true) {
-            mutableState.value = current.copy(error = "该 Session 没有可用的本地历史缓存")
+            updateState { it.copy(error = "该 Session 没有可用的本地历史缓存") }
             return
         }
-        mutableState.value = current.cancelForegroundSessionSyncs(null).copy(
+        updateState { it.cancelForegroundSessionSyncs(null).copy(
             selectedRuntimeId = null,
             selectedOfflineSessionId = sessionId,
-        )
+        ) }
         val pairedDevice = device ?: return
         scope.launch(Dispatchers.IO) {
-            relayStateLock.withLock { loadCachedSessionGraph(pairedDevice, sessionId, null) }
+            loadCachedSessionGraph(pairedDevice, sessionId)
         }
     }
 
-    fun loadOlderHistory(runtimeId: String? = mutableState.value.selectedRuntimeId) {
-        val id = runtimeId ?: return
-        val current = mutableState.value
-        if (id in current.sessionSyncFailures || current.conversations[id]?.chatSyncError != null) return
-        val runtime = current.runtimes[id]
-        val offlineSessionId = id.removePrefix("offline:").takeIf { id.startsWith("offline:") }
-        val sessionId = runtime?.sessionId ?: offlineSessionId ?: return
-        val view = current.runtimeSessionViews[id]
-            ?.takeIf { it.sessionId == sessionId }
-            ?: RuntimeSessionView(id, sessionId, runtime?.sessionLeafId ?: current.sessionGraphs[sessionId]?.cursor?.leafId)
-        val history = current.sessionHistory[id]
-            ?: historyState(sessionId, view.leafId, current.sessionGraphs[sessionId])
-        val beforeEntryId = history.oldestEntryId ?: return
-        if (!history.hasOlder || history.loading || historyJobs[id]?.isActive == true) return
-        mutableState.value = current.copy(
-            sessionHistory = current.sessionHistory + (id to history.copy(loading = true)),
-        )
-        val pairedDevice = device
-        if (pairedDevice == null) {
-            mutableState.value = mutableState.value.copy(
-                sessionHistory = mutableState.value.sessionHistory + (id to history.copy(loading = false)),
-            )
-            return
+    private fun registerReadWorker(operationId: String, job: Job) {
+        synchronized(historyJobs) { historyJobs[operationId] = job }
+        job.invokeOnCompletion {
+            synchronized(historyJobs) { if (historyJobs[operationId] === job) historyJobs.remove(operationId) }
         }
-        val requestGeneration = generation
-        val branchGeneration = current.sessionBranchGenerations[id] ?: 0
-        val probe = HistoryLoadProbe.start(runtime?.agentKind ?: "offline", sessionId, beforeEntryId, "history")
-        val job = scope.launch(Dispatchers.IO) {
-            probe?.mark("worker_started")
-            relayStateLock.withLock {
-                probe?.mark("lock_acquired")
-                if (requestGeneration != generation || branchGeneration != (mutableState.value.sessionBranchGenerations[id] ?: 0)) return@launch
-                probe?.mark("prepare_begin")
-                if (prepareSessionCache(pairedDevice, sessionId, runtime?.agentKind ?: mutableState.value.sessions[sessionId]?.agentKind)) {
-                    probe?.mark("cache_rebuilt")
-                    return@launch
-                }
+        // Close the gap when invalidation preceded execution-handle registration.
+        if (!mutableState.value.ownsHistoryRead(operationId)) job.cancel()
+    }
+
+    fun loadOlderHistory(runtimeId: String? = mutableState.value.selectedRuntimeId): HistoryReadAcceptance {
+        val key = runtimeId ?: return HistoryReadAcceptance(rejection = "没有选中的历史窗口")
+        val pairedDevice = device ?: return HistoryReadAcceptance(rejection = "设备尚未配对")
+        val operationId = UUID.randomUUID().toString()
+        var acceptance = HistoryReadAcceptance()
+        updateState { state -> state.beginHistoryRead(key, operationId).also { acceptance = it.acceptance }.state }
+        if (acceptance.operationId == null || acceptance.merged) return acceptance
+        val operation = mutableState.value.historyReads[operationId] ?: return acceptance
+        val kind = mutableState.value.runtimes[key]?.agentKind ?: mutableState.value.sessions[operation.sessionId]?.agentKind
+        val probe = HistoryLoadProbe.start(kind ?: "offline", operation.sessionId, operation.beforeEntryId, "history",
+            leafId = operation.leafId, cacheEpoch = operation.cacheEpoch)
+        // Registration precedes execution, so even an immediately completed cache read has an owner.
+        val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try {
+                probe?.mark("worker_started")
+                if (device != pairedDevice || !mutableState.value.ownsHistoryRead(operationId)) return@launch
+                if (prepareSessionCache(pairedDevice, operation.sessionId, kind)) return@launch
+                currentCoroutineContext().ensureActive()
                 probe?.mark("cache_read_begin")
-                val local = runCatching {
-                    sessionGraphStore.readBranch(
-                        device = pairedDevice,
-                        sessionId = sessionId,
-                        leafId = view.leafId,
-                        beforeEntryId = beforeEntryId,
-                        maxEntries = historyPageSize,
-                    )
-                }.onFailure { probe?.mark("cache_read_error", "type=${it::class.simpleName}") }.getOrNull()
-                probe?.mark("cache_read_end", "entries=${local?.entries?.size ?: 0} status=${local?.status}")
-                if (device != pairedDevice || !shouldConnect ||
-                    !isHistoryRequestCurrent(id, sessionId, view.leafId, beforeEntryId)
-                ) return@launch
-                if (local != null && local.status in setOf(
-                        SessionGraphRangeStatus.COMPLETE,
-                        SessionGraphRangeStatus.OLDER_AVAILABLE,
-                        SessionGraphRangeStatus.MISSING_PARENT,
-                    ) && local.entries.isNotEmpty()
-                ) {
-                    val latest = mutableState.value
-                    val graph = latest.sessionGraphs[sessionId] ?: SessionGraph(sessionId)
-                    val mergedEntries = LinkedHashMap<String, SessionGraphEntry>()
-                    graph.entries.forEach { (entryId, entry) -> mergedEntries[entryId] = entry }
-                    local.entries.forEach { entry -> mergedEntries.putIfAbsent(entry.entryId, entry) }
-                    // Paging changes the visible range without moving the observed leaf.
-                    val mergedGraph = graph.copy(entries = mergedEntries)
-                    val conversation = latest.conversations[id]
-                    val projection = if (mergedGraph.hasCompleteEntryChain(view.leafId)) {
-                        projectSessionGraph(
-                            mergedGraph.copy(cursor = SessionBranchCursor(view.leafId)),
-                            messageJson,
-                        )
+                val (page, cacheEpoch) = synchronized(sessionGraphStore) {
+                    sessionGraphStore.readBranch(pairedDevice, operation.sessionId,
+                        leafId = operation.leafId, beforeEntryId = operation.beforeEntryId, maxEntries = historyPageSize) to
+                        sessionGraphStore.cacheEpoch(pairedDevice, operation.sessionId)
+                }
+                currentCoroutineContext().ensureActive()
+                probe?.mark("cache_read_end", "entries=${page.entries.size} status=${page.status}")
+                var appliedPhase: HistoryReadPhase? = null
+                updateState { state ->
+                    val next = if (device == pairedDevice) state.applyLocalHistoryRead(operationId, page, cacheEpoch) else state
+                    appliedPhase = next.historyReads[operationId]?.phase
+                    next
+                }
+                when (appliedPhase) {
+                    HistoryReadPhase.SUCCEEDED -> probe?.mark("local_completed")
+                    HistoryReadPhase.END_REACHED -> probe?.mark("local_exhausted")
+                    else -> Unit
+                }
+                if (!mutableState.value.ownsHistoryRead(operationId)) return@launch
+                relayStateLock.withLock {
+                    if (!mutableState.value.ownsHistoryRead(operationId)) return@withLock
+                    val runtime = mutableState.value.runtimes[key]
+                    if (runtime == null || mutableState.value.connection != RelayConnection.ONLINE || !mutableState.value.e2eReady) {
+                        updateState { it.finishHistoryRead(operationId, HistoryReadPhase.FAILED, "本地历史存在缺口，请连接后重试") }
                     } else {
-                        // Project a cached fragment while retaining the rest of the current display.
-                        SessionProjectionResult(projectSessionEntries(local.entries, messageJson))
+                        probe?.mark("remote_requested")
+                        requestHistoryRange(pairedDevice, runtime, operation)
                     }
-                    val nextConversations = if (conversation == null) {
-                        latest.conversations
-                    } else {
-                        val olderIds = projection.messages.map(ChatMessage::messageId).toSet()
-                        latest.conversations + (
-                            id to conversation.copy(
-                                messages = projection.messages + conversation.messages.filterNot {
-                                    it.messageId in olderIds
-                                },
-                                turnTimings = if (projection.turnTimings.isEmpty()) {
-                                    conversation.turnTimings
-                                } else {
-                                    projection.turnTimings.associateBy(TurnTiming::turnId)
-                                },
-                                revision = conversation.revision + 1,
-                            )
-                        )
-                    }
-                    val next = latest.copy(
-                        sessionGraphs = latest.sessionGraphs + (sessionId to mergedGraph),
-                        conversations = nextConversations,
-                        sessionHistory = latest.sessionHistory + (
-                            id to history.copy(
-                                oldestEntryId = local.entries.firstOrNull()?.entryId ?: beforeEntryId,
-                                hasOlder = local.hasOlder,
-                                loading = false,
-                            )
-                        ),
-                    )
-                    mutableState.value = next
-                    probe?.mark("local_completed", "entries=${local.entries.size}")
-                    return@launch
                 }
-                if (local?.status == SessionGraphRangeStatus.COMPLETE) {
-                    mutableState.value = mutableState.value.copy(
-                        sessionHistory = mutableState.value.sessionHistory + (
-                            id to history.copy(hasOlder = false, loading = false)
-                        ),
-                    )
-                    probe?.mark("local_exhausted")
-                    return@launch
-                }
-                if (runtime != null && isHistoryRequestCurrent(id, sessionId, view.leafId, beforeEntryId)) {
-                    probe?.mark("remote_requested")
-                    requestHistoryRange(pairedDevice, runtime, sessionId, view.leafId, beforeEntryId, id)
-                } else if (device == pairedDevice && shouldConnect) {
-                    mutableState.value = mutableState.value.copy(
-                        sessionHistory = mutableState.value.sessionHistory + (
-                            id to history.copy(hasOlder = false, loading = false)
-                        ),
-                    )
-                }
-                }
-        }
-        historyJobs[id] = job
-        job.invokeOnCompletion { cause ->
-            probe?.mark("worker_finished", "result=${if (cause == null) "returned" else if (cause is CancellationException) "cancelled" else "failed"}")
-            if (historyJobs[id] === job) historyJobs.remove(id)
-            val latest = mutableState.value
-            val latestHistory = latest.sessionHistory[id]
-            if (latestHistory?.loading == true && latestHistory.requestId == null) {
-                mutableState.value = latest.copy(
-                    sessionHistory = latest.sessionHistory + (id to latestHistory.copy(loading = false)),
-                )
+            } catch (error: CancellationException) {
+                updateState { it.finishHistoryRead(operationId, HistoryReadPhase.CANCELLED) }
+                throw error
+            } catch (error: Exception) {
+                probe?.mark("cache_read_error", "type=${error::class.simpleName}")
+                updateState { it.finishHistoryRead(operationId, HistoryReadPhase.FAILED, "历史缓存读取失败：${error.message}") }
+            } finally {
+                // A transferred page is owned by its REMOTE phase, not this local worker.
+                updateState { state -> if (state.historyReads[operationId]?.phase == HistoryReadPhase.LOCAL)
+                    state.finishHistoryRead(operationId, HistoryReadPhase.CANCELLED) else state }
             }
         }
+        registerReadWorker(operationId, job)
+        job.invokeOnCompletion { cause ->
+            probe?.mark("worker_finished", "result=${if (cause == null) "returned" else "cancelled_or_failed"}")
+        }
+        job.start()
+        return acceptance
     }
 
     private fun requestHistoryRange(
         pairedDevice: DeviceCredential,
         runtime: RuntimeSummary,
-        sessionId: String,
-        leafId: String?,
-        beforeEntryId: String,
-        historyKey: String,
+        operation: HistoryReadOperation,
     ) {
-        val current = mutableState.value
-        if (!isHistoryRequestCurrent(historyKey, sessionId, leafId, beforeEntryId)) return
+        if (!mutableState.value.ownsHistoryRead(operation.operationId)) return
         val pending = PendingSessionSync(
-            runtime.runtimeId, sessionId, UUID.randomUUID().toString(), range = "history",
-            targetLeafId = leafId, beforeEntryId = beforeEntryId, viewLeafId = leafId,
-            branchGeneration = current.sessionBranchGenerations[runtime.runtimeId] ?: 0,
-            connectionGeneration = generation,
+            runtime.runtimeId, operation.sessionId, UUID.randomUUID().toString(), range = "history",
+            targetLeafId = operation.leafId, beforeEntryId = operation.beforeEntryId, viewLeafId = operation.leafId,
+            branchGeneration = operation.branchGeneration, connectionGeneration = generation,
+            historyOperationId = operation.operationId,
         )
         sendSessionSync(pairedDevice, newSessionSyncCommandId(), pending)
+        updateState { state -> if (state.historyReads[operation.operationId]?.phase == HistoryReadPhase.LOCAL)
+            state.finishHistoryRead(operation.operationId, HistoryReadPhase.FAILED, "历史请求未能加入同步队列，请重试") else state }
     }
     private fun startBranchCatchUp(
         pairedDevice: DeviceCredential,
         runtime: RuntimeSummary,
         fixedTarget: String? = runtime.sessionLeafId,
+        completedRange: PendingSessionSync? = null,
     ) {
         val sessionId = runtime.sessionId ?: return
         if (runCatching { prepareSessionCache(pairedDevice, sessionId, runtime.agentKind) }.getOrElse {
                 reportSessionLoadFailure(runtime.runtimeId, it)
                 return
             }) return
-        val targetLeafId = fixedTarget ?: return
         val current = mutableState.value
         if (device != pairedDevice || !shouldConnect || current.runtimes[runtime.runtimeId]?.sessionId != sessionId ||
-            runtime.runtimeId in current.sessionSyncFailures || current.conversations[runtime.runtimeId]?.chatSyncError != null) return
+            runtime.runtimeId in current.sessionSyncFailures) return
+        if (sessionRangeFailureKey(runtime.runtimeId, "catchup") in current.sessionRangeFailures) return
         if (current.sessionSyncCommands.values.any { it.runtimeId == runtime.runtimeId && it.range == "catchup" }) return
-        val gap = try {
-            sessionGraphStore.planCatchUp(pairedDevice, sessionId, targetLeafId)
-        } catch (error: Throwable) {
-            reportSessionLoadFailure(runtime.runtimeId, error)
+        var acceptance = SessionReadAcceptance()
+        updateState { it.beginSessionRead(runtime.runtimeId, SessionReadKind.CATCHUP,
+            UUID.randomUUID().toString(), fixedTarget).also { start -> acceptance = start.acceptance }.state }
+        val operationId = acceptance.operationId ?: return
+        val operation = mutableState.value.sessionReads[operationId] ?: return
+        val targetLeafId = operation.leafId
+        if (targetLeafId == null) {
+            updateState { it.finishHistoryRead(operationId, SessionReadPhase.SUCCEEDED) }
             return
-        } ?: return
-        val commandId = newSessionSyncCommandId()
+        }
+        val (gap, cacheEpoch) = try {
+            synchronized(sessionGraphStore) {
+                sessionGraphStore.planCatchUp(pairedDevice, sessionId, targetLeafId) to
+                    sessionGraphStore.cacheEpoch(pairedDevice, sessionId)
+            }
+        } catch (error: Exception) {
+            failLocalSessionRead(operationId, error)
+            return
+        }
+        updateState { it.observeCatchupCoverage(operationId, completedRange, gap, cacheEpoch) }
+        if (gap == null) {
+            if (mutableState.value.sessionReads[operationId]?.phase != SessionReadPhase.SUCCEEDED) return
+            val latest = mutableState.value.runtimes[runtime.runtimeId]
+            if (latest?.sessionId == sessionId && latest.sessionLeafId != targetLeafId)
+                scheduleSessionGraphLoad(pairedDevice, listOf(latest))
+            return
+        }
+        if (!mutableState.value.ownsHistoryRead(operationId)) return
         val pending = PendingSessionSync(
             runtimeId = runtime.runtimeId, sessionId = sessionId, syncId = UUID.randomUUID().toString(),
             range = "catchup", targetLeafId = targetLeafId, knownLeafId = gap.knownLeafId,
             requestTargetLeafId = gap.targetLeafId, viewLeafId = runtime.sessionLeafId,
-            branchGeneration = current.sessionBranchGenerations[runtime.runtimeId] ?: 0,
-            connectionGeneration = generation,
+            branchGeneration = operation.branchGeneration,
+            connectionGeneration = generation, historyOperationId = operationId,
         )
-        sendSessionSync(pairedDevice, commandId, pending)
+        sendSessionSync(pairedDevice, newSessionSyncCommandId(), pending)
     }
 
     private fun sendSessionSync(pairedDevice: DeviceCredential, commandId: String, pending: PendingSessionSync) {
         val agentKind = mutableState.value.runtimes[pending.runtimeId]?.agentKind
             ?: mutableState.value.sessions[pending.sessionId]?.agentKind
         if (prepareSessionCache(pairedDevice, pending.sessionId, agentKind)) return
+        val operationId = pending.historyOperationId ?: UUID.randomUUID().toString()
         updateState { current ->
             if (device != pairedDevice || !shouldConnect || pending.connectionGeneration != generation ||
                 current.runtimes[pending.runtimeId]?.sessionId != pending.sessionId ||
                 pending.branchGeneration != (current.sessionBranchGenerations[pending.runtimeId] ?: 0)) current
             else {
-                val next = current.queueSessionSync(commandId, pending)
-                if (commandId !in next.sessionSyncCommands || pending.range != "history") next
-                else next.copy(sessionHistory = next.sessionHistory + (pending.runtimeId to
-                    (next.sessionHistory[pending.runtimeId] ?: SessionHistoryState(pending.sessionId, pending.targetLeafId, pending.beforeEntryId, true))
-                        .copy(loading = true, requestId = commandId)))
+                val started = if (pending.historyOperationId != null) SessionReadStart(current, SessionReadAcceptance(operationId))
+                    else current.beginSessionRead(pending.runtimeId,
+                        if (pending.range == "preview") SessionReadKind.SOURCE else SessionReadKind.CATCHUP,
+                        operationId, pending.targetLeafId,
+                        demandGeneration = pending.demandGeneration ?: (current.sessionSyncDemandGenerations[pending.runtimeId] ?: 0L))
+                val id = started.acceptance.operationId
+                if (id == null) started.state else started.state.queueSessionSync(commandId, pending.copy(
+                    historyOperationId = id,
+                    demandGeneration = pending.demandGeneration ?: (current.sessionSyncDemandGenerations[pending.runtimeId] ?: 0),
+                ))
             }
         }
         runSessionSyncScheduler()
     }
+    private fun launchFirstSessionPage(pairedDevice: DeviceCredential, runtime: RuntimeSummary, operationId: String) {
+        val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try {
+                currentCoroutineContext().ensureActive()
+                val loaded = loadLocalGraphForRuntime(pairedDevice, runtime)
+                currentCoroutineContext().ensureActive()
+                updateState { current -> if (device != pairedDevice) current else if (loaded == null)
+                    current.finishHistoryRead(operationId, SessionReadPhase.FAILED, "本地首屏存在缺口，等待源端恢复")
+                    else current.applyFirstSessionPage(operationId, loaded) }
+            } catch (error: CancellationException) {
+                updateState { it.finishHistoryRead(operationId, SessionReadPhase.CANCELLED) }
+                throw error
+            } catch (error: Exception) {
+                failLocalSessionRead(operationId, error)
+            } finally {
+                updateState { state -> if (state.sessionReads[operationId]?.phase == SessionReadPhase.LOCAL)
+                    state.finishHistoryRead(operationId, SessionReadPhase.CANCELLED) else state }
+            }
+        }
+        registerReadWorker(operationId, job)
+        job.start()
+    }
+
+    private fun failLocalSessionRead(operationId: String, error: Exception) {
+        updateState { it.failLocalSessionRead(operationId, "本地 Session 读取失败：${error.message ?: "未知错误"}") }
+    }
+
     private fun reportSessionLoadFailure(runtimeId: String, error: Throwable) {
         updateState { current ->
-            val conversation = current.conversations[runtimeId] ?: RuntimeConversation()
-            current.copy(
-                sessionSyncRequests = current.sessionSyncRequests - runtimeId,
-                conversations = current.conversations + (runtimeId to conversation.copy(
-                    isChatSyncing = false, chatSyncError = "Session 历史缓存读取失败：${error.message}",
-                )),
-            )
+            val operation = current.sessionReads.values.lastOrNull { it.historyKey == runtimeId && it.phase.active &&
+                it.kind in setOf(SessionReadKind.FIRST_PAGE, SessionReadKind.CATCHUP) }
+            val started = if (operation != null) SessionReadStart(current, SessionReadAcceptance(operation.operationId))
+                else current.beginSessionRead(runtimeId, if (current.selectedRuntimeId == runtimeId) SessionReadKind.FIRST_PAGE
+                    else SessionReadKind.CATCHUP, UUID.randomUUID().toString())
+            started.acceptance.operationId?.let { started.state.failLocalSessionRead(it,
+                "本地 Session 读取失败：${error.message ?: "未知错误"}") } ?: started.state
         }
     }
     fun loadDraft(runtimeId: String): String {
@@ -915,13 +917,8 @@ internal class HostConnection(
         val identity = runtime.sessionAliasIdentity()
         val alias = normalizeSessionAlias(value)
         sessionAliasStore.save(pairedDevice, runtime, value)
-        mutableState.value = mutableState.value.copy(
-            sessionAliases = if (alias == null) {
-                mutableState.value.sessionAliases - identity
-            } else {
-                mutableState.value.sessionAliases + (identity to alias)
-            },
-        )
+        updateState { it.copy(sessionAliases = if (alias == null) it.sessionAliases - identity
+            else it.sessionAliases + (identity to alias)) }
     }
 
     /**
@@ -936,7 +933,7 @@ internal class HostConnection(
         val trimmed = text.trim().ifBlank { if (attachments.isEmpty()) "" else "已发送 ${attachments.size} 个附件" }
         if (trimmed.isBlank()) return null
         if (text.trim().startsWith("/")) {
-            mutableState.value = mutableState.value.copy(error = "斜杠命令只能从当前 Pi 提供的菜单中选择")
+            updateState { it.copy(error = "斜杠命令只能从当前 Pi 提供的菜单中选择") }
             return null
         }
         val messageId = UUID.randomUUID().toString()
@@ -978,18 +975,18 @@ internal class HostConnection(
         val command = mutableState.value.capabilities[runtimeId]?.commands?.find { it.name == name }
         if (command == null) {
             Log.i(RELOAD_TRACE_TAG, "ui.slash.rejected name=$name reason=command_not_available")
-            mutableState.value = mutableState.value.copy(error = "所选命令已不再由当前 Pi 提供，请重新选择")
+            updateState { it.copy(error = "所选命令已不再由当前 Pi 提供，请重新选择") }
             return null
         }
         val normalizedArgs = args.trim()
         if (command.argument == null && normalizedArgs.isNotBlank()) {
             Log.i(RELOAD_TRACE_TAG, "ui.slash.rejected name=$name reason=arguments_not_allowed")
-            mutableState.value = mutableState.value.copy(error = "命令 /$name 不接受参数")
+            updateState { it.copy(error = "命令 /$name 不接受参数") }
             return null
         }
         if (command.argument?.required == true && normalizedArgs.isBlank()) {
             Log.i(RELOAD_TRACE_TAG, "ui.slash.rejected name=$name reason=argument_required")
-            mutableState.value = mutableState.value.copy(error = "命令 /$name 需要参数")
+            updateState { it.copy(error = "命令 /$name 需要参数") }
             return null
         }
         val commandId = relay.executeSlashCommand(runtimeId, name, normalizedArgs)
@@ -999,9 +996,7 @@ internal class HostConnection(
     }
 
     fun consumeCommandResult(commandId: String) {
-        mutableState.value = mutableState.value.copy(
-            commandResults = mutableState.value.commandResults - commandId,
-        )
+        updateState { it.copy(commandResults = it.commandResults - commandId) }
     }
 
     fun stopRuntime() {
@@ -1018,7 +1013,7 @@ internal class HostConnection(
      */
     fun downloadArtifact(runtimeId: String, artifact: RemoteArtifact) {
         val hostId = mutableState.value.hostId ?: run {
-            mutableState.value = mutableState.value.copy(error = "还没有已配对的电脑，无法下载")
+            updateState { it.copy(error = "还没有已配对的电脑，无法下载") }
             return
         }
         artifact.path?.let { path ->
@@ -1054,7 +1049,7 @@ internal class HostConnection(
         if (path.isBlank()) return
         val hostId = mutableState.value.hostId
         if (hostId == null) {
-            mutableState.value = mutableState.value.copy(error = "还没有已配对的电脑，无法下载")
+            updateState { it.copy(error = "还没有已配对的电脑，无法下载") }
             return
         }
         startFileDownload(runtimeId, hostId, path.trim())
@@ -1065,11 +1060,11 @@ internal class HostConnection(
         if (task.status !in setOf("queued", "downloading", "paused")) return
         val cancelled = artifactDownloadStore.cancel(taskId) ?: return
         val nextTask = artifactDownloadStore.load().firstOrNull { it.taskId == taskId } ?: return
-        mutableState.value = mutableState.value.copy(
-            downloads = mutableState.value.downloads + (taskId to nextTask),
-            pendingCommands = task.commandId?.let { mutableState.value.pendingCommands - it } ?: mutableState.value.pendingCommands,
-            pendingDownloads = task.commandId?.let { mutableState.value.pendingDownloads - it } ?: mutableState.value.pendingDownloads,
-        )
+        updateState { it.copy(
+            downloads = it.downloads + (taskId to nextTask),
+            pendingCommands = task.commandId?.let { id -> it.pendingCommands - id } ?: it.pendingCommands,
+            pendingDownloads = task.commandId?.let { id -> it.pendingDownloads - id } ?: it.pendingDownloads,
+        ) }
         if (cancelled.transferId != null) {
             // 范围下载由 Host 服务：取消走 E2E 给它。
             val hostId = mutableState.value.hostId ?: cancelled.runtimeId
@@ -1090,11 +1085,11 @@ internal class HostConnection(
         val deletedIds = taskIds.filterTo(mutableSetOf()) { it in tasks }
         if (deletedIds.isEmpty()) return
         val pendingCommandIds = deletedIds.mapNotNull { tasks[it]?.commandId }.toSet()
-        mutableState.value = mutableState.value.copy(
-            downloads = tasks - deletedIds,
-            pendingCommands = mutableState.value.pendingCommands - pendingCommandIds,
-            pendingDownloads = mutableState.value.pendingDownloads - pendingCommandIds,
-        )
+        updateState { it.copy(
+            downloads = it.downloads - deletedIds,
+            pendingCommands = it.pendingCommands - pendingCommandIds,
+            pendingDownloads = it.pendingDownloads - pendingCommandIds,
+        ) }
         val hostId = mutableState.value.hostId
         stopped.forEach { result ->
             val transferId = result.transferId ?: return@forEach
@@ -1106,7 +1101,7 @@ internal class HostConnection(
         val task = mutableState.value.downloads[taskId] ?: return
         // 下载永远问 Host（§9.4）：文件在磁盘上，Host 常驻，与「产生它的那个进程还在不在」无关。
         val hostId = mutableState.value.hostId ?: run {
-            mutableState.value = mutableState.value.copy(error = "还没有已配对的电脑，无法继续下载")
+            updateState { it.copy(error = "还没有已配对的电脑，无法继续下载") }
             return
         }
         when {
@@ -1151,31 +1146,22 @@ internal class HostConnection(
             error = null,
         )
         artifactDownloadStore.register(queued)
-        mutableState.value = mutableState.value.copy(
-            downloads = mutableState.value.downloads + (task.taskId to queued),
-        )
+        updateState { it.copy(downloads = it.downloads + (task.taskId to queued)) }
         val commandId = send(offset)
         if (commandId == null) {
             val failed = queued.copy(status = "failed", error = "文件下载请求未发送：中继服务器当前离线")
             artifactDownloadStore.register(failed)
-            mutableState.value = mutableState.value.copy(
-                downloads = mutableState.value.downloads + (task.taskId to failed),
-                error = failed.error,
-            )
+            updateState { it.copy(downloads = it.downloads + (task.taskId to failed), error = failed.error) }
             return
         }
         val requested = queued.copy(commandId = commandId)
         artifactDownloadStore.register(requested)
         artifactDownloadStore.bindCommand(commandId, task.taskId)
-        mutableState.value = mutableState.value.copy(
-            downloads = mutableState.value.downloads + (task.taskId to requested),
-            // 路由标识是 hostId：下载由 Host 服务（§9.4）。这样某个 Pi 进程掉线时
-            // runtime.offline 的「中断同 runtime 的 pending 命令」就不会误伤这条下载。
-            pendingCommands = mutableState.value.pendingCommands + (commandId to hostId),
-            pendingDownloads = mutableState.value.pendingDownloads + (
-                commandId to PendingDownload(task.taskId, hostId, offset)
-            ),
-        )
+        updateState { it.copy(
+            downloads = it.downloads + (task.taskId to requested),
+            pendingCommands = it.pendingCommands + (commandId to hostId),
+            pendingDownloads = it.pendingDownloads + (commandId to PendingDownload(task.taskId, hostId, offset)),
+        ) }
     }
 
     fun respondConfirm(request: PendingInteraction, approved: Boolean) {
@@ -1205,7 +1191,7 @@ internal class HostConnection(
     }
 
     fun clearError() {
-        mutableState.value = mutableState.value.copy(error = null)
+        updateState { it.copy(error = null) }
     }
 
     /**
@@ -1274,23 +1260,19 @@ internal class HostConnection(
         val commandId = send(runtimeId)
         trackCommand(commandId, runtimeId, "交互响应未发送：当前离线，请连接后重试")
         if (commandId != null) {
-            val latest = mutableState.value
-            val latestConversation = latest.conversations[runtimeId] ?: return
-            val latestRequest = latestConversation.interactions[request.requestId] ?: return
-            mutableState.value = latest.copy(conversations = latest.conversations + (runtimeId to latestConversation.copy(
-                interactions = latestConversation.interactions + (request.requestId to latestRequest.copy(responseCommandId = commandId, responseError = null)),
-            )))
+            updateState { latest ->
+                val latestConversation = latest.conversations[runtimeId] ?: return@updateState latest
+                val latestRequest = latestConversation.interactions[request.requestId] ?: return@updateState latest
+                latest.copy(conversations = latest.conversations + (runtimeId to latestConversation.copy(
+                    interactions = latestConversation.interactions + (request.requestId to latestRequest.copy(responseCommandId = commandId, responseError = null)),
+                )))
+            }
         }
     }
 
     private fun trackCommand(commandId: String?, runtimeId: String, offlineError: String) {
-        mutableState.value = if (commandId == null) {
-            mutableState.value.copy(error = offlineError)
-        } else {
-            mutableState.value.copy(
-                pendingCommands = mutableState.value.pendingCommands + (commandId to runtimeId),
-            )
-        }
+        updateState { if (commandId == null) it.copy(error = offlineError)
+            else it.copy(pendingCommands = it.pendingCommands + (commandId to runtimeId)) }
     }
 
     private fun connect(
@@ -1306,10 +1288,10 @@ internal class HostConnection(
             // 这种连接能连上中继，但永远没有加密通道，进程激活必然被拒。与其把人困在
             // 「已连接」的主界面里反复报同一句话，不如直接退回配对页说明原因。
             shouldConnect = false
-            mutableState.value = RemoteState(
+            updateState { RemoteState(
                 connection = RelayConnection.OFFLINE,
                 error = "这台手机上的配对不完整（缺少端到端加密材料）：请重新扫码配对",
-            )
+            ) }
             return
         }
         reconnectJob?.cancel()
@@ -1344,9 +1326,7 @@ internal class HostConnection(
                 }
                 if (frame is ByteArray) {
                     runCatching { processArtifactChunk(frame) }.onFailure { error ->
-                        mutableState.value = mutableState.value.copy(
-                            error = "文件下载失败：${error.message ?: "二进制下载分片无效"}",
-                        )
+                        updateState { it.copy(error = "文件下载失败：${error.message ?: "二进制下载分片无效"}") }
                     }
                     continue
                 }
@@ -1379,17 +1359,17 @@ internal class HostConnection(
                                 previous.ownsSessionPatch(runtimeId, patch)
                             ) {
                                 runCatching {
-                                    prepareSessionCache(pairedDevice, patch.sessionId, previous.runtimes[runtimeId]?.agentKind)
+                                    prepareSessionCache(pairedDevice, patch.sessionId, mutableState.value.runtimes[runtimeId]?.agentKind)
                                     ingestSessionPatch(sessionGraphStore, pairedDevice, runtimeId, patch,
                                         currentState = { mutableState.value },
                                         connectionCurrent = { currentGeneration == generation && device == pairedDevice && shouldConnect })
                                 }.getOrElse { error ->
                                     val failure = "Session 历史缓存写入失败：${error.message ?: "未知错误"}"
-                                    mutableState.value = previous.copy(
-                                        sessionSyncFailures = previous.sessionSyncFailures + (runtimeId to failure),
-                                        conversations = previous.conversations + (runtimeId to
-                                            (previous.conversations[runtimeId] ?: RuntimeConversation()).copy(chatSyncError = failure)),
-                                    )
+                                    updateState { latest -> latest.copy(
+                                        sessionSyncFailures = latest.sessionSyncFailures + (runtimeId to failure),
+                                        conversations = latest.conversations + (runtimeId to
+                                            (latest.conversations[runtimeId] ?: RuntimeConversation()).copy(chatSyncError = failure)),
+                                    ) }
                                     return@withLock
                                 } ?: return@withLock
                             } else null
@@ -1426,22 +1406,22 @@ internal class HostConnection(
                                     stopReconnectOnClose = true
                                 }
                                 var next = reduced
-                                artifactResult.exceptionOrNull()?.let { error ->
-                                    val persisted = artifactDownloadStore.load().associateBy(ArtifactDownload::taskId)
-                                    next = next.copy(
-                                        downloads = next.downloads.mapValues { (taskId, task) -> persisted[taskId] ?: task },
-                                        error = "文件下载失败：${error.message ?: "无法保存文件"}",
-                                    )
-                                } ?: next.downloads
+                                val artifactFailure = artifactResult.exceptionOrNull()
+                                val persistedDownloads = if (artifactFailure != null) artifactDownloadStore.load().associateBy(ArtifactDownload::taskId) else emptyMap()
+                                if (artifactFailure == null) next.downloads
                                     .filter { (taskId, task) -> previous.downloads[taskId] != task }
                                     .values
                                     .forEach(artifactDownloadStore::register)
-                                mutableState.value = next
-                                // 上传的入站消息（ready/progress/finished/failed）不经过 reducer：它们改的是
-                                // 上传任务与调度器。**必须放在 reducer 落地之后**——processUploadPayload 的
-                                // updateState 会被下面的 `mutableState.value = next` 覆盖（next 基于「处理前」
-                                // 的 previous 快照算出），ready 的 uploading+uploadId 一落地就被冲掉，
-                                // 调度器永远创建不出来，分片一片都不发（2026-09-17 真机 0% 卡死的根因）。
+                                updateState { latest ->
+                                    val rebased = if (latest === previous) next
+                                        else reducer.reduce(latest, payload, committedEntries, channel = interactiveChannel)
+                                    if (artifactFailure == null) rebased else rebased.copy(
+                                        downloads = rebased.downloads.mapValues { (taskId, task) -> persistedDownloads[taskId] ?: task },
+                                        error = "文件下载失败：${artifactFailure.message ?: "无法保存文件"}",
+                                    )
+                                }
+                                next = mutableState.value
+                                // Upload state is published after the reducer, through its own transforms.
                                 runCatching { processUploadPayload(payload) }
                                     .onFailure { error -> Log.e(RELOAD_TRACE_TAG, "upload.payload_failed", error) }
                                 if (previous.sessions != next.sessions) {
@@ -1483,7 +1463,7 @@ internal class HostConnection(
                                 put("type", "device.version.report")
                                 put("protocolVersion", PROTOCOL_VERSION)
                                 put("version", appVersion)
-                                put("versionCode", packageInfo.longVersionCode.toInt())
+                                put("versionCode", androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(packageInfo).toInt())
                             })
                         }
                     }
@@ -1502,7 +1482,7 @@ internal class HostConnection(
                 }
             }
         }
-        mutableState.value = mutableState.value.copy(connection = RelayConnection.CONNECTING, error = null)
+        updateState { it.copy(connection = RelayConnection.CONNECTING, error = null) }
         relay.onLanEndpointsChanged = { endpoints ->
             if (currentGeneration == generation && pairing.lanEndpoints != endpoints) {
                 // LAN addresses move when the Host restarts; a live connection keeps using the old
@@ -1555,7 +1535,7 @@ internal class HostConnection(
                     }.getOrDefault(false)
                     if (isMismatch) {
                         protocolVersionMismatch.set(true)
-                        mutableState.value = mutableState.value.copy(error = PROTOCOL_VERSION_MISMATCH_ERROR)
+                        updateState { it.copy(error = PROTOCOL_VERSION_MISMATCH_ERROR) }
                     }
                 }
                 // 队列关闭/溢出只说明这条连接正在收尾：重连是自动的，而 connection 已经切成
@@ -1574,7 +1554,7 @@ internal class HostConnection(
             },
             onOpen = {
                 if (currentGeneration == generation) {
-                    mutableState.value = mutableState.value.copy(connection = RelayConnection.CONNECTING)
+                    updateState { it.copy(connection = RelayConnection.CONNECTING) }
                 }
             },
             onClosed = closed@{ reason ->
@@ -1583,12 +1563,11 @@ internal class HostConnection(
                 if (protocolVersionMismatch.get() || reason == "protocol_version_mismatch") {
                     pairingAwaitingAccept = false
                     shouldConnect = false
-                    val current = mutableState.value
-                    mutableState.value = current.copy(
+                    updateState { it.copy(
                         connection = RelayConnection.OFFLINE,
-                        deviceId = if (device == null) null else current.deviceId,
+                        deviceId = if (device == null) null else it.deviceId,
                         error = PROTOCOL_VERSION_MISMATCH_ERROR,
-                    )
+                    ) }
                     return@closed
                 }
                 if (pairingAwaitingAccept) {
@@ -1596,15 +1575,15 @@ internal class HostConnection(
                     // 不落盘、不进主界面，把人留在配对页重试。
                     pairingAwaitingAccept = false
                     shouldConnect = false
-                    mutableState.value = mutableState.value.copy(
+                    updateState { it.copy(
                         connection = RelayConnection.OFFLINE,
                         deviceId = null,
                         error = "配对未完成：连接在电脑确认之前断开。请确认电脑上的配对窗口还开着，再扫一次",
-                    )
+                    ) }
                     return@closed
                 }
                 if (!shouldConnect) return@closed
-                mutableState.value = mutableState.value.copy(path = null, pathRttMs = null)
+                updateState { it.copy(path = null, pathRttMs = null) }
                 val pausedDownloads = mutableState.value.downloads.mapValues { (_, task) ->
                     if (task.status in setOf("queued", "downloading")) {
                         task.copy(status = "paused", commandId = null, error = "连接已断开，可在重连后继续")
@@ -1612,15 +1591,12 @@ internal class HostConnection(
                 }
                 pausedDownloads.values.forEach(artifactDownloadStore::register)
                 if (stopReconnectOnClose) {
-                    mutableState.value = mutableState.value.copy(
-                        connection = RelayConnection.OFFLINE,
-                        error = mutableState.value.error,
-                    )
+                    updateState { it.markReconnecting(preserveError = true).copy(connection = RelayConnection.OFFLINE) }
                     return@closed
                 }
                 // Transport loss is expected to recover; keep the alert channel for
                 // authentication, protocol, and other actionable failures.
-                mutableState.value = mutableState.value.markReconnecting(preserveErrorOnClose)
+                updateState { it.markReconnecting(preserveErrorOnClose) }
                 scheduleReconnect()
             },
             // ★ 必须传：这是 E2E 材料（配对会话 / pskRoot 握手）进入连接的**唯一**入口。
@@ -1641,12 +1617,12 @@ internal class HostConnection(
                 pairingAwaitingAccept = false
                 shouldConnect = false
                 relay.disconnect()
-                mutableState.value = mutableState.value.copy(
+                updateState { it.copy(
                     connection = RelayConnection.OFFLINE,
                     deviceId = null,
                     error = "配对没有完成：电脑没有回确认（配对窗口可能已关闭或过期）。" +
                         "请确认电脑上的配对窗口还开着，再扫一次二维码",
-                )
+                ) }
             }
         }
         // 握手看门狗：中继认了这台手机（ONLINE 来自 Relay 的 device.ready）**不等于**电脑在听。
@@ -1661,7 +1637,7 @@ internal class HostConnection(
             if (mutableState.value.connection != RelayConnection.ONLINE) return@launch
             if (relay.hasE2eChannel() || handshakeStalled) return@launch
             handshakeStalled = true
-            mutableState.value = mutableState.value.copy(error = HANDSHAKE_STALLED_ERROR)
+            updateState { it.copy(error = HANDSHAKE_STALLED_ERROR) }
         }
     }
 
@@ -1682,6 +1658,12 @@ internal class HostConnection(
             Triple(runtimeId, snapshot, sequence)
         }.getOrNull() ?: return
         val (runtimeId, snapshot, sequence) = decoded
+        updateState { state ->
+            val commandId = state.sessionSyncCommands.entries.firstOrNull {
+                it.value.runtimeId == runtimeId && it.value.syncId == snapshot.syncId && it.value.sessionId == snapshot.sessionId
+            }?.key
+            commandId?.let(state::recoverLateHistoryRead) ?: state
+        }
         val initial = mutableState.value
         val pendingEntry = initial.sessionSyncCommands.entries.firstOrNull {
             it.value.runtimeId == runtimeId &&
@@ -1746,19 +1728,15 @@ internal class HostConnection(
                 // display projection nor a canonical update; release it and request the
                 // Runtime's current target again.
                 val activeRuntime = current.runtimes[runtimeId]
-                val next = current.copy(
-                    pendingCommands = current.pendingCommands - pendingCommandId,
-                    sessionSyncCommands = current.sessionSyncCommands - pendingCommandId,
-                    sessionSyncRequests = if (activeRuntime?.sessionGraphSync == true) {
-                        current.sessionSyncRequests + runtimeId
-                    } else {
-                        current.sessionSyncRequests - runtimeId
-                    },
-                    lastSequence = current.lastSequence + (
-                        "$runtimeId\u0000msg" to maxOf(current.lastSequence["$runtimeId\u0000msg"] ?: -1L, sequence)
+                updateState { latest -> latest.copy(
+                    pendingCommands = latest.pendingCommands - pendingCommandId,
+                    sessionSyncCommands = latest.sessionSyncCommands - pendingCommandId,
+                    sessionSyncRequests = if (latest.runtimes[runtimeId]?.sessionGraphSync == true)
+                        latest.sessionSyncRequests + runtimeId else latest.sessionSyncRequests - runtimeId,
+                    lastSequence = latest.lastSequence + (
+                        "$runtimeId\u0000msg" to maxOf(latest.lastSequence["$runtimeId\u0000msg"] ?: -1L, sequence)
                     ),
-                )
-                mutableState.value = next
+                ) }
                 activeRuntime?.let { scheduleSessionGraphLoad(pairedDevice, listOf(it)) }
                 return@withLock
             }
@@ -1766,20 +1744,20 @@ internal class HostConnection(
                 "Session 历史缓存写入失败：${error.message ?: "未知错误"}"
             }
             if (persistenceMessage != null) {
-                mutableState.value = current.failSessionSync(pendingCommandId, persistenceMessage).copy(
-                    lastSequence = current.lastSequence + (
-                        "$runtimeId\u0000msg" to maxOf(current.lastSequence["$runtimeId\u0000msg"] ?: -1L, sequence)
+                updateState { latest -> latest.failSessionSync(pendingCommandId, persistenceMessage).copy(
+                    lastSequence = latest.lastSequence + (
+                        "$runtimeId\u0000msg" to maxOf(latest.lastSequence["$runtimeId\u0000msg"] ?: -1L, sequence)
                     ),
-                )
+                ) }
                 return@withLock
             }
             val previous = current
-            var next = runCatching {
-                reducer.reduce(current, payload, persistedEntries)
-            }.getOrElse {
-                current.copy(error = "收到无效的 Session 历史快照")
+            var next = current
+            updateState { latest ->
+                runCatching { reducer.reduce(latest, payload, persistedEntries) }
+                    .getOrElse { latest.copy(error = "收到无效的 Session 历史快照") }
+                    .also { next = it }
             }
-            mutableState.value = next
             probe?.mark("snapshot_applied", "accepted=${pendingCommandId !in next.sessionSyncCommands} loading=${next.sessionHistory[runtimeId]?.loading} error=${next.conversations[runtimeId]?.chatSyncError != null}")
             val runtime = next.runtimes[runtimeId]
             if (runtime != null && runtime.sessionId == pending.sessionId &&
@@ -1789,7 +1767,7 @@ internal class HostConnection(
                 // committed. Only after coverage reaches it may a newer live tail start a round.
                 val fixedTarget = pending.targetLeafId.takeIf { pending.range == "catchup" }
                 if (fixedTarget != null && !sessionGraphStore.hasContinuousCoverage(pairedDevice, pending.sessionId, fixedTarget)) {
-                    if (snapshot.entries.isNotEmpty()) startBranchCatchUp(pairedDevice, runtime, fixedTarget)
+                    startBranchCatchUp(pairedDevice, runtime, fixedTarget, completedRange = pending)
                 } else {
                     startBranchCatchUp(pairedDevice, runtime)
                 }
@@ -1832,78 +1810,37 @@ internal class HostConnection(
     }
 
     /** Loads the selected cached branch for offline display. */
-    private fun loadCachedSessionGraph(
-        pairedDevice: DeviceCredential,
-        sessionId: String,
-        runtimeId: String?,
-    ) {
-        prepareSessionCache(pairedDevice, sessionId, mutableState.value.sessions[sessionId]?.agentKind)
-        val existingGraph = mutableState.value.sessionGraphs[sessionId]
-        if (runtimeId != null && existingGraph != null) return
-        if (runtimeId == null && mutableState.value.selectedOfflineSessionId != sessionId) return
-        var graph = sessionGraphStore.latestLeaf(pairedDevice, sessionId)?.let { leafId ->
-            sessionGraphStore.readBranch(
-                device = pairedDevice,
-                sessionId = sessionId,
-                leafId = leafId,
-                maxEntries = previewPageSize,
-            ).entries.takeIf { it.isNotEmpty() }?.let { entries ->
-                SessionGraph(
-                    sessionId,
-                    entries.associateBy(SessionGraphEntry::entryId),
-                    SessionBranchCursor(leafId),
-                    sessionGraphStore.readTurnTimings(pairedDevice, sessionId).associateBy(TurnTiming::turnId),
-                )
+    private suspend fun loadCachedSessionGraph(pairedDevice: DeviceCredential, sessionId: String) {
+        val key = offlineHistoryKey(sessionId)
+        var acceptance = SessionReadAcceptance()
+        updateState { it.beginSessionRead(key, SessionReadKind.FIRST_PAGE,
+            UUID.randomUUID().toString()).also { start -> acceptance = start.acceptance }.state }
+        val operationId = acceptance.operationId ?: return
+        if (acceptance.merged) return
+        registerReadWorker(operationId, currentCoroutineContext()[Job]!!)
+        try {
+            currentCoroutineContext().ensureActive()
+            if (prepareSessionCache(pairedDevice, sessionId, mutableState.value.sessions[sessionId]?.agentKind)) return
+            val graph = synchronized(sessionGraphStore) {
+                val leafId = sessionGraphStore.latestLeaf(pairedDevice, sessionId)
+                val range = sessionGraphStore.readBranch(pairedDevice, sessionId, leafId, maxEntries = previewPageSize)
+                if (leafId == null || range.entries.isEmpty()) null else
+                    sessionGraphStore.withCacheVersions(pairedDevice, SessionGraph(sessionId,
+                        range.entries.associateBy(SessionGraphEntry::entryId), SessionBranchCursor(leafId),
+                        sessionGraphStore.readTurnTimings(pairedDevice, sessionId).associateBy(TurnTiming::turnId)))
             }
-        }
-        val loadedGraph = graph?.let { sessionGraphStore.withCacheVersions(pairedDevice, it) } ?: existingGraph ?: return
-        val current = mutableState.value
-        val mergedGraph = if (existingGraph == null || loadedGraph === existingGraph || existingGraph.cacheEpoch != loadedGraph.cacheEpoch) {
-            loadedGraph
-        } else {
-            loadedGraph.copy(
-                entries = LinkedHashMap<String, SessionGraphEntry>().apply {
-                    existingGraph.entries.forEach { (entryId, entry) -> put(entryId, entry) }
-                    loadedGraph.entries.forEach { (entryId, entry) ->
-                        put(entryId, entry)
-                    }
-                },
-                turnTimings = existingGraph.turnTimings + loadedGraph.turnTimings,
-                entryVersions = existingGraph.entryVersions + loadedGraph.entryVersions,
-                timingVersions = existingGraph.timingVersions + loadedGraph.timingVersions,
-            )
-        }
-        val conversations = if (runtimeId == null) current.conversations else {
-            val projected = projectSessionGraph(mergedGraph, messageJson)
-            current.conversations + (
-                runtimeId to (current.conversations[runtimeId] ?: RuntimeConversation()).copy(
-                    messages = projected.messages,
-                    turnTimings = projected.turnTimings.associateBy(TurnTiming::turnId),
-                    hasLiveSnapshot = false,
-                    isChatSyncing = false,
-                    chatSyncError = projected.error,
-                    revision = (current.conversations[runtimeId]?.revision ?: 0) + 1,
-                )
-            )
-        }
-        val session = current.sessions[sessionId]
-        if (runtimeId == null && mutableState.value.selectedOfflineSessionId != sessionId) return
-        val updatedConversation = runtimeId?.let { key -> conversations[key]?.let { key to it } }
-        updateState { target ->
-            if (runtimeId == null && target.selectedOfflineSessionId != sessionId) return@updateState target
-            target.copy(
-                sessions = if (session == null) target.sessions else target.sessions + (
-                    sessionId to session.copy(hasHistoryCache = true)
-                ),
-                sessionGraphs = target.sessionGraphs + (sessionId to mergedGraph),
-                conversations = updatedConversation
-                    ?.let { (key, conversation) -> target.conversations + (key to conversation) }
-                    ?: target.conversations,
-                sessionHistory = target.sessionHistory + (
-                    (runtimeId?.let(::sessionHistoryKey) ?: offlineHistoryKey(sessionId)) to
-                        historyState(sessionId, mergedGraph.cursor.leafId, mergedGraph)
-                ),
-            )
+            currentCoroutineContext().ensureActive()
+            updateState { if (device != pairedDevice) it else if (graph == null)
+                it.finishHistoryRead(operationId, SessionReadPhase.FAILED, "本地首屏存在缺口，请连接后重试")
+                else it.applyFirstSessionPage(operationId, graph) }
+        } catch (error: CancellationException) {
+            updateState { it.finishHistoryRead(operationId, SessionReadPhase.CANCELLED) }
+            throw error
+        } catch (error: Exception) {
+            failLocalSessionRead(operationId, error)
+        } finally {
+            updateState { state -> if (state.sessionReads[operationId]?.phase?.active == true)
+                state.finishHistoryRead(operationId, SessionReadPhase.CANCELLED) else state }
         }
     }
 
@@ -1931,64 +1868,49 @@ internal class HostConnection(
     private fun loadLocalGraphForRuntime(
         pairedDevice: DeviceCredential,
         runtime: RuntimeSummary,
-        initial: RemoteState,
     ): SessionGraph? {
         val sessionId = runtime.sessionId ?: return null
         prepareSessionCache(pairedDevice, sessionId, runtime.agentKind)
-        val observedLeaf = sessionGraphStore.latestLeaf(pairedDevice, sessionId)
-        var graph = mutableState.value.sessionGraphs[sessionId] ?: SessionGraph(sessionId)
-        val diskEpoch = sessionGraphStore.cacheEpoch(pairedDevice, sessionId)
-        if (graph.cacheEpoch != diskEpoch) graph = SessionGraph(sessionId, cacheEpoch = diskEpoch)
-        for (leaf in listOfNotNull(runtime.sessionLeafId, observedLeaf).distinct()) {
-            val range = sessionGraphStore.readBranch(pairedDevice, sessionId, leaf, maxEntries = previewPageSize)
-            graph = graph.merge(SessionGraphSnapshot(sessionId, "local", SessionBranchCursor(leaf), "prepend", range.entries))
-        }
-        graph = graph.merge(SessionGraphSnapshot(sessionId, "local", SessionBranchCursor(), "prepend", emptyList(),
-            turnTimings = sessionGraphStore.readTurnTimings(pairedDevice, sessionId)))
-        graph = sessionGraphStore.withCacheVersions(pairedDevice, graph)
-        return graph.takeIf { it.entries.isNotEmpty() }?.let {
-            if (it.cursor.leafId == null) it.copy(cursor = SessionBranchCursor(observedLeaf)) else it
+        return synchronized(sessionGraphStore) {
+            val observedLeaf = sessionGraphStore.latestLeaf(pairedDevice, sessionId)
+            var graph = SessionGraph(sessionId, cacheEpoch = sessionGraphStore.cacheEpoch(pairedDevice, sessionId))
+            for (leaf in listOfNotNull(runtime.sessionLeafId, observedLeaf).distinct()) {
+                val range = sessionGraphStore.readBranch(pairedDevice, sessionId, leaf, maxEntries = previewPageSize)
+                graph = graph.merge(SessionGraphSnapshot(sessionId, "local", SessionBranchCursor(leaf), "prepend", range.entries))
+            }
+            graph = graph.merge(SessionGraphSnapshot(sessionId, "local", SessionBranchCursor(), "prepend", emptyList(),
+                turnTimings = sessionGraphStore.readTurnTimings(pairedDevice, sessionId)))
+            graph = sessionGraphStore.withCacheVersions(pairedDevice, graph)
+            graph.takeIf { it.entries.isNotEmpty() || it.cacheEpoch != null && runtime.sessionLeafId == null }?.let {
+                if (it.cursor.leafId == null) it.copy(cursor = SessionBranchCursor(observedLeaf)) else it
+            }
         }
     }
-    private fun historyState(
-        sessionId: String,
-        leafId: String?,
-        graph: SessionGraph?,
-        loading: Boolean = false,
-        requestId: String? = null,
-    ): SessionHistoryState {
-        val branch = graph?.let { buildSessionPath(it.entries, leafId) }.orEmpty()
-        return SessionHistoryState(
-            sessionId = sessionId,
-            leafId = leafId,
-            oldestEntryId = branch.firstOrNull()?.entryId,
-            hasOlder = branch.firstOrNull()?.parentId != null,
-            loading = loading,
-            requestId = requestId,
-        )
+    private fun scheduleSessionGraphLoad(pairedDevice: DeviceCredential, runtimes: List<RuntimeSummary>) {
+        val requests = runtimes.map { SessionLoadRequest(pairedDevice, it) }
+        launchSessionLoads(requests)
     }
 
-    private fun scheduleSessionGraphLoad(
-        pairedDevice: DeviceCredential,
-        runtimes: List<RuntimeSummary>,
-    ) {
-        if (runtimes.isEmpty()) return
-        // Coalesce load requests. Each load spends seconds decrypting the local tree, so launching
-        // one coroutine per request let a busy runtime starve the newly selected one: its load
-        // queued behind a stream of refreshes and the chat stayed blank with a sync spinner.
-        runtimes.forEach { pendingSessionLoadRuntimes[it.runtimeId] = it }
-        if (sessionLoadWorker?.isActive == true) return
-        sessionLoadWorker = scope.launch(Dispatchers.IO) {
-            while (true) {
-                val batch = sessionSyncLoadLock.withLock {
-                    if (pendingSessionLoadRuntimes.isEmpty()) return@withLock null
-                    pendingSessionLoadRuntimes.values.toList().also { pendingSessionLoadRuntimes.clear() }
-                } ?: break
-                try {
-                    loadSessionGraphsFor(pairedDevice, batch)
-                } catch (error: Throwable) {
-                    Log.i(RELOAD_TRACE_TAG, "session.load.failed error=${error.message}")
+    private fun launchSessionLoads(requests: List<SessionLoadRequest>) {
+        val worker = sessionLoads.enqueue(requests) ?: return
+        scope.launch(Dispatchers.IO) {
+            try {
+                while (true) {
+                    val batch = sessionLoads.take(worker, mutableState.value.selectedRuntimeId) ?: break
+                    for (request in batch) {
+                        if (request.device != device) continue
+                        try {
+                            loadSessionGraphsFor(request.device, listOf(request.runtime))
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            reportSessionLoadFailure(request.runtime.runtimeId, error)
+                        }
+                    }
                 }
+            } finally {
+                val pending = sessionLoads.release(worker)
+                if (pending.isNotEmpty() && shouldConnect) launchSessionLoads(pending)
             }
         }
     }
@@ -1997,9 +1919,9 @@ internal class HostConnection(
     private fun prepareSessionCache(pairedDevice: DeviceCredential, sessionId: String, agentKind: String?): Boolean {
         if (device != pairedDevice || !sessionGraphStore.prepareSession(pairedDevice, sessionId, agentKind)) return false
         val current = mutableState.value
-        val historyKeys = current.sessionHistory.filterValues { it.sessionId == sessionId }.keys
-        historyKeys.forEach { historyJobs.remove(it)?.cancel() }
-        updateState { state -> if (device != pairedDevice) state else state.afterSessionCacheRebuild(sessionId) }
+        val affected = current.historyReads.values.filter { it.sessionId == sessionId && it.phase.active }.map { it.operationId }
+        updateState { state -> if (device != pairedDevice) state else state.afterSessionCacheRebuild(sessionId).reconcileHistoryReads() }
+        synchronized(historyJobs) { affected.mapNotNull { historyJobs[it] } }.forEach(Job::cancel)
         scheduleSessionGraphLoad(pairedDevice, mutableState.value.runtimes.values.filter { it.sessionId == sessionId && it.sessionGraphSync })
         return true
     }
@@ -2014,18 +1936,18 @@ internal class HostConnection(
      * `sessionLeafId` froze so every catch-up round was rejected as stale (leaving the chat behind a
      * permanent "Session 已产生更新" banner and re-requesting the same preview forever), and streamed
      * output never reached the chat. Callers now evaluate their transform against the state they
-     * actually replace, retrying when a frame wins the race instead of overwriting it.
+     * actually replace. The short writer lock covers pure state transforms only; cache IO remains
+     * outside it and submits identity-bearing results for a fresh ownership check.
      */
     private fun updateState(transform: (RemoteState) -> RemoteState) {
-        while (true) {
+        synchronized(stateWriterLock) {
             val current = mutableState.value
-            val next = transform(current)
-            if (next === current) return
-            if (mutableState.compareAndSet(current, next)) return
+            val next = transform(current).trackSessionReadDemands(current).reconcileHistoryReads()
+            if (next !== current) mutableState.value = next
         }
     }
 
-    /** Runs under relayStateLock, shared with registration, snapshot commit and cancellation. */
+    /** Atomic registration/ticks precede sends; every effect rechecks its immutable task. */
     private fun runSessionSyncScheduler() {
         val pairedDevice = device ?: return
         val state = mutableState.value
@@ -2052,75 +1974,46 @@ internal class HostConnection(
     private suspend fun loadSessionGraphsFor(pairedDevice: DeviceCredential, runtimes: List<RuntimeSummary>) {
         val connectionGeneration = generation
         for (requested in runtimes.sortedBy { it.runtimeId != mutableState.value.selectedRuntimeId }) {
-            val probe = HistoryLoadProbe.start(requested.agentKind, requested.sessionId.orEmpty(), null, "loader")
+            if (device != pairedDevice || !shouldConnect || generation != connectionGeneration ||
+                mutableState.value.connection != RelayConnection.ONLINE) return
+            val runtime = mutableState.value.runtimes[requested.runtimeId]?.takeIf { it.sessionId == requested.sessionId }
+                ?: continue
+            val sessionId = runtime.sessionId ?: continue
+            if (runtime.runtimeId != mutableState.value.selectedRuntimeId) {
+                val recovery = mutableState.value.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
+                if (recovery != null) sendSessionSync(pairedDevice, newSessionSyncCommandId(), recovery)
+                else startBranchCatchUp(pairedDevice, runtime)
+                continue
+            }
+            prepareSessionCache(pairedDevice, sessionId, runtime.agentKind)
+            val initial = mutableState.value
+            // A trusted baseline needs a source check, not another local decrypt/projection pass.
+            val conditional = initial.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
+                ?.takeIf { it.knownState != null }
+            if (conditional != null) {
+                sendSessionSync(pairedDevice, newSessionSyncCommandId(), conditional)
+                continue
+            }
+            if (initial.conversations[runtime.runtimeId]?.hasLiveSnapshot != true ||
+                initial.runtimeSessionViews[runtime.runtimeId]?.leafId != runtime.sessionLeafId) {
+                var acceptance = SessionReadAcceptance()
+                updateState { it.beginSessionRead(runtime.runtimeId, SessionReadKind.FIRST_PAGE,
+                    UUID.randomUUID().toString()).also { start -> acceptance = start.acceptance }.state }
+                val operationId = acceptance.operationId
+                if (operationId != null && !acceptance.merged) launchFirstSessionPage(pairedDevice, runtime, operationId)
+            }
+            // Display completion and source confirmation are independent facts. A local failure
+            // neither consumes recovery demand nor prevents an independently owned source check.
             relayStateLock.withLock {
-                probe?.mark("loader_lock_acquired")
-                if (device != pairedDevice || !shouldConnect || generation != connectionGeneration ||
-                    mutableState.value.connection != RelayConnection.ONLINE) return
-                val runtime = mutableState.value.runtimes[requested.runtimeId]?.takeIf { it.sessionId == requested.sessionId }
-                    ?: return@withLock
-                val sessionId = runtime.sessionId ?: return@withLock
-                try {
-                    prepareSessionCache(pairedDevice, sessionId, runtime.agentKind)
-                    val initial = mutableState.value
-                    if (runtime.runtimeId in initial.sessionSyncFailures || initial.conversations[runtime.runtimeId]?.chatSyncError != null) return@withLock
-                    // An applied baseline already owns its display and cached head. Periodic
-                    // reconciliation can ask the source directly without decrypting the same
-                    // local tail again before every unchanged acknowledgement.
-                    val conditional = initial.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
-                        ?.takeIf { it.knownState != null }
-                    if (conditional != null) {
-                        sendSessionSync(pairedDevice, newSessionSyncCommandId(), conditional)
-                        return@withLock
-                    }
-                    probe?.mark("local_load_begin")
-                    val loaded = if (runtime.sessionLeafId == null) SessionGraph(sessionId)
-                        else loadLocalGraphForRuntime(pairedDevice, runtime, initial)
-                    probe?.mark("local_load_end", "entries=${loaded?.entries?.size ?: 0}")
-                    if (loaded != null) updateState { current ->
-                        if (device != pairedDevice || generation != connectionGeneration ||
-                            current.runtimes[runtime.runtimeId]?.sessionId != sessionId ||
-                            current.sessionBranchGenerations[runtime.runtimeId] != initial.sessionBranchGenerations[runtime.runtimeId]) current
-                        else {
-                            val graph = (current.sessionGraphs[sessionId] ?: SessionGraph(sessionId)).merge(
-                                SessionGraphSnapshot(sessionId, "local", loaded.cursor, "prepend", loaded.entries.values.toList(),
-                                    turnTimings = loaded.turnTimings.values.toList()),
-                            ).let { merged -> if (merged.cursor.leafId == null) merged.copy(cursor = loaded.cursor) else merged }
-                            current.copy(
-                                sessionGraphs = current.sessionGraphs + (sessionId to graph),
-                                sessions = current.sessions + (sessionId to (current.sessions[sessionId]
-                                    ?: SessionCatalogEntry(sessionId)).withHistoryCache(runtime.hostname)),
-                            ).seedCachedSessionView(runtime.runtimeId, graph)
-                        }
-                    }
-                    val current = mutableState.value
-                    if (current.sessionSyncCommands.values.any { it.runtimeId == runtime.runtimeId }) return@withLock
-                    val recovery = current.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
-                    if (recovery != null) {
-                        sendSessionSync(pairedDevice, newSessionSyncCommandId(), recovery)
-                        return@withLock
-                    }
-                    val conversation = current.conversations[runtime.runtimeId]
-                    if (conversation?.hasLiveSnapshot == true) {
-                        startBranchCatchUp(pairedDevice, runtime)
-                        if (mutableState.value.sessionSyncCommands.values.none { it.runtimeId == runtime.runtimeId }) {
-                            updateState { it.copy(sessionSyncRequests = it.sessionSyncRequests - runtime.runtimeId) }
-                        }
-                    } else if (runtime.runtimeId == current.selectedRuntimeId) {
-                        val pending = PendingSessionSync(
-                            runtime.runtimeId, sessionId, UUID.randomUUID().toString(), range = "preview",
-                            targetLeafId = null, viewLeafId = runtime.sessionLeafId,
-                            branchGeneration = current.sessionBranchGenerations[runtime.runtimeId] ?: 0,
-                            connectionGeneration = generation,
-                        )
-                        sendSessionSync(pairedDevice, newSessionSyncCommandId(), pending)
-                    }
-                } catch (error: Throwable) {
-                    probe?.mark("loader_failed", "type=${error::class.simpleName}")
-                    reportSessionLoadFailure(runtime.runtimeId, error)
-                } finally {
-                    probe?.mark("loader_finished")
-                }
+                val current = mutableState.value
+                if (device != pairedDevice || generation != connectionGeneration ||
+                    current.selectedRuntimeId != runtime.runtimeId || current.runtimes[runtime.runtimeId]?.sessionId != sessionId ||
+                    runtime.runtimeId in current.sessionSyncFailures) return@withLock
+                if (current.sessionSyncCommands.values.any { it.runtimeId == runtime.runtimeId }) return@withLock
+                val recovery = current.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
+                if (recovery != null) sendSessionSync(pairedDevice, newSessionSyncCommandId(), recovery)
+                else if (current.conversations[runtime.runtimeId]?.hasLiveSnapshot == true)
+                    startBranchCatchUp(pairedDevice, current.runtimes[runtime.runtimeId] ?: runtime)
             }
         }
     }
@@ -2314,18 +2207,8 @@ internal class HostConnection(
         if (task.status !in setOf("downloading", "paused", "queued")) return
         val result = artifactDownloadStore.append(frame.runtimeId, frame.transferId, frame.offset, frame.data)
         if (!result.recognized || result.runtimeId == null) return
-        val previous = mutableState.value
-        val reduced = reducer.reduceArtifactChunk(
-            previous,
-            result.runtimeId,
-            frame.transferId,
-            frame.offset,
-            frame.data.size,
-            result.receivedOffset,
-        )
-        mutableState.value = reduced.downloads[task.taskId]?.let { updated ->
-            reduced.copy(downloads = reduced.downloads + (task.taskId to updated))
-        } ?: reduced
+        updateState { reducer.reduceArtifactChunk(it, result.runtimeId, frame.transferId,
+            frame.offset, frame.data.size, result.receivedOffset) }
         if (!pullDownloads.onChunk(frame.transferId, frame.offset, frame.data.size, result.receivedOffset)) {
             Log.i(RELOAD_TRACE_TAG, "in chunk.dropped transferId=${frame.transferId} reason=no_scheduler")
         }
@@ -2452,28 +2335,6 @@ internal class HostConnection(
         if (result.getOrNull() != null) relay.doneArtifact(transferId)
     }
 
-    private fun isHistoryRequestCurrent(
-        historyKey: String,
-        sessionId: String,
-        leafId: String?,
-        beforeEntryId: String,
-    ): Boolean {
-        val current = mutableState.value
-        val history = current.sessionHistory[historyKey] ?: return false
-        if (history.sessionId != sessionId || history.leafId != leafId ||
-            history.oldestEntryId != beforeEntryId || !history.loading
-        ) return false
-        if (historyKey == offlineHistoryKey(sessionId)) {
-            return current.selectedOfflineSessionId == sessionId
-        }
-        val runtime = current.runtimes[historyKey] ?: return false
-        // Older entries are anchored to the display leaf, not the live frontier. Requiring the
-        // runtime leaf to still equal the view leaf made paging fail as soon as the session
-        // appended anything while the request was in flight.
-        return current.selectedRuntimeId == historyKey &&
-            runtime.sessionId == sessionId
-    }
-
     private fun sessionHistoryKey(runtimeId: String): String = runtimeId
 
     private fun offlineHistoryKey(sessionId: String): String = "offline:$sessionId"
@@ -2521,5 +2382,4 @@ internal class HostConnection(
             retryDownload(task.taskId)
         }
     }
-
 }

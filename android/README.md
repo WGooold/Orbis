@@ -81,6 +81,10 @@ APP 启动时只加载并持久化轻量 Session Catalog；用户打开在线 Ru
 .\gradlew.bat connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pi.remote.MarkdownInstrumentedTest
 ```
 
+## Session 历史读取验收
+
+已有配对和在线 Codex 的只读端到端验收，分别覆盖客户端/连接重建，以及真正的 App 进程重开和 UI 上滑。脚本、覆盖安装、设备占用、截止时间、脱敏证据与 `PASS / FAIL / INCONCLUSIVE` 的判定见 [历史读取验收说明](docs/history-reload-probe.md)。必须取得本次设备操作授权；不清缓存、不激活后端，也不重启 Host。
+
 ## 文件
 
 下载页通过「浏览电脑文件」打开与新建会话共用的目录选择器：从盘符 / 根目录逐层进入，支持返回上一级和刷新；选中文件后点击「下载到手机」，无需手输路径。新建会话只显示目录，下载选择器同时显示普通文件；加载、离线或读取失败时不能下载，失败可原地重试。主页面的下载入口和聊天页右上角的下载按钮打开的是**同一个页面**；消息中识别到的 Windows/Unix 文件路径仍可直接点击下载。文件列表需要更新并重启 Host。

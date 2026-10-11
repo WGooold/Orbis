@@ -13,9 +13,9 @@ class SessionSnapshotProjectionTest {
     private val runtime = RuntimeSummary("r", "R", "/", "idle", "s", sessionLeafId = "tail")
     private val graph = SessionGraph("s", listOf(entry("root", null), entry("tail", "root")).associateBy { it.entryId }, SessionBranchCursor("tail"))
 
-    private fun reduce(state: RemoteState, snapshot: SessionGraphSnapshot): RemoteState {
+    private fun reduce(state: RemoteState, snapshot: SessionGraphSnapshot, sequence: Int = 1): RemoteState {
         val payload = buildJsonObject {
-            put("type", "runtime.event"); put("runtimeId", "r"); put("sequence", 1)
+            put("type", "runtime.event"); put("runtimeId", "r"); put("sequence", sequence)
             put("event", JsonObject((Json.encodeToJsonElement(SessionGraphSnapshot.serializer(), snapshot) as JsonObject) +
                 ("type" to kotlinx.serialization.json.JsonPrimitive("session.snapshot"))))
         }
@@ -70,6 +70,48 @@ class SessionSnapshotProjectionTest {
             assertEquals("e$first", next.sessionHistory["r"]?.oldestEntryId)
             assertEquals(first != 1, next.sessionHistory["r"]?.hasOlder)
         }
+    }
+
+    @Test
+    fun `bounded catchup pages advance the fixed gap without declaring a range failure or moving live state`() {
+        fun node(n: Int) = entry("e$n", if (n == 1) null else "e${n - 1}")
+        val cached = ((1..3) + (8..10)).map(::node)
+        val pending = PendingSessionSync("r", "s", "first", "catchup",
+            targetLeafId = "e10", knownLeafId = "e3", requestTargetLeafId = "e7", viewLeafId = "e10",
+            historyOperationId = "read", attempts = 1)
+        val conversation = RuntimeConversation(messages = projectSessionEntries((8..10).map(::node)),
+            hasLiveSnapshot = true, sourceEpoch = "epoch", sourceSeq = 1,
+            sourceHeadLeafId = "e10", sourceReady = true)
+        val initial = RemoteState(
+            runtimes = mapOf("r" to runtime.copy(sessionLeafId = "e10")),
+            sessionGraphs = mapOf("s" to SessionGraph("s", cached.associateBy { it.entryId },
+                SessionBranchCursor("e10"), cacheEpoch = "epoch")),
+            runtimeSessionViews = mapOf("r" to RuntimeSessionView("r", "s", "e10")),
+            conversations = mapOf("r" to conversation),
+        ).beginSessionRead("r", SessionReadKind.CATCHUP, "read", "e10").state
+        val registered = initial.copy(sessionSyncCommands = mapOf("c" to pending)).bindHistoryRead("read", "c")
+        // The producer's forward page has no older-history flag even when more catchup rows remain.
+        val partial = reduce(registered, SessionGraphSnapshot("s", "first", SessionBranchCursor("e7"), "append",
+            (4..5).map(::node), range = "catchup", targetLeafId = "e7", hasOlder = false,
+            complete = false, rangeStatus = "limit_reached", source = SessionSourceEpoch("epoch", 1, true)))
+        assertNull("A bounded forward page must not report Session range load failed",
+            partial.sessionRangeFailures[sessionRangeFailureKey("r", "catchup")])
+        assertTrue("The returned rows must be retained for the next page", "e5" in partial.sessionGraphs.getValue("s").entries)
+        assertTrue(partial.ownsHistoryRead("read"))
+        assertEquals(conversation.messages, partial.conversations["r"]?.messages)
+        assertEquals("e10", partial.conversations["r"]?.sourceHeadLeafId)
+
+        val nextTask = pending.copy(syncId = "second", knownLeafId = "e5")
+        val continued = partial.copy(sessionSyncCommands = mapOf("next" to nextTask)).bindHistoryRead("read", "next")
+        val filled = reduce(continued, SessionGraphSnapshot("s", "second", SessionBranchCursor("e7"), "append",
+            (6..7).map(::node), range = "catchup", targetLeafId = "e7", hasOlder = false,
+            complete = true, rangeStatus = "complete", source = SessionSourceEpoch("epoch", 1, true)), sequence = 2)
+        assertTrue(filled.sessionGraphs.getValue("s").hasCompleteEntryChain("e10"))
+        val finished = filled.observeCatchupCoverage("read", nextTask, null, "epoch")
+        assertEquals(SessionReadPhase.SUCCEEDED, finished.sessionReads.getValue("read").phase)
+        assertNull(finished.sessionRangeFailures[sessionRangeFailureKey("r", "catchup")])
+        assertEquals("e10", finished.sessionReads.getValue("read").leafId)
+        assertEquals("e10", finished.conversations["r"]?.sourceHeadLeafId)
     }
 
     @Test
@@ -287,7 +329,8 @@ class SessionSnapshotProjectionTest {
         assertEquals(state.sessionGraphs, failed.sessionGraphs)
         assertEquals(state.conversations["r"]?.messages, failed.conversations["r"]?.messages)
         assertFalse(failed.sessionHistory.getValue("r").loading)
-        assertEquals("disk full", failed.conversations["r"]?.chatSyncError)
+        assertNull(failed.conversations["r"]?.chatSyncError)
+        assertEquals("disk full", failed.sessionRangeFailures[sessionRangeFailureKey("r", "history")])
     }
 
     @Test

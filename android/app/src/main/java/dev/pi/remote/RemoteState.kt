@@ -415,7 +415,12 @@ data class RemoteState(
     /** Stops automatic reloads after failure, even if unrelated live events update the display. */
     val sessionSyncFailures: Map<String, String> = emptyMap(),
     val sessionSyncRequests: Set<String> = emptySet(),
+    val sessionSyncDemandGenerations: Map<String, Long> = emptyMap(),
     val sessionHistory: Map<String, SessionHistoryState> = emptyMap(),
+    /** Logical reads and bounded terminal outcomes; one owner for all read kinds. */
+    val sessionReads: Map<String, SessionReadOperation> = emptyMap(),
+    /** Range failures do not invalidate the source baseline or block valid cache queries. */
+    val sessionRangeFailures: Map<String, String> = emptyMap(),
     val downloads: Map<String, ArtifactDownload> = emptyMap(),
     /** 手机发往电脑的上传任务（spec: 手机上传文件到电脑），key = taskId。 */
     val uploads: Map<String, UploadTask> = emptyMap(),
@@ -449,7 +454,10 @@ data class RemoteState(
      */
     val e2eReady: Boolean = false,
     val error: String? = null,
-)
+) {
+    /** Read-only history observation compatibility; there is no second mutable registry. */
+    val historyReads: Map<String, SessionReadOperation> get() = sessionReads
+}
 
 data class PendingSessionSync(
     val runtimeId: String,
@@ -478,6 +486,10 @@ data class PendingSessionSync(
     val sourceRecoveryEpoch: String? = null,
     /** Fixed at task creation so retry never changes its immutable request parameters. */
     val knownState: SessionAppliedState? = null,
+    /** Client-local read identity; applies to preview/history/catchup, never sent on the wire. */
+    val historyOperationId: String? = null,
+    /** Immutable refresh demand captured at task creation. */
+    val demandGeneration: Long? = null,
 )
 
 data class SessionHistoryState(
@@ -665,16 +677,25 @@ internal fun RemoteState.ownsSessionSnapshot(
         (pending.requestTargetLeafId == null || pending.requestTargetLeafId == targetLeafId) &&
         pending.beforeEntryId == beforeEntryId &&
         runtime.sessionId == sessionId &&
-        pending.branchGeneration == (sessionBranchGenerations[runtimeId] ?: 0)
+        pending.branchGeneration == (sessionBranchGenerations[runtimeId] ?: 0) &&
+        (pending.historyOperationId == null || ownsHistoryRead(pending.historyOperationId))
 }
 
 internal fun RemoteState.failSessionSync(commandId: String, message: String): RemoteState {
     val pending = sessionSyncCommands[commandId] ?: return this
     val conversation = conversations[pending.runtimeId] ?: RuntimeConversation()
-    return releaseHistoryRequest(commandId).copy(
+    val released = finishRemoteHistoryRead(commandId, HistoryReadPhase.FAILED, message).releaseHistoryRequest(commandId)
+    if (pending.range != "preview") return released.copy(
+        pendingCommands = released.pendingCommands - commandId,
+        sessionSyncCommands = released.sessionSyncCommands - commandId,
+        sessionRangeFailures = released.sessionRangeFailures + (sessionRangeFailureKey(pending.runtimeId, pending.range) to message),
+    )
+    return released.copy(
         pendingCommands = pendingCommands - commandId,
         sessionSyncCommands = sessionSyncCommands - commandId,
-        sessionSyncRequests = sessionSyncRequests - pending.runtimeId,
+        sessionSyncRequests = if (pending.demandGeneration != null &&
+            pending.demandGeneration != (sessionSyncDemandGenerations[pending.runtimeId] ?: 0L)) sessionSyncRequests
+            else sessionSyncRequests - pending.runtimeId,
         sessionSyncFailures = sessionSyncFailures + (pending.runtimeId to message),
         conversations = conversations + (pending.runtimeId to conversation.copy(
             isChatSyncing = false, chatSyncError = message, revision = conversation.revision + 1,
@@ -683,14 +704,18 @@ internal fun RemoteState.failSessionSync(commandId: String, message: String): Re
 }
 
 /** The runtime metadata supplies freshness; the local page supplies its immutable contents. */
-internal fun RemoteState.seedCachedSessionView(runtimeId: String, graph: SessionGraph): RemoteState {
+internal fun RemoteState.seedCachedSessionView(runtimeId: String, graph: SessionGraph, cachedFirstPage: Boolean = false): RemoteState {
     val runtime = runtimes[runtimeId] ?: return this
     if (runtime.sessionId != graph.sessionId) return this
     val conversation = conversations[runtimeId] ?: RuntimeConversation()
-    if (conversation.sourceEpoch != null && !conversation.sourceReady) return this
-    val leaf = if (conversation.sourceEpoch != null) conversation.sourceHeadLeafId else runtime.sessionLeafId
-    if (leaf != null && !graph.entries.containsKey(leaf)) return this
+    if (conversation.sourceEpoch != null && !conversation.sourceReady && !cachedFirstPage) return this
     val previousView = runtimeSessionViews[runtimeId]?.takeIf { it.sessionId == graph.sessionId }
+    val leaf = if (conversation.sourceEpoch != null && conversation.sourceReady &&
+        (!cachedFirstPage || !conversation.forceSourceSnapshot)) conversation.sourceHeadLeafId
+        else if (cachedFirstPage) listOfNotNull(previousView?.leafId, runtime.sessionLeafId,
+            conversation.sourceHeadLeafId, graph.cursor.leafId).firstOrNull { it in graph.entries }
+        else runtime.sessionLeafId
+    if (leaf != null && !graph.entries.containsKey(leaf)) return this
     if (conversation.hasLiveSnapshot && previousView != null && previousView.leafId == leaf &&
         !conversation.isChatSyncing
     ) return this
@@ -720,12 +745,13 @@ internal fun RemoteState.seedCachedSessionView(runtimeId: String, graph: Session
         conversations = conversations + (runtimeId to source.applyProjection(projection, messages, keepLiveTiming = !branchChanged).copy(
             // Cached rows can render the old head, but cannot complete source recovery.
             hasLiveSnapshot = true, isChatSyncing = source.sourceEpoch != null && source.isChatSyncing, streamingMessageIds = overlay,
+            chatSyncError = if (cachedFirstPage) conversation.chatSyncError else projection.error,
             streamingSessionId = graph.sessionId.takeIf { overlay.isNotEmpty() }, revision = conversation.revision + 1,
         )),
         runtimeSessionViews = runtimeSessionViews + (runtimeId to RuntimeSessionView(runtimeId, graph.sessionId, leaf)),
         sessionHistory = sessionHistory + (runtimeId to (history?.copy(leafId = leaf)
             ?: SessionHistoryState(graph.sessionId, leaf, branch.firstOrNull()?.entryId, branch.firstOrNull()?.parentId != null))),
-    )
+    ).reconcileHistoryReads()
 }
 
 private fun RemoteState.isKnownBranchChange(
@@ -785,8 +811,7 @@ internal fun RemoteState.requestRuntimeRefresh(runtimeId: String): RemoteState {
     // overlay. They can be reconciled while the Runtime is running: seedCachedSessionView keeps
     // the active turn/live rows and projects the snapshot underneath them. Blocking here made a
     // dropped event during a running turn unrecoverable until the turn became idle.
-    val alreadyPending = sessionSyncCommands.values.any { it.runtimeId == runtimeId }
-    if (alreadyPending || !runtime.sessionGraphSync) return this
+    if (!runtime.sessionGraphSync) return this
     // A periodic refresh reconciles the Session Graph in the background. Once the conversation
     // already has displayable content, keep that snapshot live while the preview/catch-up request
     // is in flight; invalidating it here makes the UI flash its loading indicator and re-anchor
@@ -800,11 +825,9 @@ internal fun RemoteState.requestRuntimeRefresh(runtimeId: String): RemoteState {
                 chatSyncError = null,
             )
         ),
-        sessionSyncRequests = if (runtime.sessionGraphSync) {
-            sessionSyncRequests + runtimeId
-        } else {
-            sessionSyncRequests
-        },
+        sessionSyncDemandGenerations = sessionSyncDemandGenerations +
+            (runtimeId to ((sessionSyncDemandGenerations[runtimeId] ?: 0) + 1)),
+        sessionSyncRequests = sessionSyncRequests + runtimeId,
     )
 }
 
@@ -828,6 +851,7 @@ internal fun RemoteState.requestBranchRefresh(runtimeId: String): RemoteState {
         pendingCommands = pendingCommands - staleCommands,
         sessionSyncCommands = sessionSyncCommands - staleCommands,
         sessionSyncFailures = sessionSyncFailures - runtimeId,
+        sessionRangeFailures = sessionRangeFailures.filterKeys { !it.startsWith("$runtimeId\u0000") },
         sessionSyncRequests = sessionSyncRequests + runtimeId,
         sessionBranchGenerations = sessionBranchGenerations + (runtimeId to generation),
         runtimeSessionViews = runtimeSessionViews - runtimeId,
@@ -852,7 +876,7 @@ internal fun RemoteState.requestBranchRefresh(runtimeId: String): RemoteState {
             waitingLocalInteraction = conversation.waitingLocalInteraction,
             revision = conversation.revision + 1,
         )),
-    )
+    ).reconcileHistoryReads()
 }
 
 internal fun shouldStartBranchCatchUpImmediately(
@@ -1406,10 +1430,11 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
         },
         sessionSyncCommands = emptyMap(),
         sessionSyncFailures = emptyMap(),
+        sessionRangeFailures = emptyMap(),
         sessionSyncRequests = emptySet(),
         sessionHistory = sessionHistory.mapValues { (_, history) -> history.copy(loading = false, requestId = null) },
         error = error.takeIf { preserveError },
-    )
+    ).reconcileHistoryReads()
 }
 
 class RelayReducer(
@@ -1425,6 +1450,33 @@ class RelayReducer(
         payload: String,
         persistedSessionEntries: List<SessionGraphEntry>? = null,
         channel: String? = null,
+    ): RemoteState {
+        val event = runCatching { json.parseToJsonElement(payload).jsonObject["event"]?.jsonObject }.getOrNull()
+        val syncId = event?.takeIf { it.string("type") == "session.snapshot" }?.string("syncId")
+        val commandId = syncId?.let { id -> state.sessionSyncCommands.entries.firstOrNull { it.value.syncId == id }?.key }
+        val input = commandId?.let(state::recoverLateHistoryRead) ?: state
+        val reduced = reducePayload(input, payload, persistedSessionEntries, channel)
+        val changedTargets = reduced.runtimes.keys.filterTo(mutableSetOf()) { key ->
+            val old = input.runtimes[key]
+            val next = reduced.runtimes[key]
+            old?.sessionId != next?.sessionId || old?.sessionLeafId != next?.sessionLeafId
+        }
+        val runtimeId = runCatching { json.parseToJsonElement(payload).jsonObject.string("runtimeId") }.getOrNull()
+        if (event?.string("type") == "session.patch" && runtimeId != null && runtimeId in reduced.sessionSyncRequests &&
+            reduced.conversations[runtimeId]?.sourcePatchBuffer != input.conversations[runtimeId]?.sourcePatchBuffer) changedTargets += runtimeId
+        val response = event?.takeIf { it.string("type") == "session.snapshot" }?.let {
+            runCatching { json.decodeFromJsonElement<SessionGraphSnapshot>(it) }.getOrNull()
+        }
+        val completed = if (event?.string("type") in setOf("session.snapshot", "session.patch"))
+            reduced.confirmSourceRead(input, commandId, response) else reduced
+        return completed.trackSessionReadDemands(input, changedTargets, setOfNotNull(commandId)).reconcileHistoryReads()
+    }
+
+    private fun reducePayload(
+        state: RemoteState,
+        payload: String,
+        persistedSessionEntries: List<SessionGraphEntry>?,
+        channel: String?,
     ): RemoteState {
         val message = json.parseToJsonElement(payload).jsonObject
         val messageType = message.string("type")
@@ -1584,6 +1636,7 @@ class RelayReducer(
                     pendingDownloads = state.pendingDownloads.filterValues { it.runtimeId in runtimes },
                     sessionSyncCommands = emptyMap(),
                     sessionSyncFailures = emptyMap(),
+                    sessionRangeFailures = emptyMap(),
                     // Graph history is lazy: only the selected Runtime requests it.
                     sessionSyncRequests = state.sessionSyncRequests + runtimes.values
                         .filter { runtime ->
@@ -1698,6 +1751,9 @@ class RelayReducer(
                         else state.sessionSyncFailures,
                     // A reconnect that lands on the same branch keeps the older-history paging
                     // progress. Only a real session or branch change starts a fresh window.
+                    sessionRangeFailures = if (sessionChanged || branchChanged) state.sessionRangeFailures.filterKeys {
+                        !it.startsWith("${runtime.runtimeId}\u0000")
+                    } else state.sessionRangeFailures,
                     sessionHistory = if (sessionChanged || branchChanged) {
                         state.sessionHistory - runtime.runtimeId
                     } else {
@@ -1757,6 +1813,7 @@ class RelayReducer(
                             chatSyncError = "运行实例已离线",
                         )),
                     sessionSyncCommands = state.sessionSyncCommands.filterValues { it.runtimeId != runtimeId },
+                    sessionRangeFailures = state.sessionRangeFailures.filterKeys { !it.startsWith("$runtimeId\u0000") },
                     sessionSyncRequests = state.sessionSyncRequests - runtimeId,
                 )
             }
@@ -1808,7 +1865,10 @@ class RelayReducer(
                 }
                 val sessionSync = commandId?.let(state.sessionSyncCommands::get)
                 if (sessionSync == null && commandId?.isSessionSyncCommandId() == true) return state
-                if (sessionSync != null && commandId != null) return state.failSessionSync(commandId, syncError).copy(error = syncError)
+                if (sessionSync != null && commandId != null) {
+                    val failed = state.failSessionSync(commandId, syncError)
+                    return if (sessionSync.range == "preview") failed.copy(error = syncError) else failed
+                }
                 val isHistorySync = sessionSync?.range == "history"
                 // A failed history request must release its foreground paging state, and it must
                 // not cancel a forward catch-up that is still needed for the live frontier.
@@ -1902,6 +1962,8 @@ class RelayReducer(
         var nextBranchGenerations = state.sessionBranchGenerations
         var nextSessionSyncRequests = state.sessionSyncRequests
         var nextSessionHistory = state.sessionHistory
+        var nextHistoryReads = state.historyReads
+        var nextRangeFailures = state.sessionRangeFailures
         var nextDownloads = state.downloads
         var nextPendingDownloads = state.pendingDownloads
 
@@ -2045,6 +2107,7 @@ class RelayReducer(
                 if (sessionChanged || branchChanged) {
                     nextBranchGenerations = nextBranchGenerations + (runtimeId to ((nextBranchGenerations[runtimeId] ?: 0) + 1))
                     nextSessionSyncFailures = nextSessionSyncFailures - runtimeId
+                    nextRangeFailures = nextRangeFailures.filterKeys { !it.startsWith("$runtimeId\u0000") }
                     val invalidatedSessionCommands = state.sessionSyncCommands
                         .filterValues { it.runtimeId == runtimeId }
                         .keys
@@ -2323,6 +2386,14 @@ class RelayReducer(
                 }
                 val liveLeafId = state.runtimes[runtimeId]?.sessionLeafId
                 val isHistory = pending.range == "history"
+                if (pending.range in setOf("history", "catchup") &&
+                    (snapshot.rangeStatus != null && snapshot.rangeStatus !in setOf("complete", "older_available", "limit_reached") ||
+                        // hasOlder describes backwards history paging. A bounded forward
+                        // catchup can legitimately have complete=false and hasOlder=false.
+                        isHistory && snapshot.hasOlder == false && snapshot.complete == false)) {
+                    val id = state.sessionSyncCommands.entries.first { it.value === pending }.key
+                    return state.failSessionSync(id, "Session 范围加载失败：${snapshot.rangeStatus ?: "incomplete_range"}")
+                }
                 // Historical ranges fill immutable cache only. Even an older server's attached
                 // checkpoint cannot make a history page a second current-state writer.
                 val isCanonicalPage = isHistory || conversation.sourceEpoch != null && (pending.range != "preview" || snapshot.source == null)
@@ -2332,6 +2403,7 @@ class RelayReducer(
                 val sourceRetired = incomingSource != null && incomingSource.epoch in conversation.retiredSourceEpochs
                 val sourceEpochChanged = incomingSource != null && conversation.sourceEpoch != null &&
                     conversation.sourceEpoch != incomingSource.epoch
+                if (sourceEpochChanged) nextRangeFailures = nextRangeFailures.filterKeys { !it.startsWith("$runtimeId\u0000") }
                 val sourceSameEpoch = incomingSource == null || conversation.sourceEpoch == null ||
                     conversation.sourceEpoch == incomingSource.epoch
                 val sourceStale = incomingSource != null && sourceSameEpoch &&
@@ -2439,7 +2511,7 @@ class RelayReducer(
                 }
                 val graphForProjection = if (staleTarget) mergedGraph.copy(cursor = currentGraph.cursor) else mergedGraph
                 if (!staleTarget) {
-                    nextSessionSyncFailures = nextSessionSyncFailures - runtimeId
+                    if (!isCanonicalPage) nextSessionSyncFailures = nextSessionSyncFailures - runtimeId
                     nextSessionGraphs = state.sessionGraphs + (snapshot.sessionId to graphForProjection)
                     nextSessions = nextSessions + (
                         snapshot.sessionId to (nextSessions[snapshot.sessionId] ?: SessionCatalogEntry(snapshot.sessionId))
@@ -2698,6 +2770,28 @@ class RelayReducer(
                 if (!staleTarget && isCanonicalPage && pending.range == "preview") {
                     nextConversation = nextConversation.copy(isChatSyncing = true, sourceRecoveryRetryAt = System.currentTimeMillis() + 2_000)
                     nextSessionSyncRequests = nextSessionSyncRequests + runtimeId
+                }
+                val rangeFailure = snapshot.rangeStatus?.takeIf {
+                    it !in setOf("complete", "older_available", "limit_reached")
+                }
+                if (isCanonicalPage) {
+                    // A range outcome belongs to this operation, not to current-state recovery.
+                    nextConversation = nextConversation.copy(chatSyncError = conversation.chatSyncError)
+                    if (!staleTarget) {
+                        val key = sessionRangeFailureKey(runtimeId, pending.range)
+                        nextRangeFailures = if (rangeFailure == null) nextRangeFailures - key
+                            else nextRangeFailures + (key to "Session 范围加载失败：$rangeFailure")
+                    }
+                }
+                if (isHistory || isCanonicalPage && (staleTarget || rangeFailure != null)) {
+                    val phase = when {
+                        staleTarget -> HistoryReadPhase.SUPERSEDED
+                        rangeFailure != null -> HistoryReadPhase.FAILED
+                        snapshot.hasOlder == false -> HistoryReadPhase.END_REACHED
+                        else -> HistoryReadPhase.SUCCEEDED
+                    }
+                    nextHistoryReads = state.finishRemoteHistoryRead(commandId, phase,
+                        rangeFailure?.let { "Session 范围加载失败：$it" }).historyReads
                 }
             }
             "artifact.started" -> {
@@ -3024,6 +3118,8 @@ class RelayReducer(
             sessionBranchGenerations = nextBranchGenerations,
             sessionSyncRequests = nextSessionSyncRequests,
             sessionHistory = nextSessionHistory,
+            sessionReads = nextHistoryReads,
+            sessionRangeFailures = nextRangeFailures,
             pendingDownloads = nextPendingDownloads,
             error = nextError,
         )
