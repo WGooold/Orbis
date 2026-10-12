@@ -18,7 +18,7 @@ async function harness() {
   runtime.markStarted();
   await runtime.activate({ type: "resume", sessionId: "a" });
   cleanups.push(() => server.onExit?.(0));
-  const apply = (name: string, args: string, id = "apply") => runtime.dispatchCommand("codex:a", id, { type: "slash.execute", name, args });
+  const apply = (name: string, args: string, id = "apply") => runtime.dispatchCommand("codex:a", id, { type: "permissions.update", settingId: name, value: args });
   const notify = (patch: Record<string, unknown>, threadId = "a") => server.onNotification?.("thread/settings/updated", { threadId, threadSettings: { ...settings, ...patch } });
   return { events, settings, request, server, runtime, apply, notify };
 }

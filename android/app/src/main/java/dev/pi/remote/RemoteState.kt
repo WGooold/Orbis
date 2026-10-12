@@ -78,6 +78,7 @@ data class RuntimeSummary(
     /** Context utilization reported by the Runtime; absent on older Runtime or Relay versions. */
     val contextUsage: RuntimeContextUsage? = null,
     val permissions: RuntimePermissions? = null,
+    val permissionManagement: RuntimePermissionManagement? = null,
 ) {
     /**
      * 这条 Runtime 是不是 Codex 会话。codex 的对外 runtimeId 形如 `codex:<threadId>`
@@ -504,7 +505,8 @@ data class SessionHistoryState(
 /**
  * Model and context utilization are optional metadata fields. A Runtime or Relay that predates them
  * omits both, and Pi itself omits a model when none is selected, so keep the last known values
- * instead of blanking the composer status on the next metadata refresh.
+ * instead of blanking the composer status on the next metadata refresh. Permission metadata is
+ * retained only for the same Session, so switching Sessions never carries an old permission scope.
  */
 internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): RuntimeSummary {
     if (previous == null) return this
@@ -513,6 +515,7 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
         thinkingLevel = thinkingLevel ?: previous.thinkingLevel,
         contextUsage = contextUsage ?: previous.contextUsage,
         permissions = permissions ?: previous.permissions.takeIf { sessionId == previous.sessionId },
+        permissionManagement = permissionManagement ?: previous.permissionManagement.takeIf { sessionId == previous.sessionId },
     )
 }
 

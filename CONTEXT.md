@@ -171,6 +171,10 @@ _Avoid_: Runtime action menu, Android command allowlist
 A structured request for one command selected from the current Slash command menu, including its selected or entered arguments.
 _Avoid_: Free-form command text
 
+**Permission management**:
+A Host protocol projection of one Session's effective permission summary and backend-supported opaque settings. The Agent backend owns native semantics, validation, and confirmation; clients render the projection and submit typed updates without interpreting native commands or permission values. Single-operation approval remains a separate structured interaction. See ADR-0031.
+_Avoid_: Android permission allowlist, slash-menu-driven permission page, implicit global permission default
+
 **Capability envelope**:
 The models, credentials, trust decisions, tools, extensions, working directory, and operating-system permissions an agent runtime already holds.
 _Avoid_: Feature flags

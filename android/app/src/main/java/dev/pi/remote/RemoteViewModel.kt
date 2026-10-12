@@ -365,6 +365,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun executeSlashCommand(name: String, args: String): String? =
         active()?.executeSlashCommand(name, args)
 
+    fun updatePermissions(settingId: String, value: String): String? =
+        active()?.updatePermissions(settingId, value)
+
     fun consumeCommandResult(commandId: String) = active()?.consumeCommandResult(commandId)
 
     fun stopRuntime() = active()?.stopRuntime()

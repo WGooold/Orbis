@@ -571,6 +571,10 @@ export class RuntimeBridge {
         this.#commandResult(commandId, true);
         return;
       }
+      if (command.type === "permissions.update") {
+        this.#commandResult(commandId, false, "permission_management_not_available");
+        return;
+      }
       if (!this.#interactions) {
         this.#commandResult(commandId, false, "interaction_not_available");
         return;

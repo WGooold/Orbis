@@ -44,16 +44,42 @@ class RuntimePermissionsTest {
     private fun event(sequence: Int, body: String) =
         """{"type":"runtime.event","runtimeId":"codex:a","sequence":$sequence,"event":$body}"""
 
-    @Test fun `effective permissions update and explain never without implying full access`() {
+    @Test fun `management metadata preserves opaque settings and host presentation`() {
         val state = reducer.reduce(initial, event(1, """{"type":"runtime.metadata","metadata":{
             "runtimeId":"codex:a","name":"Codex","cwd":"D:/repo","status":"idle","sessionId":"a",
-            "permissions":{"sandbox":"readOnly","approvalPolicy":"never","networkAccess":false,"reviewer":"user"}}}"""))
-        val permissions = state.runtimes.getValue("codex:a").permissions!!
-        assertEquals("只读沙箱 · 不申请审批", permissionSummary(permissions))
-        assertTrue(permissionDetails(permissions).contains("受限操作不会弹出人工批准"))
-        assertTrue(permissionDetails(permissions).contains("网络访问：受限"))
-        assertNull(state.runtimes.getValue("codex:a").copy(sessionId = "b", permissions = null)
-            .carryingComposerStatus(state.runtimes["codex:a"]).permissions)
+            "permissions":{"sandbox":"readOnly","approvalPolicy":"never"},
+            "permissionManagement":{"summary":"Host summary","details":"Host explanation","tone":"unknown",
+            "settings":[{"id":"vendor.setting/42","label":"Host setting","currentValue":"opaque:old",
+            "disabledReason":"Host policy","options":[{"value":"opaque:new","label":"New option","description":"Host option detail"}]}]}}}"""))
+        val runtime = state.runtimes.getValue("codex:a")
+        val management = runtime.permissionManagement!!
+        assertEquals("Host summary", management.summary)
+        assertEquals("Host explanation", management.details)
+        assertEquals("unknown", management.tone)
+        assertEquals(RuntimePermissionSetting("vendor.setting/42", "Host setting", "opaque:old", "Host policy",
+            listOf(RuntimePermissionOption("opaque:new", "New option", "Host option detail"))), management.settings.single())
+        assertEquals("readOnly", runtime.permissions?.sandbox) // Raw diagnostic facts remain decodable.
+        assertEquals(management, runtime.copy(permissionManagement = null).carryingComposerStatus(runtime).permissionManagement)
+        assertNull(runtime.copy(sessionId = "b", permissionManagement = null).carryingComposerStatus(runtime).permissionManagement)
+        assertNull(runtime.copy(sessionId = "b", permissions = null).carryingComposerStatus(runtime).permissions)
+    }
+
+    @Test fun `legacy raw permissions do not invent management metadata`() {
+        val state = reducer.reduce(initial, event(1, """{"type":"runtime.metadata","metadata":{
+            "runtimeId":"codex:a","name":"Codex","cwd":"D:/repo","status":"idle","sessionId":"a",
+            "permissions":{"sandbox":"dangerFullAccess","approvalPolicy":"never"}}}"""))
+        assertNull(state.runtimes.getValue("codex:a").permissionManagement)
+    }
+
+    @Test fun `management decodes unknown current value and optional setting fields`() {
+        val state = reducer.reduce(initial, event(1, """{"type":"runtime.metadata","metadata":{
+            "runtimeId":"codex:a","name":"Codex","cwd":"D:/repo","status":"idle","sessionId":"a",
+            "permissionManagement":{"summary":"Unknown","details":"Not confirmed","tone":"unknown",
+            "settings":[{"id":"future.mode","label":"Mode","options":[{"value":"x","label":"X"}]}]}}}"""))
+        val setting = state.runtimes.getValue("codex:a").permissionManagement!!.settings.single()
+        assertNull(setting.currentValue)
+        assertNull(setting.disabledReason)
+        assertNull(setting.options.single().description)
     }
 
     @Test fun `reconnect restores submitted approval and local completion clears pending command`() {

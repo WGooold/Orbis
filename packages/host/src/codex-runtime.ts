@@ -64,6 +64,7 @@ import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
 import { CodexAsyncInputs, codexAsyncQuestionText, codexQuestionReplyText } from "./codex-async-input.js";
 import { CODEX_PERMISSION_COMMANDS, codexErrorMessage, codexPermissionUpdate, codexPermissions } from "./codex-permissions.js";
+import { codexPermissionManagement } from "./permission-management.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { CodexClientRefreshCoordinator, FileCodexRefreshJournal, type CodexRefreshResult } from "./codex-client-refresh.js";
 import { CodexDesktopRefreshDriver, desktopHistoryRevision, type CodexDesktopRefreshOptions } from "./codex-desktop-refresh.js";
@@ -624,6 +625,7 @@ export class CodexRuntime implements AgentBackend {
       ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
       ...(contextUsage === undefined ? {} : { contextUsage }),
       permissions: thread.permissions ?? { sandbox: "unknown", approvalPolicy: "unknown" },
+      permissionManagement: codexPermissionManagement(thread.permissions, this.#statusOf(thread) !== "idle" || this.#permissionUpdates.has(thread.id) || [...this.#approvals.values()].some(item => item.threadId === thread.id)),
     };
   }
 
@@ -1708,6 +1710,11 @@ export class CodexRuntime implements AgentBackend {
         } else publish();
         return true;
       }
+      case "permissions.update": {
+        if (thread === undefined) return this.#slashNoSession(threadId, commandId);
+        void this.#updatePermissions(thread, command.settingId, command.value, commandId);
+        return true;
+      }
       case "slash.execute": {
         // §9.1：slash 只走这条车道。codex 把能兑现的子集映射到 app-server RPC，
         // 未声明的命令回失败（App 菜单来自 capabilities，正常不会发到这里）。
@@ -1984,7 +1991,7 @@ export class CodexRuntime implements AgentBackend {
       this.#commandResult(thread.id, commandId, false, `权限设置未确认：${describeError(error)}`);
     } finally {
       if (timer) clearTimeout(timer);
-      if (registered) this.#permissionUpdates.delete(thread.id);
+      if (registered) { this.#permissionUpdates.delete(thread.id); this.#publishMetadataEvent(thread); }
     }
   }
 

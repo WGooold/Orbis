@@ -995,6 +995,13 @@ internal class HostConnection(
         return commandId
     }
 
+    fun updatePermissions(settingId: String, value: String): String? {
+        val runtimeId = mutableState.value.selectedRuntimeId ?: return null
+        val commandId = relay.updatePermissions(runtimeId, settingId, value)
+        trackCommand(commandId, runtimeId, "权限设置未发送：中继服务器当前离线")
+        return commandId
+    }
+
     fun consumeCommandResult(commandId: String) {
         updateState { it.copy(commandResults = it.commandResults - commandId) }
     }

@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import org.junit.Assert.*
@@ -77,38 +78,76 @@ class InteractionWorkspaceInstrumentedTest {
     }
 
     @Test fun permissionChangesWaitForConfirmationAndShowServerFailures() {
-        val permissions = mutableStateOf(RuntimePermissions("readOnly", "never", reviewer = "user", networkAccess = false))
+        val setting = RuntimePermissionSetting("vendor.setting/42", "Host 设置", "opaque:old", options = listOf(
+            RuntimePermissionOption("opaque:old", "当前策略", "Host 当前策略说明"),
+            RuntimePermissionOption("opaque:new", "新策略", "Host 新策略说明"),
+        ))
+        val permissions = mutableStateOf(RuntimePermissionManagement("Host 当前摘要", "Host 权限详情", "restricted", listOf(setting)))
         val results = mutableStateOf(emptyMap<String, CommandResult>())
         val calls = mutableListOf<Pair<String, String>>()
-        val command = RuntimeSlashCommand("sandbox", "文件访问范围", "builtin", RuntimeSlashCommandArgument("select", true, options = listOf(
-            RuntimeSlashCommandOption("readOnly", "只读", "仅允许读取文件"),
-            RuntimeSlashCommandOption("workspaceWrite", "工作区可写", "允许修改当前项目"),
-            RuntimeSlashCommandOption("dangerFullAccess", "完全访问", "允许读写和联网"),
-        )))
         compose.setContent { PiRemoteTheme { RuntimePermissionsStatus(
-            permissions.value, listOf(command), commandResults = results.value,
-            onApply = { name, value -> calls.add(name to value); "write-${calls.size}" },
+            permissions.value, commandResults = results.value,
+            onApply = { id, value -> calls.add(id to value); "write-${calls.size}" },
         ) } }
         compose.onNodeWithContentDescription("当前会话权限").performClick()
-        compose.onNodeWithText("○ 工作区可写").performScrollTo().performClick()
+        compose.onNodeWithText("○ 新策略").performScrollTo().performClick()
         compose.onNodeWithText("应用到当前会话").performClick()
         compose.onNodeWithText("正在应用，等待电脑确认…").assertIsNotEnabled()
-        compose.runOnIdle { assertEquals("readOnly", permissions.value.sandbox); results.value = mapOf("write-1" to CommandResult(false, error = "组织策略不允许修改")) }
+        compose.runOnIdle {
+            assertEquals(listOf("vendor.setting/42" to "opaque:new"), calls)
+            assertEquals("opaque:old", permissions.value.settings.single().currentValue)
+            results.value = mapOf("write-1" to CommandResult(false, error = "组织策略不允许修改"))
+        }
         compose.onNodeWithText("组织策略不允许修改").assertIsDisplayed()
         compose.onNodeWithText("应用到当前会话").performClick()
         compose.runOnIdle {
-            permissions.value = permissions.value.copy(sandbox = "workspaceWrite")
+            permissions.value = permissions.value.copy(summary = "Host 新摘要", settings = listOf(setting.copy(currentValue = "opaque:new")))
             results.value = results.value + ("write-2" to CommandResult(true))
         }
-        compose.onNodeWithText("已应用到当前会话，后续任务使用新设置").assertIsDisplayed()
+        compose.onNodeWithText("已应用到当前会话").assertIsDisplayed()
         compose.onNodeWithText("应用到当前会话").assertIsNotEnabled()
         capture("mobile-controls-permissions.png")
+    }
+
+    @Test fun permissionWaitRecoversAfterTimeoutDisconnectAndStateRestoration() {
+        val setting = RuntimePermissionSetting("opaque-setting", "权限设置", "old", options = listOf(
+            RuntimePermissionOption("old", "当前策略"), RuntimePermissionOption("new", "新策略"),
+        ))
+        val connected = mutableStateOf(true)
+        val results = mutableStateOf(emptyMap<String, CommandResult>())
+        var calls = 0
+        val restoration = StateRestorationTester(compose)
+        restoration.setContent { PiRemoteTheme { RuntimePermissionsStatus(
+            RuntimePermissionManagement("Host 摘要", "Host 详情", "unknown", listOf(setting)),
+            connected = connected.value, commandResults = results.value,
+            onApply = { _, _ -> "write-${++calls}" },
+        ) } }
+        compose.onNodeWithContentDescription("当前会话权限").performClick()
+        compose.onNodeWithText("○ 新策略").performScrollTo().performClick()
+        compose.onNodeWithText("应用到当前会话").performClick()
+        compose.runOnIdle { results.value = mapOf("write-1" to CommandResult(true, status = "pending")) }
+        compose.onNodeWithText("正在应用，等待电脑确认…").assertIsNotEnabled()
+        compose.mainClock.advanceTimeBy(75_100)
+        compose.onNodeWithText("等待电脑确认已超过 75 秒，权限设置尚未确认；请检查当前权限后再决定是否重试").assertIsDisplayed()
+        compose.onNodeWithText("应用到当前会话").assertIsEnabled()
+        compose.runOnIdle { assertEquals(1, calls) }
+
+        compose.onNodeWithText("应用到当前会话").performClick()
+        compose.runOnIdle { connected.value = false }
+        compose.onNodeWithText("连接已断开，权限设置尚未确认；重新连接后请检查当前权限").assertIsDisplayed()
+        compose.runOnIdle { connected.value = true; assertEquals(2, calls) }
+        compose.onNodeWithText("应用到当前会话").assertIsEnabled()
+
+        compose.onNodeWithText("应用到当前会话").performClick()
+        restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithText("正在应用，等待电脑确认…").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(3, calls) }
     }
 
     @Test fun unavailablePiPermissionsDoNotInventSettings() {
         compose.setContent { PiRemoteTheme { RuntimePermissionsStatus(null) } }
         compose.onNodeWithText("电脑端管理").performClick()
-        compose.onNodeWithText("工具权限由电脑端", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("当前会话未提供权限管理信息，请在电脑端查看和管理权限").assertIsDisplayed()
         compose.onNodeWithText("应用到当前会话").assertDoesNotExist()
     }
 

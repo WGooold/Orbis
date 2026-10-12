@@ -69,7 +69,7 @@ try {
     & $adb -s $Serial install -r $apkPath
     if ($LASTEXITCODE -ne 0) { throw "APK install failed with exit code $LASTEXITCODE." }
     if ($StartActivity) {
-        & $adb -s $Serial shell am start -n dev.pi.remote/.MainActivity
+        & $adb -s $Serial shell am start -n com.orbising.orbis/dev.pi.remote.MainActivity
         if ($LASTEXITCODE -ne 0) { throw "Activity launch failed with exit code $LASTEXITCODE." }
     }
     Write-Output "Installed build $($manifest.buildId) on $Serial from $apkPath"

@@ -141,6 +141,16 @@ export const RuntimeContextUsageSchema = z.strictObject({
 export type RuntimeContextUsage = z.infer<typeof RuntimeContextUsageSchema>;
 
 /** Effective session permissions reported by the backend; absence never implies full access. */
+export const PermissionManagementSchema = z.strictObject({
+  summary: z.string(), details: z.string(),
+  tone: z.enum(["restricted", "full", "unknown", "problem"]),
+  settings: z.array(z.strictObject({
+    id: z.string().min(1), label: z.string(), currentValue: z.string().optional(), disabledReason: z.string().optional(),
+    options: z.array(z.strictObject({ value: z.string(), label: z.string(), description: z.string().optional() })),
+  })),
+});
+export type PermissionManagement = z.infer<typeof PermissionManagementSchema>;
+
 export const RuntimePermissionsSchema = z.strictObject({
   sandbox: z.string(),
   approvalPolicy: z.string(),
@@ -171,6 +181,7 @@ export const RuntimeMetadataSchema = z.strictObject({
   thinkingLevel: z.string().min(1).max(64).optional(),
   contextUsage: RuntimeContextUsageSchema.optional(),
   permissions: RuntimePermissionsSchema.optional(),
+  permissionManagement: PermissionManagementSchema.optional(),
 });
 export type RuntimeMetadata = z.infer<typeof RuntimeMetadataSchema>;
 
@@ -902,6 +913,7 @@ export const RuntimeCommandSchema = z.discriminatedUnion("type", [
     name: RuntimeSlashCommandNameSchema,
     args: z.string().max(100_000),
   }),
+  z.strictObject({ type: z.literal("permissions.update"), settingId: z.string().min(1).max(256), value: z.string().max(4096) }),
   z.strictObject({ type: z.literal("stop") }),
   z.strictObject({
     type: z.literal("interaction.respond"),

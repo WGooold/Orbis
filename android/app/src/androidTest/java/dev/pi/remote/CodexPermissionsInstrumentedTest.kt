@@ -31,14 +31,15 @@ class CodexPermissionsInstrumentedTest {
         compose.runOnIdle { assertEquals(listOf("1"), submissions) }
     }
 
-    @Test fun permissionDetailsShowReadOnlyNeverAndTheSandboxFailure() {
-        compose.setContent { PiRemoteTheme { RuntimePermissionsStatus(RuntimePermissions(
-            sandbox = "readOnly", approvalPolicy = "never", networkAccess = false, reviewer = "user",
-            problem = "Windows 沙箱初始化失败，请在电脑端修复 Codex 沙箱设置后重试。",
+    @Test fun permissionDetailsShowHostSummaryAndFailureVerbatim() {
+        compose.setContent { PiRemoteTheme { RuntimePermissionsStatus(RuntimePermissionManagement(
+            summary = "Host 提供的权限异常摘要",
+            details = "Windows 沙箱初始化失败，请在电脑端修复 Codex 沙箱设置后重试。",
+            tone = "problem", settings = emptyList(),
         )) } }
-        compose.onNodeWithText("沙箱异常").performClick()
+        compose.onNodeWithContentDescription("当前会话权限").performClick()
         compose.onNodeWithText("当前会话权限").assertIsDisplayed()
-        compose.onNodeWithText("只读沙箱 · 不申请审批", substring = true).assertIsDisplayed()
+        compose.onAllNodesWithText("Host 提供的权限异常摘要").onFirst().assertExists()
         compose.onNodeWithText("电脑端修复 Codex 沙箱设置", substring = true).assertExists()
     }
 

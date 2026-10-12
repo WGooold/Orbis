@@ -1503,12 +1503,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                     ) {
                         androidx.compose.runtime.key(runtimeId, sessionId) {
                             RuntimePermissionsStatus(
-                                permissions = runtime?.permissions,
-                                commands = state.capabilities[runtimeId]?.commands.orEmpty(),
+                                permissionManagement = runtime?.permissionManagement,
                                 connected = state.e2eReady && runtime != null,
                                 idle = runtime?.status == "idle" && conversation.interactions.isEmpty() && conversation.queuedMessages.isEmpty(),
                                 commandResults = state.commandResults,
-                                onApply = model::executeSlashCommand,
+                                onApply = model::updatePermissions,
                             )
                         }
                     }

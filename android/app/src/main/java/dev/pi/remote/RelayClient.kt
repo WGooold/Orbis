@@ -697,6 +697,12 @@ class RelayClient(
         put("args", args)
     })
 
+    fun updatePermissions(runtimeId: String, settingId: String, value: String): String? = sendCommand(runtimeId, buildJsonObject {
+        put("type", "permissions.update")
+        put("settingId", settingId)
+        put("value", value)
+    })
+
     fun stop(runtimeId: String): String? = sendCommand(runtimeId, buildJsonObject { put("type", "stop") })
 
     fun respond(

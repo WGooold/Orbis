@@ -120,7 +120,45 @@ describe("DeepSeek Web runtime adapter", () => {
     expect((await f.runtime.catalog())[0]?.name).toBe("服务端规范化标题");
   });
 
-
+  it("exposes native permission choices, confirms writes, and rejects busy or unavailable changes", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]);
+    const base = f.request.getMockImplementation()!;
+    let profile = "workspace-write"; let seq = 10; let fail = false;
+    f.request.mockImplementation(async (method, args) => {
+      if (method === "permissionPresets/catalog") return { options: [{ value: "workspace-write", name: "Workspace" }, { value: "danger-full-access", name: "Full" }] };
+      if (method === "session/projections") return { asOfSeq: seq, values: { permissions: { currentValue: profile } } };
+      if (method === "commands/execute") {
+        if (fail) return { result: { kind: "error", text: "native refusal" } };
+        profile = "danger-full-access"; seq++;
+        return { commandId: "native", result: { kind: "success" } };
+      }
+      return base(method, args);
+    });
+    await f.runtime.start();
+    await vi.waitFor(() => expect(f.runtime.directoryEntries()[0]?.permissions?.profile).toBe(profile));
+    expect(f.events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "runtime.capabilities", capabilities: expect.objectContaining({ commands: expect.arrayContaining([expect.objectContaining({ name: "permission-preset" })]) }) }) }));
+    const apply = (id: string, value: string) => f.runtime.dispatchCommand("dsh:browser", id, { type: "permissions.update", settingId: "permission-preset", value });
+    const result = (id: string) => f.events.find(item => item.event.type === "command.result" && item.event.commandId === id)?.event;
+    apply("busy", "danger-full-access");
+    await vi.waitFor(() => expect(result("busy")).toMatchObject({ ok: false }));
+    f.emit("api-session/status", "browser", false);
+    apply("invalid", "arbitrary");
+    await vi.waitFor(() => expect(result("invalid")).toMatchObject({ ok: false }));
+    apply("write", "danger-full-access");
+    await vi.waitFor(() => expect(result("write")).toMatchObject({ ok: true }));
+    expect(f.request).toHaveBeenCalledWith("commands/execute", { agentId: "browser", line: "/permission danger-full-access", submittedAttachments: [] });
+    expect(f.runtime.directoryEntries()[0]?.permissions).toMatchObject({ profile: "danger-full-access", sandbox: "unknown" });
+    const control = f.subscriptions.find(item => item.method === "session/control")!;
+    control.frame({ type: "projection", sessionId: "browser", key: "permissions", value: { currentValue: "workspace-write" }, seq: 12 });
+    control.frame({ type: "projection", sessionId: "browser", key: "permissions", value: { currentValue: "danger-full-access" }, seq: 11 });
+    expect(f.runtime.directoryEntries()[0]?.permissions?.profile).toBe("workspace-write");
+    const follow = f.follows()[0]!;
+    follow.frame({ type: "event", event: { seq: 0, time: 1, type: "sandbox/mode", data: { mode: "danger-full-access" } } });
+    follow.frame({ type: "event", event: { seq: 1, time: 2, type: "approval/policy", data: { policy: "never" } } });
+    expect(f.runtime.directoryEntries()[0]?.permissions).toMatchObject({ sandbox: "danger-full-access", approvalPolicy: "never" });
+    fail = true; apply("refusal", "danger-full-access");
+    await vi.waitFor(() => expect(result("refusal")).toMatchObject({ ok: false, error: "native refusal" }));
+  });
   it("keeps recovery active until a valid current follow snapshot and isolates catalog recovery", async () => {
     const f = discoveryFixture(); f.list([f.live("browser", true)]);
     const base = f.request.getMockImplementation()!; let badSkills = true; let badModels = true;
