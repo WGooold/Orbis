@@ -747,10 +747,20 @@ export class DshWebRuntime implements AgentBackend {
       }
       const text = chunk.type === "text-delta" || chunk.type === "reasoning-delta"
         ? String(chunk.text ?? "") : chunk.type === "tool-call-delta" ? String(chunk.argumentsDelta ?? "") : "";
-      if (!text) return;
+      if (!text && chunk.type !== "tool-call-delta") return;
       const contentType = frame.reasoning === true || chunk.type === "reasoning-delta" ? "thinking" : chunk.type === "tool-call-delta" ? "tool_call" : "text";
-      if (contentType === "thinking") message.content.push({ type: "thinking", text });
-      else if (contentType === "tool_call") message.content.push({ type: "tool_call", toolCallId: String(chunk.id ?? attempt), toolName: String(chunk.name ?? "tool"), arguments: text });
+      const previous = message.content.at(-1);
+      // Stream chunks are fragments of one block; the phone renders each block separately.
+      if ((contentType === "text" || contentType === "thinking") && previous?.type === contentType) previous.text += text;
+      else if (contentType === "thinking") message.content.push({ type: "thinking", text });
+      else if (contentType === "tool_call") {
+        const toolCallId = String(chunk.id ?? attempt);
+        const block = message.content.find(block => block.type === "tool_call" && block.toolCallId === toolCallId);
+        if (block?.type === "tool_call") {
+          block.arguments = String(block.arguments ?? "") + text;
+          if (typeof chunk.name === "string") block.toolName = chunk.name;
+        } else message.content.push({ type: "tool_call", toolCallId, toolName: String(chunk.name ?? "tool"), arguments: text });
+      }
       else message.content.push({ type: "text", text });
       session.source.upsertMessage({ message, finished: false, contentComplete: session.source.snapshot().live.messages.find(item => item.message.messageId === attempt)?.contentComplete ?? false });
       return;

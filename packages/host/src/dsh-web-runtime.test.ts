@@ -225,6 +225,58 @@ describe("DeepSeek Web runtime adapter", () => {
     expect(f.subscriptions.every(item => item.closed)).toBe(true);
   });
 
+  it("updates one live card per tool call before completion, including interleaved calls and empty name updates", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const follow = f.follows()[0]!;
+    follow.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: -1, records: [] });
+    follow.frame({ type: "assistant-stream", frame: { type: "start", attemptId: "attempt", time: 1001 } });
+    const send = (id: string, argumentsDelta: string, name?: string) => follow.frame({ type: "assistant-stream",
+      frame: { type: "chunk", attemptId: "attempt", chunk: { type: "tool-call-delta", id, argumentsDelta, ...(name ? { name } : {}) } } });
+    const content = () => {
+      const event = f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event;
+      if (event?.type !== "session.patch") throw new Error("missing live patch");
+      return event.live?.messages[0]?.message.content;
+    };
+    send("pwsh-1", '{"command":', "pwsh");
+    send("pwsh-1", '"Get-');
+    expect(content()).toEqual([{ type: "tool_call", toolCallId: "pwsh-1", toolName: "pwsh", arguments: '{"command":"Get-' }]);
+    send("pwsh-2", '{"command":"pwd"}', "pwsh");
+    send("pwsh-1", 'Location"}');
+    send("pwsh-2", "", "functions.pwsh");
+    expect(content()).toEqual([
+      { type: "tool_call", toolCallId: "pwsh-1", toolName: "pwsh", arguments: '{"command":"Get-Location"}' },
+      { type: "tool_call", toolCallId: "pwsh-2", toolName: "functions.pwsh", arguments: '{"command":"pwd"}' },
+    ]);
+  });
+
+  it("combines live text and reasoning fragments while preserving whitespace and block boundaries", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const follow = f.follows()[0]!;
+    follow.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: -1, records: [] });
+    follow.frame({ type: "assistant-stream", frame: { type: "start", attemptId: "attempt", time: 1001 } });
+    const chunks = [
+      { type: "reasoning-delta", text: "先" },
+      { type: "reasoning-delta", text: "检查。\n" },
+      { type: "text-delta", text: "Hello" },
+      { type: "text-delta", text: " " },
+      { type: "text-delta", text: "world\n\n" },
+      { type: "text-delta", text: "下一段。" },
+      { type: "reasoning-delta", text: "再确认" },
+      { type: "text-delta", text: "完成。" },
+    ];
+    chunks.forEach((chunk, index) => {
+      follow.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId: "attempt", index, chunk } });
+    });
+    expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event).toMatchObject({
+      live: { messages: [expect.objectContaining({ message: expect.objectContaining({ content: [
+        { type: "thinking", text: "先检查。\n" },
+        { type: "text", text: "Hello world\n\n下一段。" },
+        { type: "thinking", text: "再确认" },
+        { type: "text", text: "完成。" },
+      ] }) })] },
+    });
+  });
+
   it("restores an in-progress browser reply and replays it when the APP opens the discovered session", async () => {
     const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
     const follow = f.follows()[0]!;
@@ -237,7 +289,7 @@ describe("DeepSeek Web runtime adapter", () => {
     f.runtime.dispatchCommand("dsh:browser", "sync", { type: "session.sync", sessionId: "dsh:browser", syncId: "sync", range: "preview" });
     await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot")).toBe(true));
     const restored = f.events.find(({ event }) => event.type === "session.snapshot")?.event;
-    expect(restored).toMatchObject({ live: { messages: [expect.objectContaining({ message: expect.objectContaining({ messageId: "attempt-1", content: [{ type: "text", text: "already sent " }, { type: "text", text: "and still streaming" }] }) })] } });
+    expect(restored).toMatchObject({ live: { messages: [expect.objectContaining({ message: expect.objectContaining({ messageId: "attempt-1", content: [{ type: "text", text: "already sent and still streaming" }] }) })] } });
     follow.frame({ type: "assistant-stream", frame: { type: "end", attemptId: "attempt-1", outcome: { kind: "committed", seq: 1 } } });
     // An ended but uncommitted attempt stays recoverable until its canonical record arrives.
     expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { messages: [expect.objectContaining({ finished: true })] } });
