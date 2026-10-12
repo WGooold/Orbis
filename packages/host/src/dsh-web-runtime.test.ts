@@ -40,7 +40,7 @@ function discoveryFixture() {
   const metadata = vi.fn(); runtime.onMetadataChange = metadata;
   const changed = vi.fn(); runtime.onCatalogChange = changed;
   const emit = (event: string, ...args: unknown[]) => client.onEvent?.({ type: "emit", event, args });
-  const live = (id: string, running = false) => ({ sessionId: id, cwd: "D:/work", title: `Title ${id}`, updatedAt: 1000, agentAvailable: true, running });
+  const live = (id: string, running = false) => ({ sessionId: id, cwd: "D:/work", projections: { kind: "sequenced", asOfSeq: 0, values: { title: `Title ${id}` } }, updatedAt: 1000, agentAvailable: true, running });
   const follows = () => subscriptions.filter(item => item.method === "session/follow" && !item.closed);
   return { runtime, client, events, offline, archives, metadata, changed, emit, live, follows, subscriptions, request,
     list: (next: Record<string, unknown>[]) => { items = next; } };
@@ -51,6 +51,76 @@ afterEach(async () => {
 });
 
 describe("DeepSeek Web runtime adapter", () => {
+  it("reads native title hints for busy, cold and archived sessions and resumes with the catalog title", async () => {
+    const f = discoveryFixture();
+    f.list([f.live("busy", true), { ...f.live("cold"), agentAvailable: false, projections: { kind: "cached", asOfSeq: 500, values: { title: "冷会话标题" } } }, f.live("archived")]);
+    await f.runtime.start();
+    expect(f.runtime.directoryEntries()[0]?.sessionName).toBe("Title busy");
+    expect(await f.runtime.catalog()).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId: "dsh:cold", name: "冷会话标题" })]));
+    expect(await f.runtime.catalog(true)).toEqual([expect.objectContaining({ sessionId: "dsh:archived", name: "Title archived" })]);
+    await f.runtime.activate({ type: "resume", sessionId: "dsh:cold" });
+    expect(f.runtime.directoryEntries().find(item => item.sessionId === "dsh:cold")?.sessionName).toBe("冷会话标题");
+    const follow = f.follows().find(item => (item.args.request as { address: { sessionId: string } }).address.sessionId === "cold")!;
+    follow.frame({ type: "snapshot", header: { cwd: "D:/work", createdAt: 1000 }, cursor: -1, records: [], projections: { asOfSeq: 2, values: { title: "实时标题" } } });
+    expect(f.runtime.directoryEntries().find(item => item.sessionId === "dsh:cold")?.sessionName).toBe("实时标题");
+    expect((await f.runtime.catalog()).find(item => item.sessionId === "dsh:cold")?.name).toBe("实时标题");
+  });
+
+  it("syncs title control baselines before discovery and fences stale updates and list hints", async () => {
+    const f = discoveryFixture(); f.list([f.live("busy", true), f.live("idle")]);
+    const starting = f.runtime.start();
+    const control = f.subscriptions.find(item => item.method === "session/control")!;
+    control.frame({ type: "baseline", value: { projections: { busy: { asOfSeq: 10, values: { title: "基线标题" } }, idle: { asOfSeq: 10, values: { title: "未打开的会话" } } } } });
+    await starting;
+    expect(f.runtime.directoryEntries()[0]?.sessionName).toBe("基线标题");
+    control.frame({ type: "projection", sessionId: "busy", key: "title", seq: 12, value: "自动生成的标题" });
+    control.frame({ type: "projection", sessionId: "busy", key: "title", seq: 11, value: "旧标题" });
+    expect(f.runtime.directoryEntries()[0]?.sessionName).toBe("自动生成的标题");
+    expect(await f.runtime.catalog()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: "dsh:busy", name: "自动生成的标题" }),
+      expect.objectContaining({ sessionId: "dsh:idle", name: "未打开的会话" }),
+    ]));
+    expect(f.events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "runtime.metadata", metadata: expect.objectContaining({ sessionName: "自动生成的标题" }) }) }));
+    control.frame({ type: "projection", sessionId: "busy", key: "title", seq: 13, value: null });
+    expect(f.runtime.directoryEntries()[0]?.sessionName).toBeUndefined();
+    expect((await f.runtime.catalog()).find(item => item.sessionId === "dsh:busy")?.name).toBe("");
+    control.frame({ type: "projection", sessionId: "idle", key: "title", seq: 14, value: { invalid: true } });
+    expect((await f.runtime.catalog()).find(item => item.sessionId === "dsh:idle")?.name).toBe("未打开的会话");
+    f.list([{ ...f.live("busy", true), projections: { kind: "sequenced", asOfSeq: 1, values: { title: "重连标题" } } }]);
+    f.client.onReconnect?.();
+    f.subscriptions[0]!.frame({ type: "baseline", value: { archivedSessionIds: [] } });
+    await vi.waitFor(() => expect(f.runtime.directoryEntries()[0]?.sessionName).toBe("重连标题"));
+  });
+
+  it("recovers a failed title control stream and clears absent title capabilities in complete baselines", async () => {
+    const f = discoveryFixture(); f.list([f.live("busy", true), f.live("idle")]); await f.runtime.start();
+    const control = f.subscriptions.find(item => item.method === "session/control")!;
+    vi.useFakeTimers();
+    try {
+      control.fail!(new Error("control interrupted"));
+      await vi.advanceTimersByTimeAsync(2_000);
+      const replacement = f.subscriptions.filter(item => item.method === "session/control" && !item.closed).at(-1)!;
+      expect(replacement).not.toBe(control);
+      replacement.frame({ type: "baseline", value: { projections: { busy: { asOfSeq: 10, values: {} }, idle: { asOfSeq: 10, values: { title: "恢复后的目录标题" } } } } });
+      expect(f.runtime.directoryEntries()[0]?.sessionName).toBeUndefined();
+      expect((await f.runtime.catalog()).find(item => item.sessionId === "dsh:busy")?.name).toBe("");
+      expect((await f.runtime.catalog()).find(item => item.sessionId === "dsh:idle")?.name).toBe("恢复后的目录标题");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("syncs durable title events and normalized rename acknowledgements to the catalog", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    f.follows()[0]!.frame({ type: "event", event: { seq: 1, time: 1000, type: "session/title", data: { title: "日志中的标题" } } });
+    expect(f.runtime.directoryEntries()[0]?.sessionName).toBe("日志中的标题");
+    expect((await f.runtime.catalog())[0]?.name).toBe("日志中的标题");
+    const base = f.request.getMockImplementation()!;
+    f.request.mockImplementation((method, args) => method === "session/rename" ? Promise.resolve({ title: "服务端规范化标题", seq: 2 }) : base(method, args));
+    f.runtime.dispatchCommand("dsh:browser", "rename", { type: "slash.execute", name: "name", args: "请求的标题" });
+    await vi.waitFor(() => expect(f.runtime.directoryEntries()[0]?.sessionName).toBe("服务端规范化标题"));
+    expect((await f.runtime.catalog())[0]?.name).toBe("服务端规范化标题");
+  });
+
+
   it("keeps recovery active until a valid current follow snapshot and isolates catalog recovery", async () => {
     const f = discoveryFixture(); f.list([f.live("browser", true)]);
     const base = f.request.getMockImplementation()!; let badSkills = true; let badModels = true;

@@ -1,4 +1,5 @@
 import type { DshWebConnection, DshWebEvent } from "./dsh-web-client.js";
+import { DshSessionTitles } from "./dsh-session-titles.js";
 
 type Row = Record<string, unknown> & { sessionId: string };
 type Change = (rows: Map<string, Row>) => void;
@@ -9,7 +10,7 @@ const row = (value: unknown): Row | undefined => {
 };
 
 export type DshLiveSession = {
-  sessionId: string; cwd: string; running: boolean; title?: string; createdAt: number;
+  sessionId: string; cwd: string; running: boolean; title?: string | null; createdAt: number;
 };
 type DiscoveryCallbacks = {
   live: (session: DshLiveSession) => void;
@@ -35,7 +36,7 @@ export class DshWebDiscovery {
   #retry: NodeJS.Timeout | undefined;
   #closed = false;
 
-  constructor(client: DshWebConnection, callbacks: DiscoveryCallbacks) {
+  constructor(client: DshWebConnection, callbacks: DiscoveryCallbacks, readonly titles: DshSessionTitles = new DshSessionTitles()) {
     this.#client = client;
     this.#callbacks = callbacks;
   }
@@ -94,6 +95,12 @@ export class DshWebDiscovery {
   }
 
   retry(): void { this.#scheduleRetry(); }
+
+  titleProjection(id: string, baseline: unknown, complete = false): void {
+    if (this.#closed || !this.titles.apply(id, baseline, "sequenced", complete)) return;
+    this.#callbacks.changed();
+    this.#publish();
+  }
 
   refresh(): Promise<void> {
     if (this.#closed) return Promise.resolve();
@@ -158,9 +165,10 @@ export class DshWebDiscovery {
     for (const item of this.#rows.values()) {
       if (item.agentAvailable !== true || item.origin === "subagent" || this.#archives.has(item.sessionId) || typeof item.cwd !== "string") continue;
       live.add(item.sessionId);
+      const title = this.titles.read(item.sessionId, item);
       this.#callbacks.live({ sessionId: item.sessionId, cwd: item.cwd, running: item.running === true,
         createdAt: Number(item.createdAt ?? item.updatedAt ?? Date.now()),
-        ...(typeof item.title === "string" && item.title.length > 0 ? { title: item.title.slice(0, 256) } : {}) });
+        ...(title === undefined ? {} : { title }) });
     }
     for (const id of this.#published) if (!live.has(id)) this.#callbacks.offline(id, false);
     this.#published = live;

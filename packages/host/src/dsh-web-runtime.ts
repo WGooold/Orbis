@@ -71,6 +71,8 @@ export class DshWebRuntime implements AgentBackend {
   readonly #activating = new Map<string, Promise<BackendActivation>>();
   readonly #approvals = new Map<string, Approval>();
   #ready = true;
+  #controlUnsubscribe: (() => void) | undefined;
+  #controlRetry: NodeJS.Timeout | undefined;
   #stopping: Promise<void> | undefined;
   #sink: (event: RuntimeEvent, runtimeId: string) => void = () => {};
   onMetadataChange: (() => void) | undefined;
@@ -111,7 +113,30 @@ export class DshWebRuntime implements AgentBackend {
     return new DshWebRuntime(await DshWebClient.connect(options), decoder);
   }
   setEventSink(sink: (event: RuntimeEvent, runtimeId: string) => void): void { this.#sink = sink; }
-  start(): Promise<void> { return this.#discovery.start(); }
+  start(): Promise<void> {
+    const discovery = this.#discovery.start();
+    this.#subscribeControl();
+    return discovery;
+  }
+  #subscribeControl(): void {
+    if (!this.#ready) return;
+    this.#controlUnsubscribe = this.#client.subscribe("session/control", {}, raw => {
+      const frame = object(raw);
+      if (frame.type === "baseline") {
+        for (const [id, baseline] of Object.entries(object(object(frame.value).projections))) {
+          this.#titleProjection(id, baseline, true);
+        }
+      } else if (frame.type === "projection" && typeof frame.sessionId === "string") {
+        const baseline = { asOfSeq: frame.seq, values: { [String(frame.key)]: frame.value } };
+        if (frame.key === "title") this.#titleProjection(frame.sessionId, baseline);
+      }
+    }, () => {
+      this.#controlUnsubscribe?.(); this.#controlUnsubscribe = undefined;
+      if (!this.#ready) return;
+      this.#controlRetry = setTimeout(() => { this.#controlRetry = undefined; this.#subscribeControl(); }, 2_000);
+      this.#controlRetry.unref();
+    });
+  }
   announce(): void {
     for (const session of this.#sessions.values()) {
       session.notifications.announce();
@@ -145,17 +170,20 @@ export class DshWebRuntime implements AgentBackend {
 
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
     const archiveIds = await this.#archivedSessionIds();
+    const generation = this.#discovery.titles.generation;
     const result = await this.#client.request<Obj>("session/list", { _request: {} });
+    if (generation !== this.#discovery.titles.generation) return this.catalog(archived);
     const items = Array.isArray(result.items) ? result.items : Array.isArray(result.sessions) ? result.sessions : [];
     return items.flatMap(raw => {
       const item = object(raw); const id = typeof item.sessionId === "string" ? item.sessionId : typeof item.id === "string" ? item.id : undefined;
       const cwd = typeof item.cwd === "string" ? item.cwd : undefined;
       if (!id || !cwd || archiveIds.has(id) !== archived || item.origin === "subagent" && item.blank === true) return [];
       const local = this.#sessions.get(publicId(id));
+      const title = this.#discovery.titles.read(id, item);
       return [{ sessionId: publicId(id), agentKind: "dsh" as const, hostname: localHostname(), cwd,
         archived,
         createdAt: local?.createdAt ?? Number(item.createdAt ?? item.updatedAt ?? Date.now()), modifiedAt: Number(item.updatedAt ?? item.createdAt ?? Date.now()),
-        messageCount: local?.entries.length ?? 0, ...(typeof item.title === "string" ? { name: item.title.slice(0, 256) } : {}) }];
+        messageCount: local?.entries.length ?? 0, ...(title === undefined ? {} : { name: title ?? "" }) }];
     });
   }
 
@@ -203,7 +231,7 @@ export class DshWebRuntime implements AgentBackend {
     const operation = this.#activate(target); return operation;
   }
   async #activate(target: AgentActivateTarget): Promise<BackendActivation> {
-    let id: string; let cwd: string; let createdAt = Date.now();
+    let id: string; let cwd: string; let title: string | undefined; let createdAt = Date.now();
     if (target.type === "new") {
       cwd = target.cwd;
       if (!isAbsolute(cwd) || !(await stat(cwd).then(info => info.isDirectory(), () => false))) throw new ActivationError("cwd_missing", "请选择存在的绝对目录");
@@ -215,13 +243,13 @@ export class DshWebRuntime implements AgentBackend {
       id = target.sessionId.slice(4);
       const item = (await this.catalog()).find(value => value.sessionId === target.sessionId);
       if (!item) throw new ActivationError("session_not_found", "找不到这个 DeepSeek Web 会话");
-      cwd = item.cwd; createdAt = item.createdAt;
+      cwd = item.cwd; createdAt = item.createdAt; title = item.name;
       const workspaceId = await this.#ensureWorkspace(cwd);
       await this.#client.request("session/create", { request: { sessionId: id, workspaceId } });
     }
     if (!this.#ready) throw new ActivationError("agent_unsupported", "DeepSeek Web 已断开");
     this.#detached.delete(id);
-    this.#attach({ sessionId: id, cwd, createdAt, running: this.#sessions.get(publicId(id))?.running ?? false });
+    this.#attach({ sessionId: id, cwd, createdAt, ...(title === undefined ? {} : { title }), running: this.#sessions.get(publicId(id))?.running ?? false });
     return { sessionId: publicId(id), spawnMode: "headless" };
   }
 
@@ -249,7 +277,7 @@ export class DshWebRuntime implements AgentBackend {
     if (current) {
       const changed = current.cwd !== item.cwd || current.running !== item.running || item.title !== undefined && current.title !== item.title;
       current.cwd = item.cwd; current.running = item.running;
-      if (item.title !== undefined) current.title = item.title;
+      if (item.title !== undefined) { if (item.title) current.title = item.title; else delete current.title; }
       if (!current.following) this.#followSession(current);
       if (changed) this.#publishMetadata(current);
       return;
@@ -356,7 +384,12 @@ export class DshWebRuntime implements AgentBackend {
 
   async #slash(session: WebSession, args: string, name: string): Promise<void> {
     if (name === "quit") { this.#detached.add(session.id); this.#detachSession(session, "DeepSeek Web 会话已关闭"); return; }
-    if (name === "name") { const title = args.trim(); if (!title) throw new Error("会话名称不能为空"); await this.#client.request("session/rename", { request: { sessionId: session.id, title } }); session.title = title; this.#publishMetadata(session); return; }
+    if (name === "name") {
+      const title = args.trim(); if (!title) throw new Error("会话名称不能为空");
+      const result = object(await this.#client.request("session/rename", { request: { sessionId: session.id, title } }));
+      this.#titleProjection(session.id, { asOfSeq: result.seq, values: { title: result.title } });
+      return;
+    }
     if (name === "fork" || name === "clone") {
       const parsed = args.trim() === "" ? undefined : Number(args.trim());
       if (parsed !== undefined && !Number.isSafeInteger(parsed)) throw new Error("分支位置必须是有效事件序号");
@@ -521,6 +554,8 @@ export class DshWebRuntime implements AgentBackend {
           return !Number.isSafeInteger(event.seq) || Number(event.seq) < 0 || !Number.isFinite(event.time) || typeof event.type !== "string";
         })) return;
       const header = object(frame.header); const events = arrayObjects(frame.records).map(record => { const event = object(record.event); return { seq: Number(event.seq), time: Number(event.time), type: String(event.type), data: event.data }; });
+      this.#titleProjection(session.id, frame.projections, true);
+      for (const event of events) this.#titleEvent(session, event);
       this.#rememberTools(session, events);
       const snapshotEntries = dshWebEntries(session.id, events);
       // `session/follow` always opens with a bounded tail page. On a WebSocket
@@ -649,6 +684,7 @@ export class DshWebRuntime implements AgentBackend {
     }
     if (session.lastSeq === -1 && event.seq === 0) session.source.setAvailability(true, !session.running);
     session.lastSeq = event.seq;
+    this.#titleEvent(session, event);
     const data = object(event.data);
     if (event.type === "tool/call") {
       const toolCallId = String(data.callId ?? dshWebEntryId(session.id, event.seq));
@@ -815,6 +851,7 @@ export class DshWebRuntime implements AgentBackend {
   }
 
   async #resyncAll(): Promise<void> {
+    this.#discovery.titles.reconnect();
     for (const session of this.#sessions.values()) {
       session.unsubscribe(); session.following = false;
       ++session.followGeneration;
@@ -826,6 +863,17 @@ export class DshWebRuntime implements AgentBackend {
     await this.#discovery.reconnect();
   }
   #metadata(session: WebSession): RuntimeMetadata { return { runtimeId: publicId(session.id), sessionId: publicId(session.id), name: "DeepSeek Harness Web", ...(session.title ? { sessionName: session.title } : {}), cwd: session.cwd, hostname: localHostname(), status: session.running ? "running" : "idle", sessionGraphSync: true, sessionLeafId: session.entries.at(-1)?.entryId ?? null, ...(session.model === undefined ? {} : { model: session.model }), ...(session.thinkingLevel === undefined ? {} : { thinkingLevel: session.thinkingLevel }), ...(session.usage === undefined ? {} : { contextUsage: session.usage }) }; }
+  #titleProjection(id: string, raw: unknown, complete = false): void {
+    this.#discovery.titleProjection(id, raw, complete);
+    const session = this.#sessions.get(publicId(id));
+    const title = this.#discovery.titles.read(id, {});
+    if (!session || title === undefined || session.title === (title ?? undefined)) return;
+    if (title) session.title = title; else delete session.title;
+    this.#publishMetadata(session);
+  }
+  #titleEvent(session: WebSession, event: DshWebLogEvent): void {
+    if (event.type === "session/title") this.#titleProjection(session.id, { asOfSeq: event.seq, values: { title: object(event.data).title } });
+  }
   async #loadSkills(session: WebSession): Promise<void> {
     const generation = ++session.skillsGeneration;
     try {
@@ -920,5 +968,5 @@ export class DshWebRuntime implements AgentBackend {
     for (const session of sessions) if (session) session.notifications.upsert({ code, occurrenceId: code === "dsh.recovery" ? "follow" : code,
       scope: {}, severity: "warning", lifecycle: "condition", message });
   }
-  async stop(): Promise<void> { if (this.#stopping) return this.#stopping; this.#stopping = (async () => { this.#ready = false; this.#discovery.stop(); for (const id of this.#approvals.keys()) this.#cancelApproval(id, "owner_closed"); for (const session of this.#sessions.values()) { session.unsubscribe(); if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error("backend_stopped")); } } this.#sessions.clear(); this.#running.clear(); this.#detached.clear(); await this.#client.stop(); })(); return this.#stopping; }
+  async stop(): Promise<void> { if (this.#stopping) return this.#stopping; this.#stopping = (async () => { this.#ready = false; clearTimeout(this.#controlRetry); this.#controlUnsubscribe?.(); this.#discovery.stop(); for (const id of this.#approvals.keys()) this.#cancelApproval(id, "owner_closed"); for (const session of this.#sessions.values()) { session.unsubscribe(); if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error("backend_stopped")); } } this.#sessions.clear(); this.#running.clear(); this.#detached.clear(); await this.#client.stop(); })(); return this.#stopping; }
 }
