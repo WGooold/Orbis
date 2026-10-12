@@ -476,6 +476,58 @@ describe("DeepSeek Web runtime adapter", () => {
     expect(requestMock).toHaveBeenCalledWith("session/page", { request: expect.objectContaining({ throughSeq: -1 }) });
   });
 
+  it("presents DSH questions, replays once, and retains failed submissions for retry", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const waterfall = { type: "waterfall" as const, event: "user-questions/request", eventId: "questions-1", agentId: "browser",
+      request: { questions: [{ id: "mode", question: "选择模式", options: [{ label: "开发" }, { label: "发布" }] }, { id: "detail", question: "补充内容" }] } };
+    f.client.onEvent?.(waterfall); f.client.onEvent?.(waterfall);
+    expect(f.events.filter(({ event }) => event.type === "interaction.requested")).toHaveLength(1);
+    f.runtime.announce();
+    expect(f.events.filter(({ event }) => event.type === "interaction.snapshot").at(-1)?.event).toMatchObject({ requests: [expect.objectContaining({ kind: "questionnaire", requestId: "questions-1" })] });
+    const response = { kind: "questionnaire" as const, answers: [{ id: "mode", values: ["0"] }, { id: "detail", values: [], other: "本地验证" }] };
+    const respond = (commandId: string) => f.runtime.dispatchCommand("dsh:browser", commandId, { type: "interaction.respond", requestId: "questions-1", extensionId: "dsh", response });
+    vi.mocked(f.client.respondEvent).mockRejectedValueOnce(new Error("transport unavailable"));
+    respond("failed");
+    await vi.waitFor(() => expect(f.events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "command.result", commandId: "failed", ok: false }) })));
+    expect(f.events.some(({ event }) => event.type === "interaction.resolved")).toBe(false);
+    respond("retry");
+    await vi.waitFor(() => expect(f.events).toContainEqual(expect.objectContaining({ event: { type: "interaction.resolved", requestId: "questions-1", source: "remote" } })));
+    expect(f.client.respondEvent).toHaveBeenLastCalledWith("questions-1", { kind: "result", value: { answers: [{ id: "mode", selected: ["开发"] }, { id: "detail", selected: [], custom: "本地验证" }] } });
+  });
+
+  it("claims timed questions before presenting them and releases claims on replay and timeout", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    vi.useFakeTimers();
+    try {
+      const waterfall = { type: "waterfall" as const, event: "user-questions/request", eventId: "timed-1", agentId: "browser",
+        request: { questions: [{ id: "q", question: "继续？", options: [{ label: "继续" }] }], wait: { callId: "call-1", timed: true } } };
+      f.client.onEvent?.(waterfall);
+      const first = f.subscriptions.find(item => item.method === "userQuestions/attachWait")!;
+      expect(first.args).toEqual({ agentId: "browser", callId: "call-1" });
+      expect(f.events.some(({ event }) => event.type === "interaction.requested")).toBe(false);
+      first.frame({ remainingMs: 1000 });
+      expect(f.events.filter(({ event }) => event.type === "interaction.requested")).toHaveLength(1);
+      f.client.onEvent?.(waterfall);
+      expect(first.closed).toBe(true);
+      const second = f.subscriptions.filter(item => item.method === "userQuestions/attachWait").at(-1)!;
+      first.frame({ remainingMs: 1 }); second.frame({ remainingMs: 2000 });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(f.client.respondEvent).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(second.closed).toBe(true);
+      expect(f.client.respondEvent).toHaveBeenCalledWith("timed-1", { kind: "rejected", error: { name: "AbortError", message: "timeout", code: "ASK_TIMED_OUT" } });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("cancels question UI with the native waterfall and delegates unsupported requests", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    f.client.onEvent?.({ type: "waterfall", event: "user-questions/request", eventId: "q", agentId: "browser", request: { questions: [{ id: "q", question: "输入" }] } });
+    f.client.onEvent?.({ type: "cancel", eventId: "q" });
+    expect(f.events).toContainEqual(expect.objectContaining({ event: { type: "interaction.cancelled", requestId: "q", reason: "cancelled" } }));
+    f.client.onEvent?.({ type: "waterfall", event: "user-questions/request", eventId: "bad", agentId: "browser", request: { questions: [] } });
+    expect(f.client.respondEvent).toHaveBeenCalledWith("bad", { kind: "next" });
+  });
+
   it("deduplicates a replayed approval after the Web carrier reconnects", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-web-runtime-")); roots.push(cwd);
     const requestMock = vi.fn(async (method: string) => method === "workspace/create" ? { workspace: { workspaceId: "workspace-approval" } } : method === "session/create" ? { sessionId: "web-approval" } : {});

@@ -13,6 +13,7 @@ import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispa
 import { DshWebClient, type DshWebConnection, type DshWebEvent } from "./dsh-web-client.js";
 import { dshErrorText, dshWebEntries, dshWebEntryId, dshWebMessage, type DshStreamDecoder, type DshWebLogEvent } from "./dsh-web-history.js";
 import { localHostname } from "./sessions.js";
+import { dshUserQuestionInteraction, dshUserQuestionAnswer } from "./dsh-user-questions.js";
 import { ActivationError } from "./spawner.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { DshWebDiscovery, type DshLiveSession } from "./dsh-web-discovery.js";
@@ -37,7 +38,7 @@ const webEntrySeqOrUndefined = (entryId: string | null | undefined): number | un
   return Number.isSafeInteger(seq) ? seq : undefined;
 };
 
-type Approval = { id: string; session: WebSession; interaction: InteractionRequest; timer: NodeJS.Timeout };
+type Approval = { id: string; session: WebSession; interaction: InteractionRequest; timer?: NodeJS.Timeout; releaseWait?: () => void; responding?: boolean };
 type WebSession = {
   source: RecoverableSessionSource;
   sourceCheckedAt: number;
@@ -411,10 +412,25 @@ export class DshWebRuntime implements AgentBackend {
   }
 
   async #respondInteraction(session: WebSession, command: Extract<RuntimeCommand, { type: "interaction.respond" }>): Promise<void> {
-    const pending = this.#approvals.get(command.requestId); if (!pending || pending.session !== session || command.extensionId !== "dsh") throw new Error("审批已结束或不属于这个会话");
-    clearTimeout(pending.timer); this.#approvals.delete(command.requestId);
-    if (command.response.kind === "cancel") await this.#client.respondEvent(pending.id, { kind: "rejected", error: { name: "AbortError", message: "cancelled" } });
-    else await this.#client.respondEvent(pending.id, { kind: "result", value: command.response.kind === "select" ? command.response.value : command.response });
+    const pending = this.#approvals.get(command.requestId); if (!pending || pending.session !== session || command.extensionId !== "dsh") throw new Error("交互已结束或不属于这个会话");
+    if (pending.responding) throw new Error("答案正在提交，请稍候");
+    const response = command.response;
+    let value: unknown;
+    if (response.kind !== "cancel") {
+      if (pending.interaction.kind === "questionnaire") value = dshUserQuestionAnswer(pending.interaction, response);
+      else {
+        if (response.kind !== "select" || pending.interaction.kind !== "select" || !pending.interaction.options.some(option => option.value === response.value)) throw new Error("无效的 DSH 审批选项");
+        value = response.value;
+      }
+    }
+    pending.responding = true;
+    try {
+      await this.#client.respondEvent(pending.id, response.kind === "cancel"
+        ? { kind: "rejected", error: { name: "AbortError", message: "cancelled" } }
+        : { kind: "result", value });
+    } catch (error) { pending.responding = false; throw error; }
+    if (this.#approvals.get(command.requestId) !== pending) return;
+    clearTimeout(pending.timer); this.#approvals.delete(command.requestId); pending.releaseWait?.();
     this.#emit(session, { type: "interaction.resolved", requestId: command.requestId, source: "remote" });
   }
 
@@ -423,10 +439,12 @@ export class DshWebRuntime implements AgentBackend {
     if (event.type === "emit") { this.#discovery.event(event); return; }
     if (event.type === "cancel") { this.#cancelApproval(event.eventId, "cancelled"); return; }
     if (event.type !== "waterfall") return;
-    if (event.event !== "approval/request" && event.event !== "permission/request") { void this.#client.respondEvent(event.eventId, { kind: "next" }).catch(() => {}); return; }
+    if (event.event !== "approval/request" && event.event !== "permission/request" && event.event !== "user-questions/request") { void this.#client.respondEvent(event.eventId, { kind: "next" }).catch(() => {}); return; }
     const agentId = event.agentId.replace(/^dsh:/, "");
     const session = this.#sessions.get(publicId(agentId)); if (!session || session.closing) { void this.#client.respondEvent(event.eventId, { kind: "next" }).catch(() => {}); return; }
-    const request = object(event.request); const rawOptions = Array.isArray(request.options) ? request.options : Array.isArray(request.choices) ? request.choices : [];
+    const request = object(event.request);
+    if (event.event === "user-questions/request") { this.#questionEvent(session, event, request); return; }
+    const rawOptions = Array.isArray(request.options) ? request.options : Array.isArray(request.choices) ? request.choices : [];
     const options = event.event === "approval/request" && rawOptions.length === 0
       ? [{ value: "allowed-once", label: "允许一次" }, { value: "rejected", label: "拒绝" }]
       : rawOptions.map((value, index) => { const item = object(value); const id = String(item.id ?? item.optionId ?? item.value ?? `option-${index}`); return { value: id, label: String(item.label ?? item.name ?? id) }; });
@@ -451,7 +469,43 @@ export class DshWebRuntime implements AgentBackend {
     const timer = setTimeout(() => this.#cancelApproval(requestId, "timeout"), 300_000); timer.unref();
     this.#approvals.set(requestId, { id: event.eventId, session, interaction, timer }); this.#emit(session, { type: "interaction.requested", request: interaction });
   }
-  #cancelApproval(id: string, reason: "cancelled" | "timeout" | "disconnected" | "owner_closed"): void { const pending = this.#approvals.get(id); if (!pending) return; clearTimeout(pending.timer); this.#approvals.delete(id); void this.#client.respondEvent(pending.id, { kind: "rejected", error: { name: "AbortError", message: reason } }).catch(() => {}); this.#emit(pending.session, { type: "interaction.cancelled", requestId: id, reason }); }
+  #questionEvent(session: WebSession, event: Extract<DshWebEvent, { type: "waterfall" }>, request: Obj): void {
+    const interaction = dshUserQuestionInteraction(publicId(session.id), event.eventId, request);
+    if (!interaction) { void this.#client.respondEvent(event.eventId, { kind: "next" }).catch(() => {}); return; }
+    const previous = this.#approvals.get(event.eventId);
+    if (previous) { clearTimeout(previous.timer); previous.releaseWait?.(); }
+    const pending: Approval = { id: event.eventId, session, interaction: previous?.interaction ?? interaction };
+    this.#approvals.set(event.eventId, pending);
+    const wait = object(request.wait);
+    if (wait.timed !== true || typeof wait.callId !== "string") {
+      if (!previous) this.#emit(session, { type: "interaction.requested", request: interaction });
+      return;
+    }
+    // A timed question requires a business-stream claim before exposing its
+    // countdown. Reattach that claim when the gateway replays the waterfall.
+    let opened = false;
+    try {
+      pending.releaseWait = this.#client.subscribe("userQuestions/attachWait", { agentId: session.id, callId: wait.callId }, raw => {
+        if (this.#approvals.get(event.eventId) !== pending || opened) return;
+        const remainingMs = object(raw).remainingMs;
+        if (typeof remainingMs !== "number" || !Number.isFinite(remainingMs) || remainingMs <= 0) { this.#cancelApproval(event.eventId, "timeout"); return; }
+        opened = true;
+        pending.interaction = { ...interaction, expiresAt: Date.now() + Math.ceil(remainingMs) };
+        pending.timer = setTimeout(() => this.#cancelApproval(event.eventId, "timeout"), remainingMs); pending.timer.unref();
+        this.#emit(session, { type: "interaction.requested", request: pending.interaction });
+      }, () => {
+        if (this.#approvals.get(event.eventId) === pending) this.#cancelApproval(event.eventId, "cancelled");
+      });
+      if (this.#approvals.get(event.eventId) !== pending) pending.releaseWait();
+    } catch { this.#cancelApproval(event.eventId, "cancelled"); }
+  }
+  #cancelApproval(id: string, reason: "cancelled" | "timeout" | "disconnected" | "owner_closed"): void {
+    const pending = this.#approvals.get(id); if (!pending) return;
+    clearTimeout(pending.timer); this.#approvals.delete(id); pending.releaseWait?.();
+    const timedOut = reason === "timeout" && pending.interaction.kind === "questionnaire";
+    void this.#client.respondEvent(pending.id, { kind: "rejected", error: { name: "AbortError", message: reason, ...(timedOut ? { code: "ASK_TIMED_OUT" } : {}) } }).catch(() => {});
+    this.#emit(pending.session, { type: "interaction.cancelled", requestId: id, reason });
+  }
   #cancelSessionApprovals(session: WebSession, reason: "cancelled" | "owner_closed"): void { for (const [id, item] of this.#approvals) if (item.session === session) this.#cancelApproval(id, reason); }
 
   #follow(session: WebSession, value: unknown): void {
