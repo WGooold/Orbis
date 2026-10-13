@@ -430,6 +430,14 @@ QString HostController::selectWorkspace(const QString &kind) {
     if (!cwd.isEmpty()) m_settings.setValue("lastWorkspace", cwd);
     return cwd;
 }
+void HostController::restartDshServer() {
+    if (!m_bridgeReady || busy()) return;
+    if (m_desiredRunning) { setMessage("请先在概览中暂停 Host 连接，再重启 DSH Server"); return; }
+    setMessage("正在重启 DSH Server…");
+    command("restartDshServer", {}, [this](const QJsonValue &) {
+        setMessage("DSH Server 已就绪，请从 Host 重新打开网页工作台，再恢复 Host 连接");
+    });
+}
 void HostController::openAgent(const QString &kind) {
     if (kind == "pi") { openAgentTui(kind); return; }
     command("openAgent", {{"kind", kind}});

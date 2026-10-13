@@ -2,9 +2,24 @@
 /* eslint-disable @typescript-eslint/no-unused-vars -- QML imports these functions as a namespace. */
 function newModel(kind, id, name) {
     var model = {id: id || "", name: name || id || "", input: ["text"], contextWindow: kind === "dsh" ? 262144 : "", maxTokens: kind === "dsh" ? 32768 : ""}
-    if (kind === "dsh") model.reasoningEfforts = false
+    if (kind === "dsh") model.reasoningEfforts = defaultReasoningEfforts()
     else model.reasoning = false
     return model
+}
+
+function defaultReasoningEfforts() {
+    return {off: null, minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max"}
+}
+
+function reasoningMode(value) {
+    return value === undefined ? "inherit" : value === false ? "disabled" : "custom"
+}
+
+function editReasoningEffort(current, level, value, enabled) {
+    var next = Object.assign({}, current && typeof current === "object" ? current : {})
+    if (!enabled) delete next[level]
+    else next[level] = level === "off" && !value.trim() ? null : value.trim()
+    return Object.keys(next).length ? next : false
 }
 
 function applyDiscoveredModels(kind, current, selected, defaultModel, index) {

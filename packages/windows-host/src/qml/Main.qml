@@ -83,6 +83,7 @@ ApplicationWindow {
         if (index < 0 || index >= providerModels.length) return
         var previousId = providerModels[index].id
         providerModels[index][key] = value
+        if (providerDraft.kind === "dsh") explicitProviderModels = true
         if (providerDraft.kind === "dsh" && key === "id" && (!providerModel.text || providerModel.text === previousId)) providerModel.text = value
         providerFormDirty = true
     }
@@ -102,7 +103,9 @@ ApplicationWindow {
         providerApi.currentIndex = Math.max(0, providerApi.find(draft.fields.api))
         piHeaders.text = JSON.stringify(draft.fields.headers || {}, null, 2)
         piCompat.text = JSON.stringify(draft.fields.compat || {}, null, 2)
-        window.providerModels = window.providerDraft.kind === "codex" ? [] : draft.fields.models || []
+        // Qt QVariant-backed rows do not retain nested in-place edits when serialized.
+        // Keep an independent JS draft, just like rows created by addProviderModel().
+        window.providerModels = window.providerDraft.kind === "codex" ? [] : JSON.parse(JSON.stringify(draft.fields.models || []))
         window.explicitProviderModels = draft.fields.models !== undefined
         if (draft.create && window.providerDraft.kind === "pi") window.providerModels = window.providerModels.map(function(model) { return !model.id ? Object.assign(ProviderFlow.newModel("pi"), model) : model })
         codexReasoning.currentIndex = Math.max(0, codexReasoning.find(draft.fields.reasoningEffort || "high"))
@@ -788,6 +791,7 @@ ApplicationWindow {
                                         spacing: 10
                                         ActionButton { text: modelData.installedButBroken ? "修复到最新版本" : !modelData.installed ? "安装最新版本" : !modelData.latestVersion || modelData.updateAvailable ? "更新到最新版本" : "已是最新版本"; enabled: host.bridgeReady && !host.busy && (!modelData.installed || !modelData.latestVersion || modelData.updateAvailable || modelData.installedButBroken); onClicked: window.showAgentInstaller(modelData) }
                                         ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders(modelData.kind) }
+                                        ActionButton { objectName: "restartDshServer"; text: "重启 DSH Server"; visible: modelData.kind === "dsh"; enabled: host.bridgeReady && !host.busy && !host.agentInstalling && modelData.installed; onClicked: restartDshDialog.open() }
                                     }
                                 }
                             }
@@ -980,6 +984,16 @@ ApplicationWindow {
         onAccepted: host.revoke(window.revokeId)
     }
     SoftDialog {
+        id: restartDshDialog; title: "重启 DSH Server？"; anchors.centerIn: parent; modal: true; width: 480
+        contentItem: Hint { text: "重启会断开 DSH 网页和相关会话连接，正在生成的回复可能中断。请先在概览中暂停 Host 连接。重启完成后，从 Host 重新打开网页工作台，再恢复连接。手动配置的外部服务需在原启动位置重启。"; width: parent.width }
+        footer: SoftDialogButtons {
+            ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            ActionButton { text: "确认重启"; enabled: host.bridgeReady && !host.busy && !host.desiredRunning; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            onAccepted: restartDshDialog.accept(); onRejected: restartDshDialog.reject()
+        }
+        onAccepted: host.restartDshServer()
+    }
+    SoftDialog {
         id: installDialog; title: (window.installAgentData.installed ? "更新 " : "安装 ") + window.agentName(window.installKind) + " 到最新版本"; anchors.centerIn: parent; modal: true; width: 540
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: window.installAgentData.installed ? "更新到最新版本" : "安装最新版本"; enabled: window.canInstallAgents && !host.busy; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
@@ -1122,8 +1136,14 @@ ApplicationWindow {
                         }
                         Repeater { model: window.providerModels
                             delegate: ColumnLayout {
+                                id: modelEditor
                                 required property var modelData
                                 required property int index
+                                property var reasoningMapping: modelData.reasoningEfforts
+                                function saveReasoningMapping(value) {
+                                    reasoningMapping = value
+                                    window.updateProviderModel(index, "reasoningEfforts", value)
+                                }
                                 Layout.fillWidth: true; spacing: 6
                                 RowLayout { Layout.fillWidth: true
                                     Field { id: modelIdField; Layout.fillWidth: true; text: modelData.id || ""; placeholderText: "模型 ID"; onTextEdited: window.updateProviderModel(index, "id", text) }
@@ -1141,8 +1161,46 @@ ApplicationWindow {
                                     Field { Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: window.providerDraft.kind === "pi" ? "16384" : window.providerDraft.kind === "dsh" ? "32768" : "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "maxTokens", text) }
                                 }
                                 SoftTextArea { visible: window.providerDraft.kind === "pi"; Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "思考档位映射（留空使用 Pi 默认值）"; text: modelData.thinkingLevelMap === undefined ? "" : JSON.stringify(modelData.thinkingLevelMap); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updateProviderModel(index, "thinkingLevelMap", text) }
-                                Label { visible: window.providerDraft.kind === "dsh"; text: "推理档位映射（JSON；false 表示不支持，留空继承原生能力）"; color: "#4b5d78" }
-                                SoftTextArea { visible: window.providerDraft.kind === "dsh"; Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "例如 {\"medium\":\"medium\",\"high\":\"high\"}"; text: modelData.reasoningEfforts === undefined ? "" : JSON.stringify(modelData.reasoningEfforts); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updateProviderModel(index, "reasoningEfforts", text) }
+                                ColumnLayout { visible: window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 6
+                                    RowLayout { Layout.fillWidth: true
+                                        Label { text: "思考深度映射"; color: "#4b5d78" }
+                                        SoftComboBox {
+                                            objectName: "dshReasoningMode-" + modelEditor.index
+                                            Layout.fillWidth: true; textRole: "label"; valueRole: "value"
+                                            model: [{label:"自定义映射",value:"custom"},{label:"继承原生能力",value:"inherit"},{label:"不支持推理",value:"disabled"}]
+                                            currentIndex: ProviderFlow.reasoningMode(modelEditor.reasoningMapping) === "inherit" ? 1 : ProviderFlow.reasoningMode(modelEditor.reasoningMapping) === "disabled" ? 2 : 0
+                                            onActivated: function(selectedIndex) {
+                                                var mode = model[selectedIndex].value
+                                                modelEditor.saveReasoningMapping(mode === "custom" ? ProviderFlow.defaultReasoningEfforts() : mode === "disabled" ? false : undefined)
+                                            }
+                                        }
+                                        ActionButton { text: "恢复默认"; onClicked: modelEditor.saveReasoningMapping(ProviderFlow.defaultReasoningEfforts()) }
+                                    }
+                                    Hint { Layout.fillWidth: true; text: "勾选模型支持的档位，在输入框填写 API 对应值。off 留空表示关闭思考；其他档位不能为空。" }
+                                    GridLayout { visible: ProviderFlow.reasoningMode(modelEditor.reasoningMapping) === "custom"; Layout.fillWidth: true; columns: 2; columnSpacing: 12
+                                        Repeater { model: ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+                                            delegate: RowLayout {
+                                                id: effortRow
+                                                required property string modelData
+                                                property string level: modelData
+                                                property bool selected: !!modelEditor.reasoningMapping && Object.prototype.hasOwnProperty.call(modelEditor.reasoningMapping, level)
+                                                Layout.fillWidth: true
+                                                SoftCheckBox {
+                                                    text: effortRow.level; checked: effortRow.selected
+                                                    onToggled: modelEditor.saveReasoningMapping(ProviderFlow.editReasoningEffort(modelEditor.reasoningMapping, effortRow.level, effortValue.text || (effortRow.level === "off" ? "" : effortRow.level), checked))
+                                                }
+                                                Field {
+                                                    id: effortValue
+                                                    objectName: "dshReasoning-" + modelEditor.index + "-" + effortRow.level
+                                                    Layout.fillWidth: true; enabled: effortRow.selected
+                                                    text: effortRow.selected && modelEditor.reasoningMapping[effortRow.level] !== null ? String(modelEditor.reasoningMapping[effortRow.level]) : ""
+                                                    placeholderText: effortRow.level === "off" ? "留空表示关闭思考" : "API 档位值"
+                                                    onTextEdited: modelEditor.saveReasoningMapping(ProviderFlow.editReasoningEffort(modelEditor.reasoningMapping, effortRow.level, text, true))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

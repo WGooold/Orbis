@@ -2,9 +2,9 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { expect, it } from "vitest";
 
-const flow = runInNewContext(`${readFileSync(new URL("../packages/windows-host/src/qml/ProviderFlow.js", import.meta.url), "utf8")}\n({applyDiscoveredModels, newModel})`);
+const flow = runInNewContext(`${readFileSync(new URL("../packages/windows-host/src/qml/ProviderFlow.js", import.meta.url), "utf8")}\n({applyDiscoveredModels, newModel, defaultReasoningEfforts, reasoningMode, editReasoningEffort})`);
 
-it("uses CC Switch defaults for new Pi models while keeping DSH native defaults", () => {
+it("uses Pi defaults and editable thinking depth defaults for new DSH models", () => {
   expect(flow.newModel("pi")).toMatchObject({
     id: "",
     name: "",
@@ -17,8 +17,24 @@ it("uses CC Switch defaults for new Pi models while keeping DSH native defaults"
     input: ["text"],
     contextWindow: 262144,
     maxTokens: 32768,
-    reasoningEfforts: false,
+    reasoningEfforts: { off: null, minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
   });
+});
+
+it("edits individual reasoning fields while preserving custom values and explicit modes", () => {
+  const original = { off: "none", medium: "balanced", high: "deep" };
+  const edited = flow.editReasoningEffort(original, "high", " thorough ", true);
+  expect(edited).toEqual({ off: "none", medium: "balanced", high: "thorough" });
+  expect(original.high).toBe("deep");
+  expect(flow.editReasoningEffort(edited, "off", "", true).off).toBeNull();
+  expect(flow.editReasoningEffort(edited, "medium", "", false)).toEqual({ off: "none", high: "thorough" });
+  expect(flow.editReasoningEffort({ high: "high" }, "high", "", false)).toBe(false);
+  expect(flow.reasoningMode(undefined)).toBe("inherit");
+  expect(flow.reasoningMode(false)).toBe("disabled");
+  expect(flow.reasoningMode(edited)).toBe("custom");
+  const first = flow.newModel("dsh");
+  first.reasoningEfforts.high = "custom";
+  expect(flow.newModel("dsh").reasoningEfforts.high).toBe("high");
 });
 
 it("adds or selects discovered models without replacing existing capabilities or introducing duplicates", () => {

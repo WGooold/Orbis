@@ -36,6 +36,7 @@ class HostController : public QObject {
     Q_PROPERTY(bool registrationAvailable READ registrationAvailable NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
     Q_PROPERTY(bool bridgeReady READ bridgeReady NOTIFY changed)
+    Q_PROPERTY(bool desiredRunning READ desiredRunning NOTIFY changed)
     Q_PROPERTY(bool autoStart READ autoStart NOTIFY changed)
     Q_PROPERTY(bool codexEnabled READ codexEnabled NOTIFY changed)
     Q_PROPERTY(bool dshEnabled READ dshEnabled NOTIFY changed)
@@ -59,6 +60,7 @@ public:
     HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QObject *parent = nullptr);
     ~HostController() override;
     QString state() const { return m_state; }
+    bool desiredRunning() const { return m_desiredRunning; }
     QString message() const { return m_message; }
     qint64 downloadReceived() const { return m_downloadReceived; }
     qint64 downloadTotal() const { return m_downloadTotal; }
@@ -133,6 +135,7 @@ public:
     Q_INVOKABLE void switchProvider(const QString &id, bool enabled);
     Q_INVOKABLE void removeProvider(const QString &id);
     Q_INVOKABLE void copyProvider(const QString &id);
+    Q_INVOKABLE void restartDshServer();
     Q_INVOKABLE void openAgent(const QString &kind);
     Q_INVOKABLE void openAgentTui(const QString &kind);
     Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl);
