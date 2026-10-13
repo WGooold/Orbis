@@ -436,6 +436,9 @@ data class RemoteState(
     val sessionBrowse: SessionBrowseState? = null,
     /** 进行中的 session.activate 请求（L1 resume / L2 new 共用）。 */
     val sessionActivateRequests: Set<String> = emptySet(),
+    /** Only explicit resume requests may navigate when their acknowledged Session comes online. */
+    val sessionActivateTargets: Map<String, String> = emptyMap(),
+    val activatedSessionToOpen: String? = null,
     /** requestId -> sessionId; clear only on a result, failure, timeout, or reconnect. */
     val sessionArchiveRequests: Map<String, String> = emptyMap(),
     /** 最近一次成功激活（进程已拉起），UI 用于 snackbar 提示；展示完可清除。 */
@@ -570,7 +573,13 @@ private fun reduceSessionListResult(state: RemoteState, message: JsonObject): Re
         sessionListRequests = requestId?.let { state.sessionListRequests - it } ?: state.sessionListRequests,
         sessionListRequestEpochs = requestId?.let { state.sessionListRequestEpochs - it } ?: state.sessionListRequestEpochs,
     )
-    var merged = state.sessions
+    val listedIds = sessions.mapTo(mutableSetOf(), SessionCatalogEntry::sessionId)
+    val onlineIds = state.runtimes.values.mapNotNullTo(mutableSetOf(), RuntimeSummary::sessionId)
+    val hasDshEvidence = sessions.any { it.agentKind == "dsh" } || state.runtimes.values.any { it.agentKind == "dsh" }
+    var merged = state.sessions.filterValues { entry ->
+        !hasDshEvidence || entry.agentKind != "dsh" || entry.sessionId in listedIds ||
+            entry.hasHistoryCache || entry.sessionId in onlineIds
+    }
     for (entry in sessions) {
         merged = merged + (entry.sessionId to mergeSessionCatalogEntry(merged[entry.sessionId], entry))
     }
@@ -635,14 +644,31 @@ private fun reduceSessionActivated(state: RemoteState, message: JsonObject): Rem
     val requestId = message["requestId"]?.jsonPrimitive?.contentOrNull
     if (requestId != null && requestId !in state.sessionActivateRequests) return state
     val agentKind = message["agentKind"]?.jsonPrimitive?.contentOrNull ?: return state
+    val target = requestId?.let(state.sessionActivateTargets::get)
+    val acknowledged = message["sessionId"]?.jsonPrimitive?.contentOrNull
     return state.copy(
         sessionActivateRequests = requestId?.let { state.sessionActivateRequests - it } ?: state.sessionActivateRequests,
+        sessionActivateTargets = requestId?.let { state.sessionActivateTargets - it } ?: state.sessionActivateTargets,
+        activatedSessionToOpen = target?.takeIf { it == acknowledged } ?: state.activatedSessionToOpen,
         sessionActivation = SessionActivationInfo(
             requestId = requestId ?: "",
             agentKind = agentKind,
             sessionId = message["sessionId"]?.jsonPrimitive?.contentOrNull,
             spawnMode = message["spawnMode"]?.jsonPrimitive?.contentOrNull ?: "tui",
         ),
+    )
+}
+
+/** A resume acknowledgement and runtime.online may arrive in either order. */
+internal fun RemoteState.openAcknowledgedSession(): RemoteState {
+    val target = activatedSessionToOpen ?: return this
+    val runtime = runtimes.values.firstOrNull { it.sessionId == target } ?: return this
+    val selected = cancelForegroundSessionSyncs(runtime.runtimeId)
+    return selected.copy(
+        activatedSessionToOpen = null,
+        selectedRuntimeId = runtime.runtimeId,
+        selectedOfflineSessionId = null,
+        sessionSyncRequests = if (runtime.sessionGraphSync) selected.sessionSyncRequests + runtime.runtimeId else selected.sessionSyncRequests,
     )
 }
 
@@ -1777,6 +1803,9 @@ class RelayReducer(
                 state.copy(
                     e2eReady = false,
                     currentProviders = emptyMap(),
+                    sessionActivateRequests = emptySet(),
+                    sessionActivateTargets = emptyMap(),
+                    activatedSessionToOpen = null,
                     runtimes = emptyMap(),
                     codexDesktop = null,
                     pendingCommands = emptyMap(),
@@ -1858,6 +1887,7 @@ class RelayReducer(
                         sessionListRequests = listCleared?.let { state.sessionListRequests - it } ?: state.sessionListRequests,
                         sessionListRequestEpochs = listCleared?.let { state.sessionListRequestEpochs - it } ?: state.sessionListRequestEpochs,
                         sessionActivateRequests = activateCleared?.let { state.sessionActivateRequests - it } ?: state.sessionActivateRequests,
+                    sessionActivateTargets = activateCleared?.let { state.sessionActivateTargets - it } ?: state.sessionActivateTargets,
                         sessionBrowse = if (browseCleared != null) {
                             state.sessionBrowse?.copy(isLoading = false, error = syncError)
                         } else {

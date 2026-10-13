@@ -399,6 +399,7 @@ internal class HostConnection(
     }
 
     private fun activateTarget(target: JsonObject) {
+        restoreSettled = true
         val requestId = UUID.randomUUID().toString()
         sendSessionPayload(
             requestId = requestId,
@@ -413,8 +414,17 @@ internal class HostConnection(
                 // 开窗入口时会在 session.activated 里如实回执 headless，不假装开过窗。
                 put("spawnMode", "tui")
             },
-            register = { it.copy(sessionActivateRequests = it.sessionActivateRequests + requestId) },
-            rollback = { it.copy(sessionActivateRequests = it.sessionActivateRequests - requestId) },
+            register = { it.copy(
+                sessionActivateRequests = it.sessionActivateRequests + requestId,
+                sessionActivateTargets = if (target["type"]?.jsonPrimitive?.contentOrNull == "resume") {
+                    target["sessionId"]?.jsonPrimitive?.contentOrNull?.let { id -> mapOf(requestId to id) } ?: emptyMap()
+                } else emptyMap(),
+                activatedSessionToOpen = null,
+            ) },
+            rollback = { it.copy(
+                sessionActivateRequests = it.sessionActivateRequests - requestId,
+                sessionActivateTargets = it.sessionActivateTargets - requestId,
+            ) },
         )
     }
 
@@ -559,6 +569,8 @@ internal class HostConnection(
                     candidateConversation?.sourceEpoch != null && latest.appliedSessionState(candidate.runtimeId) == null)
             val selected = latest.cancelForegroundSessionSyncs(runtimeId)
             selected.copy(
+                sessionActivateTargets = emptyMap(),
+                activatedSessionToOpen = null,
                 selectedRuntimeId = runtimeId,
                 selectedOfflineSessionId = null,
                 sessionSyncRequests = if (needsSessionRefresh && runtimeId != null) selected.sessionSyncRequests + runtimeId
@@ -677,6 +689,8 @@ internal class HostConnection(
             return
         }
         updateState { it.cancelForegroundSessionSyncs(null).copy(
+            sessionActivateTargets = emptyMap(),
+            activatedSessionToOpen = null,
             selectedRuntimeId = null,
             selectedOfflineSessionId = sessionId,
         ) }
@@ -1949,7 +1963,7 @@ internal class HostConnection(
     private fun updateState(transform: (RemoteState) -> RemoteState) {
         synchronized(stateWriterLock) {
             val current = mutableState.value
-            val next = transform(current).trackSessionReadDemands(current).reconcileHistoryReads()
+            val next = transform(current).openAcknowledgedSession().trackSessionReadDemands(current).reconcileHistoryReads()
             if (next !== current) mutableState.value = next
         }
     }
