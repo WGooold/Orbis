@@ -2,9 +2,9 @@
 
 日期：2026-10-10
 
-Status: accepted
+Status: superseded by ADR-0028
 
-后续统一方案见 [ADR-0028：Host 统一通知生命周期](0028-host-notification-lifecycle.md)（proposed）。本 ADR 记录 Codex 单条诊断的专项方案；ADR-0028 采纳并完成适配后，将以独立通知集合替代本文的 `live.diagnostics.error` 传输，保留原生恢复语义与回合归属要求。当前不得据此宣称各后端通知已完成统一适配。
+统一方案已接入 [ADR-0028：Host 统一通知生命周期](0028-host-notification-lifecycle.md)。本文保留原先专项方案的历史记录；协议 12 已移除 `live.diagnostics.error`，改用 Host 的独立通知集合。原生恢复语义与回合归属要求继续有效；实际验证及运行环境生效情况以 ADR-0028 第 12 节为准。
 
 关联：[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0026](0026-host-selected-session-sync.md)。
 

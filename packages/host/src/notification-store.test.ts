@@ -93,6 +93,16 @@ describe("Host notification lifecycle", () => {
     expect(h.items()[0]?.verification).toBe("unknown");
     h.store.apply("runtime", source(1, [condition("retry")])); expect(h.items()[0]?.verification).toBe("confirmed");
   });
+  it("expiration and device-local closing provide removal proof while source health is unknown", () => {
+    const h = make(); h.store.apply("runtime", source(1, [condition("retry"), condition("sandbox")]));
+    h.store.outcome("runtime", { ...condition("done"), lifecycle: "outcome", displayMs: 8000 });
+    const [retry, sandbox, done] = h.items();
+    h.store.apply("runtime", source(2, [], { complete: false }));
+    h.advance(9000); h.store.dismiss("runtime", "a", retry!.notificationId);
+    expect(h.store.snapshot("runtime", "a").removedNotificationIds).toEqual([done!.notificationId, retry!.notificationId]);
+    expect(h.store.snapshot("runtime", "b").removedNotificationIds).toEqual([done!.notificationId]);
+    expect(h.items().map(item => item.notificationId)).toEqual([sandbox!.notificationId]);
+  });
   it("a different Session cannot clear the original Session's notices", () => {
     const h = make(); h.store.apply("runtime", source(1, [condition("retry")]));
     expect(h.store.apply("runtime", source(2, [], { sessionId: "other" }))).toBe(false);
@@ -127,5 +137,9 @@ describe("Host notification lifecycle", () => {
     for (let i = 0; i < 64; i++) producer.upsert(condition(`code-${i}`));
     expect(events.at(-1)).toMatchObject({ complete: false, notifications: expect.any(Array) });
     expect(events.at(-1)!.notifications).toHaveLength(64);
+    producer.resolve("code-63");
+    expect(events.at(-1)?.complete).toBe(true);
+    const h = make();
+    expect(h.store.apply("runtime", events.at(-1)!)).toBe(true);
   });
 });

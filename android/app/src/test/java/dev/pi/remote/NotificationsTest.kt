@@ -67,6 +67,14 @@ class NotificationsTest {
         assertTrue(delayed.notificationProjections.getValue("runtime").items.isEmpty())
         assertNull(delayed.error)
     }
+    @Test fun `Host removal proof can expire an outcome without pretending the source recovered`() {
+        val active = receive(initial(), 1, listOf(notice("retry"), notice("done").copy(lifecycle = "outcome", displayMs = 8000, expiresAt = 9000)))
+        val snapshot = NoticeSnapshot("host", "runtime", "session", 2, false, "unknown", emptyList(), listOf("done"))
+        val payload = json.encodeToString(snapshot).dropLast(1) + ",\"type\":\"notification.snapshot\",\"protocolVersion\":$PROTOCOL_VERSION}"
+        val expired = reducer.reduce(active, payload, channel = "ctl")
+        assertEquals(listOf("retry"), expired.notificationProjections.getValue("runtime").items.map { it.notificationId })
+        assertEquals("unknown", expired.notificationProjections.getValue("runtime").verification)
+    }
     @Test fun `a partial inventory for a different Session cannot inherit old Session notices`() {
         val old = receive(initial(), 1, listOf(notice("retry")))
         val switched = old.copy(runtimes = old.runtimes + ("runtime" to old.runtimes.getValue("runtime").copy(sessionId = "new")))

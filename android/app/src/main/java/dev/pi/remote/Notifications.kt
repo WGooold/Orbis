@@ -21,6 +21,7 @@ data class RuntimeNotice(
 data class NoticeSnapshot(
     val hostEpoch: String, val runtimeId: String, val sessionId: String?, val revision: Long,
     val complete: Boolean, val verification: String, val notifications: List<RuntimeNotice>,
+    val removedNotificationIds: List<String> = emptyList(),
 )
 
 data class NoticeProjection(val hostEpoch: String, val revision: Long, val sessionId: String?,
@@ -30,6 +31,9 @@ data class NoticeProjection(val hostEpoch: String, val revision: Long, val sessi
 internal fun RemoteState.withNotificationSnapshot(message: JsonObject, json: Json): RemoteState {
     val snapshot = runCatching { json.decodeFromJsonElement<NoticeSnapshot>(message) }.getOrNull() ?: return this
     if (snapshot.hostEpoch != notificationEpoch || snapshot.revision < 0 || snapshot.notifications.size > 64 ||
+        snapshot.removedNotificationIds.size > 320 ||
+        snapshot.removedNotificationIds.any { it.isBlank() || it.length > 256 } ||
+        snapshot.notifications.any { it.notificationId in snapshot.removedNotificationIds } ||
         message.toString().toByteArray(Charsets.UTF_8).size > 256 * 1024) return this
     val expectedSession = runtimes[snapshot.runtimeId]?.sessionId ?: knownRuntimeSessions[snapshot.runtimeId]
     if (snapshot.runtimeId !in runtimes && snapshot.runtimeId !in knownRuntimeSessions) return this
@@ -50,7 +54,8 @@ internal fun RemoteState.withNotificationSnapshot(message: JsonObject, json: Jso
     val projection = if (snapshot.complete) NoticeProjection(snapshot.hostEpoch, snapshot.revision,
         snapshot.sessionId, snapshot.verification, snapshot.notifications)
     else NoticeProjection(snapshot.hostEpoch, snapshot.revision, snapshot.sessionId, "unknown",
-        previous?.takeIf { it.sessionId == snapshot.sessionId }?.items.orEmpty(), false)
+        previous?.takeIf { it.sessionId == snapshot.sessionId }?.items.orEmpty()
+            .filterNot { it.notificationId in snapshot.removedNotificationIds }, false)
     var projections = notificationProjections
     var boundedReceipts = receipts
     if (snapshot.runtimeId !in projections && projections.size >= 2048) {

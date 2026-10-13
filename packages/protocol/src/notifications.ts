@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const identity = z.string().min(1).max(256);
+const identity = z.string().min(1).max(256).refine(value => value.trim().length > 0, "Identifier must not be blank");
 export const NotificationScopeSchema = z.strictObject({
   turnId: identity.optional(), requestId: identity.optional(), operationId: identity.optional(), commandId: identity.optional(),
 });
@@ -21,7 +21,8 @@ export const NotificationSourceEventSchema = z.strictObject({
   outcomes: z.array(NotificationInputSchema).max(64).optional(),
 }).refine(value => value.notifications.every(item => item.displayMs === undefined)
   && (value.outcomes ?? []).every(item => item.lifecycle === "outcome" && item.displayMs !== undefined)
-  && new Set(value.notifications.map(item => notificationKey(item))).size === value.notifications.length,
+  && new Set([...value.notifications, ...(value.outcomes ?? [])].map(item => notificationKey(item))).size
+    === value.notifications.length + (value.outcomes?.length ?? 0),
   "Invalid notification inventory");
 export type NotificationSourceEvent = z.infer<typeof NotificationSourceEventSchema>;
 export const ActiveNotificationSchema = NotificationInputSchema.safeExtend({
@@ -36,7 +37,12 @@ export const NotificationSnapshotSchema = z.strictObject({
   revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   complete: z.boolean(), verification: z.enum(["confirmed", "unknown"]),
   notifications: z.array(ActiveNotificationSchema).max(64),
-});
+  /** Host-verified removals remain authoritative even when the source inventory is unknown. */
+  removedNotificationIds: z.array(identity).max(320),
+}).refine(value => new TextEncoder().encode(JSON.stringify(value)).length <= 256 * 1024
+  && new Set(value.notifications.map(item => item.notificationId)).size === value.notifications.length
+  && !value.notifications.some(item => value.removedNotificationIds.includes(item.notificationId)),
+  "Invalid notification view");
 export type NotificationSnapshot = z.infer<typeof NotificationSnapshotSchema>;
 
 export function notificationKey(item: Pick<NotificationInput, "code" | "occurrenceId" | "scope">): string {
@@ -59,9 +65,11 @@ export function notificationMessage(value: string): string {
 /** A source-owned, bounded current inventory. Host owns result expiration and device views. */
 export class NotificationSource {
   readonly #items = new Map<string, NotificationInput>();
+  readonly #overflow = new Map<string, Pick<NotificationInput, "code" | "occurrenceId">>();
   readonly #outcomes = new Set<string>();
   #revision = 0;
   #complete = true;
+  #untrackedOverflow = false;
   #batch = false;
   #pending = false;
   constructor(readonly epoch: string, readonly sessionId: string,
@@ -81,7 +89,14 @@ export class NotificationSource {
     const item = NotificationInputSchema.parse({ ...input, message: notificationMessage(input.message) });
     const key = notificationKey(item);
     if (JSON.stringify(this.#items.get(key)) === JSON.stringify(item)) return;
-    if (!this.#items.has(key) && this.#items.size >= 64) { this.#complete = false; this.#send(); return; }
+    if (!this.#items.has(key) && this.#items.size >= 64) {
+      if (this.#overflow.has(key)) return;
+      if (this.#overflow.size < 64) this.#overflow.set(key, { code: item.code, occurrenceId: item.occurrenceId });
+      else this.#untrackedOverflow = true;
+      this.#complete = false; this.#send(); return;
+    }
+    this.#overflow.delete(key);
+    this.#complete = !this.#untrackedOverflow && this.#overflow.size === 0;
     this.#items.set(key, item); this.#send();
   }
   resolve(code: string, occurrenceId?: string): void {
@@ -91,6 +106,12 @@ export class NotificationSource {
         this.#items.delete(key); changed = true;
       }
     }
+    for (const [key, item] of this.#overflow) {
+      if (item.code === code && (occurrenceId === undefined || item.occurrenceId === occurrenceId)) {
+        this.#overflow.delete(key); changed = true;
+      }
+    }
+    this.#complete = !this.#untrackedOverflow && this.#overflow.size === 0;
     if (changed) this.#send();
   }
   outcome(input: Omit<NotificationInput, "lifecycle" | "displayMs"> & { displayMs?: number | undefined }): void {

@@ -6,7 +6,7 @@ import { notificationKey, notificationMessage, NotificationSourceEventSchema, No
 type Record = { item: ActiveNotification; transient: boolean; deviceId?: string };
 type Projection = { sessionId: string | null; epoch?: string; active: boolean; sourceRevision: number; revision: number;
   verification: "confirmed" | "unknown"; complete: boolean; records: Map<string, Record>; dismissed: Map<string, Set<string>>;
-  outcomeReceipts: Set<string> };
+  outcomeReceipts: Set<string>; removedIds: Set<string> };
 
 /** Current-state middleware. Native meaning belongs to producers; no message matching here. */
 export class NotificationStore {
@@ -26,7 +26,7 @@ export class NotificationStore {
         this.#runtimes.delete(retired[0]);
       }
       state = { sessionId: null, active: true, sourceRevision: -1, revision: 0, verification: "unknown", complete: false,
-        records: new Map(), dismissed: new Map(), outcomeReceipts: new Set() }; this.#runtimes.set(runtimeId, state);
+        records: new Map(), dismissed: new Map(), outcomeReceipts: new Set(), removedIds: new Set() }; this.#runtimes.set(runtimeId, state);
     }
     return state;
   }
@@ -35,7 +35,10 @@ export class NotificationStore {
   attach(runtimeId: string, sessionId?: string): boolean {
     const state = this.#get(runtimeId);
     if (!state) return false;
-    if (state.sessionId !== (sessionId ?? null)) { state.records.clear(); state.dismissed.clear(); }
+    if (state.sessionId !== (sessionId ?? null)) {
+      for (const record of state.records.values()) this.#rememberRemoval(state, record.item.notificationId);
+      state.records.clear(); state.dismissed.clear();
+    }
     for (const record of state.records.values()) record.item = { ...record.item, verification: "unknown" };
     delete state.epoch; state.sourceRevision = -1; state.verification = "unknown"; state.active = true; state.complete = false;
     state.sessionId = sessionId ?? null; this.#change(runtimeId, state);
@@ -50,6 +53,7 @@ export class NotificationStore {
   }
   end(runtimeId: string): void {
     const state = this.#runtimes.get(runtimeId); if (!state) return;
+    for (const record of state.records.values()) this.#rememberRemoval(state, record.item.notificationId);
     state.records.clear(); state.dismissed.clear(); delete state.epoch; state.sourceRevision = -1;
     state.verification = "unknown"; state.active = false; state.complete = true; this.#change(runtimeId, state);
   }
@@ -87,11 +91,15 @@ export class NotificationStore {
       if (state.outcomeReceipts.has(receipt)) continue;
       this.#put(records, input, event.producerEpoch, true); receipts.push(receipt);
     }
-    if (records.size > 64 || Buffer.byteLength(JSON.stringify([...records.values()]), "utf8") > 256 * 1024) {
+    // Reserve room for the routing identity and up to 320 Host removal/dismissal UUIDs.
+    if (records.size > 64 || Buffer.byteLength(JSON.stringify([...records.values()]), "utf8") > 240 * 1024) {
+      state.epoch = event.producerEpoch; state.sessionId = event.sessionId; state.sourceRevision = event.revision;
       state.complete = false; state.verification = "unknown"; this.#change(runtimeId, state); return false;
     }
     const changed = first || !state.complete || state.verification !== "confirmed" || !isDeepStrictEqual(records, state.records);
     state.epoch = event.producerEpoch; state.sourceRevision = event.revision; state.sessionId = event.sessionId;
+    const present = new Set([...records.values()].map(record => record.item.notificationId));
+    for (const record of state.records.values()) if (!present.has(record.item.notificationId)) this.#rememberRemoval(state, record.item.notificationId);
     state.records = records; state.complete = true; state.verification = "confirmed";
     for (const receipt of receipts) this.#rememberOutcome(state, receipt);
     this.#pruneDismissals(state);
@@ -120,7 +128,7 @@ export class NotificationStore {
     const receipt = JSON.stringify([this.hostEpoch, notificationKey(item), deviceId]);
     if (state.outcomeReceipts.has(receipt) || state.records.size >= 64) return;
     const records = new Map(state.records); this.#put(records, item, this.hostEpoch, true, deviceId);
-    if (Buffer.byteLength(JSON.stringify([...records.values()]), "utf8") > 256 * 1024) return;
+    if (Buffer.byteLength(JSON.stringify([...records.values()]), "utf8") > 240 * 1024) return;
     this.#rememberOutcome(state, receipt);
     if (!isDeepStrictEqual(records, state.records)) { state.records = records; this.#change(runtimeId, state); }
   }
@@ -128,10 +136,15 @@ export class NotificationStore {
     state.outcomeReceipts.add(receipt);
     if (state.outcomeReceipts.size > 256) state.outcomeReceipts.delete(state.outcomeReceipts.values().next().value!);
   }
+  #rememberRemoval(state: Projection, notificationId: string): void {
+    state.removedIds.add(notificationId);
+    if (state.removedIds.size > 256) state.removedIds.delete(state.removedIds.values().next().value!);
+  }
   expire(): void {
     for (const [runtimeId, state] of this.#runtimes) {
       let changed = false;
       for (const [key, record] of state.records) if (record.item.expiresAt !== undefined && record.item.expiresAt <= this.now()) {
+        this.#rememberRemoval(state, record.item.notificationId);
         state.records.delete(key); changed = true;
       }
       if (changed) { this.#pruneDismissals(state); this.#change(runtimeId, state); }
@@ -163,7 +176,8 @@ export class NotificationStore {
     return { type: "notification.snapshot", protocolVersion: PROTOCOL_VERSION, hostEpoch: this.hostEpoch, runtimeId,
       sessionId: state?.sessionId ?? null, revision: state?.revision ?? this.#revision, complete: state?.complete ?? false, verification: state?.verification ?? "unknown",
       notifications: [...(state?.records.values() ?? [])].filter(record => (record.deviceId === undefined || record.deviceId === deviceId)
-        && !state?.dismissed.get(deviceId)?.has(record.item.notificationId)).map(record => record.item) };
+        && !state?.dismissed.get(deviceId)?.has(record.item.notificationId)).map(record => record.item),
+      removedNotificationIds: [...(state?.removedIds ?? []), ...(state?.dismissed.get(deviceId) ?? [])] };
   }
   close(): void { clearInterval(this.#timer); this.#runtimes.clear(); }
 }

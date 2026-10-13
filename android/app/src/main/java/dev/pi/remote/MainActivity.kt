@@ -1657,21 +1657,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             state.notificationProjections[runtimeId]?.takeIf { it.sessionId == sessionId }?.let { projection ->
-                if (projection.items.isNotEmpty() || !projection.complete) Column(Modifier.fillMaxWidth().heightIn(max = 192.dp)
-                    .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (projection.verification == "unknown" || projection.hostEpoch != state.notificationEpoch) {
-                        Text("通知状态待核对", style = MaterialTheme.typography.labelSmall)
-                    }
-                    projection.items.forEach { notice ->
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.weight(1f)) {
-                                if (notice.severity == "info") NoticeCard(notice.message) else WarningCard(notice.message)
-                            }
-                            TextButton(onClick = { model.dismissNotification(runtimeId, notice.notificationId) }) { Text("关闭") }
-                        }
-                    }
-                }
+                RuntimeNotifications(projection, state.notificationEpoch) { model.dismissNotification(runtimeId, it) }
             }
             LazyColumn(
                 state = listState,
@@ -3314,6 +3300,26 @@ private fun queuedMessageStateText(state: String): String = when (state) {
 
 @Composable
 private fun WarningCard(text: String) = FeedbackCard(text, isError = true)
+
+@Composable
+internal fun RuntimeNotifications(projection: NoticeProjection, expectedEpoch: String?, onDismiss: (String) -> Unit) {
+    if (projection.items.isEmpty() && projection.complete) return
+    Column(Modifier.fillMaxWidth().heightIn(max = 192.dp)
+        .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (projection.verification == "unknown" || projection.hostEpoch != expectedEpoch) {
+            Text("通知状态待核对", style = MaterialTheme.typography.labelSmall)
+        }
+        projection.items.forEach { notice ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) {
+                    if (notice.severity == "info") NoticeCard(notice.message) else WarningCard(notice.message)
+                }
+                TextButton(onClick = { onDismiss(notice.notificationId) }) { Text("关闭") }
+            }
+        }
+    }
+}
 
 @Composable
 private fun NoticeCard(text: String) = FeedbackCard(text, isError = false)
