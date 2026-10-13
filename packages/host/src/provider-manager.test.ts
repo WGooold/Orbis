@@ -156,6 +156,25 @@ describe("CC Switch provider configuration semantics", () => {
     expect(await readFile(join(paths.pi, "auth.json"), "utf8")).toBe("private OAuth data");
     expect(await readFile(join(paths.pi, "settings.json"), "utf8")).toBe("default model untouched");
   });
+  it("marks edits of the provider already in use as live while switches still need an idle agent", async () => {
+    const beforeApply = vi.fn().mockResolvedValue(undefined);
+    const afterApply = vi.fn().mockResolvedValue(undefined);
+    const { manager } = await fixture({ beforeApply, afterApply });
+    const dsh = (model: string) => ({ env: {}, patch: `- id: llm-pi-ai\n  config:\n    providers:\n      custom:\n        models:\n          - id: ${model}\n` });
+    // 新建即启用等于切换供应商，仍然按“需要空闲”处理。
+    await manager.save("dsh", "one", "One", dsh("a"), true);
+    expect(beforeApply).toHaveBeenLastCalledWith("dsh", false, false);
+    beforeApply.mockClear(); afterApply.mockClear();
+    // 编辑当前在用的供应商是热应用：准入和重载都要知道这一点。
+    await manager.save("dsh", "one", "One", dsh("b"), false);
+    expect(beforeApply).toHaveBeenLastCalledWith("dsh", false, true);
+    expect(afterApply).toHaveBeenLastCalledWith("dsh", false, true);
+    beforeApply.mockClear(); afterApply.mockClear();
+    // 真正切换供应商时仍然要求 Agent 空闲。
+    await manager.save("dsh", "two", "Two", dsh("c"), true);
+    await manager.switch("dsh", "two");
+    expect(beforeApply).toHaveBeenLastCalledWith("dsh", false, false);
+  });
   it("rolls back both live files and current identity when backend reload fails", async () => {
     const reload = vi.fn().mockResolvedValue(undefined);
     const { manager, paths } = await fixture({ afterApply: reload });

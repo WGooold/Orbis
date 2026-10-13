@@ -73,6 +73,7 @@ input.on("line", line => {
         case "provider.remove": result = await runtime.mutateProvider(String(p.kind), "remove", p); break;
         case "provider.copy": result = await runtime.mutateProvider(String(p.kind), "copy", p); break;
         case "openAgent": await runtime.openAgent(String(p.kind), p.mode === undefined ? "setup" : String(p.mode), typeof p.cwd === "string" ? p.cwd : undefined); break;
+        case "restartDshServer": await runtime.restartDshServer(); break;
         case "shutdown": await runtime.close(); closing = true; break;
         default: throw new Error("Unknown desktop command");
       }

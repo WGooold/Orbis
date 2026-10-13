@@ -2030,6 +2030,25 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     target.sendPayload(Buffer.from(JSON.stringify(message), "utf8"));
   };
 
+  it("lets DSH saves reach provider validation while busy, but still blocks switches", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-save-gate-"));
+    relay = await startRelayLocal(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false });
+    const guard = vi.spyOn(host, "assertProviderSwitchReady").mockRejectedValue(new Error("browser session running"));
+    const save = vi.fn(async () => "saved");
+    await expect(host.changeProvider("dsh", save, "save")).resolves.toBe("saved");
+    expect(guard).not.toHaveBeenCalled();
+    const activate = vi.fn(async () => {});
+    await expect(host.changeProvider("dsh", activate)).rejects.toThrow("browser session running");
+    expect(activate).not.toHaveBeenCalled();
+    await expect(host.changeProvider("codex", save, "save")).rejects.toThrow("browser session running");
+    // A failed transaction must not block the next queued save.
+    await expect(host.changeProvider("dsh", async () => { throw new Error("invalid config"); }, "save")).rejects.toThrow("invalid config");
+    await expect(host.changeProvider("dsh", save, "save")).resolves.toBe("saved");
+    guard.mockRestore();
+  });
+
   it("routes DSH activation, bounded sync and stop over the encrypted Host connection", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-host-"));
     relay = await startRelayLocal(stateDir);

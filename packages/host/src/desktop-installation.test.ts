@@ -58,6 +58,27 @@ async function fixture() {
 }
 
 describe("desktop Agent installation commands", () => {
+  it.each([true, false])("manually restarts or starts the managed DSH server (running=%s)", async running => {
+    const { runtime, prefix } = await fixture();
+    vi.stubEnv("ORBIS_DSH_ENTRY", join(prefix, "node_modules", agentPackages.dsh, agentEntries.dsh));
+    vi.stubEnv("ORBIS_DSH_WEB_URL", "");
+    web.restart.mockResolvedValue(running);
+    await runtime.restartDshServer();
+    expect(web.restart).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ command: process.execPath }));
+    expect(web.ensure).toHaveBeenCalledOnce();
+    expect(web.apply).toHaveBeenCalledOnce();
+    expect(web.stop).toHaveBeenCalled();
+    await runtime.close();
+  });
+
+  it("does not restart an externally configured DSH endpoint", async () => {
+    const { runtime } = await fixture();
+    vi.stubEnv("ORBIS_DSH_WEB_URL", "http://127.0.0.1:3080/?token=external-service-token");
+    await expect(runtime.restartDshServer()).rejects.toThrow("手动配置");
+    expect(web.restart).not.toHaveBeenCalled();
+    expect(web.ensure).not.toHaveBeenCalled();
+    await runtime.close();
+  });
   it("persists the selected Codex npm copy for the Host and standalone shim", async () => {
     const { runtime, root, prefix, events } = await fixture();
     await runtime.detect();

@@ -51,6 +51,27 @@ afterEach(async () => {
 });
 
 describe("DeepSeek Web runtime adapter", () => {
+  it("refreshes thinking choices on announce after model configuration changes", async () => {
+    const f = discoveryFixture();
+    let enabled = false;
+    f.request.mockImplementation(async method => {
+      if (method === "session/list") return { items: [f.live("busy", true)] };
+      if (method === "session/modelCatalog") return { default: { provider: "custom", model: "same-id" }, groups: [
+        { id: "other", models: [{ id: "same-id" }] },
+        { id: "custom", models: [{ id: "same-id", ...(enabled ? { reasoning: { efforts: [{ id: "high", name: "High" }] } } : {}) }] },
+      ] };
+      return {};
+    });
+    await f.runtime.start();
+    await vi.waitFor(() => expect(f.runtime.directoryEntries()[0]?.model?.id).toBe("same-id"));
+    enabled = true;
+    f.runtime.announce();
+    await vi.waitFor(() => expect(f.events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({
+      type: "runtime.capabilities", capabilities: expect.objectContaining({ commands: expect.arrayContaining([
+        expect.objectContaining({ name: "thinking", argument: expect.objectContaining({ options: [{ value: "high", label: "High" }] }) }),
+      ]) }),
+    }) })));
+  });
   it("reads native title hints for busy, cold and archived sessions and resumes with the catalog title", async () => {
     const f = discoveryFixture();
     f.list([f.live("busy", true), { ...f.live("cold"), agentAvailable: false, projections: { kind: "cached", asOfSeq: 500, values: { title: "冷会话标题" } } }, f.live("archived")]);
@@ -187,7 +208,7 @@ describe("DeepSeek Web runtime adapter", () => {
     badModels = false; f.runtime.syncNotifications("dsh:browser");
     await vi.waitFor(() => expect(codes()).toMatchObject({ notifications: [] }));
   });
-  it("only follows Agents that are working at startup and keeps cold, idle, archived, and child sessions in the catalog", async () => {
+  it("only follows working ordinary Agents and keeps resumable cold and idle sessions in the catalog", async () => {
     const f = discoveryFixture();
     f.list([f.live("busy", true), f.live("idle"), { ...f.live("cold"), agentAvailable: false }, f.live("archived"), { ...f.live("child"), origin: "subagent" }]);
     await f.runtime.start();
@@ -195,9 +216,26 @@ describe("DeepSeek Web runtime adapter", () => {
       expect.objectContaining({ sessionId: "dsh:busy", status: "running", sessionName: "Title busy" }),
     ]);
     expect(f.follows()).toHaveLength(1);
-    expect((await f.runtime.catalog()).map(item => item.sessionId)).toContain("dsh:idle");
+    expect((await f.runtime.catalog()).map(item => item.sessionId)).toEqual(["dsh:busy", "dsh:idle", "dsh:cold"]);
     expect(f.request.mock.calls.some(([method]) => method === "session/create" || method === "workspace/create")).toBe(false);
     expect(f.metadata).toHaveBeenCalled();
+  });
+
+  it("does not add subagent runs or replacement blank drafts to the ordinary sidebar after each prompt", async () => {
+    const f = discoveryFixture();
+    const parent = f.live("parent", true);
+    let rows: Record<string, unknown>[] = [parent];
+    f.list(rows); await f.runtime.start();
+    for (let turn = 1; turn <= 3; turn++) {
+      rows = [...rows, { ...f.live(`child-${turn}`, true), origin: "subagent", parentSessionId: "parent", blank: false }, { ...f.live(`draft-${turn}`), blank: true }];
+      f.list(rows);
+      f.emit("api-session/added", rows.at(-2));
+      f.emit("api-session/added", rows.at(-1));
+      expect((await f.runtime.catalog()).map(item => item.sessionId)).toEqual(["dsh:parent"]);
+      expect(f.runtime.directoryEntries().map(item => item.sessionId)).toEqual(["dsh:parent"]);
+    }
+    await expect(f.runtime.activate({ type: "resume", sessionId: "dsh:child-1" })).rejects.toThrow("找不到");
+    expect(f.request.mock.calls.some(([method, args]) => method === "session/create" && (args as { request?: { sessionId?: string } }).request?.sessionId === "child-1")).toBe(false);
   });
 
   it("follows a browser Agent once it starts working, shares both directions, and keeps it online after it finishes", async () => {
@@ -479,6 +517,26 @@ describe("DeepSeek Web runtime adapter", () => {
     expect((await runtime.catalog()).map(item => item.sessionId)).toEqual(["dsh:browser"]);
     expect((await runtime.catalog(true)).map(item => item.sessionId)).toEqual(["dsh:saved"]);
     await expect(runtime.assertProviderSwitchReady()).rejects.toThrow("浏览器会话正在工作");
+  });
+
+  it("reloads an edited provider live while a browser session is working, and still guards switches", async () => {
+    const home = await mkdtemp(join(tmpdir(), "orbis-dsh-live-")); roots.push(home);
+    const request = vi.fn(async (method: string) => method === "session/list" ? { items: [
+      { sessionId: "browser", cwd: "D:/work", updatedAt: 20, running: true },
+    ] } : {});
+    const client: DshWebConnection = {
+      onEvent: undefined, onExit: undefined, onReconnect: undefined,
+      request: request as unknown as DshWebConnection["request"],
+      subscribe: vi.fn(() => () => {}), respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+    };
+    const runtime = new DshWebRuntime(client); runtimes.push(runtime);
+    const env = { DSH_HOME: home };
+    // 切换供应商（live 缺省）仍然要求空闲。
+    await expect(runtime.reloadProviderConfiguration(env)).rejects.toThrow("浏览器会话正在工作");
+    const calls = request.mock.calls.length;
+    // 编辑当前在用的供应商必须能穿过准入检查，把新配置真正应用并校验。
+    await expect(runtime.reloadProviderConfiguration(env, true)).resolves.toBeUndefined();
+    expect(request.mock.calls.slice(calls).map(call => call[0])).not.toContain("session/list");
   });
 
   it("puts app-created sessions in the matching Web workspace and keeps quit separate from archive", async () => {

@@ -16,7 +16,7 @@ import { ensureCodexDesktopEntry } from "./codex-shim-install.js";
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
-import { DSH_VERSION } from "./dsh-client.js";
+import { DSH_VERSION, resolveDshCommand } from "./dsh-client.js";
 import { ensureDshWebService, restartDshWebServiceAfterUpdate, validateDshWebUrl } from "./dsh-web-service.js";
 import { DshWebClient } from "./dsh-web-client.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
@@ -125,14 +125,17 @@ export class DesktopRuntime {
   constructor(emit: (event: DesktopEvent) => void, stateDir?: string, providerPaths?: ProviderPaths) {
     this.#emit = emit;
     this.#stateDir = resolveStateDir(stateDir);
+    // DeepSeek Web 热加载配置文件，只有它能在有会话运行时应用配置变更；
+    // 其他 Agent 的 apply 会重载自己的运行时，所以仍然要求空闲。
+    const liveApply = (kind: string, liveEdit: boolean): boolean => liveEdit && kind === "dsh";
     this.#providers = new ProviderManager(this.#stateDir, providerPaths, {
-      beforeApply: async (kind, hotSwitch) => {
-        if (!hotSwitch || (kind === "codex" && this.#codexDesktopLifecycle?.runtime !== undefined)) {
+      beforeApply: async (kind, hotSwitch, liveEdit) => {
+        if ((!hotSwitch && !liveApply(kind, liveEdit)) || (kind === "codex" && this.#codexDesktopLifecycle?.runtime !== undefined)) {
           await this.#service?.assertProviderSwitchReady(kind);
         }
       },
-      afterApply: async (kind, hotSwitch) => {
-        if (!hotSwitch) await this.#service?.reloadProviderConfiguration(kind, await this.#providers.environment(kind));
+      afterApply: async (kind, hotSwitch, liveEdit) => {
+        if (!hotSwitch) await this.#service?.reloadProviderConfiguration(kind, await this.#providers.environment(kind), liveApply(kind, liveEdit));
         this.#emit({ event: "providersChanged", kind });
       },
       proxyStatus: () => this.#emit({ event: "proxyStatusChanged" }),
@@ -704,7 +707,21 @@ export class DesktopRuntime {
       this.#service?.announceProviderChange(selected);
       return result;
     };
-    return this.#service ? this.#service.changeProvider(selected, work) : work();
+    return this.#service ? this.#service.changeProvider(selected, work, operation === "save" ? "save" : "switch") : work();
+  }
+
+  async restartDshServer(): Promise<void> {
+    if (this.#desired) throw new Error("请先在概览中暂停 Host 连接，再重启 DSH Server");
+    if (this.#installation) throw new Error("请等待 Agent 安装完成后再重启 DSH Server");
+    await this.#checkExistingHost();
+    const env = await this.#providers.environment("dsh");
+    if (env.ORBIS_DSH_WEB_URL?.trim()) throw new Error("当前使用手动配置的 DeepSeek Web 服务，请在其启动位置重启，并更新启动链接");
+    const cli = await resolveDshCommand(env);
+    const restarted = await restartDshWebServiceAfterUpdate(env, cli);
+    const service = await ensureDshWebService(env, { cli });
+    const client = await DshWebClient.connect({ url: service.url, env, ...(service.cli ? { cli: service.cli } : {}) });
+    try { await applyDshWebProvider(client, env); } finally { await client.stop(); }
+    this.log(restarted ? "DSH Server 已重启，请从 Host 重新打开网页工作台" : "DSH Server 未运行，已启动，请从 Host 打开网页工作台");
   }
 
   async openAgent(kind: string, mode = "setup", cwd?: string): Promise<void> {

@@ -147,6 +147,7 @@ export class DshWebRuntime implements AgentBackend {
   }
   announce(): void {
     for (const session of this.#sessions.values()) {
+      void this.#loadModelCatalog(session);
       session.notifications.announce();
       this.#publishMetadata(session);
       this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
@@ -171,8 +172,10 @@ export class DshWebRuntime implements AgentBackend {
     const list = object(await this.#client.request("session/list", { _request: {} }));
     if (arrayObjects(list.items).some(session => session.running)) throw new Error("DeepSeek Web 浏览器会话正在工作，请结束任务后切换供应商");
   }
-  async reloadProviderConfiguration(env: NodeJS.ProcessEnv): Promise<void> {
-    await this.assertProviderSwitchReady();
+  async reloadProviderConfiguration(env: NodeJS.ProcessEnv, live = false): Promise<void> {
+    // 编辑当前在用的供应商时 DSH 自己热加载补丁文件，正在进行的回复在下一步才用新配置，
+    // 不需要为了写配置先让用户停下手上的会话；切换供应商仍然要求空闲。
+    if (!live) await this.assertProviderSwitchReady();
     await applyDshWebProvider(this.#client, env);
     for (const session of this.#sessions.values()) await this.#loadModelCatalog(session);
   }
@@ -186,7 +189,9 @@ export class DshWebRuntime implements AgentBackend {
     return items.flatMap(raw => {
       const item = object(raw); const id = typeof item.sessionId === "string" ? item.sessionId : typeof item.id === "string" ? item.id : undefined;
       const cwd = typeof item.cwd === "string" ? item.cwd : undefined;
-      if (!id || !cwd || archiveIds.has(id) !== archived || item.origin === "subagent" && item.blank === true) return [];
+      // Subagent identities require their durable parent address and cannot be
+      // resumed through ordinary session/create. Blank sessions are browser drafts.
+      if (!id || !cwd || archiveIds.has(id) !== archived || item.origin === "subagent" || item.blank === true) return [];
       const local = this.#sessions.get(publicId(id));
       const title = this.#discovery.titles.read(id, item);
       return [{ sessionId: publicId(id), agentKind: "dsh" as const, hostname: localHostname(), cwd,
@@ -995,6 +1000,8 @@ export class DshWebRuntime implements AgentBackend {
     const modelId = session.model?.id;
     if (!modelId) return [];
     for (const group of arrayObjects(session.modelCatalog?.groups)) {
+      const provider = typeof group.id === "string" ? group.id : group.provider;
+      if (provider !== session.model?.provider) continue;
       const model = arrayObjects(group.models).find(item => item.id === modelId || item.model === modelId);
       if (!model) continue;
       const reasoning = object(model.reasoning);

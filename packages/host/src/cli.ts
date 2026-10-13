@@ -19,7 +19,7 @@ import {
   saveDeviceStore,
   type DeviceRecord,
 } from "@pi-remote/e2e";
-import { LoopbackDescriptorSchema } from "@pi-remote/protocol";
+import { LoopbackDescriptorSchema, type AgentKind } from "@pi-remote/protocol";
 
 import { loadHostConfig } from "./config.js";
 import { CodexAppServer } from "./codex-daemon.js";
@@ -84,9 +84,11 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
   const config = await loadHostConfig({ stateDir });
 
   let service: HostService | undefined;
+  // 与桌面 Host 一致：DeepSeek Web 能热加载配置，所以编辑当前在用的供应商不需要先空闲。
+  const liveApply = (kind: AgentKind, liveEdit: boolean): boolean => liveEdit && kind === "dsh";
   const providers = new ProviderManager(stateDir, undefined, {
-    beforeApply: async kind => { await service?.assertProviderSwitchReady(kind); },
-    afterApply: async kind => { await service?.reloadProviderConfiguration(kind, await providers.environment(kind)); },
+    beforeApply: async (kind, hotSwitch, liveEdit) => { if (!hotSwitch && !liveApply(kind, liveEdit)) await service?.assertProviderSwitchReady(kind); },
+    afterApply: async (kind, hotSwitch, liveEdit) => { if (!hotSwitch) await service?.reloadProviderConfiguration(kind, await providers.environment(kind), liveApply(kind, liveEdit)); },
   });
 
   // Codex 后端按需启用；起不来（未安装/版本太旧）不是致命错误，降级为纯 Pi。

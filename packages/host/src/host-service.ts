@@ -459,18 +459,20 @@ export class HostService {
     } catch (error) { throw new ProviderError(error instanceof Error ? error.message : "Agent 正在工作"); }
   }
 
-  async reloadProviderConfiguration(kind: AgentKind, env: NodeJS.ProcessEnv): Promise<void> {
+  async reloadProviderConfiguration(kind: AgentKind, env: NodeJS.ProcessEnv, live = false): Promise<void> {
     if (kind === "codex") await this.#options.codexRuntime?.reloadProviderConfiguration();
-    if (kind === "dsh") await this.#options.dshRuntime?.reloadProviderConfiguration(env);
+    if (kind === "dsh") await this.#options.dshRuntime?.reloadProviderConfiguration(env, live);
     this.#invalidateCatalog();
   }
 
-  changeProvider<T>(kind: AgentKind, operation: () => Promise<T>): Promise<T> {
+  changeProvider<T>(kind: AgentKind, operation: () => Promise<T>, mode: "switch" | "save" = "switch"): Promise<T> {
     const result = this.#sessionMutation.then(async () => {
       this.#providerChanging = kind;
       try {
         const desktopReady = this.#backends.some(backend => backend.kind === "codexDesktop" && backend.isReady());
-        if (!(kind === "codex" && this.#options.providers?.proxyTakeoverActive && !desktopReady)) {
+        // DSH saves defer readiness to ProviderManager: only an actual activation
+        // needs idle; editing the active provider is validated by live reload.
+        if (!(kind === "dsh" && mode === "save") && !(kind === "codex" && this.#options.providers?.proxyTakeoverActive && !desktopReady)) {
           await this.assertProviderSwitchReady(kind);
         }
         return await operation();

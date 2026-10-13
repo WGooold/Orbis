@@ -503,7 +503,7 @@ type DshImplementation = AgentBackend & {
   onArchiveChange?: ((sessionId: string, archived: boolean) => void) | undefined;
   announce?: () => void;
   assertProviderSwitchReady?: () => void | Promise<void>;
-  reloadProviderConfiguration?: (env: NodeJS.ProcessEnv) => Promise<void>;
+  reloadProviderConfiguration?: (env: NodeJS.ProcessEnv, live?: boolean) => Promise<void>;
 };
 
 /**
@@ -573,9 +573,9 @@ export class DshRuntime implements AgentBackend {
   }
   currentProvider(): Promise<string | undefined> { return this.#implementation.currentProvider?.() ?? Promise.resolve(undefined); }
   async assertProviderSwitchReady(): Promise<void> { await this.#implementation.assertProviderSwitchReady?.(); }
-  async reloadProviderConfiguration(env: NodeJS.ProcessEnv): Promise<void> {
+  async reloadProviderConfiguration(env: NodeJS.ProcessEnv, live = false): Promise<void> {
     if (this.#implementation.reloadProviderConfiguration) {
-      await this.#implementation.reloadProviderConfiguration(env);
+      await this.#implementation.reloadProviderConfiguration(env, live);
       return;
     }
     throw new Error("DeepSeek Web 已在运行；请关闭并重新打开 Web 工作台后应用供应商配置");

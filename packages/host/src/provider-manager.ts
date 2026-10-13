@@ -21,7 +21,8 @@ export type ProviderSummary = { id: string; kind: AgentKind; name: string; enabl
 type Store = { version: 1; providers: ProviderProfile[]; current: Partial<Record<AgentKind, string>>; codexPreferences?: CodexPreferences; managedAuth?: ManagedAuthMarker; proxyPreferences?: ProxyPreferences; proxyToken?: string; proxyTakeover?: ProxyTakeover };
 type FileChange = { path: string; before: string | null; after: string | null };
 export type ProviderPaths = { codex: string; pi: string; dsh: string };
-export type ProviderHooks = { beforeApply?: (kind: AgentKind, hotSwitch: boolean) => Promise<void>; afterApply?: (kind: AgentKind, hotSwitch: boolean) => Promise<void>; proxyStatus?: () => void };
+/** `liveEdit` 表示这次 apply 改的是当前已经在用的那个供应商，而不是切换到另一个。 */
+export type ProviderHooks = { beforeApply?: (kind: AgentKind, hotSwitch: boolean, liveEdit: boolean) => Promise<void>; afterApply?: (kind: AgentKind, hotSwitch: boolean, liveEdit: boolean) => Promise<void>; proxyStatus?: () => void };
 const object = (value: unknown): value is ObjectValue => value !== null && typeof value === "object" && !Array.isArray(value);
 const json = (value: unknown): string => JSON.stringify(value, null, 2) + "\n";
 const kinds = ["pi", "codex", "dsh"] as const;
@@ -271,7 +272,7 @@ export class ProviderManager {
       if (kind === "codex" && store.proxyPreferences?.queue.includes(profile.id)) proxyRoute(profile);
       if (kind === "pi" && (create || Object.hasOwn(profile.config, "name"))) profile.config.name = name.trim();
       if (existing) Object.assign(existing, profile); else store.providers.push(profile);
-      if (active || (create && addToLive && (kind === "pi" || !store.current[kind]))) await this.#apply(store, profile, live, true);
+      if (active || (create && addToLive && (kind === "pi" || !store.current[kind]))) await this.#apply(store, profile, live, true, active === true);
       else await atomicWrite(this.#file, json(store));
       return this.#summaries(store, kind, await this.#live(kind));
     });
@@ -467,17 +468,17 @@ export class ProviderManager {
     const env = store.providers.find(p => p.kind === kind && p.id === store.current[kind])?.config.env;
     return kind === "dsh" ? { ...process.env, ...(object(env) ? env as Record<string, string> : {}), DSH_HOME: this.paths.dsh, ORBIS_DSH_PROVIDER_ENV: JSON.stringify(object(env) ? env : {}) } : { ...process.env };
   }
-  async #apply(store: Store, profile: ProviderProfile, live: ObjectValue, enabled: boolean): Promise<void> {
+  async #apply(store: Store, profile: ProviderProfile, live: ObjectValue, enabled: boolean, liveEdit = false): Promise<void> {
     const running = this.#proxy.running;
-    try { await this.#applyTransaction(store, profile, live, enabled); }
+    try { await this.#applyTransaction(store, profile, live, enabled, liveEdit); }
     catch (error) { if (!running) await this.#proxy.stop(); throw error; }
   }
-  async #applyTransaction(store: Store, profile: ProviderProfile, live: ObjectValue, enabled: boolean): Promise<void> {
+  async #applyTransaction(store: Store, profile: ProviderProfile, live: ObjectValue, enabled: boolean, liveEdit: boolean): Promise<void> {
     validateConfig(profile.kind, profile.config);
     const takeover = profile.kind === "codex" && store.proxyPreferences?.enabled === true && !codexOfficial(profile.config) && !this.#suspending;
     const hotSwitch = !!(takeover && store.proxyTakeover && this.#proxy.running);
     if (profile.kind === "codex" && upstreamFormat(profile.config) !== "responses" && !takeover && !this.#suspending) throw new ProviderError("Enable Codex local routing before activating this API format");
-    await this.#hooks.beforeApply?.(profile.kind, hotSwitch);
+    await this.#hooks.beforeApply?.(profile.kind, hotSwitch, liveEdit);
     const desired: { path: string; after: string | null }[] = [];
     if (profile.kind === "pi") {
       const providers = { ...(object(live.providers) ? live.providers : {}) };
@@ -518,14 +519,14 @@ export class ProviderManager {
         if (await read(change.path) !== change.before) throw new ProviderError("配置已被外部修改，请刷新后重试");
         await atomicWrite(change.path, change.after);
       }
-      await this.#hooks.afterApply?.(profile.kind, hotSwitch);
+      await this.#hooks.afterApply?.(profile.kind, hotSwitch, liveEdit);
       await rm(this.#journal);
       this.#takeoverActive = !!store.proxyTakeover;
       if (profile.kind === "codex" && !store.proxyTakeover) await this.#proxy.stop();
     } catch (error) {
       await this.#recover();
       this.#takeoverActive = !!(await this.#load()).proxyTakeover;
-      try { await this.#hooks.afterApply?.(profile.kind, hotSwitch); } catch { throw new ProviderError("配置已回滚，但 Agent 重载失败，请重启 Host"); }
+      try { await this.#hooks.afterApply?.(profile.kind, hotSwitch, liveEdit); } catch { throw new ProviderError("配置已回滚，但 Agent 重载失败，请重启 Host"); }
       throw error instanceof ProviderError ? error : new ProviderError("切换失败，已恢复原配置；请检查 Agent 安装与配置");
     }
   }

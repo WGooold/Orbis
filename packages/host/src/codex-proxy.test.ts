@@ -150,7 +150,7 @@ describe("native proxy takeover transactions", () => {
     expect(JSON.stringify(backfilled)).toContain("https://a.example/v1"); expect(JSON.stringify(backfilled)).not.toContain("127.0.0.1");
     expect(backfilled.config.auth).toEqual({ OPENAI_API_KEY: "a-secret" });
     await writeFile(native, (await readFile(native, "utf8")).replace("keep=true", "keep=false"));
-    afterApply.mockClear(); await manager.switch("codex", "b"); expect(afterApply).toHaveBeenCalledWith("codex", true);
+    afterApply.mockClear(); await manager.switch("codex", "b"); expect(afterApply).toHaveBeenCalledWith("codex", true, false);
     expect((await manager.get("codex", "b")).config.auth).toEqual({ OPENAI_API_KEY: "b-secret" });
     await manager.switch("codex", "a");
     await manager.saveProxyPreferences({ ...defaultProxyPreferences(), enabled: false, port: Number(new URL(String((await manager.proxyStatus() as any).baseUrl)).port) });
