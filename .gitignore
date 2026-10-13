@@ -30,6 +30,7 @@ aqtinstall.log
 
 # Local browser validation artifacts
 /.playwright-cli/
+/.playwright-mcp/
 /output/playwright/
 
 # Private operational state and credentials
