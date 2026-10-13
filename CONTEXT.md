@@ -9,16 +9,26 @@ A native phone UI that acts as the remote frontend for the agent sessions a Host
 _Avoid_: Terminal emulator, remote desktop
 
 **Host**:
-The resident computer-side process that owns the pairing identity, device records, encrypted channels, transport paths, file serving, and the aggregated session directory. It does not interpret any agent's business semantics.
+The resident computer-side process that owns the pairing identity, device records, encrypted channels, transport paths, file serving, and the aggregated session directory. ADR-0032 additionally makes it the owner of the unified Agent state model and the client-facing projections of shared Host services; that architecture decision is accepted, while implementation is pending. Agent backends interpret native business semantics; the common Host model manager validates and publishes their standardized facts.
 _Avoid_: Relay proxy, desktop gateway
 
 **Agent backend**:
-One computer-side agent integration behind the Host, addressed by an `agentKind`; it discovers, activates, drives, and reports the sessions of exactly one agent product.
+One computer-side agent integration behind the Host, addressed by an `agentKind`; it discovers, activates, drives, and reports the sessions of one agent product and integration path. It owns native interpretation, verified recovery, and the standardized facts supplied to the Host Agent state model (ADR-0032).
 _Avoid_: Generic agent abstraction
 
 **Agent kind**:
-The `pi` | `codex` | `dsh` discriminator that labels a session and selects a backend. It never selects a display-projection rule. DSH connects to the authenticated local Web service and reads canonical events through its native RPC; see ADR-0020.
+The `pi` | `codex` | `codexDesktop` | `dsh` discriminator that labels a session and selects a backend. Codex terminal and desktop are separate integration paths for the same agent product. It never selects a client-side display-projection rule. DSH connects to the authenticated local Web service and reads canonical events through its native RPC; see ADR-0020.
 _Avoid_: Backend branch in UI logic
+
+**Agent state model**:
+The Host-managed logical state for one agent Session, keyed by Host, agent kind and Session identity. It covers history and head, live messages and tools, execution, delivery, interactions, permissions, model and context, capabilities and resources, notifications, and references to providers, workspace, artifacts and diagnostic records. Native execution and history remain source authority; the Host owns the standardized client-facing projection. See ADR-0032; this is the accepted target architecture, not a claim that the current implementation has completed it.
+_Avoid_: Event forwarding wrapper, a full-history database, a model-provider selection
+
+**Device view**:
+A Host-owned projection for one paired device that filters notification dismissals, private command receipts and device-scoped operations from shared state. It does not redefine shared Agent facts. See ADR-0032.
+
+**Client-local state**:
+Device-owned pairing and selection, cache and applied baselines, logical read operations, outbox, local transfer files and scheduling, drafts, aliases, viewport and preferences. These remain local while remote domain facts come from the Host model. See ADR-0032.
 
 **Pi runtime**:
 One already-running Pi process attached to the Host over the loopback endpoint. It owns its Session, agent, loaded resources, and command semantics.
@@ -56,6 +66,10 @@ _Avoid_: Active connection
 
 **Runtime event**:
 An ordered state update emitted for one runtime connection toward its paired devices.
+
+**Runtime notification**:
+A current condition or operation outcome standardized by its Agent backend or Pi RuntimeBridge. The source owns native meaning and verified recovery; the Host owns notification identities, outcome expiration, device-local dismissal, and an independent versioned projection. Notification snapshots and reconciliation do not depend on Session history versions or transport sequence. See ADR-0028.
+_Avoid_: A permanent runtime error string, chat history entry, source recovery inferred by the phone
 
 **Runtime command**:
 An authenticated request addressed to one runtime, such as a chat message, Slash invocation, stop request, interaction response, download, upload, or session activation.

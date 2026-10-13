@@ -4,6 +4,8 @@ Date: 2026-10-11
 
 Status: accepted
 
+2026-10-13: [ADR-0032](0032-host-owned-agent-state-model.md) incorporates this contract into the unified Host Agent state model. Opaque settings, backend confirmation, Session scope, and separate approval interactions remain required; model integration is pending.
+
 ## Context
 
 The mobile permission page currently recognizes native slash command names and interprets Codex and DSH sandbox, approval, and preset values. Adding a backend therefore requires changes to the phone. Permission configuration is a runtime operational control, while its effective meaning and execution remain owned by the Agent backend. A single approval only authorizes its pending operation; it is separate from changing durable Session configuration.

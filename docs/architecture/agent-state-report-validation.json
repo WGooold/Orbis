@@ -1,0 +1,24 @@
+{
+  "modules": 36,
+  "sources": 158,
+  "counts": {
+    "partial": 18,
+    "fit": 3,
+    "gap": 3,
+    "boundary": 12
+  },
+  "invalidRefs": [],
+  "views": 6,
+  "stateDetails": 36,
+  "desktopViewport": [
+    1600,
+    1100
+  ],
+  "mobileViewport": [
+    390,
+    844
+  ],
+  "pageErrors": [],
+  "externalRequests": [],
+  "checks": "navigation, status/group/search filters, empty search, all state details, source excerpts, Escape close, offline operation, desktop/mobile overflow"
+}

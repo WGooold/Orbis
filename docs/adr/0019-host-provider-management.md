@@ -4,6 +4,8 @@ Date: 2026-09-24
 
 Status: accepted
 
+2026-10-13：[ADR-0032](0032-host-owned-agent-state-model.md) 将供应商服务纳入 Host 统一状态模型，并扩展手机可同步的非秘密用量、健康度、认证与路由摘要。配置/凭据权威、事务和手机操作权限边界继续有效；该扩展尚待实现。
+
 ## Context
 
 Previously Orbis only exposed each Agent's native configuration flow. The user requested Host-side installation and provider editing, with switching also available on the paired Android app, using CC Switch's native-file switching behavior as the reference.

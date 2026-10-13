@@ -4,6 +4,8 @@
 
 Status: accepted
 
+2026-10-13：[ADR-0032](0032-host-owned-agent-state-model.md) 将通用 Host 的职责从路由、关联和背压扩展到统一模型管理与客户端恢复入口；来源核对、条件响应选择、范围预算与不新增全量聊天数据库继续有效。此为待实施的架构调整。
+
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0008](0008-drop-backward-compatibility.md)。
 
 ## Context
