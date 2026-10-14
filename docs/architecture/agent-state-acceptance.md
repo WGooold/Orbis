@@ -6,22 +6,26 @@
 
 > 给接手的人或新会话。完成 issue #12 与 #11 后可以删掉这一节。
 
-**状态（2026-10-14，HEAD `ab546eb`，22 个提交，全部未 push，工作树干净）**
+**状态（2026-10-14，代码侧 #12 已完成，全部未 push，工作树干净）**
 
 - 统一模型：36 个模块里 10 个已接入真实事实（03 目录、09–19 的 Host 侧投影，外加权限、命令回执、通知引用）。
-- 显示投影：三个适配层都会在提交条目时附 `display` 批次（Pi/DSH 走共用 `RecoverableSessionSource`，Codex 走自己的 patch 出口），协议已带该字段与 `projectionVersion`。已核对当前 App 用 `ignoreUnknownKeys` 逐键读取，新增字段不影响它。
-- 未开始：App 消费显示投影（issue #12）、协议硬版本升级（issue #11）。
+- 显示投影：契约（`DisplayEntry`/`DisplayBatch` + 窗口起点 `windowStart` + 渲染锚点 `anchor`）→ 三个适配层产出 → 每页/每批随 canonical 范围同行 → **App 消费**，这条链已经打通。App 侧已删除全部原生解释（`PiMessageProjection`、压缩裁剪、`stopReason` 判定、`custom_message` 拼装）。
+- 条目与显示结果在本地**同一笔事务**里落盘，提交后按盘上那份读回（来源修正条目时显示行随之修正）；`projectionVersion` 换代即整段作废该会话缓存，包括上一版 App 留下的「只有条目、没有解释」的旧缓存。
+- 未完成：**issue #12 的实机核对**、issue #11（协议硬版本升级、删旧路径）。
 
-**下一步是 issue #12**（文件级步骤在 issue 正文里）：
+**下一步**
 
-`HostConnection.kt` 解析 → `RemoteState.kt` 按 `entryId` 存显示结果 → `SessionGraphStore.kt` 落盘并在 `projectionVersion` 变化时重建 → 删 `SessionGraph.kt` 的原生解释（`PiMessageProjection`、压缩裁剪、`stopReason` 判定、`custom_message` 拼装）→ `MainActivity.kt` 渲染 → #11 升协议版本。
+1. **实机核对（issue #12 验收项，尚未做）**：三种情况——压缩后重载、失败回合、自定义消息带产物。要点：
+   - App 现在**必须**由发 `display` 的 Host 服务；用户当前运行中的 Host 仍是旧代码（不发 display），所以要跑真实会话必须先获得重启授权。
+   - 不需要授权也能做的一半：`scripts/session-sync-fixture.mjs` + `SessionSyncSlowLinkInstrumentedTest`（真加密链路 + 真 SQLite + 真 ChatScreen，夹具用真实协议函数产出 display）。跑之前先 `npm run build`（夹具读 `packages/*/dist`）。
+2. **issue #11**：硬升 `PROTOCOL_VERSION`，删掉旧路径与双写。
+3. 两项都完成后删掉这一节。
 
 **硬约束（踩过或明确写死的）**
 
-- Kotlin 改动必须经 `scripts/windows/android-build.ps1` 构建 + `android/app/src/test` 单测通过才能提交；不要在未编译的情况下入库。
+- Kotlin 改动必须经 `scripts/windows/android-build.ps1` 构建 + `android/app/src/test` 单测通过才能提交；不要在未编译的情况下入库。设备测试（`src/androidTest`）走同一个脚本，单测与设备测试共用 `android/app/src/sharedTest` 里的夹具（两个源集互相看不见对方）。
 - 不要直接跑 `gradlew`（绕过构建锁）；模拟器一实例一持有者，用完必须关闭。
-- 三个后端都已供 `display`，所以客户端可以**一次切换**，不需要按后端灰度。
-- 仍是**只写不读**：目前没有任何客户端消费这些投影，所以运行中的 Host/App 不需要重启。
+- 三个后端都已供 `display`，所以客户端是**一次切换**，没有按后端灰度。
 - push、发版、重启 Host 都需要单独授权；本分支至今未 push。
 
 作用域与版本：
@@ -47,8 +51,8 @@
 | 01 身份与运行元数据 | AgentState.identity / availability | 模型已定义；adapter 已有 metadata |
 | 02 后端可用性与桌面接入 | HostState.backends；AgentState.availability | 模型已定义；Host 已有 readiness 聚合 |
 | 03 会话目录与归档 | HostState.catalog | **已接入事实**：逐后端读取结果、失败原因与截断标记；任一后端没读全就是 partial，不冒充完整空目录 |
-| 04 聊天历史与 canonical Entries | AgentState.history | **Host 侧投影已实现**：`projectDisplayEntries` 产出标准 ChatMessage（文本/思考/工具调用/产物/摘要）；未知条目保留身份与原因 |
-| 05 会话分支与当前 head | AgentState.history | **Host 侧投影已实现**：路径重建与压缩裁剪在 Host 判定，缺父/成环/找不到叶子如实报告；App 仍用旧投影 |
+| 04 聊天历史与 canonical Entries | AgentState.history | **已接入事实**：`projectDisplayEntries` 产出标准 ChatMessage（文本/思考/工具调用/产物/摘要），App 直接渲染，不再解释原生形状；未知条目保留身份与原因 |
+| 05 会话分支与当前 head | AgentState.history | **已接入事实**：路径重建、压缩裁剪与摘要渲染位置都在产出方判定（批次带窗口起点与渲染锚点），App 只负责分支与 head；缺父/成环/找不到叶子如实报告 |
 | 06 实时消息与流式正文 | AgentState.live.messages | 模型已定义；live 在 source adapter |
 | 07 回合身份与计时 | AgentState.execution.turn | 模型已定义；分散在 source 与 App |
 | 08 工具调用与执行结果 | AgentState.live.tools | 模型已定义；工具库存在 source |
@@ -188,6 +192,20 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 - `toDisplayBatch` 只在路径 `complete` 时才产出批次：半截的「完整样子」会覆盖客户端已有的正确内容，比不给更糟。
 
 未交付（同一方向的后续批次）：三个适配层实际产出 `display`、App 改为渲染 `display.entries` 并删除原生解释（`PiMessageProjection`、压缩裁剪、stopReason 判定）、协议硬版本升级。
+
+## 第 9 批（issue #12：App 消费显示投影）
+
+已交付——App 侧（`android/app/src/main/java/dev/pi/remote/`）：
+
+- **契约补齐**（协议 `ad5b156`）：批次带 `windowStart`（显示窗口起点——路径上比它更旧的条目已被历史改写覆盖，客户端据此作废旧显示内容），压缩摘要带 `anchor: "head"`（渲染在窗口顶部，而不是它在路径里的位置）。`selectSessionSyncSnapshot` 给**每一页**附上该页自己的显示结果：一次投影、多页共用，空页不发。显示投影接受「已验证的原生边界」，有界读取的分支不再因为「更旧的还没读进来」被判成缺父而整段不发。
+- **App 落盘与消费**：新增 [DisplayProjection.kt](../../android/app/src/main/java/dev/pi/remote/DisplayProjection.kt)（`DisplayEntry` / `DisplayBatch` / 窗口裁剪 / 锚点排序）与两张表 `session_display_entries` / `session_display_windows`（库版本 8）。条目与显示结果在同一笔事务里提交；提交后按**盘上那份**读回（来源修正条目时，被顶掉的那一行显示结果不写、保留盘上原值），因此渲染正文与已提交历史永远同源。
+- **删除原生解释**：`PiMessageProjection`、`toChatMessage`、正文块解释、`firstKeptEntryId` 压缩裁剪、`stopReason`/`errorMessage`/`remoteFailure` 失败判定与回填、`custom_message` 的 display 开关与产物拼装全部删除。`projectSessionGraph` 现在只做「走路径 → 按窗口裁剪 → 取显示行 → 按锚点排序」。
+- **版本换代**：`projectionVersion` 与本机不同即整段作废该会话缓存（含上一版 App 留下的「有条目、没解释」的旧缓存），下一次同步重新拿；版本不匹配时投影如实报「请更新 App」，而不是渲染成一片空白。
+- 不可显示的条目保留身份与原因（`undisplayable` + `unknown_native_type` / `not_rendered` / `missing_content`），只是没有可渲染正文。
+
+未交付：模拟器实机核对三种情况（压缩后重载、失败回合、自定义消息带产物），以及协议硬版本升级（issue #11）。
+
+已知边界：**会话树**（`/tree`，[HistoryTree.kt](../../android/app/src/main/java/dev/pi/remote/HistoryTree.kt)）仍按后端给出的 `role` / `entryType` 分类节点。树要显示**不在显示窗口里**的条目（系统事件、被压缩掉的节点、细节行），显示投影刻意不含它们，所以树的分类属于模块 05 的另一半，留给后续批次。
 
 ## 回归要求
 
