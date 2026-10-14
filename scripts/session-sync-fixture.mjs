@@ -74,7 +74,9 @@ ws.on("connection", (socket) => {
         pskRoot, label: "isolated sync fixture", createdAt: 0, revoked: false }, probeIntervalMs: 0,
         onSessionReady: () => {
           tasks.clearDevice(deviceId);
-          send(deviceId, { type: "device.ready", protocolVersion: PROTOCOL_VERSION, deviceId, runtimes: [metadata(kind)], agents: [kind] });
+          // notificationEpoch 是 device.ready 的必填项（ADR-0028）：夹具不是通知来源，给一个固定代次。
+          send(deviceId, { type: "device.ready", protocolVersion: PROTOCOL_VERSION, deviceId,
+            notificationEpoch: "sync-fixture-epoch", runtimes: [metadata(kind)], agents: [kind] });
           send(deviceId, { type: "device.path", protocolVersion: PROTOCOL_VERSION, path: "relay" });
         },
         onPayload: (payload) => {
