@@ -1318,3 +1318,9 @@ export * from "./outbound-mux.js";
 export * from "./piece.js";
 
 export * from "./session-sync.js";
+
+/**
+ * 历史显示投影（ADR-0032 §5）。它解释 canonical 条目、产出 display 批次；适配层
+ * （Host 内的 Codex/DSH 与 Pi 扩展）用同一份实现，客户端据此停止解释原生形状。
+ */
+export * from "./display-entries.js";

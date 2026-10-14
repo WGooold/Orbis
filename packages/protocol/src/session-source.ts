@@ -4,6 +4,28 @@ import type {
   SessionLiveTool, SessionLiveTurn, SessionSourceEpoch,
 } from "./index.js";
 import { SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES } from "./session-sync.js";
+import { projectDisplayEntries } from "./display-entries.js";
+import type { DisplayBatch } from "./index.js";
+
+/**
+ * 本次提交条目的显示批次。
+ *
+ * 只覆盖这一批条目（不是整条路径）：客户端按 id 增量更新，不必每次重收整段历史。
+ * 路径不完整时返回 undefined——半截的「完整样子」会覆盖客户端已有的正确内容。
+ * 被压缩裁剪掉的、以及不在当前 head 路径上的条目自然会被过滤掉。
+ */
+function displayBatchFor(
+  committed: readonly RemoteSessionEntry[],
+  entries: ReadonlyMap<string, RemoteSessionEntry>,
+  head: string | null,
+): DisplayBatch | undefined {
+  if (committed.length === 0) return undefined;
+  const projection = projectDisplayEntries([...entries.values()], head);
+  if (projection.status !== "complete") return undefined;
+  const ids = new Set(committed.map(entry => entry.entryId));
+  const visible = projection.entries.filter(entry => entry.entryId !== null && ids.has(entry.entryId));
+  return visible.length === 0 ? undefined : { projectionVersion: projection.projectionVersion, entries: visible };
+}
 
 /** Source-owned, transport-independent state. Adapters supply native history and exact identities. */
 export class RecoverableSessionSource {
@@ -204,7 +226,12 @@ export class RecoverableSessionSource {
     this.#committed = [];
     const withEntries = { ...patch, entries: committed };
     if (this.#ready && committed.length > 0 && committed.length <= 256 &&
-      Buffer.byteLength(JSON.stringify(withEntries), "utf8") + SESSION_SYNC_WRAPPER_BYTES <= SESSION_SYNC_PAGE_BYTES) patch.entries = committed;
+      Buffer.byteLength(JSON.stringify(withEntries), "utf8") + SESSION_SYNC_WRAPPER_BYTES <= SESSION_SYNC_PAGE_BYTES) {
+      patch.entries = committed;
+      // 显示投影与这批条目绑定同一来源版本，跟着同一份 patch 走：客户端因此不必解释原生形状。
+      const display = displayBatchFor(committed, this.#entries, this.#head);
+      if (display !== undefined) patch.display = display;
+    }
     // Oversize state remains recoverable as an explicit sync error, never a truncated complete inventory.
     if (patch.live.messages.length > 256 || patch.live.tools.length > 256 ||
       Buffer.byteLength(JSON.stringify(patch), "utf8") + SESSION_SYNC_WRAPPER_BYTES > SESSION_SYNC_PAGE_BYTES) return;
