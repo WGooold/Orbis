@@ -132,7 +132,7 @@
 
 issue #6 的 Host 侧范围到此完成。剩下的只有模块 10 重试/压缩的真实阶段：那必须由各适配层提供事实，Host 不能从 idle 或日志文案推断。
 
-## 第 6 批（issue #7 前半段：Host 侧显示投影）
+## 第 6 批（issue #7：Host 侧显示投影、页缓存与范围入口）
 
 已交付——[display-entries.ts](../../packages/host/src/display-entries.ts)：
 
@@ -143,7 +143,9 @@ issue #6 的 Host 侧范围到此完成。剩下的只有模块 10 重试/压缩
 
 - [display-page-cache.ts](../../packages/host/src/display-page-cache.ts)：有界显示页缓存与范围索引。有效性判据是`sourceEpoch`（不是 revision——同一代次里新内容改写的只是 live，更旧的范围没变），页数/单页条数/总字节三个上限，命中刷新 LRU，head 变化重置该会话覆盖范围；范围索引记录「已缓存到的最旧条目」与「是否已到分支起点」，只有带 `beforeEntryId` 的页才会把最旧边界往前推。
 
-issue #7 未交付部分：`history`/`catchup` 只补固定范围的服务端实现、协议接入，以及 App 停止解释原生形状。
+- [display-range-service.ts](../../packages/host/src/display-range-service.ts)：统一显示范围入口，把「缓存 → provider 查原生历史 → 归一 → 校验 → 入缓存 → 返回」串成一条路径。provider 是留给协议层（#10）的缝；同一窗口的并发请求合并成一次查询；provider 失败返回 `unavailable` 而不是空历史，也不污染缓存；来源没自报代次时照常返回投影但明确不缓存。`observeSource` 让 Host 在处理来源复制时告知当前代次，缓存因此不必先问 adapter。
+
+issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源查询）、App 停止解释原生形状。
 
 ## 回归要求
 
