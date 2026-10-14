@@ -124,14 +124,14 @@ App 只接受 `wss://<任意主机>` 和 `ws://<本机/私网主机>`（`isSuppo
 - `pair-isolated-host.ps1 -AdvertiseRelayUrl ws://10.0.2.2:8787` 实测输出：
   `{"v":2,"relayUrl":"ws://10.0.2.2:8787","code":"...","hostId":"8509e449-...","hostPub":"...","psk":"...","exp":...}`
   ——隔离 Host 自己连 `127.0.0.1:8787`，交给模拟器的载荷是 `10.0.2.2:8787`。
-- 配对测试已写好并编译通过（`IsolatedHostPairingInstrumentedTest`，隔离目录 + base64 传参）。
+- **配对测试实机跑通**（`IsolatedHostPairingInstrumentedTest`，emulator-5554）：`tests=1 failures=0 skipped=0`，
+  同时隔离 Host 侧 `cli.js devices --state-dir <rig>\state` 列出了刚配对的设备（时间与测试运行吻合）。
+  也就是说：模拟器 → 本机 Relay（`ws://10.0.2.2:8787`）→ 配对握手 → E2E → Host 发布状态，整条链路通了，
+  而且没碰这台模拟器上与用户电脑的既有配对。
 - 载荷里有引号，经 `pwsh -File` / `gradlew.bat` 传参会被拆坏（Gradle 会报找不到任务），
   所以走 URL-safe base64（`pairingPayloadBase64`）。
 
 未完成：
 
-- 配对测试的**实机跑通**还没做完：上一轮跑到一半时本机可用内存掉到 0.99 GB，按
-  `D:\android-emulators\README.md` 的规则（低于 1.5 GB 停止构建/测试并关闭自己的模拟器）
-  主动收尾了；模拟器、rig、Relay、占用都已释放。下次接着跑这一条命令即可。
 - 三种回归场景（压缩后重载、失败回合、自定义消息带产物）还没在 rig 上跑过：它们需要 rig 上真的
-  有一个 Agent 会话（Pi 扩展接进来或 `-Dsh`），说明书上面那张表已经写清怎么造、看什么。
+  有一个 Agent 会话（Pi 扩展接进来或 `-Dsh`），上面那张表已经写清怎么造、看什么。
