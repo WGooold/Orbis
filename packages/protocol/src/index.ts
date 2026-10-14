@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentKindSchema } from "./agent-state.js";
 import { NotificationSourceEventSchema, NotificationSnapshotSchema } from "./notifications.js";
 export * from "./notifications.js";
 export { RecoverableSessionSource } from "./session-source.js";
@@ -197,13 +198,12 @@ export const SessionCatalogEntrySchema = z.strictObject({
 export type SessionCatalogEntry = z.infer<typeof SessionCatalogEntrySchema>;
 
 /**
- * 会话条目来源（spec §7.2 的 AgentBackend）。
+ * 会话条目来源（spec §7.2 的 AgentBackend）与 ADR-0032 的共享状态模型。
  *
- * `pi` 的历史会话由 Host 直接扫磁盘（§8.1）；`codex` 走 M4 的 daemon。手机侧只按
- * agentKind 画角标，分组逻辑（以 cwd 分组）不因它分叉（§7.5）。
+ * agentKind、Agent 身份与领域 envelope 都定义在 `agent-state.ts`；它只依赖 zod，
+ * 因此不会与这里的 schema 形成循环。客户端仍从 `@pi-remote/protocol` 取类型。
  */
-export const AgentKindSchema = z.enum(["pi", "codex", "codexDesktop", "dsh"]);
-export type AgentKind = z.infer<typeof AgentKindSchema>;
+export * from "./agent-state.js";
 
 /**
  * Codex 桌面版 app-server 的接入分档（ADR-0022）。

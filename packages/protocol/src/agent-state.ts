@@ -1,0 +1,135 @@
+import { z } from "zod";
+
+/**
+ * ADR-0032 的共享 Agent 状态模型（第 1 批：schema、身份与领域 envelope）。
+ *
+ * 这个模块只定义**契约**：身份怎么算、领域怎么分、每个领域的状态长什么样、什么情况算已确认。
+ * 它不含存储、网络或原生语义；Host 端的单写者见 `packages/host/src/agent-state-registry.ts`。
+ * 原生执行与原生历史仍是权威，这里描述的是 Host 管理并向客户端发布的标准化投影。
+ */
+
+/**
+ * 会话条目来源（spec §7.2 的 AgentBackend）。
+ *
+ * `pi` 的历史会话由 Host 直接扫磁盘（§8.1）；`codex` / `codexDesktop` 是同一个 Codex
+ * 产品的两路接入（ADR-0022）；`dsh` 走本机 Web 服务（ADR-0020）。
+ */
+export const AgentKindSchema = z.enum(["pi", "codex", "codexDesktop", "dsh"]);
+export type AgentKind = z.infer<typeof AgentKindSchema>;
+
+const identity = z.string().min(1).max(256).refine(value => value.trim().length > 0, "Identifier must not be blank");
+
+/**
+ * Agent 身份：一个后端会话 = (hostId, agentKind, sessionId)。
+ *
+ * `runtimeId` **不在**身份里：它是可更换的在线路由身份（重连、换路、桌面重开都会变），
+ * 而历史会话没有在线 runtime 也必须能被目录和分页读取。
+ */
+export const AgentKeySchema = z.strictObject({
+  hostId: identity,
+  agentKind: AgentKindSchema,
+  sessionId: identity,
+});
+export type AgentKey = z.infer<typeof AgentKeySchema>;
+
+/** 稳定的会话身份字符串。只用于本地索引与日志，不是线上字段。 */
+export const agentKeyId = (key: AgentKey): string => JSON.stringify([key.hostId, key.agentKind, key.sessionId]);
+
+/** 设备操作身份：回执按发起设备和操作隔离，共享操作本身仍归 HostState.operations。 */
+export const OperationKeySchema = z.strictObject({
+  hostId: identity,
+  deviceId: identity,
+  operationId: identity,
+});
+export type OperationKey = z.infer<typeof OperationKeySchema>;
+
+/** 诊断记录身份。会话作用域可空（Host/安装等记录不属于任何会话）。 */
+export const RecordKeySchema = z.strictObject({
+  hostId: identity,
+  agentKey: AgentKeySchema.nullable(),
+  recordId: identity,
+});
+export type RecordKey = z.infer<typeof RecordKeySchema>;
+
+/** 会话内领域（ADR-0032 §4 的 01–24 中归属 AgentState 的部分）。 */
+export const AgentStateDomainSchema = z.enum([
+  "identity", "availability", "history", "live", "execution", "delivery", "interactions",
+  "permissions", "model", "context", "capabilities", "resources", "notifications", "artifacts",
+  "records", "providerBinding", "workspaceRef",
+]);
+export type AgentStateDomain = z.infer<typeof AgentStateDomainSchema>;
+
+/** Host 级共享领域（目录、供应商、文件、操作、记录，以及 §9 的 25–30）。 */
+export const HostStateDomainSchema = z.enum([
+  "identity", "backends", "catalog", "providers", "workspaces", "files", "operations",
+  "diagnostics", "connections", "management",
+]);
+export type HostStateDomain = z.infer<typeof HostStateDomainSchema>;
+
+/**
+ * 领域的可用性。`unknown` 是显式状态：来源未核对、读取失败或后端不支持都不是「空」。
+ * 只有 `ready` 才允许发布当前值。
+ */
+export const DomainAvailabilitySchema = z.enum(["ready", "unavailable", "unknown"]);
+export type DomainAvailability = z.infer<typeof DomainAvailabilitySchema>;
+
+/**
+ * 领域内容的完整程度。只有 `complete` 的清单可以用「缺席」删除条目；
+ * `partial` 只能合并，`unknown` 保留最后已知值。
+ */
+export const DomainCompletenessSchema = z.enum(["complete", "partial", "unknown"]);
+export type DomainCompleteness = z.infer<typeof DomainCompletenessSchema>;
+
+/** 事实由谁确认。原生后端 > 适配层 > Host 自己；Host 不能把转发当作已确认。 */
+export const DomainProducerSchema = z.enum(["native", "adapter", "host"]);
+export type DomainProducer = z.infer<typeof DomainProducerSchema>;
+
+export const DomainSourceSchema = z.strictObject({
+  producer: DomainProducerSchema,
+  /** 写入这个领域的唯一来源（后端实例或 Host 服务）。单写者冲突会被 Registry 拒绝。 */
+  sourceId: identity,
+  /** 来源代次：原生重建/更正换新值。字符串，**不按大小比较**。 */
+  sourceEpoch: identity,
+  /** 来源自己的版本水位，只在来源事实变化时推进；心跳与分页请求不推进它。 */
+  sourceRevision: z.number().int().nonnegative(),
+});
+export type DomainSource = z.infer<typeof DomainSourceSchema>;
+
+/** Host 模型的聚合发布版本，每个领域各自单调递增。 */
+export const DomainRevisionSchema = z.number().int().nonnegative();
+
+/**
+ * 领域 envelope。宿主模型代次（`modelEpoch`）与通知协议的 `hostEpoch` 是两件事：
+ * 前者随 Host 模型重建更换，后者是 ADR-0028 的设备级通知代次，二者不得互相代替。
+ */
+export const domainStateSchema = <T extends z.ZodType>(value: T) => z.strictObject({
+  modelEpoch: identity,
+  revision: DomainRevisionSchema,
+  availability: DomainAvailabilitySchema,
+  completeness: DomainCompletenessSchema,
+  source: DomainSourceSchema,
+  /** 最后一次核对时间。刷新它不代表内容版本变化。 */
+  checkedAt: z.number().int().nonnegative(),
+  /** `unknown` / `unavailable` 时保留最后已知值；显式清空要 `ready` + `complete` + `null`。 */
+  value: value.nullable(),
+});
+
+export type DomainState<T> = {
+  modelEpoch: string;
+  revision: number;
+  availability: DomainAvailability;
+  completeness: DomainCompleteness;
+  source: DomainSource;
+  checkedAt: number;
+  value: T | null;
+};
+
+/**
+ * 是否允许按「缺席」删除条目。
+ *
+ * 只有来自同一有效来源、`ready` 且 `complete` 的清单能证明某条已经不存在；
+ * 部分清单、超时、读取失败和来源未知都必须保留最后已知值。
+ */
+export const domainStateConfirmsAbsence = (
+  state: Pick<DomainState<unknown>, "availability" | "completeness">,
+): boolean => state.availability === "ready" && state.completeness === "complete";

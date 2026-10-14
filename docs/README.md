@@ -5,6 +5,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 ## Current references
 
 - `docs/adr/`: accepted architecture decisions. ADRs preserve historical reasoning; a superseded ADR is marked in its header.
+- `docs/architecture/agent-state-acceptance.md`: living acceptance checklist for ADR-0032, mapping the 36 audited state modules to their model scope and migration status.
 - `docs/deployment.md`: production Relay deployment and release checks.
 - `docs/mail-server.md`: QQ verification mail configuration.
 - `docs/deepseek-harness.md`: DeepSeek Harness installation, configuration and supported behavior.
