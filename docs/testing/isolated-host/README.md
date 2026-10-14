@@ -31,16 +31,43 @@ rig 默认落在 `<repo>\.scratch\isolated-host`（`.scratch/` 已被 gitignore�
 
 ## 使用步骤
 
+目录里有三个脚本：`start-isolated-host.ps1`（起常驻 Host）、`pair-isolated-host.ps1`（开配对窗口）、
+`stop-isolated-host.ps1`（收尾）。**pair 与 host 在同一个状态目录里互斥**：要配对先停 host。
+
 ```powershell
-# 1. 起隔离 Host（脚本会等它打出「已就绪」）
-pwsh -File docs\testing\isolated-host\start-isolated-host.ps1
+# 1. 本机 Relay（脚本自己会记 pid，收尾时 -Action Stop）
+pwsh -File scripts\windows\relay.ps1 -Action Start -Port 8787
 
-# 2. 配对窗口（Host 与 pair 在同一个状态目录里互斥：先 pair 后 host，或先停 host）
-node packages/host/dist/cli.js pair --state-dir .scratch\isolated-host\state --print-payload
-#    输出一行配对载荷（JSON），交给 App 即可，不必用摄像头扫码
+# 2. 配对窗口：打印一行载荷给 App。模拟器视角的 relayUrl 用 -AdvertiseRelayUrl 改写
+#    （隔离 Host 自己连 127.0.0.1，载荷里必须是模拟器能到的 10.0.2.2）
+pwsh -File docs\testing\isolated-host\pair-isolated-host.ps1 -AdvertiseRelayUrl ws://10.0.2.2:8787
+#    → {"v":2,"relayUrl":"ws://10.0.2.2:8787","code":"...","hostPub":"...","psk":"...", ...}
 
-# 3. 收尾
+# 3. 起常驻 Host 做后续场景（配对完成后 pair 会自己退出）
+pwsh -File docs\testing\isolated-host\start-isolated-host.ps1 -Dsh
+
+# 4. 收尾
 pwsh -File docs\testing\isolated-host\stop-isolated-host.ps1 -StopRelay
+```
+
+### 让模拟器上的 App 真的连上（配对测试）
+
+`android/app/src/androidTest/.../IsolatedHostPairingInstrumentedTest.kt` 用**隔离目录**调
+`RemoteViewModel.pair(...)`，跑完把临时文件与偏好删掉，因此不会碰这台模拟器上与用户电脑的既有配对。
+断言是「Host 出现在 `model.hosts` 里」——这一步只有 Relay 可达、配对码有效、E2E 材料正确、
+Host 真的在跑才会成立。
+
+载荷里有引号，经 `pwsh -File` / `gradlew.bat` 传参会**被拆坏**（实测：Gradle 报「找不到任务」）。
+所以测试同时接受 URL-safe base64：
+
+```powershell
+$env:ANDROID_SERIAL='emulator-5554'
+$payload = (pwsh -File docs\testing\isolated-host\pair-isolated-host.ps1 -AdvertiseRelayUrl ws://10.0.2.2:8787 |
+    Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -First 1).Trim()
+$encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload)).Replace('+','-').Replace('/','_').TrimEnd('=')
+pwsh -File scripts\windows\android-build.ps1 :app:connectedDebugAndroidTest `
+  "-Pandroid.testInstrumentationRunnerArguments.class=dev.pi.remote.IsolatedHostPairingInstrumentedTest" `
+  "-Pandroid.testInstrumentationRunnerArguments.pairingPayloadBase64=$encoded" --console=plain
 ```
 
 启动成功的标志（`<rig>\logs\host.out.log`）：
@@ -91,11 +118,20 @@ App 只接受 `wss://<任意主机>` 和 `ws://<本机/私网主机>`（`isSuppo
 - 修掉一处阻塞：`cli.ts` 的 `isLocalHostAlive()` 原来只查默认状态目录，导致**用户 Host 一在跑，
   rig 的 `pair` 就永远开不了窗**；现在按 `--state-dir` 查（不同状态目录＝不同 Relay 身份）。
 - 新增 `pair --print-payload`：把配对载荷按一行 JSON 打到 stdout。
+- **配对窗口能开出来了**：配对码由 Relay 用 `Authorization: Bearer <adminToken>` 签发，所以 rig 的
+  pair 进程必须带上 `data\local-relay.env` 里的 `PI_REMOTE_ADMIN_TOKEN`——少了它就是
+  `Relay 拒绝签发配对码（HTTP 401）`（这是实测踩过的坑，`pair-isolated-host.ps1` 已经带上）。
+- `pair-isolated-host.ps1 -AdvertiseRelayUrl ws://10.0.2.2:8787` 实测输出：
+  `{"v":2,"relayUrl":"ws://10.0.2.2:8787","code":"...","hostId":"8509e449-...","hostPub":"...","psk":"...","exp":...}`
+  ——隔离 Host 自己连 `127.0.0.1:8787`，交给模拟器的载荷是 `10.0.2.2:8787`。
+- 配对测试已写好并编译通过（`IsolatedHostPairingInstrumentedTest`，隔离目录 + base64 传参）。
+- 载荷里有引号，经 `pwsh -File` / `gradlew.bat` 传参会被拆坏（Gradle 会报找不到任务），
+  所以走 URL-safe base64（`pairingPayloadBase64`）。
 
-未解决（下一步）：
+未完成：
 
-- 本机 Relay 拒绝签发配对码：`pair --print-payload` 走到 `Relay 拒绝签发配对码（HTTP 401）`。
-  生产 Relay 上桌面 Host 走的是管理员/注册那条路，本机 Relay 还需要把对应凭据（`data\local-relay.env`
-  里的 `PI_REMOTE_ADMIN_TOKEN` 或注册状态）接上，rig 才能开出配对窗口。
-- 配对自动化：把载荷当 instrumentation 参数传给一个配对测试（内部走 `HostPairing`/`PairingE2e`），
-  这样整条链路（起 Host → 配对 → 开会话 → 三种场景 → 截图）都不需要人操作摄像头。
+- 配对测试的**实机跑通**还没做完：上一轮跑到一半时本机可用内存掉到 0.99 GB，按
+  `D:\android-emulators\README.md` 的规则（低于 1.5 GB 停止构建/测试并关闭自己的模拟器）
+  主动收尾了；模拟器、rig、Relay、占用都已释放。下次接着跑这一条命令即可。
+- 三种回归场景（压缩后重载、失败回合、自定义消息带产物）还没在 rig 上跑过：它们需要 rig 上真的
+  有一个 Agent 会话（Pi 扩展接进来或 `-Dsh`），说明书上面那张表已经写清怎么造、看什么。

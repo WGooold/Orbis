@@ -1,8 +1,6 @@
 package dev.pi.remote
 
-import android.app.Application
 import android.content.Context
-import android.content.SharedPreferences
 import android.graphics.Bitmap
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -39,26 +37,6 @@ import org.junit.Test
 class SessionSyncSlowLinkInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 
-    private class IsolatedApplication(base: Context) : Application() {
-        private val prefix = "slow-sync-${UUID.randomUUID()}"
-        val root = File(base.filesDir, prefix).apply { mkdirs() }
-        private val preferences = mutableSetOf<String>()
-        init { attachBaseContext(base) }
-        override fun getApplicationContext(): Context = this
-        override fun getFilesDir(): File = root
-        override fun getCacheDir(): File = File(root, "cache").apply { mkdirs() }
-        override fun getNoBackupFilesDir(): File = File(root, "no-backup").apply { mkdirs() }
-        override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
-            val isolated = "$prefix-$name"
-            preferences += isolated
-            return baseContext.getSharedPreferences(isolated, mode)
-        }
-        fun dispose() {
-            preferences.forEach { baseContext.deleteSharedPreferences(it) }
-            root.deleteRecursively()
-        }
-    }
-
     @Test fun piSlowResponsePersistsDisplaysAndReusesCacheAfterRestart() = exercise("pi")
     @Test fun codexSlowResponsePersistsDisplaysAndReusesCacheAfterRestart() = exercise("codex")
 
@@ -68,7 +46,7 @@ class SessionSyncSlowLinkInstrumentedTest {
         val base = ApplicationProvider.getApplicationContext<Context>()
         val originalPreferences = listOf("pi_remote_credentials", "pi_remote_e2e", "pi_remote_last_session")
             .associateWith { base.getSharedPreferences(it, Context.MODE_PRIVATE).all.toMap() }
-        val app = IsolatedApplication(base)
+        val app = IsolatedTestApplication(base, prefix = "slow-sync")
         val device = DeviceCredential("ws://10.0.2.2:$port", "sync-fixture-$kind", "sync-fixture-$kind")
         val runtimeId = "$kind:slow-sync"
         val sessionId = "$kind-session"
