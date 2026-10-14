@@ -28,7 +28,7 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { NotificationSource, selectSessionSyncSnapshot, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES } from "@pi-remote/protocol";
+import { displayBatchFor, NotificationSource, selectSessionSyncSnapshot, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES } from "@pi-remote/protocol";
 
 import type {
   AgentKind,
@@ -3602,6 +3602,9 @@ export class CodexRuntime implements AgentBackend {
       const withEntries = { ...patch, entries: committed };
       if (Buffer.byteLength(JSON.stringify(withEntries), "utf8") + SESSION_SYNC_WRAPPER_BYTES <= SESSION_SYNC_PAGE_BYTES) {
         patch.entries = committed;
+        // 与 Pi/DSH 共用的源类同一套做法：显示投影跟这批条目绑在同一份 patch 上。
+        const display = displayBatchFor(committed, new Map(thread.entries.map(entry => [entry.entryId, entry])), patch.head.leafId);
+        if (display !== undefined) patch.display = display;
       }
     }
     this.#emit(thread.id, patch);

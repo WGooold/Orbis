@@ -53,6 +53,26 @@ const NOT_RENDERED_TYPES = new Set(["custom", "thinking_level_change", "model_ch
  * 假装历史是完整的。
  */
 /**
+ * 本次提交条目的显示批次——适配层在 snapshot/patch 上附显示结果时的统一入口。
+ *
+ * 只覆盖这一批条目（不是整条路径）：客户端按 id 增量更新，不必每次重收整段历史。
+ * 路径不完整时返回 undefined：半截的「完整样子」会覆盖客户端已有的正确内容，比不发更糟。
+ * 被压缩裁剪掉的、以及不在当前 head 路径上的条目自然会被过滤掉。
+ */
+export function displayBatchFor(
+  committed: readonly RemoteSessionEntry[],
+  entries: ReadonlyMap<string, RemoteSessionEntry>,
+  head: string | null,
+): DisplayBatch | undefined {
+  if (committed.length === 0) return undefined;
+  const projection = projectDisplayEntries([...entries.values()], head);
+  if (projection.status !== "complete") return undefined;
+  const ids = new Set(committed.map(entry => entry.entryId));
+  const visible = projection.entries.filter(entry => entry.entryId !== null && ids.has(entry.entryId));
+  return visible.length === 0 ? undefined : { projectionVersion: projection.projectionVersion, entries: visible };
+}
+
+/**
  * 把一次投影整理成可以附在 snapshot/patch 上的显示批次。
  *
  * 只有 `complete` 的路径才附带：路径不完整时给客户端一批「看起来完整」的显示结果，
