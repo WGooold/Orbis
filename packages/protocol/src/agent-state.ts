@@ -260,6 +260,65 @@ export const HostCatalogStateSchema = z.strictObject({
 });
 export type HostCatalogState = z.infer<typeof HostCatalogStateSchema>;
 
+/**
+ * 线上快照里的一个领域：envelope 加上领域名。
+ *
+ * `value` 对协议层是不透明的领域负载——它的形状由该领域自己的 schema 定义，读的人按
+ * `domain` 去解释，而不是让协议层认识每个领域的内容。
+ */
+export const AgentStateDomainSnapshotSchema = z.strictObject({
+  domain: z.string().min(1).max(64),
+  modelEpoch: z.string().min(1).max(256),
+  revision: z.number().int().nonnegative(),
+  availability: DomainAvailabilitySchema,
+  completeness: DomainCompletenessSchema,
+  source: DomainSourceSchema,
+  checkedAt: z.number().int().nonnegative(),
+  value: z.unknown().nullable(),
+});
+export type AgentStateDomainSnapshot = z.infer<typeof AgentStateDomainSnapshotSchema>;
+
+/**
+ * 读一个作用域的当前投影。缺省按 runtimeId / sessionId 推断成会话作用域；都没有则是 Host 级。
+ * `protocolVersion` 由协议层补上（见 index.ts）。
+ */
+export const AgentStateRequestSchema = z.strictObject({
+  type: z.literal("agent.state.request"),
+  requestId: z.string().min(1).max(128),
+  scope: z.enum(["host", "agent", "device"]).optional(),
+  runtimeId: z.string().min(1).max(1_024).optional(),
+  agentKind: AgentKindSchema.optional(),
+  sessionId: z.string().min(1).max(256).optional(),
+  /** 只读这些领域；缺省表示该作用域里当前存在的全部。 */
+  domains: z.array(z.string().min(1).max(64)).max(32).optional(),
+});
+export type AgentStateRequest = z.infer<typeof AgentStateRequestSchema>;
+
+/**
+ * 一次模型读取的应答负载（`protocolVersion` 由协议层补上，见 index.ts）。
+ *
+ * `missing` 与 `truncated` 是这份契约的重点：点名要却没有状态的领域、以及因为字节预算
+ * 没能全部放进来的情况，都必须由 Host 说出来，客户端不能从「没看到」推断「不存在」。
+ */
+export const AgentStateSnapshotSchema = z.strictObject({
+  type: z.literal("agent.state.snapshot"),
+  requestId: z.string().min(1).max(128),
+  scope: z.enum(["host", "agent", "device"]),
+  runtimeId: z.string().min(1).max(1_024).optional(),
+  agentKind: AgentKindSchema.optional(),
+  sessionId: z.string().min(1).max(256).optional(),
+  modelEpoch: z.string().min(1).max(256).nullable(),
+  domains: z.array(AgentStateDomainSnapshotSchema).max(64),
+  missing: z.array(z.strictObject({
+    domain: z.string().min(1).max(64),
+    reason: z.enum(["no_state", "unknown_domain"]),
+  })).max(64),
+  truncated: z.boolean(),
+  /** 作用域根本解析不出来时才有值（例如 runtime 不在本机、会话身份不全）。 */
+  error: z.string().max(500).optional(),
+});
+export type AgentStateSnapshot = z.infer<typeof AgentStateSnapshotSchema>;
+
 /** 设备操作回执状态（模块 13）。`accepted` 表示 Host 已受理、还没有任何后端结果。 */
 export const AgentOperationStateSchema = z.enum([
   "accepted", "pending", "success", "failure", "cancelled",

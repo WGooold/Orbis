@@ -45,7 +45,8 @@ import {
 } from "@pi-remote/protocol";
 
 import { AgentStateFacts } from "./agent-state-facts.js";
-import { AgentStateRegistry } from "./agent-state-registry.js";
+import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
+import { buildAgentStateSnapshot } from "./agent-state-snapshot.js";
 import { DeviceViewFacts } from "./device-view-facts.js";
 import { HostStateFacts } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
@@ -231,6 +232,8 @@ export class HostService {
   readonly #deviceViewFacts: DeviceViewFacts;
   /** HostState：Host 级共享领域（目前是聚合目录的逐后端完整性）。 */
   readonly #hostStateFacts: HostStateFacts;
+  /** 单写者本身：设备读模型时按作用域直接读它，而不是让每个领域各自暴露读取接口。 */
+  readonly #agentStateRegistry: AgentStateRegistry;
   readonly #notifications = new NotificationStore(runtimeId => {
     // 通知投影变化时同步模型里的引用摘要（ADR-0032 模块 18/19）；它只是引用，不复制权威。
     this.#agentFacts?.refreshNotifications(runtimeId);
@@ -337,6 +340,7 @@ export class HostService {
     });
     this.#deviceViewFacts = new DeviceViewFacts(agentStateOptions);
     this.#hostStateFacts = new HostStateFacts({ registry: agentStateRegistry });
+    this.#agentStateRegistry = agentStateRegistry;
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
     }
@@ -519,6 +523,59 @@ export class HostService {
 
   announceProviderChange(kind: AgentKind, exceptDeviceId?: string): void {
     for (const [id, link] of this.#links) if (id !== exceptDeviceId) link.send(Buffer.from(JSON.stringify({ type: "provider.changed", protocolVersion: PROTOCOL_VERSION, kind })), "ctl");
+  }
+
+  /**
+   * 读统一状态模型（ADR-0032）。同步返回已提交的当前投影——不查后端、不占本机资源。
+   *
+   * 作用域解析不出来时**明确回错**：空快照会被客户端读成「什么都没有」，而事实是
+   * 「这台电脑不知道这个会话」。
+   */
+  #handleAgentStateRequest(deviceId: string, request: Extract<DeviceE2ePayload, { type: "agent.state.request" }>): void {
+    const identity = {
+      ...(request.runtimeId === undefined ? {} : { runtimeId: request.runtimeId }),
+      ...(request.agentKind === undefined ? {} : { agentKind: request.agentKind }),
+      ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
+    };
+    const scope = this.#resolveAgentStateScope(deviceId, request);
+    const link = this.#links.get(deviceId);
+    if (scope === undefined) {
+      link?.send(Buffer.from(JSON.stringify({
+        type: "agent.state.snapshot", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId,
+        scope: request.scope ?? "agent", ...identity, modelEpoch: null, domains: [], missing: [], truncated: false,
+        error: "这台电脑没有该会话的状态：它可能不在线，或这个后端还没有接入统一模型。",
+      }), "utf8"), "ctl");
+      return;
+    }
+    link?.send(Buffer.from(JSON.stringify(buildAgentStateSnapshot({
+      registry: this.#agentStateRegistry,
+      requestId: request.requestId,
+      scope,
+      identity,
+      ...(request.domains === undefined ? {} : { domains: request.domains }),
+    })), "utf8"), "ctl");
+  }
+
+  #resolveAgentStateScope(
+    deviceId: string,
+    request: {
+      readonly scope?: "host" | "agent" | "device" | undefined;
+      readonly runtimeId?: string | undefined;
+      readonly agentKind?: AgentKind | undefined;
+      readonly sessionId?: string | undefined;
+    },
+  ): StateScope | undefined {
+    if (request.scope === "host") return { kind: "host" };
+    // 设备视图按发起设备取，客户端不需要（也不能）指定别的设备。
+    if (request.scope === "device") return { kind: "device", key: { hostId: this.#identity.hostId, deviceId } };
+    if (request.runtimeId !== undefined) return this.#agentFacts.scopeOf(request.runtimeId);
+    if (request.sessionId !== undefined) {
+      // 没有 agentKind 就拼不出会话身份：宁可不答，也不猜一个后端。
+      if (request.agentKind === undefined) return undefined;
+      return { kind: "agent", key: { hostId: this.#identity.hostId, agentKind: request.agentKind, sessionId: request.sessionId } };
+    }
+    if (request.scope === undefined) return { kind: "host" };
+    return undefined;
   }
 
   async #handleProviderRequest(deviceId: string, request: ProviderRequest): Promise<void> {
@@ -979,6 +1036,11 @@ export class HostService {
     if (message.type === "session.list" || message.type === "session.browse") {
       // 会话目录在磁盘上，天然是异步的；不阻塞帧处理循环，失败自己回报设备。
       void this.#handleSessionRequest(deviceId, message);
+      return;
+    }
+    if (message.type === "agent.state.request") {
+      // 读的是 Host 已经提交的当前投影，同步返回，不占用本机后端。
+      this.#handleAgentStateRequest(deviceId, message);
       return;
     }
     if (message.type === "p2p.request" || message.type === "p2p.answer") {

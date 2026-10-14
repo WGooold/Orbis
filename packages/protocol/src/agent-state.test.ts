@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import {
-  AgentKeySchema, agentKeyId, domainStateConfirmsAbsence, domainStateSchema,
+  AgentKeySchema, AgentStateRequestSchema, AgentStateSnapshotSchema, agentKeyId, domainStateConfirmsAbsence,
+  domainStateSchema,
 } from "./agent-state.js";
 
 const source = { producer: "adapter" as const, sourceId: "codex:1", sourceEpoch: "epoch-a", sourceRevision: 3 };
@@ -43,6 +44,27 @@ describe("领域 envelope", () => {
     expect(() => noticeSchema.parse({ ...base, availability: "stale" })).toThrow();
     expect(() => noticeSchema.parse({ ...base, revision: -1 })).toThrow();
     expect(() => noticeSchema.parse({ ...base, source: { ...source, producer: "relay" } })).toThrow();
+  });
+
+  it("模型读取的请求与应答都是严格 schema", () => {
+    // 线上消息由协议层补 protocolVersion；负载本身不认识这个字段。
+    const wireRequest = AgentStateRequestSchema.safeExtend({ protocolVersion: z.literal(12) });
+    const request = wireRequest.parse({ type: "agent.state.request", protocolVersion: 12, requestId: "r", sessionId: "s", agentKind: "codex", domains: ["execution"] });
+    expect(request.domains).toEqual(["execution"]);
+    expect(() => wireRequest.parse({ type: "agent.state.request", protocolVersion: 12, requestId: "r", extra: 1 })).toThrow();
+    expect(() => AgentStateRequestSchema.parse({ type: "agent.state.request", protocolVersion: 12, requestId: "r" })).toThrow();
+
+    const snapshot = AgentStateSnapshotSchema.safeExtend({ protocolVersion: z.literal(12) }).parse({
+      type: "agent.state.snapshot", protocolVersion: 12, requestId: "r", scope: "agent", modelEpoch: "m",
+      domains: [{ domain: "execution", modelEpoch: "m", revision: 1, availability: "ready", completeness: "complete", source, checkedAt: 1, value: { phase: "idle" } }],
+      missing: [{ domain: "live", reason: "no_state" }], truncated: false,
+    });
+    expect(snapshot.domains[0]?.domain).toBe("execution");
+    // 作用域之外的错误原因必须被拒绝：客户端只认这几种。
+    expect(() => AgentStateSnapshotSchema.parse({
+      type: "agent.state.snapshot", requestId: "r", scope: "agent", modelEpoch: null, domains: [],
+      missing: [{ domain: "live", reason: "whatever" }], truncated: false,
+    })).toThrow();
   });
 
   it("只承认 ready + complete 的缺席证明", () => {

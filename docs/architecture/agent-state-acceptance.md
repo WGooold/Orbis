@@ -147,6 +147,16 @@ issue #6 的 Host 侧范围到此完成。剩下的只有模块 10 重试/压缩
 
 issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源查询）、App 停止解释原生形状。
 
+## 第 7 批（issue #10 服务端一半：模型读取协议）
+
+已交付：
+
+- 协议新增 `agent.state.request` / `agent.state.snapshot`（负载定义在 `agent-state.ts`，线上消息由 index.ts 补 `protocolVersion`）。应答带每个领域自己的 envelope、`modelEpoch`、`missing`（`no_state` / `unknown_domain`）与 `truncated`：点名要却没有状态的领域、以及超出字节预算被截断的情况，都必须由 Host 说出来。
+- Host 在设备载荷分派里同步应答：按 `scope`（host / agent / device）或 `runtimeId` / `sessionId+agentKind` 解析作用域，读的是 Registry 里**已提交**的当前投影，不查后端、不占本机资源。作用域解析不出来时明确回错，而不是回空快照。
+- 设备视图按发起设备取，客户端不能指定别的设备。
+
+未交付（issue #10 剩余）：App 与桌面改为消费这些消息、显示范围请求接到真实 adapter、协议硬版本升级（issue #11）。
+
 ## 回归要求
 
 改动 Registry 或 envelope 时必须保持：
