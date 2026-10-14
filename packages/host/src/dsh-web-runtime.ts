@@ -858,6 +858,9 @@ export class DshWebRuntime implements AgentBackend {
 
   #reconcileSource(session: WebSession): void {
     const mappings = [...session.persistedMappings].map(([messageId, entryId]) => ({ messageId, entryId }));
+    // 只加载了尾部若干条目时，最旧条目的父条目就是原生历史的已验证边界：显示投影据此
+    // 把「更旧的还没读进来」和「这条分支真的缺父」区分开。
+    session.source.setHistoryBoundary(session.entries[0]?.parentId ?? null);
     session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null, mappings);
     const ids = new Set(session.entries.map(entry => entry.entryId));
     for (const [id, entryId] of session.persistedMappings) if (ids.has(entryId)) {

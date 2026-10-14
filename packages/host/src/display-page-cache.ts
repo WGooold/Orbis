@@ -32,6 +32,8 @@ export type DisplayPage = {
   readonly sourceRevision: number;
   readonly projectionVersion: number;
   readonly entries: DisplayEntry[];
+  /** 显示窗口起点：比它更旧的路径条目已经被历史改写覆盖。null = 整条路径都是窗口。 */
+  readonly windowStart: string | null;
   /** 这一页之外还有更旧的内容。false 表示已经到分支起点。 */
   readonly hasOlder: boolean;
   readonly status: DisplayProjection["status"];
@@ -118,6 +120,7 @@ export class DisplayPageCache {
       sourceRevision: input.source.sourceRevision,
       projectionVersion: this.#projectionVersion,
       entries,
+      windowStart: input.projection.windowStart,
       hasOlder: input.hasOlder,
       status: input.projection.status,
       createdAt: this.#now(),

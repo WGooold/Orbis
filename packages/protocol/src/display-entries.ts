@@ -12,14 +12,27 @@ import {
  * 它住在协议层而不是 Host 里：**产出 display 批次的是适配层**，其中 Pi 扩展与 Host 内的
  * Codex/DSH 都要用它，Host 只负责校验、缓存与转发。模块只依赖本包的 schema 与其类型。
  *
- * 与今天 Android 的投影保持同一语义（压缩裁剪、角色映射、失败回填、忽略名单），差别只有两处
+ * 与今天 Android 的投影保持同一语义（压缩裁剪、角色映射、失败回填、忽略名单），差别是三处
  * 有意的改进：
  * - 不可显示的条目不再被静默丢弃，而是带着 `nativeType` 与原因留在结果里；
- * - 结果带 `projectionVersion`：投影算法变化时，消费方能据此失效自己的显示缓存。
+ * - 结果带 `projectionVersion`：投影算法变化时，消费方能据此失效自己的显示缓存；
+ * - 显示窗口与渲染锚点是**投影说出来的事实**（`windowStart` / `anchor`），客户端不必再自己
+ *   解释「哪一段被压缩裁剪掉了、摘要该渲染在哪」，见下。
+ *
+ * 显示窗口：
+ * - `windowStart` 是路径上仍然可见的最旧条目；比它更旧的路径条目已经被历史改写（压缩）覆盖，
+ *   不再显示。它是**显示窗口的起点**，不是「什么都没有」的证明：null 表示整条路径都是窗口。
+ * - `anchor: "head"` 的条目渲染在窗口顶部，而不是它在 canonical 路径里的位置。摘要描述的是
+ *   比它更旧的那段历史，因此排在它覆盖的内容之前；没有这个声明的条目按路径顺序渲染。
  */
 
-/** 投影算法版本。改变任何显示语义都要 +1，否则旧缓存会继续用旧表示。 */
-export const DISPLAY_PROJECTION_VERSION = 1;
+/**
+ * 投影算法版本。改变任何显示语义都要 +1，否则旧缓存会继续用旧表示。
+ *
+ * v2：批次开始携带 `windowStart`，压缩摘要带 `anchor: "head"`——窗口与顺序从「客户端自己算」
+ * 变成「投影说出来」，这是 App 能够删掉原生解释的前提。
+ */
+export const DISPLAY_PROJECTION_VERSION = 2;
 
 /**
  * 显示结果与显示批次的形状定义在协议里（它是线上负载），这里只做投影：
@@ -31,13 +44,26 @@ export type { DisplayBatch, DisplayEntry } from "@pi-remote/protocol";
 
 export type DisplayProjection = {
   readonly projectionVersion: number;
+  /** 显示结果，已按渲染顺序排列（窗口顶部的条目在最前）。 */
   readonly entries: DisplayEntry[];
   /** 走到的 canonical 叶子；null 表示没有 head。 */
   readonly headEntryId: string | null;
   /** 生效的最新压缩条目；客户端据此知道这里有一段被压缩掉的历史。 */
   readonly compactionEntryId: string | null;
+  /** 显示窗口起点（canonical entryId）：比它更旧的路径条目不显示。null = 整条路径都是窗口。 */
+  readonly windowStart: string | null;
   /** 路径重建结果。不是 complete 时，客户端必须知道显示内容不完整。 */
   readonly status: "complete" | "leaf_not_found" | "missing_parent" | "cycle_detected";
+};
+
+/**
+ * 投影的输入口径。
+ *
+ * `boundaryParentId` 是「原生历史到此为止」的已验证边界：走到它就等于走到了起点，不算缺父。
+ * 有界读取（只加载了尾部若干条目）的分支靠它把自己的起点说清楚，而不是冒充成完整祖先链。
+ */
+export type DisplayProjectionOptions = {
+  readonly boundaryParentId?: string | null | undefined;
 };
 
 const ROLE_MAP: Record<string, ChatMessage["role"]> = {
@@ -63,13 +89,30 @@ export function displayBatchFor(
   committed: readonly RemoteSessionEntry[],
   entries: ReadonlyMap<string, RemoteSessionEntry>,
   head: string | null,
+  options: DisplayProjectionOptions = {},
 ): DisplayBatch | undefined {
   if (committed.length === 0) return undefined;
-  const projection = projectDisplayEntries([...entries.values()], head);
-  if (projection.status !== "complete") return undefined;
+  return displayBatchFromProjection(projectDisplayEntries([...entries.values()], head, options), committed);
+}
+
+/**
+ * 从一份已经算好的投影里取出这一批条目的显示结果。
+ *
+ * 分页（一次投影、多页发出）走这条路径：投影只算一次，每页只挑自己那几条。语义与
+ * `displayBatchFor` 完全相同——只覆盖这一批条目，路径不完整时不发。
+ */
+export function displayBatchFromProjection(
+  projection: DisplayProjection,
+  committed: readonly RemoteSessionEntry[],
+): DisplayBatch | undefined {
+  if (committed.length === 0 || projection.status !== "complete") return undefined;
   const ids = new Set(committed.map(entry => entry.entryId));
   const visible = projection.entries.filter(entry => entry.entryId !== null && ids.has(entry.entryId));
-  return visible.length === 0 ? undefined : { projectionVersion: projection.projectionVersion, entries: visible };
+  return visible.length === 0 ? undefined : {
+    projectionVersion: projection.projectionVersion,
+    entries: visible,
+    windowStart: projection.windowStart,
+  };
 }
 
 /**
@@ -80,17 +123,26 @@ export function displayBatchFor(
  */
 export function toDisplayBatch(projection: DisplayProjection): DisplayBatch | undefined {
   if (projection.status !== "complete") return undefined;
-  return { projectionVersion: projection.projectionVersion, entries: projection.entries };
+  return {
+    projectionVersion: projection.projectionVersion,
+    entries: projection.entries,
+    windowStart: projection.windowStart,
+  };
 }
 
-export function projectDisplayEntries(entries: readonly RemoteSessionEntry[], leafId: string | null): DisplayProjection {
-  const { path, status } = buildDisplayPath(entries, leafId);
+export function projectDisplayEntries(
+  entries: readonly RemoteSessionEntry[],
+  leafId: string | null,
+  options: DisplayProjectionOptions = {},
+): DisplayProjection {
+  const { path, status } = buildDisplayPath(entries, leafId, options.boundaryParentId);
   const trimmed = trimAtCompaction(path);
   return {
     projectionVersion: DISPLAY_PROJECTION_VERSION,
     entries: trimmed.path.flatMap(projectEntry),
     headEntryId: leafId,
     compactionEntryId: trimmed.compactionEntryId,
+    windowStart: trimmed.windowStart,
     status,
   };
 }
@@ -99,6 +151,7 @@ export function projectDisplayEntries(entries: readonly RemoteSessionEntry[], le
 export function buildDisplayPath(
   entries: readonly RemoteSessionEntry[],
   leafId: string | null,
+  boundaryParentId?: string | null,
 ): { path: RemoteSessionEntry[]; status: DisplayProjection["status"] } {
   if (leafId === null) return { path: [], status: "complete" };
   const indexed = new Map(entries.map(entry => [entry.entryId, entry]));
@@ -111,6 +164,8 @@ export function buildDisplayPath(
     seen.add(cursor);
     const entry = indexed.get(cursor);
     if (entry === undefined) {
+      // 走到已验证的原生边界：那就是这条分支的起点，不是缺父。
+      if (boundaryParentId !== undefined && boundaryParentId !== null && cursor === boundaryParentId) break;
       // 一个都没走到：叶子本身不在这一页里；走到一半断掉：中间缺父。
       status = path.length === 0 ? "leaf_not_found" : "missing_parent";
       break;
@@ -128,10 +183,11 @@ export function buildDisplayPath(
 function trimAtCompaction(path: readonly RemoteSessionEntry[]): {
   path: readonly RemoteSessionEntry[];
   compactionEntryId: string | null;
+  windowStart: string | null;
 } {
   let latest = -1;
   for (let index = 0; index < path.length; index += 1) if (path[index]!.type === "compaction") latest = index;
-  if (latest < 0) return { path, compactionEntryId: null };
+  if (latest < 0) return { path, compactionEntryId: null, windowStart: null };
   const compaction = path[latest]!;
   const firstKeptId = asString(compaction.data["firstKeptEntryId"]);
   let firstKept = -1;
@@ -139,14 +195,20 @@ function trimAtCompaction(path: readonly RemoteSessionEntry[]): {
     for (let index = 0; index < path.length; index += 1) if (path[index]!.entryId === firstKeptId) { firstKept = index; break; }
   }
   const kept = firstKept >= 0 && firstKept < latest ? path.slice(firstKept, latest) : [];
-  return { path: [compaction, ...kept, ...path.slice(latest + 1)], compactionEntryId: compaction.entryId };
+  // 窗口起点是路径上仍然可见的最旧条目：有保留段就是它的开头，否则就是压缩点本身。
+  const windowStart = kept.length > 0 ? path[firstKept]!.entryId : compaction.entryId;
+  return {
+    path: [compaction, ...kept, ...path.slice(latest + 1)],
+    compactionEntryId: compaction.entryId,
+    windowStart,
+  };
 }
 
 function projectEntry(entry: RemoteSessionEntry): DisplayEntry[] {
   switch (entry.type) {
     case "message": return projectMessage(entry);
     case "custom_message": return projectCustomMessage(entry);
-    case "compaction": return [summaryEntry(entry, "压缩摘要", "summary")];
+    case "compaction": return [summaryEntry(entry, "压缩摘要", "summary", "head")];
     case "branch_summary": {
       const summary = asString(entry.data["summary"]);
       return summary === undefined || summary.length === 0
@@ -221,13 +283,18 @@ function projectCustomMessage(entry: RemoteSessionEntry): DisplayEntry[] {
   }];
 }
 
-function summaryEntry(entry: RemoteSessionEntry, label: string, field: string): DisplayEntry {
+/**
+ * 摘要条目。压缩摘要带 `anchor: "head"`：它描述的是比它更旧的那段历史，因此渲染在窗口顶部，
+ * 而不是它自己的 canonical 位置。分支摘要留在原位（路径顺序）。
+ */
+function summaryEntry(entry: RemoteSessionEntry, label: string, field: string, anchor?: "head"): DisplayEntry {
   return {
     displayId: entry.entryId,
     entryId: entry.entryId,
     nativeType: entry.type,
     kind: "summary",
     reason: null,
+    ...(anchor === undefined ? {} : { anchor }),
     message: {
       messageId: entry.entryId,
       role: "system",

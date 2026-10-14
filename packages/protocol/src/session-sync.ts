@@ -1,7 +1,8 @@
 import type {
-  RemoteSessionEntry, RuntimeCommand, RuntimeEvent, RuntimeTurnTiming, SessionCheckpoint, SessionLiveState, SessionSourceEpoch,
-  SessionSyncRange, SessionSyncRangeStatus,
+  DisplayBatch, RemoteSessionEntry, RuntimeCommand, RuntimeEvent, RuntimeTurnTiming, SessionCheckpoint, SessionLiveState,
+  SessionSourceEpoch, SessionSyncRange, SessionSyncRangeStatus,
 } from "./index.js";
+import { displayBatchFromProjection, projectDisplayEntries } from "./display-entries.js";
 
 export type SessionSyncRequest = Extract<RuntimeCommand, { type: "session.sync" }>;
 export type SessionSyncSnapshot = Omit<Extract<RuntimeEvent, { type: "session.snapshot" }>,
@@ -70,6 +71,13 @@ export function selectSessionSyncSnapshot(
   const boundedPrefix = status === "missing_parent" && source?.version.ready === true &&
     historyBoundaryParentId !== undefined && path[0]?.parentId === historyBoundaryParentId;
   if (boundedPrefix) status = "complete";
+  // 显示投影只算一次，每页只挑自己那几条：分页不会把同一段历史重复归一 N 遍。
+  // 走到已验证的原生边界就等于走到起点——这正是 boundedPrefix 已经认定的完整性。
+  const displayProjection = projectDisplayEntries([...byId.values()], targetLeafId, {
+    boundaryParentId: boundedPrefix ? historyBoundaryParentId : undefined,
+  });
+  const displayFor = (page: readonly RemoteSessionEntry[]): DisplayBatch | undefined =>
+    page.length === 0 ? undefined : displayBatchFromProjection(displayProjection, page);
   let candidates = path;
   let rangeStatus = status;
   let mode: SessionSyncSnapshot["mode"] = range === "history" ? "prepend" : "replace";
@@ -137,9 +145,11 @@ export function selectSessionSyncSnapshot(
   const response = (page: RemoteSessionEntry[], pageTimings: ReadonlyMap<string, RuntimeTurnTiming>): SessionSyncSnapshot => {
     const remaining = candidates.length > page.length;
     const olderOutsideWindow = boundedPrefix && range !== "catchup" && selection !== "state" && selection !== "delta";
+    const display = displayFor(page);
     return {
       type: "session.snapshot", sessionId, syncId: request.syncId,
       cursor: { leafId: targetLeafId }, mode, entries: page,
+      ...(display === undefined ? {} : { display }),
       turnTimings: [...pageTimings.values()], range, targetLeafId,
       ...(range === "history" ? { beforeEntryId: request.beforeEntryId ?? null } : {}),
       hasOlder: backwards && (remaining || olderOutsideWindow),

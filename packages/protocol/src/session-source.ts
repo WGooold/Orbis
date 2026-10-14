@@ -22,6 +22,7 @@ export class RecoverableSessionSource {
   #depth = 0;
   #dirty = false;
   #committed: RemoteSessionEntry[] = [];
+  #boundaryParentId: string | null = null;
 
   constructor(sessionId: string, publish: (event: Extract<RuntimeEvent, { type: "session.patch" }>) => void) {
     this.#sessionId = sessionId;
@@ -42,6 +43,16 @@ export class RecoverableSessionSource {
 
   #fingerprint(): string {
     return JSON.stringify([this.#epoch, this.#ready, this.#complete, this.#head, this.#turn, [...this.#messages.values()], [...this.#tools.values()]]);
+  }
+
+  /**
+   * 声明「原生历史到此为止」的已验证边界（那条边界父条目的 id）。
+   *
+   * 有界读取（只加载了尾部若干条目）的分支靠它把起点说清楚：显示投影因此不会把「更旧的条目
+   * 还没加载」误报成缺父，也不会因为缺父而整段不发显示结果。null 表示没有边界。
+   */
+  setHistoryBoundary(parentId: string | null): void {
+    this.#boundaryParentId = parentId;
   }
 
   /** Unknown is not empty. Retain observed output while a native read is in flight or failed. */
@@ -208,7 +219,7 @@ export class RecoverableSessionSource {
       Buffer.byteLength(JSON.stringify(withEntries), "utf8") + SESSION_SYNC_WRAPPER_BYTES <= SESSION_SYNC_PAGE_BYTES) {
       patch.entries = committed;
       // 显示投影与这批条目绑定同一来源版本，跟着同一份 patch 走：客户端因此不必解释原生形状。
-      const display = displayBatchFor(committed, this.#entries, this.#head);
+      const display = displayBatchFor(committed, this.#entries, this.#head, { boundaryParentId: this.#boundaryParentId });
       if (display !== undefined) patch.display = display;
     }
     // Oversize state remains recoverable as an explicit sync error, never a truncated complete inventory.

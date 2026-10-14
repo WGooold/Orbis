@@ -4,7 +4,9 @@ import type { RemoteSessionEntry } from "@pi-remote/protocol";
 
 import { DisplayEntrySchema, SessionPatchSchema } from "@pi-remote/protocol";
 
-import { DISPLAY_PROJECTION_VERSION, buildDisplayPath, projectDisplayEntries, toDisplayBatch } from "./display-entries.js";
+import {
+  DISPLAY_PROJECTION_VERSION, buildDisplayPath, displayBatchFromProjection, projectDisplayEntries, toDisplayBatch,
+} from "./display-entries.js";
 
 const at = "2026-01-01T00:00:00.000Z";
 const entry = (
@@ -42,6 +44,23 @@ describe("显示投影：路径与压缩", () => {
     expect(projection.entries.map(item => item.entryId)).toEqual(["c1", "u2", "a2"]);
     expect(projection.entries[0]?.kind).toBe("summary");
     expect(projection.entries[0]?.message?.content[0]).toEqual({ type: "text", text: "压缩摘要：前面聊了旧话题" });
+    // 显示窗口与渲染锚点是投影说出来的事实：被裁掉的 u1/a1 之外，窗口从保留段开始，
+    // 摘要渲染在窗口顶部，而不是它在路径里的位置（它在 u2 之后）。
+    expect(projection.windowStart).toBe("u2");
+    expect(projection.entries[0]?.anchor).toBe("head");
+    expect(projection.entries[1]?.anchor).toBeUndefined();
+    expect(toDisplayBatch(projection)?.windowStart).toBe("u2");
+  });
+
+  it("没有保留段时窗口从压缩点本身开始，没有压缩时整条路径都是窗口", () => {
+    const trimmed = [
+      message("u1", null, { role: "user", content: "旧问题" }),
+      entry("c1", "u1", "compaction", { summary: "摘要", firstKeptEntryId: "missing" }),
+      message("a1", "c1", { role: "assistant", content: "之后" }),
+    ];
+    expect(projectDisplayEntries(trimmed, "a1").windowStart).toBe("c1");
+    const plain = [message("u1", null, { role: "user", content: "问题" })];
+    expect(projectDisplayEntries(plain, "u1").windowStart).toBeNull();
   });
 
   it("firstKeptEntryId 指不到有效位置时只保留压缩点及之后", () => {
@@ -166,6 +185,19 @@ describe("显示批次：随 snapshot/patch 一起发给客户端", () => {
     })).toThrow();
   });
 
+  it("分页：一次投影多页发出，每页只拿自己那几条，窗口与投影版本一致", () => {
+    const entries = [
+      message("u1", null, { role: "user", content: "问题" }),
+      message("a1", "u1", { role: "assistant", content: "回答" }),
+      message("u2", "a1", { role: "user", content: "继续" }),
+    ];
+    const projection = projectDisplayEntries(entries, "u2");
+    expect(displayBatchFromProjection(projection, [entries[0]!])?.entries.map(item => item.displayId)).toEqual(["u1"]);
+    expect(displayBatchFromProjection(projection, [entries[1]!, entries[2]!])?.entries.map(item => item.displayId))
+      .toEqual(["a1", "u2"]);
+    expect(displayBatchFromProjection(projection, [])).toBeUndefined();
+  });
+
   it("路径不完整时不产生显示批次：半截的「完整样子」比不给更糟", () => {
     const entries = [entry("a", null, "custom"), entry("b", "a", "custom")];
     expect(toDisplayBatch(projectDisplayEntries(entries, "nope"))).toBeUndefined();
@@ -180,7 +212,19 @@ describe("显示投影：路径不完整时如实报告", () => {
     expect(projectDisplayEntries(entries, "b").status).toBe("missing_parent");
     expect(projectDisplayEntries([entry("x", "y", "custom"), entry("y", "x", "custom")], "x").status).toBe("cycle_detected");
     const empty = projectDisplayEntries(entries, null);
-    expect(empty).toMatchObject({ status: "complete", headEntryId: null, compactionEntryId: null });
+    expect(empty).toMatchObject({ status: "complete", headEntryId: null, compactionEntryId: null, windowStart: null });
     expect(empty.entries).toEqual([]);
+  });
+
+  it("走到已验证的原生边界不算缺父：有界读取的分支照样能发显示结果", () => {
+    const entries = [entry("a", "native-tail", "custom"), entry("b", "a", "custom")];
+    expect(projectDisplayEntries(entries, "b").status).toBe("missing_parent");
+    const bounded = projectDisplayEntries(entries, "b", { boundaryParentId: "native-tail" });
+    expect(bounded.status).toBe("complete");
+    expect(bounded.entries.map(item => item.entryId)).toEqual(["a", "b"]);
+    // 只在真的走到那条边界时才算完整：叶子不在、或边界对不上，都如实报告。
+    expect(projectDisplayEntries(entries, "nope", { boundaryParentId: "native-tail" }).status).toBe("leaf_not_found");
+    expect(projectDisplayEntries(entries, "b", { boundaryParentId: "other" }).status).toBe("missing_parent");
+    expect(projectDisplayEntries(entries, "b", { boundaryParentId: null }).status).toBe("missing_parent");
   });
 });

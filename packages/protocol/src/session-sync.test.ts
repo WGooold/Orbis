@@ -87,6 +87,51 @@ describe("bounded Session ranges", () => {
       .toMatchObject({ entries: [], complete: true, rangeStatus: "complete" });
   });
 
+  it("carries display results for exactly the entries in each page", () => {
+    const tree: RemoteSessionEntry[] = [1, 2, 3, 4, 5].map((index) => ({
+      entryId: String(index), parentId: index === 1 ? null : String(index - 1), type: "message",
+      timestamp: "2026-09-21T00:00:00.000Z",
+      data: { message: { role: index % 2 === 1 ? "user" : "assistant", content: `第 ${index} 句` } },
+    }));
+    const preview = selectSessionSyncSnapshot(tree, "s", "5", { ...request, range: "preview", targetLeafId: "5" });
+    expect(preview.entries.map((entry) => entry.entryId)).toEqual(["3", "4", "5"]);
+    expect(preview.display?.entries.map((item) => item.displayId)).toEqual(["3", "4", "5"]);
+    expect(preview.display?.entries[0]?.message?.content).toEqual([{ type: "text", text: "第 3 句" }]);
+    expect(preview.display?.windowStart).toBeNull();
+    expect(RuntimeEventSchema.safeParse(preview).success).toBe(true);
+    const history = selectSessionSyncSnapshot(tree, "s", "5", {
+      ...request, range: "history", targetLeafId: "5", beforeEntryId: "3",
+    });
+    expect(history.entries.map((entry) => entry.entryId)).toEqual(["1", "2"]);
+    expect(history.display?.entries.map((item) => item.displayId)).toEqual(["1", "2"]);
+    // 没有条目就没有批次：ack/状态页不该为一无所有的一页付出显示投影的开销。
+    const empty = selectSessionSyncSnapshot([], "s", null, { ...request, range: "preview" });
+    expect(empty.display).toBeUndefined();
+  });
+
+  it("branch is incomplete: no display batch, unless the native boundary is verified", () => {
+    const tree: RemoteSessionEntry[] = [1, 2, 3].map((index) => ({
+      entryId: String(index), parentId: index === 1 ? "native-tail" : String(index - 1), type: "message",
+      timestamp: "2026-09-21T00:00:00.000Z",
+      data: { message: { role: "user", content: `第 ${index} 句` } },
+    }));
+    const partial = selectSessionSyncSnapshot(tree, "s", "3", { ...request, range: "preview", targetLeafId: "3" });
+    expect(partial.rangeStatus).toBe("missing_parent");
+    expect(partial.entries).toEqual([]);
+    expect(partial.display).toBeUndefined();
+    const source = {
+      version: { epoch: "e1", seq: 1, ready: true },
+      checkpoint: { checkpointId: "e1:1", head: { leafId: "3" }, headCompleteness: "complete" as const, inventoryComplete: true },
+      live: { complete: true, turn: null, messages: [], tools: [] },
+    };
+    const bounded = selectSessionSyncSnapshot(tree, "s", "3", { ...request, range: "preview", targetLeafId: "3" },
+      [], source, "native-tail");
+    // 已验证的边界让这一页成为自洽的前缀（祖先链到此为止），但边界之外仍有更旧的内容。
+    expect(bounded).toMatchObject({ rangeStatus: "limit_reached", hasOlder: true, complete: false });
+    expect(bounded.entries.map((entry) => entry.entryId)).toEqual(["1", "2", "3"]);
+    expect(bounded.display?.entries.map((item) => item.displayId)).toEqual(["1", "2", "3"]);
+  });
+
   it("carries a source version and recoverable live state independently of transport sequence", () => {
     const snapshot = selectSessionSyncSnapshot(entries(1), "s", "1", {
       ...request, range: "preview",

@@ -503,13 +503,25 @@ export const DisplayEntrySchema = z.strictObject({
   message: ChatMessageSchema.nullable(),
   /** 为什么不可显示。认识但不渲染 `not_rendered`、没见过 `unknown_native_type`、缺内容 `missing_content`。 */
   reason: z.enum(["unknown_native_type", "not_rendered", "missing_content"]).nullable(),
+  /**
+   * 渲染锚点。`head` 表示「渲染在显示窗口顶部」——摘要描述的是比它更旧的历史，所以排在它
+   * 覆盖的内容之前；缺省（`position`）表示按 canonical 路径顺序渲染。
+   */
+  anchor: z.enum(["head", "position"]).optional(),
 });
 export type DisplayEntry = z.infer<typeof DisplayEntrySchema>;
 
-/** 一批显示结果：与同一条消息里携带的 canonical 条目一一对应，顺序一致。 */
+/**
+ * 一批显示结果：与同一条消息里携带的 canonical 条目一一对应，顺序一致。
+ *
+ * `windowStart` 是显示窗口起点（canonical entryId）：路径上比它更旧的条目已经被历史改写
+ * （压缩）覆盖，不再显示；null 表示整条路径都是窗口。客户端据此丢弃自己手里的旧显示内容，
+ * 而不必自己解释「压缩裁剪到哪」。
+ */
 export const DisplayBatchSchema = z.strictObject({
   projectionVersion: z.number().int().positive(),
   entries: z.array(DisplayEntrySchema).max(500),
+  windowStart: z.string().min(1).max(256).nullable(),
 });
 export type DisplayBatch = z.infer<typeof DisplayBatchSchema>;
 

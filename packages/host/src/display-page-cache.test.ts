@@ -30,6 +30,22 @@ describe("DisplayPageCache 有效性", () => {
     expect(hit?.entries.map(item => item.entryId)).toEqual(["e0", "e1", "e2", "e3", "e4"]);
     expect(hit?.sourceRevision).toBe(1);
     expect(hit?.projectionVersion).toBe(DISPLAY_PROJECTION_VERSION);
+    // 显示窗口跟页一起缓存：命中缓存拿到的窗口与重新投影一致。
+    expect(hit?.windowStart).toBeNull();
+  });
+
+  it("压缩窗口跟着页缓存走：命中缓存的客户端不必重新解释压缩", () => {
+    const cache = new DisplayPageCache();
+    const entries = [
+      { ...entry("e0", null), type: "message", data: { message: { role: "user", content: "旧" } } },
+      { ...entry("e1", "e0"), type: "message", data: { message: { role: "user", content: "保留" } } },
+      { ...entry("c2", "e1"), type: "compaction", data: { summary: "摘要", firstKeptEntryId: "e1" } },
+    ];
+    cache.put(request({ leafId: "c2" }), { source: source(), projection: projectionOf(entries, "c2"), hasOlder: false });
+    const hit = cache.get(request({ leafId: "c2" }), { sourceEpoch: "epoch-1" });
+    expect(hit?.windowStart).toBe("e1");
+    expect(hit?.entries.map(item => item.entryId)).toEqual(["c2", "e1"]);
+    expect(hit?.entries[0]?.anchor).toBe("head");
   });
 
   it("换代次后旧页作废并被丢弃", () => {

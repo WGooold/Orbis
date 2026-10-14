@@ -27,6 +27,8 @@ export type DisplayRangeProvider = (request: DisplayRangeRequest) => Promise<{
 
 export type DisplayRangeResult = {
   readonly entries: DisplayEntry[];
+  /** 显示窗口起点：比它更旧的路径条目已经被历史改写覆盖。null = 整条路径都是窗口。 */
+  readonly windowStart: string | null;
   /** 投影状态；provider 失败时是 `unavailable`，不能当成「这里没有历史」。 */
   readonly status: DisplayProjection["status"] | "unavailable";
   readonly hasOlder: boolean;
@@ -92,7 +94,7 @@ export class DisplayRangeService {
       const hit = this.#cache.get(bounded, { sourceEpoch: known.sourceEpoch });
       if (hit !== undefined) {
         return {
-          entries: hit.entries, status: hit.status, hasOlder: hit.hasOlder,
+          entries: hit.entries, status: hit.status, windowStart: hit.windowStart, hasOlder: hit.hasOlder,
           source: { sourceEpoch: hit.sourceEpoch, sourceRevision: hit.sourceRevision },
           cached: true, truncated: hit.truncated, coverage: this.#cache.coverage(bounded.scopeId),
         };
@@ -114,7 +116,7 @@ export class DisplayRangeService {
       this.#log?.(`显示范围：${request.scopeId} 查询失败：${error instanceof Error ? error.message : String(error)}`);
       const known = this.#sources.get(request.scopeId);
       return {
-        entries: [], status: "unavailable", hasOlder: false,
+        entries: [], status: "unavailable", windowStart: null, hasOlder: false,
         source: known === undefined ? null : { ...known }, cached: false, truncated: false,
         coverage: this.#cache.coverage(request.scopeId),
       };
@@ -124,7 +126,8 @@ export class DisplayRangeService {
       this.#log?.(`显示范围：${request.scopeId} 的来源没有给代次，本次不缓存`);
       const projection = projectDisplayEntries(fetched.entries, request.leafId);
       return {
-        entries: projection.entries, status: projection.status, hasOlder: fetched.hasOlder,
+        entries: projection.entries, status: projection.status, windowStart: projection.windowStart,
+        hasOlder: fetched.hasOlder,
         source: null, cached: false, truncated: fetched.entries.length > request.maxEntries,
         coverage: this.#cache.coverage(request.scopeId),
       };
@@ -144,6 +147,7 @@ export class DisplayRangeService {
     return {
       entries: stored?.entries ?? projection.entries,
       status: projection.status,
+      windowStart: stored?.windowStart ?? projection.windowStart,
       hasOlder: fetched.hasOlder,
       source: { sourceEpoch: fetched.sourceEpoch, sourceRevision: fetched.sourceRevision },
       cached: false,
