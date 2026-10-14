@@ -8,6 +8,8 @@ Status: accepted（架构决定已确认；实现与运行环境迁移尚未完�
 
 审计依据：[状态与架构报告](../architecture/agent-state-architecture.html)、[36 个状态模块清单](../architecture/agent-state-audit.json)。报告记录的是本决定之前的工作树现状，目标图是本决定的设计参考，不代表代码已迁移。
 
+验收登记：[Agent 状态模型验收清单](../architecture/agent-state-acceptance.md)——36 个模块的模型归属、作用域与迁移状态，随实施更新。
+
 ## Context
 
 当前 Pi、Codex 和 DeepSeek Harness 已接入统一的 AgentBackend 端口与部分协议。Codex 具有终端和桌面两路接入，因此当前 agentKind 为 pi、codex、codexDesktop、dsh。
