@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import type { RemoteSessionEntry } from "@pi-remote/protocol";
 
-import { DISPLAY_PROJECTION_VERSION, buildDisplayPath, projectDisplayEntries } from "./display-entries.js";
+import { DisplayEntrySchema, SessionPatchSchema } from "@pi-remote/protocol";
+
+import { DISPLAY_PROJECTION_VERSION, buildDisplayPath, projectDisplayEntries, toDisplayBatch } from "./display-entries.js";
 
 const at = "2026-01-01T00:00:00.000Z";
 const entry = (
@@ -144,6 +146,30 @@ describe("显示投影：不认识的原生条目", () => {
     const projection = projectDisplayEntries(entries, "b2");
     expect(projection.entries[0]).toMatchObject({ kind: "undisplayable", reason: "not_rendered" });
     expect(projection.entries[1]?.message?.content[0]).toEqual({ type: "text", text: "分支摘要：另一条分支" });
+  });
+});
+
+describe("显示批次：随 snapshot/patch 一起发给客户端", () => {
+  it("patch 可以携带与条目对应的显示批次，且原因取值受限", () => {
+    const entries = [message("m1", null, { role: "user", content: "问题" })];
+    const batch = toDisplayBatch(projectDisplayEntries(entries, "m1"));
+    expect(batch?.projectionVersion).toBe(DISPLAY_PROJECTION_VERSION);
+    const patch = SessionPatchSchema.parse({
+      type: "session.patch", sessionId: "s", source: { epoch: "e1", seq: 1, ready: true }, baseSeq: 0, seq: 1,
+      checkpointId: "c1", head: { leafId: "m1" }, headCompleteness: "complete",
+      live: { complete: true, turn: null, messages: [], tools: [] },
+      entries, display: batch,
+    });
+    expect(patch.display?.entries[0]).toMatchObject({ displayId: "m1", kind: "message" });
+    expect(() => DisplayEntrySchema.parse({
+      displayId: "x", entryId: "x", nativeType: "message", kind: "undisplayable", message: null, reason: "whatever",
+    })).toThrow();
+  });
+
+  it("路径不完整时不产生显示批次：半截的「完整样子」比不给更糟", () => {
+    const entries = [entry("a", null, "custom"), entry("b", "a", "custom")];
+    expect(toDisplayBatch(projectDisplayEntries(entries, "nope"))).toBeUndefined();
+    expect(toDisplayBatch(projectDisplayEntries(entries, "b"))?.entries).toHaveLength(2);
   });
 });
 

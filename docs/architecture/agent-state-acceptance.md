@@ -157,6 +157,16 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 未交付（issue #10 剩余）：App 与桌面改为消费这些消息、显示范围请求接到真实 adapter、协议硬版本升级（issue #11）。
 
+## 第 8 批（issue #10：显示投影上协议）
+
+已交付——**最终形态的契约**（不是双读中间态）：
+
+- 协议新增 `DisplayEntry` / `DisplayBatch`，并作为**可选字段挂在 `session.snapshot` 与 `session.patch` 上**：适配层对本次条目给出的显示投影与 canonical 范围绑定同一来源版本，跟着同一份消息到达，不额外往返。
+- `projectionVersion` 随批次下发：显示语义变化时客户端必须重建显示缓存，而不是继续用旧表示。
+- `toDisplayBatch` 只在路径 `complete` 时才产出批次：半截的「完整样子」会覆盖客户端已有的正确内容，比不给更糟。
+
+未交付（同一方向的后续批次）：三个适配层实际产出 `display`、App 改为渲染 `display.entries` 并删除原生解释（`PiMessageProjection`、压缩裁剪、stopReason 判定）、协议硬版本升级。
+
 ## 回归要求
 
 改动 Registry 或 envelope 时必须保持：

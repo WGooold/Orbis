@@ -1,4 +1,7 @@
-import { RemoteArtifactSchema, type ChatMessage, type RemoteContent, type RemoteSessionEntry } from "@pi-remote/protocol";
+import {
+  RemoteArtifactSchema, type ChatMessage, type DisplayBatch, type DisplayEntry, type RemoteContent,
+  type RemoteSessionEntry,
+} from "@pi-remote/protocol";
 
 /**
  * 统一的历史显示投影（ADR-0032 §5，issue #7 的 Host 侧）。
@@ -16,24 +19,13 @@ import { RemoteArtifactSchema, type ChatMessage, type RemoteContent, type Remote
 /** 投影算法版本。改变任何显示语义都要 +1，否则旧缓存会继续用旧表示。 */
 export const DISPLAY_PROJECTION_VERSION = 1;
 
-export type DisplayUndisplayableReason =
-  /** 原生类型从未见过：保留身份，不猜内容。 */
-  | "unknown_native_type"
-  /** 认识这个类型，但它的语义就是不显示（自定义事件、模型切换、标签等）。 */
-  | "not_rendered"
-  /** 认识这个类型，但缺少可显示的内容。 */
-  | "missing_content";
-
-export type DisplayEntry = {
-  /** 稳定的显示身份：canonical 条目就是 entryId。 */
-  readonly displayId: string;
-  readonly entryId: string | null;
-  readonly nativeType: string | null;
-  readonly kind: "message" | "summary" | "undisplayable";
-  /** 可直接渲染的消息；`undisplayable` 时为 null。 */
-  readonly message: ChatMessage | null;
-  readonly reason: DisplayUndisplayableReason | null;
-};
+/**
+ * 显示结果与显示批次的形状定义在协议里（它是线上负载），这里只做投影：
+ * 同一份类型既给 Host 侧缓存用，也给适配层在 snapshot/patch 上附带时用。
+ */
+export type DisplayUndisplayableReason = DisplayEntry["reason"] & string;
+/** 形状的唯一来源在协议；这里转出去，Host 侧模块不必各自再 import 一次。 */
+export type { DisplayBatch, DisplayEntry } from "@pi-remote/protocol";
 
 export type DisplayProjection = {
   readonly projectionVersion: number;
@@ -58,6 +50,17 @@ const NOT_RENDERED_TYPES = new Set(["custom", "thinking_level_change", "model_ch
  * `leafId` 为空时返回空投影；缺父、成环、找不到叶子都会在 `status` 里如实报告，而不是
  * 假装历史是完整的。
  */
+/**
+ * 把一次投影整理成可以附在 snapshot/patch 上的显示批次。
+ *
+ * 只有 `complete` 的路径才附带：路径不完整时给客户端一批「看起来完整」的显示结果，
+ * 比不给更糟——它会覆盖掉客户端手里已有的正确内容。
+ */
+export function toDisplayBatch(projection: DisplayProjection): DisplayBatch | undefined {
+  if (projection.status !== "complete") return undefined;
+  return { projectionVersion: projection.projectionVersion, entries: projection.entries };
+}
+
 export function projectDisplayEntries(entries: readonly RemoteSessionEntry[], leafId: string | null): DisplayProjection {
   const { path, status } = buildDisplayPath(entries, leafId);
   const trimmed = trimAtCompaction(path);

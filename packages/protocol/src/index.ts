@@ -485,6 +485,34 @@ export const ChatMessageSchema = z.strictObject({
 });
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 
+/**
+ * 统一显示投影（ADR-0032 §5）。原生条目仍是历史权威；这里是**适配层解释好**、客户端可以
+ * 直接渲染的结果。它与同一份 canonical 范围绑定同一来源版本，所以跟着 snapshot/patch 一起发，
+ * 不额外往返。
+ *
+ * `projectionVersion` 变化代表显示语义变了：客户端必须重建自己的显示缓存，而不是继续用旧表示。
+ */
+export const DisplayEntrySchema = z.strictObject({
+  /** 稳定的显示身份：canonical 条目就是 entryId。 */
+  displayId: z.string().min(1).max(256),
+  entryId: z.string().min(1).max(256).nullable(),
+  /** 原生类型照旧保留，供诊断与树结构使用。 */
+  nativeType: z.string().min(1).max(128).nullable(),
+  kind: z.enum(["message", "summary", "undisplayable"]),
+  /** 可直接渲染的消息；`undisplayable` 时为 null。 */
+  message: ChatMessageSchema.nullable(),
+  /** 为什么不可显示。认识但不渲染 `not_rendered`、没见过 `unknown_native_type`、缺内容 `missing_content`。 */
+  reason: z.enum(["unknown_native_type", "not_rendered", "missing_content"]).nullable(),
+});
+export type DisplayEntry = z.infer<typeof DisplayEntrySchema>;
+
+/** 一批显示结果：与同一条消息里携带的 canonical 条目一一对应，顺序一致。 */
+export const DisplayBatchSchema = z.strictObject({
+  projectionVersion: z.number().int().positive(),
+  entries: z.array(DisplayEntrySchema).max(500),
+});
+export type DisplayBatch = z.infer<typeof DisplayBatchSchema>;
+
 export const RemoteSessionEntrySchema = z.strictObject({
   entryId: z.string().min(1).max(256),
   parentId: z.string().max(256).nullable(),
@@ -605,6 +633,8 @@ export const SessionPatchSchema = z.strictObject({
   live: SessionLiveStateSchema,
   /** Immutable nodes committed by this transition; ingest before switching head/live. */
   entries: z.array(RemoteSessionEntrySchema).max(256).optional(),
+  /** 适配层对本次提交条目给出的显示投影（顺序与 `entries` 一致）。 */
+  display: DisplayBatchSchema.optional(),
 }).refine(patch => patch.source.seq === patch.seq && patch.baseSeq < patch.seq, {
   message: "Source patch must advance from baseSeq to the matching source sequence",
 });
@@ -773,6 +803,8 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
     source: SessionSourceEpochSchema.optional(),
     checkpoint: SessionCheckpointSchema.optional(),
     live: SessionLiveStateSchema.optional(),
+    /** 适配层对本次范围内条目给出的显示投影（顺序与 `entries` 一致）。 */
+    display: DisplayBatchSchema.optional(),
   }).refine(snapshot => {
     if (snapshot.selection !== undefined && snapshot.range !== "preview") return false;
     if (snapshot.selection === "unchanged") {
