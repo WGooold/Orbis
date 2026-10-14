@@ -24,7 +24,14 @@ class SessionProviderFilterInstrumentedTest {
             sessions = entries.associateBy { it.sessionId }, currentProviders = mapOf("codex" to "custom"),
         ))
         val opened = mutableListOf<String>()
-        compose.setContent { PiRemoteTheme { SessionDrawer(state.value, opened::add, {}, {}, { _, _ -> }) } }
+        compose.setContent { PiRemoteTheme {
+            SessionDrawer(
+                state = state.value, hosts = hostFor(state.value),
+                onSelectHost = {}, onUnpairHost = {}, onAddHost = {},
+                onOpenSession = { _, sessionId -> opened.add(sessionId) },
+                onOpenHistory = { _, _ -> }, onNewSession = { _, _ -> }, onSetArchived = { _, _, _ -> },
+            )
+        } }
         openFilter()
         compose.onNodeWithContentDescription("按 provider 筛选").performClick()
         compose.onNodeWithText("custom（当前使用）").assertIsDisplayed()
@@ -74,7 +81,14 @@ class SessionProviderFilterInstrumentedTest {
 
     @Test fun missingConfigurationNeverClaimsUnknownSessionsAreCurrent() {
         val state = mutableStateOf(RemoteState(hostId = "paired-host", hostName = "Desktop", sessions = listOf(session("Unknown session", null)).associateBy { it.sessionId }))
-        compose.setContent { PiRemoteTheme { SessionDrawer(state.value, {}, {}, {}, { _, _ -> }) } }
+        compose.setContent { PiRemoteTheme {
+            SessionDrawer(
+                state = state.value, hosts = hostFor(state.value),
+                onSelectHost = {}, onUnpairHost = {}, onAddHost = {},
+                onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> },
+                onNewSession = { _, _ -> }, onSetArchived = { _, _, _ -> },
+            )
+        } }
         openFilter()
         compose.onNodeWithContentDescription("按 provider 筛选").performClick()
         compose.onNodeWithText("当前 provider（尚未获取）").performClick()
@@ -92,6 +106,13 @@ class SessionProviderFilterInstrumentedTest {
         sessionId = name, name = name, cwd = "D:/project", hostname = "Desktop", agentKind = agent,
         modelProvider = provider, archived = archived,
     )
+
+/** Drawer 现在按「已配对电脑 + 各自状态」渲染；夹具只描述这一台。 */
+    private fun hostFor(state: RemoteState) = listOf(HostSnapshot(
+        HostPairing(hostId = state.hostId ?: "host-1", hostName = state.hostName, hostPub = "pub", pskRoot = "psk",
+            relayUrl = "wss://relay.example.com", deviceId = "device-1", credential = "credential"),
+        state,
+    ))
 
     private fun capture(name: String) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()

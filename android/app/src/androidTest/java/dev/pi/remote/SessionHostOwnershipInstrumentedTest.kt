@@ -24,7 +24,14 @@ class SessionHostOwnershipInstrumentedTest {
             runtimes = mapOf("codex:empty" to RuntimeSummary("codex:empty", "Codex", "D:/repo", "idle", sessionId = "empty", sessionName = "Empty Codex")),
         ))
         val created = mutableListOf<String?>()
-        compose.setContent { PiRemoteTheme { SessionDrawer(state.value, {}, {}, created::add, { _, _ -> }) } }
+        compose.setContent { PiRemoteTheme {
+            SessionDrawer(
+                state = state.value, hosts = hostFor(state.value),
+                onSelectHost = {}, onUnpairHost = {}, onAddHost = {},
+                onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> },
+                onNewSession = { _, cwd -> created.add(cwd) }, onSetArchived = { _, _, _ -> },
+            )
+        } }
         compose.onNodeWithText("Paired Desktop").assertIsDisplayed()
         compose.onNodeWithText("Empty Codex").assertIsDisplayed()
         compose.onNodeWithText("Cached Pi").assertIsDisplayed()
@@ -50,7 +57,14 @@ class SessionHostOwnershipInstrumentedTest {
     @Test fun emptyAndFilteredCatalogKeepThePairedComputerVisible() {
         val state = mutableStateOf(RemoteState(hostId = "host-1", hostName = "Paired Desktop",
             connection = RelayConnection.ONLINE, e2eReady = true))
-        compose.setContent { PiRemoteTheme { SessionDrawer(state.value, {}, {}, {}, { _, _ -> }) } }
+        compose.setContent { PiRemoteTheme {
+            SessionDrawer(
+                state = state.value, hosts = hostFor(state.value),
+                onSelectHost = {}, onUnpairHost = {}, onAddHost = {},
+                onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> },
+                onNewSession = { _, _ -> }, onSetArchived = { _, _, _ -> },
+            )
+        } }
         compose.onNodeWithText("Paired Desktop").assertIsDisplayed()
         compose.onNodeWithContentDescription("新建会话").assertIsEnabled()
         capture("paired-empty")
@@ -74,6 +88,13 @@ class SessionHostOwnershipInstrumentedTest {
         compose.onNodeWithText("在此目录新建 Pi 会话").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals("pi" to "D:/repo", created) }
     }
+
+/** Drawer 现在按「已配对电脑 + 各自状态」渲染；夹具只描述这一台。 */
+    private fun hostFor(state: RemoteState) = listOf(HostSnapshot(
+        HostPairing(hostId = state.hostId ?: "host-1", hostName = state.hostName, hostPub = "pub", pskRoot = "psk",
+            relayUrl = "wss://relay.example.com", deviceId = "device-1", credential = "credential"),
+        state,
+    ))
 
     private fun capture(name: String) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

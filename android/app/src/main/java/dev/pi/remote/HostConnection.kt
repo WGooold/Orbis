@@ -1372,7 +1372,7 @@ internal class HostConnection(
                     relayStateLock.withLock {
                         if (currentGeneration != generation) return@withLock
                         val previous = mutableState.value
-                        val committedEntries = if (sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull == "session.patch") {
+                        val committedBatch = if (sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull == "session.patch") {
                             val patch = runCatching { messageJson.decodeFromJsonElement<SessionPatch>(sessionEvent) }.getOrNull()
                             val runtimeId = incomingMessage?.get("runtimeId")?.jsonPrimitive?.contentOrNull
                             val pairedDevice = device
@@ -1396,7 +1396,7 @@ internal class HostConnection(
                             } else null
                         } else null
                         val artifactResult = runCatching { processArtifactPayload(payload) }
-                        runCatching { reducer.reduce(previous, payload, committedEntries, channel = interactiveChannel) }
+                        runCatching { reducer.reduce(previous, payload, committedBatch, channel = interactiveChannel) }
                             .onFailure { error ->
                                 // reducer 抛异常过去是**静默吞掉**的：界面会永远停在「正在连接」，
                                 // 而现场没有任何线索。宁可吵也不能哑。
@@ -1435,7 +1435,7 @@ internal class HostConnection(
                                     .forEach(artifactDownloadStore::register)
                                 updateState { latest ->
                                     val rebased = if (latest === previous) next
-                                        else reducer.reduce(latest, payload, committedEntries, channel = interactiveChannel)
+                                        else reducer.reduce(latest, payload, committedBatch, channel = interactiveChannel)
                                     if (artifactFailure == null) rebased else rebased.copy(
                                         downloads = rebased.downloads.mapValues { (taskId, task) -> persistedDownloads[taskId] ?: task },
                                         error = "文件下载失败：${artifactFailure.message ?: "无法保存文件"}",
@@ -1735,7 +1735,7 @@ internal class HostConnection(
             }
             probe?.mark("persist_end", "result=${if (persisted.isSuccess) "ok" else "failed"}")
             val persistence = persisted.getOrNull()
-            val persistedEntries = persistence?.entries
+            val committed = persistence?.let { CommittedSessionBatch(it.entries, it.display) }
             val persistenceError = persisted.exceptionOrNull()
             val current = mutableState.value
             val stillPending = current.sessionSyncCommands.values.any {
@@ -1775,7 +1775,7 @@ internal class HostConnection(
             val previous = current
             var next = current
             updateState { latest ->
-                runCatching { reducer.reduce(latest, payload, persistedEntries) }
+                runCatching { reducer.reduce(latest, payload, committed) }
                     .getOrElse { latest.copy(error = "收到无效的 Session 历史快照") }
                     .also { next = it }
             }
@@ -1867,6 +1867,8 @@ internal class HostConnection(
 
     private data class PersistedSessionSnapshotResult(
         val entries: List<SessionGraphEntry>,
+        /** 盘上那份条目对应的显示投影，与 entries 同源；线上没给显示结果时为 null。 */
+        val display: DisplayBatch? = null,
         val stale: Boolean = false,
     )
 
@@ -1878,13 +1880,15 @@ internal class HostConnection(
         snapshot: SessionGraphSnapshot,
     ): PersistedSessionSnapshotResult {
         prepareSessionCache(pairedDevice, snapshot.sessionId, mutableState.value.runtimes[runtimeId]?.agentKind)
-        val entries = ingestSessionSnapshot(
+        val committed = ingestSessionSnapshot(
             sessionGraphStore, pairedDevice, runtimeId, commandId, snapshot,
             currentState = { mutableState.value },
             connectionCurrent = { connectionGeneration == generation && device == pairedDevice && shouldConnect &&
                 mutableState.value.sessionSyncCommands[commandId]?.connectionGeneration == connectionGeneration },
         )
-        return PersistedSessionSnapshotResult(entries.orEmpty(), stale = entries == null)
+        return PersistedSessionSnapshotResult(
+            committed?.entries.orEmpty(), committed?.display, stale = committed == null,
+        )
     }
     private fun loadLocalGraphForRuntime(
         pairedDevice: DeviceCredential,
@@ -1938,7 +1942,10 @@ internal class HostConnection(
 
     /** Runs before any old canonical content can be seeded or validated in memory. */
     private fun prepareSessionCache(pairedDevice: DeviceCredential, sessionId: String, agentKind: String?): Boolean {
-        if (device != pairedDevice || !sessionGraphStore.prepareSession(pairedDevice, sessionId, agentKind)) return false
+        // 显示投影版本换代与 Codex 格式重建一样，都要先清掉旧缓存再让内容重新进来。
+        val codexRebuilt = sessionGraphStore.prepareSession(pairedDevice, sessionId, agentKind)
+        val displayRebuilt = sessionGraphStore.prepareDisplayCache(pairedDevice, sessionId)
+        if (device != pairedDevice || !(codexRebuilt || displayRebuilt)) return false
         val current = mutableState.value
         val affected = current.historyReads.values.filter { it.sessionId == sessionId && it.phase.active }.map { it.operationId }
         updateState { state -> if (device != pairedDevice) state else state.afterSessionCacheRebuild(sessionId).reconcileHistoryReads() }

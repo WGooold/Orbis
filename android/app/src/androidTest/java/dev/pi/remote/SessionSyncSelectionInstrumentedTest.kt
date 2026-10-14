@@ -18,7 +18,7 @@ class SessionSyncSelectionInstrumentedTest {
     private fun state(): RemoteState {
         val source = SessionSourceEpoch("epoch", 10, true)
         store.upsert(device, "s", listOf(entry("a", null)), "a", source = source, activateSource = true)
-        val graph = store.withCacheVersions(device, SessionGraph("s", mapOf("a" to entry("a", null)), SessionBranchCursor("a")))
+        val graph = store.withCacheVersions(device, fixtureGraph("s", mapOf("a" to entry("a", null)), SessionBranchCursor("a")))
         val state = RemoteState(selectedRuntimeId = "r",
             runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s", sessionGraphSync = true, sessionLeafId = "a")),
             sessionGraphs = mapOf("s" to graph), runtimeSessionViews = mapOf("r" to RuntimeSessionView("r", "s", "a")),
@@ -31,12 +31,14 @@ class SessionSyncSelectionInstrumentedTest {
         complete = true, rangeStatus = "complete", source = SessionSourceEpoch("epoch", seq, true),
         checkpoint = SessionCheckpoint("epoch:$seq", SessionBranchCursor(head), "complete", true),
         live = SessionLiveState(true).takeUnless { selection == "unchanged" }, selection = selection,
+        // 真实后端随条目一起发显示结果；夹具照做，摄取路径因此也走到「读回盘上那份」的分支。
+        display = fixtureDisplayBatch(entries),
     )
     @Test fun unchangedDoesNotWriteOrActivateCache() {
         val state = state()
         val before = store.withCacheVersions(device, state.sessionGraphs.getValue("s"))
         assertEquals(emptyList<SessionGraphEntry>(), ingestSessionSnapshot(store, device, "r", "request",
-            snapshot("unchanged", 10, "a", emptyList()), { state }, { true }))
+            snapshot("unchanged", 10, "a", emptyList()), { state }, { true })?.entries)
         assertEquals(before, store.withCacheVersions(device, state.sessionGraphs.getValue("s")))
         assertEquals("a", store.latestLeaf(device, "s"))
         assertTrue(store.hasContinuousCoverage(device, "s", "a"))
@@ -45,7 +47,7 @@ class SessionSyncSelectionInstrumentedTest {
         val state = state()
         val b = entry("b", "a")
         assertEquals(listOf(b), ingestSessionSnapshot(store, device, "r", "request",
-            snapshot("delta", 11, "b", listOf(b)), { state }, { true }))
+            snapshot("delta", 11, "b", listOf(b)), { state }, { true })?.entries)
         assertEquals(listOf(entry("a", null), b), store.readBranch(device, "s", "b").entries)
         assertEquals("epoch", store.cacheEpoch(device, "s"))
         assertTrue(store.hasContinuousCoverage(device, "s", "b"))

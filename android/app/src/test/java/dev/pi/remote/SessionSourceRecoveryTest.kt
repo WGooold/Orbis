@@ -9,9 +9,9 @@ import org.junit.Test
 
 class SessionSourceRecoveryTest {
     private val json = Json { encodeDefaults = true }
-    private val reducer = RelayReducer()
+    private val reducer = FixtureRelayReducer()
     private fun cachedGraph(sessionId: String, entries: Map<String, SessionGraphEntry>, cursor: SessionBranchCursor = SessionBranchCursor()) =
-        SessionGraph(sessionId, entries, cursor, cacheEpoch = "epoch")
+        fixtureGraph(sessionId, entries, cursor, cacheEpoch = "epoch")
     private fun row(id: String, text: String = id) = ChatMessage(id, "assistant", listOf(RemoteContent("text", text)), 1)
     private fun entry(id: String, parent: String? = null) = SessionGraphEntry(id, parent, "message", "1", buildJsonObject {
         put("message", json.encodeToJsonElement(ChatMessage.serializer(), row(id)))

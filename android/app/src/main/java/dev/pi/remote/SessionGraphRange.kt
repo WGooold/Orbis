@@ -15,6 +15,12 @@ data class SessionGraphRange(
     val hasOlder: Boolean,
     val complete: Boolean,
     val status: SessionGraphRangeStatus = SessionGraphRangeStatus.COMPLETE,
+    /** 这段范围自带的显示结果：本地读取时从盘上一并读出，范围与解释因此同源。 */
+    val display: Map<String, DisplayEntry> = emptyMap(),
+    /** 同一次读取得到的显示窗口起点。 */
+    val displayWindowStart: String? = null,
+    /** 盘上那份显示结果的投影版本；null 表示这次读取没有拿到显示状态。 */
+    val displayVersion: Int? = null,
 )
 
 data class SessionGraphPath(

@@ -289,29 +289,28 @@ class CachedHistoryTreeTest {
 
     @Test
     fun `firstUserMessageTitle returns the first user message of the branch`() {
-        val graph = SessionGraph(
-            sessionId = "s1",
-            entries = listOf(
+        val graph = fixtureGraph(
+            "s1",
+            listOf(
                 userEntry("u1", null, "这是第一句"),
                 assistantEntry("a1", "u1", "收到"),
                 userEntry("u2", "a1", "这是第二句"),
             ).associateBy(SessionGraphEntry::entryId),
-            cursor = SessionBranchCursor("u2"),
+            SessionBranchCursor("u2"),
         )
 
-        assertEquals("这是第一句", graph.firstUserMessageTitle(json))
+        assertEquals("这是第一句", graph.firstUserMessageTitle())
     }
 
     @Test
     fun `firstUserMessageTitle returns null when the branch has no user message`() {
-        val graph = SessionGraph(
-            sessionId = "s1",
-            entries = listOf(assistantEntry("a1", null, "你好"))
-                .associateBy(SessionGraphEntry::entryId),
-            cursor = SessionBranchCursor("a1"),
+        val graph = fixtureGraph(
+            "s1",
+            listOf(assistantEntry("a1", null, "你好")).associateBy(SessionGraphEntry::entryId),
+            SessionBranchCursor("a1"),
         )
 
-        assertNull(graph.firstUserMessageTitle(json))
+        assertNull(graph.firstUserMessageTitle())
     }
 
     @Test

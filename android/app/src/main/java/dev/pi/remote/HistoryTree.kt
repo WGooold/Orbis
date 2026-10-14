@@ -476,7 +476,7 @@ private fun historyAncestorIds(options: List<RuntimeSlashCommandOption>, nodeId:
 /** 节点在本地缓存里的原文；「编辑这条消息并重新开始」在运行时没回传原文时用它兜底。 */
 internal fun SessionGraph.historyNodeText(nodeId: String): String? =
     entries[nodeId]
-        ?.let { entry -> projectSessionEntries(listOf(entry)).firstOrNull() }
+        ?.let { entry -> projectSessionEntries(listOf(entry), display).firstOrNull() }
         ?.content
         ?.mapNotNull { it.text }
         ?.joinToString("\n")

@@ -195,7 +195,13 @@ internal fun RemoteState.applyLocalHistoryRead(operationId: String, page: Sessio
             .finishHistoryRead(operationId, SessionReadPhase.END_REACHED)
     }
     val graph = sessionGraphs[operation.sessionId] ?: SessionGraph(operation.sessionId)
-    val merged = graph.copy(entries = LinkedHashMap(graph.entries).apply { page.entries.forEach { putIfAbsent(it.entryId, it) } })
+    // 本地页自带显示结果：条目与解释同源，页面读进来就能渲染。
+    val merged = graph.copy(
+        entries = LinkedHashMap(graph.entries).apply { page.entries.forEach { putIfAbsent(it.entryId, it) } },
+        display = graph.display + page.display,
+        displayWindowStart = if (page.displayVersion == null) graph.displayWindowStart else page.displayWindowStart,
+        displayVersion = page.displayVersion ?: graph.displayVersion,
+    )
     val history = sessionHistory[operation.historyKey] ?: return this
     val first = page.entries.first()
     val keepBoundary = history.oldestEntryId != operation.beforeEntryId && merged.isDescendant(first.entryId, history.oldestEntryId)
@@ -204,7 +210,7 @@ internal fun RemoteState.applyLocalHistoryRead(operationId: String, page: Sessio
     val conversation = conversations[operation.historyKey]
     val viewLeaf = runtimeSessionViews[operation.historyKey]?.leafId ?: history.leafId
     val projection = if (merged.hasCompleteEntryChain(viewLeaf)) projectSessionGraph(merged.copy(cursor = SessionBranchCursor(viewLeaf)))
-        else SessionProjectionResult(projectSessionEntries(page.entries))
+        else SessionProjectionResult(projectSessionEntries(page.entries, merged.display, merged.displayWindowStart))
     val ids = projection.messages.map(ChatMessage::messageId).toSet()
     val nextConversations = if (conversation == null) conversations else conversations + (operation.historyKey to
         conversation.copy(messages = projection.messages + conversation.messages.filterNot { it.messageId in ids },

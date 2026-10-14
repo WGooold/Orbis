@@ -18,6 +18,15 @@ import kotlinx.serialization.json.put
 
 class SessionGraphStoreException(message: String) : IllegalStateException(message)
 
+/**
+ * 一次读出的显示缓存。版本、窗口与显示结果同源：缺任何一项都不能当作可用显示状态。
+ */
+data class SessionDisplayCache(
+    val version: Int? = null,
+    val windowStart: String? = null,
+    val entries: Map<String, DisplayEntry> = emptyMap(),
+)
+
 private val SESSION_GRAPH_CONFLICT_MESSAGES = setOf("entry_conflict", "turn_timing_conflict")
 
 /**
@@ -54,8 +63,11 @@ class SessionGraphStore(
         agentKind: String? = null,
         source: SessionSourceEpoch? = null,
         activateSource: Boolean = false,
+        /** 产出方给出的显示投影：与这批条目同源，落在同一笔事务里。 */
+        display: DisplayBatch? = null,
     ) {
-        if (entries.isEmpty() && leafId == null && turnTimings.isEmpty() && source == null) return
+        if (entries.isEmpty() && leafId == null && turnTimings.isEmpty() && source == null &&
+            display?.entries.isNullOrEmpty()) return
         require(sessionId.isNotBlank()) { "session_id_required" }
         turnTimings.forEach(::validateTurnTiming)
         if (writeGuard?.invoke() == false) throw SessionGraphStoreException(STALE_SESSION_GRAPH_WRITE)
@@ -72,7 +84,10 @@ class SessionGraphStore(
                 val epoch = cacheEpoch(database, sessionId)
                 if (epoch != source.epoch) {
                     require(activateSource) { "source_epoch_not_accepted" }
-                    for (table in listOf("session_entries", "session_cursors", "session_turn_timings", "session_sync_progress")) {
+                    for (table in listOf(
+                        "session_entries", "session_cursors", "session_turn_timings", "session_sync_progress",
+                        "session_display_entries", "session_display_windows",
+                    )) {
                         database.delete(table, "session_id = ?", arrayOf(sessionId))
                     }
                     database.execSQL("INSERT OR REPLACE INTO session_cache_epochs(session_id, epoch) VALUES (?, ?)",
@@ -151,6 +166,11 @@ class SessionGraphStore(
                     ),
                 )
             }
+            // 被盘上更新版本顶掉的线上条目不能带走它那一行显示结果：条目与解释必须始终同源。
+            val superseded = batch.keys.filterTo(mutableSetOf()) { entryId ->
+                source != null && source.seq < storedSourceSeq(database, sessionId, entryId)
+            }
+            writeDisplay(database, sessionId, display, superseded)
             if (leafId != null) {
                 val storedLeaf = findStored(database, sessionId, leafId)
                 if (storedLeaf == null) throw SessionGraphStoreException("leaf_not_found")
@@ -188,6 +208,25 @@ class SessionGraphStore(
         startEntryId: String? = null,
         maxEntries: Int = DEFAULT_MAX_ENTRIES,
         beforeEntryId: String? = null,
+    ): SessionGraphRange {
+        val range = readBranchEntries(device, sessionId, leafId, startEntryId, maxEntries, beforeEntryId)
+        if (range.entries.isEmpty()) return range
+        // 本地读取把这段范围的显示结果一并带出来：范围与解释同源，调用方不必再问一次盘。
+        val display = readCommittedDisplay(device, sessionId, range.entries.map(SessionGraphEntry::entryId))
+        return range.copy(
+            display = display.entries,
+            displayWindowStart = display.windowStart,
+            displayVersion = display.version,
+        )
+    }
+
+    private fun readBranchEntries(
+        device: DeviceCredential,
+        sessionId: String,
+        leafId: String?,
+        startEntryId: String?,
+        maxEntries: Int,
+        beforeEntryId: String?,
     ): SessionGraphRange {
         if (leafId == null || maxEntries <= 0) {
             return SessionGraphRange(
@@ -361,6 +400,8 @@ class SessionGraphStore(
             database.delete("session_turn_timings", "session_id = ?", arrayOf(sessionId))
             database.delete("session_sync_progress", "session_id = ?", arrayOf(sessionId))
             database.delete("session_legacy_entries", "session_id = ?", arrayOf(sessionId))
+            database.delete("session_display_entries", "session_id = ?", arrayOf(sessionId))
+            database.delete("session_display_windows", "session_id = ?", arrayOf(sessionId))
             database.delete("codex_canonical_rebuilds", "session_id = ?", arrayOf(sessionId))
             database.delete("session_cache_epochs", "session_id = ?", arrayOf(sessionId))
             database.setTransactionSuccessful()
@@ -461,9 +502,15 @@ class SessionGraphStore(
     @Synchronized
     fun withCacheVersions(device: DeviceCredential, graph: SessionGraph): SessionGraph {
         val db = database(device).readableDatabase
+        // 显示结果也是持久事实的一部分：内存图里没有显示行时（离线冷启动、本地回填）就用落盘的那份。
+        val stored = readDisplay(device, graph.sessionId)
         return graph.copy(cacheEpoch = cacheEpoch(db, graph.sessionId),
             entryVersions = graph.entries.keys.associateWith { storedSourceSeq(db, graph.sessionId, it) },
-            timingVersions = graph.turnTimings.keys.associateWith { storedTimingSourceSeq(db, graph.sessionId, it) })
+            timingVersions = graph.turnTimings.keys.associateWith { storedTimingSourceSeq(db, graph.sessionId, it) },
+            display = stored.entries + graph.display,
+            displayWindowStart = if (graph.displayVersion == null) stored.windowStart ?: graph.displayWindowStart
+                else graph.displayWindowStart,
+            displayVersion = graph.displayVersion ?: stored.version)
     }
 
     private fun cacheEpoch(db: SQLiteDatabase, sessionId: String): String? = db.rawQuery(
@@ -590,7 +637,6 @@ class SessionGraphStore(
     fun firstUserMessageTitle(
         device: DeviceCredential,
         sessionId: String,
-        json: Json = Json { ignoreUnknownKeys = true },
     ): String? {
         if (sessionId.isBlank()) return null
         val leaf = latestLeaf(device, sessionId) ?: return null
@@ -601,7 +647,132 @@ class SessionGraphStore(
             maxEntries = MAX_TITLE_SCAN_ENTRIES,
         )
         if (range.entries.isEmpty()) return null
-        return firstUserMessageTitle(projectSessionEntries(range.entries, json))
+        // 标题也走显示投影：没有可渲染的显示结果就没有标题，而不是退回解释原生形状。
+        val display = readDisplay(device, sessionId)
+        return firstUserMessageTitle(projectSessionEntries(range.entries, display.entries, display.windowStart))
+    }
+
+    /**
+     * 读一个会话的显示缓存。版本、窗口与显示结果必须同一份来源：只要不是本机的投影版本，
+     * 就整份作废（返回空），宁可重新同步也不按已经变了的语义渲染。
+     */
+    @Synchronized
+    internal fun readDisplay(device: DeviceCredential, sessionId: String): SessionDisplayCache {
+        val database = database(device).readableDatabase
+        val window = storedDisplayWindow(database, sessionId) ?: return SessionDisplayCache()
+        return SessionDisplayCache(
+            window.first, window.second,
+            decodeDisplayRows(database, "session_id = ?", arrayOf(sessionId)).toMap(),
+        )
+    }
+
+    /**
+     * 只读这一批条目的显示结果（外加会话窗口）。摄取路径每批都要读回来，不能按会话全量扫。
+     *
+     * 读回来是必要的：条目在提交时可能被来源修正（盘上那份才是权威），显示结果必须与它们同源，
+     * 否则渲染出来的正文会与已提交的历史对不上。
+     */
+    @Synchronized
+    internal fun readCommittedDisplay(
+        device: DeviceCredential,
+        sessionId: String,
+        entryIds: Collection<String>,
+    ): SessionDisplayCache {
+        val ids = entryIds.filter { it.isNotBlank() }.distinct()
+        if (ids.isEmpty()) return SessionDisplayCache()
+        val database = database(device).readableDatabase
+        val window = storedDisplayWindow(database, sessionId) ?: return SessionDisplayCache()
+        val placeholders = ids.joinToString(",") { "?" }
+        return SessionDisplayCache(
+            window.first, window.second,
+            decodeDisplayRows(
+                database, "session_id = ? AND entry_id IN ($placeholders)", arrayOf(sessionId, *ids.toTypedArray()),
+            ).toMap(),
+        )
+    }
+
+    /** 盘上的显示窗口；没有这一行、或版本与本机不同都返回 null（那份显示结果不能用）。 */
+    private fun storedDisplayWindow(database: SQLiteDatabase, sessionId: String): Pair<Int, String?>? {
+        val window = database.rawQuery(
+            "SELECT projection_version, window_start FROM session_display_windows WHERE session_id = ?",
+            arrayOf(sessionId),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) to cursor.getStringOrNull(1) else null }
+            ?: return null
+        return window.takeIf { it.first == DISPLAY_PROJECTION_VERSION }
+    }
+
+    private fun decodeDisplayRows(
+        database: SQLiteDatabase,
+        selection: String,
+        args: Array<String>,
+    ): List<Pair<String, DisplayEntry>> = database.rawQuery(
+        "SELECT payload FROM session_display_entries WHERE $selection", args,
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) {
+                val row = runCatching { json.decodeFromString<DisplayEntry>(cursor.getString(0)) }.getOrNull() ?: continue
+                val entryId = row.entryId ?: continue
+                add(entryId to row)
+            }
+        }
+    }
+
+    /**
+     * 显示投影版本换代时必须重建显示缓存：旧显示结果无法渲染，而条目单独留着也没有意义
+     * （渲染、会话标题、树标签都要靠显示结果）。返回 true 表示这个会话的本地缓存已被清掉。
+     */
+    @Synchronized
+    internal fun prepareDisplayCache(device: DeviceCredential, sessionId: String): Boolean {
+        if (sessionId.isBlank()) return false
+        val database = database(device).readableDatabase
+        val stored = database.rawQuery(
+            "SELECT projection_version FROM session_display_windows WHERE session_id = ?", arrayOf(sessionId),
+        ).use { if (it.moveToFirst()) it.getInt(0) else null }
+        if (stored == DISPLAY_PROJECTION_VERSION) return false
+        if (stored == null) {
+            // 没有显示窗口行：这个会话要么从没缓存过，要么缓存来自「条目还没有解释」的上一版 App。
+            // 后者留着只会渲染出一片空白——已知来源状态还会让后端回 unchanged，永远补不上显示结果，
+            // 所以整段作废，让下一次同步重新拿。
+            val cached = database.rawQuery(
+                "SELECT 1 FROM session_entries WHERE session_id = ? LIMIT 1", arrayOf(sessionId),
+            ).use { it.moveToFirst() }
+            if (!cached) return false
+        }
+        clearSession(device, sessionId)
+        return true
+    }
+
+    /**
+     * 一批显示结果与它的窗口、版本一起落盘；版本不是本机投影版本的批次整批丢弃。
+     *
+     * [superseded] 是被盘上更新版本顶掉的条目：它们保留盘上原有的显示行，线上那行不能覆盖，
+     * 否则渲染出来的正文会与已提交的历史对不上。
+     */
+    private fun writeDisplay(
+        database: SQLiteDatabase,
+        sessionId: String,
+        display: DisplayBatch?,
+        superseded: Set<String> = emptySet(),
+    ) {
+        if (display == null || display.projectionVersion != DISPLAY_PROJECTION_VERSION) return
+        for (row in display.entries) {
+            if (row.displayId.isBlank()) continue
+            if (row.entryId != null && row.entryId in superseded) continue
+            database.execSQL(
+                """
+                INSERT OR REPLACE INTO session_display_entries(session_id, display_id, entry_id, payload)
+                VALUES (?, ?, ?, ?)
+                """.trimIndent(),
+                arrayOf<Any?>(sessionId, row.displayId, row.entryId, json.encodeToString(row)),
+            )
+        }
+        database.execSQL(
+            """
+            INSERT OR REPLACE INTO session_display_windows(session_id, projection_version, window_start)
+            VALUES (?, ?, ?)
+            """.trimIndent(),
+            arrayOf<Any?>(sessionId, display.projectionVersion, display.windowStart),
+        )
     }
 
     @Synchronized
@@ -764,6 +935,7 @@ class SessionGraphStore(
             createCodexRebuildTable(database)
             upgradeCodexRebuildTable(database)
             createCacheEpochTable(database)
+            createDisplayTables(database)
         }
 
         override fun onUpgrade(database: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -832,10 +1004,22 @@ class SessionGraphStore(
                 database.execSQL("ALTER TABLE session_turn_timings ADD COLUMN source_seq INTEGER NOT NULL DEFAULT -1")
                 createCacheEpochTable(database)
             }
+            if (oldVersion < 8) {
+                // v8 之前没有显示投影：旧库直接留空，下一次同步会带上显示结果。
+                createDisplayTables(database)
+            }
         }
 
         private fun createCacheEpochTable(database: SQLiteDatabase) {
             database.execSQL("CREATE TABLE session_cache_epochs(session_id TEXT PRIMARY KEY, epoch TEXT NOT NULL)")
+        }
+
+        private fun createDisplayTables(database: SQLiteDatabase) {
+            database.execSQL("""CREATE TABLE IF NOT EXISTS session_display_entries(
+                session_id TEXT NOT NULL, display_id TEXT NOT NULL, entry_id TEXT, payload TEXT NOT NULL,
+                PRIMARY KEY(session_id, display_id))""")
+            database.execSQL("""CREATE TABLE IF NOT EXISTS session_display_windows(
+                session_id TEXT PRIMARY KEY, projection_version INTEGER NOT NULL, window_start TEXT)""")
         }
 
         private fun upgradeCodexRebuildTable(database: SQLiteDatabase) {
@@ -866,7 +1050,7 @@ class SessionGraphStore(
     }
 
     private companion object {
-        const val DATABASE_VERSION = 7
+        const val DATABASE_VERSION = 8
         const val DEFAULT_MAX_ENTRIES = 2_000
         const val MAX_TRAVERSAL_ENTRIES = 100_000
         const val MAX_TITLE_SCAN_ENTRIES = 2_000

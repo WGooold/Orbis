@@ -1,6 +1,5 @@
 package dev.pi.remote
 
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -11,8 +10,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionGraphTest {
-    private val json = Json { ignoreUnknownKeys = true }
-
     private fun entry(id: String, parentId: String?, role: String = "user", text: String = id) = SessionGraphEntry(
         entryId = id,
         parentId = parentId,
@@ -28,7 +25,7 @@ class SessionGraphTest {
 
     @Test
     fun `projection follows the selected leaf and excludes sibling branches`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = listOf(
                 entry("root", null),
@@ -39,14 +36,14 @@ class SessionGraphTest {
             cursor = SessionBranchCursor("branch-a"),
         )
 
-        val projected = projectSessionGraph(graph, json)
+        val projected = projectSessionGraph(graph)
 
         assertEquals(listOf("root", "shared", "branch-a"), projected.messages.map(ChatMessage::messageId))
         assertFalse(projected.messages.any { it.content.any { content -> content.text == "B" } })
     }
 
     @Test
-    fun `projection applies the latest Pi compaction boundary and skips unknown entry types`() {
+    fun `projection renders the window the producer declared, not the native compaction fields`() {
         val compaction = SessionGraphEntry(
             entryId = "compaction",
             parentId = "kept",
@@ -58,30 +55,39 @@ class SessionGraphTest {
             },
         )
         val after = entry("after", "compaction", text = "after")
-        val graph = SessionGraph(
-            sessionId = "session-1",
-            entries = listOf(
-                entry("root", null),
-                entry("old", "root", text = "old"),
-                entry("kept", "old", text = "kept"),
-                compaction,
-                after,
-            ).associateBy(SessionGraphEntry::entryId),
-            cursor = SessionBranchCursor("after"),
+        val entries = listOf(
+            entry("root", null),
+            entry("old", "root", text = "old"),
+            entry("kept", "old", text = "kept"),
+            compaction,
+            after,
+        )
+        // 产出方已经解释好：窗口从 kept 开始，摘要渲染在窗口顶部。App 只照做。
+        val graph = fixtureGraph("session-1", entries, SessionBranchCursor("after")).copy(
+            display = fixtureDisplay(entries) + ("compaction" to DisplayEntry(
+                displayId = "compaction", entryId = "compaction", nativeType = "compaction", kind = "summary",
+                message = ChatMessage("compaction", "system", listOf(RemoteContent("text", "压缩摘要：old context")), 0L),
+                anchor = DISPLAY_ANCHOR_HEAD,
+            )),
+            displayWindowStart = "kept",
         )
 
-        val projected = projectSessionGraph(graph, json)
+        val projected = projectSessionGraph(graph)
 
         assertEquals(listOf("compaction", "kept", "after"), projected.messages.map(ChatMessage::messageId))
         assertEquals("压缩摘要：old context", projected.messages.first().content.single().text)
 
-        val unsupported = graph.copy(
-            entries = graph.entries + ("unknown" to entry("unknown", "compaction").copy(type = "future_semantic_entry")),
-            cursor = SessionBranchCursor("unknown"),
-        )
-        val unsupportedProjection = projectSessionGraph(unsupported, json)
+        // 没有显示结果的条目只是不渲染，不是把整段会话丢掉，也不改变分支权威。
+        val unsupported = fixtureGraph(
+            "session-1",
+            entries + entry("unknown", "compaction").copy(type = "future_semantic_entry"),
+            SessionBranchCursor("unknown"),
+        ).copy(display = graph.display, displayWindowStart = "kept")
+        val unsupportedProjection = projectSessionGraph(unsupported)
         assertEquals(null, unsupportedProjection.error)
+        // 没见过的条目没有显示结果，就不渲染；它前面的内容照常按窗口与锚点渲染。
         assertEquals(listOf("compaction", "kept"), unsupportedProjection.messages.map(ChatMessage::messageId))
+        assertEquals("unknown", unsupported.cursor.leafId)
     }
 
     @Test
@@ -114,16 +120,22 @@ class SessionGraphTest {
                 })
             },
         )
-        val graph = SessionGraph(
-            sessionId = "session-1",
-            entries = listOf(bash, hidden).associateBy(SessionGraphEntry::entryId),
-            cursor = SessionBranchCursor("hidden"),
+        val entries = listOf(bash, hidden)
+        // 产出方为 bash 合成了一行 system 文本，并且明确没有回传隐藏的自定义消息。
+        val graph = fixtureGraph("session-1", entries, SessionBranchCursor("hidden")).copy(
+            display = mapOf("bash" to DisplayEntry(
+                displayId = "bash", entryId = "bash", nativeType = "message", kind = "message",
+                message = ChatMessage("bash", "system", listOf(RemoteContent("text", "$ pwd\n/workspace")), 1L),
+            )),
         )
 
-        val projected = projectSessionGraph(graph, json)
+        val projected = projectSessionGraph(graph)
 
         assertEquals(listOf("bash"), projected.messages.map(ChatMessage::messageId))
         assertEquals("$ pwd\n/workspace", projected.messages.single().content.single().text)
+        // 隐藏的条目身份还在图里，但没有显示行就没有内容：本机不再自己判断 display 开关。
+        assertTrue("hidden" in graph.entries)
+        assertNull(graph.display["hidden"])
     }
 
     @Test
@@ -148,14 +160,17 @@ class SessionGraphTest {
             },
         )
 
-        val projected = projectSessionGraph(
-            SessionGraph(
-                sessionId = "session-1",
-                entries = mapOf(tool.entryId to tool),
-                cursor = SessionBranchCursor(tool.entryId),
-            ),
-            json,
+        // 工具调用的形状（含参数）也由产出方归一，App 只渲染。
+        val graph = fixtureGraph("session-1", listOf(tool), SessionBranchCursor(tool.entryId)).copy(
+            display = mapOf("tool-1" to DisplayEntry(
+                displayId = "tool-1", entryId = "tool-1", nativeType = "message", kind = "message",
+                message = ChatMessage("tool-1", "assistant", listOf(RemoteContent(
+                    type = "tool_call", toolCallId = "tool-1", toolName = "commandExecution",
+                    arguments = buildJsonObject { put("command", "npm test") },
+                )), 0L),
+            )),
         )
+        val projected = projectSessionGraph(graph)
         val presentation = buildConversationPresentation(projected.messages)
 
         assertEquals(listOf("tool-1"), presentation.messages.map(ChatMessage::messageId))
@@ -182,13 +197,13 @@ class SessionGraphTest {
                 })
             },
         )
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = listOf(assistant, timing).associateBy(SessionGraphEntry::entryId),
             cursor = SessionBranchCursor("timing"),
         )
 
-        val projected = projectSessionGraph(graph, json)
+        val projected = projectSessionGraph(graph)
 
         assertEquals(
             listOf(TurnTiming("turn-1", 1_000, durationMs = 250, turnIndex = 0, messageId = "assistant")),
@@ -198,7 +213,7 @@ class SessionGraphTest {
 
     @Test
     fun `append merges a new branch entry and keeps an existing identical entry idempotent`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = mapOf("root" to entry("root", null)),
             cursor = SessionBranchCursor("root"),
@@ -219,7 +234,7 @@ class SessionGraphTest {
 
     @Test
     fun `append detects conflicts and replace preserves canonical sibling entries`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = mapOf("root" to entry("root", null)),
             cursor = SessionBranchCursor("root"),
@@ -245,7 +260,7 @@ class SessionGraphTest {
 
     @Test
     fun `replace rejects a divergent entry and preserves the committed tree`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = mapOf("root" to entry("root", null, text = "local")),
             cursor = SessionBranchCursor("root"),
@@ -290,7 +305,7 @@ class SessionGraphTest {
 
     @Test
     fun `completed wire range cannot prove continuity when memory lacks ancestors`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = mapOf("frontier" to entry("frontier", "missing")),
             cursor = SessionBranchCursor("frontier"),
@@ -314,7 +329,7 @@ class SessionGraphTest {
 
     @Test
     fun `catchup resumes from the persisted frontier when the target is not cached yet`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = listOf(
                 entry("root", null),
@@ -336,7 +351,7 @@ class SessionGraphTest {
 
     @Test
     fun `projection refreshes the full branch when catchup completes on the same leaf`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = listOf(
                 entry("tail", "root"),
@@ -353,6 +368,7 @@ class SessionGraphTest {
                 entries = listOf(entry("root", null), entry("tail", "root")),
                 range = "catchup",
                 complete = true,
+                display = fixtureDisplayBatch(listOf(entry("root", null), entry("tail", "root"))),
             ),
         )
 
@@ -363,7 +379,6 @@ class SessionGraphTest {
                 ChatMessage("tail", "user", listOf(RemoteContent("text", "tail")), 1),
                 ChatMessage("leaf", "assistant", listOf(RemoteContent("text", "leaf")), 2),
             ),
-            json = json,
         )
 
         assertEquals(listOf("root", "tail", "leaf"), projection.messages.map(ChatMessage::messageId))
@@ -371,7 +386,7 @@ class SessionGraphTest {
 
     @Test
     fun `leaf append keeps new graph entries before an in-flight overlay`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = listOf(
                 entry("root", null),
@@ -389,7 +404,6 @@ class SessionGraphTest {
                 ChatMessage("user", "user", listOf(RemoteContent("text", "user")), 2),
                 ChatMessage("live", "assistant", listOf(RemoteContent("text", "streaming")), 3),
             ),
-            json = json,
         )
 
         assertEquals(listOf("root", "user", "assistant", "live"), projection.messages.map(ChatMessage::messageId))
@@ -397,7 +411,7 @@ class SessionGraphTest {
 
     @Test
     fun `branch switch keeps canonical suffix ahead of live overlay`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = listOf(
                 entry("root", null),
@@ -414,7 +428,6 @@ class SessionGraphTest {
                 ChatMessage("old", "assistant", listOf(RemoteContent("text", "old")), 2),
                 ChatMessage("live", "assistant", listOf(RemoteContent("text", "live")), 3),
             ),
-            json = json,
         )
 
         assertEquals(listOf("root", "new", "live"), projection.messages.map(ChatMessage::messageId))
@@ -422,13 +435,13 @@ class SessionGraphTest {
 
     @Test
     fun `partial projection reports missing parent while retaining the known tail`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = mapOf("tail" to entry("tail", "missing")),
             cursor = SessionBranchCursor("tail"),
         )
 
-        val projection = projectSessionGraph(graph, json)
+        val projection = projectSessionGraph(graph)
 
         assertEquals(listOf("tail"), projection.messages.map(ChatMessage::messageId))
         assertEquals("missing_parent", projection.error)
@@ -452,7 +465,7 @@ class SessionGraphTest {
 
     @Test
     fun `firstUserMessageTitle returns the first user message of the branch`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = listOf(
                 entry("u1", null, role = "user", text = "第一句：开始提问"),
@@ -462,12 +475,12 @@ class SessionGraphTest {
             cursor = SessionBranchCursor("u2"),
         )
 
-        assertEquals("第一句：开始提问", graph.firstUserMessageTitle(json))
+        assertEquals("第一句：开始提问", graph.firstUserMessageTitle())
     }
 
     @Test
     fun `firstUserMessageTitle returns null when the branch has no user message`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = listOf(
                 entry("a1", null, role = "assistant", text = "hello"),
@@ -475,31 +488,31 @@ class SessionGraphTest {
             cursor = SessionBranchCursor("a1"),
         )
 
-        assertNull(graph.firstUserMessageTitle(json))
+        assertNull(graph.firstUserMessageTitle())
     }
 
     @Test
     fun `firstUserMessageTitle returns null for an empty graph`() {
-        assertNull(SessionGraph("session-1").firstUserMessageTitle(json))
+        assertNull(SessionGraph("session-1").firstUserMessageTitle())
     }
 
     @Test
     fun `firstUserMessageTitle returns null when the leaf is missing from the graph`() {
-        val graph = SessionGraph(
+        val graph = fixtureGraph(
             sessionId = "session-1",
             entries = listOf(entry("u1", null, role = "user", text = "ask")).associateBy(SessionGraphEntry::entryId),
             cursor = SessionBranchCursor("unknown-leaf"),
         )
 
-        assertNull(graph.firstUserMessageTitle(json))
+        assertNull(graph.firstUserMessageTitle())
     }
 
     /**
-     * A provider failure is the only content such a turn produced, so a projection that drops it
-     * leaves the phone showing an empty turn with no way to tell failure from "still thinking".
+     * 失败回合的文案归产出方：它知道该用哪一份失败文本（流里发的还是 provider 回的）。
+     * App 不看 stopReason，也不拿 errorMessage 兜底——没有显示结果就是「还没解释」，不猜。
      */
     @Test
-    fun `projection keeps a failed turn renderable with its failure reason`() {
+    fun `a failed turn renders from its display row and stays empty without one`() {
         val failed = SessionGraphEntry(
             entryId = "failed",
             parentId = "u1",
@@ -518,20 +531,82 @@ class SessionGraphTest {
                 put("remoteFailure", "OpenAI API error (504): Gateway Time-out\nprovider=linkbus, model=gpt-5.6-terra")
             },
         )
-        val graph = SessionGraph(
-            sessionId = "session-1",
-            entries = listOf(entry("u1", null, role = "user", text = "ask"), failed)
-                .associateBy(SessionGraphEntry::entryId),
-            cursor = SessionBranchCursor("failed"),
-        )
+        val entries = listOf(entry("u1", null, role = "user", text = "ask"), failed)
+        val graph = fixtureGraph("session-1", entries, SessionBranchCursor("failed"))
+        // 夹具只认字符串正文；失败行的正文与 isError 由产出方给，所以这里显式替换。
+        val withFailure = graph.copy(display = graph.display + ("failed" to DisplayEntry(
+            displayId = "failed", entryId = "failed", nativeType = "message", kind = "message",
+            message = ChatMessage(
+                "failed", "assistant",
+                listOf(RemoteContent(
+                    type = "text",
+                    text = "OpenAI API error (504): Gateway Time-out\nprovider=linkbus, model=gpt-5.6-terra",
+                )),
+                1L,
+                isError = true,
+            ),
+        )))
 
-        val message = projectSessionGraph(graph, json).messages.single { it.messageId == "failed" }
+        val message = projectSessionGraph(withFailure).messages.single { it.messageId == "failed" }
 
         assertEquals("assistant", message.role)
         assertTrue(message.isError == true)
         assertEquals(
             "OpenAI API error (504): Gateway Time-out\nprovider=linkbus, model=gpt-5.6-terra",
             message.content.single().text,
+        )
+        // stopReason / errorMessage / remoteFailure 都在条目的原生形状里，本机不再读它们：
+        // 产出方没给正文就渲染空行，不会自己拼一行「失败原因」，也不会自己点亮 isError。
+        val bare = projectSessionGraph(graph).messages.single { it.messageId == "failed" }
+        assertNull(bare.isError)
+        assertTrue(bare.content.isEmpty())
+    }
+
+    @Test
+    fun `display window prunes older path entries and keeps everything when it is not on the path`() {
+        val entries = listOf(
+            entry("u1", null, text = "旧问题"),
+            entry("a1", "u1", role = "assistant", text = "旧回答"),
+            entry("u2", "a1", text = "新问题"),
+        )
+        val graph = fixtureGraph("session-1", entries, SessionBranchCursor("u2"))
+            .copy(displayWindowStart = "a1")
+
+        assertEquals(listOf("a1", "u2"), projectSessionGraph(graph).messages.map(ChatMessage::messageId))
+        // 窗口起点不在手上的这段路径里：整段保留。误删比多显示更糟。
+        assertEquals(
+            listOf("u1", "a1", "u2"),
+            projectSessionGraph(graph.copy(displayWindowStart = "native-tail")).messages.map(ChatMessage::messageId),
+        )
+        // 窗口只影响渲染；历史权威（条目与分支）不受影响。
+        assertEquals(setOf("u1", "a1", "u2"), graph.entries.keys)
+    }
+
+    @Test
+    fun `anchored rows render at the window top and undisplayable rows keep identity without content`() {
+        val entries = listOf(entry("u1", null, text = "问题"), entry("a1", "u1", role = "assistant", text = "回答"))
+        val graph = fixtureGraph("session-1", entries, SessionBranchCursor("a1")).copy(
+            display = fixtureDisplay(entries).mapValues { (id, row) ->
+                if (id == "a1") row.copy(anchor = DISPLAY_ANCHOR_HEAD) else row
+            } + ("future" to DisplayEntry(
+                displayId = "future", entryId = null, nativeType = "brand_new_event",
+                kind = "undisplayable", message = null, reason = "unknown_native_type",
+            )),
+        )
+
+        assertEquals(listOf("a1", "u1"), projectSessionGraph(graph).messages.map(ChatMessage::messageId))
+        assertEquals("unknown_native_type", graph.display.getValue("future").reason)
+    }
+
+    @Test
+    fun `a projection version mismatch is reported instead of rendering another version's semantics`() {
+        val entries = listOf(entry("u1", null, text = "问题"))
+        val graph = fixtureGraph("session-1", entries, SessionBranchCursor("u1"))
+            .copy(displayVersion = DISPLAY_PROJECTION_VERSION + 1)
+
+        assertEquals(
+            "显示投影版本不匹配（Host：${DISPLAY_PROJECTION_VERSION + 1}），请更新 App",
+            projectSessionGraph(graph).error,
         )
     }
 }

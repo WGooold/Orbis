@@ -88,7 +88,7 @@ class SessionGraphStoreInstrumentedTest {
         assertEquals(listOf(corrected), store.readEntries(device, "s", listOf("c")))
         assertTrue(store.hasContinuousCoverage(device, "s", "c"))
         assertEquals("c", store.latestLeaf(device, "s"))
-        val cached = store.withCacheVersions(device, SessionGraph("s", mapOf("c" to corrected)))
+        val cached = store.withCacheVersions(device, fixtureGraph("s", mapOf("c" to corrected)))
         assertEquals("new", cached.cacheEpoch)
         assertEquals(2L, cached.entryVersions["c"])
     }
@@ -151,7 +151,7 @@ class SessionGraphStoreInstrumentedTest {
                 if (range == "history") "prepend" else "replace", listOf(root.copy(timestamp = "wrong")), range = range,
                 beforeEntryId = pending.beforeEntryId, source = SessionSourceEpoch(epoch, 99, true),
                 checkpoint = SessionCheckpoint("id", SessionBranchCursor("root"), "complete", true), live = SessionLiveState(true))
-            assertEquals(emptyList<SessionGraphEntry>(), ingestSessionSnapshot(store, device, "r", "cmd", snapshot, { state }, { true }))
+            assertEquals(emptyList<SessionGraphEntry>(), ingestSessionSnapshot(store, device, "r", "cmd", snapshot, { state }, { true })?.entries)
             assertEquals("e", store.cacheEpoch(device, "s"))
             assertEquals(listOf(root), store.readEntries(device, "s", listOf("root")))
         }
@@ -161,7 +161,7 @@ class SessionGraphStoreInstrumentedTest {
     fun cachedRowsCannotPreventRecoveryCheckpointFromActivatingNewEpoch() {
         val old = listOf(entry("root", null), entry("obsolete", "root"))
         store.upsert(device, "s", old, "obsolete", source = SessionSourceEpoch("old", 5, true), activateSource = true)
-        val graph = store.withCacheVersions(device, SessionGraph("s", old.associateBy { it.entryId }, SessionBranchCursor("obsolete")))
+        val graph = store.withCacheVersions(device, fixtureGraph("s", old, SessionBranchCursor("obsolete")))
         val current = RemoteState(
             selectedRuntimeId = "r",
             runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s", sessionGraphSync = true, sessionLeafId = "obsolete")),
@@ -180,7 +180,7 @@ class SessionGraphStoreInstrumentedTest {
 
         val persisted = ingestSessionSnapshot(store, device, "r", "request", snapshot, { state }, { true })!!
         val payload = """{"type":"runtime.event","runtimeId":"r","sequence":100,"event":${Json.encodeToString(snapshot).dropLast(1)},"type":"session.snapshot"}}"""
-        val recovered = RelayReducer().reduce(state, payload, persisted)
+        val recovered = FixtureRelayReducer().reduce(state, payload, persisted)
         assertEquals(listOf(corrected), persisted)
         assertEquals("new", store.cacheEpoch(device, "s"))
         assertEquals("root", store.latestLeaf(device, "s"))
@@ -207,13 +207,13 @@ class SessionGraphStoreInstrumentedTest {
         val state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s")),
             conversations = mapOf("r" to RuntimeConversation(sourceEpoch = "e", sourceReady = false,
                 sourcePatchBuffer = mapOf(3L to patch))),
-            sessionGraphs = mapOf("s" to SessionGraph("s", mapOf("obsolete" to old), cacheEpoch = "old")),
+            sessionGraphs = mapOf("s" to fixtureGraph("s", mapOf("obsolete" to old), cacheEpoch = "old")),
             sessionSyncCommands = mapOf("cmd" to PendingSessionSync("r", "s", "sync", "preview")))
         val snapshot = SessionGraphSnapshot("s", "sync", SessionBranchCursor("a"), "replace", listOf(root), range = "preview",
             source = SessionSourceEpoch("e", 2, true), checkpoint = SessionCheckpoint("e:2", SessionBranchCursor("a"), "complete", true),
             live = SessionLiveState(true))
         val persisted = ingestSessionSnapshot(store, device, "r", "cmd", snapshot, { state }, { true })!!
-        assertEquals(listOf(root, child), persisted)
+        assertEquals(listOf(root, child), persisted.entries)
         assertEquals("e", store.cacheEpoch(device, "s"))
         assertEquals("b", store.latestLeaf(device, "s"))
         assertTrue(store.hasContinuousCoverage(device, "s", "b"))
@@ -225,7 +225,7 @@ class SessionGraphStoreInstrumentedTest {
                 put("type", "session.snapshot")
             })
         }
-        val reduced = RelayReducer().reduce(state, event.toString(), persisted)
+        val reduced = FixtureRelayReducer().reduce(state, event.toString(), committedFixtureBatch(persisted.entries))
         assertEquals(3L, reduced.conversations.getValue("r").sourceSeq)
         assertEquals("b", reduced.runtimeSessionViews.getValue("r").leafId)
         assertEquals(listOf("a", "b"), reduced.conversations.getValue("r").messages.map { it.messageId })
@@ -642,7 +642,7 @@ class SessionGraphStoreInstrumentedTest {
         val entries = (1..10).map { entry("$it", if (it == 1) null else "${it - 1}") }
         store.upsert(device, "s", entries.take(3), leafId = "3")
         var state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s", sessionLeafId = "10")))
-        val reducer = RelayReducer()
+        val reducer = FixtureRelayReducer()
         var sequence = 0L
         fun receive(range: String, batch: List<SessionGraphEntry>, wireTarget: String, before: String? = null) {
             val sync = "sync-${++sequence}"
@@ -718,12 +718,12 @@ class SessionGraphStoreInstrumentedTest {
         store.upsert(device, "s", listOf(root), leafId = "root", source = SessionSourceEpoch("epoch", 1, true), activateSource = true)
         val state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "running", "s")),
             conversations = mapOf("r" to RuntimeConversation(sourceEpoch = "epoch", sourceSeq = 1)),
-            sessionGraphs = mapOf("s" to SessionGraph("s", mapOf("root" to root), cacheEpoch = "epoch")))
+            sessionGraphs = mapOf("s" to fixtureGraph("s", mapOf("root" to root), cacheEpoch = "epoch")))
         val patch = SessionPatch(sessionId = "s", source = SessionSourceEpoch("epoch", 2, true), baseSeq = 1, seq = 2,
             checkpointId = "epoch:2", head = SessionBranchCursor("result"), headCompleteness = "complete",
             live = SessionLiveState(true), entries = listOf(entry("call", "root"), entry("result", "call")))
         val persisted = ingestSessionPatch(store, device, "r", patch, { state }, { true })
-        assertEquals(patch.entries, persisted)
+        assertEquals(patch.entries, persisted?.entries)
         assertTrue(store.hasContinuousCoverage(device, "s", "result"))
         val conflicted = patch.copy(entries = listOf(entry("new", "result"), entry("root", "new")))
         val failure = runCatching { ingestSessionPatch(store, device, "r", conflicted, { state }, { true }) }

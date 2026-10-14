@@ -1,6 +1,8 @@
 package dev.pi.remote
 
 import org.junit.Assert.assertEquals
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -14,7 +16,7 @@ import org.junit.Test
 import java.io.File
 
 class RelayReducerTest {
-    private val reducer = RelayReducer()
+    private val reducer = FixtureRelayReducer()
 
     @Test
     fun `working branch ignores stale responses across refresh session and directory changes`() {
@@ -760,7 +762,7 @@ class RelayReducerTest {
           }}
         """.trimIndent()
 
-        val changed = reducer.reduce(initial, payload, listOf(persisted))
+        val changed = reducer.reduce(initial, payload, committedFixtureBatch(listOf(persisted)))
 
         assertEquals("persisted", changed.conversations["runtime-a"]?.messages?.single()?.content?.single()?.text)
     }
@@ -1192,9 +1194,7 @@ class RelayReducerTest {
                 ),
             ),
             sessionGraphs = sessionGraphs + (
-                "session-1" to graph.copy(
-                    entries = graph.entries + (user.entryId to user) + (assistant.entryId to assistant),
-                )
+                "session-1" to graph.withFixtureEntries(graph.entries.values + listOf(user, assistant))
                 ),
         )
         val metadata = """
@@ -3439,11 +3439,7 @@ class RelayReducerTest {
                 "runtime-a" to RuntimeSessionView("runtime-a", "session-1", "tool-call"),
             ),
             sessionGraphs = mapOf(
-                "session-1" to SessionGraph(
-                    sessionId = "session-1",
-                    entries = mapOf("tool-call" to toolCallEntry),
-                    cursor = SessionBranchCursor("tool-call"),
-                ),
+                "session-1" to fixtureGraph("session-1", mapOf("tool-call" to toolCallEntry), SessionBranchCursor("tool-call")),
             ),
             conversations = mapOf(
                 "runtime-a" to RuntimeConversation(
@@ -3469,10 +3465,21 @@ class RelayReducerTest {
             ),
         )
 
+        // 产出方的显示结果：窗口从压缩点开始，摘要渲染在窗口顶部——压缩点之前的内容不显示。
+        val display = Json.encodeToString(DisplayBatch.serializer(), DisplayBatch(
+            projectionVersion = DISPLAY_PROJECTION_VERSION,
+            entries = listOf(DisplayEntry(
+                displayId = "compaction", entryId = "compaction", nativeType = "compaction", kind = "summary",
+                message = ChatMessage("compaction", "system", listOf(RemoteContent("text", "压缩摘要：old context")), 0L),
+                anchor = DISPLAY_ANCHOR_HEAD,
+            )),
+            windowStart = "compaction",
+        ))
         val reduced = reducer.reduce(state, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-1","mode":"replace",
             "range":"catchup","targetLeafId":"compaction","cursor":{"leafId":"compaction"},
+            "display":$display,
             "entries":[
               {"entryId":"tool-call","parentId":null,"type":"message","timestamp":"2026-01-01T00:00:00.000Z","data":{"message":{"role":"assistant","content":[{"type":"toolCall","id":"tool-1","name":"bash"}]}}},
               {"entryId":"compaction","parentId":"tool-call","type":"compaction","timestamp":"2026-01-01T00:00:01.000Z","data":{"summary":"old context"}}

@@ -9,13 +9,13 @@ import org.junit.Test
 
 class SessionSyncSelectionTest {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-    private val reducer = RelayReducer()
+    private val reducer = FixtureRelayReducer()
     private fun entry(id: String, parent: String? = null) = SessionGraphEntry(id, parent, "message", "1",
         buildJsonObject { put("message", buildJsonObject { put("role", "user"); put("content", id) }) })
     private fun initial(): RemoteState {
         val a = entry("a")
-        val graph = SessionGraph("s", mapOf("a" to a), SessionBranchCursor("a"), cacheEpoch = "epoch",
-            entryVersions = mapOf("a" to 10L))
+        val graph = fixtureGraph("s", mapOf("a" to a), SessionBranchCursor("a"), cacheEpoch = "epoch")
+            .copy(entryVersions = mapOf("a" to 10L))
         return RemoteState(
             selectedRuntimeId = "r", runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "running", "s",
                 sessionGraphSync = true, sessionLeafId = "a")),

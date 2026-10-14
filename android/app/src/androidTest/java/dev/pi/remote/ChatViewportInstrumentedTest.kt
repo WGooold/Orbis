@@ -63,7 +63,7 @@ class ChatViewportInstrumentedTest {
             conversations = mapOf("r" to RuntimeConversation(messages = listOf(user, assistant, tool("tool-1")),
                 streamingMessageIds = setOf("tool-1"), sourceEpoch = "epoch", sourceSeq = 1, sourceHeadLeafId = "assistant",
                 hasLiveSnapshot = true, activeTurnId = "turn", turnTimings = mapOf("turn" to TurnTiming("turn", 1)))),
-            sessionGraphs = mapOf("s" to SessionGraph("s", listOf(canonical(user, null), canonical(assistant, "user")).associateBy { it.entryId })))
+            sessionGraphs = mapOf("s" to fixtureGraph("s", listOf(canonical(user, null), canonical(assistant, "user")))))
     }
 
     private fun withChat(exercise: (androidx.compose.runtime.MutableState<RemoteState>, LazyListState) -> Unit) {
@@ -92,7 +92,7 @@ class ChatViewportInstrumentedTest {
     }
 
     @Test fun repeatedToolCommitsKeepTheReadingPositionInsideALongAssistantCard() = withChat { displayed, scroll ->
-        val reducer = RelayReducer()
+        val reducer = FixtureRelayReducer()
         for (number in 1..8) {
             val before = displayed.value
             val call = tool("tool-$number")

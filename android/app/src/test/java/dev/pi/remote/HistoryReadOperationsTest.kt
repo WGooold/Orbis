@@ -13,7 +13,7 @@ class HistoryReadOperationsTest {
         buildJsonObject { put("message", buildJsonObject { put("role", "user"); put("content", id) }) })
     private fun initial(offline: Boolean = false): RemoteState {
         val key = if (offline) "offline:s" else "r"
-        val graph = SessionGraph("s", mapOf("tail" to entry("tail", "older")), SessionBranchCursor("tail"))
+        val graph = fixtureGraph("s", mapOf("tail" to entry("tail", "older")), SessionBranchCursor("tail"))
         return RemoteState(deviceId = "device", hostId = "host", connection = RelayConnection.ONLINE,
             selectedRuntimeId = key.takeUnless { offline }, selectedOfflineSessionId = "s".takeIf { offline },
             runtimes = if (offline) emptyMap() else mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s",
@@ -22,7 +22,7 @@ class HistoryReadOperationsTest {
             sessionGraphs = mapOf("s" to graph), sessionHistory = mapOf(key to SessionHistoryState("s", "tail", "tail", true)),
             conversations = mapOf(key to RuntimeConversation(messages = projectSessionGraph(graph).messages, hasLiveSnapshot = true)))
     }
-    private val page = SessionGraphRange(listOf(entry("older", null)), false, true)
+    private val page = fixtureRange(listOf(entry("older", null)), false, true)
     private fun remote(state: RemoteState, id: String = "page"): RemoteState = state.queueSessionSync("command",
         PendingSessionSync("r", "s", "sync", "history", "tail", beforeEntryId = "tail", historyOperationId = id))
         .let { advanceSessionSyncTasks(it, 0).state }
@@ -32,7 +32,7 @@ class HistoryReadOperationsTest {
         val event = Json.encodeToJsonElement(SessionGraphSnapshot.serializer(), snapshot) as JsonObject
         val payload = buildJsonObject { put("type", "runtime.event"); put("runtimeId", "r"); put("sequence", 2)
             put("event", JsonObject(event + ("type" to JsonPrimitive("session.snapshot")))) }
-        return RelayReducer().reduce(state, payload.toString(), snapshot.entries)
+        return FixtureRelayReducer().reduce(state, payload.toString(), committedFixtureBatch(snapshot.entries))
     }
 
     @Test fun `ordinary projection cannot revoke a cached page or let its old worker end a new read`() {
@@ -41,7 +41,8 @@ class HistoryReadOperationsTest {
         assertTrue(started.state.beginHistoryRead("r", "duplicate").acceptance.merged)
         // Same failing seam as the phone: valid content arrives after display loading was cleared.
         var changed = started.state.copy(sessionHistory = mapOf("r" to SessionHistoryState("s", "tail", "tail", true)))
-        val nextGraph = changed.sessionGraphs.getValue("s").copy(entries = mapOf("tail" to entry("tail", "older"), "new" to entry("new", "tail")))
+        val nextGraph = changed.sessionGraphs.getValue("s")
+            .withFixtureEntries(listOf(entry("tail", "older"), entry("new", "tail")))
         changed = changed.copy(runtimes = mapOf("r" to changed.runtimes.getValue("r").copy(sessionLeafId = "new")))
             .seedCachedSessionView("r", nextGraph)
         assertTrue(changed.sessionHistory.getValue("r").loading)
@@ -109,8 +110,9 @@ class HistoryReadOperationsTest {
                     conversation.copy(messages = emptyList(), hasLiveSnapshot = false)
                 }).beginSessionRead(key, SessionReadKind.FIRST_PAGE, "first-page").state
             if (!offline) state = state.beginSessionRead(key, SessionReadKind.SOURCE, "source").state
-            val loaded = state.sessionGraphs.getValue("s").copy(entries = mapOf("older" to entry("older", null),
-                "tail" to entry("tail", "older")))
+            val loaded = state.sessionGraphs.getValue("s").withFixtureEntries(
+                listOf(entry("older", null), entry("tail", "older")),
+            )
             val displayed = state.applyFirstSessionPage("first-page", loaded)
             assertEquals(listOf("older", "tail"), projectSessionGraph(displayed.sessionGraphs.getValue("s")).messages.map { it.messageId })
             assertNull(displayed.appliedSessionState(key))
@@ -127,8 +129,8 @@ class HistoryReadOperationsTest {
                 assertTrue(unknown.ownsHistoryRead("source"))
             }
             // Another committed projection can advance while this cache query is running.
-            val newerGraph = loaded.copy(entries = loaded.entries + ("new" to entry("new", "tail")),
-                cursor = SessionBranchCursor("new"))
+            val newerGraph = loaded.withFixtureEntries(loaded.entries.values + entry("new", "tail"))
+                .copy(cursor = SessionBranchCursor("new"))
             val newer = state.copy(sessionGraphs = mapOf("s" to newerGraph)).applyFirstSessionPage("first-page", loaded)
             assertEquals("new", newer.sessionGraphs.getValue("s").cursor.leafId)
             assertEquals(SessionReadPhase.SUCCEEDED, displayed.sessionReads.getValue("first-page").phase)

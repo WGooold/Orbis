@@ -1,5 +1,17 @@
 package dev.pi.remote
 
+/**
+ * SQLite 提交之后的这一批：条目与显示结果都取自同一笔事务。
+ *
+ * 投影的输入因此只有一个来源——盘上的历史，而不是线上刚收到的那份。两者可能不同：来源可以修正
+ * 一个已经存在的条目，而 App 没有能力重新解释条目，所以显示结果必须跟着盘上那份一起读回来。
+ */
+data class CommittedSessionBatch(
+    val entries: List<SessionGraphEntry>,
+    /** 盘上这份条目对应的显示投影；线上没给显示结果时为 null，不能把「没解释」当成「解释为空」。 */
+    val display: DisplayBatch? = null,
+)
+
 /** The reducer and SQLite writer must agree before authority can replace a cache generation. */
 internal data class SessionSnapshotSourceGate(
     val cacheAllowed: Boolean,
@@ -104,7 +116,7 @@ internal fun ingestSessionSnapshot(
     snapshot: SessionGraphSnapshot,
     currentState: () -> RemoteState,
     connectionCurrent: () -> Boolean,
-): List<SessionGraphEntry>? {
+): CommittedSessionBatch? {
     fun owns(): Boolean = connectionCurrent() && currentState().ownsSessionSnapshot(
         commandId, runtimeId, snapshot.sessionId, snapshot.syncId,
         snapshot.targetLeafId ?: snapshot.cursor.leafId, snapshot.range, snapshot.beforeEntryId,
@@ -114,7 +126,7 @@ internal fun ingestSessionSnapshot(
     val pending = state.sessionSyncCommands.getValue(commandId)
     pending.validatePreviewSelection(snapshot)
     // No data is carried: this acknowledges a fixed baseline and never writes a cache epoch.
-    if (snapshot.selection == "unchanged") return emptyList()
+    if (snapshot.selection == "unchanged") return CommittedSessionBatch(emptyList())
     require(snapshot.targetLeafId == null || snapshot.targetLeafId == snapshot.cursor.leafId) { "session_target_mismatch" }
     require(when (pending.range) {
         "preview" -> snapshot.mode in setOf("replace", "append")
@@ -125,12 +137,12 @@ internal fun ingestSessionSnapshot(
     val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
     // A conditional reply cannot authorize a new baseline after its original one was invalidated.
     if (snapshot.selection in setOf("state", "delta") &&
-        (!conversation.sourceReady || conversation.sourceEpoch != pending.knownState?.epoch)) return emptyList()
+        (!conversation.sourceReady || conversation.sourceEpoch != pending.knownState?.epoch)) return CommittedSessionBatch(emptyList())
     val gate = conversation.snapshotSourceGate(
         snapshot, pending.range, pending.sourceRecovery, pending.sourceRecoveryEpoch,
     )
     // Leave rejected/unknown boundaries to the reducer; neither can modify persistent rows.
-    if (!gate.cacheAllowed) return emptyList()
+    if (!gate.cacheAllowed) return CommittedSessionBatch(emptyList())
     val cacheOnly = pending.range == "history" || state.conversations[runtimeId]?.sourceEpoch != null &&
         (pending.range != "preview" || snapshot.source == null)
     val observed = if (cacheOnly) null else
@@ -142,6 +154,7 @@ internal fun ingestSessionSnapshot(
     }.orEmpty()
     val page = if (patches.isEmpty()) snapshot else snapshot.copy(
         entries = mergedPatchEntries(snapshot.entries, patches), source = patches.last().source,
+        display = mergedPatchDisplay(patches) ?: snapshot.display,
     )
     val finalObserved = if (patches.isEmpty()) observed else patches.last().head.leafId?.takeIf { id ->
         page.entries.any { it.entryId == id } || store.contains(device, snapshot.sessionId, id)
@@ -168,7 +181,7 @@ internal fun ingestSessionPatch(
     patch: SessionPatch,
     currentState: () -> RemoteState,
     connectionCurrent: () -> Boolean,
-): List<SessionGraphEntry>? {
+): CommittedSessionBatch? {
     fun owns() = connectionCurrent() && currentState().ownsSessionPatch(runtimeId, patch)
     if (!owns()) return null
     require(patch.entries.size <= 256) { "session_patch_too_many_entries" }
@@ -176,11 +189,11 @@ internal fun ingestSessionPatch(
     val conversation = state.conversations[runtimeId]
     // Future epochs are recovery signals, not permission to modify the current cache.
     if (patch.source.epoch != conversation?.sourceEpoch || !patch.source.ready || !conversation.sourceReady)
-        return emptyList()
+        return CommittedSessionBatch(emptyList())
     val patches = contiguousSourcePatches(patch.source.epoch, conversation.sourceSeq,
         (conversation.sourcePatchBuffer + (patch.seq to patch)).values)
-    if (patches.isEmpty()) return emptyList()
-    val page = patches.last().canonicalPage(mergedPatchEntries(emptyList(), patches))
+    if (patches.isEmpty()) return CommittedSessionBatch(emptyList())
+    val page = patches.last().canonicalPage(mergedPatchEntries(emptyList(), patches), mergedPatchDisplay(patches))
     val observed = patches.last().head.leafId?.takeIf { id ->
         page.entries.any { it.entryId == id } || store.contains(device, patch.sessionId, id) }
     return ingestCanonicalPage(store, device, page, state, observed, ::owns,
@@ -196,7 +209,7 @@ private fun ingestCanonicalPage(
     owns: () -> Boolean,
     agentKind: String?,
     activateSource: Boolean = false,
-): List<SessionGraphEntry>? {
+): CommittedSessionBatch? {
     // SQLite owns persisted row versions. A bounded memory window may not know the newer
     // version of a disk row, so it cannot veto an authoritative page before disk filters it.
     if (snapshot.source == null) (state.sessionGraphs[snapshot.sessionId] ?: SessionGraph(snapshot.sessionId)).merge(snapshot)
@@ -204,11 +217,21 @@ private fun ingestCanonicalPage(
     try {
         store.upsert(device, snapshot.sessionId, snapshot.entries, observed,
             snapshot.turnTimings.orEmpty(), writeGuard = owns, agentKind = agentKind,
-            source = snapshot.source, activateSource = activateSource)
+            source = snapshot.source, activateSource = activateSource, display = snapshot.display)
     } catch (error: SessionGraphStoreException) {
         if (error.message == "stale_snapshot") return null
         throw error
     }
     val entries = store.readEntries(device, snapshot.sessionId, snapshot.entries.map { it.entryId })
-    return entries.takeIf { owns() }
+    if (!owns()) return null
+    // 显示结果同样从盘上读回来：条目被来源修正过时，只有盘上那一份才配得上它们。
+    val committedDisplay = snapshot.display?.let { wire ->
+        val stored = store.readCommittedDisplay(device, snapshot.sessionId, entries.map(SessionGraphEntry::entryId))
+        DisplayBatch(
+            projectionVersion = wire.projectionVersion,
+            entries = entries.mapNotNull { stored.entries[it.entryId] },
+            windowStart = stored.windowStart ?: wire.windowStart,
+        )
+    }
+    return CommittedSessionBatch(entries, committedDisplay)
 }

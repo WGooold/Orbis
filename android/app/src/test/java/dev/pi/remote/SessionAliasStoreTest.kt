@@ -74,8 +74,8 @@ class SessionAliasStoreTest {
             sessions = mapOf("session-1" to SessionCatalogEntry(
                 "session-1", name = "目录名称", cwd = runtime.cwd, firstMessage = "目录中的首条消息。第二句",
             )),
-            sessionGraphs = mapOf("session-1" to SessionGraph(
-                sessionId = "session-1", entries = mapOf("u1" to graphEntry), cursor = SessionBranchCursor("u1"),
+            sessionGraphs = mapOf("session-1" to fixtureGraph(
+                "session-1", mapOf("u1" to graphEntry), SessionBranchCursor("u1"),
             )),
             conversations = mapOf(runtime.runtimeId to RuntimeConversation(messages = listOf(
                 firstMessage.copy(messageId = "assistant", role = "assistant", content = listOf(RemoteContent("text", "忽略助手开场白"))),
@@ -113,7 +113,7 @@ class SessionAliasStoreTest {
         )))
 
         // A live rename must survive going offline; clearing it must not revive the old catalog name.
-        val reducer = RelayReducer()
+        val reducer = FixtureRelayReducer()
         var updated = named
         listOf("自动命名", null).forEachIndexed { index, title ->
             updated = reducer.reduce(updated, """{

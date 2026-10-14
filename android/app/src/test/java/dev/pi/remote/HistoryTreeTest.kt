@@ -239,28 +239,25 @@ class HistoryTreeTest {
 
     @Test
     fun `the cached entry is the fallback text for editing a message`() {
-        val graph = SessionGraph(
-            sessionId = "s",
-            entries = mapOf(
-                "u1" to SessionGraphEntry(
-                    entryId = "u1",
-                    parentId = null,
-                    type = "message",
-                    timestamp = "2026-09-20T00:00:00.000Z",
-                    data = buildJsonObject {
-                        put("message", buildJsonObject {
-                            put("role", "user")
-                            put("content", buildJsonArray {
-                                add(buildJsonObject {
-                                    put("type", "text")
-                                    put("text", "原文")
-                                })
+        val graph = fixtureGraph("s", mapOf(
+            "u1" to SessionGraphEntry(
+                entryId = "u1",
+                parentId = null,
+                type = "message",
+                timestamp = "2026-09-20T00:00:00.000Z",
+                data = buildJsonObject {
+                    put("message", buildJsonObject {
+                        put("role", "user")
+                        put("content", buildJsonArray {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", "原文")
                             })
                         })
-                    },
-                ),
+                    })
+                },
             ),
-        )
+        ))
 
         assertEquals("原文", graph.historyNodeText("u1"))
         assertNull(graph.historyNodeText("missing"))
@@ -268,28 +265,25 @@ class HistoryTreeTest {
 
     @Test
     fun `preview reads only the local cache and admits when it cannot`() {
-        val graph = SessionGraph(
-            sessionId = "s",
-            entries = mapOf(
-                "u1" to SessionGraphEntry(
-                    entryId = "u1",
-                    parentId = null,
-                    type = "message",
-                    timestamp = "2026-09-20T00:00:00.000Z",
-                    data = buildJsonObject {
-                        put("message", buildJsonObject {
-                            put("role", "user")
-                            put("content", buildJsonArray {
-                                add(buildJsonObject {
-                                    put("type", "text")
-                                    put("text", "原文")
-                                })
+        val graph = fixtureGraph("s", mapOf(
+            "u1" to SessionGraphEntry(
+                entryId = "u1",
+                parentId = null,
+                type = "message",
+                timestamp = "2026-09-20T00:00:00.000Z",
+                data = buildJsonObject {
+                    put("message", buildJsonObject {
+                        put("role", "user")
+                        put("content", buildJsonArray {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", "原文")
                             })
                         })
-                    },
-                ),
+                    })
+                },
             ),
-        )
+        ))
 
         assertTrue(historyNodePreview(null, "u1").unavailable)
         assertTrue(historyNodePreview(graph, "missing").unavailable)

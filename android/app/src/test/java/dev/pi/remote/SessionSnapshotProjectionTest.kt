@@ -11,15 +11,18 @@ class SessionSnapshotProjectionTest {
     private fun entry(id: String, parent: String?) = SessionGraphEntry(id, parent, "message", "stable",
         buildJsonObject { put("message", buildJsonObject { put("role", "user"); put("content", id) }) })
     private val runtime = RuntimeSummary("r", "R", "/", "idle", "s", sessionLeafId = "tail")
-    private val graph = SessionGraph("s", listOf(entry("root", null), entry("tail", "root")).associateBy { it.entryId }, SessionBranchCursor("tail"))
+    private val entries = listOf(entry("root", null), entry("tail", "root"))
+    private val graph = fixtureGraph("s", entries, SessionBranchCursor("tail"))
 
     private fun reduce(state: RemoteState, snapshot: SessionGraphSnapshot, sequence: Int = 1): RemoteState {
+        // 夹具默认按「后端总是把这一页的解释一起发过来」构造；要验裸条目时显式传 display = null 的变体。
+        val wire = if (snapshot.display != null) snapshot else snapshot.copy(display = fixtureDisplayBatch(snapshot.entries))
         val payload = buildJsonObject {
             put("type", "runtime.event"); put("runtimeId", "r"); put("sequence", sequence)
-            put("event", JsonObject((Json.encodeToJsonElement(SessionGraphSnapshot.serializer(), snapshot) as JsonObject) +
+            put("event", JsonObject((Json.encodeToJsonElement(SessionGraphSnapshot.serializer(), wire) as JsonObject) +
                 ("type" to kotlinx.serialization.json.JsonPrimitive("session.snapshot"))))
         }
-        return RelayReducer().reduce(state, payload.toString(), snapshot.entries)
+        return RelayReducer().reduce(state, payload.toString(), committedFixtureBatch(wire.entries))
     }
 
     @Test
@@ -39,7 +42,7 @@ class SessionSnapshotProjectionTest {
     @Test
     fun `gap target is not a command to roll the runtime back`() {
         val pending = PendingSessionSync("r", "s", "sync", targetLeafId = "tail", requestTargetLeafId = "root")
-        val incomplete = graph.copy(entries = graph.entries - "root")
+        val incomplete = graph.withFixtureEntries(listOf(entry("tail", "root")))
         val state = RemoteState(runtimes = mapOf("r" to runtime), sessionGraphs = mapOf("s" to incomplete),
             sessionSyncCommands = mapOf("c" to pending), runtimeSessionViews = mapOf("r" to RuntimeSessionView("r", "s", "tail")))
         val next = reduce(state, SessionGraphSnapshot("s", "sync", SessionBranchCursor("root"), "replace",
@@ -58,11 +61,11 @@ class SessionSnapshotProjectionTest {
                 targetLeafId = "e10", knownLeafId = "e3", requestTargetLeafId = "e7", viewLeafId = "e10")
             val state = RemoteState(
                 runtimes = mapOf("r" to runtime.copy(sessionLeafId = "e10")),
-                sessionGraphs = mapOf("s" to SessionGraph("s", cached.associateBy { it.entryId }, SessionBranchCursor("e10"))),
+                sessionGraphs = mapOf("s" to fixtureGraph("s", cached, SessionBranchCursor("e10"))),
                 sessionSyncCommands = mapOf("c" to pending),
                 runtimeSessionViews = mapOf("r" to RuntimeSessionView("r", "s", "e10")),
                 sessionHistory = mapOf("r" to SessionHistoryState("s", "e10", "e8", hasOlder = true)),
-                conversations = mapOf("r" to RuntimeConversation(messages = projectSessionEntries((8..10).map(::node)), hasLiveSnapshot = true)),
+                conversations = mapOf("r" to RuntimeConversation(messages = fixtureMessages((8..10).map(::node)), hasLiveSnapshot = true)),
             )
             val next = reduce(state, SessionGraphSnapshot("s", "sync", SessionBranchCursor("e7"), "append",
                 (4..7).map(::node), "catchup", "e7", complete = true))
@@ -79,13 +82,12 @@ class SessionSnapshotProjectionTest {
         val pending = PendingSessionSync("r", "s", "first", "catchup",
             targetLeafId = "e10", knownLeafId = "e3", requestTargetLeafId = "e7", viewLeafId = "e10",
             historyOperationId = "read", attempts = 1)
-        val conversation = RuntimeConversation(messages = projectSessionEntries((8..10).map(::node)),
+        val conversation = RuntimeConversation(messages = fixtureMessages((8..10).map(::node)),
             hasLiveSnapshot = true, sourceEpoch = "epoch", sourceSeq = 1,
             sourceHeadLeafId = "e10", sourceReady = true)
         val initial = RemoteState(
             runtimes = mapOf("r" to runtime.copy(sessionLeafId = "e10")),
-            sessionGraphs = mapOf("s" to SessionGraph("s", cached.associateBy { it.entryId },
-                SessionBranchCursor("e10"), cacheEpoch = "epoch")),
+            sessionGraphs = mapOf("s" to fixtureGraph("s", cached, SessionBranchCursor("e10"), cacheEpoch = "epoch")),
             runtimeSessionViews = mapOf("r" to RuntimeSessionView("r", "s", "e10")),
             conversations = mapOf("r" to conversation),
         ).beginSessionRead("r", SessionReadKind.CATCHUP, "read", "e10").state
@@ -130,7 +132,7 @@ class SessionSnapshotProjectionTest {
 
     @Test
     fun `cached target page seeds the display without waiting for the missing prefix`() {
-        val incomplete = graph.copy(entries = graph.entries - "root")
+        val incomplete = graph.withFixtureEntries(listOf(entry("tail", "root")))
         val state = RemoteState(runtimes = mapOf("r" to runtime), sessionGraphs = mapOf("s" to incomplete),
             conversations = mapOf("r" to RuntimeConversation(messages = listOf(ChatMessage("live", "assistant", emptyList(), 1)),
                 streamingMessageIds = setOf("live"))))
@@ -155,7 +157,7 @@ class SessionSnapshotProjectionTest {
             pendingCommands = mapOf("old-command" to "r"),
         )
         // SQLite can have complete coverage even though the current in-memory window lacks other.
-        val loaded = graph.copy(entries = graph.entries + ("other" to entry("other", "root")))
+        val loaded = graph.withFixtureEntries(entries + entry("other", "root"))
         val seeded = state.seedCachedSessionView("r", loaded)
 
         assertEquals(listOf("root", "other"), seeded.conversations["r"]?.messages?.map { it.messageId })
@@ -167,7 +169,10 @@ class SessionSnapshotProjectionTest {
         assertTrue(seeded.pendingCommands.isEmpty())
         assertEquals(1, seeded.sessionBranchGenerations["r"])
 
-        val evictedOldLeaf = state.seedCachedSessionView("r", loaded.copy(entries = loaded.entries - "tail"))
+        // 「旧叶子从缓存里消失」＝它的条目不在这一批里了，其余条目照旧。
+        val evictedOldLeaf = state.seedCachedSessionView(
+            "r", loaded.withFixtureEntries(loaded.entries.values.filter { it.entryId != "tail" }),
+        )
         assertEquals(seeded.conversations["r"]?.messages, evictedOldLeaf.conversations["r"]?.messages)
         assertTrue(evictedOldLeaf.conversations["r"]?.streamingMessageIds?.isEmpty() == true)
         assertEquals(1, evictedOldLeaf.sessionBranchGenerations["r"])
@@ -175,10 +180,10 @@ class SessionSnapshotProjectionTest {
 
     @Test
     fun `cached forward growth preserves paged rows history ownership and an active stream`() {
-        val loaded = SessionGraph("s", listOf(entry("tail", "missing"), entry("new", "tail")).associateBy { it.entryId })
+        val loaded = fixtureGraph("s", listOf(entry("tail", "missing"), entry("new", "tail")))
         val pending = PendingSessionSync("r", "s", "history", "history", "tail", beforeEntryId = "older")
         val conversation = RuntimeConversation(
-            messages = projectSessionEntries(listOf(entry("older", null), entry("tail", "missing"))) +
+            messages = fixtureMessages(listOf(entry("older", null), entry("tail", "missing"))) +
                 ChatMessage("live", "assistant", emptyList(), 1),
             streamingMessageIds = setOf("live"), hasLiveSnapshot = true,
         )
@@ -201,12 +206,12 @@ class SessionSnapshotProjectionTest {
         val state = RemoteState(runtimes = mapOf("r" to runtime),
             runtimeSessionViews = mapOf("r" to RuntimeSessionView("r", "s", "tail")),
             conversations = mapOf("r" to RuntimeConversation(messages = projectSessionGraph(graph).messages, hasLiveSnapshot = true)))
-        assertSame(state, state.seedCachedSessionView("r", graph.copy(entries = graph.entries - "root")))
+        assertSame(state, state.seedCachedSessionView("r", graph.withFixtureEntries(listOf(entry("tail", "root")))))
     }
 
     @Test
     fun `directory refresh schedules cached leaf changes before replacing the displayed view`() {
-        val expanded = graph.copy(entries = graph.entries + ("new" to entry("new", "tail")))
+        val expanded = graph.withFixtureEntries(entries + entry("new", "tail"))
         val initial = RemoteState(
             selectedRuntimeId = "r", runtimes = mapOf("r" to runtime.copy(sessionGraphSync = true)),
             sessionGraphs = mapOf("s" to expanded),
@@ -341,14 +346,14 @@ class SessionSnapshotProjectionTest {
         val payload = """{"type":"runtime.event","runtimeId":"r","sequence":1,"event":{
             "type":"runtime.metadata","metadata":{"runtimeId":"r","name":"R","cwd":"/","status":"idle",
             "sessionId":"s","sessionLeafId":"new","sessionGraphSync":true}}}"""
-        val sibling = RelayReducer().reduce(state.copy(sessionGraphs = mapOf("s" to graph.copy(
-            entries = graph.entries + ("new" to entry("new", "root")),
-        ))), payload)
+        val sibling = RelayReducer().reduce(
+            state.copy(sessionGraphs = mapOf("s" to graph.withFixtureEntries(entries + entry("new", "root")))), payload,
+        )
         assertEquals(1, sibling.sessionBranchGenerations["r"])
         assertTrue(sibling.sessionSyncCommands.isEmpty())
-        val unknown = RelayReducer().reduce(state.copy(sessionGraphs = mapOf("s" to graph.copy(
-            entries = graph.entries + ("new" to entry("new", "missing")),
-        ))), payload)
+        val unknown = RelayReducer().reduce(
+            state.copy(sessionGraphs = mapOf("s" to graph.withFixtureEntries(entries + entry("new", "missing")))), payload,
+        )
         assertEquals(state.sessionBranchGenerations, unknown.sessionBranchGenerations)
         assertEquals(pending, unknown.sessionSyncCommands["c"])
     }

@@ -32,6 +32,12 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
 
+    // 桌面单测与设备测试共用同一份夹具：两个源集互相看不见对方，各存一份拷贝必然漂移。
+    sourceSets {
+        getByName("test").java.srcDir("src/sharedTest/java")
+        getByName("androidTest").java.srcDir("src/sharedTest/java")
+    }
+
     // 单测跑在桌面上，`android.util.Log` 这类平台静态方法默认会抛“not mocked”。APP 里
     // 有些排障日志就写在会被单测直接驱动的纯函数里（例如 session.list 的落地诊断），
     // 那是刻意的——手机出问题时 logcat 抓不到，只能靠这些日志定位。允许平台方法返回默认值，

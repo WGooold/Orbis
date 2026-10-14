@@ -756,11 +756,11 @@ internal fun RemoteState.seedCachedSessionView(runtimeId: String, graph: Session
     val projection = (if (sameBranch) {
         mergeTemporaryOlderMessages(
             graph.projectLeafDeltaProjection(
-                previousView?.leafId, leaf, canonicalRowsForDeltaProjection(baseMessages, graph), sessionMessageJson,
+                previousView?.leafId, leaf, canonicalRowsForDeltaProjection(baseMessages, graph),
             ),
             graph, baseMessages,
         )
-    } else projectSessionGraph(graph.copy(cursor = SessionBranchCursor(leaf)), sessionMessageJson))
+    } else projectSessionGraph(graph.copy(cursor = SessionBranchCursor(leaf))))
         .let { if (it.error == "missing_parent") it.copy(error = null) else it }
     val (messages, overlay) = mergeProjectedWithStreaming(projection.messages, source)
     val branch = buildSessionPath(graph.entries, leaf)
@@ -1353,7 +1353,7 @@ private fun RuntimeConversation.applyCompleteSourceState(
 ): RuntimeConversation {
     val headAvailable = head.leafId == null || head.leafId in graph.entries
     val projection = if (!headAvailable) SessionProjectionResult(emptyList())
-        else projectSessionGraph(graph.copy(cursor = head), sessionMessageJson)
+        else projectSessionGraph(graph.copy(cursor = head))
     // A proven forward append keeps older paged ancestors just like an unchanged head. A rewind
     // or another branch must still remove rows outside its authoritative path.
     val sameBranch = sourceHeadLeafId == head.leafId || graph.isDescendant(head.leafId, sourceHeadLeafId)
@@ -1470,21 +1470,22 @@ class RelayReducer(
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
     /**
-     * `persistedSessionEntries` is supplied by RemoteViewModel after the batch has been written
-     * and read back from SessionGraphStore. Tests and the cache-failure fallback leave it null,
-     * which intentionally uses the wire entries directly for a live preview.
+     * `committed` is supplied by the connection layer after the batch has been written to and read
+     * back from SessionGraphStore: the projection's input is what the store holds, not what the wire
+     * just carried. Tests and the cache-failure fallback leave it null, which intentionally uses the
+     * wire entries directly for a live preview.
      */
     fun reduce(
         state: RemoteState,
         payload: String,
-        persistedSessionEntries: List<SessionGraphEntry>? = null,
+        committed: CommittedSessionBatch? = null,
         channel: String? = null,
     ): RemoteState {
         val event = runCatching { json.parseToJsonElement(payload).jsonObject["event"]?.jsonObject }.getOrNull()
         val syncId = event?.takeIf { it.string("type") == "session.snapshot" }?.string("syncId")
         val commandId = syncId?.let { id -> state.sessionSyncCommands.entries.firstOrNull { it.value.syncId == id }?.key }
         val input = commandId?.let(state::recoverLateHistoryRead) ?: state
-        val reduced = reducePayload(input, payload, persistedSessionEntries, channel)
+        val reduced = reducePayload(input, payload, committed, channel)
         val changedTargets = reduced.runtimes.keys.filterTo(mutableSetOf()) { key ->
             val old = input.runtimes[key]
             val next = reduced.runtimes[key]
@@ -1504,7 +1505,7 @@ class RelayReducer(
     private fun reducePayload(
         state: RemoteState,
         payload: String,
-        persistedSessionEntries: List<SessionGraphEntry>?,
+        committed: CommittedSessionBatch?,
         channel: String?,
     ): RemoteState {
         val message = json.parseToJsonElement(payload).jsonObject
@@ -1849,7 +1850,7 @@ class RelayReducer(
                     sessionSyncRequests = state.sessionSyncRequests - runtimeId,
                 )
             }
-            "runtime.event" -> reduceRuntimeEvent(state, message, persistedSessionEntries, channel)
+            "runtime.event" -> reduceRuntimeEvent(state, message, committed, channel)
             "session.list.result" -> reduceSessionListResult(state, message)
             "session.archive.changed" -> reduceSessionArchiveChanged(state, message)
             "session.browse.result" -> reduceSessionBrowseResult(state, message)
@@ -1945,7 +1946,7 @@ class RelayReducer(
     private fun reduceRuntimeEvent(
         state: RemoteState,
         envelope: JsonObject,
-        persistedSessionEntries: List<SessionGraphEntry>? = null,
+        committed: CommittedSessionBatch? = null,
         channel: String? = null,
     ): RemoteState {
         val runtimeId = envelope.string("runtimeId") ?: return state
@@ -2026,7 +2027,10 @@ class RelayReducer(
                 ) {
                     runCatching {
                         (state.sessionGraphs[patch.sessionId] ?: SessionGraph(patch.sessionId))
-                            .merge(cachePatches.last().canonicalPage(persistedSessionEntries ?: mergedPatchEntries(emptyList(), cachePatches)))
+                            .merge(cachePatches.last().canonicalPage(
+                                committed?.entries ?: mergedPatchEntries(emptyList(), cachePatches),
+                                committed?.display ?: mergedPatchDisplay(cachePatches),
+                            ))
                     }.getOrElse { error ->
                         val failure = "Session 历史缓存写入失败：${error.message ?: "无效条目"}"
                         return state.copy(
@@ -2171,13 +2175,12 @@ class RelayReducer(
                             it.messageId in sourceConversation.streamingMessageIds
                         }
                         val projection = if (contextChanged) {
-                            projectSessionGraph(graph.copy(cursor = SessionBranchCursor(view.leafId)), json)
+                            projectSessionGraph(graph.copy(cursor = SessionBranchCursor(view.leafId)))
                         } else {
                             val deltaProjection = graph.projectLeafDeltaProjection(
                                 oldLeaf,
                                 view.leafId,
                                 canonicalRowsForDeltaProjection(baseMessages, graph),
-                                json,
                             )
                             // Only a same-branch append may re-attach temporary older messages;
                             // a rewrite or rewind must be free to replace the displayed branch.
@@ -2514,7 +2517,8 @@ class RelayReducer(
                     } ?: conversation.retiredSourceEpochs,
                 ) else conversation
                 val snapshotForProjection = snapshot.copy(
-                    entries = persistedSessionEntries ?: snapshot.entries,
+                    entries = committed?.entries ?: snapshot.entries,
+                    display = committed?.display ?: snapshot.display,
                     cursor = SessionBranchCursor(targetLeafId),
                     targetLeafId = targetLeafId,
                 )
@@ -2678,12 +2682,13 @@ class RelayReducer(
                         // History entries are older than the existing boundary. Keep the current
                         // conversation even when the in-memory window lacks its older ancestors.
                         val full = if (conversation.sourceEpoch != null || graphForProjection.hasCompleteEntryChain(viewLeafId)) {
-                            projectSessionGraph(
-                                graphForProjection.copy(cursor = SessionBranchCursor(viewLeafId)),
-                                json,
-                            )
+                            projectSessionGraph(graphForProjection.copy(cursor = SessionBranchCursor(viewLeafId)))
                         } else {
-                            SessionProjectionResult(projectSessionEntries(snapshotForProjection.entries, json))
+                            SessionProjectionResult(projectSessionEntries(
+                                snapshotForProjection.entries,
+                                graphForProjection.display,
+                                graphForProjection.displayWindowStart,
+                            ))
                         }
                         val projectedIds = full.messages.map(ChatMessage::messageId).toSet()
                         full.copy(
@@ -2699,7 +2704,6 @@ class RelayReducer(
                             oldLeafId = oldLeaf,
                             newLeafId = viewLeafId,
                             currentMessages = canonicalRowsForDeltaProjection(baseMessages, graphForProjection),
-                            json = json,
                         )
                         // Only a same-branch append may re-attach temporary older messages;
                         // a rewrite or rewind must be free to replace the displayed branch.
