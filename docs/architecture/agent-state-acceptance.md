@@ -141,7 +141,9 @@ issue #6 的 Host 侧范围到此完成。剩下的只有模块 10 重试/压缩
 - 路径不完整时如实报告：`leaf_not_found` / `missing_parent` / `cycle_detected`，不假装历史完整。
 - 纯函数，不写模型、不发消息、**不改 App**：协议接入与 App 迁移留给 issue #10。
 
-issue #7 未交付部分：Host 侧的有界显示页缓存与范围索引、`history`/`catchup` 只补固定范围的服务端实现，以及 App 停止解释原生形状。
+- [display-page-cache.ts](../../packages/host/src/display-page-cache.ts)：有界显示页缓存与范围索引。有效性判据是`sourceEpoch`（不是 revision——同一代次里新内容改写的只是 live，更旧的范围没变），页数/单页条数/总字节三个上限，命中刷新 LRU，head 变化重置该会话覆盖范围；范围索引记录「已缓存到的最旧条目」与「是否已到分支起点」，只有带 `beforeEntryId` 的页才会把最旧边界往前推。
+
+issue #7 未交付部分：`history`/`catchup` 只补固定范围的服务端实现、协议接入，以及 App 停止解释原生形状。
 
 ## 回归要求
 
