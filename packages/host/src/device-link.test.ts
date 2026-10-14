@@ -227,7 +227,9 @@ describe("DeviceLink", () => {
       h.link.sendSessionSnapshot(Buffer.from("next"), done);
       expect(h.messagesSent()).toEqual(["msg:1", "msg:2", "msg:3"]);
     } finally { h.link.close(); }
-  });
+    // 这个用例要在背压下搬运数十 MB：整机并行跑测试时 10s 上限会偶发不够，
+    // 断言的正确性（准入、保留、释放）不依赖墙钟预算。
+  }, 30_000);
 
   it("path switch preserves sealed slices and rehandshake or revocation releases their reservations", () => {
     const h = harness({ pskRoot: randomKey() });

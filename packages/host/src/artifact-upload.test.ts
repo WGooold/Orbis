@@ -162,7 +162,9 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
       recovered.close();
       await recovered.flush();
     }
-  });
+    // 这个用例要落盘、重启、续传再校验哈希：整机并行跑测试时 10s 上限会偶发不够，
+    // 断言的正确性（持久前缀、续传、最终内容）不依赖墙钟预算。
+  }, 30_000);
 
   it("refuses data from a device that does not own the upload", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "pi-remote-upload-"));
