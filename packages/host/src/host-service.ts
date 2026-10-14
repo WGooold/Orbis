@@ -38,6 +38,7 @@ import {
   type EnvelopeChannel,
   type EnvelopeV2,
   type PathKind,
+  type HostCatalogBackend,
   type RelayToDeviceMessage,
   type RuntimeMetadata,
   type RuntimeEvent,
@@ -46,6 +47,7 @@ import {
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { DeviceViewFacts } from "./device-view-facts.js";
+import { HostStateFacts } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
@@ -227,6 +229,8 @@ export class HostService {
   readonly #agentFacts: AgentStateFacts;
   /** DeviceView：只对发起设备可见的回执，和共享事实分开写。 */
   readonly #deviceViewFacts: DeviceViewFacts;
+  /** HostState：Host 级共享领域（目前是聚合目录的逐后端完整性）。 */
+  readonly #hostStateFacts: HostStateFacts;
   readonly #notifications = new NotificationStore(runtimeId => {
     // 通知投影变化时同步模型里的引用摘要（ADR-0032 模块 18/19）；它只是引用，不复制权威。
     this.#agentFacts?.refreshNotifications(runtimeId);
@@ -332,6 +336,7 @@ export class HostService {
       notifications: (runtimeId) => this.#notifications.summary(runtimeId),
     });
     this.#deviceViewFacts = new DeviceViewFacts(agentStateOptions);
+    this.#hostStateFacts = new HostStateFacts({ registry: agentStateRegistry });
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
     }
@@ -1181,20 +1186,31 @@ export class HostService {
   /** 实际扫一遍所有后端（`#catalogWithCache` 的唯一慢路径）。 */
   async #collectCatalogs(): Promise<AgentSessionSummary[]> {
     const sessions: AgentSessionSummary[] = [];
+    // 逐后端记结果：拉取失败或后端没就绪，在模型里都不能退化成「它没有会话」（ADR-0032 模块 03）。
+    const backends: HostCatalogBackend[] = [];
     for (const backend of this.#backends) {
-      if (!backend.isReady()) continue;
+      if (!backend.isReady()) {
+        backends.push({ kind: backend.kind, ready: false, sessions: 0, complete: false, elapsedMs: 0 });
+        continue;
+      }
+      const started = Date.now();
       try {
-        const started = Date.now();
         const [active, archived] = await Promise.all([backend.catalog(), backend.catalog(true)]);
         const catalog = [...new Map([...active, ...archived].map((entry) => [entry.sessionId, entry])).values()];
         this.#options.log?.(`[debug] session.list：${backend.kind} 返回 ${catalog.length} 条（${Date.now() - started}ms）`);
         sessions.push(...catalog);
+        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: true, elapsedMs: Date.now() - started });
       } catch (error) {
-        this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${describeError(error)}`);
+        const detail = describeError(error).slice(0, 500);
+        this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);
+        backends.push({ kind: backend.kind, ready: true, sessions: 0, complete: false, elapsedMs: Date.now() - started, error: detail });
       }
     }
     const desktopIds = this.#desktopOwnedIds;
-    return sessions.filter(entry => entry.agentKind !== "codex" || !desktopIds.has(entry.sessionId)).slice(0, 2_000);
+    const visible = sessions.filter(entry => entry.agentKind !== "codex" || !desktopIds.has(entry.sessionId));
+    const limited = visible.slice(0, 2_000);
+    this.#hostStateFacts.catalog({ totalSessions: limited.length, truncated: limited.length < visible.length, backends });
+    return limited;
   }
 
   #recordDesktopThread(id: string): void {

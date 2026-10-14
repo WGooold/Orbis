@@ -238,6 +238,28 @@ export const AgentPermissionsStateSchema = z.strictObject({
 });
 export type AgentPermissionsState = z.infer<typeof AgentPermissionsStateSchema>;
 
+/** 目录里一个后端的读取结果（模块 03）。失败或未就绪**不是**「这个后端没有会话」。 */
+export const HostCatalogBackendSchema = z.strictObject({
+  kind: AgentKindSchema,
+  ready: z.boolean(),
+  sessions: z.number().int().nonnegative(),
+  /** 只有真正读完（或明确确认没就绪）才是完整；读取失败必须留 false。 */
+  complete: z.boolean(),
+  elapsedMs: z.number().int().nonnegative(),
+  error: z.string().max(500).optional(),
+});
+export type HostCatalogBackend = z.infer<typeof HostCatalogBackendSchema>;
+
+/** Host 聚合目录的逐后端完整性（HostState.catalog）。 */
+export const HostCatalogStateSchema = z.strictObject({
+  totalSessions: z.number().int().nonnegative(),
+  /** 聚合结果被上限截断：客户端不能把总数当成全部。 */
+  truncated: z.boolean(),
+  backends: z.array(HostCatalogBackendSchema).max(16),
+  checkedAt: z.number().int().nonnegative(),
+});
+export type HostCatalogState = z.infer<typeof HostCatalogStateSchema>;
+
 /** 设备操作回执状态（模块 13）。`accepted` 表示 Host 已受理、还没有任何后端结果。 */
 export const AgentOperationStateSchema = z.enum([
   "accepted", "pending", "success", "failure", "cancelled",

@@ -24,7 +24,7 @@
 | --- | --- | --- |
 | 01 身份与运行元数据 | AgentState.identity / availability | 模型已定义；adapter 已有 metadata |
 | 02 后端可用性与桌面接入 | HostState.backends；AgentState.availability | 模型已定义；Host 已有 readiness 聚合 |
-| 03 会话目录与归档 | HostState.catalog | 模型已定义；缺逐后端完整性 |
+| 03 会话目录与归档 | HostState.catalog | **已接入事实**：逐后端读取结果、失败原因与截断标记；任一后端没读全就是 partial，不冒充完整空目录 |
 | 04 聊天历史与 canonical Entries | AgentState.history | 模型已定义；历史仍在 source/adapter |
 | 05 会话分支与当前 head | AgentState.history | 模型已定义；缺统一 displayEntries |
 | 06 实时消息与流式正文 | AgentState.live.messages | 模型已定义；live 在 source adapter |
@@ -120,7 +120,17 @@
 - Host 的通知投影一变化（apply / dismiss / expire / outcome / end / attach）就刷新摘要；身份还没建立时不补写，等 metadata 到达时带上当时的摘要。
 - 来源代次用固定 id 而不是通知的 `hostEpoch`：Host 重建时整份模型本来就换代次，不能把「通知代次」误当成来源重建而要求重新基线。
 
-未交付：模块 03 目录的逐后端完整性（下一批），模块 10 重试/压缩的真实阶段（需要适配层事实）。
+未交付：模块 03 目录的逐后端完整性（见第 5 批），模块 10 重试/压缩的真实阶段（需要适配层事实）。
+
+## 第 5 批（issue #6 收尾：目录完整性）
+
+已交付——模块 03 聚合目录的逐后端完整性：
+
+- 新增 [host-state-facts.ts](../../packages/host/src/host-state-facts.ts) 写入 `HostState.catalog`：每个后端的 `kind` / `ready` / `sessions` / `complete` / `elapsedMs` / `error`，加上总数与截断标记。
+- 只要有一个后端没就绪、读取失败，或聚合结果被 2,000 条上限截断，整个目录就是 `partial`。于是「某个后端这次没读到」在模型里不会退化成「那个后端没有会话」。
+- 目录缓存命中时不会重复提交；内容没变时 Registry 本来就不推进版本。
+
+issue #6 的 Host 侧范围到此完成。剩下的只有模块 10 重试/压缩的真实阶段：那必须由各适配层提供事实，Host 不能从 idle 或日志文案推断。
 
 ## 回归要求
 
