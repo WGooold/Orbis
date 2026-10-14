@@ -34,8 +34,8 @@
 | 10 重试与上下文压缩 | AgentState.execution.retry / compaction | **部分接入**：字段已在模型里，但仍显式 `unavailable`——等适配层提供真实阶段 |
 | 11 交互请求与审批 | AgentState.interactions | **已接入事实**：`snapshot` 是完整清单，回答/取消按 id 显式删除 |
 | 12 消息队列与投递状态 | AgentState.delivery.queue | **已接入事实**：只有部分清单（后端没有队列快照事件），因此不能当基线 |
-| 13 命令关联与执行回执 | HostState.operations；DeviceView | 模型已定义；Host 已有有界账本 |
-| 14 权限摘要与可编辑设置 | AgentState.permissions | 模型已定义；已有 opaque 契约，待接入 |
+| 13 命令关联与执行回执 | HostState.operations；DeviceView | **已接入事实**：受理先记 accepted，后端结果覆盖同一条；回执按设备作用域、有界淘汰并按 id 显式删除 |
+| 14 权限摘要与可编辑设置 | AgentState.permissions | **已接入事实**：raw 权限 + opaque management；缺 management 不等于权限更宽，离线保留最后已知值 |
 | 15 模型与思考级别 | AgentState.model | **已接入事实**：metadata 没报就是整个领域 unknown；选项明细仍走 commands |
 | 16 上下文与 tokens | AgentState.context | **已接入事实**：缺事实为 unknown，不假报已支持 |
 | 17 能力与资源 | AgentState.capabilities / resources | **已接入事实**：命令菜单按完整清单替换；资源（skills/prompts/MCP）仍归各后端 |
@@ -92,10 +92,24 @@
 
 未交付：
 
-- 03 目录逐后端完整性、13 命令回执、14 权限、18/19 通知来源、23 诊断记录仍在既有实现里，未并入模型（通知已有独立 Store，按 ADR 复用即可）。
+- 03 目录逐后端完整性、18/19 通知来源、23 诊断记录仍在既有实现里，未并入模型（通知已有独立 Store，按 ADR 复用即可）。
 - 04–08 历史与 live 正文继续由 source adapter 的版本化复制负责（ADR-0024/0025），模型只记引用，不重复正文。
 - 已知边界：队列没有完整清单事件，重新接入前观察到的条目要等会话结束（`forget`）或后端提供完整清单才会消失；模型里以 `completeness: partial` 如实表达。
 - 协议层读取（App/桌面消费模型）留给 issue #10；供应商公共投影与持久诊断记录分别留给 #8、#9。
+
+## 第 3 批（issue #6 续）交付与未交付
+
+已交付：
+
+- **模块 14 权限**：`AgentState.permissions` 取 metadata 的 raw 权限与 opaque `management`。没有 `management` 只表示后端没提供编辑界面（ADR-0031），不是「权限更宽」；metadata 没报权限时整个领域 unknown，离线保留最后已知值。
+- **模块 13 命令回执**：新增 [device-view-facts.ts](../../packages/host/src/device-view-facts.ts)，把 Host 受理与后端结果写进 **DeviceView.operations**——只对发起设备可见，按 operationId 覆盖同一条，每台设备最多 256 条并按最旧淘汰（淘汰用显式按 id 删除同步，不靠缺席推断）；设备被撤销时终结该视图。
+- Registry 增加集合条目键不能为空白的身份校验。
+- 两个重型 Host 测试（device-link 背压、artifact 续传）显式声明 30s 超时：整机并行跑测试时 10s 上限偶发不够，断言未改。
+
+未交付（issue #6 剩余）：
+
+- 模块 10 重试/压缩的真实阶段仍显式 `unavailable`，需要各适配层提供事实。
+- 模块 03 目录的逐后端完整性、模块 18/19 通知在模型里的归属引用尚未接入；通知继续由既有 NotificationStore 独立拥有（ADR-0028），接入时只做引用与摘要，不复制权威。
 
 ## 回归要求
 

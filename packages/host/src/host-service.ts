@@ -45,6 +45,7 @@ import {
 
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry } from "./agent-state-registry.js";
+import { DeviceViewFacts } from "./device-view-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
@@ -224,6 +225,8 @@ export class HostService {
    * 仍是原来的消息。协议层接入（issue #10）之前，这里只供 Host 内部与测试读取。
    */
   readonly #agentFacts: AgentStateFacts;
+  /** DeviceView：只对发起设备可见的回执，和共享事实分开写。 */
+  readonly #deviceViewFacts: DeviceViewFacts;
   readonly #notifications = new NotificationStore(runtimeId => {
     for (const deviceId of this.#links.keys()) this.#sendNotificationSnapshot(deviceId, runtimeId);
   });
@@ -314,12 +317,18 @@ export class HostService {
       }),
     ];
     this.#backends = backends;
-    this.#agentFacts = new AgentStateFacts({
-      registry: new AgentStateRegistry(),
+    // 共享同一个单写者：Agent 事实与设备视图回执都写进这一份模型。
+    const agentStateRegistry = new AgentStateRegistry();
+    const agentStateOptions = {
+      registry: agentStateRegistry,
       hostId: this.#identity.hostId,
-      kindOf: (runtimeId) => this.#backends.find((backend) => backend.ownsRuntime(runtimeId))?.kind,
       ...(options.log === undefined ? {} : { log: options.log }),
+    };
+    this.#agentFacts = new AgentStateFacts({
+      ...agentStateOptions,
+      kindOf: (runtimeId) => this.#backends.find((backend) => backend.ownsRuntime(runtimeId))?.kind,
     });
+    this.#deviceViewFacts = new DeviceViewFacts(agentStateOptions);
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
     }
@@ -834,6 +843,7 @@ export class HostService {
     this.#p2p?.forget(deviceId);
     this.#sessionSync.clearDevice(deviceId);
     this.#notifications.releaseDevice(deviceId);
+    this.#deviceViewFacts.forget(deviceId);
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
     this.#persist();
@@ -1083,10 +1093,19 @@ export class HostService {
     }
     this.#commandOwners.set(commandKey, { ...priorOwner, deviceId, at: Date.now(), fingerprint,
       ...(command.type === "interaction.respond" ? { requestId: command.requestId } : {}) });
+    this.#deviceViewFacts.accepted(deviceId, {
+      operationId: commandId,
+      runtimeId,
+      ...(command.type === "interaction.respond" ? { requestId: command.requestId } : {}),
+    });
     for (const backend of this.#backends) {
       if (!backend.isReady() || !backend.ownsRuntime(runtimeId)) continue;
       const result = backend.dispatchCommand(runtimeId, commandId, command);
       if (result === "handled") return;
+      this.#deviceViewFacts.settled(deviceId, {
+        operationId: commandId, runtimeId, state: "failure",
+        detail: result === "offline" ? "runtime_offline" : "unsupported_command",
+      });
       this.#sendToDevice(deviceId, {
         type: "protocol.error",
         code: result === "offline" ? "runtime_offline" : "unsupported_command",
@@ -1490,6 +1509,14 @@ export class HostService {
             message: event.type === "runtime.error" ? event.message : event.error ?? "回答未送达，请重新提交。" }, owner.deviceId);
         }
         if (event.type === "runtime.error" || event.status !== "pending") owner.terminal = true;
+        this.#deviceViewFacts.settled(owner.deviceId, {
+          operationId: event.commandId!,
+          runtimeId,
+          state: event.type === "runtime.error" ? "failure" : event.ok ? "success" : event.status ?? "failure",
+          ...(owner.requestId === undefined ? {} : { requestId: owner.requestId }),
+          ...(event.type === "runtime.error" ? { detail: event.message }
+            : event.error === undefined ? {} : { detail: event.error }),
+        });
         this.#sendToDevice(owner.deviceId, this.#runtimeEventMessage(runtimeId, event)); return;
       }
       return;

@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import {
   type AgentCapabilityItem, type AgentContextState, type AgentDeliveryItem, type AgentExecutionState,
-  type AgentInteractionItem, type AgentKind, type AgentModelState, type DomainAvailability,
+  type AgentInteractionItem, type AgentKind, type AgentModelState, type AgentPermissionsState,
+  type DomainAvailability,
   type DomainCompleteness, type DomainSource, type DomainState, type InteractionRequest,
   type RuntimeCapabilities, type RuntimeEvent, type RuntimeMetadata, type RuntimeStatus,
 } from "@pi-remote/protocol";
@@ -34,7 +35,7 @@ const INTERESTING_EVENTS: ReadonlySet<RuntimeEvent["type"]> = new Set([
   "interaction.requested", "interaction.snapshot", "interaction.resolved", "interaction.cancelled",
 ] as const);
 
-const SESSION_KEYS = ["execution", "model", "context"] as const;
+const SESSION_KEYS = ["execution", "model", "context", "permissions"] as const;
 const COLLECTION_KEYS = ["delivery", "interactions", "capabilities"] as const;
 /** 身份建立前的缓冲上限；超过就丢掉最早的一条，避免为没接上的 runtime 无限占内存。 */
 const MAX_PENDING_ITEMS = 128;
@@ -237,7 +238,7 @@ export class AgentStateFacts {
       for (const domain of pending.fresh) session.fresh.add(domain);
     }
     session.revision += 1;
-    const touched = new Set<StateDomain>(["execution", "model", "context"]);
+    const touched = new Set<StateDomain>(["execution", "model", "context", "permissions"]);
     for (const domain of session.fresh) touched.add(domain);
     this.#commit(session, touched);
   }
@@ -334,6 +335,13 @@ export class AgentStateFacts {
         });
     }
 
+    if (touched.has("permissions")) {
+      const permissions = permissionsValue(metadata);
+      this.#registry.commitValue(scope, "permissions", permissions === null
+        ? { source, availability: "unknown", completeness: "unknown", value: null }
+        : { source, availability: "ready", completeness: "complete", value: permissions });
+    }
+
     if (touched.has("delivery") && session.fresh.has("delivery")) {
       // 后端没有队列完整清单事件，所以这里只能是部分清单：它合并、不删除。
       this.#registry.commitCollection(scope, "delivery", {
@@ -404,6 +412,35 @@ export class AgentStateFacts {
     return session !== undefined && session.runtimeId === runtimeId ? session : undefined;
   }
 }
+
+/**
+ * 权限领域值。`management` 缺失是 null（后端没提供编辑界面），不是「权限更宽」；
+ * 整个 `permissions` 缺失才是领域 unknown（ADR-0031）。
+ */
+const permissionsValue = (metadata: RuntimeMetadata | null): AgentPermissionsState | null => {
+  const permissions = metadata?.permissions;
+  if (permissions === undefined) return null;
+  const management = metadata?.permissionManagement;
+  return {
+    ...permissions,
+    management: management === undefined ? null : {
+      summary: management.summary,
+      details: management.details,
+      tone: management.tone,
+      settings: management.settings.map(setting => ({
+        id: setting.id,
+        label: setting.label,
+        ...(setting.currentValue === undefined ? {} : { currentValue: setting.currentValue }),
+        ...(setting.disabledReason === undefined ? {} : { disabledReason: setting.disabledReason }),
+        options: setting.options.map(option => ({
+          value: option.value,
+          label: option.label,
+          ...(option.description === undefined ? {} : { description: option.description }),
+        })),
+      })),
+    },
+  };
+};
 
 const deliveryItem = (event: Extract<RuntimeEvent, { type: "message.queued" }>): AgentDeliveryItem => ({
   queueId: event.queueId,

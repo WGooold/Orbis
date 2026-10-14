@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type {
-  AgentDeliveryItem, AgentExecutionState, AgentModelState, InteractionRequest, RuntimeEvent, RuntimeMetadata,
+  AgentDeliveryItem, AgentExecutionState, AgentModelState, AgentPermissionsState, InteractionRequest,
+  RuntimeEvent, RuntimeMetadata,
 } from "@pi-remote/protocol";
 
 import { AgentStateFacts } from "./agent-state-facts.js";
@@ -192,6 +193,41 @@ describe("AgentStateFacts 重新接入与隔离", () => {
     expect(facts.baseline("codex:r1", "execution")?.action).toBe("state");
     expect(facts.baseline("codex:r1", "history")).toEqual({ action: "baseline", state: null });
     expect(facts.baseline("codex:r9", "execution")).toBeUndefined();
+  });
+
+  it("权限来自 metadata：有 management 才是可编辑契约，离线保留最后已知值", () => {
+    const { registry, facts } = setup();
+    facts.observe("codex:r1", metadata());
+    expect(read(registry, "permissions")?.availability).toBe("unknown");
+
+    facts.observe("codex:r1", metadata({
+      status: "running",
+      permissions: { sandbox: "workspace-write", approvalPolicy: "on-request", problem: "配置文件不可读" },
+    }));
+    const withoutManagement = read<AgentPermissionsState>(registry, "permissions");
+    expect(withoutManagement?.availability).toBe("ready");
+    // 没有 management 只表示后端没提供编辑界面，不代表权限更宽。
+    expect(withoutManagement?.value?.management).toBeNull();
+    expect(withoutManagement?.value?.problem).toBe("配置文件不可读");
+
+    facts.observe("codex:r1", metadata({
+      permissions: { sandbox: "read-only", approvalPolicy: "never" },
+      permissionManagement: {
+        summary: "只读", details: "当前会话不能写盘", tone: "restricted",
+        settings: [{
+          id: "sandbox", label: "沙箱", currentValue: "read-only",
+          options: [{ value: "read-only", label: "只读" }, { value: "workspace-write", label: "可写工作区" }],
+        }],
+      },
+    }));
+    const management = read<AgentPermissionsState>(registry, "permissions");
+    expect(management?.value?.management?.tone).toBe("restricted");
+    expect(management?.value?.management?.settings[0]?.options).toHaveLength(2);
+
+    facts.runtimeOffline("codex:r1", "loopback closed");
+    const offline = read<AgentPermissionsState>(registry, "permissions");
+    expect(offline?.availability).toBe("unknown");
+    expect(offline?.value?.sandbox).toBe("read-only");
   });
 
   it("无关或迟到的事件不会抛错，也不会写进模型", () => {

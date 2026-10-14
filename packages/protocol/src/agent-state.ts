@@ -200,6 +200,62 @@ export const AgentContextStateSchema = z.strictObject({
 });
 export type AgentContextState = z.infer<typeof AgentContextStateSchema>;
 
+/** 一条可编辑权限设置（模块 14）。形状与 ADR-0031 的 opaque 契约一致。 */
+export const AgentPermissionSettingSchema = z.strictObject({
+  id: z.string().min(1).max(256),
+  label: z.string().max(512),
+  currentValue: z.string().max(4_096).optional(),
+  disabledReason: z.string().max(4_000).optional(),
+  options: z.array(z.strictObject({
+    value: z.string().min(1).max(4_096),
+    label: z.string().min(1).max(512),
+    description: z.string().max(4_000).optional(),
+  })),
+});
+export type AgentPermissionSetting = z.infer<typeof AgentPermissionSettingSchema>;
+
+/**
+ * 权限摘要与设置（模块 14）。
+ *
+ * `management` 是给客户端显示的 opaque 契约；raw 权限保留供诊断与电脑侧核对。
+ * 没有 `management` 不代表权限更宽——它只说明后端没提供编辑界面（ADR-0031）。
+ */
+export const AgentPermissionsStateSchema = z.strictObject({
+  sandbox: z.string(),
+  approvalPolicy: z.string(),
+  reviewer: z.string().optional(),
+  networkAccess: z.boolean().optional(),
+  writableRoots: z.array(z.string()).optional(),
+  readableRoots: z.array(z.string()).optional(),
+  profile: z.string().optional(),
+  problem: z.string().optional(),
+  management: z.strictObject({
+    summary: z.string(),
+    details: z.string(),
+    tone: z.enum(["restricted", "full", "unknown", "problem"]),
+    settings: z.array(AgentPermissionSettingSchema),
+  }).nullable(),
+});
+export type AgentPermissionsState = z.infer<typeof AgentPermissionsStateSchema>;
+
+/** 设备操作回执状态（模块 13）。`accepted` 表示 Host 已受理、还没有任何后端结果。 */
+export const AgentOperationStateSchema = z.enum([
+  "accepted", "pending", "success", "failure", "cancelled",
+  "not_cancelable", "already_delivered", "message_id_conflict",
+]);
+export type AgentOperationState = z.infer<typeof AgentOperationStateSchema>;
+
+/** 一条设备私有回执（DeviceView.operations）。共享操作本身归 HostState.operations。 */
+export const AgentOperationItemSchema = z.strictObject({
+  operationId: z.string().min(1).max(256),
+  runtimeId: z.string().min(1).max(256),
+  requestId: z.string().min(1).max(256).optional(),
+  state: AgentOperationStateSchema,
+  at: z.number().int().nonnegative(),
+  detail: z.string().max(2_000).optional(),
+});
+export type AgentOperationItem = z.infer<typeof AgentOperationItemSchema>;
+
 /** 一条能力菜单项（模块 17）。选项明细仍走既有 `RuntimeSlashCommand`，模型只记形状。 */
 export const AgentCapabilityItemSchema = z.strictObject({
   name: z.string().min(1).max(256),

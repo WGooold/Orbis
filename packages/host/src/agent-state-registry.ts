@@ -131,6 +131,10 @@ export class AgentStateRegistry {
   commitCollection(scope: StateScope, domain: StateDomain, fact: CollectionFact): CommitResult {
     const invalid = validateFact(fact);
     if (invalid !== undefined) return { ok: false, code: "invalid_fact", detail: invalid };
+    // 条目身份由来源决定，但不能是空白：空白键在模型里既不能索引也不能删除。
+    for (const id of Object.keys(fact.items)) {
+      if (id.trim() === "") return { ok: false, code: "invalid_fact", detail: "items.key" };
+    }
     const key = entryKey(scope, domain);
     const existing = this.#entries.get(key);
     const rejected = this.#reject(scope, domain, key, existing, fact);
