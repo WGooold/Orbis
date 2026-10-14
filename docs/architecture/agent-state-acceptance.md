@@ -25,8 +25,8 @@
 | 01 身份与运行元数据 | AgentState.identity / availability | 模型已定义；adapter 已有 metadata |
 | 02 后端可用性与桌面接入 | HostState.backends；AgentState.availability | 模型已定义；Host 已有 readiness 聚合 |
 | 03 会话目录与归档 | HostState.catalog | **已接入事实**：逐后端读取结果、失败原因与截断标记；任一后端没读全就是 partial，不冒充完整空目录 |
-| 04 聊天历史与 canonical Entries | AgentState.history | 模型已定义；历史仍在 source/adapter |
-| 05 会话分支与当前 head | AgentState.history | 模型已定义；缺统一 displayEntries |
+| 04 聊天历史与 canonical Entries | AgentState.history | **Host 侧投影已实现**：`projectDisplayEntries` 产出标准 ChatMessage（文本/思考/工具调用/产物/摘要）；未知条目保留身份与原因 |
+| 05 会话分支与当前 head | AgentState.history | **Host 侧投影已实现**：路径重建与压缩裁剪在 Host 判定，缺父/成环/找不到叶子如实报告；App 仍用旧投影 |
 | 06 实时消息与流式正文 | AgentState.live.messages | 模型已定义；live 在 source adapter |
 | 07 回合身份与计时 | AgentState.execution.turn | 模型已定义；分散在 source 与 App |
 | 08 工具调用与执行结果 | AgentState.live.tools | 模型已定义；工具库存在 source |
@@ -131,6 +131,17 @@
 - 目录缓存命中时不会重复提交；内容没变时 Registry 本来就不推进版本。
 
 issue #6 的 Host 侧范围到此完成。剩下的只有模块 10 重试/压缩的真实阶段：那必须由各适配层提供事实，Host 不能从 idle 或日志文案推断。
+
+## 第 6 批（issue #7 前半段：Host 侧显示投影）
+
+已交付——[display-entries.ts](../../packages/host/src/display-entries.ts)：
+
+- `projectDisplayEntries(entries, leafId)` 把 canonical 条目投影成客户端可直接渲染的结果，语义与今天 Android 的实现逐条对齐：角色映射（toolResult/tool → tool、bashExecution → system、custom → custom）、正文块（文本/思考/工具调用的两种历史命名）、压缩裁剪（`firstKeptEntryId` 指不到就只保留压缩点及之后）、失败回填（`remoteFailure` 优先，缺失时回退 provider 文案且不重复追加）、自定义消息的显示开关与产物引用、分支摘要、以及原生事件忽略名单。
+- 两处有意的改进：不可显示的条目**不再被静默丢弃**，而是带 `nativeType` 与原因（`unknown_native_type` / `not_rendered` / `missing_content`）留在结果里；结果带 `projectionVersion`，投影语义变化时消费方据此失效显示缓存。
+- 路径不完整时如实报告：`leaf_not_found` / `missing_parent` / `cycle_detected`，不假装历史完整。
+- 纯函数，不写模型、不发消息、**不改 App**：协议接入与 App 迁移留给 issue #10。
+
+issue #7 未交付部分：Host 侧的有界显示页缓存与范围索引、`history`/`catchup` 只补固定范围的服务端实现，以及 App 停止解释原生形状。
 
 ## 回归要求
 
