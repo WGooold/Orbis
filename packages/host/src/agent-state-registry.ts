@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 
 import {
-  agentKeyId, type AgentKey, type AgentStateDomain, type DomainAvailability,
-  type DomainCompleteness, type DomainSource, type DomainState, type HostStateDomain,
+  agentKeyId, deviceKeyId, type AgentKey, type AgentStateDomain, type DeviceKey,
+  type DeviceStateDomain, type DomainAvailability, type DomainCompleteness, type DomainSource,
+  type DomainState, type HostStateDomain,
 } from "@pi-remote/protocol";
 
 /**
@@ -21,8 +22,12 @@ import {
 const DEFAULT_MAX_VALUE_BYTES = 262_144;
 const DEFAULT_MAX_ENTRIES = 512;
 
-export type StateScope = { readonly kind: "host" } | { readonly kind: "agent"; readonly key: AgentKey };
-export type StateDomain = AgentStateDomain | HostStateDomain;
+export type StateScope =
+  | { readonly kind: "host" }
+  | { readonly kind: "agent"; readonly key: AgentKey }
+  /** 按设备投影：Host 持有，但不向其他设备广播。 */
+  | { readonly kind: "device"; readonly key: DeviceKey };
+export type StateDomain = AgentStateDomain | HostStateDomain | DeviceStateDomain;
 
 export type DomainFact = {
   readonly source: DomainSource;
@@ -72,7 +77,9 @@ type Entry = {
   state: DomainState<unknown>;
 };
 
-const scopeId = (scope: StateScope): string => scope.kind === "host" ? "host" : "agent:" + agentKeyId(scope.key);
+const scopeId = (scope: StateScope): string => scope.kind === "host"
+  ? "host"
+  : scope.kind === "agent" ? "agent:" + agentKeyId(scope.key) : "device:" + deviceKeyId(scope.key);
 const entryKey = (scope: StateScope, domain: StateDomain): string => scopeId(scope) + "\u0000" + domain;
 const byteLength = (text: string): number => new TextEncoder().encode(text).length;
 

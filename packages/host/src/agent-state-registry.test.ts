@@ -9,6 +9,7 @@ const agent = (sessionId = "s1"): StateScope => ({
   kind: "agent",
   key: { hostId: "host", agentKind: "codex", sessionId } satisfies AgentKey,
 });
+const device = (deviceId = "phone-1"): StateScope => ({ kind: "device", key: { hostId: "host", deviceId } });
 const source = (over: Partial<DomainSource> = {}): DomainSource => ({
   producer: "adapter", sourceId: "codex:1", sourceEpoch: "e1", sourceRevision: 1, ...over,
 });
@@ -117,6 +118,19 @@ describe("AgentStateRegistry 清单与缺席删除", () => {
     });
     expect(accepted.ok).toBe(true);
     expect(Object.keys(registry.read<Record<string, unknown>>(agent(), "interactions")?.value ?? {})).toEqual(["b"]);
+  });
+
+  it("设备视图与 Host / 会话作用域互相隔离", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    const source = { producer: "host", sourceId: "host:1", sourceEpoch: "e1", sourceRevision: 1 } as const;
+    registry.commitCollection(device("phone-1"), "notifications", { ...ready, source, items: { n1: { dismissed: true } } });
+    registry.commitCollection(device("phone-2"), "notifications", { ...ready, source, items: {} });
+    registry.commitCollection(host, "catalog", { ...ready, source, items: {} });
+    expect(registry.read(device("phone-1"), "notifications")).toBeDefined();
+    expect(registry.endScope(device("phone-1"))).toBe(1);
+    expect(registry.read(device("phone-1"), "notifications")).toBeUndefined();
+    expect(registry.read(device("phone-2"), "notifications")).toBeDefined();
+    expect(registry.read(host, "catalog")).toBeDefined();
   });
 
   it("终结作用域只清自己的领域", () => {

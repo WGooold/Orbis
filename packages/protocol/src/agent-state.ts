@@ -35,6 +35,22 @@ export type AgentKey = z.infer<typeof AgentKeySchema>;
 /** 稳定的会话身份字符串。只用于本地索引与日志，不是线上字段。 */
 export const agentKeyId = (key: AgentKey): string => JSON.stringify([key.hostId, key.agentKind, key.sessionId]);
 
+/**
+ * 设备身份。设备视图是 Host 持有的**按设备投影**：同一份共享事实，只对该设备可见的
+ * 关闭记录与私有回执在这里过滤，不重新定义共享 Agent 事实。
+ */
+export const DeviceKeySchema = z.strictObject({
+  hostId: identity,
+  deviceId: identity,
+});
+export type DeviceKey = z.infer<typeof DeviceKeySchema>;
+
+export const deviceKeyId = (key: DeviceKey): string => JSON.stringify([key.hostId, key.deviceId]);
+
+/** 设备视图领域：通知关闭、私有命令回执与传输任务。 */
+export const DeviceStateDomainSchema = z.enum(["notifications", "operations", "transfers"]);
+export type DeviceStateDomain = z.infer<typeof DeviceStateDomainSchema>;
+
 /** 设备操作身份：回执按发起设备和操作隔离，共享操作本身仍归 HostState.operations。 */
 export const OperationKeySchema = z.strictObject({
   hostId: identity,
