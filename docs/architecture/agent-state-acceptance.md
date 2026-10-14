@@ -2,6 +2,28 @@
 
 这份清单是 [ADR-0032](../adr/0032-host-owned-agent-state-model.md) 的验收登记表：36 个状态模块逐项对应到统一模型的归属、作用域与迁移状态。ADR 要求在 Agent 子域完成后仍然保留这份登记，避免「先接了通知就宣布完整模型完成」。
 
+## 交接：现在在哪、下一步做什么
+
+> 给接手的人或新会话。完成 issue #12 与 #11 后可以删掉这一节。
+
+**状态（2026-10-14，HEAD `ab546eb`，22 个提交，全部未 push，工作树干净）**
+
+- 统一模型：36 个模块里 10 个已接入真实事实（03 目录、09–19 的 Host 侧投影，外加权限、命令回执、通知引用）。
+- 显示投影：三个适配层都会在提交条目时附 `display` 批次（Pi/DSH 走共用 `RecoverableSessionSource`，Codex 走自己的 patch 出口），协议已带该字段与 `projectionVersion`。已核对当前 App 用 `ignoreUnknownKeys` 逐键读取，新增字段不影响它。
+- 未开始：App 消费显示投影（issue #12）、协议硬版本升级（issue #11）。
+
+**下一步是 issue #12**（文件级步骤在 issue 正文里）：
+
+`HostConnection.kt` 解析 → `RemoteState.kt` 按 `entryId` 存显示结果 → `SessionGraphStore.kt` 落盘并在 `projectionVersion` 变化时重建 → 删 `SessionGraph.kt` 的原生解释（`PiMessageProjection`、压缩裁剪、`stopReason` 判定、`custom_message` 拼装）→ `MainActivity.kt` 渲染 → #11 升协议版本。
+
+**硬约束（踩过或明确写死的）**
+
+- Kotlin 改动必须经 `scripts/windows/android-build.ps1` 构建 + `android/app/src/test` 单测通过才能提交；不要在未编译的情况下入库。
+- 不要直接跑 `gradlew`（绕过构建锁）；模拟器一实例一持有者，用完必须关闭。
+- 三个后端都已供 `display`，所以客户端可以**一次切换**，不需要按后端灰度。
+- 仍是**只写不读**：目前没有任何客户端消费这些投影，所以运行中的 Host/App 不需要重启。
+- push、发版、重启 Host 都需要单独授权；本分支至今未 push。
+
 作用域与版本：
 
 - **HostState**：Host 级共享领域（`HostStateDomain`），按 `hostId` 记版本。
