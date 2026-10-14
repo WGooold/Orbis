@@ -39,8 +39,8 @@
 | 15 模型与思考级别 | AgentState.model | **已接入事实**：metadata 没报就是整个领域 unknown；选项明细仍走 commands |
 | 16 上下文与 tokens | AgentState.context | **已接入事实**：缺事实为 unknown，不假报已支持 |
 | 17 能力与资源 | AgentState.capabilities / resources | **已接入事实**：命令菜单按完整清单替换；资源（skills/prompts/MCP）仍归各后端 |
-| 18 通知生产者事实 | adapter 事实 → AgentState.notifications | 已有实现，待接入 |
-| 19 Host 通知生命周期 | AgentState.notifications；DeviceView | 已有实现，待接入 |
+| 18 通知生产者事实 | adapter 事实 → AgentState.notifications | 已有实现（NotificationStore 消费来源事实）；模型侧只记引用 |
+| 19 Host 通知生命周期 | AgentState.notifications；DeviceView | **已接入引用**：Store 仍是唯一权威，模型发布 hostEpoch / revision / 条数 / 条件 code / 核对程度 |
 | 20 供应商手机摘要 | HostState.providers | 已有实现，待接入；缺领域版本 |
 | 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
 | 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
@@ -110,6 +110,17 @@
 
 - 模块 10 重试/压缩的真实阶段仍显式 `unavailable`，需要各适配层提供事实。
 - 模块 03 目录的逐后端完整性、模块 18/19 通知在模型里的归属引用尚未接入；通知继续由既有 NotificationStore 独立拥有（ADR-0028），接入时只做引用与摘要，不复制权威。
+
+## 第 4 批（issue #6 续）交付与未交付
+
+已交付——模块 18/19 通知的模型归属：
+
+- `NotificationStore.summary()` 发布**引用摘要**：`hostEpoch`、`revision`、`sessionId`、`activeCount`、条件 `code`/`severity`、`complete`、`verification`。刻意不含正文——条目、期限与设备关闭仍由 Store 唯一拥有（ADR-0028），模型不复制第二份权威。
+- 模型里的通知写者是 `host:notifications`（producer `host`），与后端适配器来源分开，因此同一个会话里两个写者互不冲突。
+- Host 的通知投影一变化（apply / dismiss / expire / outcome / end / attach）就刷新摘要；身份还没建立时不补写，等 metadata 到达时带上当时的摘要。
+- 来源代次用固定 id 而不是通知的 `hostEpoch`：Host 重建时整份模型本来就换代次，不能把「通知代次」误当成来源重建而要求重新基线。
+
+未交付：模块 03 目录的逐后端完整性（下一批），模块 10 重试/压缩的真实阶段（需要适配层事实）。
 
 ## 回归要求
 

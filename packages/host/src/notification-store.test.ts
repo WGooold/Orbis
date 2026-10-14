@@ -16,6 +16,15 @@ const make = () => { let time = 1000; const changed = vi.fn();
 afterEach(() => stores.splice(0).forEach(store => store.close()));
 
 describe("Host notification lifecycle", () => {
+  it("summary 只发布引用：条数、条件 code 与核对程度，不含正文", () => {
+    const h = make(); h.store.apply("runtime", source(1, [condition("retry"), condition("sandbox")]));
+    const summary = h.store.summary("runtime");
+    expect(summary).toMatchObject({ sessionId: "session", activeCount: 2, complete: true, verification: "confirmed" });
+    expect(summary?.conditions.map(item => item.code)).toEqual(["retry", "sandbox"]);
+    expect(JSON.stringify(summary)).not.toContain("message");
+    expect(h.store.summary("unknown-runtime")).toBeUndefined();
+  });
+
   it("recovers a lost resolution with a full inventory without clearing another condition", () => {
     const h = make(); h.store.apply("runtime", source(1, [condition("retry"), condition("sandbox")]));
     const sandbox = h.items()[1]?.notificationId;

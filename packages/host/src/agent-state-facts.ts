@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import {
   type AgentCapabilityItem, type AgentContextState, type AgentDeliveryItem, type AgentExecutionState,
-  type AgentInteractionItem, type AgentKind, type AgentModelState, type AgentPermissionsState,
-  type DomainAvailability,
+  type AgentInteractionItem, type AgentKind, type AgentModelState, type AgentNotificationsState,
+  type AgentPermissionsState, type DomainAvailability,
   type DomainCompleteness, type DomainSource, type DomainState, type InteractionRequest,
   type RuntimeCapabilities, type RuntimeEvent, type RuntimeMetadata, type RuntimeStatus,
 } from "@pi-remote/protocol";
@@ -45,6 +45,13 @@ export type AgentStateFactsOptions = {
   readonly hostId: string;
   /** runtimeId → 后端 kind。返回 undefined 表示这不是一个后端会话（例如 Host 自己的下载 runtime）。 */
   readonly kindOf: (runtimeId: string) => AgentKind | undefined;
+  /**
+   * 通知投影的**引用摘要**提供者（模块 18/19）。
+   *
+   * 通知的条目、期限与设备关闭仍由 Host 的 NotificationStore 唯一拥有（ADR-0028）；
+   * 模型只记身份与核对程度，避免出现第二份通知权威。
+   */
+  readonly notifications?: (runtimeId: string) => AgentNotificationsState | undefined;
   readonly log?: (line: string) => void;
 };
 
@@ -85,6 +92,7 @@ export class AgentStateFacts {
   readonly #registry: AgentStateRegistry;
   readonly #hostId: string;
   readonly #kindOf: (runtimeId: string) => AgentKind | undefined;
+  readonly #notifications: ((runtimeId: string) => AgentNotificationsState | undefined) | undefined;
   readonly #log: ((line: string) => void) | undefined;
   /** runtimeId → 会话键。 */
   readonly #runtimes = new Map<string, string>();
@@ -96,7 +104,20 @@ export class AgentStateFacts {
     this.#registry = options.registry;
     this.#hostId = options.hostId;
     this.#kindOf = options.kindOf;
+    this.#notifications = options.notifications;
     this.#log = options.log;
+  }
+
+  /** 通知投影变化时刷新模型里的引用摘要（由 Host 的通知 Store 回调触发）。 */
+  refreshNotifications(runtimeId: string): void {
+    try {
+      const session = this.#sessionFor(runtimeId);
+      // 身份还没建立时不必补写：attach 时会带上当时的摘要。
+      if (session === undefined) return;
+      this.#commitNotifications(session, runtimeId);
+    } catch (error) {
+      this.#log?.(`统一状态模型刷新通知摘要失败 (${runtimeId}): ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /** 观察一个后端事件。任何异常都不能影响 Host 的转发路径。 */
@@ -241,6 +262,25 @@ export class AgentStateFacts {
     const touched = new Set<StateDomain>(["execution", "model", "context", "permissions"]);
     for (const domain of session.fresh) touched.add(domain);
     this.#commit(session, touched);
+    // 通知的写者是 Host 的通知投影，不是后端适配器，所以单独提交。
+    this.#commitNotifications(session, runtimeId);
+  }
+
+  #commitNotifications(session: SessionFacts, runtimeId: string): void {
+    const provider = this.#notifications;
+    if (provider === undefined) return;
+    const summary = provider(runtimeId);
+    // 来源恒为同一份 Host 通知投影：代次用固定 id，hostEpoch 记在值里。
+    // 这样 Host 重建时整份模型本来就换代次，不会把「通知代次」误当成来源重建。
+    const source: DomainSource = {
+      producer: "host",
+      sourceId: "host:notifications",
+      sourceEpoch: "host-notifications",
+      sourceRevision: summary?.revision ?? 0,
+    };
+    this.#registry.commitValue(this.#scope(session), "notifications", summary === undefined
+      ? { source, availability: "unknown", completeness: "unknown", value: null }
+      : { source, availability: "ready", completeness: summary.complete ? "complete" : "partial", value: summary });
   }
 
   #apply(session: SessionFacts, event: RuntimeEvent): void {

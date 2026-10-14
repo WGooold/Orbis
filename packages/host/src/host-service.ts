@@ -228,6 +228,8 @@ export class HostService {
   /** DeviceView：只对发起设备可见的回执，和共享事实分开写。 */
   readonly #deviceViewFacts: DeviceViewFacts;
   readonly #notifications = new NotificationStore(runtimeId => {
+    // 通知投影变化时同步模型里的引用摘要（ADR-0032 模块 18/19）；它只是引用，不复制权威。
+    this.#agentFacts?.refreshNotifications(runtimeId);
     for (const deviceId of this.#links.keys()) this.#sendNotificationSnapshot(deviceId, runtimeId);
   });
   readonly #commandOwners = new Map<string, { deviceId: string; requestId?: string; at: number; fingerprint: string; terminal?: boolean }>();
@@ -327,6 +329,7 @@ export class HostService {
     this.#agentFacts = new AgentStateFacts({
       ...agentStateOptions,
       kindOf: (runtimeId) => this.#backends.find((backend) => backend.ownsRuntime(runtimeId))?.kind,
+      notifications: (runtimeId) => this.#notifications.summary(runtimeId),
     });
     this.#deviceViewFacts = new DeviceViewFacts(agentStateOptions);
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {

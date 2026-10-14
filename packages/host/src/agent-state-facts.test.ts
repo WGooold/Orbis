@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type {
-  AgentDeliveryItem, AgentExecutionState, AgentModelState, AgentPermissionsState, InteractionRequest,
-  RuntimeEvent, RuntimeMetadata,
+  AgentDeliveryItem, AgentExecutionState, AgentModelState, AgentNotificationsState, AgentPermissionsState,
+  InteractionRequest, RuntimeEvent, RuntimeMetadata,
 } from "@pi-remote/protocol";
 
 import { AgentStateFacts } from "./agent-state-facts.js";
@@ -228,6 +228,44 @@ describe("AgentStateFacts 重新接入与隔离", () => {
     const offline = read<AgentPermissionsState>(registry, "permissions");
     expect(offline?.availability).toBe("unknown");
     expect(offline?.value?.sandbox).toBe("read-only");
+  });
+
+  it("通知只以引用摘要进入模型，写者是 Host 通知投影而不是适配器", () => {
+    const registry = new AgentStateRegistry({ modelEpoch: "model-1" });
+    let summary: AgentNotificationsState | undefined;
+    const facts = new AgentStateFacts({
+      registry, hostId: HOST, kindOf: (runtimeId) => kinds[runtimeId], notifications: () => summary,
+    });
+    facts.observe("codex:r1", metadata());
+    expect(read(registry, "notifications")?.availability).toBe("unknown");
+
+    summary = {
+      hostEpoch: "host-epoch", revision: 3, sessionId: "s1", activeCount: 1,
+      conditions: [{ code: "codex.turn.retry", severity: "warning" }],
+      complete: false, verification: "unknown",
+    };
+    facts.refreshNotifications("codex:r1");
+    const state = read<AgentNotificationsState>(registry, "notifications");
+    expect(state?.availability).toBe("ready");
+    expect(state?.completeness).toBe("partial");
+    expect(state?.value?.activeCount).toBe(1);
+    expect(state?.value?.hostEpoch).toBe("host-epoch");
+    // 通知写者与适配器领域是两个来源，互不冲突。
+    expect(state?.source.sourceId).toBe("host:notifications");
+    expect(read(registry, "execution")?.source.sourceId).toBe("adapter:codex");
+  });
+
+  it("身份未建立时刷新通知摘要不会写进模型，也不会抛错", () => {
+    const registry = new AgentStateRegistry({ modelEpoch: "model-1" });
+    const facts = new AgentStateFacts({
+      registry, hostId: HOST, kindOf: (runtimeId) => kinds[runtimeId],
+      notifications: () => ({
+        hostEpoch: "h", revision: 1, sessionId: null, activeCount: 0, conditions: [],
+        complete: true, verification: "confirmed",
+      }),
+    });
+    expect(() => facts.refreshNotifications("codex:r9")).not.toThrow();
+    expect(registry.stats().entries).toBe(0);
   });
 
   it("无关或迟到的事件不会抛错，也不会写进模型", () => {

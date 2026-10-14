@@ -245,6 +245,26 @@ export const AgentOperationStateSchema = z.enum([
 ]);
 export type AgentOperationState = z.infer<typeof AgentOperationStateSchema>;
 
+/**
+ * 通知在统一模型里的**引用摘要**（模块 18/19）。
+ *
+ * 条目、期限与设备关闭仍由 Host 的通知投影唯一拥有（ADR-0028）；这里只记身份与核对程度。
+ * 客户端要内容时读通知快照，不要从这里复制出第二份权威。
+ */
+export const AgentNotificationsStateSchema = z.strictObject({
+  hostEpoch: z.string().min(1).max(256),
+  revision: z.number().int().nonnegative(),
+  sessionId: z.string().min(1).max(256).nullable(),
+  activeCount: z.number().int().nonnegative(),
+  conditions: z.array(z.strictObject({
+    code: z.string().min(1).max(256),
+    severity: z.enum(["info", "warning", "error"]),
+  })).max(64),
+  complete: z.boolean(),
+  verification: z.enum(["confirmed", "unknown"]),
+});
+export type AgentNotificationsState = z.infer<typeof AgentNotificationsStateSchema>;
+
 /** 一条设备私有回执（DeviceView.operations）。共享操作本身归 HostState.operations。 */
 export const AgentOperationItemSchema = z.strictObject({
   operationId: z.string().min(1).max(256),

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { notificationKey, notificationMessage, NotificationSourceEventSchema, NotificationInputSchema, PROTOCOL_VERSION,
-  type ActiveNotification, type NotificationInput, type NotificationSnapshot, type NotificationSourceEvent } from "@pi-remote/protocol";
+  type ActiveNotification, type AgentNotificationsState, type NotificationInput, type NotificationSnapshot,
+  type NotificationSourceEvent } from "@pi-remote/protocol";
 
 type Record = { item: ActiveNotification; transient: boolean; deviceId?: string };
 type Projection = { sessionId: string | null; epoch?: string; active: boolean; sourceRevision: number; revision: number;
@@ -171,6 +172,31 @@ export class NotificationStore {
       for (const [key, record] of state.records) if (record.deviceId === deviceId) state.records.delete(key);
     }
   }
+  /**
+   * 统一模型用的引用摘要（ADR-0032 模块 18/19）。
+   *
+   * 不是第二份通知权威：条目、期限、设备关闭仍归本 Store，这里只发布「有几条、哪些
+   * code、核对到什么程度」以及定位用的 hostEpoch/revision。刻意不调用 `expire()`，
+   * 免得从 `changed` 回调里再触发一次变更。
+   */
+  summary(runtimeId: string): AgentNotificationsState | undefined {
+    const state = this.#runtimes.get(runtimeId);
+    if (state === undefined) return undefined;
+    const conditions = [...state.records.values()]
+      .filter(record => record.item.lifecycle === "condition")
+      .map(record => ({ code: record.item.code, severity: record.item.severity }))
+      .sort((left, right) => left.code.localeCompare(right.code) || left.severity.localeCompare(right.severity));
+    return {
+      hostEpoch: this.hostEpoch,
+      revision: state.revision,
+      sessionId: state.sessionId,
+      activeCount: state.records.size,
+      conditions,
+      complete: state.complete,
+      verification: state.verification,
+    };
+  }
+
   snapshot(runtimeId: string, deviceId: string): NotificationSnapshot & { protocolVersion: typeof PROTOCOL_VERSION } {
     this.expire(); const state = this.#runtimes.get(runtimeId);
     return { type: "notification.snapshot", protocolVersion: PROTOCOL_VERSION, hostEpoch: this.hostEpoch, runtimeId,
