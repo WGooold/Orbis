@@ -11,9 +11,10 @@
 
 每个领域都用同一 envelope：`modelEpoch` / `revision` / `availability` / `completeness` / `source` / `checkedAt` / `value`。`modelEpoch` 与通知协议的 `hostEpoch` 是两件事，不得互相代替。
 
-当前状态口径（第 1 批完成时）：
+当前状态口径：
 
-- `模型已定义`＝ schema 与 Registry 已存在，但**没有**接入真实来源，客户端读不到。
+- `模型已定义`＝ schema 与 Registry 已存在，但**没有**接入真实来源。
+- `已接入事实`＝适配层已经把真实事件归一成领域事实写进 Registry；客户端协议尚未接入（那是 issue #10）。
 - `已有实现，待接入`＝该域在 Host 或 adapter 已有一份可用实现，只是还没有写进统一模型。
 - `保留本地`＝ADR 已定边界，不迁移。
 
@@ -29,15 +30,15 @@
 | 06 实时消息与流式正文 | AgentState.live.messages | 模型已定义；live 在 source adapter |
 | 07 回合身份与计时 | AgentState.execution.turn | 模型已定义；分散在 source 与 App |
 | 08 工具调用与执行结果 | AgentState.live.tools | 模型已定义；工具库存在 source |
-| 09 运行与等待状态 | AgentState.execution | 模型已定义；DSH 缺 waiting 投影 |
-| 10 重试与上下文压缩 | AgentState.execution.retry / compaction | 模型已定义；无共同字段 |
-| 11 交互请求与审批 | AgentState.interactions | 模型已定义；Host 只存请求 ID |
-| 12 消息队列与投递状态 | AgentState.delivery.queue | 模型已定义；真队列仍分后端 |
+| 09 运行与等待状态 | AgentState.execution | **已接入事实**：状态 + 待回答交互共同决定 waiting；DSH 审批等待因此有了统一投影 |
+| 10 重试与上下文压缩 | AgentState.execution.retry / compaction | **部分接入**：字段已在模型里，但仍显式 `unavailable`——等适配层提供真实阶段 |
+| 11 交互请求与审批 | AgentState.interactions | **已接入事实**：`snapshot` 是完整清单，回答/取消按 id 显式删除 |
+| 12 消息队列与投递状态 | AgentState.delivery.queue | **已接入事实**：只有部分清单（后端没有队列快照事件），因此不能当基线 |
 | 13 命令关联与执行回执 | HostState.operations；DeviceView | 模型已定义；Host 已有有界账本 |
 | 14 权限摘要与可编辑设置 | AgentState.permissions | 模型已定义；已有 opaque 契约，待接入 |
-| 15 模型与思考级别 | AgentState.model | 模型已定义；选项仍挂在 commands |
-| 16 上下文与 tokens | AgentState.context | 模型已定义；DSH usage 未见赋值 |
-| 17 能力与资源 | AgentState.capabilities / resources | 模型已定义；资源库存在各后端 |
+| 15 模型与思考级别 | AgentState.model | **已接入事实**：metadata 没报就是整个领域 unknown；选项明细仍走 commands |
+| 16 上下文与 tokens | AgentState.context | **已接入事实**：缺事实为 unknown，不假报已支持 |
+| 17 能力与资源 | AgentState.capabilities / resources | **已接入事实**：命令菜单按完整清单替换；资源（skills/prompts/MCP）仍归各后端 |
 | 18 通知生产者事实 | adapter 事实 → AgentState.notifications | 已有实现，待接入 |
 | 19 Host 通知生命周期 | AgentState.notifications；DeviceView | 已有实现，待接入 |
 | 20 供应商手机摘要 | HostState.providers | 已有实现，待接入；缺领域版本 |
@@ -78,6 +79,23 @@
 - `packages/host/src/agent-state-registry.ts`：单写者 Registry——来源登记与冲突拒绝、`modelEpoch` 迟到拒绝、换代次必须完整基线、`ready`+`complete` 才允许缺席删除、部分清单合并、未知保留最后已知值、内容不变不推进版本、先提交再发布、值预算与条目上限、按已应用版本的基线读取、会话/设备作用域终结与隔离。
 
 未交付（留给后续 ticket）：把任何真实来源写进 Registry、协议消息与版本升级、App/桌面改为模型消费者、历史 displayEntries 归一、供应商公共投影、持久诊断记录。因此本批次**不改变**任何运行时行为，也不需要重启 Host。
+
+## 第 2 批（issue #6）交付与未交付
+
+已交付——适配层事实接入（[agent-state-facts.ts](../../packages/host/src/agent-state-facts.ts)）：
+
+- 把已有的 runtime 事件归一成领域事实交给 Registry：`execution`、`delivery`、`interactions`、`model`、`context`、`capabilities`。
+- Host 在事件转发前先记录事实（[host-service.ts](../../packages/host/src/host-service.ts) 的 `#publishRuntimeEvent`），记录失败不影响转发；离线时把已知领域标成待核对并保留最后已知值。
+- 会话身份用 `(agentKind, sessionId)`，runtimeId 只是可更换的路由身份：重新接入换新代次，旧连接的回调被丢弃。
+- 重新接入后没有收到新事实的集合领域保持待核对，不用「本地累加器为空」冒充「后端说没有了」。
+- 整体仍是**只写不读**：没有任何协议消息、App 或桌面行为依赖这些投影。
+
+未交付：
+
+- 03 目录逐后端完整性、13 命令回执、14 权限、18/19 通知来源、23 诊断记录仍在既有实现里，未并入模型（通知已有独立 Store，按 ADR 复用即可）。
+- 04–08 历史与 live 正文继续由 source adapter 的版本化复制负责（ADR-0024/0025），模型只记引用，不重复正文。
+- 已知边界：队列没有完整清单事件，重新接入前观察到的条目要等会话结束（`forget`）或后端提供完整清单才会消失；模型里以 `completeness: partial` 如实表达。
+- 协议层读取（App/桌面消费模型）留给 issue #10；供应商公共投影与持久诊断记录分别留给 #8、#9。
 
 ## 回归要求
 

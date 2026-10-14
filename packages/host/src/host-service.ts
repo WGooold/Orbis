@@ -43,6 +43,8 @@ import {
   type RuntimeEvent,
 } from "@pi-remote/protocol";
 
+import { AgentStateFacts } from "./agent-state-facts.js";
+import { AgentStateRegistry } from "./agent-state-registry.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
@@ -215,6 +217,13 @@ export class HostService {
    * 更小的 `msg` 序号。按道各记一份之后，插队变得无害。
    */
   readonly #eventSequences = new Map<string, number>();
+  /**
+   * ADR-0032 的统一状态模型：单写者 Registry + 适配层事实投影。
+   *
+   * 它只**登记**事实，不参与任何转发、路由或回执判定——事件该发还是照发，手机读到的
+   * 仍是原来的消息。协议层接入（issue #10）之前，这里只供 Host 内部与测试读取。
+   */
+  readonly #agentFacts: AgentStateFacts;
   readonly #notifications = new NotificationStore(runtimeId => {
     for (const deviceId of this.#links.keys()) this.#sendNotificationSnapshot(deviceId, runtimeId);
   });
@@ -305,6 +314,12 @@ export class HostService {
       }),
     ];
     this.#backends = backends;
+    this.#agentFacts = new AgentStateFacts({
+      registry: new AgentStateRegistry(),
+      hostId: this.#identity.hostId,
+      kindOf: (runtimeId) => this.#backends.find((backend) => backend.ownsRuntime(runtimeId))?.kind,
+      ...(options.log === undefined ? {} : { log: options.log }),
+    });
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
     }
@@ -326,6 +341,7 @@ export class HostService {
         this.#invalidateCatalog();
         for (const runtime of runtimes) {
           this.#notifications.end(runtime.runtimeId);
+          this.#agentFacts.runtimeOffline(runtime.runtimeId, reason);
           this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
         }
       };
@@ -355,6 +371,7 @@ export class HostService {
       }
       for (const runtime of runtimes) {
         this.#notifications.end(runtime.runtimeId);
+        this.#agentFacts.runtimeOffline(runtime.runtimeId, reason);
         this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
       }
     };
@@ -1439,6 +1456,8 @@ export class HostService {
   }
 
   #publishRuntimeEvent(runtimeId: string, event: RuntimeEvent): void {
+    // 先把事实记进统一模型，再走原来的转发路径；记录失败不影响转发（见 AgentStateFacts.observe）。
+    this.#agentFacts.observe(runtimeId, event);
     if (this.#sessionSync.handleEvent(runtimeId, event)) return;
     if (event.type === "runtime.metadata" && (!this.#notifications.has(runtimeId) || this.#notifications.needsAttach(runtimeId))) {
       this.#notifications.attach(runtimeId, event.metadata.sessionId);

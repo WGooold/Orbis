@@ -140,6 +140,78 @@ export type DomainState<T> = {
   value: T | null;
 };
 
+/** 运行阶段。与协议 `RuntimeStatus` 同值，避免模型模块反向依赖 index.ts。 */
+export const AgentExecutionPhaseSchema = z.enum(["idle", "running", "waiting_local_interaction"]);
+export type AgentExecutionPhase = z.infer<typeof AgentExecutionPhaseSchema>;
+
+/**
+ * 运行与等待（模块 09）＋重试与压缩（模块 10）。
+ *
+ * 模块 10 目前没有后端事实来源，因此显式声明 `unavailable`——不能用 idle 或日志文案
+ * 冒充「重试已恢复」。等适配层提供真实阶段后再替换这两个字面量。
+ */
+export const AgentExecutionStateSchema = z.strictObject({
+  phase: AgentExecutionPhaseSchema,
+  /** 正在等待回答的交互 requestId，升序。非空时 phase 必须是 waiting_local_interaction。 */
+  waitingFor: z.array(z.string().min(1)).max(64),
+  retry: z.literal("unavailable"),
+  compaction: z.literal("unavailable"),
+});
+export type AgentExecutionState = z.infer<typeof AgentExecutionStateSchema>;
+
+/** 一条队列项（模块 12）。`text` 在消息成为 canonical 之前是唯一正文来源。 */
+export const AgentDeliveryItemSchema = z.strictObject({
+  queueId: z.string().min(1).max(256),
+  text: z.string().min(1).max(4_096),
+  delivery: z.enum(["steer", "followUp"]),
+  state: z.enum(["accepted", "delivered", "cancelled", "rejected", "not_cancelable"]),
+  error: z.string().max(4_000).optional(),
+});
+export type AgentDeliveryItem = z.infer<typeof AgentDeliveryItemSchema>;
+
+/** 一条待回答的交互（模块 11）。回答提交回执属于 DeviceView，不在共享事实里。 */
+export const AgentInteractionItemSchema = z.strictObject({
+  requestId: z.string().min(1).max(256),
+  kind: z.enum(["confirm", "select", "multi-select", "input", "questionnaire"]),
+  title: z.string().min(1).max(4_000),
+  description: z.string().max(4_000).optional(),
+  toolName: z.string().min(1).max(256).optional(),
+  expiresAt: z.number().int().positive(),
+  /** 未回答即阻塞该会话推进，所以当前模型里恒为 true；回答后条目被移除。 */
+  blocking: z.boolean(),
+  submitted: z.boolean().optional(),
+});
+export type AgentInteractionItem = z.infer<typeof AgentInteractionItemSchema>;
+
+/** 当前模型与思考级别（模块 15）。 */
+export const AgentModelStateSchema = z.strictObject({
+  provider: z.string().min(1).max(128),
+  id: z.string().min(1).max(256),
+  name: z.string().min(1).max(256).optional(),
+  thinkingLevel: z.string().min(1).max(128).optional(),
+});
+export type AgentModelState = z.infer<typeof AgentModelStateSchema>;
+
+/** 上下文占用（模块 16）。后端不能估计时是整个领域的 unknown，不是这里的 null。 */
+export const AgentContextStateSchema = z.strictObject({
+  tokens: z.number().int().nonnegative().nullable(),
+  contextWindow: z.number().int().positive().nullable(),
+  percent: z.number().min(0).max(100).nullable(),
+});
+export type AgentContextState = z.infer<typeof AgentContextStateSchema>;
+
+/** 一条能力菜单项（模块 17）。选项明细仍走既有 `RuntimeSlashCommand`，模型只记形状。 */
+export const AgentCapabilityItemSchema = z.strictObject({
+  name: z.string().min(1).max(256),
+  source: z.enum(["builtin", "extension", "prompt", "skill", "mcp"]),
+  description: z.string().max(4_000).optional(),
+  argumentKind: z.enum(["text", "select", "tree"]).nullable(),
+  argumentRequired: z.boolean().nullable(),
+  optionCount: z.number().int().nonnegative(),
+  hint: z.string().max(256).optional(),
+});
+export type AgentCapabilityItem = z.infer<typeof AgentCapabilityItemSchema>;
+
 /**
  * 是否允许按「缺席」删除条目。
  *

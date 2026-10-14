@@ -144,6 +144,32 @@ export class AgentStateRegistry {
     return this.#store(scope, domain, key, existing, fact, next);
   }
 
+  /**
+   * 显式结束事实：按 id 删除条目（例如交互已回答）。
+   *
+   * 它不是「按缺席推断」——没有出现的 id 一律保留，只有明确列出的 id 会被删除，
+   * 因此部分清单也能安全地报告自己知道的那几条已经结束。
+   */
+  removeCollectionItems(
+    scope: StateScope,
+    domain: StateDomain,
+    fact: DomainFact & { readonly removeIds: readonly string[] },
+  ): CommitResult {
+    const invalid = validateFact(fact);
+    if (invalid !== undefined) return { ok: false, code: "invalid_fact", detail: invalid };
+    if (!Array.isArray(fact.removeIds) || fact.removeIds.some(id => typeof id !== "string" || id.trim() === "")) {
+      return { ok: false, code: "invalid_fact", detail: "removeIds" };
+    }
+    const key = entryKey(scope, domain);
+    const existing = this.#entries.get(key);
+    const rejected = this.#reject(scope, domain, key, existing, fact);
+    if (rejected !== undefined) return rejected;
+    const previous = (existing?.state.value ?? null) as Record<string, unknown> | null;
+    const next = { ...(previous ?? {}) };
+    for (const id of fact.removeIds) delete next[id];
+    return this.#store(scope, domain, key, existing, fact, next);
+  }
+
   read<T>(scope: StateScope, domain: StateDomain): DomainState<T> | undefined {
     const entry = this.#entries.get(entryKey(scope, domain));
     return entry === undefined ? undefined : structuredClone(entry.state) as DomainState<T>;
@@ -215,9 +241,12 @@ export class AgentStateRegistry {
     if (existing.state.source.sourceId !== fact.source.sourceId || existing.state.source.producer !== fact.source.producer) {
       return { ok: false, code: "source_conflict", detail: scopeId(scope) + "/" + domain + " owned by " + existing.state.source.sourceId };
     }
-    if (existing.state.source.sourceEpoch !== fact.source.sourceEpoch &&
-      !(fact.availability === "ready" && fact.completeness === "complete")) {
-      return { ok: false, code: "source_epoch_baseline_required" };
+    if (existing.state.source.sourceEpoch !== fact.source.sourceEpoch) {
+      // 标记「来源未知/失败」永远允许：它保留最后已知值并标明待核对（ADR-0032 §9）。
+      // 只有声称 ready 的内容必须先用完整清单重建基线，否则部分清单可能悄悄删掉有效状态。
+      if (fact.availability === "ready" && fact.completeness !== "complete") {
+        return { ok: false, code: "source_epoch_baseline_required" };
+      }
     }
     return undefined;
   }
@@ -230,8 +259,11 @@ export class AgentStateRegistry {
     fact: DomainFact,
     value: unknown,
   ): CommitResult {
-    const fingerprint = JSON.stringify([fact.source, fact.availability, fact.completeness, value ?? null]);
-    const bytes = byteLength(fingerprint);
+    // 内容指纹**不含** sourceRevision：来源水位只说明「来源核对过」，不是内容版本，
+    // 否则每次心跳都会把领域版本推高。
+    const fingerprint = JSON.stringify([fact.source.producer, fact.source.sourceId, fact.source.sourceEpoch,
+      fact.availability, fact.completeness, value ?? null]);
+    const bytes = byteLength(JSON.stringify(value ?? null));
     if (bytes > this.#maxValueBytes) {
       return { ok: false, code: "value_too_large", detail: bytes + " > " + this.#maxValueBytes };
     }
@@ -239,8 +271,8 @@ export class AgentStateRegistry {
       return { ok: false, code: "registry_full" };
     }
     if (existing !== undefined && existing.fingerprint === fingerprint) {
-      // 内容没变：只刷新核对时间，不推进版本，也不广播。
-      existing.state = { ...existing.state, checkedAt: this.#now() };
+      // 内容没变：只刷新来源水位与核对时间，不推进版本，也不广播。
+      existing.state = { ...existing.state, source: fact.source, checkedAt: this.#now() };
       return { ok: true, revision: existing.state.revision, changed: false };
     }
     const revision = (existing?.state.revision ?? 0) + 1;
@@ -254,7 +286,8 @@ export class AgentStateRegistry {
       value: structuredClone(value ?? null),
     };
     this.#entries.set(key, { scope, domain, fingerprint, state });
-    this.#emit({ kind: "committed", scope, domain, state: structuredClone(state) });
+    // 没有订阅者时不必克隆：HostService 目前不订阅，这条路径是热路径。
+    if (this.#listeners.size > 0) this.#emit({ kind: "committed", scope, domain, state: structuredClone(state) });
     return { ok: true, revision, changed: true };
   }
 

@@ -219,3 +219,60 @@ describe("AgentStateRegistry 基线读取与边界", () => {
     expect(registry.read(agent(), "delivery")?.revision).toBe(1);
   });
 });
+
+describe("AgentStateRegistry 来源水位与显式结束", () => {
+  it("只有来源水位变化不推进内容版本", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    registry.commitValue(agent(), "execution", { ...ready, source: source({ sourceRevision: 1 }), value: { phase: "running" } });
+    const result = registry.commitValue(agent(), "execution", { ...ready, source: source({ sourceRevision: 9 }), value: { phase: "running" } });
+    expect(result).toEqual({ ok: true, revision: 1, changed: false });
+    expect(registry.read(agent(), "execution")?.source.sourceRevision).toBe(9);
+  });
+
+  it("换代次后标记待核对仍然允许，并保留最后已知值", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    registry.commitValue(agent(), "execution", { ...ready, source: source(), value: { phase: "running" } });
+    const unverified = registry.commitValue(agent(), "execution", {
+      source: source({ sourceEpoch: "e2", sourceRevision: 0 }), availability: "unknown", completeness: "unknown", value: null,
+    });
+    expect(unverified.ok).toBe(true);
+    const state = registry.read<{ phase: string }>(agent(), "execution");
+    expect(state?.availability).toBe("unknown");
+    expect(state?.value?.phase).toBe("running");
+    expect(state?.source.sourceEpoch).toBe("e2");
+    // 新代次里必须用完整清单重建基线，之后才恢复正常提交。
+    expect(registry.commitValue(agent(), "execution", {
+      source: source({ sourceEpoch: "e2" }), availability: "ready", completeness: "partial", value: { phase: "idle" },
+    }).ok).toBe(true);
+    const rebuilt = registry.commitValue(agent(), "execution", {
+      source: source({ sourceEpoch: "e2" }), ...ready, value: { phase: "idle" },
+    });
+    expect(rebuilt.ok).toBe(true);
+    const baselined = registry.read<{ phase: string }>(agent(), "execution");
+    expect(baselined?.availability).toBe("ready");
+    expect(baselined?.value?.phase).toBe("idle");
+  });
+
+  it("换代次的那一次 ready 提交必须是完整清单", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    registry.commitValue(agent(), "execution", { ...ready, source: source(), value: { phase: "running" } });
+    const rejected = registry.commitValue(agent(), "execution", {
+      source: source({ sourceEpoch: "e2" }), availability: "ready", completeness: "partial", value: { phase: "idle" },
+    });
+    expect(rejected).toMatchObject({ ok: false, code: "source_epoch_baseline_required" });
+    expect(registry.read<{ phase: string }>(agent(), "execution")?.value?.phase).toBe("running");
+  });
+
+  it("显式结束事实只删除列出的条目", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    registry.commitCollection(agent(), "interactions", { ...ready, source: source(), items: { a: { id: "a" }, b: { id: "b" } } });
+    const removed = registry.removeCollectionItems(agent(), "interactions", {
+      source: source({ sourceRevision: 2 }), availability: "ready", completeness: "partial", removeIds: ["a"],
+    });
+    expect(removed.ok).toBe(true);
+    expect(Object.keys(registry.read<Record<string, unknown>>(agent(), "interactions")?.value ?? {})).toEqual(["b"]);
+    expect(registry.removeCollectionItems(agent(), "interactions", {
+      source: source(), availability: "ready", completeness: "partial", removeIds: [""],
+    })).toMatchObject({ ok: false, code: "invalid_fact" });
+  });
+});
