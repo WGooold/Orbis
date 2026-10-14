@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { DomainSource } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION, type DomainSource } from "@pi-remote/protocol";
 
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 import { buildAgentStateSnapshot } from "./agent-state-snapshot.js";
@@ -27,7 +27,8 @@ describe("buildAgentStateSnapshot", () => {
       registry, requestId: "r1", scope: agentScope(), identity: { agentKind: "codex", sessionId: "s1" },
     });
     expect(snapshot.type).toBe("agent.state.snapshot");
-    expect(snapshot.protocolVersion).toBe(12);
+    // 跟着协议常量走：硬版本升级时这条断言要一起升，而不是留一个写死的旧值。
+  expect(snapshot.protocolVersion).toBe(PROTOCOL_VERSION);
     expect(snapshot.scope).toBe("agent");
     expect(snapshot.modelEpoch).toBe("model-1");
     expect(snapshot.domains.map(entry => entry.domain)).toEqual(["execution", "model"]);

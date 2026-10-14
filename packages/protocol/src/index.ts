@@ -4,7 +4,15 @@ import { NotificationSourceEventSchema, NotificationSnapshotSchema } from "./not
 export * from "./notifications.js";
 export { RecoverableSessionSource } from "./session-source.js";
 
-export const PROTOCOL_VERSION = 12 as const;
+/**
+ * 协议硬版本（ADR-0008 / ADR-0032 §7）。
+ *
+ * 13：客户端改为消费 Host 的显示投影（`session.snapshot` / `session.patch` 上的 `display`：
+ * 窗口起点 `windowStart` + 渲染锚点 `anchor`），App 不再解释原生形状。版本号是**精确匹配**的：
+ * 所有入站校验都是 `!== PROTOCOL_VERSION` 直接拒绝，没有兼容旧版的旁路——升版就是断代，
+ * 两端必须一起更新。
+ */
+export const PROTOCOL_VERSION = 13 as const;
 export const ARTIFACT_CHUNK_BYTES = 1024 * 1024;
 
 /**

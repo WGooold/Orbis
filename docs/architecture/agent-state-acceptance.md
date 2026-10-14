@@ -6,12 +6,13 @@
 
 > 给接手的人或新会话。完成 issue #12 与 #11 后可以删掉这一节。
 
-**状态（2026-10-14，代码侧 #12 已完成，全部未 push，工作树干净）**
+**状态（2026-10-14，代码侧 #11/#12 已完成，全部未 push，工作树干净）**
 
 - 统一模型：36 个模块里 10 个已接入真实事实（03 目录、09–19 的 Host 侧投影，外加权限、命令回执、通知引用）。
 - 显示投影：契约（`DisplayEntry`/`DisplayBatch` + 窗口起点 `windowStart` + 渲染锚点 `anchor`）→ 三个适配层产出 → 每页/每批随 canonical 范围同行 → **App 消费**，这条链已经打通。App 侧已删除全部原生解释（`PiMessageProjection`、压缩裁剪、`stopReason` 判定、`custom_message` 拼装）。
 - 条目与显示结果在本地**同一笔事务**里落盘，提交后按盘上那份读回（来源修正条目时显示行随之修正）；`projectionVersion` 换代即整段作废该会话缓存，包括上一版 App 留下的「只有条目、没有解释」的旧缓存。
-- 未完成：**issue #12 的实机核对**、issue #11（协议硬版本升级、删旧路径）。
+- 协议已硬升到 **13**（issue #11 的代码部分）：两端常量同步，且本来就没有兼容旁路。
+- 未完成：**实机验收**——issue #12 的三种显示场景，以及 issue #11 的跨端恢复验收矩阵（第 10 批那张表，6 项全未跑）。
 
 **下一步**
 
@@ -206,6 +207,30 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 未交付：模拟器实机核对三种情况（压缩后重载、失败回合、自定义消息带产物），以及协议硬版本升级（issue #11）。
 
 已知边界：**会话树**（`/tree`，[HistoryTree.kt](../../android/app/src/main/java/dev/pi/remote/HistoryTree.kt)）仍按后端给出的 `role` / `entryType` 分类节点。树要显示**不在显示窗口里**的条目（系统事件、被压缩掉的节点、细节行），显示投影刻意不含它们，所以树的分类属于模块 05 的另一半，留给后续批次。
+
+## 第 10 批（issue #11：协议硬版本与跨端恢复验收）
+
+已交付：
+
+- `PROTOCOL_VERSION` 12 → **13**（`packages/protocol/src/index.ts` 与 App 侧 `RelayClient.kt` 同步）。
+  13 的含义：客户端改为消费 Host 的显示投影（`display` 的窗口起点与渲染锚点），App 不再解释原生形状。
+- **没有兼容旁路可删**：所有入站校验本来就是精确匹配（`!== PROTOCOL_VERSION` 直接拒绝，见
+  `packages/protocol/src/index.ts`、`relay-client.ts`、`lan-server.ts`、`provider-messages.ts`）。
+  所以这次升版是断代：两端必须一起更新，旧版本客户端连不上新 Host，反之亦然。
+- 修掉一处写死的旧值：`agent-state-snapshot.test.ts` 断言 `protocolVersion` 用常量而不是字面量 12。
+
+**跨端恢复验收矩阵**（issue #11 的另一半：必须逐项在设备上跑过才算数，目前**未跑**）：
+
+| # | 场景 | 怎么造 | 通过标准 | 状态 |
+| --- | --- | --- | --- | --- |
+| 1 | 版本不匹配 | 旧版 App ↔ 新版 Host（以及反向） | 明确拒绝并提示版本不一致，不静默降级、不进半连接状态 | 未跑 |
+| 2 | Host 重建 | 重启 Host（新 source epoch / 新 modelEpoch） | App 按代次重建：旧代次的迟到回调被丢弃，不冒充新代次已确认事实 | 未跑 |
+| 3 | 断线重连 | 断开 Relay（或关 LAN），恢复后重连 | 按 source epoch/seq 续传；缺口走恢复基线；`unchanged` 不被当成内容变化 | 未跑 |
+| 4 | 历史改写（revert/压缩） | 会话内回退分支、触发压缩 | 显示窗口与 head 一起更新，旧显示行被作废而不是继续渲染 | 未跑 |
+| 5 | 设备重开 | 杀掉 App 再打开 | 从 SQLite 恢复：条目与显示行同源（盘上那份），标题/树标签一致 | 未跑 |
+| 6 | 多 Host 隔离 | 同时连用户 Host 与隔离测试台 | 两台的设备回执、通知关闭、配对互不串台 | 未跑 |
+
+跑法见 [docs/testing/isolated-host/README.md](../testing/isolated-host/README.md)（隔离 Host 测试台：独立进程、独立状态目录、本机 Relay，不碰用户正在使用的 Host）。
 
 ## 回归要求
 
