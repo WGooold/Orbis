@@ -43,6 +43,8 @@ const USAGE = `pi-remote —— 电脑侧的 Host 进程
   --state-dir <路径>             覆盖状态目录（默认 ~/.pi-remote）
   --codex                        host 子命令：启用 Codex 后端（需已全局安装 codex-cli）
   --dsh                          host 子命令：启用 DeepSeek Harness 后端
+  --print-payload                pair 子命令：把配对载荷按一行 JSON 打到 stdout（不给二维码），
+                                 供隔离测试台或脚本把载荷交给客户端，不必用摄像头扫码
 
 环境变量：
   PI_REMOTE_LAN_PORT             覆盖 LAN 直连端口（默认 42130）
@@ -53,6 +55,7 @@ async function main(): Promise<void> {
     args: process.argv.slice(2),
     options: {
       "state-dir": { type: "string" },
+      "print-payload": { type: "boolean" },
       codex: { type: "boolean" },
       dsh: { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -64,7 +67,7 @@ async function main(): Promise<void> {
 
   switch (command) {
     case "pair":
-      await runPair(stateDir);
+      await runPair(stateDir, parsed.values["print-payload"] === true);
       return;
     case "host":
       await runHost(stateDir, parsed.values.codex === true, parsed.values.dsh === true);
@@ -184,11 +187,12 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
 }
 
 /** 配对模式：短命进程。开窗、收 PAIR_REQUEST、落盘，然后退出。 */
-async function runPair(stateDirOption: string | undefined): Promise<void> {
+async function runPair(stateDirOption: string | undefined, printPayload = false): Promise<void> {
   const stateDir = resolveStateDir(stateDirOption);
   const config = await loadHostConfig({ stateDir });
 
-  if (await isLocalHostAlive()) {
+  // 只认这个状态目录里的常驻 Host：不同状态目录＝不同 Relay 身份，互不抢 runtimeId。
+  if (await isLocalHostAlive(stateDir)) {
     console.error("本机已经有一个 `pi-remote host` 在运行，配对窗口开不起来。");
     console.error("两个进程在 Relay 上共用同一个 runtimeId，会互踢下线，配对消息大概率落在对方手里。");
     console.error("先停掉那个 host（Ctrl+C），再运行本命令。");
@@ -221,8 +225,14 @@ async function runPair(stateDirOption: string | undefined): Promise<void> {
   await service.start();
   const opened = await service.openPairingWindow();
   const remainingSeconds = Math.round((opened.expiresAtMs - Date.now()) / 1_000);
-  process.stdout.write(await renderTerminalQr(encodePairingQrText(opened.payload)));
-  console.log(`请用 Orbis APP 扫码。窗口 ${remainingSeconds} 秒后关闭。`);
+  const pairingText = encodePairingQrText(opened.payload);
+  if (printPayload) {
+    // 只有这一行写到 stdout：脚本可以直接拿去当载荷用，诊断信息全部留在 stderr。
+    console.log(pairingText);
+  } else {
+    process.stdout.write(await renderTerminalQr(pairingText));
+    console.log(`请用 Orbis APP 扫码。窗口 ${remainingSeconds} 秒后关闭。`);
+  }
   const lan = opened.payload.lan;
   if (lan !== undefined && lan.length > 0) {
     console.log(`同一局域网内会直连：${lan.map((entry) => `${entry.host}:${entry.port}`).join("、")}`);
@@ -253,10 +263,10 @@ async function runPair(stateDirOption: string | undefined): Promise<void> {
  * 残留文件指向已退出的进程时探不出活进程，自然放行。这里只是防手滑，
  * 不是安全边界——判断错了的最坏结果和没有这个检查一样。
  */
-async function isLocalHostAlive(): Promise<boolean> {
+async function isLocalHostAlive(stateDirOption?: string): Promise<boolean> {
   let raw: string;
   try {
-    raw = await readFile(join(resolveStateDir(undefined), "loopback.json"), "utf8");
+    raw = await readFile(join(resolveStateDir(stateDirOption), "loopback.json"), "utf8");
   } catch {
     return false;
   }
