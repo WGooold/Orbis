@@ -523,6 +523,21 @@ Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、�
 
 写点盘点（模块 23）：已有的四条是目录逐后端拉取失败、读取当前 provider 失败、供应商切换/保存失败，加上进程启动时对齐的目录投影；仍缺的是传输/审批/恢复这几条路径——它们要么埋在内部分支里，要么需要先有可触发的失败钩子。
 
+## 第 28 批（修一处自找的写者冲突：~HostState.providers~ 只留一个写者）
+
+**问题**（由用户追问「为什么一个读取请求要改写 Host 的内容」暴露）：~session.list~ 那条路径为了让模型里的「当前 provider」保持新鲜，顺手把整个 ~HostState.providers~ 写了一遍；它只认识 ~current~ 一栏，而领域写入是**整值替换**，于是把真正读过清单的那条路径写下的 ~profiles~ / ~authenticated~ 冲成了 ~null~。而 ~provider.list~/~provider.switch~ 那条路径**一次都没写过模型**——认识事实的不写，写的不认识，这就是「切完供应商手机看不到新清单」的根因。
+
+已改：
+
+- **~session.list~ 不再写 ~HostState.providers~**。它给手机的返回值（~currentProviders~）不变，那条诊断写入点（读 ~currentProvider~ 失败）也保留。
+- 新增 ~HostService.refreshProviderFacts()~：**唯一**写这个领域的地方，按 pi/codex/dsh 逐个现读 ~ProviderManager.list(kind)~，写完整摘要（~current~ = 列表里 ~enabled~ 的那个、~profiles~ 是真读到的清单、~switching~ 沿用第 24 批的事实；~authenticated~ 这次读取里没有依据，仍记 ~null~）。某个后端读不到就**那一格记 ~null~ 并留诊断**，不拿上一次的清单冒充这次读到。
+- 触发时机两处：供应商读取/切换成功之后；以及 ~agent.state.request~ **点名 ~providers~ 域**时先现读再答（谁要看谁付这次读取的钱）。分派因此改成异步，与 ~session.list~ 一样不阻塞帧处理循环。
+- App 侧跟着点名 ~providers~（~refreshHostModel~ 的默认领域加上它）——不点名就会读到「清单里没有这个领域」，这正是这一批要避免的那种「模型说没读过、界面说没有」。
+
+验证：~npm run check~ = **107 文件 / 1097 测试全过**（新增 2 条：没人读时模型里没有这一格、读不到时记 null 并留诊断）；~:app:testDebugUnitTest~ = 46 类 / 422 项全过。
+
+**没动的**：~ProviderManager.list()~ 仍然是「读-改-写」（抢锁 + 对账原生配置 + 原子写盘）。那是有意的设计——原生配置永远有第二个写者（用户手改、桌面端），报清单前必须对账，否则 ~enabled~ 是猜的。要不要把它拆成纯读 + 如实报差异，是另一件事，记在这里备查。
+
 ## 回归要求
 
 改动 Registry 或 envelope 时必须保持：

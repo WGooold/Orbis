@@ -292,7 +292,9 @@ internal class HostConnection(
      * （条数、保留窗口与缺口），以前 App 无从得知自己看到的记录是不是全部。请求与应答都走设备级
      * E2E 载荷，与 `session.list` 同一条密文通道。
      */
-    fun refreshHostModel(domains: List<String> = listOf("diagnostics", "catalog")) {
+    // 点名 providers 是有意的：这一格现在只在「有人读」的时候才刷新（Host 那边现读一次再写模型），
+    // 不点名就会读到「清单里没有这个领域」。
+    fun refreshHostModel(domains: List<String> = listOf("diagnostics", "catalog", "providers")) {
         val current = mutableState.value
         if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank()) return
         if (current.agentStateRequests.isNotEmpty()) return

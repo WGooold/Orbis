@@ -264,6 +264,53 @@ export class HostService {
     return this.#hostStateFacts.readDiagnostics();
   }
 
+  /** 读当前的供应商投影（模块 20–22）；供 Host 内部与测试断言。 */
+  readHostProviders(): ReturnType<HostStateFacts["readProviders"]> {
+    return this.#hostStateFacts.readProviders();
+  }
+
+  /**
+   * 现读一次各后端的供应商事实并写进 Host 模型（ADR-0032 模块 20–22）。
+   *
+   * **只有这里写 `HostState.providers`**：这个领域的写入是整值替换，而会话列表那条路径只认识
+   * 「当前 provider」——让它写就会把这里读到的清单冲成 null。客户端点名 `providers` 域时、
+   * 以及供应商切换/保存之后调用；读不到的那个后端如实记 null，不拿上一次的清单冒充这次读到。
+   */
+  async refreshProviderFacts(): Promise<void> {
+    const manager = this.#options.providers;
+    if (!manager) return;
+    const kinds: AgentKind[] = ["pi", "codex", "dsh"];
+    const providers = await Promise.all(kinds.map(async (kind) => {
+      const switching = providerSwitchingFact(this.#providerChanging, kind);
+      const empty = { agentKind: kind, current: null, profiles: null, authenticated: null, switching,
+        usage: { availability: "unknown" as const, detail: null } };
+      try {
+        const summaries = await manager.list(kind);
+        return {
+          agentKind: kind,
+          // 「正在生效」的那个：供应商列表用 enabled 表达（pi 是叠加式，可能不止一个）。
+          current: summaries.find((entry) => entry.enabled)?.id ?? null,
+          profiles: summaries.map((entry) => ({
+            id: entry.id, name: entry.name, enabled: entry.enabled, globalDefault: entry.globalDefault === true,
+          })),
+          // 认证绑定要按 profile 的 authBinding 与账号列表判断，这次读取里没有这份事实：记未核对。
+          authenticated: null,
+          switching,
+          usage: { availability: "unknown" as const, detail: null },
+        };
+      } catch (error) {
+        const detail = describeError(error);
+        this.#options.log?.(`读取 ${kind} 供应商清单失败：${detail}`);
+        this.recordDiagnostic({
+          scope: "host", agentKind: kind, sessionId: null, category: "provider", severity: "warning",
+          message: `读取 ${kind} 供应商清单失败`, detail: { reason: detail.slice(0, 256) },
+        });
+        return empty;
+      }
+    }));
+    this.#hostStateFacts.providers({ providers });
+  }
+
   #publishDiagnostics(): void {
     const stats = this.#diagnostics.stats();
     this.#hostStateFacts.diagnostics({
@@ -590,7 +637,9 @@ export class HostService {
    * 作用域解析不出来时**明确回错**：空快照会被客户端读成「什么都没有」，而事实是
    * 「这台电脑不知道这个会话」。
    */
-  #handleAgentStateRequest(deviceId: string, request: Extract<DeviceE2ePayload, { type: "agent.state.request" }>): void {
+  async #handleAgentStateRequest(deviceId: string, request: Extract<DeviceE2ePayload, { type: "agent.state.request" }>): Promise<void> {
+    // 点名要供应商摘要就先现读一次：模型里那份是「上次有人读时」的，不能当成刚核对过。
+    if (request.domains?.includes("providers") === true) await this.refreshProviderFacts();
     const identity = {
       ...(request.runtimeId === undefined ? {} : { runtimeId: request.runtimeId }),
       ...(request.agentKind === undefined ? {} : { agentKind: request.agentKind }),
@@ -646,6 +695,8 @@ export class HostService {
         : await this.changeProvider(request.kind, () => manager.switch(request.kind, request.id!, request.enabled));
       send(providerResult(request, providers, request.kind === "codex" && manager.proxyTakeoverActive));
       if (request.type === "provider.switch") this.announceProviderChange(request.kind, deviceId);
+      // 这次真的读了清单：把完整摘要写进模型。会话列表那条路径不再写这个领域，所以不会互相覆盖。
+      void this.refreshProviderFacts();
     } catch (error) {
       send({ type: "provider.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind,
         error: error instanceof ProviderError ? error.message : "供应商操作失败，请在 Host 检查配置与文件权限" });
@@ -1098,8 +1149,9 @@ export class HostService {
       return;
     }
     if (message.type === "agent.state.request") {
-      // 读的是 Host 已经提交的当前投影，同步返回，不占用本机后端。
-      this.#handleAgentStateRequest(deviceId, message);
+      // 默认读已提交的投影（同步、不占后端）；点了 providers 域才会先现读一次，因此整体是异步的，
+      // 与 session.list 一样不阻塞帧处理循环。
+      void this.#handleAgentStateRequest(deviceId, message);
       return;
     }
     if (message.type === "diagnostics.request") {
@@ -1419,19 +1471,10 @@ export class HostService {
             }
           })),
         ]);
-        // 同一份事实顺手写进 Host 模型（ADR-0032 模块 20–22）：模型投影与设备命令的返回值来自
-        // 同一次读取，不额外问后端。这里只知道「当前 provider」与「Host 自己有没有在切换」，
-        // profile 清单、认证绑定与用量都没有事实——按 null / unknown 记，不补默认值、不猜。
-        this.#hostStateFacts.providers({
-          providers: providers.flat().map((entry) => ({
-            agentKind: entry.agentKind,
-            current: entry.provider,
-            profiles: null,
-            authenticated: null,
-            switching: providerSwitchingFact(this.#providerChanging, entry.agentKind),
-            usage: { availability: "unknown" as const, detail: null },
-          })),
-        });
+        // 这里**不再**写 HostState.providers：会话列表只认识「当前 provider」，而这个领域是
+        // 整值替换——让它写一次，就会把真正读过清单的那条路径（供应商读取/切换后）写下的
+        // profiles 与 authenticated 冲成 null。模型里的供应商摘要由 refreshProviderFacts() 独占写入；
+        // 手机要用的 current 仍然在这条消息的返回值里（currentProviders），不受影响。
         const localHostname = hostname();
         const payload = {
           type: "session.list.result" as const,

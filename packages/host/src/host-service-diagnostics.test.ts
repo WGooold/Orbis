@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { HostService } from "./host-service.js";
+import type { ProviderManager } from "./provider-manager.js";
 
 /**
  * 诊断目录接线的端到端验证：真的 HostService + 真的状态目录（不启动网络端点）。
@@ -17,12 +18,13 @@ let dir = "";
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "orbis-host-diagnostics-")); });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
-const create = () => HostService.create({
+const create = (providers?: ProviderManager) => HostService.create({
   relayUrl: "ws://127.0.0.1:9",
   credential: "test-credential",
   stateDir: dir,
   loopback: false,
   lan: false,
+  ...(providers === undefined ? {} : { providers }),
 });
 
 const record = {
@@ -55,6 +57,49 @@ describe("HostService 的诊断目录", () => {
 
     expect(second.readHostDiagnostics()).toMatchObject({ records: 2, persistFailures: 0 });
     expect(second.readDiagnostics().records.map(item => item.category)).toEqual(["transport", "provider"]);
+  });
+
+  it("供应商摘要由读取路径独占写入：没人读时模型里没有这一格", async () => {
+    const calls: string[] = [];
+    const service = await create({
+      list: async (kind: string) => {
+        calls.push(kind);
+        return kind === "codex"
+          ? [{ id: "custom", kind: "codex", name: "Custom", enabled: true, mode: "exclusive" }]
+          : [{ id: "deepseek", kind, name: "DeepSeek", enabled: false, mode: "exclusive" }];
+      },
+    } as unknown as ProviderManager);
+
+    // 谁都没读过：模型里没有这一格，而不是「有一份全是 null 的摘要」。
+    expect(service.readHostProviders()).toBeUndefined();
+
+    await service.refreshProviderFacts();
+
+    const state = service.readHostProviders();
+    expect(state?.providers.map(entry => entry.agentKind)).toEqual(["pi", "codex", "dsh"]);
+    expect(state?.providers.find(entry => entry.agentKind === "codex")).toMatchObject({
+      current: "custom",
+      profiles: [{ id: "custom", name: "Custom", enabled: true, globalDefault: false }],
+      authenticated: null,
+    });
+    expect(calls).toEqual(["pi", "codex", "dsh"]);
+  });
+
+  it("某个后端读不到清单时如实记 null，并留下诊断", async () => {
+    const service = await create({
+      list: async (kind: string) => {
+        if (kind === "codex") throw new Error("providers.json.lock 被占用");
+        return [];
+      },
+    } as unknown as ProviderManager);
+
+    await service.refreshProviderFacts();
+
+    const codex = service.readHostProviders()?.providers.find(entry => entry.agentKind === "codex");
+    expect(codex?.profiles).toBeNull();
+    expect(codex?.current).toBeNull();
+    expect(service.readDiagnostics({ category: "provider" }).records.map(record => record.message))
+      .toEqual(["读取 codex 供应商清单失败"]);
   });
 
   it("切换失败会留下一条诊断记录，且不把配置内容写进去", async () => {
