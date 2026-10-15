@@ -261,6 +261,43 @@ export const HostCatalogStateSchema = z.strictObject({
 export type HostCatalogState = z.infer<typeof HostCatalogStateSchema>;
 
 /**
+ * 一个后端的供应商摘要（模块 20–22：手机摘要、配置与认证绑定、用量/健康度/路由）。
+ *
+ * 秘密永远留在 Host：这里只有 id、展示名与布尔状态，没有 baseUrl、密钥或脚本内容。
+ * 拿不到事实的字段显式 `unknown`，不用 0/空值冒充「已确认」。
+ */
+export const HostProviderSummarySchema = z.strictObject({
+  agentKind: AgentKindSchema,
+  /** 当前生效的 provider id；后端完全没配置时为 null。 */
+  current: z.string().min(1).max(128).nullable(),
+  profiles: z.array(z.strictObject({
+    id: z.string().min(1).max(128),
+    name: z.string().max(256),
+    enabled: z.boolean(),
+    /** 后端级默认：新会话不带指定 provider 时用它。 */
+    globalDefault: z.boolean(),
+  })).max(64),
+  /** 认证绑定是否就绪：缺凭据时 false，客户端据此提示「去电脑上配置」，而不是自己补默认值。 */
+  authenticated: z.boolean(),
+  /** 是否有一次 provider 切换正在进行：进行中时路由结论还不作数。 */
+  switching: z.boolean(),
+  /** 用量/健康度：Host 没有这份事实时是 `unknown`，不假报数字。 */
+  usage: z.strictObject({
+    availability: z.enum(["ready", "unknown"]),
+    detail: z.string().max(256).nullable(),
+  }),
+});
+export type HostProviderSummary = z.infer<typeof HostProviderSummarySchema>;
+
+/** Host 级供应商公共投影（HostState.providers）。 */
+export const HostProvidersStateSchema = z.strictObject({
+  providers: z.array(HostProviderSummarySchema).max(8),
+  /** 这份摘要是什么时候核对的；`unknown` 的字段以这个时点为准。 */
+  checkedAt: z.number().int().nonnegative(),
+});
+export type HostProvidersState = z.infer<typeof HostProvidersStateSchema>;
+
+/**
  * 线上快照里的一个领域：envelope 加上领域名。
  *
  * `value` 对协议层是不透明的领域负载——它的形状由该领域自己的 schema 定义，读的人按

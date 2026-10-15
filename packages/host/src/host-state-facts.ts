@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { HostCatalogState } from "@pi-remote/protocol";
+import type { HostCatalogState, HostProvidersState } from "@pi-remote/protocol";
 
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 
@@ -51,6 +51,36 @@ export class HostStateFacts {
     } catch {
       // 记账失败不影响会话目录的正常返回。
     }
+  }
+
+  /**
+   * 记录供应商公共投影（模块 20–22）。
+   *
+   * 与目录不同，这里没有「完整清单」的概念：某个后端没报摘要就是它缺席，客户端按 `unknown`
+   * 处理，而不是把缺席当成「这台电脑没有供应商」。
+   */
+  providers(state: Omit<HostProvidersState, "checkedAt">): void {
+    try {
+      this.#revision += 1;
+      this.#registry.commitValue(this.#scope(), "providers", {
+        source: {
+          producer: "host",
+          sourceId: "host:providers",
+          sourceEpoch: this.#epoch,
+          sourceRevision: this.#revision,
+        },
+        availability: state.providers.length === 0 ? "unknown" : "ready",
+        completeness: "partial",
+        value: { ...state, checkedAt: this.#now() } satisfies HostProvidersState,
+      });
+    } catch {
+      // 记账失败不影响供应商命令本身的返回。
+    }
+  }
+
+  /** 供 Host 内部与测试读取当前供应商投影。 */
+  readProviders(): HostProvidersState | undefined {
+    return this.#registry.read<HostProvidersState>(this.#scope(), "providers")?.value ?? undefined;
   }
 
   #scope(): StateScope {
