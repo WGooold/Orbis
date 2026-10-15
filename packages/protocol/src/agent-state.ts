@@ -270,17 +270,18 @@ export const HostProviderSummarySchema = z.strictObject({
   agentKind: AgentKindSchema,
   /** 当前生效的 provider id；后端完全没配置时为 null。 */
   current: z.string().min(1).max(128).nullable(),
+  /** profile 清单；`null` 表示这次没拿到清单（不是「没有 profile」）。 */
   profiles: z.array(z.strictObject({
     id: z.string().min(1).max(128),
     name: z.string().max(256),
     enabled: z.boolean(),
     /** 后端级默认：新会话不带指定 provider 时用它。 */
     globalDefault: z.boolean(),
-  })).max(64),
-  /** 认证绑定是否就绪：缺凭据时 false，客户端据此提示「去电脑上配置」，而不是自己补默认值。 */
-  authenticated: z.boolean(),
-  /** 是否有一次 provider 切换正在进行：进行中时路由结论还不作数。 */
-  switching: z.boolean(),
+  })).max(64).nullable(),
+  /** 认证绑定是否就绪：false 表示缺凭据（客户端提示去电脑上配置），`null` 表示未核对。 */
+  authenticated: z.boolean().nullable(),
+  /** 是否有一次 provider 切换正在进行：进行中时路由结论还不作数；`null` 表示未核对。 */
+  switching: z.boolean().nullable(),
   /** 用量/健康度：Host 没有这份事实时是 `unknown`，不假报数字。 */
   usage: z.strictObject({
     availability: z.enum(["ready", "unknown"]),

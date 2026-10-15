@@ -68,7 +68,7 @@
 | 17 能力与资源 | AgentState.capabilities / resources | **已接入事实**：命令菜单按完整清单替换；资源（skills/prompts/MCP）仍归各后端 |
 | 18 通知生产者事实 | adapter 事实 → AgentState.notifications | 已有实现（NotificationStore 消费来源事实）；模型侧只记引用 |
 | 19 Host 通知生命周期 | AgentState.notifications；DeviceView | **已接入引用**：Store 仍是唯一权威，模型发布 hostEpoch / revision / 条数 / 条件 code / 核对程度 |
-| 20 供应商手机摘要 | HostState.providers | **模型侧已定义**：`HostProviderSummary`/`HostProvidersState` + `HostStateFacts.providers()`（秘密不出 Host，缺失即 unknown）；待接 host-service 出口 |
+| 20 供应商手机摘要 | HostState.providers | **已接入事实**：设备请求目录时把同一次读取到的「当前 provider」写进模型；profile 清单/认证绑定/切换进行中与用量没有事实，记 `null`/`unknown`，不补默认值 |
 | 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
 | 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
 | 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **记录与游标已定义**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告）；待接真实来源与持久化 |
@@ -258,7 +258,9 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 - `HostStateFacts.providers()` 写进 Registry（producer `host:providers`，与目录各自的 sourceId 分开）；没有摘要时领域 availability 是 `unknown`，而不是「这台电脑没有供应商」。
 - 4 条单测：写入与核对时点、空清单是 unknown、用量缺失保留 unknown、内容不变不推进版本。
 
-未交付：把 `providers()` 接到 host-service 的供应商命令出口（真实 profile 列表、切换进行中状态、用量/健康度事实），以及模块 21/22 的完整字段。
+未交付：profile 清单、切换进行中状态、用量/健康度这些字段还需要真实来源（供应商命令出口本身只报名字），以及模块 21/22 的完整字段。
+
+**已接线**：host-service 回 `session.list.result` 时写同一份事实（模型投影与设备命令的返回值来自同一次读取）；`profiles` / `authenticated` / `switching` 在该调用点没有事实，协议里因此是 `nullable`，写 `null` 而不是猜。
 
 ## 第 12 批（issue #9 第一刀：有界诊断记录与游标）
 

@@ -1339,6 +1339,19 @@ export class HostService {
             }
           })),
         ]);
+        // 同一份事实顺手写进 Host 模型（ADR-0032 模块 20–22）：模型投影与设备命令的返回值来自
+        // 同一次读取，不额外问后端。这里只知道「当前 provider」，profile 清单、认证绑定、切换
+        // 进行中与用量都没有事实——按 null / unknown 记，不补默认值、不猜。
+        this.#hostStateFacts.providers({
+          providers: providers.flat().map((entry) => ({
+            agentKind: entry.agentKind,
+            current: entry.provider,
+            profiles: null,
+            authenticated: null,
+            switching: null,
+            usage: { availability: "unknown" as const, detail: null },
+          })),
+        });
         const localHostname = hostname();
         const payload = {
           type: "session.list.result" as const,

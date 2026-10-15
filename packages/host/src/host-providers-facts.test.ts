@@ -11,6 +11,7 @@ const summary = (over: Partial<Parameters<HostStateFacts["providers"]>[0]["provi
   switching: false,
   usage: { availability: "unknown" as const, detail: null },
   ...over,
+
 });
 
 describe("HostStateFacts.providers", () => {
