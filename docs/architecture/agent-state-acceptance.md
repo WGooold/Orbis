@@ -204,7 +204,12 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 - **版本换代**：`projectionVersion` 与本机不同即整段作废该会话缓存（含上一版 App 留下的「有条目、没解释」的旧缓存），下一次同步重新拿；版本不匹配时投影如实报「请更新 App」，而不是渲染成一片空白。
 - 不可显示的条目保留身份与原因（`undisplayable` + `unknown_native_type` / `not_rendered` / `missing_content`），只是没有可渲染正文。
 
-未交付：模拟器实机核对三种情况（压缩后重载、失败回合、自定义消息带产物），以及协议硬版本升级（issue #11）。
+**实机核对已完成**（emulator-5554，`DisplayScenariosInstrumentedTest`：`tests=1 failures=0 skipped=0`，14.2s）：
+
+- 会话由 `scripts/session-sync-fixture.mjs --rich` 提供（真加密链路 + 真 SQLite + 真显示投影），三种形态逐条断言：压缩裁掉的旧条目不渲染、摘要按 `anchor=head` 渲染在窗口顶部、保留段与之后照旧；失败回合 `isError=true` 且文案来自产出方的 `remoteFailure`；自定义消息带 `report.pdf` 产物块。
+- 落盘侧：7 条 canonical 条目、**只有窗口内的 5 行显示结果**、窗口起点为保留段第一条——「条目与显示行同源」在设备上成立。
+
+协议硬版本升级见第 10 批。
 
 已知边界：**会话树**（`/tree`，[HistoryTree.kt](../../android/app/src/main/java/dev/pi/remote/HistoryTree.kt)）仍按后端给出的 `role` / `entryType` 分类节点。树要显示**不在显示窗口里**的条目（系统事件、被压缩掉的节点、细节行），显示投影刻意不含它们，所以树的分类属于模块 05 的另一半，留给后续批次。
 

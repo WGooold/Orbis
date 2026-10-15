@@ -16,14 +16,36 @@ const links = new Map();
 const stats = new Map();
 const gates = new Map();
 let sequence = 0;
-const entries = Array.from({ length: 400 }, (_, index) => {
+// --rich：一段包含三种显示形态的短会话（压缩、失败回合、带产物的自定义消息），供
+// DisplayScenariosInstrumentedTest 在设备上核对渲染。这里只造原生事实，解释由协议层的显示投影负责。
+const ARTIFACT = { artifactId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301", fileName: "report.pdf",
+  mimeType: "application/pdf", size: 1024, sha256: "a".repeat(64) };
+const richEntries = () => [
+  { entryId: "r1", parentId: null, type: "message", timestamp: "2026-01-01T00:00:00.000Z",
+    data: { message: { role: "user", content: "旧问题（应被压缩裁掉）" } } },
+  { entryId: "r2", parentId: "r1", type: "message", timestamp: "2026-01-01T00:00:01.000Z",
+    data: { message: { role: "assistant", content: "旧回答（应被压缩裁掉）" } } },
+  { entryId: "r3", parentId: "r2", type: "message", timestamp: "2026-01-01T00:00:02.000Z",
+    data: { message: { role: "user", content: "保留的问题" } } },
+  { entryId: "r4", parentId: "r3", type: "compaction", timestamp: "2026-01-01T00:00:03.000Z",
+    data: { summary: "前面聊了旧话题", firstKeptEntryId: "r3" } },
+  { entryId: "r5", parentId: "r4", type: "message", timestamp: "2026-01-01T00:00:04.000Z",
+    data: { message: { role: "user", content: "压缩之后的问题" } } },
+  { entryId: "r6", parentId: "r5", type: "message", timestamp: "2026-01-01T00:00:05.000Z",
+    data: { message: { role: "assistant", content: [], stopReason: "error", errorMessage: "provider 504" },
+      remoteFailure: "SCENARIO_FAILURE_TEXT" } },
+  { entryId: "r7", parentId: "r6", type: "custom_message", timestamp: "2026-01-01T00:00:06.000Z",
+    data: { display: true, content: "SCENARIO_ARTIFACT_TEXT", details: { remoteArtifact: ARTIFACT } } },
+];
+const entries = process.argv.includes("--rich") ? richEntries() : Array.from({ length: 400 }, (_, index) => {
   const n = index + 1;
   return { entryId: `e${n}`, parentId: n === 1 ? null : `e${n - 1}`, type: "message",
     timestamp: "2026-01-01T00:00:00.000Z",
     data: { message: { role: "user", content: n === 400 ? "SYNC_VISIBLE_400" : `entry-${n} ${"x".repeat(1100)}` } } };
 });
 const metadata = (kind) => ({ runtimeId: `${kind}:slow-sync`, name: `Slow sync ${kind}`,
-  cwd: "D:/sync-fixture", status: "idle", sessionId: `${kind}-session`, sessionGraphSync: true, sessionLeafId: "e400" });
+  cwd: "D:/sync-fixture", status: "idle", sessionId: `${kind}-session`, sessionGraphSync: true,
+  sessionLeafId: entries.at(-1).entryId });
 const eventMessage = (runtimeId, event) => ({ type: "runtime.event", protocolVersion: PROTOCOL_VERSION,
   runtimeId, sequence: ++sequence, event });
 const send = (deviceId, message, channel = "ctl") => links.get(deviceId)?.send(Buffer.from(JSON.stringify(RelayToDeviceMessageSchema.parse(message))), channel);
@@ -37,7 +59,7 @@ const tasks = new SessionSyncTasks({
     record.generated += 1;
     if (record.generated === 1) gates.get(deviceId).until = Date.now() + 10_000;
     tasks.handleEvent(runtimeId, { type: "command.result", commandId, ok: true });
-    const snapshot = selectSessionSyncSnapshot(entries, `${kind}-session`, "e400", command);
+    const snapshot = selectSessionSyncSnapshot(entries, `${kind}-session`, entries.at(-1).entryId, command);
     record.entries += snapshot.entries.length;
     record.ranges.push({ range: command.range, target: command.targetLeafId, known: command.knownLeafId,
       entries: snapshot.entries.length, bytes: Buffer.byteLength(JSON.stringify(snapshot)) });
