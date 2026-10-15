@@ -48,6 +48,9 @@ import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 import { buildAgentStateSnapshot } from "./agent-state-snapshot.js";
 import { DeviceViewFacts } from "./device-view-facts.js";
+import {
+  DiagnosticJournal, type DiagnosticAppendInput, type DiagnosticPageRequest,
+} from "./diagnostic-journal.js";
 import { HostStateFacts } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
@@ -232,6 +235,22 @@ export class HostService {
   readonly #deviceViewFacts: DeviceViewFacts;
   /** HostState：Host 级共享领域（目前是聚合目录的逐后端完整性）。 */
   readonly #hostStateFacts: HostStateFacts;
+  /** 有界诊断记录（ADR-0032 模块 23）：写不进去也不影响被记录的那次操作。 */
+  readonly #diagnostics = new DiagnosticJournal();
+
+  /** 记一条诊断：记录失败永远不能反过来影响被记录的那次操作。 */
+  recordDiagnostic(input: DiagnosticAppendInput): void {
+    try {
+      this.#diagnostics.append(input);
+    } catch {
+      // 诊断是旁路：它自己的失败只该留在日志里，不该冒泡给业务。
+    }
+  }
+
+  /** 读一页诊断记录（游标读；缺口语义见 DiagnosticJournal）。 */
+  readDiagnostics(request: DiagnosticPageRequest = {}): ReturnType<DiagnosticJournal["page"]> {
+    return this.#diagnostics.page(request);
+  }
   /** 单写者本身：设备读模型时按作用域直接读它，而不是让每个领域各自暴露读取接口。 */
   readonly #agentStateRegistry: AgentStateRegistry;
   readonly #notifications = new NotificationStore(runtimeId => {
@@ -1265,6 +1284,10 @@ export class HostService {
       } catch (error) {
         const detail = describeError(error).slice(0, 500);
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);
+        this.recordDiagnostic({
+          scope: "host", agentKind: null, sessionId: null, category: "catalog", severity: "error",
+          message: `拉取 ${backend.kind} 会话目录失败`, detail: { agentKind: backend.kind, reason: detail.slice(0, 256) },
+        });
         backends.push({ kind: backend.kind, ready: true, sessions: 0, complete: false, elapsedMs: Date.now() - started, error: detail });
       }
     }
@@ -1334,7 +1357,12 @@ export class HostService {
               const provider = await backend.currentProvider?.();
               return provider === undefined ? [] : [{ agentKind: backend.kind, provider }];
             } catch (error) {
-              this.#options.log?.(`读取 ${backend.kind} 当前 provider 失败：${describeError(error)}`);
+              const detail = describeError(error);
+              this.#options.log?.(`读取 ${backend.kind} 当前 provider 失败：${detail}`);
+              this.recordDiagnostic({
+                scope: "host", agentKind: backend.kind, sessionId: null, category: "provider", severity: "warning",
+                message: `读取 ${backend.kind} 当前 provider 失败`, detail: { reason: detail.slice(0, 256) },
+              });
               return [];
             }
           })),

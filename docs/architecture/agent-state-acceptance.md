@@ -270,7 +270,9 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 - Host [diagnostic-journal.ts](../../packages/host/src/diagnostic-journal.ts)：有界记录（条数上限 + 保留窗口，超出即淘汰并计入 `dropped`）、不透明游标分页、**游标落后于保留窗口时置 `truncated`**（不拿「翻不到」冒充「本来没有」）、按类别/严重度/会话过滤（被过滤的记录也越过游标，下一页不会原地打转）、会话结束按作用域清理。
 - 5 条单测覆盖上述语义。
 
-未交付：把记录接到真实来源（运行/传输/审批/供应商/恢复等写入点）、持久化（当前仅在内存中有界）、跨设备读取协议（`agent.state.request` 的 records 域）。
+**已接线**：HostService 持有 journal，并在两条已有失败路径上写入——目录逐后端拉取失败（`category=catalog`，error）、读取当前 provider 失败（`category=provider`，warning）。`recordDiagnostic()` 自己吞掉异常：诊断是旁路，它的失败不能冒泡给业务；`readDiagnostics()` 提供游标读（供后续协议出口）。
+
+未交付：其余写入点（传输/审批/恢复/供应商切换）、**持久化**（当前仅在内存中有界，进程重启即丢）、跨设备读取协议（`agent.state.request` 的 records 域）。
 
 ## 回归要求
 
