@@ -6,13 +6,14 @@
 
 > 给接手的人或新会话。完成 issue #12 与 #11 后可以删掉这一节。
 
-**状态（2026-10-14，代码侧 #11/#12 已完成，全部未 push，工作树干净）**
+**状态（2026-10-15，代码侧 #11/#12 已完成，全部未 push，工作树干净）**
 
 - 统一模型：36 个模块里 10 个已接入真实事实（03 目录、09–19 的 Host 侧投影，外加权限、命令回执、通知引用）。
 - 显示投影：契约（`DisplayEntry`/`DisplayBatch` + 窗口起点 `windowStart` + 渲染锚点 `anchor`）→ 三个适配层产出 → 每页/每批随 canonical 范围同行 → **App 消费**，这条链已经打通。App 侧已删除全部原生解释（`PiMessageProjection`、压缩裁剪、`stopReason` 判定、`custom_message` 拼装）。
 - 条目与显示结果在本地**同一笔事务**里落盘，提交后按盘上那份读回（来源修正条目时显示行随之修正）；`projectionVersion` 换代即整段作废该会话缓存，包括上一版 App 留下的「只有条目、没有解释」的旧缓存。
 - 协议已硬升到 **13**（issue #11 的代码部分）：两端常量同步，且本来就没有兼容旁路。
-- 未完成：**实机验收**——issue #12 的三种显示场景，以及 issue #11 的跨端恢复验收矩阵（第 10 批那张表，6 项全未跑）。
+- 未完成：**实机验收**——issue #12 的三种显示场景（第 9 批已在 emulator-5554 跑过一次，见该批记录），以及 issue #11 的跨端恢复验收矩阵（第 10 批那张表，6 项全未跑）。
+- 同时推进的 issue #9：诊断记录已能跨重启读回（第 13 批）；`agent.state.request` 的 records/diagnostics 域、其余写入点与模块 21/22 的字段仍是空的。
 
 **下一步**
 
@@ -71,7 +72,7 @@
 | 20 供应商手机摘要 | HostState.providers | **已接入事实**：设备请求目录时把同一次读取到的「当前 provider」写进模型；profile 清单/认证绑定/切换进行中与用量没有事实，记 `null`/`unknown`，不补默认值 |
 | 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
 | 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
-| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **记录与游标已定义**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告）；待接真实来源与持久化 |
+| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **记录已落盘**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），记录跨重启读回、落盘失败计入缺口；已接目录与供应商两条失败路径；待接 records/diagnostics 域的读取协议与其余写入点 |
 | 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | 模型已定义；缺 artifact inventory |
 
 ## 25–30：Host 领域服务（逐项登记，含双侧状态）
@@ -272,7 +273,17 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 **已接线**：HostService 持有 journal，并在两条已有失败路径上写入——目录逐后端拉取失败（`category=catalog`，error）、读取当前 provider 失败（`category=provider`，warning）。`recordDiagnostic()` 自己吞掉异常：诊断是旁路，它的失败不能冒泡给业务；`readDiagnostics()` 提供游标读（供后续协议出口）。
 
-未交付：其余写入点（传输/审批/恢复/供应商切换）、**持久化**（当前仅在内存中有界，进程重启即丢）、跨设备读取协议（`agent.state.request` 的 records 域）。
+未交付：其余写入点（传输/审批/恢复/供应商切换）、跨设备读取协议（`agent.state.request` 的 records 域）。
+
+## 第 13 批（issue #9 第二刀：记录落盘）
+
+已交付：
+
+- [diagnostic-journal-file-store.ts](../../packages/host/src/diagnostic-journal-file-store.ts)：一行一条 JSON 的 `diagnostics.ndjson`（状态目录内）。追加便宜，写一半被杀进程只留一行残句而不会毁掉整份文件；读盘时**坏行只丢那一行**；重写走临时文件 + 原子替换，替换失败会清掉临时文件。
+- [diagnostic-journal.ts](../../packages/host/src/diagnostic-journal.ts) 增加持久化钩子（`load` / `append` / `rewrite`）：构造时读回上一次运行留下的记录，淘汰或按会话清理时**整体重写**盘上那份，其余情况只追加——盘上不会出现比内存更旧、更长的版本。
+- 落盘是旁路：`load` / `append` / `rewrite` 失败都不冒泡，失败次数进 `stats().persistFailures`；读盘失败也不会让 Host 起不来。
+- host-service 在构造函数里按状态目录建 journal，因此记录跨重启保留：重启后「上一轮为什么连不上」仍然读得到。
+- 新增 8 条单测：重启读回、淘汰重写、按会话清理重写、落盘失败只记缺口、读盘失败不影响构造，以及文件层的往返、替换不留旧尾巴、残句与坏行只丢一行。
 
 ## 回归要求
 

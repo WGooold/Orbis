@@ -31,6 +31,20 @@ export type DiagnosticJournalOptions = {
   readonly now?: () => number;
   /** 单次读取的条数上限。 */
   readonly maxPageSize?: number;
+  /** 落盘钩子；不传就是纯内存，进程重启即丢。 */
+  readonly persistence?: DiagnosticJournalPersistence;
+};
+
+/**
+ * 持久化钩子（ADR-0032 模块 23）：Journal 只决定**什么时候**该写，写到哪儿由调用方决定。
+ *
+ * 三个动作都必须自己吞掉失败——记录落盘失败不该让被记录的那次操作失败；失败次数记进
+ * `stats().persistFailures`，这样「盘上少了一段」是能被看见的缺口，而不是无声的丢失。
+ */
+export type DiagnosticJournalPersistence = {
+  readonly load: () => readonly DiagnosticRecord[];
+  readonly append: (record: DiagnosticRecord) => void;
+  readonly rewrite: (records: readonly DiagnosticRecord[]) => void;
 };
 
 const DEFAULT_MAX_RECORDS = 2_000;
@@ -44,16 +58,40 @@ export class DiagnosticJournal {
   readonly #retentionMs: number;
   readonly #maxPageSize: number;
   readonly #now: () => number;
+  readonly #persistence: DiagnosticJournalPersistence | undefined;
   #entries: Entry[] = [];
   #seq = 0;
   #dropped = 0;
   #counter = 0;
+  #persistFailures = 0;
 
   constructor(options: DiagnosticJournalOptions = {}) {
     this.#maxRecords = Math.max(1, options.maxRecords ?? DEFAULT_MAX_RECORDS);
     this.#retentionMs = Math.max(1, options.retentionMs ?? DEFAULT_RETENTION_MS);
     this.#maxPageSize = Math.max(1, options.maxPageSize ?? DEFAULT_MAX_PAGE_SIZE);
     this.#now = options.now ?? Date.now;
+    this.#persistence = options.persistence;
+    this.#restore();
+  }
+
+  /**
+   * 读回上一次运行留下的记录。读失败不能让 Host 起不来：诊断是旁路，缺一段就记一次缺口。
+   */
+  #restore(): void {
+    if (this.#persistence === undefined) return;
+    let stored: readonly DiagnosticRecord[];
+    try {
+      stored = this.#persistence.load();
+    } catch {
+      this.#persistFailures += 1;
+      return;
+    }
+    for (const record of stored) {
+      this.#seq += 1;
+      this.#counter += 1;
+      this.#entries.push({ seq: this.#seq, record });
+    }
+    this.#evict();
   }
 
   /** 追加一条记录。返回写下的记录；调用方拿它做日志或断言。 */
@@ -73,7 +111,9 @@ export class DiagnosticJournal {
     };
     this.#seq += 1;
     this.#entries.push({ seq: this.#seq, record });
-    this.#evict();
+    // 淘汰会改变盘上那份的内容，所以两种情况各写一次，而不是先追加再整体重写。
+    if (this.#evict() > 0) this.#rewriteAll();
+    else this.#appendOne(record);
     return record;
   }
 
@@ -108,13 +148,17 @@ export class DiagnosticJournal {
   forgetSession(sessionId: string): number {
     const before = this.#entries.length;
     this.#entries = this.#entries.filter(entry => entry.record.sessionId !== sessionId);
-    return before - this.#entries.length;
+    const removed = before - this.#entries.length;
+    if (removed > 0) this.#rewriteAll();
+    return removed;
   }
 
-  stats(): { records: number; dropped: number; oldestAt: number | null; newestAt: number | null } {
+  stats(): { records: number; dropped: number; persistFailures: number; oldestAt: number | null; newestAt: number | null } {
     return {
       records: this.#entries.length,
       dropped: this.#dropped,
+      // 落盘失败次数：>0 表示盘上那份比内存里这份少，读盘的人必须知道有缺口。
+      persistFailures: this.#persistFailures,
       oldestAt: this.#entries[0]?.record.at ?? null,
       newestAt: this.#entries[this.#entries.length - 1]?.record.at ?? null,
     };
@@ -127,8 +171,9 @@ export class DiagnosticJournal {
     return true;
   }
 
-  /** 条数上限与保留窗口：先按时间淘汰，再按条数淘汰最旧的。 */
-  #evict(): void {
+  /** 条数上限与保留窗口：先按时间淘汰，再按条数淘汰最旧的。返回淘汰条数。 */
+  #evict(): number {
+    const droppedBefore = this.#dropped;
     const cutoff = this.#now() - this.#retentionMs;
     const expired = this.#entries.findIndex(entry => entry.record.at >= cutoff);
     if (expired > 0) {
@@ -142,6 +187,25 @@ export class DiagnosticJournal {
       const excess = this.#entries.length - this.#maxRecords;
       this.#dropped += excess;
       this.#entries = this.#entries.slice(excess);
+    }
+    return this.#dropped - droppedBefore;
+  }
+
+  #appendOne(record: DiagnosticRecord): void {
+    if (this.#persistence === undefined) return;
+    try {
+      this.#persistence.append(record);
+    } catch {
+      this.#persistFailures += 1;
+    }
+  }
+
+  #rewriteAll(): void {
+    if (this.#persistence === undefined) return;
+    try {
+      this.#persistence.rewrite(this.#entries.map(entry => entry.record));
+    } catch {
+      this.#persistFailures += 1;
     }
   }
 

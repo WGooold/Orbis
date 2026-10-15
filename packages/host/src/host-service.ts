@@ -51,6 +51,7 @@ import { DeviceViewFacts } from "./device-view-facts.js";
 import {
   DiagnosticJournal, type DiagnosticAppendInput, type DiagnosticPageRequest,
 } from "./diagnostic-journal.js";
+import { createDiagnosticJournalFileStore } from "./diagnostic-journal-file-store.js";
 import { HostStateFacts } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
@@ -235,8 +236,8 @@ export class HostService {
   readonly #deviceViewFacts: DeviceViewFacts;
   /** HostState：Host 级共享领域（目前是聚合目录的逐后端完整性）。 */
   readonly #hostStateFacts: HostStateFacts;
-  /** 有界诊断记录（ADR-0032 模块 23）：写不进去也不影响被记录的那次操作。 */
-  readonly #diagnostics = new DiagnosticJournal();
+  /** 有界诊断记录（ADR-0032 模块 23）：写不进去也不影响被记录的那次操作；落盘见构造函数。 */
+  readonly #diagnostics: DiagnosticJournal;
 
   /** 记一条诊断：记录失败永远不能反过来影响被记录的那次操作。 */
   recordDiagnostic(input: DiagnosticAppendInput): void {
@@ -285,6 +286,8 @@ export class HostService {
   ) {
     this.#options = options;
     this.#stateDir = stateDir;
+    // 记录要跨重启保留：重启后「上一轮为什么连不上」仍然读得到，否则排查只能靠现场的这一次。
+    this.#diagnostics = new DiagnosticJournal({ persistence: createDiagnosticJournalFileStore(stateDir) });
     this.#identity = identity;
     this.#store = store;
     this.#pairing = new HostPairingService(identity);

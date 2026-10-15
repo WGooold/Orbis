@@ -1,3 +1,4 @@
+import type { DiagnosticRecord } from "@pi-remote/protocol";
 import { describe, expect, it } from "vitest";
 
 import { DiagnosticJournal } from "./diagnostic-journal.js";
@@ -75,4 +76,73 @@ describe("DiagnosticJournal", () => {
     expect(journal.forgetSession("s1")).toBe(1);
     expect(journal.page().records.map(r => r.message)).toEqual(["b"]);
   });
+
+  it("重启后读回上一次运行留下的记录", () => {
+    const memory = memoryPersistence();
+    const before = new DiagnosticJournal({ persistence: memory, now: () => 1_000 });
+    before.append(record({ message: "上一轮为什么连不上" }));
+
+    const after = new DiagnosticJournal({ persistence: memory, now: () => 2_000 });
+    expect(after.page().records.map(r => r.message)).toEqual(["上一轮为什么连不上"]);
+  });
+
+  it("淘汰后整体重写：盘上那份不能比内存更旧、更长", () => {
+    const memory = memoryPersistence();
+    const journal = new DiagnosticJournal({ persistence: memory, maxRecords: 2, now: () => 1_000 });
+    journal.append(record({ message: "a" }));
+    journal.append(record({ message: "b" }));
+    journal.append(record({ message: "c" }));
+
+    expect(memory.records.map(r => r.message)).toEqual(["b", "c"]);
+    expect(journal.stats()).toMatchObject({ records: 2, dropped: 1, persistFailures: 0 });
+  });
+
+  it("按会话清掉时也要重写盘上那份", () => {
+    const memory = memoryPersistence();
+    const journal = new DiagnosticJournal({ persistence: memory, now: () => 1_000 });
+    journal.append(record({ sessionId: "s1", message: "a" }));
+    journal.append(record({ sessionId: "s2", message: "b" }));
+
+    expect(journal.forgetSession("s1")).toBe(1);
+    expect(memory.records.map(r => r.message)).toEqual(["b"]);
+  });
+
+  it("落盘失败只记缺口：记录本身照旧返回，也没有记录写丢", () => {
+    const journal = new DiagnosticJournal({
+      now: () => 1_000,
+      persistence: {
+        load: () => [],
+        append: () => { throw new Error("disk full"); },
+        rewrite: () => { throw new Error("disk full"); },
+      },
+    });
+
+    expect(journal.append(record({ message: "still recorded" })).message).toBe("still recorded");
+    expect(journal.page().records.map(r => r.message)).toEqual(["still recorded"]);
+    expect(journal.stats().persistFailures).toBe(1);
+  });
+
+  it("读盘失败不让 Journal 构造失败：Host 不能因为诊断起不来", () => {
+    const journal = new DiagnosticJournal({
+      persistence: {
+        load: () => { throw new Error("unreadable"); },
+        append: () => {},
+        rewrite: () => {},
+      },
+    });
+
+    expect(journal.page().records).toEqual([]);
+    expect(journal.stats().persistFailures).toBe(1);
+  });
 });
+
+/** 内存版持久化：只验证「什么时候写」，不碰真实文件（真实文件见 file-store 的测试）。 */
+function memoryPersistence() {
+  const records: DiagnosticRecord[] = [];
+  return {
+    records,
+    load: () => [...records],
+    append: (item: DiagnosticRecord) => { records.push(item); },
+    rewrite: (next: readonly DiagnosticRecord[]) => { records.splice(0, records.length, ...next); },
+  };
+}
