@@ -56,4 +56,17 @@ describe("HostService 的诊断目录", () => {
     expect(second.readHostDiagnostics()).toMatchObject({ records: 2, persistFailures: 0 });
     expect(second.readDiagnostics().records.map(item => item.category)).toEqual(["transport", "provider"]);
   });
+
+  it("切换失败会留下一条诊断记录，且不把配置内容写进去", async () => {
+    const service = await create();
+
+    await expect(service.changeProvider("dsh", async () => { throw new Error("provider boom: sk-秘密"); }))
+      .rejects.toThrow("provider boom");
+
+    const page = service.readDiagnostics({ category: "provider" });
+    expect(page.records.map(record => record.message)).toEqual(["切换 dsh 供应商失败"]);
+    // 只记原因摘要：写进来的东西将来会跟着诊断页被读出去。
+    expect(page.records[0]?.detail?.reason).toContain("provider boom");
+    expect(service.readHostDiagnostics()).toMatchObject({ records: 1, dropped: 0 });
+  });
 });

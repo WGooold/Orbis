@@ -560,6 +560,19 @@ export class HostService {
           await this.assertProviderSwitchReady(kind);
         }
         return await operation();
+      } catch (error) {
+        // 失败是运维事实：什么时候、想动哪个后端、为什么没成。记录只有原因摘要，
+        // 不含配置内容或凭据——诊断记录永远不装秘密（ADR-0032 模块 23）。
+        this.recordDiagnostic({
+          scope: "host",
+          agentKind: kind,
+          sessionId: null,
+          category: "provider",
+          severity: "error",
+          message: (mode === "switch" ? "切换 " : "保存 ") + kind + " 供应商失败",
+          detail: { reason: describeError(error).slice(0, 256) },
+        });
+        throw error;
       }
       finally { this.#providerChanging = undefined; }
     });
