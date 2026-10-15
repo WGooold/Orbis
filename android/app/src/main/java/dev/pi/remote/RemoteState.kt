@@ -409,6 +409,15 @@ data class RemoteState(
     /** Effective Host configuration; do not infer it from a historical session or model name. */
     val currentProviders: Map<String, String> = emptyMap(),
     val agentProviders: AgentProvidersState = AgentProvidersState(),
+    /**
+     * Host 统一状态模型的最近一次读取（ADR-0032 issue #10），key = 作用域 + 会话/运行时身份。
+     *
+     * 存的是 Host **已经提交**的投影：客户端不再自己拼这些事实，缺就用 [AgentStateSnapshotView.missing]
+     * 说的原因解释缺席，而不是把「没读到」渲染成「没有」。
+     */
+    val agentStateSnapshots: Map<String, AgentStateSnapshotView> = emptyMap(),
+    /** 已发出、还没应答的模型读取请求；应答到达即移除（好坏都销账）。 */
+    val agentStateRequests: Set<String> = emptySet(),
     val sessionGraphs: Map<String, SessionGraph> = emptyMap(),
     val runtimeSessionViews: Map<String, RuntimeSessionView> = emptyMap(),
     val sessionSyncCommands: Map<String, PendingSessionSync> = emptyMap(),
@@ -1512,7 +1521,7 @@ class RelayReducer(
         val messageType = message.string("type")
         if (messageType !in setOf(
                 "device.ready", "runtime.online", "runtime.offline", "runtime.event", "runtime.git", "notification.snapshot",
-                "protocol.error", "provider.result", "provider.changed",
+                "protocol.error", "provider.result", "provider.changed", "agent.state.snapshot",
                 "artifact.read.failed",
                 // 上传的入站消息：状态由 ViewModel 的上传处理器维护，reducer 只需不把它当非法消息。
                 "file.upload.ready", "file.upload.read", "file.upload.progress", "file.upload.finished", "file.upload.failed",
@@ -1531,6 +1540,7 @@ class RelayReducer(
             "notification.snapshot" -> if (channel != null) state.withNotificationSnapshot(message, json) else state
             "provider.result" -> if (channel != null) state.withProviderResult(message) else state
             "provider.changed" -> state
+            "agent.state.snapshot" -> state.withAgentStateSnapshot(message)
             "runtime.git" -> state.withWorkingBranch(message)
             "device.ready" -> {
                 // Relay's plaintext authentication receipt always carries an empty directory:

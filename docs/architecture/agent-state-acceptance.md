@@ -13,7 +13,7 @@
 - 条目与显示结果在本地**同一笔事务**里落盘，提交后按盘上那份读回（来源修正条目时显示行随之修正）；`projectionVersion` 换代即整段作废该会话缓存，包括上一版 App 留下的「只有条目、没有解释」的旧缓存。
 - 协议已硬升到 **13**（issue #11 的代码部分）：两端常量同步，且本来就没有兼容旁路。
 - 未完成：**实机验收**——issue #12 的三种显示场景（第 9 批已在 emulator-5554 跑过一次，见该批记录），以及 issue #11 的跨端恢复验收矩阵（第 10 批那张表，6 项全未跑）。
-- 同时推进的 issue #9：诊断记录已跨重启读回（第 13 批），目录与记录都已在协议上可读（第 14、15 批）；其余写入点、客户端（App/桌面）实际消费与模块 21/22 的字段仍是空的。
+- 同时推进的 issue #9：诊断记录已跨重启读回（第 13 批），目录与记录都已在协议上可读（第 14、15 批）；issue #10 从 App 侧开了一刀——连接后读一次 Host 作用域的 `diagnostics`，并有 7 条单测锁住「缺席有原因 / 坏消息整份拒绝 / 整份替换」（第 16 批）。其余写入点、记录分页的界面、其余领域的客户端消费与模块 21/22 的字段仍是空的。
 
 **下一步**
 
@@ -72,7 +72,7 @@
 | 20 供应商手机摘要 | HostState.providers | **已接入事实**：设备请求目录时把同一次读取到的「当前 provider」写进模型；profile 清单/认证绑定/切换进行中与用量没有事实，记 `null`/`unknown`，不补默认值 |
 | 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
 | 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
-| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两侧都可读**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），跨重启读回、落盘失败计入缺口；`HostState.diagnostics` 给目录（条数/窗口/缺口），`diagnostics.request` → `diagnostics.page` 按游标取记录本身；已接目录与供应商两条失败路径；待接其余写入点与客户端消费 |
+| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两侧都可读，App 已消费目录**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），跨重启读回、落盘失败计入缺口；`HostState.diagnostics` 给目录（条数/窗口/缺口），`diagnostics.request` → `diagnostics.page` 按游标取记录本身；App 连接后读一次 Host 作用域目录（第 16 批）；待接其余写入点、记录分页的客户端界面与其余领域 |
 | 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | 模型已定义；缺 artifact inventory |
 
 ## 25–30：Host 领域服务（逐项登记，含双侧状态）
@@ -308,6 +308,19 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 协议版本不变：这是**新增**消息类型，老客户端永远不会发它，现有消息的形状没有改动。
 
 未交付：客户端（App / 桌面）实际消费这两条消息属于 issue #10；其余写入点（传输/审批/恢复/供应商切换）仍未接线。
+
+## 第 16 批（issue #10 第一刀：App 消费统一模型）
+
+已交付——Android 侧（`android/app/src/main/java/dev/pi/remote/`）：
+
+- [AgentModelState.kt](../../android/app/src/main/java/dev/pi/remote/AgentModelState.kt)：`agent.state.snapshot` 的客户端表示，把三条纪律写进类型：**整份替换**（同一身份的重复读取顶掉旧的，不做字段级合并）、**缺席有原因**（`missing` 区分 `no_state` 与 `unknown_domain`，「领域表里没有它」不等于「它是空的」）、**截断如实说**（`truncated` 那份不能当基线）。领域缺 envelope 字段时**整份拒绝**并记错误——两端对协议理解不一致时，留半份模型比什么都不留更糟。
+- `RemoteState` 新增 `agentStateSnapshots` / `agentStateRequests`；reducer 把 `agent.state.snapshot` 收进允许集合（此前未知类型会被当成「不支持的中继消息」直接弹错，所以这一步是消费的前提）。
+- 连接建立后自动读一次 Host 作用域的 `diagnostics`（`refreshHostModel()`）：诊断目录是客户端**只能**由模型拿到的事实——条数、保留窗口与缺口，以前 App 无从判断自己看到的是不是全部。请求与应答走设备级 E2E 载荷，与 `session.list` 同一条密文通道。
+- 7 条单测（`AgentModelStateTest`）：envelope 落库、缺席原因、截断标记、明确回错不当成空模型、坏消息整份拒绝、整份替换、协议版本不匹配仍被拒绝。
+
+验证：`scripts/windows/android-build.ps1 :app:testDebugUnitTest` = **46 类 / 408 项全过**；`:app:compileDebugAndroidTestKotlin` 通过（设备测试源集跟着新字段一起编译）。
+
+未交付：界面还没有展示诊断目录（读进来的事实目前只有状态与测试消费）；`diagnostics.page` 的分页读取在 App 侧未接线；其余领域（catalog / providers / workspaces…）仍走各自的老路径。
 
 ## 回归要求
 

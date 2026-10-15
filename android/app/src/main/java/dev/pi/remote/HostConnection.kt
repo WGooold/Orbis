@@ -285,6 +285,32 @@ internal class HostConnection(
         )
     }
 
+    /**
+     * 读 Host 的统一状态模型（ADR-0032 issue #10）。
+     *
+     * 默认只读 Host 作用域的 `diagnostics`：诊断目录是客户端第一个**只能**由模型提供的事实
+     * （条数、保留窗口与缺口），以前 App 无从得知自己看到的记录是不是全部。请求与应答都走设备级
+     * E2E 载荷，与 `session.list` 同一条密文通道。
+     */
+    fun refreshHostModel(domains: List<String> = listOf("diagnostics")) {
+        val current = mutableState.value
+        if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank()) return
+        if (current.agentStateRequests.isNotEmpty()) return
+        val requestId = UUID.randomUUID().toString()
+        // 先登记再发送：应答走独立协程回来，登记必须先于 reducer 可能看到应答。
+        updateState { it.copy(agentStateRequests = it.agentStateRequests + requestId) }
+        val sent = relay.sendDeviceMessage(buildJsonObject {
+            put("type", "agent.state.request")
+            put("protocolVersion", PROTOCOL_VERSION)
+            put("requestId", requestId)
+            put("scope", "host")
+            put("domains", buildJsonArray { domains.forEach { add(it) } })
+        })
+        if (!sent) updateState {
+            it.copy(agentStateRequests = it.agentStateRequests - requestId, error = "模型读取未发送，当前连接没有端到端加密通道")
+        }
+    }
+
     fun setSessionArchived(sessionId: String, archived: Boolean) {
         val state = mutableState.value
         val entry = state.sessions[sessionId] ?: return
@@ -1492,6 +1518,8 @@ internal class HostConnection(
                         mutableState.value.sessionListRequests.isEmpty()
                     ) {
                         refreshSessions()
+                        // 诊断目录只在连接建立时读一次：它是目录，不是需要跟帧的东西。
+                        refreshHostModel()
                         autoResumeDownloads()
                     }
                     if (archiveChanged && currentGeneration == generation && interactiveChannel != null) {
