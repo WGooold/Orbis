@@ -325,7 +325,9 @@ internal class HostConnection(
             put("type", "diagnostics.request")
             put("protocolVersion", PROTOCOL_VERSION)
             put("requestId", requestId)
-            put("limit", 50)
+            // 游标朝更新的方向走，第一页是**最旧**的一批：取满一页（Host 上限 500），
+            // 这样窗口不大时一次就追平最新；追不平则由界面如实说「还有更新的没读」。
+            put("limit", 500)
             if (cursor != null) put("cursor", cursor)
         })
         if (!sent) updateState {
