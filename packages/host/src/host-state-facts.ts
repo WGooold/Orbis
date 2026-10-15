@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { HostCatalogState, HostProvidersState } from "@pi-remote/protocol";
+import type { HostCatalogState, HostDiagnosticsState, HostProvidersState } from "@pi-remote/protocol";
 
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 
@@ -76,6 +76,36 @@ export class HostStateFacts {
     } catch {
       // 记账失败不影响供应商命令本身的返回。
     }
+  }
+
+  /**
+   * 记录诊断目录（模块 23 的读取侧）。
+   *
+   * 空 journal 是**事实**（这台电脑现在没有记录），所以 availability 是 ready 而不是 unknown；
+   * 有没有缺口由 completeness 说：淘汰过或落盘失败过就是 partial，客户端据此知道手里的不是全部。
+   */
+  diagnostics(state: Omit<HostDiagnosticsState, "checkedAt">): void {
+    try {
+      this.#revision += 1;
+      this.#registry.commitValue(this.#scope(), "diagnostics", {
+        source: {
+          producer: "host",
+          sourceId: "host:diagnostics",
+          sourceEpoch: this.#epoch,
+          sourceRevision: this.#revision,
+        },
+        availability: "ready",
+        completeness: state.dropped > 0 || state.persistFailures > 0 ? "partial" : "complete",
+        value: { ...state, checkedAt: this.#now() } satisfies HostDiagnosticsState,
+      });
+    } catch {
+      // 记账失败不影响记录本身：诊断是旁路。
+    }
+  }
+
+  /** 供 Host 内部与测试读取当前诊断目录。 */
+  readDiagnostics(): HostDiagnosticsState | undefined {
+    return this.#registry.read<HostDiagnosticsState>(this.#scope(), "diagnostics")?.value ?? undefined;
   }
 
   /** 供 Host 内部与测试读取当前供应商投影。 */

@@ -39,6 +39,24 @@ describe("buildAgentStateSnapshot", () => {
     expect(snapshot.truncated).toBe(false);
   });
 
+  it("Host 作用域点 diagnostics 时读到记录目录（模块 23 的读取侧）", () => {
+    const registry = new AgentStateRegistry({ modelEpoch: "model-1" });
+    // completeness 由写入方（HostStateFacts）按「有没有缺口」决定，这里照它写下的形状提交。
+    registry.commitValue(hostScope, "diagnostics", {
+      availability: "ready",
+      completeness: "partial",
+      source: source("host:diagnostics"),
+      value: { records: 2, dropped: 1, persistFailures: 0, oldestAt: 10, newestAt: 20, checkedAt: 30 },
+    });
+
+    const snapshot = buildAgentStateSnapshot({ registry, requestId: "r1", scope: hostScope, domains: ["diagnostics"] });
+
+    expect(snapshot.missing).toEqual([]);
+    // 淘汰过就是 partial：客户端据此知道手里那份不是全部历史。
+    expect(snapshot.domains[0]).toMatchObject({ domain: "diagnostics", completeness: "partial" });
+    expect(snapshot.domains[0]?.value).toMatchObject({ records: 2, dropped: 1 });
+  });
+
   it("点名要的领域没有状态时报 no_state，名字不属于该作用域时报 unknown_domain", () => {
     const registry = new AgentStateRegistry({ modelEpoch: "model-1" });
     populate(registry);

@@ -299,6 +299,27 @@ export const HostProvidersStateSchema = z.strictObject({
 export type HostProvidersState = z.infer<typeof HostProvidersStateSchema>;
 
 /**
+ * 诊断记录的**目录**投影（HostState.diagnostics，模块 23 的读取侧）。
+ *
+ * 这里只放「有多少、缺多少、窗口到哪儿」：记录本身是游标分页读的，把它们塞进快照只会造出
+ * 一份会过期的副本。`dropped` 与 `persistFailures` 是缺口——只要它们不为 0，客户端就不能把
+ * 这里当成完整历史。
+ */
+export const HostDiagnosticsStateSchema = z.strictObject({
+  /** 当前保留窗口里的条数。 */
+  records: z.number().int().nonnegative(),
+  /** 因条数上限或保留窗口被淘汰的条数。 */
+  dropped: z.number().int().nonnegative(),
+  /** 落盘失败次数：>0 表示盘上那份比内存里这份少。 */
+  persistFailures: z.number().int().nonnegative(),
+  oldestAt: z.number().int().nonnegative().nullable(),
+  newestAt: z.number().int().nonnegative().nullable(),
+  /** 这份摘要是什么时候核对的。 */
+  checkedAt: z.number().int().nonnegative(),
+});
+export type HostDiagnosticsState = z.infer<typeof HostDiagnosticsStateSchema>;
+
+/**
  * 一条有界诊断记录（模块 23）。
  *
  * 记录是**运维事实**，不是聊天正文：只有身份、类别、严重度、短文本与小时点的小键值，

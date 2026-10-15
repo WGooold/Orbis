@@ -246,11 +246,32 @@ export class HostService {
     } catch {
       // 诊断是旁路：它自己的失败只该留在日志里，不该冒泡给业务。
     }
+    // 目录投影跟着记录一起刷新，客户端读模型就能看到「有多少记录、缺了多少」。
+    this.#publishDiagnostics();
   }
 
   /** 读一页诊断记录（游标读；缺口语义见 DiagnosticJournal）。 */
   readDiagnostics(request: DiagnosticPageRequest = {}): ReturnType<DiagnosticJournal["page"]> {
-    return this.#diagnostics.page(request);
+    const page = this.#diagnostics.page(request);
+    // 读取本身会触发淘汰：顺手让目录投影跟当前窗口对齐。
+    this.#publishDiagnostics();
+    return page;
+  }
+
+  /** 读诊断目录投影（模块 23 的读取侧）；记录本身走 `readDiagnostics` 的游标分页。 */
+  readHostDiagnostics(): ReturnType<HostStateFacts["readDiagnostics"]> {
+    return this.#hostStateFacts.readDiagnostics();
+  }
+
+  #publishDiagnostics(): void {
+    const stats = this.#diagnostics.stats();
+    this.#hostStateFacts.diagnostics({
+      records: stats.records,
+      dropped: stats.dropped,
+      persistFailures: stats.persistFailures,
+      oldestAt: stats.oldestAt,
+      newestAt: stats.newestAt,
+    });
   }
   /** 单写者本身：设备读模型时按作用域直接读它，而不是让每个领域各自暴露读取接口。 */
   readonly #agentStateRegistry: AgentStateRegistry;
@@ -362,6 +383,8 @@ export class HostService {
     });
     this.#deviceViewFacts = new DeviceViewFacts(agentStateOptions);
     this.#hostStateFacts = new HostStateFacts({ registry: agentStateRegistry });
+    // 启动时就把目录投影对齐：重启后读模型应当看得到上一次运行留下的记录数，而不是等下一次写入。
+    this.#publishDiagnostics();
     this.#agentStateRegistry = agentStateRegistry;
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);

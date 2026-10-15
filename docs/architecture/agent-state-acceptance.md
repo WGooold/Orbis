@@ -13,7 +13,7 @@
 - 条目与显示结果在本地**同一笔事务**里落盘，提交后按盘上那份读回（来源修正条目时显示行随之修正）；`projectionVersion` 换代即整段作废该会话缓存，包括上一版 App 留下的「只有条目、没有解释」的旧缓存。
 - 协议已硬升到 **13**（issue #11 的代码部分）：两端常量同步，且本来就没有兼容旁路。
 - 未完成：**实机验收**——issue #12 的三种显示场景（第 9 批已在 emulator-5554 跑过一次，见该批记录），以及 issue #11 的跨端恢复验收矩阵（第 10 批那张表，6 项全未跑）。
-- 同时推进的 issue #9：诊断记录已能跨重启读回（第 13 批）；`agent.state.request` 的 records/diagnostics 域、其余写入点与模块 21/22 的字段仍是空的。
+- 同时推进的 issue #9：诊断记录已跨重启读回（第 13 批），`HostState.diagnostics` 目录已能通过 `agent.state.request` 读到（第 14 批）；记录本身的分页读取协议、其余写入点与模块 21/22 的字段仍是空的。
 
 **下一步**
 
@@ -72,7 +72,7 @@
 | 20 供应商手机摘要 | HostState.providers | **已接入事实**：设备请求目录时把同一次读取到的「当前 provider」写进模型；profile 清单/认证绑定/切换进行中与用量没有事实，记 `null`/`unknown`，不补默认值 |
 | 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
 | 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
-| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **记录已落盘**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），记录跨重启读回、落盘失败计入缺口；已接目录与供应商两条失败路径；待接 records/diagnostics 域的读取协议与其余写入点 |
+| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **目录已可读、记录已落盘**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），跨重启读回、落盘失败计入缺口；`HostState.diagnostics` 由 `agent.state.request` 可读（条数/窗口/缺口）；已接目录与供应商两条失败路径；待接记录本身的分页读取协议与其余写入点 |
 | 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | 模型已定义；缺 artifact inventory |
 
 ## 25–30：Host 领域服务（逐项登记，含双侧状态）
@@ -284,6 +284,17 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 - 落盘是旁路：`load` / `append` / `rewrite` 失败都不冒泡，失败次数进 `stats().persistFailures`；读盘失败也不会让 Host 起不来。
 - host-service 在构造函数里按状态目录建 journal，因此记录跨重启保留：重启后「上一轮为什么连不上」仍然读得到。
 - 新增 8 条单测：重启读回、淘汰重写、按会话清理重写、落盘失败只记缺口、读盘失败不影响构造，以及文件层的往返、替换不留旧尾巴、残句与坏行只丢一行。
+
+## 第 14 批（issue #9 第三刀：诊断目录上模型）
+
+已交付：
+
+- 协议 `HostDiagnosticsState`（`HostState.diagnostics`，模块 23 的读取侧）：当前窗口条数、被淘汰条数、落盘失败次数与窗口起止时点。**记录本身不进快照**——那是游标分页读的，塞进控制帧只会造出一份会过期的副本。
+- `HostStateFacts.diagnostics()`：空 journal 是**事实**（这台电脑现在没有记录），所以 availability 是 `ready` 而不是 `unknown`；淘汰过或落盘失败过就是 `partial`，客户端据此知道手里那份不是全部历史。
+- host-service 在三条时机刷新这份目录：进程启动（重启后立刻能看到上一轮留下的记录数）、每次 `recordDiagnostic`（记录与目录一起变）、每次读页（读取本身会触发淘汰）。
+- 新增 11 条测试：目录写入与核对时点、空记录是 ready+complete、缺口即 partial、计数不变不推进版本，快照里按 `agent.state.request` 读得到（含 completeness 透传），以及真 HostService + 真状态目录的端到端——记一条即刷新目录、重启后仍报得出上一轮的条数。
+
+协议版本不变：`HostState.diagnostics` 本来就在领域枚举里，`value` 对协议层是不透明的，没有新增消息类型。
 
 ## 回归要求
 
