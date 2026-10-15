@@ -230,9 +230,55 @@ class AgentModelStateTest {
         return """{"type":"diagnostics.page","protocolVersion":$PROTOCOL_VERSION,"requestId":"req-2","page":{"records":$records,"nextCursor":$cursor,"truncated":$truncated}}"""
     }
 
+
+    @Test
+    fun `目录读全时就说读全了`() {
+        val reduced = reducer.reduce(pending(), snapshot(domains = CATALOG_COMPLETE))
+
+        val view = reduced.catalogSummaryView()
+        assertEquals("12 个会话（2 个后端都读全）", view.text)
+        assertEquals(StatusTone.Good, view.tone)
+        assertNull(view.detail)
+    }
+
+    @Test
+    fun `某个后端读取失败时说清是哪个、为什么——缺席不能显示成没有`() {
+        val failed = reducer.reduce(pending(), snapshot(domains = CATALOG_PARTIAL))
+        val view = failed.catalogSummaryView()
+
+        assertEquals("12 个会话（部分）", view.text)
+        assertTrue(view.detail!!.contains("codex"))
+        assertTrue(view.detail!!.contains("读取失败"))
+        assertEquals(StatusTone.Warn, view.tone)
+
+        val notReady = reducer.reduce(pending(), snapshot(domains = CATALOG_NOT_READY))
+        assertTrue(notReady.catalogSummaryView().detail!!.contains("未就绪"))
+
+        val truncated = reducer.reduce(pending(), snapshot(domains = CATALOG_TRUNCATED))
+        assertEquals("结果被上限截断", truncated.catalogSummaryView().detail)
+    }
+
+    @Test
+    fun `还没读到目录时不装作完整`() {
+        assertEquals("尚未读取", RemoteState().catalogSummaryView().text)
+
+        val absent = reducer.reduce(pending(), snapshot(domains = "[]", missing = """[{"domain":"catalog","reason":"no_state"}]"""))
+        assertEquals("电脑没有报这个领域", absent.catalogSummaryView().text)
+
+        val broken = reducer.reduce(pending(), snapshot(
+            domains = """[{"domain":"catalog","modelEpoch":"m","revision":1,"availability":"ready","completeness":"complete","checkedAt":1,"value":{"truncated":false,"backends":[]}}]""",
+        ))
+        assertEquals(StatusTone.Bad, broken.catalogSummaryView().tone)
+        assertEquals("目录缺少总数", broken.catalogSummaryView().text)
+    }
+
     private companion object {
         const val DOMAINS = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":2,"availability":"ready","completeness":"partial","checkedAt":1700000000000,"value":{"records":2,"dropped":1}}]"""
         const val CLEAN_DOMAINS = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":3,"availability":"ready","completeness":"complete","checkedAt":1700000000000,"value":{"records":2,"dropped":0,"persistFailures":0}}]"""
         const val DEFAULT_RECORD = """[{"recordId":"r1","category":"catalog","severity":"error","message":"catalog read failed","at":1700000000000}]"""
+        const val CATALOG_COMPLETE = """[{"domain":"catalog","modelEpoch":"m","revision":1,"availability":"ready","completeness":"complete","checkedAt":1,"value":{"totalSessions":12,"truncated":false,"backends":[{"kind":"pi","ready":true,"sessions":10,"complete":true,"elapsedMs":5},{"kind":"codex","ready":true,"sessions":2,"complete":true,"elapsedMs":7}],"checkedAt":1}}]"""
+        const val CATALOG_PARTIAL = """[{"domain":"catalog","modelEpoch":"m","revision":2,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":12,"truncated":false,"backends":[{"kind":"pi","ready":true,"sessions":10,"complete":true,"elapsedMs":5},{"kind":"codex","ready":true,"sessions":2,"complete":false,"elapsedMs":3000,"error":"thread/list 超时"}],"checkedAt":1}}]"""
+        const val CATALOG_NOT_READY = """[{"domain":"catalog","modelEpoch":"m","revision":3,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":10,"truncated":false,"backends":[{"kind":"pi","ready":true,"sessions":10,"complete":true,"elapsedMs":5},{"kind":"codex","ready":false,"sessions":0,"complete":false,"elapsedMs":0}],"checkedAt":1}}]"""
+        const val CATALOG_TRUNCATED = """[{"domain":"catalog","modelEpoch":"m","revision":4,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":2000,"truncated":true,"backends":[{"kind":"pi","ready":true,"sessions":2000,"complete":true,"elapsedMs":5}],"checkedAt":1}}]"""
     }
 }

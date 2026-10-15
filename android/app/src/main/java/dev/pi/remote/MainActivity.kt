@@ -2411,6 +2411,15 @@ private fun StatusScreen(
                 NeumorphTextButton(text = "读取记录", onClick = onLoadDiagnostics)
             }
 
+            StatusSectionTitle("电脑端会话目录")
+            StatusCard {
+                // 会话列表本身来自 session.list.result；这一行回答的是「那份列表读全了吗」——
+                // 某个后端没就绪或读取失败时，缺席的会话不能显示成「没有」。
+                val catalog = state.catalogSummaryView()
+                StatusRow("目录完整性", catalog.text, catalog.tone)
+                catalog.detail?.let { StatusFact("说明", it) }
+            }
+
             StatusSectionTitle("电脑 Agent 服务")
             StatusCard {
                 // 这一行只回答「Host 接上了 Codex 桌面版的 app-server 吗」。装了没开、开了

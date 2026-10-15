@@ -52,7 +52,7 @@
 | --- | --- | --- |
 | 01 身份与运行元数据 | AgentState.identity / availability | 模型已定义；adapter 已有 metadata |
 | 02 后端可用性与桌面接入 | HostState.backends；AgentState.availability | 模型已定义；Host 已有 readiness 聚合 |
-| 03 会话目录与归档 | HostState.catalog | **已接入事实**：逐后端读取结果、失败原因与截断标记；任一后端没读全就是 partial，不冒充完整空目录 |
+| 03 会话目录与归档 | HostState.catalog | **已接入事实，App 已消费完整性**：逐后端读取结果、失败原因与截断标记；任一后端没读全就是 partial，不冒充完整空目录；App 状态页显示「读全 / 部分（哪个后端、为什么）」（第 23 批） |
 | 04 聊天历史与 canonical Entries | AgentState.history | **已接入事实**：`projectDisplayEntries` 产出标准 ChatMessage（文本/思考/工具调用/产物/摘要），App 直接渲染，不再解释原生形状；未知条目保留身份与原因 |
 | 05 会话分支与当前 head | AgentState.history | **已接入事实**：路径重建、压缩裁剪与摘要渲染位置都在产出方判定（批次带窗口起点与渲染锚点），App 只负责分支与 head；缺父/成环/找不到叶子如实报告 |
 | 06 实时消息与流式正文 | AgentState.live.messages | 模型已定义；live 在 source adapter |
@@ -434,6 +434,20 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 **这一项验到哪儿**：验的是「同时连两台时，配对、设备身份与目录各自独立、不串台」。矩阵里写的「通知关闭」没有单独构造（那需要在一台上产生通知并在另一台上验证收不到）——**仍未覆盖**，不当作已通过。
 
 收尾：两台 rig、Relay、模拟器全部停掉，占用释放；内存 1.4 GB 时按红线停机。
+
+## 第 23 批（issue #10：App 消费第二个领域——目录完整性）
+
+已交付——Android 侧：
+
+- App 读 Host 作用域快照时同时点名 ~catalog~（~refreshHostModel~ 默认领域从 ~[diagnostics]~ 变成 ~[diagnostics, catalog]~）。
+- [AgentModelState.kt](../../android/app/src/main/java/dev/pi/remote/AgentModelState.kt) 解析 ~HostCatalogState~（~totalSessions~ / ~truncated~ / 逐后端 ~ready~ / ~sessions~ / ~complete~ / ~error~），并把它翻成界面口径。
+- 状态页新增「电脑端会话目录」：读全时是「N 个会话（M 个后端都读全）」，有缺口时是「N 个会话（部分）」并把**是哪个后端、为什么**写在说明里（读取失败 / 未就绪 / 没读全 / 被上限截断）。缺字段、负载不是对象、领域缺席都明确报错——不把「没读到」画成「完整」。
+- 这一行回答的是会话列表本身答不出的问题：App 以前**无法知道自己看到的目录是不是读全了**。
+- 3 条新单测（共 18 条）：读全、部分（含未就绪与截断两种原因）、还没读到/坏负载。
+
+验证：~scripts/windows/android-build.ps1 :app:testDebugUnitTest~ = **46 类 / 419 项全过**。
+
+未交付：目录里逐后端的会话明细仍走 ~session.list.result~（模型只提供完整性摘要）；说明行的文案没有本地化变体。
 
 ## 回归要求
 

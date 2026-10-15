@@ -292,7 +292,7 @@ internal class HostConnection(
      * （条数、保留窗口与缺口），以前 App 无从得知自己看到的记录是不是全部。请求与应答都走设备级
      * E2E 载荷，与 `session.list` 同一条密文通道。
      */
-    fun refreshHostModel(domains: List<String> = listOf("diagnostics")) {
+    fun refreshHostModel(domains: List<String> = listOf("diagnostics", "catalog")) {
         val current = mutableState.value
         if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank()) return
         if (current.agentStateRequests.isNotEmpty()) return

@@ -115,6 +115,10 @@ private fun RemoteState.storeSnapshot(key: String, view: AgentStateSnapshotView)
 private fun RemoteState.rejectedSnapshot(key: String, scope: String, requestId: String, reason: String): RemoteState =
     storeSnapshot(key, AgentStateSnapshotView(key = key, scope = scope, requestId = requestId, error = reason))
 
+/** Host 作用域的那份快照：目录与记录目录都从同一次读取拿。 */
+private fun RemoteState.hostScopeSnapshot(): AgentStateSnapshotView? =
+    agentStateSnapshots.values.firstOrNull { it.scope == "host" }
+
 private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
 
 /**
@@ -131,7 +135,7 @@ internal data class DiagnosticDirectoryView(val text: String, val detail: String
  * 有缺口时必须说出来：淘汰过、落盘失败过、被字节预算截断过，都意味着这份目录不是全部历史。
  */
 internal fun RemoteState.diagnosticDirectoryView(): DiagnosticDirectoryView {
-    val snapshot = agentStateSnapshots.values.firstOrNull { it.scope == "host" }
+    val snapshot = hostScopeSnapshot()
         ?: return DiagnosticDirectoryView("尚未读取", "连接建立后会自动读一次")
     snapshot.error?.let { return DiagnosticDirectoryView("读取失败：" + it, null, StatusTone.Bad) }
     snapshot.missing["diagnostics"]?.let { reason ->
@@ -160,6 +164,80 @@ internal fun RemoteState.diagnosticDirectoryView(): DiagnosticDirectoryView {
 }
 
 private fun JsonObject.long(key: String): Long? = this[key]?.jsonPrimitive?.longOrNull
+
+/** 目录里一个后端的读取结果（模块 03）。失败或未就绪**不是**「这个后端没有会话」。 */
+data class CatalogBackendView(
+    val kind: String,
+    val ready: Boolean,
+    val sessions: Long,
+    val complete: Boolean,
+    val error: String? = null,
+)
+
+/** Host 聚合目录的逐后端完整性。 */
+data class CatalogView(
+    val totalSessions: Long,
+    val truncated: Boolean,
+    val backends: List<CatalogBackendView>,
+    val checkedAt: Long,
+)
+
+/** 目录完整性在界面上的口径。 */
+internal data class CatalogSummaryView(val text: String, val detail: String? = null, val tone: StatusTone = StatusTone.Neutral)
+
+/**
+ * 把 Host 的目录完整性翻译成一句人话。
+ *
+ * 这一行回答的是 App 以前答不出来的问题：**这份会话列表是不是读全了**。某个后端没就绪或读取失败时，
+ * 缺席的会话不能显示成「没有」，所以这里必须说出来是哪个后端、为什么。
+ */
+internal fun RemoteState.catalogSummaryView(): CatalogSummaryView {
+    val snapshot = hostScopeSnapshot() ?: return CatalogSummaryView("尚未读取", "连接建立后会自动读一次")
+    snapshot.error?.let { return CatalogSummaryView("读取失败：" + it, null, StatusTone.Bad) }
+    snapshot.missing["catalog"]?.let { reason ->
+        val text = if (reason == "unknown_domain") "这台电脑不认识这个领域" else "电脑没有报这个领域"
+        return CatalogSummaryView(text, "缺席原因：" + reason, StatusTone.Warn)
+    }
+    val domain = snapshot.domains["catalog"]
+        ?: return CatalogSummaryView("清单里没有这个领域", "缺席没有给原因，不能当成完整目录", StatusTone.Warn)
+    if (domain.availability != "ready") {
+        return CatalogSummaryView("电脑尚未核对", "availability=" + domain.availability, StatusTone.Warn)
+    }
+    val value = domain.value as? JsonObject
+        ?: return CatalogSummaryView("目录格式无法识别", "负载不是对象", StatusTone.Bad)
+    val total = value.long("totalSessions")
+        ?: return CatalogSummaryView("目录缺少总数", "负载里没有 totalSessions", StatusTone.Bad)
+    val rows = value["backends"] as? JsonArray
+        ?: return CatalogSummaryView("目录缺少后端清单", "负载里没有 backends", StatusTone.Bad)
+    val backends = ArrayList<CatalogBackendView>(rows.size)
+    for (element in rows) {
+        val row = element as? JsonObject
+            ?: return CatalogSummaryView("目录格式无法识别", "后端条目不是对象", StatusTone.Bad)
+        val kind = row.string("kind")
+        val sessions = row.long("sessions")
+        val complete = row["complete"]?.jsonPrimitive?.booleanOrNull
+        val ready = row["ready"]?.jsonPrimitive?.booleanOrNull
+        if (kind == null || sessions == null || complete == null || ready == null) {
+            return CatalogSummaryView("目录缺少字段", "后端条目缺少 kind/sessions/ready/complete", StatusTone.Bad)
+        }
+        backends += CatalogBackendView(kind, ready, sessions, complete, row.string("error"))
+    }
+    val truncated = value["truncated"]?.jsonPrimitive?.booleanOrNull == true
+    val gaps = backends.filter { !it.complete }
+    if (gaps.isEmpty() && !truncated && domain.completeness == "complete") {
+        return CatalogSummaryView("$total 个会话（" + backends.size + " 个后端都读全）", null, StatusTone.Good)
+    }
+    val reason = gaps.joinToString("，") { gap ->
+        val why = when {
+            gap.error != null -> "读取失败：" + gap.error
+            !gap.ready -> "未就绪"
+            else -> "没读全"
+        }
+        gap.kind + " " + why
+    }.ifEmpty { if (truncated) "结果被上限截断" else "清单不完整" }
+    return CatalogSummaryView("$total 个会话（部分）", reason, StatusTone.Warn)
+}
+
 
 /** 一条诊断记录（模块 23）。记录是运维事实：只有身份、类别、严重度与短文本，没有正文。 */
 data class DiagnosticRecordView(
