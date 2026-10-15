@@ -298,6 +298,41 @@ export const HostProvidersStateSchema = z.strictObject({
 export type HostProvidersState = z.infer<typeof HostProvidersStateSchema>;
 
 /**
+ * 一条有界诊断记录（模块 23）。
+ *
+ * 记录是**运维事实**，不是聊天正文：只有身份、类别、严重度、短文本与小时点的小键值，
+ * 不带原始正文、凭据、脚本或文件内容。缺事实就是没有这条记录，不写「占位记录」。
+ */
+export const DiagnosticRecordSchema = z.strictObject({
+  recordId: z.string().min(1).max(256),
+  scope: z.enum(["agent", "host"]),
+  agentKind: AgentKindSchema.nullable(),
+  sessionId: z.string().min(1).max(256).nullable(),
+  /** 类别：运行、传输、审批、供应商、恢复……客户端可以按类别过滤而不必解析文本。 */
+  category: z.string().min(1).max(64),
+  severity: z.enum(["info", "warning", "error"]),
+  message: z.string().min(1).max(512),
+  /** 结构化补充：小键值，Host 不往里塞正文、凭据或脚本。 */
+  detail: z.record(z.string().min(1).max(64), z.string().max(256)).optional(),
+  at: z.number().int().nonnegative(),
+});
+export type DiagnosticRecord = z.infer<typeof DiagnosticRecordSchema>;
+
+/**
+ * 一页诊断记录（游标读取）。
+ *
+ * `truncated` 表示「游标给出的位置与当前保留窗口之间已经有记录被淘汰」——客户端必须知道
+ * 这里有缺口，而不是把这一页当成完整历史（ADR-0032 的「丢失/淘汰有明确缺口」）。
+ */
+export const DiagnosticPageSchema = z.strictObject({
+  records: z.array(DiagnosticRecordSchema).max(500),
+  /** 下一页游标；null 表示已经追平当前最新记录。 */
+  nextCursor: z.string().min(1).max(256).nullable(),
+  truncated: z.boolean(),
+});
+export type DiagnosticPage = z.infer<typeof DiagnosticPageSchema>;
+
+/**
  * 线上快照里的一个领域：envelope 加上领域名。
  *
  * `value` 对协议层是不透明的领域负载——它的形状由该领域自己的 schema 定义，读的人按

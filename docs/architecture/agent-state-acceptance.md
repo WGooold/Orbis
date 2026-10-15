@@ -71,7 +71,7 @@
 | 20 供应商手机摘要 | HostState.providers | **模型侧已定义**：`HostProviderSummary`/`HostProvidersState` + `HostStateFacts.providers()`（秘密不出 Host，缺失即 unknown）；待接 host-service 出口 |
 | 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
 | 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
-| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | 模型已定义；缺统一记录与游标 |
+| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **记录与游标已定义**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告）；待接真实来源与持久化 |
 | 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | 模型已定义；缺 artifact inventory |
 
 ## 25–30：Host 领域服务（逐项登记，含双侧状态）
@@ -259,6 +259,16 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 - 4 条单测：写入与核对时点、空清单是 unknown、用量缺失保留 unknown、内容不变不推进版本。
 
 未交付：把 `providers()` 接到 host-service 的供应商命令出口（真实 profile 列表、切换进行中状态、用量/健康度事实），以及模块 21/22 的完整字段。
+
+## 第 12 批（issue #9 第一刀：有界诊断记录与游标）
+
+已交付：
+
+- 协议 `DiagnosticRecord` / `DiagnosticPage`（模块 23）：身份（scope / agentKind / sessionId）、类别、严重度、短文本、小键值 `detail` 与时点；**正文、凭据、脚本不进记录**。
+- Host [diagnostic-journal.ts](../../packages/host/src/diagnostic-journal.ts)：有界记录（条数上限 + 保留窗口，超出即淘汰并计入 `dropped`）、不透明游标分页、**游标落后于保留窗口时置 `truncated`**（不拿「翻不到」冒充「本来没有」）、按类别/严重度/会话过滤（被过滤的记录也越过游标，下一页不会原地打转）、会话结束按作用域清理。
+- 5 条单测覆盖上述语义。
+
+未交付：把记录接到真实来源（运行/传输/审批/供应商/恢复等写入点）、持久化（当前仅在内存中有界）、跨设备读取协议（`agent.state.request` 的 records 域）。
 
 ## 回归要求
 
