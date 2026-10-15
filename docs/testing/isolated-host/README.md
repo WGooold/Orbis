@@ -96,7 +96,10 @@ pwsh -File docs\testing\isolated-host\start-isolated-host.ps1 -ScratchSessions
 node -e "import('file:///D:/orbis/packages/host/dist/sessions.js').then(async m => { const s = await m.listPiSessions({ root: 'D:/orbis/.scratch/isolated-host/sessions' }); console.log(s.sessions.map(x => x.sessionId)); })"
 ```
 
-合成会话目前只有会话头：够让 App 列出并打开它，但**还没有历史内容**。要跑「断线重连按 seq 续传」这类场景，先在 `<rig>\sessions\scratch\matrix-session.jsonl` 里追加真实形状的消息行。
+合成会话目前只有会话头：够让 App 列出并打开它，但**还没有历史内容**。要跑「断线重连按 seq 续传」这类场景，两条路：
+
+1. 在 App 里于 `<rig>\workspace` 新建一个会话——那会拉起真的 Pi，产出的就是真会话文件（推荐，不必手写格式）；
+2. 给 `<rig>\sessions\scratch\matrix-session.jsonl` 追加真实形状的消息行（先照着 `packages/host/src` 里解析 Pi 会话的代码或一份真会话文件确认格式）。
 
 ### 为什么用 `--print-payload`
 
