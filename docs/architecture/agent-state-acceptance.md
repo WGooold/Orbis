@@ -228,7 +228,7 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 | # | 场景 | 怎么造 | 通过标准 | 状态 |
 | --- | --- | --- | --- | --- |
-| 1 | 版本不匹配 | 旧版 App ↔ 新版 Host（以及反向） | 明确拒绝并提示版本不一致，不静默降级、不进半连接状态 | 未跑 |
+| 1 | 版本不匹配 | 用 `dcafa43`（协议 12）构建 App，连 13 的隔离测试台 | 明确拒绝并提示版本不一致，不静默降级、不进半连接状态 | 单测已覆盖两端精确保守；**设备级未跑** |
 | 2 | Host 重建 | 重启 Host（新 source epoch / 新 modelEpoch） | App 按代次重建：旧代次的迟到回调被丢弃，不冒充新代次已确认事实 | 未跑 |
 | 3 | 断线重连 | 断开 Relay（或关 LAN），恢复后重连 | 按 source epoch/seq 续传；缺口走恢复基线；`unchanged` 不被当成内容变化 | 未跑 |
 | 4 | 历史改写（revert/压缩） | 会话内回退分支、触发压缩 | 显示窗口与 head 一起更新，旧显示行被作废而不是继续渲染 | 未跑 |
@@ -236,6 +236,10 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 | 6 | 多 Host 隔离 | 同时连用户 Host 与隔离测试台 | 两台的设备回执、通知关闭、配对互不串台 | 未跑 |
 
 跑法见 [docs/testing/isolated-host/README.md](../testing/isolated-host/README.md)（隔离 Host 测试台：独立进程、独立状态目录、本机 Relay，不碰用户正在使用的 Host）。
+
+第 1 项的两端拒绝本来就有单测兜底：App 侧 `RelayReducerTest` 用 `PROTOCOL_VERSION - 1` 断言拒绝；Host/Relay 侧的 `relay-client.ts`、`lan-server.ts`、`provider-messages.ts` 都是精确匹配。设备级那一跑要的是「旧版客户端连新版 Host 会被明确拒绝」，做法是拿升版前那个提交构建 App。
+
+顺带在设备上看到一条现状（不是验收项，但影响后续跑法）：这台模拟器上的 App **没有有效配对**，启动后停在配对页，并反复重试一个遗留域名（`wgooold.cn` 解析失败）与一条不通的 LAN 路径——也就是说它没有假装已连接。要用它跑矩阵的其它项，得先按测试台说明书把它配到隔离 Host 上。
 
 ## 回归要求
 
