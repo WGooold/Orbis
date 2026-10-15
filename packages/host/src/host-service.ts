@@ -52,6 +52,7 @@ import {
   DiagnosticJournal, type DiagnosticAppendInput, type DiagnosticPageRequest,
 } from "./diagnostic-journal.js";
 import { createDiagnosticJournalFileStore } from "./diagnostic-journal-file-store.js";
+import { buildDiagnosticsPageMessage } from "./diagnostic-page-message.js";
 import { HostStateFacts } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
@@ -1086,6 +1087,18 @@ export class HostService {
     if (message.type === "agent.state.request") {
       // 读的是 Host 已经提交的当前投影，同步返回，不占用本机后端。
       this.#handleAgentStateRequest(deviceId, message);
+      return;
+    }
+    if (message.type === "diagnostics.request") {
+      // 记录在内存 + 盘上，不查后端：同步读一页就回。
+      const page = this.readDiagnostics({
+        ...(message.cursor === undefined ? {} : { cursor: message.cursor }),
+        ...(message.limit === undefined ? {} : { limit: message.limit }),
+        ...(message.category === undefined ? {} : { category: message.category }),
+        ...(message.severity === undefined ? {} : { severity: message.severity }),
+        ...(message.sessionId === undefined ? {} : { sessionId: message.sessionId }),
+      });
+      this.#sendToDevice(deviceId, buildDiagnosticsPageMessage(message, page));
       return;
     }
     if (message.type === "p2p.request" || message.type === "p2p.answer") {

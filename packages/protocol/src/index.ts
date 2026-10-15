@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema } from "./agent-state.js";
+import {
+  AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema,
+  DiagnosticsPageMessageSchema, DiagnosticsRequestSchema,
+} from "./agent-state.js";
 import { NotificationSourceEventSchema, NotificationSnapshotSchema } from "./notifications.js";
 export * from "./notifications.js";
 export { RecoverableSessionSource } from "./session-source.js";
@@ -1064,6 +1067,8 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
   }),
   // ── 统一 Agent 状态模型（ADR-0032）：读一个作用域的当前投影。负载形状在 agent-state.ts。
   AgentStateRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
+  // ── 诊断记录的分页读取（ADR-0032 模块 23）：快照只给目录，记录本身按游标一页页取。
+  DiagnosticsRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   // ── P2P 信令（spec §6.1 / M5）。SDP 里已经烧好 ICE 候选（gather 完再发，非 trickle）：
   // 信令只发生在建立连接时，不值得为省一两个包引入 candidate 增量消息。
   // 手机请求 → Host 出 offer → 手机回 answer。全部走 E2E data 帧，Relay 零改动。
@@ -1241,6 +1246,7 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
   // 每个领域带自己的版本与可信度，点名要但确实没有状态的领域会出现在 `missing` 里，
   // 而不是悄悄缺席。负载本身的形状在 agent-state.ts，这里只补协议版本。
   AgentStateSnapshotSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
+  DiagnosticsPageMessageSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   // ── 进程激活（spec §8）的响应。`session.activated` 只证明进程已被拉起；会话真正上线
   // 由随后的 runtime.online / session.catalog 对账（进程经 loopback 自己注册回来）。
   z.strictObject({

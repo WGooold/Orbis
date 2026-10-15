@@ -13,7 +13,7 @@
 - 条目与显示结果在本地**同一笔事务**里落盘，提交后按盘上那份读回（来源修正条目时显示行随之修正）；`projectionVersion` 换代即整段作废该会话缓存，包括上一版 App 留下的「只有条目、没有解释」的旧缓存。
 - 协议已硬升到 **13**（issue #11 的代码部分）：两端常量同步，且本来就没有兼容旁路。
 - 未完成：**实机验收**——issue #12 的三种显示场景（第 9 批已在 emulator-5554 跑过一次，见该批记录），以及 issue #11 的跨端恢复验收矩阵（第 10 批那张表，6 项全未跑）。
-- 同时推进的 issue #9：诊断记录已跨重启读回（第 13 批），`HostState.diagnostics` 目录已能通过 `agent.state.request` 读到（第 14 批）；记录本身的分页读取协议、其余写入点与模块 21/22 的字段仍是空的。
+- 同时推进的 issue #9：诊断记录已跨重启读回（第 13 批），目录与记录都已在协议上可读（第 14、15 批）；其余写入点、客户端（App/桌面）实际消费与模块 21/22 的字段仍是空的。
 
 **下一步**
 
@@ -72,7 +72,7 @@
 | 20 供应商手机摘要 | HostState.providers | **已接入事实**：设备请求目录时把同一次读取到的「当前 provider」写进模型；profile 清单/认证绑定/切换进行中与用量没有事实，记 `null`/`unknown`，不补默认值 |
 | 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
 | 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
-| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **目录已可读、记录已落盘**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），跨重启读回、落盘失败计入缺口；`HostState.diagnostics` 由 `agent.state.request` 可读（条数/窗口/缺口）；已接目录与供应商两条失败路径；待接记录本身的分页读取协议与其余写入点 |
+| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两侧都可读**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），跨重启读回、落盘失败计入缺口；`HostState.diagnostics` 给目录（条数/窗口/缺口），`diagnostics.request` → `diagnostics.page` 按游标取记录本身；已接目录与供应商两条失败路径；待接其余写入点与客户端消费 |
 | 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | 模型已定义；缺 artifact inventory |
 
 ## 25–30：Host 领域服务（逐项登记，含双侧状态）
@@ -295,6 +295,19 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 - 新增 11 条测试：目录写入与核对时点、空记录是 ready+complete、缺口即 partial、计数不变不推进版本，快照里按 `agent.state.request` 读得到（含 completeness 透传），以及真 HostService + 真状态目录的端到端——记一条即刷新目录、重启后仍报得出上一轮的条数。
 
 协议版本不变：`HostState.diagnostics` 本来就在领域枚举里，`value` 对协议层是不透明的，没有新增消息类型。
+
+## 第 15 批（issue #9 第四刀：记录的分页读取上协议）
+
+已交付：
+
+- 协议 `DiagnosticsRequestSchema` → `DiagnosticsPageMessageSchema`：请求带 `requestId`、不透明游标、`limit` 与类别/严重度/会话过滤，应答回带同一个 `requestId` 与一整页（含 `nextCursor` 与 `truncated`）。严重度枚举抽成 `DiagnosticSeveritySchema`，记录与请求共用一份，不各写一遍。
+- Host 在设备载荷分派里同步应答：读的是内存 + 盘上那份，不查后端；读页本身会触发淘汰，因此顺手把 `HostState.diagnostics` 目录对齐（第 14 批的投影）。
+- [diagnostic-page-message.ts](../../packages/host/src/diagnostic-page-message.ts)：把「读出来的一页」包成线上消息的纯函数，于是游标、缺口与协议版本都能单独断言，不必为验证一个字段形状去起一台设备。
+- 新增 5 条测试：请求/应答严格 schema 与 `limit` 边界、记录不许出现自由字段（塞正文即被拒），以及构造出的消息必须能过协议联合体本身（只断言字段名会漏掉「发了但收不下」），空页与缺口标记照原样回带。
+
+协议版本不变：这是**新增**消息类型，老客户端永远不会发它，现有消息的形状没有改动。
+
+未交付：客户端（App / 桌面）实际消费这两条消息属于 issue #10；其余写入点（传输/审批/恢复/供应商切换）仍未接线。
 
 ## 回归要求
 

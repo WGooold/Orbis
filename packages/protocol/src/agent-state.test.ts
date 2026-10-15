@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import {
-  AgentKeySchema, AgentStateRequestSchema, AgentStateSnapshotSchema, agentKeyId, domainStateConfirmsAbsence,
-  domainStateSchema,
+  AgentKeySchema, AgentStateRequestSchema, AgentStateSnapshotSchema, DiagnosticRecordSchema,
+  DiagnosticsPageMessageSchema, DiagnosticsRequestSchema, agentKeyId, domainStateConfirmsAbsence, domainStateSchema,
 } from "./agent-state.js";
+import { PROTOCOL_VERSION } from "./index.js";
 
 const source = { producer: "adapter" as const, sourceId: "codex:1", sourceEpoch: "epoch-a", sourceRevision: 3 };
 const noticeSchema = domainStateSchema(z.array(z.strictObject({ id: z.string(), message: z.string() })));
@@ -46,16 +47,47 @@ describe("领域 envelope", () => {
     expect(() => noticeSchema.parse({ ...base, source: { ...source, producer: "relay" } })).toThrow();
   });
 
+  it("诊断分页请求与应答都是严格 schema，游标与过滤器按原样带过去", () => {
+    const request = DiagnosticsRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }).parse({
+      type: "diagnostics.request", protocolVersion: PROTOCOL_VERSION, requestId: "r",
+      cursor: null, limit: 50, category: "catalog", severity: "error", sessionId: "s",
+    });
+    expect(request).toMatchObject({ cursor: null, limit: 50, category: "catalog", severity: "error" });
+    expect(() => DiagnosticsRequestSchema.parse({ type: "diagnostics.request", requestId: "r", limit: 0 })).toThrow();
+    expect(() => DiagnosticsRequestSchema.parse({ type: "diagnostics.request", requestId: "r", limit: 501 })).toThrow();
+    expect(() => DiagnosticsRequestSchema.parse({ type: "diagnostics.request", requestId: "r", severity: "fatal" })).toThrow();
+
+    const page = DiagnosticsPageMessageSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }).parse({
+      type: "diagnostics.page", protocolVersion: PROTOCOL_VERSION, requestId: "r",
+      page: {
+        records: [{
+          recordId: "rec-1", scope: "host", agentKind: null, sessionId: null, category: "catalog",
+          severity: "error", message: "catalog read failed", at: 1_700_000_000_000,
+        }],
+        nextCursor: null,
+        truncated: false,
+      },
+    });
+    expect(page.page.records[0]).toMatchObject({ recordId: "rec-1", severity: "error" });
+    // 记录里不许出现正文/凭据之外的自由字段：多一个键就是有人往这儿塞了别的东西。
+    expect(() => DiagnosticRecordSchema.parse({
+      recordId: "rec-1", scope: "host", agentKind: null, sessionId: null, category: "catalog",
+      severity: "error", message: "x", at: 1, transcript: "秘密",
+    })).toThrow();
+  });
+
   it("模型读取的请求与应答都是严格 schema", () => {
     // 线上消息由协议层补 protocolVersion；负载本身不认识这个字段。
-    const wireRequest = AgentStateRequestSchema.safeExtend({ protocolVersion: z.literal(12) });
-    const request = wireRequest.parse({ type: "agent.state.request", protocolVersion: 12, requestId: "r", sessionId: "s", agentKind: "codex", domains: ["execution"] });
+    // 跟着协议常量走：硬版本升级时这里要一起升，而不是留一个写死的旧值。
+    const wire = z.literal(PROTOCOL_VERSION);
+    const wireRequest = AgentStateRequestSchema.safeExtend({ protocolVersion: wire });
+    const request = wireRequest.parse({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "r", sessionId: "s", agentKind: "codex", domains: ["execution"] });
     expect(request.domains).toEqual(["execution"]);
-    expect(() => wireRequest.parse({ type: "agent.state.request", protocolVersion: 12, requestId: "r", extra: 1 })).toThrow();
-    expect(() => AgentStateRequestSchema.parse({ type: "agent.state.request", protocolVersion: 12, requestId: "r" })).toThrow();
+    expect(() => wireRequest.parse({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "r", extra: 1 })).toThrow();
+    expect(() => AgentStateRequestSchema.parse({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "r" })).toThrow();
 
-    const snapshot = AgentStateSnapshotSchema.safeExtend({ protocolVersion: z.literal(12) }).parse({
-      type: "agent.state.snapshot", protocolVersion: 12, requestId: "r", scope: "agent", modelEpoch: "m",
+    const snapshot = AgentStateSnapshotSchema.safeExtend({ protocolVersion: wire }).parse({
+      type: "agent.state.snapshot", protocolVersion: PROTOCOL_VERSION, requestId: "r", scope: "agent", modelEpoch: "m",
       domains: [{ domain: "execution", modelEpoch: "m", revision: 1, availability: "ready", completeness: "complete", source, checkedAt: 1, value: { phase: "idle" } }],
       missing: [{ domain: "live", reason: "no_state" }], truncated: false,
     });

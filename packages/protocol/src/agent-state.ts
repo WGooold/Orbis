@@ -325,6 +325,9 @@ export type HostDiagnosticsState = z.infer<typeof HostDiagnosticsStateSchema>;
  * 记录是**运维事实**，不是聊天正文：只有身份、类别、严重度、短文本与小时点的小键值，
  * 不带原始正文、凭据、脚本或文件内容。缺事实就是没有这条记录，不写「占位记录」。
  */
+export const DiagnosticSeveritySchema = z.enum(["info", "warning", "error"]);
+export type DiagnosticSeverity = z.infer<typeof DiagnosticSeveritySchema>;
+
 export const DiagnosticRecordSchema = z.strictObject({
   recordId: z.string().min(1).max(256),
   scope: z.enum(["agent", "host"]),
@@ -332,7 +335,7 @@ export const DiagnosticRecordSchema = z.strictObject({
   sessionId: z.string().min(1).max(256).nullable(),
   /** 类别：运行、传输、审批、供应商、恢复……客户端可以按类别过滤而不必解析文本。 */
   category: z.string().min(1).max(64),
-  severity: z.enum(["info", "warning", "error"]),
+  severity: DiagnosticSeveritySchema,
   message: z.string().min(1).max(512),
   /** 结构化补充：小键值，Host 不往里塞正文、凭据或脚本。 */
   detail: z.record(z.string().min(1).max(64), z.string().max(256)).optional(),
@@ -353,6 +356,31 @@ export const DiagnosticPageSchema = z.strictObject({
   truncated: z.boolean(),
 });
 export type DiagnosticPage = z.infer<typeof DiagnosticPageSchema>;
+
+/**
+ * 读一页诊断记录（模块 23 的读取出口）。
+ *
+ * 游标由 Host 给出，客户端只负责原样带回来；`cursor` 为 `null` 与不传是两件事的**同一种**
+ * 意思（从当前窗口最旧一条开始），所以两者都允许。`limit` 的上限由 Host 的页上限再夹一次。
+ */
+export const DiagnosticsRequestSchema = z.strictObject({
+  type: z.literal("diagnostics.request"),
+  requestId: z.string().min(1).max(128),
+  cursor: z.string().min(1).max(256).nullable().optional(),
+  limit: z.number().int().positive().max(500).optional(),
+  category: z.string().min(1).max(64).optional(),
+  severity: DiagnosticSeveritySchema.optional(),
+  sessionId: z.string().min(1).max(256).optional(),
+});
+export type DiagnosticsRequest = z.infer<typeof DiagnosticsRequestSchema>;
+
+/** 一页诊断记录 + 回带 requestId：并发请求各自认领自己的应答。 */
+export const DiagnosticsPageMessageSchema = z.strictObject({
+  type: z.literal("diagnostics.page"),
+  requestId: z.string().min(1).max(128),
+  page: DiagnosticPageSchema,
+});
+export type DiagnosticsPageMessage = z.infer<typeof DiagnosticsPageMessageSchema>;
 
 /**
  * 线上快照里的一个领域：envelope 加上领域名。
