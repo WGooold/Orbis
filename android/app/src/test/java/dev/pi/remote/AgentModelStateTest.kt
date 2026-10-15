@@ -159,8 +159,80 @@ class AgentModelStateTest {
         assertEquals(StatusTone.Bad, view.tone)
     }
 
+
+    @Test
+    fun `记录页存下最近一页，并给发出那次请求销账`() {
+        val state = RemoteState(diagnosticRequest = DiagnosticRequestView("req-2", 0))
+        val reduced = reducer.reduce(state, page())
+
+        val page = reduced.diagnosticPage!!
+        assertEquals(1, page.records.size)
+        assertEquals("catalog", page.records.single().category)
+        assertEquals("error", page.records.single().severity)
+        assertNull(page.nextCursor)
+        assertNull(reduced.diagnosticRequest)
+    }
+
+    @Test
+    fun `不是我们那次请求的应答一律丢掉`() {
+        val state = RemoteState(diagnosticRequest = DiagnosticRequestView("other", 0))
+
+        val reduced = reducer.reduce(state, page())
+
+        assertNull(reduced.diagnosticPage)
+        assertEquals("other", reduced.diagnosticRequest?.requestId)
+    }
+
+    @Test
+    fun `记录缺字段就整页拒绝，不留半页看着像真的记录`() {
+        val state = RemoteState(diagnosticRequest = DiagnosticRequestView("req-2", 0))
+        val broken = page(records = """[{"recordId":"r1","category":"catalog","severity":"error"}]""")
+
+        val reduced = reducer.reduce(state, broken)
+
+        val result = reduced.diagnosticPage!!
+        assertEquals("记录缺少字段", result.error)
+        assertEquals(0, result.records.size)
+    }
+
+    @Test
+    fun `界面口径：没有回音要说出来，最近一条带缺口也要说`() {
+        assertEquals("尚未读取", RemoteState().diagnosticRecordsView().text)
+
+        val waiting = RemoteState(diagnosticRequest = DiagnosticRequestView("req-2", 0))
+        assertEquals("读取中…", waiting.diagnosticRecordsView(now = 5_000).text)
+        assertEquals("上次读取没有回音", waiting.diagnosticRecordsView(now = 60_000).text)
+        assertEquals(StatusTone.Warn, waiting.diagnosticRecordsView(now = 60_000).tone)
+
+        val loaded = reducer.reduce(waiting, page(nextCursor = "r1:9", truncated = true))
+        val view = loaded.diagnosticRecordsView()
+        assertEquals("catalog read failed（还有更早的，有缺口）", view.text)
+        assertEquals("catalog", view.detail)
+        assertEquals(StatusTone.Bad, view.tone)
+    }
+
+    @Test
+    fun `记录为空时如实说空，不编一条`() {
+        val state = RemoteState(diagnosticRequest = DiagnosticRequestView("req-2", 0))
+
+        val reduced = reducer.reduce(state, page(records = "[]"))
+
+        assertEquals("没有记录", reduced.diagnosticRecordsView().text)
+        assertEquals(StatusTone.Neutral, reduced.diagnosticRecordsView().tone)
+    }
+
+    private fun page(
+        records: String = DEFAULT_RECORD,
+        nextCursor: String? = null,
+        truncated: Boolean = false,
+    ): String {
+        val cursor = if (nextCursor == null) "null" else "\"$nextCursor\""
+        return """{"type":"diagnostics.page","protocolVersion":$PROTOCOL_VERSION,"requestId":"req-2","page":{"records":$records,"nextCursor":$cursor,"truncated":$truncated}}"""
+    }
+
     private companion object {
         const val DOMAINS = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":2,"availability":"ready","completeness":"partial","checkedAt":1700000000000,"value":{"records":2,"dropped":1}}]"""
         const val CLEAN_DOMAINS = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":3,"availability":"ready","completeness":"complete","checkedAt":1700000000000,"value":{"records":2,"dropped":0,"persistFailures":0}}]"""
+        const val DEFAULT_RECORD = """[{"recordId":"r1","category":"catalog","severity":"error","message":"catalog read failed","at":1700000000000}]"""
     }
 }

@@ -250,6 +250,7 @@ private fun RemoteApp(
                 onBack = { statusOpen = false },
                 onOpenSettings = { settingsOpen = true },
                 onRawDiagnostics = model::diagnosticReport,
+                onLoadDiagnostics = model::refreshDiagnostics,
             )
         } else {
             runtimeListStateHolder.SaveableStateProvider("runtime-list") {
@@ -2336,6 +2337,7 @@ private fun StatusScreen(
     onBack: () -> Unit,
     onOpenSettings: () -> Unit,
     onRawDiagnostics: () -> String,
+    onLoadDiagnostics: () -> Unit,
 ) {
     BackHandler(onBack = onBack)
     // 原始事件日志是这个 APP 唯一的现场排障面（手机未必能接 logcat），状态页只回答「现在通不通」，
@@ -2403,6 +2405,10 @@ private fun StatusScreen(
                 val directory = state.diagnosticDirectoryView()
                 StatusRow("记录目录", directory.text, directory.tone)
                 directory.detail?.let { StatusFact("说明", it) }
+                val records = state.diagnosticRecordsView()
+                StatusRow("最近一条", records.text, records.tone)
+                records.detail?.let { StatusFact("类别", it) }
+                NeumorphTextButton(text = "读取记录", onClick = onLoadDiagnostics)
             }
 
             StatusSectionTitle("电脑 Agent 服务")

@@ -72,7 +72,7 @@
 | 20 供应商手机摘要 | HostState.providers | **已接入事实**：设备请求目录时把同一次读取到的「当前 provider」写进模型；profile 清单/认证绑定/切换进行中与用量没有事实，记 `null`/`unknown`，不补默认值 |
 | 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
 | 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
-| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两侧都可读，App 已消费目录**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），跨重启读回、落盘失败计入缺口；`HostState.diagnostics` 给目录（条数/窗口/缺口），`diagnostics.request` → `diagnostics.page` 按游标取记录本身；App 连接后读一次 Host 作用域目录（第 16 批）；待接其余写入点、记录分页的客户端界面与其余领域 |
+| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两端闭环**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），跨重启读回、落盘失败计入缺口；`HostState.diagnostics` 给目录，`diagnostics.request` → `diagnostics.page` 取记录本身；App 连接后读目录（第 16 批）、按需读记录并在状态页显示最近一条（第 18 批）；待接其余写入点、更早页的界面与其余领域 |
 | 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | 模型已定义；缺 artifact inventory |
 
 ## 25–30：Host 领域服务（逐项登记，含双侧状态）
@@ -343,6 +343,19 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 - 资源占用要按顺序放：拿到 ~resource-operation~ 启模拟器后，模拟器开机完成就必须释放，否则下一次 Android 构建会一直等这个占用（实测卡了 8 分钟才反应过来）。
 
 **这一批没有跑矩阵本身**：跑到这里可用内存降到 1.1 GB（低于 1.5 GB 红线），按 ~D:\android-emulators\README.md~ 停机收尾——模拟器已关、rig 与 Relay 已停、占用文件已释放，用户正在使用的 Host 全程未受影响。6 项验收仍是**未跑**，但现在每一项都具备了跑的条件。
+
+## 第 18 批（issue #9/#10：记录的分页读取到客户端）
+
+已交付——Android 侧：
+
+- ~diagnostics.request~ → ~diagnostics.page~ 在 App 侧接通：状态页「读取记录」按钮发一页请求（~limit=50~），请求带时间戳，超过 15 秒没回来就显示「上次读取没有回音」，而不是永远转圈。
+- 受理纪律与快照一致：**只接受自己那次请求的应答**（并发或迟到的页会把现场搅乱），记录缺一个字段就**整页拒绝**并显示「读取失败」，不留半页看着像真的记录。
+- 状态页显示「最近一条」（Host 的页从最旧一条开始给，所以最近的是列表末尾那条），并带上「还有更早的」「有缺口」两种注记；色调跟那条记录的严重度走。
+- 5 条新单测（共 15 条）：页落库与销账、非本次请求的应答丢弃、缺字段整页拒绝、界面口径（读取中 / 没有回音 / 最近一条带注记）、空页如实说空。
+
+验证：~scripts/windows/android-build.ps1 :app:testDebugUnitTest~ = **46 类 / 416 项全过**。
+
+未交付：界面上没有「继续读更早的页」（~nextCursor~ 已经存下来了，但没有按钮）；记录只显示最近一条，没有列表视图。
 
 ## 回归要求
 

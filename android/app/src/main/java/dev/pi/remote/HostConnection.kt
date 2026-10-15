@@ -311,6 +311,28 @@ internal class HostConnection(
         }
     }
 
+    /**
+     * 读一页诊断记录（ADR-0032 模块 23）。目录回答「有多少、缺多少」，这里回答「最近发生了什么」。
+     *
+     * 页由 Host 从窗口里最旧一条开始给；`cursor` 只在继续读更早的页时带上。
+     */
+    fun refreshDiagnostics(cursor: String? = null) {
+        val current = mutableState.value
+        if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank()) return
+        val requestId = UUID.randomUUID().toString()
+        updateState { it.copy(diagnosticRequest = DiagnosticRequestView(requestId, System.currentTimeMillis())) }
+        val sent = relay.sendDeviceMessage(buildJsonObject {
+            put("type", "diagnostics.request")
+            put("protocolVersion", PROTOCOL_VERSION)
+            put("requestId", requestId)
+            put("limit", 50)
+            if (cursor != null) put("cursor", cursor)
+        })
+        if (!sent) updateState {
+            it.copy(diagnosticRequest = null, error = "读取记录未发送，当前连接没有端到端加密通道")
+        }
+    }
+
     fun setSessionArchived(sessionId: String, archived: Boolean) {
         val state = mutableState.value
         val entry = state.sessions[sessionId] ?: return

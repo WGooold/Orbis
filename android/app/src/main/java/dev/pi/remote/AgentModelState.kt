@@ -161,3 +161,99 @@ internal fun RemoteState.diagnosticDirectoryView(): DiagnosticDirectoryView {
 
 private fun JsonObject.long(key: String): Long? = this[key]?.jsonPrimitive?.longOrNull
 
+/** 一条诊断记录（模块 23）。记录是运维事实：只有身份、类别、严重度与短文本，没有正文。 */
+data class DiagnosticRecordView(
+    val recordId: String,
+    val category: String,
+    val severity: String,
+    val message: String,
+    val at: Long,
+)
+
+/** 一次记录读取。只保留最后一页：状态页要看的是「最近发生了什么」，不是整本历史。 */
+data class DiagnosticPageView(
+    val requestId: String,
+    val records: List<DiagnosticRecordView>,
+    val nextCursor: String? = null,
+    val truncated: Boolean = false,
+    val error: String? = null,
+)
+
+/** 已发出、还没回来的记录读取请求。带时间戳是为了能说「上次读取没有回音」，而不是永远转圈。 */
+data class DiagnosticRequestView(val requestId: String, val sentAt: Long)
+
+/** 记录读取在界面上的口径。 */
+internal data class DiagnosticRecordsView(val text: String, val detail: String? = null, val tone: StatusTone = StatusTone.Neutral)
+
+/** 等多久算「没有回音」。超过就如实说，不继续显示读取中。 */
+private const val DIAGNOSTIC_REQUEST_TIMEOUT_MS = 15_000L
+
+/**
+ * 收下一记录页。
+ *
+ * 只接受我们自己那次请求的应答：并发或迟到的页会把现场搅乱。记录的字段缺一个就整页拒绝——
+ * 与快照同一条纪律，宁可说「读取失败」，也不留半页看着像真的的记录。
+ */
+internal fun RemoteState.withDiagnosticsPage(message: JsonObject): RemoteState {
+    val requestId = message.string("requestId") ?: return this
+    if (diagnosticRequest?.requestId != requestId) return this
+    val cleared = copy(diagnosticRequest = null)
+    val failure = message.string("error")
+    if (failure != null) return cleared.copy(diagnosticPage = DiagnosticPageView(requestId, emptyList(), error = failure))
+    val page = message["page"] as? JsonObject ?: return cleared
+    val rows = page["records"]?.jsonArray ?: return cleared
+    val records = ArrayList<DiagnosticRecordView>(rows.size)
+    for (element in rows) {
+        val row = element as? JsonObject
+            ?: return cleared.copy(diagnosticPage = DiagnosticPageView(requestId, emptyList(), error = "记录不是对象"))
+        val recordId = row.string("recordId")
+        val category = row.string("category")
+        val severity = row.string("severity")
+        val text = row.string("message")
+        val at = row["at"]?.jsonPrimitive?.longOrNull
+        if (recordId == null || category == null || severity == null || text == null || at == null) {
+            return cleared.copy(diagnosticPage = DiagnosticPageView(requestId, emptyList(), error = "记录缺少字段"))
+        }
+        records += DiagnosticRecordView(recordId, category, severity, text, at)
+    }
+    return cleared.copy(diagnosticPage = DiagnosticPageView(
+        requestId = requestId,
+        records = records,
+        nextCursor = page.string("nextCursor"),
+        truncated = page["truncated"]?.jsonPrimitive?.booleanOrNull == true,
+    ))
+}
+
+/**
+ * 把记录页翻译成一句人话。
+ *
+ * Host 的页是从窗口里最旧一条开始给的，所以「最近一条」是列表末尾那条；有更早的、有缺口、
+ * 以及「上次读取没有回音」都必须说出来。
+ */
+internal fun RemoteState.diagnosticRecordsView(now: Long = System.currentTimeMillis()): DiagnosticRecordsView {
+    val pending = diagnosticRequest
+    val waiting = pending != null && now - pending.sentAt < DIAGNOSTIC_REQUEST_TIMEOUT_MS
+    val page = diagnosticPage
+    if (page == null) {
+        if (waiting) return DiagnosticRecordsView("读取中…")
+        if (pending != null) return DiagnosticRecordsView("上次读取没有回音", null, StatusTone.Warn)
+        return DiagnosticRecordsView("尚未读取", "点下面的按钮读一页")
+    }
+    page.error?.let { return DiagnosticRecordsView("读取失败：" + it, null, StatusTone.Bad) }
+    val newest = page.records.lastOrNull()
+        ?: return DiagnosticRecordsView(if (page.truncated) "没有记录（有缺口）" else "没有记录", null, if (page.truncated) StatusTone.Warn else StatusTone.Neutral)
+    val notes = buildList {
+        if (page.nextCursor != null) add("还有更早的")
+        if (page.truncated) add("有缺口")
+        if (!waiting && pending != null) add("上次读取没有回音")
+    }
+    val text = newest.message + if (notes.isEmpty()) "" else "（" + notes.joinToString("，") + "）"
+    val tone = when (newest.severity) {
+        "error" -> StatusTone.Bad
+        "warning" -> StatusTone.Warn
+        else -> StatusTone.Good
+    }
+    return DiagnosticRecordsView(text, newest.category, tone)
+}
+
+

@@ -418,6 +418,10 @@ data class RemoteState(
     val agentStateSnapshots: Map<String, AgentStateSnapshotView> = emptyMap(),
     /** 已发出、还没应答的模型读取请求；应答到达即移除（好坏都销账）。 */
     val agentStateRequests: Set<String> = emptySet(),
+    /** 诊断记录的最后一页（模块 23）。只留一页：状态页要看的是最近发生了什么。 */
+    val diagnosticPage: DiagnosticPageView? = null,
+    /** 已发出、还没回来的记录读取；带时间戳，超过窗口就如实说「没有回音」。 */
+    val diagnosticRequest: DiagnosticRequestView? = null,
     val sessionGraphs: Map<String, SessionGraph> = emptyMap(),
     val runtimeSessionViews: Map<String, RuntimeSessionView> = emptyMap(),
     val sessionSyncCommands: Map<String, PendingSessionSync> = emptyMap(),
@@ -1521,7 +1525,7 @@ class RelayReducer(
         val messageType = message.string("type")
         if (messageType !in setOf(
                 "device.ready", "runtime.online", "runtime.offline", "runtime.event", "runtime.git", "notification.snapshot",
-                "protocol.error", "provider.result", "provider.changed", "agent.state.snapshot",
+                "protocol.error", "provider.result", "provider.changed", "agent.state.snapshot", "diagnostics.page",
                 "artifact.read.failed",
                 // 上传的入站消息：状态由 ViewModel 的上传处理器维护，reducer 只需不把它当非法消息。
                 "file.upload.ready", "file.upload.read", "file.upload.progress", "file.upload.finished", "file.upload.failed",
@@ -1541,6 +1545,7 @@ class RelayReducer(
             "provider.result" -> if (channel != null) state.withProviderResult(message) else state
             "provider.changed" -> state
             "agent.state.snapshot" -> state.withAgentStateSnapshot(message)
+            "diagnostics.page" -> state.withDiagnosticsPage(message)
             "runtime.git" -> state.withWorkingBranch(message)
             "device.ready" -> {
                 // Relay's plaintext authentication receipt always carries an empty directory:
