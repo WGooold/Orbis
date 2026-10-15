@@ -43,6 +43,8 @@ const USAGE = `pi-remote —— 电脑侧的 Host 进程
   --state-dir <路径>             覆盖状态目录（默认 ~/.pi-remote）
   --codex                        host 子命令：启用 Codex 后端（需已全局安装 codex-cli）
   --dsh                          host 子命令：启用 DeepSeek Harness 后端
+  --sessions-root <路径>         host 子命令：只扫这个目录下的 Pi 会话（隔离测试台用它，
+                                 免得把真实会话列进来；默认 ~/.pi/agent/sessions）
   --print-payload                pair 子命令：把配对载荷按一行 JSON 打到 stdout（不给二维码），
                                  供隔离测试台或脚本把载荷交给客户端，不必用摄像头扫码
 
@@ -55,6 +57,7 @@ async function main(): Promise<void> {
     args: process.argv.slice(2),
     options: {
       "state-dir": { type: "string" },
+      "sessions-root": { type: "string" },
       "print-payload": { type: "boolean" },
       codex: { type: "boolean" },
       dsh: { type: "boolean" },
@@ -70,7 +73,7 @@ async function main(): Promise<void> {
       await runPair(stateDir, parsed.values["print-payload"] === true);
       return;
     case "host":
-      await runHost(stateDir, parsed.values.codex === true, parsed.values.dsh === true);
+      await runHost(stateDir, parsed.values.codex === true, parsed.values.dsh === true, parsed.values["sessions-root"]);
       return;
     case "devices":
       await runDevices(rest[0], rest[1], stateDir);
@@ -82,7 +85,12 @@ async function main(): Promise<void> {
 }
 
 /** 常驻模式：连上 Relay，开 LAN 端点，并开一条本机 loopback 等 Pi 扩展接进来。 */
-async function runHost(stateDirOption: string | undefined, codexEnabled: boolean, dshEnabled: boolean): Promise<void> {
+async function runHost(
+  stateDirOption: string | undefined,
+  codexEnabled: boolean,
+  dshEnabled: boolean,
+  sessionsRoot: string | undefined,
+): Promise<void> {
   const stateDir = resolveStateDir(stateDirOption);
   const config = await loadHostConfig({ stateDir });
 
@@ -147,6 +155,8 @@ async function runHost(stateDirOption: string | undefined, codexEnabled: boolean
       credential: config.runtimeCredential,
       stateDir,
       ...(config.adminToken === undefined ? {} : { adminToken: config.adminToken }),
+      // 隔离测试台用：只列这个目录里的 Pi 会话，避免联调时把真实会话（以及它们的运行状态）拉进来。
+      ...(sessionsRoot === undefined ? {} : { sessionsRoot }),
       ...(config.lanPort === undefined ? {} : { lanPort: config.lanPort }),
       ...(config.stunServers.length > 0 ? { stunServers: config.stunServers } : {}),
       ...(codexRuntime === undefined ? {} : { codexRuntime, codexLaunch: (request: { cwd: string }) => codexRuntime!.prepareTerminalLaunch(request.cwd) }),

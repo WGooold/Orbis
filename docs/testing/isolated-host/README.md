@@ -34,6 +34,8 @@ rig 默认落在 `<repo>\.scratch\isolated-host`（`.scratch/` 已被 gitignore�
 目录里有三个脚本：`start-isolated-host.ps1`（起常驻 Host）、`pair-isolated-host.ps1`（开配对窗口）、
 `stop-isolated-host.ps1`（收尾）。**pair 与 host 在同一个状态目录里互斥**：要配对先停 host。
 
+**跑验收矩阵时加 `-ScratchSessions`**（见下节）：否则 App 的会话列表里会出现这台电脑上的**真实会话**，「打开一个会话验证断线重连」就变成拿用户正在用的会话做实验。
+
 ```powershell
 # 1. 本机 Relay（脚本自己会记 pid，收尾时 -Action Stop）
 pwsh -File scripts\windows\relay.ps1 -Action Start -Port 8787
@@ -78,6 +80,23 @@ pwsh -File scripts\windows\android-build.ps1 :app:connectedDebugAndroidTest `
 [host] relay connected
 [host] hostId=<uuid> 已就绪，共 0 台已配对设备
 ```
+
+### 只服务合成会话（`-ScratchSessions`）
+
+Host 的 Pi 后端默认扫 ``/.pi/agent/sessions`。测试台加 `-ScratchSessions` 时改成 `--sessions-root <rig>\sessions`，并在那里种一个合成会话（首行是会话头 `{type,id,cwd,name}`，Pi 就是靠它列目录的）：App 只会看到「隔离测试台会话」，真实会话一条都不会出现。
+
+```powershell
+pwsh -File docs\testing\isolated-host\start-isolated-host.ps1 -ScratchSessions
+# 输出里会写明会话来源：仅合成会话（<rig>\sessions）还是真实会话
+```
+
+验证（不需要模拟器，实测输出：合成 1 条、真实根目录 164 条）：
+
+```powershell
+node -e "import('file:///D:/orbis/packages/host/dist/sessions.js').then(async m => { const s = await m.listPiSessions({ root: 'D:/orbis/.scratch/isolated-host/sessions' }); console.log(s.sessions.map(x => x.sessionId)); })"
+```
+
+合成会话目前只有会话头：够让 App 列出并打开它，但**还没有历史内容**。要跑「断线重连按 seq 续传」这类场景，先在 `<rig>\sessions\scratch\matrix-session.jsonl` 里追加真实形状的消息行。
 
 ### 为什么用 `--print-payload`
 

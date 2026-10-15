@@ -21,6 +21,11 @@
 .PARAMETER Codex
   启用 Codex 后端（默认关；需要已全局安装 codex-cli）。
 
+.PARAMETER ScratchSessions
+  只把 rig 目录里的**合成会话**列给客户端（--sessions-root），不扫 ~/.pi/agent/sessions。
+  跑验收矩阵时应当打开：否则 App 的会话列表里会混进用户真实会话，而「打开一个会话来验证
+  断线重连」就变成了拿用户正在用的会话做实验。
+
 .PARAMETER ReadyTimeoutSeconds
   等待「已就绪」的超时，默认 60 秒。
 
@@ -34,6 +39,7 @@ param(
     [string]$RelayUrl = 'ws://127.0.0.1:8787',
     [switch]$Dsh,
     [switch]$Codex,
+    [switch]$ScratchSessions,
     [int]$ReadyTimeoutSeconds = 60
 )
 $ErrorActionPreference = 'Stop'
@@ -59,6 +65,20 @@ $credential = ($credential -split '=', 2)[1].Trim()
 
 New-Item -ItemType Directory -Force -Path $stateDir, $logDir | Out-Null
 
+# 合成会话：会话文件的首行是会话头（id / cwd / name），Pi 后端就是靠它列目录的。
+# 只写一次，之后的人工改动保留——它是给人做实验用的，不是每次启动都重置的临时文件。
+$sessionsRoot = Join-Path $RigRoot 'sessions'
+if ($ScratchSessions) {
+    $sessionFile = Join-Path $sessionsRoot 'scratch\matrix-session.jsonl'
+    if (-not (Test-Path -LiteralPath $sessionFile)) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $sessionFile) | Out-Null
+        $workspace = Join-Path $RigRoot 'workspace'
+        New-Item -ItemType Directory -Force -Path $workspace | Out-Null
+        $header = [ordered]@{ type = 'session'; id = 'matrix-session'; cwd = $workspace; name = '隔离测试台会话' }
+        Set-Content -LiteralPath $sessionFile -Encoding utf8 -Value ($header | ConvertTo-Json -Compress)
+    }
+}
+
 # 同一个 rig 只能有一个常驻 Host：重复启动只会互踢。
 if (Test-Path -LiteralPath $pidFile) {
     $existing = (Get-Content -LiteralPath $pidFile -Raw).Trim()
@@ -81,6 +101,7 @@ try {
     $arguments = @($entry, 'host', '--state-dir', $stateDir)
     if ($Dsh) { $arguments += '--dsh' }
     if ($Codex) { $arguments += '--codex' }
+    if ($ScratchSessions) { $arguments += @('--sessions-root', $sessionsRoot) }
     # 不开 -NoNewWindow：子进程若继承调用方的 stdio 管道，调用方会一直等到它退出（实测踩过）。
     $process = Start-Process -FilePath 'node' -ArgumentList $arguments -WorkingDirectory $repo -PassThru `
         -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
@@ -99,6 +120,7 @@ try {
     Write-Output "  状态目录   $stateDir"
     Write-Output "  Relay      $RelayUrl"
     Write-Output "  LAN 端口   $LanPort"
+    Write-Output "  会话来源   $(if ($ScratchSessions) { "仅合成会话（$sessionsRoot）" } else { '真实会话（~/.pi/agent/sessions）' })"
     Write-Output "  日志       $outLog"
     Write-Output "  提示：配对与常驻互斥——先 pair，再 host；需要配对窗口时先 stop。"
 } finally {

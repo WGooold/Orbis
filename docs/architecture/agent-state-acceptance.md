@@ -231,7 +231,7 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 | --- | --- | --- | --- | --- |
 | 1 | 版本不匹配 | 用 `dcafa43`（协议 12）构建 App，连 13 的隔离测试台 | 明确拒绝并提示版本不一致，不静默降级、不进半连接状态 | 单测已覆盖两端精确保守；**设备级未跑** |
 | 2 | Host 重建 | 重启 Host（新 source epoch / 新 modelEpoch） | App 按代次重建：旧代次的迟到回调被丢弃，不冒充新代次已确认事实 | **已跑，通过**（第 19 批）：App 自动重连、重新握手、重发 `session.list` 与 `agent.state.request`（同一 requestId 两边对上）；迟到回调那一半由 Registry 单测覆盖 |
-| 3 | 断线重连 | 断开 Relay（或关 LAN），恢复后重连 | 按 source epoch/seq 续传；缺口走恢复基线；`unchanged` 不被当成内容变化 | 未跑 |
+| 3 | 断线重连 | 断开 Relay（或关 LAN），恢复后重连 | 按 source epoch/seq 续传；缺口走恢复基线；`unchanged` 不被当成内容变化 | 未跑（前置已就绪：测试台可只服务合成会话，见第 20 批；合成会话还缺历史内容） |
 | 4 | 历史改写（revert/压缩） | 会话内回退分支、触发压缩 | 显示窗口与 head 一起更新，旧显示行被作废而不是继续渲染 | 未跑 |
 | 5 | 设备重开 | 杀掉 App 再打开 | 从 SQLite 恢复：条目与显示行同源（盘上那份），标题/树标签一致 | 未跑 |
 | 6 | 多 Host 隔离 | 同时连用户 Host 与隔离测试台 | 两台的设备回执、通知关闭、配对互不串台 | 未跑 |
@@ -378,6 +378,19 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 - 装完 App 直接启动会被系统的权限对话框挡住（~GrantPermissionsActivity~ 是 top-most，~pidof~ 为空，看着像「启动失败」）。跑设备验证前先 ~pm grant com.orbising.orbis android.permission.POST_NOTIFICATIONS~（相机同理），或用 UI 点掉。
 - 内存到 0.9 GB 时按红线停机：模拟器已关、rig 与 Relay 已停、占用已释放、用户 Host 未受影响。
+
+## 第 20 批（issue #11：让测试台只服务合成会话）
+
+第 3 项（断线重连）第一次尝试时卡在一个安全问题上：测试台上唯一可打开的会话是**用户正在用的那个**（Host 扫真实会话目录，164 条全在列表里）。拿它做断线实验会和用户自己的进程抢同一份会话文件。
+
+这一批把根因去掉：
+
+- ~packages/host/src/cli.ts~ 暴露 ~--sessions-root <路径>~：host 子命令只扫这个目录下的 Pi 会话（默认仍是 ~~/.pi/agent/sessions~）。Host 早就有这个选项，只是一直没有出口。
+- ~start-isolated-host.ps1 -ScratchSessions~：把 Pi 会话根指到 ~<rig>\sessions~，并在那里种一个合成会话（首行是会话头 ~{type,id,cwd,name}~）；输出里写明这次是「仅合成会话」还是「真实会话」。
+
+实测（不需要模拟器）：~-ScratchSessions~ 启动的 rig Host 命令行确实是 ~host --state-dir … --sessions-root D:\orbis\.scratch\isolated-host\sessions~；直接调 ~listPiSessions~ 得到**合成 1 条**（~matrix-session @ <rig>\workspace~），而真实根目录是 **164 条**——隔离生效，不是「看起来生效」。
+
+**这一批没有跑第 3 项**：合成会话目前只有会话头，够 App 列出与打开，但还没有历史内容；要跑「按 source epoch/seq 续传」还得先给它补真实形状的消息行，或者在 rig 里新建一个会话。第 3 项仍然记为未跑，但它不再有「会碰到用户会话」的风险。
 
 ## 回归要求
 
