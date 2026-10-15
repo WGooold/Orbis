@@ -481,6 +481,19 @@ Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、�
 
 **教训**：消费方（App）的文案必须照着产出方（Host）已写下来的语义抄，而不是照着自己对「诊断日志」的直觉猜——这次的错话本来会被一整条链路原样带到用户面前。
 
+## 第 26 批（issue #10：App 消费第三个领域——供应商切换状态）
+
+已交付——Android 侧：
+
+- 解析 ~HostState.providers~ 的公共摘要（~agentKind~ / ~current~ / ~switching~ / 用量是否 unknown），状态页新增「电脑端供应商」一节：切换状态 + 当前供应商（~codex: custom、dsh: deepseek~）。
+- 这一格补的是手机**看不见的那种切换**：手机只知道「我自己发起的那次」，桌面端带外改配置只有 Host 模型知道。
+- 文案按事实说：~switching == null~ 是未核对，所以写「**Host 未报告进行中的切换**」——陈述它报了什么，而不是替它断言「现在没有切换」；~true~ 时写「正在切换：codex」。领域缺席、空清单、坏负载、未核对都各有明确说法，不混成一个「无」。
+- 4 条新单测（共 422 项）：未报告（含当前供应商明细）、正在切换、缺席与坏负载、空清单与未核对两种不一样的说法。
+
+验证：~scripts/windows/android-build.ps1 :app:testDebugUnitTest~ = **46 类 / 422 项全过**。
+
+未交付：~profiles~/~authenticated~ 仍按第 24 批的结论空着（等口径决定）；用量/健康度在模型里仍是 ~unknown~。
+
 ## 回归要求
 
 改动 Registry 或 envelope 时必须保持：

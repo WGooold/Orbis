@@ -2421,6 +2421,14 @@ private fun StatusScreen(
                 catalog.detail?.let { StatusFact("说明", it) }
             }
 
+            StatusSectionTitle("电脑端供应商")
+            StatusCard {
+                // 手机只知道「我自己发起的那次切换」；带外（桌面端）的切换只有 Host 模型知道。
+                val switching = state.providerSwitchingView()
+                StatusRow("切换状态", switching.text, switching.tone)
+                switching.detail?.let { StatusFact("当前供应商", it) }
+            }
+
             StatusSectionTitle("电脑 Agent 服务")
             StatusCard {
                 // 这一行只回答「Host 接上了 Codex 桌面版的 app-server 吗」。装了没开、开了

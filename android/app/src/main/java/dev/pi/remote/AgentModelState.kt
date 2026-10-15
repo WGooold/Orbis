@@ -165,6 +165,69 @@ internal fun RemoteState.diagnosticDirectoryView(): DiagnosticDirectoryView {
 
 private fun JsonObject.long(key: String): Long? = this[key]?.jsonPrimitive?.longOrNull
 
+/** 一个后端的供应商摘要（模块 20–22）。秘密不在模型里：这里只有 id 与布尔状态。 */
+data class ProviderSummaryView(
+    val agentKind: String,
+    val current: String?,
+    /** true 表示 Host 自己正在为这个后端切换；null 表示未核对（不是「没在切换」）。 */
+    val switching: Boolean?,
+    val usageUnknown: Boolean,
+)
+
+/** 供应商切换状态在界面上的口径。 */
+internal data class ProviderSwitchingView(val text: String, val detail: String? = null, val tone: StatusTone = StatusTone.Neutral)
+
+/**
+ * 把 Host 的供应商摘要翻成一句人话，重点是**切换进行中**。
+ *
+ * 手机以前只知道「我自己发起的那次切换」，带外（桌面端）的切换它看不见；模型里这条事实补的正是这一格。
+ * ~switching == null~ 是未核对，所以文案说的是「Host 未报告进行中的切换」——陈述它报了什么，
+ * 而不是替它断言「现在没有切换」。
+ */
+internal fun RemoteState.providerSwitchingView(): ProviderSwitchingView {
+    val snapshot = hostScopeSnapshot() ?: return ProviderSwitchingView("尚未读取", "连接建立后会自动读一次")
+    snapshot.error?.let { return ProviderSwitchingView("读取失败：" + it, null, StatusTone.Bad) }
+    snapshot.missing["providers"]?.let { reason ->
+        val text = if (reason == "unknown_domain") "这台电脑不认识这个领域" else "电脑没有报这个领域"
+        return ProviderSwitchingView(text, "缺席原因：" + reason, StatusTone.Warn)
+    }
+    val domain = snapshot.domains["providers"]
+        ?: return ProviderSwitchingView("清单里没有这个领域", "缺席没有给原因，不能当成没有切换", StatusTone.Warn)
+    if (domain.availability != "ready") {
+        return ProviderSwitchingView("电脑尚未核对", "availability=" + domain.availability, StatusTone.Warn)
+    }
+    val value = domain.value as? JsonObject
+        ?: return ProviderSwitchingView("供应商摘要格式无法识别", "负载不是对象", StatusTone.Bad)
+    val rows = value["providers"] as? JsonArray
+        ?: return ProviderSwitchingView("供应商摘要缺少清单", "负载里没有 providers", StatusTone.Bad)
+    val summaries = ArrayList<ProviderSummaryView>(rows.size)
+    for (element in rows) {
+        val row = element as? JsonObject
+            ?: return ProviderSwitchingView("供应商摘要格式无法识别", "条目不是对象", StatusTone.Bad)
+        val kind = row.string("agentKind")
+            ?: return ProviderSwitchingView("供应商摘要缺少字段", "条目没有 agentKind", StatusTone.Bad)
+        val usage = row["usage"] as? JsonObject
+        summaries += ProviderSummaryView(
+            agentKind = kind,
+            current = row.string("current"),
+            switching = row["switching"]?.jsonPrimitive?.booleanOrNull,
+            usageUnknown = usage?.string("availability") != "ready",
+        )
+    }
+    if (summaries.isEmpty()) {
+        return ProviderSwitchingView("电脑没有报任何供应商", null, StatusTone.Warn)
+    }
+    val detail = summaries.joinToString("、") { summary ->
+        summary.agentKind + ": " + (summary.current ?: "未配置")
+    }
+    val switching = summaries.filter { it.switching == true }.map { it.agentKind }
+    if (switching.isNotEmpty()) {
+        return ProviderSwitchingView("正在切换：" + switching.joinToString("、"), detail, StatusTone.Warn)
+    }
+    return ProviderSwitchingView("Host 未报告进行中的切换", detail)
+}
+
+
 /** 目录里一个后端的读取结果（模块 03）。失败或未就绪**不是**「这个后端没有会话」。 */
 data class CatalogBackendView(
     val kind: String,

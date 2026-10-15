@@ -272,6 +272,48 @@ class AgentModelStateTest {
         assertEquals("目录缺少总数", broken.catalogSummaryView().text)
     }
 
+
+    @Test
+    fun `没有切换时说的是「Host 未报告」，不是替它断言没有切换`() {
+        val reduced = reducer.reduce(pending(), snapshot(domains = PROVIDERS_IDLE))
+
+        val view = reduced.providerSwitchingView()
+        assertEquals("Host 未报告进行中的切换", view.text)
+        assertEquals("codex: custom、dsh: deepseek", view.detail)
+        assertEquals(StatusTone.Neutral, view.tone)
+    }
+
+    @Test
+    fun `切换进行中时说清是哪个后端——带外的切换手机本来看不见`() {
+        val reduced = reducer.reduce(pending(), snapshot(domains = PROVIDERS_SWITCHING))
+
+        val view = reduced.providerSwitchingView()
+        assertEquals("正在切换：codex", view.text)
+        assertEquals(StatusTone.Warn, view.tone)
+    }
+
+    @Test
+    fun `缺席、空清单与坏负载都不含糊`() {
+        assertEquals("尚未读取", RemoteState().providerSwitchingView().text)
+
+        val absent = reducer.reduce(pending(), snapshot(domains = "[]", missing = """[{"domain":"providers","reason":"no_state"}]"""))
+        assertEquals("电脑没有报这个领域", absent.providerSwitchingView().text)
+
+        val empty = reducer.reduce(pending(), snapshot(domains = PROVIDERS_EMPTY))
+        assertEquals("电脑没有报任何供应商", empty.providerSwitchingView().text)
+        assertEquals(StatusTone.Warn, empty.providerSwitchingView().tone)
+
+        val unknown = reducer.reduce(pending(), snapshot(domains = PROVIDERS_UNKNOWN))
+        assertEquals("电脑尚未核对", unknown.providerSwitchingView().text)
+        assertEquals(StatusTone.Warn, unknown.providerSwitchingView().tone)
+
+        val broken = reducer.reduce(pending(), snapshot(
+            domains = """[{"domain":"providers","modelEpoch":"m","revision":1,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"checkedAt":1}}]""",
+        ))
+        assertEquals("供应商摘要缺少清单", broken.providerSwitchingView().text)
+        assertEquals(StatusTone.Bad, broken.providerSwitchingView().tone)
+    }
+
     private companion object {
         const val DOMAINS = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":2,"availability":"ready","completeness":"partial","checkedAt":1700000000000,"value":{"records":2,"dropped":1}}]"""
         const val CLEAN_DOMAINS = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":3,"availability":"ready","completeness":"complete","checkedAt":1700000000000,"value":{"records":2,"dropped":0,"persistFailures":0}}]"""
@@ -280,5 +322,10 @@ class AgentModelStateTest {
         const val CATALOG_PARTIAL = """[{"domain":"catalog","modelEpoch":"m","revision":2,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":12,"truncated":false,"backends":[{"kind":"pi","ready":true,"sessions":10,"complete":true,"elapsedMs":5},{"kind":"codex","ready":true,"sessions":2,"complete":false,"elapsedMs":3000,"error":"thread/list 超时"}],"checkedAt":1}}]"""
         const val CATALOG_NOT_READY = """[{"domain":"catalog","modelEpoch":"m","revision":3,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":10,"truncated":false,"backends":[{"kind":"pi","ready":true,"sessions":10,"complete":true,"elapsedMs":5},{"kind":"codex","ready":false,"sessions":0,"complete":false,"elapsedMs":0}],"checkedAt":1}}]"""
         const val CATALOG_TRUNCATED = """[{"domain":"catalog","modelEpoch":"m","revision":4,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":2000,"truncated":true,"backends":[{"kind":"pi","ready":true,"sessions":2000,"complete":true,"elapsedMs":5}],"checkedAt":1}}]"""
+        const val PROVIDERS_IDLE = """[{"domain":"providers","modelEpoch":"m","revision":1,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[{"agentKind":"codex","current":"custom","profiles":null,"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}},{"agentKind":"dsh","current":"deepseek","profiles":null,"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}}],"checkedAt":1}}]"""
+        const val PROVIDERS_SWITCHING = """[{"domain":"providers","modelEpoch":"m","revision":2,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[{"agentKind":"codex","current":"custom","profiles":null,"authenticated":null,"switching":true,"usage":{"availability":"unknown","detail":null}}],"checkedAt":1}}]"""
+        const val PROVIDERS_EMPTY = """[{"domain":"providers","modelEpoch":"m","revision":3,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[],"checkedAt":1}}]"""
+        // Host 在没有摘要时写的是 unknown（不是「没有供应商」），客户端不许把它当成空清单。
+        const val PROVIDERS_UNKNOWN = """[{"domain":"providers","modelEpoch":"m","revision":4,"availability":"unknown","completeness":"partial","checkedAt":1,"value":{"providers":[],"checkedAt":1}}]"""
     }
 }
