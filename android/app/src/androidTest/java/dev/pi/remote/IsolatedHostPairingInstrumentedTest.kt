@@ -55,7 +55,11 @@ class IsolatedHostPairingInstrumentedTest {
         assumeTrue("载荷缺 relayUrl/code/hostId", relayUrl != null && code != null && hostId != null)
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val base = ApplicationProvider.getApplicationContext<Context>()
-        val app = IsolatedTestApplication(base, prefix = "isolated-host")
+        // `pairIntoRealStorage=true` 写进 App 的真实存储：后续的跨端恢复验收需要一个真的连得上的
+        // Host，而模拟器数据已清空、没有遗留凭据。默认仍是隔离目录（跑完就删）。
+        val keepPairing = arguments.getString("pairIntoRealStorage") == "true"
+        val app: android.app.Application =
+            if (keepPairing) base as android.app.Application else IsolatedTestApplication(base, prefix = "isolated-host")
         val owner = ViewModelStore()
         lateinit var model: RemoteViewModel
         try {
@@ -83,7 +87,7 @@ class IsolatedHostPairingInstrumentedTest {
             assertTrue("Host 名称应该来自它自己的状态：${snapshot.name}", snapshot.name.isNotBlank())
         } finally {
             instrumentation.runOnMainSync { owner.clear() }
-            app.dispose()
+            if (app is IsolatedTestApplication) app.dispose()
         }
     }
 }
