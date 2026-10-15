@@ -96,10 +96,14 @@ pwsh -File docs\testing\isolated-host\start-isolated-host.ps1 -ScratchSessions
 node -e "import('file:///D:/orbis/packages/host/dist/sessions.js').then(async m => { const s = await m.listPiSessions({ root: 'D:/orbis/.scratch/isolated-host/sessions' }); console.log(s.sessions.map(x => x.sessionId)); })"
 ```
 
-合成会话目前只有会话头：够让 App 列出并打开它，但**还没有历史内容**。要跑「断线重连按 seq 续传」这类场景，两条路：
+**合成会话只能被列出和选中，不能提供历史**（2026-10-15 实测结论）：Pi 的会话历史来自**运行中的 Pi**（Pi 扩展走 loopback 把条目送出来），会话文件本身不是 Host 的历史来源——所以往 `matrix-session.jsonl` 里补消息行并不会让 App 看到聊天记录。
 
-1. 在 App 里于 `<rig>\workspace` 新建一个会话——那会拉起真的 Pi，产出的就是真会话文件（推荐，不必手写格式）；
-2. 给 `<rig>\sessions\scratch\matrix-session.jsonl` 追加真实形状的消息行（先照着 `packages/host/src` 里解析 Pi 会话的代码或一份真会话文件确认格式）。
+要拿到一个「活着的、不属于用户」的会话，只有两条路：
+
+1. **在 App 里于 `<rig>\workspace` 新建会话**：Host 会拉起真的 Pi，产出真会话文件与真运行时。代价是这台机器上多一个真 agent 进程，且它用的是用户的 Pi 配置。
+2. **用夹具 Host**（`scripts/session-sync-fixture.mjs`，见 `DisplayScenariosInstrumentedTest` / `SessionSyncSlowLinkInstrumentedTest`）：夹具直接按线上协议发合成会话，App 侧走真加密链路 + 真 SQLite。适合验证 App 的显示与恢复语义，不适合验证 Host 侧的重建/续传。
+
+会话文件的形状（只记结构，不抄内容）：首行 `{type:"session",version,id,timestamp,cwd}`，其后每行 `{type,id,parentId,timestamp,...}`；user 消息的 content 块是 `{type:"text",text}`。
 
 ### 为什么用 `--print-payload`
 
