@@ -2406,7 +2406,8 @@ private fun StatusScreen(
                 StatusRow("记录目录", directory.text, directory.tone)
                 directory.detail?.let { StatusFact("说明", it) }
                 val records = state.diagnosticRecordsView()
-                StatusRow("最近一条", records.text, records.tone)
+                // 只读了第一页时它就不是「最近一条」——标签按实际语义写，别让界面替 Host 说满话。
+                StatusRow("最近读到的", records.text, records.tone)
                 records.detail?.let { StatusFact("类别", it) }
                 NeumorphTextButton(text = "读取记录", onClick = onLoadDiagnostics)
             }

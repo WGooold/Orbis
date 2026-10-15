@@ -206,7 +206,7 @@ class AgentModelStateTest {
 
         val loaded = reducer.reduce(waiting, page(nextCursor = "r1:9", truncated = true))
         val view = loaded.diagnosticRecordsView()
-        assertEquals("catalog read failed（还有更早的，有缺口）", view.text)
+        assertEquals("catalog read failed（还有更新的没读，有缺口）", view.text)
         assertEquals("catalog", view.detail)
         assertEquals(StatusTone.Bad, view.tone)
     }

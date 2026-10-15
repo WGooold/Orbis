@@ -461,6 +461,24 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 未交付（模块 20–22 剩下的）：profile 清单与认证绑定仍没有可信来源接进来——~provider.list~ 那次读取确实拿得到（~id/name/enabled/globalDefault~），但 ~session.list~ 会把它覆盖成 ~null~，要接必须先定「最后已知值」的口径与失效时机，这是个设计决定，没有替用户拍板。用量/健康度同理。
 
+## 第 25 批（修第 18 批自己的方向性错误：游标是朝**更新**走的）
+
+第 18 批（~d06a182~）把 ~nextCursor~ 说成「还有更早的」，状态页那行也叫「最近一条」。**都是反的。**
+
+Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、朝**更新**方向取 ~limit~ 条，~nextCursor~ 指向「比这一页更新的还没读的那些」，为 null 才是追平最新（单测 ~按游标分页读完整个保留窗口~ 本来就是这么断言的，我没照着读）。于是界面上出现两处错话：
+
+- 「还有更早的」应为「还有更新的没读」——把没读的方向说反了；
+- 「最近一条」在第一页时根本不成立，它只是**这一页里最新的一条**。
+
+已修：
+
+- App：[AgentModelState.kt](../../android/app/src/main/java/dev/pi/remote/AgentModelState.kt) 的注记改成「还有更新的没读」，KDoc 写清方向；状态页标签改成「最近读到的」，并在只有第一页时不假装那是最近。
+- Host：[diagnostic-journal.ts](../../packages/host/src/diagnostic-journal.ts) 的 ~page()~ 注释明确写下**方向**，避免以后有人把它「修」成倒序；新增 1 条单测把方向钉死（m0,m1 → m2 → 追平）。
+
+验证：~npm run check~ = **107 文件 / 1094 测试全过**；~:app:testDebugUnitTest~ = **46 类 / 419 项全过**。
+
+**教训**：消费方（App）的文案必须照着产出方（Host）已写下来的语义抄，而不是照着自己对「诊断日志」的直觉猜——这次的错话本来会被一整条链路原样带到用户面前。
+
 ## 回归要求
 
 改动 Registry 或 envelope 时必须保持：

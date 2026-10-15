@@ -117,7 +117,13 @@ export class DiagnosticJournal {
     return record;
   }
 
-  /** 读一页。游标太旧或指向已淘汰的位置时，`truncated` 为 true。 */
+  /**
+   * 读一页。游标太旧或指向已淘汰的位置时，`truncated` 为 true。
+   *
+   * **方向**：页从保留窗口里**最旧**一条开始，往后（更新）取 `limit` 条；`nextCursor` 因此指向
+   * 「比这一页更新的还没读的那些」，为 null 表示已经追平最新。客户端别把它当成「还有更早的」——
+   * 那会让界面把「一页里最新的一条」说成「最近的一条」。
+   */
   page(request: DiagnosticPageRequest = {}): DiagnosticPage {
     this.#evict();
     const limit = Math.min(Math.max(1, request.limit ?? this.#maxPageSize), this.#maxPageSize);

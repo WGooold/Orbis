@@ -27,6 +27,20 @@ describe("DiagnosticJournal", () => {
     expect(third.nextCursor).toBeNull();
   });
 
+
+  it("游标朝更新的方向翻页：nextCursor 不为 null 表示更新的还没读", () => {
+    const journal = new DiagnosticJournal();
+    for (let index = 0; index < 3; index += 1) journal.append(record({ message: `m${index}` }));
+
+    const first = journal.page({ limit: 2 });
+    expect(first.records.map(r => r.message)).toEqual(["m0", "m1"]);
+    // m2 比这一页更新：游标说的是「更新的还没读」，不是「还有更早的」。
+    expect(first.nextCursor).not.toBeNull();
+    const second = journal.page({ cursor: first.nextCursor, limit: 2 });
+    expect(second.records.map(r => r.message)).toEqual(["m2"]);
+    expect(second.nextCursor).toBeNull();
+  });
+
   it("被过滤掉的记录也要越过，下一页不能原地打转", () => {
     const journal = new DiagnosticJournal();
     journal.append(record({ message: "info", severity: "info" }));

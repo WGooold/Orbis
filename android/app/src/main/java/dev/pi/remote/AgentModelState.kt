@@ -305,7 +305,8 @@ internal fun RemoteState.withDiagnosticsPage(message: JsonObject): RemoteState {
 /**
  * 把记录页翻译成一句人话。
  *
- * Host 的页是从窗口里最旧一条开始给的，所以「最近一条」是列表末尾那条；有更早的、有缺口、
+ * Host 的页是从窗口里**最旧**一条开始、朝**更新**方向给的，所以列表末尾那条是「这一页里最新的一条」——
+ * 只有当 `nextCursor` 为空（已经追平最新）时，它才真的是「最近一条」。有更新的没读、有缺口、
  * 以及「上次读取没有回音」都必须说出来。
  */
 internal fun RemoteState.diagnosticRecordsView(now: Long = System.currentTimeMillis()): DiagnosticRecordsView {
@@ -321,7 +322,8 @@ internal fun RemoteState.diagnosticRecordsView(now: Long = System.currentTimeMil
     val newest = page.records.lastOrNull()
         ?: return DiagnosticRecordsView(if (page.truncated) "没有记录（有缺口）" else "没有记录", null, if (page.truncated) StatusTone.Warn else StatusTone.Neutral)
     val notes = buildList {
-        if (page.nextCursor != null) add("还有更早的")
+        // 游标朝更新的方向走：不为 null 表示「比这一页更新的还没读」。
+        if (page.nextCursor != null) add("还有更新的没读")
         if (page.truncated) add("有缺口")
         if (!waiting && pending != null) add("上次读取没有回音")
     }
