@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { AgentStateRegistry } from "./agent-state-registry.js";
-import { HostStateFacts } from "./host-state-facts.js";
+import { HostStateFacts, providerSwitchingFact } from "./host-state-facts.js";
 
 const summary = (over: Partial<Parameters<HostStateFacts["providers"]>[0]["providers"][number]> = {}) => ({
   agentKind: "codex" as const,
@@ -61,3 +61,13 @@ describe("HostStateFacts.providers", () => {
     expect(registry.read(scope, "providers")?.revision).toBe(first);
   });
 });
+
+describe("providerSwitchingFact", () => {
+  it("只有 Host 自己正在切换的那个后端才是 true，其余是未核对而不是 false", () => {
+    expect(providerSwitchingFact("dsh", "dsh")).toBe(true);
+    // 没在切换不等于没有切换：桌面端可以在带外改配置，所以是 null（未核对）。
+    expect(providerSwitchingFact("dsh", "codex")).toBeNull();
+    expect(providerSwitchingFact(undefined, "pi")).toBeNull();
+  });
+});
+

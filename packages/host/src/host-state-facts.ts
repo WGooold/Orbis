@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { HostCatalogState, HostDiagnosticsState, HostProvidersState } from "@pi-remote/protocol";
+import type { AgentKind, HostCatalogState, HostDiagnosticsState, HostProvidersState } from "@pi-remote/protocol";
 
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 
@@ -15,6 +15,16 @@ export type HostStateFactsOptions = {
   readonly registry: AgentStateRegistry;
   readonly now?: () => number;
 };
+
+/**
+ * 「有供应商切换正在进行」这条事实（模块 20）。
+ *
+ * 只有 Host 自己发起的切换才是已知事实；没在切换**不等于**没有切换——桌面端可能在带外改配置，
+ * 所以那种情况记 ~null~（未核对），而不是 ~false~。客户端据此知道：进行中时路由结论还不作数。
+ */
+export function providerSwitchingFact(changingKind: AgentKind | undefined, kind: AgentKind): boolean | null {
+  return changingKind === kind ? true : null;
+}
 
 export class HostStateFacts {
   readonly #registry: AgentStateRegistry;

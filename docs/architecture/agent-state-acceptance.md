@@ -69,7 +69,7 @@
 | 17 能力与资源 | AgentState.capabilities / resources | **已接入事实**：命令菜单按完整清单替换；资源（skills/prompts/MCP）仍归各后端 |
 | 18 通知生产者事实 | adapter 事实 → AgentState.notifications | 已有实现（NotificationStore 消费来源事实）；模型侧只记引用 |
 | 19 Host 通知生命周期 | AgentState.notifications；DeviceView | **已接入引用**：Store 仍是唯一权威，模型发布 hostEpoch / revision / 条数 / 条件 code / 核对程度 |
-| 20 供应商手机摘要 | HostState.providers | **已接入事实**：设备请求目录时把同一次读取到的「当前 provider」写进模型；profile 清单/认证绑定/切换进行中与用量没有事实，记 `null`/`unknown`，不补默认值 |
+| 20 供应商手机摘要 | HostState.providers | **已接入事实**：设备请求目录时把同一次读取到的「当前 provider」写进模型，并记下 Host 自己是否正在切换（未在切换是 `null` 未核对，不是 `false`，第 24 批）；profile 清单/认证绑定与用量仍没有事实，记 `null`/`unknown`，不补默认值 |
 | 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
 | 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
 | 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两端闭环**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），跨重启读回、落盘失败计入缺口；`HostState.diagnostics` 给目录，`diagnostics.request` → `diagnostics.page` 取记录本身；App 连接后读目录（第 16 批）、按需读记录并在状态页显示最近一条（第 18 批）；待接其余写入点、更早页的界面与其余领域 |
@@ -448,6 +448,18 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 验证：~scripts/windows/android-build.ps1 :app:testDebugUnitTest~ = **46 类 / 419 项全过**。
 
 未交付：目录里逐后端的会话明细仍走 ~session.list.result~（模型只提供完整性摘要）；说明行的文案没有本地化变体。
+
+## 第 24 批（issue #8：切换进行中的事实）
+
+已交付：
+
+- ~providerSwitchingFact(changingKind, kind)~（[host-state-facts.ts](../../packages/host/src/host-state-facts.ts)）：**只有 Host 自己发起的切换**才是已知事实——正在切换的那个后端记 ~true~，其余记 ~null~（未核对）而不是 ~false~。理由是桌面端可以在带外改配置，「现在没在切换」并不等于「没有切换」。
+- 接到 ~session.list~ 那次投影写入（与「当前 provider」同一份事实、同一次读取）：客户端因此知道进行中时路由结论还不作数。
+- 1 条单测：匹配的后端是 true，其他（含没有切换）是 null。
+
+验证：~npm run check~ = **107 文件 / 1093 测试全过**。
+
+未交付（模块 20–22 剩下的）：profile 清单与认证绑定仍没有可信来源接进来——~provider.list~ 那次读取确实拿得到（~id/name/enabled/globalDefault~），但 ~session.list~ 会把它覆盖成 ~null~，要接必须先定「最后已知值」的口径与失效时机，这是个设计决定，没有替用户拍板。用量/健康度同理。
 
 ## 回归要求
 

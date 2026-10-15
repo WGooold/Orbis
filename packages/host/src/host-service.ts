@@ -53,7 +53,7 @@ import {
 } from "./diagnostic-journal.js";
 import { createDiagnosticJournalFileStore } from "./diagnostic-journal-file-store.js";
 import { buildDiagnosticsPageMessage } from "./diagnostic-page-message.js";
-import { HostStateFacts } from "./host-state-facts.js";
+import { HostStateFacts, providerSwitchingFact } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
@@ -1407,15 +1407,15 @@ export class HostService {
           })),
         ]);
         // 同一份事实顺手写进 Host 模型（ADR-0032 模块 20–22）：模型投影与设备命令的返回值来自
-        // 同一次读取，不额外问后端。这里只知道「当前 provider」，profile 清单、认证绑定、切换
-        // 进行中与用量都没有事实——按 null / unknown 记，不补默认值、不猜。
+        // 同一次读取，不额外问后端。这里只知道「当前 provider」与「Host 自己有没有在切换」，
+        // profile 清单、认证绑定与用量都没有事实——按 null / unknown 记，不补默认值、不猜。
         this.#hostStateFacts.providers({
           providers: providers.flat().map((entry) => ({
             agentKind: entry.agentKind,
             current: entry.provider,
             profiles: null,
             authenticated: null,
-            switching: null,
+            switching: providerSwitchingFact(this.#providerChanging, entry.agentKind),
             usage: { availability: "unknown" as const, detail: null },
           })),
         });
