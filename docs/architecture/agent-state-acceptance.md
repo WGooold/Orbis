@@ -499,7 +499,7 @@ Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、�
 已交付：
 
 - ~HostService.changeProvider~ 的失败分支写入一条诊断记录（~category=provider~、~severity=error~、消息「切换/保存 <kind> 供应商失败」、~detail.reason~ 是错误摘要）。**配置内容与凭据永远不进记录**——记录会被设备读出去。
-- 这条写在 ~changeProvider~ 里而不是各调用点：切换与保存、设备发起与后续调用都走这条路，�漏一条就少一段现场。
+- 这条写在 ~changeProvider~ 里而不是各调用点：切换与保存、设备发起与后续调用都走这条路，漏一条就少一段现场。
 - 1 条新单测（共 3 条）：切换失败既要把错误抛给调用方（业务照旧失败），又要留下记录，同时目录投影的条数跟着更新。
 
 验证：~npm run check~ = **107 文件 / 1095 测试全过**。
