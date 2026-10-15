@@ -230,7 +230,7 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 | # | 场景 | 怎么造 | 通过标准 | 状态 |
 | --- | --- | --- | --- | --- |
 | 1 | 版本不匹配 | 用 `dcafa43`（协议 12）构建 App，连 13 的隔离测试台 | 明确拒绝并提示版本不一致，不静默降级、不进半连接状态 | 单测已覆盖两端精确保守；**设备级未跑** |
-| 2 | Host 重建 | 重启 Host（新 source epoch / 新 modelEpoch） | App 按代次重建：旧代次的迟到回调被丢弃，不冒充新代次已确认事实 | 未跑 |
+| 2 | Host 重建 | 重启 Host（新 source epoch / 新 modelEpoch） | App 按代次重建：旧代次的迟到回调被丢弃，不冒充新代次已确认事实 | **已跑，通过**（第 19 批）：App 自动重连、重新握手、重发 `session.list` 与 `agent.state.request`（同一 requestId 两边对上）；迟到回调那一半由 Registry 单测覆盖 |
 | 3 | 断线重连 | 断开 Relay（或关 LAN），恢复后重连 | 按 source epoch/seq 续传；缺口走恢复基线；`unchanged` 不被当成内容变化 | 未跑 |
 | 4 | 历史改写（revert/压缩） | 会话内回退分支、触发压缩 | 显示窗口与 head 一起更新，旧显示行被作废而不是继续渲染 | 未跑 |
 | 5 | 设备重开 | 杀掉 App 再打开 | 从 SQLite 恢复：条目与显示行同源（盘上那份），标题/树标签一致 | 未跑 |
@@ -356,6 +356,28 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 验证：~scripts/windows/android-build.ps1 :app:testDebugUnitTest~ = **46 类 / 416 项全过**。
 
 未交付：界面上没有「继续读更早的页」（~nextCursor~ 已经存下来了，但没有按钮）；记录只显示最近一条，没有列表视图。
+
+## 第 19 批（issue #11 验收矩阵第 2 项：Host 重建）——**已跑，通过**
+
+怎么跑：实例 2 + 隔离测试台（状态目录不变，hostId 不变、模型代次与来源代次换代）；App 用第 17 批那套真实配对启动并连上，然后**停掉再起**隔离 Host，全程不碰 App。
+
+观察到的（App 侧 ~PiRemote.ReloadTrace~，Host 侧 ~host.out.log~，两边 requestId 对得上）：
+
+| 步骤 | 证据 |
+| --- | --- |
+| 重连 | ~out path=relay type=device.pathPreference~ → ~path.announced path=lan~（Host 侧：~路径 中继 → LAN 直连~） |
+| 重新握手 | ~e2e.hs.confirmed hostId=8509e449…~（同一 hostId，宿主进程换了，PID 8992 → 10096） |
+| 重建目录 | ~out path=lan type=session.list requestId=405d5124-…~；Host 侧同一 requestId：~收到 session.list（requestId=405d5124-…）~ |
+| **重新读模型** | ~out path=lan type=agent.state.request requestId=ca7a5dee-…~——换代次后 App 重新读，而不是继续拿旧代次的事实当已确认 |
+
+证据落在 ~D:\android-emulators\evidence\emulator-5556\<owner>\~：~item2-app-logcat.txt~、~item2-host-after-restart.log~、~item2-before-restart.png~、~item2-after-restart.png~（~<owner>~ = ~0a3671bd-3e20-42ed-8402-6af8f53a2953~）。
+
+**这一项验到哪儿**：验的是「Host 换代次后 App 会重建连接与目录、并重新读取模型」。矩阵里「旧代次的迟到回调被丢弃、不冒充新代次已确认事实」的那一半属于 Registry 的写者纪律，由 ~agent-state-registry~ 的单测覆盖，**这次没有在设备上单独构造迟到回调**。
+
+**顺带记两条操作坑**：
+
+- 装完 App 直接启动会被系统的权限对话框挡住（~GrantPermissionsActivity~ 是 top-most，~pidof~ 为空，看着像「启动失败」）。跑设备验证前先 ~pm grant com.orbising.orbis android.permission.POST_NOTIFICATIONS~（相机同理），或用 UI 点掉。
+- 内存到 0.9 GB 时按红线停机：模拟器已关、rig 与 Relay 已停、占用已释放、用户 Host 未受影响。
 
 ## 回归要求
 
