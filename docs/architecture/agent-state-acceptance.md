@@ -12,7 +12,7 @@
 - 显示投影：契约（`DisplayEntry`/`DisplayBatch` + 窗口起点 `windowStart` + 渲染锚点 `anchor`）→ 三个适配层产出 → 每页/每批随 canonical 范围同行 → **App 消费**，这条链已经打通。App 侧已删除全部原生解释（`PiMessageProjection`、压缩裁剪、`stopReason` 判定、`custom_message` 拼装）。
 - 条目与显示结果在本地**同一笔事务**里落盘，提交后按盘上那份读回（来源修正条目时显示行随之修正）；`projectionVersion` 换代即整段作废该会话缓存，包括上一版 App 留下的「只有条目、没有解释」的旧缓存。
 - 协议已硬升到 **13**（issue #11 的代码部分）：两端常量同步，且本来就没有兼容旁路。
-- 未完成：**实机验收**——issue #12 的三种显示场景（第 9 批已在 emulator-5554 跑过一次，见该批记录），以及 issue #11 的跨端恢复验收矩阵（第 10 批那张表，6 项全未跑）。
+- 未完成：**实机验收**——issue #12 的三种显示场景（第 9 批已在 emulator-5554 跑过一次，见该批记录），以及 issue #11 的跨端恢复验收矩阵（第 10 批那张表，6 项全未跑）。第 17 批已把矩阵的前置条件打通：设备端现在有一台连得上的隔离 Host，且不需要用户授权就能重来。
 - 同时推进的 issue #9：诊断记录已跨重启读回（第 13 批），目录与记录都已在协议上可读（第 14、15 批）；issue #10 从 App 侧开了一刀——连接后读一次 Host 作用域的 `diagnostics`，并有 7 条单测锁住「缺席有原因 / 坏消息整份拒绝 / 整份替换」（第 16 批）。其余写入点、记录分页的界面、其余领域的客户端消费与模块 21/22 的字段仍是空的。
 
 **下一步**
@@ -250,6 +250,8 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 第 3–6 项都依赖这一步先完成。
 
+**已解决（2026-10-15，路线 3）**：在实例 2 上带 `pairIntoRealStorage=true` 一次跑通，真实 App 已连上隔离测试台并发出模型读取（第 17 批有证据）。矩阵本身仍未跑，但前置条件已经不需要用户授权就能满足。
+
 ## 第 11 批（issue #8 第一刀：Host 供应商公共投影）
 
 已交付：
@@ -322,6 +324,25 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 验证：`scripts/windows/android-build.ps1 :app:testDebugUnitTest` = **46 类 / 411 项全过**；`:app:compileDebugAndroidTestKotlin` 通过（设备测试源集跟着新字段一起编译）。
 
 未交付：`diagnostics.page` 的分页读取在 App 侧未接线（状态页只显示目录，不含记录本身）；其余领域（catalog / providers / workspaces…）仍走各自的老路径。
+
+## 第 17 批（issue #11：验收矩阵的前置条件打通）
+
+矩阵一直卡在同一件事上：设备端没有一台「连得上的 Host」。这一批把路线 3（第二台干净实例）跑通了。
+
+**做成了什么**
+
+- 实例 2（~Pi_Remote_API_35_2~ / ~emulator-5556~）按占用协议取用；本机 Relay 起在 8787，隔离 Host 用独立状态目录运行（LAN 42131，与用户 Host 的 42130 分开）。
+- 配对测试带 ~pairIntoRealStorage=true~ 一次通过（25 秒，**没有**上一批那种 6 分钟挂起）：~com.orbising.orbis/files/hosts/pairings.json~ 里 ~activeHostId~ 就是隔离 Host（用 ~run-as~ 读盘核对过，不是只看测试结论）。
+- 真实 App 连上了隔离 Host：App 侧 ~socket.connect relay=ws://10.0.2.2:8787~ → ~e2e.hs.confirmed hostId=8509e449…~ → ~in type=device.ready~；Host 侧收到该设备（~21a2547ae91d3a33…~）的 ~session.list~（169 条）。
+- 顺带在真机上验证了第 16 批：App 收到 ~device.ready~ 之后自动发出 ~agent.state.request~（~out path=lan type=agent.state.request sent=true~）——模型读取在真 Host 面前确实会发出去。
+
+**踩到的坑（下次别再踩）**
+
+- ~applicationId = com.orbising.orbis~，而 ~namespace = dev.pi.remote~：模拟器上**同时装着**一个旧包 ~dev.pi.remote~。启动 ~dev.pi.remote~ 看到的是旧 App（停在配对页），从它查存储当然也查不到配对。**设备验证一律用 ~com.orbising.orbis~；~dev.pi.remote~ 是遗留包，未经授权不卸载。**
+- 隔离测试台的 ~pair~ 与常驻 ~host~ 在同一状态目录里互斥：Host 活着时再开配对窗口会直接退出（~code=2~，错误日志写得很清楚）。要重新配对先 ~stop-isolated-host.ps1~。
+- 资源占用要按顺序放：拿到 ~resource-operation~ 启模拟器后，模拟器开机完成就必须释放，否则下一次 Android 构建会一直等这个占用（实测卡了 8 分钟才反应过来）。
+
+**这一批没有跑矩阵本身**：跑到这里可用内存降到 1.1 GB（低于 1.5 GB 红线），按 ~D:\android-emulators\README.md~ 停机收尾——模拟器已关、rig 与 Relay 已停、占用文件已释放，用户正在使用的 Host 全程未受影响。6 项验收仍是**未跑**，但现在每一项都具备了跑的条件。
 
 ## 回归要求
 
