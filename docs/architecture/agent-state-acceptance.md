@@ -316,11 +316,12 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 - [AgentModelState.kt](../../android/app/src/main/java/dev/pi/remote/AgentModelState.kt)：`agent.state.snapshot` 的客户端表示，把三条纪律写进类型：**整份替换**（同一身份的重复读取顶掉旧的，不做字段级合并）、**缺席有原因**（`missing` 区分 `no_state` 与 `unknown_domain`，「领域表里没有它」不等于「它是空的」）、**截断如实说**（`truncated` 那份不能当基线）。领域缺 envelope 字段时**整份拒绝**并记错误——两端对协议理解不一致时，留半份模型比什么都不留更糟。
 - `RemoteState` 新增 `agentStateSnapshots` / `agentStateRequests`；reducer 把 `agent.state.snapshot` 收进允许集合（此前未知类型会被当成「不支持的中继消息」直接弹错，所以这一步是消费的前提）。
 - 连接建立后自动读一次 Host 作用域的 `diagnostics`（`refreshHostModel()`）：诊断目录是客户端**只能**由模型拿到的事实——条数、保留窗口与缺口，以前 App 无从判断自己看到的是不是全部。请求与应答走设备级 E2E 载荷，与 `session.list` 同一条密文通道。
-- 7 条单测（`AgentModelStateTest`）：envelope 落库、缺席原因、截断标记、明确回错不当成空模型、坏消息整份拒绝、整份替换、协议版本不匹配仍被拒绝。
+- 10 条单测（`AgentModelStateTest`）：envelope 落库、缺席原因、截断标记、明确回错不当成空模型、坏消息整份拒绝、整份替换、协议版本不匹配仍被拒绝，以及状态页口径。
+- **状态页可见**：状态页新增「电脑端诊断记录」一行（`diagnosticDirectoryView()`），把模型说的话翻成人话——「尚未读取」「电脑没有报这个领域」「读取失败」「2 条记录（已淘汰 1 条）」。有缺口就显示缺口，负载缺条数就明确报错，**不画成 0 条**；它与状态页原有的「原始事件」（本机日志）是两件事，标签上也分开。
 
-验证：`scripts/windows/android-build.ps1 :app:testDebugUnitTest` = **46 类 / 408 项全过**；`:app:compileDebugAndroidTestKotlin` 通过（设备测试源集跟着新字段一起编译）。
+验证：`scripts/windows/android-build.ps1 :app:testDebugUnitTest` = **46 类 / 411 项全过**；`:app:compileDebugAndroidTestKotlin` 通过（设备测试源集跟着新字段一起编译）。
 
-未交付：界面还没有展示诊断目录（读进来的事实目前只有状态与测试消费）；`diagnostics.page` 的分页读取在 App 侧未接线；其余领域（catalog / providers / workspaces…）仍走各自的老路径。
+未交付：`diagnostics.page` 的分页读取在 App 侧未接线（状态页只显示目录，不含记录本身）；其余领域（catalog / providers / workspaces…）仍走各自的老路径。
 
 ## 回归要求
 

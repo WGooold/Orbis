@@ -116,3 +116,48 @@ private fun RemoteState.rejectedSnapshot(key: String, scope: String, requestId: 
     storeSnapshot(key, AgentStateSnapshotView(key = key, scope = scope, requestId = requestId, error = reason))
 
 private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
+
+/**
+ * 诊断目录在界面上的口径。
+ *
+ * 文案与色调都在这里定，Compose 只负责画：状态页上的每一句话都应当是**模型说过的话**，
+ * 而不是界面自己猜的——「还没读」「电脑没报」「读失败」是三件不同的事，不能都画成「0 条」。
+ */
+internal data class DiagnosticDirectoryView(val text: String, val detail: String? = null, val tone: StatusTone = StatusTone.Neutral)
+
+/**
+ * 把 Host 作用域的诊断目录翻译成一句人话。
+ *
+ * 有缺口时必须说出来：淘汰过、落盘失败过、被字节预算截断过，都意味着这份目录不是全部历史。
+ */
+internal fun RemoteState.diagnosticDirectoryView(): DiagnosticDirectoryView {
+    val snapshot = agentStateSnapshots.values.firstOrNull { it.scope == "host" }
+        ?: return DiagnosticDirectoryView("尚未读取", "连接建立后会自动读一次")
+    snapshot.error?.let { return DiagnosticDirectoryView("读取失败：" + it, null, StatusTone.Bad) }
+    snapshot.missing["diagnostics"]?.let { reason ->
+        val text = if (reason == "unknown_domain") "这台电脑不认识这个领域" else "电脑没有报这个领域"
+        return DiagnosticDirectoryView(text, "缺席原因：" + reason, StatusTone.Warn)
+    }
+    val domain = snapshot.domains["diagnostics"]
+        ?: return DiagnosticDirectoryView("清单里没有这个领域", "缺席没有给原因，不能当成 0 条", StatusTone.Warn)
+    if (domain.availability != "ready") {
+        return DiagnosticDirectoryView("电脑尚未核对", "availability=" + domain.availability, StatusTone.Warn)
+    }
+    val value = domain.value as? JsonObject
+        ?: return DiagnosticDirectoryView("目录格式无法识别", "负载不是对象", StatusTone.Bad)
+    val records = value.long("records")
+        ?: return DiagnosticDirectoryView("目录缺少条数", "负载里没有 records", StatusTone.Bad)
+    val dropped = value.long("dropped") ?: 0
+    val persistFailures = value.long("persistFailures") ?: 0
+    val notes = buildList {
+        if (dropped > 0) add("已淘汰 " + dropped + " 条")
+        if (persistFailures > 0) add("落盘失败 " + persistFailures + " 次")
+        if (snapshot.truncated) add("清单被截断")
+        if (isEmpty() && domain.completeness != "complete") add("清单不完整")
+    }
+    val text = if (notes.isEmpty()) records.toString() + " 条记录" else records.toString() + " 条记录（" + notes.joinToString("，") + "）"
+    return DiagnosticDirectoryView(text, null, if (notes.isEmpty()) StatusTone.Good else StatusTone.Warn)
+}
+
+private fun JsonObject.long(key: String): Long? = this[key]?.jsonPrimitive?.longOrNull
+

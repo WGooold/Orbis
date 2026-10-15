@@ -114,7 +114,53 @@ class AgentModelStateTest {
         assertTrue(reduced.agentStateSnapshots.isEmpty())
     }
 
+
+    @Test
+    fun `状态页口径：还没读、电脑没报、读失败是三件不同的事`() {
+        val untouched = RemoteState().diagnosticDirectoryView()
+        assertEquals("尚未读取", untouched.text)
+        assertEquals(StatusTone.Neutral, untouched.tone)
+
+        val failed = reducer.reduce(pending(), """
+            {"type":"agent.state.snapshot","protocolVersion":$PROTOCOL_VERSION,"requestId":"req-1",
+             "scope":"host","modelEpoch":null,"domains":[],"missing":[],"truncated":false,"error":"这台电脑没有该会话的状态"}
+        """.trimIndent())
+        assertEquals(StatusTone.Bad, failed.diagnosticDirectoryView().tone)
+        assertTrue(failed.diagnosticDirectoryView().text.startsWith("读取失败"))
+
+        val absent = reducer.reduce(pending(), snapshot(domains = "[]", missing = """[{"domain":"diagnostics","reason":"no_state"}]"""))
+        assertEquals("电脑没有报这个领域", absent.diagnosticDirectoryView().text)
+        assertEquals(StatusTone.Warn, absent.diagnosticDirectoryView().tone)
+    }
+
+    @Test
+    fun `目录没有缺口才画成正常，有缺口必须说出来`() {
+        val clean = reducer.reduce(pending(), snapshot(domains = CLEAN_DOMAINS))
+        assertEquals("2 条记录", clean.diagnosticDirectoryView().text)
+        assertEquals(StatusTone.Good, clean.diagnosticDirectoryView().tone)
+
+        // DOMAINS 里淘汰过 1 条、completeness 是 partial：读的人必须知道这不是全部历史。
+        val gapped = reducer.reduce(pending(), snapshot())
+        assertEquals("2 条记录（已淘汰 1 条）", gapped.diagnosticDirectoryView().text)
+        assertEquals(StatusTone.Warn, gapped.diagnosticDirectoryView().tone)
+
+        val truncated = reducer.reduce(pending(), snapshot(domains = CLEAN_DOMAINS, truncated = true))
+        assertEquals("2 条记录（清单被截断）", truncated.diagnosticDirectoryView().text)
+    }
+
+    @Test
+    fun `负载缺条数时明确报错，不画成 0 条`() {
+        val broken = reducer.reduce(pending(), snapshot(
+            domains = """[{"domain":"diagnostics","modelEpoch":"m","revision":1,"availability":"ready","completeness":"complete","checkedAt":1,"value":"not-an-object"}]""",
+        ))
+
+        val view = broken.diagnosticDirectoryView()
+        assertEquals("目录格式无法识别", view.text)
+        assertEquals(StatusTone.Bad, view.tone)
+    }
+
     private companion object {
         const val DOMAINS = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":2,"availability":"ready","completeness":"partial","checkedAt":1700000000000,"value":{"records":2,"dropped":1}}]"""
+        const val CLEAN_DOMAINS = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":3,"availability":"ready","completeness":"complete","checkedAt":1700000000000,"value":{"records":2,"dropped":0,"persistFailures":0}}]"""
     }
 }

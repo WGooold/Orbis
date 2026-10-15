@@ -2396,6 +2396,15 @@ private fun StatusScreen(
                 StatusFact("配对根密钥", if (pairing.pskRootPresent) "已保存" else "缺失")
             }
 
+            StatusSectionTitle("电脑端诊断记录")
+            StatusCard {
+                // 与上面的「原始事件」不是一回事：那是本机日志，这是电脑端统一状态模型里的
+                // 记录目录（条数、淘汰与落盘缺口）。缺口必须显示出来，否则读的人会以为这就是全部。
+                val directory = state.diagnosticDirectoryView()
+                StatusRow("记录目录", directory.text, directory.tone)
+                directory.detail?.let { StatusFact("说明", it) }
+            }
+
             StatusSectionTitle("电脑 Agent 服务")
             StatusCard {
                 // 这一行只回答「Host 接上了 Codex 桌面版的 app-server 吗」。装了没开、开了
