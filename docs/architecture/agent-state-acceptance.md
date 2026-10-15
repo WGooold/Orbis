@@ -68,7 +68,7 @@
 | 17 能力与资源 | AgentState.capabilities / resources | **已接入事实**：命令菜单按完整清单替换；资源（skills/prompts/MCP）仍归各后端 |
 | 18 通知生产者事实 | adapter 事实 → AgentState.notifications | 已有实现（NotificationStore 消费来源事实）；模型侧只记引用 |
 | 19 Host 通知生命周期 | AgentState.notifications；DeviceView | **已接入引用**：Store 仍是唯一权威，模型发布 hostEpoch / revision / 条数 / 条件 code / 核对程度 |
-| 20 供应商手机摘要 | HostState.providers | 已有实现，待接入；缺领域版本 |
+| 20 供应商手机摘要 | HostState.providers | **模型侧已定义**：`HostProviderSummary`/`HostProvidersState` + `HostStateFacts.providers()`（秘密不出 Host，缺失即 unknown）；待接 host-service 出口 |
 | 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
 | 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
 | 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | 模型已定义；缺统一记录与游标 |
@@ -248,6 +248,17 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 3. 用第二台模拟器实例（干净数据）跑矩阵。
 
 第 3–6 项都依赖这一步先完成。
+
+## 第 11 批（issue #8 第一刀：Host 供应商公共投影）
+
+已交付：
+
+- 协议 `HostProviderSummary` / `HostProvidersState`（`HostState.providers`，模块 20–22 的共同投影）：每个后端给出 `current`、profile 展示列表、`authenticated`、`switching` 与 `usage{availability,detail}`。
+  **没有 baseUrl、密钥或脚本内容**——秘密留在 Host；拿不到事实的字段显式 `unknown`，不用 0 或空值冒充已确认。
+- `HostStateFacts.providers()` 写进 Registry（producer `host:providers`，与目录各自的 sourceId 分开）；没有摘要时领域 availability 是 `unknown`，而不是「这台电脑没有供应商」。
+- 4 条单测：写入与核对时点、空清单是 unknown、用量缺失保留 unknown、内容不变不推进版本。
+
+未交付：把 `providers()` 接到 host-service 的供应商命令出口（真实 profile 列表、切换进行中状态、用量/健康度事实），以及模块 21/22 的完整字段。
 
 ## 回归要求
 
