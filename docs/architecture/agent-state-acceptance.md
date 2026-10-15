@@ -86,7 +86,7 @@
 | 17 能力与资源 | AgentState.capabilities / resources | **已接入事实**：命令菜单按完整清单替换；资源（skills/prompts/MCP）仍归各后端 |
 | 18 通知生产者事实 | adapter 事实 → AgentState.notifications | 已有实现（NotificationStore 消费来源事实）；模型侧只记引用 |
 | 19 Host 通知生命周期 | AgentState.notifications；DeviceView | **已接入引用**：Store 仍是唯一权威，模型发布 hostEpoch / revision / 条数 / 条件 code / 核对程度 |
-| 20 供应商手机摘要 | HostState.providers | **已接入事实**：设备请求目录时把同一次读取到的「当前 provider」写进模型，并记下 Host 自己是否正在切换（未在切换是 `null` 未核对，不是 `false`，第 24 批）；profile 清单/认证绑定与用量仍没有事实，记 `null`/`unknown`，不补默认值 |
+| 20 供应商手机摘要 | HostState.providers | **已接入事实，单一写者**：只有 `refreshProviderFacts()` 写这个领域（第 28 批），它在供应商读取/切换后、或客户端点名 `providers` 域时现读一次 pi/codex/dsh，写下 `current`、真读到的 `profiles` 清单与 `switching`（未在切换是 `null` 未核对）；`authenticated` 与用量这次读取里没有依据，记 `null`/`unknown`，不补默认值 |
 | 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
 | 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
 | 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两端闭环**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），跨重启读回、落盘失败计入缺口；`HostState.diagnostics` 给目录，`diagnostics.request` → `diagnostics.page` 取记录本身；App 连接后读目录（第 16 批）、按需读记录并在状态页显示最近一条（第 18 批）；待接其余写入点、更早页的界面与其余领域 |
