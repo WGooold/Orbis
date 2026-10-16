@@ -250,7 +250,7 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 | 2 | Host 重建 | 重启 Host（新 source epoch / 新 modelEpoch） | App 按代次重建：旧代次的迟到回调被丢弃，不冒充新代次已确认事实 | **已跑，通过**（第 19 批）：App 自动重连、重新握手、重发 `session.list` 与 `agent.state.request`（同一 requestId 两边对上）；迟到回调那一半由 Registry 单测覆盖 |
 | 3 | 断线重连 | 断开 Relay（或关 LAN），恢复后重连 | 按 source epoch/seq 续传；缺口走恢复基线；`unchanged` 不被当成内容变化 | 未跑（前置已就绪：测试台可只服务合成会话，见第 20 批；合成会话还缺历史内容） |
 | 4 | 历史改写（revert/压缩） | 会话内回退分支、触发压缩 | 显示窗口与 head 一起更新，旧显示行被作废而不是继续渲染 | 未跑 |
-| 5 | 设备重开 | 杀掉 App 再打开 | 从 SQLite 恢复：条目与显示行同源（盘上那份），标题/树标签一致 | 未跑 |
+| 5 | 设备重开 | 杀掉 App 再打开 | 从 SQLite 恢复：条目与显示行同源（盘上那份），标题/树标签一致 | **落盘侧已跑，通过**（第 31 批）：换一个 store 实例读回来，条目/显示行/窗口起点/投影版本都在；**进程级重启（真杀 App 再打开）仍未跑** |
 | 6 | 多 Host 隔离 | 同时连两台 Host | 两台的设备回执、通知关闭、配对互不串台 | **已跑（部分）**（第 22 批）：用两台隔离 rig 验了配对、设备身份与目录互不串台；「通知关闭」未单独构造，仍算未覆盖 |
 
 跑法见 [docs/testing/isolated-host/README.md](../testing/isolated-host/README.md)（隔离 Host 测试台：独立进程、独立状态目录、本机 Relay，不碰用户正在使用的 Host）。
@@ -559,7 +559,19 @@ Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、�
 
 验证：~pwsh -File scripts/windows/android-build.ps1 :app:compileDebugAndroidTestKotlin~ 通过（**只编译，没跑**）。
 
-**诚实的边界**：这是「同进程内重开 store」，不是真杀进程重启；矩阵第 5 项仍记**未跑**，差别在于现在只差「起模拟器跑这一条」这一步，不用再写代码。进程级重启（杀 App 再打开、从 SQLite 恢复并渲染）仍要在设备上人工看一次。
+**已在设备上跑过（第 31 批）**：`emulator-5556`，`Starting 1 tests … Finished 1 tests … BUILD SUCCESSFUL in 24s`，结果 XML：`tests=1 failures=0 errors=0 skipped=0 time=1.182`；证据存在 `D:\android-emulators\evidence\emulator-5556\<owner>\item5-store-restore.xml`。
+
+**诚实的边界仍然成立**：跑的是「同进程内重开 store」，不是真杀进程重启。矩阵第 5 项因此记**落盘侧已跑、通过**，进程级重启（杀 App 再打开、从 SQLite 恢复并渲染）仍未跑。
+
+## 第 31 批（矩阵第 5 项：落盘侧在设备上跑过，通过）
+
+第 30 批写的用例在 ~emulator-5556~ 上跑通了：`Starting 1 tests … Finished 1 tests … BUILD SUCCESSFUL in 24s`，结果 XML ~tests=1 failures=0 errors=0 skipped=0 time=1.182~。
+
+它验的：条目与显示投影**同一批**写进真 SQLite，关掉 store，再用**新实例**从同一目录读回来——条目顺序、显示行集合（每个条目都有对应显示行）、~displayWindowStart~、~displayVersion~ 全部还在。也就是「内容来自盘上那份」。
+
+**仍未覆盖**：真杀进程重启（App 冷启动后从 SQLite 恢复并渲染、标题/树标签一致）。第 5 项因此记「落盘侧已跑」，不记通过。
+
+过程中的两个坑：第一次 ~connectedDebugAndroidTest~ 跑完没有任何结果 XML（UTP 日志是空的），重跑一次就好了——**结果目录里没有 TEST-*.xml 就是没跑成，不要当成通过**；另外跑到后半段可用内存掉到 0.5 GB，按红线立即取证停机。
 
 ## 回归要求
 
