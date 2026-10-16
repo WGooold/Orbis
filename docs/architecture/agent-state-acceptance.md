@@ -22,6 +22,12 @@
 4. ``**#8 的 `profiles`/`authenticated`**：……在用户选定之前不要实现`` **已解决（第 28、29 批）**：`profiles` 与 `current` 由 `refreshProviderFacts()` 独占写入、写前必读；App 也显示了清单。剩下的 `authenticated`（要 profile 的 `authBinding` 与账号列表）与用量（要供应商自己报配额）**不在 `ProviderManager.list()` 的返回值里**，要接得先给这条读取补事实，属于新的工作项。
 5. **#9 其余写入点**：传输/审批/恢复——先有可触发的失败钩子，否则只能写出不可测的记录。
 6. **#10 更大的领域**：`workspaces` / `operations` / `connections` 在 Host 侧还没有发布事实，得先在 Host 侧接进来。
+7. **`authenticated`**：见模块 21 那行——要 `ProviderManager` 这条读取补上 `authBinding` 与账号事实，动的是供应商这条最敏感的路径，做之前先想清楚「没有绑定」与「未核对」的区别。
+
+**两件需要用户明确同意才能做的事**（不要自行开工）：
+
+- **矩阵第 1 项**：用升版前的 `dcafa43` 构建旧 APK（会动代码版本，应在独立 worktree 里做）；
+- **矩阵第 3/4 项与第 6 项的「通知关闭」半**：需要一个**活着的、不属于用户的会话**——在 rig 里新建会话会在这台机器上多拉起一个真 agent 进程并使用用户的 Pi 配置。
 
 **状态（2026-10-15，代码侧 #11/#12 已完成，全部未 push，工作树干净）**
 
@@ -87,8 +93,8 @@
 | 18 通知生产者事实 | adapter 事实 → AgentState.notifications | 已有实现（NotificationStore 消费来源事实）；模型侧只记引用 |
 | 19 Host 通知生命周期 | AgentState.notifications；DeviceView | **已接入引用**：Store 仍是唯一权威，模型发布 hostEpoch / revision / 条数 / 条件 code / 核对程度 |
 | 20 供应商手机摘要 | HostState.providers | **已接入事实，单一写者**：只有 `refreshProviderFacts()` 写这个领域（第 28 批），它在供应商读取/切换后、或客户端点名 `providers` 域时现读一次 pi/codex/dsh，写下 `current`、真读到的 `profiles` 清单与 `switching`（未在切换是 `null` 未核对）；`authenticated` 与用量这次读取里没有依据，记 `null`/`unknown`，不补默认值 |
-| 21 完整配置与认证绑定 | HostState.providers | 已有实现，待接入；秘密留 Host |
-| 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；手机摘要缺字段 |
+| 21 完整配置与认证绑定 | HostState.providers | **profile 清单已接入**（第 28、29 批：`id`/`name`/`enabled`/`globalDefault`，App 显示个数与「未读到」）；**完整配置与认证绑定仍未接入**——`authenticated` 要 profile 的 `authBinding` 与账号列表，而这两样都不在 `ProviderManager.list()` 的返回值里，得先给这条读取补事实。秘密永远留 Host |
+| 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；模型里的 `usage` 恒为 `unknown`（不是因为缺，而是因为这次读取里没有配额事实）。要接得先有供应商自报配额的来源，不能拿 0 或空值冒充 |
 | 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两端闭环**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），跨重启读回、落盘失败计入缺口；`HostState.diagnostics` 给目录，`diagnostics.request` → `diagnostics.page` 取记录本身；App 连接后读目录（第 16 批）、按需读记录并在状态页显示最近一条（第 18 批）；待接其余写入点、更早页的界面与其余领域 |
 | 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | 模型已定义；缺 artifact inventory |
 
