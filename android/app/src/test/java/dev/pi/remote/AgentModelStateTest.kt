@@ -281,6 +281,16 @@ class AgentModelStateTest {
         assertEquals("Host 未报告进行中的切换", view.text)
         assertEquals("codex: custom、dsh: deepseek", view.detail)
         assertEquals(StatusTone.Neutral, view.tone)
+        // 这次读取没拿到清单：说「未读到」，而不是说「0 个可选」。
+        assertEquals("codex: 清单未读到、dsh: 清单未读到", view.profiles)
+    }
+
+    @Test
+    fun `拿到清单时说个数——空清单是「0 个可选」，不是「没读到」`() {
+        val reduced = reducer.reduce(pending(), snapshot(domains = PROVIDERS_PROFILES))
+
+        val view = reduced.providerSwitchingView()
+        assertEquals("codex: 2 个可选、dsh: 0 个可选", view.profiles)
     }
 
     @Test
@@ -325,6 +335,8 @@ class AgentModelStateTest {
         const val PROVIDERS_IDLE = """[{"domain":"providers","modelEpoch":"m","revision":1,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[{"agentKind":"codex","current":"custom","profiles":null,"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}},{"agentKind":"dsh","current":"deepseek","profiles":null,"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}}],"checkedAt":1}}]"""
         const val PROVIDERS_SWITCHING = """[{"domain":"providers","modelEpoch":"m","revision":2,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[{"agentKind":"codex","current":"custom","profiles":null,"authenticated":null,"switching":true,"usage":{"availability":"unknown","detail":null}}],"checkedAt":1}}]"""
         const val PROVIDERS_EMPTY = """[{"domain":"providers","modelEpoch":"m","revision":3,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[],"checkedAt":1}}]"""
+        // 读到清单：codex 两个可选、dsh 明确是空数组（读了，就是一个都没有）。
+        const val PROVIDERS_PROFILES = """[{"domain":"providers","modelEpoch":"m","revision":5,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[{"agentKind":"codex","current":"custom","profiles":[{"id":"custom","name":"Custom","enabled":true,"globalDefault":false},{"id":"official","name":"官方","enabled":false,"globalDefault":false}],"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}},{"agentKind":"dsh","current":"deepseek","profiles":[],"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}}],"checkedAt":1}}]"""
         // Host 在没有摘要时写的是 unknown（不是「没有供应商」），客户端不许把它当成空清单。
         const val PROVIDERS_UNKNOWN = """[{"domain":"providers","modelEpoch":"m","revision":4,"availability":"unknown","completeness":"partial","checkedAt":1,"value":{"providers":[],"checkedAt":1}}]"""
     }

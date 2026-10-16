@@ -172,10 +172,18 @@ data class ProviderSummaryView(
     /** true 表示 Host 自己正在为这个后端切换；null 表示未核对（不是「没在切换」）。 */
     val switching: Boolean?,
     val usageUnknown: Boolean,
+    /** 可选供应商个数；null 表示这次读取**没有拿到清单**（不是「一个可选都没有」）。 */
+    val profileCount: Int? = null,
 )
 
 /** 供应商切换状态在界面上的口径。 */
-internal data class ProviderSwitchingView(val text: String, val detail: String? = null, val tone: StatusTone = StatusTone.Neutral)
+internal data class ProviderSwitchingView(
+    val text: String,
+    val detail: String? = null,
+    val tone: StatusTone = StatusTone.Neutral,
+    /** 可选供应商清单的口径；null 表示这一行不该出现（还没读到过供应商摘要）。 */
+    val profiles: String? = null,
+)
 
 /**
  * 把 Host 的供应商摘要翻成一句人话，重点是**切换进行中**。
@@ -212,6 +220,8 @@ internal fun RemoteState.providerSwitchingView(): ProviderSwitchingView {
             current = row.string("current"),
             switching = row["switching"]?.jsonPrimitive?.booleanOrNull,
             usageUnknown = usage?.string("availability") != "ready",
+            // profiles 为 null 是「这次没读到清单」，空数组才是「一个可选都没有」——两者不能混。
+            profileCount = (row["profiles"] as? JsonArray)?.size,
         )
     }
     if (summaries.isEmpty()) {
@@ -220,11 +230,14 @@ internal fun RemoteState.providerSwitchingView(): ProviderSwitchingView {
     val detail = summaries.joinToString("、") { summary ->
         summary.agentKind + ": " + (summary.current ?: "未配置")
     }
+    val profiles = summaries.joinToString("、") { summary ->
+        summary.agentKind + ": " + (summary.profileCount?.let { count -> count.toString() + " 个可选" } ?: "清单未读到")
+    }
     val switching = summaries.filter { it.switching == true }.map { it.agentKind }
     if (switching.isNotEmpty()) {
-        return ProviderSwitchingView("正在切换：" + switching.joinToString("、"), detail, StatusTone.Warn)
+        return ProviderSwitchingView("正在切换：" + switching.joinToString("、"), detail, StatusTone.Warn, profiles)
     }
-    return ProviderSwitchingView("Host 未报告进行中的切换", detail)
+    return ProviderSwitchingView("Host 未报告进行中的切换", detail, StatusTone.Neutral, profiles)
 }
 
 

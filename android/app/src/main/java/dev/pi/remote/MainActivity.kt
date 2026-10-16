@@ -2427,6 +2427,8 @@ private fun StatusScreen(
                 val switching = state.providerSwitchingView()
                 StatusRow("切换状态", switching.text, switching.tone)
                 switching.detail?.let { StatusFact("当前供应商", it) }
+                // 「清单未读到」与「0 个可选」是两件事：前者是这次读取没拿到，后者是拿到且为空。
+                switching.profiles?.let { StatusFact("可选供应商", it) }
             }
 
             StatusSectionTitle("电脑 Agent 服务")
