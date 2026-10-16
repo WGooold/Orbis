@@ -292,12 +292,11 @@ internal class HostConnection(
      * （条数、保留窗口与缺口），以前 App 无从得知自己看到的记录是不是全部。请求与应答都走设备级
      * E2E 载荷，与 `session.list` 同一条密文通道。
      */
-    // 点名 providers 是有意的：这一格现在只在「有人读」的时候才刷新（Host 那边现读一次再写模型），
-    // 不点名就会读到「清单里没有这个领域」。
-    fun refreshHostModel(domains: List<String> = listOf("diagnostics", "catalog", "providers")) {
+    // 默认只读目录与诊断：这两格在 Host 侧是廉价投影。供应商摘要是最贵的一格，只在状态页点名（force）。
+    fun refreshHostModel(domains: List<String> = listOf("diagnostics", "catalog"), force: Boolean = false) {
         val current = mutableState.value
         if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank()) return
-        if (current.agentStateRequests.isNotEmpty()) return
+        if (!force && current.agentStateRequests.isNotEmpty()) return
         val requestId = UUID.randomUUID().toString()
         // 先登记再发送：应答走独立协程回来，登记必须先于 reducer 可能看到应答。
         updateState { it.copy(agentStateRequests = it.agentStateRequests + requestId) }
@@ -336,6 +335,14 @@ internal class HostConnection(
             it.copy(diagnosticRequest = null, error = "读取记录未发送，当前连接没有端到端加密通道")
         }
     }
+
+    /**
+     * 读供应商摘要（模块 20–22）。
+     *
+     * 这一格**不在连接时读**：Host 要为此现读三个后端（抢锁 + 对账原生配置 + 写盘），是这里最贵的
+     * 一次模型读取。用户在状态页要看，才付这个钱。
+     */
+    fun refreshProviderModel() = refreshHostModel(listOf("providers"), force = true)
 
     fun setSessionArchived(sessionId: String, archived: Boolean) {
         val state = mutableState.value

@@ -573,6 +573,18 @@ Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、�
 
 过程中的两个坑：第一次 ~connectedDebugAndroidTest~ 跑完没有任何结果 XML（UTP 日志是空的），重跑一次就好了——**结果目录里没有 TEST-*.xml 就是没跑成，不要当成通过**；另外跑到后半段可用内存掉到 0.5 GB，按红线立即取证停机。
 
+## 第 32 批（把最贵的那次模型读取挪出连接路径）
+
+第 28 批让 App 在连接时点名 ~providers~，代价是**每次连接**都要 Host 现读三个后端（抢锁 + 对账原生配置 + 写盘）。这一批把它挪到真正要看的地方：
+
+- ~refreshHostModel~ 的默认领域回到 ~[diagnostics, catalog]~（Host 侧这两格是廉价投影），并加了 ~force~ 参数；
+- 新增 ~refreshProviderModel()~：点名 ~providers~ 且 ~force = true~（连接时的请求还在路上也不会被吞掉）；~RemoteViewModel.refreshProviderFacts()~ 转出去；
+- 入口只有一个：**打开状态页**时触发（~onOpenStatus~）。不看就不读，文案与语义一致——「谁要看谁付这次读取的钱」。
+
+验证：~:app:testDebugUnitTest~ = **46 类 / 423 项全过**（编译 + 单测）。
+
+代价（如实说）：状态页刚打开的那一瞬间，供应商那两行先显示「尚未读取」，等这一次读取回来后才有内容；这是刻意的——它不该假装手里有刚读到的事实。
+
 ## 回归要求
 
 改动 Registry 或 envelope 时必须保持：

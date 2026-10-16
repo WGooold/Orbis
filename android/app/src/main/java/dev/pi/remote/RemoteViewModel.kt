@@ -274,6 +274,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun refreshDiagnostics() = active()?.refreshDiagnostics()
 
+    fun refreshProviderFacts() = active()?.refreshProviderModel()
+
     /** Switches to [hostId] and opens its runtime (or activates the Session) in one step. */
     fun openSession(hostId: String, sessionId: String) {
         val connection = connectionFor(hostId) ?: return

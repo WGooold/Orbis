@@ -285,7 +285,8 @@ private fun RemoteApp(
                     },
                     onSelectHost = model::selectHost,
                     onAddHost = { addingHost = true },
-                    onOpenStatus = { statusOpen = true },
+                    // 状态页才读供应商摘要：它是 Host 侧最贵的一次模型读取（见 refreshProviderModel 的说明）。
+                onOpenStatus = { statusOpen = true; model.refreshProviderFacts() },
                 )
             }
         }
