@@ -74,6 +74,34 @@ class SessionGraphStoreInstrumentedTest {
         assertEquals(true, range.complete)
     }
 
+    /**
+     * 矩阵第 5 项（设备重开）的落盘侧核对：换一个 store 实例读回来，内容必须来自盘上那份。
+     *
+     * 条目与显示行是同一批写进去的，读回来也必须同源（每个条目都有对应的显示行、窗口起点一致）。
+     * 诚实的边界：这是「同进程内重开 store」，不是真杀进程重启；进程级重启仍要在设备上人工跑一次。
+     */
+    @Test
+    fun entriesAndDisplayRowsComeBackFromDiskOnAFreshStore() {
+        val entries = listOf(entry("d1", null), entry("d2", "d1"), entry("d3", "d2"))
+        val session = "restore-session"
+        store.upsert(
+            device, session, entries, leafId = "d3", agentKind = "pi",
+            display = fixtureDisplayBatch(entries, windowStart = "d2"),
+        )
+        store.close()
+
+        val reopened = SessionGraphStore(context, directoryName = directoryName)
+        try {
+            val range = reopened.readBranch(device, session, leafId = "d3", maxEntries = 50)
+            assertEquals(listOf("d1", "d2", "d3"), range.entries.map { it.entryId })
+            assertEquals(entries.map { it.entryId }.toSet(), range.display.keys)
+            assertEquals("d2", range.displayWindowStart)
+            assertEquals(DISPLAY_PROJECTION_VERSION, range.displayVersion)
+        } finally {
+            reopened.close()
+        }
+    }
+
     @Test
     fun authoritativeEpochSwitchCorrectsSameIdAndPersistsOwnership() {
         val old = listOf(entry("a", null), entry("b", "a"), entry("c", "b"))

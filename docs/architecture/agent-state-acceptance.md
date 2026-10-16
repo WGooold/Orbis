@@ -550,6 +550,17 @@ Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、�
 
 至此模块 20–22 的手机摘要里 ~current~ / ~profiles~ / ~switching~ 三格都有真实来源；~authenticated~ 与用量仍是 ~null~/~unknown~——前者要 profile 的 ~authBinding~ 与账号列表，后者要供应商自己报配额，都不在 ~ProviderManager.list()~ 的返回值里。
 
+## 第 30 批（issue #11 矩阵第 5 项：先写测试，**尚未在设备上跑**）
+
+已交付：在既有的设备测试 [SessionGraphStoreInstrumentedTest.kt](../../android/app/src/androidTest/java/dev/pi/remote/SessionGraphStoreInstrumentedTest.kt) 里加了 ~entriesAndDisplayRowsComeBackFromDiskOnAFreshStore~：
+
+- 用夹具条目 + 夹具显示投影写进真 SQLite（同一批），关掉 store；
+- 用**新的 store 实例**从同一个目录读回来，断言条目顺序、显示行集合（每个条目都有对应显示行）、~displayWindowStart~ 与 ~displayVersion~ 都还在。
+
+验证：~pwsh -File scripts/windows/android-build.ps1 :app:compileDebugAndroidTestKotlin~ 通过（**只编译，没跑**）。
+
+**诚实的边界**：这是「同进程内重开 store」，不是真杀进程重启；矩阵第 5 项仍记**未跑**，差别在于现在只差「起模拟器跑这一条」这一步，不用再写代码。进程级重启（杀 App 再打开、从 SQLite 恢复并渲染）仍要在设备上人工看一次。
+
 ## 回归要求
 
 改动 Registry 或 envelope 时必须保持：
