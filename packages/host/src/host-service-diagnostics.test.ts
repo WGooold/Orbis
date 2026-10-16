@@ -114,4 +114,24 @@ describe("HostService 的诊断目录", () => {
     expect(page.records[0]?.detail?.reason).toContain("provider boom");
     expect(service.readHostDiagnostics()).toMatchObject({ records: 1, dropped: 0 });
   });
+
+  it("切换进行中时，模型里那一格写着 switching: true", async () => {
+    const service = await create({
+      list: async (kind: string) => [{ id: "deepseek", kind, name: "DeepSeek", enabled: true, mode: "exclusive" }],
+    } as unknown as ProviderManager);
+
+    // changeProvider 把「正在切换」记在 Host 自己身上；切换期间读到的事实必须带上它。
+    let during: boolean | null | undefined;
+    await service.changeProvider("dsh", async () => {
+      await service.refreshProviderFacts();
+      during = service.readHostProviders()?.providers.find(entry => entry.agentKind === "dsh")?.switching;
+      return null;
+    });
+    expect(during).toBe(true);
+
+    // 切换结束后再读一次：进行中这件事已经不成立，不能留在模型里当结论。
+    await service.refreshProviderFacts();
+    const after = service.readHostProviders()?.providers.find(entry => entry.agentKind === "dsh");
+    expect(after?.switching).toBeNull();
+  });
 });
