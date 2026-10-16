@@ -19,7 +19,7 @@
 1. **矩阵第 5 项（设备重开）**：夹具 Host + instrumented test，不需要真实会话、不拉真 agent 进程；跑前先 `npm run build`（夹具读 `packages/*/dist`）。
 2. **矩阵第 3/4 项**：需要一个**活着的、不属于用户的**会话——Pi 历史来自运行中的 Pi，会话文件本身不是历史来源（第 21 批）；两条路是在 rig 里新建会话，或改用夹具 Host。
 3. **矩阵第 1 项（版本不匹配）**：需要一个用 `dcafa43`（协议 12）构建的旧 APK；**动代码版本之前先取得用户确认**。
-4. **#8 的 `profiles`/`authenticated`**：事实拿得到（`provider.list` 已读到 `id/name/enabled/globalDefault`），但 `session.list` 会把它们覆盖成 `null`；三个口径选项写在第 24 批，**在用户选定之前不要实现**（保持 `null` 就是当前行为）。
+4. ``**#8 的 `profiles`/`authenticated`**：……在用户选定之前不要实现`` **已解决（第 28、29 批）**：`profiles` 与 `current` 由 `refreshProviderFacts()` 独占写入、写前必读；App 也显示了清单。剩下的 `authenticated`（要 profile 的 `authBinding` 与账号列表）与用量（要供应商自己报配额）**不在 `ProviderManager.list()` 的返回值里**，要接得先给这条读取补事实，属于新的工作项。
 5. **#9 其余写入点**：传输/审批/恢复——先有可触发的失败钩子，否则只能写出不可测的记录。
 6. **#10 更大的领域**：`workspaces` / `operations` / `connections` 在 Host 侧还没有发布事实，得先在 Host 侧接进来。
 
