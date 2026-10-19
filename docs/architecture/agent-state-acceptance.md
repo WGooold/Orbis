@@ -6,7 +6,7 @@
 
 > 给接手的人或新会话。完成 issue #12 与 #11 后可以删掉这一节。
 
-**当前位置（第 38 批为止；全部未 push）**
+**当前位置（第 40 批为止）**
 
 - **统一模型**：Host 侧 01–30 的领域现在**全部有事实来源**，其中 04–13、20–30 由本批接进来的当前投影持有。显示投影那条链仍是最完整的一段；协议已硬升到 **14**，无兼容旁路。
 - **会话当前投影（模块 04–08）**：`AgentConversationState` 保存有界的 canonical 当前投影、live 库存、回合计时与产物引用，并按 immutable 页缓存范围；设备的 `session.sync` 先由 Host 模型应答（`recover`），模型没有基线时才转给适配层。会话同步不再只是「转发 + 复制」。
@@ -722,6 +722,21 @@ rig Host 进程 21072 → 25624 后，App **在熄屏状态下**自动重连：`
 **收尾（全部已做）**：真机配对文件已按原样恢复（只保留用户自己的 Host、`activeHostId` 也还原）、旧协议 APK 已装回（用户的 Host 仍是 13，这样手机照旧可用）、`adb reverse` 已移除、rig 与 Relay 已停、Gradle/Kotlin daemon 已停、设备占用已释放。用户正在使用的 Host 没有被停止或重启，也没有被本批改动过。
 
 验证：`npm run check` = **111 文件 / 1133 测试全过**（本批只改 Kotlin）；`:app:testDebugUnitTest` = **48 类 / 438 项全过**。
+
+## 第 40 批（部署 Relay 到协议 14，并把本机 Host 一起升上去）
+
+协议 14 是**断代**：旧 Relay 会按精确匹配拒绝新 Host 与新 App（`protocol_version_mismatch`），所以代码合了不等于能用。这一批把运行环境也搬过去：
+
+- 按唯一入口把 `main` 推到 `0c076e1`，`relay-deploy.yml` 在 windows-latest 上跑完 check，再归档 `HEAD`、远端构建、健康检查并切换；run 结论 **success**，部署标记与本次提交一致。
+- 之后用该 Host 的真实凭据对 `/v1/runtime` 做了一次协议 14 的裸连接探测：返回 `runtime.ready`，确认生产 Relay 已是 14（同一探测在部署前会得到 `protocol_version_mismatch`）。
+- 本机 Host 用 `scripts/windows/host-rebuild.ps1 -Yes` 重新打包并重启（`.artifacts/host` 现在是协议 14 的包）。旧进程在 Relay 部署前就起来了，一直卡在 `connecting`；重启后立刻 `Relay connection: connected`，与 `orbising.com:443` 建链，DSH Web（3080）也随新 Host 起来。
+- 手机侧：装的是协议 14 的 APK，配对表已按原样恢复（只有用户自己的 Host、`activeHostId` 也还原）。两端的 14↔14 互通此前已在隔离测试台上验过（第 39 批：握手、目录、`agent.state.request`）。
+
+**遗留**：手机被取走后无法再取证「重启 App 后连上」的那一步；旧的中继版本留下的「协议版本不兼容」弹窗如果还留在屏幕上，点一次「确定」即可（App 的重连循环会继续）。设备矩阵第 3/4/5/6 项仍未跑，原因见第 39 批。
+
+**同时修掉的一个 rig 缺陷**（第 39 批调查中发现）：`pi-extension` 只找 `~/.pi-remote/loopback.json`，所以用非默认 `--state-dir` 起的 Host 拉起的 agent 永远接不上。现在 Host 把 `PI_REMOTE_STATE_DIR` 传给子进程，扩展优先用它（空白回落到默认目录），并各有单测。
+
+验证：`npm run check` = **111 文件 / 1135 测试全过**；`npm run lint` 通过。
 
 ## 回归要求
 
