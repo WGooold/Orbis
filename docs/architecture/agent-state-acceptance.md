@@ -14,7 +14,7 @@
 - **App 与桌面改为模型消费者**：App 的 `execution` / `interactions` / `delivery` / `model` / `context` / `permissions` / `capabilities` / `identity` 与 Host 的 `catalog` / `backends` / `providers` 都按领域 envelope 落库；会话目录改由模型提供（`session.list.result` 只剩回执），原生 `message.*` / `turn.*` / `tool.*` / `runtime.status` 等一次性事件**不再驱动业务状态**；桌面状态栏的 runtimeCount 也读模型。
 - **诊断记录（模块 23）**：记录带 `producerEpoch` / `hostId` / `operationId` / `turnId` 与有界 `detail`，App 状态页能翻页读（「读取下一页」）。
 - **矩阵**：第 2 项（Host 重建）**通过**；第 5 项（设备重开）**落盘侧通过**（第 31 批）；第 6 项（多 Host 隔离）**部分通过**（「通知关闭」未构造）；第 1、3、4 项未跑，原因见下。本批只做单测与编译，**没有再跑设备矩阵**。
-- **基线**（第 35 批重验）：`npm run check` = **113 文件 / 1150 测试全过**，`npm run lint` 通过；`:app:testDebugUnitTest` = **48 类 / 438 项全过**，`:app:compileDebugAndroidTestKotlin` 通过。
+- **基线**（第 36 批重验）：`npm run check` = **113 文件 / 1151 测试全过**，`npm run lint` 通过；`:app:testDebugUnitTest` = **48 类 / 438 项全过**（第 35 批跑的，本批未改 Kotlin），`:app:compileDebugAndroidTestKotlin` 通过。
 
 **下一步（按代价从低到高）**
 
@@ -23,7 +23,7 @@
 3. **矩阵第 3/4 项**：需要一个**活着的、不属于用户的**会话（**需要用户同意**，见下）。
 4. **矩阵第 1 项（版本不匹配）**：现在的旧版候选是协议 13；用 `695c0da`（协议 13）构建旧 APK（**需要用户同意**，见下）。
 5. **#9 其余写入点**：传输/审批/恢复——先有可触发的失败钩子，否则只能写出不可测的记录。
-6. **模块 24 剩余**：产物引用与下载文件摘要已进模型，但「Host 侧完整产物清单 / 上传面」还没有统一领域。
+6. **模块 24 剩余**：产物引用（来自显示投影与 live）与下载清单已进模型；上传作业、已完成上传的持久清单，以及「Host 侧完整产物清单」还没有统一领域。
 
 **两件需要用户明确同意才能做的事**（不要自行开工）：
 
@@ -85,7 +85,7 @@
 | 21 完整配置与认证绑定 | HostState.providers | **公开认证摘要已接入**（第 33 批）：`authentication` 给出 `method`/`credentialPresent`/`bindingReady`/`verified`，来自 profile 的 `authBinding` 与 OAuth 账号列表；`authenticated` 由它派生。**配置原文、journal、凭据、OAuth token 永不进入模型**；「没有绑定」与「未核对」在字段上分开（`false` vs `null`）|
 | 22 用量、健康度与路由 | HostState.providers | **已接入摘要**（第 33 批）：`usage` 只转发供应商自报的数值行（`remaining`/`used`/`total` + 更新时间/查询错误），没有配额来源时是 `unknown`，不拿 0 冒充；`health` 给 circuit 状态与失败数，`routing` 给 failover/队列/进行中请求与每个请求开始时的 route 快照。用量来源目前只有桌面（`ProviderUsageCache`），命令行 Host 仍是 `unknown` |
 | 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两端闭环**：记录带 `producerEpoch`/`hostId`/`operationId`/`turnId`、`agentKind` 过滤与有界 `detail`（≤16 键）；有界 journal 跨重启读回、落盘失败计入缺口；目录走 `HostState.diagnostics`，记录走 `diagnostics.request/page`；App 状态页能读目录、列出整页并按游标翻页（第 34 批）。待接其余写入点（传输/审批/恢复）|
-| 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | **部分接入**：live 消息里的 artifact 内容块按 `artifactId` 写成会话产物引用（含来源 `messageId`），`HostState.files` 发布下载清单摘要（`fileId`/`runtimeId`/大小/校验/可用性）。上传作业与「Host 侧完整产物清单」还没有统一领域 |
+| 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | **部分接入**：产物引用取自**显示投影与 live 两处**的 artifact 内容块，带 `artifactId` 与来源 `messageId`；持久化之后（live 已空）或换页重读仍然保留，索引按最新 256 条显式淘汰旧引用（第 36 批）。`HostState.files` 发布下载清单摘要。上传作业与「Host 侧完整产物清单」还没有统一领域 |
 
 ## 25–30：Host 领域服务（逐项登记，含双侧状态）
 
@@ -646,6 +646,20 @@ App 侧（[AgentModelProjection.kt](../../android/app/src/main/java/dev/pi/remot
 
 设备矩阵没有在这一批重跑：连接路径、目录来源与工具事件都变了，之前第 19/22 批的实机结论应在拿到新 APK 后复核（见交接的下一步）。
 
+## 第 36 批（模块 24：产物引用不再依赖 live）
+
+第 33 批的产物引用只从 `live.messages` 里取：消息一旦持久化、live 变空，或者 Host 重启后重新同步，引用就没了——而这恰恰是「产物」最该还在的时候（文件在盘上，会话里也该指得回去）。
+
+已改：[agent-conversation-state.ts](../../packages/host/src/agent-conversation-state.ts) 的 `accept()` 现在从**两处**收集 artifact 内容块——本次提交的**显示投影**（canonical 消息的产物引用，含工具结果里的 `details.remoteArtifact` 与自定义消息）和 **live 库存**——按 `artifactId` 合成一份引用索引，每条带来源 `messageId`。
+
+三条口径：
+
+- **不会因为 live 空了就消失**：显示行随每页一起来，持久化后的消息仍然在索引里；同一页重复到达是幂等的。
+- **不靠缺席删除**：这是有界窗口的引用索引，不是「这个会话只有这些文件」的清单；超过 256 条时按最新保留、旧引用**按 id 显式删除**（不是发一个少了几条的完整清单）。
+- **不冒充完整产物清单**：`HostState.files` 仍然是下载索引摘要；上传作业与已完成上传的持久清单留给后续批次。
+
+验证：`npm run check` = **113 文件 / 1151 测试全过**（新增 1 条：显示投影与 live 两处都进索引、后续页与空 live 不会丢引用）；`npm run lint` 通过。
+
 ## 回归要求
 
 改动 Registry 或 envelope 时必须保持：
@@ -656,4 +670,5 @@ App 侧（[AgentModelProjection.kt](../../android/app/src/main/java/dev/pi/remot
 - Registry 不保存全量聊天历史。
 - 一条会话 patch 可以推进内容与来源水位，但**永远不能成为恢复基线**（`hasBaseline` 仍为 false，设备范围读取仍走「模型 → 适配层」的顺序）。
 - 版本门槛（ADR-0025）：更旧的页不能覆盖较新的条目；同 epoch 的有效权威结果**可以**修正同 ID 的表示；同一个包内同 ID 的两种写法必须整包拒绝。
+- 会话产物引用是**引用索引**而不是文件清单：来自显示投影与 live 两处，live 变空、换页与重启重读都不能丢；缺席不能删除，只有按 id 的显式淘汰。
 - 目录分页、模型领域与已应用版本不能跨 `snapshotId` / `modelEpoch` 混用；换代次或换目录版本时，旧在途应答只能被丢弃，不能写回。
