@@ -51,6 +51,19 @@ describe("DeviceViewFacts 设备私有回执", () => {
     expect(Object.keys(items(registry, "phone-2"))).toEqual(["c9"]);
   });
 
+  it("传输摘要只写进发起设备的作用域，撤销设备后一起清掉", () => {
+    const { registry, facts } = setup();
+    facts.transfers("phone-1", { uploads: [{ transferId: "part-1", runtimeId: "pi:r1", fileName: "a.bin",
+      size: 10, durableBytes: 4, state: "interrupted", updatedAt: 7 }], receiving: 0, truncated: false });
+    expect(registry.read(scope("phone-1"), "transfers")).toMatchObject({
+      availability: "ready", completeness: "partial",
+      value: { uploads: [expect.objectContaining({ transferId: "part-1", durableBytes: 4 })], receiving: 0 },
+    });
+    expect(registry.read(scope("phone-2"), "transfers")).toBeUndefined();
+    facts.forget("phone-1");
+    expect(registry.read(scope("phone-1"), "transfers")).toBeUndefined();
+  });
+
   it("回执有界：超过上限按最旧淘汰，并用显式删除同步到模型", () => {
     const { registry, facts } = setup();
     for (let index = 0; index < 257; index += 1) {

@@ -286,6 +286,15 @@ export class HostService {
     this.#recordAgentDiagnostic(runtimeId, "recovery", "Source disconnected; current baseline requires reconciliation", "warning");
   }
 
+  /**
+   * 设备视图的传输摘要（模块 24/33）：只发布这台设备自己未完成的上传和 Host 确认的持久前缀。
+   * 手机本地前缀仍由 App 权威；这里不做 IO，值来自上传服务的内存状态。
+   */
+  #syncDeviceTransfers(deviceId: string): void {
+    if (this.#serviceClosed) return;
+    this.#deviceViewFacts.transfers(deviceId, this.#uploads.transfers(deviceId));
+  }
+
   /** 读诊断目录投影（模块 23 的读取侧）；记录本身走 `readDiagnostics` 的游标分页。 */
   readHostDiagnostics(): ReturnType<HostStateFacts["readDiagnostics"]> {
     return this.#hostStateFacts.readDiagnostics();
@@ -503,14 +512,6 @@ export class HostService {
       ...(options.log === undefined ? {} : { log: options.log }),
     });
     void this.#downloads.load().then(() => this.refreshHostFacts());
-    this.#uploads = new HostUploadService({
-      indexPath: hostUploadIndexPath(stateDir),
-      publishMessage: (deviceId, message) => {
-        this.#sendToDevice(deviceId, message);
-      },
-      ...(options.log === undefined ? {} : { log: options.log }),
-    });
-    void this.#uploads.load();
     this.#sessionSync = new SessionSyncTasks({
       link: (deviceId) => this.#links.get(deviceId),
       dispatch: (runtimeId, commandId, command) => {
@@ -571,6 +572,16 @@ export class HostService {
       },
     });
     this.#deviceViewFacts = new DeviceViewFacts(agentStateOptions);
+    // Created after the device view so a transfer change can publish its device projection directly.
+    this.#uploads = new HostUploadService({
+      indexPath: hostUploadIndexPath(stateDir),
+      publishMessage: (deviceId, message) => {
+        this.#sendToDevice(deviceId, message);
+      },
+      onTransferChange: (deviceId) => this.#syncDeviceTransfers(deviceId),
+      ...(options.log === undefined ? {} : { log: options.log }),
+    });
+    void this.#uploads.load();
     this.#hostStateFacts = new HostStateFacts({ registry: agentStateRegistry });
     // 启动时就把目录投影对齐：重启后读模型应当看得到上一次运行留下的记录数，而不是等下一次写入。
     this.#publishDiagnostics();
@@ -1809,6 +1820,7 @@ export class HostService {
   #handleSessionReady(deviceId: string, kind: PathKind, active: PathKind, change: PathChange): void {
     this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#sessionSync.clearDevice(deviceId);
+    this.#syncDeviceTransfers(deviceId);
     if (change.changed) {
       this.#options.log?.(`设备 ${deviceId} 的路径 ${describePath(change.from)} → ${describePath(change.to)}`);
       this.#options.onPathChange?.(deviceId, {

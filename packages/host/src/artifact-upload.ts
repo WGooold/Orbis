@@ -24,6 +24,8 @@ import {
   decodeArtifactChunkFrame,
   type ArtifactChunkFrame,
   type DeviceE2ePayload,
+  type DeviceTransferItem,
+  type DeviceTransfersState,
   type RelayToDeviceMessage,
 } from "@pi-remote/protocol";
 
@@ -41,12 +43,16 @@ const REREQUEST_MS = 1_000;
 
 type UploadInit = Extract<DeviceE2ePayload, { type: "file.upload.init" }>;
 
+const MAX_TRANSFER_FACTS = 64;
+
 export type HostUploadServiceOptions = {
   /** 一条 Host→设备的 E2E 控制载荷。 */
   publishMessage: (deviceId: string, message: RelayToDeviceMessage) => void;
   /** 未完成上传的索引落盘位置（`<stateDir>/uploads.json`）。 */
   indexPath: string;
   log?: (line: string) => void;
+  /** A transfer changed (started, progressed, paused or finished): refresh its device view. */
+  onTransferChange?: (deviceId: string) => void;
   progressThresholdBytes?: number;
   progressIntervalMs?: number;
   idleTimeoutMs?: number;
@@ -96,6 +102,8 @@ type IndexedUpload = {
   mimeType?: string;
   size: number;
   sha256: string;
+  /** Durable prefix as of this index write; the resume path still re-reads the `.part` size. */
+  durableBytes?: number;
   updatedAt: number;
 };
 
@@ -156,6 +164,39 @@ export class HostUploadService {
 
   /** An incomplete upload remains a transfer, never an already-created artifact. */
   get activeUploads(): number { return this.#uploads.size; }
+
+  /**
+   * 这条设备还没完成的上传（DeviceView.transfers，模块 24/33）。
+   *
+   * 只读内存里的活句柄与索引，不做 IO；`durableBytes` 是 Host 确认落盘的前缀，
+   * 手机自己的本地前缀仍由 App 权威。完成的上传不在列表里——那是目录里的文件。
+   */
+  transfers(deviceId: string): DeviceTransfersState {
+    const items = new Map<string, DeviceTransferItem>();
+    for (const active of this.#uploads.values()) {
+      if (active.deviceId !== deviceId) continue;
+      items.set(active.partKey, { transferId: active.partKey, runtimeId: active.runtimeId, fileName: active.fileName,
+        size: active.size, durableBytes: active.durableBytes, state: "receiving", updatedAt: active.lastActivityAt });
+    }
+    for (const indexed of this.#index.values()) {
+      if (indexed.deviceId !== deviceId || items.has(indexed.partKey)) continue;
+      items.set(indexed.partKey, { transferId: indexed.partKey, runtimeId: indexed.runtimeId, fileName: indexed.fileName,
+        size: indexed.size, durableBytes: indexed.durableBytes ?? null, state: "interrupted", updatedAt: indexed.updatedAt });
+    }
+    const ordered = [...items.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+    const bounded = ordered.slice(0, MAX_TRANSFER_FACTS);
+    return { uploads: bounded, receiving: bounded.filter(item => item.state === "receiving").length,
+      truncated: bounded.length < ordered.length };
+  }
+
+  /** The Host model only mirrors; a failing publication must never disturb the transfer itself. */
+  #notify(deviceId: string): void {
+    try {
+      this.#options.onTransferChange?.(deviceId);
+    } catch (error) {
+      this.#options.log?.(`上传状态投影失败：${describe(error)}`);
+    }
+  }
 
   constructor(options: HostUploadServiceOptions) {
     this.#options = options;
@@ -218,6 +259,8 @@ export class HostUploadService {
           ...(typeof upload.mimeType === "string" ? { mimeType: upload.mimeType } : {}),
           size: upload.size,
           sha256: upload.sha256,
+          // Old indexes do not carry a prefix; the model reports it as unknown rather than 0.
+          ...(typeof upload.durableBytes === "number" ? { durableBytes: upload.durableBytes } : {}),
           updatedAt: typeof upload.updatedAt === "number" ? upload.updatedAt : 0,
         });
       }
@@ -351,6 +394,7 @@ export class HostUploadService {
       ...(message.mimeType === undefined ? {} : { mimeType: message.mimeType }),
       size: message.size,
       sha256: message.sha256,
+      durableBytes: receivedBytes,
       updatedAt: now,
     });
     this.#trimIndex();
@@ -367,6 +411,7 @@ export class HostUploadService {
     this.#options.log?.(
       `上传受理：${message.fileName}（${message.size} 字节，从 ${receivedBytes} 开始，uploadId=${uploadId}）`,
     );
+    this.#notify(deviceId);
   }
 
   /**
@@ -467,7 +512,7 @@ export class HostUploadService {
     // 句柄拿到了字节，但「持久前缀」是在这里才推进的：write 成功返回说明数据已交给内核。
     // 真正的内容正确性由收尾时的 sha256 兜底。
     active.durableBytes += frame.data.byteLength;
-    this.#index.set(active.partKey, { ...this.#index.get(active.partKey)!, updatedAt: Date.now() });
+    this.#index.set(active.partKey, { ...this.#index.get(active.partKey)!, durableBytes: active.durableBytes, updatedAt: Date.now() });
     this.#publishProgress(active);
   }
 
@@ -486,6 +531,7 @@ export class HostUploadService {
       uploadId: active.uploadId,
       receivedBytes: active.durableBytes,
     });
+    this.#notify(active.deviceId);
   }
 
   /**
@@ -577,6 +623,7 @@ export class HostUploadService {
       sha256: active.sha256,
       ...(active.mimeType === undefined ? {} : { mimeType: active.mimeType }),
     });
+    this.#notify(deviceId);
   }
 
   /** 手机主动放弃。不回收就能一直占着 `.part` 和句柄。 */
@@ -590,6 +637,7 @@ export class HostUploadService {
     await rm(active.partPath, { force: true }).catch(() => {});
     this.#persistIndex();
     this.#options.log?.(`上传取消：${active.fileName}`);
+    this.#notify(deviceId);
   }
 
   /**
@@ -607,6 +655,7 @@ export class HostUploadService {
       );
     }
     this.#persistIndex();
+    this.#notify(deviceId);
   }
 
   /** 空闲回收：句柄不能跟着一条再也不会继续的上传一直开着。 */
@@ -619,12 +668,14 @@ export class HostUploadService {
       this.#options.log?.(
         `上传空闲回收：${active.fileName}（${active.durableBytes}/${active.size} 字节，保留待续传）`,
       );
+      this.#notify(active.deviceId);
     }
   }
 
   #failActive(active: ActiveUpload, code: string, message: string): void {
     this.#uploads.delete(active.uploadId);
     this.#track(active.handle.close());
+    this.#notify(active.deviceId);
     this.#options.publishMessage(active.deviceId, {
       type: "file.upload.failed",
       protocolVersion: PROTOCOL_VERSION,

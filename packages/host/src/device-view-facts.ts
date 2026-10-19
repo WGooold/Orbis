@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { AgentOperationItem, AgentOperationState, DeviceKey } from "@pi-remote/protocol";
+import type { AgentOperationItem, AgentOperationState, DeviceKey, DeviceTransfersState } from "@pi-remote/protocol";
 
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 
@@ -69,6 +69,24 @@ export class DeviceViewFacts {
       at: operation.at ?? this.#now(),
       ...(operation.detail === undefined ? {} : { detail: operation.detail.slice(0, 2_000) }),
     });
+  }
+
+  /**
+   * 传输任务摘要（模块 24/33 的 Host 一侧）。
+   *
+   * 只保存这台设备自己未完成的上传，所以写设备作用域、不广播；Host 的持久前缀是
+   * 「这台电脑确认收到了多少」，不能代替手机的续传判断。索引已经有界，这里只做投影。
+   */
+  transfers(deviceId: string, state: DeviceTransfersState): void {
+    try {
+      this.#revision += 1;
+      this.#registry.commitValue(this.#scope(deviceId), "transfers", {
+        source: { producer: "host", sourceId: "host:device-transfers", sourceEpoch: this.#epoch, sourceRevision: this.#revision },
+        availability: "ready", completeness: "partial", value: state,
+      });
+    } catch {
+      // 记账失败不能影响传输本身。
+    }
   }
 
   /** 设备被撤销/释放时终结它的视图，不留旧回执。 */

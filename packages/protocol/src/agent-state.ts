@@ -542,6 +542,38 @@ export const AgentOperationItemSchema = z.strictObject({
 });
 export type AgentOperationItem = z.infer<typeof AgentOperationItemSchema>;
 
+/**
+ * 一条未完成的上传（模块 24 / 33：Host 确认的持久前缀）。
+ *
+ * `transferId` 是 `.part` 的内容身份，跨重启稳定；手机自己的本地前缀仍由 App 权威，
+ * 这里只回答「Host 这一侧确认收到了多少」，不能拿来代替手机的续传判断。
+ */
+export const DeviceTransferItemSchema = z.strictObject({
+  transferId: z.string().min(1).max(256),
+  runtimeId: z.string().min(1).max(256),
+  fileName: z.string().min(1).max(512),
+  size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  /** 已确认落盘的字节数；`null` 表示这条记录没有写下持久前缀（旧索引）。 */
+  durableBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+  /** `receiving` 有活句柄；`interrupted` 只剩 `.part`，等下一次 init 续传。 */
+  state: z.enum(["receiving", "interrupted"]),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type DeviceTransferItem = z.infer<typeof DeviceTransferItemSchema>;
+
+/**
+ * 设备视图里的传输任务（`DeviceView.transfers`，模块 33 的 Host 一侧）。
+ *
+ * 只列**未完成**的上传：完成的上传已经是目录里的文件，不属于传输任务。列表有界，超界是
+ * `truncated`；这里是设备私有投影，不向其他设备广播。
+ */
+export const DeviceTransfersStateSchema = z.strictObject({
+  uploads: z.array(DeviceTransferItemSchema).max(64),
+  receiving: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+});
+export type DeviceTransfersState = z.infer<typeof DeviceTransfersStateSchema>;
+
 /** 一条能力菜单项（模块 17）。选项明细仍走既有 `RuntimeSlashCommand`，模型只记形状。 */
 export const AgentCapabilityItemSchema = z.strictObject({
   name: z.string().min(1).max(256),

@@ -166,6 +166,49 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
     // 断言的正确性（持久前缀、续传、最终内容）不依赖墙钟预算。
   }, 30_000);
 
+  // 模块 24/33 的 Host 一侧：设备视图里的传输摘要只回答「这台电脑确认收到了多少」，
+  // 而且只对上传的那台设备可见；完成的上传不再是传输任务。手机本地前缀仍由 App 权威。
+  it("reports the durable prefix of incomplete uploads to their owner only", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-upload-"));
+    const data = new Uint8Array(ARTIFACT_CHUNK_BYTES + 512).map((_, index) => (index * 7) % 251);
+    const messages: RelayToDeviceMessage[] = [];
+    const uploads = service(messages);
+    await uploads.load();
+    expect(uploads.transfers("device-a")).toEqual({ uploads: [], receiving: 0, truncated: false });
+
+    const request = init(data);
+    await uploads.handleInit("device-a", request);
+    expect(uploads.transfers("device-a")).toMatchObject({
+      receiving: 1, truncated: false,
+      uploads: [expect.objectContaining({ runtimeId: "runtime-a", fileName: "file.bin", size: data.byteLength,
+        durableBytes: 0, state: "receiving" })],
+    });
+    expect(uploads.transfers("device-b").uploads).toHaveLength(0);
+
+    // 只回一半的读：持久前缀停在中间，然后设备断开（句柄释放，`.part` 保留）。
+    const served = new Set<number>();
+    await waitFor(() => readRequests(messages).length > 0);
+    serveReads(uploads, "device-a", messages, data, served, true);
+    await waitFor(() => (uploads.transfers("device-a").uploads[0]?.durableBytes ?? 0) > 0);
+    uploads.releaseDevice("device-a", "offline");
+    const interrupted = uploads.transfers("device-a");
+    expect(interrupted).toMatchObject({
+      receiving: 0, truncated: false,
+      uploads: [expect.objectContaining({ state: "interrupted" })],
+    });
+    const prefix = interrupted.uploads[0]?.durableBytes ?? 0;
+    expect(prefix).toBeGreaterThan(0);
+    expect(prefix).toBeLessThan(data.byteLength);
+
+    // 继续传完：完成的上传不在传输列表里（它已经是目录里的文件）。
+    await uploads.handleInit("device-a", request);
+    await waitFor(() => {
+      serveReads(uploads, "device-a", messages, data, served);
+      return messages.some((message) => message.type === "file.upload.finished");
+    });
+    expect(uploads.transfers("device-a")).toEqual({ uploads: [], receiving: 0, truncated: false });
+  }, 30_000);
+
   it("refuses data from a device that does not own the upload", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "pi-remote-upload-"));
     const data = new Uint8Array(2048);
