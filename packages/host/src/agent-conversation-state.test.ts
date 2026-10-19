@@ -81,6 +81,40 @@ describe("Host conversation projection", () => {
     expect(model.accept(scope, snapshot())).toBe(true);
   });
 
+  it("records artifact references from the canonical display and keeps them after live is gone", () => {
+    const registry = new AgentStateRegistry(), model = new AgentConversationState(registry);
+    const report = { artifactId: "11111111-1111-4111-8111-111111111111", fileName: "report.pdf",
+      mimeType: "application/pdf", size: 42, sha256: "a".repeat(64) };
+    const chart = { artifactId: "22222222-2222-4222-8222-222222222222", fileName: "chart.png",
+      mimeType: "image/png", size: 7, sha256: "b".repeat(64) };
+    const entry = (id: string) => ({ entryId: id, parentId: id === "a" ? null : "a", type: "message",
+      timestamp: "2026-01-01T00:00:00.000Z", data: { message: { role: "tool", content: [] } } });
+    const event = snapshot();
+    event.entries = [entry("a"), entry("b")];
+    event.display = {
+      projectionVersion: 2, windowStart: null, entries: [
+        { displayId: "a", entryId: "a", nativeType: "message", kind: "message", reason: null,
+          message: { messageId: "a", role: "tool", timestamp: 1, content: [{ type: "artifact", artifact: report }] } },
+        { displayId: "b", entryId: "b", nativeType: "message", kind: "message", reason: null,
+          message: { messageId: "b", role: "assistant", timestamp: 2, content: [{ type: "text", text: "done" }] } },
+      ],
+    };
+    event.live = { complete: true, turn: null, tools: [], messages: [{ finished: false, contentComplete: true,
+      message: { messageId: "live-row", role: "assistant", timestamp: 3, content: [{ type: "artifact", artifact: chart }] } }] };
+    expect(model.accept(scope, event)).toBe(true);
+    const references = () => registry.read<Record<string, { messageId: string }>>(scope, "artifacts")?.value ?? {};
+    // Canonical display and live inventory are two sources of the same reference index.
+    expect(Object.keys(references())).toEqual([report.artifactId, chart.artifactId]);
+    expect(references()[report.artifactId]?.messageId).toBe("a");
+
+    // A later page (or a snapshot whose live is empty) must not drop references that already arrived.
+    const page = { ...snapshot("e", 1), range: "history" as const, checkpoint: undefined, live: undefined,
+      entries: [], display: undefined, cursor: { leafId: "a" } };
+    expect(model.accept(scope, page)).toBe(true);
+    expect(model.accept(scope, { ...snapshot("e", 2), selection: "state", mode: "append", entries: [], display: undefined, live: { complete: true, turn: null, messages: [], tools: [] } })).toBe(true);
+    expect(Object.keys(references())).toEqual([report.artifactId, chart.artifactId]);
+  });
+
   it("serves a first preview with canonical entries and their supplied display at the same capture", () => {
     const registry = new AgentStateRegistry(), model = new AgentConversationState(registry);
     const event = snapshot(); event.entries = [{ entryId: "a", parentId: null, type: "native", timestamp: "now", data: {} }];

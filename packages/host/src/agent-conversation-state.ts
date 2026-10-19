@@ -9,6 +9,8 @@ type Current = {
 };
 export type ConversationStateOptions = { maxCurrentSessions?: number; maxCurrentBytes?: number; maxPageBytes?: number; maxPages?: number; maxPageCacheBytes?: number };
 const size = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
+/** Bounded by construction: the conversation projection only keeps the newest references. */
+const MAX_ARTIFACT_REFERENCES = 256;
 const scopeKey = (scope: StateScope): string => scope.kind === "agent" ? JSON.stringify([scope.key.hostId, scope.key.agentKind, scope.key.sessionId]) : "";
 
 /** Native adapters own semantics. This boundary owns bounded, versioned current projections and
@@ -86,10 +88,35 @@ export class AgentConversationState {
       { kind: "value", scope, domain: "live", fact: { source: provenance, availability: "ready", completeness: "complete", value: event.live } },
     ] : ["history", "live", "artifacts"].map(domain => ({ kind: "value", scope, domain: domain as "history" | "live" | "artifacts", fact: { source: provenance, availability: "unknown", completeness: "unknown", value: null } }));
     if (ready) {
-      // References survive live -> canonical migration. Empty live never deletes native history.
-      const artifacts = { ...(this.#registry.read<Record<string, unknown>>(scope, "artifacts")?.value ?? {}) };
-      for (const item of event.live!.messages) for (const content of item.message.content) if (content.type === "artifact") artifacts[content.artifact.artifactId] = { ...content.artifact, messageId: item.message.messageId };
-      changes.push({ kind: "collection", scope, domain: "artifacts", fact: { source: provenance, availability: "ready", completeness: "complete", items: artifacts } });
+      // References survive live -> canonical migration, and come from both places: an artifact that
+      // reached the canonical display is still a real file after its live row is gone (and after a
+      // Host restart, when a page re-supplies the display). Empty live never deletes native history.
+      const previousArtifacts = this.#registry.read<Record<string, unknown>>(scope, "artifacts")?.value;
+      const artifacts = new Map<string, unknown>(previousArtifacts === null || previousArtifacts === undefined
+        ? [] : Object.entries(previousArtifacts));
+      const collect = (message: { messageId: string; content: readonly unknown[] } | null | undefined): void => {
+        if (message === null || message === undefined) return;
+        for (const content of message.content) {
+          if (typeof content !== "object" || content === null) continue;
+          const block = content as { type?: unknown; artifact?: unknown };
+          if (block.type !== "artifact") continue;
+          const artifact = block.artifact as { artifactId?: unknown } | undefined;
+          if (typeof artifact?.artifactId !== "string") continue;
+          artifacts.set(artifact.artifactId, { ...(artifact as Record<string, unknown>), messageId: message.messageId });
+        }
+      };
+      for (const row of event.display?.entries ?? []) collect(row.message);
+      for (const item of event.live!.messages) collect(item.message);
+      // This is a reference index for the bounded window, not an inventory of the session's files:
+      // absence never deletes, and the oldest references are dropped by id, not by omission.
+      const dropped: string[] = [];
+      while (artifacts.size > MAX_ARTIFACT_REFERENCES) {
+        const oldest = artifacts.keys().next().value as string;
+        artifacts.delete(oldest);
+        dropped.push(oldest);
+      }
+      changes.push({ kind: "collection", scope, domain: "artifacts", fact: { source: provenance, availability: "ready", completeness: "complete", items: Object.fromEntries(artifacts) } });
+      if (dropped.length > 0) changes.push({ kind: "remove", scope, domain: "artifacts", fact: { source: provenance, availability: "ready", completeness: "complete", removeIds: dropped } });
     }
     const companion = prepare?.(ready === true);
     const result = this.#registry.commitTransaction([...changes, ...(companion?.changes ?? [])], () => {
