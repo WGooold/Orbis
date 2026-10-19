@@ -1678,6 +1678,12 @@ internal class HostConnection(
                 if (ready) {
                     autoResumeDownloads()
                     sendPathPreference()
+                    // device.ready can be reduced before the handshake flips e2eReady (device order:
+                    // device.ready, then e2e.hs.confirmed). That first path returns early because the
+                    // model read needs an encrypted channel, so the committed-model read has to be
+                    // retried here instead of waiting for a resumed 15s reconcile tick.
+                    refreshHostModel()
+                    mutableState.value.runtimes.keys.forEach { runtimeId -> refreshAgentModel(runtimeId) }
                 }
             }
         }
