@@ -29,6 +29,7 @@ export class AgentConversationState {
     });
   }
 
+  // ADR-0032 §5 §7：patch 可先写内容，但永远不是恢复基线；别放宽 hasBaseline。
   accept(scope: StateScope, event: Snapshot | Patch, prepare?: (ready: boolean) => PreparedRegistryCommit | undefined): boolean {
     if (scope.kind !== "agent" || event.sessionId !== scope.key.sessionId) return false;
     const key = scopeKey(scope), source = event.source, old = this.#current.get(key);

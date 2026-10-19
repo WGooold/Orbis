@@ -52,6 +52,7 @@ class SessionGraphStore(
     }
     private val databases = mutableMapOf<String, GraphDatabase>()
 
+    // ADR-0025 §2：同版本可覆盖（revert/原生更正靠它修复）；只拦更旧版本，别改成「同版本即冲突」。
     @Synchronized
     fun upsert(
         device: DeviceCredential,

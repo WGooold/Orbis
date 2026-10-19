@@ -183,6 +183,7 @@ export class HostStateFacts {
   }
 
   /** Pages only expose the immutable inventory attached to the currently committed catalog version. */
+  // ADR-0032 §7：分页不跨 snapshotId 拼接；别为省一次重读而混版本。
   catalogRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}): HostCatalogRange {
     const state = this.#registry.read<HostCatalogState>(this.#scope(), "catalog");
     const inventory = this.#catalogInventory;

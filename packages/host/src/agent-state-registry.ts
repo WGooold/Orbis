@@ -177,6 +177,7 @@ export class AgentStateRegistry {
   }
 
   /** 单值领域：整体替换当前投影。非 ready 的提交只更新核对状态，保留最后已知值。 */
+  // ADR-0032 §6：未知/部分不删已有值；别把「这次没报」当删除。
   commitValue<T>(scope: StateScope, domain: StateDomain, fact: ValueFact<T>): CommitResult {
     const invalid = validateFact(fact);
     if (invalid !== undefined) return { ok: false, code: "invalid_fact", detail: invalid };
