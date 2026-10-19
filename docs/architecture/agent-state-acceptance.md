@@ -6,29 +6,31 @@
 
 > 给接手的人或新会话。完成 issue #12 与 #11 后可以删掉这一节。
 
-**当前位置（第 32 批为止；全部未 push，工作树干净）**
+**当前位置（第 35 批为止；全部未 push）**
 
-- **统一模型**：36 个模块里 **13 个已接入真实事实**（03 目录、09–19 的 Host 侧投影、20 的供应商摘要、23 诊断记录）。显示投影那条链（契约 → 三个适配层 → 每页随 canonical 范围同行 → App 消费、已删除全部原生解释）仍然是最完整的一段；协议已硬升到 **13**，无兼容旁路。
-- **诊断记录（模块 23）端到端闭环**：有界 journal + 落盘（跨重启读回、落盘失败计入缺口）→ `HostState.diagnostics` 目录 → `diagnostics.request` / `diagnostics.page` 分页 → App 状态页读目录与一页记录。游标朝**更新**方向走（第 25 批修过一处说反的文案）。
-- **App 已消费四个模型立面**：`diagnostics`（目录 + 记录页）、`catalog`（这份列表读全了吗、哪个后端为什么没读全）、`providers` 的切换状态与 profile 清单。供应商领域是**单一写者**（`refreshProviderFacts()`，写前必读），最贵的那次读取只在**打开状态页**时发生。
-- **矩阵**：第 2 项（Host 重建）**通过**；第 5 项（设备重开）**落盘侧通过**（第 31 批，emulator-5556 实跑，结果 XML 在 `D:\android-emulators\evidence\emulator-5556\<owner>\item5-store-restore.xml`；**真杀进程重启仍未跑**）；第 6 项（多 Host 隔离）**部分通过**（配对/设备身份/目录/模型读取互不串台，「通知关闭」未构造）；第 1、3、4 项未跑，原因见下。
-- **基线**（第 20 批重验）：`npm run check` = **107 文件 / 1098 测试全过**；`:app:testDebugUnitTest` = **46 类 / 423 项全过**。
+- **统一模型**：Host 侧 01–30 的领域现在**全部有事实来源**，其中 04–13、20–30 由本批接进来的当前投影持有。显示投影那条链仍是最完整的一段；协议已硬升到 **14**，无兼容旁路。
+- **会话当前投影（模块 04–08）**：`AgentConversationState` 保存有界的 canonical 当前投影、live 库存、回合计时与产物引用，并按 immutable 页缓存范围；设备的 `session.sync` 先由 Host 模型应答（`recover`），模型没有基线时才转给适配层。会话同步不再只是「转发 + 复制」。
+- **Host 共享领域（模块 25–30）**：`identity` / `backends` / `workspaces` / `files` / `operations` / `connections` / `management` 都由 `HostService.refreshHostFacts()` 从真实现有服务发布（无 IO），凭据与配置原文永不进入；目录有 `snapshotId` + 不透明游标分页（`agent.state.range.request/page`），一次目录版本可跨页收齐。
+- **App 与桌面改为模型消费者**：App 的 `execution` / `interactions` / `delivery` / `model` / `context` / `permissions` / `capabilities` / `identity` 与 Host 的 `catalog` / `backends` / `providers` 都按领域 envelope 落库；会话目录改由模型提供（`session.list.result` 只剩回执），原生 `message.*` / `turn.*` / `tool.*` / `runtime.status` 等一次性事件**不再驱动业务状态**；桌面状态栏的 runtimeCount 也读模型。
+- **诊断记录（模块 23）**：记录带 `producerEpoch` / `hostId` / `operationId` / `turnId` 与有界 `detail`，App 状态页能翻页读（「读取下一页」）。
+- **矩阵**：第 2 项（Host 重建）**通过**；第 5 项（设备重开）**落盘侧通过**（第 31 批）；第 6 项（多 Host 隔离）**部分通过**（「通知关闭」未构造）；第 1、3、4 项未跑，原因见下。本批只做单测与编译，**没有再跑设备矩阵**。
+- **基线**（第 35 批重验）：`npm run check` = **113 文件 / 1150 测试全过**，`npm run lint` 通过；`:app:testDebugUnitTest` = **48 类 / 438 项全过**，`:app:compileDebugAndroidTestKotlin` 通过。
 
 **下一步（按代价从低到高）**
 
 1. **矩阵第 5 项的进程级那一半**：App 冷启动后从 SQLite 恢复并渲染、标题/树标签一致（落盘侧已由第 31 批的用例覆盖）。
-2. **矩阵第 3/4 项 + 第 6 项的「通知关闭」半**：需要一个**活着的、不属于用户的**会话（**需要用户同意**，见下）。
-3. **矩阵第 1 项（版本不匹配）**：用 `dcafa43`（协议 12）构建旧 APK（**需要用户同意**，见下）。
-4. **#9 其余写入点**：传输/审批/恢复——先有可触发的失败钩子，否则只能写出不可测的记录。
-5. **#10 更大的领域**：`workspaces` / `operations` / `connections` 在 Host 侧还没有发布事实，得先在 Host 侧接进来（中等规模，建议在上下文充足的会话里做）。
-6. **`authenticated`**：见模块 21 那行——要 `ProviderManager` 那条读取补 `authBinding` 与账号事实，动的是供应商这条最敏感的路径；做之前先想清楚「没有绑定」与「未核对」的区别。用量同理（要有供应商自报配额的来源）。
+2. **在第 35 批的模型语义下重跑矩阵第 2/6 项**：连接路径、目录来源与工具事件都变了，之前那两次实机结论要用新 APK 复核；第 6 项顺带补「通知关闭」。
+3. **矩阵第 3/4 项**：需要一个**活着的、不属于用户的**会话（**需要用户同意**，见下）。
+4. **矩阵第 1 项（版本不匹配）**：现在的旧版候选是协议 13；用 `695c0da`（协议 13）构建旧 APK（**需要用户同意**，见下）。
+5. **#9 其余写入点**：传输/审批/恢复——先有可触发的失败钩子，否则只能写出不可测的记录。
+6. **模块 24 剩余**：产物引用与下载文件摘要已进模型，但「Host 侧完整产物清单 / 上传面」还没有统一领域。
 
 **两件需要用户明确同意才能做的事**（不要自行开工）：
 
-- **矩阵第 1 项**：用升版前的 `dcafa43` 构建旧 APK——会动代码版本，应在**独立 git worktree** 里做。**截至第 32 批并未创建任何 worktree**（`git worktree list` 只有本工作树），所以也没有"待合并"的分支。
+- **矩阵第 1 项**：用升版前的 `695c0da` 构建旧 APK——会动代码版本，应在**独立 git worktree** 里做。**截至第 35 批并未创建任何 worktree**（`git worktree list` 只有本工作树），所以也没有"待合并"的分支。
 - **矩阵第 3/4 项与「通知关闭」半**：在 rig 里新建会话会在这台机器上**多拉起一个真 agent 进程并使用用户的 Pi 配置**。
 
-**环境与边界**（第 32 批收尾时实测）：无模拟器、无 qemu、无占用文件（`D:\android-emulators\leases` 为空）；rig 与 Relay 均已停止；**用户正在使用的 Host 全程未被停止或重启**。push、发版、重启 Host 各自都需要单独授权，本分支至今未 push。
+**环境与边界**（第 35 批收尾时实测）：本批只用了 Windows 构建脚本（`scripts/windows/android-build.ps1`，同一把构建锁），未启动模拟器、未起 rig/Relay；**用户正在使用的 Host 全程未被停止或重启**。push、发版、重启 Host 各自都需要单独授权，本分支至今未 push。
 
 > 第 2 批前后的旧「状态」与旧「下一步」已删除——它们的内容要么已经过时（当时的未交付项现已完成），要么已被上面这段取代；历史细节看下面各批的记录。
 
@@ -51,7 +53,8 @@
 当前状态口径：
 
 - `模型已定义`＝ schema 与 Registry 已存在，但**没有**接入真实来源。
-- `已接入事实`＝适配层已经把真实事件归一成领域事实写进 Registry；客户端协议尚未接入（那是 issue #10）。
+- `已接入事实`＝适配层或 Host 服务已经把真实事件/服务事实归一成领域事实写进 Registry，并且客户端协议能读到它。
+- `部分接入`＝领域里有事实，但覆盖不全（例如某个后端没有这类事实，显式 `unavailable`/`unknown`）。
 - `已有实现，待接入`＝该域在 Host 或 adapter 已有一份可用实现，只是还没有写进统一模型。
 - `保留本地`＝ADR 已定边界，不迁移。
 
@@ -59,41 +62,41 @@
 
 | 模块 | 目标归属 | 现状 |
 | --- | --- | --- |
-| 01 身份与运行元数据 | AgentState.identity / availability | 模型已定义；adapter 已有 metadata |
-| 02 后端可用性与桌面接入 | HostState.backends；AgentState.availability | 模型已定义；Host 已有 readiness 聚合 |
-| 03 会话目录与归档 | HostState.catalog | **已接入事实，App 已消费完整性**：逐后端读取结果、失败原因与截断标记；任一后端没读全就是 partial，不冒充完整空目录；App 状态页显示「读全 / 部分（哪个后端、为什么）」（第 23 批） |
-| 04 聊天历史与 canonical Entries | AgentState.history | **已接入事实**：`projectDisplayEntries` 产出标准 ChatMessage（文本/思考/工具调用/产物/摘要），App 直接渲染，不再解释原生形状；未知条目保留身份与原因 |
-| 05 会话分支与当前 head | AgentState.history | **已接入事实**：路径重建、压缩裁剪与摘要渲染位置都在产出方判定（批次带窗口起点与渲染锚点），App 只负责分支与 head；缺父/成环/找不到叶子如实报告 |
-| 06 实时消息与流式正文 | AgentState.live.messages | 模型已定义；live 在 source adapter |
-| 07 回合身份与计时 | AgentState.execution.turn | 模型已定义；分散在 source 与 App |
-| 08 工具调用与执行结果 | AgentState.live.tools | 模型已定义；工具库存在 source |
-| 09 运行与等待状态 | AgentState.execution | **已接入事实**：状态 + 待回答交互共同决定 waiting；DSH 审批等待因此有了统一投影 |
-| 10 重试与上下文压缩 | AgentState.execution.retry / compaction | **部分接入**：字段已在模型里，但仍显式 `unavailable`——等适配层提供真实阶段 |
-| 11 交互请求与审批 | AgentState.interactions | **已接入事实**：`snapshot` 是完整清单，回答/取消按 id 显式删除 |
-| 12 消息队列与投递状态 | AgentState.delivery.queue | **已接入事实**：只有部分清单（后端没有队列快照事件），因此不能当基线 |
-| 13 命令关联与执行回执 | HostState.operations；DeviceView | **已接入事实**：受理先记 accepted，后端结果覆盖同一条；回执按设备作用域、有界淘汰并按 id 显式删除 |
-| 14 权限摘要与可编辑设置 | AgentState.permissions | **已接入事实**：raw 权限 + opaque management；缺 management 不等于权限更宽，离线保留最后已知值 |
-| 15 模型与思考级别 | AgentState.model | **已接入事实**：metadata 没报就是整个领域 unknown；选项明细仍走 commands |
-| 16 上下文与 tokens | AgentState.context | **已接入事实**：缺事实为 unknown，不假报已支持 |
-| 17 能力与资源 | AgentState.capabilities / resources | **已接入事实**：命令菜单按完整清单替换；资源（skills/prompts/MCP）仍归各后端 |
+| 01 身份与运行元数据 | AgentState.identity / availability | **已接入事实**：metadata + `hostId` 归一进 `identity`，`availability` 单独一格；路由身份（runtimeId）与会话身份分开，App 的 `agentKind` 现在从这里读，不再按 runtimeId 前缀猜（第 34 批）|
+| 02 后端可用性与桌面接入 | HostState.backends；AgentState.availability | **已接入事实**：`HostState.backends` 发布逐后端 `ready`/`launchable`/`runtimeCount`/`reason` 与 `agents`/`launchableAgents`/Codex 桌面接档；App 的支持后端与桌面接档从这份领域读（第 34 批）|
+| 03 会话目录与归档 | HostState.catalog | **已接入事实，App 已是消费者**：领域里带完整（有界）会话清单 + `snapshotId` + 不透明游标，`agent.state.range.request/page` 按同一目录版本跨页收齐，逐后端读取结果/失败原因/截断标记一起发布；任一后端没读全就是 partial。App 的会话列表改由模型提供，`session.list.result` 只剩回执（第 34 批）|
+| 04 聊天历史与 canonical Entries | AgentState.history | **已接入事实，Host 持有当前投影**：`projectDisplayEntries` 产出标准 ChatMessage（文本/思考/工具调用/产物/摘要），`AgentConversationState` 把 canonical head、有界条目、显示结果与页缓存一起提交；设备的范围读取先由 Host 模型应答，模型没有基线时才转给适配层。未知条目保留身份与原因 |
+| 05 会话分支与当前 head | AgentState.history | **已接入事实**：路径重建、压缩裁剪与摘要渲染位置都在产出方判定（批次带窗口起点与渲染锚点），App 只负责分支与 head；缺父/成环/找不到叶子如实报告。同一来源版本的条目不能被改写——同版本不同内容是 `entry_conflict`，更旧版本不能覆盖缓存（第 35 批）|
+| 06 实时消息与流式正文 | AgentState.live.messages | **已接入事实**：`AgentConversationState` 与 history 同一笔事务写完整 live 库存（`complete` 标记），流式正文经 `session.patch` 的累计正文到达；未持久化的结束消息仍可恢复。App 不再消费 `message.started/delta/finished`，只认这份库存（第 33/34 批）|
+| 07 回合身份与计时 | AgentState.execution.turn | **已接入事实**：`execution.turn` 带 `turnId`/`startedAt`，结束后**保留已确认的 `durationMs`**（不再清成 null），App 只在 `durationMs == null` 时算「进行中」；快照的 `turnTimings` 另外落进投影（第 33/34 批）|
+| 08 工具调用与执行结果 | AgentState.live.tools；history 引用 | **已接入事实**：工具随 live 库存提交，结果提交与 live 移除同源；投影没画出来的已完成工具不会继续钉在底栏（第 33 批）|
+| 09 运行与等待状态 | AgentState.execution | **已接入事实，App 已消费**：状态 + 待回答交互共同决定 waiting；DSH 审批等待因此有了统一投影。运行状态只认这一格（原生 `runtime.status` 不再驱动），最后已知值按 availability 区分 |
+| 10 重试与上下文压缩 | AgentState.execution.retry / compaction | **部分接入**：`execution.activity` 事件已接成真实阶段——Pi 的 `session_compact`/`session_compact_failed`、Codex 的原生错误/重试与 `contextCompaction` 条目都会报 `idle`/`running`/`failed` 与所属回合；DSH 仍显式 `unavailable`（它不提供这类阶段）。模型/客户端都不按日志文字推断恢复 |
+| 11 交互请求与审批 | AgentState.interactions | **已接入事实**：`snapshot` 是完整清单，回答/取消按 id 显式删除；条目带类型、问题/选项、按钮文案、URL、长度/秘密等回答所需字段，App 直接从模型渲染（第 34 批）|
+| 12 消息队列与投递状态 | AgentState.delivery.queue | **已接入事实，有完整清单**：`delivery.snapshot` 给出当前待投递项与 `complete`（Pi 桥接在连接/重同步/sync 时重放，Codex 按 thread 队列发布）；不稳定就没有基线，App 以 `complete` 决定是否用缺席删除（第 33/34 批）|
+| 13 命令关联与执行回执 | HostState.operations；DeviceView | **已接入事实**：受理先记 accepted，后端结果覆盖同一条；回执按设备作用域、有界淘汰并按 id 显式删除。共享操作（会话激活/归档、供应商切换）另在 `HostState.operations.items` 发布状态，设备私有回执仍只对发起设备可见（第 33 批）|
+| 14 权限摘要与可编辑设置 | AgentState.permissions | **已接入事实，App 已消费**：raw 权限 + opaque management；缺 management 不等于权限更宽，离线保留最后已知值；权限界面现在按 `domainAvailability["permissions"] == "ready"` 才可操作（第 34 批）|
+| 15 模型与思考级别 | AgentState.model | **已接入事实，App 已消费**：metadata 没报就是整个领域 unknown；选项明细仍走 commands |
+| 16 上下文与 tokens | AgentState.context | **已接入事实，App 已消费**：缺事实为 unknown，不假报已支持；上下文百分比在 `context` 未核对时不再画 |
+| 17 能力与资源 | AgentState.capabilities / resources | **已接入事实，App 已消费**：命令菜单按完整清单替换（参数形状也在条目里）；资源（skills/prompts/MCP）仍归各后端 |
 | 18 通知生产者事实 | adapter 事实 → AgentState.notifications | 已有实现（NotificationStore 消费来源事实）；模型侧只记引用 |
 | 19 Host 通知生命周期 | AgentState.notifications；DeviceView | **已接入引用**：Store 仍是唯一权威，模型发布 hostEpoch / revision / 条数 / 条件 code / 核对程度 |
-| 20 供应商手机摘要 | HostState.providers | **已接入事实，单一写者**：只有 `refreshProviderFacts()` 写这个领域（第 28 批），它在供应商读取/切换后、或客户端点名 `providers` 域时现读一次 pi/codex/dsh，写下 `current`、真读到的 `profiles` 清单与 `switching`（未在切换是 `null` 未核对）；`authenticated` 与用量这次读取里没有依据，记 `null`/`unknown`，不补默认值 |
-| 21 完整配置与认证绑定 | HostState.providers | **profile 清单已接入**（第 28、29 批：`id`/`name`/`enabled`/`globalDefault`，App 显示个数与「未读到」）；**完整配置与认证绑定仍未接入**——`authenticated` 要 profile 的 `authBinding` 与账号列表，而这两样都不在 `ProviderManager.list()` 的返回值里，得先给这条读取补事实。秘密永远留 Host |
-| 22 用量、健康度与路由 | HostState.providers | 已有实现，待接入；模型里的 `usage` 恒为 `unknown`（不是因为缺，而是因为这次读取里没有配额事实）。要接得先有供应商自报配额的来源，不能拿 0 或空值冒充 |
-| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两端闭环**：`DiagnosticRecord`/`DiagnosticPage` + 有界 `DiagnosticJournal`（条数+保留窗口淘汰、游标分页、缺口如实报告），跨重启读回、落盘失败计入缺口；`HostState.diagnostics` 给目录，`diagnostics.request` → `diagnostics.page` 取记录本身；App 连接后读目录（第 16 批）、按需读记录并在状态页显示最近一条（第 18 批）；待接其余写入点、更早页的界面与其余领域 |
-| 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | 模型已定义；缺 artifact inventory |
+| 20 供应商手机摘要 | HostState.providers | **已接入事实，单一写者**：只有 `refreshProviderFacts()` 写这个领域，一次 `ProviderManager.publicState()` 现读 pi/codex/dsh，写下 `current`、真读到的 `profiles`（含 `mode`、`profilesTruncated`）、`switching`、认证/用量/健康/路由摘要。App 的 profile 清单也已改为读模型（`provider.list.result` 不再携带列表，第 34 批）|
+| 21 完整配置与认证绑定 | HostState.providers | **公开认证摘要已接入**（第 33 批）：`authentication` 给出 `method`/`credentialPresent`/`bindingReady`/`verified`，来自 profile 的 `authBinding` 与 OAuth 账号列表；`authenticated` 由它派生。**配置原文、journal、凭据、OAuth token 永不进入模型**；「没有绑定」与「未核对」在字段上分开（`false` vs `null`）|
+| 22 用量、健康度与路由 | HostState.providers | **已接入摘要**（第 33 批）：`usage` 只转发供应商自报的数值行（`remaining`/`used`/`total` + 更新时间/查询错误），没有配额来源时是 `unknown`，不拿 0 冒充；`health` 给 circuit 状态与失败数，`routing` 给 failover/队列/进行中请求与每个请求开始时的 route 快照。用量来源目前只有桌面（`ProviderUsageCache`），命令行 Host 仍是 `unknown` |
+| 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两端闭环**：记录带 `producerEpoch`/`hostId`/`operationId`/`turnId`、`agentKind` 过滤与有界 `detail`（≤16 键）；有界 journal 跨重启读回、落盘失败计入缺口；目录走 `HostState.diagnostics`，记录走 `diagnostics.request/page`；App 状态页能读目录、列出整页并按游标翻页（第 34 批）。待接其余写入点（传输/审批/恢复）|
+| 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | **部分接入**：live 消息里的 artifact 内容块按 `artifactId` 写成会话产物引用（含来源 `messageId`），`HostState.files` 发布下载清单摘要（`fileId`/`runtimeId`/大小/校验/可用性）。上传作业与「Host 侧完整产物清单」还没有统一领域 |
 
 ## 25–30：Host 领域服务（逐项登记，含双侧状态）
 
 | 模块 | 目标归属 | 现状 |
 | --- | --- | --- |
-| 25 工作区与 Git 分支 | HostState.workspaces；AgentState.workspaceRef | 已有实现，待接入 |
-| 26 会话激活与电脑侧操作 | HostState.operations | 已有实现，待接入 |
-| 27 同步任务与背压 | HostState.operations | 已有实现，待接入 |
-| 28 Host 身份、配对与设备 | HostState.identity / connections | 已有实现，待接入；不导出凭据 |
-| 29 连接、路径、加密与序号 | **双侧**：HostState.connections 只发布摘要与传输 sequence；App 仍持有 socket / path / handshake / e2eReady / 密钥 / 重放水位（AppLocalState.transport） | 已有实现，待接入摘要 |
-| 30 安装、桌面与服务生命周期 | HostState.management | 已有实现，待接入 |
+| 25 工作区与 Git 分支 | HostState.workspaces；AgentState.workspaceRef | **已接入事实**：按 cwd 分组（`sessionCount`）发布 `workspaceId` 与 Git `branch`/`head`（来自会话 Git 读取结果，未读为 `unknown`）；会话侧 `workspaceRef` 早就在模型里。App 尚未展示 |
+| 26 会话激活与电脑侧操作 | HostState.operations | **已接入事实**：`activationsPending`/`commandsPending` 与 `items` 里的激活/归档/供应商切换状态（accepted→running→succeeded/failed）一起发布，超窗口条目按显式淘汰移除并置 `truncated` |
+| 27 同步任务与背压 | HostState.operations | **已接入事实**：`sync` 子域发布记录数/待处理/活动/预留字节（来自 `SessionSyncTasks.aggregateStats()`），传输数另计；背压预算仍由任务队列自己执行，模型只发布摘要 |
+| 28 Host 身份、配对与设备 | HostState.identity / connections | **已接入事实**：`identity` 给 `hostId`/`hostName`/`protocolVersion`，`connections` 给已配对/已连接设备数与路径摘要；凭据、`pskRoot` 与设备记录本身不导出 |
+| 29 连接、路径、加密与序号 | **双侧**：HostState.connections 只发布摘要；App 仍持有 socket / path / handshake / e2eReady / 密钥 / 重放水位（AppLocalState.transport） | **摘要已接入**：`connections` 给出逐路径（lan/p2p/relay）挂接/活动设备数、relay 状态与序号通道数；本端握手判定与端到端可用仍只由 App 自己下结论 |
+| 30 安装、桌面与服务生命周期 | HostState.management | **已接入事实**：`lifecycle`（starting/running/stopping/stopped）由 HostService 自己发布，`platform`/`nodeVersion` 给运行环境；逐后端 `installed`/`version` 由桌面检测注入（没有检测来源时是 `null`，不猜） |
 
 模块 29 不是 Host 单方权威：Host 摘要不能代替本端握手判定，Relay 转发路径也不等于已确认的端到端可用。
 
@@ -577,6 +580,72 @@ Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、�
 
 代价（如实说）：状态页刚打开的那一瞬间，供应商那两行先显示「尚未读取」，等这一次读取回来后才有内容；这是刻意的——它不该假装手里有刚读到的事实。
 
+## 第 33 批（issue #6 / #8 / #9 收尾：Host 侧剩余领域上模型）
+
+这一批把「已有实现，待接入」全部接进来，并补上会话当前投影。
+
+**会话当前投影（模块 04–08）**——[agent-conversation-state.ts](../../packages/host/src/agent-conversation-state.ts)：
+
+- `AgentConversationState.accept()` 是会话领域的**唯一写者**：把一份 `session.snapshot` / `session.patch` 归成 `history` / `live` / `artifacts` 三个领域与 `execution.turn`，在**一笔 Registry 事务**里提交（任一步失败整批回滚，订阅者看不到半批）。
+- canonical 条目按 `(来源代次, head, range, beforeEntryId)` 缓存成 immutable 页（条数/页字节/总字节/LRU 四个上限），`recover()` 让 Host 先用自己的当前投影回答设备的 `session.sync`；模型没有基线时才把请求转给适配层，并且**不把客户端的 `knownState` 带过去**（它是按另一个基线算的）。
+- `offline()` 把 history/live/artifacts 标成待核对并保留最后已知值；来源代次变化时旧代次进 retired 集，迟到回调不能把它复活（上限 64）。
+- live→canonical 迁移不删除原生历史；空 live 也**不能**删除条目——「后端没说有」不等于「没有」。
+
+**Host 共享领域（模块 25–30）**——`HostService.refreshHostFacts()`：
+
+- 一次调用从**已有**服务读事实（`#catalogCache`、下载清单、`SessionSyncTasks.aggregateStats()`、连接/路径状态、生命周期），**不做 IO、不查后端**，然后发布 `identity` / `backends` / `workspaces` / `files` / `operations` / `connections` / `management`；本机与桌面读同一份已提交投影（`readHostState(domains)`）。
+- 会话激活/归档与供应商切换共用一个有界共享操作表（accepted→running→succeeded/failed，300 秒窗口外显式淘汰并置 `truncated`），设备私有回执仍在 `DeviceView`。
+- 工作区的 Git 摘要只记录**真读过**的结果；没读过是 `unknown`，不是「没有分支」。
+
+**目录分页（模块 03 的第二半）**——[host-state-facts.ts](../../packages/host/src/host-state-facts.ts)：
+
+- `catalog()` 保留完整（有界：20,000 条 / 8 MiB）清单与一个 `snapshotId`；提交给 Registry 的 value 只装前 2,000 条并给 `nextCursor`。
+- `catalogRange()` 按同一 `snapshotId` 分页（≤200 条/页，base64url 不透明游标）；目录换代后旧游标返回 `snapshot_changed`，绝不在两版之间拼接；非法游标、越界偏移各有明确错误。
+- 协议新增 `agent.state.range.request` / `agent.state.range.page`。
+
+**订阅与发布（ADR §7）**——[agent-state-subscriptions.ts](../../packages/host/src/agent-state-subscriptions.ts)：
+
+- 客户端可对某个作用域 `subscribe`（每设备最多 8 个），Host 合并同一批变化后按领域发布完整领域快照；已应用版本相同的领域回 `unchanged`，不重发内容。
+- `device.ready` 带 `modelEpoch`：客户端据此判断「还是同一个模型代次」还是「Host 换代了」。
+
+**其余领域**：模块 10 的 `execution.activity`（Pi 的压缩/压缩失败、Codex 的原生错误/重试/压缩条目）、模块 12 的 `delivery.snapshot`（Pi 桥接、Codex 队列、DSH）、模块 11 的可回答交互字段、模块 23 的记录字段（`producerEpoch`/`hostId`/`operationId`/`turnId`、`agentKind` 过滤、≤16 键 `detail`）、模块 24 的产物引用与 `HostState.files` 下载摘要。
+
+**供应商公开摘要（模块 20–22）**：[provider-public-state.ts](../../packages/host/src/provider-public-state.ts) + `ProviderManager.publicState()` 一次原生对账同时给出 profile、认证绑定（来自 OAuth 账号列表）、用量（供应商自报数值行，桌面注入 `ProviderUsageCache`）、健康（circuit）与路由（failover/队列/进行中请求的 route 快照）。**凭据、配置原文、用量脚本、OAuth token 永不进入模型**。
+
+## 第 34 批（issue #10 收尾：App 与桌面改为模型消费者）
+
+App 侧（[AgentModelProjection.kt](../../android/app/src/main/java/dev/pi/remote/AgentModelProjection.kt)、[AgentCatalogRange.kt](../../android/app/src/main/java/dev/pi/remote/AgentCatalogRange.kt)）：
+
+- 按领域 envelope 镜像：**整份替换**同一领域，`unknown`/`unavailable` 保留最后已知值但登记可用性；集合领域只有在 `projectionComplete`（或 source `complete`）时才允许用缺席删除。
+- Agent 领域投影进运行时会话：`identity`（含 `agentKind`/`hostId` 校验）、`execution`（运行状态只认这一格）、`model`/`context`/`permissions`/`capabilities`/`interactions`/`delivery`；Host 领域投影 `catalog`/`backends`/`providers`。
+- 删除原生业务解释：`MODEL_OWNED_LEGACY_EVENTS` 里的 `runtime.status`、`message.*`、`turn.*`、`tool.*`、`interaction.*`、`local_interaction.required` 只推进序号、**不再写业务状态**；`session.list.result` 只用来销账（目录来自模型）；`agentKind` 与 `isCodex` 不再看 runtimeId 前缀。
+- 目录分页：按 `snapshotId`/`revision` 累加，错版本、重复游标、超总数、空页却给游标都拒绝；收齐后再按模型口径删除缺席条目。
+- 代次：`device.ready.modelEpoch` 同代次保留已应用领域，新代次作废依赖它的缓存/在读请求/订阅，旧代次进 retired 集；前台每 15 秒核对一次（`reconcileModels()`），运行中出现时读该会话的 Agent 领域。
+- 状态页新增「统一状态模型」（逐领域 availability/revision/missing）与供应商公开事实（用量/认证/健康/路由），诊断记录从「最近一条」改成整页列表 + 「读取下一页」；权限界面按 `permissions` 可用性决定能否操作。
+
+桌面（[desktop-runtime.ts](../../packages/host/src/desktop-runtime.ts)）：状态栏的 runtimeCount 与 `readState`/`readRange` 都读同一份模型；供应商用量缓存变化后刷新 `providers` 领域。
+
+验证：`:app:testDebugUnitTest` = **48 类 / 438 项全过**；`:app:compileDebugAndroidTestKotlin` 通过。
+
+## 第 35 批（issue #11：协议 14，以及跑绿时发现的三处缺陷）
+
+**协议 13 → 14**（`packages/protocol/src/index.ts` 与 `relay-client.ts` / `lan-server.ts` / App 的 `PROTOCOL_VERSION` 同步）：
+
+- 14 的含义：客户端改为**按领域消费 Host 模型**（订阅/完整领域发布、目录分页、`device.ready` 带 `modelEpoch`），并且会话快照必须自报 source（preview 还必须带 checkpoint/live）。
+- 入站校验仍是精确匹配，所以这是断代：旧 13 连不上新 Host，反之亦然；没有兼容旁路可删。
+
+跑绿过程中修掉三处（都是这批代码自己引入的，不是新功能）：
+
+1. **第一条实时消息会被丢掉**：[agent-conversation-state.ts](../../packages/host/src/agent-conversation-state.ts) 原来要求 ready patch 必须有已提交基线，但 **Codex 与 DSH 从不主动推 snapshot**（只有 `session.sync` 才给），它们的第一次 `session.patch` 必然没有基线 —— 于是整段内容被拒绝，`sendResync` 又只对 loopback 的 Pi 有效。现在这类 patch 按 **handshake** 接收：内容照旧转发、来源水位照旧推进，但它**永远不能成为基线**（`hasBaseline` 仍为 false、`recover` 仍返回 undefined、缺席不能删条目）；真正的 baseSeq 缺口仍然拒绝并要求重新基线。
+2. **同版本改写没有冲突判定**：[SessionGraph.merge](../../android/app/src/main/java/dev/pi/remote/SessionGraph.kt) 原来只要快照带 ready source 就允许改写同 ID 条目。现在**同一来源版本给出两种写法就是 `entry_conflict`**（与 SQLite 行的判定一致），更旧版本不能覆盖缓存，更新的版本才允许更正。
+3. **catchup 不推进分页锚点**：canonical 页不动显示视图是对的，但补齐到新 head 之后 `sessionHistory.leafId` 还停在旧叶，下一次「读更早」会按错的锚点发；现在 catchup 用页的目标叶更新分页锚点（显示视图仍不动）。顺带修掉 `expandedStart` 的自反判定——它会把边界条目本身当成「向外扩了一格」，把 `hasOlder` 误清成 false。
+
+测试夹具跟着迁移：13 个 `RelayReducerTest` 用例按新协议补 `source`/`checkpoint`，并补上真实客户端一定会有的 canonical 缓存（条目 + 显示行 + `cacheEpoch` + 条目版本）；`HistoryReadOperationsTest` 的首屏夹具补 `cacheEpoch`，`RelayReducerTest` 的 catchup 页补 `parentId` 让它与缓存一致。没有放宽任何断言，只把「不可能的初始状态」换成「真实的初始状态」。
+
+验证：`npm run check` = **113 文件 / 1150 测试全过**；`npm run lint` 通过；`:app:testDebugUnitTest` = **48 类 / 438 项全过**；`:app:compileDebugAndroidTestKotlin` 通过。
+
+设备矩阵没有在这一批重跑：连接路径、目录来源与工具事件都变了，之前第 19/22 批的实机结论应在拿到新 APK 后复核（见交接的下一步）。
+
 ## 回归要求
 
 改动 Registry 或 envelope 时必须保持：
@@ -585,3 +654,6 @@ Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、�
 - 心跳、历史页请求与其他设备回执不推进源端内容版本。
 - 提交路径里不发起原生 RPC、文件 IO 或网络探测。
 - Registry 不保存全量聊天历史。
+- 一条会话 patch 可以推进内容与来源水位，但**永远不能成为恢复基线**（`hasBaseline` 仍为 false，设备范围读取仍走「模型 → 适配层」的顺序）。
+- 同一来源版本的同一个 Entry 只能有一种写法：同版本不同内容是冲突，更旧版本不能覆盖缓存。
+- 目录分页、模型领域与已应用版本不能跨 `snapshotId` / `modelEpoch` 混用；换代次或换目录版本时，旧在途应答只能被丢弃，不能写回。

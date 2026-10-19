@@ -9,7 +9,7 @@ A native phone UI that acts as the remote frontend for the agent sessions a Host
 _Avoid_: Terminal emulator, remote desktop
 
 **Host**:
-The resident computer-side process that owns the pairing identity, device records, encrypted channels, transport paths, file serving, and the aggregated session directory. ADR-0032 additionally makes it the owner of the unified Agent state model and the client-facing projections of shared Host services; that architecture decision is accepted, while implementation is pending. Agent backends interpret native business semantics; the common Host model manager validates and publishes their standardized facts.
+The resident computer-side process that owns the pairing identity, device records, encrypted channels, transport paths, file serving, and the aggregated session directory. ADR-0032 additionally makes it the owner of the unified Agent state model and the client-facing projections of shared Host services; that architecture decision is accepted, and the model now carries real facts for the Host-side domains (the per-module migration state lives in `docs/architecture/agent-state-acceptance.md`). Agent backends interpret native business semantics; the common Host model manager validates and publishes their standardized facts.
 _Avoid_: Relay proxy, desktop gateway
 
 **Agent backend**:
