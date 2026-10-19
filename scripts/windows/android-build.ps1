@@ -1,4 +1,24 @@
-﻿[CmdletBinding()]
+﻿<#
+.SYNOPSIS
+Serialized Android build wrapper for this machine.
+
+.DESCRIPTION
+Agents must not wait out a build inside one foreground tool call: a killed caller
+leaves the wrapper half-dead and, before 2026-10-19, leaked the machine resource
+lease so every later build waited silently for up to two hours. Use:
+
+  pwsh -File scripts\windows\android-build.ps1 -Background :app:testDebugUnitTest
+  pwsh -File scripts\windows\android-build.ps1 -Status     # prints pid/state/exit code + tail
+  pwsh -File scripts\windows\android-build.ps1 -Status > $null; $LASTEXITCODE  # build result
+
+A foreground run still works but prints a heartbeat while it waits for the build
+mutex or the machine lease. A lease left by a dead pid is taken over (with a log
+line) instead of blocking the next task.
+
+.EXAMPLE
+pwsh -File scripts\windows\android-build.ps1 -InstallSerial emulator-5556 -LaunchActivity :app:assembleDebug --console=plain
+#>
+[CmdletBinding()]
 param(
     [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
     [string[]] $GradleArgs,
@@ -16,7 +36,18 @@ param(
     [int] $AcquireTimeoutMinutes = 120,
 
     [ValidateRange(1, 60)]
-    [int] $MemoryPollSeconds = 15
+    [int] $MemoryPollSeconds = 15,
+
+    # 长构建不要在调用方的前台等待：先 -Background 立刻返回，再 -Status 轮询。
+    [switch] $Background,
+
+    [switch] $Status,
+
+    # -Background 内部使用；子进程带着它跑真正的构建。
+    [switch] $DetachedChild,
+
+    [ValidateRange(5, 120)]
+    [int] $HeartbeatSeconds = 15
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,6 +61,9 @@ $installScript = Join-Path $repo 'scripts\windows\android-install.ps1'
 $mutexName = 'PiRemote.AndroidBuild'
 $owner = [guid]::NewGuid().ToString()
 $buildId = [guid]::NewGuid().ToString()
+# 运行记录与日志放在 .scratch 下：它们是过程材料，不是交付产物。
+$runDir = Join-Path $repo '.scratch\android-build'
+$runStatePath = Join-Path $runDir 'current.json'
 
 if ($StopOnly -and $GradleArgs -and $GradleArgs.Count -gt 0) {
     throw '-StopOnly cannot be combined with Gradle task arguments.'
@@ -51,6 +85,79 @@ if (-not (Test-Path $gradlew)) {
 }
 if ($env:GRADLE_USER_HOME) {
     throw 'GRADLE_USER_HOME is set. Use the shared default Gradle user home so compatible daemons can be reused.'
+}
+if ($Background -and $DetachedChild) {
+    throw '-Background and -DetachedChild cannot be combined.'
+}
+if ($Background -and ($Status -or $StopOnly)) {
+    throw '-Background cannot be combined with -Status or -StopOnly.'
+}
+
+function Read-RunRecord {
+    if (-not (Test-Path -LiteralPath $runStatePath)) { return $null }
+    try { return Get-Content -LiteralPath $runStatePath -Raw | ConvertFrom-Json } catch { return $null }
+}
+
+function Get-LiveProcess([object]$record) {
+    $candidate = 0
+    if ($null -eq $record -or -not [int]::TryParse([string]$record.pid, [ref]$candidate) -or $candidate -le 0) { return $null }
+    return Get-Process -Id $candidate -ErrorAction SilentlyContinue
+}
+
+if ($Status) {
+    $record = Read-RunRecord
+    if ($null -eq $record) {
+        Write-Output "No background build recorded ($runStatePath)."
+        exit 0
+    }
+    $live = Get-LiveProcess $record
+    Write-Output ("build pid={0} state={1} started={2} finished={3} exitCode={4}" -f $record.pid,
+        $(if ($live) { 'running' } else { 'exited' }), $record.startedUtc,
+        $(if ($record.finishedUtc) { $record.finishedUtc } else { '-' }),
+        $(if ($null -ne $record.exitCode) { $record.exitCode } else { '-' }))
+    Write-Output ("args: {0}" -f (($record.args | ForEach-Object { $_ }) -join ' '))
+    Write-Output ("log: {0}" -f $record.log)
+    if (Test-Path -LiteralPath $record.log) {
+        Write-Output '--- last 25 log lines ---'
+        Get-Content -LiteralPath $record.log -Tail 25
+    }
+    if ($record.err -and (Test-Path -LiteralPath $record.err) -and (Get-Item -LiteralPath $record.err).Length -gt 0) {
+        Write-Output '--- last 10 stderr lines ---'
+        Get-Content -LiteralPath $record.err -Tail 10
+    }
+    # 轮询脚本可以直接用退出码判断结果：还在跑是 0，跑完就是构建自己的退出码。
+    if (-not $live -and $null -ne $record.exitCode) { exit [int]$record.exitCode }
+    exit 0
+}
+
+if ($Background) {
+    New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    $shell = (Get-Process -Id $PID).Path
+    $logPath = Join-Path $runDir ("build-{0}.log" -f $buildId)
+    $errPath = Join-Path $runDir ("build-{0}.err" -f $buildId)
+    $scriptArg = if ($PSCommandPath -match '\s') { '"' + $PSCommandPath + '"' } else { $PSCommandPath }
+    $childArgs = @('-NoProfile', '-File', $scriptArg) + @($GradleArgs) + @('-DetachedChild', '-HeartbeatSeconds', $HeartbeatSeconds,
+        '-AcquireTimeoutMinutes', $AcquireTimeoutMinutes, '-MemoryPollSeconds', $MemoryPollSeconds)
+    if ($StopDaemons) { $childArgs += '-StopDaemons' }
+    if ($InstallSerial) { $childArgs += @('-InstallSerial', $InstallSerial) }
+    if ($LaunchActivity) { $childArgs += '-LaunchActivity' }
+    $child = Start-Process -FilePath $shell -ArgumentList $childArgs -WorkingDirectory $repo -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $logPath -RedirectStandardError $errPath
+    $record = [ordered]@{
+        pid = $child.Id
+        startedUtc = [DateTime]::UtcNow.ToString('o')
+        finishedUtc = $null
+        exitCode = $null
+        args = $GradleArgs
+        log = $logPath
+        err = $errPath
+        worktree = $repo
+    }
+    [IO.File]::WriteAllText($runStatePath, ($record | ConvertTo-Json -Depth 4))
+    Write-Output ("Background build started pid={0}" -f $child.Id)
+    Write-Output ("log: {0}" -f $logPath)
+    Write-Output ("poll: pwsh -File '{0}' -Status" -f $PSCommandPath)
+    exit 0
 }
 
 function Get-FreeMemoryGb {
@@ -139,8 +246,17 @@ function Remove-BuildMetadata {
     }
 }
 
+function Get-DeadLeaseRecord([string]$Path) {
+    # 记录里写了 pid 却从来没有校验它是否还活着：包装进程被杀时 finally 不会执行，
+    # 占用文件就会留下来，下一个构建只能静默等到 120 分钟超时。
+    try { $record = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json } catch { return $null }
+    if ($null -eq (Get-Process -Id ([int]$record.pid) -ErrorAction SilentlyContinue)) { return $record }
+    return $null
+}
+
 function Enter-ResourceLease {
     $deadline = (Get-Date).AddMinutes($AcquireTimeoutMinutes)
+    $started = Get-Date
     $reportedWait = $false
     while ((Get-Date) -lt $deadline) {
         try {
@@ -159,9 +275,29 @@ function Enter-ResourceLease {
             finally { $stream.Dispose() }
             return
         } catch [IO.IOException] {
+            $dead = Get-DeadLeaseRecord $resourcePath
+            if ($null -ne $dead) {
+                Write-Output ("Taking over the machine resource lease left by dead PID {0} (task={1}, acquired={2})." -f
+                    $dead.pid, $dead.task, $dead.acquiredUtc)
+                try { Remove-Item -LiteralPath $resourcePath -Force -ErrorAction Stop } catch {
+                    # 另一个等待者先接管了：让下一轮 CreateNew 决定归属。
+                }
+                continue
+            }
             if (-not $reportedWait) {
-                Write-Output "Waiting for the machine resource lease: $resourcePath"
+                $holder = $null
+                if (Test-Path -LiteralPath $resourcePath) {
+                    try { $holder = Get-Content -LiteralPath $resourcePath -Raw | ConvertFrom-Json } catch { $holder = $null }
+                }
+                if ($null -ne $holder) {
+                    Write-Output ("Waiting for the machine resource lease; holder PID {0} (task={1}, since {2})." -f
+                        $holder.pid, $holder.task, $holder.acquiredUtc)
+                } else {
+                    Write-Output "Waiting for the machine resource lease: $resourcePath"
+                }
                 $reportedWait = $true
+            } else {
+                Write-Output ("Still waiting for the machine resource lease ({0:N0}s elapsed)." -f ((Get-Date) - $started).TotalSeconds)
             }
             Start-Sleep -Seconds $MemoryPollSeconds
         }
@@ -186,11 +322,33 @@ $mutex = [Threading.Mutex]::new($false, $mutexName)
 $acquired = $false
 $exitCode = 1
 try {
-    try {
-        $acquired = $mutex.WaitOne([TimeSpan]::FromMinutes($AcquireTimeoutMinutes))
-    } catch [Threading.AbandonedMutexException] {
-        $acquired = $true
-        Write-Warning 'The previous build wrapper exited unexpectedly; taking the released build mutex.'
+    # 另一个构建正在跑时，WaitOne 会一直静默；按心跳打印持有者，免得看起来像卡死。
+    $slotDeadline = (Get-Date).AddMinutes($AcquireTimeoutMinutes)
+    $slotStarted = Get-Date
+    $slotAnnounced = $false
+    while (-not $acquired -and (Get-Date) -lt $slotDeadline) {
+        try {
+            $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds($HeartbeatSeconds))
+        } catch [Threading.AbandonedMutexException] {
+            $acquired = $true
+            Write-Warning 'The previous build wrapper exited unexpectedly; taking the released build mutex.'
+        }
+        if ($acquired) { break }
+        $holder = $null
+        if (Test-Path -LiteralPath $metadataPath) {
+            try { $holder = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json } catch { $holder = $null }
+        }
+        if (-not $slotAnnounced) {
+            if ($null -ne $holder) {
+                Write-Output ("Waiting for the serialized Android build slot; holder PID {0} (task={1}, since {2})." -f
+                    $holder.pid, $holder.task, $holder.acquiredUtc)
+            } else {
+                Write-Output 'Waiting for the serialized Android build slot.'
+            }
+            $slotAnnounced = $true
+        } else {
+            Write-Output ("Still waiting for the build slot ({0:N0}s elapsed)." -f ((Get-Date) - $slotStarted).TotalSeconds)
+        }
     }
     if (-not $acquired) {
         throw "Timed out waiting for the serialized Android build slot ($AcquireTimeoutMinutes minutes)."
@@ -245,6 +403,15 @@ try {
         }
     }
 } finally {
+    if ($DetachedChild) {
+        # 写在 finally 里：构建失败（Write-Error 是终止错误）也要留下退出码，轮询才看得懂。
+        $record = Read-RunRecord
+        if ($null -ne $record -and [int]$record.pid -eq $PID) {
+            $record.finishedUtc = [DateTime]::UtcNow.ToString('o')
+            $record.exitCode = $exitCode
+            [IO.File]::WriteAllText($runStatePath, ($record | ConvertTo-Json -Depth 4))
+        }
+    }
     Remove-BuildMetadata
     if (Test-Path $resourcePath) {
         try { Exit-ResourceLease } catch { Write-Warning $_.Exception.Message }
