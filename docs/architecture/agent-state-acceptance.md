@@ -14,7 +14,7 @@
 - **App 与桌面改为模型消费者**：App 的 `execution` / `interactions` / `delivery` / `model` / `context` / `permissions` / `capabilities` / `identity` 与 Host 的 `catalog` / `backends` / `providers` 都按领域 envelope 落库；会话目录改由模型提供（`session.list.result` 只剩回执），原生 `message.*` / `turn.*` / `tool.*` / `runtime.status` 等一次性事件**不再驱动业务状态**；桌面状态栏的 runtimeCount 也读模型。
 - **诊断记录（模块 23）**：记录带 `producerEpoch` / `hostId` / `operationId` / `turnId` 与有界 `detail`，App 状态页能翻页读（「读取下一页」）。
 - **矩阵**：第 2 项（Host 重建）**通过**；第 5 项（设备重开）**落盘侧通过**（第 31 批）；第 6 项（多 Host 隔离）**部分通过**（「通知关闭」未构造）；第 1、3、4 项未跑，原因见下。本批只做单测与编译，**没有再跑设备矩阵**。
-- **基线**（第 36 批重验）：`npm run check` = **113 文件 / 1151 测试全过**，`npm run lint` 通过；`:app:testDebugUnitTest` = **48 类 / 438 项全过**（第 35 批跑的，本批未改 Kotlin），`:app:compileDebugAndroidTestKotlin` 通过。
+- **基线**（第 37 批重验）：`npm run check` = **113 文件 / 1153 测试全过**，`npm run lint` 通过；`:app:testDebugUnitTest` = **48 类 / 438 项全过**（第 35 批跑的，第 36–37 批未改 Kotlin），`:app:compileDebugAndroidTestKotlin` 通过。
 
 **下一步（按代价从低到高）**
 
@@ -23,7 +23,7 @@
 3. **矩阵第 3/4 项**：需要一个**活着的、不属于用户的**会话（**需要用户同意**，见下）。
 4. **矩阵第 1 项（版本不匹配）**：现在的旧版候选是协议 13；用 `695c0da`（协议 13）构建旧 APK（**需要用户同意**，见下）。
 5. **#9 其余写入点**：传输/审批/恢复——先有可触发的失败钩子，否则只能写出不可测的记录。
-6. **模块 24 剩余**：产物引用（来自显示投影与 live）与下载清单已进模型；上传作业、已完成上传的持久清单，以及「Host 侧完整产物清单」还没有统一领域。
+6. **模块 24 剩余**：产物引用、下载清单、未完成上传与 Host 持久前缀都已进模型；**已完成上传**没有持久清单（完成即成为目录里的文件），要不要为「重连后列出我传过什么」建一份清单尚未定，先不拍板。
 
 **两件需要用户明确同意才能做的事**（不要自行开工）：
 
@@ -85,7 +85,7 @@
 | 21 完整配置与认证绑定 | HostState.providers | **公开认证摘要已接入**（第 33 批）：`authentication` 给出 `method`/`credentialPresent`/`bindingReady`/`verified`，来自 profile 的 `authBinding` 与 OAuth 账号列表；`authenticated` 由它派生。**配置原文、journal、凭据、OAuth token 永不进入模型**；「没有绑定」与「未核对」在字段上分开（`false` vs `null`）|
 | 22 用量、健康度与路由 | HostState.providers | **已接入摘要**（第 33 批）：`usage` 只转发供应商自报的数值行（`remaining`/`used`/`total` + 更新时间/查询错误），没有配额来源时是 `unknown`，不拿 0 冒充；`health` 给 circuit 状态与失败数，`routing` 给 failover/队列/进行中请求与每个请求开始时的 route 快照。用量来源目前只有桌面（`ProviderUsageCache`），命令行 Host 仍是 `unknown` |
 | 23 诊断日志与实时记录 | HostState.diagnostics；AgentState.records | **两端闭环**：记录带 `producerEpoch`/`hostId`/`operationId`/`turnId`、`agentKind` 过滤与有界 `detail`（≤16 键）；有界 journal 跨重启读回、落盘失败计入缺口；目录走 `HostState.diagnostics`，记录走 `diagnostics.request/page`；App 状态页能读目录、列出整页并按游标翻页（第 34 批）。待接其余写入点（传输/审批/恢复）|
-| 24 文件产物与会话附件 | AgentState.artifacts；HostState.files | **部分接入**：产物引用取自**显示投影与 live 两处**的 artifact 内容块，带 `artifactId` 与来源 `messageId`；持久化之后（live 已空）或换页重读仍然保留，索引按最新 256 条显式淘汰旧引用（第 36 批）。`HostState.files` 发布下载清单摘要。上传作业与「Host 侧完整产物清单」还没有统一领域 |
+| 24 文件产物与会话附件 | AgentState.artifacts；HostState.files；DeviceView.transfers | **部分接入**：产物引用取自**显示投影与 live 两处**的 artifact 内容块，带 `artifactId` 与来源 `messageId`，持久化/换页后仍保留，按最新 256 条显式淘汰（第 36 批）；`HostState.files` 发布下载清单摘要；未完成上传与 Host 确认的持久前缀进 `DeviceView.transfers`（设备私有，第 37 批）。已完成上传的持久清单与「Host 侧完整产物清单」仍未建模 |
 
 ## 25–30：Host 领域服务（逐项登记，含双侧状态）
 
@@ -106,7 +106,7 @@
 | --- | --- |
 | 31 App 缓存、应用水位与恢复 | 反映某一设备已成功应用的版本；后端事实权威仍在来源 |
 | 32 App 读取操作与请求重试 | 逻辑读取目标、反馈与网络尝试属于设备；不等于远端 running |
-| 33 上传下载与持久前缀 | 手机磁盘前缀由 App 权威，Host 只确认 durable 前缀 |
+| 33 上传下载与持久前缀 | 手机磁盘前缀由 App 权威，Host 只确认 durable 前缀；Host 的确认值发布在该设备的 `DeviceView.transfers`，只能用来对账，不能代替手机的续传判断 |
 | 34 App 发件箱与提交反馈 | 未确认提交必须能在源端 live 为空时独立显示 |
 | 35 多 Host 连接与当前选择 | 设备侧连接与当前界面选择；每 Host 模型仍来自各自 Host |
 | 36 草稿、别名、视图与偏好 | 本地编辑与展示，不是共享 Agent 事实 |
@@ -660,6 +660,19 @@ App 侧（[AgentModelProjection.kt](../../android/app/src/main/java/dev/pi/remot
 
 验证：`npm run check` = **113 文件 / 1151 测试全过**（新增 1 条：显示投影与 live 两处都进索引、后续页与空 live 不会丢引用）；`npm run lint` 通过。
 
+## 第 37 批（模块 24/33：未完成上传与 Host 持久前缀进设备视图）
+
+ADR §9 把「文件传输的 Host 任务及设备相关结果」划到 `HostState` / `DeviceView`，而模块 33 明确手机本地前缀由 App 权威、Host 只确认 durable 前缀。这条事实一直只存在于 `file.upload.ready/progress` 的瞬时消息里：手机重连后如果不重新 `init`，就问不出「电脑那边到底落了多少」。
+
+已接：`DeviceView.transfers`（设备作用域，只有上传的那台设备读得到）。
+
+- 协议新增 `DeviceTransferItem` / `DeviceTransfersState`：`transferId`（`.part` 的内容身份，跨重启稳定）、`runtimeId`、文件名、大小、`durableBytes`（`null` = 旧索引没记）、`state`（`receiving` 有活句柄 / `interrupted` 只剩 `.part`）、`updatedAt`；列表有界 64，超界 `truncated`。
+- [artifact-upload.ts](../../packages/host/src/artifact-upload.ts)：索引记录现在持久化 `durableBytes`（每次受理与推进时写下它当时的值；旧索引读回来是 `null`，不拿 0 冒充），并新增 `transfers(deviceId)`——只读内存里的活句柄与索引，不做 IO。`onTransferChange` 在受理、进度、取消、断开、空闲回收、失败、完成时触发。
+- [host-service.ts](../../packages/host/src/host-service.ts)：`#syncDeviceTransfers()` 把这份摘要写进该设备的视图；握手完成时补一次，设备撤销时随作用域一起清掉。
+- 只列**未完成**的上传：完成的上传已经是目录里的文件，不是传输任务。`durableBytes` 是「Host 确认收到了多少」，不是手机的续传依据——手机仍然走 `init`，由 Host 读 `.part` 回报真实前缀。
+
+验证：`npm run check` = **113 文件 / 1153 测试全过**（新增 2 条：未完成上传的持久前缀只对该设备可见、完成后不再是传输任务；设备视图写入与撤销清理）；`npm run lint` 通过。
+
 ## 回归要求
 
 改动 Registry 或 envelope 时必须保持：
@@ -671,4 +684,5 @@ App 侧（[AgentModelProjection.kt](../../android/app/src/main/java/dev/pi/remot
 - 一条会话 patch 可以推进内容与来源水位，但**永远不能成为恢复基线**（`hasBaseline` 仍为 false，设备范围读取仍走「模型 → 适配层」的顺序）。
 - 版本门槛（ADR-0025）：更旧的页不能覆盖较新的条目；同 epoch 的有效权威结果**可以**修正同 ID 的表示；同一个包内同 ID 的两种写法必须整包拒绝。
 - 会话产物引用是**引用索引**而不是文件清单：来自显示投影与 live 两处，live 变空、换页与重启重读都不能丢；缺席不能删除，只有按 id 的显式淘汰。
+- 传输摘要（`DeviceView.transfers`）只对该设备可见、只列未完成的上传，`durableBytes` 是 Host 的确认值，不能拿它代替手机的续传判断。
 - 目录分页、模型领域与已应用版本不能跨 `snapshotId` / `modelEpoch` 混用；换代次或换目录版本时，旧在途应答只能被丢弃，不能写回。
