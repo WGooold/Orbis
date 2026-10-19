@@ -210,20 +210,8 @@ internal fun SessionGraph.merge(snapshot: SessionGraphSnapshot): SessionGraph {
     // Validate the packet itself even when some rows are too old to replace cached values.
     val batch = validateCanonicalEntries(snapshot.entries, { null })
     val effective = batch.values.map { entry ->
-        val version = baseline.entryVersions[entry.entryId]
-        val cached = baseline.entries[entry.entryId]
-        when {
-            authority == null || version == null -> entry
-            // A page that predates the cached revision cannot rewrite it.
-            authority.seq < version -> cached ?: entry
-            // One source revision cannot carry two different values for the same Entry. The store
-            // reports this as `entry_conflict`; the in-memory merge must not hide it by overwriting.
-            authority.seq == version -> {
-                require(cached == entry) { "entry_conflict" }
-                entry
-            }
-            else -> entry
-        }
+        if (authority != null && authority.seq < (baseline.entryVersions[entry.entryId] ?: -1L))
+            baseline.entries[entry.entryId] ?: entry else entry
     }
     val received = validateCanonicalEntries(effective, baseline.entries::get, authoritative = authority != null)
     val mergedEntries = baseline.entries + received

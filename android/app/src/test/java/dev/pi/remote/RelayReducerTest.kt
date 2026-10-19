@@ -1392,13 +1392,9 @@ class RelayReducerTest {
     }
 
     @Test
-    fun `catch-up entry conflict preserves the local tree and reports a recoverable error`() {
-        val conflicting = SessionGraphEntry(
-            "root", null, "message", "1",
-            buildJsonObject {
-                put("message", buildJsonObject { put("role", "user"); put("content", "different") })
-            },
-        )
+    fun `catch-up page with two payloads for one entry id preserves the local tree`() {
+        // ADR-0025：同一个来源版本可以修正同 ID 的表示（revert/原生更正要能修复缓存），
+        // 但同一个包里给出两种写法不是修正，而是不自洽的包——整包拒绝，本地树不动。
         val initial = RemoteState(
             selectedRuntimeId = "runtime-a",
             runtimes = mapOf(
@@ -1448,6 +1444,7 @@ class RelayReducerTest {
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-1","mode":"append",
             "range":"catchup","targetLeafId":"leaf","complete":true,"cursor":{"leafId":"leaf"},
             "entries":[
+              {"entryId":"root","parentId":null,"type":"message","timestamp":"1","data":{"message":{"role":"user","content":"old"}}},
               {"entryId":"root","parentId":null,"type":"message","timestamp":"1","data":{"message":{"role":"user","content":"different"}}},
               {"entryId":"leaf","parentId":"root","type":"message","timestamp":"2","data":{"message":{"role":"assistant","content":"leaf"}}}
             ]
