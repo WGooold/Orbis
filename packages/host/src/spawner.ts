@@ -257,6 +257,8 @@ export type SessionSpawnerOptions = {
   log?: (line: string) => void;
   spawnImpl?: typeof spawn;
   env?: Record<string, string | undefined>;
+  /** 本 Host 的状态目录；拉起的 agent 靠它找到这个 Host 的 loopback 发现文件。 */
+  stateDir?: string;
   now?: () => number;
 };
 
@@ -265,6 +267,7 @@ export class SessionSpawner {
   readonly #log: (line: string) => void;
   readonly #spawn: typeof spawn;
   readonly #env: Record<string, string | undefined>;
+  readonly #stateDir: string | undefined;
   readonly #now: () => number;
   readonly #running = new Map<number, SpawnedAgent>();
 
@@ -273,6 +276,7 @@ export class SessionSpawner {
     this.#log = options.log ?? (() => {});
     this.#spawn = options.spawnImpl ?? spawn;
     this.#env = options.env ?? process.env;
+    this.#stateDir = options.stateDir;
     this.#now = options.now ?? Date.now;
   }
 
@@ -340,6 +344,9 @@ export class SessionSpawner {
       cwd,
       detached: true,
       shell: false,
+      // The agent must find *this* Host's loopback descriptor when the Host does not use the
+      // default state directory (several Hosts on one machine is supported).
+      env: this.#stateDir === undefined ? this.#env : { ...this.#env, PI_REMOTE_STATE_DIR: this.#stateDir },
       // stdin 必须是**保持打开**的管道，不能用 `"ignore"`：`"ignore"` 让子进程的
       // stdin 立刻读到 EOF，而 pi 的 rpc 模式把「输入结束」当成「该收工了」，会干净
       // 退出（实测 exit 0）。于是进程被记成「拉起成功」，几秒后自己消失——电脑上没

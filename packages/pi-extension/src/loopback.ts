@@ -20,8 +20,17 @@ import {
 
 import { RelayRuntimeTransport, type RelayRuntimeConnectionState, type RelayRuntimeTransportOptions } from "./transport.js";
 
+/**
+ * 发现文件的默认位置。
+ *
+ * 一台机器上可以有多个 Host（不同 `--state-dir` 就是不同 Host），Host 拉起 agent 时会用
+ * `PI_REMOTE_STATE_DIR` 告诉它自己用哪个状态目录；没有这个变量时才是用户默认的
+ * `~/.pi-remote`。读不到文件仍然按「本机没有 Host」处理。
+ */
 export function defaultLoopbackDescriptorPath(): string {
-  return join(homedir(), ".pi-remote", LOOPBACK_DESCRIPTOR_FILE);
+  const configured = process.env.PI_REMOTE_STATE_DIR?.trim();
+  return join(configured !== undefined && configured.length > 0 ? configured : join(homedir(), ".pi-remote"),
+    LOOPBACK_DESCRIPTOR_FILE);
 }
 
 /**

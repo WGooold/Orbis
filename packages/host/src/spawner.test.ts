@@ -229,12 +229,12 @@ function fakeSpawn(): {
   impl: ReturnType<typeof vi.fn>;
   emitExit: (pid: number) => void;
   pids: number[];
-  options: unknown[];
+  options: Array<{ env?: Record<string, string | undefined> } | undefined>;
 } {
   const pids: number[] = [];
   const exits: (() => void)[] = [];
-  const options: unknown[] = [];
-  const impl = vi.fn((_command: unknown, _args: unknown, spawnOptions: unknown) => {
+  const options: Array<{ env?: Record<string, string | undefined> } | undefined> = [];
+  const impl = vi.fn((_command: unknown, _args: unknown, spawnOptions: { env?: Record<string, string | undefined> } | undefined) => {
     const pid = 1000 + pids.length;
     pids.push(pid);
     options.push(spawnOptions);
@@ -304,6 +304,23 @@ describe("SessionSpawner", () => {
     await vi.waitFor(() => expect(spawner2.running).toHaveLength(0));
     await spawner2.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } });
     expect(spawner2.running).toHaveLength(1);
+  });
+
+  it("拉起的 agent 带上本 Host 的状态目录：多开的 Host 靠它找到自己的 loopback", async () => {
+    const dir = await tempDir();
+    const fake = fakeSpawn();
+    const cliRoot = await tempDir();
+    const cliJs = join(cliRoot, "npm", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
+    await mkdir(join(cliJs, ".."), { recursive: true });
+    await writeFile(cliJs, "// fake", "utf8");
+    const stateDir = join(dir, "rig-state");
+    const spawner = new SessionSpawner({
+      spawnImpl: fake.impl as never,
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
+      stateDir,
+    });
+    await spawner.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } });
+    expect(fake.options[0]?.env).toMatchObject({ PI_REMOTE_STATE_DIR: stateDir, APPDATA: cliRoot });
   });
 
   it("同一会话重复 resume 只拉起一次：先发现，再决定拉不拉", async () => {

@@ -7,12 +7,13 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import {
+  LOOPBACK_DESCRIPTOR_FILE,
   LOOPBACK_PATH,
   PROTOCOL_VERSION,
   type LoopbackDescriptor,
@@ -21,6 +22,7 @@ import {
 
 import {
   LoopbackHostTransport,
+  defaultLoopbackDescriptorPath,
   readLoopbackDescriptor,
   resolveRuntimeTransport,
 } from "./loopback.js";
@@ -38,6 +40,26 @@ const descriptor = (url: string, token = "loopback-token"): LoopbackDescriptor =
   token,
   hostId: "host-1",
   pid: 4242,
+});
+
+// 一台机器上可以有多个 Host（不同 --state-dir）：Host 拉起 agent 时必须让它找到**自己**的
+// 发现文件，否则多开的 Host 永远等不到 agent，只有默认那台能接上。
+describe("defaultLoopbackDescriptorPath", () => {
+  it("跟随 PI_REMOTE_STATE_DIR，空白值回落到用户默认目录", () => {
+    const previous = process.env.PI_REMOTE_STATE_DIR;
+    try {
+      const rig = join(tmpdir(), "pi-remote-rig-state");
+      process.env.PI_REMOTE_STATE_DIR = rig;
+      expect(defaultLoopbackDescriptorPath()).toBe(join(rig, LOOPBACK_DESCRIPTOR_FILE));
+      process.env.PI_REMOTE_STATE_DIR = "   ";
+      expect(defaultLoopbackDescriptorPath()).toBe(join(homedir(), ".pi-remote", LOOPBACK_DESCRIPTOR_FILE));
+      delete process.env.PI_REMOTE_STATE_DIR;
+      expect(defaultLoopbackDescriptorPath()).toBe(join(homedir(), ".pi-remote", LOOPBACK_DESCRIPTOR_FILE));
+    } finally {
+      if (previous === undefined) delete process.env.PI_REMOTE_STATE_DIR;
+      else process.env.PI_REMOTE_STATE_DIR = previous;
+    }
+  });
 });
 
 describe("readLoopbackDescriptor", () => {

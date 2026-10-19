@@ -491,7 +491,7 @@ export class HostService {
     this.#identity = identity;
     this.#store = store;
     this.#pairing = new HostPairingService(identity);
-    this.#spawner = options.spawner ?? new SessionSpawner({ ...(options.log === undefined ? {} : { log: options.log }) });
+    this.#spawner = options.spawner ?? new SessionSpawner({ stateDir, ...(options.log === undefined ? {} : { log: options.log }) });
     this.#downloads = new HostDownloadService({
       indexPath: hostArtifactIndexPath(stateDir),
       publishEvent: (deviceId, runtimeId, event) => {
