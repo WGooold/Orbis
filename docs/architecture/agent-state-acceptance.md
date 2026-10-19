@@ -13,8 +13,8 @@
 - **Host 共享领域（模块 25–30）**：`identity` / `backends` / `workspaces` / `files` / `operations` / `connections` / `management` 都由 `HostService.refreshHostFacts()` 从真实现有服务发布（无 IO），凭据与配置原文永不进入；目录有 `snapshotId` + 不透明游标分页（`agent.state.range.request/page`），一次目录版本可跨页收齐。
 - **App 与桌面改为模型消费者**：App 的 `execution` / `interactions` / `delivery` / `model` / `context` / `permissions` / `capabilities` / `identity` 与 Host 的 `catalog` / `backends` / `providers` 都按领域 envelope 落库；会话目录改由模型提供（`session.list.result` 只剩回执），原生 `message.*` / `turn.*` / `tool.*` / `runtime.status` 等一次性事件**不再驱动业务状态**；桌面状态栏的 runtimeCount 也读模型。
 - **诊断记录（模块 23）**：记录带 `producerEpoch` / `hostId` / `operationId` / `turnId` 与有界 `detail`，App 状态页能翻页读（「读取下一页」）。
-- **矩阵**：第 2 项（Host 重建）**通过**；第 5 项（设备重开）**落盘侧通过**（第 31 批）；第 6 项（多 Host 隔离）**部分通过**（「通知关闭」未构造）；第 1、3、4 项未跑，原因见下。本批只做单测与编译，**没有再跑设备矩阵**。
-- **基线**（第 38 批重验）：`npm run check` = **111 文件 / 1133 测试全过**（删掉了两个孤儿模块的测试，见第 38 批），`npm run lint` 通过；`:app:testDebugUnitTest` = **48 类 / 438 项全过**（第 35 批跑的，第 36–38 批未改 Kotlin），`:app:compileDebugAndroidTestKotlin` 通过。
+- **矩阵**：第 1 项（版本不匹配）与第 2 项（Host 重建）**真机通过**（第 39 批，两个方向都验了）；第 5 项**落盘侧通过**（第 31 批）；第 6 项**部分通过**（「通知关闭」未构造）；第 3、4 项与第 5 项的进程级重启未跑，原因见第 39 批。
+- **基线**（第 38 批重验）：`npm run check` = **111 文件 / 1133 测试全过**（第 38 批删掉两个孤儿模块的测试），`npm run lint` 通过；`:app:testDebugUnitTest` = **48 类 / 438 项全过**（第 39 批在本批 Kotlin 修复之后重跑）。
 
 **ADR 还剩什么（截至第 38 批）**
 
@@ -253,8 +253,8 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 | # | 场景 | 怎么造 | 通过标准 | 状态 |
 | --- | --- | --- | --- | --- |
-| 1 | 版本不匹配 | 用 `dcafa43`（协议 12）构建 App，连 13 的隔离测试台 | 明确拒绝并提示版本不一致，不静默降级、不进半连接状态 | 单测已覆盖两端精确保守；**设备级未跑** |
-| 2 | Host 重建 | 重启 Host（新 source epoch / 新 modelEpoch） | App 按代次重建：旧代次的迟到回调被丢弃，不冒充新代次已确认事实 | **已跑，通过**（第 19 批）：App 自动重连、重新握手、重发 `session.list` 与 `agent.state.request`（同一 requestId 两边对上）；迟到回调那一半由 Registry 单测覆盖 |
+| 1 | 版本不匹配 | 用升版前的 APK（第 39 批用了 2026-10-12 的协议 13 包）连新 Host；再用新 App 连仍跑 13 的 Host | 明确拒绝并提示版本不一致，不静默降级、不进半连接状态 | **真机已跑，通过**（第 39 批，两个方向都验了） |
+| 2 | Host 重建 | 重启 Host（新 source epoch / 新 modelEpoch） | App 按代次重建：旧代次的迟到回调被丢弃，不冒充新代次已确认事实 | **已跑，通过**（第 19 批模拟器；第 39 批**真机复验**：手机关屏也能重连、重新握手、重发 `session.list` 与 `agent.state.request`）；迟到回调那一半由 Registry 单测覆盖 |
 | 3 | 断线重连 | 断开 Relay（或关 LAN），恢复后重连 | 按 source epoch/seq 续传；缺口走恢复基线；`unchanged` 不被当成内容变化 | 未跑（前置已就绪：测试台可只服务合成会话，见第 20 批；合成会话还缺历史内容） |
 | 4 | 历史改写（revert/压缩） | 会话内回退分支、触发压缩 | 显示窗口与 head 一起更新，旧显示行被作废而不是继续渲染 | 未跑 |
 | 5 | 设备重开 | 杀掉 App 再打开 | 从 SQLite 恢复：条目与显示行同源（盘上那份），标题/树标签一致 | **落盘侧已跑，通过**（第 31 批）：换一个 store 实例读回来，条目/显示行/窗口起点/投影版本都在；**进程级重启（真杀 App 再打开）仍未跑** |
@@ -699,6 +699,29 @@ ADR §9 把「文件传输的 Host 任务及设备相关结果」划到 `HostSta
 - 剩下能做的只有设备矩阵（第 5 项进程级、第 2/6 项复核），以及需要单独授权的第 1/3/4 项与 push/发版。
 
 验证：`npm run check` = **111 文件 / 1133 测试全过**；`npm run lint` 通过。
+
+## 第 39 批（真机跑矩阵第 1、2 项；发现并修掉一处只在设备上暴露的读取缺陷）
+
+设备：用户插上的真机 `N78PZ5UCDIRCGQ8P`（Android 16），按 `D:\android-emulators\README.md` 的占用协议登记为 `(physical)`；证据在 `D:\android-emulators\evidence\N78PZ5UCDIRCGQ8P\053a49fa-8db9-4060-a5fe-a003e21693dc\`。链路：本机 Relay + `adb reverse tcp:8787 tcp:8787`（真机视角的 `ws://127.0.0.1:8787`）+ 隔离 Host（`-ScratchSessions`），配对写进真实存储后只新增一台电脑。
+
+**矩阵第 1 项（版本不匹配）——两个方向都通过**
+
+- 新 App（协议 14）连仍跑协议 13 的 Host：UI 弹「Orbis 协议版本不兼容，请将手机 App 和电脑 Host 更新到最新版本」，同时 `protocol.error code=protocol_version_mismatch` + `socket.closed 1008`；没有静默降级，也没有停在半连接（`item1-new-client-protocol-dialog.png`）。
+- 旧 App（2026-10-12 的协议 13 包，sha256 `727694a9…`）连新 Host（协议 14）：`in type=protocol.error code=protocol_version_mismatch` → `socket.closed 1008`，约 2 秒一次重试且始终被明确拒绝（`item1-old-client-new-host.log`）；换回旧 Host 后同一份旧包照常握手成功（`item1-old-client-after-restore.log`）。
+
+**矩阵第 2 项（Host 重建）——通过**
+
+rig Host 进程 21072 → 25624 后，App **在熄屏状态下**自动重连：`host.offline` → 新 `e2e.hs.confirmed` → 重新发 `device.pathPreference`、`session.list`、`agent.state.request`（新 requestId），没有拿旧代次继续当已确认事实（`item2-after-restart.log`、`item2-host-after-restart.log`）。
+
+**顺带发现的真缺陷（已修）**
+
+新 App 的模型读取原来只在 `device.ready` 那一帧触发，而设备顺序是 **先 `device.ready` 再 `e2e.hs.confirmed`**：读取需要加密通道，所以当帧直接返回；唯一的补偿是前台 15 秒核对，熄屏时一次都不跑。真机上表现为「会话列表正常、诊断/目录/供应商一直显示尚未读取」。修复：握手完成的回调（`onE2eStateChanged(true)`）补一次 `refreshHostModel()` 与已知 Agent 作用域的读取（commit `687d394`）。修完在真机上熄屏也能看到 `agent.state.request` 发出去。
+
+**没有跑、也不当作通过**：第 3（断线续传）、4（历史改写）、5（进程级冷启动渲染）、6（多 Host「通知关闭」半）。原因：rig 的合成会话没有历史；在 App 里新建 Pi 会话虽然真的拉起了 Pi（`[activate] … cwd=<rig>\workspace`），但那个 Pi 没有接上 rig 的 loopback（扩展按默认状态目录找通道，rig 用的是自己的 `--state-dir`），所以设备侧拿不到一个有历史的活会话；而用协议 13 那台 Host 的缓存会话打开时又被版本门槛挡住。这四项要么需要先解决 rig 里 Pi 扩展的通道发现（`PI_REMOTE_STATE_DIR`），要么用模拟器上的夹具测试补，留作下一批。
+
+**收尾（全部已做）**：真机配对文件已按原样恢复（只保留用户自己的 Host、`activeHostId` 也还原）、旧协议 APK 已装回（用户的 Host 仍是 13，这样手机照旧可用）、`adb reverse` 已移除、rig 与 Relay 已停、Gradle/Kotlin daemon 已停、设备占用已释放。用户正在使用的 Host 没有被停止或重启，也没有被本批改动过。
+
+验证：`npm run check` = **111 文件 / 1133 测试全过**（本批只改 Kotlin）；`:app:testDebugUnitTest` = **48 类 / 438 项全过**。
 
 ## 回归要求
 
