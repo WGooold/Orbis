@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { HostService } from "./host-service.js";
 import type { ProviderManager } from "./provider-manager.js";
+import type { AgentKind, HostProviderSummary } from "@pi-remote/protocol";
 
 /**
  * 诊断目录接线的端到端验证：真的 HostService + 真的状态目录（不启动网络端点）。
@@ -14,17 +15,26 @@ import type { ProviderManager } from "./provider-manager.js";
  */
 
 let dir = "";
+const services: HostService[] = [];
 
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "orbis-host-diagnostics-")); });
-afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+afterEach(async () => { await Promise.all(services.splice(0).map(service => service.stop())); rmSync(dir, { recursive: true, force: true }); });
 
-const create = (providers?: ProviderManager) => HostService.create({
+const create = async (providers?: ProviderManager) => {
+  const service = await HostService.create({
   relayUrl: "ws://127.0.0.1:9",
   credential: "test-credential",
   stateDir: dir,
   loopback: false,
   lan: false,
   ...(providers === undefined ? {} : { providers }),
+  });
+  services.push(service); return service;
+};
+
+const providerState = (kind: AgentKind, id?: string, switching: boolean | null = null): HostProviderSummary => ({
+  agentKind: kind, current: id ?? null, profiles: id ? [{ id, name: id === "custom" ? "Custom" : "DeepSeek", enabled: true, globalDefault: false }] : [],
+  authenticated: null, switching, usage: { availability: "unknown", detail: null },
 });
 
 const record = {
@@ -62,11 +72,11 @@ describe("HostService 的诊断目录", () => {
   it("供应商摘要由读取路径独占写入：没人读时模型里没有这一格", async () => {
     const calls: string[] = [];
     const service = await create({
-      list: async (kind: string) => {
+      publicState: async (kind: AgentKind) => {
         calls.push(kind);
         return kind === "codex"
-          ? [{ id: "custom", kind: "codex", name: "Custom", enabled: true, mode: "exclusive" }]
-          : [{ id: "deepseek", kind, name: "DeepSeek", enabled: false, mode: "exclusive" }];
+          ? providerState(kind, "custom")
+          : providerState(kind);
       },
     } as unknown as ProviderManager);
 
@@ -87,9 +97,9 @@ describe("HostService 的诊断目录", () => {
 
   it("某个后端读不到清单时如实记 null，并留下诊断", async () => {
     const service = await create({
-      list: async (kind: string) => {
+      publicState: async (kind: AgentKind) => {
         if (kind === "codex") throw new Error("providers.json.lock 被占用");
-        return [];
+        return providerState(kind);
       },
     } as unknown as ProviderManager);
 
@@ -117,7 +127,7 @@ describe("HostService 的诊断目录", () => {
 
   it("切换进行中时，模型里那一格写着 switching: true", async () => {
     const service = await create({
-      list: async (kind: string) => [{ id: "deepseek", kind, name: "DeepSeek", enabled: true, mode: "exclusive" }],
+      publicState: async (kind: AgentKind, options: { switching?: boolean | null }) => providerState(kind, "deepseek", options.switching ?? null),
     } as unknown as ProviderManager);
 
     // changeProvider 把「正在切换」记在 Host 自己身上；切换期间读到的事实必须带上它。

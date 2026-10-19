@@ -782,7 +782,9 @@ describe("host end-to-end over relay", () => {
       const request = forwarded.command as { syncId: string };
       runtime.publish(1, { type: "command.result", commandId: forwarded.commandId as string, ok: true });
       runtime.publish(2, { type: "session.snapshot", sessionId: "s", syncId: request.syncId,
-        range: "preview", cursor: { leafId: null }, mode: "replace", entries: [], complete: true });
+        range: "preview", cursor: { leafId: null }, mode: "replace", entries: [], complete: true,
+        source: { epoch: "source", seq: 0, ready: true }, checkpoint: { checkpointId: "c", head: { leafId: null }, headCompleteness: "complete", inventoryComplete: true },
+        live: { complete: true, turn: null, messages: [], tools: [] } });
       const received = [await device.receiveMessage(), await device.receiveMessage()];
       expect(received).toEqual(expect.arrayContaining([
         expect.objectContaining({ event: expect.objectContaining({ type: "command.result", commandId: "original" }) }),
@@ -2559,18 +2561,13 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     });
     const types: string[] = [];
     let online: Record<string, unknown> | undefined;
-    for (let i = 0; i < 5; i += 1) {
+    for (let i = 0; i < 8; i += 1) {
       const message = (await codexDevice.receiveMessage()) as Record<string, unknown>;
       types.push(message.type as string);
       if (message.type === "runtime.online") online = message;
+      if (message.type === "session.activated") break;
     }
-    expect(types).toEqual([
-      "runtime.event", // runtime.status
-      "runtime.event", // runtime.metadata（模型名/上下文占用，APP 靠它显示）
-      "runtime.event", // runtime.capabilities（slash 菜单词表）
-      "runtime.online",
-      "session.activated",
-    ]);
+    expect(types.filter(type => type !== "runtime.event")).toEqual(["runtime.online", "session.activated"]);
     expect(online).toMatchObject({
       runtime: { runtimeId: "codex:th-new-1", cwd: "D:/work/demo" },
     });

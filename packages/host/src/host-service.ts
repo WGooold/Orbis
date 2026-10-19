@@ -12,6 +12,7 @@
 import { homedir, hostname } from "node:os";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   E2eError,
@@ -39,6 +40,11 @@ import {
   type EnvelopeV2,
   type PathKind,
   type HostCatalogBackend,
+  type HostCatalogRange,
+  type AgentStateRangeRequest,
+  type HostManagementState,
+  type HostWorkspacesState,
+  type HostSharedOperation,
   type RelayToDeviceMessage,
   type RuntimeMetadata,
   type RuntimeEvent,
@@ -46,7 +52,9 @@ import {
 
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
-import { buildAgentStateSnapshot } from "./agent-state-snapshot.js";
+import { buildAgentStateSnapshot, buildAgentStateSnapshotParts } from "./agent-state-snapshot.js";
+import { AgentStateSubscriptions } from "./agent-state-subscriptions.js";
+import { AgentConversationState } from "./agent-conversation-state.js";
 import { DeviceViewFacts } from "./device-view-facts.js";
 import {
   DiagnosticJournal, type DiagnosticAppendInput, type DiagnosticPageRequest,
@@ -78,6 +86,7 @@ import { ActivationError, SessionSpawner } from "./spawner.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { ProviderManager, ProviderError } from "./provider-manager.js";
 import { parseProviderRequest, providerResult, type ProviderRequest } from "./provider-messages.js";
+import type { UsageSnapshot } from "./provider-usage-cache.js";
 
 /**
  * 会话目录（`session.list`）的缓存时长。
@@ -104,6 +113,7 @@ const CATALOG_TTL_MS = 5_000;
  * 分片不走这里：它们是 `bin` 帧，由 `DeviceLink.sendBinary` 直接打上 `bulk`。
  */
 export function channelForDeviceMessage(message: { type: string; event?: { type?: string } }): EnvelopeChannel {
+  if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "diagnostics.page") return "msg";
   if (message.type !== "runtime.event") return "ctl";
   const eventType = message.event?.type ?? "";
   if (
@@ -175,6 +185,8 @@ export type HostServiceOptions = {
   codexLaunch?: (request: CodexLaunchRequest) => Promise<CodexLaunchResult>;
   dshRuntime?: DshRuntime;
   providers?: ProviderManager;
+  providerUsage?: (kind: AgentKind, providerId: string) => UsageSnapshot | undefined;
+  managementBackends?: () => HostManagementState["backends"];
   log?: (line: string) => void;
   /** 配对成功。调用方负责对外报告；落盘已经由 HostService 完成。 */
   onPaired?: (device: DeviceRecord) => void;
@@ -242,8 +254,9 @@ export class HostService {
 
   /** 记一条诊断：记录失败永远不能反过来影响被记录的那次操作。 */
   recordDiagnostic(input: DiagnosticAppendInput): void {
+    if (this.#providerFactsClosing) return;
     try {
-      this.#diagnostics.append(input);
+      this.#diagnostics.append({ ...input, hostId: this.#identity.hostId });
     } catch {
       // 诊断是旁路：它自己的失败只该留在日志里，不该冒泡给业务。
     }
@@ -257,6 +270,20 @@ export class HostService {
     // 读取本身会触发淘汰：顺手让目录投影跟当前窗口对齐。
     this.#publishDiagnostics();
     return page;
+  }
+
+  #recordAgentDiagnostic(runtimeId: string, category: string, message: string, severity: "info" | "warning" | "error" = "info", operationId?: string): void {
+    const scope = this.#agentFacts.scopeOf(runtimeId);
+    this.recordDiagnostic({ scope: scope ? "agent" : "host", agentKind: scope?.kind === "agent" ? scope.key.agentKind : null,
+      sessionId: scope?.kind === "agent" ? scope.key.sessionId : null, category, severity, message,
+      ...(operationId === undefined ? {} : { operationId }) });
+  }
+
+  #markRuntimeOffline(runtimeId: string, reason: string): void {
+    const scope = this.#agentFacts.scopeOf(runtimeId);
+    if (scope) this.#conversationState.offline(scope, this.#agentFacts.prepareOffline(runtimeId));
+    else this.#agentFacts.runtimeOffline(runtimeId, reason);
+    this.#recordAgentDiagnostic(runtimeId, "recovery", "Source disconnected; current baseline requires reconciliation", "warning");
   }
 
   /** 读诊断目录投影（模块 23 的读取侧）；记录本身走 `readDiagnostics` 的游标分页。 */
@@ -276,42 +303,125 @@ export class HostService {
    * 「当前 provider」——让它写就会把这里读到的清单冲成 null。客户端点名 `providers` 域时、
    * 以及供应商切换/保存之后调用；读不到的那个后端如实记 null，不拿上一次的清单冒充这次读到。
    */
-  async refreshProviderFacts(): Promise<void> {
+  refreshProviderFacts(): Promise<void> {
+    if (this.#providerFactsClosing) return Promise.resolve();
+    const work = this.#refreshProviderFacts();
+    this.#providerFactsPending.add(work);
+    void work.then(() => this.#providerFactsPending.delete(work), () => this.#providerFactsPending.delete(work));
+    return work;
+  }
+
+  async #refreshProviderFacts(): Promise<void> {
     const manager = this.#options.providers;
-    if (!manager) return;
+    if (!manager) { this.#hostStateFacts.unknown("providers"); return; }
+    const generation = ++this.#providerFactsGeneration;
+    const modelEpoch = this.#agentStateRegistry.currentModelEpoch();
     const kinds: AgentKind[] = ["pi", "codex", "dsh"];
     const providers = await Promise.all(kinds.map(async (kind) => {
       const switching = providerSwitchingFact(this.#providerChanging, kind);
-      const empty = { agentKind: kind, current: null, profiles: null, authenticated: null, switching,
+      const empty = { agentKind: kind, availability: "unknown" as const, current: null, profiles: null, authenticated: null, switching,
         usage: { availability: "unknown" as const, detail: null } };
       try {
-        const summaries = await manager.list(kind);
-        return {
-          agentKind: kind,
-          // 「正在生效」的那个：供应商列表用 enabled 表达（pi 是叠加式，可能不止一个）。
-          current: summaries.find((entry) => entry.enabled)?.id ?? null,
-          profiles: summaries.map((entry) => ({
-            id: entry.id, name: entry.name, enabled: entry.enabled, globalDefault: entry.globalDefault === true,
-          })),
-          // 认证绑定要按 profile 的 authBinding 与账号列表判断，这次读取里没有这份事实：记未核对。
-          authenticated: null,
-          switching,
-          usage: { availability: "unknown" as const, detail: null },
-        };
+        return await manager.publicState(kind, { switching,
+          ...(this.#options.providerUsage === undefined ? {} : { usage: this.#options.providerUsage }) });
       } catch (error) {
+        if (this.#providerFactsClosing) return empty;
         const detail = describeError(error);
         this.#options.log?.(`读取 ${kind} 供应商清单失败：${detail}`);
         this.recordDiagnostic({
           scope: "host", agentKind: kind, sessionId: null, category: "provider", severity: "warning",
           message: `读取 ${kind} 供应商清单失败`, detail: { reason: detail.slice(0, 256) },
         });
-        return empty;
+        const previous = this.#hostStateFacts.readProviders()?.providers.find(provider => provider.agentKind === kind);
+        return previous ? { ...previous, availability: "unknown" as const, switching } : empty;
       }
     }));
-    this.#hostStateFacts.providers({ providers });
+    if (!this.#providerFactsClosing && generation === this.#providerFactsGeneration && modelEpoch === this.#agentStateRegistry.currentModelEpoch()) {
+      this.#hostStateFacts.providers({ providers });
+    }
+  }
+
+  /** Rebuild public service projections without IO. Clients read exactly this committed Host model. */
+  refreshHostFacts(): void {
+    if (this.#serviceClosed) return;
+    const facts = this.#hostStateFacts;
+    if (!facts) return;
+    const runtimes = this.#runtimesSnapshot();
+    for (const [id, operation] of this.#sharedOperations) {
+      if (operation.state !== "accepted" && operation.state !== "running" && operation.updatedAt < Date.now() - 300_000) this.#sharedOperations.delete(id);
+    }
+    facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
+    const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh"];
+    facts.backends({ backends: kinds.map(kind => {
+      const backend = this.#backends.find(candidate => candidate.kind === kind);
+      return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
+        runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
+        reason: backend === undefined ? "backend_not_attached" : backend.isReady() ? null : "backend_not_ready" };
+    }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot() });
+    const grouped = new Map<string, Set<string>>();
+    for (const session of [...(this.#catalogCache?.sessions ?? []), ...runtimes]) {
+      if (!session.cwd) continue;
+      const keys = grouped.get(session.cwd) ?? new Set<string>(); keys.add(session.sessionId ?? "runtime:" + ("runtimeId" in session ? session.runtimeId : ""));
+      grouped.set(session.cwd, keys);
+    }
+    const catalog = this.#hostStateFacts.read();
+    const catalogComplete = catalog?.backends.every(backend => backend.complete) === true && !catalog.truncated;
+    facts.workspaces({ workspaces: [...grouped].slice(0, 256).map(([cwd, sessions]) => ({
+      workspaceId: createHash("sha256").update(cwd).digest("hex"), cwd, sessionCount: sessions.size,
+      git: this.#workspaceGit.get(cwd) ?? { availability: "unknown", branch: null, head: null, repoRoot: null },
+    })), truncated: grouped.size > 256 || !catalogComplete });
+    for (const cwd of this.#workspaceGit.keys()) if (!grouped.has(cwd)) this.#workspaceGit.delete(cwd);
+    facts.files(this.#downloads.inventory());
+    const links = [...this.#links.values()];
+    facts.connections({ pairedDevices: this.devices.filter(device => !device.revoked).length, connectedDevices: links.filter(link => link.active !== undefined).length,
+      paths: (["lan", "p2p", "relay"] as const).map(kind => ({ kind,
+        attachedDevices: links.filter(link => link.paths.includes(kind)).length,
+        activeDevices: links.filter(link => link.active === kind).length })), relayState: this.relayState, sequenceChannels: this.#eventSequences.size });
+    facts.operations({ activationsPending: this.#activationsPending,
+      commandsPending: [...this.#commandOwners.values()].filter(owner => !owner.terminal && owner.at >= Date.now() - 300_000).length,
+      sync: this.#sessionSync.aggregateStats(), transfers: { uploads: this.#uploads.activeUploads, downloads: this.#downloads.activeDownloads }, retentionMs: 300_000,
+      items: [...this.#sharedOperations.values()], truncated: this.#sharedOperationsTruncatedAt > Date.now() - 300_000 });
+    facts.management({ lifecycle: this.#modelLifecycle, platform: process.platform, nodeVersion: process.version,
+      backends: this.#options.managementBackends?.() ?? kinds.map(kind => ({ kind, installed: null, version: null })) });
+  }
+
+  /** Desktop and mobile share the same committed model and snapshot serializer. */
+  readHostState(domains?: readonly string[]): ReturnType<typeof buildAgentStateSnapshot> {
+    this.refreshHostFacts();
+    return buildAgentStateSnapshot({ registry: this.#agentStateRegistry, requestId: "desktop:host-state", scope: { kind: "host" },
+      ...(domains === undefined ? {} : { domains }) });
+  }
+
+  /** The first range read reconciles the source; cursor continuations read one committed immutable inventory. */
+  async readHostRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}): Promise<HostCatalogRange> {
+    if (!request.cursor && !this.#serviceClosed) await this.#catalogWithCache();
+    return this.#hostStateFacts.catalogRange(request);
+  }
+
+  #beginSharedOperation(kind: HostSharedOperation["kind"], agentKind: AgentKind | null = null, sessionId: string | null = null): string | undefined {
+    if (this.#sharedOperations.size >= 256) {
+      const retired = [...this.#sharedOperations.values()].find(operation => operation.state !== "accepted" && operation.state !== "running");
+      if (retired) this.#sharedOperations.delete(retired.operationId);
+      this.#sharedOperationsTruncatedAt = Date.now();
+      if (!retired) { this.refreshHostFacts(); return undefined; }
+    }
+    const operationId = randomUUID(); const now = Date.now();
+    this.#sharedOperations.set(operationId, { operationId, kind, state: "accepted", agentKind, sessionId, startedAt: now, updatedAt: now });
+    this.refreshHostFacts();
+    return operationId;
+  }
+
+  #settleSharedOperation(operationId: string | undefined, state: HostSharedOperation["state"]): void {
+    if (operationId === undefined) return;
+    const operation = this.#sharedOperations.get(operationId);
+    if (operation === undefined) return;
+    this.#sharedOperations.set(operationId, { ...operation, state, updatedAt: Date.now() });
+    this.refreshHostFacts();
   }
 
   #publishDiagnostics(): void {
+    if (this.#serviceClosed) return;
     const stats = this.#diagnostics.stats();
     this.#hostStateFacts.diagnostics({
       records: stats.records,
@@ -320,9 +430,12 @@ export class HostService {
       oldestAt: stats.oldestAt,
       newestAt: stats.newestAt,
     });
+    for (const runtime of this.#runtimesSnapshot()) this.#agentFacts.refreshRecords(runtime.runtimeId);
   }
   /** 单写者本身：设备读模型时按作用域直接读它，而不是让每个领域各自暴露读取接口。 */
   readonly #agentStateRegistry: AgentStateRegistry;
+  readonly #agentStateSubscriptions: AgentStateSubscriptions;
+  readonly #conversationState: AgentConversationState;
   readonly #notifications = new NotificationStore(runtimeId => {
     // 通知投影变化时同步模型里的引用摘要（ADR-0032 模块 18/19）；它只是引用，不复制权威。
     this.#agentFacts?.refreshNotifications(runtimeId);
@@ -344,6 +457,15 @@ export class HostService {
   #sessionMutation: Promise<void> = Promise.resolve();
   readonly #gitReads = new Map<string, ReturnType<typeof readGitBranch>>();
   #providerChanging: AgentKind | undefined;
+  #providerFactsGeneration = 0;
+  #providerFactsClosing = false;
+  #serviceClosed = false;
+  readonly #providerFactsPending = new Set<Promise<void>>();
+  #modelLifecycle: HostManagementState["lifecycle"] = "stopped";
+  #activationsPending = 0;
+  readonly #workspaceGit = new Map<string, HostWorkspacesState["workspaces"][number]["git"]>();
+  readonly #sharedOperations = new Map<string, HostSharedOperation>();
+  #sharedOperationsTruncatedAt = 0;
   readonly #desktopOwnedIds = new Set<string>();
   #desktopLedgerWrite: Promise<void> = Promise.resolve();
 
@@ -380,7 +502,7 @@ export class HostService {
       },
       ...(options.log === undefined ? {} : { log: options.log }),
     });
-    void this.#downloads.load();
+    void this.#downloads.load().then(() => this.refreshHostFacts());
     this.#uploads = new HostUploadService({
       indexPath: hostUploadIndexPath(stateDir),
       publishMessage: (deviceId, message) => {
@@ -392,12 +514,27 @@ export class HostService {
     this.#sessionSync = new SessionSyncTasks({
       link: (deviceId) => this.#links.get(deviceId),
       dispatch: (runtimeId, commandId, command) => {
+        const scope = this.#agentFacts.scopeOf(runtimeId);
+        const forwarded = { ...command };
+        if (!scope || !this.#conversationState.hasBaseline(scope)) delete forwarded.knownState;
+        const recovered = scope ? this.#conversationState.recover(scope, forwarded) : undefined;
+        if (recovered) {
+          queueMicrotask(() => this.#publishRuntimeEvent(runtimeId, recovered));
+          return "handled";
+        }
         for (const backend of this.#backends) {
-          if (backend.isReady() && backend.ownsRuntime(runtimeId)) return backend.dispatchCommand(runtimeId, commandId, command);
+          if (backend.isReady() && backend.ownsRuntime(runtimeId)) return backend.dispatchCommand(runtimeId, commandId, forwarded);
         }
         return "offline";
       },
       encodeEvent: (runtimeId, event) => Buffer.from(JSON.stringify(this.#runtimeEventMessage(runtimeId, event)), "utf8"),
+      acceptSnapshot: (runtimeId, event) => {
+        const scope = this.#agentFacts.scopeOf(runtimeId);
+        const accepted = scope !== undefined && this.#conversationState.accept(scope, event,
+          ready => this.#agentFacts.prepareConversation(runtimeId, event, ready));
+        if (!accepted) this.#recordAgentDiagnostic(runtimeId, "recovery", "Rejected session snapshot; source baseline required", "warning");
+        return accepted;
+      },
       sendEvent: (deviceId, runtimeId, event) => this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, event)),
       error: (deviceId, commandId, code, message) => this.#sendToDevice(deviceId, { type: "protocol.error", code, message: message ?? code, commandId }),
       ...(options.log === undefined ? {} : { log: options.log }),
@@ -418,7 +555,7 @@ export class HostService {
     ];
     this.#backends = backends;
     // 共享同一个单写者：Agent 事实与设备视图回执都写进这一份模型。
-    const agentStateRegistry = new AgentStateRegistry();
+    const agentStateRegistry = new AgentStateRegistry({ maxValueBytes: 4 * 1024 * 1024, maxEntries: 4096 });
     const agentStateOptions = {
       registry: agentStateRegistry,
       hostId: this.#identity.hostId,
@@ -428,12 +565,18 @@ export class HostService {
       ...agentStateOptions,
       kindOf: (runtimeId) => this.#backends.find((backend) => backend.ownsRuntime(runtimeId))?.kind,
       notifications: (runtimeId) => this.#notifications.summary(runtimeId),
+      records: () => {
+        const domain = this.#agentStateRegistry?.read({ kind: "host" }, "diagnostics");
+        return domain ? { modelEpoch: domain.modelEpoch, revision: domain.revision } : undefined;
+      },
     });
     this.#deviceViewFacts = new DeviceViewFacts(agentStateOptions);
     this.#hostStateFacts = new HostStateFacts({ registry: agentStateRegistry });
     // 启动时就把目录投影对齐：重启后读模型应当看得到上一次运行留下的记录数，而不是等下一次写入。
     this.#publishDiagnostics();
     this.#agentStateRegistry = agentStateRegistry;
+    this.#conversationState = new AgentConversationState(agentStateRegistry);
+    this.#agentStateSubscriptions = new AgentStateSubscriptions(agentStateRegistry, (deviceId, message) => this.#sendToDevice(deviceId, message));
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
     }
@@ -455,12 +598,13 @@ export class HostService {
         this.#invalidateCatalog();
         for (const runtime of runtimes) {
           this.#notifications.end(runtime.runtimeId);
-          this.#agentFacts.runtimeOffline(runtime.runtimeId, reason);
+          this.#markRuntimeOffline(runtime.runtimeId, reason);
           this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
         }
       };
       backends.push(dsh);
     }
+    this.refreshHostFacts();
   }
 
   /** Wire a Codex runtime once. Desktop runtimes can be attached after relay startup. */
@@ -485,7 +629,7 @@ export class HostService {
       }
       for (const runtime of runtimes) {
         this.#notifications.end(runtime.runtimeId);
-        this.#agentFacts.runtimeOffline(runtime.runtimeId, reason);
+        this.#markRuntimeOffline(runtime.runtimeId, reason);
         this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
       }
     };
@@ -597,8 +741,11 @@ export class HostService {
   }
 
   changeProvider<T>(kind: AgentKind, operation: () => Promise<T>, mode: "switch" | "save" = "switch"): Promise<T> {
+    const operationId = this.#beginSharedOperation("provider.change", kind);
     const result = this.#sessionMutation.then(async () => {
       this.#providerChanging = kind;
+      this.#settleSharedOperation(operationId, "running");
+      void this.refreshProviderFacts();
       try {
         const desktopReady = this.#backends.some(backend => backend.kind === "codexDesktop" && backend.isReady());
         // DSH saves defer readiness to ProviderManager: only an actual activation
@@ -606,8 +753,11 @@ export class HostService {
         if (!(kind === "dsh" && mode === "save") && !(kind === "codex" && this.#options.providers?.proxyTakeoverActive && !desktopReady)) {
           await this.assertProviderSwitchReady(kind);
         }
-        return await operation();
+        const value = await operation();
+        this.#settleSharedOperation(operationId, "succeeded");
+        return value;
       } catch (error) {
+        this.#settleSharedOperation(operationId, "failed");
         // 失败是运维事实：什么时候、想动哪个后端、为什么没成。记录只有原因摘要，
         // 不含配置内容或凭据——诊断记录永远不装秘密（ADR-0032 模块 23）。
         this.recordDiagnostic({
@@ -621,7 +771,7 @@ export class HostService {
         });
         throw error;
       }
-      finally { this.#providerChanging = undefined; }
+      finally { this.#providerChanging = undefined; void this.refreshProviderFacts(); }
     });
     this.#sessionMutation = result.then(() => {}, () => {});
     return result;
@@ -638,6 +788,8 @@ export class HostService {
    * 「这台电脑不知道这个会话」。
    */
   async #handleAgentStateRequest(deviceId: string, request: Extract<DeviceE2ePayload, { type: "agent.state.request" }>): Promise<void> {
+    const authenticatedLink = this.#links.get(deviceId);
+    this.refreshHostFacts();
     // 点名要供应商摘要就先现读一次：模型里那份是「上次有人读时」的，不能当成刚核对过。
     if (request.domains?.includes("providers") === true) await this.refreshProviderFacts();
     const identity = {
@@ -646,6 +798,8 @@ export class HostService {
       ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
     };
     const scope = this.#resolveAgentStateScope(deviceId, request);
+    if (scope?.kind === "host" && (request.domains === undefined || request.domains.includes("catalog"))) await this.readHostRange();
+    if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active) return;
     const link = this.#links.get(deviceId);
     if (scope === undefined) {
       link?.send(Buffer.from(JSON.stringify({
@@ -655,13 +809,28 @@ export class HostService {
       }), "utf8"), "ctl");
       return;
     }
-    link?.send(Buffer.from(JSON.stringify(buildAgentStateSnapshot({
+    if (scope.kind === "agent" && request.runtimeId !== undefined) {
+      const runtimeId = request.runtimeId;
+      // Recovery asks the source outside Registry's commit path; publications arrive through the same writer.
+      this.#loopback?.sendResync(runtimeId, "model_reconcile");
+      for (const backend of this.#backends) if (backend instanceof CodexRuntime && backend.ownsRuntime(runtimeId)) {
+        const entry = backend.directoryEntries?.().find(candidate => candidate.runtimeId === runtimeId);
+        if (entry?.sessionId) backend.announce(entry.sessionId);
+      }
+      if (this.#options.dshRuntime?.ownsRuntime(runtimeId)) this.#options.dshRuntime.announce();
+    }
+    if (!this.#agentStateSubscriptions.register(deviceId, scope, request)) {
+      this.#sendToDevice(deviceId, { type: "protocol.error", code: "model_subscription_limit", message: "模型订阅已达上限" });
+      return;
+    }
+    for (const part of buildAgentStateSnapshotParts({
       registry: this.#agentStateRegistry,
       requestId: request.requestId,
       scope,
       identity,
       ...(request.domains === undefined ? {} : { domains: request.domains }),
-    })), "utf8"), "ctl");
+      ...(request.known === undefined ? {} : { known: request.known }),
+    })) this.#sendToDevice(deviceId, part);
   }
 
   #resolveAgentStateScope(
@@ -741,6 +910,7 @@ export class HostService {
 
   /** Re-send the authoritative capability list after a desktop GUI state change. */
   #broadcastDeviceReady(): void {
+    this.refreshHostFacts();
     for (const deviceId of this.#links.keys()) {
       this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
     }
@@ -757,6 +927,7 @@ export class HostService {
       protocolVersion: PROTOCOL_VERSION,
       deviceId,
       notificationEpoch: this.#notifications.hostEpoch,
+      modelEpoch: this.#agentStateRegistry.currentModelEpoch(),
       runtimes: this.#runtimesSnapshot(),
       agents: this.#agentsSnapshot(),
       launchableAgents: this.#launchableAgentsSnapshot(),
@@ -775,6 +946,8 @@ export class HostService {
   }
 
   async start(): Promise<void> {
+    this.#modelLifecycle = "starting";
+    this.refreshHostFacts();
     // Host 在 Relay 眼里就是一个普通 runtime，直接复用 v1 的身份空间。
     const runtime: RuntimeMetadata = {
       runtimeId: this.#identity.hostId,
@@ -804,6 +977,9 @@ export class HostService {
           for (const link of this.#links.values()) link.detach("relay");
         }
         this.#options.onStateChange?.(state);
+        this.recordDiagnostic({ scope: "host", agentKind: null, sessionId: null, category: "transport",
+          severity: state === "connected" ? "info" : "warning", message: `Relay connection: ${state}` });
+        this.refreshHostFacts();
       },
       onProtocolError: (code, message, transferId, targetDeviceId) => {
         // 目标设备不在中继上：把它名下的下载以确定原因收场。这条回绝不带 transferId
@@ -843,6 +1019,9 @@ export class HostService {
         ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
         ...(this.#options.codexLaunch === undefined ? {} : { onCodexLaunch: this.#options.codexLaunch }),
         onRuntimeOnline: (metadata) => {
+          const displaced = this.#agentFacts.displacedRuntime(metadata.runtimeId, metadata);
+          if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
+          this.#agentFacts.observe(metadata.runtimeId, { type: "runtime.metadata", metadata });
           this.#notifications.attach(metadata.runtimeId, metadata.sessionId);
           this.#broadcastDeviceMessage({
             type: "runtime.online",
@@ -850,6 +1029,7 @@ export class HostService {
           });
         },
         onRuntimeOffline: (runtimeId, reason) => {
+          this.#markRuntimeOffline(runtimeId, reason);
           this.#notifications.offline(runtimeId);
           this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason });
         },
@@ -915,12 +1095,20 @@ export class HostService {
     try { await this.#options.dshRuntime?.start(); }
     catch (error) { this.#options.log?.(`DeepSeek Web 会话发现暂时失败，将自动重试：${describeError(error)}`); }
     await relay.start();
+    this.#modelLifecycle = "running";
+    this.refreshHostFacts();
+    void this.refreshProviderFacts();
   }
 
   async stop(): Promise<void> {
+    this.#providerFactsClosing = true;
+    this.#providerFactsGeneration++;
+    this.#modelLifecycle = "stopping";
+    this.refreshHostFacts();
     this.#notifications.close();
     await this.#desktopLedgerWrite;
     this.#sessionSync.close();
+    this.#agentStateSubscriptions.close();
     this.#pairing.close();
     await this.#lan?.stop();
     this.#lan = undefined;
@@ -936,6 +1124,10 @@ export class HostService {
     // 上传索引与 `.part` 句柄同样是脱离调用栈的写。进程退出前不等它们，下次启动就少一截
     // 可续传的状态——用户要重传的不是几个分片，是整个文件。
     await this.#uploads.flush();
+    await Promise.allSettled([...this.#providerFactsPending]);
+    this.#modelLifecycle = "stopped";
+    this.refreshHostFacts();
+    this.#serviceClosed = true;
   }
 
   /**
@@ -1021,7 +1213,9 @@ export class HostService {
     this.#deviceViewFacts.forget(deviceId);
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
+    this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#persist();
+    this.refreshHostFacts();
     return true;
   }
 
@@ -1154,6 +1348,15 @@ export class HostService {
       void this.#handleAgentStateRequest(deviceId, message);
       return;
     }
+    if (message.type === "agent.state.range.request") {
+      const authenticatedLink = this.#links.get(deviceId);
+      void this.readHostRange(message).then(page => {
+        if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active) return;
+        this.#sendToDevice(deviceId, { type: "agent.state.range.page", protocolVersion: PROTOCOL_VERSION,
+          requestId: message.requestId, scope: "host", domain: "catalog", page });
+      }).catch(error => { this.#options.onDeviceError?.(deviceId, error); });
+      return;
+    }
     if (message.type === "diagnostics.request") {
       // 记录在内存 + 盘上，不查后端：同步读一页就回。
       const page = this.readDiagnostics({
@@ -1162,6 +1365,7 @@ export class HostService {
         ...(message.category === undefined ? {} : { category: message.category }),
         ...(message.severity === undefined ? {} : { severity: message.severity }),
         ...(message.sessionId === undefined ? {} : { sessionId: message.sessionId }),
+        ...(message.agentKind === undefined ? {} : { agentKind: message.agentKind }),
       });
       this.#sendToDevice(deviceId, buildDiagnosticsPageMessage(message, page));
       return;
@@ -1247,6 +1451,9 @@ export class HostService {
     }
     const current = this.#runtimesSnapshot().find((entry) => entry.runtimeId === request.runtimeId);
     if (current?.cwd !== runtime.cwd || current.sessionId !== runtime.sessionId) return;
+    this.#workspaceGit.set(runtime.cwd, { availability: identity.branch !== null || identity.commit !== null ? "ready" : "unknown",
+      branch: identity.branch, head: identity.commit, repoRoot: null });
+    this.refreshHostFacts();
     this.#links.get(deviceId)?.send(Buffer.from(JSON.stringify({
       type: "runtime.git",
       protocolVersion: PROTOCOL_VERSION,
@@ -1272,6 +1479,7 @@ export class HostService {
     const { runtimeId, commandId, command } = message;
     if (command.type === "session.sync") {
       this.#sessionSync.request(deviceId, runtimeId, commandId, command);
+      this.refreshHostFacts();
       return;
     }
     for (const [key, owner] of this.#commandOwners) if (owner.at < Date.now() - 300_000) this.#commandOwners.delete(key);
@@ -1291,6 +1499,7 @@ export class HostService {
       runtimeId,
       ...(command.type === "interaction.respond" ? { requestId: command.requestId } : {}),
     });
+    this.refreshHostFacts();
     for (const backend of this.#backends) {
       if (!backend.isReady() || !backend.ownsRuntime(runtimeId)) continue;
       const result = backend.dispatchCommand(runtimeId, commandId, command);
@@ -1356,12 +1565,13 @@ export class HostService {
       if (epoch !== this.#catalogEpoch) return this.#catalogWithCache();
       return { sessions, cached: true };
     }
-    const task = this.#collectCatalogs();
+    const task = this.#collectCatalogs(epoch);
     this.#catalogInFlight = task;
     try {
       const sessions = await task;
       if (epoch !== this.#catalogEpoch) return this.#catalogWithCache();
       this.#catalogCache = { at: Date.now(), sessions };
+      this.refreshHostFacts();
       return { sessions, cached: false };
     } finally {
       if (this.#catalogInFlight === task) this.#catalogInFlight = undefined;
@@ -1369,7 +1579,7 @@ export class HostService {
   }
 
   /** 实际扫一遍所有后端（`#catalogWithCache` 的唯一慢路径）。 */
-  async #collectCatalogs(): Promise<AgentSessionSummary[]> {
+  async #collectCatalogs(epoch: number): Promise<AgentSessionSummary[]> {
     const sessions: AgentSessionSummary[] = [];
     // 逐后端记结果：拉取失败或后端没就绪，在模型里都不能退化成「它没有会话」（ADR-0032 模块 03）。
     const backends: HostCatalogBackend[] = [];
@@ -1398,7 +1608,10 @@ export class HostService {
     const desktopIds = this.#desktopOwnedIds;
     const visible = sessions.filter(entry => entry.agentKind !== "codex" || !desktopIds.has(entry.sessionId));
     const limited = visible.slice(0, 2_000);
-    this.#hostStateFacts.catalog({ totalSessions: limited.length, truncated: limited.length < visible.length, backends });
+    if (epoch === this.#catalogEpoch && !this.#serviceClosed) {
+      this.#hostStateFacts.catalog({ totalSessions: visible.length, truncated: false, backends,
+        sessions: visible.map(entry => ({ ...entry, hostname: hostname() })), currentProviders: this.#hostStateFacts.read()?.currentProviders ?? [] });
+    }
     return limited;
   }
 
@@ -1428,6 +1641,12 @@ export class HostService {
     message: Extract<DeviceE2ePayload, { type: "session.list" | "session.browse" | "session.activate" | "session.archive" }>,
   ): Promise<void> {
     const requestId = message.requestId;
+    const sharedOperationId = message.type === "session.activate" ? this.#beginSharedOperation("session.activate",
+      message.target.type === "new" ? message.target.agentKind : null, message.target.type === "resume" ? message.target.sessionId : null)
+      : message.type === "session.archive" ? this.#beginSharedOperation("session.archive", message.agentKind, message.sessionId) : undefined;
+    this.#settleSharedOperation(sharedOperationId, "running");
+    let sharedOperationFailed = false;
+    if (message.type === "session.activate") { this.#activationsPending++; this.refreshHostFacts(); }
     this.#options.log?.(`[debug] 收到 ${message.type}（requestId=${requestId}）`);
     try {
       if (message.type === "session.archive") {
@@ -1482,6 +1701,8 @@ export class HostService {
           sessions: sessions.map((entry) => ({ ...entry, hostname: localHostname })),
           currentProviders: providers.flat(),
         };
+        this.#hostStateFacts.catalogProviders(payload.currentProviders);
+        this.refreshHostFacts();
         this.#options.log?.(
           `[debug] 回 session.list.result：${payload.sessions.length} 条，${JSON.stringify(payload).length} 字节${cached ? "（命中缓存）" : ""}`,
         );
@@ -1560,6 +1781,7 @@ export class HostService {
       }
       throw new ActivationError("session_not_found", `找不到会话 ${target.sessionId}（可能已被删除）`);
     } catch (error) {
+      sharedOperationFailed = true;
       const code = error instanceof ActivationError || error instanceof SessionArchiveError ? error.code : "session_request_failed";
       this.#sendToDevice(deviceId, {
         type: "protocol.error",
@@ -1568,6 +1790,9 @@ export class HostService {
         requestId,
       });
       this.#options.log?.(`设备 ${deviceId} 的会话请求失败（${message.type}）：${describeError(error)}`);
+    } finally {
+      this.#settleSharedOperation(sharedOperationId, sharedOperationFailed ? "failed" : "succeeded");
+      if (message.type === "session.activate") { this.#activationsPending--; this.refreshHostFacts(); }
     }
   }
 
@@ -1582,6 +1807,7 @@ export class HostService {
    * 路径，而对端恰恰是那时候最需要目录——把它挂在路径变更上，手机重开就永远补不到。
    */
   #handleSessionReady(deviceId: string, kind: PathKind, active: PathKind, change: PathChange): void {
+    this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#sessionSync.clearDevice(deviceId);
     if (change.changed) {
       this.#options.log?.(`设备 ${deviceId} 的路径 ${describePath(change.from)} → ${describePath(change.to)}`);
@@ -1646,6 +1872,7 @@ export class HostService {
    * 这里**不补** runtime 目录——那件事属于「握手完成」（见 `#handleSessionReady`）。
    */
   #handlePathChange(deviceId: string, change: ActivePathChange): void {
+    this.refreshHostFacts();
     this.#options.log?.(
       `设备 ${deviceId} 的路径 ${describePath(change.from)} → ${describePath(change.to)}`
         + (change.rttMs === undefined ? "" : `（${Math.round(change.rttMs)} ms）`),
@@ -1692,8 +1919,23 @@ export class HostService {
   }
 
   #publishRuntimeEvent(runtimeId: string, event: RuntimeEvent): void {
+    if (event.type === "runtime.metadata") {
+      const displaced = this.#agentFacts.displacedRuntime(runtimeId, event.metadata);
+      if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
+    }
+    if (event.type === "session.snapshot") { this.#sessionSync.handleEvent(runtimeId, event); return; }
+    if (event.type === "session.patch") {
+      const scope = this.#agentFacts.scopeOf(runtimeId);
+      if (!scope || !this.#conversationState.accept(scope, event,
+        ready => this.#agentFacts.prepareConversation(runtimeId, event, ready))) {
+        this.#recordAgentDiagnostic(runtimeId, "recovery", "Rejected conversation transaction; source baseline required", "warning");
+        this.#loopback?.sendResync(runtimeId, "model_baseline_required");
+        return;
+      }
+    }
     // 先把事实记进统一模型，再走原来的转发路径；记录失败不影响转发（见 AgentStateFacts.observe）。
-    this.#agentFacts.observe(runtimeId, event);
+    if (event.type !== "session.patch") this.#agentFacts.observe(runtimeId, event);
+    if (event.type === "runtime.metadata" || event.type === "runtime.status") this.refreshHostFacts();
     if (this.#sessionSync.handleEvent(runtimeId, event)) return;
     if (event.type === "runtime.metadata" && (!this.#notifications.has(runtimeId) || this.#notifications.needsAttach(runtimeId))) {
       this.#notifications.attach(runtimeId, event.metadata.sessionId);
@@ -1703,11 +1945,13 @@ export class HostService {
       return;
     }
     if (event.type === "interaction.requested") {
+      this.#recordAgentDiagnostic(runtimeId, "interaction", "Interaction requested");
       const ids = this.#interactionIds.get(runtimeId) ?? new Set<string>();
       if (ids.size < 64) ids.add(event.request.requestId); this.#interactionIds.set(runtimeId, ids);
     }
     if (event.type === "interaction.snapshot") this.#interactionIds.set(runtimeId, new Set(event.requests.map(item => item.requestId)));
     if (event.type === "interaction.resolved" || event.type === "interaction.cancelled") {
+      this.#recordAgentDiagnostic(runtimeId, "interaction", event.type === "interaction.resolved" ? "Interaction resolved" : "Interaction cancelled");
       if (this.#interactionIds.get(runtimeId)?.delete(event.requestId)) {
         const failed = event.type === "interaction.cancelled" && event.reason === "timeout";
         this.#notifications.outcome(runtimeId, { code: "interaction.result", occurrenceId: event.requestId,
@@ -1734,6 +1978,7 @@ export class HostService {
           ...(event.type === "runtime.error" ? { detail: event.message }
             : event.error === undefined ? {} : { detail: event.error }),
         });
+        this.refreshHostFacts();
         this.#sendToDevice(owner.deviceId, this.#runtimeEventMessage(runtimeId, event)); return;
       }
       return;
@@ -1748,6 +1993,7 @@ export class HostService {
   }
 
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
+    if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
     this.#broadcastPayload(Buffer.from(JSON.stringify(message), "utf8"), channelForDeviceMessage(message));
   }
 
@@ -1855,6 +2101,8 @@ export class HostService {
       // 底层写入重试耗尽：那几帧真的没出去，而它们的序号已经消耗。重发只会换一个新序号、
       // 接收侧的洞永远补不上，所以把这条路径摘掉、让选路回落（与 P2P 通道关闭时同一条出口）。
       onPathWriteAbandoned: (kind, error) => {
+        this.recordDiagnostic({ scope: "host", agentKind: null, sessionId: null, category: "transport",
+          severity: "warning", message: `Path write abandoned: ${kind}` });
         this.#options.log?.(
           `${kind} 路径上的写入重试耗尽（${describeError(error)}）：摘掉这条路径，让选路回落`,
         );

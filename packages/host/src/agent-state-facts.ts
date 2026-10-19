@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   type AgentCapabilityItem, type AgentContextState, type AgentDeliveryItem, type AgentExecutionState,
@@ -9,7 +9,7 @@ import {
 } from "@pi-remote/protocol";
 
 import {
-  AgentStateRegistry, type BaselineRead, type StateDomain, type StateScope,
+  AgentStateRegistry, type BaselineRead, type StateDomain, type StateScope, type RegistryMutation, type PreparedRegistryCommit,
 } from "./agent-state-registry.js";
 
 /**
@@ -33,10 +33,11 @@ const INTERESTING_EVENTS: ReadonlySet<RuntimeEvent["type"]> = new Set([
   "runtime.metadata", "runtime.status", "runtime.capabilities",
   "message.queued", "message.started", "message.finished",
   "interaction.requested", "interaction.snapshot", "interaction.resolved", "interaction.cancelled",
+  "delivery.snapshot", "execution.activity",
 ] as const);
 
-const SESSION_KEYS = ["execution", "model", "context", "permissions"] as const;
-const COLLECTION_KEYS = ["delivery", "interactions", "capabilities"] as const;
+const SESSION_KEYS = ["identity", "availability", "execution", "model", "context", "permissions", "providerBinding", "workspaceRef"] as const;
+const COLLECTION_KEYS = ["delivery", "interactions", "capabilities", "resources"] as const;
 /** 身份建立前的缓冲上限；超过就丢掉最早的一条，避免为没接上的 runtime 无限占内存。 */
 const MAX_PENDING_ITEMS = 128;
 
@@ -52,6 +53,7 @@ export type AgentStateFactsOptions = {
    * 模型只记身份与核对程度，避免出现第二份通知权威。
    */
   readonly notifications?: (runtimeId: string) => AgentNotificationsState | undefined;
+  readonly records?: () => { modelEpoch: string; revision: number } | undefined;
   readonly log?: (line: string) => void;
 };
 
@@ -64,6 +66,9 @@ type Pending = {
   queue: Map<string, AgentDeliveryItem>;
   interactions: Map<string, AgentInteractionItem>;
   fresh: Set<CollectionDomain>;
+  queueComplete?: boolean;
+  interactionsComplete?: boolean;
+  activity?: Extract<RuntimeEvent, { type: "execution.activity" }>;
 };
 
 type SessionFacts = {
@@ -86,6 +91,10 @@ type SessionFacts = {
    * 累加器被清空就提交成 ready 的空清单——那等于用「没看见」冒充「不存在」。
    */
   readonly fresh: Set<CollectionDomain>;
+  queueComplete?: boolean;
+  interactionsComplete?: boolean;
+  activity?: Extract<RuntimeEvent, { type: "execution.activity" }>;
+  turn?: AgentExecutionState["turn"];
 };
 
 export class AgentStateFacts {
@@ -93,6 +102,7 @@ export class AgentStateFacts {
   readonly #hostId: string;
   readonly #kindOf: (runtimeId: string) => AgentKind | undefined;
   readonly #notifications: ((runtimeId: string) => AgentNotificationsState | undefined) | undefined;
+  readonly #records: AgentStateFactsOptions["records"];
   readonly #log: ((line: string) => void) | undefined;
   /** runtimeId → 会话键。 */
   readonly #runtimes = new Map<string, string>();
@@ -105,7 +115,31 @@ export class AgentStateFacts {
     this.#hostId = options.hostId;
     this.#kindOf = options.kindOf;
     this.#notifications = options.notifications;
+    this.#records = options.records;
     this.#log = options.log;
+  }
+
+  refreshRecords(runtimeId: string): void {
+    const session = this.#sessionFor(runtimeId);
+    if (session) this.#commitRecords(session);
+  }
+
+  /** Conversation head/live and its execution turn share this one registry transaction. Legacy
+   * turn events never write execution; adapters already incorporate them into versioned live. */
+  prepareConversation(runtimeId: string, event: Extract<RuntimeEvent, { type: "session.patch" | "session.snapshot" }>, ready: boolean): PreparedRegistryCommit | undefined {
+    const session = this.#sessionFor(runtimeId);
+    if (!session || session.sessionId !== event.sessionId) return;
+    const next = this.#clone(session); next.revision += 1;
+    if (ready && event.live) next.turn = structuredClone(event.live.turn);
+    const changes = ready ? this.#mutations(next, new Set(["execution"])) : [{ kind: "value" as const, scope: this.#scope(next), domain: "execution" as const,
+      fact: { source: this.#source(next), availability: "unknown" as const, completeness: "unknown" as const, value: null } }];
+    return { changes, onCommitted: () => { this.#sessions.set(next.key, next); } };
+  }
+
+  prepareOffline(runtimeId: string): PreparedRegistryCommit | undefined {
+    const session = this.#sessionFor(runtimeId); if (!session) return;
+    const next = this.#clone(session); next.revision += 1; next.fresh.clear();
+    return { changes: this.#unverified(next), onCommitted: () => { this.#sessions.set(next.key, next); } };
   }
 
   /** 通知投影变化时刷新模型里的引用摘要（由 Host 的通知 Store 回调触发）。 */
@@ -137,8 +171,8 @@ export class AgentStateFacts {
     try {
       const session = this.#sessionFor(runtimeId);
       if (session === undefined) return;
-      session.revision += 1;
-      this.#markUnverified(session);
+      const prepared = this.prepareOffline(runtimeId);
+      if (prepared) this.#registry.commitTransaction(prepared.changes, prepared.onCommitted);
       this.#log?.(`统一状态模型标记来源未知 (${runtimeId}): ${reason}`);
     } catch (error) {
       this.#log?.(`统一状态模型离线标记失败 (${runtimeId}): ${error instanceof Error ? error.message : String(error)}`);
@@ -159,6 +193,14 @@ export class AgentStateFacts {
   scopeOf(runtimeId: string): StateScope | undefined {
     const session = this.#sessionFor(runtimeId);
     return session === undefined ? undefined : this.#scope(session);
+  }
+
+  /** Lets the Host invalidate conversation recovery before publishing a new runtime binding. */
+  displacedRuntime(runtimeId: string, metadata: RuntimeMetadata): { runtimeId: string; scope: StateScope } | undefined {
+    const kind = this.#kindOf(runtimeId);
+    if (!kind || !metadata.sessionId) return;
+    const previous = this.#sessions.get(kind + "\u0000" + metadata.sessionId);
+    if (previous && previous.runtimeId !== runtimeId) return { runtimeId: previous.runtimeId, scope: this.#scope(previous) };
   }
 
   /** 基线读取：调用方带已应用版本，得到 unchanged / state / baseline。 */
@@ -203,6 +245,12 @@ export class AgentStateFacts {
         pending.queue.set(event.queueId, deliveryItem(event));
         pending.fresh.add("delivery");
         break;
+      case "delivery.snapshot":
+        pending.queue = new Map(event.items.map(item => [item.queueId, item]));
+        pending.queueComplete = event.complete !== false;
+        pending.fresh.add("delivery");
+        break;
+      case "execution.activity": pending.activity = event; break;
       case "interaction.requested":
         if (pending.interactions.size >= MAX_PENDING_ITEMS) pending.interactions.delete(pending.interactions.keys().next().value as string);
         pending.interactions.set(event.request.requestId, interactionItem(event.request));
@@ -210,6 +258,7 @@ export class AgentStateFacts {
         break;
       case "interaction.snapshot":
         pending.interactions = new Map(event.requests.slice(-MAX_PENDING_ITEMS).map(request => [request.requestId, interactionItem(request)]));
+        pending.interactionsComplete = true;
         pending.fresh.add("interactions");
         break;
       case "interaction.resolved":
@@ -229,6 +278,12 @@ export class AgentStateFacts {
     if (agentKind === undefined || sessionId === undefined) return;
     this.#pending.delete(runtimeId);
     const key = agentKind + "\u0000" + sessionId;
+    const previousKey = this.#runtimes.get(runtimeId);
+    if (previousKey !== undefined && this.#sessions.get(previousKey)?.runtimeId !== runtimeId) return;
+    if (previousKey !== undefined && previousKey !== key) {
+      const previous = this.#sessions.get(previousKey);
+      if (previous) { previous.revision += 1; this.#markUnverified(previous); }
+    }
     let session = this.#sessions.get(key);
     if (session === undefined) {
       session = {
@@ -246,6 +301,10 @@ export class AgentStateFacts {
       session.interactions = new Map();
       session.capabilities = null;
       session.fresh.clear();
+      session.queueComplete = false;
+      session.interactionsComplete = false;
+      delete session.activity;
+      session.turn = null;
       this.#markUnverified(session);
     }
     this.#runtimes.set(runtimeId, key);
@@ -257,13 +316,36 @@ export class AgentStateFacts {
       for (const [id, item] of pending.queue) session.queue.set(id, item);
       for (const [id, item] of pending.interactions) session.interactions.set(id, item);
       for (const domain of pending.fresh) session.fresh.add(domain);
+      session.queueComplete = pending.queueComplete === true;
+      session.interactionsComplete = pending.interactionsComplete === true;
+      if (pending.activity) session.activity = pending.activity;
     }
     session.revision += 1;
-    const touched = new Set<StateDomain>(["execution", "model", "context", "permissions"]);
+    const touched = new Set<StateDomain>(SESSION_KEYS);
+    for (const domain of ["history", "live", "artifacts", "resources", "delivery", "interactions", "capabilities"] as const) {
+      if (this.#registry.read(this.#scope(session), domain) !== undefined) continue;
+      // An explicit unavailable/unknown domain is different from an empty inventory.
+      this.#registry.commitValue(this.#scope(session), domain, {
+        source: domain === "history" || domain === "live" || domain === "artifacts"
+          ? { producer: "adapter", sourceId: `conversation:${agentKind}`, sourceEpoch: "awaiting-source", sourceRevision: 0 }
+          : this.#source(session),
+        availability: "unknown", completeness: "unknown", value: null,
+      });
+    }
     for (const domain of session.fresh) touched.add(domain);
     this.#commit(session, touched);
     // 通知的写者是 Host 的通知投影，不是后端适配器，所以单独提交。
     this.#commitNotifications(session, runtimeId);
+    this.#commitRecords(session);
+  }
+
+  #commitRecords(session: SessionFacts): void {
+    const reference = this.#records?.();
+    this.#registry.commitValue(this.#scope(session), "records", {
+      source: { producer: "host", sourceId: "host:diagnostics", sourceEpoch: reference?.modelEpoch ?? this.#registry.currentModelEpoch(), sourceRevision: reference?.revision ?? 0 },
+      availability: reference ? "ready" : "unknown", completeness: reference ? "complete" : "unknown",
+      value: reference ? { scope: "host", domain: "diagnostics", agentKind: session.agentKind, sessionId: session.sessionId, ...reference } : null,
+    });
   }
 
   #commitNotifications(session: SessionFacts, runtimeId: string): void {
@@ -284,9 +366,16 @@ export class AgentStateFacts {
   }
 
   #apply(session: SessionFacts, event: RuntimeEvent): void {
+    session = this.#clone(session);
     let interactionsComplete = false;
     const touched = new Set<StateDomain>();
     switch (event.type) {
+      case "execution.activity": session.activity = event; touched.add("execution"); break;
+      case "delivery.snapshot":
+        session.queue.clear();
+        for (const item of event.items) session.queue.set(item.queueId, item);
+        session.queueComplete = event.complete !== false;
+        session.fresh.add("delivery"); touched.add("delivery"); break;
       case "runtime.status": session.status = event.status; touched.add("execution"); break;
       case "runtime.capabilities":
         session.capabilities = event.capabilities; session.fresh.add("capabilities"); touched.add("capabilities"); break;
@@ -316,6 +405,7 @@ export class AgentStateFacts {
         touched.add("interactions");
         touched.add("execution");
         interactionsComplete = true;
+        session.interactionsComplete = true;
         break;
       case "interaction.resolved":
       case "interaction.cancelled":
@@ -337,23 +427,36 @@ export class AgentStateFacts {
    * 是有实测临界值的（device-link / artifact 测试都在 10s 上限附近）。
    */
   #commit(session: SessionFacts, touched: ReadonlySet<StateDomain>, interactionsComplete = false, event?: RuntimeEvent): void {
+    const result = this.#registry.commitTransaction(this.#mutations(session, touched, interactionsComplete, event), () => { this.#sessions.set(session.key, session); });
+    if (!result.ok) this.#log?.(`模型事务拒绝: ${result.code}`);
+  }
+
+  #mutations(session: SessionFacts, touched: ReadonlySet<StateDomain>, interactionsComplete = false, event?: RuntimeEvent): RegistryMutation[] {
     const scope = this.#scope(session);
     const source = this.#source(session);
     const metadata = session.metadata;
+    const changes: RegistryMutation[] = [];
+    const commitValue = (domain: StateDomain, fact: Parameters<AgentStateRegistry["commitValue"]>[2]): void => { changes.push({ kind: "value", scope, domain, fact }); };
+    const commitCollection = (domain: StateDomain, fact: Parameters<AgentStateRegistry["commitCollection"]>[2]): void => { changes.push({ kind: "collection", scope, domain, fact }); };
+    if (touched.has("identity")) commitValue("identity", { source, availability: "ready", completeness: "complete", value: { ...metadata, hostId: this.#hostId, agentKind: session.agentKind, sessionId: session.sessionId } });
+    if (touched.has("availability")) commitValue("availability", { source, availability: "ready", completeness: "complete", value: { connected: true, runtimeId: session.runtimeId, reason: null } });
+    if (touched.has("workspaceRef")) commitValue("workspaceRef", { source, availability: metadata?.cwd ? "ready" : "unknown", completeness: "complete", value: metadata?.cwd ? { workspaceId: createHash("sha256").update(metadata.cwd).digest("hex"), cwd: metadata.cwd } : null });
+    if (touched.has("providerBinding")) commitValue("providerBinding", { source, availability: metadata?.model ? "ready" : "unknown", completeness: "complete", value: metadata?.model ? { provider: metadata.model.provider, modelId: metadata.model.id } : null });
 
     if (touched.has("execution")) {
       const execution: AgentExecutionState = {
         phase: session.interactions.size > 0 ? "waiting_local_interaction" : session.status,
         waitingFor: [...session.interactions.keys()].sort(),
-        retry: "unavailable",
-        compaction: "unavailable",
+        retry: session.activity?.retry ?? "unavailable",
+        compaction: session.activity?.compaction ?? "unavailable",
+        turn: session.turn ?? null,
       };
-      this.#registry.commitValue(scope, "execution", { source, availability: "ready", completeness: "complete", value: execution });
+      commitValue("execution", { source, availability: "ready", completeness: "complete", value: execution });
     }
 
     if (touched.has("model")) {
       const model = metadata?.model;
-      this.#registry.commitValue(scope, "model", model === undefined
+      commitValue("model", model === undefined
         ? { source, availability: "unknown", completeness: "unknown", value: null }
         : {
           source, availability: "ready", completeness: "complete",
@@ -367,7 +470,7 @@ export class AgentStateFacts {
 
     if (touched.has("context")) {
       const usage = metadata?.contextUsage;
-      this.#registry.commitValue(scope, "context", usage === undefined
+      commitValue("context", usage === undefined
         ? { source, availability: "unknown", completeness: "unknown", value: null }
         : {
           source, availability: "ready", completeness: "complete",
@@ -377,15 +480,15 @@ export class AgentStateFacts {
 
     if (touched.has("permissions")) {
       const permissions = permissionsValue(metadata);
-      this.#registry.commitValue(scope, "permissions", permissions === null
+      commitValue("permissions", permissions === null
         ? { source, availability: "unknown", completeness: "unknown", value: null }
         : { source, availability: "ready", completeness: "complete", value: permissions });
     }
 
     if (touched.has("delivery") && session.fresh.has("delivery")) {
       // 后端没有队列完整清单事件，所以这里只能是部分清单：它合并、不删除。
-      this.#registry.commitCollection(scope, "delivery", {
-        source, availability: "ready", completeness: "partial", items: Object.fromEntries(session.queue),
+      commitCollection("delivery", {
+        source, availability: "ready", completeness: session.queueComplete ? "complete" : "partial", items: Object.fromEntries(session.queue),
       });
     }
 
@@ -394,13 +497,11 @@ export class AgentStateFacts {
         ? [event.requestId] : [];
       if (removed.length > 0 && !interactionsComplete) {
         // 已回答/取消是显式结束事实：按 id 删除，其余条目保留。
-        this.#registry.removeCollectionItems(scope, "interactions", {
-          source, availability: "ready", completeness: "partial", removeIds: removed,
-        });
+        changes.push({ kind: "remove", scope, domain: "interactions", fact: { source, availability: "ready", completeness: "partial", removeIds: removed } });
       } else {
-        this.#registry.commitCollection(scope, "interactions", {
+        commitCollection("interactions", {
           source, availability: "ready",
-          completeness: interactionsComplete ? "complete" : "partial",
+          completeness: interactionsComplete || session.interactionsComplete ? "complete" : "partial",
           items: Object.fromEntries(session.interactions),
         });
       }
@@ -408,24 +509,28 @@ export class AgentStateFacts {
 
     if (touched.has("capabilities") && session.fresh.has("capabilities") && session.capabilities !== null) {
       // 后端的命令菜单是完整清单：缺席即删除。
-      this.#registry.commitCollection(scope, "capabilities", {
+      commitCollection("capabilities", {
         source, availability: "ready", completeness: "complete",
         items: Object.fromEntries(session.capabilities.commands.map(command => [command.name, capabilityItem(command)])),
       });
+      commitCollection("resources", { source, availability: "ready", completeness: "complete", items: Object.fromEntries(session.capabilities.commands.filter(command => command.source !== "builtin").map(command => [command.name, command])) });
     }
+    return changes;
   }
 
   /** 暂断或重新接入：已知领域标成待核对，Registry 保留最后已知值。 */
   #markUnverified(session: SessionFacts): void {
-    const scope = this.#scope(session);
-    const source = this.#source(session);
     session.fresh.clear();
-    for (const domain of SESSION_KEYS) {
-      this.#registry.commitValue(scope, domain, { source, availability: "unknown", completeness: "unknown", value: null });
-    }
-    for (const domain of COLLECTION_KEYS) {
-      this.#registry.commitCollection(scope, domain, { source, availability: "unknown", completeness: "unknown", items: {} });
-    }
+    this.#registry.commitTransaction(this.#unverified(session));
+  }
+
+  #unverified(session: SessionFacts): RegistryMutation[] {
+    const scope = this.#scope(session), source = this.#source(session);
+    return [...SESSION_KEYS, ...COLLECTION_KEYS].map(domain => ({ kind: "value", scope, domain, fact: { source, availability: "unknown", completeness: "unknown", value: null } }));
+  }
+
+  #clone(session: SessionFacts): SessionFacts {
+    return { ...session, queue: new Map(session.queue), interactions: new Map(session.interactions), fresh: new Set(session.fresh) };
   }
 
   #source(session: SessionFacts): DomainSource {
@@ -491,6 +596,7 @@ const deliveryItem = (event: Extract<RuntimeEvent, { type: "message.queued" }>):
 });
 
 const interactionItem = (request: InteractionRequest): AgentInteractionItem => ({
+  ...request,
   requestId: request.requestId,
   kind: request.kind,
   title: request.title,
@@ -503,6 +609,7 @@ const interactionItem = (request: InteractionRequest): AgentInteractionItem => (
 });
 
 const capabilityItem = (command: RuntimeCapabilities["commands"][number]): AgentCapabilityItem => ({
+  ...command,
   name: command.name,
   source: command.source,
   ...(command.description === undefined ? {} : { description: command.description }),

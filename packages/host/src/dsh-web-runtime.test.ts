@@ -51,6 +51,73 @@ afterEach(async () => {
 });
 
 describe("DeepSeek Web runtime adapter", () => {
+  it("rebuilds retry and compaction from native durable events and settles only their explicit outcomes", async () => {
+    const f = discoveryFixture(); f.list([f.live("busy", true)]); await f.runtime.start();
+    const follow = f.follows()[0]!;
+    const record = (seq: number, type: string, data: unknown) => ({ type: "event", event: { seq, type, time: seq + 1000, data } });
+    follow.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: 2, records: [
+      record(0, "turn/start", { turn: 1 }),
+      record(1, "compaction/start", { turn: 1, compactionId: "compact-1" }),
+      record(2, "llm/retry", { turn: 1, retry: 2, retryId: "retry-1" }),
+    ] });
+    const activity = () => f.events.flatMap(item => item.event.type === "execution.activity" ? [item.event] : []).at(-1)!;
+    expect(activity()).toEqual({ type: "execution.activity", retry: { phase: "running", turnId: "dsh:busy:web:0", attempt: 2 },
+      compaction: { phase: "running", turnId: "dsh:busy:web:0" } });
+    f.emit("api-session/status", "busy", false);
+    expect(activity().retry).toMatchObject({ phase: "running" });
+    follow.frame(record(3, "compaction/end", { turn: 1, compactionId: "compact-1", error: "summary failed" }));
+    expect(activity().compaction).toEqual({ phase: "failed", turnId: "dsh:busy:web:0" });
+    follow.frame(record(4, "assistant/message", { message: { id: "answer", content: [{ type: "text", text: "recovered" }] } }));
+    expect(activity().retry).toEqual({ phase: "idle", turnId: "dsh:busy:web:0", attempt: 2 });
+    f.runtime.announce();
+    expect(activity().compaction).toEqual({ phase: "failed", turnId: "dsh:busy:web:0" });
+  });
+
+  it("recovers the native inbox including other frontends, fences old baselines and retains native cancellation ids", async () => {
+    const f = discoveryFixture(); f.list([f.live("busy", true)]);
+    const priorRequest = f.request.getMockImplementation()!;
+    const inbox = { "next-turn": [{ id: "native-phone", source: { rpcId: "phone-id" }, content: [{ type: "text", text: "phone queued" }] }],
+      "next-step": [{ id: "native-browser", source: { kind: "input" }, content: [{ type: "text", text: "browser steering" }] }] };
+    let baseline: unknown = { asOfSeq: 10, values: { inbox } };
+    f.request.mockImplementation((method, args) => method === "session/projections" ? Promise.resolve(baseline) : priorRequest(method, args));
+    await f.runtime.start();
+    const delivery = () => f.events.flatMap(item => item.event.type === "delivery.snapshot" ? [item.event] : []);
+    await vi.waitFor(() => expect(delivery().at(-1)).toEqual({ type: "delivery.snapshot", complete: true, items: [
+      { queueId: "phone-id", text: "phone queued", delivery: "followUp", state: "accepted" },
+      { queueId: "native-browser", text: "browser steering", delivery: "steer", state: "accepted" },
+    ] }));
+    f.runtime.dispatchCommand("dsh:busy", "cancel", { type: "user_message.cancel", messageId: "phone-id" });
+    await vi.waitFor(() => expect(f.request).toHaveBeenCalledWith("session/updateQueue", { request: {
+      sessionId: "busy", itemId: "native-phone", action: { kind: "remove" },
+    } }));
+    const control = f.subscriptions.find(item => item.method === "session/control")!;
+    control.frame({ type: "projection", sessionId: "busy", key: "inbox", seq: 11, value: { "next-turn": [], "next-step": [] } });
+    expect(delivery().at(-1)).toEqual({ type: "delivery.snapshot", items: [], complete: true });
+    f.follows()[0]!.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: -1, records: [],
+      projections: { asOfSeq: 10, values: { inbox } } });
+    expect(delivery().at(-1)?.items).toEqual([]);
+    // A successful read with no inbox key still cannot prove the queue is empty.
+    baseline = { asOfSeq: 12, values: {} };
+    const count = delivery().length;
+    f.runtime.announce(); await Promise.resolve(); await Promise.resolve();
+    expect(delivery()).toHaveLength(count);
+    expect(f.events).toContainEqual({ runtimeId: "dsh:busy", event: {
+      type: "execution.activity", retry: "unavailable", compaction: "unavailable",
+    } });
+  });
+
+  it("marks an oversized native inbox partial instead of claiming the truncated page is complete", async () => {
+    const f = discoveryFixture(); f.list([f.live("busy", true)]); await f.runtime.start();
+    const control = f.subscriptions.find(item => item.method === "session/control")!;
+    control.frame({ type: "projection", sessionId: "busy", key: "inbox", seq: 20, value: {
+      "next-turn": Array.from({ length: 257 }, (_, index) => ({ id: `queued-${index}`, content: [{ type: "text", text: "queued" }] })),
+      "next-step": [],
+    } });
+    const snapshot = f.events.flatMap(item => item.event.type === "delivery.snapshot" ? [item.event] : []).at(-1)!;
+    expect(snapshot.complete).toBe(false);
+    expect(snapshot.items).toHaveLength(256);
+  });
+
   it("refreshes thinking choices on announce after model configuration changes", async () => {
     const f = discoveryFixture();
     let enabled = false;
@@ -443,7 +510,7 @@ describe("DeepSeek Web runtime adapter", () => {
     const commit = f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event;
     expect(commit).toMatchObject({ entries: [expect.objectContaining({ entryId: "dsh:browser:web:1" })], live: { messages: [] } });
     follow.frame({ type: "event", event: { seq: 2, time: 1100, type: "turn/end", data: { turn: 1 } } });
-    expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { turn: null, messages: [] } });
+    expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { turn: expect.objectContaining({ durationMs: expect.any(Number) }), messages: [] } });
   });
 
   it("repairs silently missed native completion on a periodic check and rejects the replaced follow's late frames", async () => {
@@ -610,7 +677,7 @@ describe("DeepSeek Web runtime adapter", () => {
     event(4, "assistant/message", { turn: 1, step: 1, message: { id: "a1", role: "assistant", source: { kind: "model", provider: "p", model: "m" }, content: [{ type: "text", text: "done" }] }, stream: [] });
     event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }, 1200);
     const final = events.filter(item => item.type === "session.patch").at(-1);
-    expect(final).toMatchObject({ live: { turn: null, messages: [], tools: [] }, head: { leafId: "dsh:web-1:web:5" } });
+    expect(final).toMatchObject({ live: { turn: expect.objectContaining({ durationMs: 100 }), messages: [], tools: [] }, head: { leafId: "dsh:web-1:web:5" } });
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "session.patch", live: expect.objectContaining({ tools: [expect.objectContaining({ toolCallId: "call-1", toolName: "bash", state: "started" })] }) }),
       expect.objectContaining({ type: "message.queued", queueId: "mobile-1", state: "delivered" }),

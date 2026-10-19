@@ -6,7 +6,7 @@ import {
   NotificationSource,
   RecoverableSessionSource,
   selectSessionSyncSnapshot,
-  type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
+  type AgentDeliveryItem, type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
 } from "@pi-remote/protocol";
 import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
@@ -53,6 +53,9 @@ type WebSession = {
   permissionSeq: number; permissionSandboxSeq: number; permissionApprovalSeq: number; permissionGeneration: number;
   permissionBusy: boolean; permissionOptions: ReturnType<typeof dshPermissionOptions>;
   queue: Map<string, { itemId: string; text: string; delivery: "steer" | "followUp" }>;
+  deliverySeq: number; deliveryGeneration: number;
+  activity: Extract<RuntimeEvent, { type: "execution.activity" }>;
+  activitySeq: number; compactionId?: string;
   messages: Map<string, { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled"; entryId?: string }>;
   persistedMappings: Map<string, string>;
   retiredAttempts: Set<string>;
@@ -130,13 +133,17 @@ export class DshWebRuntime implements AgentBackend {
       if (frame.type === "baseline") {
         for (const [id, baseline] of Object.entries(object(object(frame.value).projections))) {
           this.#titleProjection(id, baseline, true);
-          const session = this.#sessions.get(publicId(id)); if (session) this.#permissionProjection(session, baseline);
+          const session = this.#sessions.get(publicId(id)); if (session) {
+            this.#permissionProjection(session, baseline);
+            this.#deliveryProjection(session, baseline);
+          }
         }
       } else if (frame.type === "projection" && typeof frame.sessionId === "string") {
         const baseline = { asOfSeq: frame.seq, values: { [String(frame.key)]: frame.value } };
         if (frame.key === "title") this.#titleProjection(frame.sessionId, baseline);
         const session = this.#sessions.get(publicId(frame.sessionId));
         if (session && frame.key === "permissions") this.#permissionProjection(session, baseline);
+        if (session && frame.key === "inbox") this.#deliveryProjection(session, baseline);
       }
     }, () => {
       this.#controlUnsubscribe?.(); this.#controlUnsubscribe = undefined;
@@ -150,6 +157,8 @@ export class DshWebRuntime implements AgentBackend {
       void this.#loadModelCatalog(session);
       session.notifications.announce();
       this.#publishMetadata(session);
+      void this.#loadDelivery(session);
+      this.#emit(session, structuredClone(session.activity));
       this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
       this.#emit(session, { type: "interaction.snapshot", requests: [...this.#approvals.values()].filter(item => item.session === session).map(item => item.interaction) });
     }
@@ -303,7 +312,9 @@ export class DshWebRuntime implements AgentBackend {
       notifications: new NotificationSource(randomUUID(), publicId(id), event => {
         if (this.#sessions.get(publicId(id))?.notifications.epoch === event.producerEpoch) this.#sink(event, publicId(id));
       }), skillsGeneration: 0, modelGeneration: 0, followGeneration: 0,
-      queue: new Map(), messages: new Map(), persistedMappings: new Map(), streamMessages: new Map(), streamIndexes: new Map(), retiredAttempts: new Set(), tools: new Map(), following: false, unsubscribe: () => {} };
+      queue: new Map(), deliverySeq: -1, deliveryGeneration: 0,
+      activity: { type: "execution.activity", retry: "unavailable", compaction: "unavailable" }, activitySeq: -1,
+      messages: new Map(), persistedMappings: new Map(), streamMessages: new Map(), streamIndexes: new Map(), retiredAttempts: new Set(), tools: new Map(), following: false, unsubscribe: () => {} };
     this.#sessions.set(runtimeId, session);
     // Announce before follow can deliver messages: APP needs the runtime identity first.
     this.#publishMetadata(session);
@@ -347,6 +358,8 @@ export class DshWebRuntime implements AgentBackend {
       case "session.sync": {
         if (command.sessionId !== publicId(session.id)) throw new Error("session_mismatch");
         if (command.range === "preview") await this.#checkSource(session);
+        await this.#loadDelivery(session);
+        this.#emit(session, structuredClone(session.activity));
         await this.#refreshPage(session, command.maxEntries,
           command.range === "history" ? webEntrySeqOrUndefined(command.beforeEntryId) : undefined);
         this.#emit(session, selectSessionSyncSnapshot(session.entries, command.sessionId, session.entries.at(-1)?.entryId ?? null, command, [], session.source.snapshot(), session.entries[0]?.parentId ?? undefined));
@@ -592,6 +605,7 @@ export class DshWebRuntime implements AgentBackend {
       const header = object(frame.header); const events = arrayObjects(frame.records).map(record => { const event = object(record.event); return { seq: Number(event.seq), time: Number(event.time), type: String(event.type), data: event.data }; });
       this.#titleProjection(session.id, frame.projections, true);
       this.#permissionProjection(session, frame.projections);
+      this.#deliveryProjection(session, frame.projections);
       for (const event of events) this.#permissionEvent(session, event);
       this.#rememberTools(session, events);
       const snapshotEntries = dshWebEntries(session.id, events);
@@ -608,6 +622,18 @@ export class DshWebRuntime implements AgentBackend {
       }
       session.lastSeq = Math.max(session.lastSeq, Number(frame.cursor ?? -1)); session.createdAt = Number(header.createdAt ?? session.createdAt); session.cwd = typeof header.cwd === "string" ? header.cwd : session.cwd;
       this.#syncSnapshotTurnState(session, events);
+      // This bounded native window cannot confirm activity omitted before its first event.
+      if (Number(frame.cursor) >= session.activitySeq) {
+        session.activity = { type: "execution.activity", retry: "unavailable", compaction: "unavailable" };
+        session.activitySeq = -1; delete session.compactionId;
+        let turnId: string | undefined;
+        for (const event of events) {
+          if (event.type === "turn/start") turnId = dshWebEntryId(session.id, event.seq);
+          this.#activityEvent(session, event, false, { turnId });
+          if (event.type === "turn/end") turnId = undefined;
+        }
+      }
+      this.#emit(session, structuredClone(session.activity));
       this.#publishMetadata(session);
       // A phone can attach after the browser already received part of a reply.
       // Restore that prefix before accepting the following live chunks.
@@ -721,6 +747,7 @@ export class DshWebRuntime implements AgentBackend {
     }
     if (session.lastSeq === -1 && event.seq === 0) session.source.setAvailability(true, !session.running);
     session.lastSeq = event.seq;
+    this.#activityEvent(session, event);
     this.#permissionEvent(session, event);
     const data = object(event.data);
     if (event.type === "tool/call") {
@@ -923,6 +950,85 @@ export class DshWebRuntime implements AgentBackend {
     this.#publishMetadata(session);
     this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
   }
+
+  /** Only native lifecycle/progress facts settle retry or compaction; ordinary idle never does. */
+  #activityEvent(session: WebSession, event: DshWebLogEvent, publish = true, owner?: { turnId: string | undefined }): void {
+    if (event.seq <= session.activitySeq) return;
+    const data = object(event.data);
+    const turnId = owner === undefined ? session.turnId : owner.turnId;
+    const turn = turnId === undefined ? {} : { turnId };
+    let changed = false;
+    if (event.type === "llm/retry" || event.type === "llm/retry-started") {
+      session.activity.retry = { phase: "running", ...turn,
+        ...(Number.isSafeInteger(data.retry) && Number(data.retry) >= 0 ? { attempt: Number(data.retry) } : {}) };
+      changed = true;
+    } else if (event.type === "assistant/message" && typeof session.activity.retry === "object" && session.activity.retry.phase === "running") {
+      session.activity.retry = { ...session.activity.retry, phase: "idle" };
+      changed = true;
+    } else if (event.type === "turn/end" && typeof session.activity.retry === "object" && session.activity.retry.phase === "running") {
+      session.activity.retry = { ...session.activity.retry, phase: object(data.reason).kind === "error" ? "failed" : "idle" };
+      changed = true;
+    } else if (event.type === "compaction/start" && typeof data.compactionId === "string") {
+      session.compactionId = data.compactionId;
+      session.activity.compaction = { phase: "running", ...(data.turn === null ? {} : turn) };
+      changed = true;
+    } else if (event.type === "compaction/end" && typeof data.compactionId === "string"
+      && (session.compactionId === undefined || session.compactionId === data.compactionId)) {
+      session.compactionId = data.compactionId;
+      session.activity.compaction = { phase: typeof data.error === "string" ? "failed" : "idle", ...(data.turn === null ? {} : turn) };
+      changed = true;
+    }
+    if (!changed) return;
+    session.activitySeq = event.seq;
+    if (publish) this.#emit(session, structuredClone(session.activity));
+  }
+
+  /** Native wire inbox is a complete, durable projection, including other frontends' submissions. */
+  #deliveryProjection(session: WebSession, raw: unknown): boolean {
+    const baseline = object(raw); const seq = baseline.asOfSeq;
+    const inbox = object(object(baseline.values).inbox);
+    if (!Number.isSafeInteger(seq) || Number(seq) < session.deliverySeq
+      || !Array.isArray(inbox["next-turn"]) || !Array.isArray(inbox["next-step"])) return false;
+    const items: AgentDeliveryItem[] = [];
+    const nativeQueue: WebSession["queue"] = new Map();
+    let complete = true;
+    for (const [target, delivery] of [["next-turn", "followUp"], ["next-step", "steer"]] as const) {
+      for (const value of inbox[target] as unknown[]) {
+        const message = object(value); const source = object(message.source);
+        const id = typeof source.rpcId === "string" ? source.rpcId : message.id;
+        if (typeof id !== "string" || id.length === 0 || id.length > 256 || typeof message.id !== "string") { complete = false; continue; }
+        if (items.length >= 256) { complete = false; break; }
+        const text = arrayObjects(message.content).filter(block => block.type === "text" && typeof block.text === "string")
+          .map(block => String(block.text)).join("\n") || "非文本消息";
+        if (text.length > 4_096) complete = false;
+        const item: AgentDeliveryItem = { queueId: id, text: text.slice(0, 4_096), delivery, state: "accepted" };
+        items.push(item);
+        // Keep the native occurrence id for the existing cancellation command.
+        nativeQueue.set(id, { itemId: message.id, text: item.text, delivery });
+      }
+    }
+    if (complete) {
+      // In-flight calls have not been admitted yet; their receipts remain device operations.
+      const submitting = [...session.queue].filter(([id]) => session.messages.get(id)?.status === "pending");
+      session.queue = new Map([...submitting, ...nativeQueue]);
+    } else for (const [id, item] of nativeQueue) session.queue.set(id, item);
+    session.deliverySeq = Number(seq);
+    this.#emit(session, { type: "delivery.snapshot", items, complete });
+    return true;
+  }
+
+  async #loadDelivery(session: WebSession): Promise<void> {
+    const generation = ++session.deliveryGeneration;
+    const followGeneration = session.followGeneration;
+    try {
+      const baseline = await this.#client.request("session/projections", { request: { sessionId: session.id } });
+      if (generation !== session.deliveryGeneration || followGeneration !== session.followGeneration
+        || this.#sessions.get(publicId(session.id)) !== session || session.closing) return;
+      this.#deliveryProjection(session, baseline);
+    } catch {
+      // No native baseline means no complete inventory; preserve the last known queue.
+    }
+  }
   #permissionEvent(session: WebSession, event: DshWebLogEvent): void {
     const data = object(event.data);
     if (event.type === "session/title") {
@@ -947,6 +1053,7 @@ export class DshWebRuntime implements AgentBackend {
       if (session.closing || generation !== session.permissionGeneration) return;
       session.permissionOptions = options;
       this.#permissionProjection(session, baseline);
+      this.#deliveryProjection(session, baseline);
       this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
       session.notifications.resolve("dsh.permissions");
     } catch (error) {

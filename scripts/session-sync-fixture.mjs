@@ -4,9 +4,15 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { generateX25519KeyPair, toBase64Url } from "@pi-remote/e2e";
-import { PROTOCOL_VERSION, RelayToDeviceMessageSchema, selectSessionSyncSnapshot } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION, RelayToDeviceMessageSchema, RecoverableSessionSource, selectSessionSyncSnapshot } from "@pi-remote/protocol";
 import { DeviceLink } from "../packages/host/dist/device-link.js";
 import { SessionSyncTasks } from "../packages/host/dist/session-sync-tasks.js";
+import { AgentStateRegistry } from "../packages/host/dist/agent-state-registry.js";
+import { AgentStateFacts } from "../packages/host/dist/agent-state-facts.js";
+import { AgentConversationState } from "../packages/host/dist/agent-conversation-state.js";
+import { AgentStateSubscriptions } from "../packages/host/dist/agent-state-subscriptions.js";
+import { HostStateFacts } from "../packages/host/dist/host-state-facts.js";
+import { buildAgentStateSnapshot } from "../packages/host/dist/agent-state-snapshot.js";
 
 const output = resolve(process.argv[2] ?? ".scratch/chat-history-sync-backlog/live-fixture");
 await mkdir(output, { recursive: true });
@@ -50,6 +56,27 @@ const eventMessage = (runtimeId, event) => ({ type: "runtime.event", protocolVer
   runtimeId, sequence: ++sequence, event });
 const send = (deviceId, message, channel = "ctl") => links.get(deviceId)?.send(Buffer.from(JSON.stringify(RelayToDeviceMessageSchema.parse(message))), channel);
 const log = (line) => process.stdout.write(`${line}\n`);
+const registry = new AgentStateRegistry({ maxValueBytes: 4 * 1024 * 1024 });
+const facts = new AgentStateFacts({ registry, hostId,
+  kindOf: runtimeId => runtimeId === "pi:slow-sync" ? "pi" : runtimeId === "codex:slow-sync" ? "codex" : undefined });
+const conversation = new AgentConversationState(registry);
+const hostFacts = new HostStateFacts({ registry });
+const subscriptions = new AgentStateSubscriptions(registry, (deviceId, message) => send(deviceId, message, "msg"));
+const sources = new Map();
+for (const kind of ["pi", "codex"]) {
+  const runtimeId = `${kind}:slow-sync`;
+  facts.observe(runtimeId, { type: "runtime.metadata", metadata: metadata(kind) });
+  facts.observe(runtimeId, { type: "delivery.snapshot", items: [] });
+  facts.observe(runtimeId, { type: "interaction.snapshot", requests: [] });
+  facts.observe(runtimeId, { type: "execution.activity", retry: "unavailable", compaction: "unavailable" });
+  const source = new RecoverableSessionSource(`${kind}-session`, () => undefined);
+  source.transaction(() => { source.reconcile(entries, entries.at(-1).entryId); source.setAvailability(true, true); });
+  sources.set(kind, source);
+}
+hostFacts.identity({ hostId, hostName: "Isolated model fixture", protocolVersion: PROTOCOL_VERSION });
+hostFacts.backends({ backends: ["pi", "codex"].map(kind => ({ kind, ready: true, launchable: false, runtimeCount: 1, reason: null })), agents: ["pi", "codex"], launchableAgents: [] });
+hostFacts.catalog({ totalSessions: 2, truncated: false, backends: ["pi", "codex"].map(kind => ({ kind, ready: true, sessions: 1, complete: true, elapsedMs: 0 })),
+  sessions: ["pi", "codex"].map(kind => ({ sessionId: `${kind}-session`, agentKind: kind, hostname: "fixture", cwd: "D:/sync-fixture", name: `Slow sync ${kind}`, createdAt: 1, modifiedAt: 1, messageCount: entries.length })), currentProviders: [] });
 const tasks = new SessionSyncTasks({
   link: (deviceId) => links.get(deviceId),
   dispatch: (runtimeId, commandId, command) => {
@@ -59,7 +86,7 @@ const tasks = new SessionSyncTasks({
     record.generated += 1;
     if (record.generated === 1) gates.get(deviceId).until = Date.now() + 10_000;
     tasks.handleEvent(runtimeId, { type: "command.result", commandId, ok: true });
-    const snapshot = selectSessionSyncSnapshot(entries, `${kind}-session`, entries.at(-1).entryId, command);
+    const snapshot = selectSessionSyncSnapshot(entries, `${kind}-session`, entries.at(-1).entryId, command, [], sources.get(kind).snapshot());
     record.entries += snapshot.entries.length;
     record.ranges.push({ range: command.range, target: command.targetLeafId, known: command.knownLeafId,
       entries: snapshot.entries.length, bytes: Buffer.byteLength(JSON.stringify(snapshot)) });
@@ -67,6 +94,10 @@ const tasks = new SessionSyncTasks({
     return "handled";
   },
   encodeEvent: (runtimeId, event) => Buffer.from(JSON.stringify(RelayToDeviceMessageSchema.parse(eventMessage(runtimeId, event)))),
+  acceptSnapshot: (runtimeId, event) => {
+    const scope = facts.scopeOf(runtimeId);
+    return scope !== undefined && conversation.accept(scope, event, ready => facts.prepareConversation(runtimeId, event, ready));
+  },
   sendEvent: (deviceId, runtimeId, event) => send(deviceId, eventMessage(runtimeId, event)),
   error: (deviceId, commandId, code, message) => send(deviceId, { type: "protocol.error", commandId, code, message: message ?? code }),
   log,
@@ -96,13 +127,27 @@ ws.on("connection", (socket) => {
         pskRoot, label: "isolated sync fixture", createdAt: 0, revoked: false }, probeIntervalMs: 0,
         onSessionReady: () => {
           tasks.clearDevice(deviceId);
+          subscriptions.clearDevice(deviceId);
           // notificationEpoch 是 device.ready 的必填项（ADR-0028）：夹具不是通知来源，给一个固定代次。
           send(deviceId, { type: "device.ready", protocolVersion: PROTOCOL_VERSION, deviceId,
-            notificationEpoch: "sync-fixture-epoch", runtimes: [metadata(kind)], agents: [kind] });
+            notificationEpoch: "sync-fixture-epoch", modelEpoch: registry.currentModelEpoch(), runtimes: [metadata(kind)], agents: [kind] });
           send(deviceId, { type: "device.path", protocolVersion: PROTOCOL_VERSION, path: "relay" });
         },
         onPayload: (payload) => {
           const incoming = JSON.parse(payload.toString());
+          if (incoming.type === "agent.state.request") {
+            const scope = incoming.scope === "host" ? { kind: "host" } : incoming.scope === "device" ? { kind: "device", key: { hostId, deviceId } } : facts.scopeOf(incoming.runtimeId);
+            if (!scope) return;
+            subscriptions.register(deviceId, scope, incoming);
+            send(deviceId, buildAgentStateSnapshot({ registry, scope, requestId: incoming.requestId, identity: incoming,
+              ...(incoming.domains === undefined ? {} : { domains: incoming.domains }), ...(incoming.known === undefined ? {} : { known: incoming.known }) }), "msg");
+            return;
+          }
+          if (incoming.type === "agent.state.range.request") {
+            send(deviceId, { type: "agent.state.range.page", protocolVersion: PROTOCOL_VERSION, requestId: incoming.requestId,
+              scope: "host", domain: "catalog", page: hostFacts.catalogRange(incoming) }, "msg");
+            return;
+          }
           if (incoming.type !== "runtime.command" || incoming.command.type !== "session.sync") return;
           const record = stats.get(deviceId);
           record.requests += 1;
@@ -137,7 +182,7 @@ ws.on("connection", (socket) => {
   });
   socket.on("close", () => {
     link?.close();
-    if (links.get(deviceId) === link) { links.delete(deviceId); tasks.clearDevice(deviceId); }
+    if (links.get(deviceId) === link) { links.delete(deviceId); tasks.clearDevice(deviceId); subscriptions.clearDevice(deviceId); }
   });
 });
 await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
@@ -146,6 +191,7 @@ await writeFile(resolve(output, "config.json"), JSON.stringify({ port, pskRoot, 
 log(`fixture.ready port=${port}`);
 async function stop() {
   tasks.close();
+  subscriptions.close();
   for (const link of links.values()) link.close();
   for (const socket of ws.clients) socket.terminate();
   await writeFile(resolve(output, "stats.json"), JSON.stringify(Object.fromEntries(stats), null, 2));

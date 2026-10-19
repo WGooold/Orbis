@@ -1,4 +1,5 @@
-import type { DiagnosticPage, DiagnosticRecord } from "@pi-remote/protocol";
+import { randomUUID } from "node:crypto";
+import { DiagnosticRecordSchema, type AgentKind, type DiagnosticPage, type DiagnosticRecord } from "@pi-remote/protocol";
 
 /**
  * 有界诊断记录（ADR-0032 模块 23）。
@@ -23,6 +24,7 @@ export type DiagnosticPageRequest = {
   readonly category?: string;
   readonly severity?: DiagnosticRecord["severity"];
   readonly sessionId?: string;
+  readonly agentKind?: AgentKind;
 };
 
 export type DiagnosticJournalOptions = {
@@ -31,6 +33,8 @@ export type DiagnosticJournalOptions = {
   readonly now?: () => number;
   /** 单次读取的条数上限。 */
   readonly maxPageSize?: number;
+  readonly maxBytes?: number;
+  readonly maxPageBytes?: number;
   /** 落盘钩子；不传就是纯内存，进程重启即丢。 */
   readonly persistence?: DiagnosticJournalPersistence;
 };
@@ -43,6 +47,7 @@ export type DiagnosticJournalOptions = {
  */
 export type DiagnosticJournalPersistence = {
   readonly load: () => readonly DiagnosticRecord[];
+  readonly gaps?: () => number;
   readonly append: (record: DiagnosticRecord) => void;
   readonly rewrite: (records: readonly DiagnosticRecord[]) => void;
 };
@@ -59,6 +64,9 @@ export class DiagnosticJournal {
   readonly #maxPageSize: number;
   readonly #now: () => number;
   readonly #persistence: DiagnosticJournalPersistence | undefined;
+  readonly #epoch = randomUUID();
+  readonly #maxBytes: number;
+  readonly #maxPageBytes: number;
   #entries: Entry[] = [];
   #seq = 0;
   #dropped = 0;
@@ -71,6 +79,8 @@ export class DiagnosticJournal {
     this.#maxPageSize = Math.max(1, options.maxPageSize ?? DEFAULT_MAX_PAGE_SIZE);
     this.#now = options.now ?? Date.now;
     this.#persistence = options.persistence;
+    this.#maxBytes = Math.max(16_384, options.maxBytes ?? 8 * 1024 * 1024);
+    this.#maxPageBytes = Math.max(16_384, options.maxPageBytes ?? 192 * 1024);
     this.#restore();
   }
 
@@ -82,6 +92,7 @@ export class DiagnosticJournal {
     let stored: readonly DiagnosticRecord[];
     try {
       stored = this.#persistence.load();
+      this.#persistFailures += this.#persistence.gaps?.() ?? 0;
     } catch {
       this.#persistFailures += 1;
       return;
@@ -91,24 +102,28 @@ export class DiagnosticJournal {
       this.#counter += 1;
       this.#entries.push({ seq: this.#seq, record });
     }
-    this.#evict();
+    if (this.#evict() > 0) this.#rewriteAll();
   }
 
   /** 追加一条记录。返回写下的记录；调用方拿它做日志或断言。 */
   append(input: DiagnosticAppendInput): DiagnosticRecord {
     const at = input.at ?? this.#now();
     this.#counter += 1;
-    const record: DiagnosticRecord = {
-      recordId: input.recordId ?? `${at.toString(36)}-${this.#counter.toString(36)}`,
+    const record = DiagnosticRecordSchema.parse({
+      recordId: input.recordId ?? `${this.#epoch}:${this.#counter.toString(36)}`,
+      producerEpoch: input.producerEpoch ?? this.#epoch,
+      ...(input.hostId === undefined ? {} : { hostId: input.hostId }),
+      ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+      ...(input.turnId === undefined ? {} : { turnId: input.turnId }),
       scope: input.scope,
       agentKind: input.agentKind,
       sessionId: input.sessionId,
       category: input.category,
       severity: input.severity,
-      message: input.message,
-      ...(input.detail === undefined ? {} : { detail: input.detail }),
+      message: redact(input.message).slice(0, 512),
+      ...(input.detail === undefined ? {} : { detail: Object.fromEntries(Object.entries(input.detail).slice(0, 16).map(([key, value]) => [key, redact(value).slice(0, 256)])) }),
       at,
-    };
+    });
     this.#seq += 1;
     this.#entries.push({ seq: this.#seq, record });
     // 淘汰会改变盘上那份的内容，所以两种情况各写一次，而不是先追加再整体重写。
@@ -125,15 +140,17 @@ export class DiagnosticJournal {
    * 那会让界面把「一页里最新的一条」说成「最近的一条」。
    */
   page(request: DiagnosticPageRequest = {}): DiagnosticPage {
-    this.#evict();
+    if (this.#evict() > 0) this.#rewriteAll();
     const limit = Math.min(Math.max(1, request.limit ?? this.#maxPageSize), this.#maxPageSize);
     const from = this.#decodeCursor(request.cursor);
+    const invalidCursor = Boolean(request.cursor) && (from === undefined || from > this.#seq);
     const oldest = this.#entries[0]?.seq ?? this.#seq + 1;
     // 游标落后于保留窗口：中间那一段已经被淘汰，如实报告缺口。
-    const truncated = from !== undefined && from + 1 < oldest;
-    const startSeq = from === undefined ? oldest : Math.max(from + 1, oldest);
+    const truncated = invalidCursor || from !== undefined && from + 1 < oldest;
+    const startSeq = from === undefined || invalidCursor ? oldest : Math.max(from + 1, oldest);
     const matched: DiagnosticRecord[] = [];
     let lastSeq = startSeq - 1;
+    let bytes = 0;
     for (const entry of this.#entries) {
       if (entry.seq < startSeq) continue;
       if (matched.length >= limit) break;
@@ -142,10 +159,13 @@ export class DiagnosticJournal {
         lastSeq = entry.seq;
         continue;
       }
+      const size = Buffer.byteLength(JSON.stringify(entry.record));
+      if (bytes + size > this.#maxPageBytes) break;
+      bytes += size;
       matched.push(entry.record);
       lastSeq = entry.seq;
     }
-    const consumed = this.#entries.length > 0 && lastSeq >= this.#entries[this.#entries.length - 1]!.seq;
+    const consumed = this.#entries.length === 0 || lastSeq >= this.#entries[this.#entries.length - 1]!.seq;
     const nextCursor = consumed ? null : this.#encodeCursor(lastSeq < startSeq - 1 ? startSeq - 1 : lastSeq);
     return { records: matched, nextCursor, truncated };
   }
@@ -174,6 +194,7 @@ export class DiagnosticJournal {
     if (request.category !== undefined && record.category !== request.category) return false;
     if (request.severity !== undefined && record.severity !== request.severity) return false;
     if (request.sessionId !== undefined && record.sessionId !== request.sessionId) return false;
+    if (request.agentKind !== undefined && record.agentKind !== request.agentKind) return false;
     return true;
   }
 
@@ -193,6 +214,11 @@ export class DiagnosticJournal {
       const excess = this.#entries.length - this.#maxRecords;
       this.#dropped += excess;
       this.#entries = this.#entries.slice(excess);
+    }
+    let bytes = this.#entries.reduce((sum, entry) => sum + Buffer.byteLength(JSON.stringify(entry.record)), 0);
+    while (bytes > this.#maxBytes && this.#entries.length > 0) {
+      bytes -= Buffer.byteLength(JSON.stringify(this.#entries.shift()!.record));
+      this.#dropped += 1;
     }
     return this.#dropped - droppedBefore;
   }
@@ -216,15 +242,22 @@ export class DiagnosticJournal {
   }
 
   #encodeCursor(seq: number): string {
-    return Buffer.from(`r1:${seq}`, "utf8").toString("base64url");
+    return Buffer.from(`r2:${this.#epoch}:${seq}`, "utf8").toString("base64url");
   }
 
   #decodeCursor(cursor: string | null | undefined): number | undefined {
     if (cursor === null || cursor === undefined || cursor === "") return undefined;
     const text = Buffer.from(cursor, "base64url").toString("utf8");
-    const match = /^r1:(\d+)$/.exec(text);
+    const match = /^r2:([^:]+):(\d+)$/.exec(text);
     if (match === null) return undefined;
-    const seq = Number(match[1]);
+    if (match[1] !== this.#epoch) return undefined;
+    const seq = Number(match[2]);
     return Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
   }
 }
+
+/** Defense in depth for operational error strings. Public writers never pass raw configuration. */
+const redact = (value: string): string => value
+  .replace(/\b(?:Bearer\s+|sk-)[^\s,;]+/gi, "[redacted]")
+  .replace(/((?:api[_-]?key|token|password|authorization)\s*[=:]\s*)[^\s,;]+/gi, "$1[redacted]")
+  .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[redacted]@");

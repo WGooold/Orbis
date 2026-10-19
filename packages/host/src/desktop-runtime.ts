@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, resolveStateDir, revokeDeviceRecord, saveDeviceStore } from "@pi-remote/e2e";
 import QRCode from "qrcode";
+import type { AgentStateRangeRequest } from "@pi-remote/protocol";
 import { HostService } from "./host-service.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
@@ -138,9 +139,12 @@ export class DesktopRuntime {
         if (!hotSwitch) await this.#service?.reloadProviderConfiguration(kind, await this.#providers.environment(kind), liveApply(kind, liveEdit));
         this.#emit({ event: "providersChanged", kind });
       },
-      proxyStatus: () => this.#emit({ event: "proxyStatusChanged" }),
+      proxyStatus: () => { this.#emit({ event: "proxyStatusChanged" }); void this.#service?.refreshProviderFacts(); },
     });
-    this.#usage = new ProviderUsageCache(() => this.#providers.usageProfiles(), (profile, usage) => this.#emit({ event: "providerUsageChanged", kind: profile.kind, providerId: profile.id, usage }));
+    this.#usage = new ProviderUsageCache(() => this.#providers.usageProfiles(), (profile, usage) => {
+      this.#emit({ event: "providerUsageChanged", kind: profile.kind, providerId: profile.id, usage });
+      void this.#service?.refreshProviderFacts();
+    });
   }
 
   async initialize(): Promise<unknown> {
@@ -274,6 +278,7 @@ export class DesktopRuntime {
         }
       }
       this.#detected.set(kind, status);
+      this.#service?.refreshHostFacts();
       return { ...status, path: local.entry, connected: kind === "pi" ? (this.#service?.localRuntimes.length ?? 0) > 0 : kind === "dsh" ? this.#dshRuntime?.isReady() ?? false : this.#codexRuntime?.isReady() ?? false };
     }));
   }
@@ -355,6 +360,11 @@ export class DesktopRuntime {
       const stunServers = settings.stunServers ?? defaultStunServers(settings.relayUrl);
       const service = await HostService.create({
         providers: this.#providers,
+        providerUsage: (kind, id) => this.#usage.get(kind, id),
+        managementBackends: () => (["pi", "codex", "dsh"] as const).map(kind => {
+          const status = this.#detected.get(kind);
+          return { kind, installed: status?.installed ?? null, version: status?.version ?? null };
+        }),
         stateDir: this.#stateDir, relayUrl: settings.relayUrl, credential: settings.credential,
         ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }), stunServers,
         ...(this.#codexRuntime === undefined ? {} : { codexRuntime: this.#codexRuntime, codexLaunch: (request: { cwd: string }) => this.#codexRuntime!.prepareTerminalLaunch(request.cwd) }),
@@ -418,9 +428,24 @@ export class DesktopRuntime {
         ...(d.appVersionCode === undefined ? {} : { appVersionCode: d.appVersionCode }),
       };
     });
-    const status = { event: "status", devices, runtimeCount: service.localRuntimes.length + (this.#codexRuntime?.directoryEntries().length ?? 0) + (this.#codexDesktopLifecycle?.runtime?.directoryEntries().length ?? 0) + (this.#dshRuntime?.directoryEntries().length ?? 0), lan: service.lanEndpoints };
-    const text = JSON.stringify(status);
+    const model = service.readHostState(["backends", "connections", "management", "operations"]);
+    const backends = model.domains.find(domain => domain.domain === "backends")?.value as { backends?: { runtimeCount: number }[] } | undefined;
+    const status = { event: "status", devices, runtimeCount: backends?.backends?.reduce((sum, backend) => sum + backend.runtimeCount, 0) ?? 0,
+      lan: service.lanEndpoints, model };
+    const text = JSON.stringify({ ...status, model: { ...model, domains: model.domains.map(domain => ({ ...domain, checkedAt: 0 })) } });
     if (text !== this.#lastStatus) { this.#lastStatus = text; this.#emit(status); }
+  }
+
+  async readState(domains?: readonly string[]): Promise<ReturnType<HostService["readHostState"]> | null> {
+    const service = this.#service;
+    if (!service) return null;
+    if (domains === undefined || domains.includes("providers")) await service.refreshProviderFacts();
+    if (domains === undefined || domains.includes("catalog")) await service.readHostRange();
+    return service.readHostState(domains);
+  }
+
+  async readRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}): Promise<Awaited<ReturnType<HostService["readHostRange"]>> | null> {
+    return await this.#service?.readHostRange(request) ?? null;
   }
 
   async pair(): Promise<unknown> {

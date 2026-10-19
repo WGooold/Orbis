@@ -161,6 +161,33 @@ describe("Codex recoverable source checkpoints", () => {
   const nativeReads = (h: ReturnType<typeof makeHarness>) => h.historyReads.mock.calls;
 
   const notices = (h: ReturnType<typeof makeHarness>) => h.events.filter(e => e.type === "notification.source").at(-1)?.notifications ?? [];
+  it("replays complete delivery and explicit retry/compaction facts during reconciliation", async () => {
+    const h = makeHarness(); await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1 } });
+    h.runtime.handleCommand({ type: "user_message", text: "later", messageId: "queued", delivery: "followUp" }, "queued-command", "th-1");
+    h.notify("error", { threadId: "th-1", turnId: "t", willRetry: true, error: { message: "network error" } });
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: { id: "compact", type: "contextCompaction" } });
+    // The native compaction item is progress for the same retrying turn, so the retry is confirmed recovered.
+    expect(h.events.filter(event => event.type === "execution.activity").at(-1)).toMatchObject({
+      retry: { phase: "idle" }, compaction: { phase: "running", turnId: "t" },
+    });
+    h.notify("item/completed", { threadId: "th-1", turnId: "t", item: { id: "compact", type: "contextCompaction" } });
+    expect(h.events.filter(event => event.type === "execution.activity").at(-1)?.compaction).toEqual({ phase: "idle", turnId: "t" });
+    expect(h.events.filter(event => event.type === "execution.activity").some(event => typeof event.retry === "object" && event.retry.phase === "running")).toBe(true);
+    h.runtime.announce("th-1");
+    expect(h.events.filter(event => event.type === "delivery.snapshot").at(-1)).toEqual({
+      type: "delivery.snapshot", complete: true, items: [{ queueId: "queued", text: "later", delivery: "followUp", state: "accepted" }],
+    });
+    expect(h.events.filter(event => event.type === "execution.activity").at(-1)?.compaction).toEqual({ phase: "idle", turnId: "t" });
+  });
+
+  it("ordinary native idle does not clear an active retry fact", async () => {
+    const h = makeHarness(); await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1 } });
+    h.notify("error", { threadId: "th-1", turnId: "t", willRetry: true, error: { message: "retry pending" } });
+    h.notify("thread/status/changed", { threadId: "th-1", status: { type: "idle" } });
+    expect(h.events.filter(event => event.type === "execution.activity").at(-1)?.retry).toEqual({ phase: "running", turnId: "t" });
+  });
   it("keeps independent retry and sandbox conditions and resolves only their owners", async () => {
     const h = makeHarness(); await activate(h);
     h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1 } });

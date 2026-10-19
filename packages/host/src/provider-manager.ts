@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { isSeq, parseDocument } from "yaml";
-import type { AgentKind } from "@pi-remote/protocol";
+import type { AgentKind, HostProviderSummary } from "@pi-remote/protocol";
 import { ProviderError } from "./provider-error.js";
 import { backfillCodex, codexOfficial, defaultCodexPreferences, extractCodexCommon, prepareCodex, type CodexPreferences } from "./provider-codex.js";
 import { validateUsageScript, type UsageScript } from "./provider-usage.js";
@@ -12,6 +12,8 @@ import { backfillCatalog, catalogFilename, catalogSpecs, ownedCatalog, prepareCa
 import { CodexOAuthAccounts, managedAuthMarker, type ManagedAuthMarker } from "./provider-oauth.js";
 import { CodexProxy, type ProxySnapshot } from "./codex-proxy.js";
 import { defaultProxyPreferences, proxyPreferences, proxyRoute, projectProxy, restoreProxy, upstreamFormat, validateCodexRouting, type ProxyPreferences, type ProxyTakeover } from "./provider-proxy-config.js";
+import { publicProviderAuthentication, publicProviderHealth, publicProviderRouting, publicProviderUsage } from "./provider-public-state.js";
+import type { UsageSnapshot } from "./provider-usage-cache.js";
 export { ProviderError } from "./provider-error.js";
 
 type ObjectValue = Record<string, unknown>;
@@ -241,6 +243,34 @@ export class ProviderManager {
     return this.#run(async () => {
       const store = await this.#load(); const live = await this.#sync(store, kind);
       await atomicWrite(this.#file, json(store)); return this.#summaries(store, kind, live);
+    });
+  }
+  /** Atomic public snapshot: one native reconciliation, one config/account view, no secrets or network probes. */
+  publicState(kind: AgentKind, options: {
+    switching?: boolean | null;
+    usage?: (kind: AgentKind, providerId: string) => UsageSnapshot | undefined;
+  } = {}): Promise<HostProviderSummary> {
+    return this.#run(async () => {
+      const store = await this.#load(); const live = await this.#sync(store, kind);
+      const summaries = this.#summaries(store, kind, live);
+      const selected = kind === "pi" ? summaries.find(summary => summary.enabled && summary.globalDefault)
+        ?? (summaries.filter(summary => summary.enabled).length === 1 ? summaries.find(summary => summary.enabled) : undefined)
+        : summaries.find(summary => summary.enabled);
+      const profile = store.providers.find(candidate => candidate.kind === kind && candidate.id === selected?.id);
+      const accountIds = new Set(profile?.authBinding ? (await this.#oauth.list()).map(account => account.id) : []);
+      const authentication = publicProviderAuthentication(profile, accountIds, profile?.authBinding ? await this.#oauth.defaultId() : undefined);
+      const status = this.#proxy.publicStatus;
+      await atomicWrite(this.#file, json(store));
+      return { agentKind: kind, availability: "ready", current: selected?.id ?? null,
+        profiles: summaries.slice(0, 64).map(summary => ({ id: summary.id, name: summary.name,
+          enabled: summary.enabled, globalDefault: summary.globalDefault === true, mode: summary.mode })),
+        profilesTruncated: summaries.length > 64,
+        authenticated: authentication.bindingReady ?? authentication.credentialPresent,
+        authentication, switching: options.switching ?? null,
+        usage: publicProviderUsage(selected ? options.usage?.(kind, selected.id) : undefined),
+        health: publicProviderHealth(kind, status),
+        routing: publicProviderRouting(kind, store.proxyPreferences ?? defaultProxyPreferences(), status),
+      };
     });
   }
   get(kind: AgentKind, id: string): Promise<ProviderProfile> {

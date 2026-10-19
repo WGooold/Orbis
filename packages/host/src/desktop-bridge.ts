@@ -2,6 +2,7 @@ import { createInterface } from "node:readline";
 import { DesktopRuntime, type DesktopSettings } from "./desktop-runtime.js";
 import { ProviderError } from "./provider-manager.js";
 import { join } from "node:path";
+import { AgentStateRangeRequestSchema } from "@pi-remote/protocol";
 
 // stdout is exclusively a JSON-lines pipe to the parent Qt process. Host diagnostics use events or stderr.
 const output = (value: unknown): void => { process.stdout.write(`${JSON.stringify(value)}\n`); };
@@ -37,6 +38,15 @@ input.on("line", line => {
       switch (request.method) {
         case "initialize": result = await runtime.initialize(); break;
         case "detect": result = await runtime.detect(p, p.checkLatest === true); break;
+        case "state.read": {
+          const domains = p.domains;
+          if (domains !== undefined && (!Array.isArray(domains) || domains.length > 32 || domains.some(value => typeof value !== "string" || value.length > 64))) throw new Error("Invalid state domains");
+          result = await runtime.readState(domains as string[] | undefined); break;
+        }
+        case "state.range": {
+          const range = AgentStateRangeRequestSchema.parse({ type: "agent.state.range.request", requestId: "desktop:host-range", ...p });
+          result = await runtime.readRange(range); break;
+        }
         case "start": await runtime.start(p as DesktopSettings); break;
         case "stop": await runtime.stop(); break;
         case "pair": result = await runtime.pair(); break;

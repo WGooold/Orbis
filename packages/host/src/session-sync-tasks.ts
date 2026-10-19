@@ -22,6 +22,7 @@ type Options = {
   link: (deviceId: string) => Pick<DeviceLink, "active" | "sendSessionSnapshot" | "sessionSyncQueuedBytes"> | undefined;
   dispatch: (runtimeId: string, commandId: string, command: SessionSyncRequest) => "handled" | "offline" | "unsupported";
   encodeEvent: (runtimeId: string, event: RuntimeEvent) => Buffer;
+  acceptSnapshot?: (runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" }>) => boolean;
   sendEvent: (deviceId: string, runtimeId: string, event: RuntimeEvent) => void;
   error: (deviceId: string, commandId: string, code: string, message?: string) => void;
   log?: (line: string) => void;
@@ -108,6 +109,10 @@ export class SessionSyncTasks {
     }
     if (event.type === "session.snapshot") {
       if (task.stage !== "processing") return true;
+      if (this.#options.acceptSnapshot?.(runtimeId, event) === false) {
+        this.#fail(task, "session_sync_model_rejected");
+        return true;
+      }
       const payload = this.#options.encodeEvent(runtimeId, { ...event, syncId: task.command.syncId });
       if (payload.byteLength > SESSION_SYNC_MAX_BYTES) {
         this.#fail(task, "session_sync_response_too_large");
@@ -207,6 +212,11 @@ export class SessionSyncTasks {
     const tasks = [...this.#tasks.values()].filter((task) => task.deviceId === deviceId);
     return { records: tasks.length, pending: tasks.filter((task) => this.#pending(task)).length,
       active: tasks.filter((task) => task.reserved > 0).length, reservedBytes: tasks.reduce((sum, task) => sum + task.reserved, 0) };
+  }
+  aggregateStats(): { records: number; pending: number; active: number; reservedBytes: number } {
+    const tasks = [...this.#tasks.values()];
+    return { records: tasks.length, pending: tasks.filter(task => this.#pending(task)).length,
+      active: tasks.filter(task => task.reserved > 0).length, reservedBytes: tasks.reduce((sum, task) => sum + task.reserved, 0) };
   }
   close(): void {
     this.#closed = true;

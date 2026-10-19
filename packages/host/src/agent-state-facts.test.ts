@@ -46,7 +46,7 @@ describe("AgentStateFacts 运行 / 模型 / 上下文", () => {
     }));
     const execution = read<AgentExecutionState>(registry, "execution");
     expect(execution?.availability).toBe("ready");
-    expect(execution?.value).toEqual({ phase: "running", waitingFor: [], retry: "unavailable", compaction: "unavailable" });
+    expect(execution?.value).toEqual({ phase: "running", waitingFor: [], retry: "unavailable", compaction: "unavailable", turn: null });
     expect(read<AgentModelState>(registry, "model")?.value).toEqual({ provider: "openai", id: "gpt-5", thinkingLevel: "high" });
     expect(read<{ contextWindow: number }>(registry, "context")?.value?.contextWindow).toBe(1_000);
   });
@@ -161,8 +161,10 @@ describe("AgentStateFacts 重新接入与隔离", () => {
 
     facts.observe("codex:r2", queued("q3"));
     const fresh = read<Record<string, AgentDeliveryItem>>(registry, "delivery");
-    expect(fresh?.availability).toBe("ready");
-    expect(Object.keys(fresh?.value ?? {}).sort()).toEqual(["q1", "q3"]);
+    expect(fresh?.availability).toBe("unknown");
+    facts.observe("codex:r2", { type: "delivery.snapshot", complete: true, items: [{ queueId: "q3", text: "q3", delivery: "followUp", state: "accepted" }] });
+    expect(read(registry, "delivery")?.availability).toBe("ready");
+    expect(Object.keys(read<Record<string, AgentDeliveryItem>>(registry, "delivery")?.value ?? {})).toEqual(["q3"]);
   });
 
   it("后端暂断标记待核对但保留最后已知值", () => {
@@ -191,7 +193,7 @@ describe("AgentStateFacts 重新接入与隔离", () => {
     const state = read<AgentExecutionState>(registry, "execution");
     expect(facts.baseline("codex:r1", "execution", { modelEpoch: state!.modelEpoch, revision: state!.revision })?.action).toBe("unchanged");
     expect(facts.baseline("codex:r1", "execution")?.action).toBe("state");
-    expect(facts.baseline("codex:r1", "history")).toEqual({ action: "baseline", state: null });
+    expect(facts.baseline("codex:r1", "history")).toMatchObject({ action: "baseline", state: { availability: "unknown", value: null } });
     expect(facts.baseline("codex:r9", "execution")).toBeUndefined();
   });
 

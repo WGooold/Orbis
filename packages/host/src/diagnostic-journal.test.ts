@@ -14,6 +14,36 @@ const record = (over: Partial<Parameters<DiagnosticJournal["append"]>[0]> = {}) 
 });
 
 describe("DiagnosticJournal", () => {
+  it("reports a cursor from a prior process as a gap without skipping the restored window", () => {
+    const memory = memoryPersistence();
+    const first = new DiagnosticJournal({ persistence: memory });
+    first.append(record({ message: "a" })); first.append(record({ message: "b" }));
+    const cursor = first.page({ limit: 1 }).nextCursor;
+    const next = new DiagnosticJournal({ persistence: memory });
+    expect(next.page({ cursor })).toMatchObject({ truncated: true, nextCursor: null });
+    expect(next.page({ cursor }).records.map(item => item.message)).toEqual(["a", "b"]);
+    expect(next.page().records[0]?.producerEpoch).toBe(first.page().records[0]?.producerEpoch);
+  });
+
+  it("bounds storage and pages by bytes and redacts common credential strings", () => {
+    const journal = new DiagnosticJournal({ maxBytes: 32_768, maxPageBytes: 16_384 });
+    for (let n = 0; n < 30; n += 1) journal.append(record({
+      message: "failure sk-private-value token=secret-value", detail: Object.fromEntries(Array.from({ length: 16 }, (_, i) => [String(i), "x".repeat(256)])),
+    }));
+    const first = journal.page();
+    expect(first.nextCursor).not.toBeNull();
+    expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThan(17_000);
+    expect(journal.stats().dropped).toBeGreaterThan(0);
+    expect(JSON.stringify(first)).not.toContain("private-value");
+    expect(JSON.stringify(first)).not.toContain("secret-value");
+  });
+
+  it("filters same-named sessions by backend and returns null for an empty window", () => {
+    const journal = new DiagnosticJournal();
+    expect(journal.page().nextCursor).toBeNull();
+    journal.append(record()); journal.append(record({ agentKind: "dsh" }));
+    expect(journal.page({ sessionId: "s1", agentKind: "dsh" }).records).toHaveLength(1);
+  });
   it("按游标分页读完整个保留窗口，最后给 null", () => {
     const journal = new DiagnosticJournal();
     for (let index = 0; index < 5; index += 1) journal.append(record({ message: `m${index}` }));

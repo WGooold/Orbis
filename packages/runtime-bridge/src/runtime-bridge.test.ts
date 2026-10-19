@@ -620,6 +620,22 @@ describe("RuntimeBridge", () => {
       delivery: "followUp",
       state: "accepted",
     });
+    expect(transport.events).toContainEqual({ type: "delivery.snapshot", complete: true, items: [{
+      queueId: "queue-reconnect", text: "survive reconnect", delivery: "followUp", state: "accepted",
+    }] });
+  });
+
+  it("replays explicit activity on reconnect and verifies an empty queue without inferring recovery from idle", async () => {
+    const transport = new FakeTransport();
+    const bridge = new RuntimeBridge(makeRuntime(), transport);
+    await bridge.start();
+    bridge.publish({ type: "execution.activity", retry: "unavailable", compaction: { phase: "failed" } });
+    bridge.setStatus("idle");
+    transport.events.length = 0;
+    transport.connectedHandler?.();
+    expect(transport.events).toContainEqual({ type: "delivery.snapshot", items: [], complete: true });
+    expect(transport.events).toContainEqual({ type: "execution.activity", retry: "unavailable", compaction: { phase: "failed" } });
+    bridge.close();
   });
 
   it("keeps cancellation scoped to one queued message", async () => {

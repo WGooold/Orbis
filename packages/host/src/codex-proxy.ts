@@ -1,6 +1,6 @@
 import { createServer, type Server, type ServerResponse, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
 import { gunzip, inflate, brotliDecompress, type ZlibOptions } from "node:zlib";
 import { createParser } from "eventsource-parser";
@@ -10,6 +10,12 @@ import { ProviderCircuit, object, text, upstreamUrl, type Obj, type ProxyPrefere
 import { ProviderError } from "./provider-error.js";
 
 export type ProxySnapshot = { preferences: ProxyPreferences; routes: ProxyRoute[] };
+export type ProxyPublicStatus = {
+  running: boolean; activeRequests: number; totalRequests: number; successfulRequests: number; failoverCount: number;
+  lastProviderId: string | null;
+  health: { id: string; state: "closed" | "open" | "half_open"; failures: number; lastSuccessAt: number; lastFailureAt: number }[];
+  requests: { requestId: string; providerId: string | null; startedAt: number; routeProviderIds: string[] }[];
+};
 const MAX_BODY = 16 * 1024 * 1024;
 class UpstreamFailure extends Error { constructor(readonly status: number) { super(`Upstream HTTP ${status}`); } }
 const retryable = (error: unknown): boolean => error instanceof UpstreamFailure ? [401, 403, 408, 429].includes(error.status) || error.status >= 500 : !(error instanceof ProviderError);
@@ -34,6 +40,7 @@ function eventString(event: Obj): string { return `event: ${text(event.type)}\nd
 export class CodexProxy {
   #server: Server | undefined; #baseUrl = ""; #token = "";
   readonly #active = new Set<AbortController>();
+  readonly #requestBindings = new Map<AbortController, ProxyPublicStatus["requests"][number]>();
   readonly #circuits = new Map<string, ProviderCircuit>();
   readonly #reasoning = new Map<string, Map<string, string>>();
   #lastProvider = ""; #requests = 0; #successes = 0; #failovers = 0;
@@ -43,7 +50,16 @@ export class CodexProxy {
   get status(): Obj {
     return { running: this.running, baseUrl: this.baseUrl, activeRequests: this.#active.size, totalRequests: this.#requests, successfulRequests: this.#successes, failoverCount: this.#failovers, lastProviderId: this.#lastProvider, health: [...this.#circuits].map(([id, c]) => ({ id, state: c.state, failures: c.failures, lastError: c.lastError, lastSuccessAt: c.lastSuccessAt, lastFailureAt: c.lastFailureAt })) };
   }
-  reset(id: string): void { this.#circuits.delete(id); }
+  /** Whitelisted public routing facts; never includes URLs, tokens, headers or upstream error text. */
+  get publicStatus(): ProxyPublicStatus {
+    return { running: this.running, activeRequests: this.#active.size, totalRequests: this.#requests,
+      successfulRequests: this.#successes, failoverCount: this.#failovers, lastProviderId: this.#lastProvider || null,
+      health: [...this.#circuits].map(([id, circuit]) => ({ id, state: circuit.state, failures: circuit.failures,
+        lastSuccessAt: circuit.lastSuccessAt, lastFailureAt: circuit.lastFailureAt })),
+      requests: structuredClone([...this.#requestBindings.values()]),
+    };
+  }
+  reset(id: string): void { this.#circuits.delete(id); this.onStatus?.(); }
   async start(port: number, token: string): Promise<void> {
     if (this.#server) return;
     const server = createServer((request, response) => { void this.#handle(request, response).catch(() => jsonResponse(response, 500, "Local route failed")); });
@@ -55,12 +71,14 @@ export class CodexProxy {
     server.on("error", () => { /* Individual socket errors must not terminate the Host. */ });
     this.#server = server; this.#token = token;
     this.#baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    this.onStatus?.();
   }
   async stop(): Promise<void> {
     const server = this.#server; this.#server = undefined;
     for (const controller of this.#active) controller.abort();
     if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
     this.#baseUrl = ""; this.#reasoning.clear();
+    this.onStatus?.();
   }
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const authorization = request.headers.authorization ?? "";
@@ -71,6 +89,9 @@ export class CodexProxy {
     if (request.method !== "POST" || !["/v1/responses", "/v1/responses/compact"].includes(requestUrl.pathname)) { jsonResponse(response, 404, "Unknown route"); return; }
     if (this.#active.size >= 32) { jsonResponse(response, 429, "Too many local inference requests"); return; }
     const abort = new AbortController(); this.#active.add(abort); this.#requests++;
+    const binding = { requestId: randomUUID(), providerId: null as string | null, startedAt: Date.now(), routeProviderIds: [] as string[] };
+    this.#requestBindings.set(abort, binding);
+    this.onStatus?.();
     const close = () => { if (!response.writableFinished) abort.abort(); };
     response.once("close", close);
     let timer: NodeJS.Timeout | undefined;
@@ -88,6 +109,7 @@ export class CodexProxy {
       catch { jsonResponse(response, 400, "Expected a JSON request object"); return; }
       const snapshot = await this.snapshot();
       const { preferences: p, routes } = snapshot;
+      binding.routeProviderIds = routes.map(route => route.id);
       if (!p.enabled || !routes.length) { jsonResponse(response, 503, "No enabled Codex route"); return; }
       timer = setTimeout(() => abort.abort(), p.requestTimeout * 1000);
       const compact = requestUrl.pathname.endsWith("/compact");
@@ -101,6 +123,8 @@ export class CodexProxy {
         if (!circuit) { circuit = new ProviderCircuit(); this.#circuits.set(route.id, circuit); }
         if (p.autoFailoverEnabled && !circuit.allow(p)) continue;
         attempts++;
+        binding.providerId = route.id;
+        this.onStatus?.();
         let upstreamAbort: AbortController | undefined;
         try {
           if (upstreamUrl(route, compact).origin === new URL(this.baseUrl).origin) throw new ProviderError("A proxy route cannot point back to itself");
@@ -181,6 +205,6 @@ export class CodexProxy {
       }
       jsonResponse(response, 503, last);
     } catch { jsonResponse(response, abort.signal.aborted ? 504 : 400, abort.signal.aborted ? "Inference request cancelled or timed out" : "Invalid local inference request"); }
-    finally { if (timer) clearTimeout(timer); response.off("close", close); this.#active.delete(abort); this.onStatus?.(); }
+    finally { if (timer) clearTimeout(timer); response.off("close", close); this.#active.delete(abort); this.#requestBindings.delete(abort); this.onStatus?.(); }
   }
 }

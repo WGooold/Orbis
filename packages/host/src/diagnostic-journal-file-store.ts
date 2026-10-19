@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { DiagnosticRecordSchema, type DiagnosticRecord } from "@pi-remote/protocol";
@@ -19,8 +19,10 @@ export const DIAGNOSTIC_JOURNAL_FILE = "diagnostics.ndjson";
 
 export function createDiagnosticJournalFileStore(stateDir: string): DiagnosticJournalPersistence {
   const path = join(stateDir, DIAGNOSTIC_JOURNAL_FILE);
+  let skipped = 0;
   return {
-    load: () => readRecords(path),
+    load: () => { skipped = 0; return readRecords(path, () => { skipped += 1; }); },
+    gaps: () => skipped,
     append: (record) => {
       mkdirSync(dirname(path), { recursive: true });
       appendFileSync(path, `${JSON.stringify(record)}\n`, "utf8");
@@ -41,13 +43,15 @@ export function createDiagnosticJournalFileStore(stateDir: string): DiagnosticJo
 }
 
 /** 读回记录：坏行跳过，顺序按文件里的先后（也就是写入顺序）。 */
-export function readRecords(path: string): DiagnosticRecord[] {
+export function readRecords(path: string, onSkipped?: () => void): DiagnosticRecord[] {
   let text: string;
   try {
+    if (statSync(path).size > 32 * 1024 * 1024) throw new Error("diagnostic journal exceeds read budget");
     text = readFileSync(path, "utf8");
-  } catch {
+  } catch (error) {
     // 还没有这份文件是正常状态，不是错误。
-    return [];
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
   const records: DiagnosticRecord[] = [];
   for (const line of text.split("\n")) {
@@ -56,10 +60,12 @@ export function readRecords(path: string): DiagnosticRecord[] {
     try {
       parsed = JSON.parse(line);
     } catch {
+      onSkipped?.();
       continue;
     }
     const result = DiagnosticRecordSchema.safeParse(parsed);
     if (result.success) records.push(result.data);
+    else onSkipped?.();
   }
   return records;
 }

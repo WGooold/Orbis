@@ -102,6 +102,8 @@ export class DshAcpRuntime implements AgentBackend {
     for (const session of this.#sessions.values()) {
       this.#publishMetadata(session);
       this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
+      this.#emit(session, { type: "delivery.snapshot", items: [], complete: true });
+      this.#emit(session, { type: "execution.activity", retry: "unavailable", compaction: "unavailable" });
       this.#emit(session, { type: "interaction.snapshot", requests: [...this.#approvals.values()].filter(item => item.session === session).map(item => item.interaction) });
     }
   }
@@ -218,6 +220,8 @@ export class DshAcpRuntime implements AgentBackend {
     if (session.closing) throw new Error("DSH 会话正在关闭");
     switch (command.type) {
       case "session.sync": {
+        this.#emit(session, { type: "delivery.snapshot", items: [], complete: true });
+        this.#emit(session, { type: "execution.activity", retry: "unavailable", compaction: "unavailable" });
         if (command.sessionId !== publicId(session.id)) throw new Error("session_mismatch");
         await this.#refresh(session);
         this.#emit(session, selectSessionSyncSnapshot(session.entries, publicId(session.id), session.entries.at(-1)?.entryId ?? null, command, [], session.source.snapshot()));

@@ -1,7 +1,8 @@
 import { z } from "zod";
 import {
-  AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema,
+  AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema, AgentActivitySchema, AgentDeliveryItemSchema,
   DiagnosticsPageMessageSchema, DiagnosticsRequestSchema,
+  AgentCatalogSessionSchema as AgentSessionSummarySchema, AgentStateRangeRequestSchema, AgentStateRangePageSchema,
 } from "./agent-state.js";
 import { NotificationSourceEventSchema, NotificationSnapshotSchema } from "./notifications.js";
 export * from "./notifications.js";
@@ -15,7 +16,7 @@ export { RecoverableSessionSource } from "./session-source.js";
  * 所有入站校验都是 `!== PROTOCOL_VERSION` 直接拒绝，没有兼容旧版的旁路——升版就是断代，
  * 两端必须一起更新。
  */
-export const PROTOCOL_VERSION = 13 as const;
+export const PROTOCOL_VERSION = 14 as const;
 export const ARTIFACT_CHUNK_BYTES = 1024 * 1024;
 
 /**
@@ -215,6 +216,7 @@ export type SessionCatalogEntry = z.infer<typeof SessionCatalogEntrySchema>;
  * 因此不会与这里的 schema 形成循环。客户端仍从 `@pi-remote/protocol` 取类型。
  */
 export * from "./agent-state.js";
+export * from "./host-model-domains.js";
 
 /**
  * Codex 桌面版 app-server 的接入分档（ADR-0022）。
@@ -244,20 +246,7 @@ export const SpawnModeSchema = z.enum(["auto", "tui", "headless"]);
 export type SpawnMode = z.infer<typeof SpawnModeSchema>;
 
 /** 磁盘扫描出的会话 = v1 的目录条目 + agentKind。`messageCount` 磁盘扫描拿不到，恒为 0。 */
-export const AgentSessionSummarySchema = SessionCatalogEntrySchema.extend({
-  agentKind: AgentKindSchema,
-  /**
-   * 产生这条会话的 Pi 主机名（`os.hostname()`）。
-   *
-   * 扫盘本身拿不到主机身份：手机侧栏按主机分组，而「电脑上有、手机还没缓存过」的会话
-   * 没有历史缓存里的 hostname 可继承，只能由 Host 在这里补。**必填**（ADR-0008）。
-   */
-  hostname: z.string().min(1).max(256),
-  /** Archive state is owned by the backend, not by runtime history snapshots. */
-  archived: z.boolean().optional(),
-  /** Provider that owns this session; independent of the currently selected model. */
-  modelProvider: z.string().min(1).max(128).optional(),
-});
+export { AgentSessionSummarySchema };
 export type AgentSessionSummary = z.infer<typeof AgentSessionSummarySchema>;
 
 export const BrowseEntrySchema = z.strictObject({
@@ -792,6 +781,8 @@ export type RuntimeCommandStatus = z.infer<typeof RuntimeCommandStatusSchema>;
  */
 
 export const RuntimeEventSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("delivery.snapshot"), items: z.array(AgentDeliveryItemSchema).max(256), complete: z.boolean().optional() }),
+  z.strictObject({ type: z.literal("execution.activity"), retry: AgentActivitySchema, compaction: AgentActivitySchema }),
   NotificationSourceEventSchema,
   z.strictObject({ type: z.literal("runtime.status"), status: RuntimeStatusSchema }),
   z.strictObject({ type: z.literal("runtime.metadata"), metadata: RuntimeMetadataSchema }),
@@ -1067,6 +1058,7 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
   }),
   // ── 统一 Agent 状态模型（ADR-0032）：读一个作用域的当前投影。负载形状在 agent-state.ts。
   AgentStateRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
+  AgentStateRangeRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   // ── 诊断记录的分页读取（ADR-0032 模块 23）：快照只给目录，记录本身按游标一页页取。
   DiagnosticsRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   // ── P2P 信令（spec §6.1 / M5）。SDP 里已经烧好 ICE 候选（gather 完再发，非 trickle）：
@@ -1132,6 +1124,7 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
   NotificationSnapshotSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({
     type: z.literal("device.ready"),
+    modelEpoch: z.string().min(1).max(256).optional(),
     protocolVersion: z.literal(PROTOCOL_VERSION),
     deviceId: z.string(),
     notificationEpoch: z.string().min(1).max(256).nullable(),
@@ -1246,6 +1239,7 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
   // 每个领域带自己的版本与可信度，点名要但确实没有状态的领域会出现在 `missing` 里，
   // 而不是悄悄缺席。负载本身的形状在 agent-state.ts，这里只补协议版本。
   AgentStateSnapshotSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
+  AgentStateRangePageSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   DiagnosticsPageMessageSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   // ── 进程激活（spec §8）的响应。`session.activated` 只证明进程已被拉起；会话真正上线
   // 由随后的 runtime.online / session.catalog 对账（进程经 loopback 自己注册回来）。

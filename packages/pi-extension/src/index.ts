@@ -462,13 +462,17 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   // Compaction rewrites the active branch, so the context percentage and tree are stale
   // until the next turn. Refresh them as soon as Pi reports the outcome.
   pi.on("session_compact", async (_event, ctx) => {
+    bridge?.publish({ type: "execution.activity", retry: "unavailable", compaction: { phase: "idle" } });
     reconcileSource(ctx, true);
     bridge?.refreshMetadata();
     publishRuntimeStatus(currentContext?.isIdle() === false ? "running" : "idle");
     await bridge?.refreshCapabilities();
   });
 
-  pi.on("session_compact_failed", async () => {
+  pi.on("session_compact_failed", async (event) => {
+    bridge?.publish({ type: "execution.activity", retry: "unavailable", compaction: {
+      phase: "failed", ...(event.errorMessage === undefined ? {} : { detail: event.errorMessage.slice(0, 512) }),
+    } });
     bridge?.refreshMetadata();
     publishRuntimeStatus(currentContext?.isIdle() === false ? "running" : "idle");
   });

@@ -17,6 +17,7 @@ import {
   PROTOCOL_VERSION,
   encodeArtifactChunkFrame,
   type RelayToDeviceMessage,
+  type HostFilesState,
   type RemoteArtifact,
   type RuntimeCommand,
   type RuntimeEvent,
@@ -152,10 +153,22 @@ export class HostDownloadService {
   /** artifactId → 元数据（含 path）。来源是各个 runtime 上报的 `artifact.started`。 */
   readonly #index = new Map<string, IndexedArtifact>();
   #indexWriteChain: Promise<void> = Promise.resolve();
+  #indexTruncated = false;
+  #indexLoaded = false;
 
   constructor(options: HostDownloadServiceOptions) {
     this.#options = options;
   }
+
+  /** Metadata only. Indexed paths are private, and an unprobed disk file is explicitly unknown. */
+  inventory(): HostFilesState {
+    return { files: [...this.#index.values()].filter(artifact => artifact.runtimeId).slice(-MAX_INDEX_ENTRIES).map(artifact => ({
+      fileId: artifact.artifactId, runtimeId: artifact.runtimeId, fileName: artifact.fileName, size: artifact.size,
+      mimeType: artifact.mimeType, sha256: artifact.sha256, availability: "unknown" as const,
+    })), truncated: !this.#indexLoaded || this.#indexTruncated };
+  }
+
+  get activeDownloads(): number { return this.#pulls.size; }
 
   /** 从盘上恢复索引：Host 重启后，老会话里的 artifact 仍然能下载。 */
   async load(): Promise<void> {
@@ -180,11 +193,16 @@ export class HostDownloadService {
           runtimeId: typeof artifact.runtimeId === "string" ? artifact.runtimeId : "",
           seenAt: typeof artifact.seenAt === "number" ? artifact.seenAt : 0,
         });
+        if (this.#index.size > MAX_INDEX_ENTRIES) {
+          this.#index.delete(this.#index.keys().next().value!); this.#indexTruncated = true;
+        }
       }
+      this.#indexLoaded = true;
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
         this.#options.log?.(`artifact 索引读取失败（按空索引继续）：${describe(error)}`);
       }
+      else this.#indexLoaded = true;
     }
   }
 
@@ -202,6 +220,7 @@ export class HostDownloadService {
       const oldest = [...this.#index.values()].sort((a, b) => a.seenAt - b.seenAt)[0];
       if (oldest === undefined) break;
       this.#index.delete(oldest.artifactId);
+      this.#indexTruncated = true;
     }
     // 路径变了（同名 artifactId 不该发生，但真变了就得重写索引）。
     if (previous?.path !== artifact.path) this.#persistIndex();

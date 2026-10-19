@@ -203,6 +203,18 @@ describe("AgentStateRegistry 基线读取与边界", () => {
     expect(second?.value).toEqual({ id: "gpt", options: ["a"] });
   });
 
+  it("提交方修改自己的来源对象不会抬高 Registry 水位", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    const mutableSource = source();
+    registry.commitValue(agent(), "execution", { ...ready, source: mutableSource, value: "running" });
+    mutableSource.sourceRevision = 100;
+    mutableSource.sourceEpoch = "mutated";
+    expect(registry.read(agent(), "execution")?.source).toEqual(source());
+    expect(registry.commitValue(agent(), "execution", {
+      ...ready, source: source({ sourceRevision: 2 }), value: "idle",
+    }).ok).toBe(true);
+  });
+
   it("提交在写者上是同步原子的，订阅者内再提交也不会交错", () => {
     const registry = new AgentStateRegistry({ now: clock() });
     const order: string[] = [];
@@ -243,7 +255,8 @@ describe("AgentStateRegistry 来源水位与显式结束", () => {
     // 新代次里必须用完整清单重建基线，之后才恢复正常提交。
     expect(registry.commitValue(agent(), "execution", {
       source: source({ sourceEpoch: "e2" }), availability: "ready", completeness: "partial", value: { phase: "idle" },
-    }).ok).toBe(true);
+    })).toMatchObject({ ok: false, code: "source_epoch_baseline_required" });
+    expect(registry.read(agent(), "execution")?.availability).toBe("unknown");
     const rebuilt = registry.commitValue(agent(), "execution", {
       source: source({ sourceEpoch: "e2" }), ...ready, value: { phase: "idle" },
     });
@@ -274,5 +287,136 @@ describe("AgentStateRegistry 来源水位与显式结束", () => {
     expect(registry.removeCollectionItems(agent(), "interactions", {
       source: source(), availability: "ready", completeness: "partial", removeIds: [""],
     })).toMatchObject({ ok: false, code: "invalid_fact" });
+  });
+
+  it("同源旧水位的完整库存和显式删除都不能覆盖新事实", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    registry.commitCollection(agent(), "interactions", {
+      ...ready, source: source({ sourceRevision: 8 }), items: { current: { id: "current" } },
+    });
+    const before = registry.read(agent(), "interactions");
+    expect(registry.commitCollection(agent(), "interactions", {
+      ...ready, source: source({ sourceRevision: 7 }), items: {},
+    })).toMatchObject({ ok: false, code: "stale_source_revision" });
+    expect(registry.removeCollectionItems(agent(), "interactions", {
+      ...ready, source: source({ sourceRevision: 7 }), removeIds: ["current"],
+    })).toMatchObject({ ok: false, code: "stale_source_revision" });
+    expect(registry.read(agent(), "interactions")).toEqual(before);
+  });
+
+  it("被新来源代次取代后，旧代次的完整快照也不能复活", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    registry.commitValue(agent(), "execution", { ...ready, source: source(), value: "old" });
+    registry.commitValue(agent(), "execution", {
+      source: source({ sourceEpoch: "e2", sourceRevision: 0 }), availability: "unknown", completeness: "unknown", value: null,
+    });
+    const before = registry.read(agent(), "execution");
+    expect(registry.commitValue(agent(), "execution", {
+      ...ready, source: source({ sourceRevision: 99 }), value: "late",
+    })).toMatchObject({ ok: false, code: "retired_source_epoch" });
+    expect(registry.read(agent(), "execution")).toEqual(before);
+    expect(registry.commitValue(agent(), "execution", {
+      ...ready, source: source({ sourceEpoch: "e2", sourceRevision: 0 }), value: "current",
+    }).ok).toBe(true);
+  });
+
+  it("代次 tombstone 达到预算后拒绝换代，不遗忘已退役来源", () => {
+    const registry = new AgentStateRegistry({ now: clock(), maxRetiredEpochsPerEntry: 1 });
+    registry.commitValue(agent(), "execution", { ...ready, source: source(), value: "e1" });
+    registry.commitValue(agent(), "execution", { ...ready, source: source({ sourceEpoch: "e2" }), value: "e2" });
+    expect(registry.commitValue(agent(), "execution", {
+      ...ready, source: source({ sourceEpoch: "e3" }), value: "e3",
+    })).toMatchObject({ ok: false, code: "source_epoch_limit" });
+    expect(registry.commitValue(agent(), "execution", { ...ready, source: source(), value: "late" }))
+      .toMatchObject({ ok: false, code: "retired_source_epoch" });
+    expect(registry.read(agent(), "execution")?.value).toBe("e2");
+  });
+
+  it("未核对的结束报告不能删除最后已知集合", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    registry.commitCollection(agent(), "interactions", { ...ready, source: source(), items: { a: {} } });
+    registry.removeCollectionItems(agent(), "interactions", {
+      source: source({ sourceRevision: 2 }), availability: "unknown", completeness: "unknown", removeIds: ["a"],
+    });
+    expect(registry.read(agent(), "interactions")?.value).toEqual({ a: {} });
+  });
+});
+
+describe("AgentStateRegistry 多领域事务", () => {
+  it("发布第一个领域时整批状态已可读，监听器内提交排在整批之后", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    const seen: string[] = [];
+    registry.subscribe(change => {
+      if (change.kind !== "committed") return;
+      seen.push(change.domain);
+      if (change.domain === "execution") {
+        expect(registry.read(agent(), "interactions")?.value).toEqual({ i1: {} });
+        registry.commitValue(agent(), "model", { ...ready, source: source(), value: "m1" });
+      }
+    });
+    const result = registry.commitTransaction([
+      { kind: "value", scope: agent(), domain: "execution", fact: { ...ready, source: source(), value: "waiting" } },
+      { kind: "collection", scope: agent(), domain: "interactions", fact: { ...ready, source: source(), items: { i1: {} } } },
+    ]);
+    expect(result).toEqual({ ok: true, results: [
+      { ok: true, revision: 1, changed: true }, { ok: true, revision: 1, changed: true },
+    ] });
+    expect(seen).toEqual(["execution", "interactions", "model"]);
+  });
+
+  it("中途失败回滚状态、版本、水位、退役代次和所有发布", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    registry.commitValue(agent(), "execution", { ...ready, source: source(), value: "old" });
+    const before = registry.read(agent(), "execution");
+    const listener = vi.fn();
+    registry.subscribe(listener);
+    const result = registry.commitTransaction([
+      { kind: "value", scope: agent(), domain: "execution", fact: { ...ready, source: source({ sourceEpoch: "e2", sourceRevision: 5 }), value: "new" } },
+      { kind: "value", scope: agent(), domain: "context", fact: { ...ready, source: source({ sourceId: " " }), value: {} } },
+    ]);
+    expect(result).toMatchObject({ ok: false, code: "invalid_fact", index: 1 });
+    expect(registry.read(agent(), "execution")).toEqual(before);
+    expect(registry.read(agent(), "context")).toBeUndefined();
+    expect(listener).not.toHaveBeenCalled();
+    expect(registry.commitValue(agent(), "execution", {
+      ...ready, source: source({ sourceRevision: 2 }), value: "after rollback",
+    })).toEqual({ ok: true, revision: 2, changed: true });
+  });
+
+  it("后续负载超预算时回滚前面未变内容的核对水位", () => {
+    const registry = new AgentStateRegistry({ now: clock(), maxValueBytes: 64 });
+    registry.commitValue(agent(), "execution", { ...ready, source: source(), value: "running" });
+    const before = registry.read(agent(), "execution");
+    expect(registry.commitTransaction([
+      { kind: "value", scope: agent(), domain: "execution", fact: { ...ready, source: source({ sourceRevision: 9 }), value: "running" } },
+      { kind: "value", scope: agent(), domain: "live", fact: { ...ready, source: source(), value: "x".repeat(100) } },
+    ])).toMatchObject({ ok: false, code: "value_too_large", index: 1 });
+    expect(registry.read(agent(), "execution")).toEqual(before);
+  });
+
+  it("无法序列化的负载同样回滚，并允许后续正常事务", () => {
+    const registry = new AgentStateRegistry({ now: clock() });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(registry.commitTransaction([
+      { kind: "value", scope: agent(), domain: "execution", fact: { ...ready, source: source(), value: "running" } },
+      { kind: "value", scope: agent(), domain: "live", fact: { ...ready, source: source(), value: circular } },
+    ])).toMatchObject({ ok: false, code: "invalid_fact", index: 1 });
+    expect(registry.stats().entries).toBe(0);
+    expect(registry.commitTransaction([
+      { kind: "value", scope: agent(), domain: "execution", fact: { ...ready, source: source(), value: "idle" } },
+    ]).ok).toBe(true);
+  });
+
+  it("整批占用条目超过预算时不留下第一条状态", () => {
+    const registry = new AgentStateRegistry({ now: clock(), maxEntries: 1 });
+    const listener = vi.fn();
+    registry.subscribe(listener);
+    expect(registry.commitTransaction([
+      { kind: "value", scope: agent(), domain: "execution", fact: { ...ready, source: source(), value: "running" } },
+      { kind: "collection", scope: agent(), domain: "interactions", fact: { ...ready, source: source(), items: {} } },
+    ])).toMatchObject({ ok: false, code: "registry_full", index: 1 });
+    expect(registry.stats().entries).toBe(0);
+    expect(listener).not.toHaveBeenCalled();
   });
 });

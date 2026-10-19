@@ -154,6 +154,9 @@ export class HostUploadService {
    */
   #background: Promise<void> = Promise.resolve();
 
+  /** An incomplete upload remains a transfer, never an already-created artifact. */
+  get activeUploads(): number { return this.#uploads.size; }
+
   constructor(options: HostUploadServiceOptions) {
     this.#options = options;
     // 接收方驱动（ADR-0012）：数据是拉来的。这个定时器就是「拉」的发动机——

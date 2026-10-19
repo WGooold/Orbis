@@ -274,6 +274,7 @@ type ThreadState = {
   approvalItems: Map<string, Record<string, unknown>>;
   asyncInputs: CodexAsyncInputs;
   lastError: { message: string; willRetry: boolean; turnId?: string } | undefined;
+  activity: Extract<RuntimeEvent, { type: "execution.activity" }>;
   notifications: NotificationSource;
   sandboxGeneration: number;
   waitingForApproval: boolean;
@@ -571,6 +572,7 @@ export class CodexRuntime implements AgentBackend {
       approvalItems: new Map(),
       asyncInputs: new CodexAsyncInputs(this.runtimeIdFor(id), event => this.#emit(id, event)),
       lastError: undefined,
+      activity: { type: "execution.activity", retry: "unavailable", compaction: "unavailable" },
       notifications: new NotificationSource(randomUUID(), this.#publicSessionId(id), event => this.#emit(id, event)),
       sandboxGeneration: 0,
       waitingForApproval: false,
@@ -1698,6 +1700,8 @@ export class CodexRuntime implements AgentBackend {
             if (thread === undefined || this.#threads.get(thread.id) !== thread) throw new Error("session_not_found");
             this.#publishSnapshot(thread, command);
             this.#publishInteractions(thread.id);
+            this.#publishDelivery(thread);
+            this.#emit(thread.id, thread.activity);
             this.#commandResult(threadId, commandId, true);
           } catch (error) {
             this.#commandResult(threadId, commandId, false, describeError(error));
@@ -3059,6 +3063,10 @@ export class CodexRuntime implements AgentBackend {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
         const data = item as Record<string, unknown>;
+        if (data.type === "contextCompaction") {
+          thread.activity.compaction = { phase: "running", ...(typeof record.turnId === "string" ? { turnId: record.turnId.slice(0, 256) } : {}) };
+          this.#emit(thread.id, thread.activity);
+        }
         if (typeof data.type === "string" && data.type !== "userMessage") this.#clearRetryError(thread, record.turnId);
         if (typeof record.turnId === "string") thread.asyncInputs.upsert(data, record.turnId);
         if ((data.type === "fileChange" || data.type === "commandExecution") && typeof data.id === "string") {
@@ -3166,6 +3174,11 @@ export class CodexRuntime implements AgentBackend {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
         const data = item as Record<string, unknown>;
+        if (data.type === "contextCompaction") {
+          thread.activity.compaction = { phase: data.status === "failed" ? "failed" : "idle",
+            ...(typeof record.turnId === "string" ? { turnId: record.turnId.slice(0, 256) } : {}) };
+          this.#emit(thread.id, thread.activity);
+        }
         if (typeof record.turnId === "string") thread.asyncInputs.upsert(data, record.turnId);
         if (data.type === "agentMessage" && thread.streamingMessageId === data.id) {
           thread.streamingMessageId = undefined;
@@ -3416,6 +3429,11 @@ export class CodexRuntime implements AgentBackend {
 
   #clearError(thread: ThreadState): void {
     if (thread.lastError === undefined) return;
+    const turnId = thread.lastError.turnId;
+    if (thread.lastError.willRetry) {
+      thread.activity.retry = { phase: "idle", ...(turnId === undefined ? {} : { turnId }) };
+      this.#emit(thread.id, thread.activity);
+    }
     thread.lastError = undefined;
     this.#syncTurnNotification(thread);
   }
@@ -3433,11 +3451,21 @@ export class CodexRuntime implements AgentBackend {
       ...(turnId === undefined ? {} : { turnId: turnId.slice(0, 256) }) };
     if (isDeepStrictEqual(thread.lastError, diagnostic)) return;
     thread.lastError = diagnostic;
+    thread.activity.retry = { phase: willRetry ? "running" : "failed", ...(diagnostic.turnId === undefined ? {} : { turnId: diagnostic.turnId }) };
+    this.#emit(thread.id, thread.activity);
     this.#syncTurnNotification(thread);
     this.#options.log?.(`app-server 报错：${message}`);
   }
 
   #syncTurnNotification(thread: ThreadState): void {
+    const retry = thread.lastError === undefined ? { phase: "idle" as const }
+      : { phase: thread.lastError.willRetry ? "running" as const : "failed" as const,
+        ...(thread.lastError.turnId === undefined ? {} : { turnId: thread.lastError.turnId }) };
+    // Called only on native error/progress/completion or verified history reconciliation.
+    if (!isDeepStrictEqual(thread.activity.retry, retry)) {
+      thread.activity.retry = retry;
+      this.#emit(thread.id, thread.activity);
+    }
     thread.notifications.batch(() => {
       for (const item of thread.notifications.snapshot().notifications) {
         if ((item.code === "codex.turn.retry" || item.code === "codex.turn.failed")
@@ -3684,6 +3712,8 @@ export class CodexRuntime implements AgentBackend {
     this.#publishCapabilities(thread);
     this.#emit(thread.id, { type: "runtime.metadata", metadata: this.threadMetadata(thread) });
     this.#publishInteractions(thread.id);
+    this.#publishDelivery(thread);
+    this.#emit(thread.id, thread.activity);
     thread.notifications.announce();
     void this.#checkNativeSource(thread).catch(() => undefined);
   }
@@ -3691,6 +3721,12 @@ export class CodexRuntime implements AgentBackend {
   /** 当前活跃 thread 的 id 列表（Host 握手后逐个 announce 用）。 */
   activeThreadIds(): string[] {
     return [...this.#threads.keys()];
+  }
+
+  #publishDelivery(thread: ThreadState): void {
+    this.#emit(thread.id, { type: "delivery.snapshot", complete: thread.queue.length <= 256,
+      items: thread.queue.slice(0, 256).map(item => ({ queueId: item.messageId, text: item.text,
+        delivery: item.delivery, state: "accepted" })) });
   }
 
   syncNotifications(runtimeId: string): void {
@@ -3704,7 +3740,7 @@ export class CodexRuntime implements AgentBackend {
   #emit(threadId: string | undefined, event: RuntimeEvent): void {
     if (event.type === "notification.source" && (threadId === undefined
       || this.#threads.get(threadId)?.notifications.epoch !== event.producerEpoch)) return;
-    this.#eventSink?.(event, threadId);
+    this.#eventSink?.(event.type === "execution.activity" ? structuredClone(event) : event, threadId);
   }
 }
 

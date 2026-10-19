@@ -106,7 +106,7 @@ export class RecoverableSessionSource {
         this.#touch();
         return true;
       case "turn.finished":
-        if (this.#turn?.turnId === event.turnId) this.#turn = null;
+        this.#turn = { turnId: event.turnId, startedAt: event.startedAt, durationMs: event.durationMs };
         this.#touch();
         return true;
       case "tool.started":

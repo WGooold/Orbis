@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, type DomainSource } from "@pi-remote/protocol";
 
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
-import { buildAgentStateSnapshot } from "./agent-state-snapshot.js";
+import { buildAgentStateSnapshot, buildAgentStateSnapshotParts } from "./agent-state-snapshot.js";
 
 const HOST = "host-1";
 const agentScope = (sessionId = "s1"): StateScope =>
@@ -20,6 +20,15 @@ const populate = (registry: AgentStateRegistry): void => {
 };
 
 describe("buildAgentStateSnapshot", () => {
+  it("splits at domain boundaries so a large inventory cannot starve later domains", () => {
+    const registry = new AgentStateRegistry({ maxValueBytes: 1024 * 1024 });
+    registry.commitValue(hostScope, "catalog", { ...ready, source: source("host:catalog"), value: "x".repeat(300_000) });
+    registry.commitValue(hostScope, "providers", { ...ready, source: source("host:providers"), value: { current: "p" } });
+    const parts = buildAgentStateSnapshotParts({ registry, requestId: "large", scope: hostScope });
+    expect(parts).toHaveLength(2);
+    expect(parts.every(part => !part.truncated && part.domains.length === 1)).toBe(true);
+    expect(parts.flatMap(part => part.domains.map(domain => domain.domain))).toEqual(["catalog", "providers"]);
+  });
   it("返回该作用域已提交的全部领域，按名字排序并带各自 envelope", () => {
     const registry = new AgentStateRegistry({ modelEpoch: "model-1" });
     populate(registry);

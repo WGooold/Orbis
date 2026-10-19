@@ -19,9 +19,9 @@ import type { AgentStateRegistry, StateScope } from "./agent-state-registry.js";
 const DEFAULT_MAX_BYTES = 256 * 1024;
 
 export type AgentStateSnapshotIdentity = {
-  readonly runtimeId?: string;
-  readonly agentKind?: string;
-  readonly sessionId?: string;
+  readonly runtimeId?: string | undefined;
+  readonly agentKind?: string | undefined;
+  readonly sessionId?: string | undefined;
 };
 
 export type AgentStateSnapshotInput = {
@@ -32,9 +32,20 @@ export type AgentStateSnapshotInput = {
   readonly domains?: readonly string[];
   readonly identity?: AgentStateSnapshotIdentity;
   readonly maxBytes?: number;
+  readonly known?: readonly { domain: string; modelEpoch: string; revision: number }[];
+  readonly update?: boolean;
 };
 
 export type AgentStateSnapshotMessage = Extract<RelayToDeviceMessage, { type: "agent.state.snapshot" }>;
+
+/** Domain publications are independently versioned. Split a large response only at domain boundaries;
+ * no supported domain can be permanently starved behind a large alphabetically earlier domain. */
+export function buildAgentStateSnapshotParts(input: AgentStateSnapshotInput): AgentStateSnapshotMessage[] {
+  const first = buildAgentStateSnapshot(input);
+  if (!first.truncated) return [first];
+  const domains = input.domains ?? input.registry.snapshot(input.scope).map(entry => entry.domain);
+  return domains.map(domain => buildAgentStateSnapshot({ ...input, domains: [domain], maxBytes: 4 * 1024 * 1024 + 64 * 1024 }));
+}
 
 export function buildAgentStateSnapshot(input: AgentStateSnapshotInput): AgentStateSnapshotMessage {
   const budget = input.maxBytes ?? DEFAULT_MAX_BYTES;
@@ -53,9 +64,14 @@ export function buildAgentStateSnapshot(input: AgentStateSnapshotInput): AgentSt
   }
 
   const domains: AgentStateDomainSnapshot[] = [];
+  const unchanged: string[] = [];
   let bytes = 0;
   let truncated = false;
   for (const entry of present) {
+    if (input.known?.some(known => known.domain === entry.domain && known.modelEpoch === entry.state.modelEpoch && known.revision === entry.state.revision)) {
+      unchanged.push(entry.domain);
+      continue;
+    }
     const snapshot: AgentStateDomainSnapshot = {
       domain: entry.domain,
       modelEpoch: entry.state.modelEpoch,
@@ -65,6 +81,7 @@ export function buildAgentStateSnapshot(input: AgentStateSnapshotInput): AgentSt
       source: entry.state.source,
       checkedAt: entry.state.checkedAt,
       value: entry.state.value,
+      projectionComplete: true,
     };
     const size = byteLength(snapshot);
     if (bytes + size > budget) { truncated = true; break; }
@@ -85,6 +102,8 @@ export function buildAgentStateSnapshot(input: AgentStateSnapshotInput): AgentSt
     domains,
     missing,
     truncated,
+    ...(input.update === undefined ? {} : { update: input.update }),
+    ...(unchanged.length === 0 ? {} : { unchanged }),
   };
 }
 

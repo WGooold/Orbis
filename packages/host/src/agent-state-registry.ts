@@ -21,6 +21,7 @@ import {
 
 const DEFAULT_MAX_VALUE_BYTES = 262_144;
 const DEFAULT_MAX_ENTRIES = 512;
+const DEFAULT_MAX_RETIRED_EPOCHS = 64;
 
 export type StateScope =
   | { readonly kind: "host" }
@@ -44,6 +45,9 @@ export type CommitCode =
   | "invalid_fact"
   | "stale_model_epoch"
   | "source_conflict"
+  | "stale_source_revision"
+  | "retired_source_epoch"
+  | "source_epoch_limit"
   | "source_epoch_baseline_required"
   | "value_too_large"
   | "registry_full";
@@ -51,6 +55,18 @@ export type CommitCode =
 export type CommitResult =
   | { readonly ok: true; readonly revision: number; readonly changed: boolean }
   | { readonly ok: false; readonly code: CommitCode; readonly detail?: string };
+
+export type RegistryMutation =
+  | { readonly kind: "value"; readonly scope: StateScope; readonly domain: StateDomain; readonly fact: ValueFact<unknown> }
+  | { readonly kind: "collection"; readonly scope: StateScope; readonly domain: StateDomain; readonly fact: CollectionFact }
+  | { readonly kind: "remove"; readonly scope: StateScope; readonly domain: StateDomain; readonly fact: DomainFact & { readonly removeIds: readonly string[] } };
+
+/** Prepared owner state is finalized only after the whole registry transaction succeeds. */
+export type PreparedRegistryCommit = { readonly changes: readonly RegistryMutation[]; readonly onCommitted: () => void };
+
+export type TransactionResult =
+  | { readonly ok: true; readonly results: ReadonlyArray<Extract<CommitResult, { ok: true }>> }
+  | { readonly ok: false; readonly code: CommitCode; readonly detail?: string; readonly index: number };
 
 export type BaselineAction = "unchanged" | "state" | "baseline";
 export type BaselineRead<T> = { readonly action: BaselineAction; readonly state: DomainState<T> | null };
@@ -68,12 +84,17 @@ export type RegistryOptions = {
   readonly now?: () => number;
   readonly maxValueBytes?: number;
   readonly maxEntries?: number;
+  /** 拒绝超过上限的新代次，不能靠遗忘旧代次来接受迟到数据。重建模型可释放这些有界 tombstone。 */
+  readonly maxRetiredEpochsPerEntry?: number;
 };
 
 type Entry = {
   readonly scope: StateScope;
   readonly domain: StateDomain;
   readonly fingerprint: string;
+  /** 当前来源已经取代过的代次；迟到的完整快照也不能将它重新激活。 */
+  readonly retiredEpochs: ReadonlySet<string>;
+  readonly baselineRequired: boolean;
   state: DomainState<unknown>;
 };
 
@@ -87,18 +108,62 @@ export class AgentStateRegistry {
   readonly #now: () => number;
   readonly #maxValueBytes: number;
   readonly #maxEntries: number;
-  readonly #entries = new Map<string, Entry>();
+  readonly #maxRetiredEpochsPerEntry: number;
+  #entries = new Map<string, Entry>();
   readonly #listeners = new Set<RegistryListener>();
+  #transactionChanges: RegistryChange[] | undefined;
   #modelEpoch: string;
 
   constructor(options: RegistryOptions = {}) {
     this.#now = options.now ?? Date.now;
     this.#maxValueBytes = options.maxValueBytes ?? DEFAULT_MAX_VALUE_BYTES;
     this.#maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
+    this.#maxRetiredEpochsPerEntry = options.maxRetiredEpochsPerEntry ?? DEFAULT_MAX_RETIRED_EPOCHS;
     this.#modelEpoch = options.modelEpoch ?? randomUUID();
   }
 
   currentModelEpoch(): string { return this.#modelEpoch; }
+
+  /**
+   * 将同一来源事务涉及的多个领域一起提交。任一校验失败即回滚全部领域与来源水位；
+   * 全部成功后才发布变化，因此第一个订阅者也能读到完整批次。
+   *
+   * 这里没有异步回调或 IO，暂存中的 Map 不会泄漏到其它读取者；原有单领域 API 仍然可用。
+   */
+  commitTransaction(changes: readonly RegistryMutation[], onCommitted?: () => void): TransactionResult {
+    const previous = this.#entries;
+    this.#entries = new Map([...previous].map(([key, entry]) => [key, { ...entry }]));
+    const notifications: RegistryChange[] = [];
+    this.#transactionChanges = notifications;
+    const results: Array<Extract<CommitResult, { ok: true }>> = [];
+    let index = 0;
+    try {
+      for (const change of changes) {
+        const result = change.kind === "value"
+          ? this.commitValue(change.scope, change.domain, change.fact)
+          : change.kind === "collection"
+            ? this.commitCollection(change.scope, change.domain, change.fact)
+            : this.removeCollectionItems(change.scope, change.domain, change.fact);
+        if (!result.ok) {
+          this.#entries = previous;
+          return { ...result, index };
+        }
+        results.push(result);
+        index += 1;
+      }
+      // Internal projection owners finalize their prepared in-memory state before any reader is
+      // notified. The callback must only swap prepared values, never perform IO or nested commits.
+      onCommitted?.();
+    } catch {
+      // 无法序列化/克隆的负载也不得留下已经暂存的半个事务。
+      this.#entries = previous;
+      return { ok: false, code: "invalid_fact", detail: "value", index };
+    } finally {
+      this.#transactionChanges = undefined;
+    }
+    this.#emitMany(notifications);
+    return { ok: true, results };
+  }
 
   /**
    * Host 重建或重新认证后开新代次。旧投影不能作为新代次的已确认事实，
@@ -170,7 +235,7 @@ export class AgentStateRegistry {
     if (rejected !== undefined) return rejected;
     const previous = (existing?.state.value ?? null) as Record<string, unknown> | null;
     const next = { ...(previous ?? {}) };
-    for (const id of fact.removeIds) delete next[id];
+    if (fact.availability === "ready") for (const id of fact.removeIds) delete next[id];
     return this.#store(scope, domain, key, existing, fact, next);
   }
 
@@ -245,7 +310,20 @@ export class AgentStateRegistry {
     if (existing.state.source.sourceId !== fact.source.sourceId || existing.state.source.producer !== fact.source.producer) {
       return { ok: false, code: "source_conflict", detail: scopeId(scope) + "/" + domain + " owned by " + existing.state.source.sourceId };
     }
+    if (existing.retiredEpochs.has(fact.source.sourceEpoch)) {
+      return { ok: false, code: "retired_source_epoch", detail: fact.source.sourceEpoch };
+    }
+    if (existing.state.source.sourceEpoch === fact.source.sourceEpoch
+      && fact.source.sourceRevision < existing.state.source.sourceRevision) {
+      return { ok: false, code: "stale_source_revision" };
+    }
+    if (existing.baselineRequired && fact.availability === "ready" && fact.completeness !== "complete") {
+      return { ok: false, code: "source_epoch_baseline_required" };
+    }
     if (existing.state.source.sourceEpoch !== fact.source.sourceEpoch) {
+      if (existing.retiredEpochs.size >= this.#maxRetiredEpochsPerEntry) {
+        return { ok: false, code: "source_epoch_limit" };
+      }
       // 标记「来源未知/失败」永远允许：它保留最后已知值并标明待核对（ADR-0032 §9）。
       // 只有声称 ready 的内容必须先用完整清单重建基线，否则部分清单可能悄悄删掉有效状态。
       if (fact.availability === "ready" && fact.completeness !== "complete") {
@@ -276,7 +354,7 @@ export class AgentStateRegistry {
     }
     if (existing !== undefined && existing.fingerprint === fingerprint) {
       // 内容没变：只刷新来源水位与核对时间，不推进版本，也不广播。
-      existing.state = { ...existing.state, source: fact.source, checkedAt: this.#now() };
+      existing.state = { ...existing.state, source: { ...fact.source }, checkedAt: this.#now() };
       return { ok: true, revision: existing.state.revision, changed: false };
     }
     const revision = (existing?.state.revision ?? 0) + 1;
@@ -285,13 +363,24 @@ export class AgentStateRegistry {
       revision,
       availability: fact.availability,
       completeness: fact.completeness,
-      source: fact.source,
+      source: { ...fact.source },
       checkedAt: this.#now(),
       value: structuredClone(value ?? null),
     };
-    this.#entries.set(key, { scope, domain, fingerprint, state });
+    const retiredEpochs = new Set(existing?.retiredEpochs);
+    const epochChanged = existing !== undefined && existing.state.source.sourceEpoch !== fact.source.sourceEpoch;
+    if (epochChanged) {
+      retiredEpochs.add(existing.state.source.sourceEpoch);
+    }
+    const baselineRequired = fact.availability === "ready" && fact.completeness === "complete"
+      ? false : epochChanged || (existing?.baselineRequired ?? false);
+    this.#entries.set(key, { scope: structuredClone(scope), domain, fingerprint, retiredEpochs, baselineRequired, state });
     // 没有订阅者时不必克隆：HostService 目前不订阅，这条路径是热路径。
-    if (this.#listeners.size > 0) this.#emit({ kind: "committed", scope, domain, state: structuredClone(state) });
+    if (this.#listeners.size > 0) {
+      const change: RegistryChange = { kind: "committed", scope: structuredClone(scope), domain, state: structuredClone(state) };
+      if (this.#transactionChanges !== undefined) this.#transactionChanges.push(change);
+      else this.#emit(change);
+    }
     return { ok: true, revision, changed: true };
   }
 
@@ -303,7 +392,12 @@ export class AgentStateRegistry {
    * 由当前这一轮统一按顺序发完，避免后来的订阅者看到交错顺序。
    */
   #emit(change: RegistryChange): void {
-    this.#queue.push(change);
+    this.#emitMany([change]);
+  }
+
+  /** 整个事务先入发布队列，订阅者触发的新提交排在本批次之后。 */
+  #emitMany(changes: readonly RegistryChange[]): void {
+    this.#queue.push(...changes);
     if (this.#publishing) return;
     this.#publishing = true;
     try {

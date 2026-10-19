@@ -32,6 +32,28 @@ async function proxy(routes: ProxyRoute[], extra: Partial<ReturnType<typeof defa
 const chat = (content = "answer") => ({ id: "chat_1", choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 } });
 
 describe("authenticated Codex local routing", () => {
+  it("retains an in-flight request's captured route while the configured default changes", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const url = await upstream((_body, _request, response) => { entered(); void held.then(() => response.end(JSON.stringify(chat()))); });
+    const { server, current, post } = await proxy([route("initial", url)]);
+    const pending = post({ input: "test" });
+    await started;
+    try {
+      current.routes = [route("new-default", url)];
+      const state = server.publicStatus;
+      expect(state.requests).toHaveLength(1);
+      expect(state.requests[0]).toMatchObject({ providerId: "initial", routeProviderIds: ["initial"] });
+      expect(JSON.stringify(state)).not.toMatch(/secret|local-test-token|127\.0\.0\.1/);
+      state.requests[0]!.routeProviderIds.push("mutated-copy");
+      expect(server.publicStatus.requests[0]?.routeProviderIds).toEqual(["initial"]);
+    } finally { release(); }
+    const response = await pending; await response.text();
+    expect(server.publicStatus.requests).toEqual([]);
+    expect(server.publicStatus).toMatchObject({ activeRequests: 0, lastProviderId: "initial" });
+  });
   it.each(["responses", "openai_chat", "anthropic"] as const)("routes compact requests for %s without a bogus upstream suffix or stream field", async format => {
     const seen: Array<{ path: string; body: Obj }> = [];
     const native = { id: "cmp_1", object: "response.compaction", output: [{ type: "compaction", encrypted_content: "opaque" }], usage: { input_tokens: 2, output_tokens: 1 } };

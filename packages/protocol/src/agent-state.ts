@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HostProviderAuthenticationSchema, HostProviderUsageSchema, HostProviderHealthSchema, HostProviderRoutingSchema } from "./host-model-domains.js";
 
 /**
  * ADR-0032 的共享 Agent 状态模型（第 1 批：schema、身份与领域 envelope）。
@@ -150,12 +151,17 @@ export type AgentExecutionPhase = z.infer<typeof AgentExecutionPhaseSchema>;
  * 模块 10 目前没有后端事实来源，因此显式声明 `unavailable`——不能用 idle 或日志文案
  * 冒充「重试已恢复」。等适配层提供真实阶段后再替换这两个字面量。
  */
+export const AgentActivitySchema = z.union([z.literal("unavailable"), z.strictObject({
+  phase: z.enum(["idle", "running", "failed"]), turnId: identity.optional(),
+  attempt: z.number().int().nonnegative().optional(), detail: z.string().max(4_000).optional(),
+})]);
 export const AgentExecutionStateSchema = z.strictObject({
   phase: AgentExecutionPhaseSchema,
   /** 正在等待回答的交互 requestId，升序。非空时 phase 必须是 waiting_local_interaction。 */
   waitingFor: z.array(z.string().min(1)).max(64),
-  retry: z.literal("unavailable"),
-  compaction: z.literal("unavailable"),
+  retry: AgentActivitySchema,
+  compaction: AgentActivitySchema,
+  turn: z.strictObject({ turnId: identity, startedAt: z.number().int().nonnegative(), durationMs: z.number().int().nonnegative().optional() }).nullable().optional(),
 });
 export type AgentExecutionState = z.infer<typeof AgentExecutionStateSchema>;
 
@@ -180,6 +186,13 @@ export const AgentInteractionItemSchema = z.strictObject({
   /** 未回答即阻塞该会话推进，所以当前模型里恒为 true；回答后条目被移除。 */
   blocking: z.boolean(),
   submitted: z.boolean().optional(),
+  runtimeId: z.string().optional(), extensionId: z.string().optional(),
+  argumentSummary: z.string().optional(), externalUrl: z.string().optional(),
+  confirmLabel: z.string().optional(), cancelLabel: z.string().optional(),
+  options: z.array(z.unknown()).optional(), questions: z.array(z.unknown()).optional(),
+  minSelections: z.number().optional(), maxSelections: z.number().optional(),
+  placeholder: z.string().optional(), initialValue: z.string().optional(),
+  minLength: z.number().optional(), maxLength: z.number().optional(), secret: z.boolean().optional(),
 });
 export type AgentInteractionItem = z.infer<typeof AgentInteractionItemSchema>;
 
@@ -250,6 +263,15 @@ export const HostCatalogBackendSchema = z.strictObject({
 });
 export type HostCatalogBackend = z.infer<typeof HostCatalogBackendSchema>;
 
+export const AgentCatalogSessionSchema = z.strictObject({
+  sessionId: identity, name: z.string().max(256).optional(), cwd: z.string().max(4096),
+  firstMessage: z.string().max(4_000).optional(), createdAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  modifiedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), messageCount: z.number().int().nonnegative().max(100_000),
+  agentKind: AgentKindSchema, hostname: z.string().min(1).max(256), archived: z.boolean().optional(),
+  modelProvider: z.string().min(1).max(128).optional(),
+});
+export type AgentCatalogSession = z.infer<typeof AgentCatalogSessionSchema>;
+
 /** Host 聚合目录的逐后端完整性（HostState.catalog）。 */
 export const HostCatalogStateSchema = z.strictObject({
   totalSessions: z.number().int().nonnegative(),
@@ -257,8 +279,34 @@ export const HostCatalogStateSchema = z.strictObject({
   truncated: z.boolean(),
   backends: z.array(HostCatalogBackendSchema).max(16),
   checkedAt: z.number().int().nonnegative(),
+  sessions: z.array(AgentCatalogSessionSchema).max(2_000).optional(),
+  currentProviders: z.array(z.strictObject({ agentKind: AgentKindSchema, provider: z.string().min(1).max(128) })).max(16).optional(),
+  snapshotId: identity.optional(),
+  nextCursor: z.string().min(1).max(512).nullable().optional(),
 });
 export type HostCatalogState = z.infer<typeof HostCatalogStateSchema>;
+
+export const AgentStateRangeRequestSchema = z.strictObject({
+  type: z.literal("agent.state.range.request"), requestId: identity,
+  scope: z.literal("host"), domain: z.literal("catalog"),
+  cursor: z.string().min(1).max(512).nullable().optional(), limit: z.number().int().positive().max(200).optional(),
+});
+export type AgentStateRangeRequest = z.infer<typeof AgentStateRangeRequestSchema>;
+
+export const HostCatalogRangeSchema = z.strictObject({
+  modelEpoch: identity, revision: DomainRevisionSchema, snapshotId: identity.nullable(),
+  offset: z.number().int().nonnegative(), totalSessions: z.number().int().nonnegative(),
+  sessions: z.array(AgentCatalogSessionSchema).max(200),
+  nextCursor: z.string().min(1).max(512).nullable(), complete: z.boolean(), truncated: z.boolean(),
+  error: z.enum(["snapshot_changed", "catalog_unavailable", "invalid_cursor"]).optional(),
+});
+export type HostCatalogRange = z.infer<typeof HostCatalogRangeSchema>;
+
+export const AgentStateRangePageSchema = z.strictObject({
+  type: z.literal("agent.state.range.page"), requestId: identity,
+  scope: z.literal("host"), domain: z.literal("catalog"), page: HostCatalogRangeSchema,
+});
+export type AgentStateRangePage = z.infer<typeof AgentStateRangePageSchema>;
 
 /**
  * 一个后端的供应商摘要（模块 20–22：手机摘要、配置与认证绑定、用量/健康度/路由）。
@@ -268,6 +316,8 @@ export type HostCatalogState = z.infer<typeof HostCatalogStateSchema>;
  */
 export const HostProviderSummarySchema = z.strictObject({
   agentKind: AgentKindSchema,
+  availability: DomainAvailabilitySchema.optional(),
+  profilesTruncated: z.boolean().optional(),
   /** 当前生效的 provider id；后端完全没配置时为 null。 */
   current: z.string().min(1).max(128).nullable(),
   /** profile 清单；`null` 表示这次没拿到清单（不是「没有 profile」）。 */
@@ -277,16 +327,17 @@ export const HostProviderSummarySchema = z.strictObject({
     enabled: z.boolean(),
     /** 后端级默认：新会话不带指定 provider 时用它。 */
     globalDefault: z.boolean(),
+    mode: z.enum(["additive", "exclusive"]).optional(),
   })).max(64).nullable(),
   /** 认证绑定是否就绪：false 表示缺凭据（客户端提示去电脑上配置），`null` 表示未核对。 */
   authenticated: z.boolean().nullable(),
   /** 是否有一次 provider 切换正在进行：进行中时路由结论还不作数；`null` 表示未核对。 */
   switching: z.boolean().nullable(),
   /** 用量/健康度：Host 没有这份事实时是 `unknown`，不假报数字。 */
-  usage: z.strictObject({
-    availability: z.enum(["ready", "unknown"]),
-    detail: z.string().max(256).nullable(),
-  }),
+  usage: HostProviderUsageSchema,
+  authentication: HostProviderAuthenticationSchema.optional(),
+  health: HostProviderHealthSchema.optional(),
+  routing: HostProviderRoutingSchema.optional(),
 });
 export type HostProviderSummary = z.infer<typeof HostProviderSummarySchema>;
 
@@ -330,6 +381,10 @@ export type DiagnosticSeverity = z.infer<typeof DiagnosticSeveritySchema>;
 
 export const DiagnosticRecordSchema = z.strictObject({
   recordId: z.string().min(1).max(256),
+  producerEpoch: z.string().min(1).max(256).optional(),
+  hostId: z.string().min(1).max(256).optional(),
+  operationId: z.string().min(1).max(256).optional(),
+  turnId: z.string().min(1).max(256).optional(),
   scope: z.enum(["agent", "host"]),
   agentKind: AgentKindSchema.nullable(),
   sessionId: z.string().min(1).max(256).nullable(),
@@ -338,7 +393,7 @@ export const DiagnosticRecordSchema = z.strictObject({
   severity: DiagnosticSeveritySchema,
   message: z.string().min(1).max(512),
   /** 结构化补充：小键值，Host 不往里塞正文、凭据或脚本。 */
-  detail: z.record(z.string().min(1).max(64), z.string().max(256)).optional(),
+  detail: z.record(z.string().min(1).max(64), z.string().max(256)).refine(value => Object.keys(value).length <= 16).optional(),
   at: z.number().int().nonnegative(),
 });
 export type DiagnosticRecord = z.infer<typeof DiagnosticRecordSchema>;
@@ -370,6 +425,7 @@ export const DiagnosticsRequestSchema = z.strictObject({
   limit: z.number().int().positive().max(500).optional(),
   category: z.string().min(1).max(64).optional(),
   severity: DiagnosticSeveritySchema.optional(),
+  agentKind: AgentKindSchema.optional(),
   sessionId: z.string().min(1).max(256).optional(),
 });
 export type DiagnosticsRequest = z.infer<typeof DiagnosticsRequestSchema>;
@@ -397,6 +453,8 @@ export const AgentStateDomainSnapshotSchema = z.strictObject({
   source: DomainSourceSchema,
   checkedAt: z.number().int().nonnegative(),
   value: z.unknown().nullable(),
+  /** Complete Host projection, independent of the native source inventory completeness. */
+  projectionComplete: z.literal(true).optional(),
 });
 export type AgentStateDomainSnapshot = z.infer<typeof AgentStateDomainSnapshotSchema>;
 
@@ -413,6 +471,8 @@ export const AgentStateRequestSchema = z.strictObject({
   sessionId: z.string().min(1).max(256).optional(),
   /** 只读这些领域；缺省表示该作用域里当前存在的全部。 */
   domains: z.array(z.string().min(1).max(64)).max(32).optional(),
+  subscribe: z.boolean().optional(),
+  known: z.array(z.strictObject({ domain: z.string().min(1).max(64), modelEpoch: identity, revision: DomainRevisionSchema })).max(32).optional(),
 });
 export type AgentStateRequest = z.infer<typeof AgentStateRequestSchema>;
 
@@ -436,6 +496,9 @@ export const AgentStateSnapshotSchema = z.strictObject({
     reason: z.enum(["no_state", "unknown_domain"]),
   })).max(64),
   truncated: z.boolean(),
+  /** A complete-domain publication for an established subscription. */
+  update: z.boolean().optional(),
+  unchanged: z.array(z.string().min(1).max(64)).max(32).optional(),
   /** 作用域根本解析不出来时才有值（例如 runtime 不在本机、会话身份不全）。 */
   error: z.string().max(500).optional(),
 });
@@ -488,6 +551,7 @@ export const AgentCapabilityItemSchema = z.strictObject({
   argumentRequired: z.boolean().nullable(),
   optionCount: z.number().int().nonnegative(),
   hint: z.string().max(256).optional(),
+  argument: z.unknown().optional(),
 });
 export type AgentCapabilityItem = z.infer<typeof AgentCapabilityItemSchema>;
 

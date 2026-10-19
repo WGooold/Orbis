@@ -17,6 +17,7 @@ import {
   type SessionSourceEpoch,
   type SessionCheckpoint,
   type SessionLiveState,
+  type AgentDeliveryItem,
 } from "@pi-remote/protocol";
 
 export type RuntimeSessionSyncRequest = {
@@ -156,6 +157,9 @@ export class RuntimeBridge {
   // delivered/rejected 由扩展出队时经 deliverQueued/failQueued 明确回执。
   readonly #queuedMessages = new Map<string, QueuedMessageRecord>();
   readonly #userMessageCommands = new Map<string, UserMessageCommandRecord>();
+  #activity: Extract<RuntimeEvent, { type: "execution.activity" }> = {
+    type: "execution.activity", retry: "unavailable", compaction: "unavailable",
+  };
 
   constructor(
     runtime: RuntimePort,
@@ -188,6 +192,7 @@ export class RuntimeBridge {
         this.#diagnostic?.("bridge.transport.connected", { runtimeId: metadata.runtimeId });
         this.#publishCompletedSlashCommands();
         this.#publishQueuedMessages();
+        this.publish(this.#activity);
         void this.#publishCapabilities();
         void this.#publishSessionCatalog();
         this.#interactions?.resync?.();
@@ -201,6 +206,7 @@ export class RuntimeBridge {
         this.refreshMetadata();
         this.#diagnostic?.("bridge.transport.resync", { runtimeId: metadata.runtimeId, reason });
         this.#publishQueuedMessages();
+        this.publish(this.#activity);
         void this.#publishCapabilities();
         void this.#publishSessionCatalog();
         this.#interactions?.resync?.();
@@ -253,6 +259,7 @@ export class RuntimeBridge {
   }
 
   publish(event: RuntimeEvent): void {
+    if (event.type === "execution.activity") this.#activity = structuredClone(event);
     this.#transport.publish(event);
   }
 
@@ -296,17 +303,19 @@ export class RuntimeBridge {
   }
 
   #publishQueuedMessages(): void {
+    const pending: AgentDeliveryItem[] = [];
+    const settled: AgentDeliveryItem[] = [];
     for (const [queueId, queued] of this.#queuedMessages) {
       if (queued.state === "submitting") continue;
-      this.publish({
-        type: "message.queued",
-        queueId,
-        text: queued.text,
-        delivery: queued.delivery,
-        state: queued.state,
-        ...(queued.error === undefined ? {} : { error: queued.error }),
-      });
+      const target = queued.state === "accepted" || queued.state === "not_cancelable" ? pending : settled;
+      target.push({ queueId, text: queued.text, delivery: queued.delivery, state: queued.state,
+        ...(queued.error === undefined ? {} : { error: queued.error }) });
     }
+    // Current pending work takes priority; only a bounded recent terminal window is replayed.
+    const remaining = Math.max(0, 256 - pending.length);
+    const items = [...pending.slice(0, 256), ...(remaining === 0 ? [] : settled.slice(-Math.min(128, remaining)))];
+    for (const item of items) this.publish({ type: "message.queued", ...item });
+    this.publish({ type: "delivery.snapshot", items, complete: pending.length <= 256 });
   }
 
   #publishQueuedMessage(queueId: string, queued: QueuedMessageRecord): void {
@@ -375,6 +384,8 @@ export class RuntimeBridge {
 
     try {
       if (command.type === "session.sync") {
+        this.#publishQueuedMessages();
+        this.publish(this.#activity);
         this.#diagnostic?.("bridge.session_sync.request", {
           runtimeId,
           commandId,

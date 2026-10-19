@@ -6,6 +6,15 @@ const message: ChatMessage = { messageId: "live", role: "assistant", timestamp: 
 const entry: RemoteSessionEntry = { entryId: "entry", parentId: null, type: "message", timestamp: new Date(1).toISOString(), data: { message } };
 
 describe("recoverable source", () => {
+  it("retains confirmed turn timing through recovery until the next turn starts", () => {
+    const source = new RecoverableSessionSource("session", () => undefined);
+    source.setAvailability(true, true);
+    source.observe({ type: "turn.started", turnId: "t1", startedAt: 100 });
+    source.observe({ type: "turn.finished", turnId: "t1", startedAt: 100, durationMs: 75 });
+    expect(source.snapshot().live.turn).toEqual({ turnId: "t1", startedAt: 100, durationMs: 75 });
+    source.observe({ type: "turn.started", turnId: "t2", startedAt: 200 });
+    expect(source.snapshot().live.turn).toEqual({ turnId: "t2", startedAt: 200 });
+  });
   it("hands a live reply to canonical storage atomically and recovers the same partition without lifecycle replay", () => {
     const patches: SessionPatch[] = [];
     const source = new RecoverableSessionSource("session", patch => patches.push(patch));

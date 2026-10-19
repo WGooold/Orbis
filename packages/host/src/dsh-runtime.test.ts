@@ -45,6 +45,15 @@ async function fixture() {
 }
 
 describe("DeepSeek Harness backend", () => {
+  it("replays an explicitly unsupported activity and the ACP adapter's empty owned queue", async () => {
+    const { runtime, events } = await fixture();
+    runtime.announce();
+    expect(events).toContainEqual({ runtimeId: "dsh:one", event: { type: "delivery.snapshot", items: [], complete: true } });
+    expect(events).toContainEqual({ runtimeId: "dsh:one", event: {
+      type: "execution.activity", retry: "unavailable", compaction: "unavailable",
+    } });
+  });
+
   it("advertises dsh, namespaces sessions, combines live/listed sessions and routes only owned runtimes", async () => {
     const { runtime, client, cwd } = await fixture();
     expect(AgentKindSchema.parse("dsh")).toBe("dsh");
@@ -111,7 +120,8 @@ describe("DeepSeek Harness backend", () => {
     }) }));
     await command({ type: "session.sync", sessionId: "dsh:one", syncId: "recovered", range: "preview" }, "sync");
     const recovered = events.find(item => item.event.type === "session.snapshot" && item.event.syncId === "recovered")!.event;
-    expect(recovered).toMatchObject({ live: { complete: true, turn: null, messages: [] }, entries: [expect.objectContaining({ entryId: "dsh:one:1" }), expect.objectContaining({ entryId: "dsh:one:2" })] });
+    // 回合结束后 live 保留这一回合的已确认身份与耗时（ADR-0032 模块 07），客户端据此判定不在运行中。
+    expect(recovered).toMatchObject({ live: { complete: true, turn: expect.objectContaining({ durationMs: expect.any(Number) }), messages: [] }, entries: [expect.objectContaining({ entryId: "dsh:one:1" }), expect.objectContaining({ entryId: "dsh:one:2" })] });
     expect((await command(prompt, "retry")).ok).toBe(true);
     expect(vi.mocked(client.request).mock.calls.filter(args => args[0] === "session/prompt")).toHaveLength(1);
     expect((await command({ ...prompt, text: "changed" }, "conflict")).status).toBe("message_id_conflict");
@@ -142,14 +152,14 @@ describe("DeepSeek Harness backend", () => {
     await vi.waitFor(() => expect(events.some(item => item.event.type === "command.result" && item.event.commandId === "admission" && item.event.status === "cancelled")).toBe(true));
     expect(vi.mocked(client.request).mock.calls.filter(args => args[0] === "session/prompt")).toHaveLength(0);
     expect((await command(prompt, "retry-cancelled")).status).toBe("cancelled");
-    expect(events.filter(item => item.event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { turn: null } });
+    expect(events.filter(item => item.event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { turn: expect.objectContaining({ durationMs: expect.any(Number) }) } });
   });
 
   it("finishes the turn even when history cannot be read", async () => {
     const { runtime, history, command, events } = await fixture();
     vi.mocked(history.read).mockRejectedValue(new Error("history unavailable"));
     expect((await command({ type: "user_message", text: "work" })).ok).toBe(false);
-    expect(events.filter(item => item.event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { turn: null } });
+    expect(events.filter(item => item.event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { turn: expect.objectContaining({ durationMs: expect.any(Number) }) } });
     expect(runtime.directoryEntries()[0]?.status).toBe("idle");
   });
 
