@@ -371,8 +371,23 @@ try {
         $previousErrorActionPreference = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            & $gradlew -p $android @GradleArgs
-            $exitCode = $LASTEXITCODE
+            # Gradle 的 daemon 会继承启动它的进程的标准输出。直接 `& $gradlew` 时它握住调用方的
+            # 管道，直到空闲退出（10 分钟）才 EOF —— 调用方看起来就是卡死（2026-10-19 实测：
+            # 首次构建卡住，复用已存在 daemon 的构建 2 秒返回）。让 cmd 自己打开日志文件，
+            # gradle / daemon 继承的是文件而不是管道，包装进程退出后调用方立刻拿到控制权。
+            New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+            $buildLogPath = Join-Path $runDir ("gradle-{0}.log" -f $buildId)
+            $quotedArgs = (($GradleArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
+            $buildCommand = 'call "' + $gradlew + '" -p "' + $android + '"' +
+                $(if ($quotedArgs) { ' ' + $quotedArgs } else { '' }) +
+                ' > "' + $buildLogPath + '" 2>&1'
+            Write-Output ("Gradle log: {0}" -f $buildLogPath)
+            # 不要用 -Wait：PowerShell 7 的 -Wait 会等整棵进程树，而 Gradle daemon 是 cmd 的孙
+            # 进程，要空闲 10 分钟才退出。只等 cmd 本身。
+            $buildProcess = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/c', $buildCommand) -NoNewWindow -PassThru
+            $buildProcess.WaitForExit()
+            $exitCode = $buildProcess.ExitCode
+            if (Test-Path -LiteralPath $buildLogPath) { Get-Content -LiteralPath $buildLogPath | Write-Output }
         } finally {
             $ErrorActionPreference = $previousErrorActionPreference
         }
