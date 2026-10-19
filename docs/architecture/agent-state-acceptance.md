@@ -66,7 +66,7 @@
 | 02 后端可用性与桌面接入 | HostState.backends；AgentState.availability | **已接入事实**：`HostState.backends` 发布逐后端 `ready`/`launchable`/`runtimeCount`/`reason` 与 `agents`/`launchableAgents`/Codex 桌面接档；App 的支持后端与桌面接档从这份领域读（第 34 批）|
 | 03 会话目录与归档 | HostState.catalog | **已接入事实，App 已是消费者**：领域里带完整（有界）会话清单 + `snapshotId` + 不透明游标，`agent.state.range.request/page` 按同一目录版本跨页收齐，逐后端读取结果/失败原因/截断标记一起发布；任一后端没读全就是 partial。App 的会话列表改由模型提供，`session.list.result` 只剩回执（第 34 批）|
 | 04 聊天历史与 canonical Entries | AgentState.history | **已接入事实，Host 持有当前投影**：`projectDisplayEntries` 产出标准 ChatMessage（文本/思考/工具调用/产物/摘要），`AgentConversationState` 把 canonical head、有界条目、显示结果与页缓存一起提交；设备的范围读取先由 Host 模型应答，模型没有基线时才转给适配层。未知条目保留身份与原因 |
-| 05 会话分支与当前 head | AgentState.history | **已接入事实**：路径重建、压缩裁剪与摘要渲染位置都在产出方判定（批次带窗口起点与渲染锚点），App 只负责分支与 head；缺父/成环/找不到叶子如实报告。同一来源版本的条目不能被改写——同版本不同内容是 `entry_conflict`，更旧版本不能覆盖缓存（第 35 批）|
+| 05 会话分支与当前 head | AgentState.history | **已接入事实**：路径重建、压缩裁剪与摘要渲染位置都在产出方判定（批次带窗口起点与渲染锚点），App 只负责分支与 head；缺父/成环/找不到叶子如实报告。版本门槛沿用 ADR-0025：更旧版本不能覆盖缓存，**同 epoch 的有效权威结果可以修正同 ID 的表示**（revert/原生更正靠它修复缓存），同一包里给出两种写法才是不自洽（第 35 批）|
 | 06 实时消息与流式正文 | AgentState.live.messages | **已接入事实**：`AgentConversationState` 与 history 同一笔事务写完整 live 库存（`complete` 标记），流式正文经 `session.patch` 的累计正文到达；未持久化的结束消息仍可恢复。App 不再消费 `message.started/delta/finished`，只认这份库存（第 33/34 批）|
 | 07 回合身份与计时 | AgentState.execution.turn | **已接入事实**：`execution.turn` 带 `turnId`/`startedAt`，结束后**保留已确认的 `durationMs`**（不再清成 null），App 只在 `durationMs == null` 时算「进行中」；快照的 `turnTimings` 另外落进投影（第 33/34 批）|
 | 08 工具调用与执行结果 | AgentState.live.tools；history 引用 | **已接入事实**：工具随 live 库存提交，结果提交与 live 移除同源；投影没画出来的已完成工具不会继续钉在底栏（第 33 批）|
@@ -634,10 +634,10 @@ App 侧（[AgentModelProjection.kt](../../android/app/src/main/java/dev/pi/remot
 - 14 的含义：客户端改为**按领域消费 Host 模型**（订阅/完整领域发布、目录分页、`device.ready` 带 `modelEpoch`），并且会话快照必须自报 source（preview 还必须带 checkpoint/live）。
 - 入站校验仍是精确匹配，所以这是断代：旧 13 连不上新 Host，反之亦然；没有兼容旁路可删。
 
-跑绿过程中修掉三处（都是这批代码自己引入的，不是新功能）：
+跑绿过程中处理了三处：两处是这批代码自己引入的缺陷，一处是我先按旧规则改错了方向、查完 ADR-0025 后改回来（都记在下面，免得下一个人再走一遍）：
 
 1. **第一条实时消息会被丢掉**：[agent-conversation-state.ts](../../packages/host/src/agent-conversation-state.ts) 原来要求 ready patch 必须有已提交基线，但 **Codex 与 DSH 从不主动推 snapshot**（只有 `session.sync` 才给），它们的第一次 `session.patch` 必然没有基线 —— 于是整段内容被拒绝，`sendResync` 又只对 loopback 的 Pi 有效。现在这类 patch 按 **handshake** 接收：内容照旧转发、来源水位照旧推进，但它**永远不能成为基线**（`hasBaseline` 仍为 false、`recover` 仍返回 undefined、缺席不能删条目）；真正的 baseSeq 缺口仍然拒绝并要求重新基线。
-2. **同版本改写没有冲突判定**：[SessionGraph.merge](../../android/app/src/main/java/dev/pi/remote/SessionGraph.kt) 原来只要快照带 ready source 就允许改写同 ID 条目。现在**同一来源版本给出两种写法就是 `entry_conflict`**（与 SQLite 行的判定一致），更旧版本不能覆盖缓存，更新的版本才允许更正。
+2. **旧断言假定了已经不存在的前提（不是产品缺陷）**：「catch-up 页带着同 ID 的不同内容必须报 `entry_conflict`」是**未版本化**路径的规则（快照不自报 source 时）。ADR-0025 §2 明确「同 epoch 的有效权威结果可以更新同 ID 的 parent/type/timestamp/data」，SQLite 行也只拦**更旧**的版本（`source_seq` 更大的才覆盖），所以协议 14 之后这条页就该按版本门槛改写缓存，而不是报冲突。用例改成钉真正还在的不变量：**同一个包里同 ID 出现两种写法**才整包拒绝、本地树不动、错误可恢复。
 3. **catchup 不推进分页锚点**：canonical 页不动显示视图是对的，但补齐到新 head 之后 `sessionHistory.leafId` 还停在旧叶，下一次「读更早」会按错的锚点发；现在 catchup 用页的目标叶更新分页锚点（显示视图仍不动）。顺带修掉 `expandedStart` 的自反判定——它会把边界条目本身当成「向外扩了一格」，把 `hasOlder` 误清成 false。
 
 测试夹具跟着迁移：13 个 `RelayReducerTest` 用例按新协议补 `source`/`checkpoint`，并补上真实客户端一定会有的 canonical 缓存（条目 + 显示行 + `cacheEpoch` + 条目版本）；`HistoryReadOperationsTest` 的首屏夹具补 `cacheEpoch`，`RelayReducerTest` 的 catchup 页补 `parentId` 让它与缓存一致。没有放宽任何断言，只把「不可能的初始状态」换成「真实的初始状态」。
@@ -655,5 +655,5 @@ App 侧（[AgentModelProjection.kt](../../android/app/src/main/java/dev/pi/remot
 - 提交路径里不发起原生 RPC、文件 IO 或网络探测。
 - Registry 不保存全量聊天历史。
 - 一条会话 patch 可以推进内容与来源水位，但**永远不能成为恢复基线**（`hasBaseline` 仍为 false，设备范围读取仍走「模型 → 适配层」的顺序）。
-- 同一来源版本的同一个 Entry 只能有一种写法：同版本不同内容是冲突，更旧版本不能覆盖缓存。
+- 版本门槛（ADR-0025）：更旧的页不能覆盖较新的条目；同 epoch 的有效权威结果**可以**修正同 ID 的表示；同一个包内同 ID 的两种写法必须整包拒绝。
 - 目录分页、模型领域与已应用版本不能跨 `snapshotId` / `modelEpoch` 混用；换代次或换目录版本时，旧在途应答只能被丢弃，不能写回。
