@@ -179,7 +179,7 @@ class SessionGraphTest {
     }
 
     @Test
-    fun `projection restores completed turn timing from the selected Session branch`() {
+    fun `projection reads explicit timing and leaves native custom payloads opaque`() {
         val assistant = entry("assistant", null, role = "assistant", text = "done")
         val timing = SessionGraphEntry(
             entryId = "timing",
@@ -203,12 +203,10 @@ class SessionGraphTest {
             cursor = SessionBranchCursor("timing"),
         )
 
-        val projected = projectSessionGraph(graph)
-
-        assertEquals(
-            listOf(TurnTiming("turn-1", 1_000, durationMs = 250, turnIndex = 0, messageId = "assistant")),
-            projected.turnTimings,
-        )
+        assertTrue(projectSessionGraph(graph).turnTimings.isEmpty())
+        val explicit = TurnTiming("turn-1", 1_000, durationMs = 250, turnIndex = 0, messageId = "assistant")
+        val projected = projectSessionGraph(graph.copy(turnTimings = mapOf(explicit.turnId to explicit)))
+        assertEquals(listOf(explicit), projected.turnTimings)
     }
 
     @Test

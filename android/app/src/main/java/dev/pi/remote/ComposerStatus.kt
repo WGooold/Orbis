@@ -26,7 +26,7 @@ private const val ELEVATED_PERCENT = 70.0
 private const val CRITICAL_PERCENT = 90.0
 
 internal fun composerStatus(runtime: RuntimeSummary?): ComposerStatus {
-    val usage = runtime?.contextUsage
+    val usage = runtime?.contextUsage?.takeIf { runtime.domainAvailability["context"] in setOf(null, "ready") }
     val percent = usage?.contextPercent()
     return ComposerStatus(
         modelLabel = runtime?.model?.let(::modelLabel)?.takeIf(String::isNotBlank),

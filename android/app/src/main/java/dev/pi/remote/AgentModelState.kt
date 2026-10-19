@@ -3,8 +3,11 @@ package dev.pi.remote
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -22,13 +25,32 @@ data class AgentStateDomainView(
     val completeness: String,
     val checkedAt: Long,
     val value: JsonElement? = null,
+    /** 完整的 Host 已提交投影；与 source 清单是否 complete 无关。 */
+    val projectionComplete: Boolean = false,
 )
+
+data class AgentStateRead(
+    val key: String,
+    val scope: String,
+    val domains: Set<String>,
+    val runtimeId: String? = null,
+    val sessionId: String? = null,
+    val agentKind: String? = null,
+    val subscribe: Boolean = true,
+    val sentAt: Long = System.currentTimeMillis(),
+)
+
+internal val AGENT_MODEL_DOMAINS = listOf(
+    "identity", "availability", "execution", "delivery", "interactions", "permissions",
+    "model", "context", "capabilities", "resources", "providerBinding", "workspaceRef", "artifacts", "records",
+)
+internal val HOST_MODEL_DOMAINS = listOf("identity", "backends", "catalog", "providers", "workspaces", "files", "operations", "diagnostics", "connections", "management")
 
 /**
  * 一次模型读取的结果（`agent.state.snapshot`，ADR-0032 issue #10 的客户端一半）。
  *
  * 三条纪律：
- * - **整份替换**：同一个 [key] 上的新快照顶掉旧的，不做字段级合并——半新半旧的模型比没有模型更危险；
+ * - **分域替换**：每个领域按自身版本独立替换，刷新供应商不会抹掉诊断或目录基线；
  * - **缺席有原因**：[missing] 记下点名要却没有状态的领域（`no_state`）与名字不属于该作用域
  *   （`unknown_domain`），所以「领域表里没有它」永远不等于「它是空的」；
  * - **截断如实说**：[truncated] 为 true 时这份清单被字节预算切过，不能当基线。
@@ -49,9 +71,8 @@ data class AgentStateSnapshotView(
 /** 快照身份：作用域 + 会话/运行时身份。Host 按这个身份回答，客户端也按它存放。 */
 internal fun agentStateSnapshotKey(message: JsonObject): String = listOf(
     message.string("scope") ?: "host",
-    message.string("runtimeId").orEmpty(),
     message.string("agentKind").orEmpty(),
-    message.string("sessionId").orEmpty(),
+    message.string("sessionId") ?: message.string("runtimeId").orEmpty(),
 ).joinToString("|")
 
 /**
@@ -60,17 +81,29 @@ internal fun agentStateSnapshotKey(message: JsonObject): String = listOf(
  * 解析失败的整条快照按「读取失败」处理，而不是丢掉坏的那一条：Host 的 envelope 缺字段说明两端
  * 对协议的理解已经不一致，此时留下半份模型比什么都不留更糟。
  */
-internal fun RemoteState.withAgentStateSnapshot(message: JsonObject): RemoteState {
+internal fun RemoteState.withAgentStateSnapshot(
+    message: JsonObject,
+    json: Json,
+    parseInteraction: (Json, JsonObject, PendingInteraction?) -> PendingInteraction?,
+): RemoteState {
     val requestId = message.string("requestId") ?: return this
+    val read = agentStateReads[requestId]
+    // 只收本连接登记的请求或订阅；旧连接的迟到消息不能建立代次或写回镜像。
+    if (read == null && requestId !in agentStateRequests) return this
     val key = agentStateSnapshotKey(message)
     val scope = message.string("scope") ?: "host"
+    if (read != null && (read.scope != scope || read.sessionId != message.string("sessionId") ||
+            read.runtimeId != message.string("runtimeId") || read.agentKind != null && read.agentKind != message.string("agentKind"))) return this
     // 应答到达即销账：无论是成功、失败还是坏消息，都不该继续挂在「已发出」里。
-    val cleared = copy(agentStateRequests = agentStateRequests - requestId)
+    val cleared = copy(agentStateRequests = agentStateRequests - requestId,
+        agentStateReads = if (read?.subscribe == true) agentStateReads else agentStateReads - requestId)
     val failure = message.string("error")
     if (failure != null) return cleared.storeSnapshot(key, AgentStateSnapshotView(
         key = key, scope = scope, requestId = requestId, error = failure,
     ))
-    val entries = message["domains"]?.jsonArray ?: return cleared
+    val epoch = message.string("modelEpoch") ?: return cleared.rejectedSnapshot(key, scope, requestId, "模型快照缺少代次")
+    if (agentModelEpoch != null && epoch != agentModelEpoch || epoch in retiredAgentModelEpochs) return cleared
+    val entries = message["domains"] as? JsonArray ?: return cleared.rejectedSnapshot(key, scope, requestId, "模型快照缺少领域清单")
     val domains = LinkedHashMap<String, AgentStateDomainView>()
     for (element in entries) {
         val row = element as? JsonObject
@@ -81,8 +114,10 @@ internal fun RemoteState.withAgentStateSnapshot(message: JsonObject): RemoteStat
         val availability = row.string("availability")
         val completeness = row.string("completeness")
         val checkedAt = row["checkedAt"]?.jsonPrimitive?.longOrNull
-        if (domain == null || modelEpoch == null || revision == null ||
-            availability == null || completeness == null || checkedAt == null
+        if (domain == null || modelEpoch == null || modelEpoch != epoch || revision == null || revision < 0 ||
+            availability == null || availability !in setOf("ready", "unknown", "unavailable") ||
+            completeness == null || completeness !in setOf("complete", "partial", "unknown") || checkedAt == null || checkedAt < 0 ||
+            domain in domains || read != null && domain !in read.domains
         ) {
             return cleared.rejectedSnapshot(key, scope, requestId, "模型快照里的领域缺少 envelope 字段")
         }
@@ -90,6 +125,7 @@ internal fun RemoteState.withAgentStateSnapshot(message: JsonObject): RemoteStat
             domain = domain, modelEpoch = modelEpoch, revision = revision,
             availability = availability, completeness = completeness, checkedAt = checkedAt,
             value = row["value"],
+            projectionComplete = row["projectionComplete"]?.jsonPrimitive?.booleanOrNull == true,
         )
     }
     val missing = LinkedHashMap<String, String>()
@@ -98,19 +134,45 @@ internal fun RemoteState.withAgentStateSnapshot(message: JsonObject): RemoteStat
         val domain = row.string("domain") ?: continue
         missing[domain] = row.string("reason") ?: "unknown"
     }
-    return cleared.storeSnapshot(key, AgentStateSnapshotView(
+    val previous = agentStateSnapshots[key]?.takeIf { it.modelEpoch == epoch }
+    val merged = previous?.domains.orEmpty().toMutableMap()
+    val changed = linkedMapOf<String, AgentStateDomainView>()
+    for ((domain, incoming) in domains) {
+        val old = merged[domain]
+        if (old != null && incoming.revision < old.revision) continue
+        // 同版本只能更新核对时点，不能用乱序消息改内容或可用性。
+        if (old != null && incoming.revision == old.revision &&
+            (incoming.value != old.value || incoming.availability != old.availability || incoming.completeness != old.completeness)) continue
+        merged[domain] = incoming
+        changed[domain] = incoming
+    }
+    val mergedMissing = previous?.missing.orEmpty().toMutableMap().apply {
+        domains.keys.forEach(::remove)
+        putAll(missing)
+    }
+    val base = cleared.copy(agentModelEpoch = epoch)
+    val ranged = changed["catalog"]?.takeIf { scope == "host" }?.let { base.beginCatalogRange(it, json) } ?: base
+    val projected = if (scope == "agent") ranged.applyAgentDomainProjection(message.string("runtimeId"), message.string("sessionId"), changed, json, parseInteraction)
+        else if (scope == "host") ranged.applyHostDomainProjection(changed, json) else ranged
+    if (projected.error?.startsWith("Host 模型领域格式无效：") == true && projected.error != base.error) {
+        return cleared.rejectedSnapshot(key, scope, requestId, projected.error)
+    }
+    return projected.storeSnapshot(key, AgentStateSnapshotView(
         key = key,
         scope = scope,
         requestId = requestId,
-        modelEpoch = message.string("modelEpoch"),
-        domains = domains,
-        missing = missing,
+        modelEpoch = epoch,
+        domains = merged,
+        missing = mergedMissing,
         truncated = message["truncated"]?.jsonPrimitive?.booleanOrNull == true,
     ))
 }
 
-private fun RemoteState.storeSnapshot(key: String, view: AgentStateSnapshotView): RemoteState =
-    copy(agentStateSnapshots = agentStateSnapshots + (key to view))
+private fun RemoteState.storeSnapshot(key: String, view: AgentStateSnapshotView): RemoteState {
+    val stored = if (view.error != null) view.copy(modelEpoch = agentStateSnapshots[key]?.modelEpoch,
+        domains = agentStateSnapshots[key]?.domains.orEmpty(), missing = agentStateSnapshots[key]?.missing.orEmpty()) else view
+    return copy(agentStateSnapshots = agentStateSnapshots + (key to stored))
+}
 
 private fun RemoteState.rejectedSnapshot(key: String, scope: String, requestId: String, reason: String): RemoteState =
     storeSnapshot(key, AgentStateSnapshotView(key = key, scope = scope, requestId = requestId, error = reason))
@@ -184,6 +246,36 @@ internal data class ProviderSwitchingView(
     /** 可选供应商清单的口径；null 表示这一行不该出现（还没读到过供应商摘要）。 */
     val profiles: String? = null,
 )
+
+internal data class ModelStatusFact(val label: String, val value: String)
+
+/** 所有已支持 Host/Agent 领域均可见；缺席/待核对不伪装为空或已完成。 */
+internal fun RemoteState.modelStatusFacts(): List<ModelStatusFact> = buildList {
+    for (snapshot in agentStateSnapshots.values.sortedBy { it.key }) {
+        val label = if (snapshot.scope == "host") "电脑" else snapshot.key.substringAfterLast('|')
+        snapshot.error?.let { add(ModelStatusFact(label, "读取失败：$it")) }
+        for ((name, domain) in snapshot.domains.toSortedMap()) {
+            val status = when (domain.availability) { "ready" -> "已核对"; "unavailable" -> "不支持"; else -> "待核对" }
+            add(ModelStatusFact("$label · $name", "$status · v${domain.revision} · ${domain.completeness}"))
+        }
+        for ((name, reason) in snapshot.missing) add(ModelStatusFact("$label · $name", "尚无状态：$reason"))
+    }
+}
+
+internal fun RemoteState.providerPublicFacts(): List<ModelStatusFact> = buildList {
+    val domain = hostScopeSnapshot()?.domains?.get("providers") ?: return@buildList
+    val rows = ((domain.value as? JsonObject)?.get("providers") as? JsonArray).orEmpty()
+    for (row in rows.filterIsInstance<JsonObject>()) {
+        val kind = row.string("agentKind") ?: continue
+        for ((key, title) in listOf("usage" to "用量", "authentication" to "认证", "health" to "健康", "routing" to "路由")) {
+            val fact = row[key] as? JsonObject
+            val available = fact?.string("availability") ?: "unknown"
+            val detail = fact?.get("detail")?.takeUnless { it is JsonNull }?.toString()?.trim('"')
+            val summary = if (available != "ready") "未核对" else detail ?: fact.toString()
+            add(ModelStatusFact("$kind · $title", summary.take(800)))
+        }
+    }
+}
 
 /**
  * 把 Host 的供应商摘要翻成一句人话，重点是**切换进行中**。
@@ -299,6 +391,10 @@ internal fun RemoteState.catalogSummaryView(): CatalogSummaryView {
         backends += CatalogBackendView(kind, ready, sessions, complete, row.string("error"))
     }
     val truncated = value["truncated"]?.jsonPrimitive?.booleanOrNull == true
+    val range = agentCatalogRange?.takeIf { it.modelEpoch == domain.modelEpoch && it.revision == domain.revision }
+    if (range?.error != null) return CatalogSummaryView("$total 个会话（部分）", "目录分页失败：${range.error}", StatusTone.Warn)
+    if (range?.nextCursor != null || value.string("nextCursor") != null && range == null)
+        return CatalogSummaryView("$total 个会话（读取中）", "已读取 ${range?.sessions?.size ?: (value["sessions"] as? JsonArray)?.size ?: 0} 个", StatusTone.Warn)
     val gaps = backends.filter { !it.complete }
     if (gaps.isEmpty() && !truncated && domain.completeness == "complete") {
         return CatalogSummaryView("$total 个会话（" + backends.size + " 个后端都读全）", null, StatusTone.Good)

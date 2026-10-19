@@ -52,7 +52,7 @@ class SessionSyncTasksTest {
           "range":"preview","targetLeafId":"leaf","complete":true,"cursor":{"leafId":"leaf"},
           "entries":[{"entryId":"leaf","parentId":null,"type":"message","timestamp":"1",
           "data":{"message":{"role":"user","content":"late"}}}]}}"""
-        val recovered = FixtureRelayReducer().reduce(expired, payload)
+        val recovered = FixtureRelayReducer().reduceSourceSnapshot(expired, payload)
         assertTrue(recovered.sessionSyncFailures.isEmpty())
         assertTrue(recovered.sessionSyncCommands.isEmpty())
         assertEquals("leaf", recovered.conversations["r0"]?.messages?.single()?.messageId)

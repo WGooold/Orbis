@@ -27,6 +27,13 @@ internal const val PROTOCOL_VERSION_MISMATCH_ERROR =
  */
 internal val P2P_FALLBACK_ERROR_CODES = setOf("p2p_cooling_down", "p2p_unavailable")
 
+/** 协议 14 已以模型/聊天事务替换这些一次性业务通知，迟到帧不能另建写入者。 */
+internal val MODEL_OWNED_LEGACY_EVENTS = setOf(
+    "runtime.status", "runtime.capabilities", "message.queued", "interaction.requested", "interaction.snapshot",
+    "interaction.resolved", "interaction.cancelled", "local_interaction.required", "message.started", "message.delta",
+    "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished",
+)
+
 @Serializable
 data class RuntimeModelInfo(
     val provider: String,
@@ -79,6 +86,10 @@ data class RuntimeSummary(
     val contextUsage: RuntimeContextUsage? = null,
     val permissions: RuntimePermissions? = null,
     val permissionManagement: RuntimePermissionManagement? = null,
+    /** Host 模型的会话身份；不从 runtime 路由前缀推断。 */
+    val agentKind: String? = null,
+    /** 镜像可用性供界面区分最后已知值与当前已确认事实。 */
+    val domainAvailability: Map<String, String> = emptyMap(),
 ) {
     /**
      * 这条 Runtime 是不是 Codex 会话。codex 的对外 runtimeId 形如 `codex:<threadId>`
@@ -86,7 +97,7 @@ data class RuntimeSummary(
      * 只用于展示层（命令来源徽标、侧栏角标），不参与协议语义。
      */
     val isCodex: Boolean
-        get() = runtimeId == CODEX_RUNTIME_ID || runtimeId.startsWith("$CODEX_RUNTIME_ID:") || runtimeId.startsWith("codex-desktop:")
+        get() = agentKind in setOf("codex", "codexDesktop")
 }
 
 @Serializable
@@ -418,6 +429,12 @@ data class RemoteState(
     val agentStateSnapshots: Map<String, AgentStateSnapshotView> = emptyMap(),
     /** 已发出、还没应答的模型读取请求；应答到达即移除（好坏都销账）。 */
     val agentStateRequests: Set<String> = emptySet(),
+    val agentStateReads: Map<String, AgentStateRead> = emptyMap(),
+    val agentCatalogRange: AgentCatalogRange? = null,
+    val agentCatalogRangeRequest: AgentCatalogRangeRequest? = null,
+    /** 只能由经过认证的 device.ready 建立或替换。 */
+    val agentModelEpoch: String? = null,
+    val retiredAgentModelEpochs: Set<String> = emptySet(),
     /** 诊断记录的最后一页（模块 23）。只留一页：状态页要看的是最近发生了什么。 */
     val diagnosticPage: DiagnosticPageView? = null,
     /** 已发出、还没回来的记录读取；带时间戳，超过窗口就如实说「没有回音」。 */
@@ -525,13 +542,17 @@ data class SessionHistoryState(
  * retained only for the same Session, so switching Sessions never carries an old permission scope.
  */
 internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): RuntimeSummary {
-    if (previous == null) return this
+    // 目录/metadata 只提供聊天路由；业务字段由已提交的模型领域写入。
+    val sameSession = previous?.takeIf { it.sessionId == sessionId }
     return copy(
-        model = model ?: previous.model,
-        thinkingLevel = thinkingLevel ?: previous.thinkingLevel,
-        contextUsage = contextUsage ?: previous.contextUsage,
-        permissions = permissions ?: previous.permissions.takeIf { sessionId == previous.sessionId },
-        permissionManagement = permissionManagement ?: previous.permissionManagement.takeIf { sessionId == previous.sessionId },
+        status = sameSession?.status ?: "unknown",
+        model = sameSession?.model,
+        thinkingLevel = sameSession?.thinkingLevel,
+        contextUsage = sameSession?.contextUsage,
+        permissions = null,
+        permissionManagement = sameSession?.permissionManagement,
+        agentKind = sameSession?.agentKind,
+        domainAvailability = sameSession?.domainAvailability.orEmpty(),
     )
 }
 
@@ -567,47 +588,11 @@ private fun mergeSessionCatalogEntry(
  * hasHistoryCache（那是历史同步的标记），所以只合并不替换；requestId 收尾。
  */
 private fun reduceSessionListResult(state: RemoteState, message: JsonObject): RemoteState {
-    val requestId = message["requestId"]?.jsonPrimitive?.contentOrNull
-    if (requestId != null && requestId !in state.sessionListRequests) {
-        android.util.Log.w("PiRemote.SessionList", "session.list.result 的 requestId 不在在途集合里，丢弃（requestId=$requestId）")
-        return state
-    }
-    if (requestId != null && (state.sessionListRequestEpochs[requestId] ?: state.sessionListEpoch) < state.sessionListEpoch) {
-        return state.copy(
-            sessionListRequests = state.sessionListRequests - requestId,
-            sessionListRequestEpochs = state.sessionListRequestEpochs - requestId,
-        )
-    }
-    val sessions = runCatching {
-        message["sessions"]?.let { sessionMessageJson.decodeFromJsonElement<List<SessionCatalogEntry>>(it) }
-    }.onFailure {
-        android.util.Log.e("PiRemote.SessionList", "session.list.result 解码失败", it)
-    }.getOrNull() ?: return state.copy(
-        sessionListRequests = requestId?.let { state.sessionListRequests - it } ?: state.sessionListRequests,
-        sessionListRequestEpochs = requestId?.let { state.sessionListRequestEpochs - it } ?: state.sessionListRequestEpochs,
-    )
-    val listedIds = sessions.mapTo(mutableSetOf(), SessionCatalogEntry::sessionId)
-    val onlineIds = state.runtimes.values.mapNotNullTo(mutableSetOf(), RuntimeSummary::sessionId)
-    val hasDshEvidence = sessions.any { it.agentKind == "dsh" } || state.runtimes.values.any { it.agentKind == "dsh" }
-    var merged = state.sessions.filterValues { entry ->
-        !hasDshEvidence || entry.agentKind != "dsh" || entry.sessionId in listedIds ||
-            entry.hasHistoryCache || entry.sessionId in onlineIds
-    }
-    for (entry in sessions) {
-        merged = merged + (entry.sessionId to mergeSessionCatalogEntry(merged[entry.sessionId], entry))
-    }
-    return state.copy(
-        sessions = merged,
-        currentProviders = message["currentProviders"]?.jsonArray.orEmpty().mapNotNull { element ->
-            val entry = element as? JsonObject ?: return@mapNotNull null
-            val agentKind = entry["agentKind"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-            val provider = entry["provider"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
-                ?: return@mapNotNull null
-            agentKind to provider
-        }.toMap(),
-        sessionListRequests = requestId?.let { state.sessionListRequests - it } ?: state.sessionListRequests,
-        sessionListRequestEpochs = requestId?.let { state.sessionListRequestEpochs - it } ?: state.sessionListRequestEpochs,
-    )
+    val requestId = message["requestId"]?.jsonPrimitive?.contentOrNull ?: return state
+    if (requestId !in state.sessionListRequests) return state
+    // Directory contents are mirrored from HostState.catalog; this is a device read receipt.
+    return state.copy(sessionListRequests = state.sessionListRequests - requestId,
+        sessionListRequestEpochs = state.sessionListRequestEpochs - requestId)
 }
 
 private fun reduceSessionArchiveChanged(state: RemoteState, message: JsonObject): RemoteState {
@@ -619,9 +604,6 @@ private fun reduceSessionArchiveChanged(state: RemoteState, message: JsonObject)
     if (entry?.agentKind != null && entry.agentKind != agentKind) return state
     val changed = entry?.archived != archived
     return state.copy(
-        sessions = state.sessions + (sessionId to (entry ?: SessionCatalogEntry(sessionId)).copy(
-            agentKind = agentKind, archived = archived,
-        )),
         sessionArchiveRequests = state.sessionArchiveRequests - listOfNotNull(requestId),
         sessionListEpoch = if (changed) state.sessionListEpoch + 1 else state.sessionListEpoch,
     )
@@ -825,11 +807,6 @@ private fun RuntimeSummary.sessionView(runtimeId: String): RuntimeSessionView? =
     )
 }
 
-private fun RuntimeSummary.withReplicatedTurn(conversation: RuntimeConversation): RuntimeSummary {
-    if (conversation.sourceEpoch == null || !conversation.sourceReady ||
-        status !in setOf("idle", "running")) return this
-    return copy(status = if (conversation.activeTurnId != null) "running" else "idle")
-}
 
 internal fun initialSessionSyncRange(
     conversation: RuntimeConversation?,
@@ -950,26 +927,18 @@ private fun RuntimeSummary.catalogEntry(): SessionCatalogEntry? = sessionId?.let
         messageCount = 0,
         // 在线进程合入目录时也要带 agentKind（codex 是固定虚拟 runtimeId，Pi 是 UUID），
         // 否则侧栏在 session.list 刷新前无法给在线 codex 会话画角标。
-        agentKind = runtimeAgentKind(runtimeId),
+        agentKind = agentKind,
     )
 }
 
 /** codex 的固定虚拟 runtimeId（host 侧同值）。Pi 的 runtimeId 是随机 UUID，不会撞。 */
 const val CODEX_RUNTIME_ID = "codex"
 
-internal fun runtimeAgentKind(runtimeId: String?): String = when {
-    runtimeId?.startsWith("codex-desktop:") == true -> "codexDesktop"
-    runtimeId == CODEX_RUNTIME_ID || runtimeId?.startsWith("$CODEX_RUNTIME_ID:") == true -> "codex"
-    runtimeId?.startsWith("dsh:") == true -> "dsh"
-    else -> "pi"
-}
-
-internal val RuntimeSummary.agentKind: String get() = runtimeAgentKind(runtimeId)
-internal val CachedSessionRow.agentKind: String get() = catalogEntry?.agentKind ?: runtimeAgentKind(runtimeId)
+internal val CachedSessionRow.agentKind: String get() = catalogEntry?.agentKind ?: "unknown"
 
 /** 该侧栏行是不是 codex 会话：目录条目优先，在线 runtime 兜底（session.list 未刷新时条目可能为 null）。 */
 internal val CachedSessionRow.isCodex: Boolean
-    get() = catalogEntry?.agentKind in setOf("codex", "codexDesktop") || runtimeId == CODEX_RUNTIME_ID || runtimeId?.startsWith("$CODEX_RUNTIME_ID:") == true || runtimeId?.startsWith("codex-desktop:") == true
+    get() = catalogEntry?.agentKind in setOf("codex", "codexDesktop")
 
 internal val CachedSessionRow.isArchived: Boolean
     get() = catalogEntry?.archived == true
@@ -1525,7 +1494,7 @@ class RelayReducer(
         val messageType = message.string("type")
         if (messageType !in setOf(
                 "device.ready", "runtime.online", "runtime.offline", "runtime.event", "runtime.git", "notification.snapshot",
-                "protocol.error", "provider.result", "provider.changed", "agent.state.snapshot", "diagnostics.page",
+                "protocol.error", "provider.result", "provider.changed", "agent.state.snapshot", "agent.state.range.page", "diagnostics.page",
                 "artifact.read.failed",
                 // 上传的入站消息：状态由 ViewModel 的上传处理器维护，reducer 只需不把它当非法消息。
                 "file.upload.ready", "file.upload.read", "file.upload.progress", "file.upload.finished", "file.upload.failed",
@@ -1544,7 +1513,9 @@ class RelayReducer(
             "notification.snapshot" -> if (channel != null) state.withNotificationSnapshot(message, json) else state
             "provider.result" -> if (channel != null) state.withProviderResult(message) else state
             "provider.changed" -> state
-            "agent.state.snapshot" -> state.withAgentStateSnapshot(message)
+            "agent.state.snapshot" -> if (channel != null)
+                state.withAgentStateSnapshot(message, json, ::parsePendingInteraction) else state
+            "agent.state.range.page" -> if (channel != null) state.withAgentCatalogRangePage(message, json) else state
             "diagnostics.page" -> state.withDiagnosticsPage(message)
             "runtime.git" -> state.withWorkingBranch(message)
             "device.ready" -> {
@@ -1648,10 +1619,18 @@ class RelayReducer(
                     deviceId = message.string("deviceId"),
                     notificationEpoch = message.string("notificationEpoch") ?: state.notificationEpoch,
                     sessions = sessions,
-                    runtimes = runtimes,
-                    supportedAgents = supportedAgents,
-                    launchableAgents = launchableAgents,
-                    codexDesktop = codexDesktop,
+                    runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
+                        state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
+                    agentModelEpoch = message.string("modelEpoch"),
+                    retiredAgentModelEpochs = state.retiredAgentModelEpochs + listOfNotNull(state.agentModelEpoch?.takeIf { it != message.string("modelEpoch") }),
+                    agentStateSnapshots = state.agentStateSnapshots.takeIf { state.agentModelEpoch == message.string("modelEpoch") }.orEmpty(),
+                    agentStateRequests = emptySet(),
+                    agentStateReads = emptyMap(),
+                    agentCatalogRange = state.agentCatalogRange?.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    agentCatalogRangeRequest = null,
+                    supportedAgents = state.supportedAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    launchableAgents = state.launchableAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    codexDesktop = state.codexDesktop.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     sessionListRequests = emptySet(),
                     sessionListRequestEpochs = emptyMap(),
                     sessionArchiveRequests = emptyMap(),
@@ -1672,12 +1651,17 @@ class RelayReducer(
                             }
                         },
                     conversations = conversations.mapValues { (_, conversation) ->
-                        conversation.withoutActiveTurn()
+                        conversation.withoutActiveTurn().let { current ->
+                            if (state.agentModelEpoch == message.string("modelEpoch")) current else current.copy(
+                                interactions = emptyMap(), queuedMessages = emptyMap(), deliveredQueueIds = emptySet(),
+                                waitingLocalInteraction = false, interactionNotices = emptyMap())
+                        }
                     },
                     lastSequence = state.lastSequence.filterKeys { key ->
                         runtimes.keys.any { runtime -> key == runtime || key.startsWith("$runtime\u0000") }
                     },
-                    capabilities = state.capabilities.filterKeys(runtimes::containsKey),
+                    capabilities = state.capabilities.filterKeys(runtimes::containsKey)
+                        .takeIf { state.agentModelEpoch == message.string("modelEpoch") }.orEmpty(),
                     pendingDownloads = state.pendingDownloads.filterValues { it.runtimeId in runtimes },
                     sessionSyncCommands = emptyMap(),
                     sessionSyncFailures = emptyMap(),
@@ -1761,7 +1745,7 @@ class RelayReducer(
                         state.sessionBranchGenerations + (runtime.runtimeId to ((state.sessionBranchGenerations[runtime.runtimeId] ?: 0) + 1))
                     } else state.sessionBranchGenerations,
                     runtimes = state.runtimes + (runtime.runtimeId to runtime.carryingComposerStatus(previousRuntime)
-                        .let { if (versioned) it.withReplicatedTurn(conversation) else it }),
+                        ),
                     runtimeSessionViews = runtimeView?.let {
                         val previousView = state.runtimeSessionViews[runtime.runtimeId]
                         val keepPreviousView = previousView != null &&
@@ -1989,6 +1973,9 @@ class RelayReducer(
             return state.copy(error = "手机无法安全处理此运行时事件，请在电脑端处理")
         }
         val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
+        if (eventType in MODEL_OWNED_LEGACY_EVENTS) {
+            return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
+        }
         if (conversation.sourceEpoch != null && eventType in setOf(
                 "message.started", "message.delta", "message.finished", "turn.started", "turn.finished",
                 "tool.started", "tool.updated", "tool.finished",
@@ -2115,22 +2102,8 @@ class RelayReducer(
                         nextRuntimeSessionViews = nextRuntimeSessionViews + (runtimeId to
                             RuntimeSessionView(runtimeId, patch.sessionId, applied.sourceHeadLeafId))
                         nextRuntimes[runtimeId]?.let { runtime ->
-                            nextRuntimes = nextRuntimes + (runtimeId to runtime.copy(sessionLeafId = applied.sourceHeadLeafId)
-                                .withReplicatedTurn(applied))
+                            nextRuntimes = nextRuntimes + (runtimeId to runtime.copy(sessionLeafId = applied.sourceHeadLeafId))
                         }
-                    }
-                }
-            }
-            "runtime.status" -> {
-                val status = event.string("status") ?: return state
-                state.runtimes[runtimeId]?.let { runtime ->
-                    nextRuntimes = state.runtimes + (runtimeId to runtime.copy(status = status).withReplicatedTurn(conversation))
-                }
-                if (status != "waiting_local_interaction") {
-                    nextConversation = if (status == "idle") {
-                        conversation.withoutActiveTurn().copy(waitingLocalInteraction = false)
-                    } else {
-                        conversation.copy(waitingLocalInteraction = false)
                     }
                 }
             }
@@ -2155,7 +2128,7 @@ class RelayReducer(
                     metadata.sessionId, previousLeaf, metadata.sessionLeafId,
                 )
                 nextRuntimes = state.runtimes + (runtimeId to metadata.carryingComposerStatus(previousRuntime)
-                    .let { if (versioned) it.withReplicatedTurn(conversation) else it })
+                    )
                 if (sessionChanged || branchChanged) {
                     nextBranchGenerations = nextBranchGenerations + (runtimeId to ((nextBranchGenerations[runtimeId] ?: 0) + 1))
                     nextSessionSyncFailures = nextSessionSyncFailures - runtimeId
@@ -2245,148 +2218,6 @@ class RelayReducer(
                     nextSessionSyncRequests = nextSessionSyncRequests + runtimeId
                 }
             }
-            "session.catalog" -> {
-                val entries = event["sessions"]?.let {
-                    json.decodeFromJsonElement<List<SessionCatalogEntry>>(it)
-                } ?: return state
-                nextSessions = mergeSessionCatalog(state.sessions, entries)
-            }
-            "turn.started" -> {
-                val turnId = event.string("turnId") ?: return state
-                val startedAt = event["startedAt"]?.jsonPrimitive?.longOrNull
-                    ?.takeIf { it >= 0 } ?: return state
-                val turnIndex = event["turnIndex"]?.jsonPrimitive?.intOrNull
-                if (turnId in conversation.turnTimings) {
-                    return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
-                }
-                val retainedTimings = conversation.activeTurnId?.let { conversation.turnTimings - it }
-                    ?: conversation.turnTimings
-                nextConversation = conversation.copy(
-                    turnTimings = retainedTimings + (turnId to TurnTiming(turnId, startedAt, turnIndex = turnIndex)),
-                    activeTurnId = turnId,
-                    revision = conversation.revision + 1,
-                )
-            }
-            "turn.finished" -> {
-                val turnId = event.string("turnId") ?: return state
-                val startedAt = event["startedAt"]?.jsonPrimitive?.longOrNull
-                    ?.takeIf { it >= 0 } ?: return state
-                val durationMs = event["durationMs"]?.jsonPrimitive?.longOrNull
-                    ?.takeIf { it >= 0 } ?: return state
-                val current = conversation.turnTimings[turnId]
-                val liveMessageId = event.string("messageId")
-                val persistedMessageId = event.string("persistedMessageId")
-                val eventRemaps = (event.persistedMessageRemaps() +
-                    listOfNotNull(
-                        liveMessageId?.let { live ->
-                            persistedMessageId?.let { entry -> MessageIdRemap(live, entry) }
-                        },
-                    )).distinctBy(MessageIdRemap::liveId)
-                if (current == null) {
-                    if (eventRemaps.isEmpty()) {
-                        return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
-                    }
-                    var messages = conversation.messages
-                    var streamingMessageIds = conversation.streamingMessageIds
-                    var finishedMessageIds = conversation.finishedMessageIds
-                    for (remap in eventRemaps) {
-                        messages = remapMessageId(messages, remap.liveId, remap.entryId)
-                        streamingMessageIds = streamingMessageIds - remap.liveId + remap.entryId
-                        finishedMessageIds = finishedMessageIds - remap.liveId + remap.entryId
-                    }
-                    nextConversation = conversation.copy(
-                        messages = messages,
-                        streamingMessageIds = streamingMessageIds,
-                        finishedMessageIds = finishedMessageIds,
-                        revision = conversation.revision + 1,
-                    )
-                    return@reduceRuntimeEvent state.copy(
-                        conversations = state.conversations + (runtimeId to nextConversation),
-                        lastSequence = state.lastSequence + (sequenceKey to sequence),
-                    )
-                }
-                if (current.startedAt != startedAt ||
-                    current.messageId != null && liveMessageId != null && current.messageId != liveMessageId
-                ) {
-                    return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
-                }
-                val currentMessageId = current.messageId ?: liveMessageId
-                // The Runtime publishes the exact live-id -> entry-id mapping for every message this
-                // turn persisted, so streamed rows converge on their canonical id by themselves. The
-                // single `persistedMessageId` pair remains for Runtimes that predate that mapping.
-                val remaps = (event.persistedMessageRemaps() +
-                    listOfNotNull(
-                        currentMessageId?.let { live ->
-                            persistedMessageId?.let { entry -> MessageIdRemap(live, entry) }
-                        },
-                    )).distinctBy(MessageIdRemap::liveId)
-                if (current.durationMs != null && remaps.isEmpty()) {
-                    return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
-                }
-                val anchorMessageId = remaps.firstOrNull { it.liveId == currentMessageId }?.entryId
-                    ?: currentMessageId
-                var messages = conversation.messages
-                var streamingMessageIds = conversation.streamingMessageIds
-                var finishedMessageIds = conversation.finishedMessageIds
-                for (remap in remaps) {
-                    messages = remapMessageId(messages, remap.liveId, remap.entryId)
-                    streamingMessageIds = streamingMessageIds - remap.liveId + remap.entryId
-                    finishedMessageIds = finishedMessageIds - remap.liveId + remap.entryId
-                }
-                nextConversation = conversation.copy(
-                    messages = messages,
-                    streamingMessageIds = streamingMessageIds,
-                    finishedMessageIds = finishedMessageIds,
-                    turnTimings = conversation.turnTimings + (turnId to current.copy(
-                        durationMs = durationMs,
-                        messageId = anchorMessageId,
-                    )),
-                    activeTurnId = conversation.activeTurnId.takeUnless { it == turnId },
-                    revision = conversation.revision + 1,
-                )
-            }
-            "runtime.capabilities" -> {
-                val capabilities = event["capabilities"]?.let {
-                    json.decodeFromJsonElement<RuntimeCapabilities>(it)
-                } ?: return state
-                nextCapabilities = state.capabilities + (runtimeId to capabilities)
-            }
-            "message.queued" -> {
-                val queueId = event.string("queueId") ?: return state
-                val text = event.string("text") ?: return state
-                val delivery = event.string("delivery") ?: return state
-                val messageState = event.string("state") ?: return state
-                if (delivery !in setOf("steer", "followUp") ||
-                    messageState !in setOf("accepted", "delivered", "cancelled", "rejected", "not_cancelable")
-                ) return state.copy(error = "手机无法安全处理此排队消息，请在电脑端处理")
-                if (queueId !in conversation.deliveredQueueIds) {
-                    val existing = conversation.queuedMessages[queueId]
-                    if (existing != null && (existing.text != text || existing.delivery != delivery)) {
-                        nextError = "收到不一致的排队消息状态，请在电脑端检查 Pi"
-                    } else if (canAdvanceQueuedMessageState(existing?.state, messageState)) {
-                        nextConversation = if (messageState == "delivered") {
-                            // Delivered is a terminal notification, not a pending row. Keep the
-                            // ID only as a tombstone so a replayed accepted event cannot restore it.
-                            conversation.copy(
-                                queuedMessages = conversation.queuedMessages - queueId,
-                                deliveredQueueIds = conversation.deliveredQueueIds + queueId,
-                                revision = conversation.revision + 1,
-                            )
-                        } else {
-                            conversation.copy(
-                                queuedMessages = conversation.queuedMessages + (
-                                    queueId to QueuedMessage(queueId, text, delivery, messageState, event.string("error"))
-                                ),
-                                revision = conversation.revision + 1,
-                            )
-                        }
-                    } else {
-                        nextConversation = conversation.copy(revision = conversation.revision + 1)
-                    }
-                } else {
-                    nextConversation = conversation.copy(revision = conversation.revision + 1)
-                }
-            }
             "session.snapshot" -> {
                 val snapshot = runCatching { json.decodeFromJsonElement<SessionGraphSnapshot>(event) }.getOrElse {
                     return state.copy(error = "收到无效的 Session graph 快照")
@@ -2445,9 +2276,8 @@ class RelayReducer(
                     val id = state.sessionSyncCommands.entries.first { it.value === pending }.key
                     return state.failSessionSync(id, "Session 范围加载失败：${snapshot.rangeStatus ?: "incomplete_range"}")
                 }
-                // Historical ranges fill immutable cache only. Even an older server's attached
-                // checkpoint cannot make a history page a second current-state writer.
-                val isCanonicalPage = isHistory || conversation.sourceEpoch != null && (pending.range != "preview" || snapshot.source == null)
+                // Fixed ranges fill cache only; preview and patch own current source state.
+                val isCanonicalPage = pending.range != "preview"
                 val incomingSource = snapshot.source.takeUnless { isCanonicalPage }
                 val incomingCheckpoint = snapshot.checkpoint.takeUnless { isCanonicalPage }
                 val cacheGate = conversation.snapshotSourceGate(snapshot, pending.range, pending.sourceRecovery, pending.sourceRecoveryEpoch)
@@ -2540,7 +2370,7 @@ class RelayReducer(
                 val mergedGraph = if (staleTarget || sourceBlocked || !cacheGate.cacheAllowed) currentGraph else {
                     runCatching {
                         val base = currentGraph.merge(snapshotForProjection)
-                        if (isCanonicalPage || incomingSource == null || !sourceReadyCheckpoint) base else
+                        if (isCanonicalPage || !sourceReadyCheckpoint) base else
                             contiguousSourcePatches(incomingSource.epoch, incomingSource.seq, conversation.sourcePatchBuffer.values)
                                 .fold(base) { graph, patch -> graph.merge(patch.canonicalPage()) }
                     }.getOrElse { error ->
@@ -2578,7 +2408,7 @@ class RelayReducer(
                     currentViewLeaf == liveLeafId && currentViewLeaf != targetLeafId
                 val targetIsOlder = currentViewLeaf != targetLeafId && mergedGraph.isDescendant(currentViewLeaf, targetLeafId)
                 val shouldMoveView = !staleTarget && !sourceBlocked && !isCanonicalPage &&
-                    (incomingSource == null || sourceReadyCheckpoint) && targetLeafId != null &&
+                    (isCanonicalPage || sourceReadyCheckpoint) && targetLeafId != null &&
                     !retainAdvancedView && !targetIsOlder &&
                     (snapshot.complete != false || !hasRenderableCurrentView || hasRenderableTarget)
                 val viewLeafId = when {
@@ -2596,7 +2426,7 @@ class RelayReducer(
                 }
                 val branch = viewLeafId?.let { buildSessionPath(graphForProjection.entries, it) }.orEmpty()
                 val existingHistory = state.sessionHistory[runtimeId]
-                if (!staleTarget && (shouldMoveView || isHistory)) {
+                if (!staleTarget && (shouldMoveView || isHistory || isCatchUp)) {
                     // The canonical tree is only a bounded window. A forward response cannot know
                     // about the older temporary pages the user already paged in, so its boundary
                     // must not rewind the history state back to the window edge (which made the
@@ -2611,17 +2441,21 @@ class RelayReducer(
                         // Move the boundary back only along a proven ancestor chain; keeping the
                         // preview boundary would prepend already-visible rows on the next page.
                         val expandedStart = branch.firstOrNull()?.takeIf { start ->
-                            graphForProjection.isDescendant(continuedHistory.oldestEntryId, start.entryId)
+                            // A reflexive check would "expand" to the entry already at the boundary.
+                            start.entryId != continuedHistory.oldestEntryId &&
+                                graphForProjection.isDescendant(continuedHistory.oldestEntryId, start.entryId)
                         }
                         continuedHistory.copy(
-                            leafId = viewLeafId ?: continuedHistory.leafId,
+                            // A forward catch-up advances the paging window to the page's target even
+                            // when the displayed branch stays where the user is reading.
+                            leafId = (if (isCatchUp) targetLeafId else viewLeafId) ?: continuedHistory.leafId,
                             oldestEntryId = expandedStart?.entryId ?: continuedHistory.oldestEntryId,
                             hasOlder = expandedStart?.let { it.parentId != null } ?: continuedHistory.hasOlder,
                         )
                     } else if (branch.isNotEmpty()) {
                         SessionHistoryState(
                             sessionId = snapshot.sessionId,
-                            leafId = viewLeafId,
+                            leafId = if (isCatchUp) targetLeafId else viewLeafId,
                             oldestEntryId = branch.firstOrNull()?.entryId ?: existingHistory?.oldestEntryId,
                             hasOlder = snapshot.hasOlder ?: branch.firstOrNull()?.parentId != null,
                             loading = false,
@@ -2648,7 +2482,7 @@ class RelayReducer(
                 }
                 val canProject = !isCatchUp || snapshot.complete != false ||
                     graphForProjection.hasCompleteEntryChain(viewLeafId)
-                val emptyPreview = pending.range == "preview" && !isCanonicalPage && (incomingSource == null || sourceReadyCheckpoint) && targetLeafId == null &&
+                val emptyPreview = pending.range == "preview" && !isCanonicalPage && (isCanonicalPage || sourceReadyCheckpoint) && targetLeafId == null &&
                     snapshot.entries.isEmpty() && snapshot.complete == true &&
                     snapshot.rangeStatus in setOf(null, "complete") && liveLeafId == pending.viewLeafId
                 if (!staleTarget && sourceBlocked) {
@@ -2687,7 +2521,7 @@ class RelayReducer(
                             streamingSessionId = snapshot.sessionId.takeIf { overlayIds.isNotEmpty() },
                             revision = conversation.revision + 1)
                 } else if (!staleTarget && viewLeafId != null && canProject &&
-                    (incomingSource == null || sourceReadyCheckpoint)) {
+                    (isCanonicalPage || sourceReadyCheckpoint)) {
                     val oldLeaf = if (sourceEpochChanged) null else state.runtimeSessionViews[runtimeId]
                         ?.takeIf { it.sessionId == snapshot.sessionId }?.leafId
                     val baseMessages = projectionConversation.messages.filterNot {
@@ -2786,8 +2620,7 @@ class RelayReducer(
                     nextRuntimeSessionViews = nextRuntimeSessionViews + (runtimeId to
                         RuntimeSessionView(runtimeId, snapshot.sessionId, nextConversation.sourceHeadLeafId))
                     nextRuntimes[runtimeId]?.let { runtime ->
-                        nextRuntimes = nextRuntimes + (runtimeId to runtime.copy(sessionLeafId = nextConversation.sourceHeadLeafId)
-                            .withReplicatedTurn(nextConversation))
+                        nextRuntimes = nextRuntimes + (runtimeId to runtime.copy(sessionLeafId = nextConversation.sourceHeadLeafId))
                     }
                     nextSessionSyncRequests = if (nextConversation.isChatSyncing) nextSessionSyncRequests + runtimeId
                         else nextSessionSyncRequests - runtimeId
@@ -2817,10 +2650,6 @@ class RelayReducer(
                 }
                 if (!staleTarget && sourceBlocked) {
                     nextConversation = nextConversation.copy(sourceRecoveryRetryAt = System.currentTimeMillis() + 2_000)
-                    nextSessionSyncRequests = nextSessionSyncRequests + runtimeId
-                }
-                if (!staleTarget && isCanonicalPage && pending.range == "preview") {
-                    nextConversation = nextConversation.copy(isChatSyncing = true, sourceRecoveryRetryAt = System.currentTimeMillis() + 2_000)
                     nextSessionSyncRequests = nextSessionSyncRequests + runtimeId
                 }
                 val rangeFailure = snapshot.rangeStatus?.takeIf {
@@ -2910,156 +2739,6 @@ class RelayReducer(
                     )
                 }
             }
-            "message.started" -> {
-                val chatMessage = event["message"]?.let {
-                    json.decodeFromJsonElement<ChatMessage>(it)
-                } ?: return state
-                val queueId = event.string("queueId")
-                val nextQueued = conversation.queuedMessages.toMutableMap().apply {
-                    queueId?.let(::remove)
-                }
-                val runtime = state.runtimes[runtimeId]
-                nextConversation = conversation.copy(
-                    messages = conversation.messages.filterNot { it.messageId == chatMessage.messageId } + chatMessage,
-                    streamingMessageIds = conversation.streamingMessageIds + chatMessage.messageId,
-                    streamingSessionId = runtime?.sessionId,
-                    queuedMessages = nextQueued,
-                    deliveredQueueIds = queueId?.let { conversation.deliveredQueueIds + it } ?: conversation.deliveredQueueIds,
-                    revision = conversation.revision + 1,
-                ).bindActiveTurn(chatMessage)
-            }
-            "message.delta" -> {
-                val messageId = event.string("messageId") ?: return state
-                val delta = event.string("delta") ?: return state
-                // The final message already replaced this row; a late delta would only drift it
-                // away from the canonical text and stop it from reconciling with its entry.
-                if (messageId in conversation.finishedMessageIds) {
-                    return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
-                }
-                val contentType = event.string("contentType") ?: "text"
-                val existing = conversation.messages.firstOrNull { it.messageId == messageId }
-                val alreadyStreaming = messageId in conversation.streamingMessageIds
-                // A delta can arrive without its message.started when a connection is repaired or
-                // when an older Runtime omits the start event. Rebuilding a temporary assistant
-                // row keeps the live response visible instead of silently dropping the stream.
-                val messages = when {
-                    existing != null -> conversation.messages.map { chat ->
-                        if (chat.messageId == messageId) chat.appendDelta(contentType, delta) else chat
-                    }
-                    else -> conversation.messages + ChatMessage(
-                        messageId = messageId,
-                        role = "assistant",
-                        content = listOf(RemoteContent(
-                            type = contentType,
-                            text = delta,
-                        )),
-                        timestamp = 0,
-                    )
-                }
-                nextConversation = conversation.copy(
-                    messages = messages,
-                    streamingMessageIds = if (existing == null || alreadyStreaming) {
-                        conversation.streamingMessageIds + messageId
-                    } else {
-                        conversation.streamingMessageIds
-                    },
-                    streamingSessionId = conversation.streamingSessionId
-                        ?: state.runtimes[runtimeId]?.sessionId,
-                    revision = conversation.revision + 1,
-                )
-            }
-            "message.finished" -> {
-                val finished = event["message"]?.let {
-                    json.decodeFromJsonElement<ChatMessage>(it)
-                } ?: return state
-                val existing = conversation.messages.indexOfFirst { it.messageId == finished.messageId }
-                val messages = conversation.messages.toMutableList().apply {
-                    if (existing >= 0) set(existing, finished) else add(finished)
-                }
-                val queueId = event.string("queueId")
-                val nextQueued = conversation.queuedMessages.toMutableMap().apply {
-                    queueId?.let(::remove)
-                }
-                nextConversation = conversation.copy(
-                    messages = messages,
-                    streamingMessageIds = conversation.streamingMessageIds + finished.messageId,
-                    finishedMessageIds = conversation.finishedMessageIds + finished.messageId,
-                    queuedMessages = nextQueued,
-                    deliveredQueueIds = queueId?.let { conversation.deliveredQueueIds + it } ?: conversation.deliveredQueueIds,
-                    revision = conversation.revision + 1,
-                ).bindActiveTurn(finished)
-            }
-            "tool.started", "tool.updated", "tool.finished" -> {
-                val toolCallId = event.string("toolCallId") ?: return state
-                val toolName = event.string("toolName") ?: "工具"
-                val type = event.string("type").orEmpty()
-                val activity = ToolActivity(
-                    toolCallId = toolCallId,
-                    toolName = toolName,
-                    state = type.removePrefix("tool."),
-                    detail = (event["partialResult"] ?: event["result"])?.toString(),
-                    isError = event["isError"]?.jsonPrimitive?.booleanOrNull == true,
-                )
-                nextConversation = conversation.copy(
-                    tools = conversation.tools + (toolCallId to activity),
-                    revision = conversation.revision + 1,
-                )
-            }
-            "interaction.requested" -> {
-                val request = event["request"]?.jsonObject
-                val requestId = request?.string("requestId")
-                val interaction = request?.let {
-                    parsePendingInteraction(json, it, requestId?.let(conversation.interactions::get))
-                }
-                nextConversation = if (interaction != null) {
-                    conversation.copy(
-                        interactions = conversation.interactions + (interaction.requestId to interaction),
-                        interactionNotices = conversation.interactionNotices - interaction.requestId,
-                    )
-                } else {
-                    conversation.copy(
-                        interactionNotices = conversation.interactionNotices + ((requestId ?: "invalid-request") to "手机无法安全渲染此交互，请在电脑端处理。"),
-                    )
-                }
-            }
-            "interaction.snapshot" -> {
-                val requests = event["requests"] as? JsonArray
-                val interactions = requests?.mapNotNull { element ->
-                    (element as? JsonObject)?.let { request ->
-                        val requestId = request.string("requestId")
-                        parsePendingInteraction(json, request, requestId?.let(conversation.interactions::get))
-                    }
-                }
-                val validSnapshot = requests != null && interactions != null && interactions.size == requests.size
-                nextConversation = if (validSnapshot) {
-                    val retained = interactions.orEmpty().map { it.requestId }.toSet()
-                    nextPendingCommands = nextPendingCommands - conversation.interactions.values
-                        .filter { it.requestId !in retained }.mapNotNull { it.responseCommandId }.toSet()
-                    conversation.copy(
-                        interactions = interactions.orEmpty().associateBy(PendingInteraction::requestId),
-                        interactionNotices = emptyMap(),
-                    )
-                } else {
-                    conversation.copy(
-                        interactionNotices = conversation.interactionNotices + ("invalid-snapshot" to "手机无法安全恢复此交互，请在电脑端处理。"),
-                    )
-                }
-            }
-            "interaction.resolved", "interaction.cancelled" -> {
-                val requestId = event.string("requestId")
-                if (requestId != null) {
-                    conversation.interactions[requestId]?.responseCommandId?.let {
-                        nextPendingCommands = nextPendingCommands - it
-                    }
-                    nextConversation = conversation.copy(
-                        interactions = conversation.interactions - requestId,
-                        interactionNotices = conversation.interactionNotices - requestId,
-                    )
-                }
-            }
-            "local_interaction.required" -> {
-                nextConversation = conversation.copy(waitingLocalInteraction = true)
-            }
             "command.result" -> {
                 val commandId = event.string("commandId")
                 val succeeded = event["ok"]?.jsonPrimitive?.booleanOrNull == true
@@ -3114,8 +2793,8 @@ class RelayReducer(
                     if (responseInteraction != null) {
                         nextConversation = if (succeeded) {
                             conversation.copy(
-                                interactions = conversation.interactions - responseInteraction.key,
-                                interactionNotices = conversation.interactionNotices - responseInteraction.key,
+                                interactions = conversation.interactions + (responseInteraction.key to responseInteraction.value.copy(
+                                    submitted = true, responseCommandId = null, responseError = null)),
                             )
                         } else {
                             conversation.copy(

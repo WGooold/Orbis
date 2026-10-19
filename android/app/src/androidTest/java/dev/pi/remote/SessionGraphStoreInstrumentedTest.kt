@@ -178,7 +178,8 @@ class SessionGraphStoreInstrumentedTest {
             val snapshot = SessionGraphSnapshot("s", "sync", SessionBranchCursor("root"),
                 if (range == "history") "prepend" else "replace", listOf(root.copy(timestamp = "wrong")), range = range,
                 beforeEntryId = pending.beforeEntryId, source = SessionSourceEpoch(epoch, 99, true),
-                checkpoint = SessionCheckpoint("id", SessionBranchCursor("root"), "complete", true), live = SessionLiveState(true))
+                checkpoint = SessionCheckpoint("id", SessionBranchCursor("root"), "complete", true).takeIf { range == "preview" },
+                live = SessionLiveState(true).takeIf { range == "preview" })
             assertEquals(emptyList<SessionGraphEntry>(), ingestSessionSnapshot(store, device, "r", "cmd", snapshot, { state }, { true })?.entries)
             assertEquals("e", store.cacheEpoch(device, "s"))
             assertEquals(listOf(root), store.readEntries(device, "s", listOf("root")))
@@ -204,12 +205,13 @@ class SessionGraphStoreInstrumentedTest {
         val corrected = entry("root", null).copy(timestamp = "corrected")
         val snapshot = SessionGraphSnapshot("s", "recovery", SessionBranchCursor("root"), "replace", listOf(corrected),
             range = "preview", complete = true, source = SessionSourceEpoch("new", 2, true),
-            checkpoint = SessionCheckpoint("new:2", SessionBranchCursor("root"), "complete", true), live = SessionLiveState(true))
+            checkpoint = SessionCheckpoint("new:2", SessionBranchCursor("root"), "complete", true), live = SessionLiveState(true),
+            display = fixtureDisplayBatch(listOf(corrected)))
 
         val persisted = ingestSessionSnapshot(store, device, "r", "request", snapshot, { state }, { true })!!
         val payload = """{"type":"runtime.event","runtimeId":"r","sequence":100,"event":${Json.encodeToString(snapshot).dropLast(1)},"type":"session.snapshot"}}"""
         val recovered = FixtureRelayReducer().reduce(state, payload, persisted)
-        assertEquals(listOf(corrected), persisted)
+        assertEquals(listOf(corrected), persisted.entries)
         assertEquals("new", store.cacheEpoch(device, "s"))
         assertEquals("root", store.latestLeaf(device, "s"))
         assertFalse(store.contains(device, "s", "obsolete"))
@@ -231,7 +233,7 @@ class SessionGraphStoreInstrumentedTest {
         val child = entry("b", "a")
         val patch = SessionPatch(sessionId = "s", source = SessionSourceEpoch("e", 3, true), baseSeq = 2, seq = 3,
             checkpointId = "e:3", head = SessionBranchCursor("b"), headCompleteness = "complete",
-            live = SessionLiveState(true), entries = listOf(child))
+            live = SessionLiveState(true), entries = listOf(child), display = fixtureDisplayBatch(listOf(child)))
         val state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s")),
             conversations = mapOf("r" to RuntimeConversation(sourceEpoch = "e", sourceReady = false,
                 sourcePatchBuffer = mapOf(3L to patch))),
@@ -239,7 +241,7 @@ class SessionGraphStoreInstrumentedTest {
             sessionSyncCommands = mapOf("cmd" to PendingSessionSync("r", "s", "sync", "preview")))
         val snapshot = SessionGraphSnapshot("s", "sync", SessionBranchCursor("a"), "replace", listOf(root), range = "preview",
             source = SessionSourceEpoch("e", 2, true), checkpoint = SessionCheckpoint("e:2", SessionBranchCursor("a"), "complete", true),
-            live = SessionLiveState(true))
+            live = SessionLiveState(true), display = fixtureDisplayBatch(listOf(root)))
         val persisted = ingestSessionSnapshot(store, device, "r", "cmd", snapshot, { state }, { true })!!
         assertEquals(listOf(root, child), persisted.entries)
         assertEquals("e", store.cacheEpoch(device, "s"))
@@ -329,7 +331,7 @@ class SessionGraphStoreInstrumentedTest {
     @Test
     fun outOfOrderFragmentsShrinkTheGapAndSurviveReopen() {
         val entries = (1..10).map { entry("$it", if (it == 1) null else "${it - 1}") }
-        store.upsert(device, "s", entries.take(3), leafId = "3")
+        store.upsert(device, "s", entries.take(3), leafId = "3", source = SessionSourceEpoch("source", 1, true), activateSource = true)
         store.upsert(device, "s", entries.takeLast(3), leafId = "10")
         assertEquals("10", store.latestLeaf(device, "s"))
         assertEquals("3", store.continuousLeaf(device, "s"))
@@ -679,7 +681,10 @@ class SessionGraphStoreInstrumentedTest {
             state = state.copy(sessionSyncCommands = mapOf(sync to pending), pendingCommands = mapOf(sync to "r"))
             val snapshot = SessionGraphSnapshot("s", sync, SessionBranchCursor(wireTarget),
                 if (range == "history") "prepend" else if (range == "preview") "replace" else "append",
-                batch, range = range, targetLeafId = wireTarget, beforeEntryId = before, complete = true)
+                batch, range = range, targetLeafId = wireTarget, beforeEntryId = before, complete = true,
+                source = SessionSourceEpoch("source", 1, true),
+                checkpoint = SessionCheckpoint("source:1", SessionBranchCursor("10"), "complete", true).takeIf { range == "preview" },
+                live = SessionLiveState(true).takeIf { range == "preview" }, display = fixtureDisplayBatch(batch))
             val committed = ingestSessionSnapshot(store, device, "r", sync, snapshot, { state }, { true })!!
             val payload = buildJsonObject {
                 put("type", "runtime.event"); put("runtimeId", "r"); put("sequence", sequence)

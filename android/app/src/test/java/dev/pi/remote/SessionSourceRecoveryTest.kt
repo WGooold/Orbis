@@ -145,14 +145,15 @@ class SessionSourceRecoveryTest {
         assertEquals("one", conversation.messages.single().content.single().text)
         assertEquals("turn", conversation.activeTurnId)
         assertEquals("started", conversation.tools.getValue("tool").state)
-        assertEquals("running", changed.runtimes.getValue("runtime").status)
+        assertEquals(current.runtimes.getValue("runtime").status, changed.runtimes.getValue("runtime").status)
     }
 
     @Test fun `checkpoint with no active turn repairs a lost final idle event`() {
         val current = initial().let { state -> state.copy(runtimes = state.runtimes.mapValues { (_, runtime) -> runtime.copy(status = "running") }) }
         val changed = checkpoint(current, 2)
         assertNull(changed.conversations.getValue("runtime").activeTurnId)
-        assertEquals("idle", changed.runtimes.getValue("runtime").status)
+        assertEquals("running", changed.runtimes.getValue("runtime").status)
+        assertEquals("idle", changed.withModelFixture("execution", """{"phase":"idle"}""").runtimes.getValue("runtime").status)
     }
 
     @Test fun `confirmed turn status is repaired while canonical head content is still missing`() {
@@ -160,7 +161,8 @@ class SessionSourceRecoveryTest {
         val changed = checkpoint(current, 2, head = "uncached")
         assertTrue(changed.conversations.getValue("runtime").isChatSyncing)
         assertNull(changed.conversations.getValue("runtime").activeTurnId)
-        assertEquals("idle", changed.runtimes.getValue("runtime").status)
+        assertEquals("running", changed.runtimes.getValue("runtime").status)
+        assertEquals("idle", changed.withModelFixture("execution", """{"phase":"idle"}""").runtimes.getValue("runtime").status)
     }
 
     @Test fun `patch changes head to a cached ancestor atomically`() {

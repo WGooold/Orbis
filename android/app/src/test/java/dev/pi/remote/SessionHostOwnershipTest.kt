@@ -37,14 +37,12 @@ class SessionHostOwnershipTest {
     }
 
     @Test fun `all catalog entry sources share the pairing owner regardless of hostname`() {
-        var state = reducer.reduce(paired, """{"type":"session.list.result","sessions":[
+        val state = paired.withModelFixture("catalog", """{"sessions":[
             {"sessionId":"listed","cwd":"D:/repo","hostname":"old-name"},
-            {"sessionId":"unnamed","cwd":"D:/repo"}]}""")
-        state = reducer.reduce(state, """{"type":"runtime.event","runtimeId":"pi","sequence":1,"event":{
-            "type":"session.catalog","sessions":[{"sessionId":"catalog","cwd":"D:/repo","hostname":"different-name"}]}}""")
-        state = reducer.reduce(state, """{"type":"runtime.event","runtimeId":"pi","sequence":2,"event":{
-            "type":"runtime.metadata","metadata":{"runtimeId":"pi","sessionId":"metadata","name":"Pi","cwd":"D:/repo","status":"idle","hostname":""}}}""")
-        state = reducer.reduce(state, """{"type":"session.archive.changed","agentKind":"pi","sessionId":"archive","archived":true}""")
+            {"sessionId":"unnamed","cwd":"D:/repo"},
+            {"sessionId":"catalog","cwd":"D:/repo","hostname":"different-name"},
+            {"sessionId":"metadata","cwd":"D:/repo","hostname":""},
+            {"sessionId":"archive","cwd":"D:/repo","agentKind":"pi","archived":true}],"backends":[]}""", scope = "host")
         assertOwner(state, "listed", "unnamed", "catalog", "metadata", "archive")
         val renamed = state.copy(hostName = "Renamed", runtimes = emptyMap())
         assertEquals("host-1", cachedHistoryTree(renamed).single().hostId)

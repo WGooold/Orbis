@@ -129,8 +129,8 @@ class ComposerStatusTest {
         )
 
         val merged = incoming.carryingComposerStatus(previous)
-        assertEquals("claude-sonnet-4-5", merged.model?.id)
-        assertEquals(4_000L, merged.contextUsage?.tokens)
+        assertEquals("gpt-5", merged.model?.id)
+        assertEquals(1_000L, merged.contextUsage?.tokens)
     }
 
     @Test

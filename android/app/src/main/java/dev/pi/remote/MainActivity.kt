@@ -176,6 +176,16 @@ private fun RemoteApp(
     pairingError: String?,
     model: RemoteViewModel,
 ) {
+    val modelLifecycle = LocalLifecycleOwner.current
+    LaunchedEffect(model, modelLifecycle) {
+        modelLifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            model.reconcileModels()
+            while (isActive) {
+                delay(15_000)
+                model.reconcileModels()
+            }
+        }
+    }
     val appearsPaired = hosts.isNotEmpty() || state.deviceId != null || state.connection != RelayConnection.OFFLINE
     // 添加电脑：已经配对过也能再扫一台；取消只是回主界面，不动已有连接。
     var addingHost by rememberSaveable { mutableStateOf(false) }
@@ -1506,7 +1516,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                         androidx.compose.runtime.key(runtimeId, sessionId) {
                             RuntimePermissionsStatus(
                                 permissionManagement = runtime?.permissionManagement,
-                                connected = state.e2eReady && runtime != null,
+                                connected = state.e2eReady && runtime?.domainAvailability?.get("permissions") == "ready",
                                 idle = runtime?.status == "idle" && conversation.interactions.isEmpty() && conversation.queuedMessages.isEmpty(),
                                 commandResults = state.commandResults,
                                 onApply = model::updatePermissions,
@@ -2338,7 +2348,7 @@ private fun StatusScreen(
     onBack: () -> Unit,
     onOpenSettings: () -> Unit,
     onRawDiagnostics: () -> String,
-    onLoadDiagnostics: () -> Unit,
+    onLoadDiagnostics: (String?) -> Unit,
 ) {
     BackHandler(onBack = onBack)
     // 原始事件日志是这个 APP 唯一的现场排障面（手机未必能接 logcat），状态页只回答「现在通不通」，
@@ -2410,12 +2420,20 @@ private fun StatusScreen(
                 // 只读了第一页时它就不是「最近一条」——标签按实际语义写，别让界面替 Host 说满话。
                 StatusRow("最近读到的", records.text, records.tone)
                 records.detail?.let { StatusFact("类别", it) }
-                NeumorphTextButton(text = "读取记录", onClick = onLoadDiagnostics)
+                NeumorphTextButton(text = "重新读取", onClick = { onLoadDiagnostics(null) })
+                state.diagnosticPage?.let { page ->
+                    page.records.forEach { record ->
+                        StatusFact("${record.category} · ${record.severity}", record.message)
+                    }
+                    page.nextCursor?.let { cursor ->
+                        NeumorphTextButton(text = "读取下一页", onClick = { onLoadDiagnostics(cursor) })
+                    }
+                }
             }
 
             StatusSectionTitle("电脑端会话目录")
             StatusCard {
-                // 会话列表本身来自 session.list.result；这一行回答的是「那份列表读全了吗」——
+                // 目录与完整性都来自 Host 模型；范围页尚未收齐时保留已知项。
                 // 某个后端没就绪或读取失败时，缺席的会话不能显示成「没有」。
                 val catalog = state.catalogSummaryView()
                 StatusRow("目录完整性", catalog.text, catalog.tone)
@@ -2430,6 +2448,13 @@ private fun StatusScreen(
                 switching.detail?.let { StatusFact("当前供应商", it) }
                 // 「清单未读到」与「0 个可选」是两件事：前者是这次读取没拿到，后者是拿到且为空。
                 switching.profiles?.let { StatusFact("可选供应商", it) }
+                state.providerPublicFacts().forEach { fact -> StatusFact(fact.label, fact.value) }
+            }
+
+            StatusSectionTitle("统一状态模型")
+            StatusCard {
+                if (state.agentStateSnapshots.isEmpty()) StatusFact("领域基线", "尚未读取")
+                state.modelStatusFacts().forEach { fact -> StatusFact(fact.label, fact.value) }
             }
 
             StatusSectionTitle("电脑 Agent 服务")

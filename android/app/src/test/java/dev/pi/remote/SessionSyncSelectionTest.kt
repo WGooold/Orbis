@@ -168,7 +168,8 @@ class SessionSyncSelectionTest {
         assertEquals(listOf("a"), conversation.messages.map { it.messageId })
         assertEquals(11L, conversation.sourceSeq)
         assertNull(conversation.activeTurnId)
-        assertEquals("idle", result.runtimes.getValue("r").status)
+        assertEquals("running", result.runtimes.getValue("r").status)
+        assertEquals("idle", result.withModelFixture("execution", """{"phase":"idle"}""").runtimes.getValue("r").status)
         assertEquals(state.sessionHistory.getValue("r").oldestEntryId, result.sessionHistory.getValue("r").oldestEntryId)
     }
 
@@ -210,5 +211,28 @@ class SessionSyncSelectionTest {
         assertNull(explicit.requestedSessionRecovery("r", 0, "forced")?.knownState)
         val afterPatch = patch(explicit, 11, 10)
         assertNull(afterPatch.appliedSessionState("r"))
+    }
+
+    @Test fun `all snapshot ranges require source and preview also requires its checkpoint`() {
+        for (range in listOf("preview", "history", "catchup")) {
+            val mode = if (range == "history") "prepend" else "replace"
+            val state = queued().let { pending -> pending.copy(sessionSyncCommands = pending.sessionSyncCommands.mapValues { (_, task) ->
+                task.copy(range = range, knownState = null, targetLeafId = "a", requestTargetLeafId = "a", beforeEntryId = null)
+            }) }
+            val missingSource = response().copy(mode = mode, range = range, selection = null, source = null,
+                checkpoint = null, live = null, entries = listOf(entry("new", "a")))
+            val rejected = receive(state, missingSource)
+            assertEquals("Missing source cannot change canonical storage for $range", state.sessionGraphs, rejected.sessionGraphs)
+            assertEquals(state.conversations.getValue("r").messages, rejected.conversations.getValue("r").messages)
+            assertEquals(10L, rejected.conversations.getValue("r").sourceSeq)
+            assertTrue("$range must report a validation failure", "r" in rejected.sessionSyncFailures ||
+                sessionRangeFailureKey("r", range) in rejected.sessionRangeFailures)
+        }
+        val state = queued()
+        val rejected = receive(state, response("state", 11, live = SessionLiveState(true)).copy(checkpoint = null))
+        assertEquals(state.sessionGraphs, rejected.sessionGraphs)
+        assertEquals(state.conversations.getValue("r").messages, rejected.conversations.getValue("r").messages)
+        assertEquals(10L, rejected.conversations.getValue("r").sourceSeq)
+        assertTrue("r" in rejected.sessionSyncFailures)
     }
 }

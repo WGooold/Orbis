@@ -84,4 +84,30 @@ class SessionSyncSelectionInstrumentedTest {
         assertEquals("a", store.latestLeaf(device, "s"))
         assertEquals(10L, state.conversations.getValue("r").sourceSeq)
     }
+
+    @Test fun missingSourceOrCheckpointCannotWriteAnyCanonicalRows() {
+        val current = state()
+        val b = entry("b", "a")
+        for (range in listOf("preview", "history", "catchup")) {
+            val owned = current.copy(sessionSyncCommands = current.sessionSyncCommands.mapValues { (_, request) -> request.copy(
+                range = range, knownState = null, targetLeafId = "a", requestTargetLeafId = "a", beforeEntryId = null) })
+            val page = snapshot("snapshot", 11, "a", listOf(b)).copy(range = range,
+                mode = if (range == "history") "prepend" else "replace", selection = null, source = null,
+                checkpoint = null, live = null)
+            try {
+                ingestSessionSnapshot(store, device, "r", "request", page, { owned }, { true })
+                fail("$range must require a source before writing canonical rows")
+            } catch (error: IllegalArgumentException) { assertEquals("session_source_missing", error.message) }
+            assertFalse(store.contains(device, "s", "b"))
+            assertEquals("a", store.latestLeaf(device, "s"))
+            assertEquals("epoch", store.cacheEpoch(device, "s"))
+        }
+        try {
+            ingestSessionSnapshot(store, device, "r", "request",
+                snapshot("delta", 11, "b", listOf(b)).copy(checkpoint = null), { current }, { true })
+            fail("A preview checkpoint must be validated before writing canonical rows")
+        } catch (error: IllegalArgumentException) { assertEquals("session_checkpoint_missing", error.message) }
+        assertFalse(store.contains(device, "s", "b"))
+        assertEquals(10L, current.conversations.getValue("r").sourceSeq)
+    }
 }

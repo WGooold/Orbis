@@ -9,6 +9,9 @@ import org.junit.Test
 
 class CodexQuestionnaireTest {
     private val reducer = RelayReducer()
+    private fun initial() = RemoteState(runtimes = mapOf("codex-desktop:a" to RuntimeSummary("codex-desktop:a", "Agent", "/repo", "idle", "a", agentKind = "codexDesktop")))
+    private fun model(state: RemoteState, request: String?, revision: Long = 1) = state.withModelFixture("interactions",
+        if (request == null) "{}" else """{"codex-async:question":$request}""", revision)
     private val request = """{
         "runtimeId":"codex-desktop:a","requestId":"codex-async:question","extensionId":"codex",
         "kind":"questionnaire","title":"Codex 需要你的回答","expiresAt":9007199254740991,
@@ -22,7 +25,7 @@ class CodexQuestionnaireTest {
 
     @Test
     fun `desktop async questions retain options custom input and unbounded lifetime`() {
-        val state = reducer.reduce(RemoteState(), event(1, """{"type":"interaction.requested","request":$request}"""))
+        val state = model(initial(), request)
         val pending = state.conversations.getValue("codex-desktop:a").interactions.getValue("codex-async:question")
         val question = pending.questions.single()
         assertEquals("需要修复哪些端？", question.question)
@@ -39,12 +42,10 @@ class CodexQuestionnaireTest {
 
     @Test
     fun `reconnecting restores submitted questions and a desktop answer clears them`() {
-        var state = reducer.reduce(RemoteState(), event(1, """{"type":"interaction.requested","request":$request}"""))
-        state = reducer.reduce(state.markReconnecting(), event(2,
-            """{"type":"interaction.snapshot","requests":[${request.dropLast(1)},"submitted":true}]}"""))
+        var state = model(initial(), request)
+        state = model(state.markReconnecting(), request.dropLast(1) + ",\"submitted\":true}", 2)
         assertTrue(state.conversations.getValue("codex-desktop:a").interactions.getValue("codex-async:question").submitted)
-        state = reducer.reduce(state, event(3,
-            """{"type":"interaction.resolved","requestId":"codex-async:question","source":"local"}"""))
+        state = model(state, null, 3)
         assertTrue(state.conversations.getValue("codex-desktop:a").interactions.isEmpty())
     }
 }

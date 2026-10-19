@@ -17,13 +17,10 @@ class RuntimePermissionsTest {
         assertNotNull(ordinaryFailure.error)
     }
     @Test fun `unrelated interactions cannot clear local request rendering failures`() {
-        val state = initial.copy(conversations = mapOf("codex:a" to RuntimeConversation(
-            interactionNotices = mapOf("broken" to "Cannot render"))))
-        val updated = reducer.reduce(state, event(1, """{"type":"interaction.requested","request":{
-            "runtimeId":"codex:a","requestId":"other","extensionId":"pi","kind":"confirm","title":"Question","expiresAt":9000}}"""))
+        val state = initial.copy(conversations = mapOf("codex:a" to RuntimeConversation(interactionNotices = mapOf("broken" to "Cannot render"))))
+        val updated = state.withModelFixture("interactions", """{"other":{"requestId":"other","extensionId":"pi","kind":"confirm","title":"Question","expiresAt":9000}}""")
         assertEquals("Cannot render", updated.conversations.getValue("codex:a").interactionNotice)
-        val recovered = reducer.reduce(updated, event(2, """{"type":"interaction.requested","request":{
-            "runtimeId":"codex:a","requestId":"broken","extensionId":"pi","kind":"confirm","title":"Question","expiresAt":9000}}"""))
+        val recovered = updated.withModelFixture("interactions", """{"broken":{"requestId":"broken","extensionId":"pi","kind":"confirm","title":"Question","expiresAt":9000}}""", 2)
         assertNull(recovered.conversations.getValue("codex:a").interactionNotice)
     }
     @Test fun `draft persistence removes secret answers but preserves ordinary fields`() {
@@ -45,23 +42,15 @@ class RuntimePermissionsTest {
         """{"type":"runtime.event","runtimeId":"codex:a","sequence":$sequence,"event":$body}"""
 
     @Test fun `management metadata preserves opaque settings and host presentation`() {
-        val state = reducer.reduce(initial, event(1, """{"type":"runtime.metadata","metadata":{
-            "runtimeId":"codex:a","name":"Codex","cwd":"D:/repo","status":"idle","sessionId":"a",
-            "permissions":{"sandbox":"readOnly","approvalPolicy":"never"},
-            "permissionManagement":{"summary":"Host summary","details":"Host explanation","tone":"unknown",
-            "settings":[{"id":"vendor.setting/42","label":"Host setting","currentValue":"opaque:old",
-            "disabledReason":"Host policy","options":[{"value":"opaque:new","label":"New option","description":"Host option detail"}]}]}}}"""))
+        val state = initial.withModelFixture("permissions", """{"management":{"summary":"Host summary","details":"Host explanation","tone":"unknown", "settings":[{"id":"vendor.setting/42","label":"Host setting","currentValue":"opaque:old","disabledReason":"Host policy","options":[{"value":"opaque:new","label":"New option","description":"Host option detail"}]}]}}""")
         val runtime = state.runtimes.getValue("codex:a")
         val management = runtime.permissionManagement!!
-        assertEquals("Host summary", management.summary)
-        assertEquals("Host explanation", management.details)
+        assertEquals("Host summary", management.summary); assertEquals("Host explanation", management.details)
         assertEquals("unknown", management.tone)
-        assertEquals(RuntimePermissionSetting("vendor.setting/42", "Host setting", "opaque:old", "Host policy",
-            listOf(RuntimePermissionOption("opaque:new", "New option", "Host option detail"))), management.settings.single())
-        assertEquals("readOnly", runtime.permissions?.sandbox) // Raw diagnostic facts remain decodable.
+        assertEquals(RuntimePermissionSetting("vendor.setting/42", "Host setting", "opaque:old", "Host policy", listOf(RuntimePermissionOption("opaque:new", "New option", "Host option detail"))), management.settings.single())
+        assertNull(runtime.permissions)
         assertEquals(management, runtime.copy(permissionManagement = null).carryingComposerStatus(runtime).permissionManagement)
         assertNull(runtime.copy(sessionId = "b", permissionManagement = null).carryingComposerStatus(runtime).permissionManagement)
-        assertNull(runtime.copy(sessionId = "b", permissions = null).carryingComposerStatus(runtime).permissions)
     }
 
     @Test fun `legacy raw permissions do not invent management metadata`() {
@@ -72,48 +61,26 @@ class RuntimePermissionsTest {
     }
 
     @Test fun `management decodes unknown current value and optional setting fields`() {
-        val state = reducer.reduce(initial, event(1, """{"type":"runtime.metadata","metadata":{
-            "runtimeId":"codex:a","name":"Codex","cwd":"D:/repo","status":"idle","sessionId":"a",
-            "permissionManagement":{"summary":"Unknown","details":"Not confirmed","tone":"unknown",
-            "settings":[{"id":"future.mode","label":"Mode","options":[{"value":"x","label":"X"}]}]}}}"""))
+        val state = initial.withModelFixture("permissions", """{"management":{"summary":"Unknown","details":"Not confirmed","tone":"unknown","settings":[{"id":"future.mode","label":"Mode","options":[{"value":"x","label":"X"}]}]}}""")
         val setting = state.runtimes.getValue("codex:a").permissionManagement!!.settings.single()
-        assertNull(setting.currentValue)
-        assertNull(setting.disabledReason)
-        assertNull(setting.options.single().description)
+        assertNull(setting.currentValue); assertNull(setting.disabledReason); assertNull(setting.options.single().description)
     }
 
     @Test fun `reconnect restores submitted approval and local completion clears pending command`() {
-        val requested = reducer.reduce(initial, event(1, """{"type":"interaction.snapshot","requests":[{
-            "runtimeId":"codex:a","requestId":"approval","extensionId":"codex","title":"批准执行命令",
-            "kind":"select","options":[{"value":"0","label":"允许一次"}],"argumentSummary":"Get-ChildItem",
-            "submitted":true,"expiresAt":9007199254740991}]}"""))
+        val requested = initial.withModelFixture("interactions", """{"approval":{"requestId":"approval","extensionId":"codex","title":"Approval","kind":"select","options":[{"value":"0","label":"Allow once"}],"argumentSummary":"Get-ChildItem","submitted":true,"expiresAt":9007199254740991}}""")
         val request = requested.conversations.getValue("codex:a").interactions.getValue("approval")
-        assertTrue(request.submitted)
-        assertEquals("Get-ChildItem", request.argumentSummary)
-        val submitting = requested.copy(
-            pendingCommands = mapOf("answer" to "codex:a"),
-            conversations = mapOf("codex:a" to requested.conversations.getValue("codex:a").copy(
-                interactions = mapOf("approval" to request.copy(responseCommandId = "answer")),
-            )),
-        )
-        val resolved = reducer.reduce(submitting, event(2, """{"type":"interaction.resolved","requestId":"approval","source":"local"}"""))
-        assertTrue(resolved.conversations.getValue("codex:a").interactions.isEmpty())
-        assertTrue(resolved.pendingCommands.isEmpty())
-        assertNull(resolved.conversations.getValue("codex:a").interactionNotice)
-        val snapshot = reducer.reduce(submitting, event(3, """{"type":"interaction.snapshot","requests":[]}"""))
-        assertTrue(snapshot.pendingCommands.isEmpty())
+        assertTrue(request.submitted); assertEquals("Get-ChildItem", request.argumentSummary)
+        val submitting = requested.copy(pendingCommands = mapOf("answer" to "codex:a"), conversations = requested.conversations.mapValues { (_, conversation) -> conversation.copy(interactions = mapOf("approval" to request.copy(responseCommandId = "answer"))) })
+        val resolved = submitting.withModelFixture("interactions", "{}", 2, completeness = "partial")
+        assertTrue(resolved.conversations.getValue("codex:a").interactions.isEmpty()); assertTrue(resolved.pendingCommands.isEmpty())
     }
 
     @Test fun `free text secret questions decode and sandbox errors retain their explanation`() {
-        val state = reducer.reduce(initial, event(1, """{"type":"interaction.requested","request":{
-            "runtimeId":"codex:a","requestId":"q","extensionId":"codex","title":"回答问题","kind":"questionnaire",
-            "expiresAt":9007199254740991,"questions":[{"id":"secret","question":"填写密钥","options":[],"allowOther":true,"secret":true}]}}"""))
+        val state = initial.withModelFixture("interactions", """{"q":{"requestId":"q","extensionId":"codex","title":"Question","kind":"questionnaire","expiresAt":9007199254740991,"questions":[{"id":"secret","question":"Token","options":[],"allowOther":true,"secret":true}]}}""")
         val question = state.conversations.getValue("codex:a").interactions.getValue("q").questions.single()
         assertTrue(question.secret)
-        assertEquals(QuestionnaireAnswer("secret", emptyList(), "value"),
-            QuestionnaireDraft(otherSelected = true, other = "value").answer(question))
-        val failed = reducer.reduce(state, event(2, """{"type":"runtime.error","message":"Windows 沙箱初始化失败，请在电脑端修复后重试","recoverable":true}"""))
-        assertTrue(failed.notificationProjections.isEmpty()) // Only Host snapshots own remote banners.
-        assertNull(failed.error)
+        assertEquals(QuestionnaireAnswer("secret", emptyList(), "value"), QuestionnaireDraft(otherSelected = true, other = "value").answer(question))
+        val failed = reducer.reduce(state, event(2, """{"type":"runtime.error","message":"Windows sandbox failed","recoverable":true}"""))
+        assertTrue(failed.notificationProjections.isEmpty()); assertNull(failed.error)
     }
 }

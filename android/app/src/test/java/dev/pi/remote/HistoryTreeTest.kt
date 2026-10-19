@@ -144,7 +144,7 @@ class HistoryTreeTest {
         val chained = listOf(
             option("u1", role = "user", active = true),
             option("model", parent = "u1", role = null, entryType = "model_change", hidden = true, active = true),
-            option("compact", parent = "model", role = null, entryType = "compaction", active = true),
+            option("compact", parent = "model", role = null, entryType = "backend_specific_event", active = true),
             option("a1", parent = "compact", role = "assistant", active = true, current = true),
         )
         val row = historyTreeRows(chained).single() as HistoryTurnRow

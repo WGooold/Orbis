@@ -4,11 +4,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 
 @Serializable
 data class SessionGraphEntry(
@@ -215,8 +210,20 @@ internal fun SessionGraph.merge(snapshot: SessionGraphSnapshot): SessionGraph {
     // Validate the packet itself even when some rows are too old to replace cached values.
     val batch = validateCanonicalEntries(snapshot.entries, { null })
     val effective = batch.values.map { entry ->
-        if (authority != null && authority.seq < (baseline.entryVersions[entry.entryId] ?: -1L))
-            baseline.entries[entry.entryId] ?: entry else entry
+        val version = baseline.entryVersions[entry.entryId]
+        val cached = baseline.entries[entry.entryId]
+        when {
+            authority == null || version == null -> entry
+            // A page that predates the cached revision cannot rewrite it.
+            authority.seq < version -> cached ?: entry
+            // One source revision cannot carry two different values for the same Entry. The store
+            // reports this as `entry_conflict`; the in-memory merge must not hide it by overwriting.
+            authority.seq == version -> {
+                require(cached == entry) { "entry_conflict" }
+                entry
+            }
+            else -> entry
+        }
     }
     val received = validateCanonicalEntries(effective, baseline.entries::get, authoritative = authority != null)
     val mergedEntries = baseline.entries + received
@@ -281,13 +288,10 @@ internal fun projectSessionGraph(graph: SessionGraph): SessionProjectionResult {
     val visible = applyDisplayWindow(path, graph.displayWindowStart)
     // 没有显示结果的条目不是「丢弃历史」，只是还没有可渲染的解释：身份仍在 graph.entries 里。
     val messages = displayMessages(visible, graph.display)
-    val projectedTimings = linkedMapOf<String, TurnTiming>()
-    turnTimingsFromSessionEntries(visible).forEach { projectedTimings[it.turnId] = it }
-    graph.turnTimings.values.forEach { projectedTimings[it.turnId] = it }
     return SessionProjectionResult(
         messages = messages,
         error = projectionError,
-        turnTimings = projectedTimings.values.filter { timing ->
+        turnTimings = graph.turnTimings.values.filter { timing ->
             timing.messageId == null || messages.any { it.messageId == timing.messageId }
         },
     )
@@ -312,30 +316,6 @@ internal fun SessionGraph.firstUserMessageTitle(): String? {
     return firstUserMessageTitle(projectSessionEntries(path, display, displayWindowStart))
 }
 
-private const val REMOTE_TURN_TIMING_CUSTOM_TYPE = "pi_remote_turn_timing"
-
-private fun turnTimingsFromSessionEntries(entries: List<SessionGraphEntry>): List<TurnTiming> = buildList {
-    val byTurnId = linkedMapOf<String, TurnTiming>()
-    for (entry in entries) {
-        if (entry.type != "custom" ||
-            entry.data["customType"]?.jsonPrimitive?.contentOrNull != REMOTE_TURN_TIMING_CUSTOM_TYPE
-        ) continue
-        val data = entry.data["data"]?.jsonObject ?: entry.data
-        val turnId = data["turnId"]?.jsonPrimitive?.contentOrNull ?: continue
-        val startedAt = data["startedAt"]?.jsonPrimitive?.longOrNull ?: continue
-        val durationMs = data["durationMs"]?.jsonPrimitive?.longOrNull ?: continue
-        if (startedAt < 0L || durationMs < 0L) continue
-        byTurnId[turnId] = TurnTiming(
-            turnId = turnId,
-            startedAt = startedAt,
-            durationMs = durationMs,
-            turnIndex = data["turnIndex"]?.jsonPrimitive?.intOrNull,
-            messageId = data["messageId"]?.jsonPrimitive?.contentOrNull,
-        )
-    }
-    addAll(byTurnId.values)
-}
-
 internal fun SessionGraph.projectLeafDeltaProjection(
     oldLeafId: String?,
     newLeafId: String?,
@@ -345,8 +325,8 @@ internal fun SessionGraph.projectLeafDeltaProjection(
     if (currentMessages.isEmpty() || oldLeafId == newLeafId) return fullProjection
     val oldPath = buildSessionPath(entries, oldLeafId)
     val newPath = buildSessionPath(entries, newLeafId)
-    if (oldLeafId == null || oldPath.isEmpty() || newPath.isEmpty() ||
-        oldPath.any { it.type == "compaction" } || newPath.any { it.type == "compaction" }) {
+    if (oldLeafId == null || oldPath.isEmpty() || newPath.isEmpty() || displayWindowStart != null ||
+        (oldPath + newPath).any { display[it.entryId]?.anchor != null }) {
         return fullProjection
     }
     var common = 0

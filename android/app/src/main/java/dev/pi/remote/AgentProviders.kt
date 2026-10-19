@@ -25,15 +25,6 @@ internal fun RemoteState.withProviderResult(message: JsonObject): RemoteState {
     if (request == null || request != current.requestId || kind != current.kind || current.hostId != hostId) return this
     val failure = message["error"]?.jsonPrimitive?.contentOrNull
     if (failure != null) return copy(agentProviders = current.copy(loading = false, requestId = null, error = failure))
-    val rows = message["providers"]?.jsonArray?.mapNotNull { element ->
-        val row = element.jsonObject
-        val id = row["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-        if (row["kind"]?.jsonPrimitive?.contentOrNull != kind) return@mapNotNull null
-        AgentProvider(id, kind, row["name"]?.jsonPrimitive?.contentOrNull ?: id,
-            row["enabled"]?.jsonPrimitive?.booleanOrNull == true,
-            row["mode"]?.jsonPrimitive?.contentOrNull == "additive",
-            row["globalDefault"]?.jsonPrimitive?.booleanOrNull == true)
-    } ?: emptyList()
-    return copy(agentProviders = current.copy(requestId = null, loading = false, providers = rows,
+    return copy(agentProviders = current.copy(requestId = null, loading = false,
         error = null, notice = message["notice"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)))
 }

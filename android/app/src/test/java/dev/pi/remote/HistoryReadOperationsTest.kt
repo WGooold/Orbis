@@ -13,7 +13,7 @@ class HistoryReadOperationsTest {
         buildJsonObject { put("message", buildJsonObject { put("role", "user"); put("content", id) }) })
     private fun initial(offline: Boolean = false): RemoteState {
         val key = if (offline) "offline:s" else "r"
-        val graph = fixtureGraph("s", mapOf("tail" to entry("tail", "older")), SessionBranchCursor("tail"))
+        val graph = fixtureGraph("s", mapOf("tail" to entry("tail", "older")), SessionBranchCursor("tail"), "fixture-source")
         return RemoteState(deviceId = "device", hostId = "host", connection = RelayConnection.ONLINE,
             selectedRuntimeId = key.takeUnless { offline }, selectedOfflineSessionId = "s".takeIf { offline },
             runtimes = if (offline) emptyMap() else mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s",
@@ -32,7 +32,7 @@ class HistoryReadOperationsTest {
         val event = Json.encodeToJsonElement(SessionGraphSnapshot.serializer(), snapshot) as JsonObject
         val payload = buildJsonObject { put("type", "runtime.event"); put("runtimeId", "r"); put("sequence", 2)
             put("event", JsonObject(event + ("type" to JsonPrimitive("session.snapshot")))) }
-        return FixtureRelayReducer().reduce(state, payload.toString(), committedFixtureBatch(snapshot.entries))
+        return FixtureRelayReducer().reduceSourceSnapshot(state, payload.toString(), committedFixtureBatch(snapshot.entries))
     }
 
     @Test fun `ordinary projection cannot revoke a cached page or let its old worker end a new read`() {
@@ -122,7 +122,7 @@ class HistoryReadOperationsTest {
                 val unknown = state.copy(conversations = state.conversations.mapValues { (_, conversation) ->
                     conversation.copy(sourceEpoch = "epoch", sourceReady = false, isChatSyncing = true,
                         chatSyncError = "source unavailable")
-                }).applyFirstSessionPage("first-page", loaded.copy(cacheEpoch = "epoch"))
+                }).applyFirstSessionPage("first-page", loaded)
                 assertEquals(listOf("older", "tail"), unknown.conversations.getValue(key).messages.map { it.messageId })
                 assertEquals("source unavailable", unknown.conversations.getValue(key).chatSyncError)
                 assertNull(unknown.appliedSessionState(key))

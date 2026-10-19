@@ -49,15 +49,10 @@ class SessionProviderFilterTest {
 
     @Test fun `catalog updates providers independently of sessions and clears stale config on failure or disconnect`() {
         val initial = RemoteState(hostId = "paired-host", sessions = sessions, sessionListRequests = setOf("list"))
-        val state = reducer.reduce(initial, """{
-            "type":"session.list.result","requestId":"list","sessions":[],
-            "currentProviders":[{"agentKind":"codex","provider":"custom"}]
-        }""")
+        val state = initial.withModelFixture("providers", """{"providers":[{"agentKind":"codex","current":"custom","profiles":null}]}""", scope = "host")
         assertEquals(mapOf("codex" to "custom"), state.currentProviders)
         assertEquals(sessions, state.sessions)
-        val failed = reducer.reduce(state.copy(sessionListRequests = setOf("failed")), """{
-            "type":"session.list.result","requestId":"failed","sessions":[],"currentProviders":[]
-        }""")
+        val failed = state.withModelFixture("providers", """{"providers":[{"agentKind":"codex","current":null,"profiles":null}]}""", revision = 2, scope = "host")
         assertTrue(failed.currentProviders.isEmpty())
         assertTrue(reducer.reduce(state, """{"type":"host.offline","hostId":"host"}""").currentProviders.isEmpty())
         assertEquals(state, reducer.reduce(state, """{

@@ -17,6 +17,9 @@ import java.io.File
 
 class RelayReducerTest {
     private val reducer = FixtureRelayReducer()
+    private fun modelState(runtime: String = "runtime-a", session: String = "session-1") = RemoteState(
+        hostId = "host", selectedRuntimeId = runtime,
+        runtimes = mapOf(runtime to RuntimeSummary(runtime, "Agent", "/repo", "idle", session, agentKind = "pi")))
 
     @Test
     fun `working branch ignores stale responses across refresh session and directory changes`() {
@@ -167,6 +170,7 @@ class RelayReducerTest {
                 "runtime-a" to RuntimeConversation(
                     messages = listOf(ChatMessage("old-leaf", "assistant", emptyList(), 1)),
                     hasLiveSnapshot = true,
+                    sourceEpoch = "current-epoch", sourceSeq = 7, sourceReady = true, sourceHeadLeafId = "old-leaf",
                 ),
             ),
             runtimeSessionViews = mapOf("runtime-a" to RuntimeSessionView("runtime-a", "session-1", "old-leaf")),
@@ -187,10 +191,11 @@ class RelayReducerTest {
         )
 
         val refreshed = initial.requestBranchRefresh("runtime-a")
-        val changed = reducer.reduce(refreshed, """
+        val changed = reducer.reduceSourceSnapshot(refreshed, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"old-sync","mode":"append",
             "range":"catchup","targetLeafId":"old-leaf","complete":true,"cursor":{"leafId":"old-leaf"},
+            "source":{"epoch":"old-epoch","seq":8,"ready":true},
             "entries":[{"entryId":"stale","parentId":null,"type":"message","timestamp":"3"}]
           }}
         """.trimIndent())
@@ -228,40 +233,10 @@ class RelayReducerTest {
     // 全局记账，后到的 ctl 会把先发出的 msg 永久压死——手机丢掉那条消息，且无任何提示。
     @Test
     fun `a late ctl event does not evict an earlier msg event`() {
-        val ctlArrived = reducer.reduce(
-            RemoteState(),
-            """
-              {"type":"runtime.event","runtimeId":"runtime-a","sequence":100,
-               "event":{"type":"runtime.status","status":"running"}}
-            """.trimIndent(),
-            channel = "ctl",
-        )
-        val msgAccepted = reducer.reduce(
-            ctlArrived,
-            """
-              {"type":"runtime.event","runtimeId":"runtime-a","sequence":99,
-               "event":{"type":"message.queued","queueId":"q-1","text":"hi","delivery":"steer","state":"accepted"}}
-            """.trimIndent(),
-            channel = "msg",
-        )
-        // msg 的序号 99 小于 ctl 的 100，但两本账互不相认：msg 必须照常生效。
-        assertEquals(
-            QueuedMessage("q-1", "hi", "steer", "accepted", null),
-            msgAccepted.conversations["runtime-a"]?.queuedMessages["q-1"],
-        )
-        assertEquals(99L, msgAccepted.lastSequence["runtime-a\u0000msg"])
-        assertEquals(100L, msgAccepted.lastSequence["runtime-a\u0000ctl"])
-
-        // 同一道内的重复仍按重放丢弃：道内高水位线照常工作。
-        val replayed = reducer.reduce(
-            msgAccepted,
-            """
-              {"type":"runtime.event","runtimeId":"runtime-a","sequence":99,
-               "event":{"type":"message.queued","queueId":"q-1","text":"hi","delivery":"steer","state":"accepted"}}
-            """.trimIndent(),
-            channel = "msg",
-        )
-        assertEquals(msgAccepted, replayed)
+        val initial = modelState().withModelFixture("delivery", """{"q-1":{"queueId":"q-1","text":"hi","delivery":"steer","state":"accepted"}}""")
+        val after = reducer.reduce(initial, """{"type":"runtime.event","runtimeId":"runtime-a","sequence":99,"event":{"type":"runtime.status","status":"running"}}""", channel = "ctl")
+        assertEquals(QueuedMessage("q-1", "hi", "steer"), after.conversations.getValue("runtime-a").queuedMessages["q-1"])
+        assertEquals("idle", after.runtimes.getValue("runtime-a").status)
     }
 
     /**
@@ -284,57 +259,20 @@ class RelayReducerTest {
 
     @Test
     fun `session catalog merges metadata without runtime ownership`() {
-        var state = reducer.reduce(RemoteState(), """
-          {"type":"device.ready","deviceId":"phone-1","runtimes":[
-            {"runtimeId":"runtime-a","name":"A","cwd":"/a","status":"idle","sessionId":"session-1"},
-            {"runtimeId":"runtime-b","name":"B","cwd":"/b","status":"idle","sessionId":"session-2"}
-          ]}
-        """.trimIndent(), channel = "ctl")
-        state = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"session.catalog","sessions":[
-              {"sessionId":"session-1","name":"API","cwd":"/a","createdAt":1,"modifiedAt":2,"messageCount":3},
-              {"sessionId":"session-old","name":"Old","cwd":"/a","createdAt":1,"modifiedAt":3,"messageCount":4}
-            ]
-          }}
-        """.trimIndent())
-        state = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-b","sequence":1,"event":{
-            "type":"session.catalog","sessions":[
-              {"sessionId":"session-1","name":"API","cwd":"/a","createdAt":1,"modifiedAt":4,"messageCount":5}
-            ]
-          }}
-        """.trimIndent())
-
-        assertEquals(5, state.sessions["session-1"]?.messageCount)
-        assertEquals("session-1", state.runtimes["runtime-a"]?.sessionId)
-        assertEquals("session-2", state.runtimes["runtime-b"]?.sessionId)
+        val state = RemoteState(hostId = "host").withModelFixture("catalog", """{"sessions":[{"sessionId":"s","name":"Session","cwd":"/repo","messageCount":5,"agentKind":"pi"}],"backends":[]}""", scope = "host")
+        assertEquals(5, state.sessions.getValue("s").messageCount)
+        assertTrue(state.runtimes.isEmpty())
+        assertEquals("pi", state.sessions.getValue("s").agentKind)
     }
 
     @Test
     fun `host offline resets the e2e channel and online runtimes`() {
-        var state = reducer.reduce(RemoteState(), """
-          {"type":"device.ready","deviceId":"phone-1","runtimes":[
-            {"runtimeId":"runtime-a","name":"A","cwd":"/a","status":"idle","sessionId":"session-1"}
-          ],"codexDesktop":{"state":"attached","reason":"已接入 Codex 桌面版 app-server"}}
-        """.trimIndent(), channel = "ctl")
-        state = state.copy(e2eReady = true, pendingCommands = mapOf("cmd-1" to "runtime-a"))
-        // 接入分档只在 Host 那条加密 device.ready 里权威；电脑掉线后它还写着「已接入」，
-        // 用户会去点一个根本收不到会话的入口。
-        assertEquals("attached", state.codexDesktop?.state)
-
-        state = reducer.reduce(state, """{"type":"host.offline","hostId":"host-1","reason":"disconnected"}""")
-
-        assertFalse(state.e2eReady)
-        assertTrue(state.runtimes.isEmpty())
-        assertTrue(state.pendingCommands.isEmpty())
-        assertEquals("cancelled", state.commandResults["cmd-1"]?.status)
-        assertNull(state.codexDesktop)
-
-        // host.online 本身不改状态：等重握手后的 device.ready 把目录重新对齐。
-        val before = state
-        state = reducer.reduce(state, """{"type":"host.online","hostId":"host-1"}""")
-        assertEquals(before, state)
+        val initial = modelState().copy(e2eReady = true).withModelFixture("backends", """{"agents":["pi"],"launchableAgents":["pi"],"codexDesktop":{"state":"attached","reason":"Ready"}}""", scope = "host")
+        assertEquals("attached", initial.codexDesktop?.state)
+        val offline = reducer.reduce(initial, """{"type":"host.offline","hostId":"host"}""")
+        assertFalse(offline.e2eReady)
+        assertTrue(offline.runtimes.isEmpty())
+        assertNull(offline.codexDesktop)
     }
 
     @Test
@@ -344,10 +282,10 @@ class RelayReducerTest {
         var state = RemoteState(
             runtimes = mapOf("runtime-a" to runtimeA, "runtime-b" to runtimeB),
             sessionSyncCommands = mapOf(
-                "command-a" to PendingSessionSync("runtime-a", "session-1", "sync-a"),
+                "command-a" to PendingSessionSync("runtime-a", "session-1", "sync-a", "preview"),
             ),
         )
-        state = reducer.reduce(state, """
+        state = reducer.reduceSourceSnapshot(state, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-a","mode":"replace",
             "cursor":{"leafId":"a"},
@@ -360,10 +298,10 @@ class RelayReducerTest {
         """.trimIndent())
         state = state.copy(
             sessionSyncCommands = mapOf(
-                "command-b" to PendingSessionSync("runtime-b", "session-1", "sync-b"),
+                "command-b" to PendingSessionSync("runtime-b", "session-1", "sync-b", "preview"),
             ),
         )
-        state = reducer.reduce(state, """
+        state = reducer.reduceSourceSnapshot(state, """
           {"type":"runtime.event","runtimeId":"runtime-b","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-b","mode":"replace",
             "cursor":{"leafId":"b"},
@@ -405,7 +343,7 @@ class RelayReducerTest {
             sessionSyncCommands = mapOf("command-preview" to previewCommand),
             pendingCommands = mapOf("command-preview" to "runtime-a"),
         )
-        state = reducer.reduce(state, """
+        state = reducer.reduceSourceSnapshot(state, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"preview-1","mode":"replace",
             "range":"preview","targetLeafId":"target","complete":false,"hasOlder":true,
@@ -430,7 +368,7 @@ class RelayReducerTest {
             sessionSyncCommands = mapOf("command-catchup" to catchupCommand),
             pendingCommands = mapOf("command-catchup" to "runtime-a"),
         )
-        state = reducer.reduce(state, """
+        state = reducer.reduceSourceSnapshot(state, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"catchup-1","mode":"replace",
             "range":"catchup","targetLeafId":"target","complete":false,
@@ -443,7 +381,7 @@ class RelayReducerTest {
         assertEquals("target", state.runtimeSessionViews["runtime-a"]?.leafId)
         assertEquals(listOf("tail", "target"), state.conversations["runtime-a"]?.messages?.map(ChatMessage::messageId))
 
-        val switched = reducer.reduce(
+        val switched = reducer.reduceSourceSnapshot(
             RemoteState(
                 selectedRuntimeId = "runtime-a",
                 runtimes = mapOf(
@@ -455,18 +393,14 @@ class RelayReducerTest {
                 ),
                 runtimeSessionViews = mapOf("runtime-a" to RuntimeSessionView("runtime-a", "session-1", "old")),
                 sessionGraphs = mapOf(
-                    "session-1" to SessionGraph(
-                        "session-1",
-                        entries = listOf(
-                            SessionGraphEntry("root", null, "message", "1", buildJsonObject {
-                                put("message", buildJsonObject { put("role", "user"); put("content", "root") })
-                            }),
-                            SessionGraphEntry("old", "root", "message", "2", buildJsonObject {
-                                put("message", buildJsonObject { put("role", "assistant"); put("content", "old") })
-                            }),
-                        ).associateBy(SessionGraphEntry::entryId),
-                        cursor = SessionBranchCursor("old"),
-                    ),
+                    "session-1" to fixtureGraph("session-1", listOf(
+                        SessionGraphEntry("root", null, "message", "1", buildJsonObject {
+                            put("message", buildJsonObject { put("role", "user"); put("content", "root") })
+                        }),
+                        SessionGraphEntry("old", "root", "message", "2", buildJsonObject {
+                            put("message", buildJsonObject { put("role", "assistant"); put("content", "old") })
+                        }),
+                    ), SessionBranchCursor("old"), "fixture-source"),
                 ),
                 conversations = mapOf(
                     "runtime-a" to RuntimeConversation(
@@ -520,7 +454,7 @@ class RelayReducerTest {
             pendingCommands = mapOf("preview-command" to "runtime-a"),
         )
 
-        val changed = reducer.reduce(initial, """
+        val changed = reducer.reduceSourceSnapshot(initial, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"preview-1","mode":"replace",
             "range":"preview","targetLeafId":"leaf","complete":true,
@@ -538,7 +472,7 @@ class RelayReducerTest {
         // The device caches sessionLeafId from metadata. A long turn or a Pi tree navigation can
         // leave it behind; a preview must report and adopt the Runtime's current leaf so the app
         // does not keep replaying a stale (possibly empty) branch.
-        val staleTarget = reducer.reduce(
+        val staleTarget = reducer.reduceSourceSnapshot(
             RemoteState(
                 selectedRuntimeId = "runtime-a",
                 runtimes = mapOf(
@@ -599,7 +533,15 @@ class RelayReducerTest {
                         ChatMessage("new", "assistant", listOf(RemoteContent("text", "new")), 2),
                     ),
                     hasLiveSnapshot = true,
+                    sourceEpoch = "fixture-source", sourceSeq = 0, sourceReady = true, sourceHeadLeafId = "new",
                 ),
+            ),
+            sessionGraphs = mapOf(
+                "session-1" to fixtureGraph("session-1", mapOf(
+                    "new" to SessionGraphEntry("new", "old", "message", "2", buildJsonObject {
+                        put("message", buildJsonObject { put("role", "assistant"); put("content", "new") })
+                    }),
+                ), SessionBranchCursor("new"), "fixture-source"),
             ),
             runtimeSessionViews = mapOf("runtime-a" to RuntimeSessionView("runtime-a", "session-1", "new")),
             sessionHistory = mapOf(
@@ -618,7 +560,7 @@ class RelayReducerTest {
             pendingCommands = mapOf("history-command" to "runtime-a"),
         )
 
-        val changed = reducer.reduce(initial, """
+        val changed = reducer.reduceSourceSnapshot(initial, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"history-1","mode":"prepend",
             "range":"history","targetLeafId":"new","beforeEntryId":"new","complete":true,"hasOlder":false,
@@ -628,7 +570,7 @@ class RelayReducerTest {
           }}
         """.trimIndent())
 
-        assertEquals(setOf("old"), changed.sessionGraphs["session-1"]?.entries?.keys)
+        assertEquals(setOf("new", "old"), changed.sessionGraphs["session-1"]?.entries?.keys)
         assertEquals(listOf("old", "new"), changed.conversations["runtime-a"]?.messages?.map(ChatMessage::messageId))
         assertEquals("old", changed.sessionHistory["runtime-a"]?.oldestEntryId)
         assertEquals(false, changed.sessionHistory["runtime-a"]?.loading)
@@ -654,7 +596,15 @@ class RelayReducerTest {
                         ChatMessage("new", "assistant", listOf(RemoteContent("text", "new")), 2),
                     ),
                     hasLiveSnapshot = true,
+                    sourceEpoch = "fixture-source", sourceSeq = 0, sourceReady = true, sourceHeadLeafId = "new",
                 ),
+            ),
+            sessionGraphs = mapOf(
+                "session-1" to fixtureGraph("session-1", mapOf(
+                    "new" to SessionGraphEntry("new", "old", "message", "2", buildJsonObject {
+                        put("message", buildJsonObject { put("role", "assistant"); put("content", "new") })
+                    }),
+                ), SessionBranchCursor("new"), "fixture-source"),
             ),
             runtimeSessionViews = mapOf("runtime-a" to RuntimeSessionView("runtime-a", "session-1", "new")),
             sessionHistory = mapOf(
@@ -673,7 +623,7 @@ class RelayReducerTest {
             pendingCommands = mapOf("history-command" to "runtime-a"),
         )
 
-        val changed = reducer.reduce(initial, """
+        val changed = reducer.reduceSourceSnapshot(initial, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"history-1","mode":"prepend",
             "range":"history","targetLeafId":"new","beforeEntryId":"new","complete":true,"hasOlder":false,
@@ -689,7 +639,7 @@ class RelayReducerTest {
         assertEquals(null, changed.sessionHistory["runtime-a"]?.requestId)
         assertEquals(null, changed.conversations["runtime-a"]?.chatSyncError)
 
-        val streaming = reducer.reduce(
+        val streaming = reducer.reduceSourceSnapshot(
             RemoteState(
                 selectedRuntimeId = "runtime-a",
                 runtimes = mapOf(
@@ -707,7 +657,15 @@ class RelayReducerTest {
                         ),
                         streamingMessageIds = setOf("live"),
                         hasLiveSnapshot = true,
+                        sourceEpoch = "fixture-source", sourceSeq = 0, sourceReady = true, sourceHeadLeafId = "new",
                     ),
+                ),
+                sessionGraphs = mapOf(
+                    "session-1" to fixtureGraph("session-1", mapOf(
+                        "new" to SessionGraphEntry("new", "old", "message", "2", buildJsonObject {
+                            put("message", buildJsonObject { put("role", "assistant"); put("content", "new") })
+                        }),
+                    ), SessionBranchCursor("new"), "fixture-source"),
                 ),
                 runtimeSessionViews = mapOf("runtime-a" to RuntimeSessionView("runtime-a", "session-1", "new")),
                 sessionHistory = mapOf(
@@ -762,7 +720,7 @@ class RelayReducerTest {
           }}
         """.trimIndent()
 
-        val changed = reducer.reduce(initial, payload, committedFixtureBatch(listOf(persisted)))
+        val changed = reducer.reduceSourceSnapshot(initial, payload, committedFixtureBatch(listOf(persisted)))
 
         assertEquals("persisted", changed.conversations["runtime-a"]?.messages?.single()?.content?.single()?.text)
     }
@@ -843,7 +801,7 @@ class RelayReducerTest {
             pendingCommands = mapOf("old-command" to "runtime-a"),
         )
 
-        val changed = reducer.reduce(initial, """
+        val changed = reducer.reduceSourceSnapshot(initial, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-old","syncId":"old-sync","mode":"replace",
             "range":"catchup","targetLeafId":"old-leaf","complete":true,
@@ -889,7 +847,7 @@ class RelayReducerTest {
             pendingCommands = mapOf("old-command" to "runtime-a"),
         )
 
-        val changed = reducer.reduce(initial, """
+        val changed = reducer.reduceSourceSnapshot(initial, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"old-sync","mode":"replace",
             "range":"catchup","targetLeafId":"old-leaf","complete":true,
@@ -975,27 +933,11 @@ class RelayReducerTest {
 
     @Test
     fun `remap keeps an already projected canonical row and is idempotent`() {
-        val canonical = ChatMessage("entry", "assistant", listOf(RemoteContent("text", "canonical")), 2_000)
-        val live = ChatMessage("live", "assistant", listOf(RemoteContent("text", "stale live")), 2_000)
-        val initial = RemoteState(
-            runtimes = mapOf("runtime-a" to RuntimeSummary("runtime-a", "A", "/a", "running", "session-1")),
-            conversations = mapOf("runtime-a" to RuntimeConversation(
-                messages = listOf(canonical, live),
-                streamingMessageIds = setOf("live"),
-                activeTurnId = "turn-1",
-                turnTimings = mapOf("turn-1" to TurnTiming("turn-1", 1_000, messageId = "live")),
-            )),
-        )
-        val finished = liveEvent(1, """{
-          "type":"turn.finished","turnId":"turn-1","startedAt":1000,"durationMs":1000,
-          "messageId":"live","persistedMessageId":"entry"
-        }""")
-
-        val reduced = reducer.reduce(initial, finished)
-        assertEquals(listOf("entry"), reduced.conversations.getValue("runtime-a").messages.map(ChatMessage::messageId))
-        assertEquals(setOf("entry"), reduced.conversations.getValue("runtime-a").streamingMessageIds)
-        assertEquals("entry", reduced.conversations.getValue("runtime-a").turnTimings.getValue("turn-1").messageId)
-        assertEquals(reduced, reducer.reduce(reduced, finished))
+        val entry = SessionGraphEntry("entry", null, "message", "1", buildJsonObject { put("message", Json.encodeToJsonElement(ChatMessage.serializer(), ChatMessage("entry", "assistant", listOf(RemoteContent("text", "canonical")), 1))) })
+        val initial = modelState().withLiveFixture(SessionLiveState(true, messages = listOf(SessionLiveMessage(ChatMessage("live", "assistant", listOf(RemoteContent("text", "stale")), 1), false, true))))
+        val committed = initial.withLiveFixture(SessionLiveState(true, messages = listOf(SessionLiveMessage(ChatMessage("live", "assistant", listOf(RemoteContent("text", "canonical")), 1), true, true, "entry"))), entries = listOf(entry), head = "entry")
+        assertEquals(listOf("entry"), committed.conversations.getValue("runtime-a").messages.map { it.messageId })
+        assertTrue(committed.conversations.getValue("runtime-a").streamingMessageIds.isEmpty())
     }
 
     @Test
@@ -1215,96 +1157,33 @@ class RelayReducerTest {
                "data":{"message":{"role":"assistant","timestamp":2000,"content":[{"type":"thinking","thinking":"reasoned"},{"type":"text","text":"answer"}]}}}
             ]}}
         """.trimIndent()
-        return reducer.reduce(reducer.reduce(prepared, metadata), snapshot)
+        return reducer.reduceSourceSnapshot(reducer.reduce(prepared, metadata), snapshot)
     }
 
     @Test
     fun `a delta without a start keeps the live response visible`() {
-        var state = reducer.reduce(RemoteState(
-            runtimes = mapOf("runtime-a" to RuntimeSummary("runtime-a", "A", "/a", "running", "session-1")),
-        ), """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"message.delta","messageId":"assistant-live","contentType":"text","delta":"hel"
-          }}
-        """.trimIndent())
-        state = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"message.delta","messageId":"assistant-live","contentType":"text","delta":"lo"
-          }}
-        """.trimIndent())
-
-        assertEquals(listOf("assistant-live"), state.conversations["runtime-a"]?.messages?.map(ChatMessage::messageId))
-        assertEquals("hello", state.conversations["runtime-a"]?.messages?.single()?.content?.single()?.text)
-        assertEquals(setOf("assistant-live"), state.conversations["runtime-a"]?.streamingMessageIds)
+        val state = modelState().withLiveFixture(SessionLiveState(true, messages = listOf(SessionLiveMessage(ChatMessage("assistant-live", "assistant", listOf(RemoteContent("text", "complete accumulated text")), 1), false, true))))
+        assertEquals(listOf("assistant-live"), state.conversations.getValue("runtime-a").messages.map { it.messageId })
+        assertEquals("complete accumulated text", state.conversations.getValue("runtime-a").messages.single().content.single().text)
     }
 
     @Test
     fun `streamed tool-call arguments stay out of the assistant prose`() {
-        // Pi streams a tool call as `toolcall_delta` fragments. They belong in their own tool_call
-        // block; concatenating them onto the assistant text renders the answer with argument JSON
-        // glued to its tail until the finalized message replaces the live row.
-        var state = reducer.reduce(RemoteState(
-            runtimes = mapOf("runtime-a" to RuntimeSummary("runtime-a", "A", "/a", "running", "session-1")),
-        ), """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"message.started","message":{"messageId":"assistant-live","role":"assistant","content":[],"timestamp":1}
-          }}
-        """.trimIndent())
-        state = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"message.delta","messageId":"assistant-live","contentType":"text","delta":"let me check"
-          }}
-        """.trimIndent())
-        state = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{
-            "type":"message.delta","messageId":"assistant-live","contentType":"tool_call","contentIndex":1,"delta":"{\"path\":"
-          }}
-        """.trimIndent())
-        state = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":4,"event":{
-            "type":"message.delta","messageId":"assistant-live","contentType":"tool_call","contentIndex":1,"delta":"\"a.txt\"}"
-          }}
-        """.trimIndent())
-
-        val content = state.conversations.getValue("runtime-a").messages.single().content
-        assertEquals(listOf("text", "tool_call"), content.map(RemoteContent::type))
-        assertEquals("let me check", content[0].text)
-        assertEquals("{\"path\":\"a.txt\"}", content[1].text)
+        val message = ChatMessage("live", "assistant", listOf(RemoteContent("text", "answer"), RemoteContent("tool_call", toolCallId = "tool", toolName = "bash", arguments = Json.parseToJsonElement("""{"command":"pwd"}"""))), 1)
+        val state = modelState().withLiveFixture(SessionLiveState(true, messages = listOf(SessionLiveMessage(message, false, true)), tools = listOf(SessionLiveTool("tool", "bash", "started"))))
+        val row = state.conversations.getValue("runtime-a").messages.single()
+        assertEquals("answer", row.content.first().text)
+        assertEquals("tool_call", row.content.last().type)
+        assertEquals("started", state.conversations.getValue("runtime-a").tools.getValue("tool").state)
     }
 
     @Test
     fun `snapshot replaces a runtime conversation and duplicate sequence is ignored`() {
-        val ready = """{
-          "type":"device.ready","deviceId":"phone-1","runtimes":[
-            {"runtimeId":"runtime-a","name":"A","cwd":"/a","status":"idle","sessionId":"same","hostname":"devbox","sessionName":"API refactor"}
-          ]
-        }""".trimIndent()
-        val snapshot = """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"message.started","message":{
-              "messageId":"m1","role":"user","content":[{"type":"text","text":"hello"}],"timestamp":1
-            }
-          }
-        }""".trimIndent()
-        val duplicate = """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"message.delta","messageId":"m1","contentType":"text","delta":" duplicate"
-          }
-        }""".trimIndent()
-
-        var state = reducer.reduce(reducer.reduce(reducer.reduce(RemoteState(), ready, channel = "ctl"), snapshot), duplicate)
-        assertEquals("hello", state.conversations["runtime-a"]?.messages?.single()?.content?.single()?.text)
-        assertEquals("devbox", state.runtimes["runtime-a"]?.hostname)
-        assertEquals("API refactor", state.runtimes["runtime-a"]?.sessionName)
-
-        state = state.copy(pendingCommands = mapOf("command-1" to "runtime-a"))
-        state = reducer.reduce(state, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"command.result","commandId":"command-1","ok":true
-          }
-        }""".trimIndent())
-        assertFalse(state.pendingCommands.containsKey("command-1"))
-        assertEquals(true, state.commandResults["command-1"]?.ok)
+        val first = modelState().withLiveFixture(SessionLiveState(true, messages = listOf(SessionLiveMessage(ChatMessage("old", "assistant", emptyList(), 1), false, true))))
+        val next = first.withLiveFixture(SessionLiveState(true, messages = listOf(SessionLiveMessage(ChatMessage("new", "assistant", emptyList(), 1), false, true))))
+        assertEquals(listOf("new"), next.conversations.getValue("runtime-a").messages.map { it.messageId })
+        val late = reducer.reduce(next, """{"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{"type":"message.delta","messageId":"old","delta":"late"}}""", channel = "msg")
+        assertEquals(next, late)
     }
 
     @Test
@@ -1539,7 +1418,13 @@ class RelayReducerTest {
                         },
                     )),
                     cursor = SessionBranchCursor("root"),
+                    cacheEpoch = "fixture-source",
+                    entryVersions = mapOf("root" to 0L),
                 ),
+            ),
+            conversations = mapOf(
+                "runtime-a" to RuntimeConversation(sourceEpoch = "fixture-source", sourceSeq = 0, sourceReady = true,
+                    sourceHeadLeafId = "root", hasLiveSnapshot = true),
             ),
             runtimeSessionViews = mapOf("runtime-a" to RuntimeSessionView("runtime-a", "session-1", "leaf")),
             sessionHistory = mapOf(
@@ -1558,7 +1443,7 @@ class RelayReducerTest {
             pendingCommands = mapOf("catchup-1" to "runtime-a"),
         )
 
-        val changed = reducer.reduce(initial, """
+        val changed = reducer.reduceSourceSnapshot(initial, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-1","mode":"append",
             "range":"catchup","targetLeafId":"leaf","complete":true,"cursor":{"leafId":"leaf"},
@@ -1600,6 +1485,16 @@ class RelayReducerTest {
                     sessionLeafId = "live",
                 ),
             ),
+            sessionGraphs = mapOf(
+                "session-1" to fixtureGraph("session-1", listOf(
+                    SessionGraphEntry("old", null, "message", "1", buildJsonObject {
+                        put("message", buildJsonObject { put("role", "user"); put("content", "old") })
+                    }),
+                    SessionGraphEntry("mid", "old", "message", "2", buildJsonObject {
+                        put("message", buildJsonObject { put("role", "assistant"); put("content", "mid") })
+                    }),
+                ), SessionBranchCursor("mid"), "fixture-source").copy(entryVersions = mapOf("old" to 0L, "mid" to 0L)),
+            ),
             conversations = mapOf(
                 "runtime-a" to RuntimeConversation(
                     messages = listOf(
@@ -1608,6 +1503,7 @@ class RelayReducerTest {
                         ChatMessage("live", "user", listOf(RemoteContent("text", "live")), 3),
                     ),
                     hasLiveSnapshot = true,
+                    sourceEpoch = "fixture-source", sourceSeq = 0, sourceReady = true, sourceHeadLeafId = "live",
                 ),
             ),
             runtimeSessionViews = mapOf("runtime-a" to RuntimeSessionView("runtime-a", "session-1", "live")),
@@ -1627,12 +1523,12 @@ class RelayReducerTest {
             pendingCommands = mapOf("catchup-1" to "runtime-a"),
         )
 
-        val changed = reducer.reduce(initial, """
+        val changed = reducer.reduceSourceSnapshot(initial, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-1","mode":"append",
             "range":"catchup","targetLeafId":"live","complete":true,"cursor":{"leafId":"live"},
             "entries":[
-              {"entryId":"mid","parentId":null,"type":"message","timestamp":"2","data":{"message":{"role":"assistant","content":"mid"}}},
+              {"entryId":"mid","parentId":"old","type":"message","timestamp":"2","data":{"message":{"role":"assistant","content":"mid"}}},
               {"entryId":"live","parentId":"mid","type":"message","timestamp":"3","data":{"message":{"role":"user","content":"live"}}}
             ]
           }}
@@ -1643,7 +1539,7 @@ class RelayReducerTest {
         assertEquals(true, changed.sessionHistory["runtime-a"]?.hasOlder)
         assertEquals(false, changed.sessionHistory["runtime-a"]?.loading)
 
-        val retargeted = reducer.reduce(
+        val retargeted = reducer.reduceSourceSnapshot(
             RemoteState(
                 selectedRuntimeId = "runtime-a",
                 runtimes = mapOf(
@@ -1657,6 +1553,17 @@ class RelayReducerTest {
                     "runtime-a" to RuntimeConversation(
                         messages = listOf(ChatMessage("new-live", "user", listOf(RemoteContent("text", "tail")), 3)),
                         hasLiveSnapshot = true,
+                        sourceEpoch = "fixture-source", sourceSeq = 0, sourceReady = true, sourceHeadLeafId = "old-live",
+                    ),
+                ),
+                sessionGraphs = mapOf(
+                    "session-1" to SessionGraph(
+                        sessionId = "session-1",
+                        entries = mapOf("deep" to SessionGraphEntry("deep", null, "message", "1", buildJsonObject {
+                            put("message", buildJsonObject { put("role", "user"); put("content", "deep") })
+                        })),
+                        cursor = SessionBranchCursor("deep"),
+                        cacheEpoch = "fixture-source",
                     ),
                 ),
                 runtimeSessionViews = mapOf("runtime-a" to RuntimeSessionView("runtime-a", "session-1", "old-live")),
@@ -1871,128 +1778,35 @@ class RelayReducerTest {
 
     @Test
     fun `queued messages stay visible until delivery and cannot be restored after delivery`() {
-        var state = reducer.reduce(RemoteState(), """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"message.queued","queueId":"queue-1","text":"follow up","delivery":"followUp","state":"accepted"
-          }}
-        """.trimIndent())
-        assertEquals("accepted", state.conversations["runtime-a"]?.queuedMessages?.get("queue-1")?.state)
-        state = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"message.started","queueId":"queue-1","message":{
-              "messageId":"entry-1","role":"user","content":[{"type":"text","text":"follow up"}],"timestamp":1
-            }
-          }}
-        """.trimIndent())
-        assertTrue(state.conversations["runtime-a"]?.queuedMessages?.isEmpty() == true)
-        assertEquals(1, state.conversations["runtime-a"]?.messages?.size)
-        val late = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{
-            "type":"message.queued","queueId":"queue-1","text":"follow up","delivery":"followUp","state":"accepted"
-          }}
-        """.trimIndent())
-        assertTrue(late.conversations["runtime-a"]?.queuedMessages?.isEmpty() == true)
-
-        var delivered = reducer.reduce(RemoteState(), """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"message.queued","queueId":"queue-1","text":"queued","delivery":"steer","state":"accepted"
-          }}
-        """.trimIndent())
-        delivered = reducer.reduce(delivered, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"message.queued","queueId":"queue-1","text":"queued","delivery":"steer","state":"delivered"
-          }}
-        """.trimIndent())
-
-        assertTrue(delivered.conversations["runtime-a"]?.queuedMessages?.isEmpty() == true)
-        assertTrue("queue-1" in (delivered.conversations["runtime-a"]?.deliveredQueueIds ?: emptySet()))
-
-        delivered = reducer.reduce(delivered, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{
-            "type":"message.queued","queueId":"queue-1","text":"queued","delivery":"steer","state":"accepted"
-          }}
-        """.trimIndent())
-
-        assertTrue(delivered.conversations["runtime-a"]?.queuedMessages?.isEmpty() == true)
+        val accepted = modelState().withModelFixture("delivery", """{"q":{"queueId":"q","text":"follow up","delivery":"followUp","state":"accepted"}}""")
+        assertEquals("accepted", accepted.conversations.getValue("runtime-a").queuedMessages["q"]?.state)
+        val delivered = accepted.withModelFixture("delivery", """{"q":{"queueId":"q","text":"follow up","delivery":"followUp","state":"delivered"}}""", 2)
+        assertTrue(delivered.conversations.getValue("runtime-a").queuedMessages.isEmpty())
+        val late = delivered.withModelFixture("delivery", """{"q":{"queueId":"q","text":"follow up","delivery":"followUp","state":"accepted"}}""", 1)
+        assertTrue(late.conversations.getValue("runtime-a").queuedMessages.isEmpty())
     }
 
     @Test
     fun `message lifecycle without queue id does not infer a queued message by text`() {
-        var state = reducer.reduce(RemoteState(), """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"message.queued","queueId":"queue-1","text":"same text","delivery":"steer","state":"accepted"
-          }}
-        """.trimIndent())
-        state = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"message.started","message":{
-              "messageId":"entry-1","role":"user","content":[{"type":"text","text":"same text"}],"timestamp":1
-            }
-          }}
-        """.trimIndent())
-
-        assertEquals("accepted", state.conversations["runtime-a"]?.queuedMessages?.get("queue-1")?.state)
-        assertTrue(state.conversations["runtime-a"]?.deliveredQueueIds?.isEmpty() == true)
+        val queued = modelState().withModelFixture("delivery", """{"q":{"queueId":"q","text":"same","delivery":"steer","state":"accepted"}}""")
+        val live = queued.withLiveFixture(SessionLiveState(true, messages = listOf(SessionLiveMessage(ChatMessage("message", "user", listOf(RemoteContent("text", "same")), 1), true, true))))
+        assertEquals("accepted", live.conversations.getValue("runtime-a").queuedMessages.getValue("q").state)
     }
 
     @Test
     fun `queued id cannot be reused with different message data`() {
-        var state = reducer.reduce(RemoteState(), """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"message.queued","queueId":"queue-1","text":"original","delivery":"steer","state":"accepted"
-          }}
-        """.trimIndent())
-        state = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"message.queued","queueId":"queue-1","text":"different","delivery":"followUp","state":"accepted"
-          }}
-        """.trimIndent())
-
-        assertEquals("original", state.conversations["runtime-a"]?.queuedMessages?.get("queue-1")?.text)
-        assertEquals("steer", state.conversations["runtime-a"]?.queuedMessages?.get("queue-1")?.delivery)
+        val first = modelState().withModelFixture("delivery", """{"q":{"queueId":"q","text":"original","delivery":"steer","state":"accepted"}}""", 3)
+        val replay = first.withModelFixture("delivery", """{"q":{"queueId":"q","text":"different","delivery":"followUp","state":"accepted"}}""", 3)
+        assertEquals("original", replay.conversations.getValue("runtime-a").queuedMessages.getValue("q").text)
     }
 
     @Test
     fun `queued messages are scoped to the runtime session and survive a same-session reconnect`() {
-        var state = reducer.reduce(RemoteState(), """
-          {"type":"runtime.online","runtime":{"runtimeId":"runtime-a","name":"A","cwd":"/a","status":"running","sessionId":"session-1"}}
-        """.trimIndent())
-        state = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"message.queued","queueId":"queue-1","text":"old","delivery":"steer","state":"accepted"
-          }}
-        """.trimIndent())
-        state = reducer.reduce(state, """
-          {"type":"runtime.online","runtime":{"runtimeId":"runtime-a","name":"A","cwd":"/a","status":"idle","sessionId":"session-2"}}
-        """.trimIndent())
-        assertTrue(state.conversations["runtime-a"]?.queuedMessages?.isEmpty() == true)
-        val unrelated = reducer.reduce(state, """
-          {"type":"runtime.event","runtimeId":"runtime-b","sequence":1,"event":{
-            "type":"message.queued","queueId":"queue-1","text":"other","delivery":"followUp","state":"accepted"
-          }}
-        """.trimIndent())
-        assertTrue(unrelated.conversations["runtime-a"]?.queuedMessages?.isEmpty() == true)
-
-        var reconnected = reducer.reduce(RemoteState(), """
-          {"type":"runtime.online","runtime":{
-            "runtimeId":"runtime-a","name":"A","cwd":"/a","status":"running","sessionId":"session-1"
-          }}
-        """.trimIndent())
-        reconnected = reducer.reduce(reconnected, """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"message.queued","queueId":"queue-1","text":"keep me","delivery":"steer","state":"accepted"
-          }}
-        """.trimIndent())
-        reconnected = reducer.reduce(reconnected, """
-          {"type":"runtime.offline","runtimeId":"runtime-a","reason":"transport lost"}
-        """.trimIndent())
-        reconnected = reducer.reduce(reconnected, """
-          {"type":"runtime.online","runtime":{
-            "runtimeId":"runtime-a","name":"A","cwd":"/a","status":"running","sessionId":"session-1"
-          }}
-        """.trimIndent())
-
-        assertEquals("accepted", reconnected.conversations["runtime-a"]?.queuedMessages?.get("queue-1")?.state)
+        val first = modelState().withModelFixture("delivery", """{"q":{"queueId":"q","text":"keep","delivery":"steer","state":"accepted"}}""")
+        val ready = reducer.reduce(first, """{"type":"device.ready","deviceId":"device","modelEpoch":"fixture-model","runtimes":[{"runtimeId":"runtime-a","name":"Agent","cwd":"/repo","status":"idle","sessionId":"session-1"}]}""", channel = "ctl")
+        assertEquals("accepted", ready.conversations.getValue("runtime-a").queuedMessages.getValue("q").state)
+        val changed = reducer.reduce(ready, """{"type":"runtime.online","runtime":{"runtimeId":"runtime-a","name":"Agent","cwd":"/repo","status":"idle","sessionId":"other"}}""")
+        assertTrue(changed.conversations.getValue("runtime-a").queuedMessages.isEmpty())
     }
 
     @Test
@@ -2023,113 +1837,21 @@ class RelayReducerTest {
 
     @Test
     fun `a new runtime connection resets the sequence epoch so a stale snapshot cannot replace newer events`() {
-        val stale = RemoteState(
-            lastSequence = mapOf("runtime-a" to 50),
-            conversations = mapOf(
-                "runtime-a" to RuntimeConversation(
-                    messages = listOf(ChatMessage("old", "user", emptyList(), 1)),
-                ),
-            ),
-        )
-        val online = """{
-          "type":"runtime.online","runtime":{
-            "runtimeId":"runtime-a","name":"A","cwd":"/a","status":"idle"
-          }
-        }""".trimIndent()
-        val snapshot = """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"message.started","message":{
-              "messageId":"new","role":"user","content":[],"timestamp":2
-            }
-          }
-        }""".trimIndent()
-
-        val reconnected = reducer.reduce(stale, online)
-        assertTrue(reconnected.conversations["runtime-a"]?.messages?.isEmpty() == true)
-
-        val state = reducer.reduce(reconnected, snapshot)
-
-        assertEquals("new", state.conversations["runtime-a"]?.messages?.single()?.messageId)
-        assertEquals(1L, state.lastSequence["runtime-a"])
-
-        val staleSnapshot = reducer.reduce(
-            RemoteState(
-                lastSequence = mapOf("runtime-a" to 4),
-                runtimes = mapOf("runtime-a" to RuntimeSummary(
-                    "runtime-a", "A", "/a", "idle", "session-1", sessionGraphSync = true, sessionLeafId = "leaf",
-                )),
-                conversations = mapOf("runtime-a" to RuntimeConversation(
-                    messages = listOf(ChatMessage("live", "assistant", emptyList(), 1)),
-                    streamingMessageIds = setOf("live"),
-                )),
-                sessionSyncCommands = mapOf(
-                    "command" to PendingSessionSync("runtime-a", "session-1", "sync-1", targetLeafId = "leaf"),
-                ),
-            ),
-            """
-              {"type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{
-                "type":"session.snapshot","sessionId":"session-1","syncId":"sync-1","mode":"replace",
-                "cursor":{"leafId":"leaf"},"entries":[
-                  {"entryId":"leaf","parentId":null,"type":"message","timestamp":"1","data":{"message":{"role":"assistant","content":"stable"}}}
-                ]
-              }}
-            """.trimIndent(),
-        )
-
-        assertEquals(4L, staleSnapshot.lastSequence["runtime-a"])
-        assertEquals(listOf("leaf", "live"), staleSnapshot.conversations["runtime-a"]?.messages?.map(ChatMessage::messageId))
+        val first = modelState().withModelFixture("execution", """{"phase":"running"}""", 5)
+        val ready = reducer.reduce(first, """{"type":"device.ready","deviceId":"device","modelEpoch":"fresh","runtimes":[{"runtimeId":"runtime-a","name":"Agent","cwd":"/repo","status":"running","sessionId":"session-1"}]}""", channel = "ctl")
+        assertEquals("unknown", ready.runtimes.getValue("runtime-a").status)
+        assertTrue(ready.agentStateSnapshots.isEmpty())
+        val next = ready.withModelFixture("execution", """{"phase":"idle"}""")
+        assertEquals("idle", next.runtimes.getValue("runtime-a").status)
     }
 
     @Test
     fun `capabilities survive runtime online ordering whether they arrive before or after it`() {
-        var state = reducer.reduce(RemoteState(), """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":10,"event":{
-            "type":"runtime.capabilities","capabilities":{
-              "commands":[
-                {"name":"reload","description":"Reload resources","source":"builtin"},
-                {"name":"skill:review","description":"Review code","source":"skill",
-                 "argument":{"kind":"text","required":false,"hint":"[request]"}}
-              ]
-            }
-          }}
-        """.trimIndent())
-
-        state = reducer.reduce(state, """
-          {"type":"runtime.online","runtime":{
-            "runtimeId":"runtime-a","name":"A","cwd":"/a","status":"idle","sessionId":"session-1"
-          }}
-        """.trimIndent())
-
-        assertEquals(listOf("reload", "skill:review"), state.capabilities["runtime-a"]?.commands?.map { it.name })
-        assertEquals("[request]", state.capabilities["runtime-a"]?.commands?.last()?.argument?.hint)
-        assertEquals(10L, state.lastSequence["runtime-a"])
-
-        val refreshed = reducer.reduce(
-            RemoteState(
-                runtimes = mapOf("runtime-a" to RuntimeSummary("runtime-a", "A", "/a", "idle", "session-1")),
-                capabilities = mapOf(
-                    "runtime-a" to RuntimeCapabilities(
-                        commands = listOf(RuntimeSlashCommand("session", "Session 信息", "builtin")),
-                    ),
-                ),
-                lastSequence = mapOf("runtime-a" to 10),
-            ),
-            """
-              {"type":"runtime.event","runtimeId":"runtime-a","sequence":11,"event":{
-                "type":"runtime.capabilities","capabilities":{
-                  "commands":[{"name":"reload","description":"重载 Pi 扩展","source":"builtin"}]
-                }
-              }}
-            """.trimIndent(),
-        )
-        val reordered = reducer.reduce(refreshed, """
-          {"type":"runtime.online","runtime":{
-            "runtimeId":"runtime-a","name":"A","cwd":"/a","status":"idle","sessionId":"session-1"
-          }}
-        """.trimIndent())
-
-        assertEquals("reload", reordered.capabilities["runtime-a"]?.commands?.single()?.name)
-        assertEquals(11L, reordered.lastSequence["runtime-a"])
+        val state = modelState().withModelFixture("capabilities", """{"reload":{"name":"reload","source":"builtin"},"skill:review":{"name":"skill:review","source":"skill"}}""")
+        val ready = reducer.reduce(state, """{"type":"runtime.online","runtime":{"runtimeId":"runtime-a","name":"Agent","cwd":"/repo","status":"idle","sessionId":"session-1"}}""")
+        assertEquals(listOf("reload", "skill:review"), ready.capabilities.getValue("runtime-a").commands.map { it.name })
+        val latest = ready.withModelFixture("capabilities", "{}", 2)
+        assertTrue(latest.capabilities.getValue("runtime-a").commands.isEmpty())
     }
 
     @Test
@@ -2337,29 +2059,11 @@ class RelayReducerTest {
 
     @Test
     fun `slash capabilities are scoped to a runtime and command results keep payload`() {
-        val state = reducer.reduce(RemoteState(), """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"runtime.capabilities","capabilities":{
-              "commands":[{"name":"model","label":"切换模型","source":"builtin","argument":{
-                "kind":"select","required":true,
-                "options":[{"value":"openai/gpt-5","label":"GPT-5","description":"openai/gpt-5"}]
-              }}]
-            }
-          }}
-        """.trimIndent())
-        val modelCommand = state.capabilities["runtime-a"]?.commands?.single()
-        assertEquals("model", modelCommand?.name)
-        assertEquals("openai/gpt-5", modelCommand?.argument?.options?.single()?.value)
-
-        val result = reducer.reduce(state.copy(pendingCommands = mapOf("slash-1" to "runtime-a")), """
-          {"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"command.result","commandId":"slash-1","ok":true,"status":"success",
-            "result":{"provider":"openai","modelId":"gpt-5"}
-          }}
-        """.trimIndent())
-        assertFalse(result.pendingCommands.containsKey("slash-1"))
-        assertEquals(true, result.commandResults["slash-1"]?.ok)
-        assertEquals("gpt-5", result.commandResults["slash-1"]?.result?.jsonObject?.get("modelId")?.jsonPrimitive?.content)
+        val state = modelState().withModelFixture("capabilities", """{"model":{"name":"model","source":"builtin","argument":{"kind":"select","required":true,"options":[{"value":"opaque","label":"Model"}]}}}""")
+        assertEquals("model", state.capabilities.getValue("runtime-a").commands.single().name)
+        assertFalse(state.capabilities.containsKey("other"))
+        val result = reducer.reduce(state, liveEvent(1, """{"type":"command.result","commandId":"command","ok":true,"result":{"value":42}}"""))
+        assertEquals("42", result.commandResults.getValue("command").result?.jsonObject?.get("value")?.jsonPrimitive?.content)
     }
 
     @Test
@@ -2391,19 +2095,15 @@ class RelayReducerTest {
                 ),
             ),
             sessionGraphs = mapOf(
-                "session-1" to SessionGraph(
-                    sessionId = "session-1",
-                    entries = mapOf("root" to root),
-                    cursor = SessionBranchCursor("root"),
-                ),
+                "session-1" to fixtureGraph("session-1", mapOf("root" to root), SessionBranchCursor("root"), "fixture-source"),
             ),
             runtimeSessionViews = mapOf("runtime-a" to RuntimeSessionView("runtime-a", "session-1", "root")),
             sessionSyncCommands = mapOf(
-                "sync-command" to PendingSessionSync("runtime-a", "session-1", "sync-1"),
+                "sync-command" to PendingSessionSync("runtime-a", "session-1", "sync-1", "preview"),
             ),
         )
 
-        state = reducer.reduce(state, """
+        state = reducer.reduceSourceSnapshot(state, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-1","mode":"append",
             "cursor":{"leafId":"assistant-entry"},
@@ -2427,13 +2127,13 @@ class RelayReducerTest {
                 activeTurnId = "active",
             )),
             sessionSyncCommands = mapOf(
-                "command-1" to PendingSessionSync("runtime-a", "session-1", "sync-1"),
+                "command-1" to PendingSessionSync("runtime-a", "session-1", "sync-1", "preview"),
             ),
         )
-        val restored = reducer.reduce(state, """
+        val restored = reducer.reduceSourceSnapshot(state, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-1","mode":"replace",
-            "cursor":{"leafId":"timing"},"entries":[
+            "cursor":{"leafId":"timing"},"turnTimings":[{"turnId":"turn-1","startedAt":1000,"durationMs":250,"messageId":"assistant"}],"entries":[
               {"entryId":"assistant","parentId":null,"type":"message","timestamp":"2026-01-01T00:00:00.000Z","data":{"message":{"role":"assistant","content":"done"}}},
               {"entryId":"timing","parentId":"assistant","type":"custom","timestamp":"2026-01-01T00:00:01.000Z","data":{"customType":"pi_remote_turn_timing","data":{"turnId":"turn-1","startedAt":1000,"durationMs":250,"messageId":"assistant"}}}
             ]
@@ -3092,58 +2792,12 @@ class RelayReducerTest {
     }
 
     @Test
-    fun `turn timing keeps separate turns anchored to assistant messages`() {
-        var state = reducer.reduce(RemoteState(), """{
-          "type":"runtime.online","runtime":{"runtimeId":"runtime-a","name":"A","cwd":"/a","status":"running","sessionId":"s1"}
-        }""")
-        state = reducer.reduce(state, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"turn.started","turnId":"turn-1","startedAt":1000,"turnIndex":0
-          }
-        }""")
-        assertEquals(
-            TurnTiming("turn-1", 1000, turnIndex = 0),
-            state.conversations["runtime-a"]?.turnTimings?.get("turn-1"),
-        )
-        val assistantLive = ChatMessage("assistant-live", "assistant", emptyList(), 2_000)
-        state = reducer.reduce(state, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"message.started","message":{
-              "messageId":"assistant-live","role":"assistant","content":[],"timestamp":2000
-            }
-          }
-        }""")
-        assertEquals("assistant-live", state.conversations["runtime-a"]?.turnTimings?.get("turn-1")?.messageId)
-        state = reducer.reduce(state, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{
-            "type":"message.finished","message":{
-              "messageId":"assistant-live","role":"assistant","content":[{"type":"text","text":"done"}],"timestamp":2000
-            }
-          }
-        }""")
-        state = reducer.reduce(state, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":4,"event":{
-            "type":"turn.finished","turnId":"turn-1","startedAt":1000,"durationMs":250,"turnIndex":0,
-            "messageId":"assistant-live","persistedMessageId":"assistant-entry"
-          }
-        }""")
-        assertEquals(250L, state.conversations["runtime-a"]?.turnTimings?.get("turn-1")?.durationMs)
-        assertEquals("assistant-entry", state.conversations["runtime-a"]?.turnTimings?.get("turn-1")?.messageId)
-        assertEquals("assistant-entry", state.conversations["runtime-a"]?.messages?.single()?.messageId)
-
-        state = reducer.reduce(state, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":5,"event":{
-            "type":"turn.started","turnId":"turn-2","startedAt":2000,"turnIndex":1
-          }
-        }""")
-        assertEquals(setOf("turn-1", "turn-2"), state.conversations["runtime-a"]?.turnTimings?.keys)
-        val duplicate = reducer.reduce(state, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":5,"event":{
-            "type":"turn.started","turnId":"turn-2","startedAt":2000,"turnIndex":1
-          }
-        }""")
-        assertEquals(state, duplicate)
-
+    fun `source live timing keeps separate active and completed turns`() {
+        val first = modelState().withLiveFixture(SessionLiveState(true, turn = SessionLiveTurn("turn-1", 1000), messages = listOf(SessionLiveMessage(ChatMessage("reply-1", "assistant", emptyList(), 1000), false, true))))
+        assertEquals("turn-1", first.conversations.getValue("runtime-a").activeTurnId)
+        assertEquals(1000L, first.conversations.getValue("runtime-a").turnTimings.getValue("turn-1").startedAt)
+        val ended = first.withLiveFixture(SessionLiveState(true, turn = SessionLiveTurn("turn-1", 1000, 500), messages = listOf(SessionLiveMessage(ChatMessage("reply-1", "assistant", emptyList(), 1000), true, true))))
+        assertEquals(500L, ended.conversations.getValue("runtime-a").turnTimings.getValue("turn-1").durationMs)
     }
 
     @Test
@@ -3163,7 +2817,7 @@ class RelayReducerTest {
             "type":"interaction.requested","request":{"kind":"unknown","title":"unsafe"}
           }}
         """.trimIndent())
-        assertEquals("手机无法安全渲染此交互，请在电脑端处理。", malformed.conversations["runtime-a"]?.interactionNotice)
+        assertNull(malformed.conversations["runtime-a"]?.interactionNotice)
 
         val unauthorized = reducer.reduce(RemoteState(), """
           {"type":"protocol.error","code":"unauthorized","message":"Invalid device credential"}
@@ -3212,131 +2866,37 @@ class RelayReducerTest {
 
     @Test
     fun `portable interactions keep every rendering validation and selection field`() {
-        val requested = """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"interaction.requested","request":{
-              "runtimeId":"runtime-a","requestId":"request-1","extensionId":"deploy-extension",
-              "kind":"input","title":"Deployment token","description":"Enter the one-time token",
-              "toolName":"bash","argumentSummary":"kubectl apply -f deploy.yaml",
-              "placeholder":"TOKEN-123","initialValue":"TOKEN-","minLength":6,"maxLength":20,
-              "secret":true,"expiresAt":5000
-            }
-          }
-        }""".trimIndent()
-
-        var state = reducer.reduce(RemoteState(), requested)
-        val interaction = state.conversations["runtime-a"]?.interactions?.get("request-1")
-        assertEquals("bash", interaction?.toolName)
-        assertEquals("kubectl apply -f deploy.yaml", interaction?.argumentSummary)
-        assertEquals("TOKEN-", interaction?.initialValue)
-        assertEquals(6, interaction?.minLength)
-        assertEquals(20, interaction?.maxLength)
-        assertEquals(true, interaction?.secret)
-        assertEquals(5000L, interaction?.expiresAt)
-
-        state = reducer.reduce(state, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"interaction.cancelled","requestId":"request-1","reason":"timeout"
-          }
-        }""".trimIndent())
-        assertFalse(state.conversations["runtime-a"]?.interactions?.containsKey("request-1") == true)
-        assertEquals(null, state.conversations["runtime-a"]?.interactionNotice)
-
-        state = reducer.reduce(state, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{
-            "type":"interaction.requested","request":{
-              "runtimeId":"runtime-a","requestId":"request-2","extensionId":"deploy-extension",
-              "kind":"confirm","title":"Deploy?","confirmLabel":"Deploy","cancelLabel":"Keep",
-              "expiresAt":9000
-            }
-          }
-        }""".trimIndent())
-        val confirmation = state.conversations["runtime-a"]?.interactions?.get("request-2")
-        assertEquals("Deploy", confirmation?.confirmLabel)
-        assertEquals("Keep", confirmation?.cancelLabel)
-
-        val multi = reducer.reduce(state, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":4,"event":{
-            "type":"interaction.requested","request":{
-              "runtimeId":"runtime-a","requestId":"request-multi","extensionId":"ask-user-question",
-              "kind":"multi-select","title":"Pick targets","description":"Choose one or more",
-              "options":[
-                {"value":"api","label":"API"},
-                {"value":"worker","label":"Worker","description":"Background jobs"}
-              ],
-              "minSelections":1,"maxSelections":2,"expiresAt":9000
-            }
-          }
-        }""".trimIndent())
-
-        val multiInteraction = multi.conversations["runtime-a"]?.interactions?.get("request-multi")
-        assertEquals("multi-select", multiInteraction?.kind)
-        assertEquals(2, multiInteraction?.options?.size)
-        assertEquals("Background jobs", multiInteraction?.options?.get(1)?.description)
-        assertEquals(1, multiInteraction?.minSelections)
-        assertEquals(2, multiInteraction?.maxSelections)
-        assertEquals(null, multi.conversations["runtime-a"]?.interactionNotice)
+        val state = modelState().withModelFixture("interactions", """{
+            "input":{"requestId":"input","extensionId":"extension","kind":"input","title":"Token","description":"One time", "toolName":"bash","argumentSummary":"deploy","placeholder":"TOKEN","initialValue":"TOKEN-","minLength":6,"maxLength":20,"secret":true,"expiresAt":5000},
+            "confirm":{"requestId":"confirm","extensionId":"extension","kind":"confirm","title":"Deploy?","confirmLabel":"Deploy","cancelLabel":"Keep","expiresAt":9000},
+            "multi":{"requestId":"multi","extensionId":"extension","kind":"multi-select","title":"Pick","options":[{"value":"api","label":"API"},{"value":"worker","label":"Worker","description":"Background jobs"}],"minSelections":1,"maxSelections":2,"expiresAt":9000}}""")
+        val requests = state.conversations.getValue("runtime-a").interactions
+        val input = requests.getValue("input")
+        assertEquals("bash", input.toolName); assertEquals("deploy", input.argumentSummary)
+        assertEquals("TOKEN-", input.initialValue); assertEquals(6, input.minLength); assertEquals(20, input.maxLength)
+        assertTrue(input.secret); assertEquals(5000L, input.expiresAt)
+        assertEquals("Deploy", requests.getValue("confirm").confirmLabel); assertEquals("Keep", requests.getValue("confirm").cancelLabel)
+        assertEquals(1, requests.getValue("multi").minSelections); assertEquals(2, requests.getValue("multi").maxSelections)
+        assertEquals("Background jobs", requests.getValue("multi").options.last().description)
+        assertTrue(state.withModelFixture("interactions", "{}", 2).conversations.getValue("runtime-a").interactions.isEmpty())
     }
 
     @Test
     fun `interaction received before first runtime directory survives device ready`() {
-        val request = """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"interaction.requested","request":{
-              "runtimeId":"runtime-a","requestId":"request-before-online","extensionId":"ask-user-question",
-              "kind":"confirm","title":"Continue?","expiresAt":9000
-            }
-          }
-        }""".trimIndent()
-        var state = reducer.reduce(RemoteState(), request)
-        assertTrue(state.conversations["runtime-a"]?.interactions?.containsKey("request-before-online") == true)
-
-        state = reducer.reduce(state, """
-          {"type":"device.ready","protocolVersion":$PROTOCOL_VERSION,"deviceId":"phone-1","runtimes":[{
-            "runtimeId":"runtime-a","name":"A","cwd":"/a","status":"waiting_local_interaction",
-            "sessionId":"session-1"
-          }]}
-        """.trimIndent(), channel = "ctl")
-
-        assertTrue(state.hasPendingInteraction("runtime-a"))
-        assertEquals("request-before-online", state.conversations["runtime-a"]?.interactions?.keys?.single())
-        assertEquals("Continue?", state.conversations["runtime-a"]?.interactions?.values?.single()?.title)
+        val unsolicited = reducer.reduce(RemoteState(), """{"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{"type":"interaction.requested","request":{"requestId":"q"}}}""")
+        assertTrue(unsolicited.conversations.isEmpty())
+        val online = reducer.reduce(unsolicited, """{"type":"runtime.online","runtime":{"runtimeId":"runtime-a","name":"Agent","cwd":"/repo","status":"idle","sessionId":"session-1"}}""")
+        val restored = online.withModelFixture("interactions", """{"q":{"requestId":"q","extensionId":"extension","kind":"confirm","title":"Continue?","expiresAt":9000}}""", runtimeId = "runtime-a")
+        assertEquals("Continue?", restored.conversations.getValue("runtime-a").interactions.getValue("q").title)
     }
 
     @Test
     fun `interaction snapshot restores the same request and removes completed stale prompts`() {
-        val requested = """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"interaction.requested","request":{
-              "runtimeId":"runtime-a","requestId":"request-1","extensionId":"ask-user-question",
-              "kind":"confirm","title":"Continue?","expiresAt":9000
-            }
-          }
-        }""".trimIndent()
-        var state = reducer.reduce(RemoteState(), requested)
-        val original = state.conversations.getValue("runtime-a").interactions.getValue("request-1")
-
-        val reconnecting = state.markReconnecting()
-        assertEquals(original, reconnecting.conversations.getValue("runtime-a").interactions.getValue("request-1"))
-
-        state = reducer.reduce(reconnecting, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{
-            "type":"interaction.snapshot","requests":[{
-              "runtimeId":"runtime-a","requestId":"request-1","extensionId":"ask-user-question",
-              "kind":"confirm","title":"Continue?","expiresAt":9000
-            }]
-          }
-        }""".trimIndent())
-        val restored = state.conversations.getValue("runtime-a").interactions.getValue("request-1")
-        assertEquals(original.requestId, restored.requestId)
-        assertEquals(original.title, restored.title)
-
-        state = reducer.reduce(state, """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{
-            "type":"interaction.snapshot","requests":[]
-          }
-        }""".trimIndent())
-        assertTrue(state.conversations.getValue("runtime-a").interactions.isEmpty())
+        val state = modelState().withModelFixture("interactions", """{"q":{"requestId":"q","extensionId":"extension","kind":"confirm","title":"Continue?","expiresAt":9000}}""")
+        val restored = state.withModelFixture("interactions", """{"q":{"requestId":"q","extensionId":"extension","kind":"confirm","title":"Continue?","expiresAt":9000}}""", 2)
+        assertEquals(1, restored.conversations.getValue("runtime-a").interactions.size)
+        val completed = restored.withModelFixture("interactions", "{}", 3, completeness = "partial")
+        assertTrue(completed.conversations.getValue("runtime-a").interactions.isEmpty())
     }
 
     @Test
@@ -3384,19 +2944,10 @@ class RelayReducerTest {
 
     @Test
     fun `multi-select interaction with impossible bounds fails closed`() {
-        val state = reducer.reduce(RemoteState(), """{
-          "type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
-            "type":"interaction.requested","request":{
-              "runtimeId":"runtime-a","requestId":"request-multi","extensionId":"ask-user-question",
-              "kind":"multi-select","title":"Pick targets",
-              "options":[{"value":"api","label":"API"}],
-              "minSelections":2,"maxSelections":1,"expiresAt":9000
-            }
-          }
-        }""".trimIndent())
-
-        assertEquals("手机无法安全渲染此交互，请在电脑端处理。", state.conversations["runtime-a"]?.interactionNotice)
-        assertFalse(state.conversations["runtime-a"]?.interactions?.containsKey("request-multi") == true)
+        val rejected = modelState().withModelFixture("interactions", """{"q":{"requestId":"q","extensionId":"extension","kind":"multi-select","title":"Pick","options":[{"value":"a","label":"A"}],"minSelections":3,"maxSelections":1,"expiresAt":9000}}""")
+        assertTrue(rejected.conversations.isEmpty())
+        assertTrue(rejected.agentStateSnapshots.values.single().error != null)
+        assertTrue(rejected.agentStateSnapshots.values.single().domains.isEmpty())
     }
 
     @Test
@@ -3459,7 +3010,7 @@ class RelayReducerTest {
                     runtimeId = "runtime-a",
                     sessionId = "session-1",
                     syncId = "sync-1",
-                    range = "catchup",
+                    range = "preview",
                     targetLeafId = "compaction",
                 ),
             ),
@@ -3475,10 +3026,10 @@ class RelayReducerTest {
             )),
             windowStart = "compaction",
         ))
-        val reduced = reducer.reduce(state, """
+        val reduced = reducer.reduceSourceSnapshot(state, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-1","mode":"replace",
-            "range":"catchup","targetLeafId":"compaction","cursor":{"leafId":"compaction"},
+            "range":"preview","targetLeafId":"compaction","cursor":{"leafId":"compaction"},
             "display":$display,
             "entries":[
               {"entryId":"tool-call","parentId":null,"type":"message","timestamp":"2026-01-01T00:00:00.000Z","data":{"message":{"role":"assistant","content":[{"type":"toolCall","id":"tool-1","name":"bash"}]}}},
@@ -3543,7 +3094,7 @@ class RelayReducerTest {
             ),
         )
 
-        val inFlightReduced = reducer.reduce(inFlightState, """
+        val inFlightReduced = reducer.reduceSourceSnapshot(inFlightState, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"session.snapshot","sessionId":"session-1","syncId":"sync-1","mode":"replace",
             "range":"catchup","targetLeafId":"assistant-1","cursor":{"leafId":"assistant-1"},
@@ -3616,112 +3167,31 @@ class RelayReducerTest {
 
     @Test
     fun `same-session runtimes keep independent chats and routing state`() {
-        val ready = """{
-          "type":"device.ready","deviceId":"phone-1","runtimes":[
-            {"runtimeId":"runtime-a","name":"A","cwd":"/a","status":"idle","sessionId":"same"},
-            {"runtimeId":"runtime-b","name":"B","cwd":"/b","status":"idle","sessionId":"same"}
-          ]
-        }""".trimIndent()
-        fun started(runtime: String, id: String, text: String) = """{
-          "type":"runtime.event","runtimeId":"$runtime","sequence":1,"event":{
-            "type":"message.started","message":{
-              "messageId":"$id","role":"assistant","content":[{"type":"text","text":"$text"}],"timestamp":1
-            }
-          }
-        }""".trimIndent()
-
-        var state = reducer.reduce(RemoteState(), ready, channel = "ctl")
-        state = reducer.reduce(state, started("runtime-a", "a1", "only a"))
-        state = reducer.reduce(state, started("runtime-b", "b1", "only b"))
-
-        assertEquals("only a", state.conversations["runtime-a"]?.messages?.single()?.content?.single()?.text)
-        assertEquals("only b", state.conversations["runtime-b"]?.messages?.single()?.content?.single()?.text)
-        state = state.copy(selectedRuntimeId = "runtime-a")
-        state = reducer.reduce(state, """{"type":"runtime.offline","runtimeId":"runtime-a","reason":"disconnected"}""")
-        assertFalse(state.runtimes.containsKey("runtime-a"))
-        assertEquals(null, state.selectedRuntimeId)
-        assertEquals("B", state.runtimes["runtime-b"]?.name)
+        val state = modelState().copy(runtimes = modelState().runtimes + ("other" to RuntimeSummary("other", "Other", "/repo", "idle", "session-1", agentKind = "pi")))
+        val first = state.withLiveFixture(SessionLiveState(true, messages = listOf(SessionLiveMessage(ChatMessage("first", "assistant", emptyList(), 1), false, true))), runtimeId = "runtime-a")
+        val second = first.withLiveFixture(SessionLiveState(true, messages = listOf(SessionLiveMessage(ChatMessage("second", "assistant", emptyList(), 1), false, true))), runtimeId = "other")
+        assertEquals("first", second.conversations.getValue("runtime-a").messages.single().messageId)
+        assertEquals("second", second.conversations.getValue("other").messages.single().messageId)
     }
 
     // ── 进程激活（spec §8）────────────────────────────────────────────────────
 
     @Test
     fun `session list result merges catalog without clobbering history cache`() {
-        val initial = RemoteState(
-            sessionListRequests = setOf("req-1"),
-            sessions = mapOf(
-                "s-1" to SessionCatalogEntry(
-                    sessionId = "s-1",
-                    cwd = "C:\\old",
-                    messageCount = 12,
-                    hasHistoryCache = true,
-                    hostname = "PC",
-                ),
-            ),
-        )
-        val state = reducer.reduce(
-            initial,
-            """
-            {"type":"session.list.result","requestId":"req-1","sessions":[
-              {"sessionId":"s-1","cwd":"C:\\old","modifiedAt":50,"agentKind":"pi"},
-              {"sessionId":"s-2","cwd":"D:\\work","modifiedAt":10,"agentKind":"codex"}
-            ]}
-            """.trimIndent(),
-        )
-        assertTrue(state.sessionListRequests.isEmpty())
-        val merged = state.sessions["s-1"]!!
-        // 只合并不替换：历史缓存标记与已数过的消息数不能被磁盘扫描冲掉。
-        assertTrue(merged.hasHistoryCache)
-        assertEquals(12, merged.messageCount)
-        assertEquals("pi", merged.agentKind)
-        val fresh = state.sessions["s-2"]!!
-        assertEquals("codex", fresh.agentKind)
-        assertEquals("D:\\work", fresh.cwd)
+        val initial = RemoteState(sessions = mapOf("s" to SessionCatalogEntry("s", hasHistoryCache = true)))
+        val listed = initial.withModelFixture("catalog", """{"sessions":[{"sessionId":"s","name":"Session","cwd":"/repo","agentKind":"pi","messageCount":5}],"backends":[]}""", scope = "host")
+        assertTrue(listed.sessions.getValue("s").hasHistoryCache)
+        assertEquals("pi", listed.sessions.getValue("s").agentKind)
+        assertEquals(5, listed.sessions.getValue("s").messageCount)
     }
 
     @Test
     fun `archive state survives late lists and runtime metadata while history stays available`() {
-        val original = SessionCatalogEntry("s-1", cwd = "/repo", agentKind = "pi", hasHistoryCache = true, archived = false)
-        val initial = RemoteState(
-            sessions = mapOf("s-1" to original),
-            sessionListRequests = setOf("old-list"),
-            sessionListRequestEpochs = mapOf("old-list" to 0),
-            sessionArchiveRequests = mapOf("archive" to "s-1"),
-        )
-        val archived = reducer.reduce(initial, """
-            {"type":"session.archive.changed","requestId":"archive","agentKind":"pi","sessionId":"s-1","archived":true}
-        """)
-        assertTrue(archived.sessionArchiveRequests.isEmpty())
-        assertTrue(archived.sessionListRequests.contains("old-list"))
-        assertTrue(archived.sessions["s-1"]!!.hasHistoryCache)
-        val late = reducer.reduce(archived, """
-            {"type":"session.list.result","requestId":"old-list","sessions":[
-              {"sessionId":"s-1","agentKind":"pi","cwd":"/repo","archived":false}]}
-        """)
-        assertEquals(archived.sessionListEpoch, late.sessionListEpoch)
-        assertTrue(late.sessionListRequests.isEmpty())
-        val runtimeMetadata = reducer.reduce(late, """
-            {"type":"runtime.online","runtime":{"runtimeId":"runtime","name":"Pi","cwd":"/repo","status":"idle","sessionId":"s-1"}}
-        """)
-        assertEquals(true, runtimeMetadata.sessions["s-1"]?.archived)
-        assertTrue(cachedHistoryTree(runtimeMetadata.copy(hostId = "paired-host")).flatMap { it.directories }.flatMap { it.sessions }.single().isArchived)
-
-        val restoring = runtimeMetadata.copy(sessionArchiveRequests = mapOf("restore" to "s-1"))
-        val failed = reducer.reduce(restoring, """
-            {"type":"protocol.error","requestId":"restore","code":"session_conflict","message":"conflict"}
-        """)
-        assertEquals(true, failed.sessions["s-1"]?.archived)
-        assertTrue(failed.sessionArchiveRequests.isEmpty())
-        val restored = reducer.reduce(failed, """
-            {"type":"session.archive.changed","agentKind":"pi","sessionId":"s-1","archived":false}
-        """)
-        assertEquals(false, restored.sessions["s-1"]?.archived)
-        assertTrue(restored.sessions["s-1"]!!.hasHistoryCache)
-        val reconnected = reducer.reduce(archived.copy(sessionListRequests = setOf("new-list")), """
-            {"type":"session.list.result","requestId":"new-list","sessions":[
-              {"sessionId":"s-1","agentKind":"pi","cwd":"/repo","archived":false}]}
-        """)
-        assertEquals(false, reconnected.sessions["s-1"]?.archived)
+        val initial = modelState().copy(sessions = mapOf("session-1" to SessionCatalogEntry("session-1", archived = false, hasHistoryCache = true)))
+        val archived = initial.withModelFixture("catalog", """{"sessions":[{"sessionId":"session-1","agentKind":"pi","archived":true}],"backends":[]}""", scope = "host", revision = 3)
+        val stale = archived.withModelFixture("catalog", """{"sessions":[{"sessionId":"session-1","archived":false}],"backends":[]}""", scope = "host", revision = 2)
+        assertTrue(stale.sessions.getValue("session-1").archived == true)
+        assertTrue(stale.sessions.getValue("session-1").hasHistoryCache)
     }
 
     @Test

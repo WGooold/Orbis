@@ -406,11 +406,9 @@ private fun historyEntryIsDetail(option: RuntimeSlashCommandOption, kind: Histor
         HistoryNodeKind.User -> false
         HistoryNodeKind.Assistant -> option.tree?.defaultHidden == true
         HistoryNodeKind.Tool -> true
-        HistoryNodeKind.System -> option.tree?.entryType?.let { it in VISIBLE_SYSTEM_ENTRY_TYPES } != true
+        HistoryNodeKind.System -> option.tree?.defaultHidden == true
     }
 }
-
-private val VISIBLE_SYSTEM_ENTRY_TYPES = setOf("compaction", "branch_summary", "custom_message")
 
 private fun buildHistoryForest(options: List<RuntimeSlashCommandOption>): List<HistoryEntry> {
     val byId = HashMap<String, HistoryEntry>(options.size)

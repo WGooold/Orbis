@@ -22,18 +22,19 @@ class SessionSnapshotProjectionTest {
             put("event", JsonObject((Json.encodeToJsonElement(SessionGraphSnapshot.serializer(), wire) as JsonObject) +
                 ("type" to kotlinx.serialization.json.JsonPrimitive("session.snapshot"))))
         }
-        return RelayReducer().reduce(state, payload.toString(), committedFixtureBatch(wire.entries))
+        return FixtureRelayReducer().reduceSourceSnapshot(state, payload.toString(), committedFixtureBatch(wire.entries))
     }
 
     @Test
     fun `preview arriving after live tail growth cannot move the live or display leaf back`() {
         val pending = PendingSessionSync("r", "s", "sync", "preview", targetLeafId = null, viewLeafId = "root")
-        val state = RemoteState(runtimes = mapOf("r" to runtime), sessionGraphs = mapOf("s" to graph),
+        val state = RemoteState(runtimes = mapOf("r" to runtime), sessionGraphs = mapOf("s" to graph.copy(cacheEpoch = "epoch")),
             sessionSyncCommands = mapOf("c" to pending), runtimeSessionViews = mapOf("r" to RuntimeSessionView("r", "s", "tail")),
             conversations = mapOf("r" to RuntimeConversation(messages = projectSessionGraph(graph).messages,
-                hasLiveSnapshot = true)))
+                hasLiveSnapshot = true, sourceEpoch = "epoch", sourceSeq = 2, sourceReady = true, sourceHeadLeafId = "tail")))
         val next = reduce(state, SessionGraphSnapshot("s", "sync", SessionBranchCursor("root"), "replace",
-            listOf(entry("root", null)), "preview", "root", complete = true))
+            listOf(entry("root", null)), "preview", "root", complete = true,
+            source = SessionSourceEpoch("epoch", 1, true), checkpoint = SessionCheckpoint("old", SessionBranchCursor("root"), "complete", true), live = SessionLiveState(true)))
         assertEquals("tail", next.runtimes["r"]?.sessionLeafId)
         assertEquals("tail", next.runtimeSessionViews["r"]?.leafId)
         assertEquals(listOf("root", "tail"), next.conversations["r"]?.messages?.map { it.messageId })
@@ -319,9 +320,13 @@ class SessionSnapshotProjectionTest {
         assertTrue(empty.conversations.getValue("r").messages.isEmpty())
         assertTrue(empty.conversations.getValue("r").hasLiveSnapshot)
         assertFalse(empty.conversations.getValue("r").isChatSyncing)
-        val advanced = state.copy(runtimes = mapOf("r" to runtime.copy(sessionLeafId = "new")))
-        assertEquals("new", reduce(advanced, snapshot).runtimes["r"]?.sessionLeafId)
-        assertEquals(state.conversations["r"]?.messages, reduce(advanced, snapshot).conversations["r"]?.messages)
+        val advanced = state.copy(runtimes = mapOf("r" to runtime.copy(sessionLeafId = "new")),
+            conversations = state.conversations.mapValues { (_, conversation) -> conversation.copy(
+                sourceEpoch = "epoch", sourceSeq = 2, sourceReady = true, sourceHeadLeafId = "new") })
+        val delayed = snapshot.copy(source = SessionSourceEpoch("epoch", 1, true),
+            checkpoint = SessionCheckpoint("old", SessionBranchCursor(null), "complete", true), live = SessionLiveState(true))
+        assertEquals("new", reduce(advanced, delayed).runtimes["r"]?.sessionLeafId)
+        assertEquals(advanced.conversations["r"]?.messages, reduce(advanced, delayed).conversations["r"]?.messages)
     }
 
     @Test

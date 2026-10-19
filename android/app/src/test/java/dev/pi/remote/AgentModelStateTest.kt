@@ -15,7 +15,8 @@ import org.junit.Test
  * 同一身份的重复读取整份替换——而不是把「没读到」悄悄渲染成「没有」。
  */
 class AgentModelStateTest {
-    private val reducer = FixtureRelayReducer()
+    private val delegate = RelayReducer()
+    private fun reduce(state: RemoteState, payload: String) = delegate.reduce(state, payload, channel = "ctl")
 
     private fun snapshot(
         domains: String = DOMAINS,
@@ -33,7 +34,7 @@ class AgentModelStateTest {
 
     @Test
     fun `Host 作用域的领域连同 envelope 一起存下`() {
-        val reduced = reducer.reduce(pending(), snapshot())
+        val reduced = reduce(pending(), snapshot())
 
         val view = reduced.agentStateSnapshots.values.single()
         assertEquals("host", view.scope)
@@ -51,7 +52,7 @@ class AgentModelStateTest {
 
     @Test
     fun `缺席带原因：没状态与名字不认识不是同一件事`() {
-        val reduced = reducer.reduce(pending(), snapshot(missing = """[{"domain":"live","reason":"no_state"},{"domain":"nope","reason":"unknown_domain"}]"""))
+        val reduced = reduce(pending(), snapshot(missing = """[{"domain":"live","reason":"no_state"},{"domain":"nope","reason":"unknown_domain"}]"""))
 
         val view = reduced.agentStateSnapshots.values.single()
         assertEquals("no_state", view.missing["live"])
@@ -61,14 +62,14 @@ class AgentModelStateTest {
 
     @Test
     fun `被字节预算截断时如实标记，不能当基线`() {
-        val reduced = reducer.reduce(pending(), snapshot(truncated = true))
+        val reduced = reduce(pending(), snapshot(truncated = true))
 
         assertTrue(reduced.agentStateSnapshots.values.single().truncated)
     }
 
     @Test
     fun `Host 明确回错时记错误，而不是当成这个作用域什么都没有`() {
-        val reduced = reducer.reduce(pending(), """
+        val reduced = reduce(pending(), """
             {"type":"agent.state.snapshot","protocolVersion":$PROTOCOL_VERSION,"requestId":"req-1",
              "scope":"agent","modelEpoch":null,"domains":[],"missing":[],"truncated":false,
              "error":"这台电脑没有该会话的状态"}
@@ -83,7 +84,7 @@ class AgentModelStateTest {
 
     @Test
     fun `领域缺 envelope 字段时整份拒绝，不留半份模型`() {
-        val reduced = reducer.reduce(pending(), snapshot(
+        val reduced = reduce(pending(), snapshot(
             domains = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":1,"availability":"ready","completeness":"complete","value":null}]""",
         ))
 
@@ -94,21 +95,21 @@ class AgentModelStateTest {
 
     @Test
     fun `同一身份的新快照整份替换旧的那份`() {
-        val first = reducer.reduce(pending(), snapshot(
-            domains = """[{"domain":"diagnostics","modelEpoch":"m","revision":1,"availability":"ready","completeness":"complete","checkedAt":1,"value":null},
-                          {"domain":"providers","modelEpoch":"m","revision":1,"availability":"ready","completeness":"partial","checkedAt":1,"value":null}]""",
+        val first = reduce(pending(), snapshot(
+            domains = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":1,"availability":"ready","completeness":"complete","checkedAt":1,"value":null},
+                          {"domain":"providers","modelEpoch":"model-1","revision":1,"availability":"ready","completeness":"partial","checkedAt":1,"value":null}]""",
         ))
         assertEquals(setOf("diagnostics", "providers"), first.agentStateSnapshots.values.single().domains.keys)
 
-        val second = reducer.reduce(first.copy(agentStateRequests = setOf("req-1")), snapshot())
+        val second = reduce(first.copy(agentStateRequests = setOf("req-1")), snapshot())
 
         val view = second.agentStateSnapshots.values.single()
-        assertEquals(setOf("diagnostics"), view.domains.keys)
+        assertEquals(setOf("diagnostics", "providers"), view.domains.keys)
     }
 
     @Test
     fun `协议版本不匹配的应答仍然被拒绝`() {
-        val reduced = reducer.reduce(pending(), snapshot(protocolVersion = PROTOCOL_VERSION - 1))
+        val reduced = reduce(pending(), snapshot(protocolVersion = PROTOCOL_VERSION - 1))
 
         assertEquals(PROTOCOL_VERSION_MISMATCH_ERROR, reduced.error)
         assertTrue(reduced.agentStateSnapshots.isEmpty())
@@ -121,37 +122,37 @@ class AgentModelStateTest {
         assertEquals("尚未读取", untouched.text)
         assertEquals(StatusTone.Neutral, untouched.tone)
 
-        val failed = reducer.reduce(pending(), """
+        val failed = reduce(pending(), """
             {"type":"agent.state.snapshot","protocolVersion":$PROTOCOL_VERSION,"requestId":"req-1",
              "scope":"host","modelEpoch":null,"domains":[],"missing":[],"truncated":false,"error":"这台电脑没有该会话的状态"}
         """.trimIndent())
         assertEquals(StatusTone.Bad, failed.diagnosticDirectoryView().tone)
         assertTrue(failed.diagnosticDirectoryView().text.startsWith("读取失败"))
 
-        val absent = reducer.reduce(pending(), snapshot(domains = "[]", missing = """[{"domain":"diagnostics","reason":"no_state"}]"""))
+        val absent = reduce(pending(), snapshot(domains = "[]", missing = """[{"domain":"diagnostics","reason":"no_state"}]"""))
         assertEquals("电脑没有报这个领域", absent.diagnosticDirectoryView().text)
         assertEquals(StatusTone.Warn, absent.diagnosticDirectoryView().tone)
     }
 
     @Test
     fun `目录没有缺口才画成正常，有缺口必须说出来`() {
-        val clean = reducer.reduce(pending(), snapshot(domains = CLEAN_DOMAINS))
+        val clean = reduce(pending(), snapshot(domains = CLEAN_DOMAINS))
         assertEquals("2 条记录", clean.diagnosticDirectoryView().text)
         assertEquals(StatusTone.Good, clean.diagnosticDirectoryView().tone)
 
         // DOMAINS 里淘汰过 1 条、completeness 是 partial：读的人必须知道这不是全部历史。
-        val gapped = reducer.reduce(pending(), snapshot())
+        val gapped = reduce(pending(), snapshot())
         assertEquals("2 条记录（已淘汰 1 条）", gapped.diagnosticDirectoryView().text)
         assertEquals(StatusTone.Warn, gapped.diagnosticDirectoryView().tone)
 
-        val truncated = reducer.reduce(pending(), snapshot(domains = CLEAN_DOMAINS, truncated = true))
+        val truncated = reduce(pending(), snapshot(domains = CLEAN_DOMAINS, truncated = true))
         assertEquals("2 条记录（清单被截断）", truncated.diagnosticDirectoryView().text)
     }
 
     @Test
     fun `负载缺条数时明确报错，不画成 0 条`() {
-        val broken = reducer.reduce(pending(), snapshot(
-            domains = """[{"domain":"diagnostics","modelEpoch":"m","revision":1,"availability":"ready","completeness":"complete","checkedAt":1,"value":"not-an-object"}]""",
+        val broken = reduce(pending(), snapshot(
+            domains = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":1,"availability":"ready","completeness":"complete","checkedAt":1,"value":"not-an-object"}]""",
         ))
 
         val view = broken.diagnosticDirectoryView()
@@ -163,7 +164,7 @@ class AgentModelStateTest {
     @Test
     fun `记录页存下最近一页，并给发出那次请求销账`() {
         val state = RemoteState(diagnosticRequest = DiagnosticRequestView("req-2", 0))
-        val reduced = reducer.reduce(state, page())
+        val reduced = reduce(state, page())
 
         val page = reduced.diagnosticPage!!
         assertEquals(1, page.records.size)
@@ -177,7 +178,7 @@ class AgentModelStateTest {
     fun `不是我们那次请求的应答一律丢掉`() {
         val state = RemoteState(diagnosticRequest = DiagnosticRequestView("other", 0))
 
-        val reduced = reducer.reduce(state, page())
+        val reduced = reduce(state, page())
 
         assertNull(reduced.diagnosticPage)
         assertEquals("other", reduced.diagnosticRequest?.requestId)
@@ -188,7 +189,7 @@ class AgentModelStateTest {
         val state = RemoteState(diagnosticRequest = DiagnosticRequestView("req-2", 0))
         val broken = page(records = """[{"recordId":"r1","category":"catalog","severity":"error"}]""")
 
-        val reduced = reducer.reduce(state, broken)
+        val reduced = reduce(state, broken)
 
         val result = reduced.diagnosticPage!!
         assertEquals("记录缺少字段", result.error)
@@ -204,7 +205,7 @@ class AgentModelStateTest {
         assertEquals("上次读取没有回音", waiting.diagnosticRecordsView(now = 60_000).text)
         assertEquals(StatusTone.Warn, waiting.diagnosticRecordsView(now = 60_000).tone)
 
-        val loaded = reducer.reduce(waiting, page(nextCursor = "r1:9", truncated = true))
+        val loaded = reduce(waiting, page(nextCursor = "r1:9", truncated = true))
         val view = loaded.diagnosticRecordsView()
         assertEquals("catalog read failed（还有更新的没读，有缺口）", view.text)
         assertEquals("catalog", view.detail)
@@ -215,7 +216,7 @@ class AgentModelStateTest {
     fun `记录为空时如实说空，不编一条`() {
         val state = RemoteState(diagnosticRequest = DiagnosticRequestView("req-2", 0))
 
-        val reduced = reducer.reduce(state, page(records = "[]"))
+        val reduced = reduce(state, page(records = "[]"))
 
         assertEquals("没有记录", reduced.diagnosticRecordsView().text)
         assertEquals(StatusTone.Neutral, reduced.diagnosticRecordsView().tone)
@@ -233,7 +234,7 @@ class AgentModelStateTest {
 
     @Test
     fun `目录读全时就说读全了`() {
-        val reduced = reducer.reduce(pending(), snapshot(domains = CATALOG_COMPLETE))
+        val reduced = reduce(pending(), snapshot(domains = CATALOG_COMPLETE))
 
         val view = reduced.catalogSummaryView()
         assertEquals("12 个会话（2 个后端都读全）", view.text)
@@ -243,7 +244,7 @@ class AgentModelStateTest {
 
     @Test
     fun `某个后端读取失败时说清是哪个、为什么——缺席不能显示成没有`() {
-        val failed = reducer.reduce(pending(), snapshot(domains = CATALOG_PARTIAL))
+        val failed = reduce(pending(), snapshot(domains = CATALOG_PARTIAL))
         val view = failed.catalogSummaryView()
 
         assertEquals("12 个会话（部分）", view.text)
@@ -251,10 +252,10 @@ class AgentModelStateTest {
         assertTrue(view.detail!!.contains("读取失败"))
         assertEquals(StatusTone.Warn, view.tone)
 
-        val notReady = reducer.reduce(pending(), snapshot(domains = CATALOG_NOT_READY))
+        val notReady = reduce(pending(), snapshot(domains = CATALOG_NOT_READY))
         assertTrue(notReady.catalogSummaryView().detail!!.contains("未就绪"))
 
-        val truncated = reducer.reduce(pending(), snapshot(domains = CATALOG_TRUNCATED))
+        val truncated = reduce(pending(), snapshot(domains = CATALOG_TRUNCATED))
         assertEquals("结果被上限截断", truncated.catalogSummaryView().detail)
     }
 
@@ -262,11 +263,11 @@ class AgentModelStateTest {
     fun `还没读到目录时不装作完整`() {
         assertEquals("尚未读取", RemoteState().catalogSummaryView().text)
 
-        val absent = reducer.reduce(pending(), snapshot(domains = "[]", missing = """[{"domain":"catalog","reason":"no_state"}]"""))
+        val absent = reduce(pending(), snapshot(domains = "[]", missing = """[{"domain":"catalog","reason":"no_state"}]"""))
         assertEquals("电脑没有报这个领域", absent.catalogSummaryView().text)
 
-        val broken = reducer.reduce(pending(), snapshot(
-            domains = """[{"domain":"catalog","modelEpoch":"m","revision":1,"availability":"ready","completeness":"complete","checkedAt":1,"value":{"truncated":false,"backends":[]}}]""",
+        val broken = reduce(pending(), snapshot(
+            domains = """[{"domain":"catalog","modelEpoch":"model-1","revision":1,"availability":"ready","completeness":"complete","checkedAt":1,"value":{"truncated":false,"backends":[]}}]""",
         ))
         assertEquals(StatusTone.Bad, broken.catalogSummaryView().tone)
         assertEquals("目录缺少总数", broken.catalogSummaryView().text)
@@ -275,7 +276,7 @@ class AgentModelStateTest {
 
     @Test
     fun `没有切换时说的是「Host 未报告」，不是替它断言没有切换`() {
-        val reduced = reducer.reduce(pending(), snapshot(domains = PROVIDERS_IDLE))
+        val reduced = reduce(pending(), snapshot(domains = PROVIDERS_IDLE))
 
         val view = reduced.providerSwitchingView()
         assertEquals("Host 未报告进行中的切换", view.text)
@@ -287,7 +288,7 @@ class AgentModelStateTest {
 
     @Test
     fun `拿到清单时说个数——空清单是「0 个可选」，不是「没读到」`() {
-        val reduced = reducer.reduce(pending(), snapshot(domains = PROVIDERS_PROFILES))
+        val reduced = reduce(pending(), snapshot(domains = PROVIDERS_PROFILES))
 
         val view = reduced.providerSwitchingView()
         assertEquals("codex: 2 个可选、dsh: 0 个可选", view.profiles)
@@ -295,7 +296,7 @@ class AgentModelStateTest {
 
     @Test
     fun `切换进行中时说清是哪个后端——带外的切换手机本来看不见`() {
-        val reduced = reducer.reduce(pending(), snapshot(domains = PROVIDERS_SWITCHING))
+        val reduced = reduce(pending(), snapshot(domains = PROVIDERS_SWITCHING))
 
         val view = reduced.providerSwitchingView()
         assertEquals("正在切换：codex", view.text)
@@ -306,19 +307,19 @@ class AgentModelStateTest {
     fun `缺席、空清单与坏负载都不含糊`() {
         assertEquals("尚未读取", RemoteState().providerSwitchingView().text)
 
-        val absent = reducer.reduce(pending(), snapshot(domains = "[]", missing = """[{"domain":"providers","reason":"no_state"}]"""))
+        val absent = reduce(pending(), snapshot(domains = "[]", missing = """[{"domain":"providers","reason":"no_state"}]"""))
         assertEquals("电脑没有报这个领域", absent.providerSwitchingView().text)
 
-        val empty = reducer.reduce(pending(), snapshot(domains = PROVIDERS_EMPTY))
+        val empty = reduce(pending(), snapshot(domains = PROVIDERS_EMPTY))
         assertEquals("电脑没有报任何供应商", empty.providerSwitchingView().text)
         assertEquals(StatusTone.Warn, empty.providerSwitchingView().tone)
 
-        val unknown = reducer.reduce(pending(), snapshot(domains = PROVIDERS_UNKNOWN))
+        val unknown = reduce(pending(), snapshot(domains = PROVIDERS_UNKNOWN))
         assertEquals("电脑尚未核对", unknown.providerSwitchingView().text)
         assertEquals(StatusTone.Warn, unknown.providerSwitchingView().tone)
 
-        val broken = reducer.reduce(pending(), snapshot(
-            domains = """[{"domain":"providers","modelEpoch":"m","revision":1,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"checkedAt":1}}]""",
+        val broken = reduce(pending(), snapshot(
+            domains = """[{"domain":"providers","modelEpoch":"model-1","revision":1,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"checkedAt":1}}]""",
         ))
         assertEquals("供应商摘要缺少清单", broken.providerSwitchingView().text)
         assertEquals(StatusTone.Bad, broken.providerSwitchingView().tone)
@@ -328,16 +329,16 @@ class AgentModelStateTest {
         const val DOMAINS = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":2,"availability":"ready","completeness":"partial","checkedAt":1700000000000,"value":{"records":2,"dropped":1}}]"""
         const val CLEAN_DOMAINS = """[{"domain":"diagnostics","modelEpoch":"model-1","revision":3,"availability":"ready","completeness":"complete","checkedAt":1700000000000,"value":{"records":2,"dropped":0,"persistFailures":0}}]"""
         const val DEFAULT_RECORD = """[{"recordId":"r1","category":"catalog","severity":"error","message":"catalog read failed","at":1700000000000}]"""
-        const val CATALOG_COMPLETE = """[{"domain":"catalog","modelEpoch":"m","revision":1,"availability":"ready","completeness":"complete","checkedAt":1,"value":{"totalSessions":12,"truncated":false,"backends":[{"kind":"pi","ready":true,"sessions":10,"complete":true,"elapsedMs":5},{"kind":"codex","ready":true,"sessions":2,"complete":true,"elapsedMs":7}],"checkedAt":1}}]"""
-        const val CATALOG_PARTIAL = """[{"domain":"catalog","modelEpoch":"m","revision":2,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":12,"truncated":false,"backends":[{"kind":"pi","ready":true,"sessions":10,"complete":true,"elapsedMs":5},{"kind":"codex","ready":true,"sessions":2,"complete":false,"elapsedMs":3000,"error":"thread/list 超时"}],"checkedAt":1}}]"""
-        const val CATALOG_NOT_READY = """[{"domain":"catalog","modelEpoch":"m","revision":3,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":10,"truncated":false,"backends":[{"kind":"pi","ready":true,"sessions":10,"complete":true,"elapsedMs":5},{"kind":"codex","ready":false,"sessions":0,"complete":false,"elapsedMs":0}],"checkedAt":1}}]"""
-        const val CATALOG_TRUNCATED = """[{"domain":"catalog","modelEpoch":"m","revision":4,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":2000,"truncated":true,"backends":[{"kind":"pi","ready":true,"sessions":2000,"complete":true,"elapsedMs":5}],"checkedAt":1}}]"""
-        const val PROVIDERS_IDLE = """[{"domain":"providers","modelEpoch":"m","revision":1,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[{"agentKind":"codex","current":"custom","profiles":null,"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}},{"agentKind":"dsh","current":"deepseek","profiles":null,"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}}],"checkedAt":1}}]"""
-        const val PROVIDERS_SWITCHING = """[{"domain":"providers","modelEpoch":"m","revision":2,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[{"agentKind":"codex","current":"custom","profiles":null,"authenticated":null,"switching":true,"usage":{"availability":"unknown","detail":null}}],"checkedAt":1}}]"""
-        const val PROVIDERS_EMPTY = """[{"domain":"providers","modelEpoch":"m","revision":3,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[],"checkedAt":1}}]"""
+        const val CATALOG_COMPLETE = """[{"domain":"catalog","modelEpoch":"model-1","revision":1,"availability":"ready","completeness":"complete","checkedAt":1,"value":{"totalSessions":12,"truncated":false,"backends":[{"kind":"pi","ready":true,"sessions":10,"complete":true,"elapsedMs":5},{"kind":"codex","ready":true,"sessions":2,"complete":true,"elapsedMs":7}],"checkedAt":1}}]"""
+        const val CATALOG_PARTIAL = """[{"domain":"catalog","modelEpoch":"model-1","revision":2,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":12,"truncated":false,"backends":[{"kind":"pi","ready":true,"sessions":10,"complete":true,"elapsedMs":5},{"kind":"codex","ready":true,"sessions":2,"complete":false,"elapsedMs":3000,"error":"thread/list 超时"}],"checkedAt":1}}]"""
+        const val CATALOG_NOT_READY = """[{"domain":"catalog","modelEpoch":"model-1","revision":3,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":10,"truncated":false,"backends":[{"kind":"pi","ready":true,"sessions":10,"complete":true,"elapsedMs":5},{"kind":"codex","ready":false,"sessions":0,"complete":false,"elapsedMs":0}],"checkedAt":1}}]"""
+        const val CATALOG_TRUNCATED = """[{"domain":"catalog","modelEpoch":"model-1","revision":4,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"totalSessions":2000,"truncated":true,"backends":[{"kind":"pi","ready":true,"sessions":2000,"complete":true,"elapsedMs":5}],"checkedAt":1}}]"""
+        const val PROVIDERS_IDLE = """[{"domain":"providers","modelEpoch":"model-1","revision":1,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[{"agentKind":"codex","current":"custom","profiles":null,"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}},{"agentKind":"dsh","current":"deepseek","profiles":null,"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}}],"checkedAt":1}}]"""
+        const val PROVIDERS_SWITCHING = """[{"domain":"providers","modelEpoch":"model-1","revision":2,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[{"agentKind":"codex","current":"custom","profiles":null,"authenticated":null,"switching":true,"usage":{"availability":"unknown","detail":null}}],"checkedAt":1}}]"""
+        const val PROVIDERS_EMPTY = """[{"domain":"providers","modelEpoch":"model-1","revision":3,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[],"checkedAt":1}}]"""
         // 读到清单：codex 两个可选、dsh 明确是空数组（读了，就是一个都没有）。
-        const val PROVIDERS_PROFILES = """[{"domain":"providers","modelEpoch":"m","revision":5,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[{"agentKind":"codex","current":"custom","profiles":[{"id":"custom","name":"Custom","enabled":true,"globalDefault":false},{"id":"official","name":"官方","enabled":false,"globalDefault":false}],"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}},{"agentKind":"dsh","current":"deepseek","profiles":[],"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}}],"checkedAt":1}}]"""
+        const val PROVIDERS_PROFILES = """[{"domain":"providers","modelEpoch":"model-1","revision":5,"availability":"ready","completeness":"partial","checkedAt":1,"value":{"providers":[{"agentKind":"codex","current":"custom","profiles":[{"id":"custom","name":"Custom","enabled":true,"globalDefault":false},{"id":"official","name":"官方","enabled":false,"globalDefault":false}],"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}},{"agentKind":"dsh","current":"deepseek","profiles":[],"authenticated":null,"switching":null,"usage":{"availability":"unknown","detail":null}}],"checkedAt":1}}]"""
         // Host 在没有摘要时写的是 unknown（不是「没有供应商」），客户端不许把它当成空清单。
-        const val PROVIDERS_UNKNOWN = """[{"domain":"providers","modelEpoch":"m","revision":4,"availability":"unknown","completeness":"partial","checkedAt":1,"value":{"providers":[],"checkedAt":1}}]"""
+        const val PROVIDERS_UNKNOWN = """[{"domain":"providers","modelEpoch":"model-1","revision":4,"availability":"unknown","completeness":"partial","checkedAt":1,"value":{"providers":[],"checkedAt":1}}]"""
     }
 }

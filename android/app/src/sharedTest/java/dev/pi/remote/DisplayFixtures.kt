@@ -103,6 +103,47 @@ internal class FixtureRelayReducer(private val delegate: RelayReducer = RelayRed
         channel: String? = null,
     ): RemoteState = delegate.reduce(state, payload.withFixtureDisplay(), committed, channel)
 
+    /** 显式的标准来源快照夹具。仅补共同 source/checkpoint，不解释旧生命周期通知。 */
+    fun reduceSourceSnapshot(
+        state: RemoteState,
+        payload: String,
+        committed: CommittedSessionBatch? = null,
+        channel: String? = null,
+    ): RemoteState {
+        val root = fixtureJson.parseToJsonElement(payload) as JsonObject
+        val event = root["event"] as JsonObject
+        require((event["type"] as? JsonPrimitive)?.contentOrNull == "session.snapshot")
+        if (event["source"] != null && event["source"] !is kotlinx.serialization.json.JsonNull)
+            return reduce(state, payload, committed, channel)
+        val runtimeId = (root["runtimeId"] as JsonPrimitive).content
+        val current = state.conversations[runtimeId] ?: RuntimeConversation()
+        val sync = state.sessionSyncCommands.values.firstOrNull {
+            it.runtimeId == runtimeId && it.syncId == (event["syncId"] as? JsonPrimitive)?.contentOrNull
+        }
+        val range = sync?.range ?: (event["range"] as? JsonPrimitive)?.contentOrNull ?: "preview"
+        val epoch = current.sourceEpoch ?: "fixture-source"
+        val seq = if (range == "preview") maxOf(current.sourceSeq + 1, (root["sequence"] as? JsonPrimitive)?.longOrNull ?: 1)
+            else current.sourceSeq.coerceAtLeast(0)
+        val source = SessionSourceEpoch(epoch, seq, true)
+        val cursor = fixtureJson.decodeFromJsonElement<SessionBranchCursor>(event.getValue("cursor"))
+        val additions = mutableMapOf<String, JsonElement>("source" to fixtureJson.encodeToJsonElement(SessionSourceEpoch.serializer(), source))
+        if (range == "preview") {
+            additions["mode"] = JsonPrimitive("replace")
+            additions["checkpoint"] = fixtureJson.encodeToJsonElement(SessionCheckpoint.serializer(),
+                SessionCheckpoint("$epoch:$seq", cursor, "complete", true))
+            additions["live"] = fixtureJson.encodeToJsonElement(SessionLiveState.serializer(), SessionLiveState(true))
+        }
+        val input = if (range == "preview" || current.sourceEpoch != null) state else state.copy(
+            conversations = state.conversations + (runtimeId to current.copy(sourceEpoch = epoch, sourceSeq = seq,
+                sourceReady = true, sourceHeadLeafId = state.runtimeSessionViews[runtimeId]?.leafId
+                    ?: state.runtimes[runtimeId]?.sessionLeafId)),
+            sessionGraphs = state.sessionGraphs.mapValues { (sessionId, graph) ->
+                if (sessionId == (event["sessionId"] as? JsonPrimitive)?.contentOrNull) graph.copy(cacheEpoch = epoch) else graph
+            },
+        )
+        return reduce(input, JsonObject(root + ("event" to JsonObject(event + additions))).toString(), committed, channel)
+    }
+
     /** 夹具包一层，但 artifact chunk 这类成员仍然直通，测试不必为了夹具改写调用。 */
     fun reduceArtifactChunk(
         state: RemoteState,

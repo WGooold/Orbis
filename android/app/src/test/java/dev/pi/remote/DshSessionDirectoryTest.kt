@@ -15,9 +15,9 @@ class DshSessionDirectoryTest {
         ).associateBy { it.sessionId }, runtimes = mapOf("dsh:online" to RuntimeSummary(
             runtimeId = "dsh:online", sessionId = "dsh:online", name = "DSH", cwd = "D:/work", status = "idle",
         )))
-        val next = reducer.reduce(state, """{"type":"session.list.result","sessions":[
+        val next = state.withModelFixture("catalog", """{"backends":[{"kind":"dsh","complete":true}],"sessions":[
             {"sessionId":"dsh:a","name":"Same","agentKind":"dsh"},
-            {"sessionId":"dsh:b","name":"Same","agentKind":"dsh"}]}""")
+            {"sessionId":"dsh:b","name":"Same","agentKind":"dsh"}]}""", scope = "host")
         assertEquals(setOf("dsh:a", "dsh:b", "dsh:cached", "dsh:online", "pi:old"), next.sessions.keys)
         assertEquals(2, next.sessions.values.count { it.name == "Same" })
         assertTrue(next.sessions["dsh:cached"]!!.hasHistoryCache)

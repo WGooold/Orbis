@@ -223,13 +223,12 @@ class MessagePresentationTest {
     }
 
     @Test
-    fun `codex runtime is recognized by its prefixed id`() {
-        val base = RuntimeSummary(runtimeId = "codex:019f-thread-1", name = "Codex", cwd = "D:/repo", status = "idle")
+    fun `codex runtime is recognized by its explicit agent kind`() {
+        val base = RuntimeSummary(runtimeId = "opaque-route", name = "Agent", cwd = "D:/repo", status = "idle", agentKind = "codex")
         assertTrue(base.isCodex)
-        assertTrue(base.copy(runtimeId = "codex").isCodex)
-        assertFalse(base.copy(runtimeId = "3f2a-uuid").isCodex)
-        // 前缀撞车防护：以 codex 开头但不是 "codex:" 分隔的 id 不算。
-        assertFalse(base.copy(runtimeId = "codexer-uuid").isCodex)
+        assertTrue(base.copy(runtimeId = "unrelated").isCodex)
+        assertFalse(base.copy(runtimeId = "codex:thread", agentKind = "pi").isCodex)
+        assertFalse(base.copy(agentKind = null).isCodex)
     }
 
     @Test

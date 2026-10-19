@@ -285,31 +285,85 @@ internal class HostConnection(
         )
     }
 
-    /**
-     * 读 Host 的统一状态模型（ADR-0032 issue #10）。
-     *
-     * 默认只读 Host 作用域的 `diagnostics`：诊断目录是客户端第一个**只能**由模型提供的事实
-     * （条数、保留窗口与缺口），以前 App 无从得知自己看到的记录是不是全部。请求与应答都走设备级
-     * E2E 载荷，与 `session.list` 同一条密文通道。
-     */
-    // 默认只读目录与诊断：这两格在 Host 侧是廉价投影。供应商摘要是最贵的一格，只在状态页点名（force）。
-    fun refreshHostModel(domains: List<String> = listOf("diagnostics", "catalog"), force: Boolean = false) {
+    /** Reads and subscribes to committed Host domains; each connection owns its applied versions. */
+    fun refreshHostModel(domains: List<String> = HOST_MODEL_DOMAINS, force: Boolean = false) {
+        requestModel("host", domains, force = force)
+        requestCatalogPage()
+    }
+
+    fun refreshAgentModel(runtimeId: String, force: Boolean = false) {
         val current = mutableState.value
-        if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank()) return
-        if (!force && current.agentStateRequests.isNotEmpty()) return
+        val runtime = current.runtimes[runtimeId] ?: return
+        val sessionId = runtime.sessionId ?: return
+        requestModel("agent", AGENT_MODEL_DOMAINS, runtimeId, sessionId,
+            runtime.agentKind ?: current.sessions[sessionId]?.agentKind, force)
+    }
+
+    private fun requestModel(
+        modelScope: String,
+        domains: List<String>,
+        runtimeId: String? = null,
+        sessionId: String? = null,
+        agentKind: String? = null,
+        force: Boolean = false,
+    ) {
+        val current = mutableState.value
+        if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank() || !current.e2eReady) return
+        val key = listOf(modelScope, agentKind.orEmpty(), sessionId ?: runtimeId.orEmpty()).joinToString("|")
+        val now = System.currentTimeMillis()
+        val existingReads = current.agentStateReads.filterValues {
+            it.scope == modelScope && it.runtimeId == runtimeId && it.sessionId == sessionId
+        }
+        if (!force && existingReads.values.any { it.domains.containsAll(domains) && now - it.sentAt < 14_000 }) return
+        val subscribedDomains = (domains + existingReads.values.flatMap { it.domains }).distinct()
         val requestId = UUID.randomUUID().toString()
-        // 先登记再发送：应答走独立协程回来，登记必须先于 reducer 可能看到应答。
-        updateState { it.copy(agentStateRequests = it.agentStateRequests + requestId) }
+        val read = AgentStateRead(key, modelScope, subscribedDomains.toSet(), runtimeId, sessionId, agentKind, sentAt = now)
+        updateState { it.copy(agentStateRequests = it.agentStateRequests - existingReads.keys + requestId,
+            agentStateReads = it.agentStateReads - existingReads.keys + (requestId to read)) }
+        val snapshot = current.agentStateSnapshots[key]
         val sent = relay.sendDeviceMessage(buildJsonObject {
             put("type", "agent.state.request")
             put("protocolVersion", PROTOCOL_VERSION)
             put("requestId", requestId)
-            put("scope", "host")
-            put("domains", buildJsonArray { domains.forEach { add(it) } })
+            put("scope", modelScope)
+            put("subscribe", true)
+            runtimeId?.let { put("runtimeId", it) }
+            sessionId?.let { put("sessionId", it) }
+            agentKind?.let { put("agentKind", it) }
+            put("domains", buildJsonArray { subscribedDomains.forEach { add(it) } })
+            put("known", buildJsonArray {
+                snapshot?.domains?.values?.filter { it.domain in subscribedDomains && (!force || it.domain !in domains) }?.forEach { domain ->
+                    add(buildJsonObject { put("domain", domain.domain); put("modelEpoch", domain.modelEpoch); put("revision", domain.revision) })
+                }
+            })
         })
-        if (!sent) updateState {
-            it.copy(agentStateRequests = it.agentStateRequests - requestId, error = "模型读取未发送，当前连接没有端到端加密通道")
+        if (!sent) updateState { it.copy(agentStateRequests = it.agentStateRequests - requestId,
+            agentStateReads = it.agentStateReads - requestId, error = "Model read could not use an authenticated channel") }
+    }
+
+    /** Continue a fixed catalog snapshot without mixing versions or pruning omitted pages. */
+    private fun requestCatalogPage() {
+        val current = mutableState.value
+        if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank() || !current.e2eReady) return
+        val range = current.agentCatalogRange ?: return
+        if (range.error != null) {
+            updateState { it.copy(agentCatalogRange = null, agentCatalogRangeRequest = null) }
+            requestModel("host", listOf("catalog"), force = true)
+            return
         }
+        val cursor = range.nextCursor ?: return
+        val now = System.currentTimeMillis()
+        if (current.agentCatalogRangeRequest?.let { now - it.sentAt < 15_000 } == true) return
+        val request = AgentCatalogRangeRequest(UUID.randomUUID().toString(), cursor, range.modelEpoch,
+            range.revision, range.snapshotId, range.sessions.size, now)
+        updateState { if (it.agentCatalogRange == range) it.copy(agentCatalogRangeRequest = request) else it }
+        if (mutableState.value.agentCatalogRangeRequest != request) return
+        val sent = relay.sendDeviceMessage(buildJsonObject {
+            put("type", "agent.state.range.request"); put("protocolVersion", PROTOCOL_VERSION)
+            put("requestId", request.requestId); put("scope", "host"); put("domain", "catalog")
+            put("cursor", cursor); put("limit", 200)
+        })
+        if (!sent) updateState { if (it.agentCatalogRangeRequest == request) it.copy(agentCatalogRangeRequest = null) else it }
     }
 
     /**
@@ -336,12 +390,7 @@ internal class HostConnection(
         }
     }
 
-    /**
-     * 读供应商摘要（模块 20–22）。
-     *
-     * 这一格**不在连接时读**：Host 要为此现读三个后端（抢锁 + 对账原生配置 + 写盘），是这里最贵的
-     * 一次模型读取。用户在状态页要看，才付这个钱。
-     */
+    /** Reconcile provider summaries on demand while preserving the connection's other domains. */
     fun refreshProviderModel() = refreshHostModel(listOf("providers"), force = true)
 
     fun setSessionArchived(sessionId: String, archived: Boolean) {
@@ -489,7 +538,9 @@ internal class HostConnection(
 
     fun loadAgentProviders(kind: String) {
         if (kind !in setOf("pi", "codex", "dsh")) return
-        requestAgentProviders(kind, null, true)
+        updateState { it.copy(agentProviders = AgentProvidersState(kind = kind, hostId = it.hostId,
+            providers = it.agentProviders.providers.takeIf { _ -> it.agentProviders.kind == kind }.orEmpty(), loading = true)) }
+        refreshProviderModel()
     }
 
     fun switchAgentProvider(provider: AgentProvider, expectedHostId: String?) {
@@ -610,6 +661,7 @@ internal class HostConnection(
 
     /** Runtime is the interaction window; its current session follows its metadata. */
     fun selectRuntime(runtimeId: String?) {
+        runtimeId?.let { refreshAgentModel(it) }
         var runtime: RuntimeSummary? = null
         var conversation: RuntimeConversation? = null
         var graph: SessionGraph? = null
@@ -692,6 +744,7 @@ internal class HostConnection(
     /** Explicit refresh re-enables synchronization after a recoverable failure. */
     fun refreshRuntime(runtimeId: String? = mutableState.value.selectedRuntimeId, explicitRetry: Boolean = false): Boolean {
         val id = runtimeId ?: return false
+        refreshAgentModel(id, force = explicitRetry)
         if (!explicitRetry && (id in mutableState.value.sessionSyncFailures ||
                 mutableState.value.conversations[id]?.chatSyncError != null)) return false
         if (explicitRetry) updateState { it.retrySessionSync(id) }
@@ -1044,6 +1097,11 @@ internal class HostConnection(
             Log.i(RELOAD_TRACE_TAG, "ui.slash.rejected name=$name reason=no_runtime")
             return null
         }
+        if (mutableState.value.runtimes[runtimeId]?.domainAvailability?.get("capabilities") != "ready") {
+            refreshAgentModel(runtimeId, force = true)
+            updateState { it.copy(error = "电脑尚未核对可用命令，请稍后重试") }
+            return null
+        }
         Log.i(RELOAD_TRACE_TAG, "ui.slash.requested name=$name runtimeId=$runtimeId argsLength=${args.length}")
         val command = mutableState.value.capabilities[runtimeId]?.commands?.find { it.name == name }
         if (command == null) {
@@ -1070,6 +1128,10 @@ internal class HostConnection(
 
     fun updatePermissions(settingId: String, value: String): String? {
         val runtimeId = mutableState.value.selectedRuntimeId ?: return null
+        if (mutableState.value.runtimes[runtimeId]?.domainAvailability?.get("permissions") != "ready") {
+            refreshAgentModel(runtimeId, force = true)
+            return null
+        }
         val commandId = relay.updatePermissions(runtimeId, settingId, value)
         trackCommand(commandId, runtimeId, "权限设置未发送：中继服务器当前离线")
         return commandId
@@ -1336,6 +1398,10 @@ internal class HostConnection(
         val current = mutableState.value
         val conversation = current.conversations[runtimeId] ?: return
         val pending = conversation.interactions[request.requestId] ?: return
+        if (current.runtimes[runtimeId]?.domainAvailability?.get("interactions") != "ready") {
+            refreshAgentModel(runtimeId, force = true)
+            return
+        }
         if (!current.e2eReady || pending.submitted || isInteractionExpired(pending, System.currentTimeMillis()) || pending.responseCommandId in current.pendingCommands) return
         val commandId = send(runtimeId)
         trackCommand(commandId, runtimeId, "交互响应未发送：当前离线，请连接后重试")
@@ -1553,10 +1619,20 @@ internal class HostConnection(
                         refreshSessions()
                         // 诊断目录只在连接建立时读一次：它是目录，不是需要跟帧的东西。
                         refreshHostModel()
+                        mutableState.value.runtimes.keys.forEach { refreshAgentModel(it) }
                         autoResumeDownloads()
                     }
                     if (archiveChanged && currentGeneration == generation && interactiveChannel != null) {
                         refreshSessions()
+                    }
+                    if (interactiveChannel != null && currentGeneration == generation) {
+                        val onlineRuntime = incomingMessage?.get("runtime") as? JsonObject
+                        val changedRuntimeId = onlineRuntime?.get("runtimeId")?.jsonPrimitive?.contentOrNull
+                            ?: incomingMessage?.get("runtimeId")?.jsonPrimitive?.contentOrNull?.takeIf {
+                                sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull == "runtime.metadata"
+                            }
+                        changedRuntimeId?.let { refreshAgentModel(it) }
+                        requestCatalogPage()
                     }
                     // 调度器故障不能拖垮整个帧消费循环：丢帧只该让这一轮重传，不该让 App 崩。
                     runCatching { syncPullSchedulers() }

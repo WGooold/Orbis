@@ -272,9 +272,17 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun refreshSessions() = active()?.refreshSessions()
 
-    fun refreshDiagnostics() = active()?.refreshDiagnostics()
+    fun refreshDiagnostics(cursor: String? = null) = active()?.refreshDiagnostics(cursor)
 
     fun refreshProviderFacts() = active()?.refreshProviderModel()
+
+    /** 前台和定期核对按领域重读；聊天与通知仍保留各自事务和恢复水位。 */
+    fun reconcileModels() {
+        synchronized(lock) { connections.values.toList() }.forEach { connection ->
+            connection.refreshHostModel()
+            connection.state.value.runtimes.keys.forEach { connection.refreshAgentModel(it) }
+        }
+    }
 
     /** Switches to [hostId] and opens its runtime (or activates the Session) in one step. */
     fun openSession(hostId: String, sessionId: String) {

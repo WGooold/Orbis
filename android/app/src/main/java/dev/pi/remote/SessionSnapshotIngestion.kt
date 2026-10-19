@@ -21,11 +21,13 @@ internal data class SessionSnapshotSourceGate(
 
 /** Validate conditional responses before either SQLite or the reducer can consume them. */
 internal fun PendingSessionSync.validatePreviewSelection(snapshot: SessionGraphSnapshot) {
+    requireNotNull(snapshot.source) { "session_source_missing" }
     require(snapshot.targetLeafId == null || snapshot.targetLeafId == snapshot.cursor.leafId) { "session_target_mismatch" }
     if (range != "preview") {
         require(snapshot.selection == null) { "session_selection_range_mismatch" }
         return
     }
+    requireNotNull(snapshot.checkpoint) { "session_checkpoint_missing" }
     when (snapshot.selection ?: "snapshot") {
         "snapshot" -> require(snapshot.mode == "replace") { "session_range_mode_mismatch" }
         "state", "delta", "unchanged" -> {
@@ -85,9 +87,8 @@ internal fun RuntimeConversation.snapshotSourceGate(
     sourceRecovery: Boolean = false,
     sourceRecoveryEpoch: String? = sourceEpoch,
 ): SessionSnapshotSourceGate {
-    val source = snapshot.source
-    val cacheOnly = range != "preview" || source == null
-    if (source == null) return SessionSnapshotSourceGate(sourceEpoch == null, sourceEpoch != null, false)
+    val source = snapshot.source ?: return SessionSnapshotSourceGate(false, true, false)
+    val cacheOnly = range != "preview"
     val retired = source.epoch in retiredSourceEpochs
     if (cacheOnly) return SessionSnapshotSourceGate(
         source.ready && sourceReady && source.epoch == sourceEpoch && !retired,
@@ -143,8 +144,7 @@ internal fun ingestSessionSnapshot(
     )
     // Leave rejected/unknown boundaries to the reducer; neither can modify persistent rows.
     if (!gate.cacheAllowed) return CommittedSessionBatch(emptyList())
-    val cacheOnly = pending.range == "history" || state.conversations[runtimeId]?.sourceEpoch != null &&
-        (pending.range != "preview" || snapshot.source == null)
+    val cacheOnly = pending.range != "preview"
     val observed = if (cacheOnly) null else
         (pending.targetLeafId ?: snapshot.targetLeafId ?: snapshot.cursor.leafId)?.takeIf { id ->
             snapshot.entries.any { it.entryId == id } || store.contains(device, snapshot.sessionId, id)
@@ -212,8 +212,8 @@ private fun ingestCanonicalPage(
 ): CommittedSessionBatch? {
     // SQLite owns persisted row versions. A bounded memory window may not know the newer
     // version of a disk row, so it cannot veto an authoritative page before disk filters it.
-    if (snapshot.source == null) (state.sessionGraphs[snapshot.sessionId] ?: SessionGraph(snapshot.sessionId)).merge(snapshot)
-    else validateCanonicalEntries(snapshot.entries, { null })
+    requireNotNull(snapshot.source) { "session_source_missing" }
+    validateCanonicalEntries(snapshot.entries, { null })
     try {
         store.upsert(device, snapshot.sessionId, snapshot.entries, observed,
             snapshot.turnTimings.orEmpty(), writeGuard = owns, agentKind = agentKind,

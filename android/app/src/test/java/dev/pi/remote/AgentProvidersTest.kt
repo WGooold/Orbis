@@ -11,8 +11,11 @@ class AgentProvidersTest {
     @Test fun onlyMatchingHostRequestCanReplaceProviderState() {
         val result = waiting.withProviderResult(response)
         assertFalse(result.agentProviders.loading)
-        assertEquals("a", result.agentProviders.providers.single().id)
+        assertTrue(result.agentProviders.providers.isEmpty()) // A device receipt cannot replace shared provider facts.
         assertEquals("Changed", result.agentProviders.notice)
+        val mirrored = result.withModelFixture("providers", """{"providers":[{"agentKind":"codex","current":"a",
+            "profiles":[{"id":"a","name":"Custom","enabled":true,"mode":"exclusive","globalDefault":false}]}]}""", scope = "host")
+        assertEquals("a", mirrored.agentProviders.providers.single().id)
         val otherHost = waiting.copy(hostId = "host-b")
         assertEquals(otherHost, otherHost.withProviderResult(response))
         val otherRequest = waiting.copy(agentProviders = waiting.agentProviders.copy(requestId = "new"))
