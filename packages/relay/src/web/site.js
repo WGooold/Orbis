@@ -1,35 +1,86 @@
-function renderDesktopDownloads(platform, files) {
-  const container = document.getElementById(`${platform}-downloads`);
-  const versionLabel = document.getElementById(`${platform}-version`);
-  const label = platform === "windows" ? "Windows" : "macOS";
-  const pattern = platform === "windows"
-    ? /^OrbisHost-(\d+\.\d+\.\d+)-windows-x64(?:-setup\.exe|\.zip)$/
-    : /^OrbisHost-(\d+\.\d+\.\d+)-macos-(arm64|x64)\.dmg$/;
-  const releases = (Array.isArray(files) ? files : []).flatMap(file => {
-    const match = typeof file?.name === "string" ? file.name.match(pattern) : null;
+const hostPlatforms = {
+  windows: {
+    requirement: "Windows 10 / 11 · x64",
+    detail: "安装与更新 Agent，管理模型供应商，添加手机并管理连接。",
+    note: "当前为预览版，安装时 Windows 可能提示发布者未验证。",
+    pattern: /^OrbisHost-(\d+\.\d+\.\d+)-windows-x64(?:-setup\.exe|\.zip)$/,
+    files: data => data.windows,
+  },
+  "macos-arm64": {
+    requirement: "macOS · Apple Silicon",
+    detail: "下载 DMG 后打开，将 Orbis Host 拖入「应用程序」，再连接手机。",
+    note: "请按「关于本机」中的芯片类型选择 Apple Silicon 或 Intel 版本。",
+    pattern: /^OrbisHost-(\d+\.\d+\.\d+)-macos-arm64\.dmg$/,
+    files: data => data.macos,
+  },
+  "macos-x64": {
+    requirement: "macOS · Intel",
+    detail: "下载 DMG 后打开，将 Orbis Host 拖入「应用程序」，再连接手机。",
+    note: "请按「关于本机」中的芯片类型选择 Apple Silicon 或 Intel 版本。",
+    pattern: /^OrbisHost-(\d+\.\d+\.\d+)-macos-x64\.dmg$/,
+    files: data => data.macos,
+  },
+};
+const appPlatforms = {
+  android: {
+    requirement: "Android 手机 · APK",
+    detail: "接着对话、回应审批、收发文件，也能切换电脑上已保存的供应商。",
+    note: "安装后扫描电脑端的配对二维码。",
+  },
+  ios: {
+    requirement: "iPhone · 暂未提供",
+    detail: "iOS 版本正在准备，推出后可在这里下载。",
+    note: "",
+  },
+};
+let siteData;
+
+function compareVersions(left, right) {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  return b[0] - a[0] || b[1] - a[1] || b[2] - a[2];
+}
+
+function hostReleases(platform) {
+  const spec = hostPlatforms[platform];
+  const files = siteData && Array.isArray(spec.files(siteData)) ? spec.files(siteData) : [];
+  return files.flatMap(file => {
+    const match = typeof file?.name === "string" ? file.name.match(spec.pattern) : null;
     return match && typeof file.url === "string" && typeof file.checksumUrl === "string"
       ? [{ ...file, version: match[1] }] : [];
-  }).sort((a, b) => {
-    const left = a.version.split(".").map(Number);
-    const right = b.version.split(".").map(Number);
-    return right[0] - left[0] || right[1] - left[1] || right[2] - left[2]
-      || Number(b.name.endsWith(".exe")) - Number(a.name.endsWith(".exe"));
-  });
+  }).sort((a, b) => compareVersions(a.version, b.version)
+    || Number(b.name.endsWith(".exe")) - Number(a.name.endsWith(".exe")));
+}
+
+function renderHost(platform) {
+  const spec = hostPlatforms[platform];
+  const version = document.getElementById("host-version");
+  const container = document.getElementById("host-downloads");
+  document.getElementById("host-requirement").textContent = spec.requirement;
+  document.getElementById("host-detail").textContent = spec.detail;
+  document.getElementById("host-note").textContent = spec.note;
   container.replaceChildren();
-  const version = releases[0]?.version;
-  versionLabel.textContent = version ? `预览版 · ${version}` : "预览包准备中";
-  if (!version) {
-    container.textContent = `${label} 预览包正在准备，发布后即可在这里下载。`;
+  if (!siteData) {
+    version.textContent = "版本信息暂不可用";
+    container.textContent = "暂时无法读取下载信息，请刷新重试或前往 GitHub 版本页。";
     return;
   }
-  for (const release of releases.filter(file => file.version === version)) {
+  const releases = hostReleases(platform);
+  const latest = releases[0]?.version;
+  version.textContent = latest ? `预览版 · ${latest}` : "预览包准备中";
+  if (!latest) {
+    container.textContent = "该平台的预览包正在准备，发布后即可在这里下载。";
+    return;
+  }
+  for (const release of releases.filter(file => file.version === latest)) {
     const portable = release.name.endsWith(".zip");
     const link = document.createElement("a");
     link.className = portable ? "text-link portable-link" : "button primary";
     link.href = release.url;
     const size = Number.isFinite(release.bytes) && release.bytes > 0 ? ` · ${(release.bytes / 1048576).toFixed(0)} MB` : "";
-    const macLabel = release.name.includes("-x64.") ? "Intel 版" : "Apple Silicon 版";
-    link.textContent = portable ? "下载免安装版 ZIP ↗" : `下载 ${label === "macOS" ? macLabel : "Windows 安装版"}${size} ↓`;
+    link.textContent = portable
+      ? "下载免安装版 ZIP ↗"
+      : `下载 ${platform === "windows" ? "Windows 安装版" : "macOS 版"}${size} ↓`;
     const checksum = document.createElement("a");
     checksum.className = "checksum-link";
     checksum.href = release.checksumUrl;
@@ -38,22 +89,53 @@ function renderDesktopDownloads(platform, files) {
   }
 }
 
+function renderApp(platform) {
+  const spec = appPlatforms[platform];
+  const version = document.getElementById("app-version");
+  const container = document.getElementById("app-downloads");
+  document.getElementById("app-requirement").textContent = spec.requirement;
+  document.getElementById("app-detail").textContent = spec.detail;
+  document.getElementById("app-note").textContent = spec.note;
+  container.replaceChildren();
+  if (platform === "ios") {
+    version.textContent = "即将推出";
+    container.textContent = "iOS 版本暂未提供。";
+    return;
+  }
+  if (!siteData) {
+    version.textContent = "版本信息暂不可用";
+    container.textContent = "暂时无法读取下载信息，请刷新重试或前往 GitHub 版本页。";
+    return;
+  }
+  version.textContent = typeof siteData.androidVersion === "string" ? `预览版 · ${siteData.androidVersion}` : "预览版";
+  const url = typeof siteData.android === "string" ? siteData.android : "https://orbising.com/downloads/orbis.apk";
+  const link = document.createElement("a");
+  link.className = "button primary";
+  link.href = url;
+  link.textContent = "下载 Android 版 ↓";
+  const checksum = document.createElement("a");
+  checksum.className = "checksum-link";
+  checksum.href = `${url}.sha256`;
+  checksum.textContent = "SHA-256 校验文件";
+  container.append(link, checksum);
+}
+
 async function loadDownloads() {
+  const hostSelect = document.getElementById("host-platform");
+  const appSelect = document.getElementById("app-platform");
+  hostSelect.addEventListener("change", () => renderHost(hostSelect.value));
+  appSelect.addEventListener("change", () => renderApp(appSelect.value));
   try {
     const response = await fetch("v1/site", { cache: "no-store" });
     if (!response.ok) throw new Error("unavailable");
-    const data = await response.json();
-    renderDesktopDownloads("windows", data.windows);
-    renderDesktopDownloads("macos", data.macos);
-    document.getElementById("android-version").textContent = typeof data.androidVersion === "string"
-      ? `预览版 · ${data.androidVersion}` : "预览版";
+    siteData = await response.json();
   } catch {
-    for (const platform of ["windows", "macos"]) {
-      document.getElementById(`${platform}-downloads`).textContent = "暂时无法读取下载信息，请刷新重试或前往 GitHub 版本页。";
-      document.getElementById(`${platform}-version`).textContent = "版本信息暂不可用";
-    }
+    siteData = undefined;
   }
+  renderHost(hostSelect.value);
+  renderApp(appSelect.value);
 }
+
 async function loadRegistration() {
   const notice = document.getElementById("registration-status");
   try {

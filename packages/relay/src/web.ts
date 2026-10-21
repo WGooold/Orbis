@@ -80,6 +80,7 @@ export async function createWebHandler(downloadsDir?: string, androidDir?: strin
         windows,
         macos,
         android: "https://orbising.com/downloads/orbis.apk",
+        ios: null,
         androidVersion: androidRelease?.version ?? null,
         androidVersionCode: androidRelease?.versionCode ?? null,
         androidSha256: androidRelease?.sha256 ?? null,

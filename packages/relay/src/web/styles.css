@@ -75,7 +75,7 @@
 .site .future-grid h3{font-size:19px;line-height:1.5;margin-bottom:11px;font-weight:650}
 .site .future-grid p{font-size:12px;color:var(--muted);line-height:1.85}
 .site .download-note{font-size:12px;line-height:1.9;color:var(--muted);margin-top:25px}
-.site .download-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}
+.site .download-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.site .download-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}.site .platform-select{display:flex;align-items:center;gap:9px;font-size:11px;color:var(--muted)}.site .platform-select select{border:0;border-radius:10px;padding:9px 12px;background:var(--inset);box-shadow:var(--pressed);color:var(--ink);font-size:12px}
 .site .download-card{display:flex;flex-direction:column;padding:28px;min-width:0}
 .site .download-platform{display:flex;align-items:center;gap:12px;margin-bottom:18px}
 .site .download-platform .platform-mark{margin:0}

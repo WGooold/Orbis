@@ -109,40 +109,37 @@
     <section id="start" class="section wrap"><div class="section-heading"><div><p class="eyebrow">A SIMPLE START</p><h2>三步，把工作带在身边。</h2></div><p>电脑一次准备，手机随时接续。</p></div><ol class="steps"><li><span>01</span><div><h3>在电脑上安装 Orbis</h3><p id="activation-step">下载安装，按页面提示完成激活。</p></div></li><li><span>02</span><div><h3>准备好常用的 AI</h3><p>在 Agent 页安装或检测已有工具，配置自己的账号或模型供应商。</p></div></li><li><span>03</span><div><h3>打开手机，扫码连接</h3><p>在电脑端选择「添加手机」，用手机端 Orbis 扫码，即可开始。</p></div></li></ol></section>
 
     <section id="download" class="section download-section wrap">
-      <div class="section-heading"><div><p class="eyebrow">TAKE IT WITH YOU</p><h2>下一段工作，随处开始。</h2></div><p>选择电脑对应的版本，<br>再安装 Android 手机端，扫码连接。</p></div>
+      <div class="section-heading"><div><p class="eyebrow">TAKE IT WITH YOU</p><h2>下一段工作，随处开始。</h2></div><p>选好平台，<br>电脑端与手机端都在这里。</p></div>
       <div class="service-notice" role="status" id="registration-status">正在确认当前是否可以注册…</div>
       <div class="download-grid">
-        <article class="download-card" aria-labelledby="windows-title">
-          <div class="download-platform"><span class="platform-mark" aria-hidden="true">⊞</span><span class="download-kind">电脑端 · Host</span></div>
-          <h3 id="windows-title">Windows</h3>
-          <p>Windows 10 / 11 · x64</p>
-          <span class="version-tag" id="windows-version">正在读取版本…</span>
-          <p class="download-detail">安装与更新 Agent，管理模型供应商，添加手机并管理连接。</p>
-          <div class="platform-downloads" id="windows-downloads" role="status"><button class="button primary" disabled>正在准备下载入口…</button></div>
-          <small>当前为预览版，安装时 Windows 可能提示发布者未验证。</small>
+        <article class="download-card" aria-labelledby="host-title">
+          <div class="download-platform"><span class="platform-mark" aria-hidden="true">▣</span><span class="download-kind">电脑端 · Host</span></div>
+          <div class="download-head">
+            <h3 id="host-title">Host</h3>
+            <label class="platform-select"><span>平台</span><select id="host-platform" aria-label="选择电脑平台"><option value="windows">Windows</option><option value="macos-arm64">macOS · Apple Silicon</option><option value="macos-x64">macOS · Intel</option></select></label>
+          </div>
+          <p id="host-requirement">Windows 10 / 11 · x64</p>
+          <span class="version-tag" id="host-version">正在读取版本…</span>
+          <p class="download-detail" id="host-detail">安装与更新 Agent，管理模型供应商，添加手机并管理连接。</p>
+          <div class="platform-downloads" id="host-downloads" role="status"><button class="button primary" disabled>正在准备下载入口…</button></div>
+          <small id="host-note">当前为预览版，安装时 Windows 可能提示发布者未验证。</small>
         </article>
-        <article class="download-card" aria-labelledby="macos-title">
-          <div class="download-platform"><span class="platform-mark" aria-hidden="true">⌘</span><span class="download-kind">电脑端 · Host</span></div>
-          <h3 id="macos-title">macOS</h3>
-          <p>Apple Silicon / Intel · M 系列与 Intel 芯片</p>
-          <span class="version-tag" id="macos-version">正在读取版本…</span>
-          <p class="download-detail">下载 DMG 后打开，将 Orbis Host 拖入「应用程序」，再连接手机。</p>
-          <div class="platform-downloads" id="macos-downloads" role="status"><button class="button primary" disabled>正在准备下载入口…</button></div>
-          <small>请按「关于本机」中的芯片类型选择 Apple Silicon 或 Intel 版本。</small>
-        </article>
-        <article class="download-card" aria-labelledby="android-title">
+        <article class="download-card" aria-labelledby="app-title">
           <div class="download-platform"><span class="platform-mark" aria-hidden="true">▯</span><span class="download-kind">手机端 · App</span></div>
-          <h3 id="android-title">Android</h3>
-          <p>Android 手机 · APK</p>
-          <span class="version-tag" id="android-version">预览版</span>
-          <p class="download-detail">接着对话、回应审批、收发文件，也能切换电脑上已保存的供应商。</p>
-          <div class="platform-downloads"><a class="button primary" href="https://orbising.com/downloads/orbis.apk">下载 Android 版 <span aria-hidden="true">↓</span></a><a class="checksum-link" href="https://orbising.com/downloads/orbis.apk.sha256">SHA-256 校验文件</a></div>
-          <small>安装后扫描电脑端的配对二维码。iPhone 版本暂未提供。</small>
+          <div class="download-head">
+            <h3 id="app-title">App</h3>
+            <label class="platform-select"><span>平台</span><select id="app-platform" aria-label="选择手机平台"><option value="android">Android</option><option value="ios">iOS · 即将推出</option></select></label>
+          </div>
+          <p id="app-requirement">Android 手机 · APK</p>
+          <span class="version-tag" id="app-version">预览版</span>
+          <p class="download-detail" id="app-detail">接着对话、回应审批、收发文件，也能切换电脑上已保存的供应商。</p>
+          <div class="platform-downloads" id="app-downloads" role="status"><button class="button primary" disabled>正在准备下载入口…</button></div>
+          <small id="app-note">安装后扫描电脑端的配对二维码。</small>
         </article>
       </div>
       <p class="download-note">其他版本与发布说明：<a class="text-link" href="https://github.com/WGooold/Orbis/releases">前往 GitHub 版本页 ↗</a></p>
       <p class="download-note">Orbis 与官方公共连接服务免费使用。你所使用的 AI 工具或模型服务，按各自的收费规则计费。</p>
-      <noscript><p>请开启浏览器脚本功能以显示电脑端下载入口，或前往 <a href="https://github.com/WGooold/Orbis/releases">版本下载页面</a>。手机端可直接下载。</p></noscript>
+      <noscript><p>请开启浏览器脚本功能以显示下载入口，或前往 <a href="https://github.com/WGooold/Orbis/releases">版本下载页面</a>。</p></noscript>
     </section>
 
     <section id="faq" class="section wrap faq-section"><div><p class="eyebrow">GOOD TO KNOW</p><h2>开始之前，<br>你可能想知道。</h2></div><div class="faq-list"><details><summary>Orbis 和官方远控有什么不同？</summary><p>官方远控通常绑定对应产品的账号、远控服务和网络链路。Orbis 把控制面放在你的电脑与手机之间：使用电脑上已配置的兼容 API 供应商，不要求官方远控账号，也不依赖对应产品的官方远控云。模型 API 本身仍需要有效凭据，并按服务商规则联网和计费。</p></details><details><summary>自己的 API 密钥会上传到手机或 Relay 吗？</summary><p>不会。供应商地址、模型与凭据保留在电脑端 Host；手机只选择电脑上已保存的供应商，Relay 只转发端到端加密后的业务内容和必要路由信息。</p></details><details><summary>Orbis 免费吗？</summary><p>Orbis 和官方公共连接服务免费使用，无需自己购买服务器。你使用的 AI 工具或模型服务如有费用，仍按其各自的规则计费。</p></details><details><summary>需要一直开着电脑吗？</summary><p>需要。AI 工作仍在你的电脑上进行，使用时请保持电脑开机、联网，并让 Orbis 和相应的 AI 工具运行。</p></details><details><summary>为什么需要 QQ 邮箱？</summary><p id="email-faq">QQ 邮箱用于接收激活验证码，只需按客户端提示操作，不需要提供 QQ 密码。</p></details><details><summary>目前支持哪些 AI 工具？</summary><p>目前支持 Pi、Codex 和 DeepSeek Harness。电脑端提供 Agent 安装更新与供应商配置，手机端可切换已保存的供应商；更多 Agent 会继续接入。</p></details><details><summary>iPhone 可以使用吗？</summary><p>目前提供电脑端和 Android 手机端，暂未提供 iPhone 版本。</p></details><details><summary>遇到问题或有新想法，怎么反馈？</summary><p>我们会持续维护、修复问题并改善体验。欢迎到 <a href="https://github.com/WGooold/Orbis/issues">反馈页面</a>告诉我们遇到的情况或期待的功能。</p></details></div></section>
