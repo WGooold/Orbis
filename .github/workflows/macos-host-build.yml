@@ -66,7 +66,7 @@ jobs:
           dmg_root="$RUNNER_TEMP/orbis-dmg-root"
           cleanup() {
             status=$?
-            rm -rf "$build" "$dmg_root"
+            rm -rf "$build" "$dmg_root" "$RUNNER_TEMP"/orbis-rw-*.dmg "$RUNNER_TEMP"/orbis-dmg-mnt-* "$RUNNER_TEMP"/OrbisHost-*.dmg
             if [ "$status" -ne 0 ]; then rm -rf .artifacts/host; fi
             exit "$status"
           }
@@ -103,10 +103,26 @@ jobs:
           version=$(sed -nE 's/^project\(OrbisHost VERSION ([0-9.]+).*$/\1/p' packages/windows-host/CMakeLists.txt)
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           dmg="OrbisHost-$version-${{ matrix.artifact }}.dmg"
-          mkdir -p "$dmg_root"
+          # 不用 `hdiutil create -srcfolder`：它在托管 macOS runner 上会以
+          # "create failed - Resource busy" 失败，而且失败点不可见。这里拆成
+          # 建可写镜像 → 挂到固定 mountpoint → ditto 拷入 → 卸载 → 压成 UDZO，
+          # 每一步出错都能在日志里看到是哪一个。
+          rw_image="$RUNNER_TEMP/orbis-rw-${{ matrix.artifact }}.dmg"
+          mountpoint="$RUNNER_TEMP/orbis-dmg-mnt-${{ matrix.artifact }}"
+          staged_dmg="$RUNNER_TEMP/$dmg"
+          rm -f "$rw_image" "$staged_dmg"
+          rm -rf "$mountpoint"
+          mkdir -p "$mountpoint" "$dmg_root"
           cp -R .artifacts/host/OrbisHost.app "$dmg_root/"
           ln -s /Applications "$dmg_root/Applications"
-          hdiutil create -volname "Orbis Host" -srcfolder "$dmg_root" -ov -format UDZO ".artifacts/host/$dmg"
+          hdiutil create -size 3g -fs HFS+ -volname "Orbis Host" -ov "$rw_image"
+          hdiutil attach "$rw_image" -nobrowse -readwrite -mountpoint "$mountpoint"
+          ditto "$dmg_root" "$mountpoint"
+          sync
+          hdiutil detach "$mountpoint"
+          rmdir "$mountpoint" 2>/dev/null || true
+          hdiutil convert "$rw_image" -format UDZO -o "$staged_dmg"
+          mv "$staged_dmg" ".artifacts/host/$dmg"
           (cd .artifacts/host && shasum -a 256 "$dmg" > "$dmg.sha256")
       - uses: actions/upload-artifact@v4
         with:
