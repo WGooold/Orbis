@@ -12,7 +12,7 @@ Install `deploy/nginx-proxy.conf` as `/etc/nginx/snippets/orbis-proxy.conf`, ada
 
 If Cloudflare proxies HTTPS, configure Nginx's trusted Cloudflare address ranges and `real_ip_header CF-Connecting-IP` before enabling `ORBIS_TRUST_PROXY=1`. Never trust arbitrary forwarded client addresses from the public internet. Source ranges: https://www.cloudflare.com/ips/.
 
-Install `deploy/turnserver.conf` as `/etc/turnserver.conf` and enable/restart coturn. It is **STUN only**, with no anonymous TURN relay. The official `orbising.com` clients use the UDP origin `74.81.55.191:3478` because the web hostname is proxied. Self-hosted clients default to their Relay hostname; that hostname must resolve directly to a STUN server for P2P. CLI Host configurations may override `stunServers`. Verify from outside the server using `node scripts/stun-probe.mjs YOUR_STUN_HOST`. Failed P2P still falls back to Relay.
+Install `deploy/turnserver.conf` as `/etc/turnserver.conf` and enable/restart coturn. It is **STUN only**, with no anonymous TURN relay. The official `orbising.com` clients use the UDP origin `45.58.185.226:3478` because the web hostname is proxied. Self-hosted clients default to their Relay hostname; that hostname must resolve directly to a STUN server for P2P. CLI Host configurations may override `stunServers`. Verify from outside the server using `node scripts/stun-probe.mjs YOUR_STUN_HOST`. Failed P2P still falls back to Relay.
 
 ## GitHub Actions
 

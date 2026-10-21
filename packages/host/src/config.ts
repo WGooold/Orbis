@@ -76,7 +76,7 @@ export function defaultStunServers(relayUrl: string | undefined): readonly strin
     const url = new URL(relayUrl);
     if (url.protocol !== "wss:" && url.protocol !== "https:") return [];
     // The official HTTPS hostname is proxied; STUN uses the UDP origin directly.
-    const host = url.hostname === "orbising.com" ? "74.81.55.191" : url.hostname;
+    const host = url.hostname === "orbising.com" ? "45.58.185.226" : url.hostname;
     return [`stun://${host}:3478`];
   } catch {
     return [];
