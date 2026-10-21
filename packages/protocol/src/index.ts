@@ -17,6 +17,14 @@ export { RecoverableSessionSource } from "./session-source.js";
  * 两端必须一起更新。
  */
 export const PROTOCOL_VERSION = 14 as const;
+
+/**
+ * `protocol.error` 的 code：连接的对面用的是另一版协议。
+ *
+ * 这是**终态**：一个进程的协议版本不会自己变，重连只会换来同一句拒绝。所以收到它的
+ * 一侧应当停下并说明原因，而不是继续退避重试。具体版本号写在 `message` 里，code 保持稳定。
+ */
+export const PROTOCOL_VERSION_ERROR_CODE = "protocol_version";
 export const ARTIFACT_CHUNK_BYTES = 1024 * 1024;
 
 /**

@@ -1,6 +1,7 @@
 import {
   decodeJson,
   PROTOCOL_VERSION,
+  PROTOCOL_VERSION_ERROR_CODE,
   RelayToRuntimeMessageSchema,
   type RuntimeCommand,
   type RuntimeEvent,
@@ -29,6 +30,13 @@ export interface RelayRuntimeTransportOptions {
   initialReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
   heartbeatIntervalMs?: number;
+  /**
+   * 连接建立起（或尝试建立起）之后，多久没收到 `runtime.ready` 就判定对面不说话。
+   *
+   * 没有这个上限时，「对面收到了但保持沉默」的表现是 TUI 永远停在 connecting：socket 开着、
+   * 没有错误、也不重连。旧 Host 对着它不认识的帧只静默丢弃，就是靠这个口卡住的。
+   */
+  readyTimeoutMs?: number;
   onConnectionStateChange?: (state: RelayRuntimeConnectionState) => void;
 }
 
@@ -71,6 +79,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
   #closed = false;
   #reconnectDelayMs: number;
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  #readyTimer: ReturnType<typeof setTimeout> | undefined;
   #connecting = false;
   #heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   #awaitingPong = false;
@@ -119,6 +128,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
     this.#options.onConnectionStateChange?.("closed");
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = undefined;
+    this.#stopReadyTimer();
     this.#stopHeartbeat();
     this.#socket?.close(1000, "runtime shutdown");
     this.#socket = undefined;
@@ -146,6 +156,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
     this.#options.onConnectionStateChange?.(this.#hasConnected ? "reconnecting" : "connecting");
     const socket = new WebSocket(`${relayUrl.replace(/\/$/, "")}${this.#options.path ?? DEFAULT_RUNTIME_PATH}`);
     this.#socket = socket;
+    this.#startReadyTimer(socket);
 
     socket.on("open", () => {
       if (this.#socket !== socket || !this.#metadata) return;
@@ -182,6 +193,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
         this.#lastRecoverableProtocolError = undefined;
         this.#ready = true;
         this.#hasConnected = true;
+        this.#stopReadyTimer();
         this.#reconnectDelayMs = this.#options.initialReconnectDelayMs ?? 500;
         this.#options.onConnectionStateChange?.("connected");
         this.#handlers?.connected();
@@ -191,8 +203,13 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
         // 本机 Host 经 loopback 投来的命令（中继不再代传命令，见 protocol 里的注释）。
         this.#handlers?.command(message.commandId, message.runtimeId, message.command);
       } else if (message.type === "protocol.error") {
-        const recoverable = message.code !== "unauthorized" && message.code !== "runtime_mismatch";
-        if (recoverable) {
+        // 版本不匹配和 token 不匹配一样是**终态**：本进程的协议版本不会自己变，重连只换来同一句拒绝。
+        const terminal = message.code === "unauthorized"
+          || message.code === "runtime_mismatch"
+          || message.code === PROTOCOL_VERSION_ERROR_CODE;
+        if (terminal) {
+          this.#stopWithError(socket, message.message);
+        } else {
           // Relay may repeat the same recoverable protocol error while a client
           // retries a rejected payload. One terminal error event is enough for
           // the mobile UI; a new connection resets this suppression.
@@ -200,8 +217,6 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
             this.#lastRecoverableProtocolError = message.message;
             this.#handlers?.error?.(message.message, true);
           }
-        } else {
-          this.#stopWithError(socket, message.message);
         }
       }
     });
@@ -213,6 +228,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
     socket.on("close", () => {
       if (this.#socket !== socket) return;
       this.#stopHeartbeat();
+      this.#stopReadyTimer();
       this.#socket = undefined;
       this.#ready = false;
       this.#handlers?.disconnected?.();
@@ -247,9 +263,27 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
     this.#awaitingPong = false;
   }
 
+  #startReadyTimer(socket: WebSocket): void {
+    this.#stopReadyTimer();
+    const readyTimeoutMs = this.#options.readyTimeoutMs ?? 15_000;
+    this.#readyTimer = setTimeout(() => {
+      if (this.#socket !== socket || this.#ready) return;
+      // 对面收到了却没回 runtime.ready：报一次可恢复错误并断开，让重连与日志把它暴露出来。
+      this.#handlers?.error?.(`对面 ${readyTimeoutMs}ms 内没有确认 runtime.ready`, true);
+      socket.terminate();
+    }, readyTimeoutMs);
+    this.#readyTimer.unref?.();
+  }
+
+  #stopReadyTimer(): void {
+    if (this.#readyTimer) clearTimeout(this.#readyTimer);
+    this.#readyTimer = undefined;
+  }
+
   #stopWithError(socket: WebSocket, message: string): void {
     if (this.#socket !== socket) return;
     this.#stopHeartbeat();
+    this.#stopReadyTimer();
     this.#ready = false;
     this.#closed = true;
     this.#options.onConnectionStateChange?.("error");

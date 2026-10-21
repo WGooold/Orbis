@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
-import { PROTOCOL_VERSION, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata } from "@pi-remote/protocol";
 import { RelayRuntimeTransport } from "./transport.js";
 
 const metadata: RuntimeMetadata = {
@@ -286,6 +286,50 @@ describe("RelayRuntimeTransport", () => {
       credential: "fresh-secret",
     });
     expect(resolveEndpoint).toHaveBeenCalledTimes(1);
+  });
+
+  it("Host 握手后不回 runtime.ready 时报超时，而不是永远停在 connecting", async () => {
+    const relay = await listen();
+    const error = vi.fn<(message: string, recoverable: boolean) => void>();
+    const states: string[] = [];
+    transport = new RelayRuntimeTransport({
+      relayUrl: relay.url,
+      credential: "runtime-secret",
+      reconnect: false,
+      readyTimeoutMs: 20,
+      onConnectionStateChange: (state) => states.push(state),
+    });
+
+    await transport.start(metadata, { connected: vi.fn(), resync: vi.fn(), command: vi.fn(), error });
+    const socket = await relay.connection;
+    await once(socket, "message");
+
+    await vi.waitFor(() => expect(error).toHaveBeenCalledWith(expect.stringContaining("runtime.ready"), true));
+    expect(states).not.toContain("connected");
+  });
+
+  it("把协议版本不匹配当作终态，不重连", async () => {
+    const relay = await listen();
+    let attempts = 0;
+    wss!.on("connection", () => { attempts += 1; });
+    const error = vi.fn<(message: string, recoverable: boolean) => void>();
+    const states: string[] = [];
+    transport = new RelayRuntimeTransport({
+      relayUrl: relay.url,
+      credential: "runtime-secret",
+      initialReconnectDelayMs: 5,
+      maxReconnectDelayMs: 5,
+      onConnectionStateChange: (state) => states.push(state),
+    });
+    await transport.start(metadata, { connected: vi.fn(), resync: vi.fn(), command: vi.fn(), error });
+    const socket = await relay.connection;
+    await once(socket, "message");
+
+    socket.send(JSON.stringify({ type: "protocol.error", code: PROTOCOL_VERSION_ERROR_CODE, message: "协议版本不匹配：对面是 8，Host 是 14" }));
+    await vi.waitFor(() => expect(error).toHaveBeenCalledWith(expect.stringContaining("协议版本不匹配"), false));
+    expect(states).toContain("error");
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(attempts).toBe(1);
   });
 
   it("falls back to the configured endpoint when nothing can be re-resolved", async () => {

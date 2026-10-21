@@ -6,11 +6,13 @@
  * 扩展会照它连上去然后空等——那是这条通道最容易踩、也最难查的坑。
  */
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import WebSocket from "ws";
 
-import { LOOPBACK_DESCRIPTOR_FILE, LoopbackDescriptorSchema } from "@pi-remote/protocol";
+import { LOOPBACK_DESCRIPTOR_FILE, LOOPBACK_PATH, LoopbackDescriptorSchema, PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE } from "@pi-remote/protocol";
 
 import { HostLoopbackServer } from "./loopback-server.js";
 
@@ -63,5 +65,44 @@ describe("HostLoopbackServer 的发现文件", () => {
 
     await server.stop();
     await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("版本不匹配时回 protocol.error 并断开，同版本照常注册", async () => {
+    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    const online: string[] = [];
+    server = new HostLoopbackServer({
+      stateDir: dir,
+      hostId: "host-1",
+      onRuntimeOnline: runtime => online.push(runtime.runtimeId),
+    });
+    const descriptor = await server.start();
+    const url = `${descriptor.url}${LOOPBACK_PATH}`;
+    const authenticate = (protocolVersion: number, runtimeId: string): string => JSON.stringify({
+      type: "runtime.authenticate",
+      protocolVersion,
+      credential: descriptor.token,
+      role: "agent",
+      runtime: { runtimeId, name: runtimeId, cwd: "C:\\work", status: "idle" },
+    });
+
+    // 静默丢弃会让旧扩展的 TUI 永远停在 connecting：连接通着、没有错误、也不重连。
+    const stranger = new WebSocket(url);
+    await once(stranger, "open");
+    const closed = once(stranger, "close");
+    const rejection = once(stranger, "message");
+    stranger.send(authenticate(PROTOCOL_VERSION - 1, "runtime-old"));
+    const [refusal] = await rejection;
+    expect(JSON.parse(refusal.toString())).toMatchObject({ type: "protocol.error", code: PROTOCOL_VERSION_ERROR_CODE });
+    await closed;
+    expect(online).toEqual([]);
+
+    const peer = new WebSocket(url);
+    await once(peer, "open");
+    const ready = once(peer, "message");
+    peer.send(authenticate(PROTOCOL_VERSION, "runtime-current"));
+    const [confirmation] = await ready;
+    expect(JSON.parse(confirmation.toString())).toMatchObject({ type: "runtime.ready", runtimeId: "runtime-current" });
+    expect(online).toEqual(["runtime-current"]);
+    peer.close();
   });
 });

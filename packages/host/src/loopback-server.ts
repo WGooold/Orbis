@@ -23,6 +23,7 @@ import {
   LOOPBACK_PATH,
   LoopbackInboundSchema,
   PROTOCOL_VERSION,
+  PROTOCOL_VERSION_ERROR_CODE,
   type LoopbackDescriptor,
   type RuntimeCommand,
   type RuntimeEvent,
@@ -261,13 +262,27 @@ export class HostLoopbackServer {
         return;
       }
 
-      let parsed: ReturnType<typeof LoopbackInboundSchema.safeParse>;
+      let value: unknown;
       try {
-        parsed = LoopbackInboundSchema.safeParse(JSON.parse(raw.toString()) as unknown);
+        value = JSON.parse(raw.toString()) as unknown;
       } catch {
         return;
       }
+      const parsed = LoopbackInboundSchema.safeParse(value);
       if (!parsed.success) {
+        // `protocolVersion` 是字面量，所以「对面是另一版协议」和「这帧是垃圾」在 schema 里
+        // 长得一模一样。前者必须回话：静默丢弃会让对面的 TUI 永远停在 connecting——
+        // 连接通着、没有错误、也不重连（实测：协议 8 的扩展连上协议 14 的 Host 就是这样）。
+        const reported = reportedProtocolVersion(value);
+        if (reported !== undefined && reported !== PROTOCOL_VERSION) {
+          socket.send(JSON.stringify({
+            type: "protocol.error",
+            code: PROTOCOL_VERSION_ERROR_CODE,
+            message: `协议版本不匹配：对面是 ${reported}，Host 是 ${PROTOCOL_VERSION}；请把 Pi 扩展更新到与 Host 同一构建`,
+          }));
+          socket.close(1008, "loopback 协议版本不匹配");
+          return;
+        }
         this.#options.log?.("loopback 收到不认识的消息，已忽略");
         return;
       }
@@ -374,6 +389,13 @@ export class HostLoopbackServer {
     entry.socket.send(JSON.stringify(message));
     return true;
   }
+}
+
+/** 从一条被 schema 拒掉的消息里读出它自称的协议版本，用来把「另一版协议」与「垃圾帧」分开。 */
+function reportedProtocolVersion(value: unknown): number | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const version = (value as { protocolVersion?: unknown }).protocolVersion;
+  return typeof version === "number" && Number.isInteger(version) ? version : undefined;
 }
 
 async function readRequestBody(request: IncomingMessage, maximumBytes: number): Promise<string> {
