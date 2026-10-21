@@ -15,6 +15,9 @@ const assets = {
   "/assets/orbis.png": ["orbis.png", "image/png"],
 } as const;
 export const downloadNames = [
+  "OrbisHost-0.1.12-windows-x64-setup.exe", "OrbisHost-0.1.12-windows-x64.zip",
+  "OrbisHost-0.1.12-macos-arm64.dmg",
+  "OrbisHost-0.1.12-macos-x64.dmg",
   "OrbisHost-0.1.11-windows-x64-setup.exe", "OrbisHost-0.1.11-windows-x64.zip",
   "OrbisHost-0.1.11-macos-arm64.dmg",
   "OrbisHost-0.1.11-macos-x64.dmg",
@@ -73,7 +76,7 @@ export async function createWebHandler(downloadsDir?: string, androidDir?: strin
       const macos = downloads.filter(file => /-macos-/u.test(file.name));
       jsonResponse(response, 200, {
         // 保留 Windows Host 更新检查使用的版本字段，Mac 发布不应覆盖它。
-        version: windows[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.11",
+        version: windows[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.12",
         windows,
         macos,
         android: "https://orbising.com/downloads/orbis.apk",
