@@ -1,6 +1,7 @@
 #include "../DiagnosticLogModel.h"
 #include "../NeuSurface.h"
 #include <QAbstractItemModelTester>
+#include <QElapsedTimer>
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQuickItem>
@@ -67,11 +68,21 @@ private slots:
         connect(&heartbeat, &QTimer::timeout, &model, [&] { ++heartbeats; });
         producer.start(2);
         heartbeat.start(10);
-        QTest::qWait(1200);
+        // 1.2s 是**批处理窗口**：250ms 一刷，所以批次数的上下限只对这个窗口成立。
+        QElapsedTimer batchWindow;
+        batchWindow.start();
+        while (batchWindow.elapsed() < 1200) QTest::qWait(20);
+        const int batchesInWindow = int(inserts.count());
+        const int heartbeatsInWindow = heartbeats;
+        // 洪泛是"量"不是"机器有多快"：托管 runner（macOS 的软件渲染 QML）1.2s 里
+        // 产不满 1000 行，这里等产满再断言，而不是把"这台机器够快"当成不变量。
+        QElapsedTimer flood;
+        flood.start();
+        while (produced < 1000 && flood.elapsed() < 20000) QTest::qWait(20);
         producer.stop();
-        QVERIFY(produced >= 1000);
-        QVERIFY(heartbeats >= 20);
-        QVERIFY(inserts.count() >= 2 && inserts.count() <= 6);
+        QVERIFY2(produced >= 1000, qPrintable(QString("produced %1 rows in %2 ms").arg(produced).arg(batchWindow.elapsed() + flood.elapsed())));
+        QVERIFY(heartbeatsInWindow >= 20);
+        QVERIFY(batchesInWindow >= 2 && batchesInWindow <= 6);
         QCOMPARE(model.rowCount(), DiagnosticLogModel::MaxEntries);
         QTRY_COMPARE(list->property("count").toInt(), DiagnosticLogModel::MaxEntries);
         model.append("latest desktop refresh error");
