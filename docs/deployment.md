@@ -33,7 +33,14 @@ Confirm the successful Actions run, public health `commit`, and `/opt/orbis/shar
 
 ## Downloads
 
-Run **Windows Host build** on `main`. After it succeeds, dispatch **Relay deploy** with that run's `windows_build_run_id`. It checks artifact hashes and publishes the installer, portable ZIP and checksums from a read-only mount. The version in the client, packaging scripts, allowlist and release workflow must agree.
+Release order for a tagged build on `main`:
+
+1. Dispatch **Windows Host build** and **macOS Host build**, both on `main` from the release commit. Each run uploads its own artifacts (`OrbisHost-windows-x64`, `OrbisHost-macos-arm64`, `OrbisHost-macos-x64`), and each artifact carries the `.sha256` files next to the binaries.
+2. Put the verified APK and its checksum on the draft release for the tag (see the Android paragraph below).
+3. Dispatch **Publish client release** with `release_tag`, `windows_build_run_id`, `macos_build_run_id` and `android_apk_sha256`. It refuses runs whose `head_sha` is not the tagged commit, re-checks every host checksum, uploads the installer, portable ZIP and both dmgs to the release, then undrafts it as latest.
+4. Dispatch **Relay deploy** with the same `windows_build_run_id` and `macos_build_run_id` plus `android_release_tag` and `android_apk_sha256`. It re-verifies the runs, archives the four host files, and publishes them from a read-only mount; the server re-verifies every archived checksum before switching traffic.
+
+Without those inputs a push-triggered **Relay deploy** still moves the Relay but publishes no downloads. The version in the client, packaging scripts, allowlist (`packages/relay/src/web.ts`) and release workflow must agree: the deploy fails if a file named after the version in `packages/windows-host/CMakeLists.txt` is missing from the artifacts.
 
 Build Android with the Windows wrapper, publish the verified APK as `/var/www/orbis-downloads/orbis.apk` and its checksum as `orbis.apk.sha256`. Preserve the signing identity for upgrades. Never publish signing keys. Binary releases belong in GitHub Releases or the download directory, not source history.
 

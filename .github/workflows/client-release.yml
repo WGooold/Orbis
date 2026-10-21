@@ -11,6 +11,10 @@ on:
         description: 'Successful main Windows Host build for the exact release tag commit'
         required: true
         type: string
+      macos_build_run_id:
+        description: 'Successful main macOS Host build for the exact release tag commit'
+        required: true
+        type: string
       android_apk_sha256:
         description: 'Locally verified Android APK SHA-256'
         required: true
@@ -32,6 +36,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.release_tag }}
       WINDOWS_BUILD_RUN: ${{ inputs.windows_build_run_id }}
+      MACOS_BUILD_RUN: ${{ inputs.macos_build_run_id }}
       ANDROID_APK_SHA256: ${{ inputs.android_apk_sha256 }}
     steps:
       - uses: actions/checkout@v5
@@ -43,6 +48,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid release tag' }
           if ($env:WINDOWS_BUILD_RUN -notmatch '^[0-9]+$') { throw 'Invalid build run ID' }
+          if ($env:MACOS_BUILD_RUN -notmatch '^[0-9]+$') { throw 'Invalid macOS build run ID' }
           if ($env:ANDROID_APK_SHA256 -notmatch '^[a-f0-9]{64}$') { throw 'Invalid APK SHA-256' }
           $commit = git rev-list -n 1 "refs/tags/$env:RELEASE_TAG"
           if ($LASTEXITCODE -ne 0 -or !$commit) { throw 'Release tag not found' }
@@ -50,6 +56,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot read Windows build run' }
           if ($run.conclusion -ne 'success' -or $run.head_branch -ne 'main' -or $run.path -ne '.github/workflows/windows-host-build.yml' -or $run.head_sha -ne $commit) {
             throw 'Windows build does not match the successful main build for this release tag'
+          }
+          $mac = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:MACOS_BUILD_RUN" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read macOS build run' }
+          if ($mac.conclusion -ne 'success' -or $mac.head_branch -ne 'main' -or $mac.path -ne '.github/workflows/macos-host-build.yml' -or $mac.head_sha -ne $commit) {
+            throw 'macOS build does not match the successful main build for this release tag'
           }
           $release = gh release view $env:RELEASE_TAG --json isDraft | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or !$release.isDraft) { throw 'Expected an existing draft release' }
@@ -65,7 +76,21 @@ jobs:
           path: client-artifacts
           run-id: ${{ inputs.windows_build_run_id }}
           github-token: ${{ github.token }}
-      - name: Verify clients and upload Windows assets
+      - uses: actions/download-artifact@v4
+        with:
+          # 两个架构分别落到自己的目录：两边的 artifact 都带 smoke/qml.log，
+          # 合到同一目录会撞名（merge-multiple 直接覆盖）。
+          name: OrbisHost-macos-arm64
+          path: client-artifacts-macos/arm64
+          run-id: ${{ inputs.macos_build_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: OrbisHost-macos-x64
+          path: client-artifacts-macos/x64
+          run-id: ${{ inputs.macos_build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify clients and upload Host assets
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -75,9 +100,14 @@ jobs:
           $apkHash = (Get-FileHash android-release/orbis.apk -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($apkHash -ne $env:ANDROID_APK_SHA256 -or (Get-Content android-release/orbis.apk.sha256 -Raw).Trim() -ne "$apkHash  orbis.apk") { throw 'Android checksum mismatch' }
           $names = @("OrbisHost-$env:HOST_VERSION-windows-x64-setup.exe", "OrbisHost-$env:HOST_VERSION-windows-x64.zip")
+          $roots = @('client-artifacts')
+          if ($env:MACOS_BUILD_RUN) {
+            $names += @("OrbisHost-$env:HOST_VERSION-macos-arm64.dmg", "OrbisHost-$env:HOST_VERSION-macos-x64.dmg")
+            $roots += 'client-artifacts-macos'
+          }
           $uploads = @()
           foreach ($name in $names) {
-            $files = @(Get-ChildItem client-artifacts -Recurse -File -Filter $name)
+            $files = @(Get-ChildItem $roots -Recurse -File -Filter $name)
             if ($files.Count -ne 1) { throw "Expected one artifact: $name" }
             $file = $files[0]
             $checksum = $file.FullName + '.sha256'

@@ -57,7 +57,9 @@ chown 1000:1000 "$data_dir"
 chmod 700 "$data_dir"
 
 # Release downloads are separate from source and secrets. Only the CI-selected,
-# checksummed Windows artifact is published, and the container gets a read-only mount.
+# checksummed Host artifacts are published (Windows installer + portable zip, and
+# the macOS dmgs when their build run is passed), and the container gets a
+# read-only mount.
 install -d -m 755 "$shared/download-releases/empty"
 downloads_dir="$(readlink -f "$shared/downloads-current" 2>/dev/null || true)"
 if [[ ! -d "$downloads_dir" ]]; then downloads_dir="$shared/download-releases/empty"; fi
@@ -67,10 +69,12 @@ if [[ -n "$downloads_archive" ]]; then
   tar -xzf "$downloads_archive" --no-same-owner -C "$downloads_dir"
   # PowerShell-generated checksum files may use CRLF. Normalize only line
   # endings; sha256sum still validates both the digest and the exact file name.
+  # Whatever the workflow archived gets checked here: the archive is the only
+  # proof that the bytes served to clients match the verified builds.
   (cd "$downloads_dir" &&
     shopt -s nullglob
-    checksums=(OrbisHost-*-windows-x64-setup.exe.sha256 OrbisHost-*-windows-x64.zip.sha256)
-    [[ "${#checksums[@]}" -eq 2 ]]
+    checksums=(OrbisHost-*.sha256)
+    [[ "${#checksums[@]}" -gt 0 ]]
     for checksum in "${checksums[@]}"; do
       tr -d '\r' < "$checksum" | sha256sum -c -
     done)

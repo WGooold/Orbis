@@ -21,6 +21,10 @@ on:
         description: 'Optional successful Windows Host build run ID to publish on the website'
         required: false
         type: string
+      macos_build_run_id:
+        description: 'Optional successful macOS Host build run ID to publish on the website'
+        required: false
+        type: string
       android_release_tag:
         description: 'Optional GitHub release containing verified orbis.apk and orbis.apk.sha256 assets'
         required: false
@@ -79,6 +83,7 @@ jobs:
       SSH_PRIVATE_KEY: ${{ secrets.PI_REMOTE_SSH_KEY }}
       SSH_KNOWN_HOSTS: ${{ secrets.PI_REMOTE_SSH_KNOWN_HOSTS }}
       WINDOWS_BUILD_RUN: ${{ inputs.windows_build_run_id }}
+      MACOS_BUILD_RUN: ${{ inputs.macos_build_run_id }}
       ANDROID_RELEASE_TAG: ${{ inputs.android_release_tag }}
       ANDROID_APK_SHA256: ${{ inputs.android_apk_sha256 }}
     steps:
@@ -92,20 +97,37 @@ jobs:
           git archive --format=tar.gz --output="/tmp/pi-remote-relay-$release.tar.gz" HEAD
           echo "待部署版本：$release"
 
-      - name: Validate requested Windows build
-        if: inputs.windows_build_run_id != ''
+      - name: Validate requested Host builds
+        if: inputs.windows_build_run_id != '' || inputs.macos_build_run_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$WINDOWS_BUILD_RUN" =~ ^[0-9]+$ ]]
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$WINDOWS_BUILD_RUN" > /tmp/windows-run.json
           python3 - <<'PY'
-          import json
-          run = json.load(open('/tmp/windows-run.json'))
-          assert run['conclusion'] == 'success' and run['head_branch'] == 'main'
-          assert run['path'] == '.github/workflows/windows-host-build.yml'
+          import json, os, subprocess
+          release = os.environ['RELEASE']
+          repository = os.environ['GITHUB_REPOSITORY']
+          targets = [
+              (os.environ['WINDOWS_BUILD_RUN'], 'windows-host-build.yml'),
+              (os.environ['MACOS_BUILD_RUN'], 'macos-host-build.yml'),
+          ]
+          for run_id, workflow in targets:
+              if not run_id:
+                  continue
+              assert run_id.isdigit(), f'invalid run id: {run_id}'
+              raw = subprocess.check_output(['gh', 'api', f'repos/{repository}/actions/runs/{run_id}'])
+              run = json.loads(raw)
+              assert run['conclusion'] == 'success', f'{workflow} run {run_id} concluded {run["conclusion"]}'
+              assert run['head_branch'] == 'main', f'{workflow} run {run_id} is not from main: {run["head_branch"]}'
+              assert run['path'] == f'.github/workflows/{workflow}', f'unexpected workflow: {run["path"]}'
+              # 装到官网上的产物必须就是这个 HEAD 构建的：版本号相同、提交不同
+              # 的 run 会让下载页挂着一份与 deployed-commit 对不上的安装包。
+              assert run['head_sha'].startswith(release), f'{workflow} run is {run["head_sha"]}, release is {release}'
+              print(f'Verified {workflow} run {run_id} ({run["head_sha"][:12]})')
           PY
+          if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" ]]; then
+            echo 'PUBLISH_HOST_DOWNLOADS=true' >> "$GITHUB_ENV"
+          fi
 
       - uses: actions/download-artifact@v4
         if: inputs.windows_build_run_id != ''
@@ -113,6 +135,24 @@ jobs:
           name: OrbisHost-windows-x64
           path: /tmp/orbis-windows-artifact
           run-id: ${{ inputs.windows_build_run_id }}
+          github-token: ${{ github.token }}
+
+      - uses: actions/download-artifact@v4
+        if: inputs.macos_build_run_id != ''
+        with:
+          name: OrbisHost-macos-arm64
+          path: /tmp/orbis-macos-artifact/arm64
+          run-id: ${{ inputs.macos_build_run_id }}
+          github-token: ${{ github.token }}
+
+      - uses: actions/download-artifact@v4
+        if: inputs.macos_build_run_id != ''
+        with:
+          # 两个架构分别落到自己的目录：两边的 artifact 都带 smoke/qml.log，
+          # 合到同一目录会撞名（merge-multiple 直接覆盖）。
+          name: OrbisHost-macos-x64
+          path: /tmp/orbis-macos-artifact/x64
+          run-id: ${{ inputs.macos_build_run_id }}
           github-token: ${{ github.token }}
 
       - name: Set up Android SDK for APK metadata extraction
@@ -127,26 +167,31 @@ jobs:
         if: inputs.android_release_tag != ''
         run: sdkmanager "build-tools;35.0.0"
 
-      - name: Verify and archive Windows downloads
-        if: inputs.windows_build_run_id != ''
+      - name: Verify and archive Host downloads
+        if: env.PUBLISH_HOST_DOWNLOADS == 'true'
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import hashlib, os, tarfile
-          root = Path('/tmp/orbis-windows-artifact')
+          import hashlib, os, re, tarfile
           cmake = Path('packages/windows-host/CMakeLists.txt').read_text()
-          import re
           version = re.search(r'project\(OrbisHost VERSION ([0-9]+\.[0-9]+\.[0-9]+)', cmake).group(1)
+          wanted = []
+          if os.environ['WINDOWS_BUILD_RUN']:
+              wanted += [f'OrbisHost-{version}-windows-x64-setup.exe', f'OrbisHost-{version}-windows-x64.zip']
+          if os.environ['MACOS_BUILD_RUN']:
+              wanted += [f'OrbisHost-{version}-macos-arm64.dmg', f'OrbisHost-{version}-macos-x64.dmg']
+          roots = [Path(path) for path in ('/tmp/orbis-windows-artifact', '/tmp/orbis-macos-artifact') if Path(path).is_dir()]
           with tarfile.open('/tmp/orbis-downloads-' + os.environ['RELEASE'] + '.tar.gz', 'w:gz') as archive:
-              for name in [f'OrbisHost-{version}-windows-x64-setup.exe', f'OrbisHost-{version}-windows-x64.zip']:
-                  matches = list(root.rglob(name))
+              for name in wanted:
+                  matches = [match for root in roots for match in root.rglob(name)]
                   assert len(matches) == 1, name
                   file = matches[0]
                   checksum = file.with_name(name + '.sha256')
-                  assert hashlib.sha256(file.read_bytes()).hexdigest() == checksum.read_text().split()[0]
+                  assert hashlib.sha256(file.read_bytes()).hexdigest() == checksum.read_text().split()[0], name
                   archive.add(file, arcname=name)
                   archive.add(checksum, arcname=name + '.sha256')
+                  print(f'Archived verified {name}')
           PY
 
       - name: Download and verify requested Android release
@@ -209,7 +254,7 @@ jobs:
           set -euo pipefail
           deployed="$(ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
             "$TARGET" "cat $APP_DIR/shared/deployed-commit 2>/dev/null || true" | tr -d '\r\n')"
-          if [[ "$deployed" == "$RELEASE" && -z "$WINDOWS_BUILD_RUN" ]]; then
+          if [[ "$deployed" == "$RELEASE" && -z "$WINDOWS_BUILD_RUN" && -z "$MACOS_BUILD_RUN" && -z "$ANDROID_RELEASE_TAG" ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "服务器已经是 $RELEASE，跳过构建与切换。"
           else
@@ -225,7 +270,7 @@ jobs:
             "/tmp/pi-remote-relay-$RELEASE.tar.gz" "$TARGET:/tmp/pi-remote-relay-$RELEASE.tar.gz"
           scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
             deploy/remote-deploy.sh "$TARGET:/tmp/pi-remote-remote-deploy-$RELEASE.sh"
-          if [[ -n "$WINDOWS_BUILD_RUN" ]]; then
+          if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" ]]; then
             scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
               "/tmp/orbis-downloads-$RELEASE.tar.gz" "$TARGET:/tmp/orbis-downloads-$RELEASE.tar.gz"
           fi
@@ -235,7 +280,7 @@ jobs:
         run: |
           set -euo pipefail
           downloads=""
-          if [[ -n "$WINDOWS_BUILD_RUN" ]]; then downloads="/tmp/orbis-downloads-$RELEASE.tar.gz"; fi
+          if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" ]]; then downloads="/tmp/orbis-downloads-$RELEASE.tar.gz"; fi
           ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
             "$TARGET" "bash /tmp/pi-remote-remote-deploy-$RELEASE.sh '$RELEASE' \
