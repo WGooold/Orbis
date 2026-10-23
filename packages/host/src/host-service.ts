@@ -48,6 +48,7 @@ import {
   type RelayToDeviceMessage,
   type RuntimeMetadata,
   type RuntimeEvent,
+  SESSION_SYNC_MAX_BYTES,
 } from "@pi-remote/protocol";
 
 import { AgentStateFacts } from "./agent-state-facts.js";
@@ -1496,6 +1497,18 @@ export class HostService {
     // ADR-0037 §4：提交回执由协调者自己消费，不进后端。
     if (command.type === "session.snapshot.ack") {
       this.#sessionSync.acknowledge(deviceId, command.syncId, command.result);
+      return;
+    }
+    // ADR-0038 §8：按需取回未截断的条目。只回请求设备；超过单条线路上限按确定性失败拒绝。
+    if (command.type === "session.entry.request") {
+      const scope = this.#agentFacts.scopeOf(runtimeId);
+      const entry = scope === undefined ? undefined : this.#conversationState.entry(scope, command.entryId);
+      const event: RuntimeEvent = entry === undefined
+        ? { type: "session.entry.result", requestId: command.requestId, entryId: command.entryId, error: "entry_not_found" }
+        : Buffer.byteLength(JSON.stringify(entry), "utf8") > SESSION_SYNC_MAX_BYTES
+          ? { type: "session.entry.result", requestId: command.requestId, entryId: command.entryId, error: "session_entry_too_large" }
+          : { type: "session.entry.result", requestId: command.requestId, entryId: command.entryId, entry };
+      this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, event));
       return;
     }
     for (const [key, owner] of this.#commandOwners) if (owner.at < Date.now() - 300_000) this.#commandOwners.delete(key);

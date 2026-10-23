@@ -389,8 +389,8 @@ export class RuntimeBridge {
     }
 
     try {
-      // 提交回执由 Host 自己处理（ADR-0037 §4），永远不会被路由到 runtime。
-      if (command.type === "session.snapshot.ack") {
+      // 提交回执与取完整条目都由 Host 自己处理（ADR-0037 §4、ADR-0038 §8）。
+      if (command.type === "session.snapshot.ack" || command.type === "session.entry.request") {
         this.#commandResult(commandId, true);
         return;
       }

@@ -193,4 +193,17 @@ describe("Host conversation projection", () => {
     expect(Object.isFrozen(live)).toBe(false);
     expect(() => { live!.messages[0]!.message.content.push({ type: "text", text: "more" }); }).not.toThrow();
   });
+
+  // ADR-0038 §8：按需取回未截断的原始条目（线路投影里它可能被截断）。
+  it("serves the untruncated entry on demand", () => {
+    const registry = new AgentStateRegistry(); const model = new AgentConversationState(registry);
+    const entry = { entryId: "a", parentId: null, type: "message", timestamp: "t",
+      data: { message: { messageId: "a", role: "user", content: [{ type: "text", text: "x".repeat(200_000) }], timestamp: 1 } } };
+    expect(model.accept(scope, { ...snapshot(), mode: "append" as const, cursor: { leafId: "a" }, entries: [entry] })).toBe(true);
+    const full = model.entry(scope, "a");
+    expect(full?.entryId).toBe("a");
+    // 原文完整保留，逐字一致（截断只发生在发给设备的载荷上）。
+    expect(JSON.stringify(full)).toContain("x".repeat(1000));
+    expect(model.entry(scope, "missing")).toBeUndefined();
+  });
 });

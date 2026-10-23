@@ -115,6 +115,9 @@ data class RemoteArtifact(
 data class RemoteContent(
     val type: String,
     val text: String? = null,
+    /** ADR-0038 §5：这条载荷被线路投影截断过；`originalBytes` 是截断前的字节数。 */
+    val truncated: Boolean = false,
+    val originalBytes: Long? = null,
     val toolCallId: String? = null,
     val toolName: String? = null,
     val arguments: JsonElement? = null,
@@ -456,6 +459,8 @@ data class RemoteState(
      * 与只用于显示的 `sessionSyncFailures` 分开存储。
      */
     val sessionSyncBlockedTargets: Set<String> = emptySet(),
+    /** ADR-0038 §8：按需取回的未截断条目，按 entryId 缓存。 */
+    val fullEntries: Map<String, SessionGraphEntry> = emptyMap(),
     val sessionSyncRequests: Set<String> = emptySet(),
     val sessionSyncDemandGenerations: Map<String, Long> = emptyMap(),
     val sessionHistory: Map<String, SessionHistoryState> = emptyMap(),
@@ -2051,7 +2056,7 @@ class RelayReducer(
             }
         if (sequence <= (state.lastSequence[sequenceKey] ?: -1) && !snapshotStillOwned && eventType != "session.patch") return state
         val supportedEvents = setOf(
-            "runtime.status", "runtime.metadata", "runtime.capabilities", "session.catalog", "message.queued", "session.snapshot", "session.sync.pending", "session.patch", "message.started", "message.delta",
+            "runtime.status", "runtime.metadata", "runtime.capabilities", "session.catalog", "message.queued", "session.snapshot", "session.sync.pending", "session.entry.result", "session.patch", "message.started", "message.delta",
             "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished", "artifact.started",
             "artifact.failed", "interaction.requested", "interaction.snapshot",
             "interaction.resolved", "interaction.cancelled", "local_interaction.required", "command.result", "runtime.error",
@@ -2091,6 +2096,18 @@ class RelayReducer(
         var nextPendingDownloads = state.pendingDownloads
 
         when (eventType) {
+            // ADR-0038 §8：按需取回的未截断条目，只用于查看/复制，不参与 canonical 投影。
+            "session.entry.result" -> {
+                val entryId = event.string("entryId")
+                val entry = event["entry"]?.let { runCatching { json.decodeFromJsonElement<SessionGraphEntry>(it) }.getOrNull() }
+                if (entryId == null || entry == null) {
+                    return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
+                }
+                return state.copy(
+                    fullEntries = state.fullEntries + (entryId to entry),
+                    lastSequence = state.lastSequence + (sequenceKey to sequence),
+                )
+            }
             // ADR-0037 §3：协调者说"还在处理"就不再是静默。设备把耗尽窗口交给调度器重新计时，
             // 而不是等 150s 后把整场同步判成会话级失败。
             "session.sync.pending" -> {

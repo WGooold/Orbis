@@ -656,6 +656,21 @@ class RelayClient(
             put("result", result)
         }, commandId = "session-sync-ack:${UUID.randomUUID()}")
 
+    /**
+     * ADR-0038 §8：请求某条 Entry 的未截断内容；结果以 `session.entry.result` 事件回来。
+     *
+     * 返回 requestId（同时用作 commandId）——调用方用它把结果和请求对上。
+     */
+    fun requestSessionEntry(runtimeId: String, sessionId: String, entryId: String): String? {
+        val requestId = "entry:${UUID.randomUUID()}"
+        return sendCommand(runtimeId, buildJsonObject {
+            put("type", "session.entry.request")
+            put("requestId", requestId)
+            put("sessionId", sessionId)
+            put("entryId", entryId)
+        }, commandId = requestId)
+    }
+
     fun syncSession(
         runtimeId: String,
         sessionId: String,

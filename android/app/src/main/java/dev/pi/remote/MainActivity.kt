@@ -152,6 +152,11 @@ import java.util.Date
 import java.util.Locale
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.JsonArray
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -999,6 +1004,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val presentationCache = remember { PresentationCache() }
     val presentation = presentationCache.presentation(conversation.messages)
     val chatItems = presentationCache.items(presentation.messages, turnIdsByMessageId)
+    val truncatedContent = remember(presentation.messages) {
+        presentation.messages.firstNotNullOfOrNull { message ->
+            message.content.firstOrNull { it.truncated }?.let { message.messageId to (it.originalBytes ?: 0L) }
+        }
+    }
     val chatItemKeys = remember(chatItems) { chatItems.map(ChatListItem::key) }
     val chatItemIndexById = remember(conversation.revision) { chatListItemIndexByMessageId(chatItems) }
     val representedToolIds = remember(conversation.revision) {
@@ -1700,6 +1710,37 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 }
                 if (state.sessionSyncCommands.values.any { it.runtimeId == runtimeId && it.slow && it.exhaustedAt == null }) {
                     item { NoticeCard("聊天记录仍在同步，请稍候…") }
+                }
+                // ADR-0038 §8：可见分支里有被线路投影截断的内容时，给一个取全文的入口。
+                if (truncatedContent != null) {
+                    item {
+                        var open by remember { mutableStateOf(false) }
+                        val full = state.fullEntries[truncatedContent.first]
+                        Column {
+                            NoticeCard(
+                                if (full == null) "有内容因超长被截断（原始 ${truncatedContent.second} 字节）"
+                                else "已取回完整内容（原始 ${truncatedContent.second} 字节）",
+                            )
+                            TextButton(onClick = {
+                                open = true
+                                model.requestFullEntry(runtimeId, truncatedContent.first)
+                            }) { Text("查看完整内容") }
+                        }
+                        if (open) {
+                            AlertDialog(
+                                onDismissRequest = { open = false },
+                                confirmButton = { TextButton(onClick = { open = false }) { Text("关闭") } },
+                                title = { Text("完整内容") },
+                                text = {
+                                    val text = full?.let { fullEntryText(it) }
+                                    if (text == null) Text("正在取回…")
+                                    else Box(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                                        SelectionContainer { Text(text) }
+                                    }
+                                },
+                            )
+                        }
+                    }
                 }
                 if (conversation.waitingLocalInteraction) {
                     item { WarningCard("此交互必须在电脑端完成。停止操作仅为尽力而为。") }
@@ -3750,6 +3791,21 @@ private class PresentationCache {
             lastItemMessages = messages
             lastTurnIds = turnIdsByMessageId
             lastItems = it
+        }
+    }
+}
+
+/** 从一条完整 Entry 里取出可读正文（ADR-0038 §8 的查看入口用）。 */
+private fun fullEntryText(entry: SessionGraphEntry): String {
+    val message = entry.data["message"] ?: return entry.data.toString()
+    val content = message.jsonObject["content"]
+    if (content == null || content !is JsonArray) return message.toString()
+    return content.jsonArray.joinToString("\n") { block ->
+        val obj = block.jsonObject
+        when (obj["type"]?.jsonPrimitive?.contentOrNull) {
+            "text", "thinking" -> obj["text"]?.jsonPrimitive?.contentOrNull ?: ""
+            "tool_call" -> "[工具] " + (obj["toolName"]?.jsonPrimitive?.contentOrNull ?: "") + " " + (obj["arguments"]?.toString() ?: "")
+            else -> block.toString()
         }
     }
 }

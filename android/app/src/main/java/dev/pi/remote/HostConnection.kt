@@ -1181,6 +1181,21 @@ internal class HostConnection(
      * 任何 Pi 进程参与——所以命令的 `runtimeId` 填 [RemoteState.hostId]，Relay 据此路由到
      * Host。`runtimeId` 参数只作来源标记（这条下载是哪个会话里的文件），用于列表分组与回溯。
      */
+    /**
+     * ADR-0038 §8：取回某条 Entry 的完整内容。
+     *
+     * 线路页码里这条是被截断的投影；完整内容只按需取一次，并留在 `fullEntries` 供查看/复制。
+     * 已经取过就不重复请求。
+     */
+    fun requestFullEntry(runtimeId: String, entryId: String) {
+        val state = mutableState.value
+        if (entryId in state.fullEntries) return
+        val sessionId = state.runtimes[runtimeId]?.sessionId ?: return
+        scope.launch(Dispatchers.IO) {
+            runCatching { relay.requestSessionEntry(runtimeId, sessionId, entryId) }
+        }
+    }
+
     fun downloadArtifact(runtimeId: String, artifact: RemoteArtifact) {
         val hostId = mutableState.value.hostId ?: run {
             updateState { it.copy(error = "还没有已配对的电脑，无法下载") }

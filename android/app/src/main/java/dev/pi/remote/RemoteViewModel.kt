@@ -384,6 +384,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun stopRuntime() = active()?.stopRuntime()
 
+    fun requestFullEntry(runtimeId: String, entryId: String) =
+        active()?.requestFullEntry(runtimeId, entryId)
+
     fun downloadArtifact(runtimeId: String, artifact: RemoteArtifact) =
         active()?.downloadArtifact(runtimeId, artifact)
 

@@ -830,6 +830,20 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
     leaseMs: z.number().int().positive().max(600_000).optional(),
   }),
   z.strictObject({
+    /**
+     * ADR-0038 §8：按需取回**未截断**的那一条 Entry。
+     *
+     * 线路载荷仍受单条上限约束：超过 `SESSION_SYNC_MAX_BYTES` 的条目用 `error` 拒绝，
+     * 而不是发一个"看起来完整"的半截内容。
+     */
+    type: z.literal("session.entry.result"),
+    requestId: z.string().min(1).max(256),
+    entryId: z.string().min(1).max(256),
+    entry: RemoteSessionEntrySchema.optional(),
+    error: z.string().max(256).optional(),
+  }).refine(value => value.entry !== undefined || value.error !== undefined,
+    { message: "An entry result must carry either the entry or an error" }),
+  z.strictObject({
     type: z.literal("session.snapshot"),
     sessionId: z.string().min(1).max(256),
     syncId: z.string().min(1).max(256),
@@ -973,6 +987,13 @@ export const RuntimeCommandSchema = z.discriminatedUnion("type", [
     type: z.literal("session.snapshot.ack"),
     syncId: z.string().min(1).max(256),
     result: z.enum(["applied", "rejected"]),
+  }),
+  z.strictObject({
+    /** ADR-0038 §8：请求某一条 Entry 的完整内容（不走截断后的线路投影）。 */
+    type: z.literal("session.entry.request"),
+    requestId: z.string().min(1).max(256),
+    sessionId: z.string().min(1).max(256),
+    entryId: z.string().min(1).max(256),
   }),
   z.strictObject({
     type: z.literal("user_message"),

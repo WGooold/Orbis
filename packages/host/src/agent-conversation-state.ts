@@ -245,6 +245,18 @@ export class AgentConversationState {
   #dropPages(key: string): void { for (const [id, page] of this.#pages) if (JSON.parse(id)[0] === key) { this.#bytes -= page.bytes; this.#pages.delete(id); } }
   #forget(key: string): void { const old = this.#current.get(key); if (old) { this.#currentBytes -= old.bytes; this.#current.delete(key); } this.#dropPages(key); }
   stats(): { pages: number; bytes: number; currentSessions: number; currentBytes: number } { return { pages: this.#pages.size, bytes: this.#bytes, currentSessions: this.#current.size, currentBytes: this.#currentBytes }; }
+  /**
+   * ADR-0038 §8：按需取回**未截断**的那一条 Entry。
+   *
+   * 线路投影会截断超长载荷，但权威模型里保留的是原文；这里只按 id 查表，并且把
+   * "能不能发"交给调用方（超上限按确定性失败拒绝，不发半截内容）。
+   */
+  entry(scope: StateScope, entryId: string): RemoteSessionEntry | undefined {
+    if (scope.kind !== "agent") return undefined;
+    const current = this.#current.get(scopeKey(scope));
+    return current?.entries.find(entry => entry.entryId === entryId);
+  }
+
   hasBaseline(scope: StateScope): boolean { return this.#current.get(scopeKey(scope))?.source.ready === true && this.#registry.read(scope, "live")?.availability === "ready"; }
   recover(scope: StateScope, request: SessionSyncRequest): Snapshot | undefined {
     if (scope.kind !== "agent" || request.sessionId !== scope.key.sessionId) return;
