@@ -97,3 +97,26 @@ describe("recoverable source", () => {
     expect(source.snapshot().live.tools[0]?.detail).toEqual(big);
   });
 });
+
+// ADR-0035 §15：合并流式发布（默认关闭）。seq 仍然只在真正发布时前进，序列保持连续。
+describe("coalesced publishing", () => {
+  it("publishes one patch per window and keeps the sequence contiguous", async () => {
+    const patches: SessionPatch[] = [];
+    const source = new RecoverableSessionSource("session", patch => patches.push(patch), { coalesceMs: 20 });
+    source.setAvailability(true, true);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const before = source.snapshot().version;
+    patches.length = 0;
+    for (let index = 0; index < 5; index += 1) {
+      source.upsertMessage({
+        message: { messageId: "m", role: "assistant", timestamp: 1, content: [{ type: "text", text: "x".repeat(index + 1) }] },
+        finished: false, contentComplete: true,
+      });
+      expect(patches).toHaveLength(0);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(patches).toHaveLength(1);
+    expect(patches[0]!.baseSeq).toBe(before.seq);
+    expect(patches[0]!.seq).toBe(before.seq + 1);
+  });
+});

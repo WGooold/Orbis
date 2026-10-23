@@ -1048,9 +1048,23 @@ class RelayClient(
      * WebSocket 读线程是串行的：它被拖住时连 ping/pong 都排不进去，中继 30s 心跳就会把这条
      * 连接判死——表现就是「下载下着下着就断线」。大帧只记长度。
      */
+    /**
+     * 大帧只记长度；而且**限频**。流式回复会让 patch 打到 ~90 帧/秒，逐帧 `Log.i` 本身就是
+     * 读线程和 logd 的持续开销（实测 5s 内 450 行，正好和掉帧同步）。每 2 秒最多一行，带上
+     * 这期间被合并的次数。
+     */
+    private var largeFrameLogAt = 0L
+    private var largeFrameSuppressed = 0
+
     private fun traceIncoming(payload: String) {
         if (payload.length > TRACE_INCOMING_PARSE_LIMIT) {
-            trace("in large_frame bytes=${payload.length}")
+            val now = System.currentTimeMillis()
+            largeFrameSuppressed += 1
+            if (now - largeFrameLogAt >= 2_000) {
+                trace("in large_frame bytes=${payload.length} count=$largeFrameSuppressed")
+                largeFrameLogAt = now
+                largeFrameSuppressed = 0
+            }
             return
         }
         runCatching {
