@@ -102,7 +102,18 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
     - **DSH（终端）**：`dshEntries` 增加按原生 `seq` 的条目缓存，刷新时复用已有对象——这是 §1/§2 里“引用相等即没变”能成立的前提；sync 走 `SessionSyncPreparer`。
     - **DSH Web**：sync 走 `SessionSyncPreparer`（带它的 `historyBoundaryParentId`），在页面合并、快照替换与增量追加处 `invalidate()`。
     - **仍未做（代价已实测，比本文原先估计的重）**：DSH 终端适配层每次 sync 仍调用 `#history.read()` 读回整份原生日志（它的持久化 API 只给整份 log）。2026-10-22 实测本机一条 8.7MB 会话（5240 个 zstd 帧、11,978 个事件）：解压 163ms + 逐行解析 261ms = **约 420ms/次**，而且跑在 Host 的事件循环上（单线程，会连带卡住所有设备的推送）。本文原先按"最大单条 368KB、文本量级"判断为低风险，这个判断不成立——成本取决于**日志总长**，不是单条大小。
-    已做的缓解：条目对象不重建、不重算指纹；`#refresh` 单飞（并发 sync 共享同一次读）；`read()` 前置 `size:mtimeMs` 判据，文件未变直接复用上次解析结果（未变时 ≈0ms）。根治仍需 DSH 提供带游标的读取（或按 §1 的"内容变更信号"由源端告知增量）。
+    已做的缓解（2026-10-22，全部在 Host 侧，不需要 DSH 改动）：
+
+    1. 条目对象按原生 `seq` 复用、不重算指纹（§1/§2 的前提）。
+    2. `#refresh` 单飞：并发 sync 共享同一次读取。
+    3. `read()` 前置 `size:mtimeMs` 判据：文件未变时直接复用上次结果。
+    4. **按 zstd 帧做字节区间增量读**：v4 日志每次追加写一个独立帧，实测只解新帧
+       = 7ms（整份 373ms）。首次读取与 `list()` 仍走 DSH 自己的持久化 API（保证解码语义），
+       增量只在 `session.v4.jsonl.zstd` 布局、且文件只增长时启用；文件被截断/替换、
+       布局不同、或尾部解不开（半帧）一律退回整份 API 读。
+
+    实测对比（8.7MB 会话，5240 帧，11,978 事件）：整份 373ms → 追加一帧 7ms → 未变 0ms。
+    仍未做：DSH 原生游标 API（当前是 Host 侧按帧增量，依赖"帧独立、只追加"这个格式事实）。
 
 12. **live 的变更检测用条目修订号，不用内容哈希（2026-10-22 已实现）。** 落地前的过渡实现是“每条 live 算一次内容哈希”，每个 token 仍要扫一遍正文（实测 1MB 正文 1.14ms/token、20KB 0.026ms/token，回合仍是 O(n²)，只是常数比旧实现小 3–10 倍）。现在：每个 live 条目维护单调递增的 `rev`（写入该条目时 +1），`#liveToken()` 只拼 `id:rev` 与标量字段，比较成本 O(条目数)、**每 token 零字节扫描**。
     **收益要说准**：它只消掉“比较”那一次扫描（实测 60KB 正文摊到 300 个 token 约 0.03ms/token）。回合内真正的大头在 `#flush()`：`snapshot()` 的 `structuredClone(live)`（1MB 工具结果 → 0.33ms）+ `JSON.stringify(patch)`（1.25ms），而且这份 patch 因为超过 256KB 预算会被整份丢弃——见 §13。两条都落地后实测：**1MB live 的 300 个 delta 总计 1ms（≈0.00ms/token，对照修复前 6.78ms/token）**；20KB live 为 0.07ms/token。

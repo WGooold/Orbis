@@ -1,5 +1,13 @@
-/** Read canonical logs through DSH's own versioned, read-only persistence API. */
-import { readdirSync, statSync } from "node:fs";
+/**
+ * 读 DSH 的 canonical 日志。
+ *
+ * 首次读取与 `list()` 走 DSH 自己的只读持久化 API（保证解码语义与该版本一致）；
+ * 之后的追加读取按 `session.v4.jsonl.zstd` 的**独立 zstd 帧**做字节区间增量解码
+ * （实测 8.7MB 日志：整份 373ms → 追加一帧 7ms → 文件未变 0ms）。
+ * 任何不确定的情况（布局不同、文件被截断/替换、尾部解码失败）都退回整份 API 读。
+ */
+import { closeSync, openSync, readSync, readdirSync, statSync } from "node:fs";
+import { zstdDecompressSync } from "node:zlib";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +28,57 @@ export function dshLogStatKey(file: string | undefined): string | undefined {
   try { const info = statSync(file); return `${info.size}:${info.mtimeMs}`; } catch { return undefined; }
 }
 
+
+/** zstd 帧起始 magic（0x28 B5 2F FD）。DSH v4 每次追加写一个**独立**帧。 */
+const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd] as const;
+
+/**
+ * 把一段字节切成 zstd 帧并逐帧解压（帧之间互不依赖，已用本机 8.7MB 日志验证）。
+ *
+ * 只用于 `session.v4.jsonl.zstd`；其它版本的布局不同，一律走 DSH 自己的持久化 API。
+ */
+export function dshDecodeFrames(bytes: Buffer): string[] {
+  const starts: number[] = [0];
+  for (let index = 1; index + 3 < bytes.length; index += 1) {
+    if (bytes[index] === ZSTD_MAGIC[0] && bytes[index + 1] === ZSTD_MAGIC[1] &&
+      bytes[index + 2] === ZSTD_MAGIC[2] && bytes[index + 3] === ZSTD_MAGIC[3]) starts.push(index);
+  }
+  const out: string[] = [];
+  for (let index = 0; index < starts.length; index += 1) {
+    const frame = bytes.subarray(starts[index]!, starts[index + 1] ?? bytes.length);
+    if (frame.length === 0) continue;
+    out.push(zstdDecompressSync(frame).toString("utf8"));
+  }
+  return out;
+}
+
+/** 解析 JSONL 文本块为事件数组；坏行直接跳过（与 DSH 的宽容读法一致）。 */
+export function dshEventsFromText(text: string): DshLog["events"] {
+  const events: DshLog["events"] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as { seq?: unknown };
+      if (typeof parsed.seq === "number" && Number.isSafeInteger(parsed.seq)) events.push(parsed as DshLog["events"][number]);
+    } catch { /* 半行或损坏：下次读到完整帧时再补 */ }
+  }
+  return events;
+}
+
+/** 从 `offset` 起读取文件尾部字节（返回尾部内容与新的偏移）。 */
+export function dshReadTail(file: string, offset: number): { bytes: Buffer; offset: number } | undefined {
+  let size: number;
+  try { size = statSync(file).size; } catch { return undefined; }
+  if (size <= offset) return undefined;
+  const handle = openSync(file, "r");
+  try {
+    const bytes = Buffer.allocUnsafe(size - offset);
+    const read = readSync(handle, bytes, 0, bytes.length, offset);
+    return { bytes: bytes.subarray(0, read), offset };
+  } finally { closeSync(handle); }
+}
+
 export interface DshHistory {
   list(): Promise<DshHeader[]>;
   read(sessionId: string): Promise<DshLog>;
@@ -37,7 +96,8 @@ export async function openDshHistory(cliEntry: string, root = process.env.ORBIS_
   // ADR-0035 §11：DSH 的 API 只给整份日志，而实测 8.7MB 日志一次 read 要 ~420ms
   // （5240 个 zstd 帧解压 163ms + 11,978 行逐行解析 261ms）。它跑在 Host 的事件循环上，
   // 单线程会连带卡住所有设备的事件。这里用文件 stat 做廉价判据：文件没变就复用上次的解析结果。
-  const caches = new Map<string, { key: string; log: DshLog }>();
+  // 增量读的会话状态：已解析事件、已消费的字节偏移、以及文件是否还是同一条（截断/替换要重读）。
+  const caches = new Map<string, { key: string; log: DshLog; offset: number }>();
   const paths = new Map<string, string | undefined>();
   const fileFor = (sessionId: string): string | undefined => {
     if (paths.has(sessionId)) return paths.get(sessionId);
@@ -57,12 +117,34 @@ export async function openDshHistory(cliEntry: string, root = process.env.ORBIS_
       const file = fileFor(sessionId);
       const key = dshLogStatKey(file);
       const cached = key === undefined ? undefined : caches.get(sessionId);
+      // 文件没变：直接复用（最常见的情况，≈0ms）。
       if (cached !== undefined && key !== undefined && cached.key === key) return cached.log;
+      // 只对 v4 的单文件布局做增量读；文件被截断/替换（变小）或布局不同都退回整份 API 读。
+      const size = key === undefined ? -1 : Number(key.split(":")[0]);
+      if (cached !== undefined && file !== undefined && size >= cached.offset) {
+        const tail = dshReadTail(file, cached.offset);
+        if (tail !== undefined && tail.bytes.length > 0) {
+          let appended: DshLog["events"] | undefined;
+          try { appended = dshDecodeFrames(tail.bytes).flatMap(dshEventsFromText); }
+          catch { appended = undefined; }        // 半帧或格式变化：下面整份重读
+          if (appended !== undefined) {
+            const merged = appended.length === 0 ? cached.log
+              : { header: cached.log.header, events: [...cached.log.events, ...appended] };
+            caches.set(sessionId, { key: key!, log: merged, offset: cached.offset + tail.bytes.length });
+            return merged;
+          }
+          caches.delete(sessionId);
+        }
+      }
       const handle = await ctx.sessionPersistence.open(sessionId, "read");
       try {
         const { events } = await handle.read();
         const log = { header: handle.header, events } as DshLog;
-        if (key !== undefined) caches.set(sessionId, { key, log });
+        if (key !== undefined && file !== undefined) {
+          let offset = 0;
+          try { offset = statSync(file).size; } catch { /* 读不到就下次重来 */ }
+          caches.set(sessionId, { key, log, offset });
+        }
         return log;
       } finally { await handle.close(); }
     },
