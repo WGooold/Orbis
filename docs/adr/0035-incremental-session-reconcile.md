@@ -4,7 +4,7 @@
 
 2026-10-22：[ADR-0039](0039-content-change-signals.md) 把本文 §12 的"修订号优先于内容哈希"扩展到 Host 权威模型层、App 投影层与 DSH 显示索引：entries 边界冻结 + 引用存储、条目级内容派生修订号、投影按行依赖复用。
 
-Status: accepted（2026-10-22 实现 §1/§2/§3/§7/§8/§9/§10/§12/§13/§15/§16 与 §11 的 3/3 项；§11-1 的"DSH 增量读原生日志"已由 §16 落地（DSH 原生游标 API 仍未提供，当前是 Host 侧按追加帧增量）；运行中的 Host/Pi 需另行授权才重启生效）
+Status: accepted（2026-10-22 实现 §1/§2/§3/§7/§8/§9/§10/§12/§13/§15/§16 与 §11 的 3/3 项；§11-1 的"DSH 增量读原生日志"已由 §16 落地（终端按追加帧增量；Web 本来就是游标分页，无需改动；DSH 原生游标 API 不再是前置条件）；运行中的 Host/Pi 需另行授权才重启生效）
 
 2026-10-22 溯源：本文修的这套“按全量重算”写法由 [ADR-0024](0024-recoverable-session-state-sync.md) 一次性引入（commit `15b9b23`，2026-10-10「feat(sync): recover Pi and DSH state and unify protocol 12 updates」，52 个文件）；ADR-0026 / 0032 沿用该机制，但都没有再审视它的成本。
 
@@ -100,7 +100,7 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
 11. **§1/§2/§10 的规则对三个后端同等适用（2026-10-22 已落地）。**
     - **Codex**：`resultText` 先过 `stripInlineMedia` 再把工具结果序列化进正文（§ ADR-0034 §5）；sync 走 `SessionSyncPreparer`，失效信号用后端已有的 `sourceSeq`，并在条目追加/重置/回滚三处显式 `invalidate()`。
     - **DSH（终端）**：`dshEntries` 增加按原生 `seq` 的条目缓存，刷新时复用已有对象——这是 §1/§2 里“引用相等即没变”能成立的前提；sync 走 `SessionSyncPreparer`。
-    - **DSH Web**：sync 走 `SessionSyncPreparer`（带它的 `historyBoundaryParentId`），在页面合并、快照替换与增量追加处 `invalidate()`。
+    - **DSH Web**：sync 走 `SessionSyncPreparer`（带它的 `historyBoundaryParentId`），在页面合并、快照替换与增量追加处 `invalidate()`。它的历史本来就是**服务端游标分页**（`session/page` 带 `throughSeq` / `beforeSeq` / `maxMessages`），每次只取一页而不是整份日志，所以 §11 对 Web 早已成立，不需要额外改动。
     - **仍未做（代价已实测，比本文原先估计的重）**：DSH 终端适配层每次 sync 仍调用 `#history.read()` 读回整份原生日志（它的持久化 API 只给整份 log）。2026-10-22 实测本机一条 8.7MB 会话（5240 个 zstd 帧、11,978 个事件）：解压 163ms + 逐行解析 261ms = **约 420ms/次**，而且跑在 Host 的事件循环上（单线程，会连带卡住所有设备的推送）。本文原先按"最大单条 368KB、文本量级"判断为低风险，这个判断不成立——成本取决于**日志总长**，不是单条大小。
     已做的缓解（2026-10-22，全部在 Host 侧，不需要 DSH 改动）：
 
@@ -158,7 +158,8 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
 - 在此之前，长正文回合的成本仍随"正文长度 × token 数"增长，只是系数已经小了 3–10 倍。
 - 按后端分列（2026-10-22 状态）：
   - **Pi**：§1/§2/§3/§7/§8/§9/§10 全部实现；canonical Entry 与 live 工具结果已按 ADR-0034 裁剪。
-  - **DSH / DSH Web**：增量 `reconcile`、`prepare`/`select` 拆分、显示索引已随 protocol 生效；整份日志读按 §16 改成"首次官方 API + 之后按追加帧增量"（实测 373ms → 7ms → 未变 0ms）。原先"文本量级、风险低"的判断已被实测推翻。
+  - **DSH（终端）**：增量 `reconcile`、`prepare`/`select` 拆分、显示索引已生效；整份日志读按 §16 改成"首次官方 API + 之后按追加帧增量"（实测 373ms → 7ms → 未变 0ms）。原先"文本量级、风险低"的判断已被实测推翻。
+  - **DSH Web**：历史来自 `session/page` 的游标分页（`throughSeq` / `beforeSeq` / `maxMessages`），本来就只取一页；配合 `SessionSyncPreparer` 与显示索引，§11 对它不需要额外工作。
   - **Codex**：增量 `reconcile` 与显示索引已生效，但它不经过 `RecoverableSessionSource`，本来就只在中继历史时付全量投影；`resultText` 内联 base64 的问题仍在（ADR-0034 §5）。
 - 需要的验证（实现时补齐）：
   - 同一份历史连续 sync 两次：第二次不 clone、不递增 seq、响应与第一次一致（除 syncId）；
