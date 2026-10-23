@@ -35,8 +35,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -321,26 +323,15 @@ private fun RemoteApp(
             },
         )
     }
-    // 模态错误框：同一句文案只弹一次。
+    // 共享错误通道按"要不要用户在电脑端动手"分两层显示，**任何一条都不再弹模态确认框**。
     //
-    // `error` 是一条共享通道，重连抖动时会有多个写入方反复写同一句话（最典型的是
-    // 「收到无效的中继服务器消息」）。模态框每次出现都要求用户点「确定」才能继续，所以不设防
-    // 的话，一句重复的噪音就能把界面钉成一个点不完的弹窗——用户看到的正是「一直提示这个」。
-    var acknowledgedError by rememberSaveable { mutableStateOf<String?>(null) }
-    state.error?.takeIf { appearsPaired }?.takeIf { it != acknowledgedError }?.let { error ->
-        AlertDialog(
-            onDismissRequest = {
-                acknowledgedError = error
-                model.clearError()
-            },
-            confirmButton = {
-                NeumorphTextButton("确定", filled = true, onClick = {
-                    acknowledgedError = error
-                    model.clearError()
-                })
-            },
-            title = { Text("Orbis") },
-            text = { Text(error) },
+    // 之前这里是 AlertDialog：一句重连抖动写进来的噪音就要求点「确定」，而 `error` 有十几个
+    // 写入方，重复文案会把界面钉成点不完的弹窗。模态框只留给真正的选择（配对、删除、权限）。
+    state.error?.takeIf { appearsPaired }?.let { error ->
+        ErrorBanner(
+            message = error,
+            needsAction = state.errorNeedsAction,
+            onDismiss = model::clearError,
         )
     }
 }
@@ -3357,6 +3348,58 @@ private fun queuedMessageStateText(state: String): String = when (state) {
     "rejected" -> "已拒绝"
     "not_cancelable" -> "不可取消"
     else -> state
+}
+
+
+/**
+ * 错误横幅：错误分两层，互不打扰。
+ *
+ * - **Notice**（默认）：偶发/可自愈的错误，6 秒后自动消失；再点一下也能立刻关掉。
+ * - **Action**：需要用户去电脑端处理（版本不兼容、事件无法解析），一直留着，直到用户点关闭。
+ *
+ * 覆盖在内容之上但不拦截点击：只有横幅本身可点，下面的界面照常操作。
+ */
+@Composable
+private fun ErrorBanner(message: String, needsAction: Boolean, onDismiss: () -> Unit) {
+    // 同一条文案重复到达不会反复闪：key 是文案本身，计时不会被重置。
+    LaunchedEffect(message, needsAction) {
+        if (!needsAction) {
+            delay(6_000)
+            onDismiss()
+        }
+    }
+    Box(Modifier.fillMaxSize().wrapContentHeight(Alignment.Top).statusBarsPadding(), contentAlignment = Alignment.TopCenter) {
+        NeumorphSurface(
+            onClick = onDismiss,
+            shape = RemoteUi.ControlShape,
+            shadowScale = 0.5f,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    Icons.Rounded.ErrorOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = if (needsAction) 6 else 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (needsAction) {
+                    Text("关闭", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+    }
 }
 
 @Composable

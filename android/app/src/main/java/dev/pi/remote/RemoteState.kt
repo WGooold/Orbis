@@ -498,7 +498,19 @@ data class RemoteState(
      * 进程激活要求 data 通道可用，判定依据必须是这个字段，而不是 connection。
      */
     val e2eReady: Boolean = false,
+    /**
+     * 共享错误通道。**它不再弹模态框**：界面把 `errorNeedsAction` 分成两层显示。
+     */
     val error: String? = null,
+    /**
+     * 这条错误需不需要用户在**电脑端**动手。
+     *
+     * - `false`（默认）：偶发/可自愈的噪音（同步失败、校验失败、协议抖动）。顶部横幅显示几秒后自动消失。
+     * - `true`：版本不兼容、事件无法解析这类"手机这边做什么都没用"的问题。横幅一直留着，直到用户关掉。
+     *
+     * 模态确认框只留给"用户必须做选择"的操作（配对、删除、权限），错误本身不再占用它。
+     */
+    val errorNeedsAction: Boolean = false,
 ) {
     /** Read-only history observation compatibility; there is no second mutable registry. */
     val historyReads: Map<String, SessionReadOperation> get() = sessionReads
@@ -1572,13 +1584,13 @@ class RelayReducer(
                 "session.list.result", "session.browse.result", "session.activated", "session.archive.changed",
                 "host.online", "host.offline",
             )) {
-            return state.copy(error = "收到不支持的中继服务器消息，请在电脑端检查协议版本")
+            return state.copy(error = "收到不支持的中继服务器消息，请在电脑端检查协议版本", errorNeedsAction = true)
         }
         val protocolVersion = message["protocolVersion"]?.jsonPrimitive?.intOrNull
         // 用常量而不是字面量：写死版本号会在协议升级时**静默**把每条消息都变成错误，
         // 现象是界面永远停在「正在连接」+ 弹「不兼容的协议版本」，而链路其实是通的。
         if (protocolVersion != null && protocolVersion != PROTOCOL_VERSION) {
-            return state.copy(error = PROTOCOL_VERSION_MISMATCH_ERROR)
+            return state.copy(error = PROTOCOL_VERSION_MISMATCH_ERROR, errorNeedsAction = true)
         }
         return when (messageType) {
             "notification.snapshot" -> if (channel != null) state.withNotificationSnapshot(message, json) else state
@@ -2045,7 +2057,7 @@ class RelayReducer(
             "interaction.resolved", "interaction.cancelled", "local_interaction.required", "command.result", "runtime.error",
         )
         if (eventType !in supportedEvents) {
-            return state.copy(error = "手机无法安全处理此运行时事件，请在电脑端处理")
+            return state.copy(error = "手机无法安全处理此运行时事件，请在电脑端处理", errorNeedsAction = true)
         }
         val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
         if (eventType in MODEL_OWNED_LEGACY_EVENTS) {
@@ -2093,7 +2105,7 @@ class RelayReducer(
             }
             "session.patch" -> {
                 val patch = runCatching { json.decodeFromJsonElement<SessionPatch>(event) }.getOrNull()
-                    ?: return state.copy(error = "收到无效的 Session 状态 patch")
+                    ?: return state.copy(error = "收到无效的 Session 状态 patch", errorNeedsAction = true)
                 if (patch.source.seq != patch.seq || patch.baseSeq >= patch.seq) {
                     return state.copy(
                         sessionSyncRequests = state.sessionSyncRequests + runtimeId,
@@ -2307,7 +2319,7 @@ class RelayReducer(
             }
             "session.snapshot" -> {
                 val snapshot = runCatching { json.decodeFromJsonElement<SessionGraphSnapshot>(event) }.getOrElse {
-                    return state.copy(error = "收到无效的 Session graph 快照")
+                    return state.copy(error = "收到无效的 Session graph 快照", errorNeedsAction = true)
                 }
                 val pending = state.sessionSyncCommands.values.firstOrNull {
                     it.runtimeId == runtimeId && it.syncId == snapshot.syncId
@@ -2765,9 +2777,9 @@ class RelayReducer(
             "artifact.started" -> {
                 val artifact = event["artifact"]?.let {
                     json.decodeFromJsonElement<RemoteArtifact>(it)
-                } ?: return state.copy(error = "手机无法安全处理此下载项，请在电脑端处理")
+                } ?: return state.copy(error = "手机无法安全处理此下载项，请在电脑端处理", errorNeedsAction = true)
                 if (artifact.size < 0 || !isSafeArtifactFileName(artifact.fileName) || !isValidSha256(artifact.sha256)) {
-                    return state.copy(error = "手机无法安全处理此下载项，请在电脑端处理")
+                    return state.copy(error = "手机无法安全处理此下载项，请在电脑端处理", errorNeedsAction = true)
                 }
                 val commandId = event.string("commandId")
                 val transferId = event.string("transferId")
