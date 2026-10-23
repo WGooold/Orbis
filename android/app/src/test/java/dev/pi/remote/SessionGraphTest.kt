@@ -634,4 +634,13 @@ class SessionGraphTest {
             assertTrue(first.messages[index] === second.messages[index])
         }
     }
+
+    // 新会话没有本地缓存不是缺口：把两种情况分开，否则每个新 Pi 会话顶部都会挂一条错误。
+    @Test
+    fun `a new session without local cache is not reported as a gap`() {
+        assertEquals(FirstPageOutcome.NO_LOCAL_CACHE, firstPageOutcome(null, hasAnyLocalData = false))
+        assertEquals(FirstPageOutcome.GAP, firstPageOutcome(null, hasAnyLocalData = true))
+        val graph = fixtureGraph("session-1", mapOf("tail" to entry("tail", null)), SessionBranchCursor("tail"))
+        assertEquals(FirstPageOutcome.LOADED, firstPageOutcome(graph, hasAnyLocalData = false))
+    }
 }

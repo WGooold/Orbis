@@ -74,6 +74,23 @@ internal class HostStores(application: Application) {
     val notifier = InteractionNotifier(application)
 }
 
+/** 首屏本地读取的三种结果：有数据 / 完全没有本地缓存（新会话）/ 有缓存但缺一段。 */
+internal enum class FirstPageOutcome { LOADED, NO_LOCAL_CACHE, GAP }
+
+/**
+ * 只有"有缓存但缺一段"才是真的缺口。
+ *
+ * 新会话（或缓存被清理过）本来就没有本地数据，等源端首屏即可——把它报成
+ * "本地首屏存在缺口"会让每个新 Pi 会话在对话窗口顶部都挂一条错误，
+ * 而这既不是用户的错也不是故障。
+ */
+internal fun firstPageOutcome(loaded: SessionGraph?, hasAnyLocalData: Boolean): FirstPageOutcome =
+    when {
+        loaded != null -> FirstPageOutcome.LOADED
+        !hasAnyLocalData -> FirstPageOutcome.NO_LOCAL_CACHE
+        else -> FirstPageOutcome.GAP
+    }
+
 internal class HostConnection(
     private val application: Application,
     private val scope: CoroutineScope,
@@ -990,10 +1007,19 @@ internal class HostConnection(
             try {
                 currentCoroutineContext().ensureActive()
                 val loaded = loadLocalGraphForRuntime(pairedDevice, runtime)
+                val hasLocal = loaded != null || hasAnyLocalSessionData(pairedDevice, runtime.sessionId)
                 currentCoroutineContext().ensureActive()
-                updateState { current -> if (device != pairedDevice) current else if (loaded == null)
-                    current.finishHistoryRead(operationId, SessionReadPhase.FAILED, "本地首屏存在缺口，等待源端恢复")
-                    else current.applyFirstSessionPage(operationId, loaded) }
+                updateState { current ->
+                    if (device != pairedDevice) current
+                    else when (firstPageOutcome(loaded, hasLocal)) {
+                        FirstPageOutcome.LOADED -> current.applyFirstSessionPage(operationId, loaded!!)
+                        // 新会话没有本地缓存：交给源端首屏，不在对话窗口顶部挂错误。
+                        FirstPageOutcome.NO_LOCAL_CACHE -> current.finishHistoryRead(operationId, SessionReadPhase.SUPERSEDED)
+                        FirstPageOutcome.GAP -> current.finishHistoryRead(
+                            operationId, SessionReadPhase.FAILED, "本地首屏存在缺口，等待源端恢复",
+                        )
+                    }
+                }
             } catch (error: CancellationException) {
                 updateState { it.finishHistoryRead(operationId, SessionReadPhase.CANCELLED) }
                 throw error
@@ -2041,6 +2067,15 @@ internal class HostConnection(
             committed?.entries.orEmpty(), committed?.display, stale = committed == null,
         )
     }
+    /** 本地是否有这个会话的任何痕迹：没有叶也没有缓存代次 → 全新会话。 */
+    private fun hasAnyLocalSessionData(pairedDevice: DeviceCredential, sessionId: String?): Boolean {
+        if (sessionId == null) return false
+        return synchronized(sessionGraphStore) {
+            sessionGraphStore.latestLeaf(pairedDevice, sessionId) != null ||
+                sessionGraphStore.cacheEpoch(pairedDevice, sessionId) != null
+        }
+    }
+
     private fun loadLocalGraphForRuntime(
         pairedDevice: DeviceCredential,
         runtime: RuntimeSummary,
