@@ -4,7 +4,7 @@
 
 2026-10-22：[ADR-0039](0039-content-change-signals.md) 把本文 §12 的"修订号优先于内容哈希"扩展到 Host 权威模型层、App 投影层与 DSH 显示索引：entries 边界冻结 + 引用存储、条目级内容派生修订号、投影按行依赖复用。
 
-Status: accepted（2026-10-22 实现 §1/§2/§3/§7/§8/§9/§10/§12/§13/§15 与 §11 的 2/3 项；§11-1 的"DSH 增量读原生日志"仍受 DSH 持久化 API 限制；运行中的 Host/Pi 需另行授权才重启生效）
+Status: accepted（2026-10-22 实现 §1/§2/§3/§7/§8/§9/§10/§12/§13/§15/§16 与 §11 的 3/3 项；§11-1 的"DSH 增量读原生日志"已由 §16 落地（DSH 原生游标 API 仍未提供，当前是 Host 侧按追加帧增量）；运行中的 Host/Pi 需另行授权才重启生效）
 
 2026-10-22 溯源：本文修的这套“按全量重算”写法由 [ADR-0024](0024-recoverable-session-state-sync.md) 一次性引入（commit `15b9b23`，2026-10-10「feat(sync): recover Pi and DSH state and unify protocol 12 updates」，52 个文件）；ADR-0026 / 0032 沿用该机制，但都没有再审视它的成本。
 
@@ -113,7 +113,7 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
        布局不同、或尾部解不开（半帧）一律退回整份 API 读。
 
     实测对比（8.7MB 会话，5240 帧，11,978 事件）：整份 373ms → 追加一帧 7ms → 未变 0ms。
-    仍未做：DSH 原生游标 API（当前是 Host 侧按帧增量，依赖"帧独立、只追加"这个格式事实）。
+    这条缓解本身是架构决定，约束与回退条件见 §16。仍未做：DSH 原生游标 API（当前是 Host 侧按帧增量）。
 
 12. **live 的变更检测用条目修订号，不用内容哈希（2026-10-22 已实现）。** 落地前的过渡实现是“每条 live 算一次内容哈希”，每个 token 仍要扫一遍正文（实测 1MB 正文 1.14ms/token、20KB 0.026ms/token，回合仍是 O(n²)，只是常数比旧实现小 3–10 倍）。现在：每个 live 条目维护单调递增的 `rev`（写入该条目时 +1），`#liveToken()` 只拼 `id:rev` 与标量字段，比较成本 O(条目数)、**每 token 零字节扫描**。
     **收益要说准**：它只消掉“比较”那一次扫描（实测 60KB 正文摊到 300 个 token 约 0.03ms/token）。回合内真正的大头在 `#flush()`：`snapshot()` 的 `structuredClone(live)`（1MB 工具结果 → 0.33ms）+ `JSON.stringify(patch)`（1.25ms），而且这份 patch 因为超过 256KB 预算会被整份丢弃——见 §13。两条都落地后实测：**1MB live 的 300 个 delta 总计 1ms（≈0.00ms/token，对照修复前 6.78ms/token）**；20KB live 为 0.07ms/token。
@@ -136,6 +136,15 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
     **配套的不变量**：合并窗口会把"版本号最终值"推迟到窗口结束，所以任何要在响应里携带 `source.seq` 的路径必须先 `flushPending()`（`syncSession` 已加；`reestablish()` 会先 flush 再换 epoch）。否则客户端拿到的 `knownState` 在 100ms 后失效，sync 永远回不了 `unchanged`——这条在实现时被集成测试抓到过。
     客户端侧同批做了一件轻量修复：入站大帧的诊断日志从"每帧一行"改成每 2 秒一行带计数（原来 5s 内 450 行 `Log.i`）。更彻底的做法（增量投影 / UI 侧限频）仍未做。
 
+16. **原生日志按"追加帧"增量读；格式依赖以文件布局为界，任何不确定都退回官方 API（2026-10-22 已实现）。** DSH 的持久化 API 只提供整份读，而实测代价是 Host 事件循环上的 373ms/次（8.7MB、5240 帧、11,978 事件）。这条把 `dsh-history.ts` 原先"一律走 DSH 官方持久化 API"的隐含前提改成**分层读取**：
+    - **首次读取与 `list()` 仍走官方 API**：解码语义与该版本一致，不自己猜布局；
+    - **只在 `session.v4.jsonl.zstd` 布局、且文件只增长时**走字节区间增量：读 `offset` 之后的字节，按 zstd magic 切帧，只解新帧、只解析新行，事件按 `seq` 追加；
+    - **四条回退**，任一条命中就丢弃增量状态并整份重读：文件变小（截断/替换）、布局不同、尾部帧解不开（半帧/格式变化）、拿不到文件路径；
+    - `read()` 前保留 `size:mtimeMs` 判据：文件没变直接复用，不解压不解析。
+
+    这条依赖两个**格式事实**，任一失效都只会退化成旧行为、不会给出错误数据：①v4 每次追加写一个**独立**帧（帧间不引用）；②日志只追加。若 DSH 改成"续接同一帧"或"重写整份"，第二个事实仍在、第一个失效，表现为尾部统一解不开 → 走回退。
+    代价与验收：整份 373ms → 追加一帧 7.27ms → 未变 0ms（本机 8.7MB 会话，约 51×）；单测覆盖"只解新帧"、"无新增返回 undefined"、"半行跳过"。
+
 ## Consequences and verification
 
 - 带图的会话从 O(全历史字节) 回到 O(变化量)：73 张图的会话单次 sync 从 ~400ms 回到 1ms 量级；纯文本长会话也同样受益（大文本历史此前是同一形状的成本）。
@@ -149,7 +158,7 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
 - 在此之前，长正文回合的成本仍随"正文长度 × token 数"增长，只是系数已经小了 3–10 倍。
 - 按后端分列（2026-10-22 状态）：
   - **Pi**：§1/§2/§3/§7/§8/§9/§10 全部实现；canonical Entry 与 live 工具结果已按 ADR-0034 裁剪。
-  - **DSH / DSH Web**：增量 `reconcile`、`prepare`/`select` 拆分、显示索引已随 protocol 生效；`dsh-runtime.ts` 的“每次 sync 重读整份原生日志”和“每页重新 prepare”仍未改（文本量级，风险低）。
+  - **DSH / DSH Web**：增量 `reconcile`、`prepare`/`select` 拆分、显示索引已随 protocol 生效；整份日志读按 §16 改成"首次官方 API + 之后按追加帧增量"（实测 373ms → 7ms → 未变 0ms）。原先"文本量级、风险低"的判断已被实测推翻。
   - **Codex**：增量 `reconcile` 与显示索引已生效，但它不经过 `RecoverableSessionSource`，本来就只在中继历史时付全量投影；`resultText` 内联 base64 的问题仍在（ADR-0034 §5）。
 - 需要的验证（实现时补齐）：
   - 同一份历史连续 sync 两次：第二次不 clone、不递增 seq、响应与第一次一致（除 syncId）；
