@@ -8,6 +8,7 @@
       "@pi-remote/protocol": ["packages/protocol/src/index.ts"],
       "@pi-remote/e2e": ["packages/e2e/src/index.ts"],
       "@pi-remote/host": ["packages/host/src/index.ts"],
+      "@pi-remote/relay": ["packages/relay/src/index.ts"],
       "@pi-remote/runtime-bridge": ["packages/runtime-bridge/src/index.ts"],
       "@pi-remote/interaction-sdk": ["packages/remote-interaction-sdk/src/index.ts"],
     },

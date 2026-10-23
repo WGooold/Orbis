@@ -4,6 +4,10 @@
 
 2026-10-10：[ADR-0025](0025-native-history-authority-and-versioned-caches.md) 替代本文的不可变缓存与同 ID 硬冲突条款。版本化历史页携带 source 所有权；原生权威修正通过新 epoch 与 APP 缓存事务生效。checkpoint/patch、running sync 和恢复调度继续遵守本文。
 
+2026-10-22：[ADR-0037](0037-session-sync-transaction-contract.md) 为本文的恢复任务补上协调侧契约：Host 作为协调者用租约判定作废，终态必须送达设备，提交以设备确认 applied 为准，失败只写尝试状态。
+
+2026-10-22：[ADR-0036](0036-sync-backpressure-is-not-failure.md) 定义本文准入拒绝的失败语义：`session_sync_busy` 一族是背压，设备必须重试，不能记成会话同步失败。
+
 Status: accepted（Pi、Codex、DSH 与 APP 已接入源端状态复制；大 checkpoint 分块及完整设备故障矩阵仍待验收）
 
 2026-10-13：[ADR-0032](0032-host-owned-agent-state-model.md) 将最终架构扩展为 Host 保存完整逻辑 Agent 模型的有界当前投影，并由适配层统一历史显示数据。本文的原生历史权威、源端可恢复状态、checkpoint/patch 和缓存事务继续有效；Host 不新增全量持久聊天数据库。该模型迁移尚待实现。

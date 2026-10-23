@@ -138,6 +138,22 @@ _Avoid_: Last received Entry, display leaf
 The source epoch, sequence and head whose complete current state the mobile client has successfully applied after committing its referenced Entries. It permits conditional synchronization, but does not prove that every historical ancestor is cached. Metadata and buffered future patches do not advance it. See ADR-0026.
 _Avoid_: Received watermark, full history coverage
 
+**Session sync transaction**:
+One device-requested goal to read or reconcile a Session range, identified by `commandId` and correlated to the source response by `syncId`, with immutable parameters. It is a distributed transaction across the device, the Host, and the backend: the Host is its coordinator and owns the resources it reserves (active slot, byte reservation, delivery slots), so only the Host may decide its outcome and release them, while the device reports local results but never declares the transaction aborted. It ends in exactly one terminal state — `committed` (the device confirmed it applied the result) or `aborted` (failure or lease expiry). See ADR-0013 and ADR-0037.
+_Avoid_: Sync request (for the whole lifecycle), retry loop, history job
+
+**Session sync attempt**:
+One dispatch of a Session sync transaction. Attempts may fail or be abandoned without changing the transaction's identity; only the transaction owner's lease can end the transaction. See ADR-0037.
+_Avoid_: Sync retry, duplicate request
+
+**Session sync lease**:
+The Host-declared upper bound on time without progress for a Session sync transaction. The lease is the sole basis for aborting a transaction and releasing its slot and byte reservation; it is renewed only by observed progress (backend stage advance, bytes written, device acknowledgement), never by elapsed time alone. See ADR-0037 §2/§7.
+_Avoid_: Timeout (for a fixed constant), idle timer
+
+**Sent versus applied**:
+`sent` means the Host finished writing the snapshot bytes to the transport; `applied` means the device committed the snapshot to its cache and advanced its applied Session state. Only `applied` (a device acknowledgement) may be treated as commit. See ADR-0026 and ADR-0037 §4.
+_Avoid_: Delivered, delivered successfully
+
 **Session read operation**:
 A mobile-client operation with a defined goal for reading a Session range or reconciling its current state. Its lifecycle spans the work needed for that goal; it is distinct from a network attempt, source version, or visible loading indicator. See ADR-0029.
 _Avoid_: History Job, loading flag, wire request
@@ -230,6 +246,10 @@ _Avoid_: Progress ACK, upload acknowledgement
 **Attachment path**:
 An absolute computer path carried on a message so the agent can read the file itself. Not a descriptor, and not a content part.
 _Avoid_: File attachment, image attachment, upload descriptor
+
+**Image content reference**:
+The only representation of an image inside the unified Agent model: mime type, byte length, optional dimensions, and either a computer path or an artifact descriptor — never inline base64 or file bytes. Clients render a placeholder; viewing an image uses the existing download path. See ADR-0034.
+_Avoid_: Inline image, base64 content part
 
 **Direct machine control**:
 Remote authority that bypasses the agent to run arbitrary commands or to manage processes, packages, credentials, trust, files, or arbitrary network destinations.
