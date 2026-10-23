@@ -1,4 +1,5 @@
 /** Read canonical logs through DSH's own versioned, read-only persistence API. */
+import { readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,17 @@ import { record } from "./dsh-client.js";
 
 export type DshHeader = { id: string; cwd?: string; createdAt: number };
 export type DshLog = { header: DshHeader; events: Array<{ seq: number; time?: number; type: string; data: unknown }> };
+/**
+ * 日志文件的廉价变更判据：`size:mtimeMs`。
+ *
+ * DSH 的持久化 API 只提供整份读（实测 8.7MB 日志一次约 420ms，跑在 Host 事件循环上），
+ * 因此"文件没变就复用上次解析结果"必须靠文件系统事实，而不是再读一遍。
+ */
+export function dshLogStatKey(file: string | undefined): string | undefined {
+  if (file === undefined) return undefined;
+  try { const info = statSync(file); return `${info.size}:${info.mtimeMs}`; } catch { return undefined; }
+}
+
 export interface DshHistory {
   list(): Promise<DshHeader[]>;
   read(sessionId: string): Promise<DshLog>;
@@ -22,16 +34,39 @@ export async function openDshHistory(cliEntry: string, root = process.env.ORBIS_
   const ctx = new cordis.Context();
   try { await ctx.plugin(persistence.default, { root }); }
   catch (error) { await ctx.fiber.dispose(); throw error; }
+  // ADR-0035 §11：DSH 的 API 只给整份日志，而实测 8.7MB 日志一次 read 要 ~420ms
+  // （5240 个 zstd 帧解压 163ms + 11,978 行逐行解析 261ms）。它跑在 Host 的事件循环上，
+  // 单线程会连带卡住所有设备的事件。这里用文件 stat 做廉价判据：文件没变就复用上次的解析结果。
+  const caches = new Map<string, { key: string; log: DshLog }>();
+  const paths = new Map<string, string | undefined>();
+  const fileFor = (sessionId: string): string | undefined => {
+    if (paths.has(sessionId)) return paths.get(sessionId);
+    let found: string | undefined;
+    try {
+      for (const project of readdirSync(root)) {
+        const candidate = join(root, project, `session-${sessionId}`, "session.v4.jsonl.zstd");
+        try { if (statSync(candidate).isFile()) { found = candidate; break; } } catch { /* 不是这个项目目录 */ }
+      }
+    } catch { /* 目录不可读：退回 API 读取 */ }
+    paths.set(sessionId, found);
+    return found;
+  };
   return {
     async list() { return (await ctx.sessionPersistence.list()).map((item: { header: DshHeader }) => item.header); },
     async read(sessionId) {
+      const file = fileFor(sessionId);
+      const key = dshLogStatKey(file);
+      const cached = key === undefined ? undefined : caches.get(sessionId);
+      if (cached !== undefined && key !== undefined && cached.key === key) return cached.log;
       const handle = await ctx.sessionPersistence.open(sessionId, "read");
       try {
         const { events } = await handle.read();
-        return { header: handle.header, events } as DshLog;
+        const log = { header: handle.header, events } as DshLog;
+        if (key !== undefined) caches.set(sessionId, { key, log });
+        return log;
       } finally { await handle.close(); }
     },
-    async close() { await ctx.fiber.dispose(); },
+    async close() { caches.clear(); await ctx.fiber.dispose(); },
   };
 }
 
