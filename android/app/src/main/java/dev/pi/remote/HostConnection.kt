@@ -2146,6 +2146,10 @@ internal class HostConnection(
         // 显示投影版本换代与 Codex 格式重建一样，都要先清掉旧缓存再让内容重新进来。
         val codexRebuilt = sessionGraphStore.prepareSession(pairedDevice, sessionId, agentKind)
         val displayRebuilt = sessionGraphStore.prepareDisplayCache(pairedDevice, sessionId)
+        if (codexRebuilt || displayRebuilt) {
+            // 这条日志是"一直在重新同步"的判据：重复出现说明重建判据没有收敛。
+            Log.i(RELOAD_TRACE_TAG, "session.cache_rebuild sessionId=$sessionId codex=$codexRebuilt display=$displayRebuilt")
+        }
         if (device != pairedDevice || !(codexRebuilt || displayRebuilt)) return false
         val current = mutableState.value
         val affected = current.historyReads.values.filter { it.sessionId == sessionId && it.phase.active }.map { it.operationId }

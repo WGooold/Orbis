@@ -32,6 +32,9 @@ internal val MODEL_OWNED_LEGACY_EVENTS = setOf(
     "runtime.status", "runtime.capabilities", "message.queued", "interaction.requested", "interaction.snapshot",
     "interaction.resolved", "interaction.cancelled", "local_interaction.required", "message.started", "message.delta",
     "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished",
+    // 这三类是**模型来源事实**：Host 已经把它们记进统一模型，手机按领域读 agent.state。
+    // 旧 Host 仍在发的时候只推进序号、不写状态；否则每收到一条就弹「无法安全处理此运行时事件」。
+    "delivery.snapshot", "execution.activity", "notification.source",
 )
 
 @Serializable
@@ -2061,7 +2064,7 @@ class RelayReducer(
             "artifact.failed", "interaction.requested", "interaction.snapshot",
             "interaction.resolved", "interaction.cancelled", "local_interaction.required", "command.result", "runtime.error",
         )
-        if (eventType !in supportedEvents) {
+        if (eventType !in supportedEvents && eventType !in MODEL_OWNED_LEGACY_EVENTS) {
             return state.copy(error = "手机无法安全处理此运行时事件，请在电脑端处理", errorNeedsAction = true)
         }
         val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
