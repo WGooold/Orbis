@@ -2,7 +2,15 @@
 
 日期：2026-10-22
 
-Status: proposed（2026-10-22 实现 §6：DSH 显示索引按"同 seq 是否产出新对象"做增量指纹，未替换时不 `invalidate()`。§2/§3/§4/§5 未实现：§2 的 entries 冻结需先验证 Codex `data.message` 是否内嵌原始 item（本文「前置依赖」第 1 条），§3 依赖 Pi/DSH 提供条目内容修订号，§5 是 App 投影层的独立改动）
+Status: accepting（2026-10-22 实现 §2 与 §6，§5 已由既有显示缓存满足并加测试固定：
+
+- §2：`AgentConversationState` 以**冻结的引用**保存 entries 与 display 行，`event.live` 仍深拷贝（有测试证明 live 未冻结、可原地 push）。
+- §3：未实现。仍保留 `JSON.stringify` 内容比较作为"同 id 内容被改写必须被拒"的判据；改用内容派生修订号需要 Pi/DSH 提供修订号。
+- §4：字节账目沿用现有 `next.bytes - old.bytes`（替换时加减成对）。
+- §5：App 的显示行对象由 `display[entryId]` 缓存并在投影中按引用复用（有测试断言同一行是同一对象）；剩余差异只是列表分配，不做 early-exit。
+- §6：DSH `#refresh` 用"同 seq 是否产出新对象"判断替换，未替换时不 `invalidate()`。
+
+「前置依赖」第 1 条（Codex `data.message` 是否内嵌原始 item）由 §2 的冻结直接给出答案：冻结后任何原地改写都会抛错，因此不需要再单独排查 alias。）
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0037](0037-session-sync-transaction-contract.md)
 

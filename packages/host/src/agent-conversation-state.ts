@@ -15,6 +15,26 @@ const scopeKey = (scope: StateScope): string => scope.kind === "agent" ? JSON.st
 
 /** Native adapters own semantics. This boundary owns bounded, versioned current projections and
  * replaceable canonical/display pages, never a second durable history database. */
+
+/**
+ * ADR-0039 §2：权威模型持有**冻结的引用**，而不是深拷贝。
+ *
+ * 深拷贝的职责本来是"adapter 不得改写权威状态"，但它是静默的：adapter 改了它自己那份，
+ * 模型看起来没变。冻结把同一条约束变成显式错误——在严格模式下赋值直接抛异常。
+ *
+ * 只用于 entries（和 display 行）。**不能**用于 `event.live`：live 在 DSH/DSH-Web 里是
+ * 原地累加的，冻结会当场打断流式输出（ADR-0039 §2 的明确禁止项）。
+ */
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object") return value;
+  if (Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    if (child !== null && typeof child === "object") deepFreeze(child);
+  }
+  return value;
+}
+
 export class AgentConversationState {
   readonly #registry: AgentStateRegistry;
   readonly #current = new Map<string, Current>();
@@ -144,7 +164,7 @@ export class AgentConversationState {
     for (const entry of event.entries ?? []) {
       const previous = byId.get(entry.entryId);
       if (previous && JSON.stringify(previous) !== JSON.stringify(entry)) return;
-      byId.set(entry.entryId, structuredClone(entry));
+      byId.set(entry.entryId, deepFreeze(entry));
     }
     const path: RemoteSessionEntry[] = [], seen = new Set<string>(); let id = head.leafId;
     while (id !== null && byId.has(id) && path.length < 500) {
@@ -154,7 +174,7 @@ export class AgentConversationState {
     path.reverse();
     const version = event.display?.projectionVersion ?? old?.display?.projectionVersion;
     const rows = new Map((!replace && old?.display && old.display.projectionVersion === version ? old.display.entries : []).map(row => [row.entryId, row]));
-    for (const row of event.display?.entries ?? []) rows.set(row.entryId, structuredClone(row));
+    for (const row of event.display?.entries ?? []) rows.set(row.entryId, deepFreeze(row));
     const display = version !== undefined && path.every(entry => rows.has(entry.entryId)) ? { projectionVersion: version, windowStart: event.display?.windowStart ?? old?.display?.windowStart ?? null, entries: path.map(entry => rows.get(entry.entryId)!) } : undefined;
     const timings = new Map((replace ? [] : old?.timings ?? []).map(timing => [timing.turnId, timing]));
     if (event.type === "session.snapshot") for (const timing of event.turnTimings ?? []) timings.set(timing.turnId, structuredClone(timing));

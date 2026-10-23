@@ -168,4 +168,29 @@ describe("Host conversation projection", () => {
     model.accept(scope, snapshot()); registry.beginModelEpoch();
     expect(model.stats()).toEqual({ pages: 0, bytes: 0, currentSessions: 0, currentBytes: 0 });
   });
+
+  // ADR-0039 §2/§3：entries 以冻结的引用进入权威模型（不再深拷贝），live 保持可变。
+  it("freezes accepted entries and keeps live mutable", () => {
+    const registry = new AgentStateRegistry(); const model = new AgentConversationState(registry);
+    const entry = { entryId: "a", parentId: null, type: "message", timestamp: "t",
+      data: { message: { messageId: "a", role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 } } };
+    const event = { ...snapshot(), mode: "append" as const, cursor: { leafId: "a" }, entries: [entry] };
+    expect(model.accept(scope, event)).toBe(true);
+
+    // 冻结发生在**传入的那个对象**上：adapter 事后原地改写会抛错，而不是静默分叉。
+    expect(Object.isFrozen(entry)).toBe(true);
+    expect(Object.isFrozen(entry.data.message.content)).toBe(true);
+    expect(() => { (entry.data.message.content[0] as { text: string }).text = "changed"; }).toThrow(TypeError);
+
+    // 被拒绝的改写没有留下痕迹，权威模型仍是原文。
+    expect(entry.data.message.content[0]).toEqual({ type: "text", text: "hello" });
+    // 同 id、内容被改写（换新对象）必须被拒，否则模型会静默分叉。
+    const changed = { ...entry, data: { message: { ...entry.data.message, content: [{ type: "text", text: "changed" }] } } };
+    expect(model.accept(scope, { ...event, entries: [changed as unknown as typeof entry] })).toBe(false);
+
+    // live 不能冻结：DSH/DSH-Web 的流式累加依赖原地 push。
+    const live = registry.read<{ messages: Array<{ message: { content: unknown[] } }> }>(scope, "live")?.value;
+    expect(Object.isFrozen(live)).toBe(false);
+    expect(() => { live!.messages[0]!.message.content.push({ type: "text", text: "more" }); }).not.toThrow();
+  });
 });

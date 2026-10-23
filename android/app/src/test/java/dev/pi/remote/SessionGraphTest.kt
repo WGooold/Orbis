@@ -607,4 +607,31 @@ class SessionGraphTest {
             projectSessionGraph(graph).error,
         )
     }
+
+    // ADR-0039 §5：投影按行复用——同一条显示结果在多次投影中是同一个对象，
+    // 这样 Compose 才能跳过重组；只有依赖变化的那一行才会是新对象。
+    @Test
+    fun `projection reuses unchanged display rows`() {
+        val display = mapOf(
+            "row-a" to DisplayEntry(displayId = "row-a", entryId = "row-a", kind = "message",
+                message = ChatMessage("row-a", "assistant", emptyList(), 1)),
+            "row-b" to DisplayEntry(displayId = "row-b", entryId = "row-b", kind = "message",
+                message = ChatMessage("row-b", "assistant", emptyList(), 2)),
+        )
+        val graph = fixtureGraph(
+            sessionId = "session-1",
+            entries = listOf(
+                entry("root", null),
+                entry("row-a", "root", role = "assistant"),
+                entry("row-b", "row-a", role = "assistant"),
+            ).associateBy(SessionGraphEntry::entryId),
+            cursor = SessionBranchCursor("row-b"),
+        ).copy(display = display)
+        val first = projectSessionGraph(graph)
+        val second = projectSessionGraph(graph.copy(displayWindowStart = null))
+        assertEquals(first.messages.map { it.messageId }, second.messages.map { it.messageId })
+        for (index in first.messages.indices) {
+            assertTrue(first.messages[index] === second.messages[index])
+        }
+    }
 }
