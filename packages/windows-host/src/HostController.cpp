@@ -40,12 +40,14 @@ static bool validRelay(const QString &value) {
         && (url.scheme() == "wss" || (url.scheme() == "ws" && (url.host() == "localhost" || url.host() == "127.0.0.1" || url.host() == "::1")));
 }
 
-HostController::HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QObject *parent)
-    : QObject(parent), m_runtimeRoot(std::move(runtimeRoot)), m_dataDir(std::move(dataDir)), m_hostStateDir(std::move(hostStateDir)),
+HostController::HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QString credentialDir, QObject *parent)
+    : QObject(parent), m_runtimeRoot(std::move(runtimeRoot)), m_dataDir(std::move(dataDir)), m_hostStateDir(std::move(hostStateDir)), m_credentialDir(std::move(credentialDir)),
       m_settings(m_dataDir + "/settings.ini", QSettings::IniFormat) {
     QDir().mkpath(m_dataDir);
+    if (m_credentialDir.isEmpty()) m_credentialDir = m_dataDir;
+    QDir().mkpath(m_credentialDir);
     QString error;
-    auto stored = CredentialStore::load(m_dataDir + "/activation.dat", &error);
+    auto stored = CredentialStore::load(activationPath(), &error);
     // An upgrade must retain an activated installation's endpoint even when the
     // compiled default changes. Fresh installs still use ORBIS_DEFAULT_RELAY.
     if (!m_settings.contains("relayUrl") && validRelay(stored.value("relayUrl").toString())) {
@@ -238,7 +240,7 @@ void HostController::saveActivation(const QJsonValue &value, const QString &succ
     auto obj = value.toObject();
     if (obj.value("hostId").toString() != m_hostId || !obj.value("credential").toString().startsWith("orbis_host_")) { setMessage("服务器返回了无效的激活凭据"); return; }
     obj.insert("relayUrl", relayUrl()); QString error;
-    if (!CredentialStore::save(m_dataDir + "/activation.dat", obj, &error)) { setMessage(error); return; }
+    if (!CredentialStore::save(activationPath(), obj, &error)) { setMessage(error); return; }
     m_email = obj.value("email").toString(); m_credential = obj.value("credential").toString(); m_challenge.clear();
     setMessage(successMessage);
     startHost();
@@ -484,7 +486,7 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
         if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) { setMessage("无法保存 macOS 登录启动设置：" + file.errorString()); return; }
     } else if (QFile::exists(plist) && !QFile::remove(plist)) { setMessage("无法关闭 macOS 登录启动，设置未保存"); return; }
 #endif
-    if (normalized != relayUrl()) { m_credential.clear(); m_email.clear(); m_challenge.clear(); m_verificationRequired = true; m_registrationAvailable = false; QFile::remove(m_dataDir + "/activation.dat"); }
+    if (normalized != relayUrl()) { m_credential.clear(); m_email.clear(); m_challenge.clear(); m_verificationRequired = true; m_registrationAvailable = false; QFile::remove(activationPath()); }
     m_settings.setValue("relayUrl", normalized); m_settings.setValue("autoStart", startup); m_settings.setValue("codexEnabled", codex);
     m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed()); m_settings.sync();
     if (!name.trimmed().isEmpty() && name.trimmed() != m_hostName) command("rename", {{"name", name.trimmed()}}, [this, name](const QJsonValue &) { m_hostName = name.trimmed(); emit changed(); });

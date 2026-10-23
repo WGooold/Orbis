@@ -64,8 +64,13 @@ int main(int argc, char *argv[]) {
     parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
     parser.addOption({"smoke-agents", "Also render Agent installation dialogs without starting downloads"});
     parser.process(app);
-    QString dataDir = parser.value("data-dir"); if (dataDir.isEmpty()) dataDir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    const auto sharedDataDir = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).absolutePath();
+    QString dataDir = parser.value("data-dir"); if (dataDir.isEmpty()) dataDir = sharedDataDir;
     dataDir = QDir(dataDir).absolutePath(); QDir().mkpath(dataDir);
+    // Normal launches from a portable package and an installed package share
+    // one user credential store. Smoke tests keep their explicitly isolated
+    // data and credentials so they cannot touch the user's activated Host.
+    const auto credentialDir = parser.isSet("smoke-test") ? dataDir : sharedDataDir;
     if (parser.isSet("smoke-test") && parser.isSet("smoke-providers")) qputenv("ORBIS_PROVIDER_TEST_ROOT", (dataDir + "/test-agents").toUtf8());
     const auto serverName = "OrbisHost-" + QString::fromLatin1(QCryptographicHash::hash(dataDir.toUtf8(), QCryptographicHash::Sha256).toHex().left(24));
     QLockFile lock(dataDir + "/desktop.lock"); lock.setStaleLockTime(0);
@@ -86,7 +91,7 @@ int main(int argc, char *argv[]) {
     }
     QString hostStateDir = parser.value("host-state-dir");
     if (parser.isSet("smoke-test") && hostStateDir.isEmpty()) hostStateDir = dataDir + "/test-host";
-    HostController controller(QDir(runtimeRoot).absolutePath(), dataDir, hostStateDir);
+    HostController controller(QDir(runtimeRoot).absolutePath(), dataDir, hostStateDir, credentialDir);
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("host", &controller);
     engine.rootContext()->setContextProperty("trayAvailable", QSystemTrayIcon::isSystemTrayAvailable());

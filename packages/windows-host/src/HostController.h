@@ -57,7 +57,7 @@ class HostController : public QObject {
     Q_PROPERTY(QStringList checkingProviderIds READ checkingProviderIds NOTIFY changed)
     Q_PROPERTY(bool providerModelsLoading READ providerModelsLoading NOTIFY changed)
 public:
-    HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QObject *parent = nullptr);
+    HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QString credentialDir = {}, QObject *parent = nullptr);
     ~HostController() override;
     QString state() const { return m_state; }
     bool desiredRunning() const { return m_desiredRunning; }
@@ -181,7 +181,8 @@ private:
     QString selectWorkspace(const QString &kind);
     QJsonObject agentSettings() const;
     QString diagnostics() const;
-    QString m_runtimeRoot, m_dataDir, m_hostStateDir;
+    QString activationPath() const { return m_credentialDir + "/activation.dat"; }
+    QString m_runtimeRoot, m_dataDir, m_hostStateDir, m_credentialDir;
     QSettings m_settings;
     QProcess m_bridge;
     QNetworkAccessManager m_network;
