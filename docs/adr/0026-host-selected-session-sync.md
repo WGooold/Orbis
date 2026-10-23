@@ -2,13 +2,13 @@
 
 日期：2026-10-10
 
-2026-10-22：[ADR-0037](0037-session-sync-transaction-contract.md) 为本文的 `unchanged`/`state`/`delta` 选择补上提交语义：只有设备确认 applied 才视为 committed；ack 丢失后重试必须得到 `unchanged`，不得重复内容或回退视图。本文的范围预算与条件响应选择继续有效。
-
-2026-10-22：[ADR-0036](0036-sync-backpressure-is-not-failure.md) 明确本文"范围预算/背压"被拒时的设备语义：拒绝是重试信号，不是终态失败；Host 的准入参数不动。
-
 Status: accepted
 
 2026-10-13：[ADR-0032](0032-host-owned-agent-state-model.md) 将通用 Host 的职责从路由、关联和背压扩展到统一模型管理与客户端恢复入口；来源核对、条件响应选择、范围预算与不新增全量聊天数据库继续有效。此为待实施的架构调整。
+
+2026-10-22：[ADR-0036](0036-sync-backpressure-is-not-failure.md) 明确本文"范围预算/背压"被拒时的设备语义：拒绝是重试信号，不是终态失败；Host 的准入参数不动。
+
+2026-10-22：[ADR-0037](0037-session-sync-transaction-contract.md) 为本文的 `unchanged`/`state`/`delta` 选择补上提交语义：只有设备确认 applied 才视为 committed；ack 丢失后重试必须得到 `unchanged`，不得重复内容或回退视图。本文的范围预算与条件响应选择继续有效。
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0008](0008-drop-backward-compatibility.md)。
 

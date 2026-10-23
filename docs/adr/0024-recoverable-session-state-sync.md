@@ -6,9 +6,9 @@
 
 2026-10-22：[ADR-0037](0037-session-sync-transaction-contract.md) 为本文的恢复任务补上协调侧契约：Host 作为协调者用租约判定作废，终态必须送达设备，提交以设备确认 applied 为准，失败只写尝试状态。
 
-2026-10-22：[ADR-0036](0036-sync-backpressure-is-not-failure.md) 定义本文准入拒绝的失败语义：`session_sync_busy` 一族是背压，设备必须重试，不能记成会话同步失败。
-
 Status: accepted（Pi、Codex、DSH 与 APP 已接入源端状态复制；大 checkpoint 分块及完整设备故障矩阵仍待验收）
+
+2026-10-22：[ADR-0036](0036-sync-backpressure-is-not-failure.md) 定义本文准入拒绝的失败语义：`session_sync_busy` 一族是背压，客户端必须重试，不能记成会话同步失败。checkpoint/patch、epoch/seq、缓存事务不变。
 
 2026-10-22：[ADR-0035](0035-incremental-session-reconcile.md) 修正本文引入的实现代价：`reconcile` 的全量比较/深拷贝、每次 `session.sync` 的强制核对、以及 live 状态的逐 token 重算。恢复契约（原生历史权威、checkpoint/patch、epoch/seq、缓存事务）不变。
 

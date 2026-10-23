@@ -352,9 +352,17 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     const sessionSlashCommandAdapter = slashCommandAdapter;
     // 唯一的通道：本机 Host 的 loopback（见 resolveRuntimeTransport 的注释）。
     // Host 没起来时它只等待、不连接中继。
-    // ADR-0035 §9：发件积压时不再往 socket 里堆帧。排空后换新 epoch 重发基线——
-    // 丢掉的那段 seq 链本来就会让 Host 拒绝并要求恢复，重发基线是它已有的路径。
+    // ADR-0035 §9/§14：发件积压或 Host 要求 resync 时，换新 epoch 重发基线。
+    // Host 拒绝一条 patch 之后只会记住「需要恢复」；不给它新基线，它会永久拒绝后续增量。
     let needsBaseline = false;
+    const reestablishBaseline = (): void => {
+      if (activeSessionToken !== sessionToken) return;
+      sessionSource?.reestablish();
+      reconcileSource(ctx, true);
+      source.setAvailability(true, ctx.isIdle());
+      bridge?.refreshMetadata();
+      sessionLog("runtime_baseline_republished", { detail: "new epoch" });
+    };
     const transport = await resolveRuntimeTransport({
       onConnectionStateChange: (state) => {
         connectionState = state;
@@ -367,11 +375,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       onDrained: () => {
         if (!needsBaseline || activeSessionToken !== sessionToken) return;
         needsBaseline = false;
-        sessionSource?.reestablish();
-        reconcileSource(ctx, true);
-        source.setAvailability(true, ctx.isIdle());
-        bridge?.refreshMetadata();
-        sessionLog("runtime_transport_drained", { detail: "baseline republished" });
+        reestablishBaseline();
       },
       log: (line) => sessionLog("runtime_transport_selected", { detail: line }),
     });
@@ -475,7 +479,11 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       respond: (requestId, extensionId, response) => broker?.respond(requestId, extensionId, response) ?? false,
       disconnected: () => broker?.disconnected(),
       closed: () => broker?.closed(),
-      resync: () => broker?.resync(),
+      resync: (reason) => {
+        broker?.resync();
+        // Host 只在真的拒绝了增量时才要基线；重连/通知对齐不该让客户端白刷一遍历史。
+        if (reason === "model_baseline_required") reestablishBaseline();
+      },
     }, sessionLog);
     bridge = sessionBridge;
     // 出队投递：先发 delivered 回执、再送进 Pi（与 codex #drainQueue 同序）——

@@ -196,6 +196,23 @@ describe("RuntimeBridge", () => {
     ]);
   });
 
+  // 传输层的 resync 有两种含义：Host 拒绝了增量（要新基线）和普通重连/通知对齐。
+  // bridge 必须把 reason 原样交出去——丢掉它，扩展就无法区分，只能每��都重建 epoch。
+  it("forwards the resync reason to the interaction port", async () => {
+    const transport = new FakeTransport();
+    const reasons: string[] = [];
+    const bridge = new RuntimeBridge(makeRuntime(), transport, {
+      respond: () => false,
+      resync: (reason) => { reasons.push(reason); },
+    });
+    await bridge.start();
+    transport.resyncHandler?.("model_baseline_required");
+    transport.resyncHandler?.("device_reconnected");
+    // 首次连上也会走一次（"transport_connected"），它和普通 resync 一样不重建基线。
+    expect(reasons.slice(-2)).toEqual(["model_baseline_required", "device_reconnected"]);
+    expect(reasons[0]).toBe("transport_connected");
+  });
+
   it("rejects a download addressed to a runtime instead of the Host", async () => {
     // 下载由 Host 独家服务（spec §9.4）：命令投到某个 Pi runtime 就是寻址错了。
     // 如实回一条失败，别让它掉进后面的 interaction 分支或被说成 runtime_offline。

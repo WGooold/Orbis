@@ -4,7 +4,7 @@
 
 2026-10-22：[ADR-0039](0039-content-change-signals.md) 把本文 §12 的"修订号优先于内容哈希"扩展到 Host 权威模型层、App 投影层与 DSH 显示索引：entries 边界冻结 + 引用存储、条目级内容派生修订号、投影按行依赖复用。
 
-Status: accepted（2026-10-22 实现 §1/§2/§3/§7/§8/§9/§10/§12/§13；§11 的后端剩余项未做；运行中的 Host/Pi 需另行授权才重启生效）
+Status: accepted（2026-10-22 实现 §1/§2/§3/§7/§8/§9/§10/§12/§13/§15 与 §11 的 2/3 项；§11-1 的"DSH 增量读原生日志"仍受 DSH 持久化 API 限制；运行中的 Host/Pi 需另行授权才重启生效）
 
 2026-10-22 溯源：本文修的这套“按全量重算”写法由 [ADR-0024](0024-recoverable-session-state-sync.md) 一次性引入（commit `15b9b23`，2026-10-10「feat(sync): recover Pi and DSH state and unify protocol 12 updates」，52 个文件）；ADR-0026 / 0032 沿用该机制，但都没有再审视它的成本。
 
@@ -95,12 +95,13 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
 7. **live 状态按增量计价，不按 token 全量重算。** 指纹只覆盖本事务真正改动的部分；`#flush()` 只发布变化（正文 delta 已有 `message.delta` 通道，不需要每个 token 再发完整 live 快照）；live 工具结果在进入 live 状态时就按 ADR-0034 §4 裁剪，原件不驻留。本条已按 §12 用**修订号**实现，不再对正文做内容哈希。
 8. **发件队列必须有上界，溢出后以新基线恢复。** `publish` 在 `bufferedAmount` 超过水位（默认 8MB）后**丢帧而不是排队**，排空到低水位（2MB）时回调扩展：扩展把 source 换成新 epoch 并重发权威基线（`reestablish()`）。丢掉的那段 seq 链本来就会让 Host 拒绝并要求恢复（见上文的 1018 条诊断），重发基线是既有路径，不引入新的恢复语义。
 9. **会话库列表按 TTL 缓存，不按连接次数重扫。** `SessionManager.listAll()` 会逐行解析整个会话库（本机 179 文件 / 517MB → 2.0s、峰值 205MB），而它挂在每一次 transport 连上和每一次 `session_info_changed` / `session_tree`。改为进程内缓存（TTL 60s、并发合并、rename/tree 显式失效）：连接抖动不再触发整库扫描。
-10. **历史分页是 O(页)，不是 O(S)。** `history` 请求不改变任何状态，因此：不 reconcile、不重建 `sessionEntriesFromEntries`、不对全部条目重跑 `projectDisplayEntries`；摄取一次、投影按来源版本缓存，每页只做路径切片与页内序列化。缓存失效的判据只能是 ADR-0025 的来源版本（epoch/seq/leaf/projectionVersion），不能靠“再算一遍看看变没变”。
+10. **历史分页是 O(页)，不是 O(S)。** `history` 请求不改变任何状态，因此：不 reconcile、不重建 `sessionEntriesFromEntries`、不对全部条目重跑 `projectDisplayEntries`；摄取一次、投影按来源版本缓存，每页只做路径切片与页内序列化。缓存失效的判据只能是 ADR-0025 的来源版本（epoch/seq/leaf/projectionVersion），不能靠“再算一遍看看变没变”。三个后端共用 `SessionSyncPreparer`：key = 来源 epoch + 条目数 + leaf + `historyBoundaryParentId` + 调用方给的改写信号（Codex 用 `sourceSeq`），条目集被原地改写时由适配层显式 `invalidate()`。
 
-11. **§1/§2/§10 的规则对三个后端同等适用，落地按风险排序。** 已生效的是 protocol 层（增量 `reconcile`、`prepare`/`select`、显示索引）与 Pi 的全部条目。剩余项（不做也不会再 OOM，因为发件已有界；但不做会继续表现为“翻长历史慢、CPU 高”）：
-    1. `dsh-runtime.ts` 的 `#refresh()` 每次 sync 重读整份原生日志 —— 应改按原生 `seq` 增量读（它自己已经在维护 `lastSeq`）。
-    2. Codex 的 `toolResultMessage` / `resultText` 把工具结果整份 JSON 化，含图时会把 base64 内联进条目正文（ADR-0034 §5）—— 应在 canonical 投影处降成引用。
-    3. Codex / DSH 的 sync 仍每页 `prepareSessionSync`，没有接 §10 的缓存。
+11. **§1/§2/§10 的规则对三个后端同等适用（2026-10-22 已落地）。**
+    - **Codex**：`resultText` 先过 `stripInlineMedia` 再把工具结果序列化进正文（§ ADR-0034 §5）；sync 走 `SessionSyncPreparer`，失效信号用后端已有的 `sourceSeq`，并在条目追加/重置/回滚三处显式 `invalidate()`。
+    - **DSH（终端）**：`dshEntries` 增加按原生 `seq` 的条目缓存，刷新时复用已有对象——这是 §1/§2 里“引用相等即没变”能成立的前提；sync 走 `SessionSyncPreparer`。
+    - **DSH Web**：sync 走 `SessionSyncPreparer`（带它的 `historyBoundaryParentId`），在页面合并、快照替换与增量追加处 `invalidate()`。
+    - **仍未做**：DSH 终端适配层每次 sync 仍调用 `#history.read()` 读回整份原生日志（它的持久化 API 只给整份 log）。条目对象不再重建、不再重算指纹，但 O(S) 的读与解析还在；要根治需要 DSH 提供带游标的读取。
 
 12. **live 的变更检测用条目修订号，不用内容哈希（2026-10-22 已实现）。** 落地前的过渡实现是“每条 live 算一次内容哈希”，每个 token 仍要扫一遍正文（实测 1MB 正文 1.14ms/token、20KB 0.026ms/token，回合仍是 O(n²)，只是常数比旧实现小 3–10 倍）。现在：每个 live 条目维护单调递增的 `rev`（写入该条目时 +1），`#liveToken()` 只拼 `id:rev` 与标量字段，比较成本 O(条目数)、**每 token 零字节扫描**。
     **收益要说准**：它只消掉“比较”那一次扫描（实测 60KB 正文摊到 300 个 token 约 0.03ms/token）。回合内真正的大头在 `#flush()`：`snapshot()` 的 `structuredClone(live)`（1MB 工具结果 → 0.33ms）+ `JSON.stringify(patch)`（1.25ms），而且这份 patch 因为超过 256KB 预算会被整份丢弃——见 §13。两条都落地后实测：**1MB live 的 300 个 delta 总计 1ms（≈0.00ms/token，对照修复前 6.78ms/token）**；20KB live 为 0.07ms/token。
@@ -112,7 +113,16 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
     - 验收：同一份历史 / 同一回放在 `--scene turn` 下每 token 耗时不随正文大小增长；DSH 的全部现有用例通过；新增一条"净效果为零（仅标量翻转）的事务不推进 seq"的不变量用例。
 
 13. **超预算的 patch 在构造之前就跳过，不先克隆再丢弃（2026-10-22 已实现）。** 落地前 `#flush()` 的顺序是：`snapshot()` 深拷贝整份 live → `JSON.stringify(patch)` 量字节 → 发现超过 `SESSION_SYNC_PAGE_BYTES` 就 `return`，什么都不发。这次构造完全白付：实测 live 里有一个 1MB 工具结果时，**每个 token 白付 1.57ms**（clone 0.33 + stringify 1.25），而 patch 一定被丢弃。现在：写入条目时顺手维护它的字节数（`#messageBytes` / `#toolBytes`，与 §12 的修订号同一处更新），`#flush()` 先用 O(条目数) 的下界对预算做预判；超预算就直接跳过构造，继续依赖 `session.sync` 的 checkpoint/preview 恢复（与旧行为一致，只是不再白付构造）。
+    **跳过时必须不推进 seq。** Host 的 `AgentConversationState` 要求 `baseSeq === 上一版 seq`；旧实现的 `#seq++` 在“跳过不发布”的路径上照样执行，于是留下一个客户端永远看不到的版本号，之后**每一条** patch 都被拒绝（现场表现：Host 诊断里每秒两条 `Rejected conversation transaction; source baseline required`，永不恢复）。现在版本只在真正发布时推进；精确字节检查才判超的那一次会回滚 `#seq`。
     边界：估算必须是**上界**（宁可少发一次 patch，也不能发出一个"看起来完整但被截断"的 patch）；低估只会退回今天的行为（构造后才丢弃），不会出错。
+
+14. **Host 拒绝增量时，扩展重发新 epoch 基线；其它 resync 不换 epoch（2026-10-22 已实现）。** Host 在拒绝一条 patch 之后只发 `runtime.resync` 带原因：只有 `model_baseline_required` 表示它丢了基线，此时扩展必须 `reestablish()`（新 epoch + `ready:false` 帧 + 权威基线）；`device_reconnected` / `notification_sync` / `model_reconcile` / 首次连接只补发元数据。不加区分地对所有 resync 换 epoch 会让客户端每次重连都白刷一遍历史。
+    验证：`runtime-bridge` 的 resync 原因必须原样交给 interaction port（有用例）；扩展只在 `model_baseline_required` 上重建基线。
+
+15. **流式 patch 按窗口合并，客户端读版本前必须 flush（2026-10-22 已实现）。** 服务端算得再便宜，也架不住**发布频率**：现场在真机（Redmi 2407FRK8EC）上测到入站 `v2.frame` **96 帧/秒**（5s/479 帧），手机主线程 207% CPU、Graphics 455MB、每 2 秒一次 GC（释放 70–107MB）、滚动时 Choreographer 连续 `Skipped 33–58 frames`、legacy janky 39%、p99 450ms。原因不是单帧重，而是**每来一条 patch，`ChatScreen` 就用 `remember(conversation.revision)` 把整段会话重新投影一遍**（`buildConversationPresentation` / `buildChatListItems` 都是 O(消息数) 的全量构造）。
+    做法：`RecoverableSessionSource` 增加可选 `coalesceMs`（默认 0 = 原行为，测试不受影响），Pi 扩展设 100ms：一个窗口内多次状态变化只发一条 patch，`seq` 仍然只在真正发布时前进，序列保持连续。
+    **配套的不变量**：合并窗口会把"版本号最终值"推迟到窗口结束，所以任何要在响应里携带 `source.seq` 的路径必须先 `flushPending()`（`syncSession` 已加；`reestablish()` 会先 flush 再换 epoch）。否则客户端拿到的 `knownState` 在 100ms 后失效，sync 永远回不了 `unchanged`——这条在实现时被集成测试抓到过。
+    客户端侧同批做了一件轻量修复：入站大帧的诊断日志从"每帧一行"改成每 2 秒一行带计数（原来 5s 内 450 行 `Log.i`）。更彻底的做法（增量投影 / UI 侧限频）仍未做。
 
 ## Consequences and verification
 

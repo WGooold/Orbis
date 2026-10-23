@@ -371,11 +371,15 @@ export class RecoverableSessionSource {
   #flush(): void {
     if (process.env.ORBIS_SEQ_DEBUG) { try { appendFileSync(process.env.ORBIS_SEQ_DEBUG, `FLUSH ${this.#sessionId.slice(0, 24)} seq=${this.#seq + 1} ready=${this.#ready} complete=${this.#complete} committed=${this.#committed.length} msg=${this.#messages.size} tools=${this.#tools.size} turn=${this.#turn?.turnId ?? "-"}\n`); } catch { /* debug only */ } }
     this.#dirty = false;
-    this.#seq++;
+    if (this.#messages.size > 256 || this.#tools.size > 256) { this.#committed = []; return; }
     // ADR-0035 §13：先用 O(条目数) 的**下界**预判预算，超了就跳过构造（别再白 clone + stringify）。
-    // 跳过仍然推进 seq（客户端因此知道要去恢复），只是不再为一份注定被丢弃的 patch 付构造成本。
-    if (this.#liveLowerBoundBytes() > SESSION_SYNC_PAGE_BYTES ||
-      this.#messages.size > 256 || this.#tools.size > 256) { this.#committed = []; return; }
+    if (this.#liveLowerBoundBytes() > SESSION_SYNC_PAGE_BYTES - SESSION_SYNC_WRAPPER_BYTES) {
+      this.#committed = [];
+      return;
+    }
+    // 只有真的会发布时才推进版本：Host 要求 baseSeq === 上一版 seq，跳过时推进会留下永久缺口，
+    // 之后每一条 patch 都会被拒绝（现场表现为 Host 诊断里每秒两条 Rejected conversation transaction）。
+    this.#seq++;
     const snapshot = this.snapshot();
     const patch: Extract<RuntimeEvent, { type: "session.patch" }> = {
       type: "session.patch", sessionId: this.#sessionId, source: snapshot.version, baseSeq: this.#seq - 1, seq: this.#seq,
@@ -393,8 +397,12 @@ export class RecoverableSessionSource {
       if (display !== undefined) patch.display = display;
     }
     // Oversize state remains recoverable as an explicit sync error, never a truncated complete inventory.
+    // 精确检查也可能在粗略预判之后才判超（少数字符的转义膨胀）：同样回滚版本，不留缺口。
     if (patch.live.messages.length > 256 || patch.live.tools.length > 256 ||
-      Buffer.byteLength(JSON.stringify(patch), "utf8") + SESSION_SYNC_WRAPPER_BYTES > SESSION_SYNC_PAGE_BYTES) return;
+      Buffer.byteLength(JSON.stringify(patch), "utf8") + SESSION_SYNC_WRAPPER_BYTES > SESSION_SYNC_PAGE_BYTES) {
+      this.#seq -= 1;
+      return;
+    }
     this.#publish(patch);
   }
 }

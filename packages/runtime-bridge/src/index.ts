@@ -101,7 +101,12 @@ export interface RuntimeInteractionPort {
   disconnected?(): void;
   /** The owning Pi bridge/session is ending; pending requests may be rejected. */
   closed?(): void;
-  resync?(): void;
+  /**
+   * 传输层要求重新对齐。`reason` 来自 Host：只有 `model_baseline_required` 表示它拒绝了
+   * 增量、需要一条新的权威基线；其余（`device_reconnected` / `notification_sync` 等）
+   * 只需要补发元数据，换 epoch 反而会让客户端白刷一遍。
+   */
+  resync?(reason: string): void;
 }
 
 export type SessionStartReason = "startup" | "resume" | "new" | "fork" | "reload";
@@ -195,7 +200,8 @@ export class RuntimeBridge {
         this.publish(this.#activity);
         void this.#publishCapabilities();
         void this.#publishSessionCatalog();
-        this.#interactions?.resync?.();
+        // 重连只是对齐：不该让客户端换 epoch 白刷一遍历史（ADR-0035 §9 只对丢帧/基线缺失重建）。
+        this.#interactions?.resync?.("transport_connected");
       },
       disconnected: () => {
         this.#transportReady = false;
@@ -209,7 +215,7 @@ export class RuntimeBridge {
         this.publish(this.#activity);
         void this.#publishCapabilities();
         void this.#publishSessionCatalog();
-        this.#interactions?.resync?.();
+        this.#interactions?.resync?.(reason);
       },
       command: (commandId, runtimeId, command) => {
         this.#diagnostic?.("bridge.command.received", {

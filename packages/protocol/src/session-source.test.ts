@@ -73,8 +73,9 @@ describe("recoverable source", () => {
     expect(source.snapshot().version.seq).toBe(before.seq + 1);
   });
 
-  // ADR-0035 §13：live 装不下一个 patch 时不构造、不发布，也绝不发半个 patch。
-  it("skips an oversize live patch instead of publishing a truncated one", () => {
+  // ADR-0035 §13/§14：装不下的 live 不发 patch，也不推进版本——否则 seq 缺口会让 Host
+  // 永久拒绝后续增量（现场是每秒两条 Rejected conversation transaction）。
+  it("skips an oversize live patch without opening a version gap", () => {
     const patches: SessionPatch[] = [];
     const source = new RecoverableSessionSource("session", patch => patches.push(patch));
     source.setAvailability(true, true);
@@ -84,9 +85,13 @@ describe("recoverable source", () => {
     const big = { content: [{ type: "text", text: "y".repeat(SESSION_SYNC_PAGE_BYTES) }] };
     source.observe({ type: "tool.finished", toolCallId: "c1", toolName: "read", result: big, isError: false });
     expect(patches).toHaveLength(0);
-    // 版本仍然前进：客户端因此知道要去恢复，而不是以为自己已经是最新。
-    expect(source.snapshot().version.seq).toBe(before.seq + 1);
-    // live 没有被截断，仍在源端完整保留。
+    expect(source.snapshot().version).toEqual(before);
     expect(source.snapshot().live.tools[0]?.detail).toEqual(big);
+    // live 缩小之后，下一条 patch 必须严格衔接上一个已发布版本。
+    source.replaceLive({ complete: true, turn: null, messages: [], tools: [] });
+    const published = patches.at(-1);
+    expect(published).toBeDefined();
+    expect(published!.baseSeq).toBe(before.seq);
+    expect(published!.seq).toBe(before.seq + 1);
   });
 });

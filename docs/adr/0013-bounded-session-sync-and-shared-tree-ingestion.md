@@ -12,6 +12,8 @@ Status: accepted（设计已采纳；实施状态以关联 tickets 为准）
 
 2026-10-22：[ADR-0036](0036-sync-backpressure-is-not-failure.md) 明确本文准入拒绝的失败语义：`session_sync_busy` 一族是背压，设备必须重试，不能记成会话同步失败。
 
+2026-10-22：[ADR-0037](0037-session-sync-transaction-contract.md) 补全本文引入的请求归属语义。本文把一次同步当作"有归属的请求"处理，解决了放弃太早导致的重复下载；但它在协调侧只做到了身份与去重，缺少终态通知、作废判定者与接收方确认。ADR-0037 按分布式事务模型补齐这些条款。本文的范围、预算、事务写入与背压要求继续有效。
+
 2026-10-10：[ADR-0025](0025-native-history-authority-and-versioned-caches.md) 替代本 ADR 中 Codex 版本化同步的不可变缓存及同 ID 硬冲突条款。确定性生成、结构校验、范围和事务要求保留；下文不可变规则仅继续适用于尚未版本化的路径。
 
 ## Context

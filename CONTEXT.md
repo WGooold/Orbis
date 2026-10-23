@@ -154,6 +154,22 @@ _Avoid_: Timeout (for a fixed constant), idle timer
 `sent` means the Host finished writing the snapshot bytes to the transport; `applied` means the device committed the snapshot to its cache and advanced its applied Session state. Only `applied` (a device acknowledgement) may be treated as commit. See ADR-0026 and ADR-0037 §4.
 _Avoid_: Delivered, delivered successfully
 
+**Session sync transaction**:
+One device-requested goal to read or reconcile a Session range, identified by `commandId` and correlated to the source response by `syncId`, with immutable parameters. It is a distributed transaction across the device, the Host, and the backend: the Host is its coordinator and owns the resources it reserves (active slot, byte reservation, delivery slots), so only the Host may decide its outcome and release them, while the device reports local results but never declares the transaction aborted. It ends in exactly one terminal state — `committed` (the device confirmed it applied the result) or `aborted` (failure or lease expiry). See ADR-0013 and ADR-0037.
+_Avoid_: Sync request (for the whole lifecycle), retry loop, history job
+
+**Session sync attempt**:
+One dispatch of a Session sync transaction. Attempts may fail or be abandoned without changing the transaction's identity; only the transaction owner's lease can end the transaction. See ADR-0037.
+_Avoid_: Sync retry, duplicate request
+
+**Session sync lease**:
+The Host-declared upper bound on time without progress for a Session sync transaction. The lease is the sole basis for aborting a transaction and releasing its slot and byte reservation; it is renewed only by observed progress (backend stage advance, bytes written, device acknowledgement), never by elapsed time alone. See ADR-0037 §2/§7.
+_Avoid_: Timeout (for a fixed constant), idle timer
+
+**Sent versus applied**:
+`sent` means the Host finished writing the snapshot bytes to the transport; `applied` means the device committed the snapshot to its cache and advanced its applied Session state. Only `applied` (a device acknowledgement) may be treated as commit. See ADR-0026 and ADR-0037 §4.
+_Avoid_: Delivered, delivered successfully
+
 **Session read operation**:
 A mobile-client operation with a defined goal for reading a Session range or reconciling its current state. Its lifecycle spans the work needed for that goal; it is distinct from a network attempt, source version, or visible loading indicator. See ADR-0029.
 _Avoid_: History Job, loading flag, wire request
