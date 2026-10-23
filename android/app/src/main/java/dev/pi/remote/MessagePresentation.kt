@@ -61,14 +61,27 @@ internal fun groupTurnTiming(timings: List<TurnTiming>): TurnTiming? {
 internal fun buildChatListItems(
     messages: List<ChatMessage>,
     turnIdsByMessageId: Map<String, String> = emptyMap(),
+    /**
+     * 上一次的列表行（ADR-0039 §5）：内容相同的行必须复用**同一个对象**，否则每次 patch 都会
+     * 让 Compose 认为所有行都变了，重新测量/重组整段会话。
+     *
+     * 判定只看对象身份：消息是不可变数据类，内容变化必定产生新对象。
+     */
+    previous: List<ChatListItem> = emptyList(),
 ): List<ChatListItem> {
     val items = mutableListOf<ChatListItem>()
     var assistantMessages = mutableListOf<ChatMessage>()
     var turnBoundaryPending = false
+    val reusableUsers = previous.filterIsInstance<ChatListItem.UserMessage>().associateBy { it.message.messageId }
+    val reusableTurns = previous.filterIsInstance<ChatListItem.AssistantTurn>()
 
     fun flushAssistantMessages() {
         if (assistantMessages.isNotEmpty()) {
-            items += ChatListItem.AssistantTurn(assistantMessages)
+            val reused = reusableTurns.firstOrNull { turn ->
+                turn.messages.size == assistantMessages.size &&
+                    turn.messages.indices.all { turn.messages[it] === assistantMessages[it] }
+            }
+            items += reused ?: ChatListItem.AssistantTurn(assistantMessages.toList())
             assistantMessages = mutableListOf()
         }
     }
@@ -76,7 +89,8 @@ internal fun buildChatListItems(
     for (message in messages) {
         if (message.role == "user") {
             flushAssistantMessages()
-            items += ChatListItem.UserMessage(message)
+            val cached = reusableUsers[message.messageId]
+            items += if (cached != null && cached.message === message) cached else ChatListItem.UserMessage(message)
             turnBoundaryPending = false
             continue
         }

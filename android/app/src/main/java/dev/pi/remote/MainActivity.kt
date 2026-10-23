@@ -994,10 +994,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val turnIdsByMessageId = remember(messageTurnTimings) {
         messageTurnTimings.mapValues { (_, timing) -> timing.turnId }
     }
-    val presentation = remember(conversation.revision) { buildConversationPresentation(conversation.messages) }
-    val chatItems = remember(conversation.revision, turnIdsByMessageId) {
-        buildChatListItems(presentation.messages, turnIdsByMessageId)
-    }
+    // ADR-0039 §5：按消息对象身份复用上一次的列表行。`revision` 每条 patch 都会变，
+    // 用它当 key 等于每次都重建整段会话的呈现；这里改成"只有消息对象真的换了才重建"。
+    val presentationCache = remember { PresentationCache() }
+    val presentation = presentationCache.presentation(conversation.messages)
+    val chatItems = presentationCache.items(presentation.messages, turnIdsByMessageId)
     val chatItemKeys = remember(chatItems) { chatItems.map(ChatListItem::key) }
     val chatItemIndexById = remember(conversation.revision) { chatListItemIndexByMessageId(chatItems) }
     val representedToolIds = remember(conversation.revision) {
@@ -3711,5 +3712,44 @@ private fun uploadProgressText(upload: UploadTask): String {
         "failed" -> upload.error ?: "发送失败"
         "paused" -> "已暂停，可重新发送（$percent%）"
         else -> "发送中 $percent%"
+    }
+}
+
+/**
+ * 会话呈现的按身份缓存（ADR-0039 §5）。
+ *
+ * 消息是**不可变数据类**：内容变了必然是新对象，因此"列表逐项 `===`"就是可靠的
+ * "内容没变"判据。命中时直接返回同一个呈现/列表对象，Compose 才能跳过重组。
+ */
+private class PresentationCache {
+    private var lastMessages: List<ChatMessage>? = null
+    private var lastPresentation: ConversationPresentation? = null
+    private var lastItemMessages: List<ChatMessage>? = null
+    private var lastTurnIds: Map<String, String>? = null
+    private var lastItems: List<ChatListItem>? = null
+
+    private fun sameIdentity(a: List<ChatMessage>?, b: List<ChatMessage>): Boolean {
+        if (a === b) return true
+        if (a == null || a.size != b.size) return false
+        for (index in b.indices) if (a[index] !== b[index]) return false
+        return true
+    }
+
+    fun presentation(messages: List<ChatMessage>): ConversationPresentation {
+        lastPresentation?.let { cached -> if (sameIdentity(lastMessages, messages)) return cached }
+        return buildConversationPresentation(messages).also {
+            lastMessages = messages
+            lastPresentation = it
+        }
+    }
+
+    fun items(messages: List<ChatMessage>, turnIdsByMessageId: Map<String, String>): List<ChatListItem> {
+        val cached = lastItems
+        if (cached != null && sameIdentity(lastItemMessages, messages) && lastTurnIds == turnIdsByMessageId) return cached
+        return buildChatListItems(messages, turnIdsByMessageId, previous = cached.orEmpty()).also {
+            lastItemMessages = messages
+            lastTurnIds = turnIdsByMessageId
+            lastItems = it
+        }
     }
 }

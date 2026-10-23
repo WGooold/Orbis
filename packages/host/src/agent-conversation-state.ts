@@ -11,6 +11,34 @@ type Current = {
 };
 export type ConversationStateOptions = { maxCurrentSessions?: number; maxCurrentBytes?: number; maxPageBytes?: number; maxPages?: number; maxPageCacheBytes?: number };
 const size = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
+
+/**
+ * ADR-0039 §4：条目字节数在首次接收时测一次并缓存。
+ *
+ * 以前每个事件都 `size(next)` 把整份当前状态序列化一遍，成本是 O(全部条目字节)，
+ * 而条目在 §2 之后是**不可变引用**——同一个对象只需要量一次。替换条目时按
+ * `总字节 - 旧 + 新` 记账，口径与 §4 一致。
+ */
+const entryBytes = new WeakMap<object, number>();
+const bytesOfEntry = (entry: object): number => {
+  const cached = entryBytes.get(entry);
+  if (cached !== undefined) return cached;
+  const measured = size(entry);
+  entryBytes.set(entry, measured);
+  return measured;
+};
+const bytesOfEntries = (entries: readonly object[] | undefined): number =>
+  (entries ?? []).reduce((total, entry) => total + bytesOfEntry(entry), 0);
+
+/** 事件字节数：条目部分走缓存，其余字段（很小）照常序列化。 */
+const bytesOfEvent = (event: { entries?: readonly unknown[] | undefined } & Record<string, unknown>): number => {
+  const { entries, ...rest } = event;
+  return bytesOfEntries(entries as readonly object[] | undefined) + size(rest);
+};
+
+/** 当前状态的字节数：条目走缓存，live/头/版本再序列化（它们与条目总量相比很小）。 */
+const bytesOfCurrent = (current: { entries: readonly object[]; live: unknown; head: unknown; source: unknown }): number =>
+  bytesOfEntries(current.entries) + size({ live: current.live, head: current.head, source: current.source });
 /** Bounded by construction: the conversation projection only keeps the newest references. */
 const MAX_ARTIFACT_REFERENCES = 256;
 const scopeKey = (scope: StateScope): string => scope.kind === "agent" ? JSON.stringify([scope.key.hostId, scope.key.agentKind, scope.key.sessionId]) : "";
@@ -82,7 +110,7 @@ export class AgentConversationState {
     const range = event.type === "session.snapshot" && (event.range === "history" || event.range === "catchup");
     if (range) {
       // A delayed page cannot establish a new source, revive an offline source or switch head.
-      if (!old?.source.ready || !source.ready || old.source.epoch !== source.epoch || source.seq > old.source.seq || size(event) > this.#limits.maxPageBytes) return false;
+      if (!old?.source.ready || !source.ready || old.source.epoch !== source.epoch || source.seq > old.source.seq || bytesOfEvent(event) > this.#limits.maxPageBytes) return false;
       this.#cache(key, event);
       return true;
     }
@@ -109,19 +137,19 @@ export class AgentConversationState {
     const retired = new Set(old?.retired);
     if (old && !sameEpoch) { if (retired.size >= 64) return false; retired.add(old.source.epoch); }
     if (!old && this.#current.size >= this.#limits.maxCurrentSessions) return false;
-    if (size(event) > this.#limits.maxPageBytes) ready = false;
+    if (bytesOfEvent(event) > this.#limits.maxPageBytes) ready = false;
     if (ready && old?.source.ready && sameEpoch && old.source.seq === source.seq &&
       (JSON.stringify(old.head) !== JSON.stringify(head) || JSON.stringify(old.live) !== JSON.stringify(event.live))) return false;
     const canonical = ready ? this.#canonical(sameEpoch ? old : undefined, event, head!) : { entries: [], timings: [] };
     if (!canonical) return false;
     let next: Current = { source: { ...source, ready: ready === true }, retired, head: structuredClone(head ?? old?.head ?? { leafId: null }),
       live: structuredClone(event.live ?? old?.live ?? { complete: false, turn: null, messages: [], tools: [] }), ...canonical, bytes: 0 };
-    next.bytes = size(next);
+    next.bytes = bytesOfCurrent(next);
     if (this.#currentBytes - (old?.bytes ?? 0) + next.bytes > this.#limits.maxCurrentBytes) {
       // Retain provenance and last-known registry values; discarded ranges cannot be a baseline.
       ready = false;
       next = { source: { ...source, ready: false }, retired, head: { leafId: null }, live: { complete: false, turn: null, messages: [], tools: [] }, entries: [], timings: [], bytes: 0 };
-      next.bytes = size(next);
+      next.bytes = bytesOfCurrent(next);
       if (this.#currentBytes - (old?.bytes ?? 0) + next.bytes > this.#limits.maxCurrentBytes) return false;
     }
     const provenance = { producer: "adapter" as const, sourceId: `conversation:${scope.key.agentKind}`, sourceEpoch: source.epoch, sourceRevision: source.seq };
@@ -165,7 +193,7 @@ export class AgentConversationState {
       this.#currentBytes += next.bytes - (old?.bytes ?? 0);
       this.#current.set(key, next);
       if (!sameEpoch) this.#dropPages(key);
-      if (ready && event.type === "session.snapshot" && size(event) <= this.#limits.maxPageBytes) this.#cache(key, event);
+      if (ready && event.type === "session.snapshot" && bytesOfEvent(event) <= this.#limits.maxPageBytes) this.#cache(key, event);
       companion?.onCommitted();
     });
     return result.ok;
@@ -205,7 +233,7 @@ export class AgentConversationState {
   }
   #cache(key: string, event: Snapshot): void {
     const cacheKey = JSON.stringify([key, event.source?.epoch, event.cursor.leafId, event.range, event.beforeEntryId ?? null]);
-    const bytes = size(event); if (bytes > this.#limits.maxPageBytes || bytes > this.#limits.maxPageCacheBytes) return;
+    const bytes = bytesOfEvent(event); if (bytes > this.#limits.maxPageBytes || bytes > this.#limits.maxPageCacheBytes) return;
     const previous = this.#pages.get(cacheKey);
     if ((previous?.event.source?.seq ?? -1) > (event.source?.seq ?? -1)) return;
     if (previous) { this.#bytes -= previous.bytes; this.#pages.delete(cacheKey); }
@@ -246,7 +274,7 @@ export class AgentConversationState {
       base.hasOlder = entries[0]?.parentId != null; base.complete = !base.hasOlder;
       base.rangeStatus = base.hasOlder ? "limit_reached" : "complete";
     }
-    return size(base) <= this.#limits.maxPageBytes ? base : undefined;
+    return bytesOfEvent(base) <= this.#limits.maxPageBytes ? base : undefined;
   }
   offline(scope: StateScope, companion?: PreparedRegistryCommit): void {
     if (scope.kind !== "agent") return;
