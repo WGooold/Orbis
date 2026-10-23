@@ -15,16 +15,20 @@ import java.util.concurrent.atomic.AtomicInteger
  * 单调增长。2026-10-23 的真机堆转储里同时有 5,238 个未消费的帧、42MB payload，进程反复 OOM
  * （ADR-0040 Context）。这里给每条面各自一个「未取走」预算：
  *
- * - `ctl`（命令结果、交互、状态）：不可丢。超预算时丢最旧并记数，由消费侧当连接级异常处理。
+ * - `ctl`（命令结果、交互、状态）：不可静默丢。超预算时丢最旧并记数，消费侧据此补一次源端同步
+ *   （ADR-0040 §5 修订：**不断开连接**）。
  * - `msg`（会话同步、消息增量、会话目录）：可丢。超预算时丢最旧，消费侧据此对可见会话补一次
  *   源端同步——丢帧是背压，不是失败（ADR-0036）。
  * - `bulk`（artifact 分片）：可丢。分片按偏移重传（ADR-0005），丢一片的代价是一次 RTO。
  *
  * 预算是**本机内存**约束，不改线上协议、不改 Host 准入。计数器在生产者与消费者之间共享，竞争
  * 只可能让一次丢弃多算一帧，不会突破上界。
+ *
+ * `ctl` 的帧数预算给到 4,096：DSH 会话的 `runtime.status`/`runtime.metadata` 每来一个原生事件
+ * 就发一对（实测约 40 帧/秒），512 帧只够约 12 秒，一次大快照投影的停顿就能顶爆它。
  */
 internal class InboundFrameLanes(
-    private val controlLimits: LaneLimits = LaneLimits(frames = 512, payload = 1_048_576),
+    private val controlLimits: LaneLimits = LaneLimits(frames = 4_096, payload = 4_194_304),
     private val sessionLimits: LaneLimits = LaneLimits(frames = 256, payload = 4_194_304),
     private val bulkLimits: LaneLimits = LaneLimits(frames = 64, payload = 16_777_216),
 ) {
@@ -38,7 +42,7 @@ internal class InboundFrameLanes(
 
     internal data class InteractiveFrame(val payload: String, val channel: String?)
 
-    /** 自上次读取以来因预算而丢弃的帧数；`sessionFrames` 触发重同步，`controlFrames` 断开连接。 */
+    /** 自上次读取以来因预算而丢弃的帧数；两面都触发重同步（ADR-0040 §4/§5）。 */
     internal data class Overflow(val sessionFrames: Int, val controlFrames: Int) {
         val any: Boolean get() = sessionFrames > 0 || controlFrames > 0
     }

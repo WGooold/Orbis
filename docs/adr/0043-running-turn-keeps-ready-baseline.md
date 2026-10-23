@@ -63,6 +63,24 @@ ADR-0024 §已知限制 已经写下「DSH 有界历史：原生 follow tail 不
 - 僵尸路径：手机离开局域网后，Host 的 `lan` 出站队列无上限增长（本次 259MB），且选路器不会因为「队首帧等待 193 秒」判死该路径。
   这是独立问题，另开 ADR（非 bulk 队列的字节与等待预算 + 停滞路径摘除）。
 
+### §4 同一现场暴露的三处出站体积问题
+
+真机日志（`PiRemote.ReloadTrace`）在打开 DSH 会话后 12 秒内给出三组独立证据，一并修掉：
+
+1. **控制面被状态帧灌满。** `runtime.status` + `runtime.metadata` 每个原生事件发一对（约 40 帧/秒），
+   手机的 `ctl` 面（ADR-0040 §2）在 12 秒内顶爆 512 帧预算，溢出处理当时会断开连接
+   （`inbound.overflow lane=ctl dropped=6` 之后 2ms 就是 `p2p.ice CLOSED`）。
+   修法：`ctl` 预算 4,096 帧 / 4MB，且溢出不再断链（见 ADR-0040 §5 修订）；Host 侧按内容对
+   `runtime.status` + `runtime.metadata` 去重，新设备接入（`announce()`）强制重发。
+2. **catchup 不收敛。** `session.sync range=catchup` 以约 2 次/秒重发 20 秒以上：Host 每次只读尾部
+   `maxEntries`（30）条，手机已知 leaf 到 head 的那段根本不在 `session.entries` 里，`select` 找不到
+   共同前缀，只能回 `limit_reached` 的尾页。修法：首次 catchup 读整段历史（≤2,000 条），
+   置 `historyComplete` 后由 live 事件与 `history` 分页维持。
+3. **历史树把命令词表撑到 640KB。** `dshWebTreeOptions` 上限 2,000 条，而 `capabilities` 随每条
+   durable 事件变化，于是 640KB 的 `agent.state.snapshot` 被反复推送（出站 msg 队列一分钟 20MB，
+   手机 msg 面连续丢帧）。修法：上限降到 500 条（约 160KB），树页仍是「最近 500 条 + 更早上翻补」
+   的有界视图；`packages/host/src/dsh-web-history.test.ts` 的下限断言就是 500。
+
 ## Verification
 
 - `packages/host/src/dsh-web-runtime.test.ts` 新增用例「keeps a ready baseline when the running turn started before the bounded follow tail」：

@@ -2208,14 +2208,15 @@ internal class HostConnection(
      *
      * - 会话面丢弃：对可见会话补一次源端同步，限频 3 秒。丢帧不是失败，不写任何错误字段；
      *   但安静会话没有新事件来要同步，不补就会永久停在旧快照（ADR-0036 Context 约束 2）。
-     * - 控制面丢弃：命令结果/交互无法由同步修复，按连接级异常处理——断开重连，走既有重置。
+     * - 控制面丢弃：同一动作。`session.sync` 响应里带 `interaction.snapshot` 与会话状态，
+     *   重同步能重建控制面丢掉的可见事实；**不再断开连接**——2026-10-23 真机实测，
+     *   一次消费停顿把 ctl 预算顶爆后断链，重连又要从头同步，形成反复掉线的循环。
      */
     private fun handleInboundOverflow(overflow: InboundFrameLanes.Overflow, connectionGeneration: Int) {
         if (overflow.controlFrames > 0) {
             Log.w(RELOAD_TRACE_TAG, "inbound.overflow lane=ctl dropped=${overflow.controlFrames}")
-            relay.disconnect()
         }
-        if (overflow.sessionFrames <= 0) return
+        if (!overflow.any) return
         Log.i(RELOAD_TRACE_TAG, "inbound.overflow lane=msg dropped=${overflow.sessionFrames}")
         if (connectionGeneration != generation || !shouldConnect) return
         val now = System.currentTimeMillis()

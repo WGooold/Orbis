@@ -94,8 +94,15 @@ const entryHasThinking = (entry: RemoteSessionEntry): boolean => {
   });
 };
 
-/** 历史树的窗口上限：整张树随 capabilities 下发，手机每次同步都会重读一遍。 */
-export const DSH_WEB_TREE_MAX_ENTRIES = 2_000;
+/**
+ * 历史树的窗口上限：整张树随 capabilities 下发，手机每次同步都会重读一遍。
+ *
+ * 2026-10-23 真机实测：2,000 条时单帧约 640KB，而 `capabilities` 会随每条 durable 事件变化一次，
+ * 于是 Host 向手机反复推送 640KB 的 `agent.state.snapshot`（出站队列里一分钟堆到 20MB，手机
+ * 入站 msg 面连续丢帧）。降到 500 条把单帧压到约 160KB，树页仍是「最近 500 条 + 更早的靠上翻补」
+ * 的有界视图，语义不变（`packages/host/src/dsh-web-history.test.ts` 要求 ≥ 500）。
+ */
+export const DSH_WEB_TREE_MAX_ENTRIES = 500;
 
 /**
  * DSH 的 durable 日志是线性的：每条事件只跟上一条相连，分支发生在**会话层面**——原生

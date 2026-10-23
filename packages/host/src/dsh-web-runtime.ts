@@ -26,6 +26,8 @@ type Obj = Record<string, unknown>;
  * 实测 96 帧/秒，手机端每条都要落盘 + 全量重投影。100ms 与 Pi 扩展取同一值。
  */
 export const STREAM_COALESCE_MS = 100;
+/** catchup 首次整段加载的消息数上限（与 `session/page` 自身的 2000 上限一致）。 */
+const HISTORY_PAGE_MESSAGES = 2_000;
 type WorkspaceView = { workspaceId: string; path: string; title?: string; sessionIds?: string[] };
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
 const arrayObjects = (value: unknown): Obj[] => Array.isArray(value) ? value.map(object) : [];
@@ -59,6 +61,17 @@ type WebSession = {
   running: boolean; closing: boolean; options: Obj[]; modelCatalog?: Obj; selection?: ModelSelection; selectionSeq: number; usage?: RuntimeMetadata["contextUsage"];
   /** 上一次发布出去的命令词表；同一份内容不重复下发（历史树挂在它上面）。 */
   capabilitiesSignature?: string;
+  /**
+   * 上一次发布出去的元数据。`runtime.status` + `runtime.metadata` 走 `ctl` 面，而 DSH 每个原生
+   * 事件都会调 `#publishMetadata`：实测约 40 帧/秒的控制帧把手机的 ctl 预算顶爆（ADR-0040 §5）。
+   * 内容没变就不发；`announce()`（新设备接入）强制重发。
+   */
+  metadataSignature?: string;
+  /**
+   * 已把这段会话的历史整段读进 `session.entries`（一次未截断的 `session/page`）。置位后 catchup
+   * 不再重复拉同一页：后续条目由 live 事件按序应用，更旧的部分走 `history` 分页。
+   */
+  historyComplete?: boolean;
   lastSeq: number; turnId?: string; turnStartedAt?: number;
   permissionProfile?: string; permissionSandbox?: string; permissionApproval?: string;
   permissionSeq: number; permissionSandboxSeq: number; permissionApprovalSeq: number; permissionGeneration: number;
@@ -177,7 +190,7 @@ export class DshWebRuntime implements AgentBackend {
     for (const session of this.#sessions.values()) {
       void this.#loadModelCatalog(session);
       session.notifications.announce();
-      this.#publishMetadata(session);
+      this.#publishMetadata(session, true);
       void this.#loadDelivery(session);
       this.#emit(session, structuredClone(session.activity));
       // 新接入的设备手里没有命令词表，必须强制重发一次。
@@ -394,8 +407,16 @@ export class DshWebRuntime implements AgentBackend {
         if (command.range === "preview") await this.#checkSource(session);
         await this.#loadDelivery(session);
         this.#emit(session, structuredClone(session.activity));
-        await this.#refreshPage(session, command.maxEntries,
-          command.range === "history" ? webEntrySeqOrUndefined(command.beforeEntryId) : undefined);
+        // catchup 要把「手机已知的 leaf → head」整段补齐。只读尾部 `maxEntries` 条时这段根本不在
+        // `session.entries` 里：`select` 找不到共同前缀，只能返回 limit_reached 的尾页，手机于是
+        // 以约 2 次/秒的节奏重发（现场 20 秒里 30+ 次）。首次 catchup 读整段历史，之后由 live
+        // 事件与 `history` 分页维持，不再每次重复拉同一页。
+        if (command.range === "catchup") {
+          if (session.historyComplete !== true) await this.#refreshPage(session, HISTORY_PAGE_MESSAGES);
+        } else {
+          await this.#refreshPage(session, command.maxEntries,
+            command.range === "history" ? webEntrySeqOrUndefined(command.beforeEntryId) : undefined);
+        }
         // 响应要带 `source.seq`，先刷掉合并窗口；否则客户端拿到的 knownState 会在窗口结束后失效
         // （ADR-0035 §15 的配套不变量）。
         session.source.flushPending();
@@ -805,6 +826,8 @@ export class DshWebRuntime implements AgentBackend {
     for (const entry of pageEntries) if (!entries.has(entry.entryId)) entries.set(entry.entryId, entry);
     session.entries = [...entries.values()].sort((left, right) => webEntrySeq(left.entryId) - webEntrySeq(right.entryId));
     session.lastSeq = Math.max(session.lastSeq, ...events.map(event => event.seq));
+    // 未截断的一页 = 这段会话的历史已经整段在手里；之后 catchup 不必重复拉同一页。
+    if (beforeSeq === undefined && events.length < maxMessages) session.historyComplete = true;
     this.#reconcileSource(session);
   }
   #syncSnapshotTurnState(session: WebSession, events: readonly DshWebLogEvent[]): void {
@@ -1297,7 +1320,17 @@ export class DshWebRuntime implements AgentBackend {
     session.capabilitiesSignature = signature;
     this.#emit(session, { type: "runtime.capabilities", capabilities });
   }
-  #publishMetadata(session: WebSession): void { if (!this.#sessions.has(publicId(session.id))) return; const metadata = this.#metadata(session); this.#emit(session, { type: "runtime.status", status: metadata.status }); this.#emit(session, { type: "runtime.metadata", metadata }); this.onMetadataChange?.(); session.notifications.announce(); }
+  #publishMetadata(session: WebSession, force = false): void {
+    if (!this.#sessions.has(publicId(session.id))) return;
+    const metadata = this.#metadata(session);
+    const signature = JSON.stringify(metadata);
+    if (!force && signature === session.metadataSignature) { session.notifications.announce(); return; }
+    session.metadataSignature = signature;
+    this.#emit(session, { type: "runtime.status", status: metadata.status });
+    this.#emit(session, { type: "runtime.metadata", metadata });
+    this.onMetadataChange?.();
+    session.notifications.announce();
+  }
   #detachSession(session: WebSession, reason: string): void {
     if (session.closing) return;
     session.closing = true;
