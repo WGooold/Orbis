@@ -40,4 +40,17 @@ describe("wire truncation (ADR-0038)", () => {
     expect(truncator.entry(entry)).toBe(first);
     expect(truncateWireValue(1)).toBe(1);
   });
+
+  it("marks truncated content blocks with structured fields (ADR-0038 §5)", () => {
+    const message = { role: "assistant", content: [{ type: "text", text: "z".repeat(100_000) }] };
+    const projected = truncateWireValue(message) as { content: Array<{ text: string; truncated?: boolean; originalBytes?: number }> };
+    const block = projected.content[0]!;
+    expect(block.truncated).toBe(true);
+    expect(block.originalBytes).toBe(100_000);
+    expect(block.text).toContain("已截断");
+    expect(Buffer.byteLength(block.text)).toBeLessThanOrEqual(WIRE_FIELD_LIMIT_BYTES);
+    // 未超限的内容块保持原对象，不额外加字段。
+    const small = { type: "text", text: "hi" };
+    expect(truncateWireValue(small)).toBe(small);
+  });
 });

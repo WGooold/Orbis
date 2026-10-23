@@ -58,6 +58,16 @@ export function truncateWireValue(value: unknown, limit = WIRE_FIELD_LIMIT_BYTES
   if (depth >= MAX_DEPTH) return value;
   if (Array.isArray(value)) return value.map((item) => truncateWireValue(item, limit, depth + 1));
   const record = value as Record<string, unknown>;
+  // ADR-0038 §5：内容块被截断时带上结构化标记（客户端可显示原始字节数）；
+  // 文本里仍保留可见提示，因为绝大多数渲染路径只读 `text`。
+  if ((record.type === "text" || record.type === "thinking") && typeof record.text === "string") {
+    const text = record.text;
+    const bytes = byteLength(text);
+    if (bytes > limit) {
+      return { ...record, text: truncateWireText(text, limit), truncated: true as const, originalBytes: bytes };
+    }
+    return record;
+  }
   let changed = false;
   const next: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(record)) {

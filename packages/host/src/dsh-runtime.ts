@@ -31,6 +31,8 @@ type Session = {
   entryCache: Map<number, RemoteSessionEntry>;
   /** 分页预处理缓存：翻页只换页，不重算索引与显示投影（ADR-0035 §10）。 */
   preparer: SessionSyncPreparer;
+  /** 在飞的整份日志读取（ADR-0035 §11）：并发 sync 共享同一次读，不排队重复读整份日志。 */
+  refresh?: Promise<Awaited<ReturnType<DshHistory["read"]>>>;
   messages: Map<string, { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled"; error?: string }>;
 };
 type Approval = { session: Session; request: DshRequest; interaction: InteractionRequest; timer: NodeJS.Timeout };
@@ -438,7 +440,20 @@ export class DshAcpRuntime implements AgentBackend {
   #cancelSessionApprovals(session: Session, reason: "cancelled" | "owner_closed"): void {
     for (const [id, pending] of this.#approvals) if (pending.session === session) this.#cancelApproval(id, reason);
   }
-  async #refresh(session: Session) {
+  /**
+   * 读取整份原生日志并刷新条目（ADR-0035 §11）。
+   *
+   * DSH 的持久化 API 只提供"整份读"，所以这里至少做到两件事：并发 sync 共享同一次读取
+   * （单飞），以及只有真的产出新对象时才让显示索引失效。要根治 O(日志) 仍需 DSH 给出游标读。
+   */
+  #refresh(session: Session): Promise<Awaited<ReturnType<DshHistory["read"]>>> {
+    if (session.refresh !== undefined) return session.refresh;
+    const running = this.#readAndApply(session).finally(() => { delete session.refresh; });
+    session.refresh = running;
+    return running;
+  }
+
+  async #readAndApply(session: Session) {
     let log: Awaited<ReturnType<DshHistory["read"]>>;
     try { log = await this.#history.read(session.id); }
     catch (error) { session.source.setAvailability(false, false); throw error; }

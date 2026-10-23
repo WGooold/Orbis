@@ -2,7 +2,7 @@
 
 日期：2026-10-22
 
-Status: accepted（2026-10-22 实现 §1–§4、§6、§7 与 §5 的可见性要求：`packages/protocol/src/wire-truncate.ts` 在 `prepareSessionSync` 与 `RecoverableSessionSource.#flush` 两个出口做确定性截断；§5 的 `truncated/originalBytes` 结构化字段尚未加，当前用文本标记"…（已截断，原始 N 字节）"呈现；§8 的"取全文"未做）
+Status: accepted（2026-10-22 实现 §1–§7：`packages/protocol/src/wire-truncate.ts` 在 `prepareSessionSync` 与 `RecoverableSessionSource.#flush` 两个出口做确定性截断；内容块带 `truncated: true` + `originalBytes`，文本里同时保留"…（已截断，原始 N 字节）"以便任何只读 `text` 的渲染路径也能看见。§8 的"取全文"入口未做）
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0034](0034-image-content-references.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0037](0037-session-sync-transaction-contract.md)
 

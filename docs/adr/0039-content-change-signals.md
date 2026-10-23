@@ -5,7 +5,9 @@
 Status: accepting（2026-10-22 实现 §2 与 §6，§5 已由既有显示缓存满足并加测试固定：
 
 - §2：`AgentConversationState` 以**冻结的引用**保存 entries 与 display 行，`event.live` 仍深拷贝（有测试证明 live 未冻结、可原地 push）。
-- §3：未实现。仍保留 `JSON.stringify` 内容比较作为"同 id 内容被改写必须被拒"的判据；改用内容派生修订号需要 Pi/DSH 提供修订号。
+- §3：**已实现（Host 侧）**。`AgentConversationState` 按对象身份缓存内容派生摘要（SHA-256 前 22 位），
+  同内容重发得到同一修订号，比较从 O(字节) 降到 O(1)；未采用全局源序号（重发会误判为改写）。
+  后端若将来直接提供条目修订号，替换这里即可，契约不变。
 - §4：字节账目沿用现有 `next.bytes - old.bytes`（替换时加减成对）。
 - §5：App 的显示行对象由 `display[entryId]` 缓存并在投影中按引用复用（有测试断言同一行是同一对象）；剩余差异只是列表分配，不做 early-exit。
 - §6：DSH `#refresh` 用"同 seq 是否产出新对象"判断替换，未替换时不 `invalidate()`。

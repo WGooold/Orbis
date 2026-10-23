@@ -470,8 +470,15 @@ export const LoopbackDescriptorSchema = z.strictObject({
 export type LoopbackDescriptor = z.infer<typeof LoopbackDescriptorSchema>;
 
 export const RemoteContentSchema = z.discriminatedUnion("type", [
-  z.strictObject({ type: z.literal("text"), text: z.string() }),
-  z.strictObject({ type: z.literal("thinking"), text: z.string() }),
+  // ADR-0038 §5：被截断的载荷必须带标记，客户端据此显示"已截断（原始 N）"。
+  z.strictObject({
+    type: z.literal("text"), text: z.string(),
+    truncated: z.literal(true).optional(), originalBytes: z.number().int().positive().optional(),
+  }),
+  z.strictObject({
+    type: z.literal("thinking"), text: z.string(),
+    truncated: z.literal(true).optional(), originalBytes: z.number().int().positive().optional(),
+  }),
   z.strictObject({ type: z.literal("artifact"), artifact: RemoteArtifactSchema }),
   z.strictObject({
     type: z.literal("tool_call"),

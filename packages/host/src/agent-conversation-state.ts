@@ -1,4 +1,6 @@
 import { type DisplayBatch, type RemoteSessionEntry, type RuntimeEvent, type RuntimeTurnTiming, type SessionBranchCursor, type SessionLiveState, type SessionSourceEpoch, type SessionSyncRequest } from "@pi-remote/protocol";
+import { createHash } from "node:crypto";
+
 import { AgentStateRegistry, type PreparedRegistryCommit, type RegistryMutation, type StateScope } from "./agent-state-registry.js";
 
 type Snapshot = Extract<RuntimeEvent, { type: "session.snapshot" }>;
@@ -33,6 +35,26 @@ function deepFreeze<T>(value: T): T {
     if (child !== null && typeof child === "object") deepFreeze(child);
   }
   return value;
+}
+
+
+/**
+ * ADR-0039 §3：条目修订号必须由**内容**派生，且同一内容重发必须得到同一值。
+ *
+ * 它是"同 entryId 内容被改写必须被拒"的判据。以前每次都 `JSON.stringify` 两侧各算一遍，
+ * 成本 O(字节) 且每个事件都付；现在按对象身份缓存摘要——条目在 §2 之后是不可变引用，
+ * 因此同一个对象只算一次，比较变成 O(1)。
+ *
+ * 不使用全局源序号：同一 entry 重发时全局序号可能变化，会被误判为"内容被改写"从而
+ * 永久拒绝该条目（ADR-0039 §3 的明确禁止项）。
+ */
+const entryRevisions = new WeakMap<object, string>();
+function contentRevision(value: object): string {
+  const cached = entryRevisions.get(value);
+  if (cached !== undefined) return cached;
+  const revision = createHash("sha256").update(JSON.stringify(value)).digest("base64url").slice(0, 22);
+  entryRevisions.set(value, revision);
+  return revision;
 }
 
 export class AgentConversationState {
@@ -163,7 +185,8 @@ export class AgentConversationState {
     const byId = new Map((replace ? [] : old?.entries ?? []).map(entry => [entry.entryId, entry]));
     for (const entry of event.entries ?? []) {
       const previous = byId.get(entry.entryId);
-      if (previous && JSON.stringify(previous) !== JSON.stringify(entry)) return;
+      // ADR-0039 §3：按内容派生的修订号比较，两侧都是 O(1)（按对象身份缓存）。
+      if (previous && contentRevision(previous) !== contentRevision(entry)) return;
       byId.set(entry.entryId, deepFreeze(entry));
     }
     const path: RemoteSessionEntry[] = [], seen = new Set<string>(); let id = head.leafId;

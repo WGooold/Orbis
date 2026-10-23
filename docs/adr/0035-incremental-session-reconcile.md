@@ -101,7 +101,7 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
     - **Codex**：`resultText` 先过 `stripInlineMedia` 再把工具结果序列化进正文（§ ADR-0034 §5）；sync 走 `SessionSyncPreparer`，失效信号用后端已有的 `sourceSeq`，并在条目追加/重置/回滚三处显式 `invalidate()`。
     - **DSH（终端）**：`dshEntries` 增加按原生 `seq` 的条目缓存，刷新时复用已有对象——这是 §1/§2 里“引用相等即没变”能成立的前提；sync 走 `SessionSyncPreparer`。
     - **DSH Web**：sync 走 `SessionSyncPreparer`（带它的 `historyBoundaryParentId`），在页面合并、快照替换与增量追加处 `invalidate()`。
-    - **仍未做**：DSH 终端适配层每次 sync 仍调用 `#history.read()` 读回整份原生日志（它的持久化 API 只给整份 log）。条目对象不再重建、不再重算指纹，但 O(S) 的读与解析还在；要根治需要 DSH 提供带游标的读取。
+    - **仍未做**：DSH 终端适配层每次 sync 仍调用 `#history.read()` 读回整份原生日志（它的持久化 API 只给整份 log）。条目对象不再重建、不再重算指纹；2026-10-22 追加**单飞**（并发 sync 共享同一次读取），少了一层重复读，但 O(S) 的读与解析还在；要根治需要 DSH 提供带游标的读取。
 
 12. **live 的变更检测用条目修订号，不用内容哈希（2026-10-22 已实现）。** 落地前的过渡实现是“每条 live 算一次内容哈希”，每个 token 仍要扫一遍正文（实测 1MB 正文 1.14ms/token、20KB 0.026ms/token，回合仍是 O(n²)，只是常数比旧实现小 3–10 倍）。现在：每个 live 条目维护单调递增的 `rev`（写入该条目时 +1），`#liveToken()` 只拼 `id:rev` 与标量字段，比较成本 O(条目数)、**每 token 零字节扫描**。
     **收益要说准**：它只消掉“比较”那一次扫描（实测 60KB 正文摊到 300 个 token 约 0.03ms/token）。回合内真正的大头在 `#flush()`：`snapshot()` 的 `structuredClone(live)`（1MB 工具结果 → 0.33ms）+ `JSON.stringify(patch)`（1.25ms），而且这份 patch 因为超过 256KB 预算会被整份丢弃——见 §13。两条都落地后实测：**1MB live 的 300 个 delta 总计 1ms（≈0.00ms/token，对照修复前 6.78ms/token）**；20KB live 为 0.07ms/token。
