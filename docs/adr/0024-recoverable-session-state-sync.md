@@ -10,6 +10,8 @@
 
 Status: accepted（Pi、Codex、DSH 与 APP 已接入源端状态复制；大 checkpoint 分块及完整设备故障矩阵仍待验收）
 
+2026-10-22：[ADR-0035](0035-incremental-session-reconcile.md) 修正本文引入的实现代价：`reconcile` 的全量比较/深拷贝、每次 `session.sync` 的强制核对、以及 live 状态的逐 token 重算。恢复契约（原生历史权威、checkpoint/patch、epoch/seq、缓存事务）不变。
+
 2026-10-13：[ADR-0032](0032-host-owned-agent-state-model.md) 将最终架构扩展为 Host 保存完整逻辑 Agent 模型的有界当前投影，并由适配层统一历史显示数据。本文的原生历史权威、源端可恢复状态、checkpoint/patch 和缓存事务继续有效；Host 不新增全量持久聊天数据库。该模型迁移尚待实现。
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0023](0023-codex-revert-and-client-refresh.md)、[ADR-0008](0008-drop-backward-compatibility.md)。实施跟踪：[Issue #2](https://github.com/WGooold/Orbis/issues/2)、[Issue #3](https://github.com/WGooold/Orbis/issues/3)。

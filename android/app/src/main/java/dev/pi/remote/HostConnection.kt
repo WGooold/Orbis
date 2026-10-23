@@ -47,6 +47,8 @@ internal const val HANDSHAKE_STALLED_ERROR =
 
 /** pull 下载调度器的 tick 间隔：既要及时补超时的洞，又不要空转太频繁。 */
 internal const val PULL_TICK_MS = 200L
+/** 背压撤掉需求后的复活间隔（见 `runSessionSyncScheduler`）。 */
+internal const val SYNC_BUSY_REVIVE_MS = 5_000L
 
 /**
  * 上传任务处于 uploading 却迟迟等不到 Host 的 read 时，重新 advertise（重发 init）的阈值。
@@ -1923,6 +1925,12 @@ internal class HostConnection(
                     .also { next = it }
             }
             probe?.mark("snapshot_applied", "accepted=${pendingCommandId !in next.sessionSyncCommands} loading=${next.sessionHistory[runtimeId]?.loading} error=${next.conversations[runtimeId]?.chatSyncError != null}")
+            // ADR-0037 §4：先落库再回执。Host 只有收到它才会把这次事务当作 committed。
+            if (pendingCommandId !in next.sessionSyncCommands) {
+                scope.launch(Dispatchers.IO) {
+                    runCatching { relay.acknowledgeSessionSnapshot(runtimeId, snapshot.syncId) }
+                }
+            }
             val runtime = next.runtimes[runtimeId]
             if (runtime != null && runtime.sessionId == pending.sessionId &&
                 pending.branchGeneration == (next.sessionBranchGenerations[runtimeId] ?: 0) &&
@@ -2119,6 +2127,9 @@ internal class HostConnection(
     }
 
     /** Atomic registration/ticks precede sends; every effect rechecks its immutable task. */
+    /** 背压复活的最小间隔：比消息速率慢得多，链路上只多出可忽略的空请求。 */
+    private var syncBusyReviveAt = 0L
+
     private fun runSessionSyncScheduler() {
         val pairedDevice = device ?: return
         val state = mutableState.value
@@ -2140,6 +2151,20 @@ internal class HostConnection(
             ) }.getOrNull()
             // A temporary lack of path consumes an attempt; the bounded policy owns retry timing.
             Log.i(RELOAD_TRACE_TAG, "session.sync.send syncId=${pending.syncId} range=${pending.range} attempt=${pending.attempts} sent=${sent != null}")
+        }
+        // 背压用掉重试额度后会撤掉需求（否则每条消息都会再要一次，变成重试风暴）。
+        // 撤掉之后就没有人再要了：会话一安静，画面就会停在旧快照上。这里低频复活，
+        // 5 秒一次，直到某次同步成功把 streak 清零。
+        val now = System.currentTimeMillis()
+        if (now >= syncBusyReviveAt) {
+            val stalled = state.runtimes.values.filter { runtime ->
+                runtime.sessionGraphSync &&
+                    (state.sessionSyncBusyStreaks[runtime.runtimeId] ?: 0) >= MAX_SYNC_BUSY_RETRIES
+            }
+            if (stalled.isNotEmpty()) {
+                syncBusyReviveAt = now + SYNC_BUSY_REVIVE_MS
+                scheduleSessionGraphLoad(pairedDevice, stalled)
+            }
         }
     }
     private suspend fun loadSessionGraphsFor(pairedDevice: DeviceCredential, runtimes: List<RuntimeSummary>) {
@@ -2179,7 +2204,7 @@ internal class HostConnection(
                 val current = mutableState.value
                 if (device != pairedDevice || generation != connectionGeneration ||
                     current.selectedRuntimeId != runtime.runtimeId || current.runtimes[runtime.runtimeId]?.sessionId != sessionId ||
-                    runtime.runtimeId in current.sessionSyncFailures) return@withLock
+                    current.syncPreviewBlocked(runtime.runtimeId, runtime.sessionLeafId)) return@withLock
                 if (current.sessionSyncCommands.values.any { it.runtimeId == runtime.runtimeId }) return@withLock
                 val recovery = current.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
                 if (recovery != null) sendSessionSync(pairedDevice, newSessionSyncCommandId(), recovery)

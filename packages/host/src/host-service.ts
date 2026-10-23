@@ -1493,6 +1493,11 @@ export class HostService {
       this.refreshHostFacts();
       return;
     }
+    // ADR-0037 §4：提交回执由协调者自己消费，不进后端。
+    if (command.type === "session.snapshot.ack") {
+      this.#sessionSync.acknowledge(deviceId, command.syncId, command.result);
+      return;
+    }
     for (const [key, owner] of this.#commandOwners) if (owner.at < Date.now() - 300_000) this.#commandOwners.delete(key);
     if (this.#commandOwners.size >= 4096) {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "host_busy", message: "Host 命令任务过多，请稍后重试", commandId });

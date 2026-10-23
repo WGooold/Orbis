@@ -648,6 +648,14 @@ class RelayClient(
         put("reason", reason)
     })
 
+    /** ADR-0037 §4：快照提交回执。commandId 前缀让"旧 Host 不认识这个命令"的错误可以被静默忽略。 */
+    fun acknowledgeSessionSnapshot(runtimeId: String, syncId: String, result: String = "applied"): String? =
+        sendCommand(runtimeId, buildJsonObject {
+            put("type", "session.snapshot.ack")
+            put("syncId", syncId)
+            put("result", result)
+        }, commandId = "session-sync-ack:${UUID.randomUUID()}")
+
     fun syncSession(
         runtimeId: String,
         sessionId: String,

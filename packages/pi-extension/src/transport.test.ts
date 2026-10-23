@@ -349,4 +349,42 @@ describe("RelayRuntimeTransport", () => {
       credential: "runtime-secret",
     });
   });
+
+  // ADR-0035 §9：对端停止读取时，Pi 必须有界——否则 ws 会把帧排进内存直到进程 OOM。
+  it("drops events instead of buffering without bound when the peer stops reading", async () => {
+    const relay = await listen();
+    const connected = vi.fn();
+    const overflow = vi.fn();
+    const drained = vi.fn();
+    const maxBufferedBytes = 32 * 1024;
+    transport = new RelayRuntimeTransport({
+      relayUrl: relay.url,
+      credential: "runtime-secret",
+      reconnect: false,
+      maxBufferedBytes,
+      bufferedLowWaterBytes: 8 * 1024,
+      onOverflow: overflow,
+      onDrained: drained,
+    });
+    await transport.start(metadata, { connected, resync: vi.fn(), command: vi.fn() });
+    const socket = await relay.connection;
+    socket.send(JSON.stringify({ type: "runtime.ready", protocolVersion: PROTOCOL_VERSION, runtimeId: "runtime-a" }));
+    await vi.waitFor(() => expect(connected).toHaveBeenCalledOnce());
+
+    const raw = (socket as unknown as { _socket: { pause(): void; resume(): void } })._socket;
+    raw.pause();
+    const payload = "A".repeat(8 * 1024);
+    for (let index = 0; index < 200; index += 1) {
+      transport.publish({
+        type: "notification.source", producerEpoch: "e", sessionId: "s", revision: index,
+        complete: true, notifications: [], pad: payload,
+      } as unknown as RuntimeEvent);
+    }
+    expect(overflow).toHaveBeenCalledTimes(1);
+    // 有界：积压停在「水位 + 一帧」量级，而不是 200 × 8KB。
+    expect(socket.bufferedAmount).toBeLessThan(200 * 8 * 1024);
+
+    raw.resume();
+    await vi.waitFor(() => expect(drained).toHaveBeenCalled(), { timeout: 5000 });
+  });
 });

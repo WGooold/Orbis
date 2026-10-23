@@ -3266,4 +3266,128 @@ class RelayReducerTest {
         assertEquals(setOf("l-1"), state.sessionListRequests)
         assertTrue(state.sessionBrowse!!.isLoading)
     }
+
+    // ADR-0036 §3/§8：背压不记失败、有界重试；失败闸门必须自己过期。
+    @Test
+    fun `preview busy failures retry with a bound while real failures stay terminal`() {
+        val base = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "running", "session-1",
+                    sessionGraphSync = true, sessionLeafId = "leaf",
+                ),
+            ),
+            sessionSyncCommands = mapOf(
+                "busy-1" to PendingSessionSync("runtime-a", "session-1", "s1", range = "preview"),
+                "busy-2" to PendingSessionSync("runtime-a", "session-1", "s2", range = "preview"),
+                "busy-3" to PendingSessionSync("runtime-a", "session-1", "s3", range = "preview"),
+                "busy-4" to PendingSessionSync("runtime-a", "session-1", "s4", range = "preview"),
+                "page-busy" to PendingSessionSync("runtime-a", "session-1", "s5", range = "history"),
+                "failed" to PendingSessionSync("runtime-a", "session-1", "s6", range = "preview"),
+            ),
+            pendingCommands = listOf("busy-1", "busy-2", "busy-3", "busy-4", "page-busy", "failed")
+                .associateWith { "runtime-a" },
+        )
+
+        var state = base
+        for (index in 1..4) {
+            state = state.failSessionSync("busy-$index", "电脑端同步队列繁忙", transient = true)
+            assertEquals(index, state.sessionSyncBusyStreaks["runtime-a"])
+            assertEquals(index <= MAX_SYNC_BUSY_RETRIES, "runtime-a" in state.sessionSyncRequests)
+        }
+        assertTrue("runtime-a" !in state.sessionSyncFailures)
+        assertEquals(null, state.conversations["runtime-a"]?.chatSyncError)
+
+        // 历史翻页是用户动作：背压也必须留下可见失败，不能让页面静默停住。
+        val paged = state.failSessionSync("page-busy", "电脑端同步队列繁忙", transient = true)
+        assertTrue(paged.sessionRangeFailures.isNotEmpty())
+
+        val failed = state.failSessionSync("failed", "Session 历史同步失败")
+        assertTrue("runtime-a" in failed.sessionSyncFailures)
+    }
+
+    // ADR-0036 §8：失败闸门在冷却后过期并重新挂上需求。
+    @Test
+    fun `preview failure expires after the cooldown and re-arms demand`() {
+        var state = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "running", "session-1",
+                    sessionGraphSync = true, sessionLeafId = "leaf",
+                ),
+            ),
+            sessionSyncFailures = mapOf("runtime-a" to SESSION_SYNC_TIMEOUT_MESSAGE),
+        )
+
+        repeat(SYNC_FAILURE_COOLDOWN_TICKS - 1) { state = advanceSessionSyncTasks(state, 0).state }
+        assertTrue("runtime-a" in state.sessionSyncFailures)
+
+        state = advanceSessionSyncTasks(state, 0).state
+        assertTrue("runtime-a" !in state.sessionSyncFailures)
+        assertTrue("runtime-a" in state.sessionSyncRequests)
+    }
+
+    // ADR-0037 §3：协调者回 pending 时把耗尽窗口重新计时，且有上限。
+    @Test
+    fun `pending notices extend the exhaustion window but the cap still gives up`() {
+        var state = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "running", "session-1",
+                    sessionGraphSync = true, sessionLeafId = "leaf",
+                ),
+            ),
+            sessionSyncCommands = mapOf(
+                "session-sync:1" to PendingSessionSync(
+                    "runtime-a", "session-1", "sync-1", range = "preview", firstSentAt = 0,
+                ),
+            ),
+            pendingCommands = mapOf("session-sync:1" to "runtime-a"),
+        )
+        val reducer = RelayReducer()
+        val farFuture = 1_000_000L
+
+        state = reducer.reduce(state,
+            """{"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
+                "type":"session.sync.pending","commandId":"session-sync:1","syncId":"sync-1",
+                "stage":"processing","leaseMs":20000}}""", channel = "msg")
+        assertEquals(1, state.sessionSyncCommands["session-sync:1"]?.pendingNotices)
+        val ticked = advanceSessionSyncTasks(state, farFuture).state
+        val task = ticked.sessionSyncCommands["session-sync:1"]
+        assertEquals(farFuture, task?.firstSentAt)
+        assertTrue(ticked.conversations["runtime-a"]?.chatSyncError == null)
+
+        val capped = state.copy(sessionSyncCommands = mapOf(
+            "session-sync:1" to task!!.copy(pendingNotices = MAX_PENDING_NOTICES + 1, awaitingWindowReset = true),
+        ))
+        val cappedTick = advanceSessionSyncTasks(capped, farFuture + 1_000).state
+        assertEquals(farFuture, cappedTick.sessionSyncCommands["session-sync:1"]?.firstSentAt)
+    }
+
+    // ADR-0037 §5：确定性失败只挡它自己的目标；换目标后必须重新放行。
+    @Test
+    fun `deterministic failure blocks one target instead of the whole session`() {
+        val blocked = RemoteState(
+            selectedRuntimeId = "runtime-a",
+            runtimes = mapOf(
+                "runtime-a" to RuntimeSummary(
+                    "runtime-a", "A", "/a", "idle", "session-1",
+                    sessionGraphSync = true, sessionLeafId = "leaf-1",
+                ),
+            ),
+            sessionSyncCommands = mapOf(
+                "session-sync:1" to PendingSessionSync(
+                    "runtime-a", "session-1", "sync-1", range = "preview", targetLeafId = "leaf-1",
+                ),
+            ),
+            pendingCommands = mapOf("session-sync:1" to "runtime-a"),
+        ).failSessionSync("session-sync:1", "单条内容过大", code = "session_entry_too_large")
+
+        assertTrue("runtime-a" in blocked.sessionSyncFailures)
+        assertTrue(blocked.syncPreviewBlocked("runtime-a", "leaf-1"))
+        assertTrue(!blocked.syncPreviewBlocked("runtime-a", "leaf-2"))
+    }
 }

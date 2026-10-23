@@ -1,8 +1,8 @@
 import type {
-  DisplayBatch, RemoteSessionEntry, RuntimeCommand, RuntimeEvent, RuntimeTurnTiming, SessionCheckpoint, SessionLiveState,
+  DisplayBatch, DisplayEntry, RemoteSessionEntry, RuntimeCommand, RuntimeEvent, RuntimeTurnTiming, SessionCheckpoint, SessionLiveState,
   SessionSourceEpoch, SessionSyncRange, SessionSyncRangeStatus,
 } from "./index.js";
-import { displayBatchFromProjection, projectDisplayEntries } from "./display-entries.js";
+import { projectDisplayEntries } from "./display-entries.js";
 
 export type SessionSyncRequest = Extract<RuntimeCommand, { type: "session.sync" }>;
 export type SessionSyncSnapshot = Omit<Extract<RuntimeEvent, { type: "session.snapshot" }>,
@@ -40,17 +40,65 @@ function branchPath(byId: ReadonlyMap<string, RemoteSessionEntry>, leaf: string 
   return { path: reverse.reverse(), status: "complete" };
 }
 
-/** Selects a bounded canonical range. It never truncates, rewrites, or skips an Entry. */
-export function selectSessionSyncSnapshot(
+/**
+ * 会话同步的“预处理”部分：与“取哪一页”无关的工作（条目索引、分支路径、显示投影）。
+ *
+ * ADR-0035 §8：翻历史页时这些输入完全不变，只有页在变。拆出来之后，每页只做路径切片与
+ * 页内序列化，而不是对整段历史重跑一遍显示投影。
+ */
+export type PreparedSessionSync = {
+  sessionId: string;
+  liveLeaf: string | null;
+  byId: ReadonlyMap<string, RemoteSessionEntry>;
+  path: readonly RemoteSessionEntry[];
+  pathStatus: SessionSyncRangeStatus;
+  boundedPrefix: boolean;
+  display: ReturnType<typeof projectDisplayEntries>;
+  /**
+   * 显示条目按 entryId 的索引（含它在投影里的位置）。
+   *
+   * `displayBatchFromProjection` 是「过滤整份投影」，每页 O(投影条目数)；翻 400 页就是
+   * O(页数 × S)。索引一次之后每页只按页内条目查表，再按投影位置排序以保持原顺序。
+   */
+  displayByEntryId: ReadonlyMap<string, { position: number; entry: DisplayEntry }>;
+};
+
+export function prepareSessionSync(
   entries: readonly RemoteSessionEntry[],
   sessionId: string,
   liveLeaf: string | null,
+  options: { historyBoundaryParentId?: string; sourceReady?: boolean } = {},
+): PreparedSessionSync {
+  const byId = new Map<string, RemoteSessionEntry>();
+  for (const entry of entries) {
+    if (byId.has(entry.entryId)) throw new Error("duplicate_entry_id");
+    byId.set(entry.entryId, entry);
+  }
+  const branch = branchPath(byId, liveLeaf);
+  let status = branch.status;
+  const boundedPrefix = status === "missing_parent" && options.sourceReady === true &&
+    options.historyBoundaryParentId !== undefined && branch.path[0]?.parentId === options.historyBoundaryParentId;
+  if (boundedPrefix) status = "complete";
+  // 显示投影只算一次，每页只挑自己那几条：分页不会把同一段历史重复归一 N 遍。
+  const display = projectDisplayEntries([...byId.values()], liveLeaf, {
+    boundaryParentId: boundedPrefix ? options.historyBoundaryParentId : undefined,
+  });
+  const displayByEntryId = new Map<string, { position: number; entry: DisplayEntry }>();
+  display.entries.forEach((entry, position) => {
+    if (entry.entryId !== null) displayByEntryId.set(entry.entryId, { position, entry });
+  });
+  return { sessionId, liveLeaf, byId, path: branch.path, pathStatus: status, boundedPrefix, display, displayByEntryId };
+}
+
+/** Selects a bounded canonical range from prepared state. It never truncates, rewrites, or skips an Entry. */
+export function selectPreparedSessionSync(
+  prepared: PreparedSessionSync,
   request: Omit<SessionSyncRequest, "type">,
   turnTimings: readonly RuntimeTurnTiming[] = [],
   source?: { version: SessionSourceEpoch; live: SessionLiveState; checkpoint: SessionCheckpoint },
-  /** Verified native tail boundary; omitted for graphs that claim complete ancestor coverage. */
   historyBoundaryParentId?: string,
 ): SessionSyncSnapshot {
+  const { sessionId, byId, path, display: displayProjection } = prepared;
   if (request.sessionId !== sessionId) throw new Error("session_mismatch");
   const range = request.range;
   if (range === undefined) throw new Error("session_sync_range_required");
@@ -59,25 +107,26 @@ export function selectSessionSyncSnapshot(
   // explicitly, subject to the byte limits below.
   const maxEntries = request.maxEntries ?? 30;
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > 2000) throw new Error("invalid_max_entries");
-  const byId = new Map<string, RemoteSessionEntry>();
-  for (const entry of entries) {
-    if (byId.has(entry.entryId)) throw new Error("duplicate_entry_id");
-    byId.set(entry.entryId, entry);
-  }
-  const targetLeafId = request.targetLeafId ?? liveLeaf;
-  const branch = branchPath(byId, targetLeafId);
-  const path = branch.path;
-  let status = branch.status;
-  const boundedPrefix = status === "missing_parent" && source?.version.ready === true &&
-    historyBoundaryParentId !== undefined && path[0]?.parentId === historyBoundaryParentId;
-  if (boundedPrefix) status = "complete";
-  // 显示投影只算一次，每页只挑自己那几条：分页不会把同一段历史重复归一 N 遍。
-  // 走到已验证的原生边界就等于走到起点——这正是 boundedPrefix 已经认定的完整性。
-  const displayProjection = projectDisplayEntries([...byId.values()], targetLeafId, {
-    boundaryParentId: boundedPrefix ? historyBoundaryParentId : undefined,
-  });
-  const displayFor = (page: readonly RemoteSessionEntry[]): DisplayBatch | undefined =>
-    page.length === 0 ? undefined : displayBatchFromProjection(displayProjection, page);
+  const targetLeafId = request.targetLeafId ?? prepared.liveLeaf;
+  // 预处理绑定在一个 leaf 上；换 leaf 说明调用方用错了缓存，重新 prepare。
+  if (targetLeafId !== prepared.liveLeaf) throw new Error("prepared_leaf_mismatch");
+  const status = prepared.pathStatus;
+  const boundedPrefix = prepared.boundedPrefix;  // 页内显示批次：查表 + 按投影位置排序，O(页) 而不是过滤整份投影。
+  const displayFor = (page: readonly RemoteSessionEntry[]): DisplayBatch | undefined => {
+    if (page.length === 0 || displayProjection.status !== "complete") return undefined;
+    const hits: { position: number; entry: DisplayEntry }[] = [];
+    for (const entry of page) {
+      const hit = prepared.displayByEntryId.get(entry.entryId);
+      if (hit !== undefined) hits.push(hit);
+    }
+    if (hits.length === 0) return undefined;
+    hits.sort((left, right) => left.position - right.position);
+    return {
+      projectionVersion: displayProjection.projectionVersion,
+      entries: hits.map((hit) => hit.entry),
+      windowStart: displayProjection.windowStart,
+    };
+  };
   let candidates = path;
   let rangeStatus = status;
   let mode: SessionSyncSnapshot["mode"] = range === "history" ? "prepend" : "replace";
@@ -190,7 +239,27 @@ export function selectSessionSyncSnapshot(
   // Never label a truncated suffix as a complete incremental recovery. Existing cache-hole
   // paging can fill the ancestors of a bounded recovery snapshot without changing live state.
   if (selection === "delta" && !snapshot.complete) {
-    return selectSessionSyncSnapshot(entries, sessionId, liveLeaf, { ...request, knownState: undefined }, turnTimings, source, historyBoundaryParentId);
+    return selectPreparedSessionSync(prepared, { ...request, knownState: undefined }, turnTimings, source, historyBoundaryParentId);
   }
   return snapshot;
+}
+
+/** 一次性调用（不做缓存的后端）：prepare + select。 */
+export function selectSessionSyncSnapshot(
+  entries: readonly RemoteSessionEntry[],
+  sessionId: string,
+  liveLeaf: string | null,
+  request: Omit<SessionSyncRequest, "type">,
+  turnTimings: readonly RuntimeTurnTiming[] = [],
+  source?: { version: SessionSourceEpoch; live: SessionLiveState; checkpoint: SessionCheckpoint },
+  historyBoundaryParentId?: string,
+): SessionSyncSnapshot {
+  return selectPreparedSessionSync(
+    // 一次性调用：请求可以显式指定 targetLeafId（旧行为），预处理要按那个 leaf 建。
+    prepareSessionSync(entries, sessionId, request.targetLeafId ?? liveLeaf, {
+      ...(historyBoundaryParentId === undefined ? {} : { historyBoundaryParentId }),
+      ...(source === undefined ? {} : { sourceReady: source.version.ready }),
+    }),
+    request, turnTimings, source, historyBoundaryParentId,
+  );
 }

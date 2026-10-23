@@ -40,7 +40,11 @@ export function sessionSyncWireBytes(payloadBytes: number): number {
   const ctChars = Math.ceil((payloadBytes + 16) * 4 / 3);
   return ctChars + Math.max(1, Math.ceil(ctChars / PIECE_MAX_CT_CHARS)) * 4096;
 }
-type SyncDelivery = { kind: PathKind; bytes: number; remaining: number; done: (written: boolean) => void };
+type SyncDelivery = {
+  kind: PathKind; bytes: number; remaining: number; done: (written: boolean) => void;
+  /** ADR-0037 §7：每写出一片就报告一次进展；协调者据此区分"慢"与"卡死"。 */
+  onProgress?: () => void;
+};
 
 /**
  * 探针载荷的首字节。
@@ -295,6 +299,8 @@ export class DeviceLink {
         if (delivery !== undefined) {
           this.#syncPieces.delete(envelope);
           delivery.remaining -= 1;
+          // 进展先于完成：最后一片也算一次进展，随后才结束这条投递。
+          try { delivery.onProgress?.(); } catch { /* 进展回调不能影响发送路径 */ }
           if (delivery.remaining === 0) this.#finishSyncDelivery(delivery, true);
         }
       },
@@ -407,7 +413,7 @@ export class DeviceLink {
 
   /** Admission happens before seal consumes a nonce. A delivery owns all of its slices until
    * the last socket write, or until its entire path session is invalidated. */
-  sendSessionSnapshot(payload: Uint8Array, done: (written: boolean) => void): boolean {
+  sendSessionSnapshot(payload: Uint8Array, done: (written: boolean) => void, onProgress?: () => void): boolean {
     const kind = this.#selector.active;
     if (kind === undefined || this.#closed) return false;
     const session = this.#sessions.get(kind);
@@ -420,7 +426,7 @@ export class DeviceLink {
     let delivery: SyncDelivery | undefined;
     try {
       const pieces = fragmentEnvelope(session.seal("data", payload, "msg"));
-      delivery = { kind, bytes, remaining: pieces.length, done };
+      delivery = { kind, bytes, remaining: pieces.length, done, ...(onProgress === undefined ? {} : { onProgress }) };
       this.#syncDeliveries.add(delivery);
       for (const piece of pieces) this.#syncPieces.set(piece, delivery);
       for (const piece of pieces) {

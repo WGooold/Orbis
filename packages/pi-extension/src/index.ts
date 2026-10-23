@@ -7,7 +7,13 @@ import {
   PI_REMOTE_BROKER_QUERY,
   type InteractionCoordinator,
 } from "@pi-remote/interaction-sdk";
-import { RecoverableSessionSource, type RuntimeEvent } from "@pi-remote/protocol";
+import {
+  prepareSessionSync,
+  RecoverableSessionSource,
+  selectPreparedSessionSync,
+  type PreparedSessionSync,
+  type RuntimeEvent,
+} from "@pi-remote/protocol";
 import { RuntimeBridge } from "@pi-remote/runtime-bridge";
 import { loadRemoteControlConfig } from "./config.js";
 import {
@@ -16,14 +22,17 @@ import {
 } from "./runtime-log.js";
 import {
   PiMessageStream,
+  stripInlineMedia,
   messageToRemote,
+  mergeTurnTimings,
   sessionEntriesFromEntries,
+  turnTimingsFromEntries,
   processRuntimeId,
   runtimeContextSnapshot,
   runtimeHostname,
   sessionCatalogFromInfos,
-  sessionGraphFromEntries,
 } from "./pi-adapter.js";
+import { createSessionCatalogCache } from "./session-catalog.js";
 import { INTERNAL_SLASH_COMMAND, PiSlashCommandAdapter } from "./slash-commands.js";
 import {
   RUNTIME_STATUS_RECONCILE_MS,
@@ -73,6 +82,10 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   });
 
   let bridge: RuntimeBridge | undefined;
+  // 进程级：会话库列表的缓存（ADR-0035 §11）。listAll() 要扫完整库，不能每次连接都跑。
+  const catalogCache = createSessionCatalogCache({
+    load: async () => sessionCatalogFromInfos(await SessionManager.listAll()),
+  });
   let broker: InteractionBroker | undefined;
   let currentContext: ExtensionContext | undefined;
   let slashCommandAdapter: PiSlashCommandAdapter | undefined;
@@ -101,11 +114,22 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       }
     });
   };
+  /** ADR-0034 §4：事件载荷与 Entry 走同一条裁剪规则，工具结果里的 base64 不上线。 */
+  const stripEventMedia = (event: RuntimeEvent): RuntimeEvent => {
+    switch (event.type) {
+      case "tool.started": return { ...event, arguments: stripInlineMedia(event.arguments) };
+      case "tool.updated": return { ...event, partialResult: stripInlineMedia(event.partialResult) };
+      case "tool.finished": return { ...event, result: stripInlineMedia(event.result) };
+      default: return event;
+    }
+  };
   const publishSessionEvent = (event: RuntimeEvent, ctx = currentContext): void => {
     if (!sessionSource || !ctx) return;
+    const stripped = stripEventMedia(event);
     sessionSource.transaction(() => {
-      sessionSource?.observe(event);
-      reconcileSource(ctx, event.type === "message.started" || event.type === "message.finished" || event.type === "turn.finished" || event.type === "tool.finished");
+      sessionSource?.observe(stripped);
+      // ADR-0035 §3：只有原生历史真的可能变了才强制核对；tool.started/updated 不改历史。
+      reconcileSource(ctx, event.type === "message.finished" || event.type === "turn.finished" || event.type === "tool.finished");
     });
   };
   let connectionState: RelayRuntimeConnectionState = "closed";
@@ -280,6 +304,27 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     // is replaced by /reload, while the old command may still log completion.
     const sessionLog = createPiExtensionRuntimeDiagnostic(ctx.cwd);
     messageStream = new PiMessageStream();
+    /**
+     * ADR-0035 §8：翻页复用同一份预处理（条目索引 + 分支路径 + 显示投影）。
+     *
+     * 失效判据只有来源代次、条目数与 leaf：append 改条目数、内容修正换 epoch、翻页换 leaf。
+     * 不能用“每次重算一遍看看变没变”，那正是每页 O(整段历史) 的来源。
+     */
+    let preparedCache: { key: string; prepared: PreparedSessionSync } | undefined;
+    const preparedSession = (
+      entries: readonly unknown[],
+      sessionId: string,
+      leaf: string | null,
+      version: { epoch: string; ready: boolean },
+    ): PreparedSessionSync => {
+      const key = `${version.epoch}\u0000${entries.length}\u0000${leaf ?? ""}\u0000${version.ready ? 1 : 0}`;
+      if (preparedCache?.key === key) return preparedCache.prepared;
+      const prepared = prepareSessionSync(sessionEntriesFromEntries(entries), sessionId, leaf, {
+        sourceReady: version.ready,
+      });
+      preparedCache = { key, prepared };
+      return prepared;
+    };
     const source = new RecoverableSessionSource(ctx.sessionManager.getSessionId(), patch => {
       if (activeSessionToken === sessionToken) bridge?.publish(patch);
     });
@@ -307,10 +352,26 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     const sessionSlashCommandAdapter = slashCommandAdapter;
     // 唯一的通道：本机 Host 的 loopback（见 resolveRuntimeTransport 的注释）。
     // Host 没起来时它只等待、不连接中继。
+    // ADR-0035 §9：发件积压时不再往 socket 里堆帧。排空后换新 epoch 重发基线——
+    // 丢掉的那段 seq 链本来就会让 Host 拒绝并要求恢复，重发基线是它已有的路径。
+    let needsBaseline = false;
     const transport = await resolveRuntimeTransport({
       onConnectionStateChange: (state) => {
         connectionState = state;
         updateTerminalIndicator();
+      },
+      onOverflow: () => {
+        needsBaseline = true;
+        sessionLog("runtime_transport_overflow", { detail: "outbound backlog exceeded; dropping incremental patches" });
+      },
+      onDrained: () => {
+        if (!needsBaseline || activeSessionToken !== sessionToken) return;
+        needsBaseline = false;
+        sessionSource?.reestablish();
+        reconcileSource(ctx, true);
+        source.setAvailability(true, ctx.isIdle());
+        bridge?.refreshMetadata();
+        sessionLog("runtime_transport_drained", { detail: "baseline republished" });
       },
       log: (line) => sessionLog("runtime_transport_selected", { detail: line }),
     });
@@ -344,16 +405,28 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       },
       syncSession: (request) => {
         if (activeSessionToken !== sessionToken) throw new Error("session_replaced");
-        source.transaction(() => {
-          reconcileSource(ctx, true);
-          if (ctx.isIdle()) source.setAvailability(true, true);
-        });
-        return sessionGraphFromEntries(
-          ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId(), ctx.sessionManager.getLeafId(),
-          request, turnTimingStore?.list(), source.snapshot(),
+        // ADR-0035 §3/§8：翻历史页不改变任何状态，因此不 reconcile；其它 range 也只在
+        // 原生历史真的可能变了（leaf 变了）时才核对，不再每次请求强制全历史重算。
+        if (request.range !== "history") {
+          source.transaction(() => {
+            reconcileSource(ctx);
+            if (ctx.isIdle()) source.setAvailability(true, true);
+          });
+        }
+        const entries = ctx.sessionManager.getEntries();
+        const sessionId = ctx.sessionManager.getSessionId();
+        const leaf = ctx.sessionManager.getLeafId();
+        const snapshot = source.snapshot();
+        const prepared = preparedSession(
+          entries, sessionId, request.targetLeafId ?? leaf, snapshot.version,
+        );
+        return selectPreparedSessionSync(
+          prepared, request,
+          mergeTurnTimings(turnTimingStore?.list() ?? [], turnTimingsFromEntries(entries)),
+          snapshot,
         );
       },
-      sessionCatalog: async () => sessionCatalogFromInfos(await SessionManager.listAll()),
+      sessionCatalog: () => catalogCache.get(),
       // 有效忙 = Pi 在跑 || 扩展队列还有压着的消息。否则队列里还有 followUp 时，
       // 手机再来一条无 delivery 的消息会走空闲路径插队，顺序就乱了。
       isIdle: () => (currentContext?.isIdle() ?? true) && queuedSends.length === 0,
@@ -446,6 +519,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   });
 
   pi.on("session_info_changed", async () => {
+    catalogCache.invalidate();
     updateTerminalIndicator();
     bridge?.refreshMetadata();
     await bridge?.refreshCapabilities();
@@ -454,6 +528,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
 
   // Desktop tree navigation also changes the phone's active path and selected position.
   pi.on("session_tree", async (_event, ctx) => {
+    catalogCache.invalidate();
     reconcileSource(ctx, true);
     bridge?.refreshMetadata();
     await bridge?.refreshCapabilities();

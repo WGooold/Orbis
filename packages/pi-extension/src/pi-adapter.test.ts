@@ -9,6 +9,7 @@ import {
   runtimeHostname,
   sessionCatalogFromInfos,
   sessionEntriesFromEntries,
+  stripInlineMedia,
   sessionGraphFromEntries,
   turnTimingsFromEntries,
 } from "./pi-adapter.js";
@@ -526,5 +527,24 @@ describe("Remote context snapshot", () => {
     });
     expect(runtimeContextSnapshot({ model: { provider: "openai" } })).toEqual({});
     expect(runtimeContextSnapshot({ model: { provider: "  ", id: "gpt-5" } })).toEqual({});
+  });
+
+  // ADR-0034 §1/§4：图片一律以 mime + 字节数进入模型/事件载荷，base64 不得上线。
+  it("projects image blocks to a bounded reference without base64", () => {
+    const data = "A".repeat(4 * 1024 * 1024);
+    const image = { type: "image", data, mimeType: "image/png" };
+    const entries = sessionEntriesFromEntries([{
+      type: "message", id: "e1", parentId: null, timestamp: new Date(0).toISOString(),
+      message: { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "Read image file" }, image] },
+    }]);
+    const projection = entries[0]?.data as { message?: { content?: unknown[] } };
+    const blocks = projection.message?.content ?? [];
+    expect(JSON.stringify(blocks)).not.toContain(data.slice(0, 64));
+    expect(blocks.at(-1)).toEqual({ type: "image", mimeType: "image/png", byteLength: 3 * 1024 * 1024 });
+
+    // 同一条规则必须覆盖事件载荷（tool.finished.result）。
+    const stripped = stripInlineMedia({ content: [image] }) as { content: Array<Record<string, unknown>> };
+    expect(stripped.content[0]).toEqual({ type: "image", mimeType: "image/png", byteLength: 3 * 1024 * 1024 });
+    expect(JSON.stringify(stripped)).not.toContain(data.slice(0, 64));
   });
 });

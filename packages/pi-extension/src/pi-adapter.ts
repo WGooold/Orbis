@@ -14,6 +14,8 @@ import {
   type SessionSourceEpoch,
   type SessionCatalogEntry,
 } from "@pi-remote/protocol";
+import { stripInlineMedia } from "@pi-remote/protocol";
+export { stripInlineMedia };
 import type {
   RuntimeSessionSync,
   RuntimeSessionSyncRequest,
@@ -318,7 +320,7 @@ const sessionEntryData = (entry: Record<string, unknown>): Record<string, unknow
   const data: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(entry)) {
     if (key === "type" || key === "id" || key === "parentId" || key === "timestamp") continue;
-    const safe = safeValue(value);
+    const safe = safeValue(stripInlineMedia(value));
     if (safe !== undefined) data[key] = safe;
   }
   // The APP renders the chat from persisted entries, so the reason a provider request failed has
@@ -380,18 +382,31 @@ export function sessionCatalogFromInfos(infos: readonly unknown[]): SessionCatal
   });
 }
 
+/**
+ * 同一原生 Entry 对象的投影缓存（ADR-0035 §1/§2）。
+ *
+ * Pi 的 `sessionManager.getEntries()` 每次返回同一批 Entry 对象，缓存让未变化的条目
+ * 每次拿到同一个投影对象。`RecoverableSessionSource.reconcile` 于是可以用引用相等判断
+ * “没变”，不必对整段历史做序列化 + 深拷贝。
+ */
+const ENTRY_PROJECTIONS = new WeakMap<object, RemoteSessionEntryInput>();
+
 export function sessionEntriesFromEntries(entries: readonly unknown[]): RemoteSessionEntryInput[] {
   return entries.flatMap((raw): RemoteSessionEntryInput[] => {
     if (!raw || typeof raw !== "object") return [];
     const entry = raw as PiEntry;
     if (typeof entry.id !== "string" || typeof entry.type !== "string" || typeof entry.timestamp !== "string") return [];
-    return [{
+    const cached = ENTRY_PROJECTIONS.get(raw);
+    if (cached !== undefined && cached.entryId === entry.id && cached.timestamp === entry.timestamp) return [cached];
+    const projected: RemoteSessionEntryInput = {
       entryId: entry.id,
       parentId: typeof entry.parentId === "string" ? entry.parentId : null,
       type: entry.type,
       timestamp: entry.timestamp,
       data: sessionEntryData(entry as Record<string, unknown>),
-    }];
+    };
+    ENTRY_PROJECTIONS.set(raw, projected);
+    return [projected];
   });
 }
 

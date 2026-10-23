@@ -38,9 +38,28 @@ export interface RelayRuntimeTransportOptions {
    */
   readyTimeoutMs?: number;
   onConnectionStateChange?: (state: RelayRuntimeConnectionState) => void;
+  /**
+   * socket 还没写出去的字节上限（ADR-0035 §9）。
+   *
+   * 对端一旦读得慢（Host 正在做整段历史的 JSON.stringify / clone，或者被一个 sync 卡住），
+   * `ws` 会把后续帧排进内存。这里没有上限时表现就是：heap 不动、CPU 个位数、RSS 按几十 MB/s
+   * 一路涨到 OOM。超过水位就直接丢帧，并在排空后用新 epoch 重新建立基线——断掉的 seq 链
+   * 本来就会让 Host 要求恢复，重发基线是它已有的路径。
+   */
+  maxBufferedBytes?: number;
+  /** 排空到这个字节数以下才算恢复，避免在阈值附近来回抖。 */
+  bufferedLowWaterBytes?: number;
+  /** 第一次因为积压丢帧时调用一次（扩展据此标记「需要重建基线」）。 */
+  onOverflow?: () => void;
+  /** 积压排空后调用一次；扩展此时重发基线。 */
+  onDrained?: () => void;
 }
 
 const DEFAULT_RUNTIME_PATH = "/v1/runtime";
+/** 8MB 的队列上限：正常 loopback 上一帧只有几十 KB 到几百 KB，撞到它说明对端停止读取。 */
+const DEFAULT_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+const DEFAULT_BUFFERED_LOW_WATER_BYTES = 2 * 1024 * 1024;
+const DRAIN_POLL_MS = 500;
 
 const RUNTIME_SEQUENCE_STORE = Symbol.for("@pi-remote/runtime-sequences");
 
@@ -84,6 +103,8 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
   #heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   #awaitingPong = false;
   #hasConnected = false;
+  #overflowed = false;
+  #drainTimer: ReturnType<typeof setInterval> | undefined;
   #lastRecoverableProtocolError: string | undefined;
 
   constructor(options: RelayRuntimeTransportOptions) {
@@ -107,6 +128,16 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
       this.#metadata = event.metadata;
     }
     if (!this.#ready || !this.#socket || this.#socket.readyState !== WebSocket.OPEN || !this.#metadata) return;
+    const max = this.#options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+    if (this.#overflowed || this.#socket.bufferedAmount > max) {
+      if (!this.#overflowed) {
+        this.#overflowed = true;
+        this.#startDrainWatch();
+        this.#handlers?.error?.(`outbound backlog ${this.#socket.bufferedAmount} bytes; dropping events until it drains`, true);
+        this.#options.onOverflow?.();
+      }
+      return;
+    }
     const sequence = nextRuntimeSequence(this.#metadata.runtimeId);
     try {
       const safeEvent = safeValue(event);
@@ -130,8 +161,29 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
     this.#reconnectTimer = undefined;
     this.#stopReadyTimer();
     this.#stopHeartbeat();
+    this.#stopDrainWatch();
+    this.#overflowed = false;
     this.#socket?.close(1000, "runtime shutdown");
     this.#socket = undefined;
+  }
+
+  #startDrainWatch(): void {
+    if (this.#drainTimer !== undefined) return;
+    const low = this.#options.bufferedLowWaterBytes ?? DEFAULT_BUFFERED_LOW_WATER_BYTES;
+    this.#drainTimer = setInterval(() => {
+      const socket = this.#socket;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      if (socket.bufferedAmount > low) return;
+      this.#stopDrainWatch();
+      this.#overflowed = false;
+      this.#options.onDrained?.();
+    }, DRAIN_POLL_MS);
+    this.#drainTimer.unref?.();
+  }
+
+  #stopDrainWatch(): void {
+    if (this.#drainTimer !== undefined) clearInterval(this.#drainTimer);
+    this.#drainTimer = undefined;
   }
 
   async #connect(): Promise<void> {

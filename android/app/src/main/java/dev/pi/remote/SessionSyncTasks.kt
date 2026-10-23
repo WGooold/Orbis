@@ -15,6 +15,10 @@ private const val EXHAUST_AFTER_MS = 150_000L
 private const val RETAIN_UNTIL_MS = 300_000L
 private val RETRY_DELAY_MS = listOf(30_000L, 30_000L, 60_000L)
 internal const val SESSION_SYNC_TIMEOUT_MESSAGE = "同步暂未完成，请重试"
+/** preview 失败最多挡这么久（调度节拍，1 秒一发）：失败不是判决，必须自己过期（ADR-0036 §8）。 */
+internal const val SYNC_FAILURE_COOLDOWN_TICKS = 10
+/** 协调者连续回 pending 的上限：超过就不再延长耗尽窗口，避免它永久 pending 时我们无限等待。 */
+internal const val MAX_PENDING_NOTICES = 10
 
 internal data class SessionSyncDispatch(val commandId: String, val task: PendingSessionSync)
 internal data class SessionSyncTick(val state: RemoteState, val send: List<SessionSyncDispatch>)
@@ -58,6 +62,9 @@ internal fun RemoteState.completeUnchangedSessionSync(
     if (!valid) return next
     return next.copy(
         sessionSyncFailures = next.sessionSyncFailures - task.runtimeId,
+        sessionSyncFailureCooldowns = next.sessionSyncFailureCooldowns - task.runtimeId,
+        sessionSyncBlockedTargets = next.sessionSyncBlockedTargets
+            .filterNot { it.startsWith("${task.runtimeId}\u0000") }.toSet(),
         conversations = next.conversations + (task.runtimeId to conversation.copy(chatSyncError = null)),
     )
 }
@@ -90,6 +97,26 @@ internal fun RemoteState.requestedSessionRecovery(
 internal fun advanceSessionSyncTasks(state: RemoteState, now: Long, connectionGeneration: Int? = null): SessionSyncTick {
     var next = state.expireWaitingSessionReads(now)
     val send = mutableListOf<SessionSyncDispatch>()
+    // ADR-0037 §3：协调者回过 pending 就说明它还在处理，把 150s 耗尽窗口从这里重新计时。
+    // 上限 MAX_PENDING_NOTICES 防止协调者一直 pending 时我们永远不放弃。
+    for ((id, task) in next.sessionSyncCommands.toMap()) {
+        if (!task.awaitingWindowReset) continue
+        next = next.copy(sessionSyncCommands = next.sessionSyncCommands + (id to task.copy(
+            firstSentAt = if (task.pendingNotices <= MAX_PENDING_NOTICES) now else task.firstSentAt,
+            awaitingWindowReset = false,
+        )))
+    }
+    // 失败必须会过期。以前 `sessionSyncFailures` 是死锁式的闩锁：只有"同步成功/手动重试/
+    // 切会话/重连"才清，而卡死时永远等不到成功，于是这个会话就永久停更（现象：必须重开 App）。
+    for (runtimeId in next.sessionSyncFailures.keys.toList()) {
+        val ticks = (next.sessionSyncFailureCooldowns[runtimeId] ?: 0) + 1
+        next = if (ticks >= SYNC_FAILURE_COOLDOWN_TICKS) next.copy(
+            sessionSyncFailures = next.sessionSyncFailures - runtimeId,
+            sessionSyncFailureCooldowns = next.sessionSyncFailureCooldowns - runtimeId,
+            sessionSyncRequests = if (next.runtimes[runtimeId]?.sessionGraphSync == true)
+                next.sessionSyncRequests + runtimeId else next.sessionSyncRequests,
+        ) else next.copy(sessionSyncFailureCooldowns = next.sessionSyncFailureCooldowns + (runtimeId to ticks))
+    }
     for ((id, task) in next.sessionSyncCommands.toMap()) {
         val runtime = next.runtimes[task.runtimeId]
         val obsolete = runtime?.sessionId != task.sessionId ||
@@ -131,7 +158,7 @@ internal fun advanceSessionSyncTasks(state: RemoteState, now: Long, connectionGe
         if (task.range != "catchup" && active >= MAX_ACTIVE - 1 && catchup == 0 &&
             queued.any { it.value.range == "catchup" && it.value.runtimeId !in next.sessionSyncFailures }) continue
         if (task.range == "catchup" && catchup >= MAX_CATCHUP) continue
-        if (task.runtimeId in next.sessionSyncFailures && task.range == "preview") continue
+        if (next.syncPreviewBlocked(task)) continue
         val started = task.copy(attempts = 1, firstSentAt = now, sentAt = now)
         next = next.copy(sessionSyncCommands = next.sessionSyncCommands + (id to started))
         send += SessionSyncDispatch(id, started)
@@ -143,7 +170,7 @@ internal fun advanceSessionSyncTasks(state: RemoteState, now: Long, connectionGe
 
 internal fun RemoteState.queueSessionSync(commandId: String, task: PendingSessionSync): RemoteState {
     if (task.historyOperationId?.let { !ownsHistoryRead(it) } == true) return this
-    if ((task.runtimeId in sessionSyncFailures && task.range == "preview") || sessionSyncCommands.values.any {
+    if (syncPreviewBlocked(task) || sessionSyncCommands.values.any {
             it.runtimeId == task.runtimeId && it.sessionId == task.sessionId && it.range == task.range
         }) return this
     var next = this
@@ -192,6 +219,9 @@ internal fun RemoteState.retrySessionSync(runtimeId: String): RemoteState {
     return released.copy(
         sessionSyncCommands = released.sessionSyncCommands - ids, pendingCommands = released.pendingCommands - ids,
         sessionSyncFailures = released.sessionSyncFailures - runtimeId,
+        sessionSyncFailureCooldowns = released.sessionSyncFailureCooldowns - runtimeId,
+        sessionSyncBlockedTargets = released.sessionSyncBlockedTargets
+            .filterNot { it.startsWith("$runtimeId\u0000") }.toSet(),
         sessionRangeFailures = released.sessionRangeFailures.filterKeys { !it.startsWith("$runtimeId\u0000") },
         conversations = released.conversations + (runtimeId to conversation.copy(chatSyncError = null, forceSourceSnapshot = true)),
     )

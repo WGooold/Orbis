@@ -445,6 +445,17 @@ data class RemoteState(
     val sessionBranchGenerations: Map<String, Int> = emptyMap(),
     /** Stops automatic reloads after failure, even if unrelated live events update the display. */
     val sessionSyncFailures: Map<String, String> = emptyMap(),
+    /** 每个运行时连续被背压拒绝的次数（ADR-0036 §3）。 */
+    val sessionSyncBusyStreaks: Map<String, Int> = emptyMap(),
+    /** 失败冷却（调度节拍）：到 SYNC_FAILURE_COOLDOWN_TICKS 就放行（ADR-0036 §8）。 */
+    val sessionSyncFailureCooldowns: Map<String, Int> = emptyMap(),
+    /**
+     * 尝试层的"这个目标不必再试"集合（`runtimeId\u0000targetLeafId`）。
+     *
+     * ADR-0037 §5：确定性失败只挡它自己的目标，不许停掉整个会话；
+     * 与只用于显示的 `sessionSyncFailures` 分开存储。
+     */
+    val sessionSyncBlockedTargets: Set<String> = emptySet(),
     val sessionSyncRequests: Set<String> = emptySet(),
     val sessionSyncDemandGenerations: Map<String, Long> = emptyMap(),
     val sessionHistory: Map<String, SessionHistoryState> = emptyMap(),
@@ -524,6 +535,10 @@ data class PendingSessionSync(
     val historyOperationId: String? = null,
     /** Immutable refresh demand captured at task creation. */
     val demandGeneration: Long? = null,
+    /** 协调者回过 `session.sync.pending` 的次数（ADR-0037 §3）；用于给"重新计时"设上限。 */
+    val pendingNotices: Int = 0,
+    /** 收到 pending 后待调度器把耗尽窗口重新计时（reducer 没有时钟，由 tick 消费）。 */
+    val awaitingWindowReset: Boolean = false,
 )
 
 data class SessionHistoryState(
@@ -705,10 +720,63 @@ internal fun RemoteState.ownsSessionSnapshot(
         (pending.historyOperationId == null || ownsHistoryRead(pending.historyOperationId))
 }
 
-internal fun RemoteState.failSessionSync(commandId: String, message: String): RemoteState {
+internal fun syncTargetKey(runtimeId: String, targetLeafId: String?): String = "$runtimeId\u0000${targetLeafId ?: ""}"
+
+/** 确定性失败：重试同一目标没有意义，但不得影响该会话的其它目标。 */
+internal fun isDeterministicSessionSyncFailure(code: String?): Boolean = when (code?.lowercase()) {
+    "session_entry_too_large", "session_sync_response_too_large", "session_known_state_range_mismatch",
+    "session_mismatch", "unsupported_command", "session_sync_device_rejected" -> true
+    else -> false
+}
+
+/** Host 的背压信号：链路或队列忙，**不是**失败。 */
+internal fun isTransientSessionSyncFailure(code: String?): Boolean {
+    val value = code?.lowercase() ?: return false
+    return "session_sync_busy" in value || "session_sync_path_unavailable" in value
+}
+
+/** 背压后的立即重试上限；超过就交给下一次自然事件，避免重试风暴。 */
+internal const val MAX_SYNC_BUSY_RETRIES = 3
+
+/**
+ * 尝试层闸门（ADR-0037 §5）：只有短时冷却或"该目标被确定性失败挡住"会阻止 preview。
+ * `sessionSyncFailures` 只用于显示，不再参与这里。
+ */
+internal fun RemoteState.syncPreviewBlocked(runtimeId: String, targetLeafId: String?): Boolean =
+    sessionSyncFailureCooldowns.containsKey(runtimeId) ||
+        syncTargetKey(runtimeId, targetLeafId) in sessionSyncBlockedTargets
+
+internal fun RemoteState.syncPreviewBlocked(task: PendingSessionSync): Boolean =
+    task.range == "preview" && syncPreviewBlocked(task.runtimeId, task.requestTargetLeafId ?: task.targetLeafId)
+
+internal fun RemoteState.failSessionSync(
+    commandId: String,
+    message: String,
+    transient: Boolean = false,
+    code: String? = null,
+): RemoteState {
     val pending = sessionSyncCommands[commandId] ?: return this
     val conversation = conversations[pending.runtimeId] ?: RuntimeConversation()
+    if (transient && pending.range == "preview") {
+        // 背压：撤掉这次请求，但**不记失败**（记了就会永久挡住 preview）。
+        // 只有 preview 走这里：历史翻页是用户动作，失败必须立刻可见可重试。
+        val streak = (sessionSyncBusyStreaks[pending.runtimeId] ?: 0) + 1
+        val graphSync = runtimes[pending.runtimeId]?.sessionGraphSync == true
+        val released = finishRemoteHistoryRead(commandId, HistoryReadPhase.SUPERSEDED).releaseHistoryRequest(commandId)
+        return released.copy(
+            pendingCommands = released.pendingCommands - commandId,
+            sessionSyncCommands = released.sessionSyncCommands - commandId,
+            sessionSyncBusyStreaks = released.sessionSyncBusyStreaks + (pending.runtimeId to streak),
+            sessionSyncRequests = if (graphSync && streak <= MAX_SYNC_BUSY_RETRIES)
+                released.sessionSyncRequests + pending.runtimeId else released.sessionSyncRequests - pending.runtimeId,
+            conversations = released.conversations + (pending.runtimeId to (
+                released.conversations[pending.runtimeId] ?: RuntimeConversation()
+            ).copy(isChatSyncing = false, chatSyncError = null)),
+        )
+    }
     val released = finishRemoteHistoryRead(commandId, HistoryReadPhase.FAILED, message).releaseHistoryRequest(commandId)
+    val deterministic = isDeterministicSessionSyncFailure(code)
+    val blockTarget = syncTargetKey(pending.runtimeId, pending.requestTargetLeafId ?: pending.targetLeafId)
     if (pending.range != "preview") return released.copy(
         pendingCommands = released.pendingCommands - commandId,
         sessionSyncCommands = released.sessionSyncCommands - commandId,
@@ -721,6 +789,9 @@ internal fun RemoteState.failSessionSync(commandId: String, message: String): Re
             pending.demandGeneration != (sessionSyncDemandGenerations[pending.runtimeId] ?: 0L)) sessionSyncRequests
             else sessionSyncRequests - pending.runtimeId,
         sessionSyncFailures = sessionSyncFailures + (pending.runtimeId to message),
+        sessionSyncFailureCooldowns = if (deterministic) sessionSyncFailureCooldowns - pending.runtimeId
+            else sessionSyncFailureCooldowns + (pending.runtimeId to 0),
+        sessionSyncBlockedTargets = if (deterministic) sessionSyncBlockedTargets + blockTarget else sessionSyncBlockedTargets,
         conversations = conversations + (pending.runtimeId to conversation.copy(
             isChatSyncing = false, chatSyncError = message, revision = conversation.revision + 1,
         )),
@@ -1440,7 +1511,7 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
             CommandResult(ok = false, status = "cancelled")
         },
         sessionSyncCommands = emptyMap(),
-        sessionSyncFailures = emptyMap(),
+        sessionSyncFailures = emptyMap(), sessionSyncBusyStreaks = emptyMap(), sessionSyncFailureCooldowns = emptyMap(), sessionSyncBlockedTargets = emptySet(),
         sessionRangeFailures = emptyMap(),
         sessionSyncRequests = emptySet(),
         sessionHistory = sessionHistory.mapValues { (_, history) -> history.copy(loading = false, requestId = null) },
@@ -1664,7 +1735,7 @@ class RelayReducer(
                         .takeIf { state.agentModelEpoch == message.string("modelEpoch") }.orEmpty(),
                     pendingDownloads = state.pendingDownloads.filterValues { it.runtimeId in runtimes },
                     sessionSyncCommands = emptyMap(),
-                    sessionSyncFailures = emptyMap(),
+                    sessionSyncFailures = emptyMap(), sessionSyncBusyStreaks = emptyMap(), sessionSyncFailureCooldowns = emptyMap(), sessionSyncBlockedTargets = emptySet(),
                     sessionRangeFailures = emptyMap(),
                     // Graph history is lazy: only the selected Runtime requests it.
                     sessionSyncRequests = state.sessionSyncRequests + runtimes.values
@@ -1874,6 +1945,7 @@ class RelayReducer(
                 // 点「确定」的噪音，所以静默丢弃；路径现状在连接状态页仍有体现。
                 if (message.string("code") in P2P_FALLBACK_ERROR_CODES) return state
                 val commandId = message.string("commandId")
+                if (commandId?.startsWith("session-sync-ack:") == true) return state
                 val requestId = message.string("requestId")
                 val syncError = protocolErrorText(message.string("code"), message.string("message"))
                 // 先按 requestId 归位进程激活类请求（spec §8：错误带回 requestId）。
@@ -1899,7 +1971,10 @@ class RelayReducer(
                 val sessionSync = commandId?.let(state.sessionSyncCommands::get)
                 if (sessionSync == null && commandId?.isSessionSyncCommandId() == true) return state
                 if (sessionSync != null && commandId != null) {
-                    val failed = state.failSessionSync(commandId, syncError)
+                    val transient = isTransientSessionSyncFailure(message.string("code"))
+                    val failed = state.failSessionSync(
+                        commandId, syncError, transient = transient, code = message.string("code"),
+                    )
                     return if (sessionSync.range == "preview") failed.copy(error = syncError) else failed
                 }
                 val isHistorySync = sessionSync?.range == "history"
@@ -1964,7 +2039,7 @@ class RelayReducer(
             }
         if (sequence <= (state.lastSequence[sequenceKey] ?: -1) && !snapshotStillOwned && eventType != "session.patch") return state
         val supportedEvents = setOf(
-            "runtime.status", "runtime.metadata", "runtime.capabilities", "session.catalog", "message.queued", "session.snapshot", "session.patch", "message.started", "message.delta",
+            "runtime.status", "runtime.metadata", "runtime.capabilities", "session.catalog", "message.queued", "session.snapshot", "session.sync.pending", "session.patch", "message.started", "message.delta",
             "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished", "artifact.started",
             "artifact.failed", "interaction.requested", "interaction.snapshot",
             "interaction.resolved", "interaction.cancelled", "local_interaction.required", "command.result", "runtime.error",
@@ -2004,6 +2079,18 @@ class RelayReducer(
         var nextPendingDownloads = state.pendingDownloads
 
         when (eventType) {
+            // ADR-0037 §3：协调者说"还在处理"就不再是静默。设备把耗尽窗口交给调度器重新计时，
+            // 而不是等 150s 后把整场同步判成会话级失败。
+            "session.sync.pending" -> {
+                val commandId = event.string("commandId")
+                val task = commandId?.let(state.sessionSyncCommands::get)
+                    ?: return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
+                nextSessionSyncCommands = state.sessionSyncCommands + (commandId to task.copy(
+                    pendingNotices = task.pendingNotices + 1,
+                    awaitingWindowReset = true,
+                    slow = true,
+                ))
+            }
             "session.patch" -> {
                 val patch = runCatching { json.decodeFromJsonElement<SessionPatch>(event) }.getOrNull()
                     ?: return state.copy(error = "收到无效的 Session 状态 patch")
@@ -2741,6 +2828,10 @@ class RelayReducer(
             }
             "command.result" -> {
                 val commandId = event.string("commandId")
+                // 提交回执的 result 不是会话状态；旧 Host 回 unsupported_command 也在这里被静默掉。
+                if (commandId?.startsWith("session-sync-ack:") == true) {
+                    return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
+                }
                 val succeeded = event["ok"]?.jsonPrimitive?.booleanOrNull == true
                 val status = event.string("status") ?: if (succeeded) "success" else "failure"
                 if (commandId?.isSessionSyncCommandId() == true && commandId !in state.sessionSyncCommands) {
@@ -2754,8 +2845,16 @@ class RelayReducer(
                     if (isSessionSyncCommand) {
                         // The backend can acknowledge before msg-channel fragments arrive. Only
                         // the committed snapshot completes a successful logical sync task.
-                        val acknowledged = if (succeeded) state.copy(pendingCommands = state.pendingCommands - commandId)
-                            else state.failSessionSync(commandId, commandErrorText(event.string("error")))
+                        val acknowledged = if (succeeded) state.copy(
+                            pendingCommands = state.pendingCommands - commandId,
+                            sessionSyncBusyStreaks = state.sessionSyncBusyStreaks - runtimeId,
+                        )
+                            else state.failSessionSync(
+                                commandId,
+                                commandErrorText(event.string("error")),
+                                transient = isTransientSessionSyncFailure(event.string("error")),
+                                code = event.string("error"),
+                            )
                         return acknowledged.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
                     }
                     nextSessionSyncCommands = state.sessionSyncCommands - commandId

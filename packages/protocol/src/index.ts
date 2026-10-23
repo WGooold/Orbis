@@ -808,6 +808,21 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
     error: z.string().optional(),
   }),
   z.strictObject({
+    /**
+     * 协调者的"仍在处理"信号（ADR-0037 §3）。
+     *
+     * 以前设备用同一个 `commandId` 重问、而任务还在处理或仍处于重派节流窗时，Host 什么都不回，
+     * 设备只能等本地超时并把它当成会话级失败。这个事件让"没有终态"和"已丢弃"可以区分。
+     */
+    type: z.literal("session.sync.pending"),
+    commandId: z.string().min(1).max(256),
+    syncId: z.string().min(1).max(256),
+    /** 协调者当前所处阶段；`delivered` 表示它认为字节已写完，设备可自行决定是否重开事务。 */
+    stage: z.enum(["queued", "processing", "sending", "delivered"]),
+    /** 协调者声明的无进展上限；设备据此延长本地等待，缺省时按设备下限处理。 */
+    leaseMs: z.number().int().positive().max(600_000).optional(),
+  }),
+  z.strictObject({
     type: z.literal("session.snapshot"),
     sessionId: z.string().min(1).max(256),
     syncId: z.string().min(1).max(256),
@@ -943,6 +958,15 @@ export const RuntimeCommandSchema = z.discriminatedUnion("type", [
     knownState: SessionAppliedStateSchema.optional(),
   }).refine(command => command.knownState === undefined || command.range === "preview",
     { message: "An applied baseline is only valid for preview reconciliation" }),
+  z.strictObject({
+    /**
+     * 设备对快照的提交回执（ADR-0037 §4）：`applied` 表示已在本地事务里提交并推进已应用版本。
+     * 只有它才算 `committed`；Host 不把"字节写完"当作设备收到。
+     */
+    type: z.literal("session.snapshot.ack"),
+    syncId: z.string().min(1).max(256),
+    result: z.enum(["applied", "rejected"]),
+  }),
   z.strictObject({
     type: z.literal("user_message"),
     text: z.string().min(1).max(100_000)
@@ -1346,6 +1370,7 @@ export * from "./outbound-mux.js";
 export * from "./piece.js";
 
 export * from "./session-sync.js";
+export * from "./inline-media.js";
 
 /**
  * 历史显示投影（ADR-0032 §5）。它解释 canonical 条目、产出 display 批次；适配层

@@ -88,6 +88,9 @@ export async function resolveRuntimeTransport(input: {
   onConnectionStateChange: (state: RelayRuntimeConnectionState) => void;
   descriptorPath?: string;
   log?: (line: string) => void;
+  /** 发件积压超过水位（ADR-0035 §9）：扩展应停止依赖增量，等排空后重建基线。 */
+  onOverflow?: () => void;
+  onDrained?: () => void;
 }): Promise<LoopbackHostTransport> {
   const descriptorPath = input.descriptorPath ?? defaultLoopbackDescriptorPath();
   const descriptor = await readLoopbackDescriptor(descriptorPath);
@@ -103,6 +106,8 @@ export async function resolveRuntimeTransport(input: {
     descriptorPath,
     adoptAnyHost: descriptor === undefined,
     onConnectionStateChange: input.onConnectionStateChange,
+    ...(input.onOverflow === undefined ? {} : { onOverflow: input.onOverflow }),
+    ...(input.onDrained === undefined ? {} : { onDrained: input.onDrained }),
   });
 }
 

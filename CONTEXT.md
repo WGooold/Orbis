@@ -251,6 +251,14 @@ _Avoid_: File attachment, image attachment, upload descriptor
 The only representation of an image inside the unified Agent model: mime type, byte length, optional dimensions, and either a computer path or an artifact descriptor — never inline base64 or file bytes. Clients render a placeholder; viewing an image uses the existing download path. See ADR-0034.
 _Avoid_: Inline image, base64 content part
 
+**Image content reference**:
+The only representation of an image inside the unified Agent model: mime type, byte length, optional dimensions, and either a computer path or an artifact descriptor — never inline base64 or file bytes. Clients render a placeholder; viewing an image uses the existing download path. See ADR-0034.
+_Avoid_: Inline image, base64 content part
+
+**Image content reference**:
+The only representation of an image inside the unified Agent model: mime type, byte length, optional dimensions, and either a computer path or an artifact descriptor — never inline base64 or file bytes. Clients render a placeholder; viewing an image uses the existing download path. See ADR-0034.
+_Avoid_: Inline image, base64 content part
+
 **Direct machine control**:
 Remote authority that bypasses the agent to run arbitrary commands or to manage processes, packages, credentials, trust, files, or arbitrary network destinations.
 _Avoid_: Admin access

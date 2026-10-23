@@ -383,6 +383,11 @@ export class RuntimeBridge {
     }
 
     try {
+      // 提交回执由 Host 自己处理（ADR-0037 §4），永远不会被路由到 runtime。
+      if (command.type === "session.snapshot.ack") {
+        this.#commandResult(commandId, true);
+        return;
+      }
       if (command.type === "session.sync") {
         this.#publishQueuedMessages();
         this.publish(this.#activity);

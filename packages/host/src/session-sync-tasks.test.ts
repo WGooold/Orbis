@@ -13,16 +13,16 @@ function harness(synchronous = false) {
   let now = 0;
   let available = true;
   let accept = true;
-  const sends: { deviceId: string; payload: Buffer; done: (written: boolean) => void }[] = [];
+  const sends: { deviceId: string; payload: Buffer; done: (written: boolean) => void; onProgress?: () => void }[] = [];
   const dispatches: { runtimeId: string; id: string; command: SessionSyncRequest }[] = [];
   const error = vi.fn();
   const sendEvent = vi.fn();
   const manager = new SessionSyncTasks({
     now: () => now,
     link: (deviceId) => ({ active: available ? "relay" : undefined, sessionSyncQueuedBytes: 0,
-      sendSessionSnapshot: (payload, done) => {
+      sendSessionSnapshot: (payload, done, onProgress) => {
         if (!accept) return false;
-        sends.push({ deviceId, payload: Buffer.from(payload), done });
+        sends.push({ deviceId, payload: Buffer.from(payload), done, onProgress });
         return true;
       } }),
     dispatch: (runtimeId, id, command) => {
@@ -48,6 +48,65 @@ describe("SessionSyncTasks", () => {
     expect(h.error).toHaveBeenLastCalledWith("a", "cmd", "session_sync_id_conflict");
     expect(h.dispatches).toHaveLength(1);
   });
+  it("answers a duplicate request with pending instead of staying silent", () => {
+    const h = harness();
+    h.manager.request("a", "runtime", "cmd", request());
+    h.manager.tick();
+    expect(h.dispatches).toHaveLength(1);
+    h.manager.request("a", "runtime", "cmd", request());
+    expect(h.sendEvent).toHaveBeenLastCalledWith("a", "runtime", {
+      type: "session.sync.pending", commandId: "cmd", syncId: "sync", stage: "processing", leaseMs: 120_000,
+    });
+    expect(h.dispatches).toHaveLength(1);
+  });
+
+  it("aborts only when a stage stops making progress, not when it is merely slow", () => {
+    const h = harness();
+    h.manager.request("a", "runtime", "cmd", request());
+    h.manager.tick();
+    expect(h.manager.stats("a").reservedBytes).toBeGreaterThan(0);
+
+    h.time(60_000);
+    h.manager.tick();
+    expect(h.error).not.toHaveBeenCalled();
+    expect(h.manager.stats("a").reservedBytes).toBeGreaterThan(0);
+
+    h.time(121_000);
+    h.manager.tick();
+    expect(h.error).toHaveBeenLastCalledWith("a", "cmd", "session_sync_lease_expired", undefined);
+    expect(h.manager.stats("a").reservedBytes).toBe(0);
+
+    h.manager.request("a", "runtime", "cmd-2", { ...request(), syncId: "sync-2" });
+    h.manager.tick();
+    h.manager.handleEvent("runtime", snapshot(h.dispatches.at(-1)!.command.syncId));
+    expect(h.sends).toHaveLength(1);
+    h.time(175_000);
+    h.sends[0]!.onProgress?.();
+    h.manager.tick();
+    expect(h.error).not.toHaveBeenLastCalledWith("a", "cmd-2", "session_sync_lease_expired", undefined);
+    h.time(240_000);
+    h.manager.tick();
+    expect(h.error).toHaveBeenLastCalledWith("a", "cmd-2", "session_sync_lease_expired", undefined);
+  });
+
+  it("commits on the device ack and retries a delivered page that is never acknowledged", () => {
+    const h = harness();
+    h.manager.request("a", "runtime", "cmd", request());
+    h.manager.tick();
+    h.manager.handleEvent("runtime", snapshot(h.dispatches.at(-1)!.command.syncId));
+    h.sends.at(-1)!.done(true);
+    h.manager.acknowledge("a", "sync", "applied");
+    expect(h.error).not.toHaveBeenCalled();
+
+    h.manager.request("a", "runtime", "cmd-2", { ...request(), syncId: "sync-2" });
+    h.manager.tick();
+    h.manager.handleEvent("runtime", snapshot(h.dispatches.at(-1)!.command.syncId));
+    h.sends.at(-1)!.done(true);
+    h.time(200_000);
+    h.manager.tick();
+    expect(h.error).toHaveBeenLastCalledWith("a", "cmd-2", "session_sync_ack_timeout", undefined);
+  });
+
   it("registers before synchronous dispatch and only sends to the requesting device", () => {
     const h = harness(true);
     h.manager.request("a", "runtime", "cmd", request());

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RecoverableSessionSource, type ChatMessage, type RemoteSessionEntry, type SessionPatch } from "./index.js";
-import { selectSessionSyncSnapshot } from "./session-sync.js";
+import { SESSION_SYNC_PAGE_BYTES, selectSessionSyncSnapshot } from "./session-sync.js";
 
 const message: ChatMessage = { messageId: "live", role: "assistant", timestamp: 1, content: [{ type: "text", text: "answer" }] };
 const entry: RemoteSessionEntry = { entryId: "entry", parentId: null, type: "message", timestamp: new Date(1).toISOString(), data: { message } };
@@ -53,5 +53,40 @@ describe("recoverable source", () => {
     const result = selectSessionSyncSnapshot([corrected], "session", "entry", { sessionId: "session", syncId: "recovery", range: "preview", knownState: { epoch: old.version.epoch, seq: old.version.seq, head: old.checkpoint.head } }, [], source.snapshot());
     expect(result.selection).toBe("snapshot");
     expect(result.entries).toEqual([corrected]);
+  });
+
+  // ADR-0035 §12：净效果为零的事务（只翻标量）不能推进 seq——客户端的 knownState 依赖它。
+  it("does not advance the version when a transaction's net effect is zero", () => {
+    const patches: SessionPatch[] = [];
+    const source = new RecoverableSessionSource("session", patch => patches.push(patch));
+    source.setAvailability(true, true);
+    const before = source.snapshot().version;
+    patches.length = 0;
+    source.transaction(() => {
+      source.setAvailability(false, false);
+      source.setAvailability(true, true);
+    });
+    expect(source.snapshot().version).toEqual(before);
+    expect(patches).toHaveLength(0);
+    // 真实写入必须推进：抑制不能变成漏发。
+    source.observe({ type: "turn.started", turnId: "t2", startedAt: 2 });
+    expect(source.snapshot().version.seq).toBe(before.seq + 1);
+  });
+
+  // ADR-0035 §13：live 装不下一个 patch 时不构造、不发布，也绝不发半个 patch。
+  it("skips an oversize live patch instead of publishing a truncated one", () => {
+    const patches: SessionPatch[] = [];
+    const source = new RecoverableSessionSource("session", patch => patches.push(patch));
+    source.setAvailability(true, true);
+    source.transaction(() => source.reconcile([entry], entry.entryId));
+    patches.length = 0;
+    const before = source.snapshot().version;
+    const big = { content: [{ type: "text", text: "y".repeat(SESSION_SYNC_PAGE_BYTES) }] };
+    source.observe({ type: "tool.finished", toolCallId: "c1", toolName: "read", result: big, isError: false });
+    expect(patches).toHaveLength(0);
+    // 版本仍然前进：客户端因此知道要去恢复，而不是以为自己已经是最新。
+    expect(source.snapshot().version.seq).toBe(before.seq + 1);
+    // live 没有被截断，仍在源端完整保留。
+    expect(source.snapshot().live.tools[0]?.detail).toEqual(big);
   });
 });
