@@ -20,6 +20,27 @@ const populate = (registry: AgentStateRegistry): void => {
 };
 
 describe("buildAgentStateSnapshot", () => {
+  it.each([false, true])("publishes execution first and separately from other domains (update=%s)", update => {
+    const registry = new AgentStateRegistry();
+    populate(registry);
+    const parts = buildAgentStateSnapshotParts({ registry, requestId: "split", scope: agentScope(),
+      identity: { runtimeId: "runtime", agentKind: "codex", sessionId: "s1" }, update });
+    expect(parts.map(part => part.domains.map(domain => domain.domain))).toEqual([["execution"], ["model"]]);
+    expect(parts.every(part => part.requestId === "split" && part.runtimeId === "runtime" && part.update === update && !part.truncated)).toBe(true);
+  });
+  it("keeps execution missing and unchanged results separate without losing other domain results", () => {
+    const registry = new AgentStateRegistry({ modelEpoch: "model" });
+    registry.commitValue(agentScope(), "model", { ...ready, source: source(), value: { id: "gpt" } });
+    const input = { registry, requestId: "split", scope: agentScope(), domains: ["model", "execution", "live"] };
+    const missing = buildAgentStateSnapshotParts(input);
+    expect(missing).toHaveLength(2);
+    expect(missing[0]).toMatchObject({ domains: [], missing: [{ domain: "execution", reason: "no_state" }] });
+    expect(missing[1]).toMatchObject({ domains: [{ domain: "model" }], missing: [{ domain: "live", reason: "no_state" }] });
+    registry.commitValue(agentScope(), "execution", { ...ready, source: source(), value: { phase: "idle" } });
+    const unchanged = buildAgentStateSnapshotParts({ ...input, known: [{ domain: "execution", modelEpoch: "model", revision: 1 }] });
+    expect(unchanged[0]).toMatchObject({ domains: [], missing: [], unchanged: ["execution"] });
+    expect(unchanged[1]?.domains.map(domain => domain.domain)).toEqual(["model"]);
+  });
   it("splits at domain boundaries so a large inventory cannot starve later domains", () => {
     const registry = new AgentStateRegistry({ maxValueBytes: 1024 * 1024 });
     registry.commitValue(hostScope, "catalog", { ...ready, source: source("host:catalog"), value: "x".repeat(300_000) });

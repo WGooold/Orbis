@@ -4,6 +4,8 @@ import { buildAgentStateSnapshotParts } from "./agent-state-snapshot.js";
 
 type Subscription = { deviceId: string; request: AgentStateRequest; scope: StateScope; changed: Set<string> };
 const scopeId = (scope: StateScope): string => JSON.stringify(scope);
+// Match the conversation model's 64 current sessions; host/device subscriptions use separate scopes.
+const MAX_AGENT_SUBSCRIPTIONS_PER_DEVICE = 64;
 
 /** Coalesced complete-domain publications. No I/O or source RPC occurs inside Registry commits. */
 export class AgentStateSubscriptions {
@@ -18,7 +20,14 @@ export class AgentStateSubscriptions {
     const key = JSON.stringify([deviceId, scopeId(scope)]);
     if (request.subscribe === false) { this.#entries.delete(key); return true; }
     if (request.subscribe !== true) return true;
-    if (!this.#entries.has(key) && [...this.#entries.values()].filter(entry => entry.deviceId === deviceId).length >= 8) return false;
+    // A runtime can switch Sessions without changing runtimeId. Replace its old routing subscription.
+    const replaced = scope.kind === "agent" && request.runtimeId !== undefined
+      ? [...this.#entries].filter(([entryKey, entry]) => entryKey !== key && entry.deviceId === deviceId &&
+        entry.scope.kind === "agent" && entry.request.runtimeId === request.runtimeId)
+      : [];
+    if (scope.kind === "agent" && !this.#entries.has(key) &&
+        [...this.#entries.values()].filter(entry => entry.deviceId === deviceId && entry.scope.kind === "agent").length - replaced.length >= MAX_AGENT_SUBSCRIPTIONS_PER_DEVICE) return false;
+    for (const [entryKey] of replaced) this.#entries.delete(entryKey);
     this.#entries.set(key, { deviceId, scope: structuredClone(scope), request: structuredClone(request), changed: new Set() });
     return true;
   }

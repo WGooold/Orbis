@@ -41,9 +41,17 @@ export type AgentStateSnapshotMessage = Extract<RelayToDeviceMessage, { type: "a
 /** Domain publications are independently versioned. Split a large response only at domain boundaries;
  * no supported domain can be permanently starved behind a large alphabetically earlier domain. */
 export function buildAgentStateSnapshotParts(input: AgentStateSnapshotInput): AgentStateSnapshotMessage[] {
+  const domains = input.domains ?? input.registry.snapshot(input.scope).map(entry => entry.domain);
+  // Initial reads and updates use the same split, including missing/unchanged execution responses.
+  // Only the small execution frame is eligible for ctl; history/live keep their msg budget.
+  if (input.scope.kind === "agent" && domains.includes("execution") && domains.some(domain => domain !== "execution")) {
+    return [
+      ...buildAgentStateSnapshotParts({ ...input, domains: ["execution"] }),
+      ...buildAgentStateSnapshotParts({ ...input, domains: domains.filter(domain => domain !== "execution") }),
+    ];
+  }
   const first = buildAgentStateSnapshot(input);
   if (!first.truncated) return [first];
-  const domains = input.domains ?? input.registry.snapshot(input.scope).map(entry => entry.domain);
   return domains.map(domain => buildAgentStateSnapshot({ ...input, domains: [domain], maxBytes: 4 * 1024 * 1024 + 64 * 1024 }));
 }
 

@@ -144,6 +144,43 @@ describe("Host conversation projection", () => {
     expect(registry.read(scope, "live")?.availability).toBe("unknown");
   });
 
+  it("keeps an authoritative runtime status while a new conversation baseline is incomplete", () => {
+    const registry = new AgentStateRegistry(), model = new AgentConversationState(registry);
+    const facts = new AgentStateFacts({ registry, hostId: "h", kindOf: () => "pi" });
+    facts.observe("r", { type: "runtime.metadata", metadata: { runtimeId: "r", name: "Pi", cwd: "D:/repo", status: "running", sessionId: "s" } });
+    const state = registry.read<AgentExecutionState>(scope, "execution");
+    expect(state?.availability).toBe("ready");
+    const incomplete = { ...snapshot(), cursor: { leafId: null }, source: { epoch: "new", seq: 1, ready: false },
+      checkpoint: { checkpointId: "new:1", head: { leafId: null }, headCompleteness: "unknown" as const, inventoryComplete: false },
+      live: { complete: false, turn: null, messages: [], tools: [] } };
+    expect(model.accept(scope, incomplete, ready => facts.prepareConversation("r", incomplete, ready))).toBe(true);
+    expect(registry.read<AgentExecutionState>(scope, "execution")).toEqual(state);
+    expect(registry.read(scope, "history")?.availability).toBe("unknown");
+  });
+
+  it("does not reset a new session's execution on successive handshake patches before its first preview", () => {
+    const registry = new AgentStateRegistry(), model = new AgentConversationState(registry);
+    const facts = new AgentStateFacts({ registry, hostId: "h", kindOf: () => "pi" });
+    facts.observe("r", { type: "runtime.metadata", metadata: { runtimeId: "r", name: "Pi", cwd: "D:/repo", status: "running", sessionId: "s" } });
+    const patch: Extract<RuntimeEvent, { type: "session.patch" }> = {
+      type: "session.patch", sessionId: "s", source: { epoch: "e", seq: 1, ready: true }, baseSeq: 0, seq: 1,
+      checkpointId: "e:1", head: { leafId: null }, headCompleteness: "complete", live: snapshot().live!,
+    };
+    expect(model.accept(scope, patch, ready => facts.prepareConversation("r", patch, ready))).toBe(true);
+    expect(model.hasBaseline(scope)).toBe(false);
+    expect(registry.read<AgentExecutionState>(scope, "execution")).toMatchObject({ availability: "ready", value: { phase: "running" } });
+    facts.observe("r", { type: "runtime.status", status: "idle" });
+    const settled = { ...patch, source: { epoch: "e", seq: 2, ready: true }, baseSeq: 1, seq: 2,
+      live: { complete: true, turn: null, messages: [], tools: [] } };
+    expect(model.accept(scope, settled, ready => facts.prepareConversation("r", settled, ready))).toBe(true);
+    expect(registry.read<AgentExecutionState>(scope, "execution")).toMatchObject({ availability: "ready", value: { phase: "idle" } });
+    const preview = { ...snapshot("e", 2), cursor: { leafId: null },
+      checkpoint: { checkpointId: "e:2", head: { leafId: null }, headCompleteness: "complete" as const, inventoryComplete: true }, live: settled.live };
+    expect(model.accept(scope, preview, ready => facts.prepareConversation("r", preview, ready))).toBe(true);
+    expect(model.hasBaseline(scope)).toBe(true);
+    expect(registry.read<AgentExecutionState>(scope, "execution")).toMatchObject({ availability: "ready", value: { phase: "idle", turn: null } });
+  });
+
   it("rolls back companion accumulators and versions when any conversation value is rejected", () => {
     const registry = new AgentStateRegistry({ maxValueBytes: 800 }), model = new AgentConversationState(registry);
     const facts = new AgentStateFacts({ registry, hostId: "h", kindOf: () => "pi" });

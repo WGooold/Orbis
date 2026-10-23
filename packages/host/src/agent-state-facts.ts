@@ -131,8 +131,9 @@ export class AgentStateFacts {
     if (!session || session.sessionId !== event.sessionId) return;
     const next = this.#clone(session); next.revision += 1;
     if (ready && event.live) next.turn = structuredClone(event.live.turn);
-    const changes = ready ? this.#mutations(next, new Set(["execution"])) : [{ kind: "value" as const, scope: this.#scope(next), domain: "execution" as const,
-      fact: { source: this.#source(next), availability: "unknown" as const, completeness: "unknown" as const, value: null } }];
+    // A conversation checkpoint can be incomplete while runtime.status is already authoritative.
+    // Keep execution independent: only runtime reconnect/offline handling can mark it unverified.
+    const changes = ready ? this.#mutations(next, new Set(["execution"])) : [];
     return { changes, onCommitted: () => { this.#sessions.set(next.key, next); } };
   }
 

@@ -113,7 +113,20 @@ const CATALOG_TTL_MS = 5_000;
  *
  * 分片不走这里：它们是 `bin` 帧，由 `DeviceLink.sendBinary` 直接打上 `bulk`。
  */
-export function channelForDeviceMessage(message: { type: string; event?: { type?: string } }): EnvelopeChannel {
+export function channelForDeviceMessage(message: {
+  type: string;
+  event?: { type?: string };
+  scope?: string;
+  domains?: readonly { domain?: string }[];
+  missing?: readonly { domain?: string }[];
+  unchanged?: readonly string[] | undefined;
+}): EnvelopeChannel {
+  // Both initial execution reads and updates must bypass queued chat-history msg frames.
+  if (message.type === "agent.state.snapshot" && message.scope === "agent") {
+    const domains = [...(message.domains ?? []), ...(message.missing ?? [])].map(entry => entry.domain)
+      .concat(message.unchanged ?? []);
+    if (domains.length > 0 && domains.every(domain => domain === "execution")) return "ctl";
+  }
   if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "diagnostics.page") return "msg";
   if (message.type !== "runtime.event") return "ctl";
   const eventType = message.event?.type ?? "";

@@ -45,7 +45,7 @@ import {
 } from "@pi-remote/protocol";
 import { createRelayServer, type RelayServer } from "@pi-remote/relay";
 
-import { HostService } from "./host-service.js";
+import { HostService, channelForDeviceMessage } from "./host-service.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
@@ -611,6 +611,19 @@ class TestRuntime {
   }
 }
 
+describe("device model channel routing", () => {
+  it("puts initial and updated execution-only snapshots on ctl, including missing and unchanged responses", () => {
+    expect(channelForDeviceMessage({ type: "agent.state.snapshot", scope: "agent", domains: [{ domain: "execution" }] })).toBe("ctl");
+    expect(channelForDeviceMessage({ type: "agent.state.snapshot", scope: "agent", missing: [{ domain: "execution" }] })).toBe("ctl");
+    expect(channelForDeviceMessage({ type: "agent.state.snapshot", scope: "agent", unchanged: ["execution"] })).toBe("ctl");
+    expect(channelForDeviceMessage({ type: "agent.state.snapshot", scope: "agent", domains: [{ domain: "execution" }, { domain: "live" }] })).toBe("msg");
+    expect(channelForDeviceMessage({ type: "agent.state.snapshot", scope: "agent", domains: [{ domain: "execution" }], unchanged: ["model"] })).toBe("msg");
+    expect(channelForDeviceMessage({ type: "agent.state.snapshot", scope: "agent", domains: [{ domain: "execution" }], missing: [{ domain: "live" }] })).toBe("msg");
+    expect(channelForDeviceMessage({ type: "agent.state.snapshot", scope: "host", missing: [{ domain: "execution" }] })).toBe("msg");
+    expect(channelForDeviceMessage({ type: "agent.state.range.page" })).toBe("msg");
+  });
+});
+
 describe("host end-to-end over relay", () => {
   let relay: RelayServer | undefined;
   let host: HostService | undefined;
@@ -1002,6 +1015,41 @@ describe("host end-to-end over relay", () => {
     // 同一道内严格递增；跨道互不挤占。
     expect(ctl2.sequence - ctl1.sequence).toBe(1);
     expect(msg1.sequence).toBeGreaterThan(0);
+  });
+
+  it("returns a new session's execution separately and keeps publishing status on the same subscription", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false });
+    await host.start();
+    const paired = await pairDevice({ relay, host });
+    device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await expect(device.receiveMessage()).resolves.toMatchObject({ type: "device.ready" });
+    await device.receiveMessage();
+
+    const descriptor = host.loopback?.descriptor;
+    if (descriptor === undefined) throw new Error("loopback descriptor 缺失");
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-1", name: "pi", cwd: "/work/project", status: "idle", sessionId: "s1" } });
+    await expect(runtime.next()).resolves.toMatchObject({ type: "runtime.ready", runtimeId: "pi-1" });
+    await expect(device.receiveMessage()).resolves.toMatchObject({ type: "runtime.online" });
+
+    device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "model-1",
+      scope: "agent", runtimeId: "pi-1", sessionId: "s1", agentKind: "pi", subscribe: true, domains: ["execution", "history", "live"] }));
+    const initialFrames = [await device.receiveMessage(), await device.receiveMessage()] as Array<{ domains?: Array<{ domain: string }> }>;
+    expect(initialFrames.map(frame => frame.domains?.map(domain => domain.domain))).toContainEqual(["execution"]);
+    expect(initialFrames.flatMap(frame => frame.domains?.map(domain => domain.domain) ?? []).sort()).toEqual(["execution", "history", "live"]);
+    expect(initialFrames.find(frame => frame.domains?.[0]?.domain === "execution")).toMatchObject({ requestId: "model-1",
+      runtimeId: "pi-1", sessionId: "s1", domains: [{ availability: "ready", value: { phase: "idle" } }] });
+
+    runtime.publish(1, { type: "runtime.status", status: "running" });
+    const updates = [await device.receiveMessage(), await device.receiveMessage()] as Array<{ domains?: Array<{ domain: string }> }>;
+    expect(updates.map(frame => frame.domains?.map(domain => domain.domain))).toContainEqual(["execution"]);
+    expect(updates.flatMap(frame => frame.domains?.map(domain => domain.domain) ?? [])).toEqual(["execution"]);
+    expect(updates.find(frame => frame.domains?.[0]?.domain === "execution")).toMatchObject({ requestId: "model-1", update: true,
+      domains: [{ availability: "ready", value: { phase: "running" } }] });
   });
 
   it("runtime 不在线时由 Host 就地读盘服务下载（不再依赖产生文件的 Pi 进程）", async () => {

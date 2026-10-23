@@ -65,6 +65,22 @@ class AgentModelConsumerTest {
         assertEquals(updated, reducer.reduce(updated, snapshot(domain("execution", """{"phase":"running"}""", 3))))
     }
 
+    @Test fun `new session receives execution on ctl before model on msg and keeps accepting the subscription`() {
+        val pending = initial().copy(runtimes = initial().runtimes.mapValues { (_, runtime) -> runtime.copy(status = "unknown") })
+        val running = receive(pending, domain("execution", """{"phase":"running"}""", revision = 2))
+        assertEquals("running", running.runtimes.getValue("runtime").status)
+        assertTrue(running.agentStateRequests.isEmpty())
+        val model = reducer.reduce(running, snapshot(domain("model", """{"provider":"p","id":"m"}""")), channel = "msg")
+        assertEquals("running", model.runtimes.getValue("runtime").status)
+        assertEquals("m", model.runtimes.getValue("runtime").model?.id)
+        val idle = receive(model, domain("execution", """{"phase":"idle"}""", revision = 3))
+        val stale = reducer.reduce(idle, snapshot(domain("execution", "null", revision = 1, availability = "unknown")), channel = "msg")
+        assertEquals("idle", stale.runtimes.getValue("runtime").status)
+        assertEquals(setOf("execution", "model"), stale.agentStateSnapshots.values.single().domains.keys)
+        assertTrue("read" in stale.agentStateReads)
+        assertNull(stale.error)
+    }
+
     @Test fun `complete Host projection ends a request even when native coverage remains partial`() {
         val restored = receive(initial(), domain("interactions", """{"question":${interaction()}}""", completeness = "partial"))
         assertEquals("yes", restored.conversations.getValue("runtime").interactions.getValue("question").options.single().value)
