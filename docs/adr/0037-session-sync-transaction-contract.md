@@ -2,6 +2,8 @@
 
 日期：2026-10-22
 
+2026-10-22：[ADR-0038](0038-wire-payload-truncation.md) 处理本文未覆盖的另一类失败：单条 Entry 超过快照上限时同步必然失败。它属本文 §5 的"确定性失败"，但通过截断让该 target 不再必然失败。
+
 Status: accepted（2026-10-22 实现 §1–§8：事务标识与去重、协调者回 `pending`、按阶段租约与到期 abort、投递进展回调、设备 `applied` 回执与 ack 租约、设备侧尝试层与会话层拆分、失败分类与目标级封锁。Host 侧改动需重启 Host 才生效）
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0029](0029-session-read-operation-state-machine.md)、ADR-0035（待重建）、[ADR-0036](0036-sync-backpressure-is-not-failure.md)

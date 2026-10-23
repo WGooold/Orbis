@@ -2,6 +2,8 @@
 
 日期：2026-10-21
 
+2026-10-22：[ADR-0039](0039-content-change-signals.md) 把本文 §12 的"修订号优先于内容哈希"扩展到 Host 权威模型层、App 投影层与 DSH 显示索引：entries 边界冻结 + 引用存储、条目级内容派生修订号、投影按行依赖复用。
+
 Status: accepted（2026-10-22 实现 §1/§2/§3/§7/§8/§9/§10/§12/§13；§11 的后端剩余项未做；运行中的 Host/Pi 需另行授权才重启生效）
 
 2026-10-22 溯源：本文修的这套“按全量重算”写法由 [ADR-0024](0024-recoverable-session-state-sync.md) 一次性引入（commit `15b9b23`，2026-10-10「feat(sync): recover Pi and DSH state and unify protocol 12 updates」，52 个文件）；ADR-0026 / 0032 沿用该机制，但都没有再审视它的成本。
