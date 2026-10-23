@@ -325,9 +325,11 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       preparedCache = { key, prepared };
       return prepared;
     };
+    // ADR-0035 §15：流式期间把 patch 合并到 10 次/秒。手机每收到一条 patch 都要重新投影
+    // 整段会话；90 次/秒会把主线程压死（现场：滚动掉帧 39%、每 2 秒一次 GC）。
     const source = new RecoverableSessionSource(ctx.sessionManager.getSessionId(), patch => {
       if (activeSessionToken === sessionToken) bridge?.publish(patch);
-    });
+    }, { coalesceMs: 100 });
     sessionSource = source;
     source.transaction(() => {
       reconcileSource(ctx);
@@ -417,6 +419,9 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
             if (ctx.isIdle()) source.setAvailability(true, true);
           });
         }
+        // 响应要带 `source.seq`，所以必须先把合并窗口刷掉——否则客户端拿到的 knownState
+        // 会在 100ms 后失效，sync 永远回不了 unchanged（ADR-0035 §15 的配套不变量）。
+        source.flushPending();
         const entries = ctx.sessionManager.getEntries();
         const sessionId = ctx.sessionManager.getSessionId();
         const leaf = ctx.sessionManager.getLeafId();

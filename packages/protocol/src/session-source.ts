@@ -78,9 +78,50 @@ export class RecoverableSessionSource {
   #committed: RemoteSessionEntry[] = [];
   #boundaryParentId: string | null = null;
 
-  constructor(sessionId: string, publish: (event: Extract<RuntimeEvent, { type: "session.patch" }>) => void) {
+  /**
+   * `coalesceMs > 0` 时，状态变化最多每 N 毫秒发布一条 patch（ADR-0035 §15）。
+   *
+   * 流式输出会把"每个 token 一次 patch"推给手机：90 次/秒的 `session.patch` 让手机每次都要
+   * 重新投影整段会话（现场 5s 内 450 帧、CPU 207%、每 2 秒一次 GC、滚动掉帧 39%）。
+   * 合并只影响**发布节奏**：状态仍完整保存在源端，seq 只在真正发布时推进，序列保持连续。
+   * 默认 0 = 同步发布，既有调用方与测试行为不变。
+   */
+  constructor(
+    sessionId: string,
+    publish: (event: Extract<RuntimeEvent, { type: "session.patch" }>) => void,
+    options: { coalesceMs?: number } = {},
+  ) {
     this.#sessionId = sessionId;
     this.#publish = publish;
+    this.#coalesceMs = options.coalesceMs ?? 0;
+  }
+
+  /** 合并窗口（毫秒）；0 表示关闭。 */
+  #coalesceMs = 0;
+  #flushTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * 把这次状态变化排进合并窗口。
+   *
+   * 任何要在响应里携带 `source.seq` 的路径都必须先 `flushPending()`：窗口会把"版本号的最终值"
+   * 推迟到窗口结束，读早了客户端就会拿着一个马上失效的 knownState 去请求（永远回不了 unchanged）。
+   */
+  #requestFlush(): void {
+    if (this.#coalesceMs <= 0) { this.#flush(); return; }
+    if (this.#flushTimer !== undefined) return;
+    this.#flushTimer = setTimeout(() => {
+      this.#flushTimer = undefined;
+      if (this.#dirty) this.#flush();
+    }, this.#coalesceMs);
+    this.#flushTimer.unref?.();
+  }
+
+  /** 立刻发布挂起的窗口（ADR-0035 §15 的配套不变量）。 */
+  flushPending(): void {
+    if (this.#flushTimer === undefined) return;
+    clearTimeout(this.#flushTimer);
+    this.#flushTimer = undefined;
+    if (this.#dirty) this.#flush();
   }
 
   /**
@@ -101,7 +142,7 @@ export class RecoverableSessionSource {
           this.#dirty = false;
           this.#committed = [];
         } else {
-          this.#flush();
+          this.#requestFlush();
         }
       }
     }
@@ -366,7 +407,7 @@ export class RecoverableSessionSource {
 
   #touch(): void {
     this.#dirty = true;
-    if (this.#depth === 0) this.#flush();
+    if (this.#depth === 0) this.#requestFlush();
   }
 
   #flush(): void {
