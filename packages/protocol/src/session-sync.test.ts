@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   RuntimeEventSchema, selectSessionSyncSnapshot, SESSION_SYNC_MAX_BYTES, SESSION_SYNC_PAGE_BYTES,
-  SESSION_SYNC_WRAPPER_BYTES, type RemoteSessionEntry, type RuntimeTurnTiming,
+  SESSION_SYNC_WRAPPER_BYTES, SessionSyncPreparer, WIRE_ENTRY_LIMIT_BYTES,
+  type RemoteSessionEntry, type RuntimeTurnTiming,
 } from "./index.js";
 
 const entries = (count: number, text = ""): RemoteSessionEntry[] => Array.from({ length: count }, (_, index) => ({
@@ -34,24 +35,42 @@ describe("bounded Session ranges", () => {
     expect(fork.entries.map((entry) => entry.entryId)).toEqual(["sibling"]);
   });
 
-  it.each(["preview", "history", "catchup"] as const)("enforces UTF-8 response budgets for %s without changing nodes", (range) => {
+  // ADR-0038：超长载荷按线路投影截断后仍要满足页预算，而身份字段必须来自原文。
+  it.each(["preview", "history", "catchup"] as const)("enforces UTF-8 response budgets for %s with identity intact", (range) => {
     const tree = entries(50, "中文🙂".repeat(10_000));
     const snapshot = selectSessionSyncSnapshot(tree, "s", "50", { ...request, maxEntries: 100, range });
     expect(snapshot.entries.length).toBeGreaterThan(0);
     expect(snapshot.entries.length).toBeLessThan(50);
     expect(Buffer.byteLength(JSON.stringify(snapshot)) + SESSION_SYNC_WRAPPER_BYTES).toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
-    for (const entry of snapshot.entries) expect(entry).toEqual(tree[Number(entry.entryId) - 1]);
+    for (const entry of snapshot.entries) {
+      const source = tree[Number(entry.entryId) - 1]!;
+      // 身份/版本字段逐字来自原文；只有载荷允许被截断。
+      expect(entry.entryId).toBe(source.entryId);
+      expect(entry.parentId).toBe(source.parentId);
+      expect(entry.type).toBe(source.type);
+      expect(entry.timestamp).toBe(source.timestamp);
+      expect(Buffer.byteLength(JSON.stringify(entry))).toBeLessThanOrEqual(WIRE_ENTRY_LIMIT_BYTES);
+    }
     expect(snapshot.complete).toBe(false);
   });
 
-  it("sends a single large Entry intact and fails at an unsendable Entry rather than skipping it", () => {
+  // ADR-0038：一条超长 Entry 现在被截断后可发送；只有截断也装不下的结构（大量字段累加）
+  // 才按确定性失败处理，且不跳过它换取后面的条目。
+  it("truncates a single large Entry, and still fails on one that cannot be reduced", () => {
     const tree = entries(2, "x".repeat(400_000));
     const snapshot = selectSessionSyncSnapshot(tree, "s", "2", { ...request, range: "catchup" });
-    expect(snapshot.entries).toEqual([tree[0]]);
-    expect(snapshot.complete).toBe(false);
+    // 截断让原本放不下的一页能装下更多条目：这里是两条一起发，而不是只发一条。
+    expect(snapshot.entries.map((entry) => entry.entryId)).toEqual(["1", "2"]);
+    expect(snapshot.entries[0]!.data).not.toEqual(tree[0]!.data);
+    expect(JSON.stringify(snapshot.entries[0]!.data)).toContain("已截断");
     expect(Buffer.byteLength(JSON.stringify(snapshot)) + SESSION_SYNC_WRAPPER_BYTES).toBeLessThanOrEqual(SESSION_SYNC_MAX_BYTES);
-    tree[1]!.data = { text: "x".repeat(SESSION_SYNC_MAX_BYTES) };
-    expect(() => selectSessionSyncSnapshot(tree, "s", "2", { ...request, range: "catchup", knownLeafId: "1" }))
+
+    // 字段数本身过大：即使每个字段被压到下限，总字节仍超过 1MB 兜底，属无法缩减的结构。
+    const wide: Record<string, string> = {};
+    for (let index = 0; index < 3_000; index += 1) wide[`f${index}`] = "y".repeat(2_000);
+    // 条目不可变（ADR-0035）：修正内容一律换新对象，不能原地改（截断结果按对象身份缓存）。
+    const replaced = [{ ...tree[0]! }, { ...tree[1]!, data: wide }];
+    expect(() => selectSessionSyncSnapshot(replaced, "s", "2", { ...request, range: "catchup", knownLeafId: "1" }))
       .toThrow("session_entry_too_large");
   });
 
@@ -153,5 +172,24 @@ describe("bounded Session ranges", () => {
     expect(snapshot.checkpoint?.inventoryComplete).toBe(true);
     expect(snapshot.live?.messages[0]?.message.messageId).toBe("live-1");
     expect(RuntimeEventSchema.safeParse(snapshot).success).toBe(true);
+  });
+});
+
+// ADR-0035 §10：分页复用预处理，但条目集真的变了必须重新 prepare——缓存不能给出过期页。
+describe("prepared session sync cache", () => {
+  it("re-prepares when the same-length entries change", () => {
+    const preparer = new SessionSyncPreparer();
+    const text = (value: string): RemoteSessionEntry[] => [{
+      entryId: "e1", parentId: null, type: "message", timestamp: "2026-09-21T00:00:00.000Z",
+      data: { message: { messageId: "e1", role: "user", timestamp: 1, content: [{ type: "text", text: value }] } },
+    }];
+    const first = preparer.select({ entries: text("first"), sessionId: "s", leafId: "e1", request: { sessionId: "s", syncId: "1", range: "preview" } });
+    expect((first.display?.entries[0]?.message?.content[0] as { text?: string } | undefined)?.text).toBe("first");
+    // 同 id、同长度、只有内容改了：没有 revision 信号时缓存就是错的。
+    const second = preparer.select({
+      entries: text("other"), sessionId: "s", leafId: "e1",
+      request: { sessionId: "s", syncId: "2", range: "preview" }, revision: 2,
+    });
+    expect((second.display?.entries[0]?.message?.content[0] as { text?: string } | undefined)?.text).toBe("other");
   });
 });

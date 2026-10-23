@@ -276,7 +276,8 @@ describe("Codex recoverable source checkpoints", () => {
     expect(committed?.entries?.[0]?.parentId).toBe("a:result");
   });
 
-  it("recovers oversized commits through sync without truncating canonical tool output", async () => {
+  // ADR-0038：超长工具输出在**线路载荷**上被截断，源端/canonical 仍保留完整原文。
+  it("truncates oversized tool output on the wire while keeping canonical data intact", async () => {
     const h = makeHarness();
     await activate(h);
     const output = "x".repeat(300 * 1024);
@@ -286,7 +287,10 @@ describe("Codex recoverable source checkpoints", () => {
     expect(committed).toMatchObject({ head: { leafId: "large:result" } });
     expect(committed?.entries).toBeUndefined();
     const snapshot = syncHistory(h);
-    expect(JSON.stringify(snapshot?.entries)).toContain(output);
+    const wire = JSON.stringify(snapshot?.entries);
+    expect(wire).not.toContain(output);
+    expect(wire).toContain("已截断");
+    expect(snapshot?.entries.map(entry => entry.entryId)).toContain("large:result");
   });
 
   it("preserves running items with unknown native completion and marks unknown turn time", async () => {
@@ -681,12 +685,12 @@ describe("Codex bounded canonical history", () => {
     expect(syncHistory(replay)?.entries).toEqual(syncHistory(live)?.entries);
   });
 
-  it("returns a correlated error for oversized data and invalid Session identity", async () => {
+  it("truncates oversized data on the wire and still rejects an invalid Session identity", async () => {
     const h = makeHarness();
     await activate(h);
     h.notify("item/completed", { threadId: "th-1", item: item("big", "中".repeat(400_000)) });
-    expect(syncHistory(h)).toBeUndefined();
-    expect(h.events.at(-1)).toMatchObject({ type: "command.result", commandId: "sync-command", ok: false, error: "session_entry_too_large" });
+    // ADR-0038：可截断的超长正文不再让整次同步失败。
+    expect(JSON.stringify(syncHistory(h)?.entries)).toContain("已截断");
     h.runtime.handleCommand({ type: "session.sync", sessionId: "other", syncId: "bad", range: "preview" }, "bad-command", "th-1");
     expect(h.events.at(-1)).toMatchObject({ ok: false, commandId: "bad-command", error: "session_mismatch" });
   });

@@ -2,7 +2,7 @@
 
 日期：2026-10-22
 
-Status: proposed（本文只做决策与约束；三处改动均未实现。前置依赖：需要 Pi / DSH 提供条目内容修订号）
+Status: proposed（2026-10-22 实现 §6：DSH 显示索引按"同 seq 是否产出新对象"做增量指纹，未替换时不 `invalidate()`。§2/§3/§4/§5 未实现：§2 的 entries 冻结需先验证 Codex `data.message` 是否内嵌原始 item（本文「前置依赖」第 1 条），§3 依赖 Pi/DSH 提供条目内容修订号，§5 是 App 投影层的独立改动）
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0037](0037-session-sync-transaction-contract.md)
 

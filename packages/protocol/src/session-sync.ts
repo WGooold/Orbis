@@ -3,6 +3,7 @@ import type {
   SessionSourceEpoch, SessionSyncRange, SessionSyncRangeStatus,
 } from "./index.js";
 import { projectDisplayEntries } from "./display-entries.js";
+import { WireTruncator } from "./wire-truncate.js";
 
 export type SessionSyncRequest = Extract<RuntimeCommand, { type: "session.sync" }>;
 export type SessionSyncSnapshot = Omit<Extract<RuntimeEvent, { type: "session.snapshot" }>,
@@ -63,12 +64,18 @@ export type PreparedSessionSync = {
   displayByEntryId: ReadonlyMap<string, { position: number; entry: DisplayEntry }>;
 };
 
+const TRUNCATOR = new WireTruncator();
+
 export function prepareSessionSync(
   entries: readonly RemoteSessionEntry[],
   sessionId: string,
   liveLeaf: string | null,
   options: { historyBoundaryParentId?: string; sourceReady?: boolean } = {},
 ): PreparedSessionSync {
+  // ADR-0038：超长文本在这条出口先按线路预算截断，再做页装配与字节判断。
+  // 身份/版本字段来自原文，因此缓存键与 knownState 判断不受影响；按对象身份缓存，
+  // 不可变条目只截断一次（ADR-0035 的引用复用是这里的成本前提）。
+  entries = TRUNCATOR.entries(entries);
   const byId = new Map<string, RemoteSessionEntry>();
   for (const entry of entries) {
     if (byId.has(entry.entryId)) throw new Error("duplicate_entry_id");
@@ -262,4 +269,56 @@ export function selectSessionSyncSnapshot(
     }),
     request, turnTimings, source, historyBoundaryParentId,
   );
+}
+
+/**
+ * 每个会话一份的同步预处理缓存（ADR-0035 §10）。
+ *
+ * Codex / DSH 每次 `session.sync` 都会重来一遍 prepare（全量索引 + 显示投影），翻 400 页就是
+ * 400 × O(S)。这里按「来源版本 + 条目数 + leaf + 调用方给的改写信号」缓存 prepare 结果，
+ * 翻页只走 select。失效判据是来源事实，不是再算一遍比较。
+ */
+export type SessionSyncSelectionInput = {
+  entries: readonly RemoteSessionEntry[];
+  sessionId: string;
+  leafId: string | null;
+  request: Omit<SessionSyncRequest, "type">;
+  turnTimings?: readonly RuntimeTurnTiming[];
+  source?: { version: SessionSourceEpoch; live: SessionLiveState; checkpoint: SessionCheckpoint };
+  historyBoundaryParentId?: string;
+  /**
+   * 条目集被**原地**改写时的额外信号（Codex 用它已有的 `sourceSeq`）。
+   * 缺省时只靠来源 epoch 与条目数判断。
+   */
+  revision?: string | number;
+};
+
+export class SessionSyncPreparer {
+  #cache: { key: string; prepared: PreparedSessionSync } | undefined;
+
+  /** 条目集被替换/修正后调用；翻页不要调用。 */
+  invalidate(): void {
+    this.#cache = undefined;
+  }
+
+  select(input: SessionSyncSelectionInput): SessionSyncSnapshot {
+    const target = input.request.targetLeafId ?? input.leafId;
+    const key = [
+      input.sessionId, target, input.leafId ?? "", input.entries.length,
+      input.source?.version.epoch ?? "-", input.source?.version.ready ? 1 : 0,
+      input.historyBoundaryParentId ?? "", input.revision ?? "",
+    ].join("\u0000");
+    if (this.#cache?.key !== key) {
+      this.#cache = {
+        key,
+        prepared: prepareSessionSync(input.entries, input.sessionId, target, {
+          ...(input.historyBoundaryParentId === undefined ? {} : { historyBoundaryParentId: input.historyBoundaryParentId }),
+          ...(input.source === undefined ? {} : { sourceReady: input.source.version.ready }),
+        }),
+      };
+    }
+    return selectPreparedSessionSync(
+      this.#cache.prepared, input.request, input.turnTimings ?? [], input.source, input.historyBoundaryParentId,
+    );
+  }
 }

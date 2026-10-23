@@ -5,7 +5,7 @@ import { isAbsolute } from "node:path";
 import {
   NotificationSource,
   RecoverableSessionSource,
-  selectSessionSyncSnapshot,
+  SessionSyncPreparer,
   type AgentDeliveryItem, type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
 } from "@pi-remote/protocol";
@@ -47,6 +47,8 @@ type WebSession = {
   sourceCheck?: { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
   notifications: NotificationSource; skillsGeneration: number; modelGeneration: number; followGeneration: number;
   id: string; cwd: string; createdAt: number; title?: string; entries: RemoteSessionEntry[]; skills: { name: string; description: string }[];
+  /** 分页预处理缓存：翻页只换页，不重算索引与显示投影（ADR-0035 §10）。 */
+  preparer: SessionSyncPreparer;
   running: boolean; closing: boolean; options: Obj[]; modelCatalog?: Obj; model?: RuntimeMetadata["model"]; thinkingLevel?: string; usage?: RuntimeMetadata["contextUsage"];
   lastSeq: number; turnId?: string; turnStartedAt?: number;
   permissionProfile?: string; permissionSandbox?: string; permissionApproval?: string;
@@ -305,7 +307,7 @@ export class DshWebRuntime implements AgentBackend {
       if (changed) this.#publishMetadata(current);
       return;
     }
-    const session: WebSession = { id, cwd: item.cwd, createdAt: item.createdAt, ...(item.title ? { title: item.title } : {}), entries: [], skills: [], running: item.running, closing: false, options: [], lastSeq: -1, permissionSeq: -1, permissionSandboxSeq: -1, permissionApprovalSeq: -1, permissionGeneration: 0, permissionBusy: false, permissionOptions: [],
+    const session: WebSession = { id, cwd: item.cwd, createdAt: item.createdAt, ...(item.title ? { title: item.title } : {}), entries: [], preparer: new SessionSyncPreparer(), skills: [], running: item.running, closing: false, options: [], lastSeq: -1, permissionSeq: -1, permissionSandboxSeq: -1, permissionApprovalSeq: -1, permissionGeneration: 0, permissionBusy: false, permissionOptions: [],
       source: new RecoverableSessionSource(publicId(id), event => {
         if (this.#sessions.get(publicId(id)) === session) this.#sink(event, publicId(id));
       }), sourceCheckedAt: 0,
@@ -362,7 +364,12 @@ export class DshWebRuntime implements AgentBackend {
         this.#emit(session, structuredClone(session.activity));
         await this.#refreshPage(session, command.maxEntries,
           command.range === "history" ? webEntrySeqOrUndefined(command.beforeEntryId) : undefined);
-        this.#emit(session, selectSessionSyncSnapshot(session.entries, command.sessionId, session.entries.at(-1)?.entryId ?? null, command, [], session.source.snapshot(), session.entries[0]?.parentId ?? undefined));
+        this.#emit(session, session.preparer.select({
+          entries: session.entries, sessionId: command.sessionId,
+          leafId: session.entries.at(-1)?.entryId ?? null, request: command,
+          source: session.source.snapshot(),
+          ...(session.entries[0]?.parentId == null ? {} : { historyBoundaryParentId: session.entries[0].parentId }),
+        }));
         this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
         this.#emit(session, { type: "interaction.snapshot", requests: [...this.#approvals.values()].filter(item => item.session === session).map(item => item.interaction) }); break;
       }
@@ -614,11 +621,13 @@ export class DshWebRuntime implements AgentBackend {
       // it with that tail would make a transient carrier disconnect erase history
       // from the phone. Durable Session events are append-only, so merge by the
       // stable Web entry id and retain the existing order.
-      if (session.entries.length === 0) session.entries = snapshotEntries;
+      if (session.entries.length === 0) { session.entries = snapshotEntries; session.preparer.invalidate(); }
       else {
         const entries = new Map(session.entries.map(entry => [entry.entryId, entry]));
         for (const entry of snapshotEntries) if (!entries.has(entry.entryId)) entries.set(entry.entryId, entry);
         session.entries = [...entries.values()].sort((left, right) => webEntrySeq(left.entryId) - webEntrySeq(right.entryId));
+    session.preparer.invalidate();
+        session.preparer.invalidate();
       }
       session.lastSeq = Math.max(session.lastSeq, Number(frame.cursor ?? -1)); session.createdAt = Number(header.createdAt ?? session.createdAt); session.cwd = typeof header.cwd === "string" ? header.cwd : session.cwd;
       this.#syncSnapshotTurnState(session, events);
@@ -761,7 +770,8 @@ export class DshWebRuntime implements AgentBackend {
       this.#emit(session, { type: "tool.started", toolCallId, toolName, arguments: args });
     }
     const existing = dshWebMessage(session.id, event, session.tools);
-    const entry = dshWebEntries(session.id, [event])[0]; if (entry) session.entries.push(entry);
+    const entry = dshWebEntries(session.id, [event])[0];
+    if (entry) { session.entries.push(entry); session.preparer.invalidate(); }
     if (entry && (event.type === "assistant/message" || event.type === "tool/result")) {
       const raw = event.type === "assistant/message" ? data.message : object(data.message);
       if (typeof object(raw).id === "string") session.persistedMappings.set(String(object(raw).id), entry.entryId);

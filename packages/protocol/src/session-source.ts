@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { WIRE_FIELD_LIMIT_BYTES, truncateWireLive } from "./wire-truncate.js";
 import { appendFileSync } from "node:fs";
 import type {
   RemoteSessionEntry, RuntimeEvent, SessionCheckpoint, SessionLiveMessage, SessionLiveState,
@@ -373,14 +374,14 @@ export class RecoverableSessionSource {
     this.#dirty = false;
     if (this.#messages.size > 256 || this.#tools.size > 256) { this.#committed = []; return; }
     // ADR-0035 §13：先用 O(条目数) 的**下界**预判预算，超了就跳过构造（别再白 clone + stringify）。
-    if (this.#liveLowerBoundBytes() > SESSION_SYNC_PAGE_BYTES - SESSION_SYNC_WRAPPER_BYTES) {
-      this.#committed = [];
-      return;
-    }
+    // ADR-0038：live 装不下时先按线路预算截断再发布，而不是静默丢弃——
+    // 丢弃只会让客户端停在旧内容上（ADR-0035 §13 的原意是"别白付构造成本"，不是"别发"）。
+    const oversizedLive = this.#liveLowerBoundBytes() > SESSION_SYNC_PAGE_BYTES - SESSION_SYNC_WRAPPER_BYTES;
     // 只有真的会发布时才推进版本：Host 要求 baseSeq === 上一版 seq，跳过时推进会留下永久缺口，
     // 之后每一条 patch 都会被拒绝（现场表现为 Host 诊断里每秒两条 Rejected conversation transaction）。
     this.#seq++;
     const snapshot = this.snapshot();
+    if (oversizedLive) snapshot.live = truncateWireLive(snapshot.live, WIRE_FIELD_LIMIT_BYTES);
     const patch: Extract<RuntimeEvent, { type: "session.patch" }> = {
       type: "session.patch", sessionId: this.#sessionId, source: snapshot.version, baseSeq: this.#seq - 1, seq: this.#seq,
       checkpointId: snapshot.checkpoint.checkpointId, head: snapshot.checkpoint.head,

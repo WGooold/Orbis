@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RecoverableSessionSource, type ChatMessage, type RemoteSessionEntry, type SessionPatch } from "./index.js";
-import { SESSION_SYNC_PAGE_BYTES, selectSessionSyncSnapshot } from "./session-sync.js";
+import { SESSION_SYNC_MAX_BYTES, SESSION_SYNC_PAGE_BYTES, selectSessionSyncSnapshot } from "./session-sync.js";
+import { SESSION_SYNC_WRAPPER_BYTES } from "./session-sync.js";
 
 const message: ChatMessage = { messageId: "live", role: "assistant", timestamp: 1, content: [{ type: "text", text: "answer" }] };
 const entry: RemoteSessionEntry = { entryId: "entry", parentId: null, type: "message", timestamp: new Date(1).toISOString(), data: { message } };
@@ -73,25 +74,26 @@ describe("recoverable source", () => {
     expect(source.snapshot().version.seq).toBe(before.seq + 1);
   });
 
-  // ADR-0035 §13/§14：装不下的 live 不发 patch，也不推进版本——否则 seq 缺口会让 Host
-  // 永久拒绝后续增量（现场是每秒两条 Rejected conversation transaction）。
-  it("skips an oversize live patch without opening a version gap", () => {
+  // ADR-0038：装不下的 live 不再静默丢弃——按线路预算截断后照常发布，
+  // 并且版本只在真正发布时推进（否则 seq 缺口会让 Host 永久拒绝后续增量）。
+  it("truncates an oversize live patch and keeps version continuity", () => {
     const patches: SessionPatch[] = [];
     const source = new RecoverableSessionSource("session", patch => patches.push(patch));
     source.setAvailability(true, true);
     source.transaction(() => source.reconcile([entry], entry.entryId));
     patches.length = 0;
     const before = source.snapshot().version;
-    const big = { content: [{ type: "text", text: "y".repeat(SESSION_SYNC_PAGE_BYTES) }] };
+    const big = { content: [{ type: "text", text: "y".repeat(SESSION_SYNC_MAX_BYTES) }] };
     source.observe({ type: "tool.finished", toolCallId: "c1", toolName: "read", result: big, isError: false });
-    expect(patches).toHaveLength(0);
-    expect(source.snapshot().version).toEqual(before);
-    expect(source.snapshot().live.tools[0]?.detail).toEqual(big);
-    // live 缩小之后，下一条 patch 必须严格衔接上一个已发布版本。
-    source.replaceLive({ complete: true, turn: null, messages: [], tools: [] });
+
     const published = patches.at(-1);
     expect(published).toBeDefined();
     expect(published!.baseSeq).toBe(before.seq);
     expect(published!.seq).toBe(before.seq + 1);
+    expect(JSON.stringify(published!.live)).toContain("已截断");
+    expect(Buffer.byteLength(JSON.stringify(published)) + SESSION_SYNC_WRAPPER_BYTES)
+      .toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
+    // 源端仍保留完整原文（截断只发生在发给设备的载荷上）。
+    expect(source.snapshot().live.tools[0]?.detail).toEqual(big);
   });
 });

@@ -1370,6 +1370,7 @@ export * from "./outbound-mux.js";
 export * from "./piece.js";
 
 export * from "./session-sync.js";
+export * from "./wire-truncate.js";
 export * from "./inline-media.js";
 
 /**

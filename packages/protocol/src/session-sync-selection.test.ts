@@ -78,10 +78,12 @@ describe("Host-selected preview content", () => {
     const response = selectSessionSyncSnapshot(entries(140), "s", "140", { ...request, knownState: known() }, [], source(50, "140"));
     expect(response).toMatchObject({ selection: "snapshot", complete: false });
     expect(response.entries.map(entry => entry.entryId)).toEqual(entries(140).slice(110).map(entry => entry.entryId));
+    // ADR-0038 之后，超长载荷按线路预算截断，因此"后缀超预算"不再必然退化成恢复快照；
+    // 仍要断言的是：无论选择哪条路径，响应都不超过页预算。
     const tree = entries(103).map(entry => ({ ...entry, data: { text: "x".repeat(100_000) } }));
     const bounded = selectSessionSyncSnapshot(tree, "s", "103", { ...request, knownState: known() }, [], source(13, "103"));
-    expect(bounded).toMatchObject({ selection: "snapshot", complete: false });
     expect(Buffer.byteLength(JSON.stringify(bounded)) + SESSION_SYNC_WRAPPER_BYTES).toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
+    expect(JSON.stringify(bounded.entries)).toContain("已截断");
   });
 
   it("rejects malformed conditional responses and unknown acknowledgement fields", () => {

@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   NotificationSource,
   RecoverableSessionSource,
-  selectSessionSyncSnapshot,
+  SessionSyncPreparer,
   type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
 } from "@pi-remote/protocol";
@@ -27,6 +27,10 @@ type Session = {
   id: string; cwd: string; createdAt: number; options: JsonObject[]; entries: RemoteSessionEntry[];
   running: boolean; closing: boolean; cancelRequested: boolean; updates: Promise<void>; streamed: Map<string, ChatMessage>;
   tools: Map<string, { name: string; input: unknown }>; lastSeq: number; usage?: RuntimeMetadata["contextUsage"];
+  /** 原生 seq → 已投影条目，避免每次 refresh 重建全部对象（ADR-0035 §1/§2）。 */
+  entryCache: Map<number, RemoteSessionEntry>;
+  /** 分页预处理缓存：翻页只换页，不重算索引与显示投影（ADR-0035 §10）。 */
+  preparer: SessionSyncPreparer;
   messages: Map<string, { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled"; error?: string }>;
 };
 type Approval = { session: Session; request: DshRequest; interaction: InteractionRequest; timer: NodeJS.Timeout };
@@ -184,12 +188,14 @@ export class DshAcpRuntime implements AgentBackend {
     try {
       if (!this.#ready) throw new Error("DSH 后端正在停止");
       const log = await this.#history.read(id);
+      const entryCache = new Map<number, RemoteSessionEntry>();
       const session: Session = {
         source: new RecoverableSessionSource(publicId(id), event => this.#sink(event, publicId(id!))),
         notifications: new NotificationSource(randomUUID(), publicId(id), event => {
           if (this.#sessions.get(publicId(id!))?.notifications.epoch === event.producerEpoch) this.#sink(event, publicId(id!));
         }),
-        id, cwd, createdAt: log.header.createdAt, options: objects(response.configOptions), entries: dshEntries(log),
+        id, cwd, createdAt: log.header.createdAt, options: objects(response.configOptions), entries: dshEntries(log, entryCache),
+        entryCache, preparer: new SessionSyncPreparer(),
         running: false, closing: false, cancelRequested: false, updates: Promise.resolve(), streamed: new Map(), tools: new Map(), messages: new Map(), lastSeq: log.events.at(-1)?.seq ?? -1,
       };
       this.#sessions.set(publicId(id), session);
@@ -224,7 +230,10 @@ export class DshAcpRuntime implements AgentBackend {
         this.#emit(session, { type: "execution.activity", retry: "unavailable", compaction: "unavailable" });
         if (command.sessionId !== publicId(session.id)) throw new Error("session_mismatch");
         await this.#refresh(session);
-        this.#emit(session, selectSessionSyncSnapshot(session.entries, publicId(session.id), session.entries.at(-1)?.entryId ?? null, command, [], session.source.snapshot()));
+        this.#emit(session, session.preparer.select({
+          entries: session.entries, sessionId: publicId(session.id),
+          leafId: session.entries.at(-1)?.entryId ?? null, request: command, source: session.source.snapshot(),
+        }));
         this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
         this.#emit(session, { type: "interaction.snapshot", requests: [...this.#approvals.values()].filter(item => item.session === session).map(item => item.interaction) });
         break;
@@ -436,7 +445,13 @@ export class DshAcpRuntime implements AgentBackend {
     // Concurrent history requests must not move the announced leaf backwards.
     if ((log.events.at(-1)?.seq ?? -1) >= session.lastSeq) {
       session.source.transaction(() => {
-        session.entries = dshEntries(log);
+        const next = dshEntries(log, session.entryCache);
+        // ADR-0039 §6：`entryCache` 保证同一 seq 复用同一对象，因此"同 seq 产出新对象"
+        // 就是内容被替换的可靠信号。没替换就不要让显示索引失效——否则每次 sync 都重算一遍。
+        const replaced = next.length !== session.entries.length ||
+          next.some((entry, index) => entry !== session.entries[index]);
+        session.entries = next;
+        if (replaced) session.preparer.invalidate();
         session.lastSeq = log.events.at(-1)?.seq ?? -1;
         session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null);
         session.source.setAvailability(true, true);

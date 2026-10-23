@@ -52,8 +52,12 @@ export function dshContent(value: unknown): RemoteContent[] {
   });
 }
 
-/** ACP does not replay history. Source seqs, IDs and event times stay stable across every read. */
-export function dshEntries(log: DshLog): RemoteSessionEntry[] {
+/**
+ * ACP does not replay history. Source seqs, IDs and event times stay stable across every read,
+ * so a per-seq cache lets an incremental refresh reuse the entry objects it already produced.
+ * 复用对象是 ADR-0035 §1/§2 的前提：`reconcile` 才能用引用相等判断"没变"。
+ */
+export function dshEntries(log: DshLog, cache?: Map<number, RemoteSessionEntry>): RemoteSessionEntry[] {
   const entries: RemoteSessionEntry[] = [];
   const tools = new Map<string, string>();
   for (const event of log.events) {
@@ -62,6 +66,8 @@ export function dshEntries(log: DshLog): RemoteSessionEntry[] {
       tools.set(String(call.callId), String(call.name));
     }
     if (!["user/message", "assistant/message", "tool/result"].includes(event.type)) continue;
+    const cached = cache?.get(event.seq);
+    if (cached !== undefined) { entries.push(cached); continue; }
     const data = record(event.data);
     const raw = event.type === "user/message" ? data : record(data.message);
     const entryId = `dsh:${log.header.id}:${event.seq}`;
@@ -73,7 +79,9 @@ export function dshEntries(log: DshLog): RemoteSessionEntry[] {
       role, content: dshContent(raw.content), timestamp: time,
       ...(role === "tool" ? { toolCallId: String(raw.toolCallId), toolName: tools.get(String(raw.toolCallId)) ?? "tool", isError: raw.isError === true } : {}),
     };
-    entries.push({ entryId, parentId: entries.at(-1)?.entryId ?? null, type: "message", timestamp: new Date(time).toISOString(), data: { message } });
+    const entry: RemoteSessionEntry = { entryId, parentId: entries.at(-1)?.entryId ?? null, type: "message", timestamp: new Date(time).toISOString(), data: { message } };
+    cache?.set(event.seq, entry);
+    entries.push(entry);
   }
   return entries;
 }

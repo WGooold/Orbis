@@ -28,7 +28,7 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { displayBatchFor, NotificationSource, selectSessionSyncSnapshot, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES } from "@pi-remote/protocol";
+import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, stripInlineMedia } from "@pi-remote/protocol";
 
 import type {
   AgentKind,
@@ -300,6 +300,8 @@ type ThreadState = {
   /** Source-side checkpoint identity; independent from transport sequence numbers. */
   sourceEpoch: string;
   sourceSeq: number;
+  /** 分页预处理缓存（ADR-0035 §10）。条目集变化时 invalidate。 */
+  preparer: SessionSyncPreparer;
   sourceReady: boolean;
   sourceCommittedEntries: RemoteSessionEntry[];
   liveMessages: Map<string, SessionLiveMessage>;
@@ -593,6 +595,7 @@ export class CodexRuntime implements AgentBackend {
       lastNativeCheckAt: Date.now(),
       sourceEpoch: randomUUID(),
       sourceSeq: 0,
+      preparer: new SessionSyncPreparer(),
       sourceReady: false,
       sourceCommittedEntries: [],
       liveMessages: new Map(),
@@ -1487,6 +1490,7 @@ export class CodexRuntime implements AgentBackend {
     if (thread.historyError !== undefined) {
       // Invalid native batches still roll back; disagreement with our cache does not.
       thread.entries = prior.entries;
+      thread.preparer.invalidate();
       thread.sourceCommittedEntries = prior.sourceCommittedEntries;
       thread.itemOrder = prior.itemOrder;
       thread.committedItemCount = prior.committedItemCount;
@@ -3581,6 +3585,7 @@ export class CodexRuntime implements AgentBackend {
         entries.push(entry);
         thread.sourceCommittedEntries.push(entry);
       }
+      thread.preparer.invalidate();
       // 知道这个条目属于哪一轮，历史树上的「从这里继续」才能换算成 revert 的轮次边界。
       if (typeof turnId === "string" && turnId.length > 0) {
         thread.entryTurns.set(part.entryId, turnId);
@@ -3679,9 +3684,15 @@ export class CodexRuntime implements AgentBackend {
   #publishSnapshot(thread: ThreadState, request: Extract<RuntimeCommand, { type: "session.sync" }>): void {
     if (thread.historyError !== undefined) throw new Error(thread.historyError);
     const source = this.#sourceCheckpoint(thread);
-    this.#emit(thread.id, selectSessionSyncSnapshot(
-      thread.entries, this.#publicSessionId(thread.id), thread.entries.at(-1)?.entryId ?? null, request, [], source,
-    ));
+    this.#emit(thread.id, thread.preparer.select({
+      entries: thread.entries,
+      sessionId: this.#publicSessionId(thread.id),
+      leafId: thread.entries.at(-1)?.entryId ?? null,
+      request,
+      source,
+      // 条目可能原地替换（长度不变），sourceSeq 是后端自己维护的改写信号。
+      revision: thread.sourceSeq,
+    }));
   }
 
   /** 状态（idle/running/waiting）变了就广播一份 metadata，手机角标跟着走。 */
@@ -3853,7 +3864,9 @@ function toolResultMessage(item: Record<string, unknown>, canonical = false): Ch
     toolCallId: tool.toolCallId,
     toolName: tool.toolName,
     isError: tool.isError,
-    content: [{ type: "text", text: resultText(tool.result, canonical) }],
+    // ADR-0034 §5：工具结果里的内联媒体先降成引用，再序列化进正文——
+    // 否则 base64 会跟着 canonical 条目一起被复制与同步。
+    content: [{ type: "text", text: resultText(stripInlineMedia(tool.result), canonical) }],
     timestamp: Date.now(),
   };
 }

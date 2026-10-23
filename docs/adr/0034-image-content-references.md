@@ -2,7 +2,7 @@
 
 日期：2026-10-21
 
-Status: accepted（2026-10-22：Pi 侧 §1–§4 已实现并有测试；文本类超长载荷由 [ADR-0038](0038-wire-payload-truncation.md) 处理，两者是同一原则的两条分支；§5（Codex 工具结果）与 §6 的可选 path ref 尚未实现）
+Status: accepted（2026-10-22：Pi 侧 §1–§4 已实现并有测试；文本类超长载荷由 [ADR-0038](0038-wire-payload-truncation.md) 处理，两者是同一原则的两条分支；§5（Codex 工具结果先 `stripInlineMedia` 再序列化）已实现；§6 的可选 path ref 尚未实现）
 
 关联：[ADR-0008](0008-drop-backward-compatibility.md)（附件路径语义、artifact 下载）、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0035](0035-incremental-session-reconcile.md)
 
