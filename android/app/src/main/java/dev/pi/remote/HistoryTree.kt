@@ -491,6 +491,18 @@ internal fun historyEditorText(result: JsonElement?): String? =
         ?.contentOrNull
         ?.takeIf(String::isNotBlank)
 
+/**
+ * `/tree` 成功执行时后端回传的新分支会话 ID。
+ *
+ * DSH 的原生日志不支持「回到某条消息」，它的「跳到某一轮」是 `session/fork`：从那个切点
+ * 复制一段前缀生成**新会话**，原会话不动。手机收到这个 ID 就直接打开新分支，改完重发都在
+ * 新会话里发生；Pi/codex 的原生回退是原地改写，因此不带这个字段。
+ */
+internal fun historyBranchSessionId(result: JsonElement?): String? =
+    ((result as? JsonObject)?.get("sessionId") as? JsonPrimitive)
+        ?.contentOrNull
+        ?.takeIf(String::isNotBlank)
+
 /** 历史树页面唯一会改动电脑端会话的两个动作。 */
 internal sealed interface HistoryTreeAction {
     val nodeId: String

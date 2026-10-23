@@ -36,7 +36,7 @@ describe("model subscriptions", () => {
   it("keeps other scopes isolated and bounds subscriptions", () => {
     const registry = new AgentStateRegistry();
     const subscriptions = new AgentStateSubscriptions(registry, () => {});
-    for (let i = 0; i < 64; i++) expect(subscriptions.register("a", { kind: "agent", key: { hostId: "h", agentKind: "pi", sessionId: `s${i}` } },
+    for (let i = 0; i < 256; i++) expect(subscriptions.register("a", { kind: "agent", key: { hostId: "h", agentKind: "pi", sessionId: `s${i}` } },
       { type: "agent.state.request", requestId: `r${i}`, subscribe: true })).toBe(true);
     expect(subscriptions.register("a", { kind: "agent", key: { hostId: "h", agentKind: "pi", sessionId: "overflow" } },
       { type: "agent.state.request", requestId: "full", subscribe: true })).toBe(false);

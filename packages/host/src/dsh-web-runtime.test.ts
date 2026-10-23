@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeEventSchema, type RuntimeEvent } from "@pi-remote/protocol";
 import type { DshWebConnection } from "./dsh-web-client.js";
 import { DshWebRuntime } from "./dsh-web-runtime.js";
+import { AgentConversationState } from "./agent-conversation-state.js";
+import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 
 const roots: string[] = [];
 const runtimes: DshWebRuntime[] = [];
@@ -51,6 +53,59 @@ afterEach(async () => {
 });
 
 describe("DeepSeek Web runtime adapter", () => {
+  it("accepts preview and paged history through the Host conversation model", async () => {
+    const f = discoveryFixture();
+    const model = new AgentConversationState(new AgentStateRegistry());
+    const scope: StateScope = { kind: "agent", key: { hostId: "isolated", agentKind: "dsh", sessionId: "dsh:browser" } };
+    const rejected: RuntimeEvent[] = [];
+    f.runtime.setEventSink((event, runtimeId) => {
+      RuntimeEventSchema.parse(event);
+      f.events.push({ event: structuredClone(event), runtimeId });
+      if ((event.type === "session.patch" || event.type === "session.snapshot") && !model.accept(scope, event)) rejected.push(event);
+    });
+    f.list([f.live("browser", true)]); await f.runtime.start();
+    const record = (seq: number, type = "custom") => ({ event: { seq, time: 1000 + seq, type, data: {} } });
+    f.follows()[0]!.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 12,
+      records: [record(10), record(11), record(12, "turn/end")], assistantStream: { revision: 0 } });
+    for (const syncId of ["preview-1", "preview-2"]) {
+      f.runtime.dispatchCommand("dsh:browser", syncId, { type: "session.sync", sessionId: "dsh:browser", syncId, range: "preview" });
+      await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === syncId)).toBe(true));
+    }
+    expect(model.hasBaseline(scope)).toBe(true);
+    f.request.mockImplementation(async method => method === "session/page" ? { records: Array.from({ length: 10 }, (_, seq) => record(seq)) } : {});
+    f.runtime.dispatchCommand("dsh:browser", "history", { type: "session.sync", sessionId: "dsh:browser", syncId: "history", range: "history", beforeEntryId: "dsh:browser:web:10" });
+    await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "history")).toBe(true));
+    expect(rejected).toEqual([]);
+    expect(model.hasBaseline(scope)).toBe(true);
+  });
+
+  it("keeps a ready baseline when the running turn started before the bounded follow tail", async () => {
+    // ADR-0043：有界 tail 里没有本轮 `turn/start` 只说明起点不在这一页。把它当成「清单不完整」
+    // 会让 checkpoint 不再是基线：Host 丢掉 canonical、手机不能投影也不能应用 patch，
+    // 运行期间的历史整段消失。live 正文来自 assistantStream 的完整前缀，缺口另有 #checkSource。
+    const f = discoveryFixture();
+    const model = new AgentConversationState(new AgentStateRegistry());
+    const scope: StateScope = { kind: "agent", key: { hostId: "isolated", agentKind: "dsh", sessionId: "dsh:long" } };
+    const rejected: RuntimeEvent[] = [];
+    f.runtime.setEventSink((event, runtimeId) => {
+      RuntimeEventSchema.parse(event);
+      f.events.push({ event: structuredClone(event), runtimeId });
+      if ((event.type === "session.patch" || event.type === "session.snapshot") && !model.accept(scope, event)) rejected.push(event);
+    });
+    f.list([f.live("long", true)]); await f.runtime.start();
+    const record = (seq: number, type = "custom") => ({ event: { seq, time: 1000 + seq, type, data: {} } });
+    // 尾部窗口从本轮中间开始：既没有 turn/start，也没有 turn/end。
+    f.follows()[0]!.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 42,
+      records: [record(40), record(41), record(42, "tool/call")], assistantStream: { revision: 0 } });
+    f.runtime.dispatchCommand("dsh:long", "preview", { type: "session.sync", sessionId: "dsh:long", syncId: "preview", range: "preview" });
+    await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "preview")).toBe(true));
+    const preview = f.events.find(({ event }) => event.type === "session.snapshot" && event.syncId === "preview")!.event;
+    expect(preview).toMatchObject({ source: { ready: true }, live: { complete: true },
+      checkpoint: { headCompleteness: "complete", inventoryComplete: true } });
+    expect(rejected).toEqual([]);
+    expect(model.hasBaseline(scope)).toBe(true);
+  });
+
   it("rebuilds retry and compaction from native durable events and settles only their explicit outcomes", async () => {
     const f = discoveryFixture(); f.list([f.live("busy", true)]); await f.runtime.start();
     const follow = f.follows()[0]!;
@@ -154,6 +209,19 @@ describe("DeepSeek Web runtime adapter", () => {
     expect((await f.runtime.catalog()).find(item => item.sessionId === "dsh:cold")?.name).toBe("实时标题");
   });
 
+  it("resumes a blank browser draft that the sidebar deliberately hides", async () => {
+    const f = discoveryFixture();
+    // A brand new browser Session has no content yet: native `blank` is true.
+    f.list([{ ...f.live("draft"), blank: true }]);
+    await f.runtime.start();
+    expect(f.runtime.directoryEntries()).toEqual([]);
+    expect(await f.runtime.catalog()).toEqual([]);
+    // The phone can still hold its id (last selection, fork, web link) and reopen it.
+    await f.runtime.activate({ type: "resume", sessionId: "dsh:draft" });
+    expect(f.runtime.directoryEntries().map(item => item.sessionId)).toEqual(["dsh:draft"]);
+    expect(await f.runtime.catalog()).toEqual([]);
+  });
+
   it("syncs title control baselines before discovery and fences stale updates and list hints", async () => {
     const f = discoveryFixture(); f.list([f.live("busy", true), f.live("idle")]);
     const starting = f.runtime.start();
@@ -206,6 +274,93 @@ describe("DeepSeek Web runtime adapter", () => {
     f.runtime.dispatchCommand("dsh:browser", "rename", { type: "slash.execute", name: "name", args: "请求的标题" });
     await vi.waitFor(() => expect(f.runtime.directoryEntries()[0]?.sessionName).toBe("服务端规范化标题"));
     expect((await f.runtime.catalog())[0]?.name).toBe("服务端规范化标题");
+  });
+
+  it("reports the session's own model selection and thinking level instead of the deployment default", async () => {
+    const f = discoveryFixture(); f.list([f.live("busy", true)]);
+    const base = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, args) => {
+      if (method === "session/modelCatalog") return { default: { provider: "custom", model: "gpt-6-astra" }, groups: [
+        { id: "custom", name: "Custom", models: [{ id: "gpt-6-astra", name: "GPT-6 Astra" }] },
+        { id: "deepseek-official", name: "DeepSeek", models: [{ id: "deepseek-flash", name: "DeepSeek V4.1 Flash", reasoning: {
+          efforts: [{ id: "high", name: "高" }, { id: "low", name: "低" }], defaultEffort: "high",
+        } }] },
+      ] };
+      return base(method, args);
+    });
+    await f.runtime.start();
+    // 还没有选择投影时，只有部署默认值可以显示。
+    await vi.waitFor(() => expect(f.runtime.directoryEntries()[0]?.model).toEqual({ provider: "custom", id: "gpt-6-astra", name: "GPT-6 Astra" }));
+    expect(f.runtime.directoryEntries()[0]?.thinkingLevel).toBeUndefined();
+    const control = f.subscriptions.find(item => item.method === "session/control")!;
+    control.frame({ type: "projection", sessionId: "busy", key: "modelSelection", seq: 5, value: {
+      lastUsed: { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "high" },
+      next: { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "high" },
+    } });
+    const entry = () => f.runtime.directoryEntries()[0];
+    expect(entry()?.model).toEqual({ provider: "deepseek-official", id: "deepseek-flash", name: "DeepSeek V4.1 Flash" });
+    expect(entry()?.thinkingLevel).toBe("high");
+    expect(f.events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "runtime.metadata",
+      metadata: expect.objectContaining({ thinkingLevel: "high" }) }) }));
+    // 重新读目录（手机重连时会做）不能把会话模型改回部署默认值。
+    f.runtime.announce();
+    await vi.waitFor(() => expect(f.request).toHaveBeenCalledWith("session/modelCatalog", {}));
+    await Promise.resolve();
+    expect(entry()?.model?.id).toBe("deepseek-flash");
+    // 迟到的旧投影不能覆盖更新的事实。
+    control.frame({ type: "projection", sessionId: "busy", key: "modelSelection", seq: 4, value: {
+      lastUsed: { provider: "custom", model: "gpt-6-astra" }, next: { provider: "custom", model: "gpt-6-astra" },
+    } });
+    expect(entry()?.model?.id).toBe("deepseek-flash");
+    // 待生效的选择（next）优先于上次请求用的选择（lastUsed）。
+    control.frame({ type: "projection", sessionId: "busy", key: "modelSelection", seq: 6, value: {
+      lastUsed: { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "high" },
+      next: { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "low" },
+    } });
+    expect(entry()?.thinkingLevel).toBe("low");
+  });
+
+  it("applies the selection carried by a follow snapshot for a resumed session", async () => {
+    const f = discoveryFixture(); f.list([f.live("cold")]);
+    const base = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, args) => {
+      if (method === "session/modelCatalog") return { default: { provider: "custom", model: "gpt-6-astra" }, groups: [
+        { id: "deepseek-official", models: [{ id: "deepseek-flash", name: "DeepSeek V4.1 Flash" }] },
+      ] };
+      return base(method, args);
+    });
+    await f.runtime.start();
+    await f.runtime.activate({ type: "resume", sessionId: "dsh:cold" });
+    const follow = f.follows().find(item => (item.args.request as { address: { sessionId: string } }).address.sessionId === "cold")!;
+    follow.frame({ type: "snapshot", header: { cwd: "D:/work", createdAt: 1000 }, cursor: -1, records: [], projections: {
+      asOfSeq: 3, values: { modelSelection: {
+        lastUsed: { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "medium" }, next: null,
+      } },
+    } });
+    const entry = f.runtime.directoryEntries().find(item => item.sessionId === "dsh:cold");
+    expect(entry?.model).toEqual({ provider: "deepseek-official", id: "deepseek-flash", name: "DeepSeek V4.1 Flash" });
+    expect(entry?.thinkingLevel).toBe("medium");
+  });
+
+  it("takes the normalized selection returned by /model and /thinking", async () => {
+    const f = discoveryFixture(); f.list([f.live("busy", true)]);
+    const base = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, args) => {
+      if (method === "session/modelCatalog") return { default: { provider: "custom", model: "gpt-6-astra" }, groups: [
+        { id: "custom", models: [{ id: "gpt-6-astra", name: "GPT-6 Astra", reasoning: { efforts: [{ id: "high", name: "高" }, { id: "max", name: "最高" }] } }] },
+      ] };
+      if (method === "session/selectModel") {
+        const request = (args as { request: { provider: string; model: string; reasoningEffort?: string } }).request;
+        return { selected: { provider: request.provider, model: request.model, ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : { reasoningEffort: "high" }) } };
+      }
+      return base(method, args);
+    });
+    await f.runtime.start();
+    await vi.waitFor(() => expect(f.runtime.directoryEntries()[0]?.model?.id).toBe("gpt-6-astra"));
+    f.runtime.dispatchCommand("dsh:busy", "thinking", { type: "slash.execute", name: "thinking", args: "max" });
+    await vi.waitFor(() => expect(f.runtime.directoryEntries()[0]?.thinkingLevel).toBe("max"));
+    f.runtime.dispatchCommand("dsh:busy", "model", { type: "slash.execute", name: "model", args: JSON.stringify({ provider: "custom", model: "gpt-6-astra", reasoningEffort: "high" }) });
+    await vi.waitFor(() => expect(f.runtime.directoryEntries()[0]?.thinkingLevel).toBe("high"));
   });
 
   it("exposes native permission choices, confirms writes, and rejects busy or unavailable changes", async () => {
@@ -409,6 +564,36 @@ describe("DeepSeek Web runtime adapter", () => {
     await f.runtime.activate({ type: "resume", sessionId: "dsh:browser" });
     expect(f.follows()).toHaveLength(1);
     expect(f.request.mock.calls.some(([method]) => method === "workspace/archiveSession")).toBe(false);
+  });
+
+  it("stops a running Agent before detaching on /quit and confirms the command first", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const order: string[] = [];
+    f.runtime.setEventSink(event => { if (event.type === "command.result") order.push("result"); });
+    f.runtime.onOffline = () => order.push("offline");
+    f.runtime.dispatchCommand("dsh:browser", "quit", { type: "slash.execute", name: "quit", args: "" });
+    await vi.waitFor(() => expect(f.runtime.ownsRuntime("dsh:browser")).toBe(false));
+    expect(f.request).toHaveBeenCalledWith("session/cancel", { request: { sessionId: "browser" } });
+    // runtime.offline 会让 APP 把这个 runtime 上未完成的命令记成 cancelled，
+    // 所以成功回执必须排在 detach 之前。
+    expect(order).toEqual(["result", "offline"]);
+    // 重开时沿用发现流里最后一次原生 running，而不是因为本地会话已 detach 就报「空闲」。
+    await f.runtime.activate({ type: "resume", sessionId: "dsh:browser" });
+    expect(f.runtime.directoryEntries()[0]?.status).toBe("running");
+  });
+
+  it("keeps a running Agent attached and visible when native cancellation fails", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const base = f.request.getMockImplementation()!;
+    f.request.mockImplementation((method, args) => method === "session/cancel"
+      ? Promise.reject(new Error("cancel refused"))
+      : base(method, args));
+    f.runtime.dispatchCommand("dsh:browser", "quit", { type: "slash.execute", name: "quit", args: "" });
+    await vi.waitFor(() => expect(f.events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({
+      type: "command.result", commandId: "quit", ok: false,
+    }) })));
+    expect(f.runtime.ownsRuntime("dsh:browser")).toBe(true);
+    expect(f.offline).not.toHaveBeenCalled();
   });
 
   it("reuses the browser-discovered subscription when an APP activation races its creation event", async () => {
@@ -811,6 +996,69 @@ describe("DeepSeek Web runtime adapter", () => {
     expect(f.events).toContainEqual(expect.objectContaining({ event: { type: "interaction.cancelled", requestId: "q", reason: "cancelled" } }));
     f.client.onEvent?.({ type: "waterfall", event: "user-questions/request", eventId: "bad", agentId: "browser", request: { questions: [] } });
     expect(f.client.respondEvent).toHaveBeenCalledWith("bad", { kind: "next" });
+  });
+
+  it("publishes the durable log as a history tree and forks a branch from a chosen record", async () => {
+    const f = discoveryFixture(); f.list([f.live("busy", true)]); await f.runtime.start();
+    const follow = f.follows()[0]!;
+    const record = (seq: number, type: string, data: unknown) => ({ type: "event", event: { seq, type, time: seq + 1000, data } });
+    follow.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: 3, records: [
+      record(0, "turn/start", { turn: 1 }),
+      record(1, "user/message", { id: "u1", content: [{ type: "text", text: "第一个问题" }] }),
+      record(2, "assistant/message", { message: { id: "a1", content: [{ type: "text", text: "回答一" }] } }),
+      record(3, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+    ] });
+    const capabilities = () => f.events.flatMap(({ event }) => event.type === "runtime.capabilities" ? [event.capabilities] : []).at(-1)!;
+    const tree = () => capabilities().commands.find(command => command.name === "tree");
+    expect(tree()?.argument?.kind).toBe("tree");
+    expect(tree()?.argument?.options?.map(option => option.value)).toEqual([
+      "dsh:busy:web:0", "dsh:busy:web:1", "dsh:busy:web:2", "dsh:busy:web:3",
+    ]);
+    expect(tree()?.argument?.options?.find(option => option.tree?.role === "user")).toMatchObject({ label: "第一个问题" });
+    expect(tree()?.argument?.options?.at(-1)?.tree).toMatchObject({ isCurrent: true, isOnActivePath: true, entryType: "turn/end", defaultHidden: true });
+
+    // The tree rides on capabilities: an unchanged baseline must not re-send the whole thing.
+    const count = () => f.events.filter(({ event }) => event.type === "runtime.capabilities").length;
+    const unchanged = count();
+    follow.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: 3, records: [
+      record(0, "turn/start", { turn: 1 }), record(1, "user/message", { id: "u1", content: [] }),
+      record(2, "assistant/message", { message: { id: "a1", content: [] } }), record(3, "turn/end", { turn: 1 }),
+    ] });
+    f.runtime.dispatchCommand("dsh:busy", "sync-1", { type: "session.sync", sessionId: "dsh:busy", syncId: "sync-1", range: "catchup" });
+    await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "command.result" && event.commandId === "sync-1")).toBe(true));
+    expect(count()).toBe(unchanged);
+    // A durable record that changes the log changes the tree.
+    follow.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: 4, records: [
+      record(0, "turn/start", { turn: 1 }), record(1, "user/message", { id: "u1", content: [] }),
+      record(2, "assistant/message", { message: { id: "a1", content: [] } }), record(3, "turn/end", { turn: 1 }),
+      record(4, "user/message", { id: "u2", content: [{ type: "text", text: "第二个问题" }] }),
+    ] });
+    await vi.waitFor(() => expect(count()).toBeGreaterThan(unchanged));
+
+    const base = f.request.getMockImplementation()!;
+    const forkAt = (child: string) => f.request.mockImplementation((method, args) => method === "session/fork"
+      ? Promise.resolve({ sessionId: child }) : base(method, args));
+    const result = (commandId: string) => f.events.find(({ event }) => event.type === "command.result" && event.commandId === commandId)?.event;
+
+    // A user message is edited before it: the branch inherits the prefix and the text goes back to the phone.
+    forkAt("child-user");
+    f.runtime.dispatchCommand("dsh:busy", "tree-user", { type: "slash.execute", name: "tree", args: "dsh:busy:web:1" });
+    await vi.waitFor(() => expect(result("tree-user")).toMatchObject({ ok: true }));
+    expect(result("tree-user")).toMatchObject({ result: { sessionId: "dsh:child-user", editorText: "第一个问题" } });
+    expect(f.request).toHaveBeenCalledWith("session/fork", { request: { sessionId: "busy", atSeq: 0 } });
+    // The branch is attached here so the phone's resume cannot race the native session directory.
+    await vi.waitFor(() => expect(f.follows().some(item => (item.args.request as { address: { sessionId: string } }).address.sessionId === "child-user")).toBe(true));
+
+    // Any other record continues from itself.
+    forkAt("child-assistant");
+    f.runtime.dispatchCommand("dsh:busy", "tree-assistant", { type: "slash.execute", name: "tree", args: "dsh:busy:web:2" });
+    await vi.waitFor(() => expect(result("tree-assistant")).toMatchObject({ ok: true }));
+    expect(result("tree-assistant")).toMatchObject({ result: { sessionId: "dsh:child-assistant" } });
+    expect((result("tree-assistant") as { result: Record<string, unknown> }).result).not.toHaveProperty("editorText");
+    expect(f.request).toHaveBeenCalledWith("session/fork", { request: { sessionId: "busy", atSeq: 2 } });
+
+    f.runtime.dispatchCommand("dsh:busy", "tree-missing", { type: "slash.execute", name: "tree", args: "dsh:busy:web:99" });
+    await vi.waitFor(() => expect(result("tree-missing")).toMatchObject({ ok: false, error: "找不到这条记录，请刷新会话后重试" }));
   });
 
   it("deduplicates a replayed approval after the Web carrier reconnects", async () => {

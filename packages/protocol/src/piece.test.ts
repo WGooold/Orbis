@@ -22,6 +22,18 @@ const envelope = (ctChars: number, overrides: Partial<EnvelopeV2["hdr"]> = {}): 
 });
 
 describe("写入层切片", () => {
+  it("reassembles sixteen interleaved messages within the default count and byte budgets", () => {
+    const rejected: ReassemblyRejection[] = [];
+    const reassembler = new EnvelopeReassembler({ onRejected: reason => rejected.push(reason) });
+    const originals = Array.from({ length: 16 }, (_, index) => envelope(PIECE_MAX_CT_CHARS + index + 1, { n: index + 1 }));
+    const pieces = originals.map((value, index) => fragmentEnvelope(value, { mid: `parallel-${index}` }));
+    for (const message of pieces) expect(reassembler.accept(message[0]!)).toBeUndefined();
+    expect(reassembler.pendingMessages).toBe(16);
+    expect(pieces.map(message => reassembler.accept(message[1]!))).toEqual(originals);
+    expect(rejected).toEqual([]);
+    expect(reassembler.pendingMessages).toBe(0);
+    expect(reassembler.bufferedChars).toBe(0);
+  });
   it("大信封切成片后能逐字节还原，小信封原样发", () => {
     const big = envelope(PIECE_MAX_CT_CHARS * 3 + 17);
     const pieces = fragmentEnvelope(big, { mid: "m1" });

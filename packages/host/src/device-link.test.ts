@@ -16,9 +16,10 @@ import {
   toBase64Url,
   type DeviceRecord,
 } from "@pi-remote/e2e";
-import { EnvelopeReassembler, type EnvelopeV2, type PathKind } from "@pi-remote/protocol";
+import { EnvelopeReassembler, PIECE_HEADER_BYTES, type EnvelopeV2, type OutboundQueueDiagnostic, type PathKind } from "@pi-remote/protocol";
 
 import { DeviceLink, SESSION_SYNC_WIRE_LIMIT_BYTES, type PathSink } from "./device-link.js";
+import { outboundQueueSource } from "./outbound-queue-diagnostics.js";
 
 const HOST_ID = "host-1";
 const DEVICE_ID = "device-1";
@@ -114,7 +115,9 @@ function deviceRecord(pskRoot: Buffer): DeviceRecord {
 }
 
 /** 把 DeviceLink 与一组假手机接起来：出站的帧进 `outbox`，测试再手动喂回去。 */
-function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLimitBytes?: number }) {
+function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLimitBytes?: number;
+  msgQueueLimitBytes?: number;
+  onQueueDiagnostic?: (kind: PathKind, sample: OutboundQueueDiagnostic) => void }) {
   const outbox: { kind: PathKind; envelope: EnvelopeV2 }[] = [];
   const payloads: string[] = [];
   const changes: { from: PathKind | undefined; to: PathKind | undefined }[] = [];
@@ -129,6 +132,8 @@ function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLi
     device: deviceRecord(input.pskRoot),
     probeIntervalMs: input.probeIntervalMs ?? 0,
     ...(input.bulkQueueLimitBytes === undefined ? {} : { bulkQueueLimitBytes: input.bulkQueueLimitBytes }),
+    ...(input.msgQueueLimitBytes === undefined ? {} : { msgQueueLimitBytes: input.msgQueueLimitBytes }),
+    ...(input.onQueueDiagnostic === undefined ? {} : { onQueueDiagnostic: input.onQueueDiagnostic }),
     onPayload: (payload) => payloads.push(payload.toString("utf8")),
     // 生效路径的宣布有两个来源：握手完成（`onSessionReady`）与之后换路（`onActivePathChange`）。
     // 这个装置关心的是「宣布过哪些路径」，所以两条都记进来。
@@ -198,6 +203,51 @@ function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLi
 }
 
 describe("DeviceLink", () => {
+  it("attributes real encrypted slices and resets queue diagnostics after detaching a path", () => {
+    vi.useFakeTimers({ now: 1_000 });
+    const samples: { path: PathKind; sample: OutboundQueueDiagnostic }[] = [];
+    const h = harness({ pskRoot: randomKey(), onQueueDiagnostic: (path, sample) => { samples.push({ path, sample }); } });
+    let backlog = 10_000_000;
+    h.attach("lan", () => backlog);
+    h.handshake("lan");
+    const message = { type: "runtime.event", runtimeId: "runtime-a", event: {
+      type: "session.patch", sessionId: "session-a", live: { text: "private-chat".repeat(80_000) },
+    } };
+    const payload = Buffer.from(JSON.stringify(message));
+    try {
+      expect(h.link.send(payload, "msg", outboundQueueSource(message, payload.byteLength))).toBe(true);
+      expect(samples).toHaveLength(1);
+      expect(samples[0]).toMatchObject({ path: "lan", sample: { sources: [expect.objectContaining({
+        type: "runtime.event", eventType: "session.patch", runtimeId: "runtime-a", sessionId: "session-a", maxPayloadBytes: payload.byteLength,
+      })] } });
+      vi.setSystemTime(6_000);
+      h.link.send(Buffer.from("status"), "ctl");
+      const fullSample = samples[1]!.sample;
+      backlog = 0;
+      vi.advanceTimersByTime(2);
+      const pieces = h.outbox.filter(({ envelope }) => envelope.hdr.ch === "msg");
+      expect(pieces.length).toBeGreaterThan(1);
+      expect(fullSample.nonBulkQueuedBytes).toBe(pieces.reduce((bytes, { envelope }) => bytes + envelope.ct.length + PIECE_HEADER_BYTES, 0));
+      const reassembler = new EnvelopeReassembler();
+      const full = pieces.map(({ envelope }) => reassembler.accept(envelope)).find(envelope => envelope !== undefined);
+      expect(h.peer("lan").open(full!)).toEqual(payload);
+      expect(JSON.stringify(samples)).not.toContain("private-chat");
+
+      h.link.detach("lan");
+      h.outbox.length = 0;
+      backlog = 10_000_000;
+      h.attach("lan", () => backlog);
+      h.handshake("lan");
+      expect(h.link.sendSessionSnapshot(payload, () => {}, undefined, {
+        type: "runtime.event", eventType: "session.snapshot", runtimeId: "runtime-b", sessionId: "session-b", payloadBytes: payload.byteLength,
+      })).toBe(true);
+      expect(samples[2]!.sample.sources).toEqual([expect.objectContaining({ runtimeId: "runtime-b", sessionId: "session-b", eventType: "session.snapshot" })]);
+      h.link.close();
+      vi.advanceTimersByTime(10_000);
+      expect(samples).toHaveLength(3);
+    } finally { h.link.close(); vi.useRealTimers(); }
+  });
+
   it("admits sync pages before sealing, retains every slice under backlog, and releases only after the last write", async () => {
     const h = harness({ pskRoot: randomKey() });
     let backlog = 10_000_000;
@@ -206,15 +256,15 @@ describe("DeviceLink", () => {
     const done = vi.fn();
     const payload = Buffer.alloc(1024 * 1024, 65);
     try {
-      expect(h.link.sendSessionSnapshot(payload, done)).toBe(true);
-      expect(h.link.sendSessionSnapshot(payload, done)).toBe(true);
+      for (let index = 0; index < 5; index++) expect(h.link.sendSessionSnapshot(payload, done)).toBe(true);
       expect(h.link.sendSessionSnapshot(payload, done)).toBe(false);
+      expect(h.link.sessionSyncRejection?.reason).toBe("sync_byte_limit");
       expect(h.link.sessionSyncQueuedBytes).toBeLessThanOrEqual(SESSION_SYNC_WIRE_LIMIT_BYTES);
       expect(done).not.toHaveBeenCalled();
       expect(h.outbox).toHaveLength(0);
       backlog = 0;
-      await vi.waitFor(() => expect(done).toHaveBeenCalledTimes(2));
-      expect(done.mock.calls).toEqual([[true], [true]]);
+      await vi.waitFor(() => expect(done).toHaveBeenCalledTimes(5));
+      expect(done.mock.calls).toEqual(Array.from({ length: 5 }, () => [true]));
       expect(h.link.sessionSyncQueuedBytes).toBe(0);
       const reassembler = new EnvelopeReassembler();
       const messages: Buffer[] = [];
@@ -222,13 +272,73 @@ describe("DeviceLink", () => {
         const full = reassembler.accept(envelope);
         if (full !== undefined) messages.push(h.peer("relay").open(full));
       }
-      expect(messages).toEqual([payload, payload]);
-      expect(h.messagesSent()).toEqual(["msg:1", "msg:2"]);
+      expect(messages).toEqual(Array.from({ length: 5 }, () => payload));
+      expect(h.messagesSent()).toEqual(["msg:1", "msg:2", "msg:3", "msg:4", "msg:5"]);
       h.link.sendSessionSnapshot(Buffer.from("next"), done);
-      expect(h.messagesSent()).toEqual(["msg:1", "msg:2", "msg:3"]);
+      expect(h.messagesSent()).toEqual(["msg:1", "msg:2", "msg:3", "msg:4", "msg:5", "msg:6"]);
     } finally { h.link.close(); }
     // 这个用例要在背压下搬运数十 MB：整机并行跑测试时 10s 上限会偶发不够，
     // 断言的正确性（准入、保留、释放）不依赖墙钟预算。
+  }, 30_000);
+
+  it("admits sync on LAN despite an independent bulk backlog and sends it before bulk", async () => {
+    const h = harness({ pskRoot: randomKey() });
+    let backlog = 10_000_000;
+    h.attach("lan", () => backlog);
+    h.handshake("lan");
+    const payload = Buffer.alloc(1024 * 1024, 66);
+    const done = vi.fn();
+    try {
+      // Ciphertext alone exceeds the sync budget; bulk has its own 64 MiB budget.
+      for (let index = 0; index < 10; index++) expect(h.link.sendBinary(payload)).toBe(true);
+      expect(h.link.sendSessionSnapshot(Buffer.from("snapshot"), done)).toBe(true);
+      expect(h.link.sessionSyncRejection).toBeUndefined();
+      expect(h.link.send(Buffer.from("status"), "ctl")).toBe(true);
+      expect(h.messagesSent()).toEqual(["ctl:1"]);
+      backlog = 0;
+      await vi.waitFor(() => expect(h.messagesSent()).toHaveLength(12));
+      expect(h.messagesSent().slice(0, 3)).toEqual(["ctl:1", "msg:1", "bulk:1"]);
+      expect(done.mock.calls).toEqual([[true]]);
+      const reassembler = new EnvelopeReassembler();
+      const messages: Buffer[] = [];
+      for (const { envelope } of h.outbox) {
+        const full = reassembler.accept(envelope);
+        if (full !== undefined) messages.push(h.peer("lan").open(full));
+      }
+      expect(messages).toEqual([Buffer.from("status"), Buffer.from("snapshot"), ...Array.from({ length: 10 }, () => payload)]);
+      expect(h.link.sessionSyncQueuedBytes).toBe(0);
+    } finally { h.link.close(); }
+  }, 30_000);
+
+  it("still rejects a real non-bulk queue overflow before consuming the sync nonce", async () => {
+    const samples: OutboundQueueDiagnostic[] = [];
+    const h = harness({ pskRoot: randomKey(), msgQueueLimitBytes: 2 * 1024 * 1024,
+      onQueueDiagnostic: (_path, sample) => { samples.push(sample); } });
+    let backlog = 10_000_000;
+    h.attach("lan", () => backlog);
+    h.handshake("lan");
+    const done = vi.fn();
+    try {
+      // 使用可配置的较小预算，让用例保持轻量；默认生产预算是 32 MiB。
+      // 第一条消息留在背压队列中，第二条 snapshot 在封帧前发现剩余空间不足。
+      expect(h.link.send(Buffer.alloc(1_000_000), "msg")).toBe(true);
+      expect(h.link.sendSessionSnapshot(Buffer.alloc(1_000_000), done)).toBe(false);
+      expect(h.link.sessionSyncRejection).toMatchObject({ reason: "message_byte_limit", path: "lan", bulkQueuedBytes: 0 });
+      expect(h.link.sessionSyncRejection!.nonBulkQueuedBytes).toBeGreaterThan(1_000_000);
+      expect(h.link.sessionSyncRejection!.nonBulkQueuedBytes).toBeLessThan(2 * 1024 * 1024);
+      expect(h.link.sessionSyncQueuedBytes).toBe(0);
+      expect(done).not.toHaveBeenCalled();
+      // Admission failure invalidates the path; the already sealed oversized frame is
+      // discarded only at that session boundary. A fresh handshake starts a new sequence.
+      expect(h.link.active).toBeUndefined();
+      expect(h.messagesSent()).toEqual([]);
+      h.attach("lan", () => backlog);
+      h.handshake("lan");
+      backlog = 0;
+      expect(h.link.sendSessionSnapshot(Buffer.from("next"), done)).toBe(true);
+      expect(h.messagesSent()).toEqual(["msg:1"]);
+      expect(done.mock.calls).toEqual([[true]]);
+    } finally { h.link.close(); }
   }, 30_000);
 
   it("path switch preserves sealed slices and rehandshake or revocation releases their reservations", () => {

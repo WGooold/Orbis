@@ -19,6 +19,8 @@ import {
   isPieceEnvelope,
   type EnvelopeChannel,
   type EnvelopeV2,
+  type OutboundQueueDiagnostic,
+  type OutboundQueueSource,
   type PathKind,
 } from "@pi-remote/protocol";
 
@@ -34,7 +36,23 @@ import { PathSelector, type PathChange } from "./path.js";
  */
 export type PathSink = ((envelope: EnvelopeV2) => void) & { backlog?: () => number };
 
-export const SESSION_SYNC_WIRE_LIMIT_BYTES = 6 * 1024 * 1024;
+export const SESSION_SYNC_WIRE_LIMIT_BYTES = 12 * 1024 * 1024;
+export type SessionSyncRejection = {
+  reason: "closed" | "path_unavailable" | "session_not_ready" | "delivery_limit" | "sync_byte_limit" | "message_byte_limit";
+  path: PathKind | undefined;
+  deliveries: number;
+  syncQueuedBytes: number;
+  nonBulkQueuedBytes: number;
+  bulkQueuedBytes: number;
+  wireBytes: number;
+};
+export type QueueAdmissionRejection = {
+  channel: EnvelopeChannel;
+  requestedBytes: number;
+  queuedBytes: number;
+  queueLimitBytes: number;
+  source?: OutboundQueueSource;
+};
 /** Includes AEAD/base64 and conservative escaped routing headers on every slice. */
 export function sessionSyncWireBytes(payloadBytes: number): number {
   const ctChars = Math.ceil((payloadBytes + 16) * 4 / 3);
@@ -96,6 +114,10 @@ export type DeviceLinkOptions = {
    * 虽然能插队，但它前面那点**已经写进 socket、收不回来**的字节就是它要等的。
    */
   onBulkQueuedTooLong?: (kind: PathKind, queuedMs: number, queuedBytes: number) => void;
+  /** Bounded queue attribution samples; contains metadata and counters only. */
+  onQueueDiagnostic?: (kind: PathKind, sample: OutboundQueueDiagnostic) => void;
+  /** 普通出站队列封帧前拒绝，记录后摘除当前路径以触发重新握手。 */
+  onQueueAdmissionRejected?: (kind: PathKind, rejection: QueueAdmissionRejection) => void;
   /** 一条入站帧被判重放丢弃（限频后回调）：水位线错位的唯一可见信号。 */
   onStaleFrame?: (kind: PathKind, info: { channel: string; n: number; last: number }) => void;
   /**
@@ -105,6 +127,10 @@ export type DeviceLinkOptions = {
    * `sendBinary` 更早丢片（丢片由 pull 重传自愈，代价是一次 RTO）。测试用它把丢片路径逼出来。
    */
   bulkQueueLimitBytes?: number;
+  /** 普通 `msg` 等待队列每路径上限，缺省 32 MiB。 */
+  msgQueueLimitBytes?: number;
+  /** 控制 `ctl` 等待队列每路径上限，缺省 4 MiB。 */
+  ctlQueueLimitBytes?: number;
   /** `bulk` channel 的速率上限（字节/秒）。`0`/缺省 = 不限速。 */
   bulkBytesPerSecond?: number;
   /**
@@ -204,6 +230,7 @@ export class DeviceLink {
   readonly #syncDeliveries = new Set<SyncDelivery>();
   readonly #syncPieces = new WeakMap<EnvelopeV2, SyncDelivery>();
   #syncBytes = 0;
+  #syncRejection: SessionSyncRejection | undefined;
   /**
    * 入站片的重组缓冲（见 `piece.ts`）。
    *
@@ -289,6 +316,9 @@ export class DeviceLink {
   /** 一条路径的出站多路复用器。出口是**动态**读的——理由见 `attach`。 */
   #createMux(kind: PathKind): OutboundChannelMux<EnvelopeV2> {
     return new OutboundChannelMux<EnvelopeV2>({
+      ...(this.#options.onQueueDiagnostic === undefined ? {} : {
+        onQueueDiagnostic: (sample: OutboundQueueDiagnostic) => this.#options.onQueueDiagnostic?.(kind, sample),
+      }),
       // 出口不能在这里捕获：调用方会逐帧换一个新的 sink 对象（`p2p-manager` 每个消息都新建
       // 一个），捕获构造时那一个会把帧写进一条已经作废的 socket。
       write: (envelope) => {
@@ -308,6 +338,12 @@ export class DeviceLink {
       ...(this.#options.bulkQueueLimitBytes === undefined
         ? {}
         : { bulkQueueLimitBytes: this.#options.bulkQueueLimitBytes }),
+      ...(this.#options.msgQueueLimitBytes === undefined
+        ? {}
+        : { msgQueueLimitBytes: this.#options.msgQueueLimitBytes }),
+      ...(this.#options.ctlQueueLimitBytes === undefined
+        ? {}
+        : { ctlQueueLimitBytes: this.#options.ctlQueueLimitBytes }),
       // 主机侧要丢 `bulk` 就在**封帧之前**丢（`#sendSealed` 里问 `hasBulkRoom`）。这里的帧
       // 已经封好了，丢弃会让发送序号推进却到不了对端——接收侧就是一个永久空洞。
       onWriteAbandoned: (_channel, _attempts, error) => {
@@ -405,23 +441,42 @@ export class DeviceLink {
    *
    * [channel] **必填**（ADR-0008）：不再有"对端不支持就降回单流"这回事。
    */
-  send(payload: Uint8Array, channel: EnvelopeChannel): boolean {
-    return this.#sendSealed("data", payload, this.#selector.active, channel);
+  send(payload: Uint8Array, channel: EnvelopeChannel, source?: OutboundQueueSource): boolean {
+    return this.#sendSealed("data", payload, this.#selector.active, channel, source);
   }
 
   get sessionSyncQueuedBytes(): number { return this.#syncBytes; }
+  get sessionSyncRejection(): Readonly<SessionSyncRejection> | undefined { return this.#syncRejection; }
+
+  #rejectSync(reason: SessionSyncRejection["reason"], path: PathKind | undefined, wireBytes: number): false {
+    const mux = path === undefined ? undefined : this.#muxes.get(path);
+    this.#syncRejection = { reason, path, wireBytes, deliveries: this.#syncDeliveries.size,
+      syncQueuedBytes: this.#syncBytes, nonBulkQueuedBytes: (mux?.queuedBytes ?? 0) - (mux?.bulkQueuedBytes ?? 0),
+      bulkQueuedBytes: mux?.bulkQueuedBytes ?? 0 };
+    return false;
+  }
 
   /** Admission happens before seal consumes a nonce. A delivery owns all of its slices until
    * the last socket write, or until its entire path session is invalidated. */
-  sendSessionSnapshot(payload: Uint8Array, done: (written: boolean) => void, onProgress?: () => void): boolean {
+  sendSessionSnapshot(payload: Uint8Array, done: (written: boolean) => void, onProgress?: () => void, source?: OutboundQueueSource): boolean {
+    this.#syncRejection = undefined;
     const kind = this.#selector.active;
-    if (kind === undefined || this.#closed) return false;
+    const bytes = sessionSyncWireBytes(payload.byteLength);
+    if (this.#closed) return this.#rejectSync("closed", kind, bytes);
+    if (kind === undefined) return this.#rejectSync("path_unavailable", kind, bytes);
     const session = this.#sessions.get(kind);
     const mux = this.#muxes.get(kind);
-    const bytes = sessionSyncWireBytes(payload.byteLength);
-    if (session === undefined || mux === undefined || this.#syncDeliveries.size >= 8 ||
-      this.#syncBytes + bytes > SESSION_SYNC_WIRE_LIMIT_BYTES ||
-      mux.queuedBytes + bytes > SESSION_SYNC_WIRE_LIMIT_BYTES) return false;
+    if (session?.state !== "ready" || mux === undefined) return this.#rejectSync("session_not_ready", kind, bytes);
+    if (this.#syncDeliveries.size >= 32) return this.#rejectSync("delivery_limit", kind, bytes);
+    if (this.#syncBytes + bytes > SESSION_SYNC_WIRE_LIMIT_BYTES) return this.#rejectSync("sync_byte_limit", kind, bytes);
+    // ADR-0013 §6：bulk 有独立预算，不能以下载积压拒绝优先级更高的同步。
+    const queueBytes = envelopeBytesForPayload(payload.byteLength);
+    const attribution = source ?? { type: "runtime.event", eventType: "session.snapshot", payloadBytes: payload.byteLength };
+    if (!mux.hasRoom("msg", queueBytes)) {
+      const rejected = this.#rejectSync("message_byte_limit", kind, bytes);
+      this.#rejectQueueAdmission(kind, mux, "msg", queueBytes, attribution);
+      return rejected;
+    }
     this.#syncBytes += bytes;
     let delivery: SyncDelivery | undefined;
     try {
@@ -430,7 +485,7 @@ export class DeviceLink {
       this.#syncDeliveries.add(delivery);
       for (const piece of pieces) this.#syncPieces.set(piece, delivery);
       for (const piece of pieces) {
-        if (!mux.enqueue("msg", piece, piece.ct.length + PIECE_HEADER_BYTES)) {
+        if (!mux.enqueue("msg", piece, piece.ct.length + PIECE_HEADER_BYTES, attribution)) {
           this.detach(kind);
           return false;
         }
@@ -489,8 +544,8 @@ export class DeviceLink {
    * 知道手机的 socket 断过（中继不会替它转告），而这条路刚刚证明了自己能通。跟握手应答
    * 原路返回是同一个理由。
    */
-  sendOn(kind: PathKind, payload: Uint8Array, channel: EnvelopeChannel): boolean {
-    return this.#sendSealed("data", payload, kind, channel);
+  sendOn(kind: PathKind, payload: Uint8Array, channel: EnvelopeChannel, source?: OutboundQueueSource): boolean {
+    return this.#sendSealed("data", payload, kind, channel, source);
   }
 
   #sendSealed(
@@ -498,18 +553,44 @@ export class DeviceLink {
     payload: Uint8Array,
     kind = this.#selector.active,
     channel: EnvelopeChannel,
+    source?: OutboundQueueSource,
   ): boolean {
     if (kind === undefined) return false;
     const session = this.#sessions.get(kind);
     const mux = this.#muxes.get(kind);
     if (session === undefined || mux === undefined) return false;
+    const attribution = source ?? { type: frame === "bin" ? "artifact.binary" : "unattributed", payloadBytes: payload.byteLength };
+    const estimatedBytes = envelopeBytesForPayload(payload.byteLength);
+    if (!mux.hasRoom(channel, estimatedBytes)) {
+      this.#rejectQueueAdmission(kind, mux, channel, estimatedBytes, attribution);
+      return false;
+    }
     try {
       const envelope = session.seal(frame, payload, channel);
-      return this.#enqueueSealed(mux, envelope);
+      return this.#enqueueSealed(mux, envelope, attribution);
     } catch (error) {
       this.#options.onError?.(error);
       return false;
     }
+  }
+
+  #rejectQueueAdmission(
+    kind: PathKind,
+    mux: OutboundChannelMux<EnvelopeV2>,
+    channel: EnvelopeChannel,
+    requestedBytes: number,
+    source?: OutboundQueueSource,
+  ): void {
+    this.#options.onQueueAdmissionRejected?.(kind, {
+      channel,
+      requestedBytes,
+      queuedBytes: channel === "ctl" ? mux.ctlQueuedBytes : channel === "msg" ? mux.msgQueuedBytes : mux.bulkQueuedBytes,
+      queueLimitBytes: mux.queueLimitBytes(channel),
+      ...(source === undefined ? {} : { source }),
+    });
+    // The frame has not been sealed, so no E2E nonce or sequence was consumed. Drop the
+    // path and let the existing handshake/session-sync recovery establish a fresh session.
+    this.detach(kind);
   }
 
   /**
@@ -520,10 +601,10 @@ export class DeviceLink {
    * 精细的节拍器——否则一条 1.34 MB 的信封会把两个水位同时跨过，闸门关死到它被链路排空，
    * 弱链路上就是秒级的控制帧延迟。
    */
-  #enqueueSealed(mux: OutboundChannelMux<EnvelopeV2>, envelope: EnvelopeV2): boolean {
+  #enqueueSealed(mux: OutboundChannelMux<EnvelopeV2>, envelope: EnvelopeV2, source: OutboundQueueSource): boolean {
     let accepted = true;
     for (const piece of fragmentEnvelope(envelope)) {
-      const ok = mux.enqueue(muxChannelOf(piece), piece, piece.ct.length + PIECE_HEADER_BYTES);
+      const ok = mux.enqueue(muxChannelOf(piece), piece, piece.ct.length + PIECE_HEADER_BYTES, source);
       accepted = accepted && ok;
     }
     return accepted;

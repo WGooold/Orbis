@@ -38,6 +38,7 @@ import {
   type DeviceE2ePayload,
   type EnvelopeChannel,
   type EnvelopeV2,
+  type OutboundQueueSource,
   type PathKind,
   type HostCatalogBackend,
   type HostCatalogRange,
@@ -73,6 +74,7 @@ import type { DshRuntime } from "./dsh-runtime.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
 import { DeviceLink, type ActivePathChange, type PathSink } from "./device-link.js";
+import { outboundQueueAdmissionRecord, outboundQueueDiagnosticRecords, outboundQueueSource } from "./outbound-queue-diagnostics.js";
 import { DEFAULT_LAN_PORT, HostLanServer, localLanEndpoints, parseLanDiscoveryRequest, type LanDiscoveryRequest } from "./lan-server.js";
 import { HostLoopbackServer, type CodexLaunchRequest, type CodexLaunchResult } from "./loopback-server.js";
 import { HostP2pManager } from "./p2p-manager.js";
@@ -291,6 +293,21 @@ export class HostService {
     this.recordDiagnostic({ scope: scope ? "agent" : "host", agentKind: scope?.kind === "agent" ? scope.key.agentKind : null,
       sessionId: scope?.kind === "agent" ? scope.key.sessionId : null, category, severity, message,
       ...(operationId === undefined ? {} : { operationId }) });
+  }
+
+  #acceptConversation(runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" | "session.patch" }>): boolean {
+    const scope = this.#agentFacts.scopeOf(runtimeId);
+    let reason = "runtime_scope_missing";
+    const accepted = scope !== undefined && this.#conversationState.accept(scope, event,
+      ready => this.#agentFacts.prepareConversation(runtimeId, event, ready), code => { reason = code; });
+    if (!accepted) this.recordDiagnostic({ scope: scope ? "agent" : "host",
+      agentKind: scope?.kind === "agent" ? scope.key.agentKind : null, sessionId: event.sessionId,
+      category: "recovery", severity: "warning", message: "Rejected conversation transaction; source baseline required",
+      ...(event.type === "session.snapshot" ? { operationId: event.syncId } : {}),
+      detail: { reason, runtimeId, eventType: event.type, sourceEpoch: event.source?.epoch ?? "missing",
+        sourceSeq: String(event.source?.seq ?? "missing"), entries: String(event.entries?.length ?? 0),
+        ...(event.type === "session.snapshot" ? { range: event.range ?? "missing", selection: event.selection ?? "none" } : { baseSeq: String(event.baseSeq) }) } });
+    return accepted;
   }
 
   #markRuntimeOffline(runtimeId: string, reason: string): void {
@@ -544,14 +561,22 @@ export class HostService {
       },
       encodeEvent: (runtimeId, event) => Buffer.from(JSON.stringify(this.#runtimeEventMessage(runtimeId, event)), "utf8"),
       acceptSnapshot: (runtimeId, event) => {
-        const scope = this.#agentFacts.scopeOf(runtimeId);
-        const accepted = scope !== undefined && this.#conversationState.accept(scope, event,
-          ready => this.#agentFacts.prepareConversation(runtimeId, event, ready));
-        if (!accepted) this.#recordAgentDiagnostic(runtimeId, "recovery", "Rejected session snapshot; source baseline required", "warning");
-        return accepted;
+        return this.#acceptConversation(runtimeId, event);
       },
       sendEvent: (deviceId, runtimeId, event) => this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, event)),
-      error: (deviceId, commandId, code, message) => this.#sendToDevice(deviceId, { type: "protocol.error", code, message: message ?? code, commandId }),
+      error: (deviceId, commandId, code, message) => {
+        const link = this.#links.get(deviceId);
+        const stats = this.#sessionSync.stats(deviceId);
+        const rejection = code === "session_sync_busy_or_unavailable" ? link?.sessionSyncRejection : undefined;
+        this.recordDiagnostic({ scope: "host", agentKind: null, sessionId: null, category: "session.sync", severity: "warning",
+          operationId: commandId, message: code, detail: {
+            deviceId, path: link?.active ?? "none", records: String(stats.records), pending: String(stats.pending),
+            active: String(stats.active), reservedBytes: String(stats.reservedBytes), syncQueueBytes: String(link?.sessionSyncQueuedBytes ?? 0),
+            ...(rejection === undefined ? {} : { reason: rejection.reason, deliveries: String(rejection.deliveries),
+              nonBulkQueueBytes: String(rejection.nonBulkQueuedBytes), bulkQueueBytes: String(rejection.bulkQueuedBytes), wireBytes: String(rejection.wireBytes) }),
+          } });
+        this.#sendToDevice(deviceId, { type: "protocol.error", code, message: message ?? code, commandId });
+      },
       ...(options.log === undefined ? {} : { log: options.log }),
     });
     // 后端装配：Pi 恒有；Codex 由调用方注入（CLI 在 --codex 时创建 app-server）。
@@ -570,7 +595,7 @@ export class HostService {
     ];
     this.#backends = backends;
     // 共享同一个单写者：Agent 事实与设备视图回执都写进这一份模型。
-    const agentStateRegistry = new AgentStateRegistry({ maxValueBytes: 4 * 1024 * 1024, maxEntries: 4096 });
+    const agentStateRegistry = new AgentStateRegistry({ maxValueBytes: 4 * 1024 * 1024 });
     const agentStateOptions = {
       registry: agentStateRegistry,
       hostId: this.#identity.hostId,
@@ -803,7 +828,9 @@ export class HostService {
   }
 
   announceProviderChange(kind: AgentKind, exceptDeviceId?: string): void {
-    for (const [id, link] of this.#links) if (id !== exceptDeviceId) link.send(Buffer.from(JSON.stringify({ type: "provider.changed", protocolVersion: PROTOCOL_VERSION, kind })), "ctl");
+    for (const id of this.#links.keys()) if (id !== exceptDeviceId) {
+      this.#sendJsonToDevice(id, { type: "provider.changed", protocolVersion: PROTOCOL_VERSION, kind }, "ctl");
+    }
   }
 
   /**
@@ -825,13 +852,12 @@ export class HostService {
     const scope = this.#resolveAgentStateScope(deviceId, request);
     if (scope?.kind === "host" && (request.domains === undefined || request.domains.includes("catalog"))) await this.readHostRange();
     if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active) return;
-    const link = this.#links.get(deviceId);
     if (scope === undefined) {
-      link?.send(Buffer.from(JSON.stringify({
+      this.#sendJsonToDevice(deviceId, {
         type: "agent.state.snapshot", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId,
         scope: request.scope ?? "agent", ...identity, modelEpoch: null, domains: [], missing: [], truncated: false,
         error: "这台电脑没有该会话的状态：它可能不在线，或这个后端还没有接入统一模型。",
-      }), "utf8"), "ctl");
+      }, "ctl");
       return;
     }
     if (scope.kind === "agent" && request.runtimeId !== undefined) {
@@ -881,7 +907,7 @@ export class HostService {
   }
 
   async #handleProviderRequest(deviceId: string, request: ProviderRequest): Promise<void> {
-    const send = (message: object): void => { this.#links.get(deviceId)?.send(Buffer.from(JSON.stringify(message)), "ctl"); };
+    const send = (message: object): void => this.#sendJsonToDevice(deviceId, message, "ctl");
     try {
       const manager = this.#options.providers;
       if (!manager) throw new ProviderError("此 Host 尚未启用供应商管理，请升级并重启 Host");
@@ -1332,7 +1358,7 @@ export class HostService {
       // Refresh addresses for already-paired phones and DHCP changes, only after E2E authentication.
       // Pairing-only processes do not advertise a listener they haven't started.
       const response = { type: "host.lan", protocolVersion: PROTOCOL_VERSION, endpoints: this.#lan?.endpoints ?? [] };
-      this.#links.get(deviceId)?.send(Buffer.from(JSON.stringify(response), "utf8"), "ctl");
+      this.#sendJsonToDevice(deviceId, response, "ctl");
       return;
     }
     if (message.type === "device.pathPreference") {
@@ -1479,7 +1505,7 @@ export class HostService {
     this.#workspaceGit.set(runtime.cwd, { availability: identity.branch !== null || identity.commit !== null ? "ready" : "unknown",
       branch: identity.branch, head: identity.commit, repoRoot: null });
     this.refreshHostFacts();
-    this.#links.get(deviceId)?.send(Buffer.from(JSON.stringify({
+    this.#sendJsonToDevice(deviceId, {
       type: "runtime.git",
       protocolVersion: PROTOCOL_VERSION,
       requestId: request.requestId,
@@ -1487,7 +1513,7 @@ export class HostService {
       sessionId: runtime.sessionId ?? null,
       cwd: runtime.cwd,
       ...identity,
-    }), "utf8"), "ctl");
+    }, "ctl");
   }
 
   /**
@@ -1934,12 +1960,17 @@ export class HostService {
   }
 
   #sendToDevice(deviceId: string, message: RelayToDeviceMessage): void {
+    this.#sendJsonToDevice(deviceId, message, channelForDeviceMessage(message));
+  }
+
+  #sendJsonToDevice(deviceId: string, message: object, channel: EnvelopeChannel): void {
     const link = this.#links.get(deviceId);
     if (link === undefined) return;
     try {
       // `send` 走当前生效路径；没有可用路径时返回 false，此时消息就是发不出去，
       // 也不该假装发出去了——上层会靠重连后的 `device.ready` 重新对齐。
-      link.send(Buffer.from(JSON.stringify(message), "utf8"), channelForDeviceMessage(message));
+      const payload = Buffer.from(JSON.stringify(message), "utf8");
+      link.send(payload, channel, outboundQueueSource(message, payload.byteLength));
     } catch (error) {
       this.#options.onDeviceError?.(deviceId, error);
     }
@@ -1950,7 +1981,8 @@ export class HostService {
     const link = this.#links.get(deviceId);
     if (link === undefined) return;
     try {
-      link.sendOn(kind, Buffer.from(JSON.stringify(message), "utf8"), channelForDeviceMessage(message));
+      const payload = Buffer.from(JSON.stringify(message), "utf8");
+      link.sendOn(kind, payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength));
     } catch (error) {
       this.#options.onDeviceError?.(deviceId, error);
     }
@@ -1968,10 +2000,7 @@ export class HostService {
     }
     if (event.type === "session.snapshot") { this.#sessionSync.handleEvent(runtimeId, event); return; }
     if (event.type === "session.patch") {
-      const scope = this.#agentFacts.scopeOf(runtimeId);
-      if (!scope || !this.#conversationState.accept(scope, event,
-        ready => this.#agentFacts.prepareConversation(runtimeId, event, ready))) {
-        this.#recordAgentDiagnostic(runtimeId, "recovery", "Rejected conversation transaction; source baseline required", "warning");
+      if (!this.#acceptConversation(runtimeId, event)) {
         this.#loopback?.sendResync(runtimeId, "model_baseline_required");
         return;
       }
@@ -2037,14 +2066,15 @@ export class HostService {
 
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
-    this.#broadcastPayload(Buffer.from(JSON.stringify(message), "utf8"), channelForDeviceMessage(message));
+    const payload = Buffer.from(JSON.stringify(message), "utf8");
+    this.#broadcastPayload(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength));
   }
 
   /** 广播给所有握好手的设备。单台设备封帧失败不影响其他设备。 */
-  #broadcastPayload(payload: Uint8Array, channel: EnvelopeChannel): void {
+  #broadcastPayload(payload: Uint8Array, channel: EnvelopeChannel, source: OutboundQueueSource): void {
     for (const [deviceId, link] of this.#links) {
       try {
-        if (!link.send(payload, channel)) continue;
+        if (!link.send(payload, channel, source)) continue;
       } catch (error) {
         this.#options.onDeviceError?.(deviceId, error);
       }
@@ -2109,6 +2139,16 @@ export class HostService {
     const link = new DeviceLink({
       hostId: this.#identity.hostId,
       device: record,
+      onQueueDiagnostic: (path, sample) => {
+        for (const input of outboundQueueDiagnosticRecords(deviceId, path, sample)) this.recordDiagnostic(input);
+      },
+      onQueueAdmissionRejected: (path, rejection) => {
+        this.recordDiagnostic(outboundQueueAdmissionRecord(deviceId, path, rejection));
+        this.#options.log?.(
+          `[queue] ${path}/${rejection.channel} 出站队列达到上限（${rejection.queuedBytes}/${rejection.queueLimitBytes} 字节，` +
+          `请求 ${rejection.requestedBytes} 字节）：摘除路径并等待重新握手`,
+        );
+      },
       ...(this.#options.probeIntervalMs === undefined ? {} : { probeIntervalMs: this.#options.probeIntervalMs }),
       ...(pathPreference === undefined ? {} : { pathPreference }),
       ...(this.#options.bulkBytesPerSecond === undefined

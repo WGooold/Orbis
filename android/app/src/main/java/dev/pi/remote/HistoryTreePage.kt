@@ -111,6 +111,9 @@ internal fun HistoryTreePage(
     val runtime = state.runtimes[runtimeId]
     val graph = sessionId?.let(state.sessionGraphs::get)
     val busy = runtime?.status == "running"
+    // 后端只发最近一段树（DSH 的整棵树上到命令词表里）。首条记录的 parentId 指向表外时，
+    // 说明更早的历史还没读到——在聊天页往上翻，读到之后它自己会补进这张树。
+    val olderUnread = remember(treeOptions) { treeOptions.firstOrNull()?.tree?.parentId != null }
 
     var query by rememberSaveable { mutableStateOf("") }
     var filterKey by rememberSaveable { mutableStateOf(HistoryTreeFilter.DEFAULT.name) }
@@ -214,6 +217,14 @@ internal fun HistoryTreePage(
                         selectedNodeId = null
                         filterKey = HistoryTreeFilter.DEFAULT.name
                     },
+                )
+            }
+            if (olderUnread && query.isBlank()) {
+                Text(
+                    "更早的记录还没有读到：在聊天页往上翻，读到的部分会自动补进这张树",
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding, vertical = 2.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             if (rows.isEmpty()) {

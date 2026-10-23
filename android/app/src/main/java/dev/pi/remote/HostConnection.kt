@@ -26,6 +26,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -49,6 +50,8 @@ internal const val HANDSHAKE_STALLED_ERROR =
 internal const val PULL_TICK_MS = 200L
 /** 背压撤掉需求后的复活间隔（见 `runSessionSyncScheduler`）。 */
 internal const val SYNC_BUSY_REVIVE_MS = 5_000L
+/** 入站丢帧后补一次源端同步的最小间隔（ADR-0040 §4）：丢帧风暴不能变成重同步风暴。 */
+internal const val INBOUND_RECOVERY_INTERVAL_MS = 3_000L
 
 /**
  * 上传任务处于 uploading 却迟迟等不到 Host 的 read 时，重新 advertise（重发 init）的阈值。
@@ -1125,16 +1128,14 @@ internal class HostConnection(
             Log.i(RELOAD_TRACE_TAG, "ui.slash.rejected name=$name reason=no_runtime")
             return null
         }
-        if (mutableState.value.runtimes[runtimeId]?.domainAvailability?.get("capabilities") != "ready") {
-            refreshAgentModel(runtimeId, force = true)
-            updateState { it.copy(error = "电脑尚未核对可用命令，请稍后重试") }
-            return null
-        }
         Log.i(RELOAD_TRACE_TAG, "ui.slash.requested name=$name runtimeId=$runtimeId argsLength=${args.length}")
         val command = mutableState.value.capabilities[runtimeId]?.commands?.find { it.name == name }
         if (command == null) {
+            // 词表缺失才重新核对。领域暂时 unknown 但词表已缓存时仍然发送：
+            // 否则一次来源抖动会让所有斜杠命令在接下来十几秒内全部「发不出去」。
+            refreshAgentModel(runtimeId, force = true)
             Log.i(RELOAD_TRACE_TAG, "ui.slash.rejected name=$name reason=command_not_available")
-            updateState { it.copy(error = "所选命令已不再由当前 Pi 提供，请重新选择") }
+            updateState { it.copy(error = "电脑尚未核对可用命令，请稍后重试") }
             return null
         }
         val normalizedArgs = args.trim()
@@ -1490,25 +1491,32 @@ internal class HostConnection(
         var stopReconnectOnClose = false
         // Relay closes immediately after protocol.error; the async reducer may run after onClosed.
         val protocolVersionMismatch = AtomicBoolean(false)
-        // 入站帧按 channel 分两条优先级通道（见 `InboundFrameLanes`）。
+        // 入站帧按 channel 分三条通道（见 `InboundFrameLanes` 与 ADR-0040）。
         //
-        // 以前这里是一条**无界** FIFO，文本帧与二进制分片挤在一起按到达顺序消费。分片落盘比网络
-        // 慢，队列于是无界积压，一条控制帧要排在这堆分片后面——下载一开，聊天不刷新、消息发不出去、
-        // 交互点不动，全部来自这里。按 channel 拆开之后，消费循环每次回到顶部都先清空交互面，
-        // 最坏等待从「整条积压」降到「一片落盘」。
+        // 以前这里是一条**无界** FIFO，文本帧与二进制分片挤在一起按到达顺序消费：分片落盘比网络
+        // 慢，控制帧就排在积压后面（ADR-0007）；而文本面本身也没有上界——2026-10-23 的真机堆转储
+        // 里同一条队列留下 5,238 个未消费帧、42MB payload，进程反复 OOM。现在控制面必须送达，会话
+        // 面与分片各有预算，超了丢最旧并由消费侧补一次同步。
         //
         // 二进制分片仍然与文本帧分享同一条消费循环（不是各自的协程）：`artifact.started` 必须
-        // 先于依赖它的分片生效。拆开优先级本身就保证了这一点——`started` 走交互面，永远先走。
+        // 先于依赖它的分片生效。拆开优先级本身就保证了这一点——`started` 走控制面，永远先走。
         val lanes = InboundFrameLanes()
         relayEventJob = scope.launch(Dispatchers.IO) {
             while (currentGeneration == generation) {
-                // ① 控制面优先：交互面里只要还有，就一直处理，绝不让分片插到前面。
-                var frame: Any? = lanes.takeInteractive()
+                // ⓪ 先结清上一轮丢弃的帧：会话面要补同步，控制面要断开重连（ADR-0040 §4/§5）。
+                val overflow = lanes.drainOverflow()
+                if (overflow.any) handleInboundOverflow(overflow, currentGeneration)
+                // ① 控制面优先：命令结果、交互、状态永远排在最前面。
+                var frame: Any? = lanes.takeControl()
                 if (frame == null) {
-                    // ② 交互面空了，才处理一片分片。
+                    // ② 会话面：会话同步与消息增量。可丢，但排在分片之前。
+                    frame = lanes.takeSession()
+                }
+                if (frame == null) {
+                    // ③ 前面的面都空了，才处理一片分片。
                     frame = lanes.takeBulk()
                     if (frame == null) {
-                        // ③ 两面都空：挂起等生产者叫醒。
+                        // ④ 三面都空：挂起等生产者叫醒。
                         if (!lanes.awaitWork()) break
                         continue
                     }
@@ -1574,6 +1582,21 @@ internal class HostConnection(
                                 val message = incomingMessage
                                 val messageType = message?.get("type")?.jsonPrimitive?.contentOrNull
                                 val protocolCode = message?.get("code")?.jsonPrimitive?.contentOrNull
+                                val failedCommand = sessionEvent?.takeIf {
+                                    it["type"]?.jsonPrimitive?.contentOrNull == "command.result" &&
+                                        it["ok"]?.jsonPrimitive?.booleanOrNull == false
+                                }
+                                val syncErrorCode = protocolCode?.takeIf { it.startsWith("session_sync_") }
+                                    ?: failedCommand?.get("error")?.jsonPrimitive?.contentOrNull
+                                        ?.takeIf { it.startsWith("session_sync_") }
+                                if (syncErrorCode != null) {
+                                    val commandId = (if (messageType == "protocol.error") message else failedCommand)
+                                        ?.get("commandId")?.jsonPrimitive?.contentOrNull
+                                    val pending = commandId?.let(previous.sessionSyncCommands::get)
+                                    Log.w(RELOAD_TRACE_TAG, "session.sync.rejected code=$syncErrorCode command=$commandId " +
+                                        "syncId=${pending?.syncId} runtimeId=${pending?.runtimeId} range=${pending?.range} " +
+                                        "pending=${previous.sessionSyncCommands.size} channel=$interactiveChannel")
+                                }
                                 if (interactiveChannel != null && messageType == "provider.changed") {
                                     val kind = message["kind"]?.jsonPrimitive?.contentOrNull
                                     if (kind == reduced.agentProviders.kind && !reduced.agentProviders.loading) scope.launch { loadAgentProviders(kind) }
@@ -2180,9 +2203,37 @@ internal class HostConnection(
         }
     }
 
+    /**
+     * 入站队列的溢出收尾（ADR-0040 §4/§5）。
+     *
+     * - 会话面丢弃：对可见会话补一次源端同步，限频 3 秒。丢帧不是失败，不写任何错误字段；
+     *   但安静会话没有新事件来要同步，不补就会永久停在旧快照（ADR-0036 Context 约束 2）。
+     * - 控制面丢弃：命令结果/交互无法由同步修复，按连接级异常处理——断开重连，走既有重置。
+     */
+    private fun handleInboundOverflow(overflow: InboundFrameLanes.Overflow, connectionGeneration: Int) {
+        if (overflow.controlFrames > 0) {
+            Log.w(RELOAD_TRACE_TAG, "inbound.overflow lane=ctl dropped=${overflow.controlFrames}")
+            relay.disconnect()
+        }
+        if (overflow.sessionFrames <= 0) return
+        Log.i(RELOAD_TRACE_TAG, "inbound.overflow lane=msg dropped=${overflow.sessionFrames}")
+        if (connectionGeneration != generation || !shouldConnect) return
+        val now = System.currentTimeMillis()
+        if (now - lastInboundRecoveryAt < INBOUND_RECOVERY_INTERVAL_MS) return
+        val current = mutableState.value
+        if (current.connection != RelayConnection.ONLINE) return
+        val runtime = current.selectedRuntimeId?.let(current.runtimes::get) ?: return
+        val pairedDevice = device ?: return
+        lastInboundRecoveryAt = now
+        updateState { it.copy(sessionSyncRequests = it.sessionSyncRequests + runtime.runtimeId) }
+        scheduleSessionGraphLoad(pairedDevice, listOf(runtime))
+    }
+
     /** Atomic registration/ticks precede sends; every effect rechecks its immutable task. */
     /** 背压复活的最小间隔：比消息速率慢得多，链路上只多出可忽略的空请求。 */
     private var syncBusyReviveAt = 0L
+    /** 入站丢帧后补同步的限频（ADR-0040 §4）；只由 relay 消费协程读写。 */
+    private var lastInboundRecoveryAt = 0L
 
     private fun runSessionSyncScheduler() {
         val pairedDevice = device ?: return

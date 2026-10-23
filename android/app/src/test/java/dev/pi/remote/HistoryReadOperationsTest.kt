@@ -26,13 +26,44 @@ class HistoryReadOperationsTest {
     private fun remote(state: RemoteState, id: String = "page"): RemoteState = state.queueSessionSync("command",
         PendingSessionSync("r", "s", "sync", "history", "tail", beforeEntryId = "tail", historyOperationId = id))
         .let { advanceSessionSyncTasks(it, 0).state }
-    private fun response(state: RemoteState): RemoteState {
+    private fun response(state: RemoteState, withDisplay: Boolean = true): RemoteState {
         val snapshot = SessionGraphSnapshot("s", "sync", SessionBranchCursor("tail"), "prepend", page.entries,
-            range = "history", targetLeafId = "tail", beforeEntryId = "tail", hasOlder = false, complete = true)
+            range = "history", targetLeafId = "tail", beforeEntryId = "tail", hasOlder = false, complete = true,
+            display = if (withDisplay) null else DisplayBatch(DISPLAY_PROJECTION_VERSION))
         val event = Json.encodeToJsonElement(SessionGraphSnapshot.serializer(), snapshot) as JsonObject
         val payload = buildJsonObject { put("type", "runtime.event"); put("runtimeId", "r"); put("sequence", 2)
             put("event", JsonObject(event + ("type" to JsonPrimitive("session.snapshot")))) }
-        return FixtureRelayReducer().reduceSourceSnapshot(state, payload.toString(), committedFixtureBatch(snapshot.entries))
+        val committed = if (withDisplay) committedFixtureBatch(snapshot.entries) else
+            CommittedSessionBatch(snapshot.entries, DisplayBatch(DISPLAY_PROJECTION_VERSION))
+        return FixtureRelayReducer().reduceSourceSnapshot(state, payload.toString(), committed)
+    }
+
+    @Test fun `canonical ancestors without display rows remain remotely loadable instead of proving history end`() {
+        val base = initial()
+        val graph = base.sessionGraphs.getValue("s").withFixtureEntries(listOf(entry("older", null), entry("tail", "older")))
+            .let { it.copy(display = it.display - "older") }
+        val cached = base.copy(sessionGraphs = mapOf("s" to graph),
+            sessionHistory = mapOf("r" to SessionHistoryState("s", "tail", "older", false)))
+            .reconcileHistoryReads()
+        val read = cached.beginHistoryRead("r", "missing-display")
+        assertEquals("missing-display", read.acceptance.operationId)
+        assertEquals("tail", read.state.sessionHistory.getValue("r").oldestEntryId)
+        val missingDisplay = page.copy(display = emptyMap())
+        val local = read.state.applyLocalHistoryRead("missing-display", missingDisplay)
+        assertTrue(local.ownsHistoryRead("missing-display"))
+        assertTrue(local.sessionHistory.getValue("r").hasOlder)
+        val missingSourceDisplay = response(remote(local, "missing-display"), withDisplay = false)
+        assertEquals(HistoryReadPhase.FAILED, missingSourceDisplay.latestHistoryRead("r")?.phase)
+        assertTrue(missingSourceDisplay.sessionHistory.getValue("r").hasOlder)
+        val retry = missingSourceDisplay.beginHistoryRead("r", "retry-display").state
+        val recovered = response(remote(retry, "retry-display"))
+        assertEquals(listOf("older", "tail"), recovered.conversations.getValue("r").messages.map { it.messageId })
+        assertFalse("history=${recovered.sessionHistory}; display=${recovered.sessionGraphs.values.map { it.display.keys }}",
+            recovered.sessionHistory.getValue("r").hasOlder)
+        // A producer-declared display window legitimately excludes its canonical prefix.
+        val windowed = base.copy(sessionGraphs = mapOf("s" to graph.copy(displayWindowStart = "tail")),
+            sessionHistory = mapOf("r" to SessionHistoryState("s", "tail", "older", false))).reconcileHistoryReads()
+        assertFalse(windowed.sessionHistory.getValue("r").hasOlder)
     }
 
     @Test fun `ordinary projection cannot revoke a cached page or let its old worker end a new read`() {

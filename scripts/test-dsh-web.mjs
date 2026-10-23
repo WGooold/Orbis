@@ -93,7 +93,9 @@ const cli = await resolveDshCommand();
 const dshRequire = createRequire(cli.prefixArgs[0]);
 const nativeImport = name => import(pathToFileURL(dshRequire.resolve(name)).href);
 const { Context } = await nativeImport("@deepseek-ai/cordis");
-const { default: persistence } = await nativeImport("@deepseek-ai/dsh-session-persistence-jsonl");
+// 0.2.x 的持久化包只导出命名成员（name / apply / Config），没有 default；两种形状都接受。
+const persistenceModule = await nativeImport("@deepseek-ai/dsh-session-persistence-jsonl");
+const persistence = persistenceModule.default ?? persistenceModule;
 const { SESSION_FORMAT_VERSION } = await nativeImport("@deepseek-ai/dsh-session");
 const coldId = "session-orbis-cold-smoke";
 const seedContext = new Context();
@@ -105,7 +107,7 @@ try {
 } finally { await seedContext.fiber.dispose(); }
 const env = { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: "1" };
 delete env.ORBIS_DSH_WEB_TEST_KEY;
-const child = spawn(cli.command, [...cli.prefixArgs, "--profile", "web", "--no-open", "--port", "0"], { env, cwd: workspace, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+const child = spawn(cli.command, [...cli.prefixArgs, "--profile", "web", "--host", "127.0.0.1", "--no-open", "--port", "0"], { env, cwd: workspace, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 let output = "";
 child.stdout.on("data", chunk => { output += chunk.toString(); });
 child.stderr.on("data", chunk => { output += chunk.toString(); });
@@ -127,6 +129,10 @@ const waitFor = async (predicate, timeout = 30_000) => {
   const deadline = Date.now() + timeout;
   while (!predicate()) { if (Date.now() > deadline) throw new Error("Timed out waiting for DSH Web smoke event"); await delay(25); }
 };
+// 结束的 turn 会带着 durationMs 留在 live 里（手机用它显示这一轮耗时），所以「这一轮
+// 已经落定」的判据是 durationMs 已确定 + 收到 turn/end，不是 turn 变回 null。
+const turnSettled = ({ event, runtimeId }, id) => runtimeId === `dsh:${id}` && event.type === "session.patch" &&
+  event.live.turn?.durationMs !== undefined && event.entries?.some(entry => entry.data.dshEvent === "turn/end");
 try {
   const url = await started;
   first = await DshWebClient.connect({ url, cliEntry: cli.prefixArgs[0], timeoutMs: 15_000 });
@@ -142,7 +148,10 @@ try {
   mobile.setEventSink((event, runtimeId) => mobileEvents.push({ event, runtimeId }));
   await mobile.start();
   assert.equal(mobile.ownsRuntime(`dsh:${sessionId}`), false, "an idle browser Session occupies no online card");
-  assert.ok((await mobile.catalog()).some(item => item.sessionId === `dsh:${sessionId}`), "it is still listed in the Session catalog");
+  // 原生 `blank` 表示这条会话还没有任何内容：它是浏览器草稿，不进会话目录（见 catalog()）。
+  // 目录里的行要等它真的装了一轮对话，下面的断言在那之后。
+  assert.equal((await mobile.catalog()).some(item => item.sessionId === `dsh:${sessionId}`), false,
+    "a blank draft is not a Session catalog row");
   assert.equal(mobile.ownsRuntime(`dsh:${coldId}`), false);
   await first.request("session/page", { request: { address: { kind: "session", sessionId: coldId }, throughSeq: -1, maxMessages: 10 } });
   assert.equal((await first.request("session/list", { _request: {} })).items.find(item => item.sessionId === coldId)?.agentAvailable, false,
@@ -151,6 +160,10 @@ try {
   const dispose = second.subscribe("session/follow", { request: { address: { kind: "session", sessionId }, assistantStream: true } }, frame => frames.push(frame), error => { throw error; });
   await first.request("session/prompt", { request: { sessionId, requestId: "web-first", mode: "queue", content: [{ type: "text", text: "WEB_SMOKE_FIRST" }] } });
   await waitFor(() => mobile.ownsRuntime(`dsh:${sessionId}`));
+  // 有了第一轮内容，原生 `blank` 清零，它就成为目录里的一行。
+  for (const deadline = Date.now() + 15_000; !(await mobile.catalog()).some(item => item.sessionId === `dsh:${sessionId}`); await delay(100)) {
+    if (Date.now() > deadline) throw new Error("a Session with content never became a catalog row");
+  }
   await waitFor(() => modelRequests >= 1);
   const queued = await second.request("session/prompt", { request: { sessionId, requestId: "web-queued", mode: "queue", content: [{ type: "text", text: "WEB_SMOKE_QUEUED" }] } });
   assert.equal(queued.accepted, true);
@@ -175,7 +188,7 @@ try {
   const closeBrowser = first.subscribe("session/follow", { request: { address: { kind: "session", sessionId: fresh.sessionId }, assistantStream: true } }, frame => browserFrames.push(frame));
   assert.equal(mobile.dispatchCommand(`dsh:${fresh.sessionId}`, "app-prompt", { type: "user_message", text: "APP_TO_BROWSER", messageId: "app-prompt" }), "handled");
   await waitFor(() => browserFrames.some(frame => frame.type === "event" && frame.event.type === "user/message" && frame.event.data.source.rpcId === "app-prompt"));
-  await waitFor(() => mobileEvents.some(({ event, runtimeId }) => runtimeId === `dsh:${fresh.sessionId}` && event.type === "session.patch" && event.live.turn === null && event.entries?.some(entry => entry.data.dshEvent === "turn/end")));
+  await waitFor(() => mobileEvents.some(item => turnSettled(item, fresh.sessionId)));
   await first.request("workspace/archiveSession", { request: { sessionId: fresh.sessionId } });
   await waitFor(() => !mobile.ownsRuntime(`dsh:${fresh.sessionId}`));
   await first.request("workspace/unarchiveSession", { request: { sessionId: fresh.sessionId } });
@@ -185,14 +198,15 @@ try {
   closeBrowser();
   await first.request("session/prompt", { request: { sessionId: coldId, requestId: "web-resume", mode: "queue", content: [{ type: "text", text: "RESUME_COLD_HISTORY" }] } });
   await waitFor(() => mobile.ownsRuntime(`dsh:${coldId}`));
-  await waitFor(() => mobileEvents.some(({ event, runtimeId }) => runtimeId === `dsh:${coldId}` && event.type === "session.patch" && event.live.turn === null && event.entries?.some(entry => entry.data.dshEvent === "turn/end")));
+  await waitFor(() => mobileEvents.some(item => turnSettled(item, coldId)));
   mobile.dispatchCommand(`dsh:${coldId}`, "recover-cold", { type: "session.sync", sessionId: `dsh:${coldId}`, syncId: "recover-cold", range: "preview" });
   await waitFor(() => mobileEvents.some(({ event }) => event.type === "session.snapshot" && event.syncId === "recover-cold"));
   const recovered = mobileEvents.find(({ event }) => event.type === "session.snapshot" && event.syncId === "recover-cold").event;
   assert.equal(recovered.source.ready, true);
   assert.equal(recovered.live.complete, true);
   assert.deepEqual(recovered.live.messages, []);
-  assert.equal(recovered.live.turn, null);
+  assert.ok(recovered.live.turn === null || typeof recovered.live.turn.durationMs === "number",
+    "a recovered cold Session reports no in-flight turn");
   mobile.dispatchCommand(`dsh:${coldId}`, "confirm-cold", { type: "session.sync", sessionId: `dsh:${coldId}`, syncId: "confirm-cold", range: "preview",
     knownState: { epoch: recovered.source.epoch, seq: recovered.source.seq, head: recovered.checkpoint.head } });
   await waitFor(() => mobileEvents.some(({ event }) => event.type === "session.snapshot" && event.syncId === "confirm-cold" && event.selection === "unchanged"));

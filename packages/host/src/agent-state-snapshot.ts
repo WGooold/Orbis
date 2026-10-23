@@ -16,7 +16,7 @@ import type { AgentStateRegistry, StateScope } from "./agent-state-registry.js";
  */
 
 /** 快照的字节预算：一次应答不能把整份模型塞进控制帧。 */
-const DEFAULT_MAX_BYTES = 256 * 1024;
+const DEFAULT_MAX_BYTES = 512 * 1024;
 
 export type AgentStateSnapshotIdentity = {
   readonly runtimeId?: string | undefined;

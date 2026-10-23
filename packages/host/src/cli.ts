@@ -23,7 +23,7 @@ import { LoopbackDescriptorSchema, type AgentKind } from "@pi-remote/protocol";
 
 import { loadHostConfig } from "./config.js";
 import { CodexAppServer } from "./codex-daemon.js";
-import { CodexRuntime } from "./codex-runtime.js";
+import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
 import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper, stageCodexWrapper } from "./codex-desktop-launcher.js";
 import { ensureCodexDesktopEntry } from "./codex-shim-install.js";
@@ -114,6 +114,7 @@ async function runHost(
       });
       codexRuntime = new CodexRuntime({
         server: codexServer,
+        sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS,
         log: (line) => console.log(`[codex] ${line}`),
         onEvent: () => {}, // 真正的出口由 HostService 接管（setEventSink）
       });

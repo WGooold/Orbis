@@ -2511,6 +2511,9 @@ class RelayReducer(
                     else -> state.sessionSyncRequests - runtimeId
                 }
                 val graphForProjection = if (staleTarget) mergedGraph.copy(cursor = currentGraph.cursor) else mergedGraph
+                if (!staleTarget && isHistory && snapshotForProjection.entries.any { !graphForProjection.hasDisplayFor(it) }) {
+                    return@reduceRuntimeEvent state.failSessionSync(commandId, "历史页缺少显示结果，请更新并重启电脑端会话后重试")
+                }
                 if (!staleTarget) {
                     if (!isCanonicalPage) nextSessionSyncFailures = nextSessionSyncFailures - runtimeId
                     nextSessionGraphs = state.sessionGraphs + (snapshot.sessionId to graphForProjection)
@@ -2576,7 +2579,7 @@ class RelayReducer(
                             sessionId = snapshot.sessionId,
                             leafId = if (isCatchUp) targetLeafId else viewLeafId,
                             oldestEntryId = branch.firstOrNull()?.entryId ?: existingHistory?.oldestEntryId,
-                            hasOlder = snapshot.hasOlder ?: branch.firstOrNull()?.parentId != null,
+                            hasOlder = snapshot.hasOlder ?: (branch.firstOrNull()?.parentId != null),
                             loading = false,
                         )
                     } else if (isHistory) {

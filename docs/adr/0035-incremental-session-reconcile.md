@@ -136,6 +136,8 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
     **配套的不变量**：合并窗口会把"版本号最终值"推迟到窗口结束，所以任何要在响应里携带 `source.seq` 的路径必须先 `flushPending()`（`syncSession` 已加；`reestablish()` 会先 flush 再换 epoch）。否则客户端拿到的 `knownState` 在 100ms 后失效，sync 永远回不了 `unchanged`——这条在实现时被集成测试抓到过。
     客户端侧同批做了一件轻量修复：入站大帧的诊断日志从"每帧一行"改成每 2 秒一行带计数（原来 5s 内 450 行 `Log.i`）。更彻底的做法（增量投影 / UI 侧限频）仍未做。
 
+    2026-10-23 补：本条的「Pi 扩展设 100ms」**没有覆盖 DSH**。`DshWebRuntime` / `DshAcpRuntime` 当时都没有传 `coalesceMs`，真机会话仍是逐条 patch 入站，并因此堆出 5,238 个未消费帧、42MB payload 的接收侧积压（[ADR-0040](0040-bounded-inbound-delivery.md)）。现在两个运行时都接受 `coalesceMs` 选项（默认 0，测试行为不变），生产入口 `DshRuntime.create` 传 `STREAM_COALESCE_MS = 100`；`session.sync` 响应在 `source.snapshot()` 前先 `flushPending()`，与 Pi 扩展的配套不变量一致（Host 侧改动需重启 Host 生效）。
+
 16. **原生日志按"追加帧"增量读；格式依赖以文件布局为界，任何不确定都退回官方 API（2026-10-22 已实现）。** DSH 的持久化 API 只提供整份读，而实测代价是 Host 事件循环上的 373ms/次（8.7MB、5240 帧、11,978 事件）。这条把 `dsh-history.ts` 原先"一律走 DSH 官方持久化 API"的隐含前提改成**分层读取**：
     - **首次读取与 `list()` 仍走官方 API**：解码语义与该版本一致，不自己猜布局；
     - **只在 `session.v4.jsonl.zstd` 布局、且文件只增长时**走字节区间增量：读 `offset` 之后的字节，按 zstd magic 切帧，只解新帧、只解析新行，事件按 `seq` 追加；

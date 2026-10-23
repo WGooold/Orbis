@@ -14,7 +14,7 @@ import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispa
 import { DshAcpClient, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
 import { dshEntries, openDshHistory, type DshHistory } from "./dsh-history.js";
 import { DshWebClient, type DshWebConnection } from "./dsh-web-client.js";
-import { DshWebRuntime } from "./dsh-web-runtime.js";
+import { DshWebRuntime, STREAM_COALESCE_MS } from "./dsh-web-runtime.js";
 import { ensureDshWebService } from "./dsh-web-service.js";
 import type { DshStreamDecoder } from "./dsh-web-history.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
@@ -55,6 +55,7 @@ export class DshAcpRuntime implements AgentBackend {
   readonly #sessions = new Map<string, Session>();
   readonly #activating = new Map<string, Promise<BackendActivation>>();
   readonly #approvals = new Map<string, Approval>();
+  readonly #coalesceMs: number;
   #ready = true;
   #stopping: Promise<void> | undefined;
   #activation: Promise<unknown> = Promise.resolve();
@@ -62,9 +63,10 @@ export class DshAcpRuntime implements AgentBackend {
   onMetadataChange: (() => void) | undefined;
   onOffline: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
 
-  constructor(client: DshConnection, history: DshHistory) {
+  constructor(client: DshConnection, history: DshHistory, options: { coalesceMs?: number } = {}) {
     this.#client = client;
     this.#history = history;
+    this.#coalesceMs = Math.max(0, options.coalesceMs ?? 0);
     this.#attachClient(client);
   }
 
@@ -192,7 +194,7 @@ export class DshAcpRuntime implements AgentBackend {
       const log = await this.#history.read(id);
       const entryCache = new Map<number, RemoteSessionEntry>();
       const session: Session = {
-        source: new RecoverableSessionSource(publicId(id), event => this.#sink(event, publicId(id!))),
+        source: new RecoverableSessionSource(publicId(id), event => this.#sink(event, publicId(id!)), { coalesceMs: this.#coalesceMs }),
         notifications: new NotificationSource(randomUUID(), publicId(id), event => {
           if (this.#sessions.get(publicId(id!))?.notifications.epoch === event.producerEpoch) this.#sink(event, publicId(id!));
         }),
@@ -232,6 +234,8 @@ export class DshAcpRuntime implements AgentBackend {
         this.#emit(session, { type: "execution.activity", retry: "unavailable", compaction: "unavailable" });
         if (command.sessionId !== publicId(session.id)) throw new Error("session_mismatch");
         await this.#refresh(session);
+        // 响应带 `source.seq`：先刷掉合并窗口，否则 knownState 会在窗口结束后失效（ADR-0035 §15）。
+        session.source.flushPending();
         this.#emit(session, session.preparer.select({
           entries: session.entries, sessionId: publicId(session.id),
           leafId: session.entries.at(-1)?.entryId ?? null, request: command, source: session.source.snapshot(),
@@ -564,12 +568,16 @@ export class DshRuntime implements AgentBackend {
     this.#implementation.onOffline = value;
   }
 
-  constructor(client: DshConnection, history: DshHistory);
-  constructor(client: DshWebConnection, decoder?: DshStreamDecoder);
-  constructor(client: DshConnection | DshWebConnection, history?: DshHistory | DshStreamDecoder) {
+  constructor(client: DshConnection, history: DshHistory, options?: { coalesceMs?: number });
+  constructor(client: DshWebConnection, decoder?: DshStreamDecoder, options?: { coalesceMs?: number });
+  constructor(
+    client: DshConnection | DshWebConnection,
+    history?: DshHistory | DshStreamDecoder,
+    options: { coalesceMs?: number } = {},
+  ) {
     this.#implementation = history !== undefined && typeof history !== "function"
-      ? new DshAcpRuntime(client as DshConnection, history)
-      : new DshWebRuntime(client as DshWebConnection, history as DshStreamDecoder | undefined);
+      ? new DshAcpRuntime(client as DshConnection, history, options)
+      : new DshWebRuntime(client as DshWebConnection, history as DshStreamDecoder | undefined, options);
   }
 
   static async create(env: NodeJS.ProcessEnv = process.env): Promise<DshRuntime> {
@@ -584,7 +592,7 @@ export class DshRuntime implements AgentBackend {
       await applyDshWebProvider(client, env);
       const { loadDshStreamDecoder } = await import("./dsh-web-history.js");
       const decoder = cli.prefixArgs[0] ? await loadDshStreamDecoder(cli.prefixArgs[0]) : undefined;
-      return new DshRuntime(client, decoder);
+      return new DshRuntime(client, decoder, { coalesceMs: STREAM_COALESCE_MS });
     } catch (error) { await client.stop(); throw error; }
   }
 

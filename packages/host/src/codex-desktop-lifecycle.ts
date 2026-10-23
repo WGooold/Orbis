@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { CodexDesktopAttach } from "@pi-remote/protocol";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
-import { CodexRuntime } from "./codex-runtime.js";
+import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { launchCodexDesktopApp } from "./codex-desktop-app.js";
 import type { CodexDesktopRefreshOptions } from "./codex-desktop-refresh.js";
 import { detectCodexDesktopPresence, waitForCodexDesktop, type CodexDesktopPresence, type CodexDesktopPresenceOptions } from "./codex-desktop-presence.js";
@@ -239,7 +239,7 @@ export class CodexDesktopLifecycle {
 
   /** 挂载一条已握手的 app-server 连接：Host 先装事件出口，再标记就绪。 */
   async #mount(server: CodexAppServer, reason: string): Promise<CodexRuntime> {
-    const runtime = new CodexRuntime({ server, ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
+    const runtime = new CodexRuntime({ server, sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS, ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
       ...(this.#options.desktopRefresh === undefined ? {} : { desktopRefresh: this.#options.desktopRefresh }), onEvent: () => {} });
     try {
       if (this.#stopping) throw new Error("Codex 桌面版正在关闭");

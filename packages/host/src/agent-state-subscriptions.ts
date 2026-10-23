@@ -4,8 +4,8 @@ import { buildAgentStateSnapshotParts } from "./agent-state-snapshot.js";
 
 type Subscription = { deviceId: string; request: AgentStateRequest; scope: StateScope; changed: Set<string> };
 const scopeId = (scope: StateScope): string => JSON.stringify(scope);
-// Match the conversation model's 64 current sessions; host/device subscriptions use separate scopes.
-const MAX_AGENT_SUBSCRIPTIONS_PER_DEVICE = 64;
+// Match the conversation model's 256 current sessions; host/device subscriptions use separate scopes.
+const MAX_AGENT_SUBSCRIPTIONS_PER_DEVICE = 256;
 
 /** Coalesced complete-domain publications. No I/O or source RPC occurs inside Registry commits. */
 export class AgentStateSubscriptions {

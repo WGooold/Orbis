@@ -15,7 +15,7 @@ import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-li
 import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper, stageCodexWrapper } from "./codex-desktop-launcher.js";
 import { ensureCodexDesktopEntry } from "./codex-shim-install.js";
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
-import { CodexRuntime } from "./codex-runtime.js";
+import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DSH_VERSION, resolveDshCommand } from "./dsh-client.js";
 import { ensureDshWebService, restartDshWebServiceAfterUpdate, validateDshWebUrl } from "./dsh-web-service.js";
@@ -317,7 +317,7 @@ export class DesktopRuntime {
       if (settings.codexEnabled) {
         try {
           this.#codex = await CodexAppServer.create({ log: line => this.log(line), onExit: () => this.log("Codex 终端后端已断开，可暂停后重新启动 Host") });
-          this.#codexRuntime = new CodexRuntime({ server: this.#codex, log: line => this.log(line), onEvent: () => {} });
+          this.#codexRuntime = new CodexRuntime({ server: this.#codex, sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS, log: line => this.log(line), onEvent: () => {} });
         } catch (error) { this.log(`Codex 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
         // 桌面版接入走 Orbis 包装器：它给桌面版自己的 app-server 多开一个本地 ws，
         // 官方 `app-server proxy` 那条路在 Windows 上被上游关掉了（ADR-0022）。

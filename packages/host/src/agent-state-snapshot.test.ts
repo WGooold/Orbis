@@ -43,7 +43,7 @@ describe("buildAgentStateSnapshot", () => {
   });
   it("splits at domain boundaries so a large inventory cannot starve later domains", () => {
     const registry = new AgentStateRegistry({ maxValueBytes: 1024 * 1024 });
-    registry.commitValue(hostScope, "catalog", { ...ready, source: source("host:catalog"), value: "x".repeat(300_000) });
+    registry.commitValue(hostScope, "catalog", { ...ready, source: source("host:catalog"), value: "x".repeat(600_000) });
     registry.commitValue(hostScope, "providers", { ...ready, source: source("host:providers"), value: { current: "p" } });
     const parts = buildAgentStateSnapshotParts({ registry, requestId: "large", scope: hostScope });
     expect(parts).toHaveLength(2);

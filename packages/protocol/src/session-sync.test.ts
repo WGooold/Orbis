@@ -12,6 +12,17 @@ const entries = (count: number, text = ""): RemoteSessionEntry[] => Array.from({
 const request = { sessionId: "s", syncId: "request", maxEntries: 3 };
 
 describe("bounded Session ranges", () => {
+  it("keeps the default preview, history and catchup page counts at thirty", () => {
+    const tree = entries(100);
+    for (const range of ["preview", "history", "catchup"] as const) {
+      const page = selectSessionSyncSnapshot(tree, "s", "100", {
+        sessionId: "s", syncId: range, range, targetLeafId: "100",
+        ...(range === "history" ? { beforeEntryId: "71" } : {}),
+      });
+      expect(page.entries).toHaveLength(30);
+      expect(page.complete).toBe(false);
+    }
+  });
   it("pages backwards for display and forwards for catchup on a fixed branch", () => {
     const tree = [...entries(11), { ...entries(1)[0]!, entryId: "sibling", parentId: "3" }];
     const preview = selectSessionSyncSnapshot(tree, "s", "11", { ...request, range: "preview", targetLeafId: "10" });
@@ -79,7 +90,7 @@ describe("bounded Session ranges", () => {
     const timing = (id: string): RuntimeTurnTiming => ({ turnId: `turn-${id}`, messageId: id, startedAt: 1, durationMs: 2 });
     const snapshot = selectSessionSyncSnapshot(tree, "s", "4", { ...request, maxEntries: 1, range: "preview" }, [timing("1"), timing("4")]);
     expect(snapshot.turnTimings).toEqual([timing("4")]);
-    const hugeMetadata = Array.from({ length: 6000 }, (_, index) => ({ turnId: `turn-${index}`, startedAt: 1, durationMs: 2 }));
+    const hugeMetadata = Array.from({ length: 12000 }, (_, index) => ({ turnId: `turn-${index}`, startedAt: 1, durationMs: 2 }));
     expect(() => selectSessionSyncSnapshot(tree, "s", "4", { ...request, range: "preview" }, hugeMetadata))
       .toThrow("session_metadata_too_large");
   });

@@ -238,6 +238,45 @@ class HistoryTreeTest {
     }
 
     @Test
+    fun `a forked branch hands the phone the new session to open`() {
+        // DSH 的跳转是原生 fork：结果带新会话 ID，手机直接打开它。
+        assertEquals(
+            "dsh:child",
+            historyBranchSessionId(Json.parseToJsonElement("""{"sessionId":"dsh:child","editorText":"改写这一段"}""")),
+        )
+        assertEquals(
+            "dsh:child",
+            historyBranchSessionId(Json.parseToJsonElement("""{"sessionId":"dsh:child"}""")),
+        )
+        // Pi / codex 是原地回退，没有新会话可切。
+        assertNull(historyBranchSessionId(Json.parseToJsonElement("""{"leafId":"a1","editorText":"x"}""")))
+        assertNull(historyBranchSessionId(Json.parseToJsonElement("""{"sessionId":"   "}""")))
+        assertNull(historyBranchSessionId(null))
+    }
+
+    @Test
+    fun `a dsh durable tail folds turn boundaries and tools into the turn details`() {
+        // DSH 的日志是线性的：回合边界和工具事件是细节，只有用户消息和回复占节点行。
+        val dsh = listOf(
+            option("dsh:s:web:0", role = null, entryType = "turn/start", active = true, hidden = true),
+            option("dsh:s:web:1", parent = "dsh:s:web:0", role = "user", active = true, label = "第一个问题"),
+            option("dsh:s:web:2", parent = "dsh:s:web:1", role = null, entryType = "tool/call", active = true, hidden = true),
+            option("dsh:s:web:3", parent = "dsh:s:web:2", role = "toolResult", active = true, hidden = true, label = "命令输出"),
+            option("dsh:s:web:4", parent = "dsh:s:web:3", role = "assistant", active = true, current = true, label = "回答"),
+        )
+
+        val rows = historyTreeRows(dsh)
+
+        assertEquals(1, rows.size)
+        assertTrue("线性日志不该出现旁支摘要行", rows.none { it is HistoryBranchRow })
+        val row = rows.single() as HistoryTurnRow
+        assertEquals("dsh:s:web:1", row.user?.nodeId)
+        assertEquals(listOf("dsh:s:web:4"), row.replies.map(HistoryNode::nodeId))
+        assertEquals(listOf("dsh:s:web:2", "dsh:s:web:3"), row.details.map(HistoryNode::nodeId))
+        assertTrue(row.hasCurrent)
+    }
+
+    @Test
     fun `the cached entry is the fallback text for editing a message`() {
         val graph = fixtureGraph("s", mapOf(
             "u1" to SessionGraphEntry(

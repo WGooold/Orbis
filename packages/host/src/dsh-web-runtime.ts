@@ -11,7 +11,7 @@ import {
 } from "@pi-remote/protocol";
 import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshWebClient, type DshWebConnection, type DshWebEvent } from "./dsh-web-client.js";
-import { dshErrorText, dshWebEntries, dshWebEntryId, dshWebMessage, type DshStreamDecoder, type DshWebLogEvent } from "./dsh-web-history.js";
+import { dshErrorText, dshWebEntries, dshWebEntryId, dshWebEntryText, dshWebMessage, dshWebTreeOptions, type DshStreamDecoder, type DshWebLogEvent } from "./dsh-web-history.js";
 import { localHostname } from "./sessions.js";
 import { dshPermissionOptions, dshPermissions } from "./dsh-permissions.js";
 import { dshUserQuestionInteraction, dshUserQuestionAnswer } from "./dsh-user-questions.js";
@@ -21,6 +21,11 @@ import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { DshWebDiscovery, type DshLiveSession } from "./dsh-web-discovery.js";
 
 type Obj = Record<string, unknown>;
+/**
+ * 流式 patch 的合并窗口（ADR-0035 §15）：DSH Web 每个增量都会改 live 状态，逐条发布在真机上
+ * 实测 96 帧/秒，手机端每条都要落盘 + 全量重投影。100ms 与 Pi 扩展取同一值。
+ */
+export const STREAM_COALESCE_MS = 100;
 type WorkspaceView = { workspaceId: string; path: string; title?: string; sessionIds?: string[] };
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
 const arrayObjects = (value: unknown): Obj[] => Array.isArray(value) ? value.map(object) : [];
@@ -41,6 +46,8 @@ const webEntrySeqOrUndefined = (entryId: string | null | undefined): number | un
 };
 
 type Approval = { id: string; session: WebSession; interaction: InteractionRequest; timer?: NodeJS.Timeout; releaseWait?: () => void; responding?: boolean };
+/** 会话实际选中的模型与思考档位；`session/modelCatalog.default` 只是部署默认值，不是会话事实。 */
+type ModelSelection = { provider: string; model: string; reasoningEffort?: string };
 type WebSession = {
   source: RecoverableSessionSource;
   sourceCheckedAt: number;
@@ -49,7 +56,9 @@ type WebSession = {
   id: string; cwd: string; createdAt: number; title?: string; entries: RemoteSessionEntry[]; skills: { name: string; description: string }[];
   /** 分页预处理缓存：翻页只换页，不重算索引与显示投影（ADR-0035 §10）。 */
   preparer: SessionSyncPreparer;
-  running: boolean; closing: boolean; options: Obj[]; modelCatalog?: Obj; model?: RuntimeMetadata["model"]; thinkingLevel?: string; usage?: RuntimeMetadata["contextUsage"];
+  running: boolean; closing: boolean; options: Obj[]; modelCatalog?: Obj; selection?: ModelSelection; selectionSeq: number; usage?: RuntimeMetadata["contextUsage"];
+  /** 上一次发布出去的命令词表；同一份内容不重复下发（历史树挂在它上面）。 */
+  capabilitiesSignature?: string;
   lastSeq: number; turnId?: string; turnStartedAt?: number;
   permissionProfile?: string; permissionSandbox?: string; permissionApproval?: string;
   permissionSeq: number; permissionSandboxSeq: number; permissionApprovalSeq: number; permissionGeneration: number;
@@ -90,9 +99,13 @@ export class DshWebRuntime implements AgentBackend {
   onCatalogChange: (() => void) | undefined;
   onArchiveChange: ((sessionId: string, archived: boolean) => void) | undefined;
 
-  constructor(client: DshWebConnection, decoder?: DshStreamDecoder) {
+  /** 流式 patch 合并窗口（ADR-0035 §15）；0 = 原行为，生产入口传 `STREAM_COALESCE_MS`。 */
+  readonly #coalesceMs: number;
+
+  constructor(client: DshWebConnection, decoder?: DshStreamDecoder, options: { coalesceMs?: number } = {}) {
     this.#client = client;
     this.#decoder = decoder;
+    this.#coalesceMs = Math.max(0, options.coalesceMs ?? 0);
     this.#discovery = new DshWebDiscovery(client, {
       live: item => this.#observe(item),
       offline: (id, removed) => {
@@ -119,8 +132,12 @@ export class DshWebRuntime implements AgentBackend {
     };
   }
 
-  static async create(options: Parameters<typeof DshWebClient.connect>[0] = {}, decoder?: DshStreamDecoder): Promise<DshWebRuntime> {
-    return new DshWebRuntime(await DshWebClient.connect(options), decoder);
+  static async create(
+    options: Parameters<typeof DshWebClient.connect>[0] = {},
+    decoder?: DshStreamDecoder,
+    runtimeOptions: { coalesceMs?: number } = {},
+  ): Promise<DshWebRuntime> {
+    return new DshWebRuntime(await DshWebClient.connect(options), decoder, runtimeOptions);
   }
   setEventSink(sink: (event: RuntimeEvent, runtimeId: string) => void): void { this.#sink = sink; }
   start(): Promise<void> {
@@ -138,6 +155,7 @@ export class DshWebRuntime implements AgentBackend {
           const session = this.#sessions.get(publicId(id)); if (session) {
             this.#permissionProjection(session, baseline);
             this.#deliveryProjection(session, baseline);
+            this.#modelSelectionProjection(session, baseline);
           }
         }
       } else if (frame.type === "projection" && typeof frame.sessionId === "string") {
@@ -146,6 +164,7 @@ export class DshWebRuntime implements AgentBackend {
         const session = this.#sessions.get(publicId(frame.sessionId));
         if (session && frame.key === "permissions") this.#permissionProjection(session, baseline);
         if (session && frame.key === "inbox") this.#deliveryProjection(session, baseline);
+        if (session && frame.key === "modelSelection") this.#modelSelectionProjection(session, baseline);
       }
     }, () => {
       this.#controlUnsubscribe?.(); this.#controlUnsubscribe = undefined;
@@ -161,7 +180,8 @@ export class DshWebRuntime implements AgentBackend {
       this.#publishMetadata(session);
       void this.#loadDelivery(session);
       this.#emit(session, structuredClone(session.activity));
-      this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
+      // 新接入的设备手里没有命令词表，必须强制重发一次。
+      this.#publishCapabilities(session, true);
       this.#emit(session, { type: "interaction.snapshot", requests: [...this.#approvals.values()].filter(item => item.session === session).map(item => item.interaction) });
     }
   }
@@ -192,17 +212,25 @@ export class DshWebRuntime implements AgentBackend {
   }
 
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
+    return await this.#catalogRows(archived, false);
+  }
+
+  /**
+   * `includeBlank` 是「侧栏目录」与「按 ID 恢复」的差别：还没有任何内容的新会话（原生
+   * `blank`）不进侧栏，但手机可能记着它的 ID（上次选中、新分支、网页链接），照样要能打开。
+   */
+  async #catalogRows(archived: boolean, includeBlank: boolean): Promise<AgentSessionSummary[]> {
     const archiveIds = await this.#archivedSessionIds();
     const generation = this.#discovery.titles.generation;
     const result = await this.#client.request<Obj>("session/list", { _request: {} });
-    if (generation !== this.#discovery.titles.generation) return this.catalog(archived);
+    if (generation !== this.#discovery.titles.generation) return this.#catalogRows(archived, includeBlank);
     const items = Array.isArray(result.items) ? result.items : Array.isArray(result.sessions) ? result.sessions : [];
     return items.flatMap(raw => {
       const item = object(raw); const id = typeof item.sessionId === "string" ? item.sessionId : typeof item.id === "string" ? item.id : undefined;
       const cwd = typeof item.cwd === "string" ? item.cwd : undefined;
       // Subagent identities require their durable parent address and cannot be
       // resumed through ordinary session/create. Blank sessions are browser drafts.
-      if (!id || !cwd || archiveIds.has(id) !== archived || item.origin === "subagent" || item.blank === true) return [];
+      if (!id || !cwd || archiveIds.has(id) !== archived || item.origin === "subagent" || (!includeBlank && item.blank === true)) return [];
       const local = this.#sessions.get(publicId(id));
       const title = this.#discovery.titles.read(id, item);
       return [{ sessionId: publicId(id), agentKind: "dsh" as const, hostname: localHostname(), cwd,
@@ -266,7 +294,7 @@ export class DshWebRuntime implements AgentBackend {
       if (!id) throw new Error("DeepSeek Web 没有返回会话 ID");
     } else {
       id = target.sessionId.slice(4);
-      const item = (await this.catalog()).find(value => value.sessionId === target.sessionId);
+      const item = (await this.#catalogRows(false, true)).find(value => value.sessionId === target.sessionId);
       if (!item) throw new ActivationError("session_not_found", "找不到这个 DeepSeek Web 会话");
       cwd = item.cwd; createdAt = item.createdAt; title = item.name;
       const workspaceId = await this.#ensureWorkspace(cwd);
@@ -274,7 +302,9 @@ export class DshWebRuntime implements AgentBackend {
     }
     if (!this.#ready) throw new ActivationError("agent_unsupported", "DeepSeek Web 已断开");
     this.#detached.delete(id);
-    this.#attach({ sessionId: id, cwd, createdAt, ...(title === undefined ? {} : { title }), running: this.#sessions.get(publicId(id))?.running ?? false });
+    // 重新打开一个刚 detach 的会话时，#sessions 里已经没有它；用发现流保存的原生 running，
+    // 否则手机在下一帧状态通知到达前会把它显示成「空闲」。
+    this.#attach({ sessionId: id, cwd, createdAt, ...(title === undefined ? {} : { title }), running: this.#sessions.get(publicId(id))?.running ?? this.#running.get(id) ?? false });
     return { sessionId: publicId(id), spawnMode: "headless" };
   }
 
@@ -307,10 +337,10 @@ export class DshWebRuntime implements AgentBackend {
       if (changed) this.#publishMetadata(current);
       return;
     }
-    const session: WebSession = { id, cwd: item.cwd, createdAt: item.createdAt, ...(item.title ? { title: item.title } : {}), entries: [], preparer: new SessionSyncPreparer(), skills: [], running: item.running, closing: false, options: [], lastSeq: -1, permissionSeq: -1, permissionSandboxSeq: -1, permissionApprovalSeq: -1, permissionGeneration: 0, permissionBusy: false, permissionOptions: [],
+    const session: WebSession = { id, cwd: item.cwd, createdAt: item.createdAt, ...(item.title ? { title: item.title } : {}), entries: [], preparer: new SessionSyncPreparer(), skills: [], running: item.running, closing: false, options: [], lastSeq: -1, selectionSeq: -1, permissionSeq: -1, permissionSandboxSeq: -1, permissionApprovalSeq: -1, permissionGeneration: 0, permissionBusy: false, permissionOptions: [],
       source: new RecoverableSessionSource(publicId(id), event => {
         if (this.#sessions.get(publicId(id)) === session) this.#sink(event, publicId(id));
-      }), sourceCheckedAt: 0,
+      }, { coalesceMs: this.#coalesceMs }), sourceCheckedAt: 0,
       notifications: new NotificationSource(randomUUID(), publicId(id), event => {
         if (this.#sessions.get(publicId(id))?.notifications.epoch === event.producerEpoch) this.#sink(event, publicId(id));
       }), skillsGeneration: 0, modelGeneration: 0, followGeneration: 0,
@@ -321,7 +351,7 @@ export class DshWebRuntime implements AgentBackend {
     // Announce before follow can deliver messages: APP needs the runtime identity first.
     this.#publishMetadata(session);
     this.#followSession(session);
-    this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
+    this.#publishCapabilities(session, true);
     void this.#loadSkills(session);
     void this.#loadModelCatalog(session);
     void this.#loadPermissions(session);
@@ -356,6 +386,8 @@ export class DshWebRuntime implements AgentBackend {
   }
   async #command(session: WebSession, commandId: string, command: RuntimeCommand): Promise<void> {
     if (session.closing) throw new Error("DSH Web 会话正在关闭");
+    // 只有命令可以带结果正文（`/tree` 的新分支会话 ID 与原文）；其余命令的结果只是回执。
+    let result: unknown;
     switch (command.type) {
       case "session.sync": {
         if (command.sessionId !== publicId(session.id)) throw new Error("session_mismatch");
@@ -364,13 +396,16 @@ export class DshWebRuntime implements AgentBackend {
         this.#emit(session, structuredClone(session.activity));
         await this.#refreshPage(session, command.maxEntries,
           command.range === "history" ? webEntrySeqOrUndefined(command.beforeEntryId) : undefined);
+        // 响应要带 `source.seq`，先刷掉合并窗口；否则客户端拿到的 knownState 会在窗口结束后失效
+        // （ADR-0035 §15 的配套不变量）。
+        session.source.flushPending();
         this.#emit(session, session.preparer.select({
           entries: session.entries, sessionId: command.sessionId,
           leafId: session.entries.at(-1)?.entryId ?? null, request: command,
           source: session.source.snapshot(),
           ...(session.entries[0]?.parentId == null ? {} : { historyBoundaryParentId: session.entries[0].parentId }),
         }));
-        this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
+        this.#publishCapabilities(session);
         this.#emit(session, { type: "interaction.snapshot", requests: [...this.#approvals.values()].filter(item => item.session === session).map(item => item.interaction) }); break;
       }
       case "user_message": await this.#prompt(session, commandId, command); return;
@@ -388,10 +423,21 @@ export class DshWebRuntime implements AgentBackend {
       case "permissions.update":
         if (command.settingId !== "permission-preset") throw new Error("权限设置不可用，请刷新会话");
         await this.#slash(session, command.value, "permission-preset"); break;
-      case "slash.execute": await this.#slash(session, command.args, command.name); break;
+      case "slash.execute":
+        if (command.name === "quit") {
+          // 先中断、再回执、最后 detach：APP 收到 runtime.offline 时会把该 runtime 上未完成的
+          // 命令记成 cancelled，回执必须先到；而 detach 不会停掉原生 turn，不自己发
+          // session/cancel 就会变成「手机以为退出了，电脑上还在继续烧模型」。
+          await this.#cancelRunningTurn(session);
+          this.#emit(session, { type: "command.result", commandId, ok: true, status: "success" });
+          this.#detached.add(session.id);
+          this.#detachSession(session, "DeepSeek Web 会话已关闭");
+          return;
+        }
+        result = await this.#slash(session, command.args, command.name); break;
       default: throw new Error("不支持的 DSH Web 命令");
     }
-    this.#emit(session, { type: "command.result", commandId, ok: true, status: "success" });
+    this.#emit(session, { type: "command.result", commandId, ok: true, status: "success", ...(result === undefined ? {} : { result }) });
   }
 
   async #prompt(session: WebSession, commandId: string, command: Extract<RuntimeCommand, { type: "user_message" }>): Promise<void> {
@@ -420,7 +466,8 @@ export class DshWebRuntime implements AgentBackend {
     } catch (error) { receipt.status = "failure"; session.queue.delete(requestId); throw error; }
   }
 
-  async #slash(session: WebSession, args: string, name: string): Promise<void> {
+  async #slash(session: WebSession, args: string, name: string): Promise<unknown> {
+    if (name === "tree") return await this.#tree(session, args.trim());
     if (name === "permission-preset") {
       if (session.running || session.permissionBusy || [...this.#approvals.values()].some(item => item.session === session)) throw new Error("请先完成当前任务和待处理审批，再调整权限");
       const selected = args.trim();
@@ -436,7 +483,6 @@ export class DshWebRuntime implements AgentBackend {
       } finally { session.permissionBusy = false; this.#publishMetadata(session); }
       return;
     }
-    if (name === "quit") { this.#detached.add(session.id); this.#detachSession(session, "DeepSeek Web 会话已关闭"); return; }
     if (name === "name") {
       const title = args.trim(); if (!title) throw new Error("会话名称不能为空");
       const result = object(await this.#client.request("session/rename", { request: { sessionId: session.id, title } }));
@@ -464,22 +510,65 @@ export class DshWebRuntime implements AgentBackend {
       const catalog = session.modelCatalog ?? object(await this.#client.request("session/modelCatalog", {}));
       const model = this.#findModel(catalog, args.trim());
       if (!model) throw new Error("找不到模型");
-      await this.#client.request("session/selectModel", { request: { sessionId: session.id, provider: model.provider, model: model.model, ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}) } });
-      session.model = this.#modelInfo(catalog, model.provider, model.model);
-      if (model.reasoningEffort) session.thinkingLevel = model.reasoningEffort;
-      this.#publishMetadata(session); this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) }); return;
+      const result = object(await this.#client.request("session/selectModel", { request: { sessionId: session.id, provider: model.provider, model: model.model, ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}) } }));
+      // DSH 返回规范化后的选择；`modelSelection` 投影随后会用同一个值覆盖它。
+      this.#applySelection(session, result.selected);
+      return;
     }
     if (name === "thinking") {
       const selected = args.trim();
-      if (!session.model) throw new Error("请先选择模型");
+      const current = this.#selection(session);
+      if (!current) throw new Error("请先选择模型");
       let effort = selected;
       try { const parsed = JSON.parse(selected) as unknown; if (typeof parsed === "string") effort = parsed; } catch { /* Plain effort id. */ }
       const available = this.#thinkingChoices(session).some(choice => choice.value === effort);
       if (!available) throw new Error("找不到思考级别");
-      await this.#client.request("session/selectModel", { request: { sessionId: session.id, provider: session.model.provider, model: session.model.id, reasoningEffort: effort } });
-      session.thinkingLevel = effort; this.#publishMetadata(session); return;
+      const result = object(await this.#client.request("session/selectModel", { request: { sessionId: session.id, provider: current.provider, model: current.model, reasoningEffort: effort } }));
+      this.#applySelection(session, result.selected);
+      return;
     }
     throw new Error(`不支持的 DSH Web 命令：/${name}`);
+  }
+  /**
+   * `/tree <entryId>`：DSH 的原生日志不支持「回到某条消息」，分支是 `session/fork` 从某个
+   * 事件切点复制包含前缘的前缀、生成一个新会话。因此：
+   *
+   * - 落到用户消息 = 从它**之前**切，原文交回手机（改完重发就是新分支）；
+   * - 落到别的节点 = 从它本身切，接着往下聊。
+   *
+   * 结果里带新会话 ID，手机据此切到新分支；新分支在这里就接入，免得手机的 resume 与原生
+   * 会话目录抢跑。整个动作不改动原会话。
+   */
+  async #tree(session: WebSession, entryId: string): Promise<{ sessionId: string; editorText?: string }> {
+    const entry = session.entries.find(candidate => candidate.entryId === entryId);
+    if (!entry) throw new Error("找不到这条记录，请刷新会话后重试");
+    const seq = webEntrySeqOrUndefined(entryId);
+    if (seq === undefined) throw new Error("这条记录没有可用的原生事件序号");
+    const editing = object(entry.data.message).role === "user";
+    const atSeq = editing ? seq - 1 : seq;
+    if (atSeq < 0) throw new Error("这条消息是会话的第一条，没有更早的内容可以回退");
+    const fork = object(await this.#client.request("session/fork", { request: { sessionId: session.id, atSeq } }));
+    const childId = typeof fork.sessionId === "string" ? fork.sessionId : "";
+    if (!childId) throw new Error("DeepSeek Web 没有返回新分支的会话 ID");
+    // 这是用户明确要的跳转，不是目录发现：新分支即使空闲也直接接入。
+    this.#attach({ sessionId: childId, cwd: session.cwd, createdAt: Date.now(), running: false });
+    const editorText = editing ? dshWebEntryText(entry) : "";
+    return { sessionId: publicId(childId), ...(editorText ? { editorText } : {}) };
+  }
+  /**
+   * `/quit` 的前半段：让原生 turn 真正停下来。
+   *
+   * 取消失败就**不** detach：APP 一旦失去这个 runtime，就再没有入口看见或停止仍在电脑上
+   * 运行的会话；失败必须如实回给手机，让用户重试。
+   */
+  async #cancelRunningTurn(session: WebSession): Promise<void> {
+    if (!session.running) return;
+    try {
+      await this.#client.request("session/cancel", { request: { sessionId: session.id } });
+      session.running = false;
+    } catch (error) {
+      throw new Error(`无法中断 DeepSeek Web 会话：${dshErrorText(error)}`);
+    }
   }
   #findModel(catalog: Obj, selected: string): { provider: string; model: string; reasoningEffort?: string } | undefined {
     let parsed: Obj = {};
@@ -613,6 +702,7 @@ export class DshWebRuntime implements AgentBackend {
       this.#titleProjection(session.id, frame.projections, true);
       this.#permissionProjection(session, frame.projections);
       this.#deliveryProjection(session, frame.projections);
+      this.#modelSelectionProjection(session, frame.projections);
       for (const event of events) this.#permissionEvent(session, event);
       this.#rememberTools(session, events);
       const snapshotEntries = dshWebEntries(session.id, events);
@@ -676,11 +766,17 @@ export class DshWebRuntime implements AgentBackend {
         for (const record of records) this.#assistantFrame(session, { type: "chunk", attemptId: attempt.attemptId, time: record.time, chunk: record.chunk });
       }
       this.#reconcileSource(session);
-      const currentTurnCovered = events.some(event => event.type === "turn/start" && dshWebEntryId(session.id, event.seq) === session.turnId);
-      session.source.setAvailability(true, !session.running || currentTurnCovered);
+      // ADR-0043：有界 follow tail 里没有本轮的 `turn/start`，只说明「本轮起点不在这一页」，
+      // 不说明 live 清单不完整：live 正文来自 assistantStream 的完整前缀，后续事件按 seq
+      // 顺序应用，缺口由 #checkSource 重新核对。以前这里据此把 complete 降成 false，
+      // checkpoint 于是不再是基线——Host 丢掉 canonical、手机既不能投影也不能应用 patch，
+      // 运行期间的历史就整段消失（现场：长轮次一开头，聊天页只剩本轮 live 卡片）。
+      session.source.setAvailability(true, true);
       session.sourceCheckedAt = Date.now();
       if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.resolve(); delete session.sourceCheck; }
       session.notifications.resolve("dsh.recovery");
+      // 这份 baseline 刚改过 durable 日志，历史树可能变了。去重后没有变化就什么都不发。
+      this.#publishCapabilities(session);
       return;
     }
     if (frame.type === "event") { const event = object(frame.event); this.#applyEvent(session, { seq: Number(event.seq), time: Number(event.time), type: String(event.type), data: event.data }); return; }
@@ -939,7 +1035,55 @@ export class DshWebRuntime implements AgentBackend {
     }
     await this.#discovery.reconnect();
   }
-  #metadata(session: WebSession): RuntimeMetadata { return { runtimeId: publicId(session.id), sessionId: publicId(session.id), name: "DeepSeek Harness Web", ...(session.title ? { sessionName: session.title } : {}), cwd: session.cwd, hostname: localHostname(), status: session.running ? "running" : "idle", sessionGraphSync: true, ...this.#permissionMetadata(session), ...(dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) ? { permissions: dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) } : {}), sessionLeafId: session.entries.at(-1)?.entryId ?? null, ...(session.model === undefined ? {} : { model: session.model }), ...(session.thinkingLevel === undefined ? {} : { thinkingLevel: session.thinkingLevel }), ...(session.usage === undefined ? {} : { contextUsage: session.usage }) }; }
+  #metadata(session: WebSession): RuntimeMetadata {
+    const selection = this.#selection(session);
+    return { runtimeId: publicId(session.id), sessionId: publicId(session.id), name: "DeepSeek Harness Web", ...(session.title ? { sessionName: session.title } : {}), cwd: session.cwd, hostname: localHostname(), status: session.running ? "running" : "idle", sessionGraphSync: true, ...this.#permissionMetadata(session), ...(dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) ? { permissions: dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) } : {}), sessionLeafId: session.entries.at(-1)?.entryId ?? null, ...(selection === undefined ? {} : { model: this.#modelInfo(session.modelCatalog, selection.provider, selection.model) }), ...(selection?.reasoningEffort === undefined ? {} : { thinkingLevel: selection.reasoningEffort }), ...(session.usage === undefined ? {} : { contextUsage: session.usage }) };
+  }
+  /**
+   * 会话自己的模型选择：`modelSelection` 投影的 `next`（DSH 已回落到 `lastUsed`）。
+   * 在该投影到达前才退回部署默认值——新会话在首次请求前就是这种状态。
+   */
+  #selection(session: WebSession): ModelSelection | undefined {
+    if (session.selection !== undefined) return session.selection;
+    const fallback = object(session.modelCatalog?.default);
+    if (typeof fallback.provider !== "string" || !fallback.provider || typeof fallback.model !== "string" || !fallback.model) return undefined;
+    return { provider: fallback.provider, model: fallback.model,
+      ...(typeof fallback.reasoningEffort === "string" && fallback.reasoningEffort.length > 0 ? { reasoningEffort: fallback.reasoningEffort } : {}) };
+  }
+  /**
+   * 应用 `modelSelection` 投影。它按会话记录「下次请求用的选择」与「上次请求用的选择」，
+   * 是显示模型名与思考档位的唯一事实来源；目录里的 `default` 是部署级默认值，不能代替它
+   * （同一 Host 上的会话可以各自选过不同模型）。
+   */
+  #modelSelectionProjection(session: WebSession, raw: unknown): void {
+    const baseline = object(raw); const seq = baseline.asOfSeq;
+    const view = object(object(baseline.values).modelSelection);
+    const chosen = view.next ?? view.lastUsed;
+    if (!Number.isSafeInteger(seq) || Number(seq) < session.selectionSeq) return;
+    const value = object(chosen);
+    if (typeof value.provider !== "string" || !value.provider || typeof value.model !== "string" || !value.model) return;
+    const next: ModelSelection = { provider: value.provider, model: value.model,
+      ...(typeof value.reasoningEffort === "string" && value.reasoningEffort.length > 0 ? { reasoningEffort: value.reasoningEffort } : {}) };
+    const previous = this.#selection(session);
+    session.selectionSeq = Number(seq);
+    session.selection = next;
+    if (previous !== undefined && previous.provider === next.provider && previous.model === next.model
+      && previous.reasoningEffort === next.reasoningEffort) return;
+    this.#publishMetadata(session);
+    // 思考档位选项来自当前模型的推理能力，换模型后命令清单也要跟着换。
+    if (previous?.provider !== next.provider || previous?.model !== next.model) this.#publishCapabilities(session);
+  }
+  /** 应用 `session/selectModel` 的返回值：它在投影之前就返回规范化选择。 */
+  #applySelection(session: WebSession, raw: unknown): void {
+    const value = object(raw);
+    if (typeof value.provider !== "string" || !value.provider || typeof value.model !== "string" || !value.model) return;
+    const next: ModelSelection = { provider: value.provider, model: value.model,
+      ...(typeof value.reasoningEffort === "string" && value.reasoningEffort.length > 0 ? { reasoningEffort: value.reasoningEffort } : {}) };
+    const previous = this.#selection(session);
+    session.selection = next;
+    this.#publishMetadata(session);
+    if (previous?.provider !== next.provider || previous?.model !== next.model) this.#publishCapabilities(session);
+  }
   #permissionMetadata(session: WebSession): Pick<RuntimeMetadata, "permissionManagement"> {
     const management = dshPermissionManagement(dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval), session.permissionOptions ?? [], session.running || session.permissionBusy || [...this.#approvals.values()].some(item => item.session === session));
     return management ? { permissionManagement: management } : {};
@@ -958,7 +1102,7 @@ export class DshWebRuntime implements AgentBackend {
     if (!Number.isSafeInteger(seq) || Number(seq) < session.permissionSeq || typeof profile !== "string") return;
     session.permissionSeq = Number(seq); session.permissionProfile = profile;
     this.#publishMetadata(session);
-    this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
+    this.#publishCapabilities(session);
   }
 
   /** Only native lifecycle/progress facts settle retry or compaction; ordinary idle never does. */
@@ -1064,7 +1208,7 @@ export class DshWebRuntime implements AgentBackend {
       session.permissionOptions = options;
       this.#permissionProjection(session, baseline);
       this.#deliveryProjection(session, baseline);
-      this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
+      this.#publishCapabilities(session);
       session.notifications.resolve("dsh.permissions");
     } catch (error) {
       if (!session.closing && generation === session.permissionGeneration && session.permissionProfile) this.#report(`无法刷新 DeepSeek 权限配置：${textOf(error)}`, publicId(session.id), "dsh.permissions");
@@ -1078,7 +1222,7 @@ export class DshWebRuntime implements AgentBackend {
       if (generation !== session.skillsGeneration || this.#sessions.get(publicId(session.id)) !== session) return;
       session.skills = arrayObjects(value.skills).flatMap(skill => typeof skill.name === "string" && /^[^\s/]+$/u.test(skill.name)
         ? [{ name: skill.name, description: typeof skill.description === "string" ? skill.description : `DeepSeek skill /${skill.name}` }] : []);
-      if (this.#sessions.has(publicId(session.id))) this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
+      if (this.#sessions.has(publicId(session.id))) this.#publishCapabilities(session);
       session.notifications.resolve("dsh.skills");
     } catch (error) { if (generation === session.skillsGeneration && this.#sessions.get(publicId(session.id)) === session) this.#report(`无法读取 DeepSeek Web skills：${textOf(error)}`, publicId(session.id), "dsh.skills"); }
   }
@@ -1087,18 +1231,14 @@ export class DshWebRuntime implements AgentBackend {
     try {
       const catalog = object(await this.#client.request("session/modelCatalog", {}));
       if (generation !== session.modelGeneration || this.#sessions.get(publicId(session.id)) !== session) return;
+      // 目录只提供模型名与可选档位；会话实际选择来自 `modelSelection` 投影，不能在这里覆盖。
       session.modelCatalog = catalog;
-      const current = object(catalog.default);
-      if (typeof current.provider === "string" && typeof current.model === "string") {
-        session.model = this.#modelInfo(catalog, current.provider, current.model);
-        if (typeof current.reasoningEffort === "string") session.thinkingLevel = current.reasoningEffort;
-      }
-      if (this.#sessions.has(publicId(session.id))) { this.#publishMetadata(session); this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) }); }
+      if (this.#sessions.has(publicId(session.id))) { this.#publishMetadata(session); this.#publishCapabilities(session); }
       session.notifications.resolve("dsh.models");
     } catch (error) { if (generation === session.modelGeneration && this.#sessions.get(publicId(session.id)) === session) this.#report(`无法读取 DeepSeek Web 模型目录：${textOf(error)}`, publicId(session.id), "dsh.models"); }
   }
-  #modelInfo(catalog: Obj, provider: string, id: string): RuntimeMetadata["model"] | undefined {
-    for (const group of arrayObjects(catalog.groups)) {
+  #modelInfo(catalog: Obj | undefined, provider: string, id: string): RuntimeMetadata["model"] | undefined {
+    for (const group of arrayObjects(catalog?.groups)) {
       const groupId = typeof group.id === "string" ? group.id : typeof group.provider === "string" ? group.provider : "";
       if (groupId !== provider) continue;
       const model = arrayObjects(group.models).find(item => item.id === id || item.model === id);
@@ -1117,12 +1257,12 @@ export class DshWebRuntime implements AgentBackend {
     });
   }
   #thinkingChoices(session: WebSession): { value: string; label: string }[] {
-    const modelId = session.model?.id;
-    if (!modelId) return [];
+    const selection = this.#selection(session);
+    if (!selection) return [];
     for (const group of arrayObjects(session.modelCatalog?.groups)) {
       const provider = typeof group.id === "string" ? group.id : group.provider;
-      if (provider !== session.model?.provider) continue;
-      const model = arrayObjects(group.models).find(item => item.id === modelId || item.model === modelId);
+      if (provider !== selection.provider) continue;
+      const model = arrayObjects(group.models).find(item => item.id === selection.model || item.model === selection.model);
       if (!model) continue;
       const reasoning = object(model.reasoning);
       return arrayObjects(reasoning.efforts).flatMap(effort => typeof effort.id === "string" ? [{ value: effort.id, label: typeof effort.name === "string" ? effort.name : effort.id }] : []);
@@ -1133,6 +1273,10 @@ export class DshWebRuntime implements AgentBackend {
     const modelChoices = session ? this.#modelChoices(session) : [];
     const thinkingChoices = session ? this.#thinkingChoices(session) : [];
     const builtin = [
+      // 历史与分支：DSH 的原生日志是线性的，「跳分支」就是原生 `session/fork`（新会话），
+      // 所以这张树只负责让手机看清每一轮和当前位置。
+      ...(session && session.entries.length > 0 ? [{ name: "tree", description: "浏览这段会话的历史，并从某一轮创建分支", source: "builtin" as const,
+        argument: { kind: "tree" as const, required: true, options: dshWebTreeOptions(session.entries) } }] : []),
       ...(session?.permissionOptions?.length && session.permissionProfile ? [{ name: "permission-preset", description: "权限配置", source: "builtin" as const, argument: { kind: "select" as const, required: true, options: session.permissionOptions } }] : []),
       { name: "model", description: "DeepSeek Web /model", source: "builtin" as const, ...(modelChoices.length ? { argument: { kind: "select" as const, required: true, options: modelChoices } } : {}) },
       ...(thinkingChoices.length ? [{ name: "thinking", description: "DeepSeek Web /thinking", source: "builtin" as const, argument: { kind: "select" as const, required: true, options: thinkingChoices } }] : []),
@@ -1140,6 +1284,18 @@ export class DshWebRuntime implements AgentBackend {
     ];
     const skills = (session?.skills ?? []).map(skill => ({ name: skill.name, description: skill.description, source: "skill" as const }));
     return { commands: [...builtin, ...skills] };
+  }
+  /**
+   * 发布命令词表（含历史树的整张选项表）。同一份内容只发一次：手机每次 `session.sync`
+   * 都会重读这份快照，而树会随每条 durable 事件变化——不去重的话每次同步都要重传一整棵树。
+   * 新接入的手机由 `announce()` 强制重发，不靠增量。
+   */
+  #publishCapabilities(session: WebSession, force = false): void {
+    const capabilities = this.#capabilities(session);
+    const signature = JSON.stringify(capabilities);
+    if (!force && signature === session.capabilitiesSignature) return;
+    session.capabilitiesSignature = signature;
+    this.#emit(session, { type: "runtime.capabilities", capabilities });
   }
   #publishMetadata(session: WebSession): void { if (!this.#sessions.has(publicId(session.id))) return; const metadata = this.#metadata(session); this.#emit(session, { type: "runtime.status", status: metadata.status }); this.#emit(session, { type: "runtime.metadata", metadata }); this.onMetadataChange?.(); session.notifications.announce(); }
   #detachSession(session: WebSession, reason: string): void {
@@ -1170,3 +1326,4 @@ export class DshWebRuntime implements AgentBackend {
   }
   async stop(): Promise<void> { if (this.#stopping) return this.#stopping; this.#stopping = (async () => { this.#ready = false; clearTimeout(this.#controlRetry); this.#controlUnsubscribe?.(); this.#discovery.stop(); for (const id of this.#approvals.keys()) this.#cancelApproval(id, "owner_closed"); for (const session of this.#sessions.values()) { session.unsubscribe(); if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error("backend_stopped")); } } this.#sessions.clear(); this.#running.clear(); this.#detached.clear(); await this.#client.stop(); })(); return this.#stopping; }
 }
+

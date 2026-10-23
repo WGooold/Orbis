@@ -127,8 +127,12 @@ const CODEX_SLASH_COMMANDS: readonly RuntimeSlashCommand[] = [
   { name: "quit", description: "Quit Codex (close the TUI window on the computer)", source: "builtin" },
 ];
 
+export const CODEX_SOURCE_COALESCE_MS = 100;
+
 export type CodexRuntimeOptions = {
   server: CodexAppServer;
+  /** ADR-0035 §15：完整 live patch 的发布窗口；0 保留同步发布。 */
+  sourceCoalesceMs?: number;
   runtimeId?: string;
   log?: (line: string) => void;
   /**
@@ -314,6 +318,7 @@ export class CodexRuntime implements AgentBackend {
   #server: CodexAppServer;
   /** 活跃 thread 表。codex 的 thread/resume 返回完整 turns，激活即拿到历史。 */
   readonly #threads = new Map<string, ThreadState>();
+  readonly #sourcePublishTimers = new Map<ThreadState, ReturnType<typeof setTimeout>>();
   /** 审批窗口（键 = 独立生成的手机 requestId）。超时按接口对应的拒绝格式回复。 */
   readonly #approvals = new Map<string, PendingApproval & { threadId: string }>();
   readonly #observedSettings = new Map<string, RuntimePermissions>();
@@ -454,6 +459,8 @@ export class CodexRuntime implements AgentBackend {
       this.#permissionUpdates.clear();
       this.#effectiveSettings.clear();
       this.#observedSettings.clear();
+      for (const timer of this.#sourcePublishTimers.values()) clearTimeout(timer);
+      this.#sourcePublishTimers.clear();
       this.#threads.clear();
       this.#headWindows.clear();
       this.#headWindowSeen.clear();
@@ -1295,6 +1302,7 @@ export class CodexRuntime implements AgentBackend {
   #deactivateThread(threadId: string, reason: string, preserveApproval = false): void {
     const thread = this.#threads.get(threadId);
     if (thread === undefined) return;
+    this.#cancelSourcePublish(thread);
     const metadata = this.threadMetadata(thread);
     thread.asyncInputs.close("owner_closed");
     this.#permissionUpdates.get(threadId)?.reject(new Error(reason));
@@ -3599,6 +3607,32 @@ export class CodexRuntime implements AgentBackend {
       thread.sourceDirty = true;
       return;
     }
+    const windowMs = Math.max(0, this.#options.sourceCoalesceMs ?? 0);
+    // Unknown/new epochs must be published before any ready patch of that epoch.
+    if (windowMs === 0 || !thread.sourceReady) {
+      this.#cancelSourcePublish(thread);
+      this.#flushSourcePatch(thread);
+      return;
+    }
+    if (this.#sourcePublishTimers.has(thread)) return;
+    const timer = setTimeout(() => {
+      this.#sourcePublishTimers.delete(thread);
+      if (this.#threads.get(thread.id) === thread) this.#flushSourcePatch(thread);
+    }, windowMs);
+    timer.unref();
+    this.#sourcePublishTimers.set(thread, timer);
+  }
+
+  #cancelSourcePublish(thread: ThreadState): boolean {
+    const timer = this.#sourcePublishTimers.get(thread);
+    if (timer === undefined) return false;
+    clearTimeout(timer);
+    this.#sourcePublishTimers.delete(thread);
+    return true;
+  }
+
+  // ADR-0035 §15：只在真正发布时推进 seq，读取同步版本前须刷掉合并窗口。
+  #flushSourcePatch(thread: ThreadState): void {
     thread.sourceSeq = Math.min(Number.MAX_SAFE_INTEGER, thread.sourceSeq + 1);
     this.#publishSourcePatch(thread);
   }
@@ -3683,6 +3717,7 @@ export class CodexRuntime implements AgentBackend {
   /** 快照。手机发来的 session.sync 带 syncId 时**必须原样回显**（快照按 syncId 关联）。 */
   #publishSnapshot(thread: ThreadState, request: Extract<RuntimeCommand, { type: "session.sync" }>): void {
     if (thread.historyError !== undefined) throw new Error(thread.historyError);
+    if (this.#cancelSourcePublish(thread)) this.#flushSourcePatch(thread);
     const source = this.#sourceCheckpoint(thread);
     this.#emit(thread.id, thread.preparer.select({
       entries: thread.entries,

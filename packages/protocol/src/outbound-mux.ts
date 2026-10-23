@@ -36,6 +36,46 @@
 /** 逻辑 channel。与 `EnvelopeChannelSchema` 同集合，这里独立声明是为了避免与 `index.ts` 循环引用。 */
 export type MuxChannel = "ctl" | "msg" | "bulk";
 
+/** Only routing/type metadata, supplied before encryption. Never include payload content. */
+export type OutboundQueueSource = {
+  type: string;
+  eventType?: string;
+  runtimeId?: string;
+  sessionId?: string;
+  domains?: string;
+  payloadBytes: number;
+};
+
+export type OutboundQueueSourceStats = Omit<OutboundQueueSource, "payloadBytes"> & {
+  channel: MuxChannel;
+  queuedBytes: number;
+  queuedPieces: number;
+  oldestQueuedMs: number;
+  maxPayloadBytes: number;
+};
+
+export type OutboundQueueDiagnostic = {
+  queuedBytes: number;
+  nonBulkQueuedBytes: number;
+  bulkQueuedBytes: number;
+  transportBacklogBytes: number;
+  oldestQueuedMs: number;
+  windowMs: number;
+  nonBulkEnqueuedBytes: number;
+  nonBulkWrittenBytes: number;
+  writeErrors: number;
+  /** At most eight sources, sorted by currently queued bytes. */
+  sources: OutboundQueueSourceStats[];
+  /** Bytes not represented by the reported sources, including attribution overflow. */
+  otherSourceBytes: number;
+  sourcesTruncated: boolean;
+};
+
+const QUEUE_DIAGNOSTIC_THRESHOLD_BYTES = 1024 * 1024;
+const QUEUE_DIAGNOSTIC_INTERVAL_MS = 5_000;
+const MAX_DIAGNOSTIC_SOURCE_GROUPS = 256;
+const UNATTRIBUTED_QUEUE_SOURCE: OutboundQueueSource = { type: "unattributed", payloadBytes: 0 };
+
 export type OutboundMuxOptions<T> = {
   /** 把一帧交给底层传输（`socket.send` / `dataChannel.send`）。 */
   write: (frame: T) => void;
@@ -58,6 +98,10 @@ export type OutboundMuxOptions<T> = {
    * 而正常的在途量由传输自己的窗口（pull / ack 窗口）兜住，所以这个上限不该被撞到。
    */
   bulkQueueLimitBytes?: number;
+  /** `msg` 等待队列的每路径字节上限，缺省 [DEFAULT_MSG_QUEUE_LIMIT_BYTES]。 */
+  msgQueueLimitBytes?: number;
+  /** `ctl` 等待队列的每路径字节上限，缺省 [DEFAULT_CTL_QUEUE_LIMIT_BYTES]。 */
+  ctlQueueLimitBytes?: number;
   /** `bulk` 因水位被压在队列里。用于观测「限速是主动降速，不是故障」。 */
   onBulkStalled?: (queuedBytes: number) => void;
   /** 队列超上限且不拒绝时告警一次（内存风险可见）。 */
@@ -83,6 +127,8 @@ export type OutboundMuxOptions<T> = {
   onWriteAbandoned?: (channel: MuxChannel, attempts: number, error: unknown) => void;
   /** 写被拒后最多重试几次。缺省 [DEFAULT_MAX_WRITE_ATTEMPTS]。 */
   maxWriteAttempts?: number;
+  /** Non-bulk queue >= 1 MiB: at most one bounded sample per five seconds. */
+  onQueueDiagnostic?: (sample: OutboundQueueDiagnostic) => void;
 };
 
 /**
@@ -117,6 +163,10 @@ export const DEFAULT_MSG_LOW_WATER_BYTES = DEFAULT_BULK_LOW_WATER_BYTES;
  * 64 MiB 是那扇窗口的十几倍，正常传输撞不满它，而内存仍有明确上界。
  */
 export const DEFAULT_BULK_QUEUE_LIMIT_BYTES = 64 * 1024 * 1024;
+/** 普通消息等待队列的每路径上限。它只限制尚未写入 socket 的应用层队列。 */
+export const DEFAULT_MSG_QUEUE_LIMIT_BYTES = 32 * 1024 * 1024;
+/** 控制消息等待队列的每路径上限。控制帧应优先交付，但不能无限积压。 */
+export const DEFAULT_CTL_QUEUE_LIMIT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_PUMP_INTERVAL_MS = 10;
 /**
  * 被 socket 积压挡住时的复查间隔。
@@ -155,7 +205,7 @@ function validInterval(value: number | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
-type Entry<T> = { frame: T; bytes: number; queuedAt: number; channel: MuxChannel; attempts: number };
+type Entry<T> = { frame: T; bytes: number; queuedAt: number; channel: MuxChannel; attempts: number; source?: OutboundQueueSource };
 
 export class OutboundChannelMux<T> {
   readonly #options: OutboundMuxOptions<T>;
@@ -167,13 +217,21 @@ export class OutboundChannelMux<T> {
   /** 上一次 `#pump` 是**因为 socket 积压**停下的（而不是因为队列空或写被拒）。它决定下次用哪个节拍。 */
   #gatedByBacklog = false;
   #queuedBytes = 0;
+  #channelBytes: Record<MuxChannel, number> = { ctl: 0, msg: 0, bulk: 0 };
   #bulkBytes = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #overflowReported = false;
   #stopped = false;
+  #diagnosticAt: number;
+  #nextDiagnosticAt = 0;
+  #diagnosticEnqueuedBytes = 0;
+  #diagnosticWrittenBytes = 0;
+  #diagnosticWriteErrors = 0;
+  readonly #diagnosticSourceKeys = new WeakMap<OutboundQueueSource, string>();
 
   constructor(options: OutboundMuxOptions<T>) {
     this.#options = options;
+    this.#diagnosticAt = options.onQueueDiagnostic === undefined ? 0 : Date.now();
     // 时长必须校验：`setTimeout(fn, NaN)` 会被当成 1ms，一个 NaN 就能把重试节拍从 10ms 变成
     // 每 tick 一次的空转——这个项目在配对码上就这么把事件循环占满过一次。
     this.#pumpIntervalMs = validInterval(options.pumpIntervalMs) ?? DEFAULT_PUMP_INTERVAL_MS;
@@ -189,6 +247,29 @@ export class OutboundChannelMux<T> {
     return this.#bulkBytes;
   }
 
+  get ctlQueuedBytes(): number {
+    return this.#channelBytes.ctl;
+  }
+
+  get msgQueuedBytes(): number {
+    return this.#channelBytes.msg;
+  }
+
+  queueLimitBytes(channel: MuxChannel): number {
+    if (channel === "ctl") return this.#options.ctlQueueLimitBytes ?? DEFAULT_CTL_QUEUE_LIMIT_BYTES;
+    if (channel === "msg") return this.#options.msgQueueLimitBytes ?? DEFAULT_MSG_QUEUE_LIMIT_BYTES;
+    return this.#options.bulkQueueLimitBytes ?? DEFAULT_BULK_QUEUE_LIMIT_BYTES;
+  }
+
+  /**
+   * 封帧前检查对应等待队列是否还能接纳估算的线上字节数。
+   * 已封好的帧仍由 enqueue 无条件保留，避免消耗序号后静默丢帧。
+   */
+  hasRoom(channel: MuxChannel, bytes: number): boolean {
+    if (!Number.isFinite(bytes) || bytes < 0) return false;
+    return this.#channelBytes[channel] + bytes <= this.queueLimitBytes(channel);
+  }
+
   /**
    * 现在还能不能再接一片 `bulk`。
    *
@@ -200,8 +281,7 @@ export class OutboundChannelMux<T> {
    * 在这里问它会把「临时堵一下」误判成「没空间」，让调用方白丢一片。
    */
   hasBulkRoom(bytes: number): boolean {
-    const limit = this.#options.bulkQueueLimitBytes ?? DEFAULT_BULK_QUEUE_LIMIT_BYTES;
-    return this.#bulkBytes + bytes <= limit;
+    return this.hasRoom("bulk", bytes);
   }
 
   /**
@@ -210,7 +290,7 @@ export class OutboundChannelMux<T> {
    * 只有 `stop()` 之后才是 `false`：**这个类永远不丢帧**。要丢的调用方在封帧之前问
    * `hasBulkRoom()`，而不是封好了再交给这里丢。
    */
-  enqueue(channel: MuxChannel, frame: T, bytes: number): boolean {
+  enqueue(channel: MuxChannel, frame: T, bytes: number, source?: OutboundQueueSource): boolean {
     if (this.#stopped) return false;
     if (channel === "bulk") {
       const limit = this.#options.bulkQueueLimitBytes ?? DEFAULT_BULK_QUEUE_LIMIT_BYTES;
@@ -224,10 +304,13 @@ export class OutboundChannelMux<T> {
       bytes,
       channel,
       attempts: 0,
-      queuedAt: this.#options.onBulkQueuedTooLong === undefined ? 0 : Date.now(),
+      queuedAt: this.#options.onBulkQueuedTooLong === undefined && this.#options.onQueueDiagnostic === undefined ? 0 : Date.now(),
+      ...(source === undefined ? {} : { source }),
     });
     this.#queuedBytes += bytes;
+    this.#channelBytes[channel] += bytes;
     if (channel === "bulk") this.#bulkBytes += bytes;
+    else if (this.#options.onQueueDiagnostic !== undefined) this.#diagnosticEnqueuedBytes += bytes;
     this.#pump();
     return true;
   }
@@ -252,6 +335,7 @@ export class OutboundChannelMux<T> {
     this.#queues.msg.length = 0;
     this.#queues.bulk.length = 0;
     this.#queuedBytes = 0;
+    this.#channelBytes = { ctl: 0, msg: 0, bulk: 0 };
     this.#bulkBytes = 0;
     this.#gatedByBacklog = false;
   }
@@ -276,23 +360,28 @@ export class OutboundChannelMux<T> {
     }
     // **只有这里排定时器**：节拍由这一轮的停止原因决定，所以必须在循环之后才定。
     this.#syncTimer();
+    this.#reportQueueDiagnostic();
   }
 
   /** 交付一帧。返回 `false` 表示它被留在队首（重试），队列已经不再前进。 */
   #writeEntry(entry: Entry<T>): boolean {
     this.#queuedBytes -= entry.bytes;
+    this.#channelBytes[entry.channel] -= entry.bytes;
     if (entry.channel === "bulk") this.#bulkBytes -= entry.bytes;
     let failure: unknown;
     try {
       this.#options.write(entry.frame);
+      if (entry.channel !== "bulk" && this.#options.onQueueDiagnostic !== undefined) this.#diagnosticWrittenBytes += entry.bytes;
       return true;
     } catch (error) {
       failure = error;
+      if (this.#options.onQueueDiagnostic !== undefined) this.#diagnosticWriteErrors += 1;
     }
     entry.attempts += 1;
     const limit = this.#options.maxWriteAttempts ?? DEFAULT_MAX_WRITE_ATTEMPTS;
     if (entry.attempts < limit) {
       this.#queuedBytes += entry.bytes;
+      this.#channelBytes[entry.channel] += entry.bytes;
       if (entry.channel === "bulk") this.#bulkBytes += entry.bytes;
       this.#queues[entry.channel].unshift(entry);
       return false;
@@ -361,5 +450,63 @@ export class OutboundChannelMux<T> {
     if (head === undefined) return;
     const queuedMs = Date.now() - head.queuedAt;
     if (queuedMs >= 1_000) report(queuedMs, this.#bulkBytes);
+  }
+
+  #reportQueueDiagnostic(): void {
+    const report = this.#options.onQueueDiagnostic;
+    const nonBulkQueuedBytes = this.#queuedBytes - this.#bulkBytes;
+    if (report === undefined || this.#stopped || nonBulkQueuedBytes < QUEUE_DIAGNOSTIC_THRESHOLD_BYTES) return;
+    const now = Date.now();
+    if (now < this.#nextDiagnosticAt) return;
+    // Update the deadline before invoking observers: diagnostics can themselves enqueue state updates.
+    this.#nextDiagnosticAt = now + QUEUE_DIAGNOSTIC_INTERVAL_MS;
+    const groups = new Map<string, OutboundQueueSourceStats>();
+    let oldestQueuedMs = 0;
+    let sourcesTruncated = false;
+    for (const channel of ["ctl", "msg"] as const) {
+      for (const entry of this.#queues[channel]) {
+        const queuedMs = Math.max(0, now - entry.queuedAt);
+        oldestQueuedMs = Math.max(oldestQueuedMs, queuedMs);
+        const source = entry.source ?? UNATTRIBUTED_QUEUE_SOURCE;
+        let sourceKey = this.#diagnosticSourceKeys.get(source);
+        if (sourceKey === undefined) {
+          sourceKey = JSON.stringify([source.type, source.eventType, source.runtimeId, source.sessionId, source.domains]);
+          this.#diagnosticSourceKeys.set(source, sourceKey);
+        }
+        const key = `${channel}:${sourceKey}`;
+        let group = groups.get(key);
+        if (group === undefined) {
+          if (groups.size >= MAX_DIAGNOSTIC_SOURCE_GROUPS) { sourcesTruncated = true; continue; }
+          group = {
+            channel, type: source?.type ?? "unattributed",
+            ...(source?.eventType === undefined ? {} : { eventType: source.eventType }),
+            ...(source?.runtimeId === undefined ? {} : { runtimeId: source.runtimeId }),
+            ...(source?.sessionId === undefined ? {} : { sessionId: source.sessionId }),
+            ...(source?.domains === undefined ? {} : { domains: source.domains }),
+            queuedBytes: 0, queuedPieces: 0, oldestQueuedMs: 0, maxPayloadBytes: 0,
+          };
+          groups.set(key, group);
+        }
+        group.queuedBytes += entry.bytes;
+        group.queuedPieces += 1;
+        group.oldestQueuedMs = Math.max(group.oldestQueuedMs, queuedMs);
+        group.maxPayloadBytes = Math.max(group.maxPayloadBytes, source?.payloadBytes ?? 0);
+      }
+    }
+    const sources = [...groups.values()].sort((a, b) => b.queuedBytes - a.queuedBytes).slice(0, 8);
+    const sample: OutboundQueueDiagnostic = {
+      queuedBytes: this.#queuedBytes, nonBulkQueuedBytes, bulkQueuedBytes: this.#bulkBytes,
+      transportBacklogBytes: this.#options.backlog?.() ?? 0, oldestQueuedMs,
+      windowMs: Math.max(0, now - this.#diagnosticAt),
+      nonBulkEnqueuedBytes: this.#diagnosticEnqueuedBytes, nonBulkWrittenBytes: this.#diagnosticWrittenBytes,
+      writeErrors: this.#diagnosticWriteErrors, sources,
+      otherSourceBytes: nonBulkQueuedBytes - sources.reduce((sum, source) => sum + source.queuedBytes, 0),
+      sourcesTruncated: sourcesTruncated || groups.size > sources.length,
+    };
+    this.#diagnosticAt = now;
+    this.#diagnosticEnqueuedBytes = 0;
+    this.#diagnosticWrittenBytes = 0;
+    this.#diagnosticWriteErrors = 0;
+    try { report(sample); } catch { /* Diagnostics must not change delivery or retry behavior. */ }
   }
 }

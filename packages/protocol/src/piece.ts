@@ -50,7 +50,7 @@ export const PIECE_MAX_CT_CHARS = 8 * 1024;
 export const PIECE_HEADER_BYTES = 256;
 
 /** 同时重组的消息条数上限。超过就丢掉最旧的一条。 */
-export const PIECE_REASSEMBLY_MAX_MESSAGES = 4;
+export const PIECE_REASSEMBLY_MAX_MESSAGES = 16;
 /** 重组缓冲的总上限（`ct` 字符数，≈ 线上字节数）。 */
 export const PIECE_REASSEMBLY_MAX_CT_CHARS = 32 * 1024 * 1024;
 /** 一条消息从首片到末片的最长等待。超时即丢弃——大消息在慢链路上也要给足时间。 */

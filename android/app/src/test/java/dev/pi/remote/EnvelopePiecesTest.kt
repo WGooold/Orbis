@@ -11,6 +11,21 @@ import org.junit.Test
  * **重组逐字节还原**、**小消息不切**、**乱序可拼**、**有界且会超时**。
  */
 class EnvelopePiecesTest {
+    @Test
+    fun `默认容量可完整重组十六条交错消息`() {
+        val rejected = mutableListOf<PieceRejection>()
+        val reassembler = EnvelopeReassembler(onRejected = { reason, _ -> rejected.add(reason) })
+        val originals = (0 until 16).map { index ->
+            envelope(EnvelopePieces.MAX_CT_CHARS + index + 1) { copy(n = index.toLong() + 1) }
+        }
+        val pieces = originals.mapIndexed { index, value -> EnvelopePieces.fragment(value, mid = "parallel-$index") }
+        pieces.forEach { assertNull(reassembler.accept(it[0])) }
+        assertEquals(16, reassembler.pendingMessages)
+        assertEquals(originals, pieces.map { reassembler.accept(it[1]) })
+        assertEquals(emptyList<PieceRejection>(), rejected)
+        assertEquals(0, reassembler.pendingMessages)
+        assertEquals(0, reassembler.bufferedChars)
+    }
     private fun envelope(ctChars: Int, overrides: RoutingHeaderV2.() -> RoutingHeaderV2 = { this }): EnvelopeV2 {
         val base = RoutingHeaderV2(k = "bin", room = "r1", from = "d1", to = "h1", n = 7, ch = "bulk")
         return EnvelopeV2(

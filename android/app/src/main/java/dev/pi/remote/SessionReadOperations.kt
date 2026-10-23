@@ -130,9 +130,28 @@ internal fun RemoteState.waitForSessionRead(operationId: String): RemoteState {
     return copy(sessionReads = sessionReads + (operationId to operation.copy(phase = SessionReadPhase.WAITING, commandId = null)))
 }
 
+/** Missing rows are cache gaps, unlike canonical ancestors excluded by the declared display window. */
+internal fun SessionGraph.hasDisplayFor(entry: SessionGraphEntry, windowStart: String? = displayWindowStart): Boolean =
+    entry.entryId in display || windowStart != null && entry.entryId != windowStart && isDescendant(windowStart, entry.entryId)
+
+private fun RemoteState.reconcileHistoryDisplayCoverage(): RemoteState {
+    var histories = sessionHistory
+    for ((key, history) in sessionHistory) {
+        val graph = sessionGraphs[history.sessionId] ?: continue
+        val path = buildSessionPath(graph.entries, history.leafId)
+        val boundary = path.indexOfFirst { it.entryId == history.oldestEntryId }
+        // Older temporary pages can be outside the bounded graph; absence cannot revoke them.
+        if (boundary < 0) continue
+        val gap = path.indexOfLast { !graph.hasDisplayFor(it) }
+        val restart = path.getOrNull(gap + 1)?.takeIf { gap >= boundary } ?: continue
+        histories = histories + (key to history.copy(oldestEntryId = restart.entryId, hasOlder = true))
+    }
+    return if (histories == sessionHistory) this else copy(sessionHistory = histories)
+}
+
 /** All phases are changed here; IO and reducers report facts, never write a phase or spinner. */
 internal fun RemoteState.reconcileHistoryReads(): RemoteState {
-    var next = this
+    var next = reconcileHistoryDisplayCoverage()
     for (operation in sessionReads.values.filter { it.phase.active }) {
         if (!next.readOwnerValid(operation)) {
             next = next.finishHistoryRead(operation.operationId, SessionReadPhase.SUPERSEDED)
@@ -202,6 +221,9 @@ internal fun RemoteState.applyLocalHistoryRead(operationId: String, page: Sessio
         displayWindowStart = if (page.displayVersion == null) graph.displayWindowStart else page.displayWindowStart,
         displayVersion = page.displayVersion ?: graph.displayVersion,
     )
+    // Canonical coverage does not prove that the producer's display rows are cached. Keep the
+    // same operation active so its worker can fetch this fixed range from the source.
+    if (page.entries.any { !merged.hasDisplayFor(it) }) return this
     val history = sessionHistory[operation.historyKey] ?: return this
     val first = page.entries.first()
     val keepBoundary = history.oldestEntryId != operation.beforeEntryId && merged.isDescendant(first.entryId, history.oldestEntryId)

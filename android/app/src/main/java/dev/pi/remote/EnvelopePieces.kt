@@ -22,7 +22,7 @@ object EnvelopePieces {
     const val MAX_CT_CHARS = 8 * 1024
 
     /** 同时重组的消息条数上限。 */
-    const val MAX_MESSAGES = 4
+    const val MAX_MESSAGES = 16
 
     /** 重组缓冲的总上限（`ct` 字符数 ≈ 线上字节数）。 */
     const val MAX_CT_CHARS_TOTAL = 32 * 1024 * 1024

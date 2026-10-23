@@ -1,6 +1,8 @@
 import { type DisplayBatch, type RemoteSessionEntry, type RuntimeEvent, type RuntimeTurnTiming, type SessionBranchCursor, type SessionLiveState, type SessionSourceEpoch, type SessionSyncRequest } from "@pi-remote/protocol";
 import { createHash } from "node:crypto";
 
+import { SESSION_SYNC_DEFAULT_MAX_ENTRIES, truncateWireEntry } from "@pi-remote/protocol";
+
 import { AgentStateRegistry, type PreparedRegistryCommit, type RegistryMutation, type StateScope } from "./agent-state-registry.js";
 
 type Snapshot = Extract<RuntimeEvent, { type: "session.snapshot" }>;
@@ -76,6 +78,22 @@ function deepFreeze<T>(value: T): T {
  * 不使用全局源序号：同一 entry 重发时全局序号可能变化，会被误判为"内容被改写"从而
  * 永久拒绝该条目（ADR-0039 §3 的明确禁止项）。
  */
+/**
+ * 线路截断版本的内容摘要。
+ *
+ * ADR-0038 的截断只该影响**发给设备的载荷**，但 Pi 的快照同时是模型输入：同一 `entryId`
+ * 可能在历史页里是截断版、在 patch 里是原文。若按原文比较，模型会把这种一致的内容判成
+ * "不可变被违反"并拒收整页——现场表现就是往上翻历史永远加载不出来。
+ * 所以比较前先归一到同一个截断投影：两者等价，就不是改写。
+ */
+const truncatedRevisions = new WeakMap<object, string>();
+function truncatedRevision(entry: RemoteSessionEntry): string {
+  const cached = truncatedRevisions.get(entry);
+  if (cached !== undefined) return cached;
+  const revision = contentRevision(truncateWireEntry(entry));
+  truncatedRevisions.set(entry, revision);
+  return revision;
+}
 const entryRevisions = new WeakMap<object, string>();
 function contentRevision(value: object): string {
   const cached = entryRevisions.get(value);
@@ -94,7 +112,7 @@ export class AgentConversationState {
   #currentBytes = 0;
   constructor(registry: AgentStateRegistry, options: ConversationStateOptions = {}) {
     this.#registry = registry;
-    this.#limits = { maxCurrentSessions: 64, maxCurrentBytes: 8 * 1024 * 1024, maxPageBytes: 1024 * 1024, maxPages: 64, maxPageCacheBytes: 8 * 1024 * 1024, ...options };
+    this.#limits = { maxCurrentSessions: 256, maxCurrentBytes: 32 * 1024 * 1024, maxPageBytes: 1024 * 1024, maxPages: 256, maxPageCacheBytes: 32 * 1024 * 1024, ...options };
     registry.subscribe(change => {
       if (change.kind === "reset") { this.#current.clear(); this.#pages.clear(); this.#bytes = this.#currentBytes = 0; }
       else if (change.kind === "closed" && change.domain === "history") this.#forget(scopeKey(change.scope));
@@ -102,21 +120,27 @@ export class AgentConversationState {
   }
 
   // ADR-0032 §5 §7：patch 可先写内容，但永远不是恢复基线；别放宽 hasBaseline。
-  accept(scope: StateScope, event: Snapshot | Patch, prepare?: (ready: boolean) => PreparedRegistryCommit | undefined): boolean {
-    if (scope.kind !== "agent" || event.sessionId !== scope.key.sessionId) return false;
+  accept(scope: StateScope, event: Snapshot | Patch, prepare?: (ready: boolean) => PreparedRegistryCommit | undefined, onRejected?: (reason: string) => void): boolean {
+    const reject = (reason: string): false => { try { onRejected?.(reason); } catch { /* Diagnostics cannot affect acceptance. */ } return false; };
+    if (scope.kind !== "agent" || event.sessionId !== scope.key.sessionId) return reject("session_scope_mismatch");
     const key = scopeKey(scope), source = event.source, old = this.#current.get(key);
-    if (!source || !Number.isSafeInteger(source.seq) || source.seq < 0 || old?.retired.has(source.epoch)) return false;
-    if (!this.#validDisplay(event)) return false;
+    if (!source || !Number.isSafeInteger(source.seq) || source.seq < 0) return reject("invalid_source");
+    if (old?.retired.has(source.epoch)) return reject("retired_source_epoch");
+    if (!this.#validDisplay(event)) return reject("invalid_display");
     const range = event.type === "session.snapshot" && (event.range === "history" || event.range === "catchup");
     if (range) {
       // A delayed page cannot establish a new source, revive an offline source or switch head.
-      if (!old?.source.ready || !source.ready || old.source.epoch !== source.epoch || source.seq > old.source.seq || bytesOfEvent(event) > this.#limits.maxPageBytes) return false;
+      if (!old?.source.ready) return reject("range_baseline_required");
+      if (!source.ready) return reject("range_source_not_ready");
+      if (old.source.epoch !== source.epoch) return reject("range_epoch_mismatch");
+      if (source.seq > old.source.seq) return reject("range_source_ahead");
+      if (bytesOfEvent(event) > this.#limits.maxPageBytes) return reject("page_byte_limit");
       this.#cache(key, event);
       return true;
     }
-    if (old?.source.epoch === source.epoch && source.seq < old.source.seq) return false;
+    if (old?.source.epoch === source.epoch && source.seq < old.source.seq) return reject("stale_source_seq");
     if (event.type === "session.snapshot" && event.selection === "unchanged") {
-      return old?.source.ready === true && old.source.epoch === source.epoch && old.source.seq === source.seq && event.cursor.leafId === old.head.leafId;
+      return old?.source.ready === true && old.source.epoch === source.epoch && old.source.seq === source.seq && event.cursor.leafId === old.head.leafId || reject("unchanged_baseline_mismatch");
     }
     const sameEpoch = old?.source.epoch === source.epoch;
     // A source that has delivered no snapshot yet still publishes patches (Codex and DSH only emit
@@ -124,23 +148,23 @@ export class AgentConversationState {
     // keeps the source watermark, but it can never establish a recovery baseline.
     const handshake = event.type === "session.patch" && source.ready && old?.source.ready !== true;
     if (event.type === "session.patch") {
-      if (source.seq !== event.seq || event.baseSeq >= event.seq) return false;
+      if (source.seq !== event.seq || event.baseSeq >= event.seq) return reject("invalid_patch_seq");
       // Unknown is source-rebuild; an established source requires its committed baseline.
-      if (!handshake && source.ready && (!sameEpoch || !old?.source.ready || event.baseSeq !== old.source.seq)) return false;
-      if (handshake && old !== undefined && (!sameEpoch || event.baseSeq !== old.source.seq)) return false;
-      if (!source.ready && sameEpoch && event.baseSeq !== old!.source.seq) return false;
-      if (!source.ready && !sameEpoch && event.baseSeq !== 0) return false;
-    } else if ((event.selection === "state" || event.selection === "delta") && (!sameEpoch || !old?.source.ready)) return false;
+      if (!handshake && source.ready && (!sameEpoch || !old?.source.ready || event.baseSeq !== old.source.seq)) return reject("patch_baseline_mismatch");
+      if (handshake && old !== undefined && (!sameEpoch || event.baseSeq !== old.source.seq)) return reject("handshake_base_mismatch");
+      if (!source.ready && sameEpoch && event.baseSeq !== old!.source.seq) return reject("unknown_patch_base_mismatch");
+      if (!source.ready && !sameEpoch && event.baseSeq !== 0) return reject("unknown_epoch_base_mismatch");
+    } else if ((event.selection === "state" || event.selection === "delta") && (!sameEpoch || !old?.source.ready)) return reject("selection_baseline_required");
     const head = event.type === "session.patch" ? event.head : event.checkpoint?.head;
-    if (event.type === "session.snapshot" && head && head.leafId !== event.cursor.leafId) return false;
+    if (event.type === "session.snapshot" && head && head.leafId !== event.cursor.leafId) return reject("snapshot_head_mismatch");
     let ready = !handshake && source.ready && (event.type === "session.patch" ? event.headCompleteness === "complete" : event.checkpoint?.headCompleteness === "complete" && event.checkpoint.inventoryComplete) && event.live?.complete === true && head !== undefined;
     const retired = new Set(old?.retired);
-    if (old && !sameEpoch) { if (retired.size >= 64) return false; retired.add(old.source.epoch); }
-    if (!old && this.#current.size >= this.#limits.maxCurrentSessions) return false;
+    if (old && !sameEpoch) { if (retired.size >= 64) return reject("source_epoch_limit"); retired.add(old.source.epoch); }
+    if (!old && this.#current.size >= this.#limits.maxCurrentSessions) return reject("current_session_limit");
     if (bytesOfEvent(event) > this.#limits.maxPageBytes) ready = false;
     if (ready && old?.source.ready && sameEpoch && old.source.seq === source.seq &&
-      (JSON.stringify(old.head) !== JSON.stringify(head) || JSON.stringify(old.live) !== JSON.stringify(event.live))) return false;
-    const canonical = ready ? this.#canonical(sameEpoch ? old : undefined, event, head!) : { entries: [], timings: [] };
+      (JSON.stringify(old.head) !== JSON.stringify(head) || JSON.stringify(old.live) !== JSON.stringify(event.live))) return reject("same_seq_state_mismatch");
+    const canonical = ready ? this.#canonical(sameEpoch ? old : undefined, event, head!, reject) : { entries: [], timings: [] };
     if (!canonical) return false;
     let next: Current = { source: { ...source, ready: ready === true }, retired, head: structuredClone(head ?? old?.head ?? { leafId: null }),
       live: structuredClone(event.live ?? old?.live ?? { complete: false, turn: null, messages: [], tools: [] }), ...canonical, bytes: 0 };
@@ -150,7 +174,7 @@ export class AgentConversationState {
       ready = false;
       next = { source: { ...source, ready: false }, retired, head: { leafId: null }, live: { complete: false, turn: null, messages: [], tools: [] }, entries: [], timings: [], bytes: 0 };
       next.bytes = bytesOfCurrent(next);
-      if (this.#currentBytes - (old?.bytes ?? 0) + next.bytes > this.#limits.maxCurrentBytes) return false;
+      if (this.#currentBytes - (old?.bytes ?? 0) + next.bytes > this.#limits.maxCurrentBytes) return reject("current_byte_limit");
     }
     const provenance = { producer: "adapter" as const, sourceId: `conversation:${scope.key.agentKind}`, sourceEpoch: source.epoch, sourceRevision: source.seq };
     const changes: RegistryMutation[] = ready ? [
@@ -196,7 +220,7 @@ export class AgentConversationState {
       if (ready && event.type === "session.snapshot" && bytesOfEvent(event) <= this.#limits.maxPageBytes) this.#cache(key, event);
       companion?.onCommitted();
     });
-    return result.ok;
+    return result.ok || reject(`registry_${result.code}:${[...changes, ...(companion?.changes ?? [])][result.index]?.domain ?? "unknown"}`);
   }
 
   #validDisplay(event: Snapshot | Patch): boolean {
@@ -206,27 +230,38 @@ export class AgentConversationState {
       if (row.entryId === null || !ids.has(row.entryId) || seen.has(row.entryId)) return false;
       seen.add(row.entryId);
     }
-    return seen.size === ids.size;
+    // ADR-0032 §5：显示窗口外的 canonical 前缀可以没有显示行，窗口内仍须逐条覆盖。
+    const entries = event.entries ?? [];
+    const start = entries.findIndex(entry => entry.entryId === event.display!.windowStart);
+    return entries.slice(Math.max(0, start)).every(entry => seen.has(entry.entryId));
   }
-  #canonical(old: Current | undefined, event: Snapshot | Patch, head: SessionBranchCursor): Pick<Current, "entries" | "display" | "timings"> | undefined {
+  #canonical(old: Current | undefined, event: Snapshot | Patch, head: SessionBranchCursor, reject: (reason: string) => false): Pick<Current, "entries" | "display" | "timings"> | undefined {
     const replace = event.type === "session.snapshot" && event.mode === "replace";
     const byId = new Map((replace ? [] : old?.entries ?? []).map(entry => [entry.entryId, entry]));
     for (const entry of event.entries ?? []) {
       const previous = byId.get(entry.entryId);
       // ADR-0039 §3：按内容派生的修订号比较，两侧都是 O(1)（按对象身份缓存）。
-      if (previous && contentRevision(previous) !== contentRevision(entry)) return;
+      if (previous && contentRevision(previous) !== contentRevision(entry)) {
+        // 截断版与原文是同一条内容（ADR-0038）：归一后相等就保留已有的那份，不重写、不拒收。
+        // 保留原文也意味着 §8 的"取全文"拿到的仍是完整内容。
+        if (truncatedRevision(previous) === truncatedRevision(entry)) continue;
+        reject("canonical_entry_modified");
+        return;
+      }
       byId.set(entry.entryId, deepFreeze(entry));
     }
     const path: RemoteSessionEntry[] = [], seen = new Set<string>(); let id = head.leafId;
     while (id !== null && byId.has(id) && path.length < 500) {
-      if (seen.has(id)) return;
+      if (seen.has(id)) { reject("canonical_cycle"); return; }
       seen.add(id); const entry = byId.get(id)!; path.push(entry); id = entry.parentId;
     }
     path.reverse();
     const version = event.display?.projectionVersion ?? old?.display?.projectionVersion;
     const rows = new Map((!replace && old?.display && old.display.projectionVersion === version ? old.display.entries : []).map(row => [row.entryId, row]));
     for (const row of event.display?.entries ?? []) rows.set(row.entryId, deepFreeze(row));
-    const display = version !== undefined && path.every(entry => rows.has(entry.entryId)) ? { projectionVersion: version, windowStart: event.display?.windowStart ?? old?.display?.windowStart ?? null, entries: path.map(entry => rows.get(entry.entryId)!) } : undefined;
+    const windowStart = event.display ? event.display.windowStart : old?.display?.windowStart ?? null;
+    const visiblePath = path.slice(Math.max(0, path.findIndex(entry => entry.entryId === windowStart)));
+    const display = version !== undefined && visiblePath.every(entry => rows.has(entry.entryId)) ? { projectionVersion: version, windowStart, entries: visiblePath.map(entry => rows.get(entry.entryId)!) } : undefined;
     const timings = new Map((replace ? [] : old?.timings ?? []).map(timing => [timing.turnId, timing]));
     if (event.type === "session.snapshot") for (const timing of event.turnTimings ?? []) timings.set(timing.turnId, structuredClone(timing));
     return { entries: path, ...(display ? { display } : {}), timings: [...timings.values()].slice(-256) };
@@ -264,7 +299,7 @@ export class AgentConversationState {
     if (!current?.source.ready || !this.hasBaseline(scope)) return;
     if (request.range !== "preview") {
       for (const page of [...this.#pages.values()].reverse()) if (page.event.range === request.range && page.event.source?.epoch === current.source.epoch &&
-        page.event.cursor.leafId === (request.targetLeafId ?? current.head.leafId) && (page.event.beforeEntryId ?? null) === (request.beforeEntryId ?? null) && page.event.entries.length <= (request.maxEntries ?? 30)) {
+        page.event.cursor.leafId === (request.targetLeafId ?? current.head.leafId) && (page.event.beforeEntryId ?? null) === (request.beforeEntryId ?? null) && page.event.entries.length <= (request.maxEntries ?? SESSION_SYNC_DEFAULT_MAX_ENTRIES)) {
         // Catchup depends on the caller's known branch, which old wire pages do not record.
         if (request.range === "catchup") return;
         return { ...structuredClone(page.event), syncId: request.syncId };
@@ -278,7 +313,7 @@ export class AgentConversationState {
     const base: Snapshot = { type: "session.snapshot", sessionId: request.sessionId, syncId: request.syncId, range: "preview", mode: conditional ? "append" : "replace", selection: conditional ? unchanged ? "unchanged" : "state" : "snapshot", entries: [], cursor: structuredClone(current.head), source: { ...current.source }, complete: true, hasOlder: false, rangeStatus: "complete", checkpoint: { checkpointId: `host:${current.source.epoch}:${current.source.seq}`, head: structuredClone(current.head), headCompleteness: "complete", inventoryComplete: true }, ...(unchanged ? {} : { live: structuredClone(current.live) }) };
     if (!conditional) {
       if (current.head.leafId !== null && current.entries.at(-1)?.entryId !== current.head.leafId) return;
-      const entries = current.entries.slice(-(request.maxEntries ?? 30));
+      const entries = current.entries.slice(-(request.maxEntries ?? SESSION_SYNC_DEFAULT_MAX_ENTRIES));
       if (entries.length > 0 && !current.display) return;
       base.entries = structuredClone(entries);
       if (current.display) base.display = { ...structuredClone(current.display), entries: structuredClone(current.display.entries.slice(-entries.length)) };

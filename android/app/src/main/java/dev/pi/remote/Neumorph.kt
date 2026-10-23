@@ -33,8 +33,11 @@
  */
 package dev.pi.remote
 
+import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
+import android.graphics.Canvas
 import android.os.Build
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
@@ -77,10 +80,12 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asAndroidPath
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
@@ -91,8 +96,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlin.math.pow
+import kotlin.math.roundToInt
 
 /** 新拟物配色：底板 + 一对阴影。 */
 @Immutable
@@ -375,8 +383,16 @@ private fun Modifier.neumorphShadows(
         val innerPaths = if (style == NeumorphStyle.Pressed && useGaussian) {
             InnerBlurPaths(bodySize, offsetPx, corner, ShadowBlur.toPx())
         } else null
+        // ADR-0042：硬件 BlurMaskFilter 的蒙版纹理随「见过的尺寸」累积。把一组柔影渲染成
+        // 「角块 + 可拉伸边」的小图集（与尺寸无关，只有圆角/配色/模糊半径进键），绘制时用
+        // 九宫格贴回来：中间实色、边只沿一个方向拉伸，几何上与原绘制等价。
+        val patch = if (useGaussian) ShadowPatchCache.patch(corner, offsetPx, reachPx, style, paints) else null
         onDrawBehind {
             if (bodySize.width <= 0f || bodySize.height <= 0f) return@onDrawBehind
+            if (patch != null && bodySize.width >= patch.block * 2 && bodySize.height >= patch.block * 2) {
+                drawShadowPatch(patch, bodySize)
+                return@onDrawBehind
+            }
             if (style == NeumorphStyle.Raised) {
                 // 暗影先画，白光压在其上（对侧重叠仅高斯尾，可忽略）。
                 if (useGaussian) {
@@ -395,6 +411,137 @@ private fun Modifier.neumorphShadows(
         }
     }
 })
+
+/**
+ * 一组柔影的小图集（ADR-0042）。
+ *
+ * [block] 是角块边长（圆角 + 外扩），[margin] 是形体外的柔影外扩距离；位图边长为
+ * `2 * block + 2 * margin`，形体是其中 `2 * block` 见方的方块。
+ */
+private class ShadowPatch(val image: ImageBitmap, val block: Int, val margin: Int)
+
+/**
+ * 九宫格贴回柔影：四个角对齐形体四角，四条边只沿一个方向拉伸，中间用 1px 实色拉伸。
+ * 高斯模糊对直边是平移不变的，所以拉伸边与原图逐像素一致；角块原样贴。
+ */
+private fun DrawScope.drawShadowPatch(patch: ShadowPatch, body: Size) {
+    val image = patch.image
+    val side = image.width
+    val block = patch.block
+    val margin = patch.margin
+    val width = body.width
+    val height = body.height
+    val top = -margin.toFloat()
+    val left = -margin.toFloat()
+    val right = width - block + margin
+    val bottom = height - block + margin
+    val edgeWidth = width - block * 2 + margin * 2
+    val edgeHeight = height - block * 2 + margin * 2
+    fun slice(sx: Int, sy: Int, sw: Int, sh: Int, dx: Float, dy: Float, dw: Float, dh: Float) {
+        if (dw <= 0f || dh <= 0f) return
+        drawImage(
+            image = image,
+            srcOffset = IntOffset(sx, sy),
+            srcSize = IntSize(sw, sh),
+            dstOffset = IntOffset(dx.roundToInt(), dy.roundToInt()),
+            dstSize = IntSize(dw.roundToInt(), dh.roundToInt()),
+        )
+    }
+    // 四角
+    slice(0, 0, block, block, left, top, block.toFloat(), block.toFloat())
+    slice(side - block, 0, block, block, right, top, block.toFloat(), block.toFloat())
+    slice(0, side - block, block, block, left, bottom, block.toFloat(), block.toFloat())
+    slice(side - block, side - block, block, block, right, bottom, block.toFloat(), block.toFloat())
+    // 四边（只沿一个方向拉伸）
+    slice(block, 0, 1, block, block - margin.toFloat(), top, edgeWidth, block.toFloat())
+    slice(block, side - block, 1, block, block - margin.toFloat(), bottom, edgeWidth, block.toFloat())
+    slice(0, block, block, 1, left, block - margin.toFloat(), block.toFloat(), edgeHeight)
+    slice(side - block, block, block, 1, right, block - margin.toFloat(), block.toFloat(), edgeHeight)
+    // 中间（实色）
+    slice(block, block, 1, 1, block - margin.toFloat(), block - margin.toFloat(), edgeWidth, edgeHeight)
+}
+
+/**
+ * 柔影图集缓存（ADR-0042）：键只有圆角、位移、模糊半径、风格与两支画笔颜色，与控件尺寸无关。
+ * 正常最多同时存在 4 张（浅/深色 × 凸起/凹陷），每张约 200×200。
+ */
+private object ShadowPatchCache {
+    private const val MaxEntries = 8
+
+    private data class Key(
+        val corner: Int,
+        val offset: Int,
+        val blur: Int,
+        val style: Int,
+        val dark: Int,
+        val light: Int,
+    )
+
+    private val entries = object : LinkedHashMap<Key, ShadowPatch>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Key, ShadowPatch>) = size > MaxEntries
+    }
+
+    fun patch(
+        corner: Float,
+        offsetPx: Float,
+        blurPx: Float,
+        style: NeumorphStyle,
+        paints: ShadowPaints,
+    ): ShadowPatch? {
+        val key = Key(
+            corner = corner.roundToInt(),
+            offset = offsetPx.roundToInt(),
+            blur = blurPx.roundToInt(),
+            style = style.ordinal,
+            dark = paints.dark.color,
+            light = paints.light.color,
+        )
+        synchronized(entries) { entries[key]?.let { return it } }
+        val built = build(corner, offsetPx, blurPx, style, paints) ?: return null
+        return synchronized(entries) { entries.getOrPut(key) { built } }
+    }
+
+    private fun build(
+        corner: Float,
+        offsetPx: Float,
+        blurPx: Float,
+        style: NeumorphStyle,
+        paints: ShadowPaints,
+    ): ShadowPatch? {
+        val margin = (offsetPx + blurPx * 3f).roundToInt() + 2
+        val block = corner.roundToInt() + margin
+        val body = block * 2
+        val side = body + margin * 2
+        val bitmap = try {
+            Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
+        } catch (error: OutOfMemoryError) {
+            Log.w("NeumorphShadow", "shadow atlas allocation failed", error)
+            return null
+        } catch (error: IllegalArgumentException) {
+            Log.w("NeumorphShadow", "shadow atlas rejected", error)
+            return null
+        }
+        val canvas = Canvas(bitmap)
+        canvas.translate(margin.toFloat(), margin.toFloat())
+        if (style == NeumorphStyle.Raised) {
+            val rect = android.graphics.RectF(0f, 0f, body.toFloat(), body.toFloat())
+            canvas.save()
+            canvas.translate(offsetPx, offsetPx)
+            canvas.drawRoundRect(rect, corner, corner, paints.dark)
+            canvas.restore()
+            canvas.save()
+            canvas.translate(-offsetPx, -offsetPx)
+            canvas.drawRoundRect(rect, corner, corner, paints.light)
+            canvas.restore()
+        } else {
+            val paths = InnerBlurPaths(Size(body.toFloat(), body.toFloat()), offsetPx, corner, blurPx)
+            canvas.clipPath(paths.body.asAndroidPath())
+            canvas.drawPath(paths.dark.asAndroidPath(), paints.dark)
+            canvas.drawPath(paths.light.asAndroidPath(), paints.light)
+        }
+        return ShadowPatch(bitmap.asImageBitmap(), block, margin)
+    }
+}
 
 /**
  * 新拟物底座。[modifier] 的尺寸就是可见底板的尺寸，柔影不侵占内容或改变布局。

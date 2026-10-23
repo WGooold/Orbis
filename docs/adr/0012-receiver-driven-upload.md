@@ -27,7 +27,7 @@
 上传与下载同构，翻转为**接收方驱动**：
 
 - 手机 `file.upload.init`（advertise：目录/文件名/大小/sha256，partKey 续传语义不变）；
-- Host 按自己的持久前缀发 `file.upload.read { uploadId, offset, length }`（200ms 拉取节拍、
+- Host 按自己的持久前缀发 `file.upload.read { uploadId, offset, length }`（25ms 拉取节拍、
   1 块在途、1s 超时重拉）；
 - 手机应答 `bin` 数据帧（既有帧格式，`transferId` = `uploadId`）；
 - `durableBytes == size` 时 Host 自己收尾：排空写链 → sha256 → 落地 → `finished`。
@@ -39,6 +39,8 @@ init 幂等，Host 命中同一份 `.part` 原地续传）。
 
 附带收益：在途量由 Host 的拉取节奏天然限为 1 块，手机上行不再被灌满，中继心跳不再被饿死
 （问题 4 随 push 一起消失）。
+
+2026-10-23：用户要求提高限制吞吐的保守参数。Host 拉取检查频率从 5 次/秒提高到 40 次/秒（200ms → 25ms）；1 MiB 请求粒度下，由检查间隔产生的理论请求速率上限从 5 MiB/s 提到 40 MiB/s。仍保持每条上传最多一个在途请求、1 秒同偏移重试和按持久前缀发请求。收到块后设置 `writing`，写链完成前不再拉取，避免缩短检查间隔后在持久偏移尚未推进时重复拉同一块。该值是调度上限，不是实测上传速度。
 
 ## Consequences
 

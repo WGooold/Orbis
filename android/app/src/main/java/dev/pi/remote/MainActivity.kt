@@ -117,6 +117,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.text.KeyboardOptions
@@ -879,12 +880,15 @@ private fun OfflineHistoryScreen(
         historyAnchorCount = count
         historyAnchorOperationId = accepted.operationId
     }
-    LaunchedEffect(historyKey, historyState?.hasOlder, historyRead?.operationId, historyRead?.phase) {
-        if (historyKey == null || historyState?.hasOlder != true || historyRead?.phase?.active == true ||
-            historyRead?.phase == HistoryReadPhase.FAILED) return@LaunchedEffect
-        snapshotFlow { listState.firstVisibleItemIndex }.collect { firstVisibleIndex ->
-            if (firstVisibleIndex <= 1 && historyAnchorIndex == null) loadHistoryPage()
-        }
+    val pagingBlocked by rememberUpdatedState(
+        historyKey == null || historyState?.hasOlder != true || historyRead?.phase?.active == true ||
+            historyRead?.phase == HistoryReadPhase.FAILED || historyAnchorIndex != null
+    )
+    val currentLoadHistoryPage by rememberUpdatedState { loadHistoryPage() }
+    // ADR-0041：只有「滚进顶部」的边沿才加载下一页；加载完成不自动续页。
+    LaunchedEffect(historyKey) {
+        historyPagingRequests({ listState.firstVisibleItemIndex }) { pagingBlocked }
+            .collect { currentLoadHistoryPage() }
     }
     LaunchedEffect(presentation.messages.size, state.historyReads, historyAnchorOperationId) {
         val anchorIndex = historyAnchorIndex ?: return@LaunchedEffect
@@ -1179,12 +1183,16 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         historyAnchorOffset = offset
         historyAnchorOperationId = accepted.operationId
     }
-    LaunchedEffect(runtimeId, sessionId, historyState?.hasOlder, historyRead?.operationId, historyRead?.phase, initialPositioned) {
-        if (!initialPositioned || historyState?.hasOlder != true || historyRead?.phase?.active == true ||
-            historyRead?.phase == HistoryReadPhase.FAILED) return@LaunchedEffect
-        snapshotFlow { listState.firstVisibleItemIndex }.collect { firstVisibleIndex ->
-            if (firstVisibleIndex <= 1 && !historyAnchorPending) loadHistoryPage()
-        }
+    val pagingBlocked by rememberUpdatedState(
+        !initialPositioned || historyState?.hasOlder != true || historyRead?.phase?.active == true ||
+            historyRead?.phase == HistoryReadPhase.FAILED || historyAnchorPending
+    )
+    val currentLoadHistoryPage by rememberUpdatedState { loadHistoryPage() }
+    // ADR-0041：只有「滚进顶部」的边沿才加载下一页。把 hasOlder/phase 放进 key 会让 effect 每完成
+    // 一页就重启、snapshotFlow 重放当前值，于是停在顶部变成连续下载。
+    LaunchedEffect(runtimeId, sessionId) {
+        historyPagingRequests({ listState.firstVisibleItemIndex }) { pagingBlocked }
+            .collect { currentLoadHistoryPage() }
     }
     LaunchedEffect(chatItems, state.historyReads, historyAnchorOperationId) {
         val operation = historyAnchorOperationId?.let(state.historyReads::get)
@@ -1224,13 +1232,28 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             historyActionError = "跳转失败：${result.status}"
             return@LaunchedEffect
         }
+        // DSH 的「跳到某一轮」是原生 fork：后端回传新分支的会话 ID，编辑重发的原文属于那个
+        // 新会话，所以直接打开它；原会话保持不动。Pi/codex 是原地回退，回传 leafId/editorText。
+        val branchSessionId = historyBranchSessionId(result.result)
         if (action is HistoryTreeAction.EditAndRestart) {
             val text = historyEditorText(result.result) ?: action.fallbackText
             if (text != null) {
-                input = text
-                selectedSlashCommandName = null
-                model.saveDraft(runtimeId, text)
+                if (branchSessionId != null) {
+                    model.saveDraft(branchSessionId, text)
+                } else {
+                    input = text
+                    selectedSlashCommandName = null
+                    model.saveDraft(runtimeId, text)
+                }
             }
+        }
+        if (branchSessionId != null) {
+            historyOpen = false
+            refreshAnchorArmed = false
+            followNewestAfterSync = true
+            initialPositioned = false
+            model.activateSession(branchSessionId)
+            return@LaunchedEffect
         }
         // 历史已经被改写（codex 是原地截断，Pi 是同会话内换 leaf）：让列表重新贴到新的当前位置，
         // 而不是停在旧锚点上；并立刻拉一次快照——后端广播的快照用自造 syncId，手机不采，
@@ -1376,8 +1399,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             selectedSlashCommandName = null
             model.clearDraft(runtimeId)
         }
-        if (result.ok && pendingMessageText.trim().startsWith("/")) {
-            commandFeedback = slashCommandFeedback(pendingMessageText, result)
+        // 失败也必须落在 composer 上方：斜杠命令不再像以前那样「发完没动静」，
+        // 而是明确说出是中断失败、电脑端拒绝，还是连接把请求丢了。
+        if (pendingMessageText.trim().startsWith("/")) {
+            commandFeedback = if (result.ok) slashCommandFeedback(pendingMessageText, result)
+                else slashCommandError(pendingMessageText, result)
         }
         model.consumeCommandResult(commandId)
         pendingMessageCommandId = null
@@ -2022,6 +2048,16 @@ private fun slashCommandFeedback(input: String, result: CommandResult): String {
     val name = parseSlashInvocation(input)?.first ?: "command"
     val detail = result.result?.toString()?.takeIf { it != "{}" && it != "null" }
     return if (detail == null) "/$name 已完成" else "/$name 已完成：$detail"
+}
+
+private fun slashCommandError(input: String, result: CommandResult): String {
+    val name = parseSlashInvocation(input)?.first ?: "command"
+    val detail = result.error?.takeIf { it.isNotBlank() } ?: when (result.status) {
+        "cancelled" -> "请求已取消"
+        "failure" -> "电脑端执行失败"
+        else -> result.status
+    }
+    return "/$name 失败：$detail"
 }
 
 /**

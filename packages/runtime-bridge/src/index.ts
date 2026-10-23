@@ -8,6 +8,7 @@ import {
   type RuntimeMetadata,
   type SessionCatalogEntry,
   type RemoteSessionEntry,
+  type DisplayBatch,
   type SessionBranchCursor,
   type RuntimeCommandStatus,
   type RuntimeTurnTiming,
@@ -36,6 +37,7 @@ export type RuntimeSessionSync = {
   cursor: SessionBranchCursor;
   mode: "replace" | "append" | "prepend";
   entries: RemoteSessionEntry[];
+  display?: DisplayBatch | undefined;
   turnTimings?: RuntimeTurnTiming[];
   range?: SessionSyncRange;
   targetLeafId?: string | null;
@@ -447,6 +449,7 @@ export class RuntimeBridge {
             cursor: sync.cursor,
             mode: sync.mode,
             entries: sync.entries,
+            ...(sync.display === undefined ? {} : { display: sync.display }),
             ...(sync.turnTimings === undefined ? {} : { turnTimings: sync.turnTimings }),
             ...(sync.range === undefined ? {} : { range: sync.range }),
             ...(sync.targetLeafId === undefined ? {} : { targetLeafId: sync.targetLeafId }),

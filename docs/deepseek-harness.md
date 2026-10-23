@@ -26,7 +26,7 @@ Windows 桌面使用步骤：
 1. 在 Agent 页重新检测，确认出现 DeepSeek Harness。
 2. 暂停 Host，在设置中勾选「启动 Host 时启用 DeepSeek Harness」，保存后重新连接。
 3. Android 连接同一 Host 后，选择「新建会话 → DeepSeek」，选择电脑上的工作目录。
-4. 使用会话的 `/model` 菜单选择模型；当前模型声明推理档位时，再使用 `/thinking` 菜单切换档位。`/quit` 只关闭手机当前打开的会话连接并保留历史，浏览器在该会话里开始新一轮工作时会重新接入；需要隐藏会话时，在侧边栏会话菜单使用「归档」。
+4. 使用会话的 `/model` 菜单选择模型；当前模型声明推理档位时，再使用 `/thinking` 菜单切换档位。`/quit` 会先中断该会话正在运行的 turn，再关闭手机当前打开的会话连接并保留历史；浏览器在该会话里开始新一轮工作时会重新接入。需要隐藏会话时，在侧边栏会话菜单使用「归档」。
 
 CLI Host 在仓库构建后启动：
 
@@ -60,13 +60,13 @@ Harness home 默认是 `~/.dsh`，可用 `DSH_HOME` 覆盖。Orbis 默认连接 
 
 在 Host 的 Agent 页更新 DeepSeek 后，安装包验证成功会自动重启 Orbis 启动且仍在运行的 Web 服务，使用新 CLI、原端口和原数据目录，并刷新启动链接，避免旧进程与新版前端插件混用。更新窗口会提前说明网页连接与运行中任务将中断；完成后从 Host 重新打开网页。未运行的服务不会因安装而启动，手动配置的外部 Web 服务需自行重启并更新启动链接。下载失败或提交前取消不会触发重启；安装成功但重启或供应商同步失败时保留已安装版本，并单独显示恢复提示。暂停或退出 Host 仍只断开 Web 连接。
 
-Host 启动时读取原生会话目录，只对 `agentAvailable=true` 且 `running=true` 的普通、未归档会话建立 `session/follow`。空闲实例只出现在侧栏会话目录里，不占 APP 的在线卡片，也不产生逐会话的 follow、skills 与模型目录开销。之后持续处理 DSH 的会话新增、状态、活动和移除通知：某个实例从空闲变为正在工作，或在 APP 中打开该会话时，才建立订阅，因此网页里开始的 Agent 仍无需先在 APP 激活。已经接入的会话跑完变空闲后保持在线，直到 `/quit`、归档或原生实例移除。重连时先重新核对目录，再恢复仍在线实例的订阅，不通过重放旧订阅唤醒冷历史。APP 打开会话时会补发当前 turn 和已生成的回复前缀，后续消息继续使用同一个 DSH session ID。
+Host 启动时读取原生会话目录，只对 `agentAvailable=true` 且 `running=true` 的普通、未归档会话建立 `session/follow`。空闲实例只出现在侧栏会话目录里，不占 APP 的在线卡片，也不产生逐会话的 follow、skills 与模型目录开销。之后持续处理 DSH 的会话新增、状态、活动和移除通知：某个实例从空闲变为正在工作，或在 APP 中打开该会话时，才建立订阅，因此网页里开始的 Agent 仍无需先在 APP 激活。已经接入的会话跑完变空闲后保持在线，直到 `/quit`（先中断当前 turn）、归档或原生实例移除。重连时先重新核对目录，再恢复仍在线实例的订阅，不通过重放旧订阅唤醒冷历史。APP 打开会话时会补发当前 turn 和已生成的回复前缀，后续消息继续使用同一个 DSH session ID。
 
 Web runtime 不读取本地 sessions 目录作为会话来源；会话目录和历史由 Web RPC（`session/list`、`session/page`、`session/follow`）提供。`$DSH_HOME/sessions` 以及 `ORBIS_DSH_SESSIONS_ROOT` 只供旧 ACP 兼容运行时读取；设置该变量只改变 Orbis 的历史读取位置，不会改写 dsh profile。仍使用 ACP 适配时，Orbis 从所选 CLI 安装位置加载同版本持久化库，并以只读 handle 读取日志。
 
 ## 能力与边界
 
-支持会话目录、新建、恢复、独立关闭、文本请求、实时 assistant stream、工具生命周期、共享工具审批、停止、模型与推理档位选择、skills slash 命令，以及 preview/history/catchup 同步。普通消息进入 Web queue，`delivery: "steer"` 会插入当前 turn，`delivery: "followUp"` 会排队；排队消息可撤回。Web runtime 不设置活跃会话数量上限，实际数量受 dsh Web 服务和本机资源限制。归档由侧边栏会话管理执行，`/quit` 不改变归档状态。
+支持会话目录、新建、恢复、独立关闭、文本请求、实时 assistant stream、工具生命周期、共享工具审批、停止、模型与推理档位选择、skills slash 命令，以及 preview/history/catchup 同步。普通消息进入 Web queue，`delivery: "steer"` 会插入当前 turn，`delivery: "followUp"` 会排队；排队消息可撤回。Web runtime 不设置活跃会话数量上限，实际数量受 dsh Web 服务和本机资源限制。归档由侧边栏会话管理执行，`/quit` 会先中断当前 turn 再断开手机，不改变归档状态。
 
 - Host 不拥有 Web 服务的浏览器生命周期，只持有认证连接；多个客户端通过同一个官方 Web 服务读写 Session，不直接写日志。
 - Web follow 同时回放 durable event 和 assistant stream，断线后会自动重开订阅并从 Web snapshot 恢复。
@@ -74,9 +74,10 @@ Web runtime 不读取本地 sessions 目录作为会话来源；会话目录和�
 - 上传附件沿用 Orbis 文件传输，向模型提供电脑上的文件路径；当前不把上传图片自动转换为 dsh Web 图像内容块，历史中的图像/文件块显示提示文本。
 - 审批展示工具名及参数，批准只对应一次请求，五分钟未回答自动取消。停止、关闭会话或后端断线会取消待审批请求；不会自动批准工具。
 - 支持归档、fork、Steer、Follow-up、队列撤回和 Web skills；未识别的 dsh slash 命令仍会拒绝。审批采用 Orbis 共享 interaction，先响应的客户端获胜。
+- 历史与分支页由 durable 事件投影：`/tree` 的选项按原生 `seq` 顺序、带上每条的 `role` 和当前位置，工具、回合边界与设置事件默认收进「细节」。DSH 的原生日志不支持「回到某条消息」，所以跳转就是原生分支：落到用户消息时从它**之前**切（原文交回手机输入框），落到其他记录时从它本身切；`session/fork` 生成新会话，Host 立刻接入新分支并由 APP 打开，原会话不变。树只带最后 2000 条事件，更早的部分在聊天页向上翻、Host 读到后自动补进来。
 - 同一活跃会话中的 `messageId` 重试不会重复执行；这份回执不跨 Host 重启。重启后先同步历史确认发送结果，避免盲目重发不确定请求。
-- Web transport 的请求超时只结束该 RPC；连接断开后会自动重连并恢复各会话的 follow/snapshot。Host 退出不会关闭 dsh Web 服务，浏览器仍可继续使用，手机需等待 Host 重新连接；`/quit` 只关闭手机当前的会话连接，不归档指定会话。
-- 网页归档和取消归档通过持续的 Workspace 订阅同步到 APP。取消归档只把会话放回目录，不自动接回在线卡片。`/quit` 不会因为该实例上已经在跑的工作被自动接回；浏览器在那个会话里开始新一轮工作（空闲→运行）时重新接入，在 APP 中重新打开会话也重新接入。
+- Web transport 的请求超时只结束该 RPC；连接断开后会自动重连并恢复各会话的 follow/snapshot。Host 退出不会关闭 dsh Web 服务，浏览器仍可继续使用，手机需等待 Host 重新连接；`/quit` 会先中断该会话正在运行的 turn，再关闭手机当前的会话连接，不归档指定会话。
+- 网页归档和取消归档通过持续的 Workspace 订阅同步到 APP。取消归档只把会话放回目录，不自动接回在线卡片。`/quit` 之后该实例不占在线卡片；浏览器在那个会话里开始新一轮工作（空闲→运行）时重新接入，在 APP 中重新打开会话也重新接入。
 - Web 会话目录使用 dsh 返回的 session 元数据；未激活的会话不会预读完整历史，消息数会在激活并同步 `session/page` 后准确。归档和取消归档通过 Web RPC 完成，Host 不维护独立的历史目录。
 
 ## 验证
@@ -93,6 +94,6 @@ node scripts/test-dsh.mjs
 
 `node scripts/test-dsh-web.mjs` 调用已安装的真实 dsh，但创建独立临时 `DSH_HOME` 和工作目录，模型请求仅发往本机回环测试服务，不消费真实 API 额度。它验证 Web URL/token、Host 只接入正在工作的实例而空闲实例留在会话目录、网页里开始的会话自动接入、冷历史在发现和读取时保持未激活、网页与 APP 适配器的双向消息、归档及取消归档、实时 token/tool 流、队列撤回、session cancel、工具 round-trip，以及同一进程中供应商 URL/API Key 切换后的真实请求。测试不会修改用户已有 dsh 会话或凭据。
 
-Host 单元测试另外覆盖旧 ACP 兼容层的分包、超时、无效帧、停止竞态、加密命令路由，以及 Web runtime 的审批会话归属和有界历史同步。Android 的 `DshIdentityTest` 验证品牌和缓存身份，`DshInstrumentedTest` 验证新建入口与审批操作。Android 构建、安装与模拟器使用遵守仓库规定的 Windows 脚本和资源锁。
+Host 单元测试另外覆盖旧 ACP 兼容层的分包、超时、无效帧、停止竞态、加密命令路由，以及 Web runtime 的审批会话归属、有界历史同步、历史树投影（角色、细节折叠、窗口边界）与 `/tree` 的 `session/fork` 切点、原文回传和新分支接入。Android 的 `DshIdentityTest` 验证品牌和缓存身份，`DshInstrumentedTest` 验证新建入口与审批操作，`HistoryTreeTest` 验证线性历史成行、分支结果解析。Android 构建、安装与模拟器使用遵守仓库规定的 Windows 脚本和资源锁。
 
 功能启用前应同步更新桌面 Host 与 Android。正式发布的 Protocol/Relay 构建仍通过 `main` 的 Relay deploy 工作流，不使用本机部署入口。

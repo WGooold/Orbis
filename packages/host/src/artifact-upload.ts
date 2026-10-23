@@ -36,8 +36,8 @@ const PROGRESS_THRESHOLD_BYTES = 4 * 1024 * 1024;
 const PROGRESS_INTERVAL_MS = 500;
 /** 索引里最多留多少条未完成上传。 */
 const MAX_INDEX_ENTRIES = 500;
-/** 拉取节拍：每 200ms 巡一遍进行中的上传，缺数据就发 read。 */
-const PULL_TICK_MS = 200;
+/** 拉取检查频率 40Hz：每 25ms 检查，仍保持每条上传最多一个在途 read（ADR-0012）。 */
+const PULL_TICK_MS = 25;
 /** read 发出后多久没等到数据就重发同一个 read（数据应答丢了/手机流被占）。 */
 const REREQUEST_MS = 1_000;
 
@@ -88,6 +88,8 @@ type ActiveUpload = {
   writeChain: Promise<void>;
   /** 已发出、还没等到应答的 read。同一时刻每条上传至多一个在途请求。 */
   outstanding: { offset: number; length: number; sentAt: number } | undefined;
+  /** 收到当前块后，持久前缀推进前不能再发同一偏移的 read。 */
+  writing: boolean;
   /** 落地校验进行中：之后的重复应答一律忽略，别把落地完的传输再翻出来写。 */
   completing: boolean;
 };
@@ -383,6 +385,7 @@ export class HostUploadService {
       cancelled: false,
       writeChain: Promise.resolve(),
       outstanding: undefined,
+      writing: false,
       completing: false,
     });
     this.#index.set(partKey, {
@@ -447,17 +450,19 @@ export class HostUploadService {
       return;
     }
     active.outstanding = undefined;
+    active.writing = true;
     active.lastActivityAt = Date.now();
     active.chunks += 1;
     active.writeChain = active.writeChain
       .then(() => this.#acceptChunk(active, decoded))
       .catch((error: unknown) => {
         this.#options.log?.(`上传数据处理失败 ${active.fileName}：${describe(error)}`);
-      });
+      })
+      .finally(() => { active.writing = false; });
   }
 
   /**
-   * 拉取发动机：每 200ms 巡一遍进行中的上传。持久前缀没到顶、没有在途 read、
+   * 拉取发动机：每 25ms 巡一遍进行中的上传。持久前缀没到顶、没有在途 read、
    * 上一次 read 也没超时，就按 `durableBytes` 发一个 read。
    *
    * 流控就是「一次只拉一块」：中继路径上手机的上行被灌满时，websocket 的 pong 会排在
@@ -466,7 +471,7 @@ export class HostUploadService {
   #pullTick(): void {
     const now = Date.now();
     for (const active of this.#uploads.values()) {
-      if (active.cancelled || active.completing) continue;
+      if (active.cancelled || active.completing || active.writing) continue;
       // 完整前缀也可能来自续传或空文件，不能等「下一片」才触发收尾。
       if (active.durableBytes >= active.size) {
         this.#track(this.#finalize(active));

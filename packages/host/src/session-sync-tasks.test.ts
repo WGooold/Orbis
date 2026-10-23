@@ -13,9 +13,10 @@ function harness(synchronous = false) {
   let now = 0;
   let available = true;
   let accept = true;
-  const sends: { deviceId: string; payload: Buffer; done: (written: boolean) => void; onProgress?: () => void }[] = [];
+  const sends: { deviceId: string; payload: Buffer; done: (written: boolean) => void; onProgress: (() => void) | undefined }[] = [];
   const dispatches: { runtimeId: string; id: string; command: SessionSyncRequest }[] = [];
   const error = vi.fn();
+  const log = vi.fn();
   const sendEvent = vi.fn();
   const manager = new SessionSyncTasks({
     now: () => now,
@@ -30,10 +31,10 @@ function harness(synchronous = false) {
       if (synchronous) manager.handleEvent(runtimeId, snapshot(command.syncId));
       return "handled";
     },
-    encodeEvent: (runtimeId, event) => Buffer.from(JSON.stringify({ runtimeId, event })), error, sendEvent,
+    encodeEvent: (runtimeId, event) => Buffer.from(JSON.stringify({ runtimeId, event })), error, sendEvent, log,
   });
   managers.push(manager);
-  return { manager, sends, dispatches, error, sendEvent,
+  return { manager, sends, dispatches, error, sendEvent, log,
     time: (value: number) => { now = value; }, offline: () => { available = false; }, reject: () => { accept = false; } };
 }
 
@@ -170,12 +171,13 @@ describe("SessionSyncTasks", () => {
     const h = harness();
     h.manager.request("a", "runtime", "bg", request("bg", "catchup"));
     h.manager.request("a", "runtime", "fg", request("fg", "history"));
-    for (let i = 0; i < 10; i += 1) h.manager.request("a", "runtime", `c${i}`, request(`s${i}`));
+    for (let i = 0; i < 40; i += 1) h.manager.request("a", "runtime", `c${i}`, request(`s${i}`));
     h.manager.tick();
-    expect(h.dispatches.map((item) => item.command.range)).toEqual(["history", "catchup"]);
-    expect(h.manager.stats("a")).toMatchObject({ records: 8, pending: 8, active: 2 });
+    expect(h.dispatches.map((item) => item.command.range)).toEqual(["history", "preview", "preview", "catchup"]);
+    expect(h.manager.stats("a")).toMatchObject({ records: 32, pending: 32, active: 4 });
     expect(h.manager.stats("a").reservedBytes).toBeLessThanOrEqual(SESSION_SYNC_WIRE_LIMIT_BYTES);
-    expect(h.error).toHaveBeenCalledTimes(4);
+    expect(h.error).toHaveBeenCalledTimes(10);
+    expect(h.log).toHaveBeenCalledWith(expect.stringContaining("code=session_sync_busy reason=pending_limit path=relay records=32 pending=32"));
   });
 
   it("queue refusal and path loss return correlated errors and release budget", () => {
@@ -184,6 +186,8 @@ describe("SessionSyncTasks", () => {
     h.reject();
     h.manager.handleEvent("runtime", snapshot(h.dispatches[0]!.command.syncId));
     expect(h.error).toHaveBeenLastCalledWith("a", "cmd", "session_sync_busy_or_unavailable", undefined);
+    expect(h.log).toHaveBeenCalledWith(expect.stringContaining("stage=rejected device=a runtime=runtime command=cmd sync=sync range=preview attempt=1 reason=unknown path=relay"));
+    expect(h.log).toHaveBeenCalledWith(expect.stringContaining("stage=failed device=a runtime=runtime command=cmd sync=sync range=preview attempt=1 code=session_sync_busy_or_unavailable"));
     expect(h.manager.stats("a").reservedBytes).toBe(0);
     h.offline();
     h.manager.request("b", "runtime", "offline", request());
@@ -208,12 +212,12 @@ describe("SessionSyncTasks", () => {
 
   it("retained records are bounded and expire without retaining page bodies", () => {
     const h = harness(true);
-    for (let i = 0; i < 100; i += 1) {
+    for (let i = 0; i < 200; i += 1) {
       h.manager.request("a", "runtime", `c${i}`, request(`s${i}`));
       h.manager.tick();
       h.sends.at(-1)!.done(true);
     }
-    expect(h.manager.stats("a")).toEqual({ records: 32, pending: 0, active: 0, reservedBytes: 0 });
+    expect(h.manager.stats("a")).toEqual({ records: 128, pending: 0, active: 0, reservedBytes: 0 });
     h.time(300_000); h.manager.tick();
     expect(h.manager.stats("a").records).toBe(0);
   });

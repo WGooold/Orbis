@@ -809,6 +809,22 @@ describe("host end-to-end over relay", () => {
       // A marker on the same msg channel proves all earlier unwanted snapshots were suppressed.
       await expect(second.device.receiveMessage()).resolves.toMatchObject({ event: { type: "tool.started", toolCallId: "barrier" } });
       await expect(device.receiveMessage()).resolves.toMatchObject({ event: { type: "tool.started", toolCallId: "barrier" } });
+      for (let index = 0; index < 33; index++) {
+        device.sendPayload(Buffer.from(JSON.stringify({ ...command, commandId: `busy-${index}`,
+          command: { ...command.command, syncId: `busy-sync-${index}` } })));
+      }
+      let busy: Record<string, unknown> | undefined;
+      for (let index = 0; index < 10; index++) {
+        const message = await device.receiveMessage(true);
+        if (message.type === "protocol.error" && message.code === "session_sync_busy") { busy = message; break; }
+      }
+      expect(busy).toMatchObject({ type: "protocol.error", code: "session_sync_busy", commandId: "busy-32" });
+      const diagnostics = host.readDiagnostics({ category: "session.sync" });
+      expect(diagnostics.records).toEqual(expect.arrayContaining([expect.objectContaining({
+        operationId: "busy-32", message: "session_sync_busy", detail: expect.objectContaining({ path: "relay", pending: "32" }),
+      })]));
+      const persisted = (await readFile(join(stateDir, "diagnostics.ndjson"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      expect(persisted).toEqual(expect.arrayContaining([expect.objectContaining({ operationId: "busy-32", message: "session_sync_busy" })]));
     } finally { second.device.close(); }
   });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RuntimeEventSchema, type AgentExecutionState, type RuntimeEvent } from "@pi-remote/protocol";
+import { RuntimeEventSchema, prepareSessionSync, selectPreparedSessionSync, type AgentExecutionState, type RemoteSessionEntry, type RuntimeEvent } from "@pi-remote/protocol";
 import { AgentConversationState } from "./agent-conversation-state.js";
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
@@ -11,6 +11,18 @@ const snapshot = (epoch = "e", seq = 1): Extract<RuntimeEvent, { type: "session.
   live: { complete: true, turn: { turnId: "turn", startedAt: 1 }, messages: [{ finished: true, contentComplete: true, message: { messageId: "m", role: "assistant", content: [{ type: "text", text: "finished but not persisted" }], timestamp: 1 } }], tools: [] },
 });
 describe("Host conversation projection", () => {
+  it("supports 256 current sessions with the default registry and rejects the 257th atomically", () => {
+    const registry = new AgentStateRegistry();
+    const model = new AgentConversationState(registry);
+    for (let index = 0; index < 257; index++) {
+      const sessionId = `session-${index}`;
+      const target: StateScope = { kind: "agent", key: { hostId: "h", agentKind: "pi", sessionId } };
+      expect(model.accept(target, { ...snapshot(), sessionId })).toBe(index < 256);
+      expect(model.hasBaseline(target)).toBe(index < 256);
+    }
+    expect(model.stats().currentSessions).toBe(256);
+    expect(model.stats().currentBytes).toBeLessThanOrEqual(32 * 1024 * 1024);
+  });
   it("commits history and complete recoverable live inventory atomically", () => {
     const registry = new AgentStateRegistry(); const model = new AgentConversationState(registry);
     const observed: unknown[] = [];
@@ -43,9 +55,9 @@ describe("Host conversation projection", () => {
     const initial = snapshot();
     expect(model.accept(scope, { type: "session.patch", sessionId: "s", source: { epoch: "e", seq: 5, ready: true },
       baseSeq: 3, seq: 5, checkpointId: "p", head: { leafId: "a" }, headCompleteness: "complete", live: initial.live! })).toBe(false);
-    for (let i = 0; i < 100; i++) model.accept(scope, { ...initial, range: "history", checkpoint: undefined, live: undefined, syncId: `page${i}`, beforeEntryId: `before${i}` });
-    expect(model.stats().pages).toBe(64);
-    expect(model.stats().bytes).toBeLessThanOrEqual(8 * 1024 * 1024);
+    for (let i = 0; i < 300; i++) model.accept(scope, { ...initial, range: "history", checkpoint: undefined, live: undefined, syncId: `page${i}`, beforeEntryId: `before${i}` });
+    expect(model.stats().pages).toBe(256);
+    expect(model.stats().bytes).toBeLessThanOrEqual(32 * 1024 * 1024);
   });
 
   it("never lets a patch become a baseline, even when the source has not pushed a snapshot yet", () => {
@@ -125,6 +137,38 @@ describe("Host conversation projection", () => {
     expect(RuntimeEventSchema.safeParse(result).success).toBe(true);
     const duplicate = { ...event, syncId: "again" }; model.accept(scope, duplicate);
     expect(model.stats().pages).toBe(1);
+  });
+
+  it("accepts and recovers Pi pages crossing a declared display window without allowing missing visible rows", () => {
+    const model = new AgentConversationState(new AgentStateRegistry());
+    const message = (entryId: string, parentId: string | null): RemoteSessionEntry => ({ entryId, parentId,
+      type: "message", timestamp: "t", data: { message: { role: "user", content: [{ type: "text", text: entryId }], timestamp: 1 } } });
+    const entries: RemoteSessionEntry[] = [message("old", null), message("kept", "old"),
+      { entryId: "summary", parentId: "kept", type: "compaction", timestamp: "t",
+        data: { summary: "compacted history", firstKeptEntryId: "kept", tokensBefore: 100 } }];
+    const prepared = prepareSessionSync(entries, "s", "summary");
+    const initial = snapshot();
+    const source = { version: initial.source!, live: initial.live!,
+      checkpoint: { ...initial.checkpoint!, head: { leafId: "summary" } } };
+    const preview = selectPreparedSessionSync(prepared, { sessionId: "s", syncId: "preview", range: "preview", maxEntries: 1 }, [], source);
+    expect(model.accept(scope, preview)).toBe(true);
+    const page = selectPreparedSessionSync(prepared, { sessionId: "s", syncId: "page", range: "history",
+      beforeEntryId: "summary", maxEntries: 2 }, [], source);
+    expect(page.entries.map(entry => entry.entryId)).toEqual(["old", "kept"]);
+    expect(page.display?.entries.map(row => row.entryId)).toEqual(["kept"]);
+    expect(model.accept(scope, page)).toBe(true);
+    expect(model.recover(scope, { type: "session.sync", sessionId: "s", syncId: "retry", range: "history",
+      beforeEntryId: "summary", maxEntries: 2 })).toMatchObject({ syncId: "retry", entries: page.entries, display: page.display });
+    const full = selectPreparedSessionSync(prepared, { sessionId: "s", syncId: "full", range: "preview", maxEntries: 3 }, [], source);
+    expect(model.accept(scope, full)).toBe(true);
+    expect(model.recover(scope, { type: "session.sync", sessionId: "s", syncId: "reopen", range: "preview", maxEntries: 3 }))
+      .toMatchObject({ entries: full.entries, display: { windowStart: "kept", entries: expect.arrayContaining(full.display!.entries) } });
+    // The window only exempts its excluded prefix, never a missing row inside the visible range.
+    expect(model.accept(scope, { ...full, display: { ...full.display!, entries: full.display!.entries.filter(row => row.entryId !== "kept") } })).toBe(false);
+    expect(model.accept(scope, { ...page, display: { ...page.display!, windowStart: null } })).toBe(false);
+    expect(model.accept(scope, { ...page, display: { ...page.display!, windowStart: "outside" } })).toBe(false);
+    expect(model.accept(scope, { ...page, display: { ...page.display!, entries: [...page.display!.entries, page.display!.entries[0]!] } })).toBe(false);
+    expect(model.accept(scope, { ...page, display: { ...page.display!, entries: [{ ...page.display!.entries[0]!, entryId: "outside" }] } })).toBe(false);
   });
 
   it("commits the execution turn and recovery cache before publishing the conversation change", () => {

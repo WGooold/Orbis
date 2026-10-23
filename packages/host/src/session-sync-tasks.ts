@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 
-import { SESSION_SYNC_MAX_BYTES, type RuntimeEvent, type SessionSyncRequest } from "@pi-remote/protocol";
+import { SESSION_SYNC_DEFAULT_MAX_ENTRIES, SESSION_SYNC_MAX_BYTES, type RuntimeEvent, type SessionSyncRequest } from "@pi-remote/protocol";
 
 import { sessionSyncWireBytes, SESSION_SYNC_WIRE_LIMIT_BYTES, type DeviceLink } from "./device-link.js";
 
 const BACKEND_PREFIX = "host-sync:";
 const RETAIN_MS = 300_000;
-const MAX_RECORDS = 32;
-const MAX_PENDING = 8;
-const MAX_ACTIVE = 2;
+// ADR-0013 §6：活动名额与 DeviceLink 的线路预算一起扩容，后台仍最多占一个名额。
+const MAX_RECORDS = 128;
+const MAX_PENDING = 32;
+const MAX_ACTIVE = 4;
 const MAX_SENDS = 4;
 const RETRY_AFTER_MS = 30_000;
 /**
@@ -30,7 +31,8 @@ type Task = {
   acknowledged: boolean;
 };
 type Options = {
-  link: (deviceId: string) => Pick<DeviceLink, "active" | "sendSessionSnapshot" | "sessionSyncQueuedBytes"> | undefined;
+  link: (deviceId: string) => (Pick<DeviceLink, "active" | "sendSessionSnapshot" | "sessionSyncQueuedBytes"> &
+    Partial<Pick<DeviceLink, "sessionSyncRejection">>) | undefined;
   dispatch: (runtimeId: string, commandId: string, command: SessionSyncRequest) => "handled" | "offline" | "unsupported";
   encodeEvent: (runtimeId: string, event: RuntimeEvent) => Buffer;
   acceptSnapshot?: (runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" }>) => boolean;
@@ -66,13 +68,13 @@ export class SessionSyncTasks {
     this.#expire();
     const key = this.#key(deviceId, commandId);
     const fingerprint = JSON.stringify([runtimeId, command.sessionId, command.syncId, command.range,
-      command.knownLeafId ?? null, command.targetLeafId ?? null, command.beforeEntryId ?? null, command.maxEntries ?? 30,
+      command.knownLeafId ?? null, command.targetLeafId ?? null, command.beforeEntryId ?? null, command.maxEntries ?? SESSION_SYNC_DEFAULT_MAX_ENTRIES,
       command.knownState === undefined ? null : [command.knownState.epoch, command.knownState.seq, command.knownState.head.leafId]]);
     const existing = this.#tasks.get(key);
     const duplicateSync = [...this.#tasks.values()].find((task) => task.deviceId === deviceId &&
       task.command.syncId === command.syncId && task !== existing);
     if (duplicateSync !== undefined || (existing !== undefined && existing.fingerprint !== fingerprint)) {
-      this.#options.error(deviceId, commandId, "session_sync_id_conflict");
+      this.#rejectRequest(deviceId, runtimeId, commandId, command, "session_sync_id_conflict", "id_conflict");
       return;
     }
     if (existing !== undefined) {
@@ -82,7 +84,7 @@ export class SessionSyncTasks {
         return;
       }
       if (existing.stage === "failed" || existing.attempts >= MAX_SENDS) {
-        this.#options.error(deviceId, commandId, "session_sync_retry_exhausted");
+        this.#rejectRequest(deviceId, runtimeId, commandId, command, "session_sync_retry_exhausted", "retry_exhausted");
         return;
       }
       if (this.#now() - existing.lastDispatch < RETRY_AFTER_MS) {
@@ -90,7 +92,7 @@ export class SessionSyncTasks {
         return;
       }
       if ([...this.#tasks.values()].filter((task) => task.deviceId === deviceId && this.#pending(task)).length >= MAX_PENDING) {
-        this.#options.error(deviceId, commandId, "session_sync_busy");
+        this.#rejectRequest(deviceId, runtimeId, commandId, command, "session_sync_busy", "pending_limit");
         return;
       }
       existing.stage = "queued";
@@ -98,18 +100,18 @@ export class SessionSyncTasks {
       return;
     }
     if (this.#closed || this.#options.link(deviceId)?.active === undefined) {
-      this.#options.error(deviceId, commandId, "session_sync_path_unavailable");
+      this.#rejectRequest(deviceId, runtimeId, commandId, command, "session_sync_path_unavailable", this.#closed ? "closed" : "path_unavailable");
       return;
     }
     const records = [...this.#tasks.values()].filter((task) => task.deviceId === deviceId);
     if (records.filter((task) => this.#pending(task)).length >= MAX_PENDING) {
-      this.#options.error(deviceId, commandId, "session_sync_busy");
+      this.#rejectRequest(deviceId, runtimeId, commandId, command, "session_sync_busy", "pending_limit");
       return;
     }
     if (records.length >= MAX_RECORDS) {
       const retired = records.find((task) => !this.#pending(task));
       if (retired === undefined) {
-        this.#options.error(deviceId, commandId, "session_sync_busy");
+        this.#rejectRequest(deviceId, runtimeId, commandId, command, "session_sync_busy", "record_limit");
         return;
       }
       this.#remove(retired);
@@ -154,8 +156,14 @@ export class SessionSyncTasks {
           this.#log(task, "socket", `sendMs=${this.#now() - start}`);
           this.#schedule();
         }
-      }, () => { if (this.#current(task)) task.lastProgressAt = this.#now(); }) ?? false;
-      if (!accepted && task.stage === "sending") this.#fail(task, "session_sync_busy_or_unavailable");
+      }, () => { if (this.#current(task)) task.lastProgressAt = this.#now(); }, {
+        type: "runtime.event", eventType: event.type, runtimeId, sessionId: event.sessionId, payloadBytes: payload.byteLength,
+      }) ?? false;
+      if (!accepted && task.stage === "sending") {
+        const rejection = link?.sessionSyncRejection;
+        this.#log(task, "rejected", `reason=${rejection?.reason ?? "unknown"} path=${rejection?.path ?? link?.active ?? "none"} deliveries=${rejection?.deliveries ?? 0} syncQueueBytes=${rejection?.syncQueuedBytes ?? link?.sessionSyncQueuedBytes ?? 0} nonBulkQueueBytes=${rejection?.nonBulkQueuedBytes ?? 0} bulkQueueBytes=${rejection?.bulkQueuedBytes ?? 0} wireBytes=${sessionSyncWireBytes(payload.byteLength)}`);
+        this.#fail(task, "session_sync_busy_or_unavailable");
+      }
     } else if (event.type === "command.result") {
       // A success ACK is independent of snapshot delivery. It does not release the reservation.
       if (event.ok || event.status === "pending") {
@@ -274,6 +282,12 @@ export class SessionSyncTasks {
 
   #log(task: Task, stage: string, detail: string): void {
     this.#options.log?.(`[session.sync] stage=${stage} device=${task.deviceId} runtime=${task.runtimeId} command=${task.commandId} sync=${task.command.syncId} range=${task.command.range} attempt=${task.attempts} ${detail}`);
+  }
+  #rejectRequest(deviceId: string, runtimeId: string, commandId: string, command: SessionSyncRequest, code: string, reason: string): void {
+    const stats = this.stats(deviceId);
+    const link = this.#options.link(deviceId);
+    this.#options.log?.(`[session.sync] stage=rejected device=${deviceId} runtime=${runtimeId} command=${commandId} sync=${command.syncId} range=${command.range} code=${code} reason=${reason} path=${link?.active ?? "none"} records=${stats.records} pending=${stats.pending} active=${stats.active} reservedBytes=${stats.reservedBytes} syncQueueBytes=${link?.sessionSyncQueuedBytes ?? 0}`);
+    this.#options.error(deviceId, commandId, code);
   }
   clearDevice(deviceId: string): void {
     for (const task of this.#tasks.values()) if (task.deviceId === deviceId) this.#remove(task);

@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentSessionSummary, RuntimeEvent, SessionSyncRequest } from "@pi-remote/protocol";
+import { SESSION_SYNC_PAGE_BYTES, type AgentSessionSummary, type RuntimeEvent, type SessionSyncRequest } from "@pi-remote/protocol";
 
 import { CODEX_RUNTIME_ID, type CodexAppServer, type CodexServerRequest } from "./codex-daemon.js";
 import { CodexRuntime, codexHeadWindowLaunch } from "./codex-runtime.js";
@@ -22,6 +22,7 @@ function makeHarness(options?: {
   mcpServerStatusList?: unknown;
   initialTurns?: unknown[];
   holdInitialHistory?: boolean;
+  sourceCoalesceMs?: number;
 }): {
   runtime: CodexRuntime;
   server: CodexAppServer;
@@ -79,6 +80,7 @@ function makeHarness(options?: {
     server,
     onEvent: (event) => events.push(event),
     rolloutRoot,
+    sourceCoalesceMs: options?.sourceCoalesceMs ?? 0,
   });
   return {
     runtime,
@@ -151,6 +153,34 @@ function syncHistory(h: ReturnType<typeof makeHarness>, options: Partial<Session
 }
 
 describe("Codex recoverable source checkpoints", () => {
+  it("coalesces burst live updates and flushes the exact source version before sync", async () => {
+    vi.useFakeTimers();
+    const h = makeHarness({ sourceCoalesceMs: 100 });
+    try {
+      await activate(h);
+      await vi.advanceTimersByTimeAsync(100);
+      h.events.length = 0;
+      h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1 } });
+      for (let index = 0; index < 300; index++) h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "answer", delta: "x" });
+      expect(h.events.filter(event => event.type === "session.patch")).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(100);
+      const patches = () => h.events.filter(event => event.type === "session.patch");
+      expect(patches()).toHaveLength(1);
+      expect(patches()[0]?.live.messages[0]?.message.content).toEqual([{ type: "text", text: "x".repeat(300) }]);
+      const seq = patches()[0]!.seq;
+      h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "answer", delta: "tail" });
+      const snapshot = syncHistory(h);
+      expect(patches()).toHaveLength(2);
+      expect(snapshot).toMatchObject({ source: { seq: seq + 1 }, live: { messages: [expect.objectContaining({ message: expect.objectContaining({ content: [{ type: "text", text: "x".repeat(300) + "tail" }] }) })] } });
+      expect(patches()[1]).toMatchObject({ baseSeq: seq, seq: seq + 1 });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(patches()).toHaveLength(2);
+    } finally {
+      h.server.onExit?.(0);
+      vi.useRealTimers();
+    }
+  });
+
   const agent = (id: string, text = id) => ({ id, type: "agentMessage", text });
   const tool = (id: string, status?: string) => ({ id, type: "commandExecution", command: "dir", ...(status === undefined ? {} : { status }) });
   const resume = async (h: ReturnType<typeof makeHarness>, turns: unknown[]) => {
@@ -280,7 +310,7 @@ describe("Codex recoverable source checkpoints", () => {
   it("truncates oversized tool output on the wire while keeping canonical data intact", async () => {
     const h = makeHarness();
     await activate(h);
-    const output = "x".repeat(300 * 1024);
+    const output = "x".repeat(SESSION_SYNC_PAGE_BYTES + 1024);
     h.notify("item/started", { threadId: "th-1", item: tool("large") });
     h.notify("item/completed", { threadId: "th-1", item: { ...tool("large", "completed"), output } });
     const committed = h.events.filter(event => event.type === "session.patch").at(-1);

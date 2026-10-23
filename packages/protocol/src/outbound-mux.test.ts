@@ -1,9 +1,140 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { OutboundChannelMux } from "./outbound-mux.js";
+import { OutboundChannelMux, type OutboundQueueDiagnostic } from "./outbound-mux.js";
 
 /** 造一个长度恰好是 `bytes` 的「帧」——测试里用它的长度当字节数，避免声明与事实不符。 */
 const frame = (bytes: number, tag = ""): string => tag.padEnd(bytes, "x").slice(0, bytes);
+
+describe("outbound queue diagnostic attribution", () => {
+  const MiB = 1024 * 1024;
+
+  it("samples queued ciphertext by source, limits frequency, and measures admitted versus written bytes", () => {
+    vi.useFakeTimers({ now: 1_000 });
+    let backlog = 2 * MiB;
+    const samples: OutboundQueueDiagnostic[] = [];
+    const written: number[] = [];
+    const mux = new OutboundChannelMux<number>({ write: bytes => { written.push(bytes); }, backlog: () => backlog,
+      onQueueDiagnostic: sample => { samples.push(sample); } });
+    const a = { type: "runtime.event", eventType: "session.patch", runtimeId: "a", sessionId: "sa", payloadBytes: 700_000 };
+    const b = { ...a, runtimeId: "b", sessionId: "sb", payloadBytes: 750_000 };
+    try {
+      mux.enqueue("msg", MiB / 2, MiB / 2, a);
+      expect(samples).toHaveLength(0);
+      mux.enqueue("msg", MiB / 2, MiB / 2, a);
+      expect(samples).toHaveLength(1);
+      mux.enqueue("msg", MiB, MiB, b);
+      mux.enqueue("bulk", 3 * MiB, 3 * MiB);
+      mux.enqueue("ctl", 128, 128, { type: "device.path", payloadBytes: 64 });
+      mux.notifyDrained();
+      expect(samples).toHaveLength(1);
+      expect(written).toEqual([128]);
+      vi.setSystemTime(6_000);
+      mux.notifyDrained();
+      expect(samples).toHaveLength(2);
+      expect(samples[1]).toMatchObject({ queuedBytes: 5 * MiB, nonBulkQueuedBytes: 2 * MiB, bulkQueuedBytes: 3 * MiB,
+        transportBacklogBytes: 2 * MiB, oldestQueuedMs: 5_000, windowMs: 5_000,
+        nonBulkEnqueuedBytes: MiB + 128, nonBulkWrittenBytes: 128, otherSourceBytes: 0, sourcesTruncated: false });
+      expect(samples[1]!.sources).toEqual([
+        { channel: "msg", type: a.type, eventType: a.eventType, runtimeId: "a", sessionId: "sa", queuedBytes: MiB, queuedPieces: 2, oldestQueuedMs: 5_000, maxPayloadBytes: 700_000 },
+        { channel: "msg", type: b.type, eventType: b.eventType, runtimeId: "b", sessionId: "sb", queuedBytes: MiB, queuedPieces: 1, oldestQueuedMs: 5_000, maxPayloadBytes: 750_000 },
+      ]);
+      backlog = 0;
+      mux.notifyDrained();
+      expect(mux.queuedBytes).toBe(0);
+      expect(samples).toHaveLength(2);
+      backlog = 2 * MiB;
+      vi.setSystemTime(11_000);
+      mux.enqueue("msg", MiB, MiB, a);
+      expect(samples[2]).toMatchObject({ nonBulkEnqueuedBytes: MiB, nonBulkWrittenBytes: 2 * MiB, windowMs: 5_000 });
+    } finally { mux.stop(); vi.useRealTimers(); }
+  });
+
+  it("reports overflow explicitly and keeps source aggregation and output bounded", () => {
+    vi.useFakeTimers({ now: 1_000 });
+    const samples: OutboundQueueDiagnostic[] = [];
+    const mux = new OutboundChannelMux<number>({ write: () => {}, backlog: () => 2 * MiB,
+      onQueueDiagnostic: sample => { samples.push(sample); } });
+    try {
+      mux.enqueue("msg", MiB, MiB);
+      for (let i = 0; i < 300; i++) mux.enqueue("msg", 1_000, 1_000, { type: "runtime.event", runtimeId: `runtime-${i}`, payloadBytes: 700 });
+      vi.setSystemTime(6_000);
+      mux.notifyDrained();
+      const sample = samples[1]!;
+      expect(sample.sources).toHaveLength(8);
+      expect(sample.sourcesTruncated).toBe(true);
+      expect(sample.sources[0]).toMatchObject({ type: "unattributed", queuedBytes: MiB });
+      expect(sample.otherSourceBytes).toBe(293_000);
+      expect(sample.sources.reduce((bytes, source) => bytes + source.queuedBytes, sample.otherSourceBytes)).toBe(mux.queuedBytes);
+    } finally { mux.stop(); vi.useRealTimers(); }
+  });
+
+  it("does not count rejected writes as sent or allow a diagnostic callback to interrupt delivery", () => {
+    vi.useFakeTimers({ now: 1_000 });
+    const samples: OutboundQueueDiagnostic[] = [];
+    let reject = true;
+    let backlog = 0;
+    const write = vi.fn(() => { if (reject) throw new Error("blocked"); });
+    const mux = new OutboundChannelMux<number>({ write, backlog: () => backlog, onQueueDiagnostic: sample => {
+      samples.push(sample); throw new Error("diagnostic unavailable");
+    } });
+    try {
+      expect(mux.enqueue("msg", MiB, MiB)).toBe(true);
+      expect(samples[0]).toMatchObject({ writeErrors: 1, nonBulkWrittenBytes: 0, nonBulkQueuedBytes: MiB });
+      reject = false;
+      mux.notifyDrained();
+      expect(write).toHaveBeenCalledTimes(2);
+      expect(mux.queuedBytes).toBe(0);
+      backlog = 2 * MiB;
+      vi.setSystemTime(6_000);
+      expect(mux.enqueue("msg", MiB, MiB)).toBe(true);
+      expect(samples[1]).toMatchObject({ writeErrors: 0, nonBulkWrittenBytes: MiB, nonBulkQueuedBytes: MiB });
+      mux.stop();
+      vi.advanceTimersByTime(10_000);
+      expect(samples).toHaveLength(2);
+    } finally { mux.stop(); vi.useRealTimers(); }
+  });
+});
+
+describe("bounded ordinary queue admission", () => {
+  it("keeps ctl and msg budgets independent", () => {
+    const mux = new OutboundChannelMux<string>({
+      write: () => { throw new Error("blocked"); },
+      backlog: () => Number.MAX_SAFE_INTEGER,
+      ctlQueueLimitBytes: 10,
+      msgQueueLimitBytes: 20,
+      bulkQueueLimitBytes: 30,
+      bulkLowWaterBytes: 0,
+      msgLowWaterBytes: 0,
+    });
+    try {
+      expect(mux.hasRoom("ctl", 10)).toBe(true);
+      expect(mux.enqueue("ctl", "ctl", 10)).toBe(true);
+      expect(mux.hasRoom("ctl", 1)).toBe(false);
+      expect(mux.hasRoom("msg", 20)).toBe(true);
+      expect(mux.enqueue("msg", "msg", 20)).toBe(true);
+      expect(mux.hasRoom("msg", 1)).toBe(false);
+      expect(mux.ctlQueuedBytes).toBe(10);
+      expect(mux.msgQueuedBytes).toBe(20);
+      expect(mux.queuedBytes).toBe(30);
+    } finally { mux.stop(); }
+  });
+
+  it("does not silently drop an already sealed frame when a budget is reached", () => {
+    const written: string[] = [];
+    const mux = new OutboundChannelMux<string>({
+      write: frame => written.push(frame),
+      backlog: () => 1,
+      msgLowWaterBytes: 0,
+      msgQueueLimitBytes: 3,
+    });
+    try {
+      expect(mux.enqueue("msg", "one", 3)).toBe(true);
+      // Admission is the caller's responsibility; enqueue still retains the sealed frame.
+      expect(mux.enqueue("msg", "two", 3)).toBe(true);
+      expect(mux.msgQueuedBytes).toBe(6);
+    } finally { mux.stop(); }
+  });
+});
 
 /**
  * 这一组用例锁的是票 07 那条**没打勾**的验收项：「大文件传输期间 `ctl` 的延迟不劣化」。

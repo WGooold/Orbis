@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, readdir, rm, stat, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ARTIFACT_CHUNK_BYTES, PROTOCOL_VERSION, encodeArtifactChunkFrame, type RelayToDeviceMessage } from "@pi-remote/protocol";
 
@@ -208,6 +208,49 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
     });
     expect(uploads.transfers("device-a")).toEqual({ uploads: [], receiving: 0, truncated: false });
   }, 30_000);
+
+  it("does not issue another read while a received chunk is still being written", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-upload-"));
+    const data = new Uint8Array(ARTIFACT_CHUNK_BYTES + 512).fill(7);
+    const messages: RelayToDeviceMessage[] = [];
+    const uploads = service(messages);
+    await uploads.load();
+    await uploads.handleInit("device-a", init(data));
+    await waitFor(() => readRequests(messages).length === 1);
+    const probe = await open(join(stateDir, "probe"), "w+");
+    type Write = (buffer: Uint8Array, offset: number, length: number, position: number) => Promise<unknown>;
+    const prototype = Object.getPrototypeOf(probe) as { write: Write };
+    const original = prototype.write;
+    await probe.close();
+    let release!: () => void;
+    let started = false;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const write = vi.spyOn(prototype, "write").mockImplementationOnce(async function (this: FileHandle, ...args) {
+      started = true;
+      await gate;
+      return original.apply(this, args);
+    });
+    try {
+      const first = readRequests(messages)[0]!;
+      uploads.handleData("device-a", encodeArtifactChunkFrame({ runtimeId: "runtime-a", transferId: first.uploadId,
+        offset: first.offset, data: data.subarray(0, first.length) }));
+      await waitFor(() => started);
+      await new Promise(resolve => setTimeout(resolve, 125));
+      expect(readRequests(messages)).toHaveLength(1);
+      release();
+      await waitFor(() => readRequests(messages).length === 2);
+      expect(readRequests(messages)[1]!.offset).toBe(ARTIFACT_CHUNK_BYTES);
+      const served = new Set([0]);
+      await waitFor(() => {
+        serveReads(uploads, "device-a", messages, data, served);
+        return messages.some(message => message.type === "file.upload.finished");
+      });
+    } finally {
+      release();
+      await uploads.flush();
+      write.mockRestore();
+    }
+  });
 
   it("refuses data from a device that does not own the upload", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "pi-remote-upload-"));

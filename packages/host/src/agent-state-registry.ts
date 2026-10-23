@@ -19,8 +19,8 @@ import {
  * - 这里只保存各领域的**当前投影**，不保存全量聊天历史。
  */
 
-const DEFAULT_MAX_VALUE_BYTES = 262_144;
-const DEFAULT_MAX_ENTRIES = 512;
+const DEFAULT_MAX_VALUE_BYTES = 1024 * 1024;
+const DEFAULT_MAX_ENTRIES = 16_384;
 const DEFAULT_MAX_RETIRED_EPOCHS = 64;
 
 export type StateScope =

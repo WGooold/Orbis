@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   type ChatMessage,
+  type DisplayBatch,
   type RuntimeCommand,
   type RuntimeEvent,
   type RuntimeMetadata,
@@ -9,6 +10,7 @@ import {
   RuntimeBridge,
   type RuntimeBridgeTransport,
   type RuntimePort,
+  type RuntimeSessionSyncRequest,
 } from "./index.js";
 
 
@@ -105,49 +107,32 @@ describe("RuntimeBridge", () => {
     await vi.waitFor(() => expect(syncSession).toHaveBeenCalledWith({ sessionId: "session-1", syncId: "sync", range: "preview", knownState }));
     expect(transport.events).toContainEqual({ type: "session.snapshot", syncId: "sync", ...await syncSession() });
   });
-  it("publishes a correlated session graph snapshot without changing the legacy chat path", async () => {
+  it("publishes each correlated Session range with its producer-supplied display", async () => {
     const transport = new FakeTransport();
-    const syncSession = vi.fn(async () => ({
-      sessionId: "session-1",
-      cursor: { leafId: "entry-2" },
-      mode: "append" as const,
-      entries: [{
-        entryId: "entry-2",
-        parentId: "entry-1",
-        type: "message",
-        timestamp: "2026-01-01T00:00:00.000Z",
-        data: { message: { role: "user", content: "new" } },
-      }],
+    const display: DisplayBatch = { projectionVersion: 2, windowStart: null, entries: [{
+      displayId: "entry-2", entryId: "entry-2", nativeType: "message", kind: "message", reason: null,
+      message: { messageId: "entry-2", role: "user", content: [{ type: "text", text: "new" }], timestamp: 1 },
+    }] };
+    const syncSession = vi.fn(async (request: RuntimeSessionSyncRequest) => ({
+      sessionId: "session-1", cursor: { leafId: "entry-2" }, mode: "append" as const,
+      ...(request.range === undefined ? {} : { range: request.range }),
+      entries: [{ entryId: "entry-2", parentId: "entry-1", type: "message", timestamp: "2026-01-01T00:00:00.000Z",
+        data: { message: { role: "user", content: "new" } } }], display,
     }));
     const bridge = new RuntimeBridge(makeRuntime({ syncSession }), transport);
-
     await bridge.start();
-    transport.commandHandler?.("session-sync-1", "runtime-a", {
-      type: "session.sync",
-      sessionId: "session-1",
-      syncId: "sync-1",
-      knownLeafId: "entry-1",
-    });
-
-    await vi.waitFor(() => expect(syncSession).toHaveBeenCalledWith({
-      sessionId: "session-1",
-      syncId: "sync-1",
-      knownLeafId: "entry-1",
-    }));
-    expect(transport.events.filter(event => event.type === "session.snapshot")).toEqual([{
-      type: "session.snapshot",
-      sessionId: "session-1",
-      syncId: "sync-1",
-      cursor: { leafId: "entry-2" },
-      mode: "append",
-      entries: [{
-        entryId: "entry-2",
-        parentId: "entry-1",
-        type: "message",
-        timestamp: "2026-01-01T00:00:00.000Z",
-        data: { message: { role: "user", content: "new" } },
-      }],
-    }]);
+    const ranges = ["preview", "history", "catchup"] as const;
+    for (const range of ranges) {
+      transport.commandHandler?.(`cmd-${range}`, "runtime-a", { type: "session.sync", sessionId: "session-1",
+        syncId: `sync-${range}`, range, knownLeafId: "entry-1" });
+      await vi.waitFor(() => expect(transport.events).toContainEqual({ type: "session.snapshot",
+        syncId: `sync-${range}`, sessionId: "session-1", cursor: { leafId: "entry-2" }, mode: "append", range,
+        entries: [{ entryId: "entry-2", parentId: "entry-1", type: "message", timestamp: "2026-01-01T00:00:00.000Z",
+          data: { message: { role: "user", content: "new" } } }], display }));
+      expect(syncSession).toHaveBeenLastCalledWith({ sessionId: "session-1", syncId: `sync-${range}`,
+        range, knownLeafId: "entry-1" });
+    }
+    bridge.close();
   });
 
   it("publishes lightweight Session catalog metadata on connection", async () => {

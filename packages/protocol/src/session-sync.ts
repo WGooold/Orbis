@@ -17,7 +17,8 @@ export type SessionSyncSnapshot = Omit<Extract<RuntimeEvent, { type: "session.sn
   rangeStatus: SessionSyncRangeStatus;
   checkpoint?: SessionCheckpoint;
 };
-export const SESSION_SYNC_PAGE_BYTES = 256 * 1024;
+export const SESSION_SYNC_DEFAULT_MAX_ENTRIES = 30;
+export const SESSION_SYNC_PAGE_BYTES = 512 * 1024;
 export const SESSION_SYNC_MAX_BYTES = 1024 * 1024;
 // A runtime.event wrapper has routing fields and a runtime ID (up to 256 Unicode characters).
 export const SESSION_SYNC_WRAPPER_BYTES = 4096;
@@ -112,7 +113,7 @@ export function selectPreparedSessionSync(
   if (request.knownState !== undefined && range !== "preview") throw new Error("session_known_state_range_mismatch");
   // Keep the default response bounded for first paint; callers can request a larger history page
   // explicitly, subject to the byte limits below.
-  const maxEntries = request.maxEntries ?? 30;
+  const maxEntries = request.maxEntries ?? SESSION_SYNC_DEFAULT_MAX_ENTRIES;
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > 2000) throw new Error("invalid_max_entries");
   const targetLeafId = request.targetLeafId ?? prepared.liveLeaf;
   // 预处理绑定在一个 leaf 上；换 leaf 说明调用方用错了缓存，重新 prepare。
