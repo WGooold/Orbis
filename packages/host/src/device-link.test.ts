@@ -272,13 +272,15 @@ describe("DeviceLink", () => {
         const full = reassembler.accept(envelope);
         if (full !== undefined) messages.push(h.peer("relay").open(full));
       }
-      expect(messages).toEqual(Array.from({ length: 5 }, () => payload));
+      expect(messages).toHaveLength(5);
+      // Buffer.equals checks every byte without generic deep equality enumerating megabytes.
+      for (const [index, message] of messages.entries()) {
+        expect(message.equals(payload), `snapshot ${index}`).toBe(true);
+      }
       expect(h.messagesSent()).toEqual(["msg:1", "msg:2", "msg:3", "msg:4", "msg:5"]);
       h.link.sendSessionSnapshot(Buffer.from("next"), done);
       expect(h.messagesSent()).toEqual(["msg:1", "msg:2", "msg:3", "msg:4", "msg:5", "msg:6"]);
     } finally { h.link.close(); }
-    // 这个用例要在背压下搬运数十 MB：整机并行跑测试时 10s 上限会偶发不够，
-    // 断言的正确性（准入、保留、释放）不依赖墙钟预算。
   }, 30_000);
 
   it("admits sync on LAN despite an independent bulk backlog and sends it before bulk", async () => {
@@ -305,7 +307,11 @@ describe("DeviceLink", () => {
         const full = reassembler.accept(envelope);
         if (full !== undefined) messages.push(h.peer("lan").open(full));
       }
-      expect(messages).toEqual([Buffer.from("status"), Buffer.from("snapshot"), ...Array.from({ length: 10 }, () => payload)]);
+      const expected = [Buffer.from("status"), Buffer.from("snapshot"), ...Array.from({ length: 10 }, () => payload)];
+      expect(messages).toHaveLength(expected.length);
+      for (const [index, message] of messages.entries()) {
+        expect(message.equals(expected[index]!), `payload ${index}`).toBe(true);
+      }
       expect(h.link.sessionSyncQueuedBytes).toBe(0);
     } finally { h.link.close(); }
   }, 30_000);
