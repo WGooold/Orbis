@@ -7,6 +7,28 @@ const message: ChatMessage = { messageId: "live", role: "assistant", timestamp: 
 const entry: RemoteSessionEntry = { entryId: "entry", parentId: null, type: "message", timestamp: new Date(1).toISOString(), data: { message } };
 
 describe("recoverable source", () => {
+  it("never serves an unpublished state under an already-published seq", () => {
+    // 现场：流式输出期间 Host 每 10–50 秒拒收一条 preview，原因码 `same_seq_state_mismatch`。
+    // 触发条件是 live 装不进页预算：`#flush` 回滚了 seq，但状态已经改过；`snapshot()` 仍返回
+    // 当前状态，于是同一个 seq 带着两份不同的 head/live 出去。Host 侧的正确行为是拒绝。
+    const patches: SessionPatch[] = [];
+    const source = new RecoverableSessionSource("session", patch => patches.push(patch));
+    source.setAvailability(true, true);
+    source.observe({ type: "turn.started", turnId: "t1", startedAt: 1 });
+    // 每条约 200KB、截断后仍有 64KB；12 条超过 512KB 的页预算，必须回滚。
+    for (let index = 0; index < 12; index += 1) {
+      source.observe({ type: "tool.started", toolCallId: `c${index}`, toolName: "bash", arguments: { text: "x".repeat(200_000) } });
+    }
+    const published = patches.at(-1)!;
+    // 同步响应用 published()：对外只能看到已发布的那一版，seq、head、live 必须逐字段一致。
+    const wire = source.published();
+    expect(wire.version).toMatchObject({ seq: published.seq, ready: true });
+    expect(wire.checkpoint.head).toEqual(published.head);
+    expect(wire.live).toEqual(published.live);
+    // 源端自身的原文不受影响：需要全文时仍从 snapshot()/entry() 取。
+    expect(source.snapshot().live.tools.length).toBe(12);
+  });
+
   it("retains confirmed turn timing through recovery until the next turn starts", () => {
     const source = new RecoverableSessionSource("session", () => undefined);
     source.setAvailability(true, true);

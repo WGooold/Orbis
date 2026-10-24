@@ -423,7 +423,7 @@ export class DshWebRuntime implements AgentBackend {
         this.#emit(session, session.preparer.select({
           entries: session.entries, sessionId: command.sessionId,
           leafId: session.entries.at(-1)?.entryId ?? null, request: command,
-          source: session.source.snapshot(),
+          source: session.source.published(),
           ...(session.entries[0]?.parentId == null ? {} : { historyBoundaryParentId: session.entries[0].parentId }),
         }));
         this.#publishCapabilities(session);
@@ -1359,4 +1359,5 @@ export class DshWebRuntime implements AgentBackend {
   }
   async stop(): Promise<void> { if (this.#stopping) return this.#stopping; this.#stopping = (async () => { this.#ready = false; clearTimeout(this.#controlRetry); this.#controlUnsubscribe?.(); this.#discovery.stop(); for (const id of this.#approvals.keys()) this.#cancelApproval(id, "owner_closed"); for (const session of this.#sessions.values()) { session.unsubscribe(); if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error("backend_stopped")); } } this.#sessions.clear(); this.#running.clear(); this.#detached.clear(); await this.#client.stop(); })(); return this.#stopping; }
 }
+
 

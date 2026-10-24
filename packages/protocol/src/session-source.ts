@@ -75,6 +75,8 @@ export class RecoverableSessionSource {
   #turn: SessionLiveTurn | null = null;
   #depth = 0;
   #dirty = false;
+  /** 最近一次真正发布出去的状态；`snapshot()` 在变化未发出时原样返回它（见 snapshot 注释）。 */
+  #published: { seq: number; ready: boolean; complete: boolean; head: string | null; live: SessionLiveState } | undefined;
   #committed: RemoteSessionEntry[] = [];
   #boundaryParentId: string | null = null;
 
@@ -118,9 +120,8 @@ export class RecoverableSessionSource {
 
   /** 立刻发布挂起的窗口（ADR-0035 §15 的配套不变量）。 */
   flushPending(): void {
-    if (this.#flushTimer === undefined) return;
-    clearTimeout(this.#flushTimer);
-    this.#flushTimer = undefined;
+    if (this.#flushTimer !== undefined) { clearTimeout(this.#flushTimer); this.#flushTimer = undefined; }
+    // 没有定时器也可能是脏的：#flush 因预算回滚后会清掉 #dirty 而不留定时器。
     if (this.#dirty) this.#flush();
   }
 
@@ -314,9 +315,11 @@ export class RecoverableSessionSource {
         // A ready patch cannot establish a new cache epoch. Publish unknown before recovery.
         const ready = this.#ready;
         this.#ready = false;
+        const handshakeLive: SessionLiveState = { complete: false, turn: null, messages: [], tools: [] };
+        this.#published = { seq: 1, ready: false, complete: false, head: null, live: handshakeLive };
         this.#publish({ type: "session.patch", sessionId: this.#sessionId, source: { epoch: this.#epoch, seq: 1, ready: false },
           baseSeq: 0, seq: 1, checkpointId: `${this.#epoch}:1`, head: { leafId: null },
-          headCompleteness: "unknown", live: { complete: false, turn: null, messages: [], tools: [] } });
+          headCompleteness: "unknown", live: handshakeLive });
         this.#seq = 1;
         this.#ready = ready;
         this.#dirty = true;
@@ -378,22 +381,61 @@ export class RecoverableSessionSource {
     this.#committed = [];
     this.#ready = false;
     this.#dirty = false;
+    const live: SessionLiveState = { complete: false, turn: null, messages: [], tools: [] };
+    this.#published = { seq: 1, ready: false, complete: false, head: null, live };
     this.#publish({
       type: "session.patch", sessionId: this.#sessionId,
       source: { epoch: this.#epoch, seq: 1, ready: false }, baseSeq: 0, seq: 1,
       checkpointId: `${this.#epoch}:1`, head: { leafId: null }, headCompleteness: "unknown",
-      live: { complete: false, turn: null, messages: [], tools: [] },
+      live,
     });
   }
 
+  /**
+   * 源端的**当前**状态（可能还没发布出去）。要发 `session.sync` 响应时用 [published]：
+   * `seq` 只标识已经发出去的那一版（ADR-0026）。
+   */
   snapshot(): { version: SessionSourceEpoch; checkpoint: SessionCheckpoint; live: SessionLiveState } {
     if (this.#messages.size > 256 || this.#tools.size > 256) throw new Error("session_live_inventory_too_large");
+    return this.#currentSnapshot();
+  }
+
+  /**
+   * **已发布**的那一版状态：对端（Host/手机）手里保存的就是它。
+   *
+   * ADR-0026：`seq` 是状态的标识，不是计数器。合并窗口里还没发出去的变化、或上一次 `#flush`
+   * 因超出线路预算回滚时，当前状态已经不再是 `#seq` 所指的那一版。以前同步响应用 `snapshot()`
+   * 如实返回当前状态，同一个 `seq` 就带着两份不同的 head/live 出去，Host 的
+   * `AgentConversationState.accept` 以 `same_seq_state_mismatch` 拒收整条 preview
+   * （现场：流式输出期间每 10–50 秒一条 `session_sync_model_rejected`，聊天页停在旧内容，
+   * 直到本轮结束、live 缩小后才恢复）。
+   */
+  published(): { version: SessionSourceEpoch; checkpoint: SessionCheckpoint; live: SessionLiveState } {
+    if (this.#published !== undefined && this.#published.seq === this.#seq) return this.#publishedSnapshot(this.#published);
+    return this.snapshot();
+  }
+
+  #currentSnapshot(): { version: SessionSourceEpoch; checkpoint: SessionCheckpoint; live: SessionLiveState } {
     const complete = this.#ready && this.#complete;
     return {
       version: { epoch: this.#epoch, seq: this.#seq, ready: this.#ready },
       checkpoint: { checkpointId: `${this.#epoch}:${this.#seq}`, head: { leafId: this.#ready ? this.#head : null },
         headCompleteness: this.#ready ? "complete" : "unknown", inventoryComplete: complete },
       live: { complete, turn: structuredClone(this.#turn), messages: structuredClone([...this.#messages.values()]), tools: structuredClone([...this.#tools.values()]) },
+    };
+  }
+
+  /** 已发布那一版的原样投影：与对端手里那份逐字段一致（含线路截断）。 */
+  #publishedSnapshot(published: { seq: number; ready: boolean; complete: boolean; head: string | null; live: SessionLiveState }): {
+    version: SessionSourceEpoch; checkpoint: SessionCheckpoint; live: SessionLiveState;
+  } {
+    const complete = published.ready && published.complete;
+    return {
+      version: { epoch: this.#epoch, seq: published.seq, ready: published.ready },
+      checkpoint: { checkpointId: `${this.#epoch}:${published.seq}`,
+        head: { leafId: published.ready ? published.head : null },
+        headCompleteness: published.ready ? "complete" : "unknown", inventoryComplete: complete },
+      live: structuredClone(published.live),
     };
   }
 
@@ -421,7 +463,8 @@ export class RecoverableSessionSource {
     // 只有真的会发布时才推进版本：Host 要求 baseSeq === 上一版 seq，跳过时推进会留下永久缺口，
     // 之后每一条 patch 都会被拒绝（现场表现为 Host 诊断里每秒两条 Rejected conversation transaction）。
     this.#seq++;
-    const snapshot = this.snapshot();
+    // 用**当前**状态构造这一版：`snapshot()` 返回的是"已发布的那一版"，此处必须绕过它。
+    const snapshot = this.#currentSnapshot();
     if (oversizedLive) snapshot.live = truncateWireLive(snapshot.live, WIRE_FIELD_LIMIT_BYTES);
     const patch: Extract<RuntimeEvent, { type: "session.patch" }> = {
       type: "session.patch", sessionId: this.#sessionId, source: snapshot.version, baseSeq: this.#seq - 1, seq: this.#seq,
@@ -445,6 +488,9 @@ export class RecoverableSessionSource {
       this.#seq -= 1;
       return;
     }
+    // 记下已发布的那一版：`snapshot()` 在后续变化发不出去时原样返回它，保证
+    // 「同一个 seq 只对应一份状态」（ADR-0026）。live 用 patch 里那份（可能已按线路预算截断）。
+    this.#published = { seq: this.#seq, ready: this.#ready, complete: this.#complete, head: this.#head, live: patch.live };
     this.#publish(patch);
   }
 }

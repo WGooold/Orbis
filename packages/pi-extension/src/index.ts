@@ -425,7 +425,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
         const entries = ctx.sessionManager.getEntries();
         const sessionId = ctx.sessionManager.getSessionId();
         const leaf = ctx.sessionManager.getLeafId();
-        const snapshot = source.snapshot();
+        const snapshot = source.published();
         const prepared = preparedSession(
           entries, sessionId, request.targetLeafId ?? leaf, snapshot.version,
         );
@@ -732,3 +732,4 @@ export {
 export { RelayRuntimeTransport } from "./transport.js";
 export { LoopbackHostTransport, readLoopbackDescriptor } from "./loopback.js";
 export { PiSlashCommandAdapter } from "./slash-commands.js";
+
