@@ -2,6 +2,15 @@
 
 在 Windows PowerShell 中运行。下面的相对路径命令以仓库根目录 `D:\orbis` 为当前目录。
 
+## Codex 空会话回归
+
+```powershell
+npm run build
+node scripts/test-codex-empty-history.mjs .artifacts/host/codex-empty-history.json
+```
+
+脚本使用独立的 app-server、`CODEX_HOME` 和工作目录，验证 App 新建会话在首条消息前返回完整的空历史，并在原生历史核对后仍可同步。原生 `thread/turns/list` 此时可能返回 `-32600`，明确说明会话尚未 materialize；Host 只对匹配当前会话、没有历史或运行轮次的首次读取按空历史处理。其他错误、已有历史及分页中途失败仍按失败处理，不清空缓存。脚本不发送消息、不调用模型、不打开终端窗口，结束时关闭自己的服务并清理测试目录。
+
 ## DSH 断线恢复回归
 
 ```powershell

@@ -21,6 +21,7 @@ function makeHarness(options?: {
   skillsList?: unknown;
   mcpServerStatusList?: unknown;
   initialTurns?: unknown[];
+  initialHistoryError?: Error;
   holdInitialHistory?: boolean;
   sourceCoalesceMs?: number;
 }): {
@@ -62,6 +63,7 @@ function makeHarness(options?: {
     if (method === "thread/turns/list" && initialHistory.has(params?.threadId ?? "")) {
       const data = initialHistory.get(params!.threadId!);
       initialHistory.delete(params!.threadId!);
+      if (options?.initialHistoryError) return Promise.reject(options.initialHistoryError);
       if (!options?.holdInitialHistory) return Promise.resolve({ data });
     }
     if (method === "thread/turns/list") historyReads(method, params);
@@ -581,6 +583,75 @@ describe("Codex recoverable source checkpoints", () => {
 
 describe("Codex bounded canonical history", () => {
   const item = (id: string, text = id) => ({ id, type: "agentMessage", text });
+
+  it.each(["", "（code=-32600）"])("syncs an unmaterialized app-created thread as empty, then accepts its first message (%s)", async suffix => {
+    const h = makeHarness({ initialHistoryError: new Error(
+      `thread th-1 is not materialized yet; thread/turns/list is unavailable before first user message${suffix}`,
+    ) });
+    const activating = h.runtime.activate({ type: "new", cwd: "D:/repo" });
+    h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", path: null, turns: [] } });
+    await activating;
+    expect(syncHistory(h)).toMatchObject({ entries: [], complete: true, source: { ready: true } });
+    expect(h.events.at(-1)).toMatchObject({ type: "command.result", commandId: "sync-command", ok: true });
+
+    h.runtime.handleCommand({ type: "user_message", text: "Hello", messageId: "phone-1" }, "send-1", "th-1");
+    expect(h.requests).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: "th-1" }));
+    h.resolveNext({ turn: { id: "first" } });
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "first" } });
+    h.notify("item/completed", { threadId: "th-1", turnId: "first", item: {
+      id: "user-1", type: "userMessage", clientId: "phone-1", content: [{ type: "text", text: "Hello" }],
+    } });
+    h.notify("item/completed", { threadId: "th-1", turnId: "first", item: item("reply-1", "Hi") });
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "first" } });
+    expect(syncHistory(h)).toMatchObject({ source: { ready: true }, cursor: { leafId: "reply-1" }, entries: [
+      { entryId: "user-1", parentId: null }, { entryId: "reply-1", parentId: "user-1" },
+    ] });
+    h.server.onExit?.(0);
+  });
+
+  it.each([
+    "app-server transport disconnected",
+    "thread th-1 was not found（code=-32600）",
+    "thread another-thread is not materialized yet; thread/turns/list is unavailable before first user message（code=-32600）",
+    "thread th-1 is not materialized yet; thread/turns/list is unavailable before first user message（code=-32000）",
+  ])("keeps other initial history failures visible: %s", async message => {
+    const h = makeHarness({ initialHistoryError: new Error(message) });
+    const activating = h.runtime.activate({ type: "new", cwd: "D:/repo" });
+    h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", path: null, turns: [] } });
+    await activating;
+    expect(syncHistory(h)).toBeUndefined();
+    expect(h.events.at(-1)).toMatchObject({ type: "command.result", ok: false, error: message });
+    h.server.onExit?.(0);
+  });
+
+  it("does not replace existing history when a native check reports an unmaterialized thread", async () => {
+    const h = makeHarness({ initialTurns: [{ id: "first", status: "completed", items: [item("a")] }] });
+    h.runtime.markStarted();
+    await activate(h);
+    expect(syncHistory(h)?.entries.map(entry => entry.entryId)).toEqual(["a"]);
+    h.events.length = 0;
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+    h.rejectNext(new Error("thread th-1 is not materialized yet; thread/turns/list is unavailable before first user message（code=-32600）"));
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1)?.source.ready).toBe(false));
+    expect(h.runtime.directoryEntries()[0]?.sessionLeafId).toBe("a");
+    expect(h.events.filter(event => event.type === "session.patch" && event.source.ready && event.head.leafId === null)).toHaveLength(0);
+    h.server.onExit?.(0);
+  });
+
+  it("does not accept a failed later history page as an empty thread", async () => {
+    const h = makeHarness();
+    await activate(h);
+    h.events.length = 0;
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+    h.resolveNext({ data: [{ id: "first", status: "completed", items: [item("a")] }], nextCursor: "page-2" });
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(2));
+    h.rejectNext(new Error("thread th-1 is not materialized yet; thread/turns/list is unavailable before first user message（code=-32600）"));
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1)?.source.ready).toBe(false));
+    expect(h.events.filter(event => event.type === "session.patch" && event.source.ready)).toHaveLength(0);
+    h.server.onExit?.(0);
+  });
 
   it("syncs a new thread before its rollout exists and keeps syncing after the first message", async () => {
     const h = makeHarness();

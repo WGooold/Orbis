@@ -18,12 +18,13 @@ function harness() {
   const snapshot = { id: "terminal", cwd: rolloutRoot, path: join(rolloutRoot, "rollout-terminal.jsonl"),
     status: { type: "idle" }, turns: [] as unknown[] };
   const resume = vi.fn<() => Promise<unknown>>(() => Promise.resolve({ ...settings, thread: snapshot }));
+  const listTurns = vi.fn<() => Promise<unknown>>(() => Promise.resolve({ data: snapshot.turns }));
   const request = vi.fn((method: string) => {
     if (method === "thread/resume") return resume().then(value => {
       snapshot.turns = (value as { thread: { turns: unknown[] } }).thread.turns;
       return value;
     });
-    if (method === "thread/turns/list") return Promise.resolve({ data: snapshot.turns });
+    if (method === "thread/turns/list") return listTurns();
     if (method === "turn/start") return Promise.resolve({ turn: { id: "phone-turn" } });
     return Promise.resolve({ data: [] });
   });
@@ -43,13 +44,29 @@ function harness() {
     runtime.handleCommand({ type: "session.sync", sessionId: "terminal", syncId: "phone-sync", range: "preview" }, "sync", "terminal");
     return events.slice(start);
   };
-  return { runtime, server, events, settings, snapshot, request, resume, notify, launch, sync };
+  return { runtime, server, events, settings, snapshot, request, resume, listTurns, notify, launch, sync };
 }
 
 const user = (id: string, text: string) => ({ id, type: "userMessage", content: [{ type: "text", text }] });
 const assistant = (id: string, text: string) => ({ id, type: "agentMessage", text });
 
 describe("terminal Codex session synchronization", () => {
+  it("accepts an empty subscribed terminal when turns/list rejects it before the first message", async () => {
+    const h = harness();
+    h.listTurns.mockRejectedValueOnce(new Error(
+      "thread terminal is not materialized yet; thread/turns/list is unavailable before first user message（code=-32600）",
+    ));
+    await h.launch();
+    expect(h.sync()).toContainEqual(expect.objectContaining({
+      type: "session.snapshot", entries: [], complete: true, source: expect.objectContaining({ ready: true }),
+    }));
+    h.notify("item/completed", { threadId: "terminal", turnId: "first", item: user("u1", "first message") });
+    h.notify("item/completed", { threadId: "terminal", turnId: "first", item: assistant("a1", "first answer") });
+    expect(h.sync()).toContainEqual(expect.objectContaining({ type: "session.snapshot", entries: [
+      expect.objectContaining({ entryId: "u1", parentId: null }), expect.objectContaining({ entryId: "a1", parentId: "u1" }),
+    ] }));
+  });
+
   it("subscribes to the terminal thread and loads history, tree, model and effective permissions", async () => {
     const h = harness();
     h.snapshot.turns = [{ id: "terminal-turn", status: "completed", items: [user("u1", "from terminal"), assistant("a1", "answer")] }];

@@ -2891,13 +2891,27 @@ export class CodexRuntime implements AgentBackend {
       const cursors = new Set<string>();
       let cursor: string | undefined;
       do {
-        const page = object(await this.#server.request("thread/turns/list", {
-          threadId,
-          itemsView: "full",
-          sortDirection: "asc",
-          limit: 200,
-          ...(cursor === undefined ? {} : { cursor }),
-        }));
+        let page: Record<string, unknown>;
+        try {
+          page = object(await this.#server.request("thread/turns/list", {
+            threadId,
+            itemsView: "full",
+            sortDirection: "asc",
+            limit: 200,
+            ...(cursor === undefined ? {} : { cursor }),
+          }));
+        } catch (error) {
+          const thread = this.#threads.get(threadId);
+          const message = describeError(error);
+          const emptyHistory = `thread ${threadId} is not materialized yet; thread/turns/list is unavailable before first user message`;
+          // Codex explicitly reports an empty, pre-message thread as an RPC error.
+          // Never turn a failed pagination/read of existing history into an empty graph.
+          if (cursor === undefined && previous === undefined && thread !== undefined
+            && thread.entries.length === 0 && thread.itemOrder.length === 0
+            && thread.turnId === undefined && !thread.turnInProgress
+            && (message === emptyHistory || message === `${emptyHistory}（code=-32600）`)) return [];
+          throw error;
+        }
         if (!Array.isArray(page.data) || page.data.some(value => {
           const turn = object(value);
           return typeof turn.id !== "string" || !Array.isArray(turn.items) || turn.itemsView === "summary";
