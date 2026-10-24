@@ -303,8 +303,8 @@ private fun RemoteApp(
                     },
                     onSelectHost = model::selectHost,
                     onAddHost = { addingHost = true },
-                    // 状态页才读供应商摘要：它是 Host 侧最贵的一次模型读取（见 refreshProviderModel 的说明）。
-                onOpenStatus = { statusOpen = true; model.refreshProviderFacts() },
+                    onRequestProviders = model::refreshProviderFacts,
+                    onOpenStatus = { statusOpen = true; model.refreshProviderFacts() },
                 )
             }
         }
@@ -480,6 +480,7 @@ private fun RuntimeListScreen(
     onSelectHost: (String) -> Unit,
     onAddHost: () -> Unit,
     onOpenStatus: () -> Unit,
+    onRequestProviders: () -> Unit,
 ) {
     var aliasEditor by remember { mutableStateOf<Pair<String, RuntimeSummary>?>(null) }
     var moreMenuOpen by remember { mutableStateOf(false) }
@@ -504,6 +505,7 @@ private fun RuntimeListScreen(
                 onUnpairHost = onUnpairHost,
                 onAddHost = onAddHost,
                 onSetArchived = onSetArchived,
+                onRequestProviders = onRequestProviders,
                 // 打开别的电脑的会话前先切过去：交互命令永远只发给当前电脑。
                 onOpenSession = { hostId, sessionId ->
                     scope.launch { drawerState.close() }
@@ -839,6 +841,46 @@ internal fun NewSessionSheet(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+private fun HistoryPagingHeader(
+    phase: SessionReadPhase?,
+    error: String?,
+    feedback: String?,
+    onLoad: () -> Unit,
+) {
+    if (phase?.active == true) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(
+                "正在加载更早的历史…",
+                modifier = Modifier.padding(top = 8.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+    when {
+        phase == SessionReadPhase.FAILED && error != null -> WarningCard(feedback ?: error)
+        feedback != null -> WarningCard(feedback)
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            if (phase == SessionReadPhase.FAILED) "历史加载失败" else "还有更早的历史",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(onClick = onLoad) {
+            Text(if (phase == SessionReadPhase.FAILED) "重试" else "加载")
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 private fun OfflineHistoryScreen(
     state: RemoteState,
     sessionId: String?,
@@ -864,6 +906,7 @@ private fun OfflineHistoryScreen(
     val historyRead = historyKey?.let(state::historyReadForWindow)
     val firstRead = historyKey?.let { state.sessionReadForWindow(it, SessionReadKind.FIRST_PAGE) }
     val listState = remember(historyKey) { LazyListState() }
+    var historyPagingFeedback by remember(historyKey) { mutableStateOf<String?>(null) }
     var historyAnchorIndex by remember(historyKey) { mutableStateOf<Int?>(null) }
     var historyAnchorOffset by remember(historyKey) { mutableStateOf(0) }
     var historyAnchorCount by remember(historyKey) { mutableStateOf(0) }
@@ -874,7 +917,11 @@ private fun OfflineHistoryScreen(
         val offset = listState.firstVisibleItemScrollOffset
         val count = listState.layoutInfo.totalItemsCount
         val accepted = model.loadOlderHistory(key)
-        if (accepted.operationId == null) return
+        if (accepted.operationId == null) {
+            historyPagingFeedback = accepted.rejection ?: "历史加载请求未启动，请重试"
+            return
+        }
+        historyPagingFeedback = null
         historyAnchorIndex = index
         historyAnchorOffset = offset
         historyAnchorCount = count
@@ -942,14 +989,20 @@ private fun OfflineHistoryScreen(
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             historyKey?.let { state.conversations[it]?.systemNotice }?.let { notice -> item { NoticeCard(notice) } }
+            if (historyState?.hasOlder == true || historyRead?.phase?.active == true) item(key = "history-paging") {
+                HistoryPagingHeader(historyRead?.phase, historyRead?.error, historyPagingFeedback, ::loadHistoryPage)
+            }
             if (firstRead?.phase?.active == true) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             if (firstRead?.phase == SessionReadPhase.FAILED) item {
                 WarningCard(firstRead.error ?: "本地首屏读取失败")
                 TextButton(onClick = { model.selectOfflineSession(sessionId) }) { Text("重试读取") }
             } else if (firstRead?.phase?.active != true) projection.error?.let { item { WarningCard("历史记录加载失败：$it") } }
-            if (historyRead?.phase == HistoryReadPhase.FAILED) item {
-                WarningCard(historyRead.error ?: "历史记录加载失败")
+            if (historyRead?.phase == HistoryReadPhase.FAILED && historyState?.hasOlder != true) item {
+                WarningCard(historyPagingFeedback ?: historyRead.error ?: "历史记录加载失败")
                 TextButton(onClick = { loadHistoryPage() }) { Text("重试历史加载") }
+            }
+            if (historyPagingFeedback != null && historyState?.hasOlder != true && historyRead?.phase != HistoryReadPhase.FAILED) {
+                item { WarningCard(historyPagingFeedback!!) }
             }
             items(chatItems, key = ChatListItem::key) { item ->
                 when (item) {
@@ -1037,8 +1090,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val rangeError = state.sessionRangeFailures[sessionRangeFailureKey(runtimeId, "catchup")]
     val chatHeaderCount = listOf(
         runtime == null,
-        historyState?.loading == true,
-        historyRead?.phase == HistoryReadPhase.FAILED,
+        historyState?.hasOlder == true || historyRead?.phase?.active == true,
+        historyRead?.phase == HistoryReadPhase.FAILED && historyState?.hasOlder != true,
         firstReadError != null,
         rangeError != null,
         (state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError) != null,
@@ -1065,6 +1118,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     var historyAnchorPending by remember(runtimeId, sessionId) { mutableStateOf(false) }
     var historyAnchorOperationId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     var historyAnchorOffset by remember(runtimeId, sessionId) { mutableStateOf(0) }
+    var historyPagingFeedback by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     var initialPositioned by remember(runtimeId, sessionId) { mutableStateOf(false) }
     val isNearLatest by remember(listState, initialPositioned) {
@@ -1176,7 +1230,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         val index = anchor?.index ?: listState.firstVisibleItemIndex
         val offset = anchor?.let { -it.offset } ?: listState.firstVisibleItemScrollOffset
         val accepted = model.loadOlderHistory(runtimeId)
-        if (accepted.operationId == null) return
+        if (accepted.operationId == null) {
+            historyPagingFeedback = accepted.rejection ?: "历史加载请求未启动，请重试"
+            return
+        }
+        historyPagingFeedback = null
         historyAnchorMessageId = anchor?.key as? String
         historyAnchorIndex = index
         historyAnchorPending = true
@@ -1706,15 +1764,18 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 // 轮次间距 24，组内间距由 AssistantTurnCard 提供。
                 verticalArrangement = Arrangement.spacedBy(24.dp),
             ) {
-                if (runtime == null) item { WarningCard("此运行实例已离线。") }
-                if (historyState?.loading == true) {
-                    item { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
+                if (historyState?.hasOlder == true || historyRead?.phase?.active == true) item(key = "history-paging") {
+                    HistoryPagingHeader(historyRead?.phase, historyRead?.error, historyPagingFeedback, ::loadHistoryPage)
                 }
-                if (historyRead?.phase == HistoryReadPhase.FAILED) item {
+                if (runtime == null) item { WarningCard("此运行实例已离线。") }
+                if (historyRead?.phase == HistoryReadPhase.FAILED && historyState?.hasOlder != true) item {
                     Column {
-                        WarningCard(historyRead.error ?: "历史记录加载失败")
+                        WarningCard(historyPagingFeedback ?: historyRead.error ?: "历史记录加载失败")
                         TextButton(onClick = { loadHistoryPage() }) { Text("重试历史加载") }
                     }
+                }
+                if (historyPagingFeedback != null && historyState?.hasOlder != true && historyRead?.phase != HistoryReadPhase.FAILED) {
+                    item { WarningCard(historyPagingFeedback!!) }
                 }
                 firstReadError?.let { message -> item {
                     WarningCard(message)

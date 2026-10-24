@@ -98,6 +98,47 @@ async function fixture(options: { redirect?: string; missingCookie?: boolean; de
 }
 
 describe("DSH Web transport", () => {
+  it("receives a native history baseline larger than 16 MiB without reconnecting", async () => {
+    const backend = await fixture();
+    const client = await backend.connect();
+    const frames = vi.fn();
+    client.onReconnect = vi.fn();
+    client.subscribe("session/follow", {}, frames);
+    await vi.waitFor(() => expect(backend.opens).toHaveLength(2));
+    const value = { type: "snapshot", records: [{ event: { type: "tool/result", data: { text: "x".repeat(17 * 1024 * 1024) } } }] };
+    backend.send("session/follow", value);
+    await vi.waitFor(() => expect(frames).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    expect(frames.mock.calls[0]![0]).toEqual(value);
+    expect(client.onReconnect).not.toHaveBeenCalled();
+    expect(backend.sockets).toHaveLength(1);
+  });
+
+  it("persists the receiver error and stops replaying a frame beyond the bounded transport limit", async () => {
+    const backend = await fixture();
+    const client = await backend.connect();
+    client.onDiagnostic = vi.fn();
+    client.onExit = vi.fn();
+    // A frame's declared length is checked before its body is buffered. No 100 MiB allocation is needed.
+    const header = Buffer.alloc(10);
+    header[0] = 0x81; header[1] = 127;
+    header.writeBigUInt64BE(BigInt(100 * 1024 * 1024 + 1), 2);
+    (backend.sockets[0] as WebSocket & { _socket: import("node:net").Socket })._socket.write(header);
+    await vi.waitFor(() => expect(client.onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+      event: "socket.error", code: "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH", reason: "Max payload size exceeded", maxFrameBytes: 100 * 1024 * 1024,
+    })));
+    expect(client.onExit).toHaveBeenCalledWith(expect.stringContaining("transport limit"));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(backend.sockets).toHaveLength(1);
+  });
+
+  it("receives a history page larger than 16 MiB through its independent HTTP transport", async () => {
+    const backend = await fixture();
+    const client = await backend.connect();
+    const value = { records: [{ text: "x".repeat(17 * 1024 * 1024) }] };
+    backend.setRpcHandler((rpc, response) => backend.respond(response, rpc, value));
+    await expect(client.request("session/page", {})).resolves.toEqual(value);
+  });
+
   it("exchanges the launch token, uses named RPC arguments, and multiplexes independent streams", async () => {
     const backend = await fixture();
     const client = await backend.connect();
@@ -152,6 +193,59 @@ describe("DSH Web transport", () => {
     backend.sockets[0]!.terminate();
     await vi.waitFor(() => expect(backend.opens.filter(item => item.endpoint === "workspace/follow")).toHaveLength(2));
     expect(backend.opens.filter(item => item.endpoint === "session/follow")).toHaveLength(1);
+  });
+
+  it("does not abort an independent HTTP RPC when its WebSocket reconnects", async () => {
+    const backend = await fixture();
+    const client = await backend.connect();
+    let complete!: () => void;
+    backend.setRpcHandler((rpc, response) => { complete = () => backend.respond(response, rpc, { accepted: true }); });
+    const result = client.request("session/prompt", { request: { requestId: "only-once" } });
+    // Attach the rejection handler before rotating the socket so the regression is not an unhandled rejection.
+    const settled = result.then(value => ({ value }), error => ({ error: String(error) }));
+    await vi.waitFor(() => expect(backend.rpcs).toHaveLength(1));
+    client.onReconnect = vi.fn();
+    backend.sockets[0]!.terminate();
+    await vi.waitFor(() => expect(client.onReconnect).toHaveBeenCalledOnce());
+    complete();
+    expect(await settled).toEqual({ value: { accepted: true } });
+    expect(backend.rpcs).toHaveLength(1);
+  });
+
+  it("waits for carrier readiness before sending a new RPC during reconnect", async () => {
+    const backend = await fixture();
+    const client = await backend.connect();
+    // Let close handlers run, while the next generation is still inside its retry delay.
+    const closed = new Promise<void>(resolve => backend.sockets[0]!.once("close", () => resolve()));
+    backend.sockets[0]!.terminate();
+    await closed;
+    const result = client.request("skills/list", { request: { sessionId: "session" } });
+    await expect(result).resolves.toEqual({ accepted: true });
+    expect(backend.rpcs).toHaveLength(1);
+  });
+
+  it("recovers an ended native event stream without permanently stopping the client", async () => {
+    const backend = await fixture();
+    const client = await backend.connect();
+    client.onReconnect = vi.fn();
+    client.onExit = vi.fn();
+    backend.sockets[0]!.send(JSON.stringify({ type: "end", streamId: backend.opens[0]!.streamId }));
+    await vi.waitFor(() => expect(client.onReconnect).toHaveBeenCalledOnce());
+    expect(client.onExit).not.toHaveBeenCalled();
+    await expect(client.request("session/modelCatalog", {})).resolves.toEqual({ accepted: true });
+  });
+
+  it("opens a subscription added by onReconnect only once in the new generation", async () => {
+    const backend = await fixture();
+    const client = await backend.connect();
+    const frames = vi.fn();
+    client.onReconnect = () => { client.subscribe("session/follow", {}, frames); };
+    backend.sockets[0]!.terminate();
+    await vi.waitFor(() => expect(backend.opens.filter(item => item.endpoint === "session/follow")).toHaveLength(1));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(backend.opens.filter(item => item.endpoint === "session/follow")).toHaveLength(1);
+    backend.send("session/follow", { type: "snapshot", records: [] });
+    await vi.waitFor(() => expect(frames).toHaveBeenCalledOnce());
   });
 
   it("answers one approval in its exact client generation and delegates unhandled requests", async () => {

@@ -4,11 +4,23 @@ import { z } from "zod";
 import {
   AgentKeySchema, AgentStateRequestSchema, AgentStateSnapshotSchema, DiagnosticRecordSchema,
   DiagnosticsPageMessageSchema, DiagnosticsRequestSchema, agentKeyId, domainStateConfirmsAbsence, domainStateSchema,
+  HostProviderSummarySchema,
 } from "./agent-state.js";
 import { PROTOCOL_VERSION } from "./index.js";
 
 const source = { producer: "adapter" as const, sourceId: "codex:1", sourceEpoch: "epoch-a", sourceRevision: 3 };
 const noticeSchema = domainStateSchema(z.array(z.strictObject({ id: z.string(), message: z.string() })));
+
+describe("Host provider identities", () => {
+  it("separates managed profile ids from native session provider keys", () => {
+    const summary = { agentKind: "codexDesktop", current: "profile-uuid", modelProvider: "custom",
+      profiles: [], authenticated: null, switching: null, usage: { availability: "unknown", detail: null } };
+    expect(HostProviderSummarySchema.parse(summary)).toMatchObject({ current: "profile-uuid", modelProvider: "custom" });
+    expect(HostProviderSummarySchema.parse({ ...summary, modelProvider: null }).modelProvider).toBeNull();
+    expect(HostProviderSummarySchema.safeParse({ ...summary, modelProvider: "" }).success).toBe(false);
+    expect(HostProviderSummarySchema.safeParse({ ...summary, agentKind: "pi", modelProvider: undefined }).success).toBe(true);
+  });
+});
 
 describe("Agent 状态模型身份", () => {
   it("接受四个接入 kind，并保留 identity 校验", () => {

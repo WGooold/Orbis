@@ -14,6 +14,7 @@ export type DshWebEvent =
   | { type: "waterfall"; event: string; eventId: string; agentId: string; request: JsonObject }
   | { type: "cancel"; eventId: string };
 export type DshWebEventOutcome = { kind: "next" } | { kind: "result"; value?: unknown } | { kind: "rejected"; error: { name: string; message: string; code?: string; details?: unknown } };
+export type DshWebTransportDiagnostic = { event: "socket.closed" | "socket.error" | "handshake.timeout" | "event_stream.ended" | "reconnected" | "failed"; code?: string; reason?: string; maxFrameBytes?: number };
 
 export interface DshWebConnection {
   request<T = unknown>(method: string, args: JsonObject, timeoutMs?: number): Promise<T>;
@@ -22,6 +23,7 @@ export interface DshWebConnection {
   onEvent: ((event: DshWebEvent) => void) | undefined;
   onExit: ((reason: string) => void) | undefined;
   onReconnect: (() => void) | undefined;
+  onDiagnostic?: ((event: DshWebTransportDiagnostic) => void) | undefined;
   stop(): Promise<void>;
 }
 
@@ -65,12 +67,15 @@ export class DshWebRemoteError extends Error {
 }
 
 type Subscription = { method: string; args: JsonObject; onFrame: (frame: unknown) => void; onError: ((error: Error) => void) | undefined; streamId?: string };
-const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+// Match the native Gateway's ws transport default. Its bounded history page may
+// contain thousands of non-message events in addition to the requested messages.
+const MAX_FRAME_BYTES = 100 * 1024 * 1024;
 
 export class DshWebClient implements DshWebConnection {
   onEvent: DshWebConnection["onEvent"];
   onExit: DshWebConnection["onExit"];
   onReconnect: DshWebConnection["onReconnect"];
+  onDiagnostic: DshWebConnection["onDiagnostic"];
   readonly url: string;
   readonly #base: URL;
   readonly #protocol: DshWebProtocol;
@@ -79,6 +84,7 @@ export class DshWebClient implements DshWebConnection {
   readonly #subscriptions = new Set<Subscription>();
   readonly #streams = new Map<string, Subscription>();
   readonly #requests = new Set<AbortController>();
+  readonly #readyWaiters = new Set<() => void>();
   readonly #pendingEvents = new Map<string, string>();
   #cookie: string;
   #socket: WebSocket | undefined;
@@ -152,7 +158,10 @@ export class DshWebClient implements DshWebConnection {
     this.#handshakeTimer = setTimeout(() => {
       if (this.#socket !== socket || this.#ready) return;
       if (!this.#connectedOnce) this.#fail(new Error("DSH Web did not complete its event-stream handshake"));
-      else socket.terminate();
+      else {
+        this.#diagnose({ event: "handshake.timeout", reason: "DSH Web event-stream handshake timed out" });
+        socket.terminate();
+      }
     }, this.#timeoutMs);
     this.#handshakeTimer.unref();
     socket.on("open", () => {
@@ -173,21 +182,35 @@ export class DshWebClient implements DshWebConnection {
         ? "DSH Web authentication required; connect with its current launch URL or a valid local browser-session cookie"
         : `DSH Web connection failed: HTTP ${response.statusCode ?? "unknown"}`));
     });
-    socket.on("error", () => {
-      if (!this.#connectedOnce && !this.#closed) this.#fail(new Error("Cannot connect to DSH Web; start DeepSeek Harness Web and check its local address"));
+    socket.on("error", error => {
+      if (this.#socket !== socket || this.#closed) return;
+      this.#ready = false;
+      const code = (error as NodeJS.ErrnoException).code;
+      this.#diagnose({ event: "socket.error", ...(code === undefined ? {} : { code }),
+        reason: error.message.slice(0, 256), maxFrameBytes: MAX_FRAME_BYTES });
+      // Replaying the same oversized baseline cannot recover. Report the actual
+      // receiver failure instead of hiding it behind an endless 1006 reconnect loop.
+      if (code === "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH") {
+        this.#fail(new Error(`DSH Web frame exceeds the ${MAX_FRAME_BYTES / 1024 / 1024} MiB transport limit`));
+      } else if (!this.#connectedOnce) {
+        this.#fail(new Error("Cannot connect to DSH Web; start DeepSeek Harness Web and check its local address"));
+      }
     });
-    socket.on("close", () => {
+    socket.on("close", (code, reason) => {
       if (this.#socket !== socket) return;
+      if (!this.#closed) this.#diagnose({ event: "socket.closed", code: String(code), reason: reason.toString().slice(0, 256) });
       clearTimeout(this.#handshakeTimer);
       this.#socket = undefined;
       this.#ready = false;
       this.#clientId = undefined;
       this.#streams.clear();
+      for (const subscription of this.#subscriptions) delete subscription.streamId;
       // The DSH Gateway keeps a pending waterfall after a carrier generation
       // disappears and replays it to the next generation. Do not tell the
       // application that it was cancelled merely because this socket rotated.
       this.#pendingEvents.clear();
-      for (const request of this.#requests) request.abort();
+      // Browser-cookie HTTP RPCs have an independent lifetime in the native Gateway.
+      // Rotating the event socket must not cancel an accepted RPC or cause its mutation to be retried.
       if (this.#closed) return;
       if (!this.#connectedOnce) { this.#fail(new Error("DSH Web disconnected before its handshake completed")); return; }
       const cap = Math.min(10_000, 500 * 2 ** Math.min(this.#reconnectAttempt++, 5));
@@ -199,7 +222,15 @@ export class DshWebClient implements DshWebConnection {
 
   #receive(frame: StreamFrame): void {
     if (frame.streamId === this.#eventsStream) {
-      if (frame.type !== "item") throw new Error("DSH Web event stream ended");
+      if (frame.type !== "item") {
+        // Native event-source replacement can finish this logical stream while the
+        // carrier is still open. Recover a fresh generation instead of marking a
+        // valid terminal frame as a permanent protocol failure.
+        this.#ready = false;
+        this.#diagnose({ event: "event_stream.ended", ...(frame.type === "error" ? { code: frame.error.code } : {}) });
+        this.#socket?.terminate();
+        return;
+      }
       const event = record(frame.value);
       if (!this.#ready) {
         if (event.type !== "ready" || typeof event.clientId !== "string" || typeof record(event.host).home !== "string") throw new Error("DSH Web event stream did not start with ready");
@@ -212,10 +243,11 @@ export class DshWebClient implements DshWebConnection {
         this.#initialResolve?.();
         this.#initialResolve = undefined;
         this.#initialReject = undefined;
-        if (reconnecting) this.onReconnect?.();
+        if (reconnecting) { this.#diagnose({ event: "reconnected" }); this.onReconnect?.(); }
         // Let the adapter discard instance-bound follows before transport replay;
         // DSH following a now-cold Session would otherwise revive its Agent.
         for (const subscription of this.#subscriptions) this.#openSubscription(subscription);
+        for (const ready of this.#readyWaiters) ready();
         return;
       }
       this.#receiveEvent(event);
@@ -258,7 +290,7 @@ export class DshWebClient implements DshWebConnection {
   }
 
   async request<T = unknown>(method: string, args: JsonObject, timeoutMs = 30_000): Promise<T> {
-    if (this.#closed || !this.#ready) throw new Error("DSH Web is disconnected");
+    if (this.#closed) throw new Error("DSH Web is disconnected");
     if (!/^[a-zA-Z0-9_$.-]+(?:\/[a-zA-Z0-9_$.-]+)*$/.test(method) || method.split("/").some(part => part === "." || part === "..")) throw new Error("Invalid DSH Web RPC method");
     const rpcId = randomUUID();
     const controller = new AbortController();
@@ -266,6 +298,7 @@ export class DshWebClient implements DshWebConnection {
     const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
     timer?.unref();
     try {
+      await this.#waitUntilReady(controller.signal);
       const response = await fetch(new URL(`api/${method}`, this.#base), {
         method: "POST", redirect: "manual", signal: controller.signal,
         headers: { Cookie: this.#cookie, Origin: this.#base.origin, "Content-Type": "application/json" },
@@ -285,6 +318,27 @@ export class DshWebClient implements DshWebConnection {
     } finally { clearTimeout(timer); this.#requests.delete(controller); }
   }
 
+  #waitUntilReady(signal: AbortSignal): Promise<void> {
+    if (this.#closed) return Promise.reject(new Error("DSH Web is disconnected"));
+    if (this.#ready) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        this.#readyWaiters.delete(ready);
+        signal.removeEventListener("abort", aborted);
+        if (error) reject(error); else resolve();
+      };
+      const ready = () => { finish(this.#closed ? new Error("DSH Web is disconnected") : undefined); };
+      const aborted = () => { finish(new Error("DSH Web request interrupted while waiting for reconnection")); };
+      // Even an RPC without a response deadline must not wait forever for a carrier.
+      const timer = setTimeout(() => finish(new Error("DSH Web reconnection timed out")), this.#timeoutMs);
+      timer.unref();
+      this.#readyWaiters.add(ready);
+      signal.addEventListener("abort", aborted, { once: true });
+      if (signal.aborted) aborted();
+    });
+  }
+
   subscribe(method: string, args: JsonObject, onFrame: (frame: unknown) => void, onError?: (error: Error) => void): () => void {
     if (this.#closed) throw new Error("DSH Web is disconnected");
     const subscription: Subscription = { method, args, onFrame, onError };
@@ -300,6 +354,8 @@ export class DshWebClient implements DshWebConnection {
   }
 
   #openSubscription(subscription: Subscription): void {
+    // onReconnect can subscribe synchronously before the normal replay loop runs.
+    if (subscription.streamId && this.#streams.get(subscription.streamId) === subscription) return;
     subscription.streamId = randomUUID();
     this.#streams.set(subscription.streamId, subscription);
     this.#send({ type: "open", streamId: subscription.streamId, endpoint: subscription.method, payload: { args: subscription.args } });
@@ -326,11 +382,17 @@ export class DshWebClient implements DshWebConnection {
 
   #fail(error: Error): void {
     if (this.#closed) return;
+    this.#diagnose({ event: "failed", reason: error.message });
     this.#initialReject?.(error);
     this.#initialReject = undefined;
     this.#initialResolve = undefined;
     this.onExit?.(error.message);
     void this.stop();
+  }
+
+  #diagnose(event: DshWebTransportDiagnostic): void {
+    // Diagnostics must never change transport recovery or native command outcomes.
+    try { this.onDiagnostic?.(event); } catch { /* The Host owns diagnostic persistence. */ }
   }
 
   stop(): Promise<void> {
@@ -377,7 +439,7 @@ async function readJson(response: Response): Promise<unknown> {
       const chunk = await reader.read();
       if (chunk.done) break;
       length += chunk.value.byteLength;
-      if (length > MAX_FRAME_BYTES) throw new Error("DSH Web response exceeds 16 MiB");
+      if (length > MAX_FRAME_BYTES) throw new Error(`DSH Web response exceeds ${MAX_FRAME_BYTES / 1024 / 1024} MiB`);
       chunks.push(chunk.value);
     }
     return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;

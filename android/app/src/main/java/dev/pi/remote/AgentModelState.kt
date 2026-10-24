@@ -3,6 +3,7 @@ package dev.pi.remote
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.booleanOrNull
@@ -152,8 +153,17 @@ internal fun RemoteState.withAgentStateSnapshot(
     }
     val base = cleared.copy(agentModelEpoch = epoch)
     val ranged = changed["catalog"]?.takeIf { scope == "host" }?.let { base.beginCatalogRange(it, json) } ?: base
-    val projected = if (scope == "agent") ranged.applyAgentDomainProjection(message.string("runtimeId"), message.string("sessionId"), changed, json, parseInteraction)
-        else if (scope == "host") ranged.applyHostDomainProjection(changed, json) else ranged
+    // host.offline 会清空在线显示字段，但保留同代次的已应用领域和版本。
+    // Host 确认 unchanged 后必须重新投影这些缓存值，否则重连后字段会一直是未知。
+    // 使用当前镜像的版本；迟到的 unchanged 不能覆盖已经接受的更新。
+    val confirmed = changed.toMutableMap()
+    for (element in (message["unchanged"] as? JsonArray).orEmpty()) {
+        val name = (element as? JsonPrimitive)?.contentOrNull ?: continue
+        if (name in domains || read != null && name !in read.domains) continue
+        merged[name]?.let { confirmed[name] = it }
+    }
+    val projected = if (scope == "agent") ranged.applyAgentDomainProjection(message.string("runtimeId"), message.string("sessionId"), confirmed, json, parseInteraction)
+        else if (scope == "host") ranged.applyHostDomainProjection(confirmed, json) else ranged
     if (projected.error?.startsWith("Host 模型领域格式无效：") == true && projected.error != base.error) {
         return cleared.rejectedSnapshot(key, scope, requestId, projected.error)
     }
@@ -309,7 +319,7 @@ internal fun RemoteState.providerSwitchingView(): ProviderSwitchingView {
         val usage = row["usage"] as? JsonObject
         summaries += ProviderSummaryView(
             agentKind = kind,
-            current = row.string("current"),
+            current = row.string(if (kind == "codex" || kind == "codexDesktop") "modelProvider" else "current"),
             switching = row["switching"]?.jsonPrimitive?.booleanOrNull,
             usageUnknown = usage?.string("availability") != "ready",
             // profiles 为 null 是「这次没读到清单」，空数组才是「一个可选都没有」——两者不能混。
@@ -320,7 +330,7 @@ internal fun RemoteState.providerSwitchingView(): ProviderSwitchingView {
         return ProviderSwitchingView("电脑没有报任何供应商", null, StatusTone.Warn)
     }
     val detail = summaries.joinToString("、") { summary ->
-        summary.agentKind + ": " + (summary.current ?: "未配置")
+        summary.agentKind + ": " + (summary.current ?: if (summary.agentKind in setOf("codex", "codexDesktop")) "未核对" else "未配置")
     }
     val profiles = summaries.joinToString("、") { summary ->
         summary.agentKind + ": " + (summary.profileCount?.let { count -> count.toString() + " 个可选" } ?: "清单未读到")

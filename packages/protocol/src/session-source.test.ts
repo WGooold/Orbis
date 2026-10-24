@@ -29,6 +29,59 @@ describe("recoverable source", () => {
     expect(source.snapshot().live.tools.length).toBe(12);
   });
 
+  it("never drops committed entries when the live payload has to be shrunk", () => {
+    // 现场症状：模型一开始流式输出（思考卡片更新），手机上的旧历史整段消失，停止输出又恢复。
+    // 机制：live 超过页预算时旧实现回滚整条 patch，但 `#committed` 已经出队，条目就此丢失；
+    // 下一条 patch 的 `head` 指向客户端从未收到的条目，手机侧投影退化为空列表。
+    const patches: SessionPatch[] = [];
+    const source = new RecoverableSessionSource("session", patch => patches.push(patch));
+    source.setAvailability(true, true);
+    source.observe({ type: "message.started", message: { messageId: "think", role: "assistant", timestamp: 1,
+      content: [{ type: "thinking", text: "x".repeat(600_000) }] } });
+    const entryA: RemoteSessionEntry = { entryId: "a", parentId: null, type: "message",
+      timestamp: "2026-01-01T00:00:00.000Z", data: { message: { messageId: "u1", role: "user", timestamp: 1, content: [{ type: "text", text: "hi" }] } } };
+    source.reconcile([entryA], "a");
+    // 再来一次普通变化把留下的条目带出去。
+    source.observe({ type: "turn.started", turnId: "t", startedAt: 1 });
+    const delivered = patches.flatMap(patch => patch.entries ?? []);
+    expect(delivered.map(entry => entry.entryId)).toContain("a");
+    // 每条 patch 都必须装得下、且 baseSeq 连成一条链（客户端按链应用）。
+    let seq = 0;
+    for (const patch of patches) {
+      expect(patch.baseSeq).toBe(seq);
+      seq = patch.seq;
+      expect(Buffer.byteLength(JSON.stringify(patch), "utf8") + SESSION_SYNC_WRAPPER_BYTES)
+        .toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
+    }
+  });
+
+  it("keeps a whole canonical batch when the live stream exceeds the first wire budget", () => {
+    const patches: SessionPatch[] = [];
+    const source = new RecoverableSessionSource("session", patch => patches.push(patch));
+    source.transaction(() => {
+      source.reconcile(Array.from({ length: 4 }, (_, index): RemoteSessionEntry => ({
+        entryId: `e${index}`, parentId: index === 0 ? null : `e${index - 1}`, type: "message",
+        timestamp: new Date(index + 1).toISOString(),
+        data: { message: { messageId: `u${index}`, role: "user", timestamp: index + 1,
+          content: [{ type: "text", text: `row ${index}` }] } },
+      })), "e3");
+      source.setAvailability(true, true);
+      source.observe({ type: "message.started", message: { messageId: "think", role: "assistant", timestamp: 5,
+        content: [{ type: "thinking", text: "x".repeat(300_000) }] } });
+    });
+    const delivered = patches.flatMap(patch => patch.entries ?? []);
+    expect(delivered.map(entry => entry.entryId)).toEqual(["e0", "e1", "e2", "e3"]);
+    expect(patches.find(patch => patch.entries?.length)?.entries?.map(entry => entry.entryId))
+      .toEqual(["e0", "e1", "e2", "e3"]);
+    let seq = 0;
+    for (const patch of patches) {
+      expect(patch.baseSeq).toBe(seq);
+      seq = patch.seq;
+      expect(Buffer.byteLength(JSON.stringify(patch), "utf8") + SESSION_SYNC_WRAPPER_BYTES)
+        .toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
+    }
+  });
+
   it("retains confirmed turn timing through recovery until the next turn starts", () => {
     const source = new RecoverableSessionSource("session", () => undefined);
     source.setAvailability(true, true);

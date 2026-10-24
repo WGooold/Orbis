@@ -2,6 +2,33 @@
 
 在 Windows PowerShell 中运行。下面的相对路径命令以仓库根目录 `D:\orbis` 为当前目录。
 
+## DSH 断线恢复回归
+
+```powershell
+npm run build
+node scripts/test-dsh-web-reconnect.mjs .artifacts/host/dsh-web-reconnect.json
+```
+
+脚本启动独立的原生 DSH Web 服务与本机转发服务，验证首次打开、WebSocket 关闭、原生事件流结束和事件流错误之后的再次打开。每次都要求收到可用的历史基线与成功回执，并确认 skills、模型目录及恢复通知已经解除。它不发送用户消息、不调用模型供应商；结束时删除临时 DSH 数据并停止自己的服务。
+
+Host 将 DSH 传输诊断写入默认状态目录的 `diagnostics.ndjson`，分类为 `backend.transport`，记录连接关闭码、关闭原因、事件流结束及重新连接。目录读取错误仍单独记录；连接恢复不等于历史与元数据已经恢复。
+
+DSH 的 WebSocket 帧和 HTTP JSON 响应均有 100 MiB 上限。历史 follow 的消息数不等于事件数，一页可能同时包含大量工具与步骤事件。接收错误会另记 `socket.error`、原始错误码和上限，握手超时会记 `handshake.timeout`；超过硬上限时结束该连接并报告明确失败，不重复重放同一超大基线。`1006` 只表示没有正常关闭帧，不能单凭它认定是网络或大小限制。
+
+## USB 手机回归
+
+```powershell
+pwsh -File scripts/windows/android-phone-smoke.ps1 -Serial N78PZ5UCDIRCGQ8P
+```
+
+先用 `adb devices -l` 核对 serial，手机需要允许 USB 调试并保持解锁。脚本原子申请设备占用，通过 `android-build.ps1 -Background` 构建并用 `-Status` 轮询，再由 `android-install.ps1` 校验并覆盖安装应用和测试 APK，最后直接运行 instrumentation。它不卸载应用、不清除数据、不替换现有配对，也不停止电脑 Host。
+
+加 `-ValidateOnly` 可在没有手机时运行结果解析自检，覆盖通过、失败、跳过、崩溃、输出截断及重复结果；这不算实机测试通过。
+
+默认执行 `SessionGraphStoreInstrumentedTest`、`SessionSyncSelectionInstrumentedTest` 和 `DshInstrumentedTest`，覆盖 Android 加密数据库、同步事务和 DSH 界面交互。它们使用独立测试数据；这套手机回归与原生 DSH 断线恢复测试分别验证，不能据此宣称已验证用户原有配对的完整链路。可用 `-TestClass` 指定其他测试类，以逗号分隔。
+
+脚本在构建前清空 `.artifacts/app`，只保存这次的 APK、来源及 SHA-256 清单、构建日志、`instrumentation.log`、`test-results.xml`、`phone-smoke.json`、崩溃日志、内存信息和截图。只有 runner 正常结束、逐项结果齐全且没有失败、错误或跳过时才报告通过；ADB 退出码为零本身不算通过。设备未连接或占用不属于当前任务时立即停止。结束后释放自己的设备占用，保留手机应用和数据。
+
 ## 生成可运行包和 ZIP
 
 ```powershell

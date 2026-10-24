@@ -49,16 +49,44 @@ class SessionProviderFilterTest {
 
     @Test fun `catalog updates providers independently of sessions and clears stale config on failure or disconnect`() {
         val initial = RemoteState(hostId = "paired-host", sessions = sessions, sessionListRequests = setOf("list"))
-        val state = initial.withModelFixture("providers", """{"providers":[{"agentKind":"codex","current":"custom","profiles":null}]}""", scope = "host")
+        val state = initial.withModelFixture("providers", """{"providers":[{"agentKind":"codex","current":"profile-uuid","modelProvider":"custom","profiles":null}]}""", scope = "host")
         assertEquals(mapOf("codex" to "custom"), state.currentProviders)
         assertEquals(sessions, state.sessions)
-        val failed = state.withModelFixture("providers", """{"providers":[{"agentKind":"codex","current":null,"profiles":null}]}""", revision = 2, scope = "host")
+        val failed = state.withModelFixture("providers", """{"providers":[{"agentKind":"codex","current":"profile-uuid","modelProvider":null,"profiles":null}]}""", revision = 2, scope = "host")
         assertTrue(failed.currentProviders.isEmpty())
         assertTrue(reducer.reduce(state, """{"type":"host.offline","hostId":"host"}""").currentProviders.isEmpty())
         assertEquals(state, reducer.reduce(state, """{
             "type":"session.list.result","requestId":"stale","sessions":[],
             "currentProviders":[{"agentKind":"codex","provider":"wrong"}]
         }"""))
+    }
+
+    @Test fun `managed profile identity is never used as native session provider`() {
+        val state = RemoteState(hostId = "paired-host").withModelFixture("providers", """{"providers":[
+            {"agentKind":"codex","current":"managed-profile-uuid","profiles":[]},
+            {"agentKind":"codexDesktop","current":null,"modelProvider":"custom","profiles":null}
+        ]}""", scope = "host")
+        assertEquals(mapOf("codexDesktop" to "custom"), state.currentProviders)
+        assertEquals("codex: 未核对、codexDesktop: custom", state.providerSwitchingView().detail)
+        val absent = state.withModelFixture("providers", """{"providers":[
+            {"agentKind":"codex","current":"another-profile","modelProvider":"terminal","profiles":[]}
+        ]}""", revision = 2, scope = "host")
+        assertEquals(mapOf("codex" to "terminal"), absent.currentProviders)
+    }
+
+    @Test fun `desktop provider menu and ownership are independent from terminal providers`() {
+        val entries = sessions + listOf(entry("desktop-current", "custom", "codexDesktop"),
+            entry("desktop-other", "desktop-only", "codexDesktop"), entry("desktop-unknown", null, "codexDesktop"))
+            .associateBy { it.sessionId }
+        val tree = cachedHistoryTree(RemoteState(hostId = "paired-host", sessions = entries))
+        val desktop = codexProviderOptions(tree, "custom", "codexDesktop")
+        assertEquals(listOf(CURRENT_CODEX_PROVIDER, ALL_CODEX_PROVIDERS, "provider:desktop-only", UNKNOWN_CODEX_PROVIDER), desktop.map { it.key })
+        assertEquals("custom（当前使用）", desktop.first().label)
+        assertFalse(codexProviderOptions(tree, "custom", "codex").any { it.key == "provider:desktop-only" })
+        val rows = tree.single().directories.single().sessions.filter { it.agentKind == "codexDesktop" }
+        assertEquals(listOf("desktop-current"), rows.filter { matchesCodexProvider(it, CURRENT_CODEX_PROVIDER, "custom") }.map { it.sessionId })
+        assertEquals(listOf("desktop-other"), rows.filter { matchesCodexProvider(it, providerFilterKey("desktop-only"), "custom") }.map { it.sessionId })
+        assertEquals(listOf("desktop-unknown"), rows.filter { matchesCodexProvider(it, UNKNOWN_CODEX_PROVIDER, "custom") }.map { it.sessionId })
     }
 
     @Test fun `opening a foreign provider session explains how to switch without blocking Pi or unknown sessions`() {

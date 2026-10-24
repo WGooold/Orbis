@@ -13,7 +13,7 @@ import {
 import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshAcpClient, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
 import { dshEntries, openDshHistory, type DshHistory } from "./dsh-history.js";
-import { DshWebClient, type DshWebConnection } from "./dsh-web-client.js";
+import { DshWebClient, type DshWebConnection, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
 import { DshWebRuntime, STREAM_COALESCE_MS } from "./dsh-web-runtime.js";
 import { ensureDshWebService } from "./dsh-web-service.js";
 import type { DshStreamDecoder } from "./dsh-web-history.js";
@@ -539,6 +539,7 @@ type DshImplementation = AgentBackend & {
   onOffline?: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
   onCatalogChange?: (() => void) | undefined;
   onArchiveChange?: ((sessionId: string, archived: boolean) => void) | undefined;
+  onDiagnostic?: ((event: DshWebTransportDiagnostic) => void) | undefined;
   announce?: () => void;
   assertProviderSwitchReady?: () => void | Promise<void>;
   reloadProviderConfiguration?: (env: NodeJS.ProcessEnv, live?: boolean) => Promise<void>;
@@ -556,6 +557,7 @@ export class DshRuntime implements AgentBackend {
   #offline: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
   set onCatalogChange(value: (() => void) | undefined) { this.#implementation.onCatalogChange = value; }
   set onArchiveChange(value: ((sessionId: string, archived: boolean) => void) | undefined) { this.#implementation.onArchiveChange = value; }
+  set onDiagnostic(value: ((event: DshWebTransportDiagnostic) => void) | undefined) { this.#implementation.onDiagnostic = value; }
 
   get onMetadataChange(): (() => void) | undefined { return this.#metadataChange; }
   set onMetadataChange(value: (() => void) | undefined) {

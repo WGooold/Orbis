@@ -2180,6 +2180,17 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
       sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshRuntime: runtime });
     try {
+      client.onDiagnostic?.({ event: "socket.closed", code: "1001", reason: "peer left" });
+      client.onDiagnostic?.({ event: "socket.error", code: "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH", reason: "Max payload size exceeded", maxFrameBytes: 104857600 });
+      client.onDiagnostic?.({ event: "reconnected" });
+      const transport = host.readDiagnostics({ category: "backend.transport" }).records;
+      expect(transport).toEqual(expect.arrayContaining([
+        expect.objectContaining({ agentKind: "dsh", message: "DSH Web socket.closed", detail: { code: "1001", reason: "peer left" } }),
+        expect.objectContaining({ message: "DSH Web socket.error", detail: { code: "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH", reason: "Max payload size exceeded", maxFrameBytes: "104857600" } }),
+        expect.objectContaining({ agentKind: "dsh", message: "DSH Web reconnected", severity: "info" }),
+      ]));
+      const persisted = await readFile(join(stateDir, "diagnostics.ndjson"), "utf8");
+      expect(persisted).toContain('"category":"backend.transport"');
       await host.start();
       const ready = await readyDeviceCapturing({ host, relay }); device = ready.device;
       expect(ready.ready).toMatchObject({ runtimes: [expect.objectContaining({ runtimeId: "dsh:existing" })] });

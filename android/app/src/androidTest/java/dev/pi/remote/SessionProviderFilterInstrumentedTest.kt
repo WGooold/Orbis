@@ -33,10 +33,10 @@ class SessionProviderFilterInstrumentedTest {
             )
         } }
         openFilter()
-        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
+        compose.onNodeWithContentDescription("Codex 终端：按 provider 筛选").performClick()
         compose.onNodeWithText("custom（当前使用）").assertIsDisplayed()
         compose.onNodeWithContentDescription("当前 provider 筛选").assertExists()
-        compose.onNodeWithText("会话绑定所属 provider", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Codex 终端 · provider").assertIsDisplayed()
         capture("provider-menu")
         compose.onNodeWithText("custom（当前使用）").performClick()
         compose.onNodeWithText("Custom session").assertIsDisplayed()
@@ -45,7 +45,7 @@ class SessionProviderFilterInstrumentedTest {
         capture("current-provider")
 
         openFilter()
-        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
+        compose.onNodeWithContentDescription("Codex 终端：按 provider 筛选").performClick()
         compose.onNodeWithText("openai").performClick()
         compose.onNodeWithText("Other session").assertIsDisplayed().performClick()
         compose.onNodeWithText("需要切换 provider").assertIsDisplayed()
@@ -54,7 +54,7 @@ class SessionProviderFilterInstrumentedTest {
         capture("provider-mismatch")
         compose.onNodeWithText("知道了").performClick()
         openFilter()
-        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
+        compose.onNodeWithContentDescription("Codex 终端：按 provider 筛选").performClick()
         compose.onNodeWithText("全部 provider").performClick()
         compose.onNodeWithText("Custom session").assertIsDisplayed()
         compose.onNodeWithText("Other session").assertIsDisplayed()
@@ -62,12 +62,12 @@ class SessionProviderFilterInstrumentedTest {
         compose.onNodeWithText("Pi session").assertDoesNotExist()
 
         openFilter()
-        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
+        compose.onNodeWithContentDescription("Codex 终端：按 provider 筛选").performClick()
         compose.onNodeWithText("custom（当前使用）").performClick()
         compose.runOnIdle { state.value = state.value.copy(currentProviders = mapOf("codex" to "openai")) }
         compose.onNodeWithText("Other session").assertIsDisplayed()
         compose.onNodeWithText("Custom session").assertDoesNotExist()
-        compose.onNodeWithText("Codex · openai（当前使用）").assertIsDisplayed()
+        compose.onNodeWithText("Codex 终端 · openai（当前使用）").assertIsDisplayed()
         compose.onNode(hasSetTextAction()).performTextInput("no-match")
         compose.onNodeWithText("没有找到匹配的目录或会话").assertIsDisplayed()
         compose.onNodeWithContentDescription("清除搜索").performClick()
@@ -90,14 +90,62 @@ class SessionProviderFilterInstrumentedTest {
             )
         } }
         openFilter()
-        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
+        compose.onNodeWithContentDescription("Codex 终端：按 provider 筛选").performClick()
         compose.onNodeWithText("当前 provider（尚未获取）").performClick()
         compose.onNodeWithText("尚未获取当前 provider").assertIsDisplayed()
         compose.onNodeWithText("Unknown session").assertDoesNotExist()
         openFilter()
-        compose.onNodeWithContentDescription("按 provider 筛选").performClick()
+        compose.onNodeWithContentDescription("Codex 终端：按 provider 筛选").performClick()
         compose.onNodeWithText("未知 provider").performClick()
         compose.onNodeWithText("Unknown session").assertIsDisplayed()
+    }
+
+    @Test fun desktopProviderFilterUsesDesktopDefaultsAndKeepsTerminalOwnershipSeparate() {
+        var providerReads = 0
+        val entries = listOf(session("Desktop current", "custom", agent = "codexDesktop"),
+            session("Desktop other", "openai", agent = "codexDesktop"),
+            session("Desktop unknown", null, agent = "codexDesktop"),
+            session("Terminal session", "terminal", agent = "codex"))
+        val state = mutableStateOf(RemoteState(hostId = "paired-host", hostName = "Desktop",
+            sessions = entries.associateBy { it.sessionId }, currentProviders = mapOf("codex" to "terminal", "codexDesktop" to "custom")))
+        compose.setContent { PiRemoteTheme {
+            SessionDrawer(state = state.value, hosts = hostFor(state.value), onSelectHost = {}, onUnpairHost = {}, onAddHost = {},
+                onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> }, onNewSession = { _, _ -> }, onSetArchived = { _, _, _ -> },
+                onRequestProviders = { providerReads++ })
+        } }
+        openFilter()
+        compose.onNodeWithContentDescription("Codex 桌面版：按 provider 筛选").performClick()
+        compose.onNodeWithText("Codex 桌面版 · provider").assertIsDisplayed()
+        compose.onNodeWithText("custom（当前使用）").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(1, providerReads) }
+        compose.onNodeWithText("terminal", useUnmergedTree = true).assertDoesNotExist()
+        capture("desktop-provider-menu")
+        compose.onNodeWithText("custom（当前使用）").performClick()
+        compose.onNodeWithText("Desktop current").assertIsDisplayed()
+        compose.onNodeWithText("Desktop other").assertDoesNotExist()
+        compose.onNodeWithText("Terminal session").assertDoesNotExist()
+        compose.onNodeWithText("Codex 桌面版 · custom（当前使用）").assertIsDisplayed()
+        capture("desktop-current-provider")
+
+        openFilter()
+        compose.onNodeWithContentDescription("Codex 桌面版：按 provider 筛选").performClick()
+        compose.onNodeWithText("全部 provider").performClick()
+        compose.onNodeWithText("Desktop current").assertIsDisplayed()
+        compose.onNodeWithText("Desktop other").assertIsDisplayed()
+        compose.onNodeWithText("Desktop unknown").assertIsDisplayed()
+        compose.onNodeWithText("Terminal session").assertDoesNotExist()
+
+        openFilter()
+        compose.onNodeWithContentDescription("Codex 桌面版：按 provider 筛选").performClick()
+        compose.onNodeWithText("custom（当前使用）").performClick()
+        compose.runOnIdle { state.value = state.value.copy(currentProviders = mapOf("codex" to "terminal", "codexDesktop" to "openai")) }
+        compose.onNodeWithText("Desktop other").assertIsDisplayed()
+        compose.onNodeWithText("Desktop current").assertDoesNotExist()
+        openFilter()
+        compose.onNodeWithContentDescription("Codex 终端：按 provider 筛选").performClick()
+        compose.onNodeWithText("terminal（当前使用）").performClick()
+        compose.onNodeWithText("Terminal session").assertIsDisplayed()
+        compose.onNodeWithText("Desktop other").assertDoesNotExist()
     }
 
     private fun openFilter() = compose.onNode(hasContentDescription("筛选会话：", substring = true)).performClick()

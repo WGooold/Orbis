@@ -106,6 +106,34 @@ describe("DeepSeek Web runtime adapter", () => {
     expect(model.hasBaseline(scope)).toBe(true);
   });
 
+  it("keeps an in-flight preview alive across native connection replacement", async () => {
+    const f = discoveryFixture(); f.list([f.live("recover", true)]); await f.runtime.start();
+    const baseline = deferred<unknown>();
+    const baseRequest = f.request.getMockImplementation()!;
+    f.request.mockImplementation((method, args) => method === "session/page" ? baseline.promise : baseRequest(method, args));
+
+    // A preview starts the first source check and waits for its follow baseline.
+    f.runtime.dispatchCommand("dsh:recover", "preview-after-gap", {
+      type: "session.sync", sessionId: "dsh:recover", syncId: "preview-after-gap", range: "preview",
+    });
+    await vi.waitFor(() => expect(f.follows().length).toBe(1));
+
+    // Carrier reconnect replaces the pending follow while the preview owns its source check.
+    f.client.onReconnect?.();
+    f.subscriptions.find(subscription => subscription.method === "workspace/follow")!.frame({
+      type: "baseline", value: { archivedSessionIds: [] },
+    });
+    await vi.waitFor(() => expect(f.follows().length).toBe(1));
+    f.follows()[0]!.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: -1,
+      records: [], assistantStream: { revision: 0 } });
+    baseline.resolve({ records: [] });
+
+    await vi.waitFor(() => expect(f.events.some(({ event }) =>
+      event.type === "session.snapshot" && event.syncId === "preview-after-gap")).toBe(true));
+    expect(f.events.some(({ event }) => event.type === "command.result" &&
+      event.commandId === "preview-after-gap" && !event.ok)).toBe(false);
+  });
+
   it("rebuilds retry and compaction from native durable events and settles only their explicit outcomes", async () => {
     const f = discoveryFixture(); f.list([f.live("busy", true)]); await f.runtime.start();
     const follow = f.follows()[0]!;
@@ -517,6 +545,47 @@ describe("DeepSeek Web runtime adapter", () => {
     f.subscriptions[0]!.frame({ type: "baseline", value: { archivedSessionIds: ["browser"] } });
     expect(f.follows()).toHaveLength(0);
     expect(f.runtime.ownsRuntime("dsh:browser")).toBe(false);
+  });
+
+  it("reloads failed skills and model reads after the native session is verified on reconnect", async () => {
+    const f = discoveryFixture();
+    const baseRequest = f.request.getMockImplementation()!;
+    let unavailable = true;
+    f.request.mockImplementation((method, args) => {
+      if (unavailable && ["skills/list", "session/modelCatalog"].includes(method)) return Promise.reject(new Error("DSH Web is disconnected"));
+      return baseRequest(method, args);
+    });
+    f.list([f.live("browser", true)]); await f.runtime.start();
+    const notifications = () => f.events.map(({ event }) => event).filter(event => event.type === "notification.source").at(-1)?.notifications ?? [];
+    await vi.waitFor(() => expect(notifications().map(item => item.code)).toEqual(expect.arrayContaining(["dsh.skills", "dsh.models"])));
+    unavailable = false;
+    const skillsReads = () => f.request.mock.calls.filter(([method]) => method === "skills/list").length;
+    const before = skillsReads();
+    f.client.onReconnect?.();
+    await vi.waitFor(() => expect(f.changed).toHaveBeenCalledTimes(2));
+    expect(skillsReads()).toBe(before);
+    f.subscriptions[0]!.frame({ type: "baseline", value: { archivedSessionIds: [] } });
+    await vi.waitFor(() => expect(skillsReads()).toBe(before + 1));
+    await vi.waitFor(() => expect(notifications().map(item => item.code)).not.toEqual(expect.arrayContaining(["dsh.skills", "dsh.models"])));
+    expect(notifications().some(item => ["dsh.skills", "dsh.models"].includes(item.code))).toBe(false);
+  });
+
+  it("keeps a pending preview behind native membership and archive verification on reconnect", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    f.follows()[0]!.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: -1, records: [], assistantStream: { revision: 0 } });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16_000);
+    try {
+      f.runtime.dispatchCommand("dsh:browser", "pending-preview", {
+        type: "session.sync", sessionId: "dsh:browser", syncId: "pending-preview", range: "preview",
+      });
+      expect(f.follows()).toHaveLength(1);
+      f.client.onReconnect?.();
+      expect(f.follows()).toHaveLength(0);
+      await vi.waitFor(() => expect(f.changed).toHaveBeenCalledTimes(2));
+      f.subscriptions[0]!.frame({ type: "baseline", value: { archivedSessionIds: ["browser"] } });
+      expect(f.follows()).toHaveLength(0);
+      await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "command.result" && event.commandId === "pending-preview" && !event.ok)).toBe(true));
+    } finally { clock.mockRestore(); }
   });
 
   it("retries a failed follow only after rechecking that its native Agent is still live", async () => {

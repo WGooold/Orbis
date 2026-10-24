@@ -80,6 +80,7 @@ private enum class DrawerAgentFilter(
     DeepSeek("dsh", "DeepSeek", "dsh");
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
+    val hasProviderFilter: Boolean get() = this == Codex || this == CodexDesktop
 }
 
 private fun drawerAgentFilter(key: String): DrawerAgentFilter =
@@ -94,15 +95,16 @@ private fun DrawerAgentFilterMenu(
     providerOptions: List<CodexProviderOption>,
     providerFilterKey: String,
     onSelectProvider: (String) -> Unit,
+    onRequestProviders: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
-    val filterLabel = if (selected == DrawerAgentFilter.Codex) {
-        "Codex · ${providerOptions.firstOrNull { it.key == providerFilterKey }?.label.orEmpty()}"
+    val filterLabel = if (selected.hasProviderFilter) {
+        "${selected.label} · ${providerOptions.firstOrNull { it.key == providerFilterKey }?.label.orEmpty()}"
     } else selected.label
     Box {
         NeumorphIconButton(
-            onClick = { showProviders = false; expanded = true },
+            onClick = { showProviders = false; expanded = true; if (selected.hasProviderFilter) onRequestProviders() },
             icon = Icons.Rounded.FilterList,
             contentDescription = "筛选会话：$filterLabel",
             tint = if (selected == DrawerAgentFilter.All) {
@@ -114,7 +116,7 @@ private fun DrawerAgentFilterMenu(
         NeumorphMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             if (showProviders) {
                 NeumorphMenuItem(
-                    text = { Text("Codex · provider") },
+                    text = { Text("${selected.label} · provider") },
                     leadingIcon = { Icon(Icons.Rounded.ArrowBack, contentDescription = "返回会话筛选", modifier = Modifier.size(18.dp)) },
                     onClick = { showProviders = false },
                 )
@@ -133,7 +135,7 @@ private fun DrawerAgentFilterMenu(
                     text = { Text(filter.label) },
                     onClick = {
                         onSelect(filter)
-                        if (filter == DrawerAgentFilter.Codex) showProviders = true else expanded = false
+                        if (filter.hasProviderFilter) { showProviders = true; onRequestProviders() } else expanded = false
                     },
                     leadingIcon = {
                         if (filter == DrawerAgentFilter.All) {
@@ -145,7 +147,7 @@ private fun DrawerAgentFilterMenu(
                     trailingIcon = {
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             if (filter == selected) Icon(Icons.Rounded.Check, contentDescription = "当前筛选", tint = MaterialTheme.colorScheme.primary)
-                            if (filter == DrawerAgentFilter.Codex) Icon(Icons.Rounded.ChevronRight, contentDescription = "按 provider 筛选")
+                            if (filter.hasProviderFilter) Icon(Icons.Rounded.ChevronRight, contentDescription = "${filter.label}：按 provider 筛选")
                         }
                     },
                 )
@@ -180,6 +182,7 @@ internal fun SessionDrawer(
     onOpenHistory: (String, String) -> Unit,
     onNewSession: (String, String?) -> Unit,
     onSetArchived: (String, String, Boolean) -> Unit,
+    onRequestProviders: () -> Unit = {},
 ) {
     val tree = remember(hosts) {
         cachedHistoryTree(hosts.map { it.state })
@@ -187,24 +190,24 @@ internal fun SessionDrawer(
     val activeHostId = state.hostId
     var agentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
     val agentFilter = drawerAgentFilter(agentFilterKey)
-    val currentProvider = state.currentProviders["codex"]
-    val currentProviders = remember(hosts) { hosts.associate { it.hostId to it.state.currentProviders["codex"] } }
-    var requestedProviderKey by rememberSaveable(activeHostId) { mutableStateOf(CURRENT_CODEX_PROVIDER) }
-    val providerOptions = remember(tree, currentProvider) { codexProviderOptions(tree, currentProvider) }
+    val currentProvider = state.currentProviders[agentFilter.key]
+    val currentProviders = remember(hosts, agentFilterKey) { hosts.associate { it.hostId to it.state.currentProviders[agentFilter.key] } }
+    var requestedProviderKey by rememberSaveable(activeHostId, agentFilterKey) { mutableStateOf(CURRENT_CODEX_PROVIDER) }
+    val providerOptions = remember(tree, currentProvider, agentFilterKey) { codexProviderOptions(tree, currentProvider, agentFilter.key) }
     val providerKey = requestedProviderKey.takeIf { key -> providerOptions.any { it.key == key } } ?: CURRENT_CODEX_PROVIDER
     val providerLabel = providerOptions.first { it.key == providerKey }.label
     var showArchived by rememberSaveable { mutableStateOf(false) }
     var blockedSession by remember { mutableStateOf<Pair<String, String>?>(null) }
     val filteredTree = remember(tree, agentFilterKey, showArchived, providerKey, currentProviders, activeHostId) {
         tree.mapNotNull { host ->
-            // The provider filter is meaningful only where the APP knows the active provider; rows
-            // from other computers stay visible instead of being filtered by a foreign catalogue.
+            // Current-provider ownership is checked against this backend on the selected computer.
+            // Other computers keep their rows; their defaults are independent.
             val hostProvider = if (host.hostId == activeHostId) currentProviders[host.hostId] else null
             host.copy(
                 directories = host.directories.mapNotNull { directory ->
                     directory.copy(sessions = directory.sessions.filter {
                         agentFilter.matches(it) && it.isArchived == showArchived &&
-                            (agentFilter != DrawerAgentFilter.Codex || hostProvider == null ||
+                            (!agentFilter.hasProviderFilter || host.hostId != activeHostId ||
                                 matchesCodexProvider(it, providerKey, hostProvider))
                     })
                         .takeIf { it.sessions.isNotEmpty() }
@@ -312,7 +315,8 @@ internal fun SessionDrawer(
                         onToggleArchived = { showArchived = !showArchived },
                         providerOptions = providerOptions,
                         providerFilterKey = providerKey,
-                        onSelectProvider = { requestedProviderKey = it; agentFilterKey = DrawerAgentFilter.Codex.key },
+                        onSelectProvider = { requestedProviderKey = it },
+                        onRequestProviders = onRequestProviders,
                     )
                     NeumorphIconButton(
                         onClick = { activeHostId?.let { onNewSession(it, null) } },
@@ -322,9 +326,9 @@ internal fun SessionDrawer(
                         tint = MaterialTheme.colorScheme.primary,
                     )
                 }
-            if (agentFilter == DrawerAgentFilter.Codex) {
+            if (agentFilter.hasProviderFilter) {
                 Text(
-                    "Codex · $providerLabel",
+                    "${agentFilter.label} · $providerLabel",
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
@@ -367,7 +371,7 @@ internal fun SessionDrawer(
                             Text(
                                 if (searchTerm.isEmpty()) {
                                     if (showArchived) "没有已归档的会话"
-                                    else if (agentFilter == DrawerAgentFilter.Codex && providerKey == CURRENT_CODEX_PROVIDER && currentProvider == null) "尚未获取当前 provider"
+                                    else if (agentFilter.hasProviderFilter && providerKey == CURRENT_CODEX_PROVIDER && currentProvider == null) "尚未获取当前 provider"
                                     else if (agentFilter == DrawerAgentFilter.All) "还没有可显示的会话"
                                     else "没有${agentFilter.label}会话"
                                 } else "没有找到匹配的目录或会话",

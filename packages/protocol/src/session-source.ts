@@ -439,58 +439,59 @@ export class RecoverableSessionSource {
     };
   }
 
-  /** live 序列化后的下界字节数（ADR-0035 §13）；O(live 条目数)，不碰正文。 */
-  #liveLowerBoundBytes(): number {
-    let total = 128;
-    for (const id of this.#messages.keys()) total += this.#messageBytes.get(id) ?? 0;
-    for (const id of this.#tools.keys()) total += this.#toolBytes.get(id) ?? 0;
-    return total;
-  }
-
   #touch(): void {
     this.#dirty = true;
     if (this.#depth === 0) this.#requestFlush();
   }
 
+  /**
+   * 构造有界 patch。流式正文过大时缩紧正文预算，已 reconcile 的历史条目仍必须随连续 seq 发出；
+   * 如果连空 live 都超预算，就先仅发 canonical 条目，live 状态随后在 sync/checkpoint 收敛。
+   */
   #flush(): void {
     if (process.env.ORBIS_SEQ_DEBUG) { try { appendFileSync(process.env.ORBIS_SEQ_DEBUG, `FLUSH ${this.#sessionId.slice(0, 24)} seq=${this.#seq + 1} ready=${this.#ready} complete=${this.#complete} committed=${this.#committed.length} msg=${this.#messages.size} tools=${this.#tools.size} turn=${this.#turn?.turnId ?? "-"}\n`); } catch { /* debug only */ } }
     this.#dirty = false;
     if (this.#messages.size > 256 || this.#tools.size > 256) { this.#committed = []; return; }
-    // ADR-0035 §13：先用 O(条目数) 的**下界**预判预算，超了就跳过构造（别再白 clone + stringify）。
-    // ADR-0038：live 装不下时先按线路预算截断再发布，而不是静默丢弃——
-    // 丢弃只会让客户端停在旧内容上（ADR-0035 §13 的原意是"别白付构造成本"，不是"别发"）。
-    const oversizedLive = this.#liveLowerBoundBytes() > SESSION_SYNC_PAGE_BYTES - SESSION_SYNC_WRAPPER_BYTES;
-    // 只有真的会发布时才推进版本：Host 要求 baseSeq === 上一版 seq，跳过时推进会留下永久缺口，
-    // 之后每一条 patch 都会被拒绝（现场表现为 Host 诊断里每秒两条 Rejected conversation transaction）。
-    this.#seq++;
-    // 用**当前**状态构造这一版：`snapshot()` 返回的是"已发布的那一版"，此处必须绕过它。
-    const snapshot = this.#currentSnapshot();
-    if (oversizedLive) snapshot.live = truncateWireLive(snapshot.live, WIRE_FIELD_LIMIT_BYTES);
-    const patch: Extract<RuntimeEvent, { type: "session.patch" }> = {
-      type: "session.patch", sessionId: this.#sessionId, source: snapshot.version, baseSeq: this.#seq - 1, seq: this.#seq,
-      checkpointId: snapshot.checkpoint.checkpointId, head: snapshot.checkpoint.head,
-      headCompleteness: snapshot.checkpoint.headCompleteness, live: snapshot.live,
-    };
+    const current = this.#currentSnapshot();
     const committed = this.#committed;
+    if (this.#ready && committed.length > 256) return;
+    // If canonical entries are pending, never publish the new head without them. Otherwise the
+    // receiver cannot build the parent chain and its projection becomes empty.
+    const batches: readonly RemoteSessionEntry[][] = this.#ready && committed.length > 0
+      ? [committed] : [[]];
+    let chosen: { patch: Extract<RuntimeEvent, { type: "session.patch" }>; entryCount: number } | undefined;
+    for (const batch of batches) {
+      for (let limit = WIRE_FIELD_LIMIT_BYTES; ; limit = Math.floor(limit / 2)) {
+        const live = limit === WIRE_FIELD_LIMIT_BYTES
+          ? structuredClone(current.live)
+          : truncateWireLive(structuredClone(current.live), limit);
+        const patch: Extract<RuntimeEvent, { type: "session.patch" }> = {
+          type: "session.patch", sessionId: this.#sessionId, source: current.version,
+          baseSeq: this.#seq, seq: this.#seq + 1,
+          checkpointId: `${this.#epoch}:${this.#seq + 1}`, head: current.checkpoint.head,
+          headCompleteness: current.checkpoint.headCompleteness, live,
+        };
+        if (batch.length > 0) {
+          patch.entries = [...batch];
+          const display = displayBatchFor(batch, this.#entries, this.#head, { boundaryParentId: this.#boundaryParentId });
+          if (display !== undefined) patch.display = display;
+        }
+        if (Buffer.byteLength(JSON.stringify(patch), "utf8") + SESSION_SYNC_WRAPPER_BYTES <= SESSION_SYNC_PAGE_BYTES) {
+          chosen = { patch, entryCount: batch.length };
+          break;
+        }
+        if (limit <= 2 * 1024) break;
+      }
+      if (chosen !== undefined) break;
+    }
+    // Nothing was published, so retain committed rows and version. A later state change retries.
+    if (chosen === undefined) return;
+    this.#seq += 1;
+    chosen.patch.seq = this.#seq;
+    chosen.patch.source = { ...current.version, seq: this.#seq };
+    chosen.patch.checkpointId = `${this.#epoch}:${this.#seq}`;
     this.#committed = [];
-    const withEntries = { ...patch, entries: committed };
-    if (this.#ready && committed.length > 0 && committed.length <= 256 &&
-      Buffer.byteLength(JSON.stringify(withEntries), "utf8") + SESSION_SYNC_WRAPPER_BYTES <= SESSION_SYNC_PAGE_BYTES) {
-      patch.entries = committed;
-      // 显示投影与这批条目绑定同一来源版本，跟着同一份 patch 走：客户端因此不必解释原生形状。
-      const display = displayBatchFor(committed, this.#entries, this.#head, { boundaryParentId: this.#boundaryParentId });
-      if (display !== undefined) patch.display = display;
-    }
-    // Oversize state remains recoverable as an explicit sync error, never a truncated complete inventory.
-    // 精确检查也可能在粗略预判之后才判超（少数字符的转义膨胀）：同样回滚版本，不留缺口。
-    if (patch.live.messages.length > 256 || patch.live.tools.length > 256 ||
-      Buffer.byteLength(JSON.stringify(patch), "utf8") + SESSION_SYNC_WRAPPER_BYTES > SESSION_SYNC_PAGE_BYTES) {
-      this.#seq -= 1;
-      return;
-    }
-    // 记下已发布的那一版：`snapshot()` 在后续变化发不出去时原样返回它，保证
-    // 「同一个 seq 只对应一份状态」（ADR-0026）。live 用 patch 里那份（可能已按线路预算截断）。
-    this.#published = { seq: this.#seq, ready: this.#ready, complete: this.#complete, head: this.#head, live: patch.live };
-    this.#publish(patch);
+    this.#published = { seq: this.#seq, ready: this.#ready, complete: this.#complete, head: this.#head, live: chosen.patch.live };
+    this.#publish(chosen.patch);
   }
 }

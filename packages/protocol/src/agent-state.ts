@@ -318,8 +318,10 @@ export const HostProviderSummarySchema = z.strictObject({
   agentKind: AgentKindSchema,
   availability: DomainAvailabilitySchema.optional(),
   profilesTruncated: z.boolean().optional(),
-  /** 当前生效的 provider id；后端完全没配置时为 null。 */
+  /** Host 当前选中的供应商 profile id；不是原生会话的 modelProvider。 */
   current: z.string().min(1).max(128).nullable(),
+  /** 原生后端当前配置的 modelProvider，用于会话归属筛选；null 表示本次未能核对。 */
+  modelProvider: z.string().min(1).max(128).nullable().optional(),
   /** profile 清单；`null` 表示这次没拿到清单（不是「没有 profile」）。 */
   profiles: z.array(z.strictObject({
     id: z.string().min(1).max(128),

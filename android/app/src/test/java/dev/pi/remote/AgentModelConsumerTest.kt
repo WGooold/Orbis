@@ -143,4 +143,72 @@ class AgentModelConsumerTest {
         assertEquals("unknown", ready.runtimes.getValue("runtime").status)
         assertEquals(ready, reducer.reduce(ready, snapshot(domain("model", """{"provider":"p","id":"old"}""", 9)), channel = "ctl"))
     }
+
+    private fun reconnectWithHostRead(): RemoteState {
+        val attached = RemoteState(hostId = "host", e2eReady = true, agentModelEpoch = "epoch")
+            .withModelFixture("backends", """{"agents":["pi","codexDesktop"],"launchableAgents":["pi","codexDesktop"],
+                "codexDesktop":{"state":"attached","reason":"已接入 Codex 桌面版 app-server"}}""", scope = "host")
+        val offline = reducer.reduce(attached, """{"type":"host.offline","hostId":"host"}""")
+        assertNull(offline.codexDesktop)
+        assertNotNull(offline.agentStateSnapshots["host||"]?.domains?.get("backends"))
+        val ready = reducer.reduce(offline, """{"type":"device.ready","protocolVersion":$PROTOCOL_VERSION,
+            "deviceId":"device","modelEpoch":"epoch","runtimes":[{"runtimeId":"desktop","name":"Codex 桌面版",
+            "cwd":"/repo","status":"idle","sessionId":"session","agentKind":"codexDesktop"}]}""", channel = "ctl")
+        return ready.copy(agentStateRequests = setOf("host-read"), agentStateReads = mapOf("host-read" to
+            AgentStateRead("host||", "host", setOf("backends"))))
+    }
+
+    private fun unchangedHost(requestId: String = "host-read", epoch: String = "epoch", domains: String = "\"backends\"") = """{
+        "type":"agent.state.snapshot","protocolVersion":$PROTOCOL_VERSION,"requestId":"$requestId",
+        "scope":"host","modelEpoch":"$epoch","domains":[],"missing":[],"truncated":false,"unchanged":[$domains]}"""
+
+    @Test fun `unchanged backends restores desktop attachment after same Host reconnect`() {
+        val ready = reconnectWithHostRead()
+        assertNull(ready.codexDesktop)
+        val restored = reducer.reduce(ready, unchangedHost(), channel = "msg")
+        assertEquals("attached", restored.codexDesktop?.state)
+        assertEquals("已接入 Codex 桌面版 app-server", restored.codexDesktop?.reason)
+        assertEquals("已接入", codexDesktopText(restored.codexDesktop))
+        assertEquals(setOf("pi", "codexDesktop"), restored.supportedAgents)
+        assertEquals(setOf("pi", "codexDesktop"), restored.launchableAgents)
+        assertEquals(ready.agentStateSnapshots["host||"]?.domains?.get("backends"),
+            restored.agentStateSnapshots["host||"]?.domains?.get("backends"))
+    }
+
+    @Test fun `unchanged does not restore attachment from unregistered reads old epochs or unrelated domains`() {
+        val ready = reconnectWithHostRead()
+        for (payload in listOf(unchangedHost(requestId = "previous-read"), unchangedHost(epoch = "previous-epoch"),
+            unchangedHost(domains = "\"providers\""), unchangedHost(domains = ""))) {
+            assertNull(reducer.reduce(ready, payload, channel = "msg").codexDesktop)
+        }
+        val fresh = reducer.reduce(ready, """{"type":"device.ready","protocolVersion":$PROTOCOL_VERSION,
+            "deviceId":"device","modelEpoch":"fresh","runtimes":[]}""", channel = "ctl")
+            .copy(agentStateRequests = setOf("host-read"), agentStateReads = ready.agentStateReads)
+        assertNull(reducer.reduce(fresh, unchangedHost(epoch = "fresh"), channel = "msg").codexDesktop)
+    }
+
+    @Test fun `late unchanged confirmation uses the latest accepted backend version`() {
+        val ready = reconnectWithHostRead()
+        val closed = ready.withModelFixture("backends", """{"agents":["pi"],"launchableAgents":["pi","codexDesktop"],
+            "codexDesktop":{"state":"closed","reason":"Codex 桌面版已关闭"}}""", revision = 2, scope = "host")
+        val late = reducer.reduce(closed, unchangedHost(), channel = "msg")
+        assertEquals("closed", late.codexDesktop?.state)
+        assertEquals(setOf("pi"), late.supportedAgents)
+    }
+
+    @Test fun `unchanged agent domains restore same-session fields cleared while Host was offline`() {
+        val first = receive(initial(), listOf(domain("execution", """{"phase":"running"}"""),
+            domain("model", """{"provider":"p","id":"m","name":"Current model"}""")).joinToString(","))
+        val offline = reducer.reduce(first, """{"type":"host.offline","hostId":"host"}""")
+        val ready = reducer.reduce(offline, """{"type":"device.ready","protocolVersion":$PROTOCOL_VERSION,
+            "deviceId":"device","modelEpoch":"epoch","runtimes":[{"runtimeId":"runtime","name":"Agent",
+            "cwd":"/repo","status":"running","sessionId":"session","agentKind":"pi"}]}""", channel = "ctl")
+            .copy(agentStateRequests = initial().agentStateRequests, agentStateReads = initial().agentStateReads)
+        assertNull(ready.runtimes.getValue("runtime").model)
+        val restored = reducer.reduce(ready, """{"type":"agent.state.snapshot","protocolVersion":$PROTOCOL_VERSION,
+            "requestId":"read","scope":"agent","runtimeId":"runtime","agentKind":"pi","sessionId":"session",
+            "modelEpoch":"epoch","domains":[],"missing":[],"truncated":false,"unchanged":["execution","model"]}""", channel = "msg")
+        assertEquals("running", restored.runtimes.getValue("runtime").status)
+        assertEquals("m", restored.runtimes.getValue("runtime").model?.id)
+    }
 }

@@ -33,6 +33,7 @@ import {
   DeviceE2ePayloadSchema,
   PROTOCOL_VERSION,
   type AgentKind,
+  type HostProviderSummary,
   type AgentSessionSummary,
   type CodexDesktopAttach,
   type DeviceE2ePayload,
@@ -353,16 +354,20 @@ export class HostService {
 
   async #refreshProviderFacts(): Promise<void> {
     const manager = this.#options.providers;
-    if (!manager) { this.#hostStateFacts.unknown("providers"); return; }
+    if (!manager && !this.#backends.some(backend => backend.currentProvider !== undefined)) {
+      this.#hostStateFacts.unknown("providers"); return;
+    }
     const generation = ++this.#providerFactsGeneration;
     const modelEpoch = this.#agentStateRegistry.currentModelEpoch();
     const kinds: AgentKind[] = ["pi", "codex", "dsh"];
+    if (this.#backends.some(backend => backend.kind === "codexDesktop")) kinds.push("codexDesktop");
     const providers = await Promise.all(kinds.map(async (kind) => {
       const switching = providerSwitchingFact(this.#providerChanging, kind);
       const empty = { agentKind: kind, availability: "unknown" as const, current: null, profiles: null, authenticated: null, switching,
         usage: { availability: "unknown" as const, detail: null } };
+      let summary: HostProviderSummary = empty;
       try {
-        return await manager.publicState(kind, { switching,
+        if (manager && kind !== "codexDesktop") summary = await manager.publicState(kind, { switching,
           ...(this.#options.providerUsage === undefined ? {} : { usage: this.#options.providerUsage }) });
       } catch (error) {
         if (this.#providerFactsClosing) return empty;
@@ -373,8 +378,17 @@ export class HostService {
           message: `读取 ${kind} 供应商清单失败`, detail: { reason: detail.slice(0, 256) },
         });
         const previous = this.#hostStateFacts.readProviders()?.providers.find(provider => provider.agentKind === kind);
-        return previous ? { ...previous, availability: "unknown" as const, switching } : empty;
+        summary = previous ? { ...previous, availability: "unknown" as const, switching } : empty;
       }
+      // ADR-0032 §8：profile id 与原生会话 provider 分开；终端和桌面分别核对各自 app-server。
+      if (kind === "codex" || kind === "codexDesktop") {
+        const backend = this.#backends.find(candidate => candidate.kind === kind && candidate.isReady());
+        let modelProvider: string | undefined;
+        try { modelProvider = await backend?.currentProvider?.(); }
+        catch (error) { this.#options.log?.(`读取 ${kind} 当前 provider 失败：${describeError(error)}`); }
+        summary = { ...summary, modelProvider: backend && this.#backends.includes(backend) && backend.isReady() ? modelProvider ?? null : null };
+      }
+      return summary;
     }));
     if (!this.#providerFactsClosing && generation === this.#providerFactsGeneration && modelEpoch === this.#agentStateRegistry.currentModelEpoch()) {
       this.#hostStateFacts.providers({ providers });
@@ -632,6 +646,11 @@ export class HostService {
     }
     if (options.dshRuntime !== undefined) {
       const dsh = options.dshRuntime;
+      dsh.onDiagnostic = event => this.recordDiagnostic({ scope: "host", agentKind: "dsh", sessionId: null,
+        category: "backend.transport", severity: event.event === "reconnected" ? "info" : event.event === "failed" ? "error" : "warning",
+        message: `DSH Web ${event.event}`, detail: { ...(event.code === undefined ? {} : { code: event.code }),
+          ...(event.reason === undefined ? {} : { reason: event.reason }),
+          ...(event.maxFrameBytes === undefined ? {} : { maxFrameBytes: String(event.maxFrameBytes) }) } });
       dsh.setEventSink((event, runtimeId) => this.#publishRuntimeEvent(runtimeId, event));
       dsh.onCatalogChange = () => this.#invalidateCatalog();
       dsh.onArchiveChange = (sessionId, archived) => {

@@ -10,7 +10,7 @@ import {
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
 } from "@pi-remote/protocol";
 import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
-import { DshWebClient, type DshWebConnection, type DshWebEvent } from "./dsh-web-client.js";
+import { DshWebClient, type DshWebConnection, type DshWebEvent, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
 import { dshErrorText, dshWebEntries, dshWebEntryId, dshWebEntryText, dshWebMessage, dshWebTreeOptions, type DshStreamDecoder, type DshWebLogEvent } from "./dsh-web-history.js";
 import { localHostname } from "./sessions.js";
 import { dshPermissionOptions, dshPermissions } from "./dsh-permissions.js";
@@ -53,7 +53,7 @@ type ModelSelection = { provider: string; model: string; reasoningEffort?: strin
 type WebSession = {
   source: RecoverableSessionSource;
   sourceCheckedAt: number;
-  sourceCheck?: { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
+  sourceCheck?: { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout; generation: number };
   notifications: NotificationSource; skillsGeneration: number; modelGeneration: number; followGeneration: number;
   id: string; cwd: string; createdAt: number; title?: string; entries: RemoteSessionEntry[]; skills: { name: string; description: string }[];
   /** 分页预处理缓存：翻页只换页，不重算索引与显示投影（ADR-0035 §10）。 */
@@ -111,6 +111,7 @@ export class DshWebRuntime implements AgentBackend {
   onOffline: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
   onCatalogChange: (() => void) | undefined;
   onArchiveChange: ((sessionId: string, archived: boolean) => void) | undefined;
+  onDiagnostic: ((event: DshWebTransportDiagnostic) => void) | undefined;
 
   /** 流式 patch 合并窗口（ADR-0035 §15）；0 = 原行为，生产入口传 `STREAM_COALESCE_MS`。 */
   readonly #coalesceMs: number;
@@ -134,6 +135,7 @@ export class DshWebRuntime implements AgentBackend {
       changed: () => this.onCatalogChange?.(),
     });
     client.onEvent = event => this.#event(event);
+    client.onDiagnostic = event => this.onDiagnostic?.(event);
     client.onReconnect = () => { void this.#resyncAll().catch(error => this.#report(textOf(error))); };
     client.onExit = reason => {
       if (!this.#ready) return;
@@ -346,7 +348,13 @@ export class DshWebRuntime implements AgentBackend {
       const changed = current.cwd !== item.cwd || current.running !== item.running || item.title !== undefined && current.title !== item.title;
       current.cwd = item.cwd; current.running = item.running;
       if (item.title !== undefined) { if (item.title) current.title = item.title; else delete current.title; }
-      if (!current.following) this.#followSession(current);
+      if (!current.following) {
+        this.#followSession(current);
+        // ADR-0028 §4：只有相应读取成功才能解除目录错误；重连后补做这些读取。
+        void this.#loadSkills(current);
+        void this.#loadModelCatalog(current);
+        void this.#loadPermissions(current);
+      }
       if (changed) this.#publishMetadata(current);
       return;
     }
@@ -373,6 +381,7 @@ export class DshWebRuntime implements AgentBackend {
   #followSession(session: WebSession): void {
     session.following = true;
     const generation = ++session.followGeneration;
+    if (session.sourceCheck) session.sourceCheck.generation = generation;
     const fail = (error: unknown) => {
       if (this.#sessions.get(publicId(session.id)) !== session || session.closing || generation !== session.followGeneration) return;
       ++session.followGeneration;
@@ -794,7 +803,11 @@ export class DshWebRuntime implements AgentBackend {
       // 运行期间的历史就整段消失（现场：长轮次一开头，聊天页只剩本轮 live 卡片）。
       session.source.setAvailability(true, true);
       session.sourceCheckedAt = Date.now();
-      if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.resolve(); delete session.sourceCheck; }
+      if (session.sourceCheck && session.sourceCheck.generation <= session.followGeneration) {
+        clearTimeout(session.sourceCheck.timer);
+        session.sourceCheck.resolve();
+        delete session.sourceCheck;
+      }
       session.notifications.resolve("dsh.recovery");
       // 这份 baseline 刚改过 durable 日志，历史树可能变了。去重后没有变化就什么都不发。
       this.#publishCapabilities(session);
@@ -1028,9 +1041,13 @@ export class DshWebRuntime implements AgentBackend {
 
   #checkSource(session: WebSession): Promise<void> {
     if (session.sourceCheck) return session.sourceCheck.promise;
+    // A sequence-gap callback already opened a fresh follow. Let its baseline settle even though
+    // the previous successful baseline was checked less than 15 seconds ago.
+    if (session.following && session.sourceCheckedAt === 0) return Promise.resolve();
     if (session.sourceCheckedAt > 0 && Date.now() - session.sourceCheckedAt < 15_000) return Promise.resolve();
     let resolve!: () => void;
     let reject!: (error: Error) => void;
+    const generation = session.followGeneration + 1;
     const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
     const timer = setTimeout(() => {
       if (session.sourceCheck?.promise !== promise) return;
@@ -1039,7 +1056,7 @@ export class DshWebRuntime implements AgentBackend {
       reject(new Error("DeepSeek 当前会话状态恢复超时"));
     }, 15_000);
     timer.unref();
-    session.sourceCheck = { promise, resolve, reject, timer };
+    session.sourceCheck = { promise, resolve, reject, timer, generation };
     // Reopening the native follow atomically captures current history and assistant prefix.
     session.unsubscribe();
     this.#followSession(session);
@@ -1053,7 +1070,9 @@ export class DshWebRuntime implements AgentBackend {
       ++session.followGeneration;
       session.source.setAvailability(false, false);
       session.sourceCheckedAt = 0;
-      if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error("native_connection_replaced")); delete session.sourceCheck; }
+      ++session.skillsGeneration; ++session.modelGeneration; ++session.permissionGeneration;
+      // Keep a pending source check, but reopen its follow only after discovery
+      // verifies native membership and the fresh archive baseline (ADR-0020).
       session.notifications.upsert({ code: "dsh.recovery", occurrenceId: "follow", scope: {}, severity: "info", lifecycle: "condition", message: "DeepSeek Web 已重连，会话流正在恢复" });
     }
     await this.#discovery.reconnect();

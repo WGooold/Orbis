@@ -423,7 +423,7 @@ data class RemoteState(
      * 它比 [launchableAgents] 多回答一个问题：桌面版装了但没打开、还是打开了却接入失败。
      */
     val codexDesktop: CodexDesktopAttach? = null,
-    /** Effective Host configuration; do not infer it from a historical session or model name. */
+    /** Native backend modelProvider keys, keyed by agentKind; never Host-managed profile ids. */
     val currentProviders: Map<String, String> = emptyMap(),
     val agentProviders: AgentProvidersState = AgentProvidersState(),
     /**

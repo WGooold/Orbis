@@ -149,14 +149,12 @@ internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentSta
     }
     domains["providers"]?.takeIf { it.availability == "ready" }?.value?.let { element ->
         val rows = ((element as? JsonObject)?.get("providers") as? JsonArray) ?: return@let
-        val current = state.currentProviders.toMutableMap()
+        val current = mutableMapOf<String, String>()
         var providerState = state.agentProviders
         for (row in rows.filterIsInstance<JsonObject>()) {
             val kind = row.text("agentKind") ?: continue
-            if ("current" in row) {
-                val selected = row.text("current")
-                if (selected == null) current.remove(kind) else current[kind] = selected
-            }
+            // current 是 Host 供应商 profile id；会话归属只与原生 modelProvider 比较。
+            row.text("modelProvider")?.takeIf(String::isNotBlank)?.let { current[kind] = it }
             if (kind != providerState.kind) continue
             val profiles = row["profiles"] as? JsonArray ?: continue
             val providers = profiles.filterIsInstance<JsonObject>().mapNotNull { profile ->

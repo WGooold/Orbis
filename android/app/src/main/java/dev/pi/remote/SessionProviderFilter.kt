@@ -14,8 +14,9 @@ internal data class CodexProviderOption(val key: String, val label: String)
 internal fun codexProviderOptions(
     tree: List<CachedHostGroup>,
     currentProvider: String?,
+    agentKind: String = "codex",
 ): List<CodexProviderOption> {
-    val rows = tree.flatMap { it.directories }.flatMap { it.sessions }.filter { it.isCodex }
+    val rows = tree.flatMap { it.directories }.flatMap { it.sessions }.filter { it.agentKind == agentKind }
     return buildList {
         add(CodexProviderOption(CURRENT_CODEX_PROVIDER, currentProvider?.let { "$it（当前使用）" } ?: "当前 provider（尚未获取）"))
         add(CodexProviderOption(ALL_CODEX_PROVIDERS, "全部 provider"))
