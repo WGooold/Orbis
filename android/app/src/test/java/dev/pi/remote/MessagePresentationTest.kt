@@ -124,16 +124,6 @@ class MessagePresentationTest {
     }
 
     @Test
-    fun `detects bare computer paths without treating slash commands or web urls as files`() {
-        assertEquals(
-            listOf("C:\\work\\build\\app.apk", "/tmp/reports/result.zip"),
-            detectableFilePaths("路径：C:\\work\\build\\app.apk，或 /tmp/reports/result.zip。"),
-        )
-        assertEquals(emptyList<String>(), detectableFilePaths("运行 /reload 或打开 https://example.test/file.zip"))
-
-    }
-
-    @Test
     fun `conversation follows latest only initially or while user remains near the end`() {
         assertTrue(shouldFollowLatest(initialPositioned = false, lastVisibleIndex = 0, totalItems = 30))
         assertTrue(shouldFollowLatest(initialPositioned = true, lastVisibleIndex = 28, totalItems = 30))

@@ -52,7 +52,8 @@ class MarkdownTest {
             rows.first().map { it.alignment },
         )
         assertTrue(renderMarkdownInline(rows[1][1]).spanStyles.any { it.item.fontWeight == FontWeight.Bold })
-        assertEquals(listOf("/tmp/My Report (1).txt", "/tmp/output.txt"), markdownDownloadPaths(blocks))
+        val plainPathCell = renderMarkdownInline(rows[2][2])
+        assertTrue(plainPathCell.getLinkAnnotations(0, plainPathCell.length).isEmpty())
         val linkedCell = renderMarkdownInline(rows[1][2])
         assertEquals("/tmp/My Report (1).txt", linkedCell.getStringAnnotations(MARKDOWN_FILE_LINK_ANNOTATION, 0, linkedCell.length).single().item)
         // The last row need not have a closing pipe, as happens during streamed output.
@@ -112,7 +113,8 @@ class MarkdownTest {
         val code = blocks.first() as FencedCodeBlock
         assertEquals("markdown", code.info)
         assertEquals("```kotlin\n**literal** and [file](/tmp/code.txt)\n~~~", renderMarkdownInline(code).text)
-        assertTrue(markdownFileLinkPaths(listOf(code)).isEmpty())
+        val renderedCode = renderMarkdownInline(code)
+        assertTrue(renderedCode.getLinkAnnotations(0, renderedCode.length).isEmpty())
         assertEquals(4, blocks.size)
         assertTrue(blocks[1] is Paragraph)
         assertTrue(blocks[2] is IndentedCodeBlock)
@@ -156,9 +158,6 @@ class MarkdownTest {
         assertEquals(expected, links.map { (it.item as LinkAnnotation.Clickable).tag })
         links.forEach { it.item.linkInteractionListener?.onClick(it.item) }
         assertEquals(expected, clicked)
-        assertEquals(expected, markdownInteractiveLinkTargets(source))
-        assertEquals(expected.take(2), markdownFileLinkPaths(source))
-        assertEquals(expected.take(2), markdownDownloadPaths(parseMarkdown(source)))
         assertEquals(expected.take(2), rendered.getStringAnnotations(MARKDOWN_FILE_LINK_ANNOTATION, 0, rendered.length).map { it.item })
         assertEquals(expected.drop(2), rendered.getStringAnnotations(MARKDOWN_URL_LINK_ANNOTATION, 0, rendered.length).map { it.item })
         assertEquals("C:\\Program Files\\app.apk", markdownFileLinkPath("<C:\\Program Files\\app.apk>"))
@@ -170,7 +169,6 @@ class MarkdownTest {
         val rendered = inlineMarkdown(source)
         assertEquals("script data network", rendered.text)
         assertTrue(rendered.getLinkAnnotations(0, rendered.length).isEmpty())
-        assertTrue(markdownDownloadPaths(parseMarkdown(source)).isEmpty())
         assertFalse(markdownFileLinkPath("/tmp/file\n.txt") != null)
     }
 }

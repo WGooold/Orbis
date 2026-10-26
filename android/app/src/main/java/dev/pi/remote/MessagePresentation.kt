@@ -181,14 +181,3 @@ internal enum class ComposerAction { Send, Abort }
 
 internal fun composerAction(isWorking: Boolean, input: String): ComposerAction =
     if (isWorking && input.isBlank()) ComposerAction.Abort else ComposerAction.Send
-
-private val computerFilePath = Regex(
-    """(?:^|[\s（(：\[])([A-Za-z]:[\\/][^\s`<>\"'，。；：！？、]+|/(?:[^\s/`<>\"'，。；：！？、]+/)+[^\s`<>\"'，。；：！？、]+)""",
-)
-
-/** Finds unambiguous computer file paths that can be offered as one-tap downloads. */
-internal fun detectableFilePaths(text: String): List<String> = computerFilePath.findAll(text)
-    .map { match -> match.groupValues[1].trimEnd('.', ',', ';', ':', ')', ']', '}', '。', '，', '；', '：', '）', '】') }
-    .filter { it.isNotEmpty() }
-    .distinct()
-    .toList()

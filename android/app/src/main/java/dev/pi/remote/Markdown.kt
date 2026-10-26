@@ -36,7 +36,7 @@ import org.commonmark.node.Text
 import org.commonmark.parser.Parser
 
 // Parse the whole message once: reference definitions may follow the blocks that use them.
-// The same tree drives both the Compose renderer and link/download discovery.
+// The same tree drives both the Compose renderer and inline links.
 private val markdownParser = Parser.builder().extensions(
     listOf(
         TablesExtension.create(),
@@ -81,34 +81,6 @@ internal fun markdownHttpLinkUrl(value: String): String? {
 
 internal fun markdownExternalLinkUrl(value: String): String? = markdownHttpLinkUrl(value)
     ?: value.takeIf { it.matches(Regex("""mailto:[^\s<>]+""", RegexOption.IGNORE_CASE)) }
-
-private fun markdownLinkTarget(node: Node): String? {
-    val destination = when (node) {
-        is Link -> node.destination
-        is Image -> node.destination
-        else -> return null
-    }
-    return markdownFileLinkPath(destination) ?: markdownExternalLinkUrl(destination)
-}
-
-internal fun markdownFileLinkPaths(markdown: String): List<String> =
-    markdownFileLinkPaths(parseMarkdown(markdown))
-
-internal fun markdownFileLinkPaths(nodes: List<Node>): List<String> = markdownDescendants(nodes)
-    .mapNotNull(::markdownLinkTarget).mapNotNull(::markdownFileLinkPath).distinct().toList()
-
-internal fun markdownInteractiveLinkTargets(markdown: String): List<String> =
-    markdownDescendants(parseMarkdown(markdown)).mapNotNull(::markdownLinkTarget).distinct().toList()
-
-internal fun markdownDownloadPaths(nodes: List<Node>): List<String> {
-    val linked = markdownFileLinkPaths(nodes)
-    // Only inspect visible text; don't mistake URL destinations or table separators for paths.
-    val detected = markdownDescendants(nodes).filter {
-        it is org.commonmark.node.Paragraph || it is org.commonmark.node.Heading || it is TableCell ||
-            it is FencedCodeBlock || it is IndentedCodeBlock || it is HtmlBlock
-    }.flatMap { detectableFilePaths(renderMarkdownInline(it).text) }.toList()
-    return (linked + detected.filterNot { path -> linked.any { it.startsWith(path) } }).distinct()
-}
 
 internal fun inlineMarkdown(
     markdown: String,

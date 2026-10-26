@@ -23,7 +23,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckBox
 import androidx.compose.material.icons.rounded.CheckBoxOutlineBlank
 import androidx.compose.material.icons.rounded.ContentCopy
-import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -48,7 +47,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -72,7 +70,6 @@ import org.commonmark.node.ThematicBreak
 @Composable
 internal fun MarkdownText(markdown: String, downloadFile: (String) -> Unit) {
     val blocks = remember(markdown) { parseMarkdown(markdown) }
-    val downloadPaths = remember(blocks) { markdownDownloadPaths(blocks) }
     val uriHandler = LocalUriHandler.current
     val currentDownload = rememberUpdatedState(downloadFile)
     val currentUriHandler = rememberUpdatedState(uriHandler)
@@ -87,26 +84,7 @@ internal fun MarkdownText(markdown: String, downloadFile: (String) -> Unit) {
             }
         }
     }
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        MarkdownBlocks(blocks, listener)
-        downloadPaths.forEach { path ->
-            NeumorphSurface(
-                onClick = { downloadFile(path) },
-                modifier = Modifier.heightIn(min = RemoteUi.TouchTarget),
-                shape = RemoteUi.ControlShape,
-                shadowScale = 0.45f,
-            ) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Text(path, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-        }
-    }
+    MarkdownBlocks(blocks, listener)
 }
 
 @Composable
