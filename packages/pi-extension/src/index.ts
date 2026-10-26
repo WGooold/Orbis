@@ -1,4 +1,4 @@
-import { basename } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -14,7 +14,7 @@ import {
   type PreparedSessionSync,
   type RuntimeEvent,
 } from "@orbis/protocol";
-import { RuntimeBridge } from "@orbis/runtime-bridge";
+import { RuntimeBridge, ToolActivityProducer, ToolContentReadError, createProcessToolContentStore, type ToolContentStore } from "@orbis/runtime-bridge";
 import { loadRemoteControlConfig } from "./config.js";
 import {
   createPiExtensionRuntimeDiagnostic,
@@ -40,7 +40,7 @@ import {
   type RuntimeActivity,
 } from "./runtime-status.js";
 import { formatRemoteTitle, TerminalRemoteIndicator } from "./terminal-status.js";
-import { resolveRuntimeTransport } from "./loopback.js";
+import { defaultLoopbackDescriptorPath, readLoopbackDescriptor, resolveRuntimeTransport } from "./loopback.js";
 import type { RelayRuntimeConnectionState } from "./transport.js";
 import {
   formatTurnDuration,
@@ -92,6 +92,11 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   let activeSessionToken: symbol | undefined;
   let messageStream = new PiMessageStream();
   let sessionSource: RecoverableSessionSource | undefined;
+  let toolProducer: ToolActivityProducer | undefined;
+  let toolStore: ToolContentStore | undefined;
+  let toolDisposal: Promise<void> = Promise.resolve();
+  const projectEntries = (entries: readonly unknown[]): ReturnType<typeof sessionEntriesFromEntries> =>
+    sessionEntriesFromEntries(entries).map((entry, order) => toolProducer?.entry(entry, order) ?? entry);
   let lastNativeLeaf: string | null | undefined;
   const reconcileSource = (ctx: ExtensionContext, force = false): void => {
     if (!sessionSource) return;
@@ -104,7 +109,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       return messageId === undefined ? [] : [{ messageId, entryId: entry.id }];
     });
     sessionSource.transaction(() => {
-      sessionSource?.reconcile(sessionEntriesFromEntries(entries), leaf, mappings);
+      sessionSource?.reconcile(projectEntries(entries), leaf, mappings);
       lastNativeLeaf = leaf;
       if (ctx.isIdle() && sessionSource) {
         // Native idle is reached after persistence. It also repairs a locally missed message_end;
@@ -125,7 +130,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   };
   const publishSessionEvent = (event: RuntimeEvent, ctx = currentContext): void => {
     if (!sessionSource || !ctx) return;
-    const stripped = stripEventMedia(event);
+    const stripped = toolProducer?.event(event) ?? stripEventMedia(event);
     sessionSource.transaction(() => {
       sessionSource?.observe(stripped);
       // ADR-0035 §3：只有原生历史真的可能变了才强制核对；tool.started/updated 不改历史。
@@ -243,6 +248,9 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   });
 
   const closeCurrentSession = (cancelPending = false): void => {
+    const producer = toolProducer, contentStore = toolStore;
+    toolProducer = undefined; toolStore = undefined;
+    toolDisposal = toolDisposal.then(async () => { await producer?.dispose(); await contentStore?.dispose(); }).catch(() => undefined);
     stopStatusReconcile();
     broker?.close();
     bridge?.close();
@@ -273,6 +281,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       previousSessionFile: event.previousSessionFile,
     }, { cwd: ctx.cwd });
     closeCurrentSession();
+    await toolDisposal;
     const sessionToken = Symbol("orbis-session");
     activeSessionToken = sessionToken;
     // 时序防御：若 reload 是「先求值新实例 → 再 shutdown 旧实例」，新实例会被上面的
@@ -319,7 +328,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     ): PreparedSessionSync => {
       const key = `${version.epoch}\u0000${entries.length}\u0000${leaf ?? ""}\u0000${version.ready ? 1 : 0}`;
       if (preparedCache?.key === key) return preparedCache.prepared;
-      const prepared = prepareSessionSync(sessionEntriesFromEntries(entries), sessionId, leaf, {
+      const prepared = prepareSessionSync(projectEntries(entries), sessionId, leaf, {
         sourceReady: version.ready,
       });
       preparedCache = { key, prepared };
@@ -329,8 +338,37 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     // 整段会话；90 次/秒会把主线程压死（现场：滚动掉帧 39%、每 2 秒一次 GC）。
     const source = new RecoverableSessionSource(ctx.sessionManager.getSessionId(), patch => {
       if (activeSessionToken === sessionToken) bridge?.publish(patch);
-    }, { coalesceMs: 100 });
+    }, { coalesceMs: 100, runtimeId: processRuntimeId, publishTools: event => { if (activeSessionToken === sessionToken) bridge?.publish(event); } });
     sessionSource = source;
+    const sessionId = ctx.sessionManager.getSessionId();
+    let toolHostId = (await readLoopbackDescriptor())?.hostId ?? "local";
+    // A separate session producer avoids retaining raw values across extension replacement.
+    const contentStore = await createProcessToolContentStore(join(dirname(defaultLoopbackDescriptorPath()), "temporary-content"),
+      `pi:${processRuntimeId()}:${sessionId}`).catch(error => { sessionLog("tool_content_store_unavailable", { error: String(error) }); return undefined; });
+    if (activeSessionToken !== sessionToken) { await contentStore?.dispose(); return; }
+    toolStore = contentStore;
+    const producer = new ToolActivityProducer({ ...(contentStore ? { store: contentStore } : {}),
+      agent: () => ({ hostId: toolHostId, agentKind: "pi", sessionId }), runtimeId: processRuntimeId,
+      source: () => ({ epoch: source.version.epoch, ready: activeSessionToken === sessionToken && source.version.ready }),
+      native: (locator, signal) => {
+        const entries = ctx.sessionManager.getEntries();
+        if (entries.length > 65_536) throw new ToolContentReadError("content_unavailable");
+        for (const entry of entries) {
+          if (signal?.aborted) throw new ToolContentReadError("cancelled");
+          if (entry.type !== "message") continue;
+          const message = entry.message;
+          if (locator.part === "result" && message.role === "toolResult" && message.toolCallId === locator.tool.toolCallId) {
+            return { format: "json", value: message };
+          }
+          if (locator.part === "arguments" && message.role === "assistant") {
+            const call = message.content.find(part => part.type === "toolCall" && part.id === locator.tool.toolCallId);
+            if (call?.type === "toolCall") return { format: "json", value: call.arguments };
+          }
+        }
+        return undefined;
+      },
+    });
+    toolProducer = producer;
     source.transaction(() => {
       reconcileSource(ctx);
       // Reloading into a running turn cannot reconstruct its prefix through ExtensionContext.
@@ -366,6 +404,11 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       sessionLog("runtime_baseline_republished", { detail: "new epoch" });
     };
     const transport = await resolveRuntimeTransport({
+      onHostResolved: hostId => {
+        if (hostId === toolHostId) return;
+        toolHostId = hostId; producer.reset(); preparedCache = undefined;
+        source.reestablish(); lastNativeLeaf = undefined; reconcileSource(ctx, true);
+      },
       onConnectionStateChange: (state) => {
         connectionState = state;
         updateTerminalIndicator();
@@ -387,6 +430,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       (active) => publishRuntimeStatus(active ? "waiting" : (currentContext?.isIdle() ? "idle" : "running")),
     );
     const sessionBridge = new RuntimeBridge({
+      toolContents: producer,
       metadata: () => {
         const host = runtimeHostname();
         const sessionName = pi.getSessionName()?.trim() || undefined;
@@ -422,6 +466,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
         // 响应要带 `source.seq`，所以必须先把合并窗口刷掉——否则客户端拿到的 knownState
         // 会在 100ms 后失效，sync 永远回不了 unchanged（ADR-0035 §15 的配套不变量）。
         source.flushPending();
+        source.replayToolInventory();
         const entries = ctx.sessionManager.getEntries();
         const sessionId = ctx.sessionManager.getSessionId();
         const leaf = ctx.sessionManager.getLeafId();
@@ -573,6 +618,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     }, currentContext?.cwd === undefined ? {} : { cwd: currentContext.cwd });
     activeSessionToken = undefined;
     closeCurrentSession(event.reason === "quit");
+    await toolDisposal;
     // 让位：shutdown 之后进程内没有活跃实例了，后续求值（reload/换会话）可以重新接管。
     (globalThis as GlobalScope)[ACTIVE_INSTANCE] = false;
     terminalIndicator.clear();
@@ -652,7 +698,8 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     sessionSource?.transaction(() => {
       // Full native partial message includes accumulated thinking and parsed tool arguments.
       // It is independent from which deltas made it across the transport.
-      sessionSource?.upsertMessage({ message: messageToRemote(update.messageId, event.message), finished: false, contentComplete: true });
+      const message = messageToRemote(update.messageId, event.message);
+      sessionSource?.upsertMessage({ message: toolProducer?.message(message) ?? message, finished: false, contentComplete: true });
     });
   });
 

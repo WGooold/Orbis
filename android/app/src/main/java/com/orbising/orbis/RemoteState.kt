@@ -1,6 +1,7 @@
 package com.orbising.orbis
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -125,6 +126,7 @@ data class RemoteContent(
     val toolName: String? = null,
     val arguments: JsonElement? = null,
     val artifact: RemoteArtifact? = null,
+    val summary: ToolSummary? = null,
 )
 
 @Serializable
@@ -136,6 +138,7 @@ data class ChatMessage(
     val toolCallId: String? = null,
     val toolName: String? = null,
     val isError: Boolean? = null,
+    val toolSummary: ToolSummary? = null,
 )
 
 @Serializable
@@ -177,6 +180,7 @@ data class ToolActivity(
     val state: String,
     val detail: String? = null,
     val isError: Boolean = false,
+    val summary: ToolSummary? = null,
 )
 
 @Serializable
@@ -405,6 +409,9 @@ data class RemoteState(
     /** Last known session identity survives a transient runtime.offline event. */
     val knownRuntimeSessions: Map<String, String?> = emptyMap(),
     val conversations: Map<String, RuntimeConversation> = emptyMap(),
+    val toolInventories: Map<String, ToolInventoryReplica> = emptyMap(),
+    val pendingToolConversations: Map<String, List<PendingToolConversation>> = emptyMap(),
+    val toolDetail: ToolDetailView? = null,
     val lastSequence: Map<String, Long> = emptyMap(),
     val pendingCommands: Map<String, String> = emptyMap(),
     val commandResults: Map<String, CommandResult> = emptyMap(),
@@ -1397,6 +1404,7 @@ private fun RuntimeConversation.applySourceLiveCheckpoint(
             state = tool.state,
             detail = tool.detail?.toString(),
             isError = tool.isError == true,
+            summary = tool.summary,
         )
     }
     val mergedTools = if (replaceInventory) checkpointTools else tools + checkpointTools
@@ -1514,6 +1522,8 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
     }
     return copy(
         connection = RelayConnection.RECONNECTING,
+        toolInventories = emptyMap(), pendingToolConversations = emptyMap(),
+        toolDetail = toolDetail?.copy(requestId = null, read = null, follow = false, error = "连接已断开，仅显示已缓存内容"),
         currentProviders = emptyMap(),
         // 断开即没有加密通道：这条信息比 connection 更贴近「能不能干活」。
         e2eReady = false,
@@ -1554,11 +1564,19 @@ class RelayReducer(
         committed: CommittedSessionBatch? = null,
         channel: String? = null,
     ): RemoteState {
+        reduceToolEnvelope(state, payload, committed, channel)?.let { return it }
         val event = runCatching { json.parseToJsonElement(payload).jsonObject["event"]?.jsonObject }.getOrNull()
         val syncId = event?.takeIf { it.string("type") == "session.snapshot" }?.string("syncId")
         val commandId = syncId?.let { id -> state.sessionSyncCommands.entries.firstOrNull { it.value.syncId == id }?.key }
         val input = commandId?.let(state::recoverLateHistoryRead) ?: state
-        val reduced = reducePayload(input, payload, committed, channel)
+        var reduced = reducePayload(input, materializeToolPayload(input, payload), committed, channel)
+        val ownershipChanged = input.runtimes.keys.filter { runtime ->
+            input.runtimes[runtime]?.sessionId != reduced.runtimes[runtime]?.sessionId ||
+                input.runtimes[runtime]?.agentKind != reduced.runtimes[runtime]?.agentKind
+        }.toSet()
+        if (ownershipChanged.isNotEmpty()) reduced = reduced.copy(toolInventories = reduced.toolInventories - ownershipChanged,
+            pendingToolConversations = reduced.pendingToolConversations - ownershipChanged,
+            toolDetail = reduced.toolDetail?.takeUnless { it.runtimeId in ownershipChanged })
         val changedTargets = reduced.runtimes.keys.filterTo(mutableSetOf()) { key ->
             val old = input.runtimes[key]
             val next = reduced.runtimes[key]
@@ -1573,6 +1591,102 @@ class RelayReducer(
         val completed = if (event?.string("type") in setOf("session.snapshot", "session.patch"))
             reduced.confirmSourceRead(input, commandId, response) else reduced
         return completed.trackSessionReadDemands(input, changedTargets, setOfNotNull(commandId)).reconcileHistoryReads()
+    }
+
+    private fun materializeToolPayload(state: RemoteState, payload: String): String {
+        val envelope = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull() ?: return payload
+        val event = envelope["event"] as? JsonObject ?: return payload
+        if (event.string("type") !in setOf("session.snapshot", "session.patch")) return payload
+        val runtimeId = envelope.string("runtimeId") ?: return payload
+        val live = event["live"]?.let { runCatching { json.decodeFromJsonElement<SessionLiveState>(it) }.getOrNull() } ?: return payload
+        val ref = live.toolInventory ?: return payload
+        val replica = state.toolInventories[runtimeId]?.takeIf { it.covers(ref) } ?: return payload
+        val represented = live.messages.flatMap { it.message.content }.mapNotNull { it.toolCallId }.toSet()
+        val tools = replica.tools.map { summary -> SessionLiveTool(summary.tool.toolCallId, summary.toolName,
+            if (summary.phase in setOf("finished", "cancelled")) "finished" else summary.phase, summary = summary, isError = summary.isError) }
+        val synthetic = replica.tools.filter { it.tool.toolCallId !in represented }.map { summary ->
+            SessionLiveMessage(ChatMessage("tool-live:${summary.tool.toolCallId}", "assistant", listOf(
+                RemoteContent(type = "tool_call", toolCallId = summary.tool.toolCallId, toolName = summary.toolName, summary = summary)),
+                live.turn?.startedAt ?: 0), summary.phase in setOf("finished", "cancelled"), true, order = summary.order)
+        }
+        val projected = live.copy(messages = (live.messages + synthetic).sortedBy { it.order ?: Long.MAX_VALUE }, tools = tools)
+        return JsonObject(envelope + ("event" to JsonObject(event + ("live" to json.encodeToJsonElement(projected))))).toString()
+    }
+
+    /** ADR-0045 §5：工具依赖完整验证前，保留旧聊天基线；详情从不参与 applied。 */
+    private fun reduceToolEnvelope(state: RemoteState, payload: String, committed: CommittedSessionBatch?, channel: String?): RemoteState? {
+        val envelope = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull() ?: return null
+        if (envelope.string("type") != "runtime.event") return null
+        val runtimeId = envelope.string("runtimeId") ?: return null
+        val event = envelope["event"]?.jsonObject ?: return null
+        val type = event.string("type")
+        val old = state.toolInventories[runtimeId] ?: ToolInventoryReplica()
+        if (type == "session.snapshot" || type == "session.patch") {
+            val ref = (event["live"] as? JsonObject)?.get("toolInventory")?.takeIf { it != JsonNull }
+                ?.let { runCatching { json.decodeFromJsonElement<ToolInventoryReference>(it) }.getOrNull() } ?: return null
+            val session = state.runtimes[runtimeId]?.sessionId ?: state.knownRuntimeSessions[runtimeId]
+            if (ref.agent.hostId != state.hostId || ref.agent.sessionId != session ||
+                ref.agent.agentKind != state.runtimes[runtimeId]?.agentKind) return state
+            if (old.covers(ref)) return null
+            val queue = state.pendingToolConversations[runtimeId].orEmpty()
+            val item = PendingToolConversation(payload, committed, channel, ref)
+            val pending = if (queue.any { it.payload == payload }) queue else queue + item
+            if (pending.size > 64 || pending.sumOf { it.payload.toByteArray().size } > 1_048_576 ||
+                state.pendingToolConversations.values.flatten().sumOf { it.payload.toByteArray().size } + payload.toByteArray().size > 8_388_608 ||
+                state.toolInventories.size >= 64 && runtimeId !in state.toolInventories) return state.copy(
+                pendingToolConversations = state.pendingToolConversations - runtimeId,
+                sessionSyncRequests = state.sessionSyncRequests + runtimeId)
+            return state.copy(toolInventories = state.toolInventories + (runtimeId to old.require(ref)),
+                pendingToolConversations = state.pendingToolConversations + (runtimeId to pending))
+        }
+        if (type == "session.tool.content.page") {
+            val page = runCatching { json.decodeFromJsonElement<ToolContentPage>(event) }.getOrNull() ?: return state
+            if (page.runtimeId != runtimeId) return state
+            return state.copy(toolDetail = state.toolDetail?.page(page))
+        }
+        if (type?.startsWith("session.tools.") == true || type == "session.tool.read.failed") {
+            if (event.string("runtimeId") != runtimeId) return state
+        }
+        if (type == "session.tool.read.failed" && event.string("requestId") == state.toolDetail?.requestId) {
+            return state.copy(toolDetail = state.toolDetail?.copy(requestId = null, follow = false,
+                error = toolReadFailureText(event.string("reason"))))
+        }
+        val replica = when (type) {
+            "session.tools.opened" -> runCatching { old.opened(event.string("requestId") ?: "", json.decodeFromJsonElement<ToolInventorySnapshot>(event.getValue("snapshot"))) }.getOrElse { old.failed("工具清单无效") }
+            "session.tools.page" -> runCatching { old.page(json.decodeFromJsonElement<ToolInventoryPage>(event)) }.getOrElse { old.failed("工具清单页无效") }
+            "session.tools.patch" -> runCatching { old.patch(json.decodeFromJsonElement<ToolInventoryPatch>(event)) }.getOrElse { old.failed("工具清单更新无效") }
+            "session.tools.changed" -> return state // The corresponding chat checkpoint supplies the exact reference.
+            "session.tool.read.failed" -> if (event.string("requestId") == old.requestId) old.failed(event.string("reason") ?: "snapshot_expired") else return state
+            "tool.activity" -> return state
+            else -> return null
+        }
+        var next = state.copy(toolInventories = state.toolInventories + (runtimeId to replica))
+        if (replica.error != null) return next.copy(pendingToolConversations = next.pendingToolConversations - runtimeId,
+            sessionSyncRequests = next.sessionSyncRequests + runtimeId)
+        if (replica.target == null) {
+            val pending = next.pendingToolConversations[runtimeId].orEmpty()
+            next = next.copy(pendingToolConversations = next.pendingToolConversations - runtimeId)
+            var current = replica
+            for (item in pending) {
+                while (!current.covers(item.reference) && current.buffered.isNotEmpty()) {
+                    val patch = current.buffered.first()
+                    val remaining = current.buffered.drop(1)
+                    current = current.copy(buffered = emptyList()).patch(patch).copy(buffered = remaining)
+                }
+                next = next.copy(toolInventories = next.toolInventories + (runtimeId to current))
+                if (current.covers(item.reference)) next = reduce(next, item.payload, item.committed, item.channel)
+                else {
+                    next = next.copy(sessionSyncRequests = next.sessionSyncRequests + runtimeId)
+                    break
+                }
+            }
+            while (current.buffered.isNotEmpty() && current.error == null) {
+                val patch = current.buffered.first(); val remaining = current.buffered.drop(1)
+                current = current.copy(buffered = emptyList()).patch(patch).copy(buffered = remaining)
+            }
+            next = next.copy(toolInventories = next.toolInventories + (runtimeId to current))
+        }
+        return next
     }
 
     private fun reducePayload(
@@ -1713,6 +1827,9 @@ class RelayReducer(
                     runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
                         state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
                     agentModelEpoch = message.string("modelEpoch"),
+                    toolInventories = state.toolInventories.takeIf { state.agentModelEpoch == message.string("modelEpoch") }.orEmpty(),
+                    pendingToolConversations = emptyMap(),
+                    toolDetail = state.toolDetail?.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     retiredAgentModelEpochs = state.retiredAgentModelEpochs + listOfNotNull(state.agentModelEpoch?.takeIf { it != message.string("modelEpoch") }),
                     agentStateSnapshots = state.agentStateSnapshots.takeIf { state.agentModelEpoch == message.string("modelEpoch") }.orEmpty(),
                     agentStateRequests = emptySet(),
@@ -1910,6 +2027,10 @@ class RelayReducer(
                 val runtimeId = message.string("runtimeId") ?: return state
                 val interrupted = state.pendingCommands.filterValues { it == runtimeId }.keys
                 state.copy(
+                    toolInventories = state.toolInventories - runtimeId,
+                    pendingToolConversations = state.pendingToolConversations - runtimeId,
+                    toolDetail = state.toolDetail?.let { if (it.runtimeId == runtimeId) it.copy(requestId = null, read = null,
+                        follow = false, error = "运行实例已离线，仅显示已缓存内容") else it },
                     runtimes = state.runtimes - runtimeId,
                     workingBranches = state.workingBranches - runtimeId,
                     selectedRuntimeId = state.selectedRuntimeId.takeUnless { it == runtimeId },

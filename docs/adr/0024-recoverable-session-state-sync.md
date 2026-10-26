@@ -2,6 +2,8 @@
 
 日期：2026-10-08
 
+2026-10-27：[ADR-0045](0045-tool-summaries-and-on-demand-content.md) 将工具完整性改为标准摘要及独立库存引用的覆盖；原始参数、执行输出和结果按设备私有范围读取。聊天 checkpoint 精确依赖库存版本，详情不参与 applied；来源有序提交和 Entry/head/live 原子性继续有效。
+
 2026-10-10：[ADR-0025](0025-native-history-authority-and-versioned-caches.md) 替代本文的不可变缓存与同 ID 硬冲突条款。版本化历史页携带 source 所有权；原生权威修正通过新 epoch 与 APP 缓存事务生效。checkpoint/patch、running sync 和恢复调度继续遵守本文。
 
 2026-10-22：[ADR-0037](0037-session-sync-transaction-contract.md) 为本文的恢复任务补上协调侧契约：Host 作为协调者用租约判定作废，终态必须送达设备，提交以设备确认 applied 为准，失败只写尝试状态。

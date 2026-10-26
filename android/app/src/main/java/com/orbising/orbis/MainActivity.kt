@@ -103,6 +103,10 @@ import androidx.compose.material3.Text
 import com.orbising.orbis.RemoteTopAppBar as TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.runtime.key
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
@@ -171,10 +175,70 @@ class MainActivity : ComponentActivity() {
                 val state by model.state.collectAsStateWithLifecycle()
                 val hosts by model.hosts.collectAsStateWithLifecycle()
                 val pairingError by model.pairingError.collectAsStateWithLifecycle()
-                RemoteApp(state, hosts, pairingError, model)
+                var pendingToolExport by remember { mutableStateOf<ToolDetailView?>(null) }
+                val toolExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+                    val detail = pendingToolExport
+                    pendingToolExport = null
+                    if (uri != null && detail != null) model.exportToolDetail(uri, detail)
+                }
+                CompositionLocalProvider(LocalToolDetailAction provides { runtime, summary -> model.openToolDetail(runtime, summary) }) {
+                    RemoteApp(state, hosts, pairingError, model)
+                    state.toolDetail?.let { detail -> ToolDetailDialog(detail, model) {
+                        pendingToolExport = detail
+                        model.closeToolDetail()
+                        toolExport.launch("tool-${detail.part}.txt")
+                    } }
+                }
             }
         }
     }
+}
+
+private val LocalToolDetailAction = staticCompositionLocalOf<(String, ToolSummary) -> Unit> { { _, _ -> } }
+
+@Composable
+private fun ToolDetailDialog(detail: ToolDetailView, model: RemoteViewModel, onExport: () -> Unit) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle, detail.viewerId) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) model.closeAllToolDetails() }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(detail.viewerId, detail.follow, detail.requestId, detail.offset, detail.error) {
+        if (detail.follow && detail.requestId == null && detail.error == null && (!detail.contentFinal || detail.nextCursor != null)) {
+            delay(if (detail.nextCursor == null) 750 else 50)
+            model.readToolDetail()
+        }
+    }
+    AlertDialog(
+        onDismissRequest = { model.closeToolDetail() },
+        title = { Text(detail.summary.toolName) },
+        confirmButton = { TextButton(onClick = { model.closeToolDetail() }) { Text("关闭") } },
+        text = {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row {
+                    detail.summary.contents.filter { it.availability != "absent" }.forEach { part ->
+                        TextButton(onClick = { model.changeToolPart(part.part) }, enabled = !detail.exporting) { Text(when (part.part) { "arguments" -> "参数"; "output" -> "执行输出"; else -> "最终结果" }) }
+                    }
+                }
+                Text(if (detail.requestId != null) "正在读取…" else if (detail.contentFinal && detail.nextCursor == null && detail.gaps.isEmpty()) "读取完成" else if (detail.nextCursor == null) "已到当前末尾" else "已读取 ${detail.offset} 字节")
+                detail.gaps.forEach { Text("缺失范围 ${it.fromOffset}–${it.throughOffset}：${it.reason}", color = MaterialTheme.colorScheme.error) }
+                detail.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (detail.error != null) TextButton(onClick = { model.changeToolPart(detail.part) }) { Text("从头重新读取") }
+                if (detail.exporting || detail.exportComplete) Text("${if (detail.exportComplete) "已导出" else "正在导出"} ${detail.exportedBytes} 字节")
+                SelectionContainer {
+                    Text(detail.text.ifEmpty { "尚未读取内容" }, modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp).verticalScroll(rememberScrollState()),
+                        fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                }
+                Row {
+                    TextButton(onClick = { model.readToolDetail() }, enabled = detail.requestId == null && !detail.exporting) { Text(if (detail.error != null) "重试" else "读取下一页") }
+                    TextButton(onClick = { if (detail.follow) model.stopToolFollow() else model.readToolDetail(follow = true) }, enabled = !detail.exporting) { Text(if (detail.follow) "停止跟随" else "跟随输出") }
+                }
+                TextButton(onClick = { if (detail.exporting) model.closeToolDetail() else onExport() }) { Text(if (detail.exporting) "取消导出" else "导出当前部分") }
+                if (detail.error?.contains("缓存上限") == true) TextButton(onClick = { model.readToolDetail(clear = true) }) { Text("清空已读并继续") }
+            }
+        },
+    )
 }
 
 @Composable
@@ -3267,6 +3331,8 @@ private fun MessageBlocks(
                     val toolId = block.toolCallId
                     val activity = toolId?.let { toolActivities[it] }
                     val result = toolId?.let { toolResults[it] }
+                    val summary = result?.toolSummary ?: activity?.summary ?: block.summary
+                    val openDetail = LocalToolDetailAction.current
                     // A live streamed tool call has no id/arguments yet: its raw argument fragments
                     // are accumulated in `text` and only the finalized message carries the real
                     // tool_call metadata.
@@ -3277,6 +3343,8 @@ private fun MessageBlocks(
                         activity = activity,
                         result = result,
                         live = live,
+                        summary = summary,
+                        openDetail = { summary?.let { openDetail(runtimeId, it) } },
                     )
                 }
             }
@@ -3351,22 +3419,27 @@ private fun CollapsedTool(
     activity: ToolActivity?,
     result: ChatMessage?,
     live: Boolean = false,
+    summary: ToolSummary? = null,
+    openDetail: () -> Unit = {},
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val resultText = result?.content.orEmpty().mapNotNull { it.text }.joinToString("\n").trim()
     val detail = resultText.ifBlank { activity?.detail }
-    val failed = activity?.isError == true || result?.isError == true
+    val failed = summary?.isError == true || activity?.isError == true || result?.isError == true
     val status = when {
         failed -> "执行失败"
         live -> "参数接收中"
+        summary != null -> when (summary.phase) { "started", "running" -> "执行中"; "cancelled" -> "已取消"; else -> "已完成" }
         else -> activity?.let { toolStateText(it.state) } ?: "已完成"
     }
     CompactDisclosure(
         icon = Icons.Rounded.Build,
         title = toolName,
-        summary = if (expanded) listOfNotNull(arguments, detail).joinToString("\n") else "$status${detail?.let { " · ${compactActivitySummary(it)}" }.orEmpty()}",
+        summary = if (summary != null) listOfNotNull(status, summary.inputSummary?.text,
+            summary.errorSummary?.text ?: summary.resultSummary?.text, summary.exitCode?.let { "退出码 $it" }).joinToString(" · ")
+            else if (expanded) listOfNotNull(arguments, detail).joinToString("\n") else "$status${detail?.let { " · ${compactActivitySummary(it)}" }.orEmpty()}",
         expanded = expanded,
-        onClick = { expanded = !expanded },
+        onClick = { if (summary != null) openDetail() else expanded = !expanded },
         tint = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
     )
 }

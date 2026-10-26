@@ -3,6 +3,7 @@ package com.orbising.orbis
 import android.app.Application
 import android.net.Uri
 import android.os.Build
+import android.provider.DocumentsContract
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +18,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -625,6 +629,7 @@ internal class HostConnection(
      * which still has to serve the other Host connections.
      */
     fun shutdown() {
+        closeToolDetail()
         shouldConnect = false
         updateState { state -> state.sessionReads.values.filter { it.phase.active }.fold(state) { next, read ->
             next.finishHistoryRead(read.operationId, SessionReadPhase.CANCELLED)
@@ -683,6 +688,7 @@ internal class HostConnection(
 
     /** Runtime is the interaction window; its current session follows its metadata. */
     fun selectRuntime(runtimeId: String?) {
+        closeToolDetail()
         runtimeId?.let { refreshAgentModel(it) }
         var runtime: RuntimeSummary? = null
         var conversation: RuntimeConversation? = null
@@ -807,6 +813,7 @@ internal class HostConnection(
 
     /** Opens only an already-cached Session graph as a read-only history view. */
     fun selectOfflineSession(sessionId: String?) {
+        closeToolDetail()
         val current = mutableState.value
         // 用户（或恢复流程）已经选定了去处，别再被「恢复上次会话」拽走。
         restoreSettled = true
@@ -1197,6 +1204,116 @@ internal class HostConnection(
         }
     }
 
+    private val sentToolRequests = mutableMapOf<String, Long>()
+    private var toolExportJob: Job? = null
+
+    fun openToolDetail(runtimeId: String, summary: ToolSummary, part: String = summary.contents.firstOrNull { it.availability != "absent" }?.part ?: "arguments") {
+        closeToolDetail()
+        val current = mutableState.value
+        val runtime = current.runtimes[runtimeId]
+        if (current.hostId != summary.tool.agent.hostId || runtime?.sessionId != summary.tool.agent.sessionId || runtime?.agentKind != summary.tool.agent.agentKind) {
+            updateState { it.copy(error = "该工具所属会话当前未连接，无法读取未缓存的详情") }
+            return
+        }
+        updateState { it.copy(toolDetail = ToolDetailView(runtimeId, summary, part).request()) }
+        flushToolRequests()
+    }
+    fun closeToolDetail() {
+        toolExportJob?.cancel(); toolExportJob = null
+        val detail = mutableState.value.toolDetail ?: return
+        relay.sendToolCommand(detail.runtimeId, buildJsonObject {
+            put("type", "session.tool.content.cancel"); put("requestId", UUID.randomUUID().toString()); put("runtimeId", detail.runtimeId)
+            put("viewerId", detail.viewerId); put("readId", detail.read?.readId ?: "cancel-pending")
+        })
+        updateState { it.copy(toolDetail = null) }
+    }
+    fun readToolDetail(follow: Boolean? = null, clear: Boolean = false) {
+        updateState { state ->
+            val detail = state.toolDetail ?: return@updateState state
+            if (detail.exporting) return@updateState state
+            val next = detail.copy(follow = follow ?: detail.follow)
+            if (next.requestId != null) state.copy(toolDetail = next)
+            else state.copy(toolDetail = (if (clear) next.copy(text = "") else next).request(fresh = next.nextCursor == null))
+        }
+        flushToolRequests()
+    }
+    fun stopToolFollow() { updateState { it.copy(toolDetail = it.toolDetail?.copy(follow = false)) } }
+
+    /** Export a fixed range page by page; raw text never accumulates in the chat cache. */
+    fun exportToolDetail(uri: Uri, runtimeId: String, summary: ToolSummary, part: String) {
+        openToolDetail(runtimeId, summary, part)
+        val viewer = mutableState.value.toolDetail?.viewerId ?: return
+        updateState { it.copy(toolDetail = it.toolDetail?.copy(exporting = true, follow = false)) }
+        toolExportJob = scope.launch(Dispatchers.IO) {
+            var complete = false
+            try {
+                application.contentResolver.openOutputStream(uri, "w")?.use { output ->
+                    var written = 0L
+                    while (true) {
+                        val state = withTimeout(35_000) { mutableState.first {
+                            it.toolDetail?.viewerId != viewer || it.toolDetail.requestId == null
+                        } }
+                        val detail = state.toolDetail?.takeIf { it.viewerId == viewer } ?: throw CancellationException()
+                        detail.error?.let { throw IllegalStateException(it) }
+                        check(detail.gaps.isEmpty()) { "内容存在缺失范围，未导出不完整文件" }
+                        val bytes = detail.text.toByteArray(Charsets.UTF_8)
+                        check(written + bytes.size <= 64 * 1024 * 1024) { "导出达到 64 MiB 上限" }
+                        output.write(bytes); written += bytes.size
+                        val hasNext = detail.nextCursor != null
+                        updateState { current -> if (current.toolDetail?.viewerId != viewer) current else current.copy(
+                            toolDetail = current.toolDetail.copy(text = "", exportedBytes = written,
+                                exporting = hasNext, exportComplete = !hasNext).let { if (hasNext) it.request() else it }) }
+                        if (!hasNext) { output.flush(); complete = true; break }
+                        flushToolRequests()
+                    }
+                } ?: error("无法创建导出文件")
+            } catch (error: Exception) {
+                updateState { current -> if (current.toolDetail?.viewerId != viewer) current else current.copy(
+                    toolDetail = current.toolDetail.copy(exporting = false, exportComplete = false, requestId = null, follow = false,
+                        error = if (error is CancellationException) "导出已取消" else error.message ?: "导出失败")) }
+            } finally {
+                if (!complete) withContext(NonCancellable + Dispatchers.IO) {
+                    val removed = if (uri.scheme == "file") runCatching {
+                        uri.path?.let { path -> java.io.File(path).let { !it.exists() || it.delete() } } == true
+                    }.getOrDefault(false) else {
+                        runCatching { DocumentsContract.deleteDocument(application.contentResolver, uri) }.getOrDefault(false) ||
+                            runCatching { application.contentResolver.delete(uri, null, null) > 0 }.getOrDefault(false)
+                    }
+                    if (!removed) updateState { it.copy(error = "未完成的工具导出文件无法删除，请在文件管理器中删除") }
+                }
+            }
+        }
+    }
+
+    private fun flushToolRequests() {
+        val state = mutableState.value
+        if (state.connection != RelayConnection.ONLINE) return
+        val commands = state.toolInventories.mapNotNull { (runtime, replica) -> replica.command(runtime)?.let { runtime to it } } +
+            listOfNotNull(state.toolDetail?.let { detail -> detail.command()?.let { detail.runtimeId to it } })
+        val active = commands.mapNotNull { it.second["requestId"]?.jsonPrimitive?.contentOrNull }.toSet()
+        synchronized(sentToolRequests) { sentToolRequests.keys.retainAll(active) }
+        commands.forEach { (runtime, command) ->
+            val id = command["requestId"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+            val first = synchronized(sentToolRequests) {
+                if (id in sentToolRequests) false else { sentToolRequests[id] = System.currentTimeMillis(); true }
+            }
+            if (!first) return@forEach
+            val sent = relay.sendToolCommand(runtime, command) != null
+            scope.launch {
+                delay(if (sent) 30_000 else 500)
+                val pending = synchronized(sentToolRequests) { sentToolRequests.remove(id) != null }
+                if (pending) updateState { current ->
+                    if (current.toolDetail?.requestId == id) current.copy(toolDetail = current.toolDetail.copy(requestId = null, follow = false, error = "详情读取超时，可重试"))
+                    else if (current.toolInventories[runtime]?.requestId == id) current.copy(
+                        toolInventories = current.toolInventories + (runtime to current.toolInventories.getValue(runtime).failed("工具清单读取超时")),
+                        pendingToolConversations = current.pendingToolConversations - runtime,
+                        sessionSyncRequests = current.sessionSyncRequests + runtime)
+                    else current
+                }
+            }
+        }
+    }
+
     fun downloadArtifact(runtimeId: String, artifact: RemoteArtifact) {
         val hostId = mutableState.value.hostId ?: run {
             updateState { it.copy(error = "还没有已配对的电脑，无法下载") }
@@ -1521,8 +1638,8 @@ internal class HostConnection(
                         continue
                     }
                 }
-                if (frame is ByteArray) {
-                    runCatching { processArtifactChunk(frame) }.onFailure { error ->
+                if (frame is InboundFrameLanes.BinaryFrame) {
+                    runCatching { processArtifactChunk(frame.payload) }.onFailure { error ->
                         updateState { it.copy(error = "文件下载失败：${error.message ?: "二进制下载分片无效"}") }
                     }
                     continue
@@ -1633,6 +1750,11 @@ internal class HostConnection(
                                     )
                                 }
                                 next = mutableState.value
+                                previous.sessionSyncCommands.forEach { (id, pending) ->
+                                    if (id !in next.sessionSyncCommands && sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull in setOf("session.tools.page", "session.tools.patch")) {
+                                        scope.launch(Dispatchers.IO) { relay.acknowledgeSessionSnapshot(pending.runtimeId, pending.syncId) }
+                                    }
+                                }
                                 // Upload state is published after the reducer, through its own transforms.
                                 runCatching { processUploadPayload(payload) }
                                     .onFailure { error -> Log.e(RELOAD_TRACE_TAG, "upload.payload_failed", error) }
@@ -1663,6 +1785,7 @@ internal class HostConnection(
                                 updateState { current -> current.copy(error = "收到无效的中继服务器消息") }
                             }
                     }
+                    flushToolRequests()
                     // 只有 Host 的加密 device.ready 才触发刷新；Relay 的明文确认不携带会话目录。
                     // Host 已上线：自动拉一次全量会话索引刷新侧栏
                     // （spec §8 L1 的前提——手机得先知道有哪些会话可继续）。重连后也会重新拉。
@@ -1734,7 +1857,7 @@ internal class HostConnection(
                     if (currentGeneration != generation) return@launch
                     if (ready) handshakeStalled = false
                     updateState { current ->
-                        current.copy(
+                        (if (ready) current else current.markReconnecting()).copy(
                             e2eReady = ready,
                             connection = if (!ready && current.connection == RelayConnection.ONLINE) RelayConnection.RECONNECTING else current.connection,
                             error = if (ready && current.error == HANDSHAKE_STALLED_ERROR) null else current.error,
@@ -1989,6 +2112,7 @@ internal class HostConnection(
                     .also { next = it }
             }
             probe?.mark("snapshot_applied", "accepted=${pendingCommandId !in next.sessionSyncCommands} loading=${next.sessionHistory[runtimeId]?.loading} error=${next.conversations[runtimeId]?.chatSyncError != null}")
+            flushToolRequests()
             // ADR-0037 §4：先落库再回执。Host 只有收到它才会把这次事务当作 committed。
             if (pendingCommandId !in next.sessionSyncCommands) {
                 scope.launch(Dispatchers.IO) {

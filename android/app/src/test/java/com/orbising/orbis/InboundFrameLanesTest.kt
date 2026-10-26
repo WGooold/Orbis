@@ -60,14 +60,15 @@ class InboundFrameLanesTest {
     }
 
     @Test
-    fun `bulk channel 的帧也走分片面，不看载荷形态`() = runBlocking {
+    fun `bulk JSON 保留文本类型且与二进制共用分片面`() = runBlocking {
         val lanes = InboundFrameLanes()
-        lanes.offer("""{"type":"artifact.chunk"}""", "bulk")
-        // 分类以 channel 为准：写了 bulk 就是分片，不管它是文本。
+        val payload = """{"type":"runtime.event","event":{"type":"session.tool.content.page"}}"""
+        lanes.offer(payload, "bulk")
+        lanes.offerBulk(byteArrayOf(1, 2, 3))
         assertNull(lanes.takeControl())
         assertNull(lanes.takeSession())
-        // 它确实落在分片面上：分片不会丢，只是不抢控制面的道。
-        assertEquals("""{"type":"artifact.chunk"}""", lanes.takeBulk()?.toString(Charsets.UTF_8))
+        assertEquals(InboundFrameLanes.InteractiveFrame(payload, "bulk"), lanes.takeBulk())
+        assertEquals(listOf<Byte>(1, 2, 3), (lanes.takeBulk() as InboundFrameLanes.BinaryFrame).payload.toList())
     }
 
     @Test
@@ -152,8 +153,8 @@ class InboundFrameLanesTest {
         lanes.offerBulk(byteArrayOf(1, 2, 3))
         lanes.offerBulk(byteArrayOf(4, 5, 6))
         lanes.offerBulk(byteArrayOf(7, 8, 9))
-        assertEquals(byteArrayOf(4, 5, 6).toList(), lanes.takeBulk()?.toList())
-        assertEquals(byteArrayOf(7, 8, 9).toList(), lanes.takeBulk()?.toList())
+        assertEquals(byteArrayOf(4, 5, 6).toList(), (lanes.takeBulk() as InboundFrameLanes.BinaryFrame).payload.toList())
+        assertEquals(byteArrayOf(7, 8, 9).toList(), (lanes.takeBulk() as InboundFrameLanes.BinaryFrame).payload.toList())
         assertNull(lanes.takeBulk())
     }
 

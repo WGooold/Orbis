@@ -150,6 +150,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun setActiveHost(hostId: String?) {
+        active()?.closeToolDetail()
         val resolved = synchronized(lock) { hostId?.takeIf { connections.containsKey(it) } }
             ?: pairingOrder.value.firstOrNull()?.hostId
         activeHostId.value = resolved
@@ -383,6 +384,15 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun consumeCommandResult(commandId: String) = active()?.consumeCommandResult(commandId)
 
     fun stopRuntime() = active()?.stopRuntime()
+    fun openToolDetail(runtimeId: String, summary: ToolSummary) = active()?.openToolDetail(runtimeId, summary)
+    fun changeToolPart(part: String) { state.value.toolDetail?.let { active()?.openToolDetail(it.runtimeId, it.summary, part) } }
+    fun closeToolDetail() = active()?.closeToolDetail()
+    fun exportToolDetail(uri: Uri, detail: ToolDetailView) {
+        if (state.value.hostId == detail.summary.tool.agent.hostId) active()?.exportToolDetail(uri, detail.runtimeId, detail.summary, detail.part)
+    }
+    fun closeAllToolDetails() { synchronized(lock) { connections.values.forEach { it.closeToolDetail() } } }
+    fun readToolDetail(follow: Boolean? = null, clear: Boolean = false) = active()?.readToolDetail(follow, clear)
+    fun stopToolFollow() = active()?.stopToolFollow()
 
     fun requestFullEntry(runtimeId: String, entryId: String) =
         active()?.requestFullEntry(runtimeId, entryId)

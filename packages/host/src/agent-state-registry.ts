@@ -62,7 +62,32 @@ export type RegistryMutation =
   | { readonly kind: "remove"; readonly scope: StateScope; readonly domain: StateDomain; readonly fact: DomainFact & { readonly removeIds: readonly string[] } };
 
 /** Prepared owner state is finalized only after the whole registry transaction succeeds. */
-export type PreparedRegistryCommit = { readonly changes: readonly RegistryMutation[]; readonly onCommitted: () => void };
+export type PreparedRegistryCommit = {
+  readonly changes: readonly RegistryMutation[];
+  /** One prepared replacement per owner; two plans must not overwrite the same owner state. */
+  readonly owner?: object;
+  /** Optional exact native transaction dependency for conversation companion commits. */
+  readonly conversationSource?: { readonly agent: AgentKey; readonly epoch: string; readonly seq: number };
+  /** Reject a prepared owner state superseded since preparation, before swapping any companion. */
+  readonly isCurrent?: () => boolean;
+  readonly onCommitted: () => void;
+};
+
+/** All owners validate before any owner swaps. No asynchronous work or nested commit is allowed. */
+export function commitPreparedRegistryTransaction(
+  registry: AgentStateRegistry, plans: readonly PreparedRegistryCommit[],
+): TransactionResult {
+  const owners = plans.flatMap(plan => plan.owner ? [plan.owner] : []);
+  if (new Set(owners).size !== owners.length) {
+    return { ok: false, code: "invalid_fact", detail: "duplicate_prepared_owner", index: 0 };
+  }
+  if (plans.some(plan => plan.isCurrent?.() === false)) {
+    return { ok: false, code: "invalid_fact", detail: "stale_prepared_state", index: 0 };
+  }
+  return registry.commitTransaction(plans.flatMap(plan => [...plan.changes]), () => {
+    for (const plan of plans) plan.onCommitted();
+  });
+}
 
 export type TransactionResult =
   | { readonly ok: true; readonly results: ReadonlyArray<Extract<CommitResult, { ok: true }>> }

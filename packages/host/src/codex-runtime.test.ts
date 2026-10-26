@@ -281,9 +281,12 @@ describe("Codex recoverable source checkpoints", () => {
     h.notify("item/started", { threadId: "th-1", item: tool("b") });
     h.notify("item/completed", { threadId: "th-1", item: tool("b", "completed") });
     expect(syncHistory(h)).toMatchObject({
-      entries: [], live: { messages: expect.arrayContaining([expect.objectContaining({ persistedEntryId: "b", finished: true })]),
-        tools: [expect.objectContaining({ toolCallId: "b", state: "finished" })] },
+      entries: [], live: { messages: [expect.objectContaining({ message: expect.objectContaining({ messageId: "a" }) })],
+        tools: [], toolInventory: { totalCount: 1 } },
     });
+    expect(h.events.filter(event => event.type === "session.tools.produced").at(-1)).toMatchObject({ page: { tools: [
+      { tool: { toolCallId: "b" }, phase: "finished" },
+    ] } });
     h.events.length = 0;
     h.notify("item/completed", { threadId: "th-1", item: agent("a", "final") });
     const patches = h.events.filter(event => event.type === "session.patch");
@@ -308,8 +311,8 @@ describe("Codex recoverable source checkpoints", () => {
     expect(committed?.entries?.[0]?.parentId).toBe("a:result");
   });
 
-  // ADR-0038：超长工具输出在**线路载荷**上被截断，源端/canonical 仍保留完整原文。
-  it("truncates oversized tool output on the wire while keeping canonical data intact", async () => {
+  // ADR-0045：原生输出不进入公共 canonical/display/线路载荷。
+  it("projects oversized tool output into bounded canonical summaries", async () => {
     const h = makeHarness();
     await activate(h);
     const output = "x".repeat(SESSION_SYNC_PAGE_BYTES + 1024);
@@ -317,11 +320,12 @@ describe("Codex recoverable source checkpoints", () => {
     h.notify("item/completed", { threadId: "th-1", item: { ...tool("large", "completed"), output } });
     const committed = h.events.filter(event => event.type === "session.patch").at(-1);
     expect(committed).toMatchObject({ head: { leafId: "large:result" } });
-    expect(committed?.entries).toBeUndefined();
+    expect(committed?.entries).toHaveLength(2);
     const snapshot = syncHistory(h);
     const wire = JSON.stringify(snapshot?.entries);
     expect(wire).not.toContain(output);
-    expect(wire).toContain("已截断");
+    expect(wire).toContain("toolSummary");
+    expect(wire.length).toBeLessThan(16 * 1024);
     expect(snapshot?.entries.map(entry => entry.entryId)).toContain("large:result");
   });
 
@@ -333,7 +337,7 @@ describe("Codex recoverable source checkpoints", () => {
       checkpoint: { head: { leafId: null }, inventoryComplete: false },
       live: { complete: false, turn: null,
         messages: expect.arrayContaining([expect.objectContaining({ message: expect.objectContaining({ messageId: "a" }), finished: false, contentComplete: false })]),
-        tools: [expect.objectContaining({ toolCallId: "b", state: "started" })] },
+        tools: [], toolInventory: { totalCount: 1 } },
     });
   });
 
@@ -343,8 +347,8 @@ describe("Codex recoverable source checkpoints", () => {
       items: [agent("a", "partial"), tool("b", "completed")] }]);
     expect(syncHistory(h)).toMatchObject({
       entries: [], live: { complete: true,
-        messages: expect.arrayContaining([expect.objectContaining({ persistedEntryId: "b", finished: true, contentComplete: true })]),
-        tools: [expect.objectContaining({ toolCallId: "b", state: "finished" })] },
+        messages: [expect.objectContaining({ message: expect.objectContaining({ messageId: "a" }) })],
+        tools: [], toolInventory: { totalCount: 1 } },
     });
   });
 
@@ -357,7 +361,7 @@ describe("Codex recoverable source checkpoints", () => {
     h.notify("item/completed", { threadId: "th-1", turnId: "t", item: tool("b", "completed") });
     h.notify("turn/completed", { threadId: "th-1", turn: { id: "t" } });
     expect(syncHistory(h)).toMatchObject({ entries: [], live: { turn: null,
-      tools: [expect.objectContaining({ toolCallId: "b", state: "finished" })] } });
+      tools: [], toolInventory: { totalCount: 1 } } });
   });
 
   it("repairs a silent native revert through the 15 second native check", async () => {
@@ -1291,22 +1295,16 @@ describe("CodexRuntime", () => {
         content: [{ type: "tool_call", toolCallId: "tool-1" }],
       },
     });
-    expect(h.events).toContainEqual({
-      type: "tool.started",
-      toolCallId: "tool-1",
-      toolName: "commandExecution",
-      arguments: { command: "npm test", cwd: "D:/repo" },
-    });
-    expect(h.events).toContainEqual({
-      type: "tool.finished",
-      toolCallId: "tool-1",
-      toolName: "commandExecution",
-      result: { status: "completed", exitCode: 0 },
-      isError: false,
-    });
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "tool.activity", summary: expect.objectContaining({
+      tool: expect.objectContaining({ toolCallId: "tool-1" }), phase: "started", inputSummary: { text: "npm test", omitted: false, originalBytes: 8 },
+    }) }));
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "tool.activity", summary: expect.objectContaining({
+      phase: "finished", isError: false, exitCode: 0,
+    }) }));
+    expect(JSON.stringify(h.events)).not.toContain('"arguments":');
   });
 
-  it("Codex 工具输出增量映射为 tool.updated，MCP progress 也使用同一 toolCallId", async () => {
+  it("Codex 工具输出与 MCP progress 不进入共享事件或增加聊天 seq", async () => {
     const h = makeHarness();
     await activate(h);
     h.events.length = 0;
@@ -1330,18 +1328,12 @@ describe("CodexRuntime", () => {
       message: "still working",
     });
 
-    expect(h.events).toContainEqual({
-      type: "tool.updated",
-      toolCallId: "cmd-1",
-      toolName: "commandExecution",
-      partialResult: "file.txt\n",
-    });
-    expect(h.events).toContainEqual({
-      type: "tool.updated",
-      toolCallId: "mcp-1",
-      toolName: "search",
-      partialResult: "still working",
-    });
+    expect(h.events.some(event => event.type === "tool.updated")).toBe(false);
+    expect(JSON.stringify(h.events)).not.toContain("file.txt");
+    expect(JSON.stringify(h.events)).not.toContain("still working");
+    const count = h.events.length;
+    h.notify("item/commandExecution/outputDelta", { threadId: "th-1", itemId: "cmd-1", delta: "another byte" });
+    expect(h.events).toHaveLength(count);
   });
 
   it("Codex 历史工具 item 回放为相邻的 tool_call 和 tool result 消息", async () => {

@@ -670,7 +670,8 @@ class SessionGraphStoreInstrumentedTest {
     @Test
     fun allRangesCommitAndOnlyTheRemainingHoleIsRequestedAfterRestart() {
         val entries = (1..10).map { entry("$it", if (it == 1) null else "${it - 1}") }
-        store.upsert(device, "s", entries.take(3), leafId = "3")
+        store.upsert(device, "s", entries.take(3), leafId = "3",
+            source = SessionSourceEpoch("source", 1, true), activateSource = true)
         var state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "idle", "s", sessionLeafId = "10")))
         val reducer = FixtureRelayReducer()
         var sequence = 0L

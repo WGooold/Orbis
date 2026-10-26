@@ -2,6 +2,8 @@
 
 日期：2026-10-22
 
+2026-10-27：[ADR-0045](0045-tool-summaries-and-on-demand-content.md) 替换工具全文的默认同步路径：producer 在进入共享状态前生成摘要和 locator，完整参数/输出/结果通过独立范围页读取；`session.entry.request` 不承担大工具内容分页。本文关于其他文本的线路截断继续适用，超长助手正文仍可能超过 live 页预算。
+
 Status: accepted（2026-10-22 实现 §1–§7：`packages/protocol/src/wire-truncate.ts` 在 `prepareSessionSync` 与 `RecoverableSessionSource.#flush` 两个出口做确定性截断；内容块带 `truncated: true` + `originalBytes`，文本里同时保留"…（已截断，原始 N 字节）"以便任何只读 `text` 的渲染路径也能看见。§8 的"取全文"入口已实现：设备可用 `session.entry.request{requestId,sessionId,entryId}` 按需取回未截断的原文（只回请求设备；超过单条上限按确定性失败拒绝），App 在会话顶部给出「查看完整内容」入口）
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0034](0034-image-content-references.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0037](0037-session-sync-transaction-contract.md)

@@ -207,6 +207,7 @@ describe("DeepSeek Harness backend", () => {
     expect(history.entries[0]).toEqual(first.entries[0]);
     expect(history.entries[1]?.parentId).toBe("dsh:one:5");
     expect((await command({ type: "session.sync", sessionId: "dsh:two", syncId: "bad", range: "preview" }, "bad")).ok).toBe(false);
-    expect(dshEntries(log)).toEqual(history.entries);
+    expect(dshEntries(log).map(entry => entry.entryId)).toEqual(history.entries.map(entry => entry.entryId));
+    expect(JSON.stringify(history.entries)).not.toContain('"arguments":');
   });
 });

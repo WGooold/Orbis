@@ -35,6 +35,8 @@ import {
 import {
   LOOPBACK_PATH,
   PROTOCOL_VERSION,
+  ToolInventorySource, createToolSummary, createToolContentPage,
+  EnvelopeReassembler,
   decodeArtifactChunkFrame,
   encodeArtifactChunkFrame,
   type CodexDesktopAttach,
@@ -42,6 +44,7 @@ import {
   type PathKind,
   type RuntimeEvent,
   type RuntimeMetadata,
+  type ToolContentReadRequest, type ToolInventorySnapshot,
 } from "@orbis/protocol";
 import { createRelayServer, type RelayServer } from "@orbis/relay";
 
@@ -162,6 +165,7 @@ class TestPath {
   readonly #onIncoming: (incoming: Incoming) => void;
   /** 已到达但还没拆的帧。拆封顺序必须与到达顺序一致（见 `#drain`）。 */
   readonly #pending: EnvelopeV2[] = [];
+  readonly #reassembler = new EnvelopeReassembler();
   #draining = false;
   #channel: E2eChannel | undefined;
   #room = "";
@@ -208,7 +212,9 @@ class TestPath {
           this.#onIncoming({ kind: this.kind, envelope });
           continue;
         }
-        const payload = this.open(envelope);
+        const complete = this.#reassembler.accept(envelope);
+        if (!complete) continue;
+        const payload = this.open(complete);
         if (envelope.hdr.k === "ping") {
           this.seal("ping", payload);
           continue;
@@ -805,10 +811,10 @@ describe("host end-to-end over relay", () => {
       ]));
       runtime.publish(3, { type: "session.snapshot", sessionId: "s", syncId: "unsolicited",
         cursor: { leafId: null }, mode: "replace", entries: [] });
-      runtime.publish(4, { type: "tool.started", toolCallId: "barrier", toolName: "test", arguments: {} });
+      runtime.publish(4, { type: "message.started", message: { messageId: "barrier", role: "assistant", timestamp: 1, content: [] } });
       // A marker on the same msg channel proves all earlier unwanted snapshots were suppressed.
-      await expect(second.device.receiveMessage()).resolves.toMatchObject({ event: { type: "tool.started", toolCallId: "barrier" } });
-      await expect(device.receiveMessage()).resolves.toMatchObject({ event: { type: "tool.started", toolCallId: "barrier" } });
+      await expect(second.device.receiveMessage()).resolves.toMatchObject({ event: { type: "message.started", message: { messageId: "barrier" } } });
+      await expect(device.receiveMessage()).resolves.toMatchObject({ event: { type: "message.started", message: { messageId: "barrier" } } });
       for (let index = 0; index < 33; index++) {
         device.sendPayload(Buffer.from(JSON.stringify({ ...command, commandId: `busy-${index}`,
           command: { ...command.command, syncId: `busy-sync-${index}` } })));
@@ -825,6 +831,68 @@ describe("host end-to-end over relay", () => {
       })]));
       const persisted = (await readFile(join(stateDir, "diagnostics.ndjson"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
       expect(persisted).toEqual(expect.arrayContaining([expect.objectContaining({ operationId: "busy-32", message: "session_sync_busy" })]));
+    } finally { second.device.close(); }
+  });
+
+  it("privately pages Pi tool inventories and details through two real authenticated encrypted devices", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-private-tools-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      reconnect: false, lan: false }); await host.start();
+    const first = await pairDevice({ relay, host }); device = first.device;
+    await device.openChannel("relay", first.pskRoot, first.payload.hostId, first.payload.hostId);
+    await device.receiveMessage(); await device.receiveMessage();
+    const second = await pairDevice({ relay, host });
+    try {
+      await second.device.openChannel("relay", second.pskRoot, second.payload.hostId, second.payload.hostId);
+      await second.device.receiveMessage(); await second.device.receiveMessage();
+      const descriptor = host.loopback!.descriptor!;
+      runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+        metadata: { runtimeId: "pi-tools", name: "tools", cwd: "/work", status: "running", sessionId: "s" } });
+      await runtime.next(); await device.receiveMessage(); await second.device.receiveMessage();
+      device.sendPayload(Buffer.from(JSON.stringify({ type: "runtime.command", protocolVersion: PROTOCOL_VERSION,
+        runtimeId: "pi-tools", commandId: "baseline", command: { type: "session.sync", sessionId: "s", syncId: "baseline", range: "preview" } })));
+      const baseline = await runtime.next();
+      expect(baseline).toMatchObject({ command: { type: "session.sync" } });
+      runtime.publish(1, { type: "session.snapshot", sessionId: "s", range: "preview", syncId: (baseline.command as { syncId: string }).syncId,
+        cursor: { leafId: null }, mode: "replace", entries: [], complete: true, source: { epoch: "source", seq: 0, ready: true },
+        checkpoint: { checkpointId: "source:0", head: { leafId: null }, headCompleteness: "complete", inventoryComplete: true },
+        live: { complete: true, turn: null, messages: [], tools: [] } });
+      expect(await device.receiveMessage().catch(error => { throw new Error("private tools initial baseline", { cause: error }); })).toMatchObject({ event: { type: "session.snapshot" } });
+      const agent = { hostId: first.payload.hostId, agentKind: "pi" as const, sessionId: "s" };
+      let sequence = 1;
+      const summaries = Array.from({ length: 200 }, (_, i) => createToolSummary({ tool: { agent, toolCallId: `t${i}` },
+        toolName: "read", order: i, phase: "running", contents: [] }));
+      const producer = new ToolInventorySource(event => runtime!.publish(++sequence, event));
+      const reference = producer.prepare("pi-tools", { epoch: "source", seq: 1 }, summaries)!;
+      runtime.publish(++sequence, { type: "session.patch", sessionId: "s", source: { epoch: "source", seq: 1, ready: true }, baseSeq: 0, seq: 1,
+        checkpointId: "source:1", head: { leafId: null }, headCompleteness: "complete",
+        live: { complete: true, turn: null, messages: [], tools: [], toolInventory: reference } });
+      for (const phone of [device, second.device]) {
+        const messages = [await phone.receiveMessage().catch(error => { throw new Error("private tools publication 1", { cause: error }); }), await phone.receiveMessage().catch(error => { throw new Error("private tools publication 2", { cause: error }); })];
+        expect(messages.some(message => (message.event as RuntimeEvent)?.type === "session.tools.changed")).toBe(true);
+        expect(messages.find(message => (message.event as RuntimeEvent)?.type === "session.patch")).toMatchObject({ event: { live: { tools: [], toolInventory: reference } } });
+      }
+      const send = (command: unknown) => device!.sendPayload(Buffer.from(JSON.stringify({ type: "runtime.command", protocolVersion: PROTOCOL_VERSION,
+        runtimeId: "pi-tools", commandId: "private", command })));
+      send({ type: "session.tools.open", requestId: "open", runtimeId: "pi-tools", reference });
+      const opened = await device.receiveMessage(); const snapshot = (opened.event as { snapshot: ToolInventorySnapshot }).snapshot;
+      let cursor: string | null = null, count = 0;
+      do {
+        send({ type: "session.tools.read", requestId: `page${count}`, runtimeId: "pi-tools", snapshot, cursor, maxItems: 128 });
+        const event = (await device.receiveMessage()).event as Extract<RuntimeEvent, { type: "session.tools.page" }>;
+        expect(event.type).toBe("session.tools.page"); count += event.tools.length; cursor = event.nextCursor;
+      } while (cursor);
+      expect(count).toBe(200);
+      const request: ToolContentReadRequest = { type: "session.tool.content.read", requestId: "private-content", runtimeId: "pi-tools", viewerId: "v",
+        locator: { projectionVersion: 1, tool: { agent, toolCallId: "t0" }, part: "output" }, read: null, offset: 0, maxBytes: 16_384 };
+      send(request); const forwarded = (await runtime.next()).command as ToolContentReadRequest;
+      expect(forwarded.requestId).not.toBe(request.requestId);
+      runtime.publish(++sequence, createToolContentPage({ type: "session.tool.content.page", requestId: forwarded.requestId, runtimeId: "pi-tools", locator: forwarded.locator,
+        read: { readId: "read-private", contentEpoch: "content", throughOffset: 16_384 }, format: "text", representation: "utf8-fragment", fromOffset: 0,
+        availableFromOffset: 0, availableThroughOffset: 16_384, observedThroughOffset: 16_384, contentFinal: false, gaps: [] }, "private-output".repeat(1260).slice(0, 16_384)));
+      expect(await device.receiveMessage()).toMatchObject({ event: { type: "session.tool.content.page", requestId: "private-content" } });
+      // The other device receives neither the private inventory pages nor the raw content.
+      await expect(second.device.nextIncoming(150)).rejects.toThrow("超时");
     } finally { second.device.close(); }
   });
 

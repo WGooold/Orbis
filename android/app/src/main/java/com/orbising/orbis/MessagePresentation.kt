@@ -134,13 +134,20 @@ internal fun buildConversationPresentation(messages: List<ChatMessage>): Convers
     val toolResults = normalized
         .filter { it.role == "tool" && it.toolCallId != null }
         .associateBy { requireNotNull(it.toolCallId) }
+    val represented = normalized.flatMap { it.content }.mapNotNull { it.toolCallId }.toSet()
     return ConversationPresentation(
-        messages = normalized.filterNot { it.role == "tool" && it.toolCallId in toolResults },
+        messages = normalized.mapNotNull { message ->
+            if (message.role != "tool") message
+            else message.toolSummary?.takeIf { message.toolCallId !in represented }?.let { summary ->
+                message.copy(role = "assistant", content = listOf(RemoteContent(type = "tool_call",
+                    toolCallId = summary.tool.toolCallId, toolName = summary.toolName, summary = summary)))
+            }
+        },
         toolResults = toolResults,
     )
 }
 
-private fun ChatMessage.hasRenderableContent(): Boolean = content.any { block ->
+private fun ChatMessage.hasRenderableContent(): Boolean = toolSummary != null || content.any { block ->
     when (block.type) {
         "artifact" -> block.artifact != null
         "tool_call" -> !block.toolCallId.isNullOrBlank() || !block.toolName.isNullOrBlank() ||

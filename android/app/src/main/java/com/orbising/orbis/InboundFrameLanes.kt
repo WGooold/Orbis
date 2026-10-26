@@ -40,7 +40,13 @@ internal class InboundFrameLanes(
         }
     }
 
-    internal data class InteractiveFrame(val payload: String, val channel: String?)
+    internal sealed interface BulkFrame { val cost: Int }
+    internal data class InteractiveFrame(val payload: String, val channel: String?) : BulkFrame {
+        override val cost: Int get() = payload.length
+    }
+    internal data class BinaryFrame(val payload: ByteArray) : BulkFrame {
+        override val cost: Int get() = payload.size
+    }
 
     /** 自上次读取以来因预算而丢弃的帧数；两面都触发重同步（ADR-0040 §4/§5）。 */
     internal data class Overflow(val sessionFrames: Int, val controlFrames: Int) {
@@ -56,8 +62,8 @@ internal class InboundFrameLanes(
     private val control = Channel<InteractiveFrame>(Channel.UNLIMITED)
     private val session = Channel<InteractiveFrame>(Channel.UNLIMITED)
 
-    /** 分片面：artifact 裸字节。 */
-    private val bulk = Channel<ByteArray>(Channel.UNLIMITED)
+    /** 分片面：保留 data JSON 与 bin 裸字节类型，共用优先级和预算。 */
+    private val bulk = Channel<BulkFrame>(Channel.UNLIMITED)
 
     /** 叫醒信号。合并成一条：积压多少都只需要通知一次。 */
     private val wakeup = Channel<Unit>(Channel.CONFLATED)
@@ -76,7 +82,7 @@ internal class InboundFrameLanes(
      * `bulk`。没有 `ch` 的帧按 `ctl` 处理（与 ADR-0007 的协商规则一致）。
      */
     fun offer(payload: String, channel: String?): Boolean {
-        if (channel == BULK_CHANNEL) return offerBulk(payload.toByteArray(Charsets.UTF_8))
+        if (channel == BULK_CHANNEL) return offerBulkFrame(InteractiveFrame(payload, channel))
         val sessionLane = channel == MESSAGE_CHANNEL
         val queue = if (sessionLane) session else control
         val accounting = if (sessionLane) sessionCount else controlCount
@@ -91,11 +97,13 @@ internal class InboundFrameLanes(
     }
 
     /** 入队一片裸字节分片（E2E `bin` 帧）。 */
-    fun offerBulk(bytes: ByteArray): Boolean {
-        dropOldestBulk(bytes.size)
-        if (bulk.trySend(bytes).isFailure) return false
+    fun offerBulk(bytes: ByteArray): Boolean = offerBulkFrame(BinaryFrame(bytes))
+
+    private fun offerBulkFrame(frame: BulkFrame): Boolean {
+        dropOldestBulk(frame.cost)
+        if (bulk.trySend(frame).isFailure) return false
         bulkCount.frames.incrementAndGet()
-        bulkCount.payload.addAndGet(bytes.size)
+        bulkCount.payload.addAndGet(frame.cost)
         wakeup.trySend(Unit)
         return true
     }
@@ -114,11 +122,11 @@ internal class InboundFrameLanes(
     fun takeSession(): InteractiveFrame? = takeText(session, sessionCount)
 
     /** 取一片分片。`null` = 暂时没有。 */
-    fun takeBulk(): ByteArray? {
-        val bytes = bulk.tryReceive().getOrNull() ?: return null
+    fun takeBulk(): BulkFrame? {
+        val frame = bulk.tryReceive().getOrNull() ?: return null
         bulkCount.frames.decrementAndGet()
-        bulkCount.payload.addAndGet(-bytes.size)
-        return bytes
+        bulkCount.payload.addAndGet(-frame.cost)
+        return frame
     }
 
     /** 两面都空时挂起等叫醒。返回 `false` = 通道已关闭，消费循环该收工了。 */
@@ -156,7 +164,7 @@ internal class InboundFrameLanes(
         ) {
             val oldest = bulk.tryReceive().getOrNull() ?: return
             bulkCount.frames.decrementAndGet()
-            bulkCount.payload.addAndGet(-oldest.size)
+            bulkCount.payload.addAndGet(-oldest.cost)
         }
     }
 

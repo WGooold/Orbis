@@ -1,6 +1,7 @@
 /** AgentBackend adapter for an already-running DeepSeek Harness Web session. */
 import { createHash, randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
+import { ToolActivityProducer, ToolContentReadError, type NativeToolPart, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { isAbsolute } from "node:path";
 import {
   NotificationSource,
@@ -8,6 +9,7 @@ import {
   SessionSyncPreparer,
   type AgentDeliveryItem, type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
+  type ToolContentLocator,
 } from "@orbis/protocol";
 import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshWebClient, type DshWebConnection, type DshWebEvent, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
@@ -92,6 +94,75 @@ type WebSession = {
  * transport, leaving the user's browser and Web process untouched.
  */
 export class DshWebRuntime implements AgentBackend {
+  #toolHostId = "local";
+  #toolStore: ToolContentStore | undefined;
+  readonly #toolProducers = new Map<string, ToolActivityProducer>();
+  setToolContentStore(store: ToolContentStore, hostId: string): void {
+    this.#toolHostId = hostId; this.#toolStore = store;
+    for (const producer of this.#toolProducers.values()) producer.attach(store);
+  }
+  readonly toolContents: ToolContentReader = {
+    read: (owner, request, signal) => {
+      const session = this.#sessions.get(request.runtimeId);
+      if (!session || session.closing) return Promise.reject(new ToolContentReadError("content_unavailable"));
+      return this.#toolProducer(session).read(owner, request, signal);
+    },
+    cancel: async (owner, readId) => { await this.#toolStore?.cancel(owner, readId); },
+  };
+  #toolProducer(session: WebSession): ToolActivityProducer {
+    const runtimeId = publicId(session.id); let producer = this.#toolProducers.get(runtimeId);
+    if (!producer) {
+      producer = new ToolActivityProducer({ agent: () => ({ hostId: this.#toolHostId, agentKind: "dsh", sessionId: runtimeId }),
+        runtimeId: () => runtimeId,
+        source: () => ({ epoch: session.source.version.epoch,
+          ready: this.#ready && this.#sessions.get(runtimeId) === session && !session.closing && session.source.version.ready }),
+        native: (locator, signal) => this.#nativeToolPart(session, locator, signal),
+        ...(this.#toolStore === undefined ? {} : { store: this.#toolStore }) });
+      this.#toolProducers.set(runtimeId, producer);
+    }
+    return producer;
+  }
+  #toolEntries(session: WebSession, events: readonly DshWebLogEvent[]): RemoteSessionEntry[] {
+    const producer = this.#toolProducer(session);
+    return dshWebEntries(session.id, events).map(entry => producer.entry(entry, webEntrySeq(entry.entryId)));
+  }
+  // ADR-0045 §4：固定 throughSeq 的有界原生分页，只在设备显式读取时执行。
+  async #nativeToolPart(session: WebSession, locator: ToolContentLocator, signal?: AbortSignal): Promise<NativeToolPart | undefined> {
+    if (locator.part === "output") return undefined;
+    const throughSeq = session.lastSeq, deadline = Date.now() + 30_000;
+    let beforeSeq: number | undefined, bytes = 0;
+    for (let page = 0; page < 64; page++) {
+      if (signal?.aborted) throw new ToolContentReadError("cancelled");
+      if (Date.now() >= deadline) throw new ToolContentReadError("content_unavailable");
+      const result = object(await this.#client.request("session/page", { request: {
+        address: { kind: "session", sessionId: session.id }, throughSeq,
+        ...(beforeSeq === undefined ? {} : { beforeSeq }), maxMessages: 128,
+      } }));
+      const size = Buffer.byteLength(JSON.stringify(result), "utf8"); bytes += size;
+      if (size > 32 * 1024 * 1024 || bytes > 64 * 1024 * 1024) throw new ToolContentReadError("content_unavailable");
+      const records = arrayObjects(result.records);
+      if (!records.length) return undefined;
+      let minimum = beforeSeq ?? throughSeq + 1;
+      for (const item of records) {
+        const event = object(item.event), data = object(event.data), raw = object(data.message);
+        if (!Number.isSafeInteger(event.seq) || Number(event.seq) >= (beforeSeq ?? throughSeq + 1)) throw new ToolContentReadError("content_unavailable");
+        minimum = Math.min(minimum, Number(event.seq));
+        const matching = locator.part === "arguments" ? event.type === "tool/call" && data.callId === locator.tool.toolCallId
+          : event.type === "tool/result" && raw.toolCallId === locator.tool.toolCallId;
+        if (!matching) continue;
+        if (item.truncated === true) throw new ToolContentReadError("content_unavailable");
+        const value = locator.part === "arguments" ? data.arguments : data.message;
+        if (value === undefined) return undefined;
+        if (locator.part === "arguments" && typeof value === "string") {
+          try { return { format: "json", value: JSON.parse(value) }; } catch { return { format: "text", value }; }
+        }
+        return { format: "json", value };
+      }
+      if (minimum <= 0) return undefined;
+      beforeSeq = minimum;
+    }
+    throw new ToolContentReadError("content_unavailable");
+  }
   readonly kind = "dsh" as const;
   readonly #client: DshWebConnection;
   readonly #decoder: DshStreamDecoder | undefined;
@@ -361,7 +432,7 @@ export class DshWebRuntime implements AgentBackend {
     const session: WebSession = { id, cwd: item.cwd, createdAt: item.createdAt, ...(item.title ? { title: item.title } : {}), entries: [], preparer: new SessionSyncPreparer(), skills: [], running: item.running, closing: false, options: [], lastSeq: -1, selectionSeq: -1, permissionSeq: -1, permissionSandboxSeq: -1, permissionApprovalSeq: -1, permissionGeneration: 0, permissionBusy: false, permissionOptions: [],
       source: new RecoverableSessionSource(publicId(id), event => {
         if (this.#sessions.get(publicId(id)) === session) this.#sink(event, publicId(id));
-      }, { coalesceMs: this.#coalesceMs }), sourceCheckedAt: 0,
+      }, { coalesceMs: this.#coalesceMs, publishTools: event => this.#sink(event, publicId(id)) }), sourceCheckedAt: 0,
       notifications: new NotificationSource(randomUUID(), publicId(id), event => {
         if (this.#sessions.get(publicId(id))?.notifications.epoch === event.producerEpoch) this.#sink(event, publicId(id));
       }), skillsGeneration: 0, modelGeneration: 0, followGeneration: 0,
@@ -429,6 +500,7 @@ export class DshWebRuntime implements AgentBackend {
         // 响应要带 `source.seq`，先刷掉合并窗口；否则客户端拿到的 knownState 会在窗口结束后失效
         // （ADR-0035 §15 的配套不变量）。
         session.source.flushPending();
+        session.source.replayToolInventory();
         this.#emit(session, session.preparer.select({
           entries: session.entries, sessionId: command.sessionId,
           leafId: session.entries.at(-1)?.entryId ?? null, request: command,
@@ -735,7 +807,7 @@ export class DshWebRuntime implements AgentBackend {
       this.#modelSelectionProjection(session, frame.projections);
       for (const event of events) this.#permissionEvent(session, event);
       this.#rememberTools(session, events);
-      const snapshotEntries = dshWebEntries(session.id, events);
+      const snapshotEntries = this.#toolEntries(session, events);
       // `session/follow` always opens with a bounded tail page. On a WebSocket
       // reconnect the same session object already owns its older prefix; replacing
       // it with that tail would make a transient carrier disconnect erase history
@@ -784,7 +856,7 @@ export class DshWebRuntime implements AgentBackend {
         if (!session.tools.has(toolCallId)) continue;
         let args: unknown = data.arguments ?? {};
         if (typeof args === "string") { try { args = JSON.parse(args); } catch { /* Preserve native text. */ } }
-        session.source.observe({ type: "tool.started", toolCallId, toolName: session.tools.get(toolCallId)!, arguments: args });
+        session.source.observe(this.#toolProducer(session).event({ type: "tool.started", toolCallId, toolName: session.tools.get(toolCallId)!, arguments: args }));
       }
       const attempt = object(object(frame.assistantStream).activeAttempt);
       if (typeof attempt.attemptId === "string") {
@@ -834,7 +906,7 @@ export class DshWebRuntime implements AgentBackend {
     }).filter(event => Number.isSafeInteger(event.seq));
     if (events.length === 0) return;
     this.#rememberTools(session, events);
-    const pageEntries = dshWebEntries(session.id, events);
+    const pageEntries = this.#toolEntries(session, events);
     const entries = new Map(session.entries.map(entry => [entry.entryId, entry]));
     for (const entry of pageEntries) if (!entries.has(entry.entryId)) entries.set(entry.entryId, entry);
     session.entries = [...entries.values()].sort((left, right) => webEntrySeq(left.entryId) - webEntrySeq(right.entryId));
@@ -902,7 +974,7 @@ export class DshWebRuntime implements AgentBackend {
       this.#emit(session, { type: "tool.started", toolCallId, toolName, arguments: args });
     }
     const existing = dshWebMessage(session.id, event, session.tools);
-    const entry = dshWebEntries(session.id, [event])[0];
+    const entry = this.#toolEntries(session, [event])[0];
     if (entry) { session.entries.push(entry); session.preparer.invalidate(); }
     if (entry && (event.type === "assistant/message" || event.type === "tool/result")) {
       const raw = event.type === "assistant/message" ? data.message : object(data.message);
@@ -999,12 +1071,17 @@ export class DshWebRuntime implements AgentBackend {
         const toolCallId = String(chunk.id ?? attempt);
         const block = message.content.find(block => block.type === "tool_call" && block.toolCallId === toolCallId);
         if (block?.type === "tool_call") {
-          block.arguments = String(block.arguments ?? "") + text;
-          if (typeof chunk.name === "string") block.toolName = chunk.name;
-        } else message.content.push({ type: "tool_call", toolCallId, toolName: String(chunk.name ?? "tool"), arguments: text });
+          if (typeof chunk.name !== "string" || !chunk.name.trim() || chunk.name === block.toolName) return;
+          block.toolName = chunk.name;
+          if (block.summary) block.summary = { ...block.summary, toolName: chunk.name };
+        } else {
+          // Complete arguments arrive in the native tool/call event; partial JSON is never a shared message body.
+          const projected = this.#toolProducer(session).message({ ...message, content: [{ type: "tool_call", toolCallId, toolName: String(chunk.name ?? "tool") }] });
+          message.content.push(...projected.content);
+        }
       }
       else message.content.push({ type: "text", text });
-      session.source.upsertMessage({ message, finished: false, contentComplete: session.source.snapshot().live.messages.find(item => item.message.messageId === attempt)?.contentComplete ?? false });
+      session.source.upsertMessage({ message: this.#toolProducer(session).message(message), finished: false, contentComplete: session.source.snapshot().live.messages.find(item => item.message.messageId === attempt)?.contentComplete ?? false });
       return;
     }
     if (frame.type === "end") {
@@ -1351,6 +1428,8 @@ export class DshWebRuntime implements AgentBackend {
     session.notifications.announce();
   }
   #detachSession(session: WebSession, reason: string): void {
+    const producer = this.#toolProducers.get(publicId(session.id));
+    this.#toolProducers.delete(publicId(session.id)); void producer?.dispose();
     if (session.closing) return;
     session.closing = true;
     this.#cancelSessionApprovals(session, "owner_closed");
@@ -1369,6 +1448,7 @@ export class DshWebRuntime implements AgentBackend {
   }
   #emit(session: WebSession, event: RuntimeEvent): void {
     if (event.type !== "command.result" && this.#sessions.get(publicId(session.id)) !== session) return;
+    event = this.#toolProducer(session).event(event);
     if (!session.source.observe(event)) this.#sink(event, publicId(session.id));
   }
   #report(message: string, runtimeId?: string, code = "dsh.recovery"): void {
@@ -1376,7 +1456,7 @@ export class DshWebRuntime implements AgentBackend {
     for (const session of sessions) if (session) session.notifications.upsert({ code, occurrenceId: code === "dsh.recovery" ? "follow" : code,
       scope: {}, severity: "warning", lifecycle: "condition", message });
   }
-  async stop(): Promise<void> { if (this.#stopping) return this.#stopping; this.#stopping = (async () => { this.#ready = false; clearTimeout(this.#controlRetry); this.#controlUnsubscribe?.(); this.#discovery.stop(); for (const id of this.#approvals.keys()) this.#cancelApproval(id, "owner_closed"); for (const session of this.#sessions.values()) { session.unsubscribe(); if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error("backend_stopped")); } } this.#sessions.clear(); this.#running.clear(); this.#detached.clear(); await this.#client.stop(); })(); return this.#stopping; }
+  async stop(): Promise<void> { if (this.#stopping) return this.#stopping; this.#stopping = (async () => { this.#ready = false; clearTimeout(this.#controlRetry); this.#controlUnsubscribe?.(); this.#discovery.stop(); for (const id of this.#approvals.keys()) this.#cancelApproval(id, "owner_closed"); for (const session of this.#sessions.values()) { session.unsubscribe(); if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error("backend_stopped")); } } this.#sessions.clear(); for (const producer of this.#toolProducers.values()) await producer.dispose(); this.#toolProducers.clear(); this.#running.clear(); this.#detached.clear(); await this.#client.stop(); })(); return this.#stopping; }
 }
 
 

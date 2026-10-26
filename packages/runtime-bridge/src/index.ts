@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { ToolContentReadError, type ToolContentReader } from "./tool-content-store.js";
+export * from "./tool-content-store.js";
+export * from "./tool-content-capture.js";
+export * from "./tool-read-wait.js";
+export * from "./tool-activity-producer.js";
 import {
   NotificationSource,
   type InteractionResponse,
@@ -64,6 +69,7 @@ export type QueuedMessageCancellation =
   | { ok: false; error: string; status: "not_cancelable" | "already_delivered" };
 
 export interface RuntimePort {
+  readonly toolContents?: ToolContentReader;
   metadata(): RuntimeMetadata;
   syncSession?(request: RuntimeSessionSyncRequest): RuntimeSessionSync | Promise<RuntimeSessionSync>;
   sessionCatalog?(): SessionCatalogEntry[] | Promise<SessionCatalogEntry[]>;
@@ -150,6 +156,7 @@ type UserMessageCommandRecord = {
  * The bridge never starts a process and never interprets session tree semantics.
  */
 export class RuntimeBridge {
+  readonly #toolReads = new Map<string, AbortController>();
   #notifications!: NotificationSource;
   #capabilitiesGeneration = 0;
   #catalogGeneration = 0;
@@ -302,6 +309,7 @@ export class RuntimeBridge {
   }
 
   close(): void {
+    for (const controller of this.#toolReads.values()) controller.abort(); this.#toolReads.clear();
     if (!this.#started) return;
     this.#diagnostic?.("bridge.closed");
     this.#started = false;
@@ -391,6 +399,22 @@ export class RuntimeBridge {
     }
 
     try {
+      if (command.type === "session.tool.content.cancel") {
+        this.#toolReads.get(command.viewerId)?.abort();
+        await this.#runtime.toolContents?.cancel(command.viewerId, command.readId); return;
+      }
+      if (command.type === "session.tool.content.read") {
+        const fail = (reason: ToolContentReadError["reason"]): void => this.publish({ type: "session.tool.read.failed", requestId: command.requestId,
+          runtimeId, reason, gaps: [], ...(reason === "busy" ? { retryAfterMs: 250 } : {}) });
+        if (!this.#runtime.toolContents) { fail("content_unavailable"); return; }
+        if (this.#toolReads.size >= 2 || this.#toolReads.has(command.viewerId)) { fail("busy"); return; }
+        const controller = new AbortController(); this.#toolReads.set(command.viewerId, controller);
+        const timer = setTimeout(() => controller.abort(), 30_000); timer.unref();
+        try { this.publish(await this.#runtime.toolContents.read(command.viewerId, command, controller.signal)); }
+        catch (error) { fail(error instanceof ToolContentReadError ? error.reason : "content_unavailable"); }
+        finally { clearTimeout(timer); if (this.#toolReads.get(command.viewerId) === controller) this.#toolReads.delete(command.viewerId); }
+        return;
+      }
       // 提交回执与取完整条目都由 Host 自己处理（ADR-0037 §4、ADR-0038 §8）。
       if (command.type === "session.snapshot.ack" || command.type === "session.entry.request") {
         this.#commandResult(commandId, true);
@@ -599,6 +623,9 @@ export class RuntimeBridge {
       if (command.type === "permissions.update") {
         this.#commandResult(commandId, false, "permission_management_not_available");
         return;
+      }
+      if (command.type !== "interaction.respond") {
+        this.#commandResult(commandId, false, "unsupported_command"); return;
       }
       if (!this.#interactions) {
         this.#commandResult(commandId, false, "interaction_not_available");

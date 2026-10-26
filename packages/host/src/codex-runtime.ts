@@ -23,13 +23,16 @@
  * 和 Pi 的会话 id 空间天然不撞（§7.5）。
  */
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, stripInlineMedia } from "@orbis/protocol";
+import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, ToolInventorySource } from "@orbis/protocol";
 import { orbisEnvironment } from "@orbis/protocol";
+import { ToolContentCapture, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
+import { CodexToolContentReader } from "./codex-tool-content-reader.js";
+import { codexToolContents, codexToolContentText, codexToolSummary } from "./codex-tool-projection.js";
 
 import type {
   AgentKind,
@@ -51,6 +54,8 @@ import type {
   SessionLiveTool,
   SessionCheckpoint,
   SessionSourceEpoch,
+  ToolSummary,
+  ToolContentLocator,
 } from "@orbis/protocol";
 
 import type {
@@ -132,6 +137,8 @@ export const CODEX_SOURCE_COALESCE_MS = 100;
 
 export type CodexRuntimeOptions = {
   server: CodexAppServer;
+  /** Host-owned producer store shared by all this backend's sessions; explicit detail reads only. */
+  toolContentStore?: ToolContentStore;
   /** ADR-0035 §15：完整 live patch 的发布窗口；0 保留同步发布。 */
   sourceCoalesceMs?: number;
   runtimeId?: string;
@@ -396,10 +403,94 @@ export class CodexRuntime implements AgentBackend {
    * Host 必须用这份快照逐个广播 offline。同 onMetadataChange：create 之后才挂上。
    */
   onOffline: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
+  readonly #toolContentReaders = new Map<string, CodexToolContentReader>();
+  #toolStore: ToolContentStore | undefined;
+  #toolCapture: ToolContentCapture | undefined;
+  #toolHostId = "local";
+  readonly #captureEpochs = new Map<string, string>();
+  readonly #toolInventories = new Map<string, ToolInventorySource>();
+
+  setToolContentStore(store: ToolContentStore, hostId: string): void {
+    if (this.#toolStore && this.#toolStore !== store) throw new Error("tool_store_already_attached");
+    this.#toolStore = store; this.#toolHostId = hostId;
+    this.#toolCapture ??= new ToolContentCapture(store);
+  }
+
+  #toolLocator(thread: ThreadState, toolCallId: string, part: ToolContentLocator["part"]): ToolContentLocator {
+    return { projectionVersion: 1, tool: { agent: { hostId: this.#toolHostId, agentKind: this.kind,
+      sessionId: this.#publicSessionId(thread.id) }, toolCallId }, part };
+  }
+
+  // ADR-0045 §1/§4：先采集到有界私有存储，再产生不含原文的 live、事件和历史投影。
+  #projectToolItem(thread: ThreadState, item: Record<string, unknown>, phase: ToolSummary["phase"], turnId?: string,
+    capture = false): Record<string, unknown> {
+    if (!isToolItem(item) || item.orbisToolSummary !== undefined) return item;
+    this.#noteItem(thread, item);
+    const agent = this.#toolLocator(thread, String(item.id), "arguments").tool.agent;
+    if (this.#captureEpochs.get(thread.id) !== thread.sourceEpoch) {
+      this.#toolCapture?.invalidate(agent.sessionId); this.#captureEpochs.set(thread.id, thread.sourceEpoch);
+    }
+    if (capture && this.#toolCapture && typeof item.id === "string") {
+      if (phase !== "finished" && phase !== "cancelled" && !this.#toolCapture.has(this.#toolLocator(thread, item.id, "output")))
+        this.#toolCapture.replace(this.#toolLocator(thread, item.id, "output"), "text", "", false);
+      for (const part of codexToolContents(item)) {
+        try { this.#toolCapture.replace(this.#toolLocator(thread, item.id, part.part), part.format,
+          codexToolContentText(part), phase === "finished" || phase === "cancelled"); }
+        catch { /* An unrepresentable part stays unavailable; it never becomes an empty successful result. */ }
+      }
+      if (phase === "finished" || phase === "cancelled") this.#toolCapture.finish(this.#toolLocator(thread, item.id, "output"));
+    }
+    const contentSources = this.#toolStore ? Object.fromEntries([...codexToolContents(item)].map(part => [part.part,
+      { availability: "readable", readCapability: phase === "finished" ? "whole-source" : "range" }])) : undefined;
+    if (contentSources && !contentSources.output && this.#toolCapture?.has(this.#toolLocator(thread, String(item.id), "output")))
+      contentSources.output = { availability: "readable", readCapability: "range" };
+    const summary = codexToolSummary({ agent, phase, order: thread.itemOrder.indexOf(String(item.id)),
+      ...(turnId === undefined ? {} : { turnId }), entryId: String(item.id) + ":result",
+      ...(contentSources === undefined ? {} : { contentSources }) }, item);
+    return { id: item.id, type: item.type, orbisToolSummary: summary };
+  }
+  readonly toolContents: ToolContentReader = {
+    read: async (owner, request, signal) => {
+      const store = this.#toolStore;
+      const thread = [...this.#threads.values()].find(value => this.runtimeIdFor(value.id) === request.runtimeId);
+      if (!store || !thread) throw new ToolContentReadError("content_unavailable");
+      if (request.locator.tool.agent.agentKind !== this.kind || request.locator.tool.agent.sessionId !== this.#publicSessionId(thread.id)) {
+        throw new ToolContentReadError("scope_mismatch");
+      }
+      if (!thread.sourceReady) throw new ToolContentReadError("content_unavailable");
+      const committedEntry = thread.entries.find(entry => entry.entryId === request.locator.tool.toolCallId + ":result");
+      const committedSummary = object(object(committedEntry?.data.message).toolSummary) as unknown as ToolSummary | undefined;
+      const capturedOutput = request.locator.part === "output" && committedSummary?.contents?.some(part => part.part === "output" && part.readCapability === "range");
+      if ((!committedEntry || capturedOutput) && this.#toolCapture?.has(request.locator) && this.#captureEpochs.get(thread.id) === thread.sourceEpoch) {
+        const epoch = thread.sourceEpoch;
+        try {
+          const page = await this.#toolCapture.read(owner, request, signal);
+          if (thread.sourceEpoch !== epoch || this.#threads.get(thread.id) !== thread) throw new ToolContentReadError("content_version_invalid");
+          return page;
+        } catch (error) {
+          if (request.read !== null || !(error instanceof ToolContentReadError) ||
+            !["content_expired", "content_unavailable"].includes(error.reason)) throw error;
+        }
+      }
+      await this.#toolCapture?.flush();
+      let reader = this.#toolContentReaders.get(thread.id);
+      if (!reader) {
+        if (this.#toolContentReaders.size >= 32) throw new ToolContentReadError("busy");
+        reader = CodexToolContentReader.attach({ server: this.#server, agent: request.locator.tool.agent, runtimeId: request.runtimeId, nativeThreadId: thread.id,
+          source: () => ({ epoch: thread.sourceEpoch, ready: this.#threads.get(thread.id) === thread && thread.sourceReady }),
+          isCommitted: id => thread.entries.some(entry => entry.entryId === id + ":result"),
+        }, store);
+        this.#toolContentReaders.set(thread.id, reader);
+      }
+      return reader.read(owner, request, signal);
+    },
+    cancel: async (owner, readId) => { await this.#toolStore?.cancel(owner, readId); },
+  };
 
   constructor(options: CodexRuntimeOptions) {
     this.runtimeId = options.runtimeId ?? (isDesktopAppServer(options.server) ? CODEX_DESKTOP_RUNTIME_ID : CODEX_RUNTIME_ID);
     this.#options = options;
+    if (options.toolContentStore) this.setToolContentStore(options.toolContentStore, "local");
     this.#eventSink = options.onEvent;
     this.#server = options.server;
     if (isDesktopAppServer(options.server) && options.desktopRefresh !== undefined) {
@@ -462,6 +553,11 @@ export class CodexRuntime implements AgentBackend {
       this.#observedSettings.clear();
       for (const timer of this.#sourcePublishTimers.values()) clearTimeout(timer);
       this.#sourcePublishTimers.clear();
+      for (const reader of this.#toolContentReaders.values()) void reader.dispose();
+      this.#toolContentReaders.clear();
+      for (const thread of this.#threads.values()) this.#toolCapture?.invalidate(this.#publicSessionId(thread.id));
+      this.#captureEpochs.clear();
+      this.#toolInventories.clear();
       this.#threads.clear();
       this.#headWindows.clear();
       this.#headWindowSeen.clear();
@@ -521,6 +617,8 @@ export class CodexRuntime implements AgentBackend {
     this.#nativeWatcher = undefined;
     if (this.#desktopClientWatcher !== undefined) clearInterval(this.#desktopClientWatcher);
     this.#desktopClientWatcher = undefined;
+    await this.#toolCapture?.dispose(); this.#toolCapture = undefined;
+    this.#toolInventories.clear(); this.#captureEpochs.clear();
     await this.#server.stop();
     this.#server.onExit?.(0);
   }
@@ -1304,6 +1402,10 @@ export class CodexRuntime implements AgentBackend {
     const thread = this.#threads.get(threadId);
     if (thread === undefined) return;
     this.#cancelSourcePublish(thread);
+    this.#toolCapture?.invalidate(this.#publicSessionId(threadId));
+    this.#toolInventories.delete(threadId); this.#captureEpochs.delete(threadId);
+    const toolReader = this.#toolContentReaders.get(threadId);
+    this.#toolContentReaders.delete(threadId); if (toolReader) void toolReader.dispose();
     const metadata = this.threadMetadata(thread);
     thread.asyncInputs.close("owner_closed");
     this.#permissionUpdates.get(threadId)?.reject(new Error(reason));
@@ -1447,12 +1549,13 @@ export class CodexRuntime implements AgentBackend {
       if (owner !== undefined && !thread.turnOrder.includes(owner)) thread.turnOrder.push(owner);
       for (const item of items) {
         if (item !== null && typeof item === "object") {
-          const record = item as Record<string, unknown>;
+          let record = item as Record<string, unknown>;
           this.#noteItem(thread, record);
           const itemFinished = record.status === "completed" || record.status === "failed" || record.status === "declined";
           const knownCanonical = typeof record.id === "string" && previous.has(record.id);
           const itemRunning = record.status === "inProgress" || record.status === "in_progress"
             || (turnRunning && !itemFinished && !knownCanonical && (record.type === "agentMessage" || isToolItem(record)));
+          record = this.#projectToolItem(thread, record, itemRunning ? "started" : "finished", owner);
           if (turnRunning && itemRunning) {
             const itemMessage = toolCallMessage(record) ?? itemToMessage(record);
             if (itemMessage !== undefined) {
@@ -1470,7 +1573,7 @@ export class CodexRuntime implements AgentBackend {
                 toolCallId: itemTool.toolCallId,
                 toolName: itemTool.toolName,
                 state: "started",
-                detail: { arguments: itemTool.arguments },
+                summary: record.orbisToolSummary as ToolSummary,
               });
             }
           }
@@ -1493,7 +1596,7 @@ export class CodexRuntime implements AgentBackend {
       const tool = toolCallInfo(item);
       if (tool !== undefined) thread.liveTools.set(tool.toolCallId, {
         toolCallId: tool.toolCallId, toolName: tool.toolName, state: "finished",
-        detail: { arguments: tool.arguments, result: tool.result }, isError: tool.isError,
+        summary: item.orbisToolSummary as ToolSummary, isError: tool.isError,
       });
     }
     if (thread.historyError !== undefined) {
@@ -1529,7 +1632,7 @@ export class CodexRuntime implements AgentBackend {
     for (const id of prior.itemOrder) if (!thread.itemOrder.includes(id)) thread.retiredItemIds.add(id);
     for (const id of thread.turnOrder) thread.retiredTurnIds.delete(id);
     for (const id of thread.itemOrder) thread.retiredItemIds.delete(id);
-    thread.nativeHistorySignature = resultText(turns, true);
+    thread.nativeHistorySignature = nativeHistorySignature(turns);
     thread.sourceCommittedEntries = thread.sourceCommittedEntries.filter(entry =>
       rewritten || !previous.has(entry.entryId));
     thread.nativeSourceDirty = false;
@@ -2279,7 +2382,7 @@ export class CodexRuntime implements AgentBackend {
           this.#touchSource(thread);
           throw new Error("codex_native_history_incomplete");
         }
-        const signature = resultText(turns, true);
+        const signature = nativeHistorySignature(turns);
         if (signature !== thread.nativeHistorySignature || thread.nativeSourceDirty || !thread.sourceReady) {
           thread.sourceReady = false;
           // A successful periodic read is committed with its buffered notifications below.
@@ -2927,7 +3030,7 @@ export class CodexRuntime implements AgentBackend {
       if (cursors.size === 0 && previous === undefined) return turns;
       // Native cursors have no revision token. Require consecutive matching reads
       // before publishing a history assembled from multiple native responses.
-      const signature = resultText(turns, true);
+      const signature = nativeHistorySignature(turns);
       if (signature === previous) return turns;
       previous = signature;
     }
@@ -3089,7 +3192,7 @@ export class CodexRuntime implements AgentBackend {
       case "item/started": {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
-        const data = item as Record<string, unknown>;
+        let data = item as Record<string, unknown>;
         if (data.type === "contextCompaction") {
           thread.activity.compaction = { phase: "running", ...(typeof record.turnId === "string" ? { turnId: record.turnId.slice(0, 256) } : {}) };
           this.#emit(thread.id, thread.activity);
@@ -3100,6 +3203,7 @@ export class CodexRuntime implements AgentBackend {
           thread.approvalItems.set(data.id, data);
         }
         this.#noteItem(thread, data);
+        data = this.#projectToolItem(thread, data, "started", typeof record.turnId === "string" ? record.turnId : undefined, true);
         const raw = toolCallMessage(data) ?? itemToMessage(data);
         if (raw === undefined) return;
         this.#setLiveMessage(thread, {
@@ -3119,13 +3223,10 @@ export class CodexRuntime implements AgentBackend {
             toolCallId: tool.toolCallId,
             toolName: tool.toolName,
             state: "started",
-            detail: { arguments: tool.arguments },
+            summary: data.orbisToolSummary as ToolSummary,
           });
           this.#emit(thread.id, {
-            type: "tool.started",
-            toolCallId: tool.toolCallId,
-            toolName: tool.toolName,
-            arguments: tool.arguments,
+            type: "tool.activity", summary: data.orbisToolSummary as ToolSummary,
           });
         }
         return;
@@ -3133,38 +3234,13 @@ export class CodexRuntime implements AgentBackend {
       case "item/commandExecution/outputDelta":
       case "item/fileChange/outputDelta": {
         if (typeof record.itemId !== "string" || typeof record.delta !== "string") return;
-        const existingCommandTool = thread.liveTools.get(record.itemId);
-        if (existingCommandTool !== undefined) {
-          const detail = existingCommandTool.detail !== null && typeof existingCommandTool.detail === "object"
-            ? existingCommandTool.detail as Record<string, unknown> : {};
-          const output = typeof detail.output === "string" ? detail.output : "";
-          this.#setLiveTool(thread, { ...existingCommandTool, state: "updated", detail: { ...detail, output: output + record.delta } });
-        }
-        this.#emit(thread.id, {
-          type: "tool.updated",
-          toolCallId: record.itemId,
-          toolName: thread.toolNames.get(record.itemId)
-            ?? (method.startsWith("item/fileChange") ? "fileChange" : "commandExecution"),
-          partialResult: record.delta,
-        });
+        this.#toolCapture?.append(this.#toolLocator(thread, record.itemId, "output"), record.delta);
         return;
       }
       case "item/mcpToolCall/progress":
       {
         if (typeof record.itemId !== "string" || typeof record.message !== "string") return;
-        const existingMcpTool = thread.liveTools.get(record.itemId);
-        if (existingMcpTool !== undefined) {
-          const detail = existingMcpTool.detail !== null && typeof existingMcpTool.detail === "object"
-            ? existingMcpTool.detail as Record<string, unknown> : {};
-          const output = typeof detail.output === "string" ? detail.output : "";
-          this.#setLiveTool(thread, { ...existingMcpTool, state: "updated", detail: { ...detail, output: output + record.message } });
-        }
-        this.#emit(thread.id, {
-          type: "tool.updated",
-          toolCallId: record.itemId,
-          toolName: thread.toolNames.get(record.itemId) ?? "mcpToolCall",
-          partialResult: record.message,
-        });
+        this.#toolCapture?.append(this.#toolLocator(thread, record.itemId, "output"), record.message);
         return;
       }
       case "item/reasoning/textDelta":
@@ -3200,13 +3276,14 @@ export class CodexRuntime implements AgentBackend {
       case "item/completed": {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
-        const data = item as Record<string, unknown>;
+        let data = item as Record<string, unknown>;
         if (data.type === "contextCompaction") {
           thread.activity.compaction = { phase: data.status === "failed" ? "failed" : "idle",
             ...(typeof record.turnId === "string" ? { turnId: record.turnId.slice(0, 256) } : {}) };
           this.#emit(thread.id, thread.activity);
         }
         if (typeof record.turnId === "string") thread.asyncInputs.upsert(data, record.turnId);
+        data = this.#projectToolItem(thread, data, "finished", typeof record.turnId === "string" ? record.turnId : undefined, true);
         if (data.type === "agentMessage" && thread.streamingMessageId === data.id) {
           thread.streamingMessageId = undefined;
         }
@@ -3247,16 +3324,12 @@ export class CodexRuntime implements AgentBackend {
               toolCallId: tool.toolCallId,
               toolName: tool.toolName,
               state: "finished",
-              detail: { arguments: tool.arguments, result: tool.result },
+              summary: data.orbisToolSummary as ToolSummary,
               isError: tool.isError,
             });
           }
           this.#emit(thread.id, {
-            type: "tool.finished",
-            toolCallId: tool.toolCallId,
-            toolName: tool.toolName,
-            result: tool.result,
-            isError: tool.isError,
+            type: "tool.activity", summary: data.orbisToolSummary as ToolSummary,
           });
           thread.toolNames.delete(tool.toolCallId);
         }
@@ -3543,12 +3616,14 @@ export class CodexRuntime implements AgentBackend {
 
   #completeItem(thread: ThreadState, item: Record<string, unknown>, turnId?: string): void {
     if (typeof item.id !== "string") return;
+    const itemId = item.id;
+    item = this.#projectToolItem(thread, item, "finished", turnId);
     this.#noteItem(thread, item);
-    if (thread.itemOrder.indexOf(item.id) < thread.committedItemCount) {
+    if (thread.itemOrder.indexOf(itemId) < thread.committedItemCount) {
       this.#appendEntry(thread, item, turnId);
       return;
     }
-    thread.completedItems.set(item.id, { item, turnId });
+    thread.completedItems.set(itemId, { item, turnId });
     // Tools can finish out of order. Keep the source item order, or replay will change parents.
     while (thread.committedItemCount < thread.itemOrder.length) {
       const id = thread.itemOrder[thread.committedItemCount]!;
@@ -3569,7 +3644,7 @@ export class CodexRuntime implements AgentBackend {
       ? (regularMessage === undefined ? [] : [{ entryId, message: regularMessage }])
       : [
         { entryId, message: toolCallMessage(item) },
-        { entryId: `${entryId}:result`, message: toolResultMessage(item, true) },
+        { entryId: `${entryId}:result`, message: toolResultMessage(item) },
       ];
     for (const part of messages) {
       if (part.message === undefined) continue;
@@ -3702,21 +3777,26 @@ export class CodexRuntime implements AgentBackend {
     this.#touchSource(thread);
   }
 
-  #liveCheckpoint(thread: ThreadState): SessionLiveState {
+  #liveCheckpoint(thread: ThreadState, replay = false): SessionLiveState {
     const turn = thread.turnId === undefined || thread.turnStartedAt === undefined
       ? null
       : { turnId: thread.turnId, startedAt: thread.turnStartedAt };
+    let inventory = this.#toolInventories.get(thread.id);
+    if (!inventory) { inventory = new ToolInventorySource(event => this.#emit(thread.id, event)); this.#toolInventories.set(thread.id, inventory); }
+    const toolInventory = inventory.prepare(this.runtimeIdFor(thread.id), { epoch: thread.sourceEpoch, seq: thread.sourceSeq },
+      [...thread.liveTools.values()].flatMap(tool => tool.summary ? [tool.summary] : []), replay);
     return {
       complete: thread.sourceReady && (!thread.turnInProgress || turn !== null),
       turn,
-      messages: [...thread.liveMessages.values()],
-      tools: [...thread.liveTools.values()],
+      messages: [...thread.liveMessages.values()].filter(item => !item.message.content.every(part => part.type === "tool_call"))
+        .map(item => ({ ...item, order: Math.max(0, thread.itemOrder.indexOf(item.message.messageId)) })),
+      tools: [], ...(toolInventory === undefined ? {} : { toolInventory }),
     };
   }
 
-  #sourceCheckpoint(thread: ThreadState): { version: SessionSourceEpoch; live: SessionLiveState; checkpoint: SessionCheckpoint } {
+  #sourceCheckpoint(thread: ThreadState, replay = false): { version: SessionSourceEpoch; live: SessionLiveState; checkpoint: SessionCheckpoint } {
     const checkpointId = `${thread.sourceEpoch}:${thread.sourceSeq}`;
-    const live = this.#liveCheckpoint(thread);
+    const live = this.#liveCheckpoint(thread, replay);
     return {
       version: { epoch: thread.sourceEpoch, seq: thread.sourceSeq, ready: thread.sourceReady },
       live,
@@ -3733,7 +3813,7 @@ export class CodexRuntime implements AgentBackend {
   #publishSnapshot(thread: ThreadState, request: Extract<RuntimeCommand, { type: "session.sync" }>): void {
     if (thread.historyError !== undefined) throw new Error(thread.historyError);
     if (this.#cancelSourcePublish(thread)) this.#flushSourcePatch(thread);
-    const source = this.#sourceCheckpoint(thread);
+    const source = this.#sourceCheckpoint(thread, true);
     this.#emit(thread.id, thread.preparer.select({
       entries: thread.entries,
       sessionId: this.#publicSessionId(thread.id),
@@ -3826,66 +3906,24 @@ function turnRecord(value: unknown): { id: string; startedAt: number | undefined
 type CodexToolInfo = {
   toolCallId: string;
   toolName: string;
-  arguments: unknown;
-  result: unknown;
   isError: boolean;
+  summary: ToolSummary;
 };
 
 function isToolItem(item: Record<string, unknown>): boolean {
   return item.type === "commandExecution" || item.type === "fileChange" || item.type === "mcpToolCall";
 }
 
-function toolNameForItem(item: Record<string, unknown>): string {
-  if (item.type === "mcpToolCall") {
-    return typeof item.tool === "string"
-      ? item.tool
-      : typeof item.server === "string"
-        ? item.server
-        : "mcpToolCall";
-  }
-  return item.type === "fileChange" ? "fileChange" : "commandExecution";
-}
-
-function toolArgumentsForItem(item: Record<string, unknown>): unknown {
-  switch (item.type) {
-    case "commandExecution":
-      return { command: item.command, cwd: item.cwd };
-    case "fileChange":
-      return { changes: item.changes };
-    case "mcpToolCall":
-      return { server: item.server, tool: item.tool, arguments: item.arguments ?? item.input };
-    default:
-      return {};
-  }
-}
-
-function toolResultForItem(item: Record<string, unknown>): unknown {
-  const result = item.result ?? item.output ?? item.outputText ?? item.stdout;
-  if (result !== undefined) return result;
-  return {
-    status: item.status,
-    ...(item.exitCode === undefined ? {} : { exitCode: item.exitCode }),
-    ...(item.stderr === undefined ? {} : { stderr: item.stderr }),
-    ...(item.changes === undefined ? {} : { changes: item.changes }),
-    ...(item.error === undefined ? {} : { error: item.error }),
-  };
-}
-
-function toolIsError(item: Record<string, unknown>): boolean {
-  if (item.status === "failed" || item.status === "error") return true;
-  if (item.error !== undefined && item.error !== null) return true;
-  return typeof item.exitCode === "number" && item.exitCode !== 0;
-}
-
 function toolCallInfo(item: Record<string, unknown>): CodexToolInfo | undefined {
   const id = item.id;
   if (!isToolItem(item) || typeof id !== "string") return undefined;
+  const summary = item.orbisToolSummary as ToolSummary | undefined;
+  if (!summary) throw new Error("tool_summary_required");
   return {
     toolCallId: id,
-    toolName: toolNameForItem(item),
-    arguments: toolArgumentsForItem(item),
-    result: toolResultForItem(item),
-    isError: toolIsError(item),
+    toolName: summary.toolName,
+    isError: summary.isError === true,
+    summary,
   };
 }
 
@@ -3899,13 +3937,13 @@ function toolCallMessage(item: Record<string, unknown>): ChatMessage | undefined
       type: "tool_call",
       toolCallId: tool.toolCallId,
       toolName: tool.toolName,
-      arguments: tool.arguments,
+      summary: tool.summary,
     }],
     timestamp: Date.now(),
   };
 }
 
-function toolResultMessage(item: Record<string, unknown>, canonical = false): ChatMessage | undefined {
+function toolResultMessage(item: Record<string, unknown>): ChatMessage | undefined {
   const tool = toolCallInfo(item);
   if (tool === undefined) return undefined;
   return {
@@ -3914,9 +3952,8 @@ function toolResultMessage(item: Record<string, unknown>, canonical = false): Ch
     toolCallId: tool.toolCallId,
     toolName: tool.toolName,
     isError: tool.isError,
-    // ADR-0034 §5：工具结果里的内联媒体先降成引用，再序列化进正文——
-    // 否则 base64 会跟着 canonical 条目一起被复制与同步。
-    content: [{ type: "text", text: resultText(stripInlineMedia(tool.result), canonical) }],
+    toolSummary: tool.summary,
+    content: [],
     timestamp: Date.now(),
   };
 }
@@ -3932,6 +3969,10 @@ function resultText(value: unknown, canonical = false): string {
   } catch {
     return String(value);
   }
+}
+
+function nativeHistorySignature(turns: unknown): string {
+  return createHash("sha256").update(resultText(turns, true)).digest("base64url");
 }
 
 function skillCommands(value: unknown): DynamicSlashCommand[] {

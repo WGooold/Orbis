@@ -2,6 +2,8 @@
 
 日期：2026-10-23
 
+2026-10-27：[ADR-0045](0045-tool-summaries-and-on-demand-content.md) 将工具内容移出共享 live：工具原文字节追加不再要求重发聊天 patch，库存引用与摘要独立分页/修订。本文的来源合并、普通出站预算及封帧后不得丢信封规则继续适用；工具详情另用有界 bulk 队列。
+
 状态：accepted
 
 关联：[ADR-0007](0007-channel-multiplexed-delivery.md)、[ADR-0010](0010-write-layer-slicing.md)、[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0036](0036-sync-backpressure-is-not-failure.md)、[ADR-0037](0037-session-sync-transaction-contract.md)

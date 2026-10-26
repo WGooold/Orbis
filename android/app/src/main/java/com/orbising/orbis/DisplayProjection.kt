@@ -14,7 +14,7 @@ import kotlinx.serialization.Serializable
  * 投影算法版本。批次带来的版本与本机不同就说明显示语义变了：显示缓存必须整段重建，
  * 不能继续按旧表示渲染。
  */
-internal const val DISPLAY_PROJECTION_VERSION = 2
+internal const val DISPLAY_PROJECTION_VERSION = 3
 
 /** 锚点：渲染在显示窗口顶部（历史被改写的位置），而不是它在 canonical 路径里的位置。 */
 internal const val DISPLAY_ANCHOR_HEAD = "head"

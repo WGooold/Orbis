@@ -68,7 +68,7 @@ class SessionSyncSelectionInstrumentedTest {
             conversation.copy(sourceReady = false, sourceSeq = -1, isChatSyncing = true)
         })
         assertEquals(emptyList<SessionGraphEntry>(), ingestSessionSnapshot(store, device, "r", "request",
-            snapshot("delta", 11, "b", listOf(entry("b", "a"))), { unknown }, { true }))
+            snapshot("delta", 11, "b", listOf(entry("b", "a"))), { unknown }, { true })?.entries)
         assertFalse(store.contains(device, "s", "b"))
         assertEquals("a", store.latestLeaf(device, "s"))
         assertEquals("epoch", store.cacheEpoch(device, "s"))

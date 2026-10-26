@@ -60,6 +60,7 @@ export function sessionSyncWireBytes(payloadBytes: number): number {
 }
 type SyncDelivery = {
   kind: PathKind; bytes: number; remaining: number; done: (written: boolean) => void;
+  detail?: boolean;
   /** ADR-0037 §7：每写出一片就报告一次进展；协调者据此区分"慢"与"卡死"。 */
   onProgress?: () => void;
 };
@@ -230,6 +231,7 @@ export class DeviceLink {
   readonly #syncDeliveries = new Set<SyncDelivery>();
   readonly #syncPieces = new WeakMap<EnvelopeV2, SyncDelivery>();
   #syncBytes = 0;
+  #toolBytes = 0;
   #syncRejection: SessionSyncRejection | undefined;
   /**
    * 入站片的重组缓冲（见 `piece.ts`）。
@@ -445,6 +447,34 @@ export class DeviceLink {
     return this.#sendSealed("data", payload, this.#selector.active, channel, source);
   }
 
+  /** ADR-0045 §8：详情在封帧前独立准入，满时返回 busy，不摘除聊天路径。 */
+  sendToolContent(payload: Uint8Array, source?: OutboundQueueSource): boolean {
+    const kind = this.#selector.active;
+    if (this.#closed || kind === undefined || payload.byteLength > 64 * 1024) return false;
+    const session = this.#sessions.get(kind), mux = this.#muxes.get(kind);
+    const bytes = sessionSyncWireBytes(payload.byteLength);
+    if (session?.state !== "ready" || !mux || this.#toolBytes + bytes > 256 * 1024 ||
+      !mux.hasRoom("bulk", envelopeBytesForPayload(payload.byteLength))) return false;
+    const attribution = source ?? { type: "runtime.event", eventType: "session.tool.content.page", payloadBytes: payload.byteLength };
+    let delivery: SyncDelivery | undefined;
+    this.#toolBytes += bytes;
+    try {
+      const pieces = fragmentEnvelope(session.seal("data", payload, "bulk"));
+      delivery = { kind, bytes, remaining: pieces.length, done: () => undefined, detail: true };
+      this.#syncDeliveries.add(delivery);
+      for (const piece of pieces) this.#syncPieces.set(piece, delivery);
+      for (const piece of pieces) if (!mux.enqueue("bulk", piece, piece.ct.length + PIECE_HEADER_BYTES, attribution)) {
+        this.detach(kind); return false;
+      }
+      return true;
+    } catch (error) {
+      if (!delivery) this.#toolBytes -= bytes; else this.detach(kind);
+      this.#options.onError?.(error); return false;
+    }
+  }
+
+  get toolContentQueuedBytes(): number { return this.#toolBytes; }
+
   get sessionSyncQueuedBytes(): number { return this.#syncBytes; }
   get sessionSyncRejection(): Readonly<SessionSyncRejection> | undefined { return this.#syncRejection; }
 
@@ -467,7 +497,7 @@ export class DeviceLink {
     const session = this.#sessions.get(kind);
     const mux = this.#muxes.get(kind);
     if (session?.state !== "ready" || mux === undefined) return this.#rejectSync("session_not_ready", kind, bytes);
-    if (this.#syncDeliveries.size >= 32) return this.#rejectSync("delivery_limit", kind, bytes);
+    if ([...this.#syncDeliveries].filter(delivery => !delivery.detail).length >= 32) return this.#rejectSync("delivery_limit", kind, bytes);
     if (this.#syncBytes + bytes > SESSION_SYNC_WIRE_LIMIT_BYTES) return this.#rejectSync("sync_byte_limit", kind, bytes);
     // ADR-0013 §6：bulk 有独立预算，不能以下载积压拒绝优先级更高的同步。
     const queueBytes = envelopeBytesForPayload(payload.byteLength);
@@ -501,7 +531,8 @@ export class DeviceLink {
 
   #finishSyncDelivery(delivery: SyncDelivery, written: boolean): void {
     if (!this.#syncDeliveries.delete(delivery)) return;
-    this.#syncBytes -= delivery.bytes;
+    if (delivery.detail) this.#toolBytes -= delivery.bytes;
+    else this.#syncBytes -= delivery.bytes;
     delivery.done(written);
   }
 

@@ -1,5 +1,5 @@
 import { access, chmod, cp, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -43,8 +43,12 @@ async function bundle(source, target) {
       if (manifest.optionalDependencies?.[name] || manifest.peerDependenciesMeta?.[name]?.optional) continue;
       throw new Error(`Missing runtime dependency ${name} required by ${manifest.name}`);
     }
-    const rel = relative(join(root, "node_modules"), dependency);
-    if (rel.startsWith("..")) throw new Error(`Dependency outside repository node_modules: ${name}`);
+    // A worktree may junction third-party packages to another checkout. Their nested resolution
+    // then returns that checkout's drive/path; retain npm's node_modules suffix in the package.
+    const local = relative(join(root, "node_modules"), dependency);
+    const rel = local.startsWith("..") || isAbsolute(local)
+      ? dependency.match(/(?:^|[\\/])node_modules[\\/](.+)$/)?.[1] : local;
+    if (!rel || isAbsolute(rel) || rel.split(/[\\/]/).some(part => part === ".." || part.includes(":"))) throw new Error(`Invalid runtime dependency path: ${name}`);
     await bundle(dependency, join(output, "node_modules", rel));
   }
 }

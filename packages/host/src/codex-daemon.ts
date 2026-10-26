@@ -91,7 +91,15 @@ type PendingRequest = {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout | undefined;
+  maxResponseBytes?: number;
+  cleanup?: () => void;
 };
+
+export type CodexReadOptions = { signal?: AbortSignal; maxResponseBytes?: number };
+// Measured transport bytes for object results; avoids serializing a large native result again.
+const responseSizes = new WeakMap<object, number>();
+export const codexResponseBytes = (response: unknown): number | undefined =>
+  response !== null && typeof response === "object" ? responseSizes.get(response) : undefined;
 
 export class CodexAppServer {
   readonly #options: CodexAppServerOptions;
@@ -234,7 +242,7 @@ export class CodexAppServer {
           this.#options.log?.(`app-server 输出不是 JSON，已忽略：${trimmed.slice(0, 200)}`);
           continue;
         }
-        this.#dispatch(message);
+        this.#dispatch(message, trimmed);
       }
     });
     transport.onClose((code) => {
@@ -249,7 +257,7 @@ export class CodexAppServer {
     if (!this.#stopped) (this.onExit ?? this.#options.onExit)?.(code);
   }
 
-  #dispatch(message: Record<string, unknown>): void {
+  #dispatch(message: Record<string, unknown>, wireText: string): void {
     const id = message.id;
     if (id !== undefined && id !== null) {
       // 带 id 的两种可能：对我们请求的响应，或服务端发来的请求。
@@ -275,11 +283,16 @@ export class CodexAppServer {
       }
       const pending = this.#pending.get(id as string | number);
       if (pending !== undefined) {
+        const responseBytes = Buffer.byteLength(wireText, "utf8");
         this.#pending.delete(id as string | number);
         if (pending.timer !== undefined) clearTimeout(pending.timer);
-        if (message.error !== undefined && message.error !== null) {
+        pending.cleanup?.();
+        if (pending.maxResponseBytes !== undefined && responseBytes > pending.maxResponseBytes) {
+          pending.reject(new Error("codex_response_too_large"));
+        } else if (message.error !== undefined && message.error !== null) {
           pending.reject(new Error(describeJsonRpcError(message.error)));
         } else {
+          if (message.result !== null && typeof message.result === "object") responseSizes.set(message.result, responseBytes);
           pending.resolve(message.result);
         }
         return;
@@ -291,17 +304,29 @@ export class CodexAppServer {
     }
   }
 
-  request(method: string, params?: unknown, timeoutMs = 30_000): Promise<unknown> {
+  request(method: string, params?: unknown, timeoutMs = 30_000, options: CodexReadOptions = {}): Promise<unknown> {
     this.#requireTransport();
+    if (options.signal?.aborted) return Promise.reject(new Error("codex_request_cancelled"));
+    if (options.maxResponseBytes !== undefined && (!Number.isSafeInteger(options.maxResponseBytes) || options.maxResponseBytes < 1)) {
+      return Promise.reject(new Error("invalid_codex_response_limit"));
+    }
     const id = ++this.#nextId;
     return new Promise((resolve, reject) => {
+      const signal = options.signal;
+      const cleanup = () => signal?.removeEventListener("abort", abort);
+      const abort = () => {
+        const pending = this.#pending.get(id);
+        if (pending?.timer !== undefined) clearTimeout(pending.timer);
+        this.#pending.delete(id); cleanup(); reject(new Error("codex_request_cancelled"));
+      };
       const timer = timeoutMs > 0
         ? setTimeout(() => {
-          this.#pending.delete(id);
+          this.#pending.delete(id); cleanup();
           reject(new Error(`app-server 请求 ${method} 超时（${timeoutMs}ms）`));
         }, timeoutMs)
         : undefined;
-      this.#pending.set(id, { resolve, reject, timer });
+      this.#pending.set(id, { resolve, reject, timer, cleanup, ...(options.maxResponseBytes === undefined ? {} : { maxResponseBytes: options.maxResponseBytes }) });
+      signal?.addEventListener("abort", abort, { once: true });
       this.#send({ id, method, ...(params === undefined ? {} : { params }) });
     });
   }
@@ -352,6 +377,7 @@ export class CodexAppServer {
   #rejectAll(error: Error): void {
     for (const pending of this.#pending.values()) {
       if (pending.timer !== undefined) clearTimeout(pending.timer);
+      pending.cleanup?.();
       pending.reject(error);
     }
     this.#pending.clear();

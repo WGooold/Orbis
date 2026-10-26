@@ -32,7 +32,7 @@ import {
  * v2：批次开始携带 `windowStart`，压缩摘要带 `anchor: "head"`——窗口与顺序从「客户端自己算」
  * 变成「投影说出来」，这是 App 能够删掉原生解释的前提。
  */
-export const DISPLAY_PROJECTION_VERSION = 2;
+export const DISPLAY_PROJECTION_VERSION = 3;
 
 /**
  * 显示结果与显示批次的形状定义在协议里（它是线上负载），这里只做投影：
@@ -259,6 +259,7 @@ function projectMessage(entry: RemoteSessionEntry): DisplayEntry[] {
       timestamp: asNumber(message["timestamp"]) ?? toTimestampMillis(entry.timestamp),
       ...(toolCallId === undefined ? {} : { toolCallId }),
       ...(toolName === undefined ? {} : { toolName }),
+      ...(message["toolSummary"] === undefined ? {} : { toolSummary: message["toolSummary"] as ChatMessage["toolSummary"] }),
       isError: failed,
     },
   }];
@@ -335,7 +336,7 @@ function contentBlocks(value: unknown): RemoteContent[] {
           type: "tool_call",
           toolCallId: asString(block["toolCallId"]) ?? asString(block["id"]) ?? "",
           toolName: asString(block["toolName"]) ?? asString(block["name"]) ?? "",
-          arguments: block["arguments"],
+          ...(block["summary"] === undefined ? { arguments: block["arguments"] } : { summary: block["summary"] as Extract<RemoteContent, { type: "tool_call" }>["summary"] }),
         });
         break;
       default: break;

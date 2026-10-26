@@ -62,6 +62,7 @@ export async function readLoopbackDescriptor(
 export type LoopbackHostTransportOptions =
   Omit<RelayRuntimeTransportOptions, "relayUrl" | "credential" | "resolveEndpoint">
   & {
+    onHostResolved?: (hostId: string) => void;
     descriptor: LoopbackDescriptor;
     /** 发现文件路径（缺省 `~/.orbis/loopback.json`）。重连时重读它，找回换了端口的 Host。 */
     descriptorPath?: string;
@@ -86,6 +87,7 @@ export type LoopbackHostTransportOptions =
  * Host 起起来（哪怕换了端口）就会自己接上。约定仍是「先起 Host，再起 Pi」。
  */
 export async function resolveRuntimeTransport(input: {
+  onHostResolved?: (hostId: string) => void;
   onConnectionStateChange: (state: RelayRuntimeConnectionState) => void;
   descriptorPath?: string;
   log?: (line: string) => void;
@@ -101,6 +103,7 @@ export async function resolveRuntimeTransport(input: {
     input.log?.(`走本机 Host 通道（hostId=${descriptor.hostId} pid=${descriptor.pid}）`);
   }
   return new LoopbackHostTransport({
+    ...(input.onHostResolved === undefined ? {} : { onHostResolved: input.onHostResolved }),
     // 没有发现文件时给个占位端点：真正的地址由 `resolveEndpoint` 在每次重连前重读。
     // 端口取 1 是为了让"Host 还没起"这件事表现为一次普通的连接失败，而不是打到别的服务上。
     descriptor: descriptor ?? { version: 1, url: "ws://127.0.0.1:1", token: "placeholder", hostId: "", pid: 0 },
@@ -120,7 +123,7 @@ export async function resolveRuntimeTransport(input: {
  */
 export class LoopbackHostTransport extends RelayRuntimeTransport {
   constructor(options: LoopbackHostTransportOptions) {
-    const { descriptor, descriptorPath, adoptAnyHost, ...rest } = options;
+    const { descriptor, descriptorPath, adoptAnyHost, onHostResolved, ...rest } = options;
     super({
       ...rest,
       relayUrl: descriptor.url,
@@ -133,6 +136,7 @@ export class LoopbackHostTransport extends RelayRuntimeTransport {
         const fresh = await readLoopbackDescriptor(descriptorPath);
         if (fresh === undefined) return undefined;
         if (adoptAnyHost !== true && fresh.hostId !== descriptor.hostId) return undefined;
+        onHostResolved?.(fresh.hostId);
         return { relayUrl: fresh.url, credential: fresh.token };
       },
     });

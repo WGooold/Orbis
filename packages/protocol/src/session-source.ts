@@ -7,6 +7,8 @@ import type {
 } from "./index.js";
 import { SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES } from "./session-sync.js";
 import { displayBatchFor } from "./display-entries.js";
+import { ToolInventorySource } from "./tool-inventory-source.js";
+import type { ToolInventoryProduced } from "./tool-activity.js";
 
 /**
  * 一条 Entry 线上表示的指纹（ADR-0035 §1）。
@@ -79,6 +81,11 @@ export class RecoverableSessionSource {
   #published: { seq: number; ready: boolean; complete: boolean; head: string | null; live: SessionLiveState } | undefined;
   #committed: RemoteSessionEntry[] = [];
   #boundaryParentId: string | null = null;
+  readonly #toolInventory: ToolInventorySource | undefined;
+  readonly #runtimeId: () => string;
+  readonly #orders = new Map<string, number>();
+  #order = 0;
+  get version(): SessionSourceEpoch { return { epoch: this.#epoch, seq: this.#seq, ready: this.#ready }; }
 
   /**
    * `coalesceMs > 0` 时，状态变化最多每 N 毫秒发布一条 patch（ADR-0035 §15）。
@@ -91,11 +98,13 @@ export class RecoverableSessionSource {
   constructor(
     sessionId: string,
     publish: (event: Extract<RuntimeEvent, { type: "session.patch" }>) => void,
-    options: { coalesceMs?: number } = {},
+    options: { coalesceMs?: number; publishTools?: (event: ToolInventoryProduced) => void; runtimeId?: () => string } = {},
   ) {
     this.#sessionId = sessionId;
+    this.#runtimeId = options.runtimeId ?? (() => sessionId);
     this.#publish = publish;
     this.#coalesceMs = options.coalesceMs ?? 0;
+    if (options.publishTools) this.#toolInventory = new ToolInventorySource(options.publishTools);
   }
 
   /** 合并窗口（毫秒）；0 表示关闭。 */
@@ -187,8 +196,11 @@ export class RecoverableSessionSource {
   }
 
   replaceLive(live: SessionLiveState): void {
+    if (live.toolInventory && this.#toolInventory) live = { ...live, tools: [...this.#tools.values()] };
     const current = { complete: this.#complete, turn: this.#turn, messages: [...this.#messages.values()], tools: [...this.#tools.values()] };
     if (JSON.stringify(current) === JSON.stringify(live)) return;
+    for (const [id, item] of this.#messages) if (!live.messages.some(next => next.message.messageId === id)) this.#forgetMessageOrder(id, item);
+    for (const id of this.#tools.keys()) if (!live.tools.some(next => next.toolCallId === id)) this.#orders.delete(`tool:${id}`);
     this.#messages = new Map(live.messages.map(item => [item.message.messageId, structuredClone(item)]));
     this.#tools = new Map(live.tools.map(item => [item.toolCallId, structuredClone(item)]));
     this.#messageRevs = new Map(live.messages.map(item => [item.message.messageId, this.#nextRev()]));
@@ -207,6 +219,16 @@ export class RecoverableSessionSource {
    * 方向是安全的：多发不等于漏发。
    */
   upsertMessage(item: SessionLiveMessage): void {
+    if (this.#toolInventory) {
+      item = { ...item, order: this.#liveOrder(`message:${item.message.messageId}`) };
+      for (const [index, block] of item.message.content.entries()) {
+        if (block.type !== "tool_call") { this.#liveOrder(index === 0 ? `message:${item.message.messageId}` : `message:${item.message.messageId}:part:${index}`); continue; }
+        if (!block.summary || this.#tools.has(block.toolCallId) && this.#tools.get(block.toolCallId)?.toolName === block.toolName) continue;
+        const summary = { ...block.summary, order: this.#liveOrder(`tool:${block.toolCallId}`) };
+        this.#tools.set(block.toolCallId, { toolCallId: block.toolCallId, toolName: block.toolName, state: "started", summary });
+        this.#toolRevs.set(block.toolCallId, this.#nextRev()); this.#toolBytes.set(block.toolCallId, jsonBytes(summary));
+      }
+    }
     this.#messages.set(item.message.messageId, item);
     this.#messageRevs.set(item.message.messageId, this.#nextRev());
     this.#messageBytes.set(item.message.messageId, contentLowerBound(item.message.content));
@@ -216,6 +238,11 @@ export class RecoverableSessionSource {
   #nextRev(): number {
     this.#revision += 1;
     return this.#revision;
+  }
+  #liveOrder(key: string): number {
+    let order = this.#orders.get(key);
+    if (order === undefined) { order = this.#order++; this.#orders.set(key, order); }
+    return order;
   }
 
   /** Returns true for legacy lifecycle events consumed by the versioned source. */
@@ -277,6 +304,17 @@ export class RecoverableSessionSource {
         this.#toolBytes.set(event.toolCallId, jsonBytes(detail));
         this.#touch();
         return true;
+      }
+      case "tool.activity": {
+        const id = event.summary.tool.toolCallId;
+        const summary = this.#toolInventory ? { ...event.summary, order: this.#liveOrder(`tool:${id}`) } : event.summary;
+        const previous = this.#tools.get(id);
+        if (JSON.stringify(previous?.summary) === JSON.stringify(summary)) return true;
+        const tool: SessionLiveTool = { toolCallId: id, toolName: summary.toolName,
+          state: summary.phase === "finished" || summary.phase === "cancelled" ? "finished" : summary.phase === "started" ? "started" : "updated",
+          summary, ...(summary.isError === undefined ? {} : { isError: summary.isError }) };
+        this.#tools.set(id, tool); this.#toolRevs.set(id, this.#nextRev());
+        this.#toolBytes.set(id, jsonBytes(summary)); this.#touch(); return true;
       }
       default: return false;
     }
@@ -352,6 +390,7 @@ export class RecoverableSessionSource {
         const raw = message as { messageId?: unknown; toolCallId?: unknown; role?: unknown };
         if (typeof raw.messageId === "string") mapped.set(raw.messageId, entry.entryId);
         if ((raw.role === "toolResult" || raw.role === "tool") && typeof raw.toolCallId === "string" && this.#tools.delete(raw.toolCallId)) {
+          this.#orders.delete(`tool:${raw.toolCallId}`);
           this.#toolRevs.delete(raw.toolCallId);
           this.#toolBytes.delete(raw.toolCallId);
           this.#dirty = true;
@@ -361,6 +400,7 @@ export class RecoverableSessionSource {
       for (const [id, item] of this.#messages) {
         if (ids.has(id) || ids.has(item.persistedEntryId ?? mapped.get(id) ?? "")) {
           this.#messages.delete(id);
+          this.#forgetMessageOrder(id, item);
           this.#messageRevs.delete(id);
           this.#messageBytes.delete(id);
           this.#dirty = true;
@@ -396,7 +436,7 @@ export class RecoverableSessionSource {
    * `seq` 只标识已经发出去的那一版（ADR-0026）。
    */
   snapshot(): { version: SessionSourceEpoch; checkpoint: SessionCheckpoint; live: SessionLiveState } {
-    if (this.#messages.size > 256 || this.#tools.size > 256) throw new Error("session_live_inventory_too_large");
+    if (this.#messages.size > (this.#toolInventory ? 4352 : 256) || this.#tools.size > (this.#toolInventory ? 4096 : 256)) throw new Error("session_live_inventory_too_large");
     return this.#currentSnapshot();
   }
 
@@ -415,13 +455,35 @@ export class RecoverableSessionSource {
     return this.snapshot();
   }
 
-  #currentSnapshot(): { version: SessionSourceEpoch; checkpoint: SessionCheckpoint; live: SessionLiveState } {
+  replayToolInventory(): void {
+    this.flushPending();
+    this.#toolInventory?.prepare(this.#runtimeId(), this.version, [...this.#tools.values()].flatMap(tool => tool.summary ? [tool.summary] : []), true);
+  }
+  #forgetMessageOrder(id: string, item: SessionLiveMessage): void {
+    this.#orders.delete(`message:${id}`);
+    for (let index = 1; index < item.message.content.length; index++) this.#orders.delete(`message:${id}:part:${index}`);
+  }
+  #currentSnapshot(sequence = this.#seq): { version: SessionSourceEpoch; checkpoint: SessionCheckpoint; live: SessionLiveState } {
     const complete = this.#ready && this.#complete;
+    const version = { epoch: this.#epoch, seq: sequence, ready: this.#ready };
+    const toolInventory = this.#toolInventory?.prepare(this.#runtimeId(), version,
+      [...this.#tools.values()].flatMap(tool => tool.summary ? [tool.summary] : []));
+    const messages = [...this.#messages.values()].flatMap(item => {
+      if (!this.#toolInventory) return [item];
+      if (item.message.role === "tool") return [];
+      if (!item.message.content.some(part => part.type === "tool_call")) return item.message.content.length ? [item] : [];
+      return item.message.content.flatMap((part, index) => part.type === "tool_call" ? [] : [{ ...item,
+        order: this.#liveOrder(index === 0 ? `message:${item.message.messageId}` : `message:${item.message.messageId}:part:${index}`),
+        message: { ...item.message, messageId: index === 0 ? item.message.messageId : `${item.message.messageId}:part:${index}`, content: [part] } }]);
+    });
+    if (messages.length > 256) throw new Error("session_live_message_inventory_too_large");
     return {
-      version: { epoch: this.#epoch, seq: this.#seq, ready: this.#ready },
-      checkpoint: { checkpointId: `${this.#epoch}:${this.#seq}`, head: { leafId: this.#ready ? this.#head : null },
+      version,
+      checkpoint: { checkpointId: `${this.#epoch}:${sequence}`, head: { leafId: this.#ready ? this.#head : null },
         headCompleteness: this.#ready ? "complete" : "unknown", inventoryComplete: complete },
-      live: { complete, turn: structuredClone(this.#turn), messages: structuredClone([...this.#messages.values()]), tools: structuredClone([...this.#tools.values()]) },
+      live: { complete, turn: structuredClone(this.#turn), messages: structuredClone(messages),
+        tools: this.#toolInventory ? [] : structuredClone([...this.#tools.values()]),
+        ...(toolInventory === undefined ? {} : { toolInventory }) },
     };
   }
 
@@ -451,8 +513,8 @@ export class RecoverableSessionSource {
   #flush(): void {
     if (process.env.ORBIS_SEQ_DEBUG) { try { appendFileSync(process.env.ORBIS_SEQ_DEBUG, `FLUSH ${this.#sessionId.slice(0, 24)} seq=${this.#seq + 1} ready=${this.#ready} complete=${this.#complete} committed=${this.#committed.length} msg=${this.#messages.size} tools=${this.#tools.size} turn=${this.#turn?.turnId ?? "-"}\n`); } catch { /* debug only */ } }
     this.#dirty = false;
-    if (this.#messages.size > 256 || this.#tools.size > 256) { this.#committed = []; return; }
-    const current = this.#currentSnapshot();
+    if (this.#messages.size > (this.#toolInventory ? 4352 : 256) || this.#tools.size > (this.#toolInventory ? 4096 : 256)) { this.#committed = []; return; }
+    const current = this.#currentSnapshot(this.#seq + 1);
     const committed = this.#committed;
     if (this.#ready && committed.length > 256) return;
     // If canonical entries are pending, never publish the new head without them. Otherwise the

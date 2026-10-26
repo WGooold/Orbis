@@ -70,7 +70,7 @@ export type RecordKey = z.infer<typeof RecordKeySchema>;
 
 /** 会话内领域（ADR-0032 §4 的 01–24 中归属 AgentState 的部分）。 */
 export const AgentStateDomainSchema = z.enum([
-  "identity", "availability", "history", "live", "execution", "delivery", "interactions",
+  "identity", "availability", "history", "live", "tools", "execution", "delivery", "interactions",
   "permissions", "model", "context", "capabilities", "resources", "notifications", "artifacts",
   "records", "providerBinding", "workspaceRef",
 ]);

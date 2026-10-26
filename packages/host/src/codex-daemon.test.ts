@@ -41,6 +41,39 @@ function fakeTransport(): FakeTransportHarness {
 }
 
 describe("CodexAppServer", () => {
+  it("cancels only the requested native read, ignores its late response and preserves notification delivery", async () => {
+    const harness = fakeTransport(), notifications: string[] = [];
+    const creating = CodexAppServer.create({ transportImpl: async () => harness.transport, onNotification: method => notifications.push(method) });
+    await vi.waitFor(() => expect(harness.sent.length).toBe(1)); harness.emit(JSON.stringify({ id: 1, result: {} }));
+    const server = await creating, controller = new AbortController();
+    const cancelled = server.request("thread/turns/list", { threadId: "one" }, 1000, { signal: controller.signal });
+    const other = server.request("thread/list", {});
+    controller.abort(); await expect(cancelled).rejects.toThrow("codex_request_cancelled");
+    harness.emit(JSON.stringify({ id: 2, result: { privateContent: "late" } }));
+    harness.emit(JSON.stringify({ method: "turn/started", params: {} }));
+    harness.emit(JSON.stringify({ id: 3, result: { data: [] } }));
+    await expect(other).resolves.toEqual({ data: [] }); expect(notifications).toEqual(["turn/started"]);
+    const before = harness.sent.length;
+    await expect(server.request("thread/turns/list", {}, 1000, { signal: controller.signal })).rejects.toThrow("codex_request_cancelled");
+    expect(harness.sent.length).toBe(before); await server.stop();
+  });
+
+  it("measures the complete escaped native response and removes cancellation listeners on success or timeout", async () => {
+    const harness = fakeTransport();
+    const creating = CodexAppServer.create({ transportImpl: async () => harness.transport });
+    await vi.waitFor(() => expect(harness.sent.length).toBe(1)); harness.emit(JSON.stringify({ id: 1, result: {} }));
+    const server = await creating, controller = new AbortController(), remove = vi.spyOn(controller.signal, "removeEventListener");
+    const capped = server.request("thread/turns/list", {}, 1000, { maxResponseBytes: 64, signal: controller.signal });
+    harness.emit(JSON.stringify({ id: 2, result: "界".repeat(30) }));
+    await expect(capped).rejects.toThrow("codex_response_too_large"); expect(remove).toHaveBeenCalledTimes(1);
+    const success = server.request("thread/list", {}, 1000, { signal: controller.signal });
+    harness.emit(JSON.stringify({ id: 3, result: [] })); await expect(success).resolves.toEqual([]); expect(remove).toHaveBeenCalledTimes(2);
+    const timeout = server.request("thread/list", {}, 1, { signal: controller.signal });
+    await expect(timeout).rejects.toThrow("超时"); expect(remove).toHaveBeenCalledTimes(3);
+    await expect(server.request("thread/list", {}, 1, { maxResponseBytes: 0 })).rejects.toThrow("invalid_codex_response_limit");
+    await server.stop();
+  });
+
   it("handles equal IDs in opposite RPC directions and sends only one answer", async () => {
     const harness = fakeTransport();
     const requests: string[] = [];

@@ -47,6 +47,7 @@ data class SessionLiveMessage(
     val finished: Boolean,
     val contentComplete: Boolean,
     val persistedEntryId: String? = null,
+    val order: Long? = null,
 )
 
 @Serializable
@@ -56,6 +57,7 @@ data class SessionLiveTool(
     val state: String,
     val detail: JsonElement? = null,
     val isError: Boolean? = null,
+    val summary: ToolSummary? = null,
 )
 
 @Serializable
@@ -71,6 +73,7 @@ data class SessionLiveState(
     val turn: SessionLiveTurn? = null,
     val messages: List<SessionLiveMessage> = emptyList(),
     val tools: List<SessionLiveTool> = emptyList(),
+    val toolInventory: ToolInventoryReference? = null,
 )
 
 @Serializable

@@ -1,13 +1,18 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { RuntimeEventSchema, type RuntimeCommand, type RuntimeEvent } from "@orbis/protocol";
 import type { RuntimeBridgeTransport } from "@orbis/runtime-bridge";
 
-const fixture = vi.hoisted(() => ({ events: [] as RuntimeEvent[], handlers: undefined as Parameters<RuntimeBridgeTransport["start"]>[1] | undefined }));
+const fixture = vi.hoisted(() => ({ directory: "", events: [] as RuntimeEvent[], handlers: undefined as Parameters<RuntimeBridgeTransport["start"]>[1] | undefined }));
 vi.mock("@earendil-works/pi-coding-agent", () => ({ SessionManager: { listAll: async () => [] } }));
 vi.mock("./config.js", () => ({ loadRemoteControlConfig: async () => ({}) }));
 vi.mock("./runtime-log.js", () => ({ logPiExtensionRuntimeEvent: () => {}, createPiExtensionRuntimeDiagnostic: () => () => {} }));
 vi.mock("./loopback.js", () => ({
+  readLoopbackDescriptor: async () => ({ hostId: "test-host" }),
+  defaultLoopbackDescriptorPath: () => join(fixture.directory, "loopback.json"),
   resolveRuntimeTransport: async (): Promise<RuntimeBridgeTransport> => ({
     start: async (_metadata, handlers) => { fixture.handlers = handlers; handlers.connected(); },
     publish: event => { RuntimeEventSchema.parse(event); fixture.events.push(structuredClone(event)); }, close: () => {},
@@ -20,7 +25,9 @@ import piRemoteControl from "./index.js";
 
 const active = Symbol.for("@orbis/orbis-extension-active");
 const scope = globalThis as typeof globalThis & { [active]?: boolean };
-afterEach(() => { delete scope[active]; fixture.events.length = 0; fixture.handlers = undefined; });
+beforeEach(async () => { fixture.directory = await mkdtemp(join(tmpdir(), "orbis-pi-tools-")); });
+afterEach(async () => { delete scope[active]; fixture.events.length = 0; fixture.handlers = undefined;
+  await rm(fixture.directory, { recursive: true, force: true }); });
 
 async function session(idleAtStart = true) {
   const hooks = new Map<string, (event: never, ctx: ExtensionContext) => Promise<void>>();
@@ -47,6 +54,33 @@ async function session(idleAtStart = true) {
 }
 
 describe("Pi recoverable session integration", () => {
+  it("keeps 10 MiB tool results out of loopback and reads native SessionManager content only on request", async () => {
+    const f = await session();
+    try {
+      await f.sync("baseline"); f.idle(false);
+      const privateText = "PRIVATE_PI_RESULT" + "x".repeat(10 * 1024 * 1024);
+      await f.emit("tool_execution_start", { toolCallId: "call", toolName: "read", args: { path: "D:/test.txt" } });
+      await f.emit("tool_execution_end", { toolCallId: "call", toolName: "read", result: { content: [{ type: "text", text: privateText }] }, isError: false });
+      const live = await f.sync("tool-live");
+      expect(live.live?.tools).toEqual([]);
+      expect(live.live?.toolInventory?.totalCount).toBe(1);
+      expect(JSON.stringify(fixture.events)).not.toContain("PRIVATE_PI_RESULT");
+      const raw = { role: "toolResult", toolCallId: "call", toolName: "read", content: [{ type: "text", text: privateText }], timestamp: 2, isError: false };
+      f.entries.push({ type: "message", id: "result", parentId: null, timestamp: new Date(2).toISOString(), message: raw });
+      f.idle(true);
+      const history = await f.sync("tool-history");
+      expect(JSON.stringify(history)).not.toContain("PRIVATE_PI_RESULT");
+      expect(history.live?.toolInventory?.totalCount).toBe(0);
+      const runtimeId = String((globalThis as Record<symbol, unknown>)[Symbol.for("@orbis/pi-runtime-id")]);
+      fixture.handlers!.command("read-private", runtimeId, { type: "session.tool.content.read", runtimeId, requestId: "read-private", viewerId: "viewer",
+        locator: { projectionVersion: 1, tool: { agent: { hostId: "test-host", agentKind: "pi", sessionId: "pi-session" }, toolCallId: "call" }, part: "result" },
+        read: null, offset: 0, maxBytes: 16_384 });
+      await vi.waitFor(() => expect(fixture.events.some(event => (event.type === "session.tool.content.page" || event.type === "session.tool.read.failed") && event.requestId === "read-private")).toBe(true), { timeout: 10_000 });
+      const page = fixture.events.find(event => (event.type === "session.tool.content.page" || event.type === "session.tool.read.failed") && event.requestId === "read-private")!;
+      expect(page).toMatchObject({ text: expect.stringContaining("PRIVATE_PI_RESULT"), gaps: [], contentFinal: true });
+      expect(JSON.stringify(page).length).toBeLessThan(64 * 1024);
+    } finally { await f.emit("session_shutdown", { reason: "quit" }); }
+  });
   it("recovers cumulative text across transport loss and removes the live twin even without turn-end delivery", async () => {
     const f = await session();
     try {

@@ -157,7 +157,10 @@ describe("Codex canonical native item identity", () => {
     h.runtime.handleCommand({ type: "slash.execute", name: "fork", args: "" }, "fork", "session");
     await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "fork", ok: true })));
     expect(h.request).toHaveBeenCalledWith("thread/turns/list", expect.objectContaining({ threadId: "forked", itemsView: "full" }));
-    expect(h.sync("forked")?.entries).toEqual(h.sync()?.entries);
+    const forked = h.sync("forked")!.entries;
+    expect(forked.map(entry => [entry.entryId, entry.parentId])).toEqual(h.sync()!.entries.map(entry => [entry.entryId, entry.parentId]));
+    expect(JSON.stringify(forked)).toContain('"sessionId":"forked"');
+    expect(JSON.stringify(forked)).not.toContain('"sessionId":"session"');
   });
 
   it("buffers completion during initial history load without inventing a root parent", async () => {
