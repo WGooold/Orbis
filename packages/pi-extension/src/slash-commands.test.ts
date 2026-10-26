@@ -1,5 +1,5 @@
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { RuntimeCapabilitiesSchema } from "@pi-remote/protocol";
+import { RuntimeCapabilitiesSchema } from "@orbis/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { INTERNAL_SLASH_COMMAND, PiSlashCommandAdapter } from "./slash-commands.js";
 

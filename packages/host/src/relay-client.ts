@@ -9,7 +9,7 @@ import {
   RelayToRuntimeMessageSchema,
   type EnvelopeV2,
   type RuntimeMetadata,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 import WebSocket from "ws";
 
 export type HostRelayState = "connecting" | "connected" | "reconnecting" | "closed";

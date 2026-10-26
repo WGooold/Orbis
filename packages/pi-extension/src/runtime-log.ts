@@ -1,8 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { orbisEnvironment } from "@orbis/protocol";
 
-const PI_EXTENSION_RUNTIME_LOG_ENV = "PI_REMOTE_RUNTIME_LOG";
-const PI_EXTENSION_RUNTIME_LOG_LEVEL_ENV = "PI_REMOTE_RUNTIME_LOG_LEVEL";
 const DEFAULT_PI_EXTENSION_RUNTIME_LOG = join("data", "pi-extension-runtime.log");
 
 type PiExtensionRuntimeLogLevel = "off" | "error" | "warn" | "info" | "debug";
@@ -29,7 +28,7 @@ type RuntimeLogWriter = {
 };
 
 type RuntimeLogScope = { [key: symbol]: unknown };
-const RUNTIME_LOG_WRITER = Symbol.for("@pi-remote/runtime-log-writer");
+const RUNTIME_LOG_WRITER = Symbol.for("@orbis/runtime-log-writer");
 const MAX_PENDING_WRITES = 1_024;
 
 const LOG_LEVEL_PRIORITY: Record<PiExtensionRuntimeLogLevel, number> = {
@@ -41,7 +40,7 @@ const LOG_LEVEL_PRIORITY: Record<PiExtensionRuntimeLogLevel, number> = {
 };
 
 // The default info set is intentionally limited to lifecycle and reload events.
-// Per-message and adapter details remain available with PI_REMOTE_RUNTIME_LOG_LEVEL=debug.
+// Per-message and adapter details remain available with ORBIS_RUNTIME_LOG_LEVEL=debug.
 const INFO_EVENTS = new Set([
   "extension_loaded",
   "extension_reloaded",
@@ -84,7 +83,7 @@ export function piExtensionRuntimeLogPath(
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
 ): string {
-  const configured = env[PI_EXTENSION_RUNTIME_LOG_ENV];
+  const configured = orbisEnvironment(env, "RUNTIME_LOG");
   if (!configured) return join(cwd, DEFAULT_PI_EXTENSION_RUNTIME_LOG);
   return isAbsolute(configured) ? configured : resolve(cwd, configured);
 }
@@ -92,7 +91,7 @@ export function piExtensionRuntimeLogPath(
 function piExtensionRuntimeLogLevel(
   env: NodeJS.ProcessEnv = process.env,
 ): PiExtensionRuntimeLogLevel {
-  const configured = env[PI_EXTENSION_RUNTIME_LOG_LEVEL_ENV]?.trim().toLowerCase();
+  const configured = orbisEnvironment(env, "RUNTIME_LOG_LEVEL")?.trim().toLowerCase();
   return configured === "off" || configured === "error" || configured === "warn" ||
     configured === "info" || configured === "debug"
     ? configured

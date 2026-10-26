@@ -1,4 +1,4 @@
-import type { RuntimePermissions, RuntimeSlashCommand } from "@pi-remote/protocol";
+import type { RuntimePermissions, RuntimeSlashCommand } from "@orbis/protocol";
 import { object } from "./codex-interactions.js";
 
 export const CODEX_PERMISSION_COMMANDS: readonly RuntimeSlashCommand[] = [

@@ -1,13 +1,15 @@
 import { createRelayServer } from "./index.js";
 import { RegistrationAuthority } from "./registration.js";
 import { verificationMailer } from "./verification-mail.js";
+import { orbisEnvironment } from "@orbis/protocol";
 
 const port = Number(process.env.PORT ?? 8787);
-const runtimeCredential = process.env.PI_REMOTE_RUNTIME_CREDENTIAL;
-const adminToken = process.env.PI_REMOTE_ADMIN_TOKEN;
+const runtimeCredential = orbisEnvironment(process.env, "RUNTIME_CREDENTIAL");
+const adminToken = orbisEnvironment(process.env, "ADMIN_TOKEN");
+const stateFile = orbisEnvironment(process.env, "STATE_FILE") ?? process.env.ORBIS_DEFAULT_STATE_FILE ?? "./data/relay-state.json";
 const sendMail = verificationMailer();
 const registration = await RegistrationAuthority.create({
-  stateFile: process.env.ORBIS_REGISTRATION_STATE_FILE ?? `${process.env.PI_REMOTE_STATE_FILE ?? "./data/relay-state.json"}.registration.json`,
+  stateFile: process.env.ORBIS_REGISTRATION_STATE_FILE ?? `${stateFile}.registration.json`,
   ...(sendMail === undefined ? {} : { sendMail }),
 });
 
@@ -18,13 +20,13 @@ const relay = await createRelayServer({
   ...(adminToken === undefined ? {} : { adminToken }),
   registration,
   trustProxy: process.env.ORBIS_TRUST_PROXY === "1",
-  adminStateFile: process.env.ORBIS_ADMIN_STATE_FILE ?? `${process.env.PI_REMOTE_STATE_FILE ?? "./data/relay-state.json"}.admin.json`,
+  adminStateFile: process.env.ORBIS_ADMIN_STATE_FILE ?? `${stateFile}.admin.json`,
   ...(process.env.ORBIS_DOWNLOADS_DIR ? { downloadsDir: process.env.ORBIS_DOWNLOADS_DIR } : {}),
   // nginx 把 /var/www/orbis-downloads 挂在 /downloads/ 下；Android 的版本元数据写在那里，
   // 与 CI 归档的 Windows 下载不是同一个目录。
   ...(process.env.ORBIS_ANDROID_DOWNLOADS_DIR ? { androidDownloadsDir: process.env.ORBIS_ANDROID_DOWNLOADS_DIR } : {}),
   ...(process.env.ORBIS_RELEASE_COMMIT ? { buildCommit: process.env.ORBIS_RELEASE_COMMIT } : {}),
-  stateFile: process.env.PI_REMOTE_STATE_FILE ?? "./data/relay-state.json",
+  stateFile,
 });
 console.log(`Orbis Relay listening at ${relay.url}`);
 

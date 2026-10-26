@@ -15,8 +15,8 @@ import {
   readHandshakeEnvelope,
   toBase64Url,
   type DeviceRecord,
-} from "@pi-remote/e2e";
-import { EnvelopeReassembler, PIECE_HEADER_BYTES, type EnvelopeV2, type OutboundQueueDiagnostic, type PathKind } from "@pi-remote/protocol";
+} from "@orbis/e2e";
+import { EnvelopeReassembler, PIECE_HEADER_BYTES, type EnvelopeV2, type OutboundQueueDiagnostic, type PathKind } from "@orbis/protocol";
 
 import { DeviceLink, SESSION_SYNC_WIRE_LIMIT_BYTES, type PathSink } from "./device-link.js";
 import { outboundQueueSource } from "./outbound-queue-diagnostics.js";

@@ -4,7 +4,7 @@
  * 关键点：`ee`、`pskRoot`、`k_h2d`、`k_d2h` 都**从不上网**，网络上只有临时公钥与 MAC。
  * 每次建立或更换 Path 都重跑一次握手 —— 「换网络不掉线」和「前向保密」都来自这里。
  */
-import { canonEnvelopeAad, envelopeNonce, ENVELOPE_HANDSHAKE_SEQUENCE, type EnvelopeChannel, type EnvelopeV2, type RoutingHeaderV2 } from "@pi-remote/protocol";
+import { canonEnvelopeAad, envelopeNonce, ENVELOPE_HANDSHAKE_SEQUENCE, type EnvelopeChannel, type EnvelopeV2, type RoutingHeaderV2 } from "@orbis/protocol";
 
 import { E2eError } from "./error.js";
 import {

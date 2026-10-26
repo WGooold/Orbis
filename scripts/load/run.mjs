@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 import WebSocket from "ws";
-import { PROTOCOL_VERSION } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION } from "@orbis/protocol";
 
 const DEFAULT_CONFIG = "scripts/load/configs/smoke.json";
 const sleep = (ms) => new Promise(resolveSleep => setTimeout(resolveSleep, ms));

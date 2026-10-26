@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { HostOperationsState } from "@pi-remote/protocol";
+import type { HostOperationsState } from "@orbis/protocol";
 import { HostService } from "./host-service.js";
 import { ProviderManager } from "./provider-manager.js";
 

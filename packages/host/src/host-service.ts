@@ -28,7 +28,7 @@ import {
   type DeviceStore,
   type HostIdentity,
   type PairingQrLanEndpoint,
-} from "@pi-remote/e2e";
+} from "@orbis/e2e";
 import {
   DeviceE2ePayloadSchema,
   PROTOCOL_VERSION,
@@ -51,7 +51,7 @@ import {
   type RuntimeMetadata,
   type RuntimeEvent,
   SESSION_SYNC_MAX_BYTES,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
@@ -161,7 +161,7 @@ export type HostServiceOptions = {
   /** 关掉 LAN 端点。关掉后只剩 Relay 一条路径，不影响其他功能。 */
   lan?: boolean;
   /**
-   * 是否真的监听 LAN 端口。`pi-remote pair` 传 `false`：它是个短命进程，去 bind 常驻 Host
+   * 是否真的监听 LAN 端口。`orbis pair` 传 `false`：它是个短命进程，去 bind 常驻 Host
    * 已经在用的端口只会失败（或者更糟：被它抢走，然后随进程退出而消失）。
    * 注意它不影响二维码里的 LAN 地址——那部分是枚举出来的，不需要监听。
    */
@@ -1143,10 +1143,10 @@ export class HostService {
     } else {
       // 刻意不静默。之前漏传 stunServers 时这里什么都不说，于是「手机永远显示中继」在日志里
       // 完全无迹可寻——排查只能靠读代码。P2P 被关掉必须留下一行理由。
-      // 措辞保持中性：短命进程（`pi-remote pair`、本地 smoke 脚本）不传 STUN 是有意为之。
+      // 措辞保持中性：短命进程（`orbis pair`、本地 smoke 脚本）不传 STUN 是有意为之。
       this.#options.log?.(
         "P2P 未启用：本进程没有可用的 STUN 服务器 → 一律走中继。" +
-          "要开启需配置 stunServers 或设置 PI_REMOTE_STUN_SERVERS（relayUrl 非 wss:// 时不会自动推导）",
+          "要开启需配置 stunServers 或设置 ORBIS_STUN_SERVERS（relayUrl 非 wss:// 时不会自动推导）",
       );
     }
 
@@ -1830,10 +1830,10 @@ export class HostService {
           throw new ActivationError(
             "agent_unsupported",
             target.agentKind === "codex"
-              ? "Codex 后端未启用：请用 `pi-remote host --codex` 启动"
+              ? "Codex 后端未启用：请用 `orbis host --codex` 启动"
               : target.agentKind === "codexDesktop"
                 ? "Codex 桌面版未运行，已尝试启动但未就绪"
-              : target.agentKind === "dsh" ? "DeepSeek Harness 后端未启用：请用 `pi-remote host --dsh` 启动" : "未知的 agent 类型",
+              : target.agentKind === "dsh" ? "DeepSeek Harness 后端未启用：请用 `orbis host --dsh` 启动" : "未知的 agent 类型",
           );
         }
         if (!backend.isReady()) {

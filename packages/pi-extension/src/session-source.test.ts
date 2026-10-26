@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { RuntimeEventSchema, type RuntimeCommand, type RuntimeEvent } from "@pi-remote/protocol";
-import type { RuntimeBridgeTransport } from "@pi-remote/runtime-bridge";
+import { RuntimeEventSchema, type RuntimeCommand, type RuntimeEvent } from "@orbis/protocol";
+import type { RuntimeBridgeTransport } from "@orbis/runtime-bridge";
 
 const fixture = vi.hoisted(() => ({ events: [] as RuntimeEvent[], handlers: undefined as Parameters<RuntimeBridgeTransport["start"]>[1] | undefined }));
 vi.mock("@earendil-works/pi-coding-agent", () => ({ SessionManager: { listAll: async () => [] } }));
@@ -18,7 +18,7 @@ vi.mock("./slash-commands.js", () => ({ INTERNAL_SLASH_COMMAND: "test-internal",
 } }));
 import piRemoteControl from "./index.js";
 
-const active = Symbol.for("@pi-remote/pi-remote-extension-active");
+const active = Symbol.for("@orbis/orbis-extension-active");
 const scope = globalThis as typeof globalThis & { [active]?: boolean };
 afterEach(() => { delete scope[active]; fixture.events.length = 0; fixture.handlers = undefined; });
 
@@ -35,7 +35,7 @@ async function session(idleAtStart = true) {
   const emit = async (name: string, event: unknown = {}) => { await hooks.get(name)!(event as never, ctx); };
   await emit("session_start", { reason: "startup" });
   const sync = async (syncId: string, extra: Partial<Extract<RuntimeCommand, { type: "session.sync" }>> = {}) => {
-    fixture.handlers!.command(syncId, "" + (globalThis as Record<symbol, unknown>)[Symbol.for("@pi-remote/pi-runtime-id")], {
+    fixture.handlers!.command(syncId, "" + (globalThis as Record<symbol, unknown>)[Symbol.for("@orbis/pi-runtime-id")], {
       type: "session.sync", sessionId: "pi-session", syncId, range: "preview", ...extra,
     });
     await vi.waitFor(() => expect(fixture.events.some(event => event.type === "session.snapshot" && event.syncId === syncId)).toBe(true));

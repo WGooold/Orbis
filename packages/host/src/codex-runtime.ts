@@ -28,7 +28,8 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, stripInlineMedia } from "@pi-remote/protocol";
+import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, stripInlineMedia } from "@orbis/protocol";
+import { orbisEnvironment } from "@orbis/protocol";
 
 import type {
   AgentKind,
@@ -50,7 +51,7 @@ import type {
   SessionLiveTool,
   SessionCheckpoint,
   SessionSourceEpoch,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 import type {
   AgentActivateTarget,
@@ -1193,7 +1194,7 @@ export class CodexRuntime implements AgentBackend {
    * 在电脑上开一个可见终端跑官方 codex TUI（`--remote` attach 到本 app-server）。
    * 实测（2026-09-14）：`--remote` 不绕过本地 session 解析——rollout 首轮对话才落盘，
    * 所以窗口先开、内嵌等待循环轮询 rollout，一落盘立即自动 attach。
-   * endpoint 未知（测试桩 / app-server 未就绪）时静默跳过；`PI_REMOTE_CODEX_HEAD=0` 关掉。
+   * endpoint 未知（测试桩 / app-server 未就绪）时静默跳过；`ORBIS_CODEX_HEAD=0` 关掉。
    */
   #openHeadWindow(sessionId: string, cwd: string): void {
     // 桌面版那条后端自己就是「有头」：Codex 桌面版 GUI 就是它的窗口。再开一个终端 TUI
@@ -1215,7 +1216,7 @@ export class CodexRuntime implements AgentBackend {
   }
 
   #trackHeadWindow(sessionId: string, windowKey: string, respectSetting = true): void {
-    if (respectSetting && process.env.PI_REMOTE_CODEX_HEAD === "0") return;
+    if (respectSetting && orbisEnvironment(process.env, "CODEX_HEAD") === "0") return;
     this.#windowKeyByThread.set(sessionId, windowKey);
     this.#windowActivity.set(windowKey, Date.now());
     this.#headWindows.add(sessionId);
@@ -4372,7 +4373,7 @@ export function codexHeadWindowLaunch(input: {
 
 /** 缺省开窗实现：wt 里跑 {@link codexHeadWindowLaunch} 那条命令。 */
 function defaultOpenHeadWindow(input: { sessionId: string; cwd: string; endpoint: string }): void {
-  if (process.env.PI_REMOTE_CODEX_HEAD === "0") return;
+  if (orbisEnvironment(process.env, "CODEX_HEAD") === "0") return;
   const launch = codexHeadWindowLaunch(input);
   try {
     const child = spawn(launch.command, launch.args, {

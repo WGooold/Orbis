@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { HostService } from "./host-service.js";
 import type { ProviderManager } from "./provider-manager.js";
-import type { AgentKind, HostProviderSummary } from "@pi-remote/protocol";
+import type { AgentKind, HostProviderSummary } from "@orbis/protocol";
 
 /**
  * 诊断目录接线的端到端验证：真的 HostService + 真的状态目录（不启动网络端点）。

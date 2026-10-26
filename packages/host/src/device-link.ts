@@ -9,7 +9,7 @@
  *    而主动推送（`device.ready` / `runtime.event`）走当前认定的最优路径。
  * 3. **探测只在真正需要选路时跑。** 只有一条路径可用时没有可比较的对象，探了纯属浪费流量。
  */
-import { E2eError, type DeviceRecord } from "@pi-remote/e2e";
+import { E2eError, type DeviceRecord } from "@orbis/e2e";
 import {
   EnvelopeReassembler,
   OutboundChannelMux,
@@ -22,7 +22,7 @@ import {
   type OutboundQueueDiagnostic,
   type OutboundQueueSource,
   type PathKind,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 import { HostDeviceSession } from "./device-session.js";
 import { PathSelector, type PathChange } from "./path.js";

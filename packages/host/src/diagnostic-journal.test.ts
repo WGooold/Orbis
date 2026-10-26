@@ -1,4 +1,4 @@
-import type { DiagnosticRecord } from "@pi-remote/protocol";
+import type { DiagnosticRecord } from "@orbis/protocol";
 import { describe, expect, it } from "vitest";
 
 import { DiagnosticJournal } from "./diagnostic-journal.js";

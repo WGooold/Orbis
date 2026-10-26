@@ -5,7 +5,7 @@ import {
   type RuntimeCommand,
   type RuntimeEvent,
   type RuntimeMetadata,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 import {
   RuntimeBridge,
   type RuntimeBridgeTransport,
@@ -367,14 +367,14 @@ describe("RuntimeBridge", () => {
     transport.commandHandler?.("with-files", "runtime-a", {
       type: "user_message",
       text: "看下这两个文件",
-      attachments: ["/work/.pi-remote-uploads/aa/a.png", "/work/.pi-remote-uploads/bb/b.pdf"],
+      attachments: ["/work/.orbis-uploads/aa/a.png", "/work/.orbis-uploads/bb/b.pdf"],
     });
     await vi.waitFor(() => expect(sendUserMessage).toHaveBeenCalledTimes(2));
     expect(sendUserMessage).toHaveBeenLastCalledWith(
       "看下这两个文件",
       undefined,
       undefined,
-      ["/work/.pi-remote-uploads/aa/a.png", "/work/.pi-remote-uploads/bb/b.pdf"],
+      ["/work/.orbis-uploads/aa/a.png", "/work/.orbis-uploads/bb/b.pdf"],
     );
   });
 

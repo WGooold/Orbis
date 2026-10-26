@@ -66,7 +66,7 @@ try {
     Invoke-Adb @('shell', 'am', 'force-stop', $package) | Out-Null
     Invoke-Adb @('shell', 'setprop', 'log.tag.OrbisHistory', 'DEBUG') | Out-Null
     $process = Start-Adb @('shell', 'am', 'instrument', '-w', '-e', 'liveHistory', 'true',
-        '-e', 'historyRunId', $runId, '-e', 'class', 'dev.pi.remote.LiveHistoryReloadInstrumentedTest',
+        '-e', 'historyRunId', $runId, '-e', 'class', 'com.orbising.orbis.LiveHistoryReloadInstrumentedTest',
         'com.orbising.orbis.test/androidx.test.runner.AndroidJUnitRunner')
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
@@ -120,7 +120,7 @@ try {
     try {
         $restore = if ($oldLevel) { $oldLevel } else { '""' }
         Invoke-Adb @('shell', 'setprop', 'log.tag.OrbisHistory', $restore) | Out-Null
-        Invoke-Adb @('shell', 'am', 'start', '-n', "$package/dev.pi.remote.MainActivity") | Out-Null
+        Invoke-Adb @('shell', 'am', 'start', '-n', "$package/com.orbising.orbis.MainActivity") | Out-Null
     } finally {
         # The caller owns the lease and simulator lifecycle; this script never steals/releases it.
         Write-Host "Evidence: $evidence"

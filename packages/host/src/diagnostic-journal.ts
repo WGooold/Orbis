@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { DiagnosticRecordSchema, type AgentKind, type DiagnosticPage, type DiagnosticRecord } from "@pi-remote/protocol";
+import { DiagnosticRecordSchema, type AgentKind, type DiagnosticPage, type DiagnosticRecord } from "@orbis/protocol";
 
 /**
  * 有界诊断记录（ADR-0032 模块 23）。

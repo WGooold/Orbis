@@ -6,15 +6,15 @@ import {
   InteractionBroker,
   PI_REMOTE_BROKER_QUERY,
   type InteractionCoordinator,
-} from "@pi-remote/interaction-sdk";
+} from "@orbis/interaction-sdk";
 import {
   prepareSessionSync,
   RecoverableSessionSource,
   selectPreparedSessionSync,
   type PreparedSessionSync,
   type RuntimeEvent,
-} from "@pi-remote/protocol";
-import { RuntimeBridge } from "@pi-remote/runtime-bridge";
+} from "@orbis/protocol";
+import { RuntimeBridge } from "@orbis/runtime-bridge";
 import { loadRemoteControlConfig } from "./config.js";
 import {
   createPiExtensionRuntimeDiagnostic,
@@ -56,7 +56,7 @@ import { PiTurnTimingStore } from "./turn-timing-store.js";
  * 两个实例会带着 `Symbol.for` 共享的同一个 runtimeId 各建一条 loopback 连接，
  * 在 Host 的 `#register` 处互相踢掉对方——TUI 标题永远显示 reconnecting。
  */
-const ACTIVE_INSTANCE = Symbol.for("@pi-remote/pi-remote-extension-active");
+const ACTIVE_INSTANCE = Symbol.for("@orbis/orbis-extension-active");
 
 type GlobalScope = { [key: symbol]: unknown };
 
@@ -273,7 +273,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       previousSessionFile: event.previousSessionFile,
     }, { cwd: ctx.cwd });
     closeCurrentSession();
-    const sessionToken = Symbol("pi-remote-session");
+    const sessionToken = Symbol("orbis-session");
     activeSessionToken = sessionToken;
     // 时序防御：若 reload 是「先求值新实例 → 再 shutdown 旧实例」，新实例会被上面的
     // 幂等守卫 no-op，而旧实例的 shutdown 会清掉标记；活跃实例在这里重新断言，

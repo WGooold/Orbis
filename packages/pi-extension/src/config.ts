@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { orbisEnvironment } from "@orbis/protocol";
 
 interface LoadRemoteControlConfigOptions {
   configPath?: string;
@@ -38,14 +39,14 @@ export async function loadRemoteControlConfig(
 
   // The installer enables only the local Host channel. An explicit user disable wins
   // for standalone Pi, while Host-launched Pi can still opt in for that process.
-  if (env.PI_REMOTE_ENABLED !== "true" && config.orbisLocalEnabled === true && config.enabled !== false) return true;
+  if (orbisEnvironment(env, "ENABLED") !== "true" && config.orbisLocalEnabled === true && config.enabled !== false) return true;
 
-  const enabled = env.PI_REMOTE_ENABLED === "true" || config.enabled === true;
+  const enabled = orbisEnvironment(env, "ENABLED") === "true" || config.enabled === true;
   if (!enabled) return false;
 
   // Legacy Relay fields are only validated when this older opt-in path is used.
-  const relayUrl = env.PI_REMOTE_RELAY_URL ?? config.relayUrl;
-  const credential = env.PI_REMOTE_RUNTIME_CREDENTIAL ?? config.runtimeCredential;
+  const relayUrl = orbisEnvironment(env, "RELAY_URL") ?? config.relayUrl;
+  const credential = orbisEnvironment(env, "RUNTIME_CREDENTIAL") ?? config.runtimeCredential;
   if (typeof relayUrl !== "string" || !relayUrl) throw new Error("Remote control relayUrl is required");
   if (!isSecureRelayUrl(relayUrl)) throw new Error("Public Relay URLs must use wss:// encrypted transport");
   if (typeof credential !== "string" || !credential) throw new Error("Remote control runtimeCredential is required");

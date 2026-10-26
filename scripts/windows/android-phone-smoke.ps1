@@ -13,7 +13,7 @@ do not test the phone's existing pairing against a production Host.
 param(
     [ValidatePattern('^[A-Za-z0-9._:-]+$')] [string] $Serial,
     [ValidatePattern('^[A-Za-z0-9_.$#,]+$')]
-    [string] $TestClass = 'dev.pi.remote.SessionGraphStoreInstrumentedTest,dev.pi.remote.SessionSyncSelectionInstrumentedTest,dev.pi.remote.DshInstrumentedTest',
+    [string] $TestClass = 'com.orbising.orbis.SessionGraphStoreInstrumentedTest,com.orbising.orbis.SessionSyncSelectionInstrumentedTest,com.orbising.orbis.DshInstrumentedTest',
     [ValidateRange(30, 900)] [int] $TimeoutSeconds = 300,
     [switch] $ValidateOnly
 )
@@ -99,7 +99,7 @@ function Save-InstrumentationXml([string] $Text, [double] $ElapsedSeconds) {
 }
 function Test-InstrumentationParser {
     $status = @'
-INSTRUMENTATION_STATUS: class=dev.pi.remote.ParserFixture
+INSTRUMENTATION_STATUS: class=com.orbising.orbis.ParserFixture
 INSTRUMENTATION_STATUS: test=sample
 INSTRUMENTATION_STATUS: numtests=1
 '@
@@ -125,13 +125,13 @@ INSTRUMENTATION_STATUS: numtests=1
     Write-Output "PASS: $($fixtures.Count) instrumentation parser fixtures; no device or build required."
 }
 function Copy-Apk([string] $Source, [string] $Name) {
-    $manifest = Get-Content -LiteralPath "$Source.pi-remote-build.json" -Raw | ConvertFrom-Json
+    $manifest = Get-Content -LiteralPath "$Source.orbis-build.json" -Raw | ConvertFrom-Json
     if ([IO.Path]::GetFullPath($manifest.worktree).TrimEnd('\') -ne [IO.Path]::GetFullPath($repo).TrimEnd('\')) { throw 'APK belongs to another worktree.' }
     if ((Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash -ne $manifest.sha256) { throw 'APK build checksum mismatch.' }
     $destination = Join-Path $output $Name
     Copy-Item -LiteralPath $Source -Destination $destination
     $manifest.artifactPath = $destination
-    [IO.File]::WriteAllText("$destination.pi-remote-build.json", ($manifest | ConvertTo-Json -Depth 6))
+    [IO.File]::WriteAllText("$destination.orbis-build.json", ($manifest | ConvertTo-Json -Depth 6))
     return $destination
 }
 if ($ValidateOnly) {
@@ -186,8 +186,8 @@ try {
     if ([int]$build.exitCode -ne 0) { throw "Android build failed ($($build.exitCode))." }
     $appApk=Copy-Apk (Join-Path $repo 'android\app\build\outputs\apk\debug\app-debug.apk') 'app-debug.apk'
     $testApk=Copy-Apk (Join-Path $repo 'android\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk') 'app-debug-androidTest.apk'
-    $appManifest=Get-Content -LiteralPath "$appApk.pi-remote-build.json" -Raw | ConvertFrom-Json
-    $testManifest=Get-Content -LiteralPath "$testApk.pi-remote-build.json" -Raw | ConvertFrom-Json
+    $appManifest=Get-Content -LiteralPath "$appApk.orbis-build.json" -Raw | ConvertFrom-Json
+    $testManifest=Get-Content -LiteralPath "$testApk.orbis-build.json" -Raw | ConvertFrom-Json
     if ($appManifest.buildId -ne $testManifest.buildId -or [DateTimeOffset]::Parse($appManifest.builtUtc) -lt $runStarted) { throw 'App and test APKs are not from this build run.' }
     $result.buildId=$appManifest.buildId
     [IO.File]::WriteAllText((Join-Path $output 'SHA256SUMS.txt'), "$($appManifest.sha256)  app-debug.apk`n$($testManifest.sha256)  app-debug-androidTest.apk`n")

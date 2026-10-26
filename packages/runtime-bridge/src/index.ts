@@ -19,7 +19,7 @@ import {
   type SessionCheckpoint,
   type SessionLiveState,
   type AgentDeliveryItem,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 export type RuntimeSessionSyncRequest = {
   sessionId: string;

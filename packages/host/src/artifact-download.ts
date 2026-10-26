@@ -21,7 +21,7 @@ import {
   type RemoteArtifact,
   type RuntimeCommand,
   type RuntimeEvent,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 /** 同时在跑的下载条数上限。这是防手滑，不是安全边界。 */
 const DEFAULT_MAX_CONCURRENT = 4;

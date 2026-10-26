@@ -1,7 +1,7 @@
-import { type DisplayBatch, type RemoteSessionEntry, type RuntimeEvent, type RuntimeTurnTiming, type SessionBranchCursor, type SessionLiveState, type SessionSourceEpoch, type SessionSyncRequest } from "@pi-remote/protocol";
+import { type DisplayBatch, type RemoteSessionEntry, type RuntimeEvent, type RuntimeTurnTiming, type SessionBranchCursor, type SessionLiveState, type SessionSourceEpoch, type SessionSyncRequest } from "@orbis/protocol";
 import { createHash } from "node:crypto";
 
-import { SESSION_SYNC_DEFAULT_MAX_ENTRIES, truncateWireEntry } from "@pi-remote/protocol";
+import { SESSION_SYNC_DEFAULT_MAX_ENTRIES, truncateWireEntry } from "@orbis/protocol";
 
 import { AgentStateRegistry, type PreparedRegistryCommit, type RegistryMutation, type StateScope } from "./agent-state-registry.js";
 

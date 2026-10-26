@@ -1,5 +1,5 @@
 {
-  "name": "@pi-remote/pi-extension",
+  "name": "@orbis/pi-extension",
   "version": "0.1.0",
   "type": "module",
   "keywords": [
@@ -21,9 +21,10 @@
     }
   },
   "dependencies": {
-    "@pi-remote/interaction-sdk": "0.1.0",
-    "@pi-remote/protocol": "0.1.0",
-    "@pi-remote/runtime-bridge": "0.1.0",
+    "@orbis/e2e": "0.1.0",
+    "@orbis/interaction-sdk": "0.1.0",
+    "@orbis/protocol": "0.1.0",
+    "@orbis/runtime-bridge": "0.1.0",
     "ws": "^8.18.3"
   },
   "peerDependencies": {

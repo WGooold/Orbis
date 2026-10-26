@@ -10,7 +10,7 @@ import {
   type HostIdentityState, type HostManagementState, type HostOperationsState, type HostProvidersState,
   type HostStateDomain, type HostWorkspacesState,
   type AgentSessionSummary, type HostCatalogRange, type AgentStateRangeRequest,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 import { AgentStateRegistry, type CommitResult, type StateScope } from "./agent-state-registry.js";
 

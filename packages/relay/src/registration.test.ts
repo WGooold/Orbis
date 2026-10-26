@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { once } from "node:events";
 import WebSocket from "ws";
-import { PROTOCOL_VERSION } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION } from "@orbis/protocol";
 import { RegistrationAuthority, normalizeQqEmail, type VerificationMail } from "./registration.js";
 import { createRelayServer, type RelayServer } from "./index.js";
 import { verificationMailer } from "./verification-mail.js";

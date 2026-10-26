@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { AgentOperationItem, AgentOperationState, DeviceKey, DeviceTransfersState } from "@pi-remote/protocol";
+import type { AgentOperationItem, AgentOperationState, DeviceKey, DeviceTransfersState } from "@orbis/protocol";
 
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 

@@ -1,11 +1,12 @@
 /**
  * Host 身份与配对记录的落盘（spec §4.4）。
  *
- * 文件放在 `~/.pi-remote/`，与既有的 `~/.pi/agent/remote-control.json`（Relay URL +
+ * 文件放在 `~/.orbis/`，与既有的 `~/.pi/agent/remote-control.json`（Relay URL +
  * runtime credential）分开：那一个是 v1 遗留下来的配置源，这里放的是本次新增的
  * Host 私钥与设备记录。
  */
 import { randomBytes, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -19,12 +20,16 @@ import {
   toBase64Url,
 } from "./primitives.js";
 
-export const STATE_DIR_NAME = ".pi-remote";
+export const STATE_DIR_NAME = ".orbis";
 export const HOST_IDENTITY_FILE = "host.json";
 export const DEVICE_STORE_FILE = "devices.json";
 
-export function resolveStateDir(dir?: string): string {
-  return dir ?? join(homedir(), STATE_DIR_NAME);
+export function resolveStateDir(dir?: string, userHome: string = homedir()): string {
+  if (dir !== undefined) return dir;
+  const current = join(userHome, STATE_DIR_NAME);
+  const legacy = join(userHome, ".pi-remote");
+  // Keep the existing Host identity and pairing records in place during a branding upgrade.
+  return !existsSync(current) && existsSync(legacy) ? legacy : current;
 }
 
 export type HostIdentity = {

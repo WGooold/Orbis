@@ -14,7 +14,7 @@
  *   `unsupported_command`，不认领任何后端才回 `runtime_offline`（§8：手机据此
  *   区分「该重拉进程」和「这个后端做不到」）。
  */
-import type { AgentKind, AgentSessionSummary, RuntimeCommand, RuntimeMetadata, SpawnMode } from "@pi-remote/protocol";
+import type { AgentKind, AgentSessionSummary, RuntimeCommand, RuntimeMetadata, SpawnMode } from "@orbis/protocol";
 
 import { ActivationError, type SessionSpawner } from "./spawner.js";
 import { defaultPiSessionsRoot, listPiSessions } from "./sessions.js";

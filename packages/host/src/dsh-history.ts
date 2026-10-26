@@ -12,7 +12,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ChatMessage, RemoteContent, RemoteSessionEntry } from "@pi-remote/protocol";
+import type { ChatMessage, RemoteContent, RemoteSessionEntry } from "@orbis/protocol";
 import { record } from "./dsh-client.js";
 
 export type DshHeader = { id: string; cwd?: string; createdAt: number };

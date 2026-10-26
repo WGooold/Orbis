@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, type AgentKind } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION, type AgentKind } from "@orbis/protocol";
 import type { ProviderSummary } from "./provider-manager.js";
 
 export type ProviderRequest = {

@@ -4,7 +4,7 @@ import {
   agentKeyId, deviceKeyId, type AgentKey, type AgentStateDomain, type DeviceKey,
   type DeviceStateDomain, type DomainAvailability, type DomainCompleteness, type DomainSource,
   type DomainState, type HostStateDomain,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 /**
  * Host 端的 Agent 状态模型单写者（ADR-0032 §1/§6，issue #5 的实现）。

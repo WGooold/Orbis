@@ -31,7 +31,7 @@ import {
   readPairEnvelope,
   verifyPairAccept,
   type PairingQrPayload,
-} from "@pi-remote/e2e";
+} from "@orbis/e2e";
 import {
   LOOPBACK_PATH,
   PROTOCOL_VERSION,
@@ -42,8 +42,8 @@ import {
   type PathKind,
   type RuntimeEvent,
   type RuntimeMetadata,
-} from "@pi-remote/protocol";
-import { createRelayServer, type RelayServer } from "@pi-remote/relay";
+} from "@orbis/protocol";
+import { createRelayServer, type RelayServer } from "@orbis/relay";
 
 import { HostService, channelForDeviceMessage } from "./host-service.js";
 import { CodexAppServer } from "./codex-daemon.js";
@@ -769,7 +769,7 @@ describe("host end-to-end over relay", () => {
   });
 
   it("targets sync snapshots and acknowledgements to their requesting device over real encrypted relay sockets", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-sync-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-sync-"));
     relay = await startRelay(stateDir);
     host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
       stateDir, reconnect: false, lan: false });
@@ -829,7 +829,7 @@ describe("host end-to-end over relay", () => {
   });
 
   it("pairs a device, completes the handshake, and carries ciphertext only", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
     const receivedByHost: string[] = [];
@@ -876,7 +876,7 @@ describe("host end-to-end over relay", () => {
   });
 
   it("closes the pairing window once consumed and supports revoking the device", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
@@ -898,7 +898,7 @@ describe("host end-to-end over relay", () => {
   });
 
   it("把手机的 runtime.command 送到本机 Pi，并把 Pi 的事件送回手机", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
@@ -984,7 +984,7 @@ describe("host end-to-end over relay", () => {
   // 是全局一条流水，后到的 `ctl` 会把先发出的 `msg` 的水位线永久抬高，手机从此丢掉
   // 所有更小的 `msg` 序号。序号按 (runtimeId, channel) 各自递增之后，跨道倒挂无害。
   it("事件序号按 channel 各自递增：ctl 与 msg 互不挤占", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
@@ -1034,7 +1034,7 @@ describe("host end-to-end over relay", () => {
   });
 
   it("returns a new session's execution separately and keeps publishing status on the same subscription", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
     host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
       stateDir, reconnect: false, lan: false });
@@ -1069,7 +1069,7 @@ describe("host end-to-end over relay", () => {
   });
 
   it("runtime 不在线时由 Host 就地读盘服务下载（不再依赖产生文件的 Pi 进程）", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
@@ -1157,7 +1157,7 @@ describe("host end-to-end over relay", () => {
   });
 
   it("pull 模式：设备按范围索取，Host 只回被请求的那一段", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
     host = await HostService.create({
       relayUrl: relay.url,
@@ -1218,7 +1218,7 @@ describe("host end-to-end over relay", () => {
   }, 30_000);
 
   it("下载以 Host 为寻址目标（runtimeId = hostId）：Host 直接读盘服务，与任何 runtime 无关", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
@@ -1265,7 +1265,7 @@ describe("host end-to-end over relay", () => {
   });
 
   it("中继链路抖动重连后要能重新握手（出口必须重挂，否则手机 HS1 石沉大海）", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
     // 一个裸 TCP 代理挡在 Host 和 Relay 之间。掐掉它就等于「Host 那条中继连接断了一次」，
@@ -1310,7 +1310,7 @@ describe("host end-to-end over relay", () => {
   });
 
   it("手机重开（同一条中继路上重新握手）也要重新拿到 runtime 目录", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
@@ -1426,7 +1426,7 @@ describe("host end-to-end over relay", () => {
   });
 
   it("同局域网的设备先握 LAN 就直接走 LAN，拔掉 LAN 立刻回落 Relay", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
     const receivedByHost: string[] = [];
@@ -1511,7 +1511,7 @@ describe("host end-to-end over relay", () => {
   });
 
   it("拒绝未配对设备的 LAN 连接", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
@@ -1561,7 +1561,7 @@ describe("host end-to-end over relay", () => {
   }
 
   it("同一个 LAN 端口上的第二个 Host 直接拒绝启动，不去抢中继身份", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
     const lanPort = await freeTcpPort();
     host = await HostService.create({
@@ -1594,7 +1594,7 @@ describe("host end-to-end over relay", () => {
     expect(host.lan?.port).toBe(lanPort);
   });
   describe("手机上传文件（接收方驱动：Host 拉，手机应答）", () => {
-    const uploadDir = (dir: string): string => join(dir, ".pi-remote-uploads");
+    const uploadDir = (dir: string): string => join(dir, ".orbis-uploads");
 
     const initUpload = (device: TestDevice, directory: string, fileName: string, data: Buffer): void => {
       device.sendPayload(Buffer.from(JSON.stringify({
@@ -1641,7 +1641,7 @@ describe("host end-to-end over relay", () => {
     };
 
     it("read 拉取 → 应答 → 收齐自动校验落地；确认收到的字节是原始内容", async () => {
-      stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+      stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
       relay = await startRelay(stateDir);
       host = await HostService.create({
         relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
@@ -1654,7 +1654,7 @@ describe("host end-to-end over relay", () => {
       await device.receiveMessage(); // device.ready
       await device.receiveMessage(); // device.path
 
-      // 目录故意不存在：Host 必须自己建出 `.pi-remote-uploads`。
+      // 目录故意不存在：Host 必须自己建出 `.orbis-uploads`。
       const directory = uploadDir(stateDir);
       const data = randomBytes(4096);
       initUpload(device, directory, "shot.bin", data);
@@ -1669,7 +1669,7 @@ describe("host end-to-end over relay", () => {
     }, 30_000);
 
     it("答错偏移的应答被忽略：持久前缀不回退，重拉后照常完成", async () => {
-      stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+      stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
       relay = await startRelay(stateDir);
       host = await HostService.create({
         relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
@@ -1695,7 +1695,7 @@ describe("host end-to-end over relay", () => {
     }, 30_000);
 
     it("哈希不匹配：不落地、删临时文件、如实回报", async () => {
-      stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+      stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
       relay = await startRelay(stateDir);
       host = await HostService.create({
         relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
@@ -1775,8 +1775,8 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
   };
 
   it("session.browse 返回目录和可下载文件，并标出有会话历史的目录", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
-    const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-remote-sessions-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
+    const sessionsRoot = await mkdtemp(join(tmpdir(), "orbis-sessions-"));
     extraDirs.push(sessionsRoot);
     const projectDir = join(sessionsRoot, "with-history");
     await mkdir(projectDir, { recursive: true });
@@ -1823,8 +1823,8 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
   });
 
   it("session.list 返回磁盘扫描出的历史会话", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
-    const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-remote-sessions-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
+    const sessionsRoot = await mkdtemp(join(tmpdir(), "orbis-sessions-"));
     extraDirs.push(sessionsRoot, `${sessionsRoot}-archived`);
     const groupDir = join(sessionsRoot, "--D--demo--");
     await mkdir(groupDir, { recursive: true });
@@ -1868,12 +1868,12 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
   });
 
   it("session.list 短 TTL 内复用扫描结果（并发请求不各扫一遍）", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
 
     // 用可数的 spawner 站不住脚：这里要数的是 **catalog 被调用几次**，所以换 Pi 后端的
     // sessionsRoot 指向一个真实目录，再用文件变化证明「第二次请求没重扫」。
-    const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-remote-sessions-"));
+    const sessionsRoot = await mkdtemp(join(tmpdir(), "orbis-sessions-"));
     extraDirs.push(sessionsRoot);
     const groupDir = join(sessionsRoot, "--D--demo--");
     await mkdir(groupDir, { recursive: true });
@@ -1910,10 +1910,10 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
   });
 
   it("session.activate 会失效目录缓存（新建的会话立刻可见）", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
 
-    const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-remote-sessions-"));
+    const sessionsRoot = await mkdtemp(join(tmpdir(), "orbis-sessions-"));
     extraDirs.push(sessionsRoot);
     const groupDir = join(sessionsRoot, "--D--proj--");
     await mkdir(groupDir, { recursive: true });
@@ -1967,7 +1967,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
   });
 
   it("session.activate 走注入的 spawner 并回执；失败回 protocol.error 带回 requestId", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
 
     const activated: Record<string, unknown> = {
@@ -2273,7 +2273,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   });
 
   it("device.ready 带上这台电脑支持的 agent：没启用 Codex 就只有 pi", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
     host = await HostService.create({
       relayUrl: relay.url,
@@ -2292,13 +2292,13 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   });
 
   it("device.ready 带上的 agent 列表会跟着 Codex 后端打开而变", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
     const runtime = new CodexRuntime({
       server: { request: vi.fn(), notify: vi.fn() } as unknown as CodexAppServer,
       onEvent: () => {},
       // 磁盘 rollout 扫描指到不存在的目录：测试不读本机真实的 ~/.codex/sessions。
-      rolloutRoot: join(tmpdir(), "pi-remote-test-no-rollout"),
+      rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
       relayUrl: relay.url,
@@ -2360,13 +2360,13 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   });
 
   it("runtime.command 按 runtimeId 路由给 Codex 后端；不支持的命令回 unsupported_command", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
     const events: RuntimeEvent[] = [];
     const runtime = new CodexRuntime({
       server: { request: vi.fn(), notify: vi.fn() } as unknown as CodexAppServer,
       onEvent: (event) => events.push(event),
-      rolloutRoot: join(tmpdir(), "pi-remote-test-no-rollout"),
+      rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
       relayUrl: relay.url,
@@ -2413,12 +2413,12 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   });
 
   it("slash.execute：未声明的命令回 unsupported_command；已声明但无会话回 command.result 失败", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
     const runtime = new CodexRuntime({
       server: { request: vi.fn(), notify: vi.fn() } as unknown as CodexAppServer,
       onEvent: () => {},
-      rolloutRoot: join(tmpdir(), "pi-remote-test-no-rollout"),
+      rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
       relayUrl: relay.url,
@@ -2461,7 +2461,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   });
 
   it("session.list 合并 Codex 目录（catalog 失败时降级为纯 Pi 并不炸）", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
     let currentProvider = "custom";
     const listRequests: unknown[] = [];
@@ -2480,7 +2480,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         notify: vi.fn(),
       } as unknown as CodexAppServer,
       onEvent: () => {},
-      rolloutRoot: join(tmpdir(), "pi-remote-test-no-rollout"),
+      rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
       relayUrl: relay.url,
@@ -2585,8 +2585,8 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   });
 
   it("Codex 空壳不进进程目录；会话激活后 runtime.online 如实重播 cwd", async () => {
-    process.env.PI_REMOTE_CODEX_HEAD = "0"; // 别在测试机上真开终端窗口
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    process.env.ORBIS_CODEX_HEAD = "0"; // 别在测试机上真开终端窗口
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
     const runtime = new CodexRuntime({
       server: {
@@ -2606,7 +2606,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         notify: vi.fn(),
       } as unknown as CodexAppServer,
       onEvent: () => {},
-      rolloutRoot: join(tmpdir(), "pi-remote-test-no-rollout"),
+      rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
       relayUrl: relay.url,
@@ -2670,8 +2670,8 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   });
 
   it("手机重连握手后，Host 为活跃 Codex thread 重播 capabilities（slash 菜单不丢）", async () => {
-    process.env.PI_REMOTE_CODEX_HEAD = "0";
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-host-"));
+    process.env.ORBIS_CODEX_HEAD = "0";
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
     const runtime = new CodexRuntime({
       server: {
@@ -2684,7 +2684,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         notify: vi.fn(),
       } as unknown as CodexAppServer,
       onEvent: () => {},
-      rolloutRoot: join(tmpdir(), "pi-remote-test-no-rollout"),
+      rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
       relayUrl: relay.url,

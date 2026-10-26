@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { InteractionResponse } from "@pi-remote/protocol";
+import type { InteractionResponse } from "@orbis/protocol";
 import { dshUserQuestionAnswer, dshUserQuestionInteraction } from "./dsh-user-questions.js";
 
 const question = (extra: Record<string, unknown> = {}) => ({

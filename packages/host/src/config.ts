@@ -1,13 +1,14 @@
 /**
  * Host 的配置来源（spec §9 的兼容条）。
  *
- * Relay URL 与 runtime credential **复用 v1 的** `~/.pi/agent/remote-control.json`：
- * Host 在 Relay 眼里就是一个普通 runtime，接管一个 runtimeId 即可，Relay 侧零改动。
+ * Relay URL 与 runtime credential 优先读取 Orbis 状态目录下的 config.json。
+ * 旧安装仍可回落到 Pi 扩展的 `~/.pi/agent/remote-control.json`。
  * `adminToken` 另算——它只在配对时用来签发设备管道凭据，不进 runtime 通道。
  */
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { orbisEnvironment } from "@orbis/protocol";
 
 export const HOST_CONFIG_FILE = "config.json";
 
@@ -39,26 +40,31 @@ export type LoadHostConfigOptions = {
 
 export async function loadHostConfig(options: LoadHostConfigOptions): Promise<HostConfig> {
   const env = options.env ?? process.env;
-  const agentConfig = await readJsonFile(options.agentConfigPath ?? defaultAgentConfigPath());
-  const hostConfig = await readJsonFile(join(options.stateDir, HOST_CONFIG_FILE));
+  const hostConfigPath = join(options.stateDir, HOST_CONFIG_FILE);
+  const hostConfig = await readJsonFile(hostConfigPath);
+  const configuredRelayUrl = orbisEnvironment(env, "RELAY_URL") ?? stringField(hostConfig, "relayUrl");
+  const configuredCredential = orbisEnvironment(env, "RUNTIME_CREDENTIAL") ?? stringField(hostConfig, "runtimeCredential");
+  const agentConfig = configuredRelayUrl === undefined || configuredCredential === undefined
+    ? await readJsonFile(options.agentConfigPath ?? defaultAgentConfigPath())
+    : undefined;
 
-  const relayUrl = env.PI_REMOTE_RELAY_URL ?? stringField(agentConfig, "relayUrl");
-  const runtimeCredential = env.PI_REMOTE_RUNTIME_CREDENTIAL ?? stringField(agentConfig, "runtimeCredential");
-  const adminToken = env.PI_REMOTE_ADMIN_TOKEN ?? stringField(hostConfig, "adminToken");
-  const lanPort = numberField(env.PI_REMOTE_LAN_PORT) ?? numberField(hostConfig?.["lanPort"]);
+  const relayUrl = configuredRelayUrl ?? stringField(agentConfig, "relayUrl");
+  const runtimeCredential = configuredCredential ?? stringField(agentConfig, "runtimeCredential");
+  const adminToken = orbisEnvironment(env, "ADMIN_TOKEN") ?? stringField(hostConfig, "adminToken");
+  const lanPort = numberField(orbisEnvironment(env, "LAN_PORT")) ?? numberField(hostConfig?.["lanPort"]);
   const stunServers =
-    env.PI_REMOTE_STUN_SERVERS?.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0) ??
+    orbisEnvironment(env, "STUN_SERVERS")?.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0) ??
     stringArrayField(hostConfig, "stunServers") ??
     defaultStunServers(relayUrl);
 
   if (relayUrl === undefined) {
     throw new Error(
-      `未找到 Relay 地址。请在 ${options.agentConfigPath ?? defaultAgentConfigPath()} 里配置 relayUrl，或设置 PI_REMOTE_RELAY_URL`,
+      `未找到 Relay 地址。请在 ${hostConfigPath} 里配置 relayUrl，或设置 ORBIS_RELAY_URL`,
     );
   }
   if (runtimeCredential === undefined) {
     throw new Error(
-      `未找到 runtime credential。请在 ${options.agentConfigPath ?? defaultAgentConfigPath()} 里配置 runtimeCredential，或设置 PI_REMOTE_RUNTIME_CREDENTIAL`,
+      `未找到 runtime credential。请在 ${hostConfigPath} 里配置 runtimeCredential，或设置 ORBIS_RUNTIME_CREDENTIAL`,
     );
   }
   assertRelayUrl(relayUrl);

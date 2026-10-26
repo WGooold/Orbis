@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentOperationItem } from "@pi-remote/protocol";
+import type { AgentOperationItem } from "@orbis/protocol";
 
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 import { DeviceViewFacts } from "./device-view-facts.js";

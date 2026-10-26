@@ -1,5 +1,5 @@
 {
-  "name": "@pi-remote/host",
+  "name": "@orbis/host",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -14,8 +14,8 @@
     "pair": "node --enable-source-maps dist/cli.js pair"
   },
   "dependencies": {
-    "@pi-remote/e2e": "0.1.0",
-    "@pi-remote/protocol": "0.1.0",
+    "@orbis/e2e": "0.1.0",
+    "@orbis/protocol": "0.1.0",
     "eventsource-parser": "^3.0.6",
     "node-datachannel": "^0.33.4",
     "qrcode": "^1.5.4",
@@ -26,7 +26,7 @@
     "yaml": "2.9.1"
   },
   "devDependencies": {
-    "@pi-remote/relay": "0.1.0",
+    "@orbis/relay": "0.1.0",
     "@types/qrcode": "^1.5.6"
   },
   "license": "MIT",

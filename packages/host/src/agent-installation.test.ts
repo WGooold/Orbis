@@ -8,7 +8,7 @@ import {
   listManagedAgentInstallations, queryAgentStatus, resolveNpmTool, runAgentInstaller,
   type AgentInstallProgress, type InstallRun,
 } from "./agent-installation.js";
-import type { AgentKind } from "@pi-remote/protocol";
+import type { AgentKind } from "@orbis/protocol";
 
 const roots: string[] = [];
 afterEach(async () => {

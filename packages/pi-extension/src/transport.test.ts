@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
-import { PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata } from "@orbis/protocol";
 import { RelayRuntimeTransport } from "./transport.js";
 
 const metadata: RuntimeMetadata = {

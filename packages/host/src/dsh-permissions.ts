@@ -1,4 +1,4 @@
-import type { RuntimeMetadata, RuntimeSlashCommand } from "@pi-remote/protocol";
+import type { RuntimeMetadata, RuntimeSlashCommand } from "@orbis/protocol";
 
 type Obj = Record<string, unknown>;
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};

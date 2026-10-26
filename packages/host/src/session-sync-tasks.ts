@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { SESSION_SYNC_DEFAULT_MAX_ENTRIES, SESSION_SYNC_MAX_BYTES, type RuntimeEvent, type SessionSyncRequest } from "@pi-remote/protocol";
+import { SESSION_SYNC_DEFAULT_MAX_ENTRIES, SESSION_SYNC_MAX_BYTES, type RuntimeEvent, type SessionSyncRequest } from "@orbis/protocol";
 
 import { sessionSyncWireBytes, SESSION_SYNC_WIRE_LIMIT_BYTES, type DeviceLink } from "./device-link.js";
 

@@ -115,7 +115,7 @@ The Host's local, in-machine endpoint that speaks the same runtime messages as t
 _Avoid_: Local Relay, IPC channel
 
 **Loopback discovery file**:
-The `~/.pi-remote/loopback.json` descriptor — URL, token, host id, pid — that an agent process reads to find the local Host. Its token guards against stale files and duplicate Hosts, not against other local processes.
+The `~/.orbis/loopback.json` descriptor — URL, token, host id, pid — that an agent process reads to find the local Host. Its token guards against stale files and duplicate Hosts, not against other local processes.
 _Avoid_: Port file, lock file
 
 ## Conversation, commands, and activation

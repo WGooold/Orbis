@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { InteractionRequestSchema, type InteractionRequest, type InteractionResponse, type RuntimeEvent } from "@pi-remote/protocol";
+import { InteractionRequestSchema, type InteractionRequest, type InteractionResponse, type RuntimeEvent } from "@orbis/protocol";
 import { object } from "./codex-interactions.js";
 
 const OPEN = "<send_user_message_question_reply>";

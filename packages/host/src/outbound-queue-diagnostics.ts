@@ -1,4 +1,4 @@
-import type { OutboundQueueDiagnostic, OutboundQueueSource, PathKind, MuxChannel } from "@pi-remote/protocol";
+import type { OutboundQueueDiagnostic, OutboundQueueSource, PathKind, MuxChannel } from "@orbis/protocol";
 import type { QueueAdmissionRejection } from "./device-link.js";
 import type { DiagnosticAppendInput } from "./diagnostic-journal.js";
 

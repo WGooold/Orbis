@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { PROTOCOL_VERSION } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION } from "@orbis/protocol";
 
 const execFileAsync = promisify(execFile);
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { CodexDesktopAttach } from "@pi-remote/protocol";
+import type { CodexDesktopAttach } from "@orbis/protocol";
 import type { CodexAppServer } from "./codex-daemon.js";
 import { CodexDesktopLifecycle } from "./codex-desktop-lifecycle.js";
 

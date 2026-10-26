@@ -40,7 +40,7 @@ export const DISPLAY_PROJECTION_VERSION = 2;
  */
 export type DisplayUndisplayableReason = DisplayEntry["reason"] & string;
 /** 形状的唯一来源在协议；这里转出去，Host 侧模块不必各自再 import 一次。 */
-export type { DisplayBatch, DisplayEntry } from "@pi-remote/protocol";
+export type { DisplayBatch, DisplayEntry } from "@orbis/protocol";
 
 export type DisplayProjection = {
   readonly projectionVersion: number;

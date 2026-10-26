@@ -13,7 +13,7 @@ ENV ORBIS_RELEASE_COMMIT=$ORBIS_RELEASE_COMMIT
 ENV NODE_ENV=production \
     PORT=8787 \
     HOST=0.0.0.0 \
-    PI_REMOTE_STATE_FILE=/data/relay-state.json
+    ORBIS_DEFAULT_STATE_FILE=/data/relay-state.json
 WORKDIR /app
 COPY --from=build /app/package.json /app/package-lock.json /app/LICENSE /app/THIRD-PARTY-NOTICES.md ./
 COPY --from=build /app/node_modules ./node_modules

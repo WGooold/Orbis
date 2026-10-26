@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RelayToDeviceMessage } from "@pi-remote/protocol";
+import type { RelayToDeviceMessage } from "@orbis/protocol";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 import { AgentStateSubscriptions } from "./agent-state-subscriptions.js";
 import { buildAgentStateSnapshot } from "./agent-state-snapshot.js";

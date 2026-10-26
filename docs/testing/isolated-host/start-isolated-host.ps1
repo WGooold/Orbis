@@ -59,8 +59,8 @@ $envFile = Join-Path $repo 'data\local-relay.env'
 if (-not (Test-Path -LiteralPath $envFile)) {
     throw "缺少 $envFile：先运行 scripts\windows\relay.ps1 -Action Start -Port 8787。"
 }
-$credential = (Get-Content -LiteralPath $envFile | Where-Object { $_ -like 'PI_REMOTE_RUNTIME_CREDENTIAL=*' } | Select-Object -First 1)
-if (-not $credential) { throw "$envFile 里没有 PI_REMOTE_RUNTIME_CREDENTIAL。" }
+$credential = (Get-Content -LiteralPath $envFile | Where-Object { $_ -like 'ORBIS_RUNTIME_CREDENTIAL=*' } | Select-Object -First 1)
+if (-not $credential) { throw "$envFile 里没有 ORBIS_RUNTIME_CREDENTIAL。" }
 $credential = ($credential -split '=', 2)[1].Trim()
 
 New-Item -ItemType Directory -Force -Path $stateDir, $logDir | Out-Null
@@ -91,13 +91,13 @@ if (Get-NetTCPConnection -LocalPort $LanPort -State Listen -ErrorAction Silently
     throw "LAN 端口 $LanPort 已被占用，换一个 -LanPort。"
 }
 
-$savedRelay = $env:PI_REMOTE_RELAY_URL
-$savedLan = $env:PI_REMOTE_LAN_PORT
-$savedCredential = $env:PI_REMOTE_RUNTIME_CREDENTIAL
+$savedRelay = $env:ORBIS_RELAY_URL
+$savedLan = $env:ORBIS_LAN_PORT
+$savedCredential = $env:ORBIS_RUNTIME_CREDENTIAL
 try {
-    $env:PI_REMOTE_RELAY_URL = $RelayUrl
-    $env:PI_REMOTE_LAN_PORT = "$LanPort"
-    $env:PI_REMOTE_RUNTIME_CREDENTIAL = $credential
+    $env:ORBIS_RELAY_URL = $RelayUrl
+    $env:ORBIS_LAN_PORT = "$LanPort"
+    $env:ORBIS_RUNTIME_CREDENTIAL = $credential
     $arguments = @($entry, 'host', '--state-dir', $stateDir)
     if ($Dsh) { $arguments += '--dsh' }
     if ($Codex) { $arguments += '--codex' }
@@ -124,7 +124,7 @@ try {
     Write-Output "  日志       $outLog"
     Write-Output "  提示：配对与常驻互斥——先 pair，再 host；需要配对窗口时先 stop。"
 } finally {
-    $env:PI_REMOTE_RELAY_URL = $savedRelay
-    $env:PI_REMOTE_LAN_PORT = $savedLan
-    $env:PI_REMOTE_RUNTIME_CREDENTIAL = $savedCredential
+    $env:ORBIS_RELAY_URL = $savedRelay
+    $env:ORBIS_LAN_PORT = $savedLan
+    $env:ORBIS_RUNTIME_CREDENTIAL = $savedCredential
 }

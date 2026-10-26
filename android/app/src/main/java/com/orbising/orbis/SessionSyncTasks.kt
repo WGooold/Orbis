@@ -1,0 +1,228 @@
+package com.orbising.orbis
+
+import java.util.UUID
+
+internal fun sessionRangeFailureKey(runtimeId: String, range: String): String = "$runtimeId\u0000$range"
+
+internal fun newSessionSyncCommandId(): String = "session-sync:${UUID.randomUUID()}"
+internal fun String.isSessionSyncCommandId(): Boolean = startsWith("session-sync:")
+
+internal const val SESSION_SYNC_TASK_LIMIT = 32
+private const val MAX_ACTIVE = 2
+private const val MAX_CATCHUP = 1
+private const val SLOW_AFTER_MS = 8_000L
+private const val EXHAUST_AFTER_MS = 150_000L
+private const val RETAIN_UNTIL_MS = 300_000L
+private val RETRY_DELAY_MS = listOf(30_000L, 30_000L, 60_000L)
+internal const val SESSION_SYNC_TIMEOUT_MESSAGE = "同步暂未完成，请重试"
+/** preview 失败最多挡这么久（调度节拍，1 秒一发）：失败不是判决，必须自己过期（ADR-0036 §8）。 */
+internal const val SYNC_FAILURE_COOLDOWN_TICKS = 10
+/** 协调者连续回 pending 的上限：超过就不再延长耗尽窗口，避免它永久 pending 时我们无限等待。 */
+internal const val MAX_PENDING_NOTICES = 10
+
+internal data class SessionSyncDispatch(val commandId: String, val task: PendingSessionSync)
+internal data class SessionSyncTick(val state: RemoteState, val send: List<SessionSyncDispatch>)
+
+/** Source metadata and buffered packets cannot acknowledge a committed client baseline. */
+internal fun RemoteState.appliedSessionState(runtimeId: String): SessionAppliedState? {
+    val runtime = runtimes[runtimeId] ?: return null
+    val conversation = conversations[runtimeId] ?: return null
+    val epoch = conversation.sourceEpoch ?: return null
+    if (!conversation.sourceReady || !conversation.hasLiveSnapshot || conversation.isChatSyncing ||
+        conversation.forceSourceSnapshot || conversation.sourceSeq < 0 || conversation.sourcePatchBuffer.isNotEmpty()) return null
+    val sessionId = runtime.sessionId ?: return null
+    val graph = sessionGraphs[sessionId] ?: return null
+    if (graph.cacheEpoch != epoch || runtimeSessionViews[runtimeId]?.sessionId != sessionId ||
+        runtimeSessionViews[runtimeId]?.leafId != conversation.sourceHeadLeafId ||
+        conversation.sourceHeadLeafId?.let { it !in graph.entries } == true) return null
+    return SessionAppliedState(epoch, conversation.sourceSeq, SessionBranchCursor(conversation.sourceHeadLeafId))
+}
+
+/** Complete an unchanged or already superseded conditional response without replacing state. */
+internal fun RemoteState.completeUnchangedSessionSync(
+    commandId: String,
+    snapshot: SessionGraphSnapshot,
+    sequenceKey: String,
+    sequence: Long,
+): RemoteState {
+    val task = sessionSyncCommands[commandId] ?: return this
+    val owned = ownsSessionSnapshot(commandId, task.runtimeId, snapshot.sessionId, snapshot.syncId,
+        snapshot.targetLeafId ?: snapshot.cursor.leafId, snapshot.range, snapshot.beforeEntryId)
+    val conversation = conversations[task.runtimeId] ?: RuntimeConversation()
+    val applied = appliedSessionState(task.runtimeId)
+    val known = task.knownState
+    val valid = owned && applied != null && known != null && applied.epoch == known.epoch && applied.seq >= known.seq &&
+        (applied.seq > known.seq || applied.head == known.head)
+    val next = copy(
+        sessionSyncCommands = sessionSyncCommands - commandId,
+        pendingCommands = pendingCommands - commandId,
+        sessionSyncRequests = if (valid) sessionSyncRequests - task.runtimeId else sessionSyncRequests + task.runtimeId,
+        lastSequence = lastSequence + (sequenceKey to maxOf(lastSequence[sequenceKey] ?: -1L, sequence)),
+    )
+    if (!valid) return next
+    return next.copy(
+        sessionSyncFailures = next.sessionSyncFailures - task.runtimeId,
+        sessionSyncFailureCooldowns = next.sessionSyncFailureCooldowns - task.runtimeId,
+        sessionSyncBlockedTargets = next.sessionSyncBlockedTargets
+            .filterNot { it.startsWith("${task.runtimeId}\u0000") }.toSet(),
+        conversations = next.conversations + (task.runtimeId to conversation.copy(chatSyncError = null)),
+    )
+}
+
+/** Recovery always reads the source, even if SQLite already covers the advertised leaf. */
+internal fun RemoteState.requestedSessionRecovery(
+    runtimeId: String,
+    connectionGeneration: Int,
+    syncId: String,
+): PendingSessionSync? {
+    val runtime = runtimes[runtimeId] ?: return null
+    val sessionId = runtime.sessionId ?: return null
+    if (runtimeId !in sessionSyncRequests || !runtime.sessionGraphSync || runtimeId in sessionSyncFailures ||
+        sessionSyncCommands.values.any { it.runtimeId == runtimeId }) return null
+    return PendingSessionSync(
+        runtimeId, sessionId, syncId, range = "preview", targetLeafId = null,
+        viewLeafId = runtime.sessionLeafId,
+        branchGeneration = sessionBranchGenerations[runtimeId] ?: 0,
+        connectionGeneration = connectionGeneration,
+        notBefore = conversations[runtimeId]?.sourceRecoveryRetryAt ?: 0,
+        sourceRecovery = true,
+        sourceRecoveryEpoch = conversations[runtimeId]?.sourceEpoch,
+        knownState = appliedSessionState(runtimeId),
+        demandGeneration = sessionSyncDemandGenerations[runtimeId] ?: 0,
+    )
+}
+
+/** Pure clock-driven policy. Mark sends before emitting effects so another tick cannot enqueue
+ * the same request twice. A backend acknowledgement is deliberately absent from this policy. */
+internal fun advanceSessionSyncTasks(state: RemoteState, now: Long, connectionGeneration: Int? = null): SessionSyncTick {
+    var next = state.expireWaitingSessionReads(now)
+    val send = mutableListOf<SessionSyncDispatch>()
+    // ADR-0037 §3：协调者回过 pending 就说明它还在处理，把 150s 耗尽窗口从这里重新计时。
+    // 上限 MAX_PENDING_NOTICES 防止协调者一直 pending 时我们永远不放弃。
+    for ((id, task) in next.sessionSyncCommands.toMap()) {
+        if (!task.awaitingWindowReset) continue
+        next = next.copy(sessionSyncCommands = next.sessionSyncCommands + (id to task.copy(
+            firstSentAt = if (task.pendingNotices <= MAX_PENDING_NOTICES) now else task.firstSentAt,
+            awaitingWindowReset = false,
+        )))
+    }
+    // 失败必须会过期。以前 `sessionSyncFailures` 是死锁式的闩锁：只有"同步成功/手动重试/
+    // 切会话/重连"才清，而卡死时永远等不到成功，于是这个会话就永久停更（现象：必须重开 App）。
+    for (runtimeId in next.sessionSyncFailures.keys.toList()) {
+        val ticks = (next.sessionSyncFailureCooldowns[runtimeId] ?: 0) + 1
+        next = if (ticks >= SYNC_FAILURE_COOLDOWN_TICKS) next.copy(
+            sessionSyncFailures = next.sessionSyncFailures - runtimeId,
+            sessionSyncFailureCooldowns = next.sessionSyncFailureCooldowns - runtimeId,
+            sessionSyncRequests = if (next.runtimes[runtimeId]?.sessionGraphSync == true)
+                next.sessionSyncRequests + runtimeId else next.sessionSyncRequests,
+        ) else next.copy(sessionSyncFailureCooldowns = next.sessionSyncFailureCooldowns + (runtimeId to ticks))
+    }
+    for ((id, task) in next.sessionSyncCommands.toMap()) {
+        val runtime = next.runtimes[task.runtimeId]
+        val obsolete = runtime?.sessionId != task.sessionId ||
+            (connectionGeneration != null && task.connectionGeneration != connectionGeneration) ||
+            task.branchGeneration != (next.sessionBranchGenerations[task.runtimeId] ?: 0) ||
+            (task.historyOperationId != null && task.exhaustedAt == null && !next.ownsHistoryRead(task.historyOperationId))
+        if (obsolete || (task.exhaustedAt != null && now - task.firstSentAt >= RETAIN_UNTIL_MS)) {
+            next = next.releaseHistoryRequest(id).copy(
+                sessionSyncCommands = next.sessionSyncCommands - id, pendingCommands = next.pendingCommands - id,
+            )
+            continue
+        }
+        if (task.attempts == 0 || task.exhaustedAt != null) continue
+        val elapsed = (now - task.firstSentAt).coerceAtLeast(0)
+        if (elapsed >= EXHAUST_AFTER_MS) {
+            next = next.failSessionSync(id, SESSION_SYNC_TIMEOUT_MESSAGE).copy(
+                // Retain bounded correlation for an authentic late response to repair the view.
+                sessionSyncCommands = next.sessionSyncCommands + (id to task.copy(exhaustedAt = now, slow = true)),
+            )
+            continue
+        }
+        var updated = task.copy(slow = elapsed >= SLOW_AFTER_MS)
+        val retryDelay = RETRY_DELAY_MS.getOrNull(task.attempts - 1)
+        if (retryDelay != null && now - task.sentAt >= retryDelay) {
+            updated = updated.copy(attempts = task.attempts + 1, sentAt = now)
+            send += SessionSyncDispatch(id, updated)
+        }
+        if (updated != task) next = next.copy(sessionSyncCommands = next.sessionSyncCommands + (id to updated))
+    }
+    var active = next.sessionSyncCommands.values.count { it.attempts > 0 && it.exhaustedAt == null }
+    var catchup = next.sessionSyncCommands.values.count { it.attempts > 0 && it.exhaustedAt == null && it.range == "catchup" }
+    // Foreground requests get the second slot while a background request continues in its own slot.
+    val queued = next.sessionSyncCommands.entries.filter { it.value.attempts == 0 && now >= it.value.notBefore }
+        .sortedWith(compareBy<Map.Entry<String, PendingSessionSync>> { it.value.range == "catchup" }
+            .thenBy { it.value.runtimeId != next.selectedRuntimeId })
+    for ((id, task) in queued) {
+        if (active >= MAX_ACTIVE) break
+        // Reserve one slot for an already queued background request even under repeated paging.
+        if (task.range != "catchup" && active >= MAX_ACTIVE - 1 && catchup == 0 &&
+            queued.any { it.value.range == "catchup" && it.value.runtimeId !in next.sessionSyncFailures }) continue
+        if (task.range == "catchup" && catchup >= MAX_CATCHUP) continue
+        if (next.syncPreviewBlocked(task)) continue
+        val started = task.copy(attempts = 1, firstSentAt = now, sentAt = now)
+        next = next.copy(sessionSyncCommands = next.sessionSyncCommands + (id to started))
+        send += SessionSyncDispatch(id, started)
+        active += 1
+        if (task.range == "catchup") catchup += 1
+    }
+    return SessionSyncTick(next.expireWaitingSessionReads(now).reconcileHistoryReads(), send)
+}
+
+internal fun RemoteState.queueSessionSync(commandId: String, task: PendingSessionSync): RemoteState {
+    if (task.historyOperationId?.let { !ownsHistoryRead(it) } == true) return this
+    if (syncPreviewBlocked(task) || sessionSyncCommands.values.any {
+            it.runtimeId == task.runtimeId && it.sessionId == task.sessionId && it.range == task.range
+        }) return this
+    var next = this
+    // Expired correlations are expendable only at this hard capacity bound or on explicit retry.
+    for ((id, _) in sessionSyncCommands.filterValues { it.exhaustedAt != null }) {
+        if (next.sessionSyncCommands.size < SESSION_SYNC_TASK_LIMIT) break
+        next = next.copy(sessionSyncCommands = next.sessionSyncCommands - id, pendingCommands = next.pendingCommands - id)
+    }
+    if (next.sessionSyncCommands.size >= SESSION_SYNC_TASK_LIMIT) {
+        val conversation = next.conversations[task.runtimeId] ?: RuntimeConversation()
+        val message = "同步任务已满，请稍后重试"
+        if (task.range != "preview") return next.finishHistoryRead(
+            task.historyOperationId ?: "", HistoryReadPhase.FAILED, message,
+        ).copy(sessionRangeFailures = next.sessionRangeFailures + (sessionRangeFailureKey(task.runtimeId, task.range) to message))
+        return next.finishHistoryRead(task.historyOperationId ?: "", SessionReadPhase.FAILED, message).copy(
+            sessionSyncFailures = next.sessionSyncFailures + (task.runtimeId to message),
+            sessionSyncRequests = if (task.demandGeneration != null &&
+                task.demandGeneration != (next.sessionSyncDemandGenerations[task.runtimeId] ?: 0L)) next.sessionSyncRequests
+                else next.sessionSyncRequests - task.runtimeId,
+            conversations = next.conversations + (task.runtimeId to conversation.copy(isChatSyncing = false, chatSyncError = message)),
+        )
+    }
+    return next.copy(
+        sessionSyncCommands = next.sessionSyncCommands + (commandId to task.copy(attempts = 0)),
+        pendingCommands = next.pendingCommands + (commandId to task.runtimeId),
+    ).let { queued -> task.historyOperationId?.let { queued.bindHistoryRead(it, commandId) } ?: queued }
+}
+
+internal fun RemoteState.cancelForegroundSessionSyncs(exceptRuntimeId: String?): RemoteState {
+    val ids = sessionSyncCommands.filterValues { it.runtimeId != exceptRuntimeId && it.range != "catchup" }.keys
+    val released = ids.fold(cancelHistoryReads(exceptRuntimeId)) { current, id -> current.releaseHistoryRequest(id) }
+    return released.copy(sessionSyncCommands = released.sessionSyncCommands - ids, pendingCommands = released.pendingCommands - ids,
+        sessionSyncRequests = released.sessionSyncRequests.filterTo(mutableSetOf()) { it == exceptRuntimeId })
+}
+
+internal fun RemoteState.retrySessionSync(runtimeId: String): RemoteState {
+    val ids = sessionSyncCommands.filterValues { it.runtimeId == runtimeId }.keys
+    val terminated = sessionReads.values.filter { it.historyKey == runtimeId && it.phase.active &&
+        it.kind in setOf(SessionReadKind.SOURCE, SessionReadKind.CATCHUP) }.fold(this) { next, operation ->
+        next.finishHistoryRead(operation.operationId, SessionReadPhase.SUPERSEDED)
+    }
+    val released = ids.fold(terminated) { current, id ->
+        current.finishRemoteHistoryRead(id, HistoryReadPhase.SUPERSEDED).releaseHistoryRequest(id)
+    }
+    val conversation = released.conversations[runtimeId] ?: RuntimeConversation()
+    return released.copy(
+        sessionSyncCommands = released.sessionSyncCommands - ids, pendingCommands = released.pendingCommands - ids,
+        sessionSyncFailures = released.sessionSyncFailures - runtimeId,
+        sessionSyncFailureCooldowns = released.sessionSyncFailureCooldowns - runtimeId,
+        sessionSyncBlockedTargets = released.sessionSyncBlockedTargets
+            .filterNot { it.startsWith("$runtimeId\u0000") }.toSet(),
+        sessionRangeFailures = released.sessionRangeFailures.filterKeys { !it.startsWith("$runtimeId\u0000") },
+        conversations = released.conversations + (runtimeId to conversation.copy(chatSyncError = null, forceSourceSnapshot = true)),
+    )
+}

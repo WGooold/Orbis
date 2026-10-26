@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { HostCatalogBackend, HostCatalogState } from "@pi-remote/protocol";
+import type { HostCatalogBackend, HostCatalogState } from "@orbis/protocol";
 
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { HostStateFacts } from "./host-state-facts.js";

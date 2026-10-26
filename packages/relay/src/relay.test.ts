@@ -7,7 +7,7 @@ import WebSocket, { type RawData } from "ws";
 import {
   PROTOCOL_VERSION,
   type EnvelopeV2,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 import { createRelayServer, type RelayServer } from "./index.js";
 
 const openSocket = async (url: string): Promise<WebSocket> => {
@@ -202,7 +202,7 @@ describe("relay online runtime discovery", () => {
   });
 
   it("persists only the hashed device credential across Relay restarts", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-remote-relay-"));
+    const directory = await mkdtemp(join(tmpdir(), "orbis-relay-"));
     const stateFile = join(directory, "state.json");
     relay = await createRelayServer({ port: 0, adminToken: "owner-secret", stateFile });
     const httpUrl = relay.url.replace("ws://", "http://");

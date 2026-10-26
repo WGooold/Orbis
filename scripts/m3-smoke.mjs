@@ -14,11 +14,10 @@
  *   node scripts/m3-smoke.mjs           # 只跑 list + browse（无副作用）
  *   node scripts/m3-smoke.mjs --spawn   # 额外真拉起一个 Pi（会留会话记录）
  *
- * 前提：`npm run build` 已执行；配对需要 adminToken（~/.pi-remote/config.json
- * 的 adminToken 或环境变量 PI_REMOTE_ADMIN_TOKEN）。
+ * 前提：`npm run build` 已执行；配对需要 adminToken（~/.orbis/config.json
+ * 的 adminToken 或环境变量 ORBIS_ADMIN_TOKEN）。
  */
 import WebSocket from "ws";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -35,10 +34,11 @@ import {
   readHandshakeEnvelope,
   readPairEnvelope,
   verifyPairAccept,
+  resolveStateDir,
 } from "../packages/e2e/dist/index.js";
 import { PROTOCOL_VERSION } from "../packages/protocol/dist/index.js";
 
-const stateDir = join(homedir(), ".pi-remote");
+const stateDir = resolveStateDir();
 const repoDir = fileURLToPath(new URL("..", import.meta.url)).replace(/[\\/]+$/u, "");
 const wantSpawn = process.argv.includes("--spawn");
 
@@ -47,7 +47,7 @@ const log = (line) => console.log(line);
 // ── 起本地 Relay（v2）：冒烟测试自包含在本机，不连接生产服务 ──
 const config = await loadHostConfig({ stateDir });
 if (config.adminToken === undefined) {
-  console.error("缺少 adminToken：请在 ~/.pi-remote/config.json 配 adminToken，或设 PI_REMOTE_ADMIN_TOKEN");
+  console.error("缺少 adminToken：请在 ~/.orbis/config.json 配 adminToken，或设 ORBIS_ADMIN_TOKEN");
   process.exit(1);
 }
 const relay = await createRelayServer({

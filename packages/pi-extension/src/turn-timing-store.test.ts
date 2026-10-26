@@ -6,7 +6,7 @@ import { PiTurnTimingStore, turnTimingSidecarPath } from "./turn-timing-store.js
 
 describe("PiTurnTimingStore", () => {
   it("persists completed timings outside the Pi Session file and restores them", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-remote-turn-timings-"));
+    const directory = await mkdtemp(join(tmpdir(), "orbis-turn-timings-"));
     const sessionFile = join(directory, "session.jsonl");
     const timing = {
       turnId: "turn-1",
@@ -28,7 +28,7 @@ describe("PiTurnTimingStore", () => {
   });
 
   it("imports legacy timings without replacing newer sidecar data", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-remote-turn-timings-"));
+    const directory = await mkdtemp(join(tmpdir(), "orbis-turn-timings-"));
     const sessionFile = join(directory, "session.jsonl");
     const current = {
       turnId: "turn-1",
@@ -54,7 +54,7 @@ describe("PiTurnTimingStore", () => {
   });
 
   it("ignores malformed sidecar data so Session loading can continue", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-remote-turn-timings-"));
+    const directory = await mkdtemp(join(tmpdir(), "orbis-turn-timings-"));
     const sessionFile = join(directory, "session.jsonl");
     await writeFile(turnTimingSidecarPath(sessionFile), "not-json");
 

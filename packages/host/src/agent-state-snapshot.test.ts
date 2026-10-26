@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PROTOCOL_VERSION, type DomainSource } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION, type DomainSource } from "@orbis/protocol";
 
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 import { buildAgentStateSnapshot, buildAgentStateSnapshotParts } from "./agent-state-snapshot.js";

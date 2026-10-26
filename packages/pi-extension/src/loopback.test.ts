@@ -7,10 +7,11 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
+import { resolveStateDir } from "@orbis/e2e";
 
 import {
   LOOPBACK_DESCRIPTOR_FILE,
@@ -18,7 +19,7 @@ import {
   PROTOCOL_VERSION,
   type LoopbackDescriptor,
   type RuntimeCommand,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 import {
   LoopbackHostTransport,
@@ -45,19 +46,19 @@ const descriptor = (url: string, token = "loopback-token"): LoopbackDescriptor =
 // 一台机器上可以有多个 Host（不同 --state-dir）：Host 拉起 agent 时必须让它找到**自己**的
 // 发现文件，否则多开的 Host 永远等不到 agent，只有默认那台能接上。
 describe("defaultLoopbackDescriptorPath", () => {
-  it("跟随 PI_REMOTE_STATE_DIR，空白值回落到用户默认目录", () => {
-    const previous = process.env.PI_REMOTE_STATE_DIR;
+  it("跟随 ORBIS_STATE_DIR，空白值回落到用户默认目录", () => {
+    const previous = process.env.ORBIS_STATE_DIR;
     try {
-      const rig = join(tmpdir(), "pi-remote-rig-state");
-      process.env.PI_REMOTE_STATE_DIR = rig;
+      const rig = join(tmpdir(), "orbis-rig-state");
+      process.env.ORBIS_STATE_DIR = rig;
       expect(defaultLoopbackDescriptorPath()).toBe(join(rig, LOOPBACK_DESCRIPTOR_FILE));
-      process.env.PI_REMOTE_STATE_DIR = "   ";
-      expect(defaultLoopbackDescriptorPath()).toBe(join(homedir(), ".pi-remote", LOOPBACK_DESCRIPTOR_FILE));
-      delete process.env.PI_REMOTE_STATE_DIR;
-      expect(defaultLoopbackDescriptorPath()).toBe(join(homedir(), ".pi-remote", LOOPBACK_DESCRIPTOR_FILE));
+      process.env.ORBIS_STATE_DIR = "   ";
+      expect(defaultLoopbackDescriptorPath()).toBe(join(resolveStateDir(), LOOPBACK_DESCRIPTOR_FILE));
+      delete process.env.ORBIS_STATE_DIR;
+      expect(defaultLoopbackDescriptorPath()).toBe(join(resolveStateDir(), LOOPBACK_DESCRIPTOR_FILE));
     } finally {
-      if (previous === undefined) delete process.env.PI_REMOTE_STATE_DIR;
-      else process.env.PI_REMOTE_STATE_DIR = previous;
+      if (previous === undefined) delete process.env.ORBIS_STATE_DIR;
+      else process.env.ORBIS_STATE_DIR = previous;
     }
   });
 });
@@ -71,14 +72,14 @@ describe("readLoopbackDescriptor", () => {
   });
 
   const write = async (contents: string): Promise<string> => {
-    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    dir = await mkdtemp(join(tmpdir(), "orbis-loopback-"));
     const path = join(dir, "loopback.json");
     await writeFile(path, contents, "utf8");
     return path;
   };
 
   it("没有文件时安静地返回 undefined，不抛错", async () => {
-    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    dir = await mkdtemp(join(tmpdir(), "orbis-loopback-"));
     await expect(readLoopbackDescriptor(join(dir, "nope.json"))).resolves.toBeUndefined();
   });
 
@@ -91,7 +92,7 @@ describe("readLoopbackDescriptor", () => {
   });
 
   it("读出完整契约", async () => {
-    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    dir = await mkdtemp(join(tmpdir(), "orbis-loopback-"));
     const path = join(dir, "loopback.json");
     const value = descriptor("ws://127.0.0.1:51234");
     await writeFile(path, `\uFEFF${JSON.stringify(value)}`, "utf8");
@@ -161,7 +162,7 @@ describe("本机 loopback 接入", () => {
   it("Host 活着就接上，且只走 loopback", async () => {
     const host = await listen();
     runtime = host;
-    const stateDir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    const stateDir = await mkdtemp(join(tmpdir(), "orbis-loopback-"));
     try {
       const path = join(stateDir, "loopback.json");
       await writeFile(path, JSON.stringify(descriptor(host.url)), "utf8");
@@ -178,7 +179,7 @@ describe("本机 loopback 接入", () => {
   });
 
   it("还没有发现文件时只等待：Host 起来后自己接上（不回落到中继）", async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    const stateDir = await mkdtemp(join(tmpdir(), "orbis-loopback-"));
     try {
       const path = join(stateDir, "loopback.json");
       // 此刻 Host 还没起、发现文件也不存在。拿到的仍然是一个 loopback 通道（占位端点等待）。

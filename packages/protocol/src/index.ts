@@ -1,4 +1,5 @@
 import { z } from "zod";
+export { orbisEnvironment } from "./product-environment.js";
 import {
   AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema, AgentActivitySchema, AgentDeliveryItemSchema,
   DiagnosticsPageMessageSchema, DiagnosticsRequestSchema,
@@ -221,7 +222,7 @@ export type SessionCatalogEntry = z.infer<typeof SessionCatalogEntrySchema>;
  * 会话条目来源（spec §7.2 的 AgentBackend）与 ADR-0032 的共享状态模型。
  *
  * agentKind、Agent 身份与领域 envelope 都定义在 `agent-state.ts`；它只依赖 zod，
- * 因此不会与这里的 schema 形成循环。客户端仍从 `@pi-remote/protocol` 取类型。
+ * 因此不会与这里的 schema 形成循环。客户端仍从 `@orbis/protocol` 取类型。
  */
 export * from "./agent-state.js";
 export * from "./host-model-domains.js";
@@ -447,7 +448,7 @@ export type PathKind = z.infer<typeof PathKindSchema>;
 // ─── 本机发现文件（Host ↔ Pi 扩展） ────────────────────────────────────────────
 //
 // 它不是线协议，但它必须被 Host 与扩展**逐字段一致地**解释，所以和 v2 线契约住在一起。
-// Host 启动时把这个文件写到 `~/.pi-remote/`，Pi 扩展读它来决定「走本机还是走 Relay」。
+// Host 启动时把这个文件写到 `~/.orbis/`，Pi 扩展读它来决定「走本机还是走 Relay」。
 //
 // `token` 的性质是**防手滑，不是安全边界**：本机任何进程本来就读得到这个文件。
 // 它解决的问题是「残留的旧文件指向一个已经退出的 Host」和「一台机器上跑着两个 Host 时
@@ -1165,7 +1166,7 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
     requestId: z.string().min(1).max(128),
     /** 只是「这条上传属于哪个会话」的标注，不参与落地路径。 */
     runtimeId: z.string().min(1).max(256),
-    /** 手机算好的**绝对**目录（`<cwd>/.pi-remote-uploads/<sha256>`）；不存在则创建。 */
+    /** 手机算好的**绝对**目录（`<cwd>/.orbis-uploads/<sha256>`）；不存在则创建。 */
     directory: z.string().min(1).max(4096),
     fileName: safeFileName,
     size: z.number().int().nonnegative().max(MAX_UPLOAD_BYTES),

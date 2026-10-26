@@ -45,7 +45,7 @@ Status: accepted（Pi、Codex、DSH 与 APP 已接入源端状态复制；大 ch
 | 外层 sequence 按 runtime/channel 分配，包含其他设备的定向响应 | 本机看到数字跳号不一定丢了共享状态；发送时取号也不代表快照采集时点 |
 | Codex 回放会参考旧内存顺序/parent，外部 revert 尚无完整协调流程 | 相同 Entry ID 可能被重建成不同内容；读取历史与新通知竞争，产生 conflict 或旧尾部复活 |
 
-参考实现：[RemoteState.kt](../../android/app/src/main/java/dev/pi/remote/RemoteState.kt)、[RemoteViewModel.kt](../../android/app/src/main/java/dev/pi/remote/RemoteViewModel.kt)、[codex-runtime.ts](../../packages/host/src/codex-runtime.ts)、[host-service.ts](../../packages/host/src/host-service.ts)。
+参考实现：[RemoteState.kt](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt)、[RemoteViewModel.kt](../../android/app/src/main/java/com/orbising/orbis/RemoteViewModel.kt)、[codex-runtime.ts](../../packages/host/src/codex-runtime.ts)、[host-service.ts](../../packages/host/src/host-service.ts)。
 
 ## 1. 一份状态，三类数据各有归属
 

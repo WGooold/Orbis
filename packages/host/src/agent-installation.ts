@@ -4,7 +4,7 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "no
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import type { AgentKind } from "@pi-remote/protocol";
+import type { AgentKind } from "@orbis/protocol";
 import { agentKind } from "./provider-manager.js";
 import { DSH_VERSION } from "./dsh-client.js";
 import { createAgentDownloadMeter, createAgentDownloadTracker, defaultNpmCacheDir, npmCacheInflightBytes, planAgentDownload, type AgentDownloadPlan, type AgentDownloadPlanOptions, type AgentDownloadProgress } from "./agent-download-plan.js";

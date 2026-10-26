@@ -17,6 +17,7 @@ android/.kotlin/
 /AGENTS.md
 
 # Local phone uploads
+.orbis-uploads/
 .pi-remote-uploads/
 
 # Local static website draft
@@ -49,4 +50,5 @@ aqtinstall.log
 *.exe
 *.zip
 *.tar.gz
+*.orbis-build.json
 *.pi-remote-build.json

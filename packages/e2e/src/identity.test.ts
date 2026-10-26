@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,7 @@ import {
   parseDeviceStore,
   parseHostIdentity,
   revokeDeviceRecord,
+  resolveStateDir,
   saveDeviceStore,
   serializeDeviceStore,
   upsertDeviceRecord,
@@ -21,8 +22,27 @@ import {
 } from "./index.js";
 
 async function tempDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "pi-remote-e2e-"));
+  return mkdtemp(join(tmpdir(), "orbis-e2e-"));
 }
+
+describe("Orbis state directory compatibility", () => {
+  it("uses the Orbis default for a new installation and respects explicit isolation", async () => {
+    const userHome = await tempDir();
+    expect(resolveStateDir(undefined, userHome)).toBe(join(userHome, ".orbis"));
+    expect(resolveStateDir(join(userHome, "isolated"), userHome)).toBe(join(userHome, "isolated"));
+  });
+
+  it("reuses the existing identity and paired devices without moving their files", async () => {
+    const userHome = await tempDir();
+    const legacy = join(userHome, ".pi-remote");
+    const original = await loadOrCreateHostIdentity({ dir: legacy, hostName: "existing" });
+    const selected = resolveStateDir(undefined, userHome);
+    expect(selected).toBe(legacy);
+    expect((await loadOrCreateHostIdentity({ dir: selected })).hostId).toBe(original.hostId);
+    await mkdir(join(userHome, ".orbis"));
+    expect(resolveStateDir(undefined, userHome)).toBe(join(userHome, ".orbis"));
+  });
+});
 
 describe("Host 身份", () => {
   it("首次读取时生成并落盘，第二次读取拿到同一把密钥", async () => {

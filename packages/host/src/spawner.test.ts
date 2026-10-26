@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 async function tempDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "pi-remote-spawn-"));
+  const dir = await mkdtemp(join(tmpdir(), "orbis-spawn-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
   return dir;
 }
@@ -257,7 +257,7 @@ describe("SessionSpawner", () => {
     new SessionSpawner({
       spawnImpl: overrides?.spawnImpl as never,
       ...(overrides?.maxRunning === undefined ? {} : { maxRunning: overrides.maxRunning }),
-      env: { SESSIONNAME: "Console", APPDATA: join(tmpdir(), "pi-remote-spawn-nonexistent") },
+      env: { SESSIONNAME: "Console", APPDATA: join(tmpdir(), "orbis-spawn-nonexistent") },
     });
 
   it("spawn 失败（找不到 pi 入口）报 spawn_failed，并回 protocol.error 的 code", async () => {
@@ -320,7 +320,7 @@ describe("SessionSpawner", () => {
       stateDir,
     });
     await spawner.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } });
-    expect(fake.options[0]?.env).toMatchObject({ PI_REMOTE_STATE_DIR: stateDir, APPDATA: cliRoot });
+    expect(fake.options[0]?.env).toMatchObject({ ORBIS_STATE_DIR: stateDir, APPDATA: cliRoot });
   });
 
   it("同一会话重复 resume 只拉起一次：先发现，再决定拉不拉", async () => {

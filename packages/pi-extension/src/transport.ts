@@ -6,8 +6,8 @@ import {
   type RuntimeCommand,
   type RuntimeEvent,
   type RuntimeMetadata,
-} from "@pi-remote/protocol";
-import type { RuntimeBridgeTransport } from "@pi-remote/runtime-bridge";
+} from "@orbis/protocol";
+import type { RuntimeBridgeTransport } from "@orbis/runtime-bridge";
 import WebSocket from "ws";
 
 import { safeValue } from "./safe-value.js";
@@ -61,7 +61,7 @@ const DEFAULT_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const DEFAULT_BUFFERED_LOW_WATER_BYTES = 2 * 1024 * 1024;
 const DRAIN_POLL_MS = 500;
 
-const RUNTIME_SEQUENCE_STORE = Symbol.for("@pi-remote/runtime-sequences");
+const RUNTIME_SEQUENCE_STORE = Symbol.for("@orbis/runtime-sequences");
 
 type RuntimeSequenceScope = { [key: symbol]: unknown };
 

@@ -162,7 +162,7 @@ export class CodexAppServer {
       await server.request("initialize", {
         capabilities: { experimentalApi: true },
         clientInfo: {
-          name: options.clientName ?? "pi-remote-host",
+          name: options.clientName ?? "orbis-host",
           title: "Orbis Host",
           version: "0.1.0",
         },

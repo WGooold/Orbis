@@ -8,7 +8,7 @@ The runner refuses `orbising.com` unless `ORBIS_LOAD_ALLOW_PRODUCTION=1` is set.
 
 The runner does not create credentials. Configure the Relay with the credentials used by the test:
 
-- `runtimeCredential` must be present in `PI_REMOTE_RUNTIME_CREDENTIAL`.
+- `runtimeCredential` must be present in `ORBIS_RUNTIME_CREDENTIAL`.
 - Every generated device credential is `load-device-load-host-N-device-M` and must be present in the Relay device store, or supplied through a test-only provisioning fixture.
 
 The load frames contain an opaque JSON string in `envelope.ct`. They are valid Relay-routable v2 frames, but they are not application E2E ciphertext. This is deliberate: the first layer measures Relay routing, queues, parsing and WebSocket behavior. It must not be used to claim that Host/Android crypto or business semantics were tested.

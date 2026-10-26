@@ -28,7 +28,7 @@ import {
   type RuntimeCommand,
   type RuntimeEvent,
   type RuntimeMetadata,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 import WebSocket, { WebSocketServer } from "ws";
 
 export type CodexLaunchRequest = { cwd: string };

@@ -30,8 +30,8 @@ function Ensure-LocalEnvironment {
 
     if (-not (Test-Path $envFile)) {
         @(
-            "PI_REMOTE_RUNTIME_CREDENTIAL=$(New-RandomSecret)",
-            "PI_REMOTE_ADMIN_TOKEN=$(New-RandomSecret)",
+            "ORBIS_RUNTIME_CREDENTIAL=$(New-RandomSecret)",
+            "ORBIS_ADMIN_TOKEN=$(New-RandomSecret)",
             "HOST=$HostAddress",
             "PORT=$Port"
         ) | Set-Content -Path $envFile -Encoding ascii
@@ -44,9 +44,13 @@ function Ensure-LocalEnvironment {
         }
     }
 
-    if ([string]::IsNullOrWhiteSpace($env:PI_REMOTE_RUNTIME_CREDENTIAL) -or
-        [string]::IsNullOrWhiteSpace($env:PI_REMOTE_ADMIN_TOKEN)) {
-        throw "缺少 PI_REMOTE_RUNTIME_CREDENTIAL 或 PI_REMOTE_ADMIN_TOKEN：$envFile"
+    # Existing local env files retain their credentials until the user updates them.
+    if ($null -eq $env:ORBIS_RUNTIME_CREDENTIAL) { $env:ORBIS_RUNTIME_CREDENTIAL = $env:PI_REMOTE_RUNTIME_CREDENTIAL }
+    if ($null -eq $env:ORBIS_ADMIN_TOKEN) { $env:ORBIS_ADMIN_TOKEN = $env:PI_REMOTE_ADMIN_TOKEN }
+
+    if ([string]::IsNullOrWhiteSpace($env:ORBIS_RUNTIME_CREDENTIAL) -or
+        [string]::IsNullOrWhiteSpace($env:ORBIS_ADMIN_TOKEN)) {
+        throw "缺少 ORBIS_RUNTIME_CREDENTIAL 或 ORBIS_ADMIN_TOKEN：$envFile"
     }
 
     $env:HOST = $HostAddress
@@ -54,7 +58,7 @@ function Ensure-LocalEnvironment {
     if ([string]::IsNullOrWhiteSpace($StateFile)) {
         $StateFile = Join-Path $data "relay-state.json"
     }
-    $env:PI_REMOTE_STATE_FILE = $StateFile
+    $env:ORBIS_STATE_FILE = $StateFile
 }
 
 function Get-RecordedRelayProcess {

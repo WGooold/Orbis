@@ -18,7 +18,7 @@ WebSocket 是**单条有序字节流**：后写进去的帧不可能超过先写
 
 **把等待队列从 socket 搬到应用层，只让 `bulk` 排队。**
 
-- `OutboundChannelMux`（`@pi-remote/protocol`，传输无关）：`ctl` 绕过水位直接交付；`bulk` 只在 `backlog()`（`ws.bufferedAmount` / `RTCDataChannel.bufferedAmount()`）低于水位（64 KiB）时交付；`msg` 给 1 MiB 水位（会话快照是交互流量，不该被分片饿死）。宿主的每一条路径、Relay 的每一个连接各持一个。
+- `OutboundChannelMux`（`@orbis/protocol`，传输无关）：`ctl` 绕过水位直接交付；`bulk` 只在 `backlog()`（`ws.bufferedAmount` / `RTCDataChannel.bufferedAmount()`）低于水位（64 KiB）时交付；`msg` 给 1 MiB 水位（会话快照是交互流量，不该被分片饿死）。宿主的每一条路径、Relay 的每一个连接各持一个。
 - **水位是延迟预算，不是吞吐旋钮**：写进 socket 的分片收不回来，所以一条控制帧前面最多只剩「水位 + 正在写的那一帧」。吞吐由重试节拍（`pumpIntervalMs`）决定，调高水位换不来吞吐，只会让控制帧多等。
 - **绝不丢已封好的信封**：丢一个已封好的信封会推进发送序号却到不了对端，接收侧判 `sequence_gap`，**整条会话报废**。要丢就在**封帧之前**丢——Host 的 `sendBinary` 先问 `hasBulkRoom()`；Relay 对 `v2.frame` 一律不丢，队列超上限退化成「照发」（等价于升级前），只报警一次并打日志。
 - **二进制分片帧与文本信封共用同一条队列**：它们本来就共用同一个 socket，分成两条队列优先级就形同虚设。分片帧靠 `(runtimeId, transferId, offset)` 寻址 + 端到端 ack 重传，**没有发送序号，所以丢一帧会自愈**——Relay 对它的处理是「队列排不下就丢这一帧」，护栏判据取「`bulkQueuedBytes` + `socket.bufferedAmount` 合计」，上限沿用原 `maxBinaryBufferedBytes`：中继愿意持有的字节数一字未改，变的只是这些字节待在队列里而不是 socket 里，socket 因此保持排空。

@@ -6,12 +6,12 @@ const source = (path: string): string => fileURLToPath(new URL(path, import.meta
 export default defineConfig({
   resolve: {
     alias: {
-      "@pi-remote/protocol": source("./packages/protocol/src/index.ts"),
-      "@pi-remote/e2e": source("./packages/e2e/src/index.ts"),
-      "@pi-remote/host": source("./packages/host/src/index.ts"),
-    "@pi-remote/relay": source("./packages/relay/src/index.ts"),
-      "@pi-remote/runtime-bridge": source("./packages/runtime-bridge/src/index.ts"),
-      "@pi-remote/interaction-sdk": source("./packages/remote-interaction-sdk/src/index.ts"),
+      "@orbis/protocol": source("./packages/protocol/src/index.ts"),
+      "@orbis/e2e": source("./packages/e2e/src/index.ts"),
+      "@orbis/host": source("./packages/host/src/index.ts"),
+      "@orbis/relay": source("./packages/relay/src/index.ts"),
+      "@orbis/runtime-bridge": source("./packages/runtime-bridge/src/index.ts"),
+      "@orbis/interaction-sdk": source("./packages/remote-interaction-sdk/src/index.ts"),
     },
   },
   test: {

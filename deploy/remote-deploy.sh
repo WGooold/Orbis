@@ -24,9 +24,15 @@ shared="$app/shared"
 env_file="$shared/relay.env"
 data_dir="$shared/data"
 release_dir="$app/releases/$release"
-image="pi-remote-relay:$release"
-candidate="pi-remote-relay-candidate-$release"
-previous="pi-remote-relay-previous-$(date +%s)"
+image="orbis-relay:$release"
+candidate="orbis-relay-candidate-$release"
+previous="orbis-relay-previous-$(date +%s)"
+active_container="orbis-relay"
+# Keep rollback compatible with a server whose last deployed release used the old name.
+previous_name="$active_container"
+if ! docker inspect "$active_container" >/dev/null 2>&1 && docker inspect pi-remote-relay >/dev/null 2>&1; then
+  previous_name="pi-remote-relay"
+fi
 old_moved=0
 new_started=0
 
@@ -40,11 +46,11 @@ rollback() {
   set +e
   docker rm -f "$candidate" >/dev/null 2>&1 || true
   if [[ "$new_started" -eq 1 ]]; then
-    docker rm -f pi-remote-relay >/dev/null 2>&1 || true
+    docker rm -f orbis-relay >/dev/null 2>&1 || true
   fi
   if [[ "$old_moved" -eq 1 ]]; then
-    docker rename "$previous" pi-remote-relay >/dev/null 2>&1 || true
-    docker start pi-remote-relay >/dev/null 2>&1 || true
+    docker rename "$previous" "$previous_name" >/dev/null 2>&1 || true
+    docker start "$previous_name" >/dev/null 2>&1 || true
   fi
   echo "Relay deployment failed; the previous container was restored when available." >&2
   exit "$status"
@@ -129,15 +135,15 @@ fi
 docker rm -f "$candidate" >/dev/null
 
 # Keep the former container intact until both local and public health checks pass.
-if docker inspect pi-remote-relay >/dev/null 2>&1; then
+if docker inspect "$previous_name" >/dev/null 2>&1; then
   docker rm -f "$previous" >/dev/null 2>&1 || true
-  docker rename pi-remote-relay "$previous"
+  docker rename "$previous_name" "$previous"
   docker stop "$previous" >/dev/null || true
   old_moved=1
 fi
 
 docker run -d \
-  --name pi-remote-relay \
+  --name orbis-relay \
   --restart unless-stopped \
   --env-file "$env_file" \
   -v "$data_dir:/data" \
@@ -157,7 +163,7 @@ for _ in $(seq 1 40); do
   sleep 1
 done
 if [[ "$local_healthy" -ne 1 ]]; then
-  docker logs --tail 80 pi-remote-relay >&2 || true
+  docker logs --tail 80 orbis-relay >&2 || true
   false
 fi
 

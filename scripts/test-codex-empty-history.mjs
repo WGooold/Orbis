@@ -25,7 +25,7 @@ const waitFor = async (predicate, description) => {
     await delay(20);
   }
 };
-process.env.PI_REMOTE_CODEX_HEAD = "0";
+process.env.ORBIS_CODEX_HEAD = "0";
 try {
   await mkdir(home);
   await mkdir(workspace);

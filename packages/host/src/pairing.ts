@@ -6,7 +6,7 @@
  */
 import type { KeyObject } from "node:crypto";
 
-import type { EnvelopeV2 } from "@pi-remote/protocol";
+import type { EnvelopeV2 } from "@orbis/protocol";
 
 import {
   E2eError,
@@ -21,7 +21,7 @@ import {
   type PairingQrLanEndpoint,
   type PairingQrPayload,
   type PairingWindow,
-} from "@pi-remote/e2e";
+} from "@orbis/e2e";
 
 export type OpenedPairingWindow = {
   code: string;

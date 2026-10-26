@@ -2,7 +2,7 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
-import { PROTOCOL_VERSION } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION } from "@orbis/protocol";
 import { HostRelayClient } from "./relay-client.js";
 
 const expectHandshakeFailure = async (response: object, expected: RegExp): Promise<void> => {

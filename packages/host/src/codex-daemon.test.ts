@@ -79,7 +79,7 @@ describe("CodexAppServer", () => {
     expect(JSON.parse(harness.sent[0] ?? "{}")).toMatchObject({
       id: 1,
       method: "initialize",
-      params: { clientInfo: { name: "pi-remote-host" } },
+      params: { clientInfo: { name: "orbis-host" } },
     });
     expect(JSON.parse(harness.sent[1] ?? "{}")).toEqual({ method: "initialized" });
     expect(server.endpoint).toBeTruthy();

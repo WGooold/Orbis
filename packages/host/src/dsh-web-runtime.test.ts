@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RuntimeEventSchema, type RuntimeEvent } from "@pi-remote/protocol";
+import { RuntimeEventSchema, type RuntimeEvent } from "@orbis/protocol";
 import type { DshWebConnection } from "./dsh-web-client.js";
 import { DshWebRuntime } from "./dsh-web-runtime.js";
 import { AgentConversationState } from "./agent-conversation-state.js";

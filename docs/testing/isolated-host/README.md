@@ -11,9 +11,9 @@
 
 | 资源 | 隔离方式 | 备注 |
 | --- | --- | --- |
-| 状态目录 | `--state-dir <rig>\state` | 默认 `~/.pi-remote` 完全不碰；rig 有自己的 hostId / 配对记录 / 凭据 |
+| 状态目录 | `--state-dir <rig>\state` | 默认 `~/.orbis` 完全不碰；rig 有自己的 hostId / 配对记录 / 凭据 |
 | Relay | 本机 `scripts\windows\relay.ps1`（默认 8787） | 不连生产 `wss://orbising.com/relay`；密钥落在 `data\local-relay.env` |
-| LAN 端口 | `PI_REMOTE_LAN_PORT`（默认脚本用 42131） | 与用户 Host 的 42130 错开 |
+| LAN 端口 | `ORBIS_LAN_PORT`（默认脚本用 42131） | 与用户 Host 的 42130 错开 |
 | loopback | rig 自己选端口，写到 `<rig>\state\loopback.json` | 只给本机 Pi 扩展用 |
 | 日志 / PID | `<rig>\logs\host.out.log`、`host.err.log`、`host.pid` | 收尾时要一起清理 |
 | 模拟器 | 按 `D:\android-emulators\README.md` 的占用协议独占一台 | 用完必须关闭并释放占用 |
@@ -68,7 +68,7 @@ $payload = (pwsh -File docs\testing\isolated-host\pair-isolated-host.ps1 -Advert
     Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -First 1).Trim()
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload)).Replace('+','-').Replace('/','_').TrimEnd('=')
 pwsh -File scripts\windows\android-build.ps1 :app:connectedDebugAndroidTest `
-  "-Pandroid.testInstrumentationRunnerArguments.class=dev.pi.remote.IsolatedHostPairingInstrumentedTest" `
+  "-Pandroid.testInstrumentationRunnerArguments.class=com.orbising.orbis.IsolatedHostPairingInstrumentedTest" `
   "-Pandroid.testInstrumentationRunnerArguments.pairingPayloadBase64=$encoded" --console=plain
 ```
 
@@ -145,7 +145,7 @@ App 只接受 `wss://<任意主机>` 和 `ws://<本机/私网主机>`（`isSuppo
   rig 的 `pair` 就永远开不了窗**；现在按 `--state-dir` 查（不同状态目录＝不同 Relay 身份）。
 - 新增 `pair --print-payload`：把配对载荷按一行 JSON 打到 stdout。
 - **配对窗口能开出来了**：配对码由 Relay 用 `Authorization: Bearer <adminToken>` 签发，所以 rig 的
-  pair 进程必须带上 `data\local-relay.env` 里的 `PI_REMOTE_ADMIN_TOKEN`——少了它就是
+  pair 进程必须带上 `data\local-relay.env` 里的 `ORBIS_ADMIN_TOKEN`——少了它就是
   `Relay 拒绝签发配对码（HTTP 401）`（这是实测踩过的坑，`pair-isolated-host.ps1` 已经带上）。
 - `pair-isolated-host.ps1 -AdvertiseRelayUrl ws://10.0.2.2:8787` 实测输出：
   `{"v":2,"relayUrl":"ws://10.0.2.2:8787","code":"...","hostId":"8509e449-...","hostPub":"...","psk":"...","exp":...}`

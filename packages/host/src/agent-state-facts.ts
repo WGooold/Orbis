@@ -6,7 +6,7 @@ import {
   type AgentPermissionsState, type DomainAvailability,
   type DomainCompleteness, type DomainSource, type DomainState, type InteractionRequest,
   type RuntimeCapabilities, type RuntimeEvent, type RuntimeMetadata, type RuntimeStatus,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 import {
   AgentStateRegistry, type BaselineRead, type StateDomain, type StateScope, type RegistryMutation, type PreparedRegistryCommit,

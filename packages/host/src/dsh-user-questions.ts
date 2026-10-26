@@ -3,7 +3,7 @@ import {
   InteractionResponseSchema,
   type InteractionRequest,
   type InteractionResponse,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 type Questionnaire = Extract<InteractionRequest, { kind: "questionnaire" }>;
 type DshAnswers = { answers: { id: string; selected: string[]; custom?: string }[] };

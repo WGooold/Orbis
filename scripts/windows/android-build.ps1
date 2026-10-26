@@ -58,6 +58,7 @@ $leaseDir = if ($env:ORBIS_ANDROID_LEASE_DIR) { $env:ORBIS_ANDROID_LEASE_DIR } e
 $metadataPath = Join-Path $leaseDir 'android-build.json'
 $resourcePath = Join-Path $leaseDir 'resource-operation.json'
 $installScript = Join-Path $repo 'scripts\windows\android-install.ps1'
+# Keep the existing machine-wide lock ID so an older checkout cannot build concurrently.
 $mutexName = 'PiRemote.AndroidBuild'
 $owner = [guid]::NewGuid().ToString()
 $buildId = [guid]::NewGuid().ToString()
@@ -209,7 +210,7 @@ function Write-BuildManifest {
         return $null
     }
     $apkPath = (Resolve-Path $apkPath).Path
-    $manifestPath = "$apkPath.pi-remote-build.json"
+    $manifestPath = "$apkPath.orbis-build.json"
     $record = [ordered]@{
         schema = 1
         buildId = $buildId
@@ -229,7 +230,7 @@ function Write-BuildManifest {
         foreach ($key in $record.Keys) { $testRecord[$key] = $record[$key] }
         $testRecord.artifactPath = (Resolve-Path $testApk).Path
         $testRecord.sha256 = (Get-FileHash $testApk -Algorithm SHA256).Hash.ToLowerInvariant()
-        [IO.File]::WriteAllText("$testApk.pi-remote-build.json", ($testRecord | ConvertTo-Json -Depth 4))
+        [IO.File]::WriteAllText("$testApk.orbis-build.json", ($testRecord | ConvertTo-Json -Depth 4))
     }
     return [pscustomobject]@{ ArtifactPath = $apkPath; ManifestPath = $manifestPath }
 }

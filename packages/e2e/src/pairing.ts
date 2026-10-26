@@ -1,13 +1,13 @@
 /**
  * 扫码配对的密码学部分（spec §4）。
  *
- * 所有公式都是两端必须逐字节一致的互操作契约。上层（Host 的 `pi-remote pair`、
+ * 所有公式都是两端必须逐字节一致的互操作契约。上层（Host 的 `orbis pair`、
  * 手机 APP）只负责搬运 `PairRequestBody` / `PairAcceptBody` 与决定何时关窗，
  * 密钥推导与校验都收在这里，避免两端各写一遍。
  */
 import type { KeyObject } from "node:crypto";
 
-import type { EnvelopeV2 } from "@pi-remote/protocol";
+import type { EnvelopeV2 } from "@orbis/protocol";
 
 import { E2eError } from "./error.js";
 import { buildPlaintextEnvelope, readPlaintextEnvelope } from "./session.js";
@@ -28,6 +28,7 @@ import {
 /** 配对窗口时长。spec §4.1：120 秒，不是常驻监听。 */
 export const PAIRING_WINDOW_SECONDS = 120;
 /** `pskRoot` 的 HKDF salt。字面常量，两端一致。 */
+// Wire-format constant: changing it would break pairing with already released Orbis clients.
 export const PAIRING_SALT = "pi-remote/v2";
 
 /**

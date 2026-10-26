@@ -54,7 +54,7 @@ describe("localLanEndpoints", () => {
 
 describe("LAN 端点常量", () => {
   it("端口稳定、路径与 Relay 的分开", () => {
-    // 端口要稳定：二维码是唯一把 LAN 地址带出电脑的通道，而 `pi-remote pair` 是短命进程，
+    // 端口要稳定：二维码是唯一把 LAN 地址带出电脑的通道，而 `orbis pair` 是短命进程，
     // 它必须能在常驻 Host 还没跑的时候就把端口写进二维码。
     expect(DEFAULT_LAN_PORT).toBe(42130);
     expect(LAN_PATH).toBe("/v1/lan");

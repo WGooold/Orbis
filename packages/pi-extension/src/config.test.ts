@@ -6,13 +6,13 @@ import { loadRemoteControlConfig } from "./config.js";
 
 describe("remote control configuration", () => {
   it("stays disabled when remote control has not been explicitly configured", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-remote-config-"));
+    const directory = await mkdtemp(join(tmpdir(), "orbis-config-"));
     await expect(loadRemoteControlConfig({ configPath: join(directory, "missing.json"), env: {} }))
       .resolves.toBe(false);
   });
 
   it("enables only an installed local integration while honoring an explicit user disable", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-remote-config-"));
+    const directory = await mkdtemp(join(tmpdir(), "orbis-config-"));
     const configPath = join(directory, "remote-control.json");
     await writeFile(configPath, `\uFEFF${JSON.stringify({ orbisLocalEnabled: true })}`);
     await expect(loadRemoteControlConfig({ configPath, env: {} })).resolves.toBe(true);
@@ -22,7 +22,7 @@ describe("remote control configuration", () => {
   });
 
   it("rejects unencrypted public relay URLs", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-remote-config-"));
+    const directory = await mkdtemp(join(tmpdir(), "orbis-config-"));
     const configPath = join(directory, "remote-control.json");
     await writeFile(configPath, JSON.stringify({
       enabled: true,

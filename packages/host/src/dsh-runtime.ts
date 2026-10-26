@@ -9,7 +9,7 @@ import {
   SessionSyncPreparer,
   type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshAcpClient, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
 import { dshEntries, openDshHistory, type DshHistory } from "./dsh-history.js";
@@ -604,7 +604,7 @@ export class DshRuntime implements AgentBackend {
   ownsRuntime(runtimeId: string): boolean { return this.#implementation.ownsRuntime(runtimeId); }
   catalog(archived = false): Promise<AgentSessionSummary[]> { return this.#implementation.catalog(archived); }
   setArchived(sessionId: string, archived: boolean): Promise<void> { return this.#implementation.setArchived(sessionId, archived); }
-  activate(target: AgentActivateTarget, context?: { deviceId?: string; spawnMode?: import("@pi-remote/protocol").SpawnMode }): Promise<BackendActivation> {
+  activate(target: AgentActivateTarget, context?: { deviceId?: string; spawnMode?: import("@orbis/protocol").SpawnMode }): Promise<BackendActivation> {
     return this.#implementation.activate(target, context);
   }
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {

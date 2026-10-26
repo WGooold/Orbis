@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * `pi-remote` 命令行（spec §4.1 / §4.4）。
+ * `orbis` 命令行（spec §4.1 / §4.4）。
  *
- *   pi-remote pair              打开 120 秒配对窗口，终端打印二维码
- *   pi-remote host              常驻，维持 Relay 通道与设备会话
- *   pi-remote devices           列出已配对设备
- *   pi-remote devices revoke ID 撤销一台设备
+ *   orbis pair              打开 120 秒配对窗口，终端打印二维码
+ *   orbis host              常驻，维持 Relay 通道与设备会话
+ *   orbis devices           列出已配对设备
+ *   orbis devices revoke ID 撤销一台设备
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -18,8 +18,8 @@ import {
   revokeDeviceRecord,
   saveDeviceStore,
   type DeviceRecord,
-} from "@pi-remote/e2e";
-import { LoopbackDescriptorSchema, type AgentKind } from "@pi-remote/protocol";
+} from "@orbis/e2e";
+import { LoopbackDescriptorSchema, type AgentKind } from "@orbis/protocol";
 
 import { loadHostConfig } from "./config.js";
 import { CodexAppServer } from "./codex-daemon.js";
@@ -32,15 +32,15 @@ import { HostService } from "./host-service.js";
 import { ProviderManager } from "./provider-manager.js";
 import { describePath } from "./path.js";
 
-const USAGE = `pi-remote —— 电脑侧的 Host 进程
+const USAGE = `orbis —— 电脑侧的 Host 进程
 
-  pi-remote pair                 打开配对窗口并打印二维码
-  pi-remote host                 常驻运行，等待手机连接
-  pi-remote devices              列出已配对设备
-  pi-remote devices revoke <id>  撤销一台设备
+  orbis pair                 打开配对窗口并打印二维码
+  orbis host                 常驻运行，等待手机连接
+  orbis devices              列出已配对设备
+  orbis devices revoke <id>  撤销一台设备
 
 可选参数：
-  --state-dir <路径>             覆盖状态目录（默认 ~/.pi-remote）
+  --state-dir <路径>             覆盖状态目录（默认 ~/.orbis）
   --codex                        host 子命令：启用 Codex 后端（需已全局安装 codex-cli）
   --dsh                          host 子命令：启用 DeepSeek Harness 后端
   --sessions-root <路径>         host 子命令：只扫这个目录下的 Pi 会话（隔离测试台用它，
@@ -49,7 +49,7 @@ const USAGE = `pi-remote —— 电脑侧的 Host 进程
                                  供隔离测试台或脚本把载荷交给客户端，不必用摄像头扫码
 
 环境变量：
-  PI_REMOTE_LAN_PORT             覆盖 LAN 直连端口（默认 42130）
+  ORBIS_LAN_PORT             覆盖 LAN 直连端口（默认 42130）
 `;
 
 async function main(): Promise<void> {
@@ -204,7 +204,7 @@ async function runPair(stateDirOption: string | undefined, printPayload = false)
 
   // 只认这个状态目录里的常驻 Host：不同状态目录＝不同 Relay 身份，互不抢 runtimeId。
   if (await isLocalHostAlive(stateDir)) {
-    console.error("本机已经有一个 `pi-remote host` 在运行，配对窗口开不起来。");
+    console.error("本机已经有一个 `orbis host` 在运行，配对窗口开不起来。");
     console.error("两个进程在 Relay 上共用同一个 runtimeId，会互踢下线，配对消息大概率落在对方手里。");
     console.error("先停掉那个 host（Ctrl+C），再运行本命令。");
     process.exitCode = 2;
@@ -264,7 +264,7 @@ async function runPair(stateDirOption: string | undefined, printPayload = false)
     return;
   }
   console.log(`配对成功：${device.deviceId}`);
-  console.log("接着运行 `pi-remote host` 常驻即可。");
+  console.log("接着运行 `orbis host` 常驻即可。");
 }
 
 /**
@@ -300,7 +300,7 @@ async function runDevices(
 
   if (action === undefined) {
     if (store.devices.length === 0) {
-      console.log("还没有已配对的设备。在电脑上运行 `pi-remote pair` 开始配对。");
+      console.log("还没有已配对的设备。在电脑上运行 `orbis pair` 开始配对。");
       return;
     }
     for (const device of store.devices) {
@@ -313,7 +313,7 @@ async function runDevices(
 
   if (action === "revoke") {
     if (deviceId === undefined || deviceId.length === 0) {
-      console.error("用法：pi-remote devices revoke <deviceId>");
+      console.error("用法：orbis devices revoke <deviceId>");
       process.exitCode = 2;
       return;
     }

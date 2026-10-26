@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { SESSION_SYNC_PAGE_BYTES, type AgentSessionSummary, type RuntimeEvent, type SessionSyncRequest } from "@pi-remote/protocol";
+import { SESSION_SYNC_PAGE_BYTES, type AgentSessionSummary, type RuntimeEvent, type SessionSyncRequest } from "@orbis/protocol";
 
 import { CODEX_RUNTIME_ID, type CodexAppServer, type CodexServerRequest } from "./codex-daemon.js";
 import { CodexRuntime, codexHeadWindowLaunch } from "./codex-runtime.js";
@@ -77,7 +77,7 @@ function makeHarness(options?: {
   } as unknown as CodexAppServer;
   // 磁盘 rollout 扫描指向空临时目录：既不让测试读到本机真实的 ~/.codex/sessions，
   // 又给磁盘目录用例一个可写入的根。
-  const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-rollout-"));
+  const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-rollout-"));
   const runtime = new CodexRuntime({
     server,
     onEvent: (event) => events.push(event),
@@ -2148,7 +2148,7 @@ describe("CodexRuntime", () => {
     const runtime = new CodexRuntime({
       server,
       onEvent: (event) => events.push(event),
-      rolloutRoot: mkdtempSync(join(tmpdir(), "pi-remote-codex-quit-")),
+      rolloutRoot: mkdtempSync(join(tmpdir(), "orbis-codex-quit-")),
       openHeadWindow: () => {},
       killTuiProcesses: ({ sessionId, endpoint: target }) => {
         kills.push({ sessionId, endpoint: target });
@@ -2272,7 +2272,7 @@ describe("CodexRuntime", () => {
   });
 
   it("旧格式 thread 也开有头窗口（在线必须绑定 TUI 窗口在，否则「没 TUI 却在线」）", async () => {
-    const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-oldwin-"));
+    const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-oldwin-"));
     mkdirSync(join(rolloutRoot, "2026", "07", "17"), { recursive: true });
     writeFileSync(
       join(rolloutRoot, "2026", "07", "17", "rollout-2026-07-17T21-58-40-th-old.jsonl"),
@@ -2300,7 +2300,7 @@ describe("CodexRuntime", () => {
   });
 
   it("新格式 thread（turns 带 items）正常开有头窗口", async () => {
-    const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-openwin-"));
+    const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-openwin-"));
     const queue: Array<{ resolve: (v: unknown) => void }> = [];
     const server = { request: (method: string) => method === "model/list" ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] }) : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })), notify: vi.fn(), endpoint: "ws://127.0.0.1:9998" } as unknown as CodexAppServer;
     const opened: string[] = [];
@@ -2319,7 +2319,7 @@ describe("CodexRuntime", () => {
   });
 
   it("TUI 窗口关闭 → 该 thread 下线（onOffline 广播 + 目录移除）", async () => {
-    const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-closewin-"));
+    const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-closewin-"));
     const queue: Array<{ resolve: (v: unknown) => void }> = [];
     const unsubscribe = vi.fn(async () => ({}));
     const server = { request: (method: string) => method === "model/list"
@@ -2599,7 +2599,7 @@ describe("CodexRuntime TUI 切换会话", () => {
       endpoint: "ws://127.0.0.1:9931",
       codexCommand: { command: "node.exe", prefixArgs: ["codex.js"] },
     } as unknown as CodexAppServer;
-    const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-switch-"));
+    const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-switch-"));
     // 捕获看门狗 tick：#startHeadWatcher 在 activate 内部调用，覆盖窗必须盖到那之后。
     let watcherTick: () => void = () => {};
     const origSetInterval = globalThis.setInterval;

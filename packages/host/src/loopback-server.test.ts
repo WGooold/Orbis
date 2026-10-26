@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 
-import { LOOPBACK_DESCRIPTOR_FILE, LOOPBACK_PATH, LoopbackDescriptorSchema, PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE } from "@pi-remote/protocol";
+import { LOOPBACK_DESCRIPTOR_FILE, LOOPBACK_PATH, LoopbackDescriptorSchema, PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE } from "@orbis/protocol";
 
 import { HostLoopbackServer } from "./loopback-server.js";
 
@@ -28,7 +28,7 @@ describe("HostLoopbackServer 的发现文件", () => {
   });
 
   it("用发现文件 token 认证终端 Codex 启动请求", async () => {
-    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    dir = await mkdtemp(join(tmpdir(), "orbis-loopback-"));
     server = new HostLoopbackServer({
       stateDir: dir,
       hostId: "host-1",
@@ -50,7 +50,7 @@ describe("HostLoopbackServer 的发现文件", () => {
   });
 
   it("启动时写 0600 的发现文件，停止时删掉它", async () => {
-    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    dir = await mkdtemp(join(tmpdir(), "orbis-loopback-"));
     server = new HostLoopbackServer({ stateDir: dir, hostId: "host-1" });
     const descriptor = await server.start();
 
@@ -68,7 +68,7 @@ describe("HostLoopbackServer 的发现文件", () => {
   });
 
   it("版本不匹配时回 protocol.error 并断开，同版本照常注册", async () => {
-    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    dir = await mkdtemp(join(tmpdir(), "orbis-loopback-"));
     const online: string[] = [];
     server = new HostLoopbackServer({
       stateDir: dir,

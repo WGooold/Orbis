@@ -20,7 +20,7 @@
 import WebSocket from "ws";
 
 import { PROTOCOL_VERSION } from "../packages/protocol/dist/index.js";
-import { resolveStateDir } from "@pi-remote/e2e";
+import { resolveStateDir } from "@orbis/e2e";
 
 import { loadHostConfig } from "../packages/host/dist/config.js";
 

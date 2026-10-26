@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RuntimeEvent, SessionSyncRequest } from "@pi-remote/protocol";
+import type { RuntimeEvent, SessionSyncRequest } from "@orbis/protocol";
 import { SESSION_SYNC_WIRE_LIMIT_BYTES } from "./device-link.js";
 import { SessionSyncTasks } from "./session-sync-tasks.js";
 

@@ -413,7 +413,7 @@ describe("phone file upload", () => {
     protocolVersion: PROTOCOL_VERSION,
     requestId: "r1",
     runtimeId: "runtime-a",
-    directory: "/work/.pi-remote-uploads",
+    directory: "/work/.orbis-uploads",
     fileName: "shot.png",
     size: 1024,
     sha256: "a".repeat(64),
@@ -465,7 +465,7 @@ describe("phone file upload", () => {
       type: "file.upload.finished",
       protocolVersion: PROTOCOL_VERSION,
       uploadId: "u1",
-      path: "/work/.pi-remote-uploads/shot.png",
+      path: "/work/.orbis-uploads/shot.png",
       fileName: "shot.png",
       size: 1024,
       sha256: "a".repeat(64),
@@ -475,7 +475,7 @@ describe("phone file upload", () => {
   });
 
   it("carries attachments as plain paths, and only when the runtime advertises the capability", () => {
-    const path = "/work/.pi-remote-uploads/shot.png";
+    const path = "/work/.orbis-uploads/shot.png";
     const message = { type: "user_message" as const, text: "看一下这张图", attachments: [path] };
     expect(RuntimeCommandSchema.safeParse(message).success).toBe(true);
     expect(RuntimeCommandSchema.safeParse({ ...message, attachments: Array.from({ length: MAX_MESSAGE_ATTACHMENTS + 1 }, () => path) }).success).toBe(false);

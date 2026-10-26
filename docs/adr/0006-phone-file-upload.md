@@ -22,7 +22,7 @@
 - **驱动权在发送方，信用在接收方。** 这是与下载**不同**的地方，也是刻意的：下载时接收方知道自己缺哪一段，所以它能出题（`artifact.read`）；上传时只有手机知道自己有什么字节，Host 无法出题，它只能把持久前缀报回去。所以 `UploadScheduler` 的形状是「已落地 / 已发出」两个游标，而不是范围请求 + 补洞。
 - **续传基准是内容身份而不是 `uploadId`**：`sha256(runtimeId, directory, fileName, size, sha256)` 决定 `.part` 的文件名。手机重试、Host 重启都会拿到新的 `uploadId`，但内容身份不变，于是命中同一个 `.part`。持久前缀只增不减。
 - **接收方持校验权**（与下载同一原则）：`finished` 只在 Host 自己算完 sha256 之后发。手机报的哈希只用于受理时的续传判据。
-- **落地位置**：会话 cwd 下的 `.pi-remote-uploads/`，目录由手机给出、Host 只校验「绝对路径 + 可创建」。Host 不硬编码这段约定，将来加「手机上选目录」时 Host 不需要改。
+- **落地位置**：会话 cwd 下的 `.orbis-uploads/`，目录由手机给出、Host 只校验「绝对路径 + 可创建」。Host 不硬编码这段约定，将来加「手机上选目录」时 Host 不需要改。
 - **附件就是路径**：`user_message.attachments` 是 `string[]`，bridge 在发送前拼进正文（`附件：<path>`）。**不做**描述符、图片嗅探、content parts——理由见下。
 - **能力位**：`RuntimeCapabilities.messageAttachments`。手机只在看到它时才显示上传入口。
 
@@ -51,4 +51,4 @@ Pi 确实接受 `ImageContent`，但「这个文件是不是图片、要不要�
 - 手机端多一个上传任务列表与 `UploadScheduler`；Host 端多一个 `HostUploadService` 与 `.part` 索引。
 - 上传期间手机在上传与交互流量之间做「交互让路」（窗口压到 1 分片），与下载同一手法。**这仍然是在绕「所有流量共用一条 E2E 序列」这个根因**——正解见票 07。
 - 老 Host 不认识 `file.upload.init`，手机超时后报「电脑端不支持发送文件」；老手机不发 `attachments`，扩展与 Host 都不受影响。
-- `.pi-remote-uploads/` 会出现在用户仓库里，需要进 `.gitignore`。
+- `.orbis-uploads/` 会出现在用户仓库里，需要进 `.gitignore`。
