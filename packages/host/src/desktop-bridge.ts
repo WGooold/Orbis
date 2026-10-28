@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import { DesktopRuntime, type DesktopSettings } from "./desktop-runtime.js";
 import { ProviderError } from "./provider-manager.js";
 import { join } from "node:path";
-import { AgentStateRangeRequestSchema } from "@pi-remote/protocol";
+import { AgentStateRangeRequestSchema } from "@orbis/protocol";
 
 // stdout is exclusively a JSON-lines pipe to the parent Qt process. Host diagnostics use events or stderr.
 const output = (value: unknown): void => { process.stdout.write(`${JSON.stringify(value)}\n`); };

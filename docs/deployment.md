@@ -6,7 +6,7 @@ Canonical repository: https://github.com/WGooold/Orbis. Public site: https://orb
 
 Use a Linux server with Docker, Nginx, Certbot and coturn. Allow TCP 80/443 and UDP 3478, plus your restricted SSH access. The Relay container binds only `127.0.0.1:8787`.
 
-Create `/opt/orbis/shared/data` owned by UID/GID 1000 with mode 700. Copy `deploy/relay.env.example` to `/opt/orbis/shared/relay.env`, replace its administrator placeholder with a strong random secret, and make the file mode 600. Keep credentials outside the repository. The console password is this `PI_REMOTE_ADMIN_TOKEN`; there is no default password.
+Create `/opt/orbis/shared/data` owned by UID/GID 1000 with mode 700. Copy `deploy/relay.env.example` to `/opt/orbis/shared/relay.env`, replace its administrator placeholder with a strong random secret, and make the file mode 600. Keep credentials outside the repository. The console password is this `ORBIS_ADMIN_TOKEN`; there is no default password.
 
 Install `deploy/nginx-proxy.conf` as `/etc/nginx/snippets/orbis-proxy.conf`, adapt `deploy/nginx-orbis.conf` to your domain, and obtain a valid TLS certificate with Certbot. Keep the ACME webroot `/var/www/orbis-acme` and Certbot's renewal timer enabled. Validate with `nginx -t` before reloading.
 
@@ -20,12 +20,14 @@ Create a `production` environment and configure its secrets:
 
 | Secret | Value |
 | --- | --- |
-| `PI_REMOTE_SSH_KEY` | Dedicated deployment private key |
-| `PI_REMOTE_SSH_KNOWN_HOSTS` | SSH host key verified through a trusted connection |
-| `PI_REMOTE_DEPLOY_TARGET` | `root@your-server` or a deployment account with required permissions |
-| `PI_REMOTE_SSH_PORT` | SSH port, usually `22` |
-| `PI_REMOTE_DEPLOY_DIR` | `/opt/orbis` |
-| `PI_REMOTE_HEALTH_URL` | `https://your-domain/relay/healthz` |
+| `ORBIS_SSH_KEY` | Dedicated deployment private key |
+| `ORBIS_SSH_KNOWN_HOSTS` | SSH host key verified through a trusted connection |
+| `ORBIS_DEPLOY_TARGET` | `root@your-server` or a deployment account with required permissions |
+| `ORBIS_SSH_PORT` | SSH port, usually `22` |
+| `ORBIS_DEPLOY_DIR` | `/opt/orbis` |
+| `ORBIS_HEALTH_URL` | `https://your-domain/relay/healthz` |
+
+The workflow also accepts the former `PI_REMOTE_*` names for these secrets. Relay runtime configuration prefers `ORBIS_*` and accepts existing `PI_REMOTE_*` values, so a naming upgrade does not require rewriting deployed credentials. The deployment script uses `orbis-relay` for new containers and can replace an existing `pi-remote-relay` container while preserving its original name during rollback.
 
 Push relevant changes to `main`. The check job runs on Windows; the deploy job archives `git archive HEAD`, uploads via pinned SSH, builds on the server and checks a candidate before switching traffic. Application deployments have no local shortcut.
 

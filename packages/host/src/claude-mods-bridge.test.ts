@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { RuntimeEventSchema, type RuntimeEvent } from "@pi-remote/protocol";
+import { RuntimeEventSchema, type RuntimeEvent } from "@orbis/protocol";
 import { CLAUDE_BRIDGE_CAPABILITIES, ClaudeModsBridge } from "./claude-mods-bridge.js";
 
 function hello(overrides: Record<string, unknown> = {}) {

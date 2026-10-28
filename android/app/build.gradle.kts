@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.pi.remote"
+    namespace = "com.orbising.orbis"
     compileSdk = 35
 
     defaultConfig {

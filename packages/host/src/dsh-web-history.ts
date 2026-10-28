@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import type { ChatMessage, RemoteSessionEntry, RuntimeSlashCommandOption } from "@pi-remote/protocol";
+import type { ChatMessage, RemoteSessionEntry, RuntimeSlashCommandOption } from "@orbis/protocol";
 import { record, type JsonObject } from "./dsh-client.js";
 import { dshContent } from "./dsh-history.js";
 

@@ -5,9 +5,9 @@ import { homedir } from "node:os";
 import { join, delimiter, isAbsolute } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, resolveStateDir, revokeDeviceRecord, saveDeviceStore } from "@pi-remote/e2e";
+import { loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, resolveStateDir, revokeDeviceRecord, saveDeviceStore } from "@orbis/e2e";
 import QRCode from "qrcode";
-import type { AgentStateRangeRequest } from "@pi-remote/protocol";
+import type { AgentStateRangeRequest } from "@orbis/protocol";
 import { HostService } from "./host-service.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
@@ -200,9 +200,9 @@ export class DesktopRuntime {
       }
     }
     if (process.env.ORBIS_CODEX_ENTRY && !selectedCodex && !this.#selectionError) await this.#syncCodexSelection(process.env.ORBIS_CODEX_ENTRY);
-    process.env.PI_REMOTE_ENABLED = "true";
-    process.env.PI_REMOTE_RELAY_URL = "ws://127.0.0.1";
-    process.env.PI_REMOTE_RUNTIME_CREDENTIAL = "loopback-only";
+    process.env.ORBIS_ENABLED = "true";
+    process.env.ORBIS_RELAY_URL = "ws://127.0.0.1";
+    process.env.ORBIS_RUNTIME_CREDENTIAL = "loopback-only";
   }
 
   async #syncCodexSelection(entry: string): Promise<void> {

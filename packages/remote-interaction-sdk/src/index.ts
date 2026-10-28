@@ -7,8 +7,8 @@ import {
   type QuestionnaireAnswer,
   type QuestionnaireQuestion,
   type RuntimeEvent,
-} from "@pi-remote/protocol";
-export type { QuestionnaireAnswer, QuestionnaireQuestion } from "@pi-remote/protocol";
+} from "@orbis/protocol";
+export type { QuestionnaireAnswer, QuestionnaireQuestion } from "@orbis/protocol";
 
 type InteractionValue = boolean | string | string[] | QuestionnaireAnswer[];
 const responseValue = (response: Exclude<InteractionResponse, { kind: "cancel" }>): InteractionValue =>

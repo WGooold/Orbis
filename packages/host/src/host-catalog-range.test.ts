@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HostCatalogRangeSchema, HostCatalogStateSchema, type AgentSessionSummary, type HostCatalogBackend, type HostCatalogState } from "@pi-remote/protocol";
+import { HostCatalogRangeSchema, HostCatalogStateSchema, type AgentSessionSummary, type HostCatalogBackend, type HostCatalogState } from "@orbis/protocol";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { HostStateFacts } from "./host-state-facts.js";
 

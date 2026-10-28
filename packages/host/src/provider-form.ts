@@ -1,6 +1,6 @@
 import { parse } from "smol-toml";
 import { parseDocument, stringify as yaml } from "yaml";
-import type { AgentKind } from "@pi-remote/protocol";
+import type { AgentKind } from "@orbis/protocol";
 import { ProviderError, type ProviderProfile } from "./provider-manager.js";
 import { codexOfficial, codexToken } from "./provider-codex.js";
 import { setToml } from "./provider-toml.js";

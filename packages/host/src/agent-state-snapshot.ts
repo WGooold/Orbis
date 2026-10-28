@@ -1,7 +1,7 @@
 import {
   AgentStateDomainSchema, DeviceStateDomainSchema, HostStateDomainSchema, PROTOCOL_VERSION,
   type AgentStateDomainSnapshot, type AgentStateSnapshot, type RelayToDeviceMessage,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 import type { AgentStateRegistry, StateScope } from "./agent-state-registry.js";
 

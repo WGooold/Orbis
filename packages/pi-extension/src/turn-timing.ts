@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RuntimeEvent } from "@pi-remote/protocol";
+import type { RuntimeEvent } from "@orbis/protocol";
 
 export function formatTurnDuration(durationMs: number): string {
   const totalSeconds = Math.floor(durationMs / 1_000);

@@ -1,7 +1,7 @@
 import { platform } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { CodexDesktopAttach } from "@pi-remote/protocol";
+import type { CodexDesktopAttach } from "@orbis/protocol";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { launchCodexDesktopApp } from "./codex-desktop-app.js";

@@ -15,10 +15,10 @@ import {
   readHandshakeEnvelope,
   toBase64Url,
   type DeviceRecord,
-} from "@pi-remote/e2e";
-import { EnvelopeReassembler, PIECE_HEADER_BYTES, type EnvelopeV2, type OutboundQueueDiagnostic, type PathKind } from "@pi-remote/protocol";
+} from "@orbis/e2e";
+import { EnvelopeReassembler, PIECE_HEADER_BYTES, type EnvelopeV2, type OutboundQueueDiagnostic, type PathKind } from "@orbis/protocol";
 
-import { DeviceLink, SESSION_SYNC_WIRE_LIMIT_BYTES, type PathSink } from "./device-link.js";
+import { DeviceLink, SESSION_SYNC_WIRE_LIMIT_BYTES, sessionSyncWireBytes, type PathSink } from "./device-link.js";
 import { outboundQueueSource } from "./outbound-queue-diagnostics.js";
 
 const HOST_ID = "host-1";
@@ -203,6 +203,30 @@ function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLi
 }
 
 describe("DeviceLink", () => {
+  it("admits details before sealing with an independent bounded bulk budget and keeps chat/control priority", async () => {
+    const h = harness({ pskRoot: randomKey() }); let backlog = 10_000_000;
+    h.attach("lan", () => backlog); h.handshake("lan");
+    try {
+      const payload = Buffer.alloc(40 * 1024, 65);
+      const count = Math.floor(256 * 1024 / sessionSyncWireBytes(payload.length));
+      for (let i = 0; i < count; i++) expect(h.link.sendToolContent(payload)).toBe(true);
+      expect(h.link.sendToolContent(payload)).toBe(false);
+      expect(h.link.sendToolContent(Buffer.alloc(65_537))).toBe(false);
+      expect(h.link.toolContentQueuedBytes).toBeLessThanOrEqual(256 * 1024);
+      expect(h.link.sessionSyncQueuedBytes).toBe(0);
+      expect(h.link.sendSessionSnapshot(Buffer.from("chat"), () => {})).toBe(true);
+      expect(h.link.send(Buffer.from("stop"), "ctl")).toBe(true);
+      backlog = 0; await vi.waitFor(() => expect(h.link.toolContentQueuedBytes).toBe(0));
+      expect(h.messagesSent()).toEqual(["ctl:1", "msg:1", ...Array.from({ length: count }, (_, i) => `bulk:${i + 1}`)]);
+    } finally { h.link.close(); }
+  });
+
+  it("releases pending detail bytes when their encrypted path is invalidated", () => {
+    const h = harness({ pskRoot: randomKey() }); h.attach("relay", () => 10_000_000); h.handshake("relay");
+    expect(h.link.sendToolContent(Buffer.alloc(60 * 1024))).toBe(true);
+    expect(h.link.toolContentQueuedBytes).toBeGreaterThan(0);
+    h.link.detach("relay"); expect(h.link.toolContentQueuedBytes).toBe(0); h.link.close();
+  });
   it("attributes real encrypted slices and resets queue diagnostics after detaching a path", () => {
     vi.useFakeTimers({ now: 1_000 });
     const samples: { path: PathKind; sample: OutboundQueueDiagnostic }[] = [];

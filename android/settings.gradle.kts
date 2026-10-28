@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PiRemote"
+rootProject.name = "Orbis"
 include(":app")

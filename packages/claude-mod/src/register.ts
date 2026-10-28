@@ -158,7 +158,7 @@ async function connect($: Api): Promise<Connection | undefined> {
 async function readDescriptor($: Api): Promise<Descriptor | undefined> {
   const stateDir = await $.env.get("ORBIS_STATE_DIR");
   const home = await $.env.get("USERPROFILE") ?? await $.env.get("HOME");
-  const root = stateDir ?? (home === undefined ? undefined : `${home}${home.includes("\\") ? "\\.pi-remote" : "/.pi-remote"}`);
+  const root = stateDir ?? (home === undefined ? undefined : `${home}${home.includes("\\") ? "\\.orbis" : "/.orbis"}`);
   if (root === undefined) return undefined;
   const path = `${root.replace(/[\\/]+$/u, "")}${root.includes("\\") ? "\\" : "/"}loopback.json`;
   try {

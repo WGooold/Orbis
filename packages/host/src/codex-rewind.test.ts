@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { RuntimeEvent, SessionSyncRequest } from "@pi-remote/protocol";
+import type { RuntimeEvent, SessionSyncRequest } from "@orbis/protocol";
 
 import type { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";

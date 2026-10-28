@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EnvelopeV2Schema, envelopeNonce } from "@pi-remote/protocol";
+import { EnvelopeV2Schema, envelopeNonce } from "@orbis/protocol";
 
 import {
   DeviceHandshake,

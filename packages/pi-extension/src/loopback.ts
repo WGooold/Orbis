@@ -1,22 +1,23 @@
 /**
  * Pi 扩展的本机接入（spec §7.3）。
  *
- * 有常驻 Host 时走 loopback，没有时回落到 Relay：还没跑 `pi-remote host` 的用户
+ * 有常驻 Host 时走 loopback，没有时回落到 Relay：还没跑 `orbis host` 的用户
  * 体验必须和以前一模一样，所以「读不到发现文件」不是错误，只是一个分支。
  *
  * loopback 上不套 v2 Envelope——E2E 的边界是「手机 ↔ Host」，本机之后是同一个信任域。
  * 这正是 Host 的 loopback 端点可以复用 runtime 侧那套消息的原因。
  */
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveStateDir } from "@orbis/e2e";
+import { orbisEnvironment } from "@orbis/protocol";
 
 import {
   LOOPBACK_DESCRIPTOR_FILE,
   LOOPBACK_PATH,
   LoopbackDescriptorSchema,
   type LoopbackDescriptor,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 import { RelayRuntimeTransport, type RelayRuntimeConnectionState, type RelayRuntimeTransportOptions } from "./transport.js";
 
@@ -24,12 +25,12 @@ import { RelayRuntimeTransport, type RelayRuntimeConnectionState, type RelayRunt
  * 发现文件的默认位置。
  *
  * 一台机器上可以有多个 Host（不同 `--state-dir` 就是不同 Host），Host 拉起 agent 时会用
- * `PI_REMOTE_STATE_DIR` 告诉它自己用哪个状态目录；没有这个变量时才是用户默认的
- * `~/.pi-remote`。读不到文件仍然按「本机没有 Host」处理。
+ * `ORBIS_STATE_DIR` 告诉它自己用哪个状态目录；没有这个变量时才是用户默认的
+ * `~/.orbis`。读不到文件仍然按「本机没有 Host」处理。
  */
 export function defaultLoopbackDescriptorPath(): string {
-  const configured = process.env.PI_REMOTE_STATE_DIR?.trim();
-  return join(configured !== undefined && configured.length > 0 ? configured : join(homedir(), ".pi-remote"),
+  const configured = orbisEnvironment(process.env, "STATE_DIR")?.trim();
+  return join(resolveStateDir(configured || undefined),
     LOOPBACK_DESCRIPTOR_FILE);
 }
 
@@ -61,8 +62,9 @@ export async function readLoopbackDescriptor(
 export type LoopbackHostTransportOptions =
   Omit<RelayRuntimeTransportOptions, "relayUrl" | "credential" | "resolveEndpoint">
   & {
+    onHostResolved?: (hostId: string) => void;
     descriptor: LoopbackDescriptor;
-    /** 发现文件路径（缺省 `~/.pi-remote/loopback.json`）。重连时重读它，找回换了端口的 Host。 */
+    /** 发现文件路径（缺省 `~/.orbis/loopback.json`）。重连时重读它，找回换了端口的 Host。 */
     descriptorPath?: string;
     /**
      * 允许接上任何一个 Host，而不比对 `hostId`。
@@ -85,6 +87,7 @@ export type LoopbackHostTransportOptions =
  * Host 起起来（哪怕换了端口）就会自己接上。约定仍是「先起 Host，再起 Pi」。
  */
 export async function resolveRuntimeTransport(input: {
+  onHostResolved?: (hostId: string) => void;
   onConnectionStateChange: (state: RelayRuntimeConnectionState) => void;
   descriptorPath?: string;
   log?: (line: string) => void;
@@ -100,6 +103,7 @@ export async function resolveRuntimeTransport(input: {
     input.log?.(`走本机 Host 通道（hostId=${descriptor.hostId} pid=${descriptor.pid}）`);
   }
   return new LoopbackHostTransport({
+    ...(input.onHostResolved === undefined ? {} : { onHostResolved: input.onHostResolved }),
     // 没有发现文件时给个占位端点：真正的地址由 `resolveEndpoint` 在每次重连前重读。
     // 端口取 1 是为了让"Host 还没起"这件事表现为一次普通的连接失败，而不是打到别的服务上。
     descriptor: descriptor ?? { version: 1, url: "ws://127.0.0.1:1", token: "placeholder", hostId: "", pid: 0 },
@@ -119,7 +123,7 @@ export async function resolveRuntimeTransport(input: {
  */
 export class LoopbackHostTransport extends RelayRuntimeTransport {
   constructor(options: LoopbackHostTransportOptions) {
-    const { descriptor, descriptorPath, adoptAnyHost, ...rest } = options;
+    const { descriptor, descriptorPath, adoptAnyHost, onHostResolved, ...rest } = options;
     super({
       ...rest,
       relayUrl: descriptor.url,
@@ -132,6 +136,7 @@ export class LoopbackHostTransport extends RelayRuntimeTransport {
         const fresh = await readLoopbackDescriptor(descriptorPath);
         if (fresh === undefined) return undefined;
         if (adoptAnyHost !== true && fresh.hostId !== descriptor.hostId) return undefined;
+        onHostResolved?.(fresh.hostId);
         return { relayUrl: fresh.url, credential: fresh.token };
       },
     });

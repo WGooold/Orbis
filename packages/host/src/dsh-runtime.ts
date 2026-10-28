@@ -1,6 +1,7 @@
 /** DeepSeek Harness backend: ACP owns execution; the matching persistence API owns history. */
 import { createHash, randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
+import { ToolActivityProducer, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -9,7 +10,7 @@ import {
   SessionSyncPreparer,
   type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshAcpClient, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
 import { dshEntries, openDshHistory, type DshHistory } from "./dsh-history.js";
@@ -53,6 +54,43 @@ export class DshAcpRuntime implements AgentBackend {
   #client: DshConnection;
   readonly #history: DshHistory;
   readonly #sessions = new Map<string, Session>();
+  readonly #toolProducers = new Map<string, ToolActivityProducer>();
+  #toolHostId = "local";
+  #toolStore: ToolContentStore | undefined;
+  setToolContentStore(store: ToolContentStore, hostId: string): void {
+    this.#toolStore = store; this.#toolHostId = hostId;
+    for (const producer of this.#toolProducers.values()) producer.attach(store);
+  }
+  readonly toolContents: ToolContentReader = {
+    read: (owner, request, signal) => {
+      const session = this.#sessions.get(request.runtimeId);
+      if (!session || session.closing) return Promise.reject(new ToolContentReadError("content_unavailable"));
+      return this.#toolProducer(session).read(owner, request, signal);
+    }, cancel: async (owner, readId) => { await this.#toolStore?.cancel(owner, readId); },
+  };
+  #toolProducer(session: Session): ToolActivityProducer {
+    const runtimeId = publicId(session.id); let producer = this.#toolProducers.get(runtimeId);
+    if (!producer) {
+      producer = new ToolActivityProducer({ agent: () => ({ hostId: this.#toolHostId, agentKind: "dsh", sessionId: runtimeId }),
+        runtimeId: () => runtimeId, source: () => ({ epoch: session.source.version.epoch,
+          ready: this.#ready && this.#sessions.get(runtimeId) === session && !session.closing && session.source.version.ready }),
+        ...(this.#toolStore ? { store: this.#toolStore } : {}), native: async (locator, signal) => {
+          const log = await this.#history.read(session.id);
+          if (signal?.aborted) throw new ToolContentReadError("cancelled");
+          if (Buffer.byteLength(JSON.stringify(log), "utf8") > 32 * 1024 * 1024) throw new ToolContentReadError("content_unavailable");
+          for (const entry of dshEntries(log)) {
+            const message = record(entry.data.message);
+            if (locator.part === "result" && message.toolCallId === locator.tool.toolCallId) return { format: "json", value: message };
+            if (locator.part === "arguments") for (const block of objects(message.content)) {
+              if (block.type === "tool_call" && block.toolCallId === locator.tool.toolCallId) return { format: "json", value: block.arguments };
+            }
+          }
+          return undefined;
+        } });
+      this.#toolProducers.set(runtimeId, producer);
+    }
+    return producer;
+  }
   readonly #activating = new Map<string, Promise<BackendActivation>>();
   readonly #approvals = new Map<string, Approval>();
   readonly #coalesceMs: number;
@@ -77,6 +115,7 @@ export class DshAcpRuntime implements AgentBackend {
       const runtimes = this.directoryEntries();
       this.#ready = false;
       for (const id of this.#approvals.keys()) this.#cancelApproval(id, "disconnected");
+      for (const producer of this.#toolProducers.values()) void producer.dispose(); this.#toolProducers.clear();
       this.#sessions.clear();
       this.onOffline?.(reason, runtimes);
     };
@@ -194,7 +233,8 @@ export class DshAcpRuntime implements AgentBackend {
       const log = await this.#history.read(id);
       const entryCache = new Map<number, RemoteSessionEntry>();
       const session: Session = {
-        source: new RecoverableSessionSource(publicId(id), event => this.#sink(event, publicId(id!)), { coalesceMs: this.#coalesceMs }),
+        source: new RecoverableSessionSource(publicId(id), event => this.#sink(event, publicId(id!)), { coalesceMs: this.#coalesceMs,
+          publishTools: event => this.#sink(event, publicId(id!)) }),
         notifications: new NotificationSource(randomUUID(), publicId(id), event => {
           if (this.#sessions.get(publicId(id!))?.notifications.epoch === event.producerEpoch) this.#sink(event, publicId(id!));
         }),
@@ -203,6 +243,7 @@ export class DshAcpRuntime implements AgentBackend {
         running: false, closing: false, cancelRequested: false, updates: Promise.resolve(), streamed: new Map(), tools: new Map(), messages: new Map(), lastSeq: log.events.at(-1)?.seq ?? -1,
       };
       this.#sessions.set(publicId(id), session);
+      session.entries = session.entries.map((entry, order) => this.#toolProducer(session).entry(entry, order));
       session.source.transaction(() => {
         session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null);
         session.source.setAvailability(true, true);
@@ -236,6 +277,7 @@ export class DshAcpRuntime implements AgentBackend {
         await this.#refresh(session);
         // 响应带 `source.seq`：先刷掉合并窗口，否则 knownState 会在窗口结束后失效（ADR-0035 §15）。
         session.source.flushPending();
+        session.source.replayToolInventory();
         this.#emit(session, session.preparer.select({
           entries: session.entries, sessionId: publicId(session.id),
           leafId: session.entries.at(-1)?.entryId ?? null, request: command, source: session.source.snapshot(),
@@ -391,7 +433,7 @@ export class DshAcpRuntime implements AgentBackend {
         this.#emit(session, { type: "message.delta", messageId: message.messageId, contentType, contentIndex: index, delta: content.text });
       } else if (type === "tool_call" && typeof update.toolCallId === "string") {
         const name = typeof update.title === "string" ? update.title : "tool";
-        session.tools.set(update.toolCallId, { name, input: update.rawInput ?? {} });
+        session.tools.set(update.toolCallId, { name, input: undefined });
         this.#emit(session, { type: "tool.started", toolCallId: update.toolCallId, toolName: name, arguments: update.rawInput ?? {} });
       } else if (type === "tool_call_update" && typeof update.toolCallId === "string") {
         const toolName = session.tools.get(update.toolCallId)?.name ?? "tool";
@@ -464,7 +506,7 @@ export class DshAcpRuntime implements AgentBackend {
     // Concurrent history requests must not move the announced leaf backwards.
     if ((log.events.at(-1)?.seq ?? -1) >= session.lastSeq) {
       session.source.transaction(() => {
-        const next = dshEntries(log, session.entryCache);
+        const next = dshEntries(log, session.entryCache).map((entry, order) => this.#toolProducer(session).entry(entry, order));
         // ADR-0039 §6：`entryCache` 保证同一 seq 复用同一对象，因此"同 seq 产出新对象"
         // 就是内容被替换的可靠信号。没替换就不要让显示索引失效——否则每次 sync 都重算一遍。
         const replaced = next.length !== session.entries.length ||
@@ -480,6 +522,7 @@ export class DshAcpRuntime implements AgentBackend {
   }
   #emit(session: Session, event: RuntimeEvent): void {
     if (event.type !== "command.result" && this.#sessions.get(publicId(session.id)) !== session) return;
+    event = this.#toolProducer(session).event(event);
     session.source.transaction(() => {
       if (!session.source.observe(event)) this.#sink(event, publicId(session.id));
       else session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null);
@@ -526,7 +569,10 @@ export class DshAcpRuntime implements AgentBackend {
         session.cancelRequested = true;
         await this.#client.request("session/close", { sessionId: session.id }, 60_000);
       }));
-      try { await this.#client.stop(); } finally { await this.#history.close(); }
+      try { await this.#client.stop(); } finally {
+        for (const producer of this.#toolProducers.values()) await producer.dispose(); this.#toolProducers.clear();
+        await this.#history.close();
+      }
     })();
   }
 }
@@ -553,6 +599,8 @@ type DshImplementation = AgentBackend & {
 export class DshRuntime implements AgentBackend {
   readonly kind = "dsh" as const;
   readonly #implementation: DshImplementation;
+  get toolContents(): ToolContentReader | undefined { return this.#implementation.toolContents; }
+  setToolContentStore(store: ToolContentStore, hostId: string): void { this.#implementation.setToolContentStore?.(store, hostId); }
   #metadataChange: (() => void) | undefined;
   #offline: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;
   set onCatalogChange(value: (() => void) | undefined) { this.#implementation.onCatalogChange = value; }
@@ -604,7 +652,7 @@ export class DshRuntime implements AgentBackend {
   ownsRuntime(runtimeId: string): boolean { return this.#implementation.ownsRuntime(runtimeId); }
   catalog(archived = false): Promise<AgentSessionSummary[]> { return this.#implementation.catalog(archived); }
   setArchived(sessionId: string, archived: boolean): Promise<void> { return this.#implementation.setArchived(sessionId, archived); }
-  activate(target: AgentActivateTarget, context?: { deviceId?: string; spawnMode?: import("@pi-remote/protocol").SpawnMode }): Promise<BackendActivation> {
+  activate(target: AgentActivateTarget, context?: { deviceId?: string; spawnMode?: import("@orbis/protocol").SpawnMode }): Promise<BackendActivation> {
     return this.#implementation.activate(target, context);
   }
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {

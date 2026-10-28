@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createRelayServer } from "../../relay/src/index.js";
 import { RegistrationAuthority } from "../../relay/src/registration.js";
-import { loadDeviceStore, saveDeviceStore } from "@pi-remote/e2e";
+import { loadDeviceStore, saveDeviceStore } from "@orbis/e2e";
 import { DesktopRuntime, validateDesktopRelay, type DesktopEvent } from "./desktop-runtime.js";
 
 describe("desktop Host lifecycle", () => {

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type {
   AgentDeliveryItem, AgentExecutionState, AgentModelState, AgentNotificationsState, AgentPermissionsState,
   InteractionRequest, RuntimeEvent, RuntimeMetadata,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry, type StateDomain, type StateScope } from "./agent-state-registry.js";

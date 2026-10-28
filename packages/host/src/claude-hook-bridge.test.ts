@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ClaudeHookBridge, ClaudeHookInputError } from "./claude-hook-bridge.js";
-import type { RuntimeEvent } from "@pi-remote/protocol";
+import type { RuntimeEvent } from "@orbis/protocol";
 
 const permission = (sessionId = "session-1") => ({
   hook_event_name: "PermissionRequest",

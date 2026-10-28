@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { SESSION_SYNC_PAGE_BYTES, type AgentSessionSummary, type RuntimeEvent, type SessionSyncRequest } from "@pi-remote/protocol";
+import { SESSION_SYNC_PAGE_BYTES, type AgentSessionSummary, type RuntimeEvent, type SessionSyncRequest } from "@orbis/protocol";
 
 import { CODEX_RUNTIME_ID, type CodexAppServer, type CodexServerRequest } from "./codex-daemon.js";
 import { CodexRuntime, codexHeadWindowLaunch } from "./codex-runtime.js";
@@ -77,7 +77,7 @@ function makeHarness(options?: {
   } as unknown as CodexAppServer;
   // 磁盘 rollout 扫描指向空临时目录：既不让测试读到本机真实的 ~/.codex/sessions，
   // 又给磁盘目录用例一个可写入的根。
-  const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-rollout-"));
+  const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-rollout-"));
   const runtime = new CodexRuntime({
     server,
     onEvent: (event) => events.push(event),
@@ -281,9 +281,12 @@ describe("Codex recoverable source checkpoints", () => {
     h.notify("item/started", { threadId: "th-1", item: tool("b") });
     h.notify("item/completed", { threadId: "th-1", item: tool("b", "completed") });
     expect(syncHistory(h)).toMatchObject({
-      entries: [], live: { messages: expect.arrayContaining([expect.objectContaining({ persistedEntryId: "b", finished: true })]),
-        tools: [expect.objectContaining({ toolCallId: "b", state: "finished" })] },
+      entries: [], live: { messages: [expect.objectContaining({ message: expect.objectContaining({ messageId: "a" }) })],
+        tools: [], toolInventory: { totalCount: 1 } },
     });
+    expect(h.events.filter(event => event.type === "session.tools.produced").at(-1)).toMatchObject({ page: { tools: [
+      { tool: { toolCallId: "b" }, phase: "finished" },
+    ] } });
     h.events.length = 0;
     h.notify("item/completed", { threadId: "th-1", item: agent("a", "final") });
     const patches = h.events.filter(event => event.type === "session.patch");
@@ -308,8 +311,8 @@ describe("Codex recoverable source checkpoints", () => {
     expect(committed?.entries?.[0]?.parentId).toBe("a:result");
   });
 
-  // ADR-0038：超长工具输出在**线路载荷**上被截断，源端/canonical 仍保留完整原文。
-  it("truncates oversized tool output on the wire while keeping canonical data intact", async () => {
+  // ADR-0045：原生输出不进入公共 canonical/display/线路载荷。
+  it("projects oversized tool output into bounded canonical summaries", async () => {
     const h = makeHarness();
     await activate(h);
     const output = "x".repeat(SESSION_SYNC_PAGE_BYTES + 1024);
@@ -317,11 +320,12 @@ describe("Codex recoverable source checkpoints", () => {
     h.notify("item/completed", { threadId: "th-1", item: { ...tool("large", "completed"), output } });
     const committed = h.events.filter(event => event.type === "session.patch").at(-1);
     expect(committed).toMatchObject({ head: { leafId: "large:result" } });
-    expect(committed?.entries).toBeUndefined();
+    expect(committed?.entries).toHaveLength(2);
     const snapshot = syncHistory(h);
     const wire = JSON.stringify(snapshot?.entries);
     expect(wire).not.toContain(output);
-    expect(wire).toContain("已截断");
+    expect(wire).toContain("toolSummary");
+    expect(wire.length).toBeLessThan(16 * 1024);
     expect(snapshot?.entries.map(entry => entry.entryId)).toContain("large:result");
   });
 
@@ -333,7 +337,7 @@ describe("Codex recoverable source checkpoints", () => {
       checkpoint: { head: { leafId: null }, inventoryComplete: false },
       live: { complete: false, turn: null,
         messages: expect.arrayContaining([expect.objectContaining({ message: expect.objectContaining({ messageId: "a" }), finished: false, contentComplete: false })]),
-        tools: [expect.objectContaining({ toolCallId: "b", state: "started" })] },
+        tools: [], toolInventory: { totalCount: 1 } },
     });
   });
 
@@ -343,8 +347,8 @@ describe("Codex recoverable source checkpoints", () => {
       items: [agent("a", "partial"), tool("b", "completed")] }]);
     expect(syncHistory(h)).toMatchObject({
       entries: [], live: { complete: true,
-        messages: expect.arrayContaining([expect.objectContaining({ persistedEntryId: "b", finished: true, contentComplete: true })]),
-        tools: [expect.objectContaining({ toolCallId: "b", state: "finished" })] },
+        messages: [expect.objectContaining({ message: expect.objectContaining({ messageId: "a" }) })],
+        tools: [], toolInventory: { totalCount: 1 } },
     });
   });
 
@@ -357,7 +361,7 @@ describe("Codex recoverable source checkpoints", () => {
     h.notify("item/completed", { threadId: "th-1", turnId: "t", item: tool("b", "completed") });
     h.notify("turn/completed", { threadId: "th-1", turn: { id: "t" } });
     expect(syncHistory(h)).toMatchObject({ entries: [], live: { turn: null,
-      tools: [expect.objectContaining({ toolCallId: "b", state: "finished" })] } });
+      tools: [], toolInventory: { totalCount: 1 } } });
   });
 
   it("repairs a silent native revert through the 15 second native check", async () => {
@@ -1291,22 +1295,16 @@ describe("CodexRuntime", () => {
         content: [{ type: "tool_call", toolCallId: "tool-1" }],
       },
     });
-    expect(h.events).toContainEqual({
-      type: "tool.started",
-      toolCallId: "tool-1",
-      toolName: "commandExecution",
-      arguments: { command: "npm test", cwd: "D:/repo" },
-    });
-    expect(h.events).toContainEqual({
-      type: "tool.finished",
-      toolCallId: "tool-1",
-      toolName: "commandExecution",
-      result: { status: "completed", exitCode: 0 },
-      isError: false,
-    });
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "tool.activity", summary: expect.objectContaining({
+      tool: expect.objectContaining({ toolCallId: "tool-1" }), phase: "started", inputSummary: { text: "npm test", omitted: false, originalBytes: 8 },
+    }) }));
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "tool.activity", summary: expect.objectContaining({
+      phase: "finished", isError: false, exitCode: 0,
+    }) }));
+    expect(JSON.stringify(h.events)).not.toContain('"arguments":');
   });
 
-  it("Codex 工具输出增量映射为 tool.updated，MCP progress 也使用同一 toolCallId", async () => {
+  it("Codex 工具输出与 MCP progress 不进入共享事件或增加聊天 seq", async () => {
     const h = makeHarness();
     await activate(h);
     h.events.length = 0;
@@ -1330,18 +1328,12 @@ describe("CodexRuntime", () => {
       message: "still working",
     });
 
-    expect(h.events).toContainEqual({
-      type: "tool.updated",
-      toolCallId: "cmd-1",
-      toolName: "commandExecution",
-      partialResult: "file.txt\n",
-    });
-    expect(h.events).toContainEqual({
-      type: "tool.updated",
-      toolCallId: "mcp-1",
-      toolName: "search",
-      partialResult: "still working",
-    });
+    expect(h.events.some(event => event.type === "tool.updated")).toBe(false);
+    expect(JSON.stringify(h.events)).not.toContain("file.txt");
+    expect(JSON.stringify(h.events)).not.toContain("still working");
+    const count = h.events.length;
+    h.notify("item/commandExecution/outputDelta", { threadId: "th-1", itemId: "cmd-1", delta: "another byte" });
+    expect(h.events).toHaveLength(count);
   });
 
   it("Codex 历史工具 item 回放为相邻的 tool_call 和 tool result 消息", async () => {
@@ -2148,7 +2140,7 @@ describe("CodexRuntime", () => {
     const runtime = new CodexRuntime({
       server,
       onEvent: (event) => events.push(event),
-      rolloutRoot: mkdtempSync(join(tmpdir(), "pi-remote-codex-quit-")),
+      rolloutRoot: mkdtempSync(join(tmpdir(), "orbis-codex-quit-")),
       openHeadWindow: () => {},
       killTuiProcesses: ({ sessionId, endpoint: target }) => {
         kills.push({ sessionId, endpoint: target });
@@ -2272,7 +2264,7 @@ describe("CodexRuntime", () => {
   });
 
   it("旧格式 thread 也开有头窗口（在线必须绑定 TUI 窗口在，否则「没 TUI 却在线」）", async () => {
-    const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-oldwin-"));
+    const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-oldwin-"));
     mkdirSync(join(rolloutRoot, "2026", "07", "17"), { recursive: true });
     writeFileSync(
       join(rolloutRoot, "2026", "07", "17", "rollout-2026-07-17T21-58-40-th-old.jsonl"),
@@ -2300,7 +2292,7 @@ describe("CodexRuntime", () => {
   });
 
   it("新格式 thread（turns 带 items）正常开有头窗口", async () => {
-    const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-openwin-"));
+    const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-openwin-"));
     const queue: Array<{ resolve: (v: unknown) => void }> = [];
     const server = { request: (method: string) => method === "model/list" ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] }) : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })), notify: vi.fn(), endpoint: "ws://127.0.0.1:9998" } as unknown as CodexAppServer;
     const opened: string[] = [];
@@ -2319,7 +2311,7 @@ describe("CodexRuntime", () => {
   });
 
   it("TUI 窗口关闭 → 该 thread 下线（onOffline 广播 + 目录移除）", async () => {
-    const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-closewin-"));
+    const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-closewin-"));
     const queue: Array<{ resolve: (v: unknown) => void }> = [];
     const unsubscribe = vi.fn(async () => ({}));
     const server = { request: (method: string) => method === "model/list"
@@ -2599,7 +2591,7 @@ describe("CodexRuntime TUI 切换会话", () => {
       endpoint: "ws://127.0.0.1:9931",
       codexCommand: { command: "node.exe", prefixArgs: ["codex.js"] },
     } as unknown as CodexAppServer;
-    const rolloutRoot = mkdtempSync(join(tmpdir(), "pi-remote-codex-switch-"));
+    const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-switch-"));
     // 捕获看门狗 tick：#startHeadWatcher 在 activate 内部调用，覆盖窗必须盖到那之后。
     let watcherTick: () => void = () => {};
     const origSetInterval = globalThis.setInterval;

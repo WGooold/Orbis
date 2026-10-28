@@ -2,11 +2,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RuntimeEventSchema, type RuntimeEvent } from "@pi-remote/protocol";
+import { RuntimeEventSchema, type RuntimeEvent } from "@orbis/protocol";
 import type { DshWebConnection } from "./dsh-web-client.js";
 import { DshWebRuntime } from "./dsh-web-runtime.js";
 import { AgentConversationState } from "./agent-conversation-state.js";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
+import { ToolContentStore } from "@orbis/runtime-bridge";
 
 const roots: string[] = [];
 const runtimes: DshWebRuntime[] = [];
@@ -53,6 +54,34 @@ afterEach(async () => {
 });
 
 describe("DeepSeek Web runtime adapter", () => {
+  it("projects large native tool events before shared publication and privately hydrates fixed result pages", async () => {
+    const f = discoveryFixture(), root = await mkdtemp(join(tmpdir(), "orbis-dsh-tools-")); roots.push(root);
+    const store = await ToolContentStore.create({ directory: root, producerId: "dsh-test" });
+    try {
+      f.runtime.setToolContentStore(store, "host");
+      f.list([f.live("tools", true)]); await f.runtime.start();
+      const raw = "PRIVATE_DSH_RESULT" + "x".repeat(10 * 1024 * 1024);
+      const records = [
+        { event: { seq: 0, time: 1000, type: "turn/start", data: { turn: 1 } } },
+        { event: { seq: 1, time: 1001, type: "tool/call", data: { turn: 1, step: 1, callId: "call", name: "bash", arguments: '{"command":"echo ok"}' } } },
+        { event: { seq: 2, time: 1002, type: "tool/result", data: { turn: 1, step: 1, message: { id: "result", role: "tool", source: { kind: "tool", callId: "call" }, toolCallId: "call", content: [{ type: "text", text: raw }] } } } },
+      ];
+      f.follows()[0]!.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 2, records, assistantStream: { revision: 0 } });
+      f.runtime.dispatchCommand("dsh:tools", "sync", { type: "session.sync", sessionId: "dsh:tools", syncId: "sync", range: "preview" });
+      await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot")).toBe(true));
+      expect(JSON.stringify(f.events)).not.toContain("PRIVATE_DSH_RESULT");
+      const base = f.request.getMockImplementation()!;
+      const native = vi.fn(async () => ({ records }));
+      f.request.mockImplementation((method, args) => method === "session/page" ? native() : base(method, args));
+      const request = { type: "session.tool.content.read" as const, requestId: "private", runtimeId: "dsh:tools", viewerId: "v", read: null, offset: 0, maxBytes: 16_384,
+        locator: { projectionVersion: 1 as const, tool: { agent: { hostId: "host", agentKind: "dsh" as const, sessionId: "dsh:tools" }, toolCallId: "call" }, part: "result" as const } };
+      const page = await f.runtime.toolContents.read("device:v", request);
+      expect(page.text).toContain("PRIVATE_DSH_RESULT"); expect(page.gaps).toEqual([]); expect(native).toHaveBeenCalledTimes(1);
+      const count = f.events.length;
+      const next = await f.runtime.toolContents.read("device:v", { ...request, requestId: "private-2", read: page.read, offset: page.nextCursor! });
+      expect(next.fromOffset).toBe(page.throughOffset); expect(native).toHaveBeenCalledTimes(1); expect(f.events).toHaveLength(count);
+    } finally { await f.runtime.stop(); await store.dispose(); }
+  });
   it("accepts preview and paged history through the Host conversation model", async () => {
     const f = discoveryFixture();
     const model = new AgentConversationState(new AgentStateRegistry());
@@ -700,20 +729,22 @@ describe("DeepSeek Web runtime adapter", () => {
     const send = (id: string, argumentsDelta: string, name?: string) => follow.frame({ type: "assistant-stream",
       frame: { type: "chunk", attemptId: "attempt", chunk: { type: "tool-call-delta", id, argumentsDelta, ...(name ? { name } : {}) } } });
     const content = () => {
-      const event = f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event;
-      if (event?.type !== "session.patch") throw new Error("missing live patch");
-      return event.live?.messages[0]?.message.content;
+      const event = f.events.filter(({ event }) => event.type === "session.tools.produced").at(-1)?.event;
+      if (event?.type !== "session.tools.produced") throw new Error("missing inventory page");
+      return event.page.tools;
     };
     send("pwsh-1", '{"command":', "pwsh");
     send("pwsh-1", '"Get-');
-    expect(content()).toEqual([{ type: "tool_call", toolCallId: "pwsh-1", toolName: "pwsh", arguments: '{"command":"Get-' }]);
+    expect(content()).toMatchObject([{ tool: { toolCallId: "pwsh-1" }, toolName: "pwsh" }]);
     send("pwsh-2", '{"command":"pwd"}', "pwsh");
     send("pwsh-1", 'Location"}');
     send("pwsh-2", "", "functions.pwsh");
-    expect(content()).toEqual([
-      { type: "tool_call", toolCallId: "pwsh-1", toolName: "pwsh", arguments: '{"command":"Get-Location"}' },
-      { type: "tool_call", toolCallId: "pwsh-2", toolName: "functions.pwsh", arguments: '{"command":"pwd"}' },
+    expect(content()).toMatchObject([
+      { tool: { toolCallId: "pwsh-1" }, toolName: "pwsh" },
+      { tool: { toolCallId: "pwsh-2" } },
     ]);
+    expect(JSON.stringify(f.events)).not.toContain("Get-Location");
+    expect(JSON.stringify(f.events)).not.toContain('"arguments":');
   });
 
   it("combines live text and reasoning fragments while preserving whitespace and block boundaries", async () => {
@@ -933,7 +964,7 @@ describe("DeepSeek Web runtime adapter", () => {
     const final = events.filter(item => item.type === "session.patch").at(-1);
     expect(final).toMatchObject({ live: { turn: expect.objectContaining({ durationMs: 100 }), messages: [], tools: [] }, head: { leafId: "dsh:web-1:web:5" } });
     expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "session.patch", live: expect.objectContaining({ tools: [expect.objectContaining({ toolCallId: "call-1", toolName: "bash", state: "started" })] }) }),
+      expect.objectContaining({ type: "session.tools.produced", page: expect.objectContaining({ tools: [expect.objectContaining({ tool: expect.objectContaining({ toolCallId: "call-1" }), toolName: "bash", phase: "started" })] }) }),
       expect.objectContaining({ type: "message.queued", queueId: "mobile-1", state: "delivered" }),
     ]));
     const committed = events.flatMap(item => item.type === "session.patch" ? item.entries ?? [] : []);

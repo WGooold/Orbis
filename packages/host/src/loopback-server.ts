@@ -28,7 +28,7 @@ import {
   type RuntimeCommand,
   type RuntimeEvent,
   type RuntimeMetadata,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 import WebSocket, { WebSocketServer } from "ws";
 import type { ClaudeModsPoll } from "./claude-mods-bridge.js";
 

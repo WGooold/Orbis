@@ -75,13 +75,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     env:
-      TARGET: ${{ secrets.PI_REMOTE_DEPLOY_TARGET }}
-      PORT: ${{ secrets.PI_REMOTE_SSH_PORT }}
-      APP_DIR: ${{ secrets.PI_REMOTE_DEPLOY_DIR }}
-      HEALTH_URL: ${{ secrets.PI_REMOTE_HEALTH_URL }}
+      TARGET: ${{ secrets.ORBIS_DEPLOY_TARGET || secrets.PI_REMOTE_DEPLOY_TARGET }}
+      PORT: ${{ secrets.ORBIS_SSH_PORT || secrets.PI_REMOTE_SSH_PORT }}
+      APP_DIR: ${{ secrets.ORBIS_DEPLOY_DIR || secrets.PI_REMOTE_DEPLOY_DIR }}
+      HEALTH_URL: ${{ secrets.ORBIS_HEALTH_URL || secrets.PI_REMOTE_HEALTH_URL }}
       SSH_KEY_FILE: /tmp/orbis-deploy-key
-      SSH_PRIVATE_KEY: ${{ secrets.PI_REMOTE_SSH_KEY }}
-      SSH_KNOWN_HOSTS: ${{ secrets.PI_REMOTE_SSH_KNOWN_HOSTS }}
+      SSH_PRIVATE_KEY: ${{ secrets.ORBIS_SSH_KEY || secrets.PI_REMOTE_SSH_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.ORBIS_SSH_KNOWN_HOSTS || secrets.PI_REMOTE_SSH_KNOWN_HOSTS }}
       WINDOWS_BUILD_RUN: ${{ inputs.windows_build_run_id }}
       MACOS_BUILD_RUN: ${{ inputs.macos_build_run_id }}
       ANDROID_RELEASE_TAG: ${{ inputs.android_release_tag }}
@@ -94,7 +94,7 @@ jobs:
           set -euo pipefail
           release="$(git rev-parse --short=12 HEAD)"
           echo "RELEASE=$release" >> "$GITHUB_ENV"
-          git archive --format=tar.gz --output="/tmp/pi-remote-relay-$release.tar.gz" HEAD
+          git archive --format=tar.gz --output="/tmp/orbis-relay-$release.tar.gz" HEAD
           echo "待部署版本：$release"
 
       - name: Validate requested Host builds
@@ -236,10 +236,10 @@ jobs:
       - name: 准备 SSH
         run: |
           set -euo pipefail
-          : "${TARGET:?缺少 secret PI_REMOTE_DEPLOY_TARGET}"
-          : "${PORT:?缺少 secret PI_REMOTE_SSH_PORT}"
-          : "${APP_DIR:?缺少 secret PI_REMOTE_DEPLOY_DIR}"
-          : "${HEALTH_URL:?缺少 secret PI_REMOTE_HEALTH_URL}"
+          : "${TARGET:?缺少 secret ORBIS_DEPLOY_TARGET}"
+          : "${PORT:?缺少 secret ORBIS_SSH_PORT}"
+          : "${APP_DIR:?缺少 secret ORBIS_DEPLOY_DIR}"
+          : "${HEALTH_URL:?缺少 secret ORBIS_HEALTH_URL}"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$SSH_KEY_FILE"
           chmod 600 "$SSH_KEY_FILE"
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
@@ -267,9 +267,9 @@ jobs:
         run: |
           set -euo pipefail
           scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
-            "/tmp/pi-remote-relay-$RELEASE.tar.gz" "$TARGET:/tmp/pi-remote-relay-$RELEASE.tar.gz"
+            "/tmp/orbis-relay-$RELEASE.tar.gz" "$TARGET:/tmp/orbis-relay-$RELEASE.tar.gz"
           scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
-            deploy/remote-deploy.sh "$TARGET:/tmp/pi-remote-remote-deploy-$RELEASE.sh"
+            deploy/remote-deploy.sh "$TARGET:/tmp/orbis-remote-deploy-$RELEASE.sh"
           if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" ]]; then
             scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
               "/tmp/orbis-downloads-$RELEASE.tar.gz" "$TARGET:/tmp/orbis-downloads-$RELEASE.tar.gz"
@@ -283,11 +283,11 @@ jobs:
           if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" ]]; then downloads="/tmp/orbis-downloads-$RELEASE.tar.gz"; fi
           ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
-            "$TARGET" "bash /tmp/pi-remote-remote-deploy-$RELEASE.sh '$RELEASE' \
-              '/tmp/pi-remote-relay-$RELEASE.tar.gz' '$APP_DIR' '$HEALTH_URL' '$downloads'"
+            "$TARGET" "bash /tmp/orbis-remote-deploy-$RELEASE.sh '$RELEASE' \
+              '/tmp/orbis-relay-$RELEASE.tar.gz' '$APP_DIR' '$HEALTH_URL' '$downloads'"
           ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
-            "$TARGET" "rm -f /tmp/pi-remote-remote-deploy-$RELEASE.sh" || true
+            "$TARGET" "rm -f /tmp/orbis-remote-deploy-$RELEASE.sh" || true
 
       - name: 核对公网版本与服务器部署标记
         run: |

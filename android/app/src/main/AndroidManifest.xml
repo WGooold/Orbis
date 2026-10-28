@@ -12,14 +12,19 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
-        android:theme="@style/Theme.PiRemote">
+        android:theme="@style/Theme.Orbis">
         <activity
             android:name=".MainActivity"
+            android:exported="true" />
+        <!-- Keep the installed launcher component so existing shortcuts and notifications survive upgrades. -->
+        <activity-alias
+            android:name="dev.pi.remote.MainActivity"
+            android:targetActivity=".MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
     </application>
 </manifest>

@@ -1,5 +1,5 @@
 import type { SessionEntry, SessionTreeNode } from "@earendil-works/pi-coding-agent";
-import type { RuntimeSlashCommandOption } from "@pi-remote/protocol";
+import type { RuntimeSlashCommandOption } from "@orbis/protocol";
 import { REMOTE_TURN_STARTED_CUSTOM_TYPE, REMOTE_TURN_TIMING_CUSTOM_TYPE } from "./pi-adapter.js";
 
 const settingsTypes = new Set(["label", "custom", "model_change", "thinking_level_change", "session_info"]);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { HostWorkspacesState } from "@pi-remote/protocol";
+import type { HostWorkspacesState } from "@orbis/protocol";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { HostStateFacts } from "./host-state-facts.js";
 

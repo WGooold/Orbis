@@ -12,8 +12,8 @@ Status: accepted（2026-10-23 实现；Host 单元测试 `packages/host/src/dsh-
 
 采样到的证据：
 
-- logcat（`PiRemote.ReloadTrace`）：DSH 与两个 codex runtime 各自每约 2 秒发一次 `session.sync range=preview`，交替收到 `session_sync_model_rejected` 与 `session_sync_busy_or_unavailable`。
-- Host 诊断日志（`C:\Users\25892\.pi-remote\diagnostics.ndjson`）：`category=recovery` 942 条 `Rejected session snapshot; source baseline required`；`category=transport.queue` 显示 `path=lan` 的非 bulk 队列积压 **259,372,506 字节 / 22,280 片**，队首帧已等待 **193,834 ms**，其中 `session.patch`（codex runtime）169MB、`capabilities` 快照 20MB。任何 `session.sync` 响应都会在 `DeviceLink.sendSessionSnapshot` 的 `message_byte_limit` 检查处被拒。
+- logcat（`Orbis.ReloadTrace`）：DSH 与两个 codex runtime 各自每约 2 秒发一次 `session.sync range=preview`，交替收到 `session_sync_model_rejected` 与 `session_sync_busy_or_unavailable`。
+- Host 诊断日志（`C:\Users\25892\.orbis\diagnostics.ndjson`）：`category=recovery` 942 条 `Rejected session snapshot; source baseline required`；`category=transport.queue` 显示 `path=lan` 的非 bulk 队列积压 **259,372,506 字节 / 22,280 片**，队首帧已等待 **193,834 ms**，其中 `session.patch`（codex runtime）169MB、`capabilities` 快照 20MB。任何 `session.sync` 响应都会在 `DeviceLink.sendSessionSnapshot` 的 `message_byte_limit` 检查处被拒。
 - `dumpsys meminfo`：PSS 627MB、`GL mtrack` 73MB（此时手机在 5G，Host 的 `lan` 路径已成僵尸）。
 
 机制（代码位置）：
@@ -26,9 +26,9 @@ Status: accepted（2026-10-23 实现；Host 单元测试 `packages/host/src/dsh-
 3. Host [`agent-conversation-state.ts`](../../packages/host/src/agent-conversation-state.ts) 的 `accept()` 见到 `inventoryComplete=false`
    就把 `ready` 判成 false，并把 **canonical 换成空**（`canonical = ready ? ... : { entries: [], timings: [] }`），
    `source.ready=false` 之后 `recover()` 直接拒绝服务——历史在 Host 侧也没了。
-4. 手机 [`SessionSnapshotIngestion.kt`](../../android/app/src/main/java/dev/pi/remote/SessionSnapshotIngestion.kt) 的
+4. 手机 [`SessionSnapshotIngestion.kt`](../../android/app/src/main/java/com/orbising/orbis/SessionSnapshotIngestion.kt) 的
    `contiguousSourcePatches` 要求 `patch.live.complete`，于是**运行期间任何 patch 都应用不上**；
-   [`RemoteState.kt`](../../android/app/src/main/java/dev/pi/remote/RemoteState.kt) 的 `sourceReadyCheckpoint`
+   [`RemoteState.kt`](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt) 的 `sourceReadyCheckpoint`
    同样要求 `inventoryComplete && live.complete`，于是 preview 也不投影，只把 `isChatSyncing` 置 true 并 2 秒后重发。
 5. 新 epoch 的 `ready=false` 握手 patch（Host 重启、`reconcile` 判定条目被改写）会把 `messages` 清空；
    随后本该救场的 preview 在 (3)(4) 下既拿不到也不投影，画面就一直停在「只剩 live 卡片」。
@@ -65,7 +65,7 @@ ADR-0024 §已知限制 已经写下「DSH 有界历史：原生 follow tail 不
 
 ### §4 同一现场暴露的三处出站体积问题
 
-真机日志（`PiRemote.ReloadTrace`）在打开 DSH 会话后 12 秒内给出三组独立证据，一并修掉：
+真机日志（`Orbis.ReloadTrace`）在打开 DSH 会话后 12 秒内给出三组独立证据，一并修掉：
 
 1. **控制面被状态帧灌满。** `runtime.status` + `runtime.metadata` 每个原生事件发一对（约 40 帧/秒），
    手机的 `ctl` 面（ADR-0040 §2）在 12 秒内顶爆 512 帧预算，溢出处理当时会断开连接

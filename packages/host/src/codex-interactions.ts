@@ -3,7 +3,7 @@ import {
   type InteractionRequest,
   type InteractionResponse,
   type QuestionnaireQuestion,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 type RecordValue = Record<string, unknown>;
 type Base = Pick<InteractionRequest, "runtimeId" | "requestId" | "extensionId" | "expiresAt">;

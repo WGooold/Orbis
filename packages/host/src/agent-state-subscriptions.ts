@@ -1,4 +1,4 @@
-import type { AgentStateRequest, RelayToDeviceMessage } from "@pi-remote/protocol";
+import type { AgentStateRequest, RelayToDeviceMessage } from "@orbis/protocol";
 import { AgentStateRegistry, type RegistryChange, type StateScope } from "./agent-state-registry.js";
 import { buildAgentStateSnapshotParts } from "./agent-state-snapshot.js";
 

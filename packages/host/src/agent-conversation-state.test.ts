@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RuntimeEventSchema, prepareSessionSync, selectPreparedSessionSync, type AgentExecutionState, type RemoteSessionEntry, type RuntimeEvent } from "@pi-remote/protocol";
+import { RuntimeEventSchema, prepareSessionSync, selectPreparedSessionSync, type AgentExecutionState, type RemoteSessionEntry, type RuntimeEvent } from "@orbis/protocol";
 import { AgentConversationState } from "./agent-conversation-state.js";
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";

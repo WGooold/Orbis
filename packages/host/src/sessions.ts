@@ -12,7 +12,7 @@ import { open, readdir, stat, access } from "node:fs/promises";
 import { homedir, hostname, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import type { AgentSessionSummary, BrowseEntry } from "@pi-remote/protocol";
+import type { AgentSessionSummary, BrowseEntry } from "@orbis/protocol";
 
 /** 单次扫描最多读的会话文件数：磁盘扫描是给人看列表用的，不是索引重建。 */
 const MAX_SESSION_FILES = 500;

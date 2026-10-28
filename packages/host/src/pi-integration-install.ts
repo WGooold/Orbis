@@ -56,7 +56,7 @@ async function isOtherOrbisPackage(entry: unknown, agentDir: string): Promise<bo
   const root = basename(packagePath).toLowerCase() === "index.js" ? dirname(dirname(packagePath)) : packagePath;
   try {
     const manifest: unknown = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-    return isObject(manifest) && manifest.name === "@pi-remote/pi-extension";
+    return isObject(manifest) && (manifest.name === "@orbis/pi-extension" || manifest.name === "@pi-remote/pi-extension");
   } catch {
     return false;
   }
@@ -73,7 +73,7 @@ export async function updatePiIntegration(input: {
   const controlPath = join(agentDir, "remote-control.json");
   if (!input.uninstall) {
     const manifest = await readObject(join(extensionDir, "package.json"));
-    if (manifest.name !== "@pi-remote/pi-extension") throw new Error("Invalid Orbis Pi extension package");
+    if (manifest.name !== "@orbis/pi-extension") throw new Error("Invalid Orbis Pi extension package");
     await stat(join(extensionDir, "dist", "index.js"));
   }
 

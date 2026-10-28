@@ -2,6 +2,8 @@
 
 日期：2026-10-08
 
+2026-10-27：[ADR-0045](0045-tool-summaries-and-on-demand-content.md) 将工具完整性改为标准摘要及独立库存引用的覆盖；原始参数、执行输出和结果按设备私有范围读取。聊天 checkpoint 精确依赖库存版本，详情不参与 applied；来源有序提交和 Entry/head/live 原子性继续有效。
+
 2026-10-10：[ADR-0025](0025-native-history-authority-and-versioned-caches.md) 替代本文的不可变缓存与同 ID 硬冲突条款。版本化历史页携带 source 所有权；原生权威修正通过新 epoch 与 APP 缓存事务生效。checkpoint/patch、running sync 和恢复调度继续遵守本文。
 
 2026-10-22：[ADR-0037](0037-session-sync-transaction-contract.md) 为本文的恢复任务补上协调侧契约：Host 作为协调者用租约判定作废，终态必须送达设备，提交以设备确认 applied 为准，失败只写尝试状态。
@@ -45,7 +47,7 @@ Status: accepted（Pi、Codex、DSH 与 APP 已接入源端状态复制；大 ch
 | 外层 sequence 按 runtime/channel 分配，包含其他设备的定向响应 | 本机看到数字跳号不一定丢了共享状态；发送时取号也不代表快照采集时点 |
 | Codex 回放会参考旧内存顺序/parent，外部 revert 尚无完整协调流程 | 相同 Entry ID 可能被重建成不同内容；读取历史与新通知竞争，产生 conflict 或旧尾部复活 |
 
-参考实现：[RemoteState.kt](../../android/app/src/main/java/dev/pi/remote/RemoteState.kt)、[RemoteViewModel.kt](../../android/app/src/main/java/dev/pi/remote/RemoteViewModel.kt)、[codex-runtime.ts](../../packages/host/src/codex-runtime.ts)、[host-service.ts](../../packages/host/src/host-service.ts)。
+参考实现：[RemoteState.kt](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt)、[RemoteViewModel.kt](../../android/app/src/main/java/com/orbising/orbis/RemoteViewModel.kt)、[codex-runtime.ts](../../packages/host/src/codex-runtime.ts)、[host-service.ts](../../packages/host/src/host-service.ts)。
 
 ## 1. 一份状态，三类数据各有归属
 

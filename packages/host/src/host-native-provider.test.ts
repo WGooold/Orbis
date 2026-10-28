@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentKind, HostProviderSummary } from "@pi-remote/protocol";
+import type { AgentKind, HostProviderSummary } from "@orbis/protocol";
 import type { CodexRuntime } from "./codex-runtime.js";
 import { HostService } from "./host-service.js";
 import type { ProviderManager } from "./provider-manager.js";

@@ -24,7 +24,7 @@ Status: accepted（2026-10-22 实现 §1/§2/§3/§7/§8/§9/§10/§12/§13/§15
    - `this.#entries = new Map(entries.map(entry => [entry.entryId, structuredClone(entry)]))` —— 整段历史深拷贝一遍（含所有 base64）。
    两者都**与内容是否变化无关**。
 3. 同一条路还会被两处额外触发：15s 的运行状态节拍（`index.ts` 的 `startStatusReconcile`）和每轮的 `message.started` / `message.finished` / `turn.finished` / `tool.finished`（`publishSessionEvent` 的 force 参数）。
-4. 手机侧调度允许 2 路并发 + preview/catchup/history 分页（[SessionSyncTasks.kt](../../android/app/src/main/java/dev/pi/remote/SessionSyncTasks.kt)），实际是秒级多次 sync。
+4. 手机侧调度允许 2 路并发 + preview/catchup/history 分页（[SessionSyncTasks.kt](../../android/app/src/main/java/com/orbising/orbis/SessionSyncTasks.kt)），实际是秒级多次 sync。
 
 ### 实测（仓库 `dist` + 真实 Entry 形状，本机 Node 22，单次 = 一次 sync 的 `reconcile` + `sessionGraphFromEntries`）
 
@@ -46,7 +46,7 @@ Status: accepted（2026-10-22 实现 §1/§2/§3/§7/§8/§9/§10/§12/§13/§15
 
 ### 打开 App 加载聊天记录：页数 × 全量重算
 
-App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src/main/java/dev/pi/remote/HostConnection.kt)），每翻一页发一次 `session.sync`，而 `syncSession` 每接一次都做完整一轮：强制 reconcile（全历史两遍 `JSON.stringify` + 一遍 `structuredClone`）→ `sessionEntriesFromEntries` 重建全部条目 → `selectSessionSyncSnapshot` 对**全部条目**建 `byId` 并跑一遍 `projectDisplayEntries`，然后只取其中一页。
+App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)），每翻一页发一次 `session.sync`，而 `syncSession` 每接一次都做完整一轮：强制 reconcile（全历史两遍 `JSON.stringify` + 一遍 `structuredClone`）→ `sessionEntriesFromEntries` 重建全部条目 → `selectSessionSyncSnapshot` 对**全部条目**建 `byId` 并跑一遍 `projectDisplayEntries`，然后只取其中一页。
 
 于是加载一次历史的总成本是 **O(页数 × S) = O(S² / 每页条数)**，与每一页只有多少条无关。实测（本仓 `scripts/perf/session-memory-stress.mjs --scene pages`，纯文本会话，每页 30 条）：
 

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { notificationKey, notificationMessage, NotificationSourceEventSchema, NotificationInputSchema, PROTOCOL_VERSION,
   type ActiveNotification, type AgentNotificationsState, type NotificationInput, type NotificationSnapshot,
-  type NotificationSourceEvent } from "@pi-remote/protocol";
+  type NotificationSourceEvent } from "@orbis/protocol";
 
 type Record = { item: ActiveNotification; transient: boolean; deviceId?: string };
 type Projection = { sessionId: string | null; epoch?: string; active: boolean; sourceRevision: number; revision: number;

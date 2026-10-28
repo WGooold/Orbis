@@ -14,7 +14,8 @@
  *   `unsupported_command`，不认领任何后端才回 `runtime_offline`（§8：手机据此
  *   区分「该重拉进程」和「这个后端做不到」）。
  */
-import type { AgentKind, AgentSessionSummary, RuntimeCommand, RuntimeMetadata, SpawnMode } from "@pi-remote/protocol";
+import type { AgentKind, AgentSessionSummary, RuntimeCommand, RuntimeMetadata, SpawnMode } from "@orbis/protocol";
+import type { ToolContentReader, ToolContentStore } from "@orbis/runtime-bridge";
 
 import { ActivationError, type SessionSpawner } from "./spawner.js";
 import { defaultPiSessionsRoot, listPiSessions } from "./sessions.js";
@@ -42,6 +43,9 @@ export type AgentActivateContext = {
 
 export interface AgentBackend {
   readonly kind: AgentKind;
+  /** Device-private content access; never returns raw content through the shared event sink. */
+  readonly toolContents?: ToolContentReader | undefined;
+  setToolContentStore?(store: ToolContentStore, hostId: string): void;
   /** 后端进程就绪、能承接请求。未就绪的后端不进 agents 快照、不拉目录、不认领命令。 */
   isReady(): boolean;
   /** 该 runtimeId 是否归本后端（命令路由的归属判定，一次命中）。 */
@@ -69,6 +73,7 @@ export interface AgentBackend {
 }
 
 export type PiBackendOptions = {
+  toolContents?: ToolContentReader;
   spawner: SessionSpawner;
   /** 把命令投给 loopback 上注册的 Pi 进程。false = 进程不在线/没注册。 */
   sendCommand: (runtimeId: string, commandId: string, command: RuntimeCommand) => boolean;
@@ -83,6 +88,7 @@ export type PiBackendOptions = {
 export class PiBackend implements AgentBackend {
   readonly kind = "pi" as const;
   readonly #options: PiBackendOptions;
+  get toolContents(): ToolContentReader | undefined { return this.#options.toolContents; }
 
   constructor(options: PiBackendOptions) {
     this.#options = options;
@@ -159,7 +165,7 @@ export type ClaudeBackendOptions = {
   bridge: ClaudeHookBridge;
   modsBridge: ClaudeModsBridge;
   runtimeIds: () => readonly string[];
-  onCommandResult?: (runtimeId: string, event: Extract<import("@pi-remote/protocol").RuntimeEvent, { type: "command.result" }>) => void;
+  onCommandResult?: (runtimeId: string, event: Extract<import("@orbis/protocol").RuntimeEvent, { type: "command.result" }>) => void;
 };
 
 /** Backend for the native Claude Code TUI Hook bridge. */

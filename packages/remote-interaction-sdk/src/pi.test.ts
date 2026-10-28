@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { RuntimeEvent } from "@pi-remote/protocol";
+import type { RuntimeEvent } from "@orbis/protocol";
 import {
   createPiRemoteInteraction,
   InteractionBroker,

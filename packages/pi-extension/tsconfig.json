@@ -2,6 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": "src", "outDir": "dist" },
   "references": [
+    { "path": "../e2e" },
     { "path": "../protocol" },
     { "path": "../runtime-bridge" },
     { "path": "../remote-interaction-sdk" }

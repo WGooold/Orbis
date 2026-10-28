@@ -1,4 +1,4 @@
-# `@pi-remote/interaction-sdk`
+# `@orbis/interaction-sdk`
 
 供 Pi 第三方扩展使用的可移植交互接口。扩展业务逻辑继续在电脑端运行，SDK 把声明式交互同步给本地 Pi UI 和 Android 原生 renderer，并负责校验和 Promise 生命周期。
 

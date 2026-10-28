@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, RelayToDeviceMessageSchema } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION, RelayToDeviceMessageSchema } from "@orbis/protocol";
 import { describe, expect, it } from "vitest";
 
 import { buildDiagnosticsPageMessage } from "./diagnostic-page-message.js";

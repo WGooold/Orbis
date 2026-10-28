@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ARTIFACT_CHUNK_BYTES, PROTOCOL_VERSION, encodeArtifactChunkFrame, type RelayToDeviceMessage } from "@pi-remote/protocol";
+import { ARTIFACT_CHUNK_BYTES, PROTOCOL_VERSION, encodeArtifactChunkFrame, type RelayToDeviceMessage } from "@orbis/protocol";
 
 import { HostUploadService } from "./artifact-upload.js";
 
@@ -43,7 +43,7 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
     protocolVersion: PROTOCOL_VERSION,
     requestId: "req-1",
     runtimeId: "runtime-a",
-    directory: join(stateDir ?? "", ".pi-remote-uploads"),
+    directory: join(stateDir ?? "", ".orbis-uploads"),
     fileName: "file.bin",
     size: data.byteLength,
     sha256: hash(data),
@@ -93,7 +93,7 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
   // 这条不变量撑起「断线可续传」：`.part` 的身份必须跨进程稳定，否则 Host 一重启就找不到
   // 已经收下的字节，手机白传一遍。用「新实例 + 同一份索引」模拟重启。
   it("resumes from the durable prefix after a Host restart", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-upload-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-upload-"));
     const data = new Uint8Array(ARTIFACT_CHUNK_BYTES + 2048).map((_, index) => index % 251);
 
     const first: RelayToDeviceMessage[] = [];
@@ -169,7 +169,7 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
   // 模块 24/33 的 Host 一侧：设备视图里的传输摘要只回答「这台电脑确认收到了多少」，
   // 而且只对上传的那台设备可见；完成的上传不再是传输任务。手机本地前缀仍由 App 权威。
   it("reports the durable prefix of incomplete uploads to their owner only", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-upload-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-upload-"));
     const data = new Uint8Array(ARTIFACT_CHUNK_BYTES + 512).map((_, index) => (index * 7) % 251);
     const messages: RelayToDeviceMessage[] = [];
     const uploads = service(messages);
@@ -210,7 +210,7 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
   }, 30_000);
 
   it("does not issue another read while a received chunk is still being written", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-upload-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-upload-"));
     const data = new Uint8Array(ARTIFACT_CHUNK_BYTES + 512).fill(7);
     const messages: RelayToDeviceMessage[] = [];
     const uploads = service(messages);
@@ -253,7 +253,7 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
   });
 
   it("refuses data from a device that does not own the upload", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-upload-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-upload-"));
     const data = new Uint8Array(2048);
     const messages: RelayToDeviceMessage[] = [];
     const uploads = service(messages);
@@ -287,7 +287,7 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
   // 不等就会撞上「刚要落地的那一步」，在 Windows 上表现为 ENOTEMPTY。这条用例不赌时序，
   // 直接钉死「flush 回来之后盘上已是终态」。
   it("flush 之后索引已落盘，不留 .tmp 残骸", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-upload-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-upload-"));
     const data = new Uint8Array(1024).fill(3);
     const uploads = service([]);
     await uploads.load();
@@ -301,7 +301,7 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
   });
 
   it("keeps a mismatched upload out of the destination", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "pi-remote-upload-"));
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-upload-"));
     const data = new Uint8Array(1024).fill(7);
     const messages: RelayToDeviceMessage[] = [];
     const uploads = service(messages);
@@ -329,6 +329,6 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
 
     expect(messages.at(-1)).toMatchObject({ type: "file.upload.failed", code: "hash_mismatch" });
     // 坏内容不许以最终名字出现；临时文件也要清掉，否则下次续传会接着写坏前缀。
-    await expect(stat(join(stateDir, ".pi-remote-uploads", "file.bin"))).rejects.toThrow();
+    await expect(stat(join(stateDir, ".orbis-uploads", "file.bin"))).rejects.toThrow();
   });
 });

@@ -1,4 +1,4 @@
-import type { InteractionRequest, InteractionResponse, RuntimeEvent } from "@pi-remote/protocol";
+import type { InteractionRequest, InteractionResponse, RuntimeEvent } from "@orbis/protocol";
 import {
   type ConfirmOptions,
   type InputOptions,

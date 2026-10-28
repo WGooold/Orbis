@@ -2,6 +2,8 @@
 
 日期：2026-10-13
 
+2026-10-27：[ADR-0045](0045-tool-summaries-and-on-demand-content.md) 调整工具域载荷：Registry 保存库存描述符、标准摘要和内容引用；完整工具参数与输出在 producer/原生来源，按设备私有范围读取，不内联在共享 Agent 状态中。Host 仍为统一入口，App 使用通用投影。
+
 Status: accepted（架构决定已确认；实现与运行环境迁移尚未完成）
 
 关联：[ADR-0019](0019-host-provider-management.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0027](0027-source-owned-runtime-diagnostics.md)、[ADR-0028](0028-host-notification-lifecycle.md)、[ADR-0029](0029-session-read-operation-state-machine.md)、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0031](0031-host-permission-management.md)、[ADR-0008](0008-drop-backward-compatibility.md)。

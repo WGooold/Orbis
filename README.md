@@ -6,7 +6,7 @@
 
 Windows 桌面 Host 使用 **C++ / Qt / QML**，提供新拟物界面、系统托盘、按 Relay 策略激活、扫码配对、设备管理和 Agent 接入。默认要求 QQ 邮箱验证码；管理员可在 Relay 后台的「服务」页关闭该要求，允许新 Host 直接激活。构建、打包与 SMTP 配置见 [Windows Host 使用说明](packages/windows-host/README.md)。要求邮箱验证而未配置 SMTP 时，注册服务会明确提示暂未启用。
 
-项目官网位于 <https://orbising.com/>，提供 Windows 安装版、便携版和 SHA-256 校验文件。Relay 管理后台位于 <https://orbising.com/admin/>；它使用服务器的 `PI_REMOTE_ADMIN_TOKEN` 建立 8 小时的 HttpOnly 管理会话，可查看运行状态、停用 Relay 上的 Host、撤销设备的 Relay 凭据并审计管理操作。后台看不到端到端加密的聊天或文件内容，完整解除设备信任仍在电脑 Host 中完成。
+项目官网位于 <https://orbising.com/>，提供 Windows 安装版、便携版和 SHA-256 校验文件。Relay 管理后台位于 <https://orbising.com/admin/>；它使用服务器的 `ORBIS_ADMIN_TOKEN` 建立 8 小时的 HttpOnly 管理会话，可查看运行状态、停用 Relay 上的 Host、撤销设备的 Relay 凭据并审计管理操作。后台看不到端到端加密的聊天或文件内容，完整解除设备信任仍在电脑 Host 中完成。
 
 这是一个原生手机 UI 客户端，用于操作电脑上由 **Host** 托管的 coding agent（目前是 [Pi](https://github.com/earendil-works/pi-mono)、Codex 与 [DeepSeek Harness](docs/deepseek-harness.md)）。电脑上的 Host 是唯一后端和网关：它持有配对身份、设备记录、端到端加密信道、传输路径、文件服务与会话目录聚合。手机负责持久化 Session catalog、按需缓存 Session entry graph、按 runtime leaf 计算 branch 显示、跟踪消息与工具执行流、发送或追加请求、停止当前 turn，以及响应扩展发起或 agent 提出的交互。
 
@@ -50,8 +50,8 @@ npm run build
 ### macOS / Linux
 
 ```bash
-export PI_REMOTE_RUNTIME_CREDENTIAL="$(openssl rand -base64 32)"
-export PI_REMOTE_ADMIN_TOKEN="$(openssl rand -base64 32)"
+export ORBIS_RUNTIME_CREDENTIAL="$(openssl rand -base64 32)"
+export ORBIS_ADMIN_TOKEN="$(openssl rand -base64 32)"
 npm ci --ignore-scripts
 npm run build
 node packages/relay/dist/main.js
@@ -69,11 +69,11 @@ function New-RandomSecret {
     [Convert]::ToBase64String($bytes)
 }
 
-$env:PI_REMOTE_RUNTIME_CREDENTIAL = New-RandomSecret
-$env:PI_REMOTE_ADMIN_TOKEN = New-RandomSecret
+$env:ORBIS_RUNTIME_CREDENTIAL = New-RandomSecret
+$env:ORBIS_ADMIN_TOKEN = New-RandomSecret
 $env:HOST = "0.0.0.0"
 $env:PORT = "8787"
-$env:PI_REMOTE_STATE_FILE = "$PWD\data\relay-state.json"
+$env:ORBIS_STATE_FILE = "$PWD\data\relay-state.json"
 
 npm ci --ignore-scripts
 npm run build
@@ -100,7 +100,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\windows\relay.ps1 -Action Restart
 ```
 
-> **配对二维码由 Host 打印，不由 Relay 脚本打印。** `relay.ps1 -Action Start` 只负责把中继跑起来；配对请走下文「配对新设备」的 `pi-remote pair`。实体手机和电脑需要位于同一局域网；如果 Windows 防火墙拦截了 `8787` 端口，请仅为可信的私有网络放行该端口，不要将明文 Relay 暴露到公网。
+> **配对二维码由 Host 打印，不由 Relay 脚本打印。** `relay.ps1 -Action Start` 只负责把中继跑起来；配对请走下文「配对新设备」的 `orbis pair`。实体手机和电脑需要位于同一局域网；如果 Windows 防火墙拦截了 `8787` 端口，请仅为可信的私有网络放行该端口，不要将明文 Relay 暴露到公网。
 
 ### Windows CMD
 
@@ -108,11 +108,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ```bat
 cd /d D:\orbis
-set PI_REMOTE_RUNTIME_CREDENTIAL=替换为第一个随机密钥
-set PI_REMOTE_ADMIN_TOKEN=替换为第二个随机密钥
+set ORBIS_RUNTIME_CREDENTIAL=替换为第一个随机密钥
+set ORBIS_ADMIN_TOKEN=替换为第二个随机密钥
 set HOST=0.0.0.0
 set PORT=8787
-set PI_REMOTE_STATE_FILE=%CD%\data\relay-state.json
+set ORBIS_STATE_FILE=%CD%\data\relay-state.json
 
 npm ci --ignore-scripts
 npm run build
@@ -149,13 +149,12 @@ Android 使用 Windows 工具链及 `scripts/windows/android-build.ps1 testDebug
 
 ### 1. 准备 Host 配置
 
-Host 需要 Relay 地址与 runtime 凭据，它复用 `~/.pi/agent/remote-control.json`（也可以用环境变量 `PI_REMOTE_RELAY_URL` / `PI_REMOTE_RUNTIME_CREDENTIAL` 覆盖）：
+Host 需要 Relay 地址与 runtime 凭据，在 Orbis 状态目录的 `config.json` 中配置（新安装为 `~/.orbis/config.json`），也可以用环境变量 `ORBIS_RELAY_URL` / `ORBIS_RUNTIME_CREDENTIAL` 覆盖。旧安装仍兼容 Pi 扩展的 `~/.pi/agent/remote-control.json` 和原有 `PI_REMOTE_*` 环境变量：
 
 ```json
 {
-  "enabled": true,
   "relayUrl": "wss://relay.example.com",
-  "runtimeCredential": "与 PI_REMOTE_RUNTIME_CREDENTIAL 相同的值"
+  "runtimeCredential": "与 ORBIS_RUNTIME_CREDENTIAL 相同的值"
 }
 ```
 
@@ -195,7 +194,7 @@ node packages/host/dist/cli.js devices revoke <id>  # 撤销一台
 
 撤销是**设备级**的：每台设备有自己独立的 `pskRoot`，撤销一台不影响其他设备，也不必给其他设备重新配对。撤销后重启 Host 才会丢掉那条通道。APP 里的「取消配对」是设备侧主动解除。
 
-Host 的状态放在 `~/.pi-remote/`：`host.json`（身份私钥）、`devices.json`（设备记录，0600）、`loopback.json`（给本机 Pi 扩展看的发现文件）、`config.json`（可选的 `adminToken` / `lanPort` / `stunServers`；`adminToken` 只在配对时用来向 Relay 换取管道凭据）。它与 `~/.pi/agent/remote-control.json` 是两处不同的配置。
+新安装的 Host 状态放在 `~/.orbis/`：`host.json`（身份私钥）、`devices.json`（设备记录，0600）、`loopback.json`（给本机 Pi 扩展看的发现文件）、`config.json`（`relayUrl` / `runtimeCredential` 及可选的 `adminToken` / `lanPort` / `stunServers`；`adminToken` 只在配对时用来向 Relay 换取管道凭据）。若旧目录 `~/.pi-remote/` 存在而新目录尚不存在，Host 和本机扩展会继续使用旧目录，保留身份与配对。它与 Pi 扩展的 `~/.pi/agent/remote-control.json` 是两处不同的配置。
 ## 启用 Pi 扩展
 
 Windows Host 安装器把随包附带的 Pi 扩展登记到当前用户的 `~/.pi/agent/settings.json`，并在 `remote-control.json` 写入 `orbisLocalEnabled: true`。因此安装后直接在终端运行 `pi` 也会加载扩展，连接已经启动的本机 Host；Host 未启动时扩展等待它，不会回退到 Relay。用户原有的 `enabled: false` 仍可关闭独立启动的 Pi 连接。卸载安装版时会移除该安装目录的包登记与安装器写入的本机开关，不清除用户的其他 Pi 配置。免安装 ZIP 没有安装步骤，需从 Host 的“打开 Pi”入口运行或手动登记扩展。
@@ -206,15 +205,15 @@ Windows Host 安装器把随包附带的 Pi 扩展登记到当前用户的 `~/.p
 {
   "enabled": true,
   "relayUrl": "wss://relay.example.com",
-  "runtimeCredential": "与 PI_REMOTE_RUNTIME_CREDENTIAL 相同的值"
+  "runtimeCredential": "与 ORBIS_RUNTIME_CREDENTIAL 相同的值"
 }
 ```
 
-扩展的**唯一通道是本机 Host 的 loopback 端点**：它在 `session_start` 读 `~/.pi-remote/loopback.json` 发现 Host 并接上去；**Host 没起来就等它**（每次重连前重读发现文件），不回落到 Relay。中继已不再接受 agent runtime 的连接（`role` 必须是 `host`），而那条回落路本来也只能把明文会话内容播给手机，与「中继零知识」的前提直接冲突。
+扩展的**唯一通道是本机 Host 的 loopback 端点**：它在 `session_start` 读 `~/.orbis/loopback.json` 发现 Host 并接上去；**Host 没起来就等它**（每次重连前重读发现文件），不回落到 Relay。中继已不再接受 agent runtime 的连接（`role` 必须是 `host`），而那条回落路本来也只能把明文会话内容播给手机，与「中继零知识」的前提直接冲突。
 
 因此顺序是「先起 Host，再起 Pi」。Pi 先起也没关系——它会一直等 Host，Host 起来后自己接上；若仍未接上，在 Pi 里执行一次 `/reload` 即可。
 
-`~/.pi-remote/loopback.json` 里的 token 是**防手滑**，不是安全边界：本机任何进程本来就读得到这个文件。它防的是「残留文件指向一个已退出的 Host」和「一台机器上跑着两个 Host 时接到了错的那个」——两者都表现为「连上了但没有会话」，比连不上更难查。
+`~/.orbis/loopback.json` 里的 token 是**防手滑**，不是安全边界：本机任何进程本来就读得到这个文件。它防的是「残留文件指向一个已退出的 Host」和「一台机器上跑着两个 Host 时接到了错的那个」——两者都表现为「连上了但没有会话」，比连不上更难查。
 
 扩展会随 Runtime metadata 上报 Pi 所在机器的 `hostname`，APP 据此区分不同设备上的 agent 进程并在侧边栏按“主机 → 目录 → 会话”树状分组，不需要额外配置。
 
@@ -226,22 +225,22 @@ Windows Host 安装器把随包附带的 Pi 扩展登记到当前用户的 `~/.p
 npm run build        # tsc -b，刷新各包 dist
 ```
 
-然后让 Host 重新拉起一个 Pi 进程（手机端对会话执行 activate，或重启 Host）。早期的 source-first 热重载方案（manifest 指向 `src/index.ts`、依赖走 `@pi-remote/*/source`、靠 Pi 的 `/reload` 热更新）已移除——`/reload` 不再是扩展代码的更新手段。设计动机存档见 `docs/adr/0004-pi-extension-source-first-development.md`。
+然后让 Host 重新拉起一个 Pi 进程（手机端对会话执行 activate，或重启 Host）。早期的 source-first 热重载方案（manifest 指向 `src/index.ts`、依赖走 `@orbis/*/source`、靠 Pi 的 `/reload` 热更新）已移除——`/reload` 不再是扩展代码的更新手段。设计动机存档见 `docs/adr/0004-pi-extension-source-first-development.md`。
 
 扩展只会在 `session_start` 时连上本机 Host，并在 `session_shutdown` 时断开。连接后 Pi 发布轻量 Session catalog 和每个 Runtime 的当前 Session view；用户打开在线 Runtime 时，Android 才发送带 `sessionId`、graph version、entry digest、leaf、branch fingerprint 和 `syncId` 的 graph 同步请求。侧边栏中的缓存历史入口只读取已有本地缓存。可安全验证时响应只包含缺失 entry，否则发送完整 graph replace。Android 根据 graph 和 runtime leaf 自己计算 Pi-equivalent display projection；扩展不会直接读取 session JSONL 文件。
 
 也可以只用环境变量显式启用。扩展入口用构建产物 `dist/index.js`（与 manifest 注册的同一份；manifest 已自动加载扩展，通常不需要 `-e`，仅当 Pi 配置里没有本包时才显式指定）：
 
 ```bash
-PI_REMOTE_ENABLED=true \
-PI_REMOTE_RELAY_URL=wss://relay.example.com \
-PI_REMOTE_RUNTIME_CREDENTIAL=... \
+ORBIS_ENABLED=true \
+ORBIS_RELAY_URL=wss://relay.example.com \
+ORBIS_RUNTIME_CREDENTIAL=... \
 pi -e ./packages/pi-extension/dist/index.js
 ```
 
 在 Pi 中执行 `/remote-status`，可以查看当前 runtime 是否已启用远程控制。
 
-扩展加载、Session 启动/关闭、Host 通道命令链路以及 `/reload` 会写入仓库 `data/pi-extension-runtime.log`，每行是一条 JSONL 记录。日志分为 `error`、`warn`、`info`、`debug` 四级，默认使用 `info`：保留生命周期和 reload 主链路，详细的低频诊断记录可通过 `PI_REMOTE_RUNTIME_LOG_LEVEL=debug` 打开；设置为 `error` 只保留失败记录，设置为 `off` 完全关闭文件日志。其中 `extension_loaded` 可用于确认 Pi 实际加载的入口文件，`extension_reloaded` 表示 `session_start` 收到了 `reload` 原因。需要修改日志位置时可设置 `PI_REMOTE_RUNTIME_LOG`，相对路径以 Pi 工作目录为基准。日志采用异步追加、按批次写入，并限制待写队列最多 1024 条；日志失败或队列溢出都不会阻塞或影响 Pi。Android 端对应的发送、接收和连接变化会使用 `PiRemote.ReloadTrace` 标签写入 Logcat，可用 `adb logcat -s PiRemote.ReloadTrace:I` 查看。
+扩展加载、Session 启动/关闭、Host 通道命令链路以及 `/reload` 会写入仓库 `data/pi-extension-runtime.log`，每行是一条 JSONL 记录。日志分为 `error`、`warn`、`info`、`debug` 四级，默认使用 `info`：保留生命周期和 reload 主链路，详细的低频诊断记录可通过 `ORBIS_RUNTIME_LOG_LEVEL=debug` 打开；设置为 `error` 只保留失败记录，设置为 `off` 完全关闭文件日志。其中 `extension_loaded` 可用于确认 Pi 实际加载的入口文件，`extension_reloaded` 表示 `session_start` 收到了 `reload` 原因。需要修改日志位置时可设置 `ORBIS_RUNTIME_LOG`，相对路径以 Pi 工作目录为基准。日志采用异步追加、按批次写入，并限制待写队列最多 1024 条；日志失败或队列溢出都不会阻塞或影响 Pi。Android 端对应的发送、接收和连接变化会使用 `Orbis.ReloadTrace` 标签写入 Logcat，可用 `adb logcat -s Orbis.ReloadTrace:I` 查看。
 
 ## Pi 斜杠命令菜单
 
@@ -333,7 +332,7 @@ Android 10 及以上保存到系统“下载”目录，较低版本保存到 Or
 
 聊天输入框可以把手机上的文件传到电脑。上传与发消息是**两步**：先上传落地，消息只携带**已经完成**的附件路径。
 
-落地位置是会话 `cwd` 下的 `.pi-remote-uploads/`（目录由手机给出，Host 只校验「绝对路径 + 可创建」）。附件对 agent 而言就是**路径**：`user_message.attachments` 是绝对路径数组，桥接层在发送前把 `附件：<path>` 拼进正文，由 agent 自己的工具去读——不做描述符、不做图片嗅探、不走 content parts。附件是无条件支持的，没有能力位。
+落地位置是会话 `cwd` 下的 `.orbis-uploads/`（目录由手机给出，Host 只校验「绝对路径 + 可创建」）。附件对 agent 而言就是**路径**：`user_message.attachments` 是绝对路径数组，桥接层在发送前把 `附件：<path>` 拼进正文，由 agent 自己的工具去读——不做描述符、不做图片嗅探、不走 content parts。附件是无条件支持的，没有能力位。
 
 驱动权在发送方、信用在接收方：手机按 Host 回报的**已落盘前缀**推进，它同时是断线后的续传基准；Host 自己算一遍 sha256、校验通过后才改名落地。续传的身份是内容而不是 `uploadId`——`sha256(runtimeId, directory, fileName, size, sha256)` 决定 `.part` 文件名，所以手机重试、Host 重启都会命中同一个 `.part`。
 
@@ -349,7 +348,7 @@ Android 10 及以上保存到系统“下载”目录，较低版本保存到 Or
 
 ```ts
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createPiRemoteInteraction } from "@pi-remote/interaction-sdk";
+import { createPiRemoteInteraction } from "@orbis/interaction-sdk";
 
 export default function (pi: ExtensionAPI) {
   const remote = createPiRemoteInteraction(pi, "my-extension");
@@ -379,7 +378,7 @@ SDK 会把每个请求绑定到 runtime、扩展和唯一请求 ID。本地端�
 - 中继只接受身份为 `host` 的网关连接，不持有任何 agent runtime 连接，也不转发运行时的明文事件。
 - 公网 Relay 地址必须使用 TLS（`wss://`）；可信本地网络可以显式使用受限的 `ws://`。
 - 每台设备有独立 `pskRoot`；撤销是设备级的，不影响其他设备，也不必给其他设备重新配对。
-- Host 侧只持久化身份私钥与设备记录（`~/.pi-remote/`，0600）；Android 用系统加密存储保存自己的身份材料。
+- Host 侧只持久化身份私钥与设备记录（`~/.orbis/`，0600）；Android 用系统加密存储保存自己的身份材料。
 - Relay 始终根据已认证连接和信封路由头转发；客户端声明的 session ID 不能用于选择 runtime。
 - 手机能下达的指令止于「把 agent 拉起来」：可以传 `sessionId` 或 `{ agentKind, cwd }`，不能传命令行或环境变量，Host 只构造受支持 backend 的启动参数（见「会话激活」）。
 - 已配对设备视为可信，所以不做 cwd 白名单、不做桌面二次确认、不做速率限制——安全由配对与端到端加密提供，不靠校验设备输入。
@@ -391,10 +390,10 @@ SDK 会把每个请求绑定到 runtime、扩展和唯一请求 ID。本地端�
 - 设备凭据等价于「发消息 + 调用该 runtime 发布的 Slash 命令 + 按路径读写 Host 账户可读写的文件」，而不是只读凭据。需要整机隔离时，使用受限 Windows 用户、容器或虚拟机。
 - 中继只在内存中转发实时内容，不持久化聊天记录、session 数据或文件字节；它落盘的只有设备凭据与配对状态。
 
-完整产品要求和测试决策见 `PI_REMOTE_CONTROL_SPEC.md`。
+完整产品要求和测试决策见 `ORBIS_CONTROL_SPEC.md`。
 
 ## 参与与许可证
 
 后续开发、问题讨论和发布统一在 [WGooold/Orbis](https://github.com/WGooold/Orbis) 进行。开始前请读 [CONTRIBUTING.md](CONTRIBUTING.md)、[领域词汇](CONTEXT.md) 和相关 [ADRs](docs/adr/)。
 
-项目原创代码采用 [MIT](LICENSE)。第三方代码、Qt 动态库和品牌图标依赖保留各自的许可与声明，见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。现有 `@pi-remote/*` 包名和 `dev.pi.remote` Android 应用 ID 为兼容已有安装而保留。
+项目原创代码采用 [MIT](LICENSE)。第三方代码、Qt 动态库和品牌图标依赖保留各自的许可与声明，见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。workspace 包统一使用 `@orbis/*`；Android 应用 ID 保持 `com.orbising.orbis`，兼容已有安装。Pi Agent、Pi 扩展专属接口继续使用 Pi 名称。旧配对存储键、加密协议常量及跨工作树构建锁保留原标识，避免改名影响已有数据和运行中的旧版本。

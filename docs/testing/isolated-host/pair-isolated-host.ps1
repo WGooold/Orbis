@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   对应 node packages/host/dist/cli.js pair。与常驻 Host 在**同一个状态目录**里互斥：先停 host 再配对。
-  配对码由本机 Relay 签发，需要管理员令牌（data\local-relay.env 的 PI_REMOTE_ADMIN_TOKEN），
+  配对码由本机 Relay 签发，需要管理员令牌（data\local-relay.env 的 ORBIS_ADMIN_TOKEN），
   少了它就是 HTTP 401——这是实测踩过的坑。
 
   脚本把 pair 的输出写进 <rig>\logs\pair.out.log，等载荷那一行出现就打到 stdout，然后继续等
@@ -49,15 +49,15 @@ New-Item -ItemType Directory -Force -Path $stateDir, $logDir | Out-Null
 if (Test-Path -LiteralPath $outLog) { Remove-Item -LiteralPath $outLog -Force }
 
 $saved = @{}
-foreach ($name in 'PI_REMOTE_RELAY_URL', 'PI_REMOTE_LAN_PORT', 'PI_REMOTE_RUNTIME_CREDENTIAL', 'PI_REMOTE_ADMIN_TOKEN') {
+foreach ($name in 'ORBIS_RELAY_URL', 'ORBIS_LAN_PORT', 'ORBIS_RUNTIME_CREDENTIAL', 'ORBIS_ADMIN_TOKEN') {
     $saved[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 try {
-    $env:PI_REMOTE_RELAY_URL = $RelayUrl
-    $env:PI_REMOTE_LAN_PORT = "$LanPort"
-    $env:PI_REMOTE_RUNTIME_CREDENTIAL = Read-EnvValue 'PI_REMOTE_RUNTIME_CREDENTIAL'
+    $env:ORBIS_RELAY_URL = $RelayUrl
+    $env:ORBIS_LAN_PORT = "$LanPort"
+    $env:ORBIS_RUNTIME_CREDENTIAL = Read-EnvValue 'ORBIS_RUNTIME_CREDENTIAL'
     # 配对码由 Relay 签发：没有管理员令牌就是 HTTP 401。
-    $env:PI_REMOTE_ADMIN_TOKEN = Read-EnvValue 'PI_REMOTE_ADMIN_TOKEN'
+    $env:ORBIS_ADMIN_TOKEN = Read-EnvValue 'ORBIS_ADMIN_TOKEN'
     $process = Start-Process -FilePath 'node' -ArgumentList @($entry, 'pair', '--state-dir', $stateDir, '--print-payload') `
         -WorkingDirectory $repo -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
     $process.Id | Set-Content -LiteralPath $pidFile -Encoding ascii

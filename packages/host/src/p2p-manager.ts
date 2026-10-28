@@ -17,10 +17,10 @@
 import type { DataChannel } from "node-datachannel";
 import { PeerConnection } from "node-datachannel";
 
-import type { EnvelopeV2 } from "@pi-remote/protocol";
+import type { EnvelopeV2 } from "@orbis/protocol";
 
 import { describeError } from "./describe-error.js";
-import { PROTOCOL_VERSION, V2FrameSchema } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION, V2FrameSchema } from "@orbis/protocol";
 
 import type { PathSink } from "./device-link.js";
 
@@ -132,7 +132,7 @@ export class HostP2pManager {
       return undefined;
     }
     const { peer } = pending;
-    const channel = peer.createDataChannel("pi-remote");
+    const channel = peer.createDataChannel("orbis");
     pending.channel = channel;
     this.#wireChannel(deviceId, channel);
     return undefined;
@@ -211,7 +211,7 @@ export class HostP2pManager {
 
   #createPeer(deviceId: string): PendingPeer {
     // node-datachannel 是 C++ 绑定：构造函数不进 Promise，回调里出错只会走 onError。
-    const peer = new PeerConnection(`pi-remote-${deviceId}`, {
+    const peer = new PeerConnection(`orbis-${deviceId}`, {
       iceServers: this.#options.stunServers.length > 0 ? [...this.#options.stunServers] : [],
     }) as PeerConnection;
     const pending: PendingPeer = {

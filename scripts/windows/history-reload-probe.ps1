@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $package = 'com.orbising.orbis'
-$activity = "$package/dev.pi.remote.MainActivity"
+$activity = "$package/com.orbising.orbis.MainActivity"
 $evidence = Join-Path $repo '.artifacts\app'
 $adb = Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe'
 $leaseDir = if ($env:ORBIS_ANDROID_LEASE_DIR) { $env:ORBIS_ANDROID_LEASE_DIR } elseif (Test-Path 'D:\android-emulators') { 'D:\android-emulators\leases' } else { Join-Path $env:LOCALAPPDATA 'Orbis\android-leases' }

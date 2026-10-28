@@ -1,12 +1,11 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveStateDir } from "@orbis/e2e";
+import { orbisEnvironment } from "@orbis/protocol";
 
 import { resolveCodexCommand, type CodexCommand } from "./codex-daemon.js";
 import { readCodexSelection } from "./codex-selection.js";
-
-const LOOPBACK_DESCRIPTOR = join(homedir(), ".pi-remote", "loopback.json");
 
 type LoopbackDescriptor = { url?: unknown; token?: unknown };
 type LaunchResult = { endpoint?: unknown; command?: unknown; prefixArgs?: unknown };
@@ -31,7 +30,8 @@ export async function runCodexShim(args: readonly string[] = process.argv.slice(
 }
 
 async function requestHostLaunch(cwd: string): Promise<{ endpoint: string; command: string; prefixArgs: string[] }> {
-  const descriptor = JSON.parse(await readFile(LOOPBACK_DESCRIPTOR, "utf8")) as LoopbackDescriptor;
+  const stateDir = process.env.ORBIS_HOST_STATE_DIR ?? orbisEnvironment(process.env, "STATE_DIR");
+  const descriptor = JSON.parse(await readFile(join(resolveStateDir(stateDir), "loopback.json"), "utf8")) as LoopbackDescriptor;
   if (typeof descriptor.url !== "string" || typeof descriptor.token !== "string") throw new Error("invalid Host loopback descriptor");
   const response = await fetch(`${descriptor.url.replace(/^ws:/u, "http:")}/v1/codex/launch`, {
     method: "POST",

@@ -1,12 +1,21 @@
 import { z } from "zod";
+export { orbisEnvironment } from "./product-environment.js";
 import {
   AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema, AgentActivitySchema, AgentDeliveryItemSchema,
   DiagnosticsPageMessageSchema, DiagnosticsRequestSchema,
   AgentCatalogSessionSchema as AgentSessionSummarySchema, AgentStateRangeRequestSchema, AgentStateRangePageSchema,
 } from "./agent-state.js";
 import { NotificationSourceEventSchema, NotificationSnapshotSchema } from "./notifications.js";
+import { ToolSummarySchema, ToolContentReadRequestSchema, ToolContentCancelSchema, ToolContentPageSchema,
+  ToolReadFailureSchema, ToolInventoryReadRequestSchema, ToolInventoryPageSchema,
+  ToolInventoryPatchSchema, ToolInventoryChangedSchema, ToolInventoryProducedSchema, ToolInventoryReferenceSchema,
+  ToolInventoryOpenRequestSchema, ToolInventoryOpenedSchema } from "./tool-activity.js";
 export * from "./notifications.js";
 export { RecoverableSessionSource } from "./session-source.js";
+export * from "./tool-activity.js";
+export * from "./tool-message-projection.js";
+export * from "./tool-inventory-receiver.js";
+export * from "./tool-inventory-source.js";
 
 /**
  * 协议硬版本（ADR-0008 / ADR-0032 §7）。
@@ -16,7 +25,7 @@ export { RecoverableSessionSource } from "./session-source.js";
  * 所有入站校验都是 `!== PROTOCOL_VERSION` 直接拒绝，没有兼容旧版的旁路——升版就是断代，
  * 两端必须一起更新。
  */
-export const PROTOCOL_VERSION = 14 as const;
+export const PROTOCOL_VERSION = 15 as const;
 
 /**
  * `protocol.error` 的 code：连接的对面用的是另一版协议。
@@ -221,7 +230,7 @@ export type SessionCatalogEntry = z.infer<typeof SessionCatalogEntrySchema>;
  * 会话条目来源（spec §7.2 的 AgentBackend）与 ADR-0032 的共享状态模型。
  *
  * agentKind、Agent 身份与领域 envelope 都定义在 `agent-state.ts`；它只依赖 zod，
- * 因此不会与这里的 schema 形成循环。客户端仍从 `@pi-remote/protocol` 取类型。
+ * 因此不会与这里的 schema 形成循环。客户端仍从 `@orbis/protocol` 取类型。
  */
 export * from "./agent-state.js";
 export * from "./host-model-domains.js";
@@ -447,7 +456,7 @@ export type PathKind = z.infer<typeof PathKindSchema>;
 // ─── 本机发现文件（Host ↔ Pi 扩展） ────────────────────────────────────────────
 //
 // 它不是线协议，但它必须被 Host 与扩展**逐字段一致地**解释，所以和 v2 线契约住在一起。
-// Host 启动时把这个文件写到 `~/.pi-remote/`，Pi 扩展读它来决定「走本机还是走 Relay」。
+// Host 启动时把这个文件写到 `~/.orbis/`，Pi 扩展读它来决定「走本机还是走 Relay」。
 //
 // `token` 的性质是**防手滑，不是安全边界**：本机任何进程本来就读得到这个文件。
 // 它解决的问题是「残留的旧文件指向一个已经退出的 Host」和「一台机器上跑着两个 Host 时
@@ -484,7 +493,8 @@ export const RemoteContentSchema = z.discriminatedUnion("type", [
     type: z.literal("tool_call"),
     toolCallId: z.string(),
     toolName: z.string(),
-    arguments: z.unknown(),
+    arguments: z.unknown().optional(),
+    summary: ToolSummarySchema.optional(),
   }),
 ]);
 export type RemoteContent = z.infer<typeof RemoteContentSchema>;
@@ -497,6 +507,7 @@ export const ChatMessageSchema = z.strictObject({
   toolCallId: z.string().optional(),
   toolName: z.string().optional(),
   isError: z.boolean().optional(),
+  toolSummary: ToolSummarySchema.optional(),
 });
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 
@@ -622,6 +633,7 @@ export const SessionLiveMessageSchema = z.strictObject({
   finished: z.boolean(),
   contentComplete: z.boolean(),
   persistedEntryId: z.string().min(1).max(256).optional(),
+  order: z.number().int().nonnegative().optional(),
 });
 export type SessionLiveMessage = z.infer<typeof SessionLiveMessageSchema>;
 
@@ -631,6 +643,7 @@ export const SessionLiveToolSchema = z.strictObject({
   state: z.enum(["started", "updated", "finished"]),
   detail: z.unknown().optional(),
   isError: z.boolean().optional(),
+  summary: ToolSummarySchema.optional(),
 });
 export type SessionLiveTool = z.infer<typeof SessionLiveToolSchema>;
 
@@ -640,6 +653,7 @@ export const SessionLiveStateSchema = z.strictObject({
   turn: SessionLiveTurnSchema.nullable(),
   messages: z.array(SessionLiveMessageSchema).max(256),
   tools: z.array(SessionLiveToolSchema).max(256),
+  toolInventory: ToolInventoryReferenceSchema.optional(),
 });
 export type SessionLiveState = z.infer<typeof SessionLiveStateSchema>;
 
@@ -796,6 +810,8 @@ export type RuntimeCommandStatus = z.infer<typeof RuntimeCommandStatusSchema>;
  */
 
 export const RuntimeEventSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("tool.activity"), summary: ToolSummarySchema }),
+  ToolContentPageSchema, ToolReadFailureSchema, ToolInventoryPageSchema, ToolInventoryPatchSchema, ToolInventoryChangedSchema, ToolInventoryProducedSchema, ToolInventoryOpenedSchema,
   z.strictObject({ type: z.literal("delivery.snapshot"), items: z.array(AgentDeliveryItemSchema).max(256), complete: z.boolean().optional() }),
   z.strictObject({ type: z.literal("execution.activity"), retry: AgentActivitySchema, compaction: AgentActivitySchema }),
   NotificationSourceEventSchema,
@@ -959,6 +975,7 @@ export type RuntimeEvent = z.infer<typeof RuntimeEventSchema>;
 const downloadOffset = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional();
 
 export const RuntimeCommandSchema = z.discriminatedUnion("type", [
+  ToolContentReadRequestSchema, ToolContentCancelSchema, ToolInventoryReadRequestSchema, ToolInventoryOpenRequestSchema,
   z.strictObject({ type: z.literal("file.download"), path: z.string().min(1), offset: downloadOffset }),
   z.strictObject({ type: z.literal("artifact.download"), artifactId: z.string().uuid(), offset: downloadOffset }),
   z.strictObject({
@@ -1030,6 +1047,30 @@ export const RuntimeCommandSchema = z.discriminatedUnion("type", [
 ]);
 export type RuntimeCommand = z.infer<typeof RuntimeCommandSchema>;
 
+/** ADR-0045 §1/§3：原生工具事件仅供 adapter 输入，loopback 与设备业务帧只接受摘要投影。 */
+export function isToolSummaryProjection(event: RuntimeEvent): boolean {
+  if (event.type === "tool.started" || event.type === "tool.updated" || event.type === "tool.finished") return false;
+  const message = (input: unknown): boolean => {
+    if (input === null || typeof input !== "object") return true;
+    const raw = input as Record<string, unknown>;
+    if (raw.role === "tool" || raw.role === "toolResult") return ToolSummarySchema.safeParse(raw.toolSummary).success &&
+      Array.isArray(raw.content) && raw.content.length === 0;
+    return !Array.isArray(raw.content) || raw.content.every((block: unknown) => {
+      if (!block || typeof block !== "object") return true;
+      const part = block as Record<string, unknown>;
+      return part.type !== "toolCall" && (part.type !== "tool_call" || !Object.hasOwn(part, "arguments") && ToolSummarySchema.safeParse(part.summary).success);
+    });
+  };
+  if (event.type === "message.started" || event.type === "message.finished") return message(event.message);
+  if (event.type === "session.snapshot" || event.type === "session.patch") {
+    return (!event.live || event.live.tools.length === 0 && event.live.messages.every(item => message(item.message))) &&
+      (event.entries ?? []).every(entry => message(entry.data.message)) && (event.display?.entries ?? []).every(row => message(row.message));
+  }
+  if (event.type === "session.entry.result") return message(event.entry?.data.message);
+  return true;
+}
+export const RuntimeWireEventSchema = RuntimeEventSchema.refine(isToolSummaryProjection, "tool_summary_projection_required");
+
 export const RuntimeClientMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("runtime.authenticate"),
@@ -1044,7 +1085,7 @@ export const RuntimeClientMessageSchema = z.discriminatedUnion("type", [
     protocolVersion: z.literal(PROTOCOL_VERSION),
     runtimeId: z.string().min(1),
     sequence: z.number().int().nonnegative(),
-    event: RuntimeEventSchema,
+    event: RuntimeWireEventSchema,
   }),
   V2FrameSchema,
 ]);
@@ -1165,7 +1206,7 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
     requestId: z.string().min(1).max(128),
     /** 只是「这条上传属于哪个会话」的标注，不参与落地路径。 */
     runtimeId: z.string().min(1).max(256),
-    /** 手机算好的**绝对**目录（`<cwd>/.pi-remote-uploads/<sha256>`）；不存在则创建。 */
+    /** 手机算好的**绝对**目录（`<cwd>/.orbis-uploads/<sha256>`）；不存在则创建。 */
     directory: z.string().min(1).max(4096),
     fileName: safeFileName,
     size: z.number().int().nonnegative().max(MAX_UPLOAD_BYTES),
@@ -1294,7 +1335,7 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
   // UI 显示「已连接」而所有请求石沉大海。hostId 供手机过滤（广播发给所有设备）。
   z.strictObject({ type: z.literal("host.online"), hostId: z.string().min(1) }),
   z.strictObject({ type: z.literal("host.offline"), hostId: z.string().min(1), reason: z.string().optional() }),
-  z.strictObject({ type: z.literal("runtime.event"), protocolVersion: z.literal(PROTOCOL_VERSION), runtimeId: z.string(), sequence: z.number().int().nonnegative(), event: RuntimeEventSchema }),
+  z.strictObject({ type: z.literal("runtime.event"), protocolVersion: z.literal(PROTOCOL_VERSION), runtimeId: z.string(), sequence: z.number().int().nonnegative(), event: RuntimeWireEventSchema.refine((event): boolean => event.type !== "session.tools.produced", "producer_inventory_is_private") }),
   // ── 统一 Agent 状态模型（ADR-0032）的响应。读的是 Host 已经提交的当前投影，不是原生直通：
   // 每个领域带自己的版本与可信度，点名要但确实没有状态的领域会出现在 `missing` 里，
   // 而不是悄悄缺席。负载本身的形状在 agent-state.ts，这里只补协议版本。

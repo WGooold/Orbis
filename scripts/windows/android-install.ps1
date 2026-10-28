@@ -18,6 +18,7 @@ $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $leaseDir = if ($env:ORBIS_ANDROID_LEASE_DIR) { $env:ORBIS_ANDROID_LEASE_DIR } elseif (Test-Path 'D:\android-emulators') { 'D:\android-emulators\leases' } else { Join-Path $env:LOCALAPPDATA 'Orbis\android-leases' }
 $leasePath = Join-Path $leaseDir "$Serial.json"
 $adb = Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe'
+# Existing checkouts must share the same device lock during the branding upgrade.
 $deviceMutex = [Threading.Mutex]::new($false, "PiRemote.AndroidDevice.$Serial")
 $acquired = $false
 
@@ -33,7 +34,7 @@ function Read-Json([string]$Path) {
 try {
     if (-not (Test-Path $adb)) { throw "adb not found: $adb" }
     $apkPath = (Resolve-Path -LiteralPath $Apk -ErrorAction Stop).Path
-    $manifestPath = "$apkPath.pi-remote-build.json"
+    $manifestPath = "$apkPath.orbis-build.json"
     $manifest = Read-Json $manifestPath
     $lease = Read-Json $leasePath
 
@@ -69,7 +70,7 @@ try {
     & $adb -s $Serial install -r $apkPath
     if ($LASTEXITCODE -ne 0) { throw "APK install failed with exit code $LASTEXITCODE." }
     if ($StartActivity) {
-        & $adb -s $Serial shell am start -n com.orbising.orbis/dev.pi.remote.MainActivity
+        & $adb -s $Serial shell am start -n com.orbising.orbis/com.orbising.orbis.MainActivity
         if ($LASTEXITCODE -ne 0) { throw "Activity launch failed with exit code $LASTEXITCODE." }
     }
     Write-Output "Installed build $($manifest.buildId) on $Serial from $apkPath"

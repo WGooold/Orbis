@@ -22,7 +22,7 @@ These documents describe a specific tool version or a past implementation review
 
 - `docs/codex-app-server-protocol.md`: codex-cli 0.154.0 app-server schema snapshot.
 - `docs/codex-vs-pi-feature-gap.md`: 2026-09-23 Pi/Codex capability comparison.
-- `docs/pi-remote-ui-design-spec.md`: historical UI design tokens and material guidance. The source design file and exported images are intentionally not part of the repository.
+- `docs/orbis-ui-design-spec.md`: historical UI design tokens and material guidance. The source design file and exported images are intentionally not part of the repository.
 - `docs/architecture/`: 2026-10-13 agent state and architecture audit snapshot supporting ADR-0032, including `agent-state-architecture.html`, `agent-state-audit.json`, preview images and the report validation record. It describes the tree before ADR-0032; if it conflicts with source code or the ADR, the source and ADR win.
 
 When a snapshot conflicts with source code, an accepted ADR, or the current product README, use the current source and update the snapshot's status or date instead of treating it as authoritative.

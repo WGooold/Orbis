@@ -4,7 +4,7 @@
 Node 对 `dist/*.js` 的 ESM 缓存，`/reload` 复用旧模块）改用另一个答案：扩展 manifest 指向
 `./dist/index.js`、workspace 依赖走普通 package import，改完扩展 `npm run build` 后由 Host
 拉起**全新的 Pi 进程**（`session.activate`），不再依赖 `/reload` 热更新。压垮它的直接原因是
-dist 里残留的 `@pi-remote/*/source` 导入让 Node 无法加载（`tsc -b` 单独跑不含当时的改写步骤，
+dist 里残留的 `@orbis/*/source` 导入让 Node 无法加载（`tsc -b` 单独跑不含当时的改写步骤，
 Host 重启即 `ERR_MODULE_NOT_FOUND`）。现行约定见 `AGENTS.md` 的「Pi package 的模块解析」。
 以下正文保留作历史记录，其中的做法已不再适用。
 
@@ -32,13 +32,13 @@ packages/pi-extension/dist/index.js
 
 当时的实现采用 **source-first** 的本地开发结构：
 
-- `@pi-remote/pi-extension` 的 Pi manifest 和 package export 指向 `./src/index.ts`；
+- `@orbis/pi-extension` 的 Pi manifest 和 package export 指向 `./src/index.ts`；
 - `packages/pi-extension/src` 中对本仓库 workspace package 的运行时依赖使用明确的
-  `@pi-remote/*/source` export，绕过这些 package 的 `dist` export；
+  `@orbis/*/source` export，绕过这些 package 的 `dist` export；
 - `protocol`、`runtime-bridge` 和 `remote-interaction-sdk` 的默认 package export
   暂时保持 `dist`，避免把直接运行的 Relay Node 进程切换成 TypeScript 入口；它们
   额外提供仅供 source-first 图使用的 `./source` export；
-- `@pi-remote/pi-extension` 的 `files` 清单包含 `src`；
+- `@orbis/pi-extension` 的 `files` 清单包含 `src`；
 - Pi 仍通过正常的 package 配置加载扩展，不再额外维护一个重复的开发实现或
   wrapper；
 - `packages/*/src` 是唯一需要修改的实现源，`dist` 只是 TypeScript 构建生成物，
@@ -48,11 +48,11 @@ packages/pi-extension/dist/index.js
 
 ```text
 packages/pi-extension/src/index.ts
-  ├─ @pi-remote/protocol/source         → packages/protocol/src/index.ts
-  ├─ @pi-remote/runtime-bridge/source   → packages/runtime-bridge/src/index.ts
-  │                                      └─ @pi-remote/protocol/source
-  └─ @pi-remote/interaction-sdk/source  → packages/remote-interaction-sdk/src/index.ts
-                                         └─ @pi-remote/protocol/source
+  ├─ @orbis/protocol/source         → packages/protocol/src/index.ts
+  ├─ @orbis/runtime-bridge/source   → packages/runtime-bridge/src/index.ts
+  │                                      └─ @orbis/protocol/source
+  └─ @orbis/interaction-sdk/source  → packages/remote-interaction-sdk/src/index.ts
+                                         └─ @orbis/protocol/source
 ```
 
 这些 `.ts` 模块由 Pi 已有的 Jiti 转译路径加载，并受 `moduleCache: false` 控制。
@@ -71,7 +71,7 @@ packages/pi-extension/src/index.ts
 
 - Pi extension 的默认 package export 仍指向编译后的 JavaScript，以保留未来发布
   的正常入口；Pi manifest 通过 `src/index.ts` 进行本地开发，且 source 代码通过
-  `@pi-remote/*/source` 执行本地依赖；默认 package import 仍指向 `dist`，因此
+  `@orbis/*/source` 执行本地依赖；默认 package import 仍指向 `dist`，因此
   Relay 等直接由 Node 启动的运行时不受影响；
 - `npm run build` 仍然有用，用于类型检查、生成声明、验证构建图，并在生成
   `dist` 后把 source-only subpath 改回普通 runtime import；它不是本地 Pi

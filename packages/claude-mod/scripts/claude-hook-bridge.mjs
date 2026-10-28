@@ -53,7 +53,7 @@ async function readStdin() {
 async function readDescriptor() {
   const stateDir = process.env.ORBIS_STATE_DIR;
   const path = stateDir === undefined || stateDir.length === 0
-    ? join(homedir(), ".pi-remote", "loopback.json")
+    ? join(homedir(), ".orbis", "loopback.json")
     : join(stateDir, "loopback.json");
   const descriptor = JSON.parse(await readFile(path, "utf8"));
   if (typeof descriptor.url !== "string" || !/^ws:\/\/127\.0\.0\.1:\d+$/u.test(descriptor.url) ||

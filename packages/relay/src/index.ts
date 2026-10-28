@@ -12,7 +12,7 @@ import {
   type RelayToDeviceMessage,
   type RelayToRuntimeMessage,
   RuntimeClientMessageSchema,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 import { WebSocketServer, WebSocket } from "ws";
 import { RegistrationError, type RegistrationAuthority } from "./registration.js";
 import { RelayAdmin } from "./admin.js";

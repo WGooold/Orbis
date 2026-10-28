@@ -6,9 +6,9 @@ import {
   type ExtensionCommandContext,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import type { RuntimeSlashCommand, RuntimeSlashCommandOption } from "@pi-remote/protocol";
+import type { RuntimeSlashCommand, RuntimeSlashCommandOption } from "@orbis/protocol";
 import { sessionTreeOptions } from "./session-tree.js";
-import type { RuntimeSlashCommandCompletion } from "@pi-remote/runtime-bridge";
+import type { RuntimeSlashCommandCompletion } from "@orbis/runtime-bridge";
 
 export const INTERNAL_SLASH_COMMAND = "__pi_remote_slash";
 
@@ -51,7 +51,7 @@ type CompletionState = {
   completions: Map<string, RuntimeSlashCommandCompletion[]>;
   listeners: Map<string, Set<() => void>>;
 };
-const COMPLETION_STATE = Symbol.for("@pi-remote/slash-command-completions");
+const COMPLETION_STATE = Symbol.for("@orbis/slash-command-completions");
 
 const completionState = (): CompletionState => {
   const scope = globalThis as CompletionScope;

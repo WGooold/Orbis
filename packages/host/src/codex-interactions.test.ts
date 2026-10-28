@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RuntimeEventSchema } from "@pi-remote/protocol";
+import { RuntimeEventSchema } from "@orbis/protocol";
 import { codexDecline, prepareCodexInteraction } from "./codex-interactions.js";
 import { codexPermissions } from "./codex-permissions.js";
 

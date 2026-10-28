@@ -4,7 +4,7 @@
  * 一台设备可能反复上下线，每次上下线都重跑一遍握手、重新派生 `k_h2d` / `k_d2h`——
  * 这是「换网络不掉线」和「前向保密」的共同来源。业务层只看到一条能收发字节的通道。
  */
-import type { EnvelopeChannel, EnvelopeV2 } from "@pi-remote/protocol";
+import type { EnvelopeChannel, EnvelopeV2 } from "@orbis/protocol";
 
 import {
   E2eChannel,
@@ -13,7 +13,7 @@ import {
   buildPlaintextEnvelope,
   readHandshakeEnvelope,
   type DeviceRecord,
-} from "@pi-remote/e2e";
+} from "@orbis/e2e";
 
 export type DeviceSessionState = "idle" | "handshaking" | "ready";
 

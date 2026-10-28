@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, type DiagnosticPage, type DiagnosticsRequest, type RelayToDeviceMessage } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION, type DiagnosticPage, type DiagnosticsRequest, type RelayToDeviceMessage } from "@orbis/protocol";
 
 /**
  * 诊断记录分页应答（ADR-0032 模块 23）。

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NotificationSource, RuntimeEventSchema, type NotificationInput, type NotificationSourceEvent } from "@pi-remote/protocol";
+import { NotificationSource, RuntimeEventSchema, type NotificationInput, type NotificationSourceEvent } from "@orbis/protocol";
 import { NotificationStore } from "./notification-store.js";
 
 const condition = (code: string, occurrenceId = "one"): NotificationInput => ({ code, occurrenceId,

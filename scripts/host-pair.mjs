@@ -10,7 +10,7 @@ import { existsSync, rmSync, writeFileSync } from "node:fs";
 
 import QRCode from "qrcode";
 
-import { encodePairingQrText, resolveStateDir } from "@pi-remote/e2e";
+import { encodePairingQrText, resolveStateDir } from "@orbis/e2e";
 import { loadHostConfig } from "../packages/host/dist/config.js";
 import { CodexAppServer } from "../packages/host/dist/codex-daemon.js";
 import { CodexRuntime } from "../packages/host/dist/codex-runtime.js";

@@ -1,12 +1,12 @@
 /**
  * 设备可调的路径优先级（§6.2 的本机扩展）。
  *
- * 为什么不住在 `@pi-remote/protocol` 的 `DeviceE2ePayloadSchema` 里：这条消息只存在于
+ * 为什么不住在 `@orbis/protocol` 的 `DeviceE2ePayloadSchema` 里：这条消息只存在于
  * 手机 → Host 的 E2E 密文内，Relay 看不见、也永远不需要认识它。放进协议包会让每次
  * 调整这个纯本机偏好都触发一次 Relay 重新部署，收益为零。所以 Host 自己认、自己校验。
  */
-import { PROTOCOL_VERSION } from "@pi-remote/protocol";
-import type { PathKind } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION } from "@orbis/protocol";
+import type { PathKind } from "@orbis/protocol";
 
 import { PATH_KINDS } from "./path.js";
 

@@ -2,6 +2,8 @@
 
 日期：2026-10-23
 
+2026-10-27：[ADR-0045](0045-tool-summaries-and-on-demand-content.md) 将工具内容移出共享 live：工具原文字节追加不再要求重发聊天 patch，库存引用与摘要独立分页/修订。本文的来源合并、普通出站预算及封帧后不得丢信封规则继续适用；工具详情另用有界 bulk 队列。
+
 状态：accepted
 
 关联：[ADR-0007](0007-channel-multiplexed-delivery.md)、[ADR-0010](0010-write-layer-slicing.md)、[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0036](0036-sync-backpressure-is-not-failure.md)、[ADR-0037](0037-session-sync-transaction-contract.md)
@@ -10,7 +12,7 @@
 
 用户可观察到：Codex 会话状态长时间不更新，重启 App 后才恢复；同时设备频繁出现 `sync busy`、`sync unavailable`，Host 进程内存曾累计约 209 MiB 以上甚至数百 MiB。
 
-现场诊断记录在 `C:\Users\25892\.pi-remote\diagnostics.ndjson`。一次队列压力样本中，两个 Codex 会话的 `runtime.event/session.patch` 约占 392.1 MB，5 秒内入队约 35.8 MB、写出约 12.1 MB；DSH 约 5.7 MB。`sync busy` 发生在 `DeviceLink.sendSessionSnapshot()` 的 12 MiB 同步准入限制处，但普通 `msg` 没有相同的总字节上限，因此普通 patch 会继续堆积并挤压后续同步。
+现场诊断记录在 `C:\Users\25892\.orbis\diagnostics.ndjson`。一次队列压力样本中，两个 Codex 会话的 `runtime.event/session.patch` 约占 392.1 MB，5 秒内入队约 35.8 MB、写出约 12.1 MB；DSH 约 5.7 MB。`sync busy` 发生在 `DeviceLink.sendSessionSnapshot()` 的 12 MiB 同步准入限制处，但普通 `msg` 没有相同的总字节上限，因此普通 patch 会继续堆积并挤压后续同步。
 
 引入时间可以由 Git 历史确认：commit `ad9925b`（2026-10-08 14:49:45 +0800，`feat(sync): add Codex source checkpoints and versioned live patches`）首次把 Codex 的 `sourceSeq`、live 状态和完整累计 `session.patch` 接到 Host 事件出口。此后每次 `#setLiveMessage` / `#setLiveTool` 都会触发 `#touchSource`，发布包含完整 live 状态的 patch。
 

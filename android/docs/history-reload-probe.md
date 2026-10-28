@@ -4,7 +4,7 @@
 
 | 入口 | 实际覆盖 | 不覆盖 |
 | --- | --- | --- |
-| [`history-client-reload-probe.ps1`](../../scripts/windows/history-client-reload-probe.ps1) + [`LiveHistoryReloadInstrumentedTest`](../app/src/androidTest/java/dev/pi/remote/LiveHistoryReloadInstrumentedTest.kt) | 使用手机已有配对与 SQLite，经真实连接读取已有 Codex；重建 ViewModel/transport；检查操作终态、分页边界、本地缓存耗时、历史远端请求及 `limit_reached` 范围错误 | 真正的进程重开与手势、完整 UI 锚点行为 |
+| [`history-client-reload-probe.ps1`](../../scripts/windows/history-client-reload-probe.ps1) + [`LiveHistoryReloadInstrumentedTest`](../app/src/androidTest/java/com/orbising/orbis/LiveHistoryReloadInstrumentedTest.kt) | 使用手机已有配对与 SQLite，经真实连接读取已有 Codex；重建 ViewModel/transport；检查操作终态、分页边界、本地缓存耗时、历史远端请求及 `limit_reached` 范围错误 | 真正的进程重开与手势、完整 UI 锚点行为 |
 | [`history-reload-probe.ps1`](../../scripts/windows/history-reload-probe.ps1) | force-stop 后确认进程已退出，重开 App、选择在线 Runtime、执行向旧历史的真实手势；观测本地/远端接力与可见错误 | 自动恢复上次窗口（每轮先返回首页）、所有分支/网络故障、未捕获到的瞬时 UI 状态 |
 
 架构契约见 [ADR-0029](../../docs/adr/0029-session-read-operation-state-machine.md)。本说明和脚本永久保留于源码；`.artifacts/app/` 只存最近一次产物，不是历史归档。
@@ -67,12 +67,12 @@ $sources = @(
 )
 $checksums = @()
 foreach ($source in $sources) {
-    $manifest = [IO.File]::ReadAllText("$repo\$source.pi-remote-build.json") | ConvertFrom-Json
+    $manifest = [IO.File]::ReadAllText("$repo\$source.orbis-build.json") | ConvertFrom-Json
     if ((Get-FileHash $source -Algorithm SHA256).Hash -ne $manifest.sha256) { throw 'APK 校验失败' }
     $dest = Join-Path $target (Split-Path $source -Leaf)
     Copy-Item -LiteralPath $source -Destination $dest
     $manifest.artifactPath = $dest
-    $manifest | ConvertTo-Json -Depth 5 | Set-Content "$dest.pi-remote-build.json"
+    $manifest | ConvertTo-Json -Depth 5 | Set-Content "$dest.orbis-build.json"
     $checksums += "$($manifest.sha256)  $(Split-Path $dest -Leaf)"
 }
 $checksums | Set-Content (Join-Path $target 'SHA256SUMS.txt')
@@ -143,7 +143,7 @@ finally {
     # 构建失败可能跳过 -StopDaemons；等本次构建真实退出且无其他 owner 后，
     # 使用 android-build.ps1 -StopOnly 清理，不按 java.exe 名称批量结束。
     & $adb -s $serial shell setprop log.tag.OrbisHistory INFO
-    & $adb -s $serial shell am start -n com.orbising.orbis/dev.pi.remote.MainActivity
+    & $adb -s $serial shell am start -n com.orbising.orbis/com.orbising.orbis.MainActivity
     # 如果是自己启动的模拟器：先 adb -s $serial emu kill，确认 serial 与
     # 对应模拟器进程退出后再释放。实体手机不关机。
     $lease = [IO.File]::ReadAllText($leasePath) | ConvertFrom-Json

@@ -17,7 +17,7 @@ async function fixture(): Promise<{ agentDir: string; extensionDir: string; oldD
   const oldDir = join(root, "old", "packages", "pi-extension");
   for (const dir of [extensionDir, oldDir]) {
     await mkdir(join(dir, "dist"), { recursive: true });
-    await writeFile(join(dir, "package.json"), JSON.stringify({ name: "@pi-remote/pi-extension" }));
+    await writeFile(join(dir, "package.json"), JSON.stringify({ name: "@orbis/pi-extension" }));
     await writeFile(join(dir, "dist", "index.js"), "export default () => {};\n");
   }
   await mkdir(agentDir);
@@ -27,11 +27,12 @@ async function fixture(): Promise<{ agentDir: string; extensionDir: string; oldD
 const json = async (path: string): Promise<Record<string, unknown>> => JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
 
 describe("installed Pi integration", () => {
-  it("replaces the old Orbis package without changing other Pi settings, and survives reinstallation", async () => {
+  it.each(["@orbis/pi-extension", "@pi-remote/pi-extension"])("replaces an old %s package without changing other Pi settings", async (oldName) => {
     const { agentDir, extensionDir, oldDir } = await fixture();
     const settingsPath = join(agentDir, "settings.json");
     const controlPath = join(agentDir, "remote-control.json");
     const other = { source: "npm:pi-subagents", skills: [] };
+    await writeFile(join(oldDir, "package.json"), JSON.stringify({ name: oldName }));
     await writeFile(settingsPath, JSON.stringify({ defaultModel: "my-model", packages: [oldDir, other] }));
     await writeFile(controlPath, JSON.stringify({ relayUrl: "wss://example.test", runtimeCredential: "private", custom: 7 }));
 

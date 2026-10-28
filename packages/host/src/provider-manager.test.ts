@@ -6,7 +6,7 @@ import { ProviderManager, type ProviderHooks } from "./provider-manager.js";
 import { applyProviderFields, newProviderConfig, providerFields } from "./provider-form.js";
 import { parseProviderRequest, providerResult } from "./provider-messages.js";
 import { installPackage } from "./agent-installation.js";
-import { PROTOCOL_VERSION } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION } from "@orbis/protocol";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
 

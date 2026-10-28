@@ -13,17 +13,17 @@ import {
   type SessionLiveState,
   type SessionSourceEpoch,
   type SessionCatalogEntry,
-} from "@pi-remote/protocol";
-import { stripInlineMedia } from "@pi-remote/protocol";
+} from "@orbis/protocol";
+import { stripInlineMedia } from "@orbis/protocol";
 export { stripInlineMedia };
 import type {
   RuntimeSessionSync,
   RuntimeSessionSyncRequest,
-} from "@pi-remote/runtime-bridge";
+} from "@orbis/runtime-bridge";
 
 import { safeValue } from "./safe-value.js";
 
-const PROCESS_RUNTIME_ID = Symbol.for("@pi-remote/pi-runtime-id");
+const PROCESS_RUNTIME_ID = Symbol.for("@orbis/pi-runtime-id");
 
 type ProcessScope = { [key: symbol]: unknown };
 

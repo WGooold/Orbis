@@ -1,5 +1,5 @@
 {
-  "name": "@pi-remote/claude-code-mod",
+  "name": "@orbis/claude-code-mod",
   "version": "0.1.0",
   "private": true,
   "type": "module",

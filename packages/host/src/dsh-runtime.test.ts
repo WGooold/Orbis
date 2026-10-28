@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentKindSchema, RuntimeEventSchema, type RuntimeCommand, type RuntimeEvent } from "@pi-remote/protocol";
+import { AgentKindSchema, RuntimeEventSchema, type RuntimeCommand, type RuntimeEvent } from "@orbis/protocol";
 import { DshRuntime } from "./dsh-runtime.js";
 import { dshEntries, type DshHistory, type DshLog } from "./dsh-history.js";
 import type { DshConnection, JsonObject } from "./dsh-client.js";
@@ -207,6 +207,7 @@ describe("DeepSeek Harness backend", () => {
     expect(history.entries[0]).toEqual(first.entries[0]);
     expect(history.entries[1]?.parentId).toBe("dsh:one:5");
     expect((await command({ type: "session.sync", sessionId: "dsh:two", syncId: "bad", range: "preview" }, "bad")).ok).toBe(false);
-    expect(dshEntries(log)).toEqual(history.entries);
+    expect(dshEntries(log).map(entry => entry.entryId)).toEqual(history.entries.map(entry => entry.entryId));
+    expect(JSON.stringify(history.entries)).not.toContain('"arguments":');
   });
 });

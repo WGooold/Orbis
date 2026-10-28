@@ -8,7 +8,7 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 
 ## Context
 
-历史分页现在是「视口在顶部就加载下一頁」的电平触发（[HistoryPaging.kt](../android/app/src/main/java/dev/pi/remote/HistoryPaging.kt)）：
+历史分页现在是「视口在顶部就加载下一頁」的电平触发（[HistoryPaging.kt](../android/app/src/main/java/com/orbising/orbis/HistoryPaging.kt)）：
 
 - `historyPagingRequests` 用 `snapshotFlow { firstVisibleIndex() to anchorPending() }`，过滤 `index <= 1 && !pending`。
 - 它被放在 `LaunchedEffect(runtimeId, sessionId, historyState?.hasOlder, historyRead?.operationId, historyRead?.phase, initialPositioned)` 里。`historyRead.operationId`/`phase` 每完成一页就变 → effect 重启 → `snapshotFlow` **重新发出当前值**（首帧）；只要视口仍在 `index <= 1`，就再请求一页。

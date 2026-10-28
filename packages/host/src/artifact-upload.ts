@@ -27,7 +27,7 @@ import {
   type DeviceTransferItem,
   type DeviceTransfersState,
   type RelayToDeviceMessage,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 /** 多久没有分片到达就释放句柄。文件越大停顿越常见，所以比下载的 60s 宽。 */
 const IDLE_TIMEOUT_MS = 10 * 60_000;
@@ -311,7 +311,7 @@ export class HostUploadService {
     }
     let directory: string;
     try {
-      // 手机给的是 `<cwd>/.pi-remote-uploads`，这一层通常还不存在。
+      // 手机给的是 `<cwd>/.orbis-uploads`，这一层通常还不存在。
       await mkdir(message.directory, { recursive: true });
       const info = await stat(message.directory);
       if (!info.isDirectory()) throw new Error("not a directory");

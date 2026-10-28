@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { RemoteSessionEntry } from "@pi-remote/protocol";
+import type { RemoteSessionEntry } from "@orbis/protocol";
 
-import { DisplayEntrySchema, SessionPatchSchema } from "@pi-remote/protocol";
+import { DisplayEntrySchema, SessionPatchSchema } from "@orbis/protocol";
 
 import {
   DISPLAY_PROJECTION_VERSION, buildDisplayPath, displayBatchFromProjection, projectDisplayEntries, toDisplayBatch,

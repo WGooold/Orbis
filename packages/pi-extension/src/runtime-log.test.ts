@@ -10,14 +10,14 @@ import {
 
 describe("Pi extension runtime logging", () => {
   it("writes reload diagnostics as one JSONL record", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-remote-runtime-log-"));
+    const directory = await mkdtemp(join(tmpdir(), "orbis-runtime-log-"));
     const logPath = join(directory, "logs", "runtime.log");
 
     await logPiExtensionRuntimeEvent("extension_reloaded", {
       reason: "reload",
-      entryPoint: "file:///D:/pi-remote-extention/packages/pi-extension/dist/index.js",
+      entryPoint: "file:///D:/orbis/packages/pi-extension/dist/index.js",
     }, {
-      env: { PI_REMOTE_RUNTIME_LOG: logPath },
+      env: { ORBIS_RUNTIME_LOG: logPath },
       now: () => Date.parse("2026-09-03T00:00:00.000Z"),
       pid: 12345,
     });
@@ -29,7 +29,7 @@ describe("Pi extension runtime logging", () => {
       event: "extension_reloaded",
       pid: 12345,
       reason: "reload",
-      entryPoint: "file:///D:/pi-remote-extention/packages/pi-extension/dist/index.js",
+      entryPoint: "file:///D:/orbis/packages/pi-extension/dist/index.js",
     }]);
   });
 
@@ -52,14 +52,14 @@ describe("Pi extension runtime logging", () => {
   });
 
   it("honors the configured level and stays silent when disabled", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-remote-runtime-log-"));
+    const directory = await mkdtemp(join(tmpdir(), "orbis-runtime-log-"));
     const logPath = join(directory, "runtime.log");
 
     await logPiExtensionRuntimeEvent("bridge.command.received", { commandId: "debug-only" }, {
-      env: { PI_REMOTE_RUNTIME_LOG: logPath, PI_REMOTE_RUNTIME_LOG_LEVEL: "error" },
+      env: { ORBIS_RUNTIME_LOG: logPath, ORBIS_RUNTIME_LOG_LEVEL: "error" },
     });
     await logPiExtensionRuntimeEvent("pi.reload.failed", { error: "reload failed" }, {
-      env: { PI_REMOTE_RUNTIME_LOG: logPath, PI_REMOTE_RUNTIME_LOG_LEVEL: "error" },
+      env: { ORBIS_RUNTIME_LOG: logPath, ORBIS_RUNTIME_LOG_LEVEL: "error" },
     });
 
     const records = (await readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
@@ -68,13 +68,13 @@ describe("Pi extension runtime logging", () => {
 
     const disabledPath = join(directory, "disabled.log");
     await logPiExtensionRuntimeEvent("extension_loaded", {}, {
-      env: { PI_REMOTE_RUNTIME_LOG: disabledPath, PI_REMOTE_RUNTIME_LOG_LEVEL: "off" },
+      env: { ORBIS_RUNTIME_LOG: disabledPath, ORBIS_RUNTIME_LOG_LEVEL: "off" },
     });
     await expect(readFile(disabledPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("resolves a relative override against the Pi working directory", () => {
-    expect(piExtensionRuntimeLogPath({ PI_REMOTE_RUNTIME_LOG: "logs/runtime.log" }, "D:/workspace"))
+    expect(piExtensionRuntimeLogPath({ ORBIS_RUNTIME_LOG: "logs/runtime.log" }, "D:/workspace"))
       .toBe("D:\\workspace\\logs\\runtime.log");
   });
 });

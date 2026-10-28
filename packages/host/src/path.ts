@@ -15,7 +15,7 @@
  * RTT 仍然持续测量，但只用于展示（`device.path` 的 `rttMs` 与状态页），不参与换路；
  * 因此也不再需要「连续 3 次快 30%」那套防抖计数。
  */
-import type { PathKind } from "@pi-remote/protocol";
+import type { PathKind } from "@orbis/protocol";
 
 /** 默认优先级（用户没排过时）：同一时刻有几条可用就走哪条。 */
 export const PATH_PREFERENCE: readonly PathKind[] = ["lan", "p2p", "relay"];

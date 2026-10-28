@@ -1,4 +1,4 @@
-import type { PermissionManagement, RuntimePermissions } from "@pi-remote/protocol";
+import type { PermissionManagement, RuntimePermissions } from "@orbis/protocol";
 import { CODEX_PERMISSION_COMMANDS } from "./codex-permissions.js";
 
 type PermissionOption = { value: string; label: string; description?: string | undefined };

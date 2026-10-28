@@ -1,7 +1,7 @@
 import { parse as parseToml } from "smol-toml";
 import type {
   AgentKind, HostProviderAuthentication, HostProviderHealth, HostProviderRouting, HostProviderUsage,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 import { codexOfficial, codexToken } from "./provider-codex.js";
 import { providerFields } from "./provider-form.js";
 import type { ProxyPublicStatus } from "./codex-proxy.js";

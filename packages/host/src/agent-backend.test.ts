@@ -71,7 +71,7 @@ describe("PiBackend（统一端口的原生实现）", () => {
   });
 
   it("resume：目录里没有该会话 → session_not_found（不归 Pi 管，交下一个后端）", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pi-remote-pibackend-"));
+    const root = await mkdtemp(join(tmpdir(), "orbis-pibackend-"));
     const { backend, spawner } = makeBackend({ sessionsRoot: root });
     await expect(backend.activate({ type: "resume", sessionId: "no-such" })).rejects.toMatchObject({
       code: "session_not_found",
@@ -80,7 +80,7 @@ describe("PiBackend（统一端口的原生实现）", () => {
   });
 
   it("resume：目录里有该会话 → 交给 spawner，激活结果摊平成 BackendActivation", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pi-remote-pibackend-"));
+    const root = await mkdtemp(join(tmpdir(), "orbis-pibackend-"));
     // listPiSessions 扫 <root>/<分组>/*.jsonl，首行是 {"type":"session",...} 会话头。
     await mkdir(join(root, "group-a"), { recursive: true });
     await writeFile(join(root, "group-a", "sess-abc1.jsonl"),
@@ -95,7 +95,7 @@ describe("PiBackend（统一端口的原生实现）", () => {
   });
 
   it("resume 的 session_not_found 是 ActivationError（host-service 靠 code 分派）", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pi-remote-pibackend-"));
+    const root = await mkdtemp(join(tmpdir(), "orbis-pibackend-"));
     const { backend } = makeBackend({ sessionsRoot: root });
     const error = await backend.activate({ type: "resume", sessionId: "x" }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ActivationError);

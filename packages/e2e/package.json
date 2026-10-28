@@ -1,5 +1,5 @@
 {
-  "name": "@pi-remote/e2e",
+  "name": "@orbis/e2e",
   "version": "0.1.0",
   "type": "module",
   "files": [
@@ -13,7 +13,7 @@
     }
   },
   "dependencies": {
-    "@pi-remote/protocol": "0.1.0"
+    "@orbis/protocol": "0.1.0"
   },
   "license": "MIT",
   "repository": {

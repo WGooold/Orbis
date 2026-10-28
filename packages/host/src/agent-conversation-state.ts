@@ -1,7 +1,7 @@
-import { type DisplayBatch, type RemoteSessionEntry, type RuntimeEvent, type RuntimeTurnTiming, type SessionBranchCursor, type SessionLiveState, type SessionSourceEpoch, type SessionSyncRequest } from "@pi-remote/protocol";
+import { type DisplayBatch, type RemoteSessionEntry, type RuntimeEvent, type RuntimeTurnTiming, type SessionBranchCursor, type SessionLiveState, type SessionSourceEpoch, type SessionSyncRequest } from "@orbis/protocol";
 import { createHash } from "node:crypto";
 
-import { SESSION_SYNC_DEFAULT_MAX_ENTRIES, truncateWireEntry } from "@pi-remote/protocol";
+import { SESSION_SYNC_DEFAULT_MAX_ENTRIES, truncateWireEntry } from "@orbis/protocol";
 
 import { AgentStateRegistry, type PreparedRegistryCommit, type RegistryMutation, type StateScope } from "./agent-state-registry.js";
 
@@ -213,6 +213,10 @@ export class AgentConversationState {
       if (dropped.length > 0) changes.push({ kind: "remove", scope, domain: "artifacts", fact: { source: provenance, availability: "ready", completeness: "complete", removeIds: dropped } });
     }
     const companion = prepare?.(ready === true);
+    if (companion?.isCurrent?.() === false) return reject("stale_prepared_state");
+    const dependency = companion?.conversationSource;
+    if (dependency && (scopeKey({ kind: "agent", key: dependency.agent }) !== key ||
+      dependency.epoch !== source.epoch || dependency.seq !== source.seq)) return reject("companion_source_mismatch");
     const result = this.#registry.commitTransaction([...changes, ...(companion?.changes ?? [])], () => {
       this.#currentBytes += next.bytes - (old?.bytes ?? 0);
       this.#current.set(key, next);

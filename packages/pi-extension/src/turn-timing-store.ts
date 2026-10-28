@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
-import { RuntimeTurnTimingSchema, type RuntimeTurnTiming } from "@pi-remote/protocol";
+import { RuntimeTurnTimingSchema, type RuntimeTurnTiming } from "@orbis/protocol";
 
 const STORE_VERSION = 1;
 const SIDECAR_SUFFIX = ".pi-remote-turn-timings.json";

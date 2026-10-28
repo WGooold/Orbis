@@ -18,11 +18,11 @@ scripts/windows/android-build.ps1 testDebugUnitTest assembleDebug
 
 ## 配对与身份
 
-配对页支持「扫码配对」：在电脑上执行 `pi-remote pair` 打开配对窗口，终端打印的二维码扫一下即完成配对，不需要再输入任何密钥或配对码。
+配对页支持「扫码配对」：在电脑上执行 `orbis pair` 打开配对窗口，终端打印的二维码扫一下即完成配对，不需要再输入任何密钥或配对码。
 
 二维码由 **Host** 生成，里面带着 Host 公钥与一次性配对密钥。**Host 公钥只经「屏幕 → 摄像头」这条物理路径到达手机，它是整条信任链的根**：之后无论走哪条路径，手机只认这个公钥。客户端用自己的长期设备私钥与 Host 握手，双方各自落一条配对记录；手机侧的身份种子用 Android Keystore 里硬件支持的 AES-256-GCM 密钥封装后落盘（不依赖 Keystore 原生 X25519）。相机权限只用于本地识别二维码，二维码内容不会上传到第三方服务。
 
-配对记录由 **Host** 保管（`~/.pi-remote/`），不是 Relay 签发的。撤销在电脑上做：`pi-remote devices revoke <id>`，是设备级的，不影响其他设备、也不必给其他设备重新配对。APP 里的「取消配对」只是设备侧主动解除并删除本地副本。
+配对记录由 **Host** 保管（`~/.orbis/`），不是 Relay 签发的。撤销在电脑上做：`orbis devices revoke <id>`，是设备级的，不影响其他设备、也不必给其他设备重新配对。APP 里的「取消配对」只是设备侧主动解除并删除本地副本。
 
 ## 传输与加密
 
@@ -38,7 +38,7 @@ LAN 地址不可达或握手失败时自动尝试下一个地址，并定期重�
 
 输入框接受普通消息。输入 `/` 时会展开当前 runtime 动态发布的统一 Slash 命令菜单，其中包含可远程执行的内置命令、Skill、Prompt Template、扩展注册命令和 MCP 工具；各 backend 只发布它能兑现的子集。命令必须从菜单选择；任意手输的 `/...` 不会作为聊天消息发送，也没有独立的 Runtime Action 菜单。需要参数的内置命令会显示当前 runtime 提供的模型、Session 或 tree 候选项。
 
-`/tree` 的候选项不铺在输入框下面，而是和聊天页顶栏的「历史与分支」入口一起打开 [历史与分支整页](app/src/main/java/dev/pi/remote/HistoryTreePage.kt)：按轮次组织、默认只展开当前分支、其他分支折成一行摘要，搜索走独立输入框。点节点先预览附近的对话（不改动电脑端会话），底部再按节点类型给出「编辑这条消息并重新开始」或「从这条回复后继续」——两者都只发一条 `slash.execute { name: "tree" }`，节点 ID 不再进入聊天输入框。树的投影规则在 `HistoryTree.kt`，回归在 `HistoryTreeTest`。
+`/tree` 的候选项不铺在输入框下面，而是和聊天页顶栏的「历史与分支」入口一起打开 [历史与分支整页](app/src/main/java/com/orbising/orbis/HistoryTreePage.kt)：按轮次组织、默认只展开当前分支、其他分支折成一行摘要，搜索走独立输入框。点节点先预览附近的对话（不改动电脑端会话），底部再按节点类型给出「编辑这条消息并重新开始」或「从这条回复后继续」——两者都只发一条 `slash.execute { name: "tree" }`，节点 ID 不再进入聊天输入框。树的投影规则在 `HistoryTree.kt`，回归在 `HistoryTreeTest`。
 
 页面不按 agent kind 分支渲染：它只用当前 runtime 发布的 `tree` 命令选项，所以 Pi 与 Codex 走同一套界面，DeepSeek 复用共享的聊天、工具、审批和 Session 投影。动作落点两边都是「原地」——Pi 在同一条 runtime 内移动 leaf，Codex 走 `thread/revert` 截断当前会话；成功后 APP 会立刻拉一次快照：后端广播的快照用自造 syncId，手机不采，不主动问就还显示着已经不存在的那几轮。
 
@@ -63,7 +63,7 @@ APP 启动时只加载并持久化轻量 Session Catalog；用户打开在线 Ru
 - GFM 表格：表头、列对齐、单元格内格式和链接；长内容换行，宽表格横向滚动。
 - 行内链接、引用式链接、自动识别的网页 / 邮件链接和 HTTP(S) 图片。图片加载失败时保留替代文字和链接；电脑上的图片路径沿用文件下载入口。
 
-文件链接从同一棵解析树提取，因此表格、列表及引用中的下载链接也能使用；带空格的路径写成 `[文件](<D:/My Folder/report.txt>)`。代码中的 Markdown 链接不会被当作可点击链接。任务复选框展示消息记录的状态，不在手机上修改原消息。
+显式 Markdown 文件链接支持在表格、列表及引用中点击下载；带空格的路径写成 `[文件](<D:/My Folder/report.txt>)`。普通路径按原文显示，不自动识别，也不在消息下方生成独立下载按钮。代码中的 Markdown 链接不会被当作可点击链接。任务复选框展示消息记录的状态，不在手机上修改原消息。
 
 原始 HTML 按文本显示（行内 `<br>` 可换行），不运行网页脚本。LaTeX 数学公式和 Mermaid 图尚无专用渲染器，保留为文本或代码；代码块当前不做语法高亮。
 
@@ -78,7 +78,7 @@ APP 启动时只加载并持久化轻量 Session Catalog；用户打开在线 Ru
 在独立测试设备上运行界面测试：
 
 ```powershell
-.\gradlew.bat connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=dev.pi.remote.MarkdownInstrumentedTest
+.\gradlew.bat connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.orbising.orbis.MarkdownInstrumentedTest
 ```
 
 ## Session 历史读取验收
@@ -87,7 +87,7 @@ APP 启动时只加载并持久化轻量 Session Catalog；用户打开在线 Ru
 
 ## 文件
 
-下载页通过「浏览电脑文件」打开与新建会话共用的目录选择器：从盘符 / 根目录逐层进入，支持返回上一级和刷新；选中文件后点击「下载到手机」，无需手输路径。新建会话只显示目录，下载选择器同时显示普通文件；加载、离线或读取失败时不能下载，失败可原地重试。主页面的下载入口和聊天页右上角的下载按钮打开的是**同一个页面**；消息中识别到的 Windows/Unix 文件路径仍可直接点击下载。文件列表需要更新并重启 Host。
+下载页通过「浏览电脑文件」打开与新建会话共用的目录选择器：从盘符 / 根目录逐层进入，支持返回上一级和刷新；选中文件后点击「下载到手机」，无需手输路径。新建会话只显示目录，下载选择器同时显示普通文件；加载、离线或读取失败时不能下载，失败可原地重试。主页面的下载入口和聊天页右上角的下载按钮打开的是**同一个页面**；消息中的显式 Markdown 文件链接可直接点击下载。文件列表需要更新并重启 Host。
 
 **下载由电脑上的 Host 服务，与任何 agent 进程是否在运行无关**：命令寻址到 Host，Host 就地读盘分片发送并校验偏移与最终长度；下载任务和本地 `.part` 文件会持久化，连接中断或 App 重启后可从已接收 offset 继续下载。Android 10 及以上保存到系统“下载”目录，页面会显示最终保存位置。
 

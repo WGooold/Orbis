@@ -13,6 +13,12 @@ import { homedir, hostname } from "node:os";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { createProcessToolContentStore, type ToolContentStore } from "@orbis/runtime-bridge";
+import { ToolContentService } from "./tool-content-service.js";
+import { PiToolContentReader } from "./pi-tool-content-reader.js";
+import { AgentToolInventory, type PreparedToolInventory } from "./agent-tool-inventory.js";
+import { ToolInventoryIngestion } from "./tool-inventory-ingestion.js";
 
 import {
   E2eError,
@@ -28,7 +34,7 @@ import {
   type DeviceStore,
   type HostIdentity,
   type PairingQrLanEndpoint,
-} from "@pi-remote/e2e";
+} from "@orbis/e2e";
 import {
   DeviceE2ePayloadSchema,
   PROTOCOL_VERSION,
@@ -51,7 +57,9 @@ import {
   type RuntimeMetadata,
   type RuntimeEvent,
   SESSION_SYNC_MAX_BYTES,
-} from "@pi-remote/protocol";
+  assertToolWireBudget,
+  agentKeyId,
+} from "@orbis/protocol";
 
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
@@ -135,6 +143,8 @@ export function channelForDeviceMessage(message: {
   if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "diagnostics.page") return "msg";
   if (message.type !== "runtime.event") return "ctl";
   const eventType = message.event?.type ?? "";
+  if (eventType === "session.tool.content.page") return "bulk";
+  if (eventType === "session.tool.read.failed") return "ctl";
   if (
     eventType.startsWith("session.") ||
     eventType.startsWith("message.") ||
@@ -163,7 +173,7 @@ export type HostServiceOptions = {
   /** 关掉 LAN 端点。关掉后只剩 Relay 一条路径，不影响其他功能。 */
   lan?: boolean;
   /**
-   * 是否真的监听 LAN 端口。`pi-remote pair` 传 `false`：它是个短命进程，去 bind 常驻 Host
+   * 是否真的监听 LAN 端口。`orbis pair` 传 `false`：它是个短命进程，去 bind 常驻 Host
    * 已经在用的端口只会失败（或者更糟：被它抢走，然后随进程退出而消失）。
    * 注意它不影响二维码里的 LAN 地址——那部分是枚举出来的，不需要监听。
    */
@@ -226,6 +236,13 @@ export class HostService {
   readonly #pairing: HostPairingService;
   readonly #links = new Map<string, DeviceLink>();
   readonly #sessionSync: SessionSyncTasks;
+  readonly #toolContentService: ToolContentService;
+  readonly #piToolContents: PiToolContentReader;
+  readonly #toolInventory: AgentToolInventory;
+  readonly #toolIngestion: ToolInventoryIngestion;
+  #toolContentStore: ToolContentStore | undefined;
+  #toolDiagnosticTimer: ReturnType<typeof setInterval> | undefined;
+  readonly #toolTraffic = new Map<string, Record<"summaryJsonBytes" | "bodyJsonBytes" | "detailJsonBytes" | "readRequests" | "readFailures" | "gapResponses", number>>();
   /**
    * 每台设备手工排过的连接优先级（§6.2）。手机每次 E2E 就绪后重发，所以只在内存里留一份；
    * Host 重启后用默认顺序，等手机下一次上报再覆盖。
@@ -302,11 +319,43 @@ export class HostService {
       ...(operationId === undefined ? {} : { operationId }) });
   }
 
+  #countToolTraffic(runtimeId: string, field: "summaryJsonBytes" | "bodyJsonBytes" | "detailJsonBytes" | "readRequests" | "readFailures" | "gapResponses", amount: number): void {
+    if (!this.#toolTraffic.has(runtimeId) && this.#toolTraffic.size >= 256) this.#flushToolDiagnostics();
+    const counts = this.#toolTraffic.get(runtimeId) ?? { summaryJsonBytes: 0, bodyJsonBytes: 0, detailJsonBytes: 0, readRequests: 0, readFailures: 0, gapResponses: 0 };
+    counts[field] += amount; this.#toolTraffic.set(runtimeId, counts);
+  }
+
+  #flushToolDiagnostics(): void {
+    if (!this.#toolTraffic.size) return;
+    for (const [runtimeId, counts] of this.#toolTraffic) {
+      const scope = this.#agentFacts.scopeOf(runtimeId);
+      this.recordDiagnostic({ scope: scope ? "agent" : "host", agentKind: scope?.kind === "agent" ? scope.key.agentKind : null,
+        sessionId: scope?.kind === "agent" ? scope.key.sessionId : null, category: "tool.content", severity: "info",
+        message: "Tool projection and private read counters", detail: Object.fromEntries(Object.entries(counts).map(([key, value]) => [key, String(value)])) });
+    }
+    this.#toolTraffic.clear();
+    const usage = this.#toolContentStore?.usage;
+    if (usage) this.recordDiagnostic({ scope: "host", agentKind: null, sessionId: null, category: "tool.content", severity: "info",
+      message: "Producer temporary content usage", detail: Object.fromEntries(Object.entries(usage).map(([key, value]) => [key, String(value)])) });
+  }
+
   #acceptConversation(runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" | "session.patch" }>): boolean {
     const scope = this.#agentFacts.scopeOf(runtimeId);
     let reason = "runtime_scope_missing";
-    const accepted = scope !== undefined && this.#conversationState.accept(scope, event,
-      ready => this.#agentFacts.prepareConversation(runtimeId, event, ready), code => { reason = code; });
+    let inventory: PreparedToolInventory | undefined;
+    let accepted = false;
+    try {
+      accepted = scope !== undefined && this.#conversationState.accept(scope, event, ready => {
+        const facts = this.#agentFacts.prepareConversation(runtimeId, event, ready);
+        if (!ready || scope.kind !== "agent" || !event.source || !event.live?.toolInventory) return facts;
+        inventory = this.#toolIngestion.prepare(runtimeId, scope.key, event.source, event.live.toolInventory);
+        const plans = [inventory, ...(facts ? [facts] : [])];
+        return { changes: plans.flatMap(plan => [...plan.changes]), conversationSource: inventory.conversationSource!,
+          isCurrent: () => plans.every(plan => plan.isCurrent?.() !== false),
+          onCommitted: () => { for (const plan of plans) plan.onCommitted(); } };
+      }, code => { reason = code; });
+    } catch (error) { reason = error instanceof Error ? error.message : "tool_inventory_rejected"; }
+    if (accepted && inventory?.publication) this.#broadcastDeviceMessage(this.#runtimeEventMessage(runtimeId, inventory.publication));
     if (!accepted) this.recordDiagnostic({ scope: scope ? "agent" : "host",
       agentKind: scope?.kind === "agent" ? scope.key.agentKind : null, sessionId: event.sessionId,
       category: "recovery", severity: "warning", message: "Rejected conversation transaction; source baseline required",
@@ -318,6 +367,10 @@ export class HostService {
   }
 
   #markRuntimeOffline(runtimeId: string, reason: string): void {
+    this.#toolInventory.closeRuntime(runtimeId);
+    this.#toolIngestion.release(runtimeId);
+    this.#toolContentService.releaseRuntime(runtimeId);
+    this.#piToolContents.releaseRuntime(runtimeId);
     const scope = this.#agentFacts.scopeOf(runtimeId);
     if (scope) this.#conversationState.offline(scope, this.#agentFacts.prepareOffline(runtimeId));
     else this.#agentFacts.runtimeOffline(runtimeId, reason);
@@ -563,6 +616,23 @@ export class HostService {
     this.#diagnostics = new DiagnosticJournal({ persistence: createDiagnosticJournalFileStore(stateDir) });
     this.#identity = identity;
     this.#store = store;
+    this.#toolContentService = new ToolContentService({
+      observe: (runtimeId, event, bytes, gaps) => {
+        this.#countToolTraffic(runtimeId, event === "request" ? "readRequests" : event === "failure" ? "readFailures" : "detailJsonBytes", event === "page" ? bytes : 1);
+        if (gaps) this.#countToolTraffic(runtimeId, "gapResponses", 1);
+      },
+      scope: runtimeId => { const scope = this.#agentFacts.scopeOf(runtimeId); return scope?.kind === "agent" ? scope.key : undefined; },
+      reader: runtimeId => this.#backends.find(backend => backend.isReady() && backend.ownsRuntime(runtimeId))?.toolContents,
+      send: (deviceId, runtimeId, event) => {
+        const message = this.#runtimeEventMessage(runtimeId, event);
+        assertToolWireBudget(message);
+        const payload = Buffer.from(JSON.stringify(message), "utf8"), link = this.#links.get(deviceId);
+        if (!link) return false;
+        return event.type === "session.tool.content.page"
+          ? link.sendToolContent(payload, outboundQueueSource(message, payload.byteLength))
+          : link.send(payload, "ctl", outboundQueueSource(message, payload.byteLength));
+      },
+    });
     this.#pairing = new HostPairingService(identity);
     this.#spawner = options.spawner ?? new SessionSpawner({ stateDir, ...(options.log === undefined ? {} : { log: options.log }) });
     this.#downloads = new HostDownloadService({
@@ -636,8 +706,13 @@ export class HostService {
       onRuntimeOffline: (runtimeId, reason) => this.#unregisterClaudeRuntime(runtimeId, reason),
       onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
     });
+    this.#piToolContents = new PiToolContentReader({
+      send: (runtimeId, commandId, command) => this.#loopback?.sendCommand(runtimeId, commandId, command) ?? false,
+      scope: runtimeId => { const scope = this.#agentFacts.scopeOf(runtimeId); return scope?.kind === "agent" ? scope.key : undefined; },
+    });
     const backends: AgentBackend[] = [
       new PiBackend({
+        toolContents: this.#piToolContents,
         spawner: this.#spawner,
         sendCommand: (runtimeId, commandId, command) =>
           this.#loopback?.sendCommand(runtimeId, commandId, command) ?? false,
@@ -683,6 +758,8 @@ export class HostService {
     this.#publishDiagnostics();
     this.#agentStateRegistry = agentStateRegistry;
     this.#conversationState = new AgentConversationState(agentStateRegistry);
+    this.#toolInventory = new AgentToolInventory(agentStateRegistry);
+    this.#toolIngestion = new ToolInventoryIngestion(this.#toolInventory);
     this.#agentStateSubscriptions = new AgentStateSubscriptions(agentStateRegistry, (deviceId, message) => this.#sendToDevice(deviceId, message));
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
@@ -722,6 +799,7 @@ export class HostService {
   /** Wire a Codex runtime once. Desktop runtimes can be attached after relay startup. */
   #attachCodexBackend(codex: CodexRuntime): void {
     if (this.#backends.includes(codex)) return;
+    if (this.#toolContentStore) codex.setToolContentStore(this.#toolContentStore, this.#identity.hostId);
     codex.seedDesktopThreads(this.#desktopOwnedIds);
     codex.setEventSink((event, threadId) => {
       const runtimeId = threadId === undefined ? codex.runtimeId : codex.runtimeIdFor(threadId);
@@ -1126,6 +1204,10 @@ export class HostService {
     if (this.#options.lan !== false && this.#options.lanListen !== false) {
       await this.#startLan();
     }
+    this.#toolContentStore ??= await createProcessToolContentStore(join(this.#stateDir, "temporary-content"), "host");
+    this.#toolDiagnosticTimer ??= setInterval(() => this.#flushToolDiagnostics(), 30_000);
+    this.#toolDiagnosticTimer.unref();
+    for (const backend of this.#backends) backend.setToolContentStore?.(this.#toolContentStore, this.#identity.hostId);
 
     if (this.#options.loopback !== false) {
       const loopback = new HostLoopbackServer({
@@ -1192,10 +1274,10 @@ export class HostService {
     } else {
       // 刻意不静默。之前漏传 stunServers 时这里什么都不说，于是「手机永远显示中继」在日志里
       // 完全无迹可寻——排查只能靠读代码。P2P 被关掉必须留下一行理由。
-      // 措辞保持中性：短命进程（`pi-remote pair`、本地 smoke 脚本）不传 STUN 是有意为之。
+      // 措辞保持中性：短命进程（`orbis pair`、本地 smoke 脚本）不传 STUN 是有意为之。
       this.#options.log?.(
         "P2P 未启用：本进程没有可用的 STUN 服务器 → 一律走中继。" +
-          "要开启需配置 stunServers 或设置 PI_REMOTE_STUN_SERVERS（relayUrl 非 wss:// 时不会自动推导）",
+          "要开启需配置 stunServers 或设置 ORBIS_STUN_SERVERS（relayUrl 非 wss:// 时不会自动推导）",
       );
     }
 
@@ -1220,6 +1302,10 @@ export class HostService {
   }
 
   async stop(): Promise<void> {
+    clearInterval(this.#toolDiagnosticTimer); this.#toolDiagnosticTimer = undefined; this.#flushToolDiagnostics();
+    this.#toolContentService.close();
+    this.#toolIngestion.clear(); this.#toolInventory.dispose();
+    this.#piToolContents.close();
     this.#providerFactsClosing = true;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
@@ -1247,6 +1333,7 @@ export class HostService {
     // 上传索引与 `.part` 句柄同样是脱离调用栈的写。进程退出前不等它们，下次启动就少一截
     // 可续传的状态——用户要重传的不是几个分片，是整个文件。
     await this.#uploads.flush();
+    await this.#toolContentStore?.dispose(); this.#toolContentStore = undefined;
     await Promise.allSettled([...this.#providerFactsPending]);
     this.#modelLifecycle = "stopped";
     this.refreshHostFacts();
@@ -1325,6 +1412,7 @@ export class HostService {
   revokeDevice(deviceId: string): boolean {
     const changed = revokeDeviceRecord(this.#store, deviceId);
     if (!changed) return false;
+    this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
     this.#downloads.releaseDevice(deviceId);
     this.#uploads.releaseDevice(deviceId, "artifact_transport_disconnected");
     // P2P 的失败计数是「按设备」记的：设备都撤销了就别让它的历史留在内存里，
@@ -1600,6 +1688,34 @@ export class HostService {
     message: Extract<DeviceE2ePayload, { type: "runtime.command" }>,
   ): void {
     const { runtimeId, commandId, command } = message;
+    if (command.type === "session.tools.open" || command.type === "session.tools.read") {
+      const scope = this.#agentFacts.scopeOf(runtimeId);
+      const agent = command.type === "session.tools.open" ? command.reference.agent : command.snapshot.agent;
+      try {
+        if (command.runtimeId !== runtimeId || scope?.kind !== "agent" || agentKeyId(agent) !== agentKeyId(scope.key)) throw new Error("scope_mismatch");
+        let event: RuntimeEvent;
+        if (command.type === "session.tools.open") {
+          if (!isDeepStrictEqual(this.#toolInventory.reference(agent), command.reference)) throw new Error("snapshot_expired");
+          event = { type: "session.tools.opened", requestId: command.requestId, runtimeId,
+            snapshot: this.#toolInventory.openSnapshot(deviceId, agent, runtimeId) };
+        } else event = this.#toolInventory.read(deviceId, command);
+        const response = this.#runtimeEventMessage(runtimeId, event); assertToolWireBudget(response);
+        this.#sendToDevice(deviceId, response);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "snapshot_expired";
+        this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, { type: "session.tool.read.failed",
+          runtimeId, requestId: command.requestId, reason: code === "busy" ? "busy" : code === "scope_mismatch" ? "scope_mismatch" : "snapshot_expired",
+          gaps: [], ...(code === "busy" ? { retryAfterMs: 250 } : {}) }));
+      }
+      return;
+    }
+    if (command.type === "session.tool.content.read") {
+      void this.#toolContentService.read(deviceId, runtimeId, command); return;
+    }
+    if (command.type === "session.tool.content.cancel") {
+      if (command.runtimeId === runtimeId) this.#toolContentService.cancel(deviceId, runtimeId, command.viewerId, command.readId);
+      return;
+    }
     if (command.type === "session.sync") {
       this.#sessionSync.request(deviceId, runtimeId, commandId, command);
       this.refreshHostFacts();
@@ -1883,10 +1999,10 @@ export class HostService {
           throw new ActivationError(
             "agent_unsupported",
             target.agentKind === "codex"
-              ? "Codex 后端未启用：请用 `pi-remote host --codex` 启动"
+              ? "Codex 后端未启用：请用 `orbis host --codex` 启动"
               : target.agentKind === "codexDesktop"
                 ? "Codex 桌面版未运行，已尝试启动但未就绪"
-              : target.agentKind === "dsh" ? "DeepSeek Harness 后端未启用：请用 `pi-remote host --dsh` 启动" : "未知的 agent 类型",
+              : target.agentKind === "dsh" ? "DeepSeek Harness 后端未启用：请用 `orbis host --dsh` 启动" : "未知的 agent 类型",
           );
         }
         if (!backend.isReady()) {
@@ -1947,6 +2063,7 @@ export class HostService {
    * 路径，而对端恰恰是那时候最需要目录——把它挂在路径变更上，手机重开就永远补不到。
    */
   #handleSessionReady(deviceId: string, kind: PathKind, active: PathKind, change: PathChange): void {
+    this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#sessionSync.clearDevice(deviceId);
     this.#syncDeviceTransfers(deviceId);
@@ -2013,6 +2130,7 @@ export class HostService {
    * 这里**不补** runtime 目录——那件事属于「握手完成」（见 `#handleSessionReady`）。
    */
   #handlePathChange(deviceId: string, change: ActivePathChange): void {
+    this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
     this.refreshHostFacts();
     this.#options.log?.(
       `设备 ${deviceId} 的路径 ${describePath(change.from)} → ${describePath(change.to)}`
@@ -2066,12 +2184,23 @@ export class HostService {
   }
 
   #publishRuntimeEvent(runtimeId: string, event: RuntimeEvent): void {
+    if (event.type === "tool.activity") return;
+    if (event.type === "session.tools.produced") {
+      this.#countToolTraffic(runtimeId, "summaryJsonBytes", Buffer.byteLength(JSON.stringify(event.page), "utf8"));
+      const scope = this.#agentFacts.scopeOf(runtimeId);
+      if (scope?.kind !== "agent" || !this.#toolIngestion.accept(runtimeId, scope.key, event)) {
+        this.#recordAgentDiagnostic(runtimeId, "recovery", "Rejected producer tool inventory page", "warning");
+      }
+      return;
+    }
+    if (this.#piToolContents.accept(runtimeId, event)) return;
     if (event.type === "runtime.metadata") {
       const displaced = this.#agentFacts.displacedRuntime(runtimeId, event.metadata);
       if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
     }
     if (event.type === "session.snapshot") { this.#sessionSync.handleEvent(runtimeId, event); return; }
     if (event.type === "session.patch") {
+      this.#countToolTraffic(runtimeId, "bodyJsonBytes", Buffer.byteLength(JSON.stringify(event.live?.messages ?? []), "utf8"));
       if (!this.#acceptConversation(runtimeId, event)) {
         this.#loopback?.sendResync(runtimeId, "model_baseline_required");
         return;

@@ -7,7 +7,7 @@ import {
   type RuntimeMetadata,
   type RemoteContent,
   type RuntimeCommandStatus,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 /** The bridge contract is deliberately independent of the TUI's internal API. */
 export const CLAUDE_BRIDGE_VERSION = "1";

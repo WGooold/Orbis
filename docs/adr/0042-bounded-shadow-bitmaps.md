@@ -16,7 +16,7 @@ Status: accepted（2026-10-23 实现并真机验证：`RenderTarget` 从 186–2
 - 修复 Java 堆之前，同一增长路径最终到 440MB（578 个渲染目标），进程 PSS 1.2GB 被系统 SIGKILL。
 
 `1536x512` 约等于一张聊天卡片的像素尺寸，而卡片上唯一会产生离屏纹理的绘制就是新拟物柔影：
-[Neumorph.kt](../android/app/src/main/java/dev/pi/remote/Neumorph.kt) 的 `drawOuterBlur` / `drawInnerBlur`
+[Neumorph.kt](../android/app/src/main/java/com/orbising/orbis/Neumorph.kt) 的 `drawOuterBlur` / `drawInnerBlur`
 把带 `BlurMaskFilter` 的 `Paint` 直接画在硬件加速的 `Canvas` 上。每个 `NeumorphSurface` 每帧画两次模糊
 （dark + light），而 HWUI 为模糊生成的是**蒙版纹理**；卡片尺寸随内容变化，缓存键不断变化，纹理只增不减。
 

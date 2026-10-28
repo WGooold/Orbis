@@ -5,7 +5,7 @@
 import { PeerConnection } from "node-datachannel";
 import { describe, expect, it } from "vitest";
 
-import { PROTOCOL_VERSION, type EnvelopeV2 } from "@pi-remote/protocol";
+import { PROTOCOL_VERSION, type EnvelopeV2 } from "@orbis/protocol";
 
 import { HostP2pManager } from "./p2p-manager.js";
 

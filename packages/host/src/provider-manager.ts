@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { isSeq, parseDocument } from "yaml";
-import type { AgentKind, HostProviderSummary } from "@pi-remote/protocol";
+import type { AgentKind, HostProviderSummary } from "@orbis/protocol";
 import { ProviderError } from "./provider-error.js";
 import { backfillCodex, codexOfficial, defaultCodexPreferences, extractCodexCommon, prepareCodex, type CodexPreferences } from "./provider-codex.js";
 import { validateUsageScript, type UsageScript } from "./provider-usage.js";

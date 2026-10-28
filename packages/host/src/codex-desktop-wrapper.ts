@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
+import { resolveStateDir } from "@orbis/e2e";
 
 import { CodexAppServer, resolveCodexCommand, type CodexCommand } from "./codex-daemon.js";
 import { CodexDesktopRefreshBridge, type DesktopRefreshEndpoint } from "./codex-desktop-refresh-bridge.js";
@@ -47,7 +48,7 @@ function log(line: string): void {
 export function endpointFilePath(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = env.ORBIS_CODEX_DESKTOP_ENDPOINT?.trim();
   if (explicit) return explicit;
-  const stateDir = env.ORBIS_HOST_STATE_DIR?.trim() || join(homedir(), ".pi-remote");
+  const stateDir = resolveStateDir(env.ORBIS_HOST_STATE_DIR?.trim() || undefined);
   return join(stateDir, "codex-desktop-endpoint.json");
 }
 

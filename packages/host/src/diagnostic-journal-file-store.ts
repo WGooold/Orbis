@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { DiagnosticRecordSchema, type DiagnosticRecord } from "@pi-remote/protocol";
+import { DiagnosticRecordSchema, type DiagnosticRecord } from "@orbis/protocol";
 
 import type { DiagnosticJournalPersistence } from "./diagnostic-journal.js";
 

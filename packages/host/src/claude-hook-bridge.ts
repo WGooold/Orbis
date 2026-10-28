@@ -7,7 +7,7 @@ import {
   type QuestionnaireQuestion,
   type RuntimeEvent,
   type RuntimeMetadata,
-} from "@pi-remote/protocol";
+} from "@orbis/protocol";
 
 export type ClaudeHookDecision = "allow" | "deny";
 

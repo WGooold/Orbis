@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RuntimeEventSchema, type InteractionRequest, type InteractionResponse, type RuntimeEvent } from "@pi-remote/protocol";
+import { RuntimeEventSchema, type InteractionRequest, type InteractionResponse, type RuntimeEvent } from "@orbis/protocol";
 import { CodexAsyncInputs, codexQuestionReplyText } from "./codex-async-input.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import type { CodexAppServer } from "./codex-daemon.js";

@@ -1,2 +1,2 @@
 -keepattributes *Annotation*
--keep,includedescriptorclasses class dev.pi.remote.**$$serializer { *; }
+-keep,includedescriptorclasses class com.orbising.orbis.**$$serializer { *; }

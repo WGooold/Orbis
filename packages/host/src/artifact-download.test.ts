@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { RuntimeEvent } from "@pi-remote/protocol";
+import type { RuntimeEvent } from "@orbis/protocol";
 
 import { HostDownloadService } from "./artifact-download.js";
 
@@ -14,7 +14,7 @@ const setup = async (): Promise<{
   frames: Uint8Array[];
   stateDir: string;
 }> => {
-  const stateDir = await mkdtemp(join(tmpdir(), "pi-remote-download-"));
+  const stateDir = await mkdtemp(join(tmpdir(), "orbis-download-"));
   const events: RuntimeEvent[] = [];
   const frames: Uint8Array[] = [];
   const service = new HostDownloadService({

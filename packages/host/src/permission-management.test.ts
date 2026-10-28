@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PermissionManagementSchema } from "@pi-remote/protocol";
+import { PermissionManagementSchema } from "@orbis/protocol";
 import { CODEX_PERMISSION_COMMANDS, codexPermissions } from "./codex-permissions.js";
 import { dshPermissionOptions, dshPermissions } from "./dsh-permissions.js";
 import { codexPermissionManagement, dshPermissionManagement } from "./permission-management.js";

@@ -221,10 +221,10 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 ## 第 9 批（issue #12：App 消费显示投影）
 
-已交付——App 侧（`android/app/src/main/java/dev/pi/remote/`）：
+已交付——App 侧（`android/app/src/main/java/com/orbising/orbis/`）：
 
 - **契约补齐**（协议 `ad5b156`）：批次带 `windowStart`（显示窗口起点——路径上比它更旧的条目已被历史改写覆盖，客户端据此作废旧显示内容），压缩摘要带 `anchor: "head"`（渲染在窗口顶部，而不是它在路径里的位置）。`selectSessionSyncSnapshot` 给**每一页**附上该页自己的显示结果：一次投影、多页共用，空页不发。显示投影接受「已验证的原生边界」，有界读取的分支不再因为「更旧的还没读进来」被判成缺父而整段不发。
-- **App 落盘与消费**：新增 [DisplayProjection.kt](../../android/app/src/main/java/dev/pi/remote/DisplayProjection.kt)（`DisplayEntry` / `DisplayBatch` / 窗口裁剪 / 锚点排序）与两张表 `session_display_entries` / `session_display_windows`（库版本 8）。条目与显示结果在同一笔事务里提交；提交后按**盘上那份**读回（来源修正条目时，被顶掉的那一行显示结果不写、保留盘上原值），因此渲染正文与已提交历史永远同源。
+- **App 落盘与消费**：新增 [DisplayProjection.kt](../../android/app/src/main/java/com/orbising/orbis/DisplayProjection.kt)（`DisplayEntry` / `DisplayBatch` / 窗口裁剪 / 锚点排序）与两张表 `session_display_entries` / `session_display_windows`（库版本 8）。条目与显示结果在同一笔事务里提交；提交后按**盘上那份**读回（来源修正条目时，被顶掉的那一行显示结果不写、保留盘上原值），因此渲染正文与已提交历史永远同源。
 - **删除原生解释**：`PiMessageProjection`、`toChatMessage`、正文块解释、`firstKeptEntryId` 压缩裁剪、`stopReason`/`errorMessage`/`remoteFailure` 失败判定与回填、`custom_message` 的 display 开关与产物拼装全部删除。`projectSessionGraph` 现在只做「走路径 → 按窗口裁剪 → 取显示行 → 按锚点排序」。
 - **版本换代**：`projectionVersion` 与本机不同即整段作废该会话缓存（含上一版 App 留下的「有条目、没解释」的旧缓存），下一次同步重新拿；版本不匹配时投影如实报「请更新 App」，而不是渲染成一片空白。
 - 不可显示的条目保留身份与原因（`undisplayable` + `unknown_native_type` / `not_rendered` / `missing_content`），只是没有可渲染正文。
@@ -236,7 +236,7 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 协议硬版本升级见第 10 批。
 
-已知边界：**会话树**（`/tree`，[HistoryTree.kt](../../android/app/src/main/java/dev/pi/remote/HistoryTree.kt)）仍按后端给出的 `role` / `entryType` 分类节点。树要显示**不在显示窗口里**的条目（系统事件、被压缩掉的节点、细节行），显示投影刻意不含它们，所以树的分类属于模块 05 的另一半，留给后续批次。
+已知边界：**会话树**（`/tree`，[HistoryTree.kt](../../android/app/src/main/java/com/orbising/orbis/HistoryTree.kt)）仍按后端给出的 `role` / `entryType` 分类节点。树要显示**不在显示窗口里**的条目（系统事件、被压缩掉的节点、细节行），显示投影刻意不含它们，所以树的分类属于模块 05 的另一半，留给后续批次。
 
 ## 第 10 批（issue #11：协议硬版本与跨端恢复验收）
 
@@ -337,9 +337,9 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 ## 第 16 批（issue #10 第一刀：App 消费统一模型）
 
-已交付——Android 侧（`android/app/src/main/java/dev/pi/remote/`）：
+已交付——Android 侧（`android/app/src/main/java/com/orbising/orbis/`）：
 
-- [AgentModelState.kt](../../android/app/src/main/java/dev/pi/remote/AgentModelState.kt)：`agent.state.snapshot` 的客户端表示，把三条纪律写进类型：**整份替换**（同一身份的重复读取顶掉旧的，不做字段级合并）、**缺席有原因**（`missing` 区分 `no_state` 与 `unknown_domain`，「领域表里没有它」不等于「它是空的」）、**截断如实说**（`truncated` 那份不能当基线）。领域缺 envelope 字段时**整份拒绝**并记错误——两端对协议理解不一致时，留半份模型比什么都不留更糟。
+- [AgentModelState.kt](../../android/app/src/main/java/com/orbising/orbis/AgentModelState.kt)：`agent.state.snapshot` 的客户端表示，把三条纪律写进类型：**整份替换**（同一身份的重复读取顶掉旧的，不做字段级合并）、**缺席有原因**（`missing` 区分 `no_state` 与 `unknown_domain`，「领域表里没有它」不等于「它是空的」）、**截断如实说**（`truncated` 那份不能当基线）。领域缺 envelope 字段时**整份拒绝**并记错误——两端对协议理解不一致时，留半份模型比什么都不留更糟。
 - `RemoteState` 新增 `agentStateSnapshots` / `agentStateRequests`；reducer 把 `agent.state.snapshot` 收进允许集合（此前未知类型会被当成「不支持的中继消息」直接弹错，所以这一步是消费的前提）。
 - 连接建立后自动读一次 Host 作用域的 `diagnostics`（`refreshHostModel()`）：诊断目录是客户端**只能**由模型拿到的事实——条数、保留窗口与缺口，以前 App 无从判断自己看到的是不是全部。请求与应答走设备级 E2E 载荷，与 `session.list` 同一条密文通道。
 - 10 条单测（`AgentModelStateTest`）：envelope 落库、缺席原因、截断标记、明确回错不当成空模型、坏消息整份拒绝、整份替换、协议版本不匹配仍被拒绝，以及状态页口径。
@@ -362,7 +362,7 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 **踩到的坑（下次别再踩）**
 
-- ~applicationId = com.orbising.orbis~，而 ~namespace = dev.pi.remote~：模拟器上**同时装着**一个旧包 ~dev.pi.remote~。启动 ~dev.pi.remote~ 看到的是旧 App（停在配对页），从它查存储当然也查不到配对。**设备验证一律用 ~com.orbising.orbis~；~dev.pi.remote~ 是遗留包，未经授权不卸载。**
+- ~applicationId = com.orbising.orbis~，而 ~namespace = com.orbising.orbis~：模拟器上**同时装着**一个旧包 ~com.orbising.orbis~。启动 ~com.orbising.orbis~ 看到的是旧 App（停在配对页），从它查存储当然也查不到配对。**设备验证一律用 ~com.orbising.orbis~；~com.orbising.orbis~ 是遗留包，未经授权不卸载。**
 - 隔离测试台的 ~pair~ 与常驻 ~host~ 在同一状态目录里互斥：Host 活着时再开配对窗口会直接退出（~code=2~，错误日志写得很清楚）。要重新配对先 ~stop-isolated-host.ps1~。
 - 资源占用要按顺序放：拿到 ~resource-operation~ 启模拟器后，模拟器开机完成就必须释放，否则下一次 Android 构建会一直等这个占用（实测卡了 8 分钟才反应过来）。
 
@@ -385,7 +385,7 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 怎么跑：实例 2 + 隔离测试台（状态目录不变，hostId 不变、模型代次与来源代次换代）；App 用第 17 批那套真实配对启动并连上，然后**停掉再起**隔离 Host，全程不碰 App。
 
-观察到的（App 侧 ~PiRemote.ReloadTrace~，Host 侧 ~host.out.log~，两边 requestId 对得上）：
+观察到的（App 侧 ~Orbis.ReloadTrace~，Host 侧 ~host.out.log~，两边 requestId 对得上）：
 
 | 步骤 | 证据 |
 | --- | --- |
@@ -464,7 +464,7 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 已交付——Android 侧：
 
 - App 读 Host 作用域快照时同时点名 ~catalog~（~refreshHostModel~ 默认领域从 ~[diagnostics]~ 变成 ~[diagnostics, catalog]~）。
-- [AgentModelState.kt](../../android/app/src/main/java/dev/pi/remote/AgentModelState.kt) 解析 ~HostCatalogState~（~totalSessions~ / ~truncated~ / 逐后端 ~ready~ / ~sessions~ / ~complete~ / ~error~），并把它翻成界面口径。
+- [AgentModelState.kt](../../android/app/src/main/java/com/orbising/orbis/AgentModelState.kt) 解析 ~HostCatalogState~（~totalSessions~ / ~truncated~ / 逐后端 ~ready~ / ~sessions~ / ~complete~ / ~error~），并把它翻成界面口径。
 - 状态页新增「电脑端会话目录」：读全时是「N 个会话（M 个后端都读全）」，有缺口时是「N 个会话（部分）」并把**是哪个后端、为什么**写在说明里（读取失败 / 未就绪 / 没读全 / 被上限截断）。缺字段、负载不是对象、领域缺席都明确报错——不把「没读到」画成「完整」。
 - 这一行回答的是会话列表本身答不出的问题：App 以前**无法知道自己看到的目录是不是读全了**。
 - 3 条新单测（共 18 条）：读全、部分（含未就绪与截断两种原因）、还没读到/坏负载。
@@ -496,7 +496,7 @@ Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、�
 
 已修：
 
-- App：[AgentModelState.kt](../../android/app/src/main/java/dev/pi/remote/AgentModelState.kt) 的注记改成「还有更新的没读」，KDoc 写清方向；状态页标签改成「最近读到的」，并在只有第一页时不假装那是最近。
+- App：[AgentModelState.kt](../../android/app/src/main/java/com/orbising/orbis/AgentModelState.kt) 的注记改成「还有更新的没读」，KDoc 写清方向；状态页标签改成「最近读到的」，并在只有第一页时不假装那是最近。
 - Host：[diagnostic-journal.ts](../../packages/host/src/diagnostic-journal.ts) 的 ~page()~ 注释明确写下**方向**，避免以后有人把它「修」成倒序；新增 1 条单测把方向钉死（m0,m1 → m2 → 追平）。
 
 验证：~npm run check~ = **107 文件 / 1094 测试全过**；~:app:testDebugUnitTest~ = **46 类 / 419 项全过**。
@@ -559,7 +559,7 @@ Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、�
 
 ## 第 30 批（issue #11 矩阵第 5 项：先写测试，**尚未在设备上跑**）
 
-已交付：在既有的设备测试 [SessionGraphStoreInstrumentedTest.kt](../../android/app/src/androidTest/java/dev/pi/remote/SessionGraphStoreInstrumentedTest.kt) 里加了 ~entriesAndDisplayRowsComeBackFromDiskOnAFreshStore~：
+已交付：在既有的设备测试 [SessionGraphStoreInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/SessionGraphStoreInstrumentedTest.kt) 里加了 ~entriesAndDisplayRowsComeBackFromDiskOnAFreshStore~：
 
 - 用夹具条目 + 夹具显示投影写进真 SQLite（同一批），关掉 store；
 - 用**新的 store 实例**从同一个目录读回来，断言条目顺序、显示行集合（每个条目都有对应显示行）、~displayWindowStart~ 与 ~displayVersion~ 都还在。
@@ -626,7 +626,7 @@ Host 的 ~DiagnosticJournal.page()~ 从保留窗口里**最旧**一条开始、�
 
 ## 第 34 批（issue #10 收尾：App 与桌面改为模型消费者）
 
-App 侧（[AgentModelProjection.kt](../../android/app/src/main/java/dev/pi/remote/AgentModelProjection.kt)、[AgentCatalogRange.kt](../../android/app/src/main/java/dev/pi/remote/AgentCatalogRange.kt)）：
+App 侧（[AgentModelProjection.kt](../../android/app/src/main/java/com/orbising/orbis/AgentModelProjection.kt)、[AgentCatalogRange.kt](../../android/app/src/main/java/com/orbising/orbis/AgentCatalogRange.kt)）：
 
 - 按领域 envelope 镜像：**整份替换**同一领域，`unknown`/`unavailable` 保留最后已知值但登记可用性；集合领域只有在 `projectionComplete`（或 source `complete`）时才允许用缺席删除。
 - Agent 领域投影进运行时会话：`identity`（含 `agentKind`/`hostId` 校验）、`execution`（运行状态只认这一格）、`model`/`context`/`permissions`/`capabilities`/`interactions`/`delivery`；Host 领域投影 `catalog`/`backends`/`providers`。
@@ -717,7 +717,7 @@ rig Host 进程 21072 → 25624 后，App **在熄屏状态下**自动重连：`
 
 新 App 的模型读取原来只在 `device.ready` 那一帧触发，而设备顺序是 **先 `device.ready` 再 `e2e.hs.confirmed`**：读取需要加密通道，所以当帧直接返回；唯一的补偿是前台 15 秒核对，熄屏时一次都不跑。真机上表现为「会话列表正常、诊断/目录/供应商一直显示尚未读取」。修复：握手完成的回调（`onE2eStateChanged(true)`）补一次 `refreshHostModel()` 与已知 Agent 作用域的读取（commit `687d394`）。修完在真机上熄屏也能看到 `agent.state.request` 发出去。
 
-**没有跑、也不当作通过**：第 3（断线续传）、4（历史改写）、5（进程级冷启动渲染）、6（多 Host「通知关闭」半）。原因：rig 的合成会话没有历史；在 App 里新建 Pi 会话虽然真的拉起了 Pi（`[activate] … cwd=<rig>\workspace`），但那个 Pi 没有接上 rig 的 loopback（扩展按默认状态目录找通道，rig 用的是自己的 `--state-dir`），所以设备侧拿不到一个有历史的活会话；而用协议 13 那台 Host 的缓存会话打开时又被版本门槛挡住。这四项要么需要先解决 rig 里 Pi 扩展的通道发现（`PI_REMOTE_STATE_DIR`），要么用模拟器上的夹具测试补，留作下一批。
+**没有跑、也不当作通过**：第 3（断线续传）、4（历史改写）、5（进程级冷启动渲染）、6（多 Host「通知关闭」半）。原因：rig 的合成会话没有历史；在 App 里新建 Pi 会话虽然真的拉起了 Pi（`[activate] … cwd=<rig>\workspace`），但那个 Pi 没有接上 rig 的 loopback（扩展按默认状态目录找通道，rig 用的是自己的 `--state-dir`），所以设备侧拿不到一个有历史的活会话；而用协议 13 那台 Host 的缓存会话打开时又被版本门槛挡住。这四项要么需要先解决 rig 里 Pi 扩展的通道发现（`ORBIS_STATE_DIR`），要么用模拟器上的夹具测试补，留作下一批。
 
 **收尾（全部已做）**：真机配对文件已按原样恢复（只保留用户自己的 Host、`activeHostId` 也还原）、旧协议 APK 已装回（用户的 Host 仍是 13，这样手机照旧可用）、`adb reverse` 已移除、rig 与 Relay 已停、Gradle/Kotlin daemon 已停、设备占用已释放。用户正在使用的 Host 没有被停止或重启，也没有被本批改动过。
 
@@ -734,7 +734,7 @@ rig Host 进程 21072 → 25624 后，App **在熄屏状态下**自动重连：`
 
 **遗留**：手机被取走后无法再取证「重启 App 后连上」的那一步；旧的中继版本留下的「协议版本不兼容」弹窗如果还留在屏幕上，点一次「确定」即可（App 的重连循环会继续）。设备矩阵第 3/4/5/6 项仍未跑，原因见第 39 批。
 
-**同时修掉的一个 rig 缺陷**（第 39 批调查中发现）：`pi-extension` 只找 `~/.pi-remote/loopback.json`，所以用非默认 `--state-dir` 起的 Host 拉起的 agent 永远接不上。现在 Host 把 `PI_REMOTE_STATE_DIR` 传给子进程，扩展优先用它（空白回落到默认目录），并各有单测。
+**同时修掉的一个 rig 缺陷**（第 39 批调查中发现）：`pi-extension` 只找 `~/.orbis/loopback.json`，所以用非默认 `--state-dir` 起的 Host 拉起的 agent 永远接不上。现在 Host 把 `ORBIS_STATE_DIR` 传给子进程，扩展优先用它（空白回落到默认目录），并各有单测。
 
 验证：`npm run check` = **111 文件 / 1135 测试全过**；`npm run lint` 通过。
 

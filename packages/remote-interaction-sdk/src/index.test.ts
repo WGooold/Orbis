@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { InteractionRequest, QuestionnaireAnswer, RuntimeEvent } from "@pi-remote/protocol";
+import type { InteractionRequest, QuestionnaireAnswer, RuntimeEvent } from "@orbis/protocol";
 import {
   RemoteInteractionSdk,
   type LocalInteractionUi,

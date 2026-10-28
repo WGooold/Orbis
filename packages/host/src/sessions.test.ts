@@ -17,7 +17,7 @@ afterEach(async () => {
 });
 
 async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "pi-remote-sessions-"));
+  const root = await mkdtemp(join(tmpdir(), "orbis-sessions-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   return root;
 }

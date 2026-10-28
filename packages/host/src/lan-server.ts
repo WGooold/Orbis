@@ -6,7 +6,7 @@
  * 1. **说 WS，不说裸 TCP。** 对端要的东西是「把信封一条条送过去」，而 WS 已经免费提供了
  *    分帧、探活、与 Relay 完全相同的外壳（`v2.frame`）。裸 TCP 要自己写长度前缀和半包处理，
  *    多出来的全是没人看的代码。§6.1 说的「TCP over LAN」是这一级的网络位置，不是要手搓协议。
- * 2. **端口固定、地址来自 QR 或已认证会话。** `pi-remote pair` 是个短命进程，必须在
+ * 2. **端口固定、地址来自 QR 或已认证会话。** `orbis pair` 是个短命进程，必须在
  *    常驻 Host 还没跑时就能把地址写进二维码，因此端口走配置（默认 42130）。已有配对
  *    通过加密的 host.lan.request 刷新网卡地址，不依赖旧二维码里的 IP。
  *
@@ -17,8 +17,8 @@
 import { networkInterfaces } from "node:os";
 import { WebSocketServer, type WebSocket } from "ws";
 
-import type { PairingQrLanEndpoint } from "@pi-remote/e2e";
-import { PROTOCOL_VERSION, V2FrameSchema, type EnvelopeV2 } from "@pi-remote/protocol";
+import type { PairingQrLanEndpoint } from "@orbis/e2e";
+import { PROTOCOL_VERSION, V2FrameSchema, type EnvelopeV2 } from "@orbis/protocol";
 
 import type { PathSink } from "./device-link.js";
 import { describeError } from "./describe-error.js";

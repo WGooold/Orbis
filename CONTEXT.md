@@ -27,6 +27,15 @@ _Avoid_: Event forwarding wrapper, a full-history database, a model-provider sel
 **Device view**:
 A Host-owned projection for one paired device that filters notification dismissals, private command receipts and device-scoped operations from shared state. It does not redefine shared Agent facts. See ADR-0032.
 
+**Tool summary**:
+A bounded, deterministic execution projection keyed by Host, agent kind, Session and tool-call identity. It contains verified phase/status, ordering and references to available arguments, execution output and final result. Raw tool content is removed before common Host state, Registry and Pi loopback publication; native execution/history keep their own complete content. See ADR-0045.
+
+**Tool inventory**:
+The current Session's executing and finished-but-uncommitted tool summaries, with an independent epoch/revision. Chat checkpoints reference an exact inventory/source dependency; devices acquire fixed pages and continuous patches before advancing the complete applied baseline. Committed tools move atomically into historical summary Entries. It is not a full-history tool database. See ADR-0045 §5/§9.
+
+**Tool content read**:
+A device-private, bounded UTF-8 range read of arguments, execution output or final result. The locator identifies a tool and part, while a leased read identity fixes the content epoch and range. Detail text never enters shared chat state, history coverage or applied baselines. Missing ranges and expired versions are explicit; cancellation stops the read, not the tool. See ADR-0045 §4/§6/§7.
+
 **Client-local state**:
 Device-owned pairing and selection, cache and applied baselines, logical read operations, outbox, local transfer files and scheduling, drafts, aliases, viewport and preferences. These remain local while remote domain facts come from the Host model. See ADR-0032.
 
@@ -115,7 +124,7 @@ The Host's local, in-machine endpoint that speaks the same runtime messages as t
 _Avoid_: Local Relay, IPC channel
 
 **Loopback discovery file**:
-The `~/.pi-remote/loopback.json` descriptor — URL, token, host id, pid — that an agent process reads to find the local Host. Its token guards against stale files and duplicate Hosts, not against other local processes.
+The `~/.orbis/loopback.json` descriptor — URL, token, host id, pid — that an agent process reads to find the local Host. Its token guards against stale files and duplicate Hosts, not against other local processes.
 _Avoid_: Port file, lock file
 
 ## Conversation, commands, and activation

@@ -16,7 +16,8 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
-import type { AgentKind, SpawnMode } from "@pi-remote/protocol";
+import type { AgentKind, SpawnMode } from "@orbis/protocol";
+import { orbisEnvironment } from "@orbis/protocol";
 
 /** 激活失败的原因码，一对一映射到 `protocol.error` 的 `code`。 */
 export type ActivationErrorCode =
@@ -139,7 +140,7 @@ export async function resolveTerminalCommand(
 }
 
 /**
- * 默认扩展路径：monorepo 里 host 包隔壁就是 pi-extension（可用 PI_REMOTE_EXTENSION_PATH 覆盖）。
+ * 默认扩展路径：monorepo 里 host 包隔壁就是 pi-extension（可用 ORBIS_EXTENSION_PATH 覆盖）。
  *
  * 必须指向构建产物 `dist/index.js`：扩展包的 manifest（`pi.extensions`）注册的也是 dist，
  * spawn 的 `-e` 若指向 src，两条通道会在同一个 Pi 进程里求值出两个互不相识的实例——
@@ -147,7 +148,7 @@ export async function resolveTerminalCommand(
  * loopback `#register` 处互相踢掉对方，TUI 标题就永远停在 reconnecting。
  */
 export function defaultExtensionPath(env: Record<string, string | undefined> = process.env): string {
-  const override = env.PI_REMOTE_EXTENSION_PATH;
+  const override = orbisEnvironment(env, "EXTENSION_PATH");
   if (override !== undefined && override.length > 0) return override;
   return fileURLToPath(new URL("../../pi-extension/dist/index.js", import.meta.url));
 }
@@ -346,7 +347,12 @@ export class SessionSpawner {
       shell: false,
       // The agent must find *this* Host's loopback descriptor when the Host does not use the
       // default state directory (several Hosts on one machine is supported).
-      env: this.#stateDir === undefined ? this.#env : { ...this.#env, PI_REMOTE_STATE_DIR: this.#stateDir },
+      env: this.#stateDir === undefined ? this.#env : {
+        ...this.#env,
+        ORBIS_STATE_DIR: this.#stateDir,
+        // An explicitly configured older Pi extension still needs the same isolated Host directory.
+        PI_REMOTE_STATE_DIR: this.#stateDir,
+      },
       // stdin 必须是**保持打开**的管道，不能用 `"ignore"`：`"ignore"` 让子进程的
       // stdin 立刻读到 EOF，而 pi 的 rpc 模式把「输入结束」当成「该收工了」，会干净
       // 退出（实测 exit 0）。于是进程被记成「拉起成功」，几秒后自己消失——电脑上没
