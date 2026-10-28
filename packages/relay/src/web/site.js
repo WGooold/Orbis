@@ -28,9 +28,9 @@ const appPlatforms = {
     note: "安装后扫描电脑端的配对二维码。",
   },
   ios: {
-    requirement: "iPhone · 暂未提供",
-    detail: "iOS 版本正在准备，推出后可在这里下载。",
-    note: "",
+    requirement: "iPhone · 原生版预览开发中",
+    detail: "Orbis iOS 原生客户端已进入开发，支持扫码配对、端到端加密和移动端聊天。",
+    note: "当前源码已纳入仓库，正式 TestFlight / App Store 包发布后会在这里提供。",
   },
 };
 let siteData;
@@ -98,8 +98,8 @@ function renderApp(platform) {
   document.getElementById("app-note").textContent = spec.note;
   container.replaceChildren();
   if (platform === "ios") {
-    version.textContent = "即将推出";
-    container.textContent = "iOS 版本暂未提供。";
+    version.textContent = "原生版预览开发中";
+    container.textContent = "iOS 原生客户端源码已提供，正式安装包将在完成 Xcode 真机验证后发布。";
     return;
   }
   if (!siteData) {
