@@ -69,6 +69,38 @@ struct PresentationTests {
         #expect(directoryTitle("D:\\Work\\Orbis") == "Orbis")
     }
 
+    @Test func directoriesSortByMostRecentSessionAndExpandOneAtATime() {
+        func at(_ id: String, _ cwd: String, _ modified: Int64) -> SessionSummary {
+            var value = session(id, cwd: cwd); value.modifiedAt = modified; return value
+        }
+        let values = [at("old", "/a", 10), at("new", "/b", 30), at("mid", "/a", 20), at("tie", "/c", 30)]
+        let directories = sessionDirectories(values, query: "", kind: nil, archived: false, title: { $0.name ?? "" })
+        #expect(directories.map(\.path) == ["/b", "/c", "/a"])
+        #expect(directories.last?.sessions.map(\.sessionId) == ["mid", "old"])
+        #expect(directories.last?.modifiedAt == 20)
+        #expect(defaultExpandedDirectory(directories, preferred: "/a") == "/a")
+        #expect(defaultExpandedDirectory(directories, preferred: "/gone") == "/b")
+        #expect(defaultExpandedDirectory(directories, preferred: nil) == "/b")
+        #expect(defaultExpandedDirectory([], preferred: "/a") == nil)
+        #expect(directorySessionPreviewLimit == 5)
+    }
+
+    /// Host 的 runtime 元数据不带 agentKind：Codex 不能因为缺字段被显示成 Pi。
+    @Test func runtimeAgentKindComesFromCatalogThenHostRuntimeIds() {
+        #expect(resolvedAgentKind(runtimeId: "codex:thread-1", declared: nil, catalogKind: nil) == "codex")
+        #expect(resolvedAgentKind(runtimeId: "codex", declared: nil, catalogKind: nil) == "codex")
+        #expect(resolvedAgentKind(runtimeId: "codex-desktop:t", declared: nil, catalogKind: nil) == "codexDesktop")
+        #expect(resolvedAgentKind(runtimeId: "dsh:abc", declared: nil, catalogKind: nil) == "dsh")
+        #expect(resolvedAgentKind(runtimeId: "7d0c4f1e-uuid", declared: nil, catalogKind: "pi") == "pi")
+        #expect(resolvedAgentKind(runtimeId: "7d0c4f1e-uuid", declared: nil, catalogKind: "codex") == "codex")
+        #expect(resolvedAgentKind(runtimeId: "7d0c4f1e-uuid", declared: nil, catalogKind: nil) == nil)
+        #expect(resolvedAgentKind(runtimeId: "7d0c4f1e-uuid", declared: nil, catalogKind: "") == nil)
+        #expect(resolvedAgentKind(runtimeId: "codex:x", declared: "dsh", catalogKind: "pi") == "dsh")
+        #expect(runtimeAgentKind("codexDesktop") == nil)
+        #expect(runtimeAgentKind("codex-desktopish") == nil)
+        #expect(runtimeAgentKind("dsh") == nil)
+    }
+
     @Test func remotePathsUseComputerSeparatorsAndRootEntriesVerbatim() {
         #expect(remoteBrowsePath(parent: nil, name: "D:\\") == "D:\\")
         #expect(remoteBrowsePath(parent: "D:\\Work", name: "Orbis") == "D:\\Work\\Orbis")

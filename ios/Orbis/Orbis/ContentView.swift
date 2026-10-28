@@ -13,7 +13,7 @@ struct ContentView: View {
     @State private var newSessionOpen = false
     @State private var newSessionCwd: String?
     @State private var aliasRuntime: RuntimeSummary?
-    @State private var unpairHost: HostPairing?
+    @StateObject private var overlay = OrbisOverlay()
 
     init() {
         #if DEBUG
@@ -40,7 +40,7 @@ struct ContentView: View {
                 } else {
                     HomeView(onDirectory: { setDrawer(true) }, onStatus: { pages.append(.status) },
                              onSettings: { pages.append(.settings) }, onAddHost: { pages.append(.pairing) },
-                             onDownloads: { pages.append(.downloads) }, onUnpair: { unpairHost = store.selectedHost }, onAlias: { aliasRuntime = $0 },
+                             onDownloads: { pages.append(.downloads) }, onUnpair: { confirmUnpair(store.selectedHost) }, onAlias: { aliasRuntime = $0 },
                              onOpenRuntime: openRuntime)
                 }
             }
@@ -73,7 +73,9 @@ struct ContentView: View {
         .foregroundStyle(OrbisPalette(scheme).text)
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .accessibilityHidden(drawerOpen)
-        .overlay { if drawerOpen { drawer } }
+        .modifier(SessionDrawerModifier(isOpen: $drawerOpen, edgeSwipeEnabled: pages.isEmpty && !store.pairings.isEmpty && !store.isPairing) {
+            drawer
+        })
         .overlay(alignment: .top) {
             if let error = store.errorMessage {
                 HStack(alignment: .top, spacing: 10) {
@@ -86,21 +88,13 @@ struct ContentView: View {
         .overlay(alignment: .bottom) { TransferErrorBanner(transfers: store.transfers) }
         .sheet(isPresented: $newSessionOpen, onDismiss: store.dismissBrowse) {
             NewSessionView(presetCwd: newSessionCwd) { newSessionOpen = false }
-                .environmentObject(store).presentationDetents([.large]).presentationDragIndicator(.visible)
-                .presentationCornerRadius(28)
+                .environmentObject(store).orbisSheet([.large])
         }
         .sheet(item: $aliasRuntime) { runtime in
-            SessionAliasView(runtime: runtime).environmentObject(store)
-                .presentationDetents([.medium]).presentationDragIndicator(.visible).presentationCornerRadius(28)
+            SessionAliasView(runtime: runtime).environmentObject(store).orbisSheet([.medium])
         }
-        .confirmationDialog("取消配对这台电脑？", isPresented: Binding(get: { unpairHost != nil }, set: { if !$0 { unpairHost = nil } }), titleVisibility: .visible) {
-            if let host = unpairHost {
-                Button("取消配对 \(host.hostName)", role: .destructive) {
-                    store.unpair(hostId: host.hostId); unpairHost = nil; pages = []; setDrawer(false)
-                }
-            }
-            Button("返回", role: .cancel) { unpairHost = nil }
-        } message: { Text("此电脑在本机保存的配对、草稿和别名将被移除。之后可以重新扫码连接。") }
+        .onChange(of: pages) { _, _ in overlay.dismissMenu() }
+        .onChange(of: drawerOpen) { _, open in if !open { overlay.dismissMenu() } }
         .onChange(of: store.activationRevision) { _, _ in
             setDrawer(false); newSessionOpen = false
             if store.selectedRuntime != nil { pages = [.chat] }
@@ -126,37 +120,157 @@ struct ContentView: View {
                 }.accessibilityAddTraits(.updatesFrequently)
             }
         }
+        .orbisOverlayHost(overlay)
     }
 
     private var drawer: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Color.black.opacity(0.32).ignoresSafeArea().onTapGesture { setDrawer(false) }
-                    .accessibilityLabel("关闭会话目录").accessibilityAddTraits(.isButton)
-                SessionDrawerView(state: $directoryState, onClose: { setDrawer(false) },
-                                  onOpenSession: { session in
-                                      if let runtime = store.runtimes.first(where: { $0.sessionId == session.sessionId }) { openRuntime(runtime) }
-                                      else { store.activate(session) }
-                                  },
-                                  onNewSession: { cwd in
-                                      newSessionCwd = cwd; setDrawer(false); newSessionOpen = true
-                                  }, onAddHost: { setDrawer(false); pages.append(.pairing) },
-                                  onProviders: { setDrawer(false); pages.append(.settings); pages.append(.providers) },
-                                  onUnpair: { unpairHost = $0 })
-                    .frame(width: min(380, geometry.size.width * 0.9))
-                    .background(OrbisPalette(scheme).base.ignoresSafeArea())
-                    .transition(.move(edge: .leading))
-                    .gesture(DragGesture(minimumDistance: 35).onEnded { if $0.translation.width < -65 { setDrawer(false) } })
-            }
-        }.accessibilityAddTraits(.isModal)
+        SessionDrawerView(state: $directoryState, onClose: { setDrawer(false) },
+                          onOpenSession: { session in
+                              if let runtime = store.runtimes.first(where: { $0.sessionId == session.sessionId }) { openRuntime(runtime) }
+                              else { store.activate(session) }
+                          },
+                          onNewSession: { cwd in
+                              newSessionCwd = cwd; setDrawer(false); newSessionOpen = true
+                          }, onAddHost: { setDrawer(false); pages.append(.pairing) },
+                          onProviders: { setDrawer(false); pages.append(.settings); pages.append(.providers) },
+                          onUnpair: { confirmUnpair($0) })
     }
 
     private func back() { if !pages.isEmpty { pages.removeLast() } }
     private func setDrawer(_ open: Bool) {
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { drawerOpen = open }
     }
+    private func confirmUnpair(_ host: HostPairing?) {
+        guard let host else { return }
+        overlay.showDialog("取消配对这台电脑？", message: "此电脑在本机保存的配对、草稿和别名将被移除。之后可以重新扫码连接。", actions: [
+            OrbisDialogAction(title: "返回", role: .cancel),
+            OrbisDialogAction(title: "取消配对 \(host.hostName)", role: .destructive) {
+                store.unpair(hostId: host.hostId); pages = []; setDrawer(false)
+            }
+        ])
+    }
     private func openRuntime(_ runtime: RuntimeSummary) {
         store.selectRuntime(runtime.runtimeId); setDrawer(false); pages = [.chat]
+    }
+}
+
+/// 会话目录抽屉。关闭时在主页左侧（左 40% 宽度内）起手向右横拖即把抽屉拉出；打开时在抽屉
+/// 或遮罩上向左拖动即推回。拖动过程中抽屉与遮罩跟随手指，松手按位置与速度吸附到打开或关闭。
+/// 拉出手势挂在页面内容上与之同时识别，并按第一段位移锁定方向，竖向滚动主页时不会带出抽屉。
+private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var isOpen: Bool
+    let edgeSwipeEnabled: Bool
+    @ViewBuilder let drawer: Drawer
+    /// 拖动中抽屉相对完全打开位置的水平偏移，范围 [-width, 0]；nil 表示没有在拖动。
+    @State private var offset: CGFloat?
+    /// 按第一段位移锁定方向：true 横向带动抽屉，false 交给滚动等其他手势。
+    @State private var horizontalDrag: Bool?
+    /// 横拖抽屉期间停用手指下的按钮：从会话卡片或目录行上起手拖动时，松手不能再触发它们。
+    @State private var suppressTaps = false
+    @State private var containerWidth: CGFloat = 390
+
+    private var width: CGFloat { min(380, containerWidth * 0.9) }
+
+    func body(content: Content) -> some View {
+        content
+            .disabled(suppressTaps)
+            .simultaneousGesture(edgeSwipeEnabled && !isOpen ? openGesture : nil)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
+            .overlay {
+                let visible = isOpen || offset != nil
+                let progress = visible ? max(0, min(1, 1 + (offset ?? 0) / width)) : 0
+                ZStack(alignment: .leading) {
+                    if visible {
+                        Color.black.opacity(0.32 * progress).ignoresSafeArea()
+                            .contentShape(Rectangle())
+                            .onTapGesture { close() }
+                            .accessibilityLabel("关闭会话目录").accessibilityAddTraits(.isButton)
+                            .transition(.opacity)
+                        drawer
+                            .disabled(suppressTaps)
+                            .frame(width: width)
+                            .frame(maxHeight: .infinity)
+                            .background(OrbisPalette(scheme).base.ignoresSafeArea())
+                            .offset(x: offset ?? 0)
+                            .transition(.move(edge: .leading))
+                            .accessibilityAddTraits(.isModal)
+                    }
+                    // 紧贴屏幕左缘起手时，挂在内容上的同时手势会被系统边缘手势拦下，这里单独接住。
+                    // 拉出过程中这条窄带必须一直存在，否则手势会随视图移除而被取消。
+                    if edgeSwipeEnabled && !isOpen {
+                        Color.clear.frame(width: 20).frame(maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                            .gesture(openGesture)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .simultaneousGesture(isOpen ? closeGesture : nil)
+            }
+    }
+
+    private var openGesture: some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .global)
+            .onChanged { value in
+                if horizontalDrag == nil {
+                    horizontalDrag = value.startLocation.x < containerWidth * 0.4 &&
+                        value.translation.width > abs(value.translation.height) * 1.5
+                }
+                guard horizontalDrag == true else { return }
+                suppressTaps = true
+                offset = min(0, max(-width, value.translation.width - width))
+            }
+            .onEnded { value in
+                let horizontal = horizontalDrag == true
+                horizontalDrag = nil
+                guard horizontal else { return }
+                releaseTaps()
+                settle(open: value.predictedEndTranslation.width > width / 2)
+            }
+    }
+
+    private var closeGesture: some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .global)
+            .onChanged { value in
+                if horizontalDrag == nil {
+                    horizontalDrag = abs(value.translation.width) > abs(value.translation.height)
+                }
+                guard horizontalDrag == true else { return }
+                suppressTaps = true
+                offset = min(0, max(-width, value.translation.width))
+            }
+            .onEnded { value in
+                let horizontal = horizontalDrag == true
+                horizontalDrag = nil
+                guard horizontal else { return }
+                releaseTaps()
+                settle(open: value.predictedEndTranslation.width > -width / 2)
+            }
+    }
+
+    /// 等同一次松手里按钮的动作判定过去，再恢复按钮。
+    private func releaseTaps() {
+        DispatchQueue.main.async { suppressTaps = false }
+    }
+
+    private func settle(open: Bool) {
+        let animation: Animation? = reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)
+        if open {
+            withAnimation(animation) { isOpen = true; offset = nil }
+        } else if offset == nil {
+            withAnimation(animation) { isOpen = false }
+        } else {
+            // 先把抽屉滑到屏幕外，再移除，避免移除转场从完全打开的位置重新开始。
+            withAnimation(animation) { offset = -width } completion: {
+                isOpen = false; offset = nil
+            }
+        }
+    }
+
+    private func close() {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { isOpen = false; offset = nil }
     }
 }
 
@@ -199,21 +313,19 @@ struct HomeView: View {
                 }
             } trailing: {
                 OrbisIconButton(symbol: "arrow.down.to.line", label: "下载", action: onDownloads)
-                Menu {
-                    Button("连接状态", systemImage: "info.circle", action: onStatus)
-                    Button("设置", systemImage: "gearshape", action: onSettings)
-                    Button("添加电脑", systemImage: "plus", action: onAddHost)
-                    Button("取消配对当前电脑", systemImage: "link.badge.plus", role: .destructive, action: onUnpair)
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 20, weight: .semibold))
-                        .frame(width: 40, height: 40).neuSurface(radius: 20, intensity: 0.5).frame(width: 48, height: 48)
-                }.accessibilityLabel("更多操作")
+                OrbisMenuIconButton(symbol: "ellipsis", label: "更多操作") {
+                    [OrbisMenuItem(title: "连接状态", symbol: "info.circle", action: onStatus),
+                     OrbisMenuItem(title: "设置", symbol: "gearshape", action: onSettings),
+                     OrbisMenuItem(title: "添加电脑", symbol: "plus", action: onAddHost),
+                     .divider,
+                     OrbisMenuItem(title: "取消配对当前电脑", symbol: "link", destructive: true, action: onUnpair)]
+                }
             }
             HStack {
                 Button(action: onStatus) { ConnectionPill() }.buttonStyle(.plain)
                 Spacer()
                 if store.connection == .offline || store.connection == .error {
-                    Button("重新连接", action: store.reconnectSelectedHost).font(.system(size: 12, weight: .semibold)).frame(minHeight: 48)
+                    OrbisTextButton(title: "重新连接", symbol: "arrow.clockwise", action: store.reconnectSelectedHost)
                 }
             }.padding(.horizontal, 20).padding(.bottom, 6)
             if store.runtimes.isEmpty {
@@ -235,15 +347,16 @@ struct HomeView: View {
     }
 
     private func runtimeCard(_ runtime: RuntimeSummary) -> some View {
-        Button { onOpenRuntime(runtime) } label: {
+        let kind = store.agentKind(runtime)
+        return Button { onOpenRuntime(runtime) } label: {
             HStack(spacing: 12) {
-                AgentEmblem(kind: runtime.agentKind)
+                AgentEmblem(kind: kind)
                 VStack(alignment: .leading, spacing: 6) {
                     Text(store.displayName(runtime)).font(.system(size: 16, weight: .semibold)).lineLimit(1)
                     Text("\(store.selectedHost?.hostName ?? "电脑")-\(runtime.cwd)")
                         .font(.system(size: 12, design: .monospaced)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
                     HStack(spacing: 10) {
-                        Text(agentTitle(runtime.agentKind)).font(.system(size: 12, weight: .medium)).foregroundStyle(OrbisPalette(scheme).agent(runtime.agentKind))
+                        Text(agentTitle(kind)).font(.system(size: 12, weight: .medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
                         RuntimeStatusLabel(status: runtime.status)
                     }
                     if !(store.interactions[runtime.runtimeId] ?? []).isEmpty {

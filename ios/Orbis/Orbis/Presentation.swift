@@ -91,12 +91,23 @@ func offlineAliasKey(host: HostPairing?, sessionId: String) -> String {
     [host?.relay.relayUrl ?? "", host?.relay.deviceId ?? "", host?.hostId ?? ""].map { "\($0.utf8.count):\($0)" }.joined() + "session:\(sessionId.utf8.count):\(sessionId)"
 }
 
+/// 一台已配对电脑在本机偏好里的键前缀；草稿、别名与会话目录缓存都以它开头。
+func hostKeyPrefix(_ host: HostPairing) -> String {
+    [host.relay.relayUrl, host.relay.deviceId, host.hostId].map { "\($0.utf8.count):\($0)" }.joined()
+}
+
 struct SessionDirectory: Identifiable {
     let path: String
     let sessions: [SessionSummary]
     var id: String { path }
+    /// 目录的「最近使用」时间 = 其中最新会话的修改时间（与 Android `CachedDirectoryGroup.modifiedAt` 一致）。
+    var modifiedAt: Int64 { sessions.map(\.modifiedAt).max() ?? 0 }
 }
 
+/// 展开的目录默认只列出最近的几条会话，其余由「再显示 N 个会话」展开（与 Android 侧栏一致）。
+let directorySessionPreviewLimit = 5
+
+/// 目录按最近使用排序：最新会话越新越靠前，同一时间再按路径；目录内会话按修改时间倒序。
 func sessionDirectories(_ sessions: [SessionSummary], query: String, kind: String?, archived: Bool,
                         title: (SessionSummary) -> String) -> [SessionDirectory] {
     let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -105,8 +116,38 @@ func sessionDirectories(_ sessions: [SessionSummary], query: String, kind: Strin
         (term.isEmpty || session.cwd.localizedCaseInsensitiveContains(term) || title(session).localizedCaseInsensitiveContains(term))
     }
     return Dictionary(grouping: visible, by: \.cwd).map { path, sessions in
-        SessionDirectory(path: path, sessions: sessions.sorted { $0.modifiedAt > $1.modifiedAt })
-    }.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        SessionDirectory(path: path, sessions: sessions.sorted { lhs, rhs in
+            lhs.modifiedAt != rhs.modifiedAt ? lhs.modifiedAt > rhs.modifiedAt : lhs.sessionId < rhs.sessionId
+        })
+    }.sorted { lhs, rhs in
+        let left = lhs.modifiedAt, right = rhs.modifiedAt
+        return left != right ? left > right : lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
+    }
+}
+
+/// 侧栏一次只展开一个目录：优先当前会话所在目录，否则展开最近使用的目录。
+func defaultExpandedDirectory(_ directories: [SessionDirectory], preferred: String?) -> String? {
+    if let preferred, directories.contains(where: { $0.path == preferred }) { return preferred }
+    return directories.first?.path
+}
+
+/// Host 的 runtime 元数据（`RuntimeMetadata`）不携带 agentKind，缺省会被当成 Pi。
+/// 展示时先用会话目录里同一 sessionId 的 agentKind（Host 扫描出的事实），
+/// 再退回 Host 的 runtimeId 约定：`codex` / `codex:<thread>`、`codex-desktop` / `codex-desktop:<thread>`、`dsh:<id>`。
+/// Pi 的 runtimeId 是随机 UUID，不会命中这些前缀。
+/// `catalogKind` 是目录里同一 sessionId 的 agentKind，调用方用索引查好再传入。
+func resolvedAgentKind(runtimeId: String, declared: String?, catalogKind: String?) -> String? {
+    if let declared, !declared.isEmpty { return declared }
+    if let catalogKind, !catalogKind.isEmpty { return catalogKind }
+    return runtimeAgentKind(runtimeId)
+}
+
+func runtimeAgentKind(_ runtimeId: String) -> String? {
+    func owned(by prefix: String) -> Bool { runtimeId == prefix || runtimeId.hasPrefix(prefix + ":") }
+    if owned(by: "codex-desktop") { return "codexDesktop" }
+    if owned(by: "codex") { return "codex" }
+    if runtimeId.hasPrefix("dsh:") { return "dsh" }
+    return nil
 }
 
 struct MarkdownBlock: Identifiable, Equatable {

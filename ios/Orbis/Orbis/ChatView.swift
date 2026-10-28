@@ -34,7 +34,8 @@ struct ChatView: View {
     @State private var topArmed = false
     @FocusState private var composerFocused: Bool
 
-    private var accent: Color { OrbisPalette(scheme).agent(runtime.agentKind) }
+    private var kind: String? { store.agentKind(runtime) }
+    private var accent: Color { OrbisPalette(scheme).agent(kind) }
     private var draft: Binding<String> { Binding(get: { store.draft(for: runtime) }, set: { store.saveDraft($0, for: runtime) }) }
     private var slash: Bool { draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
     private var command: SlashCommand? { (store.commands[runtime.runtimeId] ?? []).first { $0.name == selectedCommand } }
@@ -58,8 +59,8 @@ struct ChatView: View {
             } title: {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 6) {
-                        AgentEmblem(kind: runtime.agentKind, size: 18, recessed: false)
-                        Text(agentTitle(runtime.agentKind)).font(.system(size: 12, weight: .semibold)).foregroundStyle(accent)
+                        AgentEmblem(kind: kind, size: 18, recessed: false)
+                        Text(agentTitle(kind)).font(.system(size: 12, weight: .semibold)).foregroundStyle(accent)
                         Text(store.displayName(runtime)).font(.system(size: 16, weight: .semibold)).lineLimit(1)
                     }
                     HStack(spacing: 7) {
@@ -69,7 +70,7 @@ struct ChatView: View {
                             Text(model.name ?? model.id).font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
                         }
                     }
-                }.onTapGesture(perform: onAlias).accessibilityLabel("\(agentTitle(runtime.agentKind))，\(store.displayName(runtime))，\(runtimeStatusTitle(runtime.status))")
+                }.onTapGesture(perform: onAlias).accessibilityLabel("\(agentTitle(kind))，\(store.displayName(runtime))，\(runtimeStatusTitle(runtime.status))")
             } trailing: {
                 OrbisIconButton(symbol: "clock.arrow.circlepath", label: "历史与分支", action: onHistory)
                 OrbisIconButton(symbol: "arrow.down.to.line", label: "下载", action: onDownloads)
@@ -84,8 +85,7 @@ struct ChatView: View {
                 }
             }
             .sheet(isPresented: $permissionsOpen) {
-                PermissionsView(runtime: runtime).presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
-                    .presentationCornerRadius(28)
+                PermissionsView(runtime: runtime).orbisSheet([.medium, .large])
             }
             .onChange(of: draft.wrappedValue) { _, next in
                 if let selectedCommand, !(next == "/" + selectedCommand || next.hasPrefix("/" + selectedCommand + " ")) { self.selectedCommand = nil }
@@ -102,7 +102,8 @@ struct ChatView: View {
     }
 
     private var conversation: some View {
-        ScrollViewReader { proxy in
+        let kind = self.kind
+        return ScrollViewReader { proxy in
             GeometryReader { viewport in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
@@ -112,7 +113,10 @@ struct ChatView: View {
                                     Text("还有更早的历史").font(.system(size: 12))
                                     Spacer()
                                     if store.historyLoading.contains(runtime.runtimeId) { ProgressView().controlSize(.small) }
-                                    else { Button(store.historyErrors[runtime.runtimeId] == nil ? "加载" : "重试") { loadOlder() }.font(.system(size: 12, weight: .semibold)).frame(minHeight: 40).disabled(store.isSyncing || !store.canSend) }
+                                    else {
+                                        OrbisTextButton(title: store.historyErrors[runtime.runtimeId] == nil ? "加载" : "重试", symbol: "arrow.up", tint: accent) { loadOlder() }
+                                            .disabled(store.isSyncing || !store.canSend)
+                                    }
                                 }
                                 if let error = store.historyErrors[runtime.runtimeId] { Text(error).font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).error) }
                             }.padding(12).neuSurface(inset: true, radius: 14, intensity: 0.35)
@@ -121,15 +125,15 @@ struct ChatView: View {
                             Text(store.isSyncing ? "正在同步最近消息…" : "最近消息")
                                 .font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary)
                             Spacer()
-                            Button { store.refresh() } label: { Label("刷新", systemImage: "arrow.clockwise").font(.system(size: 12)) }
-                                .disabled(store.isSyncing || !store.canSend).frame(minHeight: 40)
+                            OrbisTextButton(title: "刷新", symbol: "arrow.clockwise", tint: accent) { store.refresh() }
+                                .disabled(store.isSyncing || !store.canSend)
                         }.padding(.horizontal, 4)
                         if store.messages.isEmpty {
                             OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: store.isSyncing ? "正在加载会话" : "继续这段会话", detail: store.isSyncing ? nil : "发送消息，或输入 / 选择命令。")
                                 .frame(minHeight: max(180, viewport.size.height - 100))
                         }
                         ForEach(chatRows(store.messages)) { row in
-                            ChatMessageRow(row: row, kind: runtime.agentKind).id(row.id)
+                            ChatMessageRow(row: row, kind: kind).id(row.id)
                                 .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: [row.id: geometry.frame(in: .named("chat-viewport"))]) })
                         }
                         LiveToolsView(runtime: runtime)
@@ -143,7 +147,7 @@ struct ChatView: View {
                     }
                     .onPreferenceChange(ChatRowsPreference.self) { frames in
                         firstVisibleRow = frames.filter { $0.value.maxY > 0 && $0.value.minY < viewport.size.height }.min { $0.value.minY < $1.value.minY }?.key
-                        let first = chatRows(store.messages).first?.id
+                        let first = store.messages.first?.messageId
                         let atTop = first.flatMap { frames[$0] }.map { $0.minY >= -40 && $0.minY < viewport.size.height } ?? false
                         if !atTop { topArmed = hasPositioned }
                         if atTop && topArmed && historyAnchor == nil && !store.isSyncing && !store.historyLoading.contains(runtime.runtimeId) && store.historyErrors[runtime.runtimeId] == nil {
@@ -268,6 +272,7 @@ struct ChatView: View {
 
 struct ChatMessageRow: View {
     @Environment(\.colorScheme) private var scheme
+    @State private var copied = false
     let row: ChatRow
     let kind: String?
     var body: some View {
@@ -278,6 +283,11 @@ struct ChatMessageRow: View {
                     HStack(spacing: 6) {
                         AgentEmblem(kind: kind, size: 17, recessed: false)
                         Text(agentTitle(kind)).font(.system(size: 12, weight: .semibold)).foregroundStyle(OrbisPalette(scheme).agent(kind))
+                        Spacer(minLength: 8)
+                        // 复制整轮回复。不用长按手势：它挂在每条消息上会和滚动、文本选择抢触摸。
+                        OrbisIconButton(symbol: copied ? "checkmark" : "doc.on.doc", label: copied ? "已复制" : "复制回复",
+                                        tint: copied ? OrbisPalette(scheme).success : nil, size: 26, action: copy)
+                            .padding(.vertical, -10)
                     }
                 }
                 ForEach(row.messages) { message in
@@ -285,9 +295,16 @@ struct ChatMessageRow: View {
                 }
             }.padding(16).frame(maxWidth: row.isUser ? nil : .infinity, alignment: .leading)
                 .neuSurface(inset: row.isUser, radius: 20, intensity: row.isUser ? 0.6 : 0.4)
+                .accessibilityAction(named: "复制", copy)
             if !row.isUser { Spacer(minLength: 8) }
-        }.contextMenu {
-            Button("复制", systemImage: "doc.on.doc") { UIPasteboard.general.string = row.messages.map(\.text).joined(separator: "\n\n") }
+        }
+    }
+    private func copy() {
+        UIPasteboard.general.string = row.messages.map(\.text).joined(separator: "\n\n")
+        copied = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            copied = false
         }
     }
 }
@@ -369,8 +386,7 @@ struct ToolSummaryView: View {
                 }
             }
         }.sheet(isPresented: $detailOpen, onDismiss: { store.toolContent.close() }) {
-            ToolDetailView(reader: store.toolContent, title: summary.toolName)
-                .presentationDetents([.large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
+            ToolDetailView(reader: store.toolContent, title: summary.toolName).orbisSheet([.large])
         }
     }
     private var phase: String {
@@ -385,10 +401,10 @@ struct MarkdownMessage: View {
     let text: String
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(markdownBlocks(text)) { block in
+            ForEach(MarkdownCache.blocks(text)) { block in
                 switch block.kind {
                 case .text:
-                    ForEach(markdownTextSections(block.text)) { section in
+                    ForEach(MarkdownCache.sections(block.text)) { section in
                         if section.kind == .table { MarkdownTableView(section: section) }
                         else { markdownLine(section.text) }
                     }
@@ -437,9 +453,46 @@ struct MarkdownMessage: View {
         guard let url = URL(string: target), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
         return (alt, url)
     }
-    private func inline(_ value: String) -> Text {
-        if let parsed = try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) { return Text(parsed) }
-        return Text(value)
+    private func inline(_ value: String) -> Text { Text(MarkdownCache.inline(value)) }
+}
+
+private final class MarkdownCacheEntry<Value> {
+    let value: Value
+    init(_ value: Value) { self.value = value }
+}
+
+/// Markdown 解析结果按原文缓存。每次流式增量都会重绘整页，若每次都重新解析所有可见消息
+/// （尤其是逐行 `AttributedString(markdown:)`），主线程会被占满；缓存后只有正在增长的那条要重新解析。
+private enum MarkdownCache {
+    private static let blockStore = makeStore(MarkdownCacheEntry<[MarkdownBlock]>.self, limit: 300)
+    private static let sectionStore = makeStore(MarkdownCacheEntry<[MarkdownTextSection]>.self, limit: 600)
+    private static let inlineStore = makeStore(MarkdownCacheEntry<AttributedString>.self, limit: 5000)
+
+    private static func makeStore<Entry: AnyObject>(_: Entry.Type, limit: Int) -> NSCache<NSString, Entry> {
+        let store = NSCache<NSString, Entry>()
+        store.countLimit = limit
+        return store
+    }
+
+    static func blocks(_ text: String) -> [MarkdownBlock] {
+        if let hit = blockStore.object(forKey: text as NSString) { return hit.value }
+        let value = markdownBlocks(text)
+        blockStore.setObject(MarkdownCacheEntry(value), forKey: text as NSString)
+        return value
+    }
+
+    static func sections(_ text: String) -> [MarkdownTextSection] {
+        if let hit = sectionStore.object(forKey: text as NSString) { return hit.value }
+        let value = markdownTextSections(text)
+        sectionStore.setObject(MarkdownCacheEntry(value), forKey: text as NSString)
+        return value
+    }
+
+    static func inline(_ text: String) -> AttributedString {
+        if let hit = inlineStore.object(forKey: text as NSString) { return hit.value }
+        let value = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+        inlineStore.setObject(MarkdownCacheEntry(value), forKey: text as NSString)
+        return value
     }
 }
 
@@ -552,7 +605,7 @@ private struct MarkdownTableView: View {
                 ForEach(Array(section.rows.enumerated()), id: \.offset) { rowIndex, row in
                     GridRow(alignment: .top) {
                         ForEach(Array((section.rows.first ?? []).indices), id: \.self) { column in
-                            Text((try? AttributedString(markdown: column < row.count ? row[column] : "", options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(""))
+                            Text(MarkdownCache.inline(column < row.count ? row[column] : ""))
                                 .font(.system(size: 13, weight: rowIndex == 0 ? .semibold : .regular))
                                 .frame(width: 150, alignment: alignment(column)).padding(10)
                                 .background(rowIndex == 0 ? OrbisPalette(scheme).outline.opacity(0.25) : .clear)

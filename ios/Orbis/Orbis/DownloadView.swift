@@ -3,17 +3,17 @@ import SwiftUI
 struct DownloadsView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var transfers: FileTransfers
+    @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.colorScheme) private var scheme
     let onBack: () -> Void
     @State private var browserOpen = false
     @State private var selected: Set<String> = []
-    @State private var deleting = false
     private var downloads: [FileTransfer] { transfers.currentTasks.filter { $0.direction == "download" } }
     var body: some View {
         VStack(spacing: 0) {
             OrbisPageHeader(title: selected.isEmpty ? "下载" : "已选择 \(selected.count) 项", back: { if selected.isEmpty { onBack() } else { selected = [] } }) {
                 if !selected.isEmpty {
-                    OrbisIconButton(symbol: "trash", label: "删除所选下载", tint: OrbisPalette(scheme).error) { deleting = true }
+                    OrbisIconButton(symbol: "trash", label: "删除所选下载", tint: OrbisPalette(scheme).error, action: confirmDelete)
                 }
             }
             OrbisActionButton(title: "浏览电脑文件", symbol: "folder") { browserOpen = true }
@@ -30,12 +30,16 @@ struct DownloadsView: View {
             }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
             .sheet(isPresented: $browserOpen, onDismiss: store.dismissBrowse) {
-                DownloadBrowserView { browserOpen = false }.presentationDetents([.large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
+                DownloadBrowserView { browserOpen = false }.orbisSheet([.large])
             }
-            .confirmationDialog("删除下载记录与本机文件？", isPresented: $deleting, titleVisibility: .visible) {
-                Button("删除 \(selected.count) 项", role: .destructive) { transfers.remove(selected); selected = [] }
-                Button("取消", role: .cancel) {}
-            } message: { Text("电脑上的原文件不受影响。") }
+    }
+
+    private func confirmDelete() {
+        let ids = selected
+        overlay.showDialog("删除下载记录与本机文件？", message: "电脑上的原文件不受影响。", actions: [
+            OrbisDialogAction(title: "取消", role: .cancel),
+            OrbisDialogAction(title: "删除 \(ids.count) 项", role: .destructive) { transfers.remove(ids); selected = [] }
+        ])
     }
 
     private func transferCard(_ task: FileTransfer) -> some View {
@@ -47,9 +51,9 @@ struct DownloadsView: View {
                     Text(store.selectedHost?.hostName ?? "电脑").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 if !selected.isEmpty {
-                    Button { if !selected.insert(task.id).inserted { selected.remove(task.id) } } label: {
-                        Image(systemName: selected.contains(task.id) ? "checkmark.square.fill" : "square").frame(width: 40, height: 40)
-                    }.accessibilityLabel("选择 \(task.name)")
+                    OrbisCheckbox(checked: selected.contains(task.id), label: "选择 \(task.name)") {
+                        if !selected.insert(task.id).inserted { selected.remove(task.id) }
+                    }
                 }
             }
             HStack {
@@ -147,9 +151,9 @@ struct AttachmentStrip: View {
                                     .font(.system(size: 10)).lineLimit(1)
                             }.frame(maxWidth: 180, alignment: .leading)
                             if ["paused", "failed"].contains(task.status) {
-                                Button { transfers.restart(task.id) } label: { Image(systemName: "arrow.clockwise").frame(width: 36, height: 40) }.accessibilityLabel("重试上传")
+                                OrbisIconButton(symbol: "arrow.clockwise", label: "重试上传", size: 28) { transfers.restart(task.id) }
                             }
-                            Button { transfers.detach([task.id]) } label: { Image(systemName: "xmark").frame(width: 36, height: 40) }.accessibilityLabel("移除附件 \(task.name)")
+                            OrbisIconButton(symbol: "xmark", label: "移除附件 \(task.name)", size: 28) { transfers.detach([task.id]) }
                         }.padding(.horizontal, 12).padding(.vertical, 6).neuSurface(inset: true, radius: 14, intensity: 0.45)
                     }
                 }.padding(.horizontal, 16).padding(.vertical, 6)

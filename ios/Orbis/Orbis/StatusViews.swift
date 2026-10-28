@@ -12,7 +12,7 @@ struct ConnectionStatusView: View {
         VStack(spacing: 0) {
             OrbisPageHeader(title: "连接状态", back: onBack) {
                 OrbisIconButton(symbol: "gearshape", label: "设置", action: onSettings)
-                Button("原始事件") { rawEventsOpen = true }.font(.system(size: 12, weight: .medium)).frame(minHeight: 48)
+                OrbisTextButton(title: "原始事件") { rawEventsOpen = true }
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -53,7 +53,7 @@ struct ConnectionStatusView: View {
                             .frame(maxWidth: .infinity, alignment: .leading).padding(20)
                     }
                 }.foregroundStyle(OrbisPalette(scheme).text).background(OrbisPalette(scheme).base)
-                    .presentationDetents([.large]).presentationCornerRadius(28)
+                    .orbisSheet([.large])
             }
             .onAppear { if store.connection == .secured { host.refresh() } }
     }
@@ -79,8 +79,8 @@ struct SettingsView: View {
                                 Text("供应商配置与切换").font(.system(size: 14, weight: .semibold))
                                 Spacer()
                                 Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
-                            }.frame(minHeight: 48).contentShape(Rectangle())
-                        }.buttonStyle(.plain).foregroundStyle(OrbisPalette(scheme).accent)
+                            }.padding(.horizontal, 14).frame(minHeight: 48).contentShape(Rectangle())
+                        }.buttonStyle(NeuButtonStyle(radius: 14)).foregroundStyle(OrbisPalette(scheme).accent)
                     }
                     StatusSection(title: "连接优先级") {
                         ForEach(Array(store.pathPreference.enumerated()), id: \.element) { index, kind in
@@ -111,20 +111,14 @@ struct SettingsView: View {
 struct AgentProvidersView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var host: HostState
+    @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.colorScheme) private var scheme
-    @State private var pending: ProviderConfirmation?
     let onBack: () -> Void
-    private struct ProviderConfirmation: Identifiable {
-        let provider: AgentProvider
-        let hostKey: String
-        var id: String { hostKey + provider.kind + provider.id }
-    }
     var body: some View {
         VStack(spacing: 0) {
             OrbisPageHeader(title: "供应商", back: onBack) {
-                Button("刷新") { host.loadProviders(host.providerKind) }.font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(OrbisPalette(scheme).accent)
-                    .frame(minWidth: 48, minHeight: 48).disabled(host.providersLoading || host.changingProvider || !host.connected)
+                OrbisTextButton(title: "刷新", symbol: "arrow.clockwise") { host.loadProviders(host.providerKind) }
+                    .disabled(host.providersLoading || host.changingProvider || !host.connected)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -158,11 +152,10 @@ struct AgentProvidersView: View {
                                     .font(.system(size: 12)).foregroundStyle(provider.enabled ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                             if !provider.enabled || provider.additive {
-                                Button(provider.enabled ? "移除" : "启用") {
-                                    if let key = host.hostKey { pending = ProviderConfirmation(provider: provider, hostKey: key) }
-                                }.font(.system(size: 14, weight: .semibold)).frame(minWidth: 48, minHeight: 48)
-                                    .foregroundStyle(OrbisPalette(scheme).accent)
-                                    .disabled(!host.canChangeProvider).accessibilityIdentifier("provider-action-\(provider.id)")
+                                OrbisTextButton(title: provider.enabled ? "移除" : "启用",
+                                                tint: provider.enabled ? OrbisPalette(scheme).error : OrbisPalette(scheme).accent) {
+                                    if let key = host.hostKey { confirm(provider, hostKey: key) }
+                                }.disabled(!host.canChangeProvider).accessibilityIdentifier("provider-action-\(provider.id)")
                             }
                         }.padding(18).neuSurface()
                     }
@@ -170,12 +163,17 @@ struct AgentProvidersView: View {
             }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
             .onAppear { host.loadProviders(host.providerKind) }
-            .onChange(of: host.hostKey) { _, _ in pending = nil }
-            .alert(item: $pending) { item in
-                Alert(title: Text(item.provider.enabled ? "移除供应商" : "启用供应商"), message: Text(item.provider.confirmation),
-                      primaryButton: .default(Text("确认")) { host.changeProvider(item.provider, expectedHostKey: item.hostKey) },
-                      secondaryButton: .cancel(Text("取消")))
+            // 换了电脑，未确认的切换就不再成立。
+            .onChange(of: host.hostKey) { _, _ in overlay.dismissDialog() }
+    }
+
+    private func confirm(_ provider: AgentProvider, hostKey: String) {
+        overlay.showDialog(provider.enabled ? "移除供应商" : "启用供应商", message: provider.confirmation, actions: [
+            OrbisDialogAction(title: "取消", role: .cancel),
+            OrbisDialogAction(title: "确认", role: provider.enabled ? .destructive : .normal) {
+                host.changeProvider(provider, expectedHostKey: hostKey)
             }
+        ])
     }
 }
 

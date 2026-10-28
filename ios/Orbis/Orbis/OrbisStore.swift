@@ -13,7 +13,11 @@ final class OrbisStore: ObservableObject {
     @Published private(set) var pairings: [HostPairing] = []
     @Published private(set) var selectedHostId: String?
     @Published private(set) var runtimes: [RuntimeSummary] = []
-    @Published private(set) var sessions: [SessionSummary] = []
+    @Published private(set) var sessions: [SessionSummary] = [] {
+        didSet { sessionIndex = Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first }) }
+    }
+    /// sessionId → 目录条目。聊天页每条消息、每次流式更新都会查询，不能线性扫描整个目录。
+    private var sessionIndex: [String: SessionSummary] = [:]
     @Published private(set) var messages: [ChatMessage] = []
     @Published private(set) var selectedRuntimeId: String?
     @Published private(set) var connection: ConnectionState = .offline
@@ -43,7 +47,8 @@ final class OrbisStore: ObservableObject {
     @Published private(set) var historyPageRevision = 0
     @Published private(set) var pathPreference = defaultPathPreference
     @Published private(set) var currentProviders: [String: String] = [:]
-    @Published private(set) var connectionEvents: [String] = []
+    /// 仅供「原始事件」页查看；每收到一帧都会追加，不发布变更，免得每帧都让整棵视图树重绘。
+    private(set) var connectionEvents: [String] = []
 
     private let secure: SecureStorage
     private let transport: OrbisTransport
@@ -119,7 +124,7 @@ final class OrbisStore: ObservableObject {
 
     func displayName(_ runtime: RuntimeSummary) -> String {
         sessionTitle(alias: aliases[localSessionKey(host: selectedHost, runtime: runtime)], runtime: runtime,
-                     session: sessions.first { $0.sessionId == runtime.sessionId }, messages: conversations[runtime.runtimeId] ?? [])
+                     session: runtime.sessionId.flatMap { sessionIndex[$0] }, messages: conversations[runtime.runtimeId] ?? [])
     }
 
     func displayName(_ session: SessionSummary) -> String {
@@ -146,7 +151,8 @@ final class OrbisStore: ObservableObject {
         catch { errorMessage = error.localizedDescription; return }
         if let host = pairings.first(where: { $0.hostId == hostId }) {
             transfers.remove(Set(transfers.tasks.filter { $0.hostKey == FileTransfers.pairingKey(host) }.map(\.id)))
-            let prefix = [host.relay.relayUrl, host.relay.deviceId, host.hostId].map { "\($0.utf8.count):\($0)" }.joined()
+            let prefix = hostKeyPrefix(host)
+            preferences?.removeObject(forKey: sessionCacheKey(host))
             drafts = drafts.filter { !$0.key.hasPrefix(prefix) }
             preferences?.set(drafts, forKey: "orbis.sessionDrafts")
             aliases = aliases.filter { !$0.key.hasPrefix(prefix) }
@@ -214,7 +220,7 @@ final class OrbisStore: ObservableObject {
         currentProviders = [:]; sessionListRequest = nil; connectionEvents = []
         transfers.setConnection(pairing, connected: false)
         toolContent.close(); toolInventories.clear(); toolAcknowledgements = [:]
-        runtimes = []; sessions = []; messages = []; selectedRuntimeId = nil
+        runtimes = []; sessions = cachedSessions(pairing); messages = []; selectedRuntimeId = nil
         conversations = [:]; liveMessageIds = [:]; displayMessageIds = [:]
         liveOrders = [:]; liveToolReferences = [:]; liveTools = [:]
         oldestEntries = [:]; sessionLeaves = [:]; hasOlderHistory = [:]; historyErrors = [:]; historyLoading = []
@@ -489,6 +495,15 @@ final class OrbisStore: ObservableObject {
         transport.send(["type": "runtime.command", "protocolVersion": orbisProtocolVersion, "runtimeId": runtimeId, "commandId": commandId, "command": command])
     }
 
+    /// 上次从这台电脑收到的会话目录。连接或切换电脑时先显示它，等 session.list 回来再整体替换，
+    /// 抽屉不必每次都从空白等待加载。provider 归属依赖实时状态，不缓存。
+    private func cachedSessions(_ host: HostPairing) -> [SessionSummary] {
+        guard let data = preferences?.data(forKey: sessionCacheKey(host)) else { return [] }
+        return (try? JSONDecoder().decode([SessionSummary].self, from: data)) ?? []
+    }
+
+    private func sessionCacheKey(_ host: HostPairing) -> String { "orbis.sessionDirectory." + hostKeyPrefix(host) }
+
     private func refreshSessions() {
         let id = UUID().uuidString
         sessionListRequest = id
@@ -509,6 +524,12 @@ final class OrbisStore: ObservableObject {
     func currentProvider(for kind: String) -> String? {
         if hostState.domains["providers"]?.availability == "ready" { return hostState.currentProviders[kind] }
         return currentProviders[kind]
+    }
+
+    /// 展示用的 Agent 类别：runtime 元数据不带 agentKind，见 `resolvedAgentKind`。
+    func agentKind(_ runtime: RuntimeSummary) -> String? {
+        resolvedAgentKind(runtimeId: runtime.runtimeId, declared: runtime.agentKind,
+                          catalogKind: runtime.sessionId.flatMap { sessionIndex[$0]?.agentKind })
     }
 
     func providerMismatch(_ session: SessionSummary) -> String? {
@@ -586,6 +607,7 @@ final class OrbisStore: ObservableObject {
             if let values = message["sessions"] as? [[String: Any]] {
                 let decoded: [SessionSummary] = values.compactMap(jsonDecode)
                 sessions = decoded.sorted { $0.modifiedAt > $1.modifiedAt }
+                if let host = selectedHost, let data = try? JSONEncoder().encode(sessions) { preferences?.set(data, forKey: sessionCacheKey(host)) }
             }
             if let providers = message["currentProviders"] as? [[String: Any]] {
                 currentProviders = [:]

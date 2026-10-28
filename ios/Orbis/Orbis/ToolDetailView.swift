@@ -34,6 +34,7 @@ struct ToolDetailView: View {
                 Text(reader.final ? "已到当前读取范围末尾" : "已到当前末尾 · 工具可能仍在运行").font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary)
             }
             Toggle("跟随输出", isOn: Binding(get: { reader.following }, set: reader.follow))
+                .toggleStyle(NeuToggleStyle())
                 .font(.system(size: 14)).padding(.horizontal, 24).padding(.bottom, 24).disabled(reader.final && reader.nextCursor == nil)
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
             .onDisappear { reader.close() }

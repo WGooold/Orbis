@@ -26,17 +26,18 @@ struct HistoryBranchView: View {
     var body: some View {
         VStack(spacing: 12) {
             OrbisPageHeader(title: "历史与分支", back: onBack) {
-                Menu {
-                    Toggle("显示其他分支", isOn: $showOtherBranches)
-                    Toggle("显示工具与细节", isOn: $showDetails)
-                } label: { Image(systemName: "line.3.horizontal.decrease").frame(width: 40, height: 40).neuSurface(radius: 20, intensity: 0.5).frame(width: 48, height: 48) }
-                    .accessibilityLabel("筛选历史")
+                OrbisMenuIconButton(symbol: "line.3.horizontal.decrease", label: "筛选历史",
+                                    tint: showOtherBranches || showDetails ? OrbisPalette(scheme).accent : nil,
+                                    selected: showOtherBranches || showDetails) {
+                    [OrbisMenuItem(title: "显示其他分支", symbol: "arrow.triangle.branch", checked: showOtherBranches) { showOtherBranches.toggle() },
+                     OrbisMenuItem(title: "显示工具与细节", symbol: "wrench.and.screwdriver", checked: showDetails) { showDetails.toggle() }]
+                }
             }
             HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
+                Image(systemName: "magnifyingglass").foregroundStyle(OrbisPalette(scheme).secondary)
                 TextField("搜索历史与分支", text: $query).autocorrectionDisabled().font(.system(size: 14)).textInputAutocapitalization(.never)
-                if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill").frame(width: 32, height: 32) }.accessibilityLabel("清除搜索") }
-            }.padding(.horizontal, 14).frame(minHeight: 56).neuSurface(inset: true, radius: 16, intensity: 0.6).padding(.horizontal, 20)
+                if !query.isEmpty { OrbisIconButton(symbol: "xmark", label: "清除搜索", size: 28) { query = "" } }
+            }.padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).neuSurface(inset: true, radius: 16, intensity: 0.6).padding(.horizontal, 20)
             if options.isEmpty {
                 OrbisEmptyState(symbol: "clock.arrow.circlepath", title: "当前会话尚未提供历史分支", detail: "连接电脑并刷新会话后重试。")
                 OrbisActionButton(title: "刷新会话", symbol: "arrow.clockwise", action: store.refresh).padding(.horizontal, 24).padding(.bottom, 24).disabled(!store.canSend)
@@ -45,10 +46,10 @@ struct HistoryBranchView: View {
                     HStack {
                         Text("\(visible.count) 条记录").font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary)
                         Spacer()
-                        Button("回到当前位置") {
+                        OrbisTextButton(title: "回到当前位置", symbol: "scope") {
                             query = ""
                             if let current = options.first(where: { $0.tree?.isCurrent == true }) { proxy.scrollTo(current.value, anchor: .center) }
-                        }.font(.system(size: 12, weight: .semibold)).frame(minHeight: 40)
+                        }
                     }.padding(.horizontal, 24)
                     ScrollView {
                         LazyVStack(spacing: 12) {
@@ -93,12 +94,12 @@ struct HistoryBranchView: View {
                 Text("正在预览").font(.system(size: 13, weight: .semibold)).foregroundStyle(OrbisPalette(scheme).accent)
                 Text("不会改变电脑端会话").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary)
                 Spacer()
-                Button { selected = nil; store.dismissPreview() } label: { Image(systemName: "xmark").frame(width: 36, height: 36) }.accessibilityLabel("退出预览")
+                OrbisIconButton(symbol: "xmark", label: "退出预览", size: 32) { selected = nil; store.dismissPreview() }
             }
             ScrollView {
                 if store.entryPreview?.loading == true { ProgressView("读取中…").padding(20) }
                 else if let message = store.entryPreview?.message {
-                    ChatMessageRow(row: ChatRow(messages: [message]), kind: store.selectedRuntime?.agentKind)
+                    ChatMessageRow(row: ChatRow(messages: [message]), kind: store.selectedRuntime.flatMap { store.agentKind($0) })
                 } else { Text(store.entryPreview?.error ?? "该节点没有可预览的消息内容。").font(.system(size: 13)).foregroundStyle(OrbisPalette(scheme).secondary).padding(12) }
             }.frame(maxHeight: 160)
             if ["user", "assistant"].contains(option.tree?.role ?? "") {

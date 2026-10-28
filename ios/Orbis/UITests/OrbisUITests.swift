@@ -29,6 +29,22 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["在这里新建 Pi 会话"].exists)
         capture("new-session", app: app)
     }
+    func testSwipeRightFromLeftSideOpensDirectory() {
+        let app = launch("home")
+        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.6))
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.6)))
+        XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
+        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
+        // 从会话卡片上起手横拖：只拉出抽屉，不能同时打开卡片对应的会话。
+        let card = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "对齐移动端的使用体验")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 3))
+        card.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.3)))
+        XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].firstMatch.exists)
+    }
     func testDraftSurvivesBackNavigationAndSlashRequiresSelection() {
         let app = launch("chat")
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
@@ -88,19 +104,23 @@ final class OrbisUITests: XCTestCase {
         let team = app.buttons["provider-action-team"]
         XCTAssertTrue(team.waitForExistence(timeout: 5))
         team.tap()
-        XCTAssertTrue(app.alerts["启用供应商"].waitForExistence(timeout: 3))
-        app.alerts.buttons["取消"].tap()
-        XCTAssertTrue(team.exists)
-        team.tap(); app.alerts.buttons["确认"].tap()
+        let dialog = app.otherElements["orbis-dialog"]
+        XCTAssertTrue(dialog.waitForExistence(timeout: 3))
+        XCTAssertTrue(dialog.staticTexts["启用供应商"].exists)
+        dialog.buttons["取消"].tap()
+        XCTAssertTrue(team.waitForExistence(timeout: 3))
+        team.tap()
+        XCTAssertTrue(dialog.waitForExistence(timeout: 3)); dialog.buttons["确认"].tap()
         XCTAssertTrue(app.buttons["provider-action-official"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["provider-action-team"].exists)
         capture("providers-switch-complete", app: app)
         app.buttons["Pi供应商"].tap()
         let remove = app.buttons["provider-action-official"]
         XCTAssertTrue(remove.waitForExistence(timeout: 5)); remove.tap()
-        XCTAssertTrue(app.alerts["移除供应商"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.alerts.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "全局默认供应商")).firstMatch.exists)
-        app.alerts.buttons["确认"].tap()
+        XCTAssertTrue(dialog.waitForExistence(timeout: 3))
+        XCTAssertTrue(dialog.staticTexts["移除供应商"].exists)
+        XCTAssertTrue(dialog.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "全局默认供应商")).firstMatch.exists)
+        dialog.buttons["确认"].tap()
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "显式供应商已更新")).firstMatch.waitForExistence(timeout: 5))
         capture("providers-pi", app: app)
     }
@@ -127,11 +147,30 @@ final class OrbisUITests: XCTestCase {
         drawer.buttons["team"].tap()
         let session = drawer.buttons.matching(NSPredicate(format: "label CONTAINS %@", "优化聊天滚动与输入体验")).firstMatch
         XCTAssertTrue(session.waitForExistence(timeout: 3)); session.tap()
-        XCTAssertTrue(drawer.alerts["需要切换 provider"].waitForExistence(timeout: 3))
+        let dialog = drawer.otherElements["orbis-dialog"]
+        XCTAssertTrue(dialog.waitForExistence(timeout: 3))
+        XCTAssertTrue(dialog.staticTexts["需要切换 provider"].exists)
         capture("provider-mismatch", app: drawer)
-        drawer.alerts.buttons["供应商设置"].tap()
+        dialog.buttons["供应商设置"].tap()
         XCTAssertTrue(drawer.staticTexts["供应商"].waitForExistence(timeout: 3))
     }
+    func testDrawerFollowsEdgeDragAndShowsOneDirectory() {
+        let app = launch("home")
+        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))
+        let window = app.windows.firstMatch
+        let edge = window.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.5))
+        edge.press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)))
+        XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
+        // Only the most recent directory opens, and it lists the five latest sessions.
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "收起目录")).count == 1)
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "再显示 1 个会话")).firstMatch.waitForExistence(timeout: 3))
+        capture("drawer-edge-open", app: app)
+        let inside = window.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.45))
+        inside.press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.45)))
+        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["会话目录"].exists)
+    }
+
     func testPageScreenshotsInBothAppearances() {
         for dark in [false, true] {
             for screen in ["pairing", "home", "drawer", "chat", "status", "settings", "providers", "downloads", "approval"] {

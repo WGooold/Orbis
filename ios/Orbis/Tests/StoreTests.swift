@@ -68,6 +68,18 @@ struct StoreTests {
         #expect(!transport.sent.contains { $0["type"] as? String == "session.activate" })
         #expect(store.connection == .secured)
     }
+    /// Host 的 runtime 元数据没有 agentKind：Codex / DeepSeek 进程不能被显示成 Pi。
+    @Test func runtimeAgentKindIsResolvedWithoutHostField() throws {
+        let (store, transport) = setup()
+        transport.ready([runtime("codex:thread-1", session: "thread-1"), runtime("dsh:web-2", session: "dsh:web-2"), runtime("6f0d-pi", session: "pi-session")])
+        let kinds = { store.runtimes.map { store.agentKind($0) } }
+        #expect(kinds() == ["codex", "dsh", nil])
+        let id = try #require(transport.sent.last { $0["type"] as? String == "session.list" }?["requestId"] as? String)
+        transport.emit(["type": "session.list.result", "requestId": id, "sessions": [
+            ["sessionId": "pi-session", "cwd": "/repo", "createdAt": 0, "modifiedAt": 0, "messageCount": 1, "agentKind": "pi"]
+        ]])
+        #expect(kinds() == ["codex", "dsh", "pi"])
+    }
     private func runtime(_ id: String, session: String? = nil) -> [String: Any] {
         ["runtimeId": id, "name": "Agent \(id)", "cwd": "/repo", "status": "idle", "sessionId": session ?? "session-\(id)"]
     }
@@ -301,6 +313,29 @@ struct StoreTests {
         var expired = request; expired["expiresAt"] = 1
         transport.event(["type": "interaction.requested", "request": expired], sequence: 4, channel: "ctl")
         #expect(!store.respond(try #require(store.interactions["a"]?.first), response: ["kind": "confirm", "value": true]))
+    }
+
+    @Test func sessionDirectoryIsCachedPerHostUntilUnpaired() throws {
+        let key = "orbis-directory-test-" + UUID().uuidString
+        let preferences = try #require(UserDefaults(suiteName: key))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(key)
+        defer { preferences.removePersistentDomain(forName: key); try? FileManager.default.removeItem(at: root) }
+        let transport = TestTransport()
+        let store = OrbisStore(secure: MemorySecureStore(), transport: transport, autoConnect: false, preferences: preferences, transferRoot: root)
+        store.connect(hostId: "host-1"); transport.ready([])
+        let id = try #require(transport.sent.last { $0["type"] as? String == "session.list" }?["requestId"] as? String)
+        transport.emit(["type": "session.list.result", "requestId": id, "sessions": [
+            ["sessionId": "cached", "cwd": "/repo", "createdAt": 0, "modifiedAt": 0, "messageCount": 1, "agentKind": "pi"]
+        ]])
+        let secure = MemorySecureStore()
+        let restored = OrbisStore(secure: secure, transport: TestTransport(), autoConnect: false, preferences: preferences, transferRoot: root)
+        #expect(restored.sessions.isEmpty)
+        restored.connect(hostId: "host-1")
+        #expect(restored.sessions.map(\.sessionId) == ["cached"])
+        restored.unpair(hostId: "host-1")
+        let afterUnpair = OrbisStore(secure: MemorySecureStore(), transport: TestTransport(), autoConnect: false, preferences: preferences, transferRoot: root)
+        afterUnpair.connect(hostId: "host-1")
+        #expect(afterUnpair.sessions.isEmpty)
     }
 
     @Test func unpairingClearsOnlyTheSelectedPairingsLocalState() throws {

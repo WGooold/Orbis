@@ -31,6 +31,7 @@ struct InteractionWorkspaceView: View {
 private struct InteractionRequestView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.openURL) private var openURL
     let request: InteractionRequest
     @State private var choices: Set<String> = []
     @State private var input = ""
@@ -61,7 +62,7 @@ private struct InteractionRequestView: View {
                     Spacer(minLength: 0)
                     if pending { ProgressView().controlSize(.small) }
                     else { Text(expired ? "已过期" : "待确认").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).accent) }
-                    Button { expanded.toggle() } label: { Image(systemName: expanded ? "chevron.up" : "chevron.down").frame(width: 36, height: 36) }.accessibilityLabel(expanded ? "收起交互" : "展开交互")
+                    OrbisIconButton(symbol: expanded ? "chevron.up" : "chevron.down", label: expanded ? "收起交互" : "展开交互", size: 32) { expanded.toggle() }
                 }
                 if expanded || request.kind == "confirm" {
                     ScrollView {
@@ -69,7 +70,7 @@ private struct InteractionRequestView: View {
                             if let description = request.description { Text(description).font(.system(size: 13)) }
                             if let summary = request.argumentSummary { Text(summary).font(.system(size: 12, design: .monospaced)).textSelection(.enabled) }
                             if let external = request.externalUrl, let url = URL(string: external), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
-                                Link("在浏览器打开", destination: url).font(.system(size: 13)).frame(minHeight: 40)
+                                OrbisTextButton(title: "在浏览器打开", symbol: "safari") { openURL(url) }
                             }
                             content
                         }
@@ -81,7 +82,7 @@ private struct InteractionRequestView: View {
                         OrbisActionButton(title: request.confirmLabel ?? (request.kind == "confirm" ? "允许" : "提交"), symbol: "checkmark") { submit() }.disabled(!valid)
                     }.disabled(pending || expired || store.connection != .secured)
                 } else {
-                    Button("打开并完成交互") { expanded = true }.font(.system(size: 13, weight: .medium)).frame(minHeight: 40)
+                    OrbisTextButton(title: "打开并完成交互", symbol: "chevron.down") { expanded = true }
                 }
                 if pending { Text("已提交，等待电脑端确认").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary) }
             }.padding(16).neuSurface(inset: true, radius: 20, intensity: 0.6)

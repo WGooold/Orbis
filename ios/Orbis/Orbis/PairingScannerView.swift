@@ -66,8 +66,7 @@ struct PairingEntryView: View {
             }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
             .sheet(isPresented: $scannerOpen) {
-                PairingScannerView { raw in scannerOpen = false; submit(raw) }
-                    .presentationDetents([.large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
+                PairingScannerView { raw in scannerOpen = false; submit(raw) }.orbisSheet([.large])
             }
     }
 
