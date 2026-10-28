@@ -397,12 +397,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun requestFullEntry(runtimeId: String, entryId: String) =
         active()?.requestFullEntry(runtimeId, entryId)
 
-    fun downloadArtifact(runtimeId: String, artifact: RemoteArtifact) =
-        active()?.downloadArtifact(runtimeId, artifact)
+    fun downloadArtifact(artifact: RemoteArtifact) = active()?.downloadArtifact(artifact)
 
     fun downloadFile(path: String) = active()?.downloadFile(path)
-
-    fun downloadFile(runtimeId: String, path: String) = active()?.downloadFile(runtimeId, path)
 
     fun cancelDownload(taskId: String) = active()?.cancelDownload(taskId)
 

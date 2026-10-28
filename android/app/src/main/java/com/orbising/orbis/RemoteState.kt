@@ -249,18 +249,13 @@ data class CommandResult(
 
 internal fun artifactTransferKey(runtimeId: String, transferId: String): String = "$runtimeId\u0000$transferId"
 
-internal fun fileDownloadTaskId(runtimeId: String, path: String): String =
-    fileDownloadTaskId(runtimeId, null, path)
-
-internal fun fileDownloadTaskId(runtimeId: String, sessionId: String?, path: String): String = UUID.nameUUIDFromBytes(
-    "$runtimeId\u0000${sessionId.orEmpty()}\u0000file\u0000$path".toByteArray(Charsets.UTF_8),
+// 下载任务只认 Host + 文件身份，与会话无关：同一个文件从哪个会话点开都是同一条任务。
+internal fun fileDownloadTaskId(hostId: String, path: String): String = UUID.nameUUIDFromBytes(
+    "$hostId\u0000file\u0000$path".toByteArray(Charsets.UTF_8),
 ).toString()
 
-internal fun artifactDownloadTaskId(runtimeId: String, artifactId: String): String =
-    artifactDownloadTaskId(runtimeId, null, artifactId)
-
-internal fun artifactDownloadTaskId(runtimeId: String, sessionId: String?, artifactId: String): String = UUID.nameUUIDFromBytes(
-    "$runtimeId\u0000${sessionId.orEmpty()}\u0000artifact\u0000$artifactId".toByteArray(Charsets.UTF_8),
+internal fun artifactDownloadTaskId(hostId: String, artifactId: String): String = UUID.nameUUIDFromBytes(
+    "$hostId\u0000artifact\u0000$artifactId".toByteArray(Charsets.UTF_8),
 ).toString()
 
 internal fun downloadDisplayName(path: String): String = path.trimEnd('/', '\\')
@@ -271,8 +266,8 @@ internal fun downloadDisplayName(path: String): String = path.trimEnd('/', '\\')
 @Serializable
 data class ArtifactDownload(
     val taskId: String,
+    /** 服务这条下载的 Host（命令路由）；下载不归属任何会话。 */
     val runtimeId: String,
-    val sessionId: String? = null,
     /** The paired Host that serves this transfer; null only for records written before multi-Host. */
     val hostId: String? = null,
     val displayName: String,
@@ -308,8 +303,8 @@ internal fun findDownloadTaskId(
     runtimeId: String,
     artifact: RemoteArtifact,
 ): String? = downloads.firstOrNull { task ->
-    // 不绑 runtimeId：下载由 Host 服务，事件带的 runtimeId 是 hostId，而任务上的 runtimeId
-    // 是来源标记（§9.4）。按 artifact 身份匹配即可（artifactId 唯一；路径下载比对源路径）。
+    // 下载由 Host 服务，事件带的 runtimeId 是 hostId；旧记录的 runtimeId 可能还是会话，
+    // 所以按 artifact 身份匹配（artifactId 唯一；路径下载比对源路径）。
     (runtimeId == task.runtimeId || task.transferId == null) &&
         task.status in setOf("queued", "downloading", "paused") &&
         (task.sourceArtifactId == artifact.artifactId ||

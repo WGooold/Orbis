@@ -29,7 +29,8 @@ struct FileTransferTests {
         store.send = { sent.append($0); return true }
         store.setConnection(host(), connected: true)
         let body = Data(repeating: 67, count: 300_000)
-        store.download(path: "/repo/report.txt", runtimeId: "agent")
+        store.download(path: "/repo/report.txt")
+        #expect(store.tasks.first?.sessionId == nil)
         let task = try #require(store.tasks.first)
         #expect(sent.first?["runtimeId"] as? String == "host")
         store.consume(["type": "artifact.started", "commandId": try #require(task.commandId), "transferId": "transfer-1",

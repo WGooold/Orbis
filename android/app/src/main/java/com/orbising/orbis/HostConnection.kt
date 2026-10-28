@@ -1314,21 +1314,19 @@ internal class HostConnection(
         }
     }
 
-    fun downloadArtifact(runtimeId: String, artifact: RemoteArtifact) {
+    fun downloadArtifact(artifact: RemoteArtifact) {
         val hostId = mutableState.value.hostId ?: run {
             updateState { it.copy(error = "还没有已配对的电脑，无法下载") }
             return
         }
         artifact.path?.let { path ->
-            startFileDownload(runtimeId, hostId, path, artifact.fileName)
+            startFileDownload(hostId, path, artifact.fileName)
             return
         }
-        val sessionId = mutableState.value.runtimes[runtimeId]?.sessionId
-        val taskId = artifactDownloadTaskId(runtimeId, sessionId, artifact.artifactId)
+        val taskId = artifactDownloadTaskId(hostId, artifact.artifactId)
         val task = mutableState.value.downloads[taskId] ?: ArtifactDownload(
             taskId = taskId,
-            runtimeId = runtimeId,
-            sessionId = sessionId,
+            runtimeId = hostId,
             displayName = artifact.fileName,
             sourceArtifactId = artifact.artifactId,
             artifact = artifact,
@@ -1336,26 +1334,20 @@ internal class HostConnection(
         startDownload(task, hostId) { offset -> relay.downloadArtifact(hostId, artifact.artifactId, offset) }
     }
 
-    fun downloadFile(path: String) {
-        // 主页面/对话入口都问 Host，不需要先选中哪个 runtime。
-        val sourceRuntimeId = mutableState.value.selectedRuntimeId ?: ""
-        downloadFile(sourceRuntimeId, path)
-    }
-
     /**
      * 按路径下载一个文件。
      *
-     * `runtimeId` 只是来源标记（哪个会话里点的路径）；命令一律发给 Host——能读这个文件的
-     * 就是它。未配对 Host 时直接报错，而不是把请求丢给某个 runtime。
+     * 命令一律发给 Host——能读这个文件的就是它；任务不记录是从哪个会话点开的。
+     * 未配对 Host 时直接报错，而不是把请求丢给某个 runtime。
      */
-    fun downloadFile(runtimeId: String, path: String) {
+    fun downloadFile(path: String) {
         if (path.isBlank()) return
         val hostId = mutableState.value.hostId
         if (hostId == null) {
             updateState { it.copy(error = "还没有已配对的电脑，无法下载") }
             return
         }
-        startFileDownload(runtimeId, hostId, path.trim())
+        startFileDownload(hostId, path.trim())
     }
 
     fun cancelDownload(taskId: String) {
@@ -1418,17 +1410,14 @@ internal class HostConnection(
     }
 
     private fun startFileDownload(
-        sourceRuntimeId: String,
         hostId: String,
         path: String,
         displayName: String = downloadDisplayName(path),
     ) {
-        val sessionId = mutableState.value.runtimes[sourceRuntimeId]?.sessionId
-        val taskId = fileDownloadTaskId(sourceRuntimeId, sessionId, path)
+        val taskId = fileDownloadTaskId(hostId, path)
         val task = mutableState.value.downloads[taskId] ?: ArtifactDownload(
             taskId = taskId,
-            runtimeId = sourceRuntimeId,
-            sessionId = sessionId,
+            runtimeId = hostId,
             hostId = hostId,
             displayName = displayName,
             sourcePath = path,

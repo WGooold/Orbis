@@ -11,17 +11,13 @@ import org.junit.Test
 
 class ArtifactDownloadStoreTest {
     @Test
-    fun `file task identity is stable for the same runtime and path`() {
-        val first = fileDownloadTaskId("runtime-a", "C:\\work\\report.zip")
-        val second = fileDownloadTaskId("runtime-a", "C:\\work\\report.zip")
+    fun `file task identity depends only on host and path`() {
+        val first = fileDownloadTaskId("host-a", "C:\\work\\report.zip")
+        val second = fileDownloadTaskId("host-a", "C:\\work\\report.zip")
 
         assertEquals(first, second)
-        assertNotEquals(first, fileDownloadTaskId("runtime-b", "C:\\work\\report.zip"))
-        assertNotEquals(first, fileDownloadTaskId("runtime-a", "C:\\work\\other.zip"))
-        assertNotEquals(
-            fileDownloadTaskId("runtime-a", "session-1", "C:\\work\\report.zip"),
-            fileDownloadTaskId("runtime-a", "session-2", "C:\\work\\report.zip"),
-        )
+        assertNotEquals(first, fileDownloadTaskId("host-b", "C:\\work\\report.zip"))
+        assertNotEquals(first, fileDownloadTaskId("host-a", "C:\\work\\other.zip"))
     }
 
     @Test

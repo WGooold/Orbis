@@ -1074,10 +1074,9 @@ private fun OfflineHistoryScreen(
                         runtimeId = offlineRuntimeId,
                         message = item.message,
                         downloads = state.downloads,
-                        downloadArtifact = { artifact -> model.downloadArtifact(offlineRuntimeId, artifact) },
-                        // 只读历史里的文件同样能下载：点击路径就是「请 Host 把这个文件发过来」
-                        // （§9.4）。`runtimeId` 只是来源标记（哪个会话里的文件），命令发给 Host。
-                        downloadFile = { path -> model.downloadFile(offlineRuntimeId, path) },
+                        downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
+                        // 只读历史里的文件同样能下载：点击路径就是「请 Host 把这个文件发过来」（§9.4）。
+                        downloadFile = { path -> model.downloadFile(path) },
                     )
 
                     is ChatListItem.AssistantTurn -> AssistantTurnCard(
@@ -1088,8 +1087,8 @@ private fun OfflineHistoryScreen(
                         toolActivities = emptyMap(),
                         toolResults = presentation.toolResults,
                         downloads = state.downloads,
-                        downloadArtifact = { artifact -> model.downloadArtifact(offlineRuntimeId, artifact) },
-                        downloadFile = { path -> model.downloadFile(offlineRuntimeId, path) },
+                        downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
+                        downloadFile = { path -> model.downloadFile(path) },
                     )
                 }
             }
@@ -1138,10 +1137,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val orphanTools = remember(conversation.revision, representedToolIds) {
         orphanToolActivities(conversation.tools.values, representedToolIds)
     }
-    val runtimeDownloads = state.downloads.values.filter {
-        it.runtimeId == runtimeId && (runtime == null || it.sessionId == runtime.sessionId)
-    }
-    val activeDownloadCount = runtimeDownloads.count { it.status == "queued" || it.status == "downloading" }
+    // 下载不属于任何会话：会话页的下载按钮显示的是这台电脑全部在途任务。
+    val activeDownloadCount = state.downloads.values.count { it.status == "queued" || it.status == "downloading" }
     val listState = scrollState ?: remember(runtimeId, sessionId) { LazyListState() }
     val sourceRead = state.sessionReadForWindow(runtimeId, SessionReadKind.SOURCE)
     val firstRead = state.sessionReadForWindow(runtimeId, SessionReadKind.FIRST_PAGE)
@@ -1411,8 +1408,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                     ),
                 )
             },
-            downloadArtifact = { artifact -> model.downloadArtifact(runtimeId, artifact) },
-            downloadFile = { path -> model.downloadFile(runtimeId, path) },
+            downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
+            downloadFile = { path -> model.downloadFile(path) },
         )
         return
     }
@@ -1905,8 +1902,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             runtimeId = runtimeId,
                             message = item.message,
                             downloads = state.downloads,
-                            downloadArtifact = { artifact -> model.downloadArtifact(runtimeId, artifact) },
-                            downloadFile = { path -> model.downloadFile(runtimeId, path) },
+                            downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
+                            downloadFile = { path -> model.downloadFile(path) },
                         )
 
                         is ChatListItem.AssistantTurn -> AssistantTurnCard(
@@ -1917,8 +1914,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             toolActivities = conversation.tools,
                             toolResults = presentation.toolResults,
                             downloads = state.downloads,
-                            downloadArtifact = { artifact -> model.downloadArtifact(runtimeId, artifact) },
-                            downloadFile = { path -> model.downloadFile(runtimeId, path) },
+                            downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
+                            downloadFile = { path -> model.downloadFile(path) },
                         )
                     }
                 }
@@ -2319,7 +2316,6 @@ internal fun AllDownloadsScreen(
                     items(downloads, key = ArtifactDownload::taskId) { task ->
                         DownloadTaskCard(
                             task = task,
-                            contextLabel = downloadTaskContext(state, task),
                             onRetry = { taskId -> onRetry(taskId) },
                             onCancel = onCancel,
                             selected = task.taskId in effectiveSelectedTaskIds,
@@ -2352,36 +2348,12 @@ internal fun AllDownloadsScreen(
     }
 }
 
-private fun downloadTaskContext(state: RemoteState, task: ArtifactDownload): String {
-    val runtime = state.runtimes[task.runtimeId]
-    val runtimeName = when {
-        task.sessionId != null -> state.sessionDisplayName(
-            task.sessionId,
-            runtime?.takeIf { it.sessionId == task.sessionId },
-        )
-        runtime != null -> state.runtimeDisplayName(runtime)
-        task.runtimeId.isBlank() -> "电脑"
-        else -> "来源会话已离线"
-    }
-    val session = when {
-        task.sessionId == null -> "会话未知"
-        runtime == null -> "原会话 ${shortSessionId(task.sessionId)}"
-        runtime.sessionId == task.sessionId -> "当前会话"
-        else -> "原会话 ${shortSessionId(task.sessionId)}（当前已切换会话）"
-    }
-    return "$runtimeName · $session"
-}
-
-private fun shortSessionId(sessionId: String): String =
-    sessionId.take(8).ifBlank { "未知" }
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DownloadTaskCard(
     task: ArtifactDownload,
     onRetry: (String) -> Unit,
     onCancel: (String) -> Unit = {},
-    contextLabel: String? = null,
     selected: Boolean = false,
     selectionMode: Boolean = false,
     onClick: () -> Unit = {},
@@ -2447,9 +2419,6 @@ private fun DownloadTaskCard(
                         size = 40.dp,
                     )
                 }
-            }
-            contextLabel?.let { label ->
-                Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (active || task.status == "paused" || task.status == "failed") {
                 if (progress == null) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -3321,7 +3290,8 @@ private fun MessageBlocks(
                 ArtifactCard(
                     artifact = block.artifact,
                     download = downloads.values.firstOrNull {
-                        it.runtimeId == runtimeId && it.sourceArtifactId == block.artifact.artifactId
+                        it.sourceArtifactId == block.artifact.artifactId ||
+                            block.artifact.path != null && it.sourcePath == block.artifact.path
                     },
                     onDownload = { downloadArtifact(block.artifact) },
                 )

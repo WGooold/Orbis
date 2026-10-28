@@ -145,8 +145,7 @@ class ArtifactDownloadStore(context: Context) {
             sourceArtifactId = artifact.artifactId,
             createdAt = System.currentTimeMillis(),
         )).copy(
-            // Direct downloads are served by Host, while the task runtimeId is the source
-            // session shown in the UI. Keep that source identity once the command is bound.
+            // Keep the task's routing identity once the command is bound.
             runtimeId = existing?.runtimeId ?: runtimeId,
             hostId = existing?.hostId ?: hostId,
             displayName = existing?.displayName ?: artifact.fileName,

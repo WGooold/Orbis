@@ -99,10 +99,11 @@ final class FileTransfers: ObservableObject {
         }
         pairing = host; self.connected = connected
     }
-    func download(path: String? = nil, artifact: RemoteArtifact? = nil, runtimeId: String? = nil, sessionId: String? = nil) {
+    /// Downloads belong to the Host, never to a session: the task records no session identity.
+    func download(path: String? = nil, artifact: RemoteArtifact? = nil) {
         guard let pairing, connected, path?.isEmpty == false || artifact != nil else { error = "连接电脑后可下载文件。"; return }
-        var task = FileTransfer(id: UUID().uuidString, hostKey: hostKey, hostId: pairing.hostId, runtimeId: runtimeId ?? pairing.hostId,
-            sessionId: sessionId, direction: "download", name: artifact?.fileName ?? directoryTitle(path ?? "文件"), sourcePath: path, artifactId: artifact?.artifactId)
+        var task = FileTransfer(id: UUID().uuidString, hostKey: hostKey, hostId: pairing.hostId, runtimeId: pairing.hostId,
+            sessionId: nil, direction: "download", name: artifact?.fileName ?? directoryTitle(path ?? "文件"), sourcePath: path, artifactId: artifact?.artifactId)
         task.size = artifact?.size ?? 0; task.sha256 = artifact?.sha256
         tasks.insert(task, at: 0); restart(task.id)
     }
