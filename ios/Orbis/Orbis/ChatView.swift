@@ -204,7 +204,7 @@ struct ChatView: View {
                     OrbisActionButton(title: "Steer", tint: accent) { submit(delivery: "steer") }
                 }.padding(.horizontal, 16)
             }
-            HStack(spacing: 12) {
+            if !slash { HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Label(runtime.cwd, systemImage: "folder").lineLimit(1).truncationMode(.middle)
                     Button(action: store.refreshWorkingBranch) {
@@ -223,8 +223,9 @@ struct ChatView: View {
                             .foregroundStyle(permissions.tone == "problem" ? OrbisPalette(scheme).error : accent)
                     }.buttonStyle(.plain).accessibilityLabel("会话权限：\(permissions.summary)")
                 }
-            }.padding(.horizontal, 20)
+            }.padding(.horizontal, 20) }
             AttachmentStrip(runtime: runtime)
+            if slash { SlashPickerView(runtime: runtime, selected: $selectedCommand, input: draft, onHistory: onHistory) }
             HStack(alignment: .bottom, spacing: 10) {
                 OrbisIconButton(symbol: "paperclip", label: "发送文件到电脑", tint: accent) {
                     composerFocused = false; filePickerOpen = true
@@ -245,13 +246,6 @@ struct ChatView: View {
                 }
             }.padding(.horizontal, 12).padding(.bottom, 12)
         }.padding(.top, 8).background(OrbisPalette(scheme).base)
-            .overlay(alignment: .bottom) {
-                if slash {
-                    SlashPickerView(runtime: runtime, selected: $selectedCommand, input: draft, onHistory: onHistory)
-                        .padding(.bottom, 68)
-                        .zIndex(1)
-                }
-            }
     }
 
     private var branchTitle: String {
@@ -529,6 +523,7 @@ private struct SlashPickerView: View {
     @Binding var selected: String?
     @Binding var input: String
     let onHistory: () -> Void
+    @State private var contentHeight: CGFloat = 0
     private var commands: [SlashCommand] { store.commands[runtime.runtimeId] ?? [] }
     var body: some View {
         ScrollView {
@@ -561,9 +556,9 @@ private struct SlashPickerView: View {
                     }
                 }
             }.padding(8)
-        }.frame(maxHeight: 180).padding(6)
-            .neuSurface(radius: 16, intensity: 0.5)
-            .padding(.horizontal, 12)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        // A fixed height keeps the conversation, not the picker, absorbing the keyboard's squeeze.
+        }.frame(height: min(contentHeight, 180)).scrollBounceBehavior(.basedOnSize).padding(.horizontal, 12)
     }
 }
 

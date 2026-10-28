@@ -76,6 +76,7 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(command.waitForExistence(timeout: 5))
         XCTAssertTrue(command.isHittable)
         XCTAssertLessThanOrEqual(command.frame.maxY, keyboard.frame.minY)
+        capture("slash-keyboard", app: app)
     }
     func testHistoryPreviewAndNavigation() {
         let app = launch("chat")
