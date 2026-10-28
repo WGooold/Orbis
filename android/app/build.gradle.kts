@@ -18,8 +18,33 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // 发版签名密钥不进仓库：路径与密码从 ~/.gradle/gradle.properties（或同名 -P 参数）读取。
+    // 缺任何一项时 release 直接构建失败，不会悄悄退回各机器各不相同的 debug 签名——
+    // 签名一旦变化，已装用户无法覆盖升级。
+    val releaseSigning = listOf(
+        "ORBIS_RELEASE_STORE_FILE", "ORBIS_RELEASE_STORE_PASSWORD",
+        "ORBIS_RELEASE_KEY_ALIAS", "ORBIS_RELEASE_KEY_PASSWORD",
+    ).associateWith { providers.gradleProperty(it).orNull }
+    signingConfigs {
+        create("release") {
+            if (releaseSigning.values.all { it != null }) {
+                storeFile = file(releaseSigning.getValue("ORBIS_RELEASE_STORE_FILE")!!)
+                storePassword = releaseSigning["ORBIS_RELEASE_STORE_PASSWORD"]
+                keyAlias = releaseSigning["ORBIS_RELEASE_KEY_ALIAS"]
+                keyPassword = releaseSigning["ORBIS_RELEASE_KEY_PASSWORD"]
+            }
+        }
+    }
+
     buildTypes {
         release {
+            val missing = releaseSigning.filterValues { it == null }.keys
+            if (missing.isEmpty()) signingConfig = signingConfigs.getByName("release")
+            else gradle.taskGraph.whenReady {
+                if (allTasks.any { it.project == project && it.name.contains("Release") && it.name.startsWith("package") }) {
+                    throw GradleException("Release signing not configured; missing: ${missing.joinToString()}")
+                }
+            }
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
