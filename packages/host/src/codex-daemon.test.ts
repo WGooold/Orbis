@@ -262,9 +262,17 @@ describe("CodexAppServer", () => {
 describe("CodexAppServer owned 模式启动失败", () => {
   it("codex 不存在（ENOENT）时 create 正常 reject，而不是打崩进程", async () => {
     const { spawn } = await import("node:child_process");
-    await expect(CodexAppServer.create({
-      requestTimeoutMs: 20_000,
-      spawnImpl: (_command, args) => spawn("orbis-missing-codex-binary", [...args], { stdio: ["pipe", "pipe", "pipe"] }),
-    })).rejects.toThrow(/ENOENT/);
+    const { fileURLToPath } = await import("node:url");
+    // 指定一个存在的入口，跳过平台相关的 codex 定位（Windows 上找不到 JS 入口会先抛错），
+    // 让三个平台都走到这里要测的 spawn 失败。spawnImpl 不使用该入口。
+    vi.stubEnv("ORBIS_CODEX_ENTRY", fileURLToPath(import.meta.url));
+    try {
+      await expect(CodexAppServer.create({
+        requestTimeoutMs: 20_000,
+        spawnImpl: (_command, args) => spawn("orbis-missing-codex-binary", [...args], { stdio: ["pipe", "pipe", "pipe"] }),
+      })).rejects.toThrow(/ENOENT/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
