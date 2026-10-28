@@ -156,7 +156,7 @@ struct StoreTests {
         #expect(store.messages.first?.content[2].text == "Answer continues")
     }
 
-    @Test func failedSendsDoNotCreateOptimisticMessagesAndSlashCommandsAreExplicit() {
+    @Test func sentMessagesAppearFromHostEventsWithoutDuplicateOptimisticRows() throws {
         let (store, transport) = setup()
         transport.ready([runtime("a")])
         transport.acceptsSends = false
@@ -166,7 +166,46 @@ struct StoreTests {
         #expect(!store.sendMessage("/unsupported"))
         #expect(store.errorMessage != nil)
         #expect(store.sendMessage("valid message"))
-        #expect(store.messages.first?.text == "valid message")
+        #expect(store.messages.isEmpty)
+
+        let sent = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" })
+        let command = try #require(sent["command"] as? [String: Any])
+        let clientId = try #require(command["messageId"] as? String)
+        #expect(clientId.isEmpty == false)
+
+        // Pi and some other runtimes can assign a different streaming ID. The Host event is the
+        // authoritative row; do not leave the locally generated client ID beside it.
+        transport.event(["type": "message.started", "message": [
+            "messageId": "host-message-id", "role": "user", "timestamp": 100,
+            "content": [["type": "text", "text": "valid message"]],
+        ]])
+        #expect(store.messages.map(\.messageId) == ["host-message-id"])
+        transport.event(["type": "message.finished", "message": [
+            "messageId": "host-message-id", "role": "user", "timestamp": 100,
+            "content": [["type": "text", "text": "valid message"]],
+        ]], sequence: 2)
+        #expect(store.messages.map(\.text) == ["valid message"])
+
+        #expect(store.sendMessage("codex message"))
+        let codexSend = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" })
+        let codexCommand = try #require(codexSend["command"] as? [String: Any])
+        let codexMessageId = try #require(codexCommand["messageId"] as? String)
+        transport.event(["type": "message.started", "message": [
+            "messageId": codexMessageId, "role": "user", "timestamp": 101,
+            "content": [["type": "text", "text": "codex message"]],
+        ]], sequence: 3)
+        transport.event(["type": "message.finished", "message": [
+            "messageId": codexMessageId, "role": "user", "timestamp": 101,
+            "content": [["type": "text", "text": "codex message"]],
+        ]], sequence: 4)
+        #expect(store.messages.map(\.text) == ["valid message", "codex message"])
+
+        // Identical text can be two real messages; identity is always the message ID.
+        transport.event(["type": "message.finished", "message": [
+            "messageId": "another-real-message", "role": "user", "timestamp": 102,
+            "content": [["type": "text", "text": "valid message"]],
+        ]], sequence: 5)
+        #expect(store.messages.map(\.messageId) == ["host-message-id", codexMessageId, "another-real-message"])
     }
 
     @Test func commandFailuresDoNotMarkTheSecureConnectionBroken() {

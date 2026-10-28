@@ -480,9 +480,8 @@ final class OrbisStore: ObservableObject {
             errorMessage = "端到端加密连接尚未就绪，请连接成功后重试。"
             return false
         }
-        upsert(ChatMessage(messageId: id, role: "user", content: [ChatContent(type: "text", text: text, toolName: nil, artifact: nil)],
-            timestamp: Int64(Date().timeIntervalSince1970 * 1000), isError: nil), runtimeId: runtime.runtimeId)
-        publishMessages()
+        // Host message events are authoritative. Pi and DSH may assign a different streaming or
+        // persisted ID than the client's command ID, so a local row here would become a duplicate.
         return true
     }
 
