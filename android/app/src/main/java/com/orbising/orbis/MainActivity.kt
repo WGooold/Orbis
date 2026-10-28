@@ -1533,6 +1533,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
 
     Scaffold(
+        modifier = Modifier.swipeToGoBack { model.selectRuntime(null) },
         topBar = {
             Column {
             TopAppBar(

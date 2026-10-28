@@ -52,6 +52,7 @@ struct ContentView: View {
                         if let runtime = store.selectedRuntime {
                             ChatView(runtime: runtime, onBack: back, onHistory: { pages.append(.history) }, onDownloads: { pages.append(.downloads) }, onAlias: { aliasRuntime = runtime })
                                 .id(localSessionKey(host: store.selectedHost, runtime: runtime))
+                                .modifier(SwipeBackModifier(onBack: back))
                         } else { OrbisEmptyState(symbol: "desktopcomputer", title: "会话已离线", detail: "返回会话目录，重新打开会话。") }
                     case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
                     case .status: ConnectionStatusView(onBack: back, onSettings: { pages.append(.settings) })
@@ -271,6 +272,44 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
 
     private func close() {
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { isOpen = false; offset = nil }
+    }
+}
+
+/// 聊天页右滑返回。导航栏隐藏后系统侧滑返回失效，这里在页面上同时识别一个横向拖动：
+/// 按第一段位移锁定方向，向右横拖时页面跟随手指，松手按位置与速度决定返回或回弹。
+private struct SwipeBackModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let onBack: () -> Void
+    @State private var offset: CGFloat = 0
+    @State private var horizontalDrag: Bool?
+    @State private var containerWidth: CGFloat = 390
+
+    func body(content: Content) -> some View {
+        content
+            .offset(x: offset)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
+            .simultaneousGesture(gesture)
+    }
+
+    private var gesture: some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .global)
+            .onChanged { value in
+                if horizontalDrag == nil {
+                    horizontalDrag = value.translation.width > abs(value.translation.height) * 1.5
+                }
+                guard horizontalDrag == true else { return }
+                offset = max(0, value.translation.width)
+            }
+            .onEnded { value in
+                let horizontal = horizontalDrag == true
+                horizontalDrag = nil
+                guard horizontal else { return }
+                if value.predictedEndTranslation.width > containerWidth / 3 {
+                    onBack()
+                } else {
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)) { offset = 0 }
+                }
+            }
     }
 }
 
