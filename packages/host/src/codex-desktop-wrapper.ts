@@ -3,7 +3,8 @@
  *
  * 为什么需要它：桌面版（Windows）永远用 stdio 与它自己的 `codex app-server` 说话，
  * 而那条唯一的 WebSocket/守护进程分支被 `process.platform !== "win32"` 关掉了
- * （见 ADR-0022 的 Known limitation）。于是这个进程站在中间，给同一个 app-server
+ * （见 ADR-0022 的 Known limitation）；macOS 上那条分支默认也不走（见
+ * `codex-desktop-macos.ts`）。于是这个进程站在中间，给同一个 app-server
  * 多开一个本地 WebSocket：
  *
  *   桌面版 GUI <--stdio--> 本进程 <--websocket--> codex app-server --listen
@@ -11,7 +12,8 @@
  * GUI 的行为一点不变（它仍然走 stdio），Orbis 作为**第二个** ws 客户端接同一个
  * app-server，于是手机与桌面版看到并驱动同一批 thread。
  *
- * 入口是 `codex-launcher.exe`（桌面版不带 shell 启动 CLI，`.cmd` 不可用），
+ * 入口是 `codex-launcher.exe`（桌面版不带 shell 启动 CLI，`.cmd` 不可用；macOS 上是
+ * Host 生成的 sh 脚本），
  * 它把同样的 argv 与继承来的 stdio 交给本文件。**除 `app-server` 外的任何调用
  * （`login`、`exec`、`--version` …）都原样转发**，因为桌面版也会用它们。
  *
@@ -30,6 +32,7 @@ import { resolveStateDir } from "@orbis/e2e";
 
 import { CodexAppServer, resolveCodexCommand, type CodexCommand } from "./codex-daemon.js";
 import { CodexDesktopRefreshBridge, type DesktopRefreshEndpoint } from "./codex-desktop-refresh-bridge.js";
+import { appBundleOf, bundledCodexCli, processExecutable, resolveMacCodexDesktopExecutable } from "./codex-desktop-macos.js";
 
 /** 端点描述文件：Host 每 2s 读它，所以它必须是原子、只属于当前桥接的一份。 */
 export type CodexDesktopEndpointFile = {
@@ -66,6 +69,9 @@ export type ResolveRealCodexOptions = {
   requireCodeModeHost?: boolean;
   waitMs?: number;
   pollMs?: number;
+  platform?: NodeJS.Platform;
+  /** macOS：启动本包装器的进程（桌面版 GUI）的可执行路径。 */
+  parentExecutable?: () => Promise<string | undefined>;
 };
 
 const DEFAULT_CODE_MODE_RUNTIME_WAIT_MS = 120_000;
@@ -89,6 +95,7 @@ export async function resolveRealCodex(
     if (!existsSync(explicit)) throw new Error(`ORBIS_CODEX_REAL 指向的文件不存在：${explicit}`);
     return { command: explicit, prefixArgs: [] };
   }
+  if ((options.platform ?? process.platform) === "darwin") return resolveMacRealCodex(env, options);
 
   const root = join(env.LOCALAPPDATA?.trim() || join(homedir(), "AppData", "Local"), "OpenAI", "Codex", "bin");
   const requireCodeModeHost = options.requireCodeModeHost === true;
@@ -109,6 +116,20 @@ export async function resolveRealCodex(
 
   const fallback = newestCodex(findCodexCandidates(root));
   if (fallback !== undefined) return { command: fallback, prefixArgs: [] };
+  return resolveCodexCommand(env);
+}
+
+/**
+ * macOS：真正的 CLI 就是启动我们的那个桌面版自带的那份——父进程就是 GUI 主进程，
+ * 所以先从它找回应用包，这样装了多份（正式版/测试版）也不会用错。应用包里的 CLI 与
+ * `codex-code-mode-host` 一起随应用更新原地替换，不存在 Windows 那样的安装竞态。
+ */
+async function resolveMacRealCodex(env: NodeJS.ProcessEnv, options: ResolveRealCodexOptions): Promise<CodexCommand> {
+  const parent = await (options.parentExecutable ?? (() => processExecutable(process.ppid)))();
+  const fromParent = parent === undefined ? undefined : appBundleOf(parent);
+  const installed = fromParent === undefined ? await resolveMacCodexDesktopExecutable() : undefined;
+  const app = fromParent ?? (installed === undefined ? undefined : appBundleOf(installed));
+  if (app !== undefined && existsSync(bundledCodexCli(app))) return { command: bundledCodexCli(app), prefixArgs: [] };
   return resolveCodexCommand(env);
 }
 

@@ -2,11 +2,11 @@ import { platform } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { CodexDesktopAttach } from "@orbis/protocol";
-import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
+import { CodexAppServer } from "./codex-daemon.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { launchCodexDesktopApp } from "./codex-desktop-app.js";
 import type { CodexDesktopRefreshOptions } from "./codex-desktop-refresh.js";
-import { detectCodexDesktopPresence, waitForCodexDesktop, type CodexDesktopPresence, type CodexDesktopPresenceOptions } from "./codex-desktop-presence.js";
+import { detectCodexDesktopPresence, supportsCodexDesktop, waitForCodexDesktop, type CodexDesktopPresence, type CodexDesktopPresenceOptions } from "./codex-desktop-presence.js";
 
 export { launchCodexDesktopApp } from "./codex-desktop-app.js";
 
@@ -95,18 +95,20 @@ export class CodexDesktopLifecycle {
       return;
     }
     const target = this.#options.presence?.platform ?? platform();
-    this.#setStatus(target === "win32" ? "notInstalled" : "unsupported", presence.reason);
+    this.#setStatus(supportsCodexDesktop(target) ? "notInstalled" : "unsupported", presence.reason);
   }
 
-  /** Whether the official Windows desktop package is installed and can be launched. */
+  /**
+   * Whether the official Windows or macOS desktop app is installed and can be launched.
+   * 不要求另装 npm 版 Codex CLI：包装器用的是桌面版自带的那份，Host 只连它的 app-server。
+   */
   async isInstalled(): Promise<boolean> {
     try {
       const presence = await detectCodexDesktopPresence(this.#options.presence);
       if (presence.executable === undefined) { this.#presenceStatus(presence); return false; }
-      await resolveCodexCommand();
       return true;
     } catch (error) {
-      this.#setStatus("notInstalled", `未找到可用的 Codex CLI：${error instanceof Error ? error.message : String(error)}`);
+      this.#setStatus("error", `无法确认 Codex 桌面版状态：${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
   }

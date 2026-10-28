@@ -73,6 +73,12 @@ describe("Pi extension runtime logging", () => {
     await expect(readFile(disabledPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("keeps the default log out of the user's project directory", () => {
+    const path = piExtensionRuntimeLogPath({ ORBIS_HOST_STATE_DIR: "/state" }, "/Users/a/project");
+    expect(path).toBe(join("/state", "logs", "pi-extension-runtime.log"));
+    expect(piExtensionRuntimeLogPath({}, "/Users/a/project").startsWith("/Users/a/project")).toBe(false);
+  });
+
   it("resolves a relative override against the Pi working directory", () => {
     expect(piExtensionRuntimeLogPath({ ORBIS_RUNTIME_LOG: "logs/runtime.log" }, "D:/workspace"))
       .toBe("D:\\workspace\\logs\\runtime.log");

@@ -16,7 +16,7 @@ describe("Codex desktop wrapper CLI selection", () => {
 
       const resolution = resolveRealCodex(
         { LOCALAPPDATA: localAppData },
-        { requireCodeModeHost: true, waitMs: 1_000, pollMs: 5 },
+        { requireCodeModeHost: true, waitMs: 1_000, pollMs: 5, platform: "win32" },
       );
       const installation = new Promise<void>((resolve, reject) => {
         setTimeout(() => {
@@ -38,5 +38,24 @@ describe("Codex desktop wrapper CLI selection", () => {
     expect(requestsCodeModeHost(["-c", "features.code_mode_host=true", "app-server"])).toBe(true);
     expect(requestsCodeModeHost(["app-server"])).toBe(false);
     expect(requestsCodeModeHost(["--version"])).toBe(false);
+  });
+});
+
+describe("Codex desktop wrapper CLI selection on macOS", () => {
+  it("uses the CLI bundled with the desktop app that launched the wrapper", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-codex-mac-"));
+    const app = join(root, "Codex Beta.app");
+    const cli = join(app, "Contents", "Resources", "codex-cli", "bin", "codex");
+    try {
+      await mkdir(join(cli, ".."), { recursive: true });
+      await writeFile(cli, "#!/bin/sh\n");
+      await expect(resolveRealCodex({}, { platform: "darwin", parentExecutable: async () => join(app, "Contents", "MacOS", "ChatGPT") }))
+        .resolves.toEqual({ command: cli, prefixArgs: [] });
+      // 显式指定的真实 CLI 仍然优先。
+      await expect(resolveRealCodex({ ORBIS_CODEX_REAL: cli }, { platform: "darwin", parentExecutable: async () => undefined }))
+        .resolves.toEqual({ command: cli, prefixArgs: [] });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

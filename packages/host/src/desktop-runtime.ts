@@ -22,6 +22,11 @@ import { ensureDshWebService, restartDshWebServiceAfterUpdate, validateDshWebUrl
 import { DshWebClient } from "./dsh-web-client.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
+import { updatePiIntegration } from "./pi-integration-install.js";
+import { adoptLoginShellEnvironment } from "./login-shell-env.js";
+import { agentInstallRoot } from "./agent-root.js";
+import { PiCommandCancelledError, installMacPiCommand, piCommandStatus, refreshMacPiCommand, removeMacPiCommand, syncWindowsPiCommand } from "./pi-command.js";
+import { existsSync } from "node:fs";
 import { defaultStunServers } from "./config.js";
 import { ProviderManager, ProviderError, agentKind, providerMetadata, type ProviderPaths, type ProviderProfile, type ProviderSummary } from "./provider-manager.js";
 import { installAgentPackage, activateManagedAgent, activeManagedEntry, findAgentCopies, fetchNpmLatestVersion, agentPackages, queryAgentStatus, recommendedAgentVersion, extractAgentVersion, compareAgentVersions, installationSource, type AgentInstallProgress, type AgentInstallStatus, type LocalAgent } from "./agent-installation.js";
@@ -54,6 +59,8 @@ async function loopbackPortAlive(value: unknown): Promise<boolean> {
 export type DesktopSettings = {
   relayUrl: string; credential: string; codexEnabled?: boolean; piEntry?: string; codexEntry?: string;
   dshEnabled?: boolean; dshEntry?: string; dshWebUrl?: string;
+  /** macOS：让用户自己在终端里运行的 Pi 也加载 Orbis 扩展（缺省开启）。 */
+  piIntegrationEnabled?: boolean;
   lanPort?: number; stunServers?: string[];
 };
 export type DesktopEvent = { event: string; [key: string]: unknown };
@@ -148,6 +155,8 @@ export class DesktopRuntime {
   }
 
   async initialize(): Promise<unknown> {
+    // 先于一切 Agent 检测：从程序坞打开的 Host 只有 launchd 的最小 PATH。
+    await adoptLoginShellEnvironment(line => this.log(line));
     const identity = await loadOrCreateHostIdentity({ dir: this.#stateDir });
     try { await this.#providers.startRouting(); }
     catch (error) { this.log(error instanceof ProviderError ? error.message : "Codex local routing could not start; check its port and settings"); }
@@ -159,7 +168,7 @@ export class DesktopRuntime {
       appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }) };
   }
 
-  #managedRoot(): string { return process.env.ORBIS_AGENT_INSTALL_ROOT ?? join(process.env.LOCALAPPDATA ?? homedir(), "Orbis", "agents"); }
+  #managedRoot(): string { return agentInstallRoot(); }
   async #environment(settings?: Partial<DesktopSettings>): Promise<void> {
     if (settings?.dshWebUrl?.trim()) process.env.ORBIS_DSH_WEB_URL = validateDshWebUrl(settings.dshWebUrl.trim()); else delete process.env.ORBIS_DSH_WEB_URL;
     const managed = this.#managedRoot();
@@ -178,6 +187,9 @@ export class DesktopRuntime {
       const ordered = configured && installationSource(configured, managed) !== "managed"
         ? [configured, active, shared]
         : [active, shared, configured];
+      // 用户自己装的 Pi 优先：终端里敲 `pi` 跑的是它，扩展登记的也是它的配置，Host 不能另用一份。
+      // Host 自己的安装只在用户没有 Pi 时才派上用场。
+      if (kind === "pi") ordered.unshift((await findAgentCopies("pi", process.env))[0]?.entry);
       const entry = await firstExisting(ordered);
       const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
       if (entry) process.env[key] = entry; else delete process.env[key];
@@ -188,9 +200,8 @@ export class DesktopRuntime {
     const roots = searchPath.split(delimiter);
     if (legacyNpm && !roots.includes(legacyNpm)) roots.push(legacyNpm);
     if (!roots.includes(managed)) roots.push(managed);
+    // Host 的运行时目录不是 Agent 安装位置：只认用户自己装的和用户在 Host 里主动安装的副本。
     process.env.PATH = roots.join(delimiter);
-    const bundled = fileURLToPath(new URL("../../../", import.meta.url));
-    if (!(process.env.PATH ?? "").split(delimiter).includes(bundled)) process.env.PATH = `${process.env.PATH}${delimiter}${bundled}`;
     // Detection, updates and session startup must target the same copy, including a broken default.
     for (const kind of ["pi", "codex", "dsh"] as const) {
       const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
@@ -254,8 +265,22 @@ export class DesktopRuntime {
         }
       }
       status.copies = copies;
+      if (kind === "pi") {
+        let managedEntry: string | undefined;
+        try { managedEntry = await activeManagedEntry("pi", managed); } catch { managedEntry = undefined; }
+        const context = { managedEntry, usingManaged: entry !== undefined && installationSource(entry, managed) === "managed" };
+        const runtime = this.#packagedRuntime();
+        try {
+          if (runtime !== undefined && process.platform === "win32") await syncWindowsPiCommand({ ...context, runtimeRoot: runtime.root, managedRoot: managed });
+          if (runtime !== undefined && process.platform === "darwin") await refreshMacPiCommand(runtime.node, managed);
+        } catch (error) { this.log(`维护终端 pi 命令失败：${error instanceof Error ? error.message : String(error)}`); }
+        const command = await piCommandStatus(context);
+        status.terminalCommand = runtime === undefined && command.state === "available" ? "unavailable" : command.state;
+        status.terminalCommandDetail = command.detail;
+      }
       if (kind === "codex") {
-        status.desktopInstalled = local.installed && await new CodexDesktopLifecycle().isInstalled();
+        // 桌面版自带 CLI，是否装了 npm 版 codex 与能否接入桌面版无关。
+        status.desktopInstalled = await new CodexDesktopLifecycle().isInstalled();
         const runtimeRoot = fileURLToPath(new URL("../../../", import.meta.url));
         const shim = await codexShimStatus(runtimeRoot);
         status = { ...status, terminalIntegration: this.#selectionError ? "repair" : shim.state,
@@ -283,6 +308,77 @@ export class DesktopRuntime {
     }));
   }
 
+  /**
+   * macOS 的 Pi 集成：把安装包里的 Orbis 扩展登记进用户自己的 `~/.pi/agent/settings.json`。
+   *
+   * Windows 由安装器做这一步；macOS 是拖拽安装，没有安装脚本，所以由 Host 自己维护，并给用户
+   * 一个开关在删除应用前撤掉它。登记只追加 Orbis 这一项、替换旧位置的 Orbis 副本，用户自己的
+   * 扩展原样保留。开发检出不登记：那会把仓库里的构建产物写进开发者真实的 Pi 配置。
+   */
+  /** 打包后的运行时（自带 node）；开发检出返回 undefined，不往用户系统里写指向仓库的命令。 */
+  #packagedRuntime(): { root: string; node: string } | undefined {
+    const root = fileURLToPath(new URL("../../../", import.meta.url));
+    const node = join(root, "node", process.platform === "win32" ? "node.exe" : "node");
+    return existsSync(node) ? { root, node } : undefined;
+  }
+
+  #piCommandDeclinedPath(): string { return join(this.#stateDir, "pi-command-declined"); }
+
+  /**
+   * macOS：用户刚在 Host 里装好 Pi，顺势请求一次管理员授权，让终端里也能直接运行 `pi`。
+   * 授权框紧跟着用户自己的安装操作出现，不是凭空弹出；用户取消就记住，之后升级不再打扰，
+   * 设置页的按钮随时可以再装。授权失败或无人响应都不影响这次 Pi 安装的结果。
+   */
+  async #offerPiCommand(): Promise<void> {
+    if (process.platform !== "darwin" || existsSync(this.#piCommandDeclinedPath())) return;
+    const runtime = this.#packagedRuntime();
+    if (runtime === undefined) return;
+    const managed = this.#managedRoot();
+    let managedEntry: string | undefined;
+    try { managedEntry = await activeManagedEntry("pi", managed); } catch { return; }
+    const current = process.env.ORBIS_PI_ENTRY;
+    const status = await piCommandStatus({ managedEntry, usingManaged: current !== undefined && installationSource(current, managed) === "managed" });
+    if (status.state !== "available") return;
+    try {
+      await installMacPiCommand(runtime.node, managed);
+      this.log("已安装终端命令 pi；新开的终端窗口里即可使用");
+    } catch (error) {
+      if (error instanceof PiCommandCancelledError) {
+        await writeFile(this.#piCommandDeclinedPath(), `${new Date().toISOString()}\n`).catch(() => {});
+        this.log("未安装终端命令 pi；需要时可在设置页安装");
+      } else this.log(`安装终端命令 pi 失败：${error instanceof Error ? error.message : String(error)}；可在设置页重试`);
+    }
+  }
+
+  /** macOS 的 `pi` 命令要一次管理员授权：装 Pi 时顺势请求一次，之后由设置页按钮安装或移除；Windows 自动维护。 */
+  async piCommand(action: string): Promise<AgentInstallStatus[]> {
+    if (process.platform !== "darwin") throw new Error("Windows 会自动维护 pi 命令");
+    if (action === "install") {
+      const runtime = this.#packagedRuntime();
+      if (runtime === undefined) throw new Error("开发运行时不安装 pi 命令");
+      await installMacPiCommand(runtime.node, this.#managedRoot());
+      await rm(this.#piCommandDeclinedPath(), { force: true });
+      this.log("已安装终端命令 pi；新开的终端窗口里即可使用");
+    } else if (action === "remove") {
+      await removeMacPiCommand();
+      this.log("已移除终端命令 pi");
+    } else throw new Error("未知操作");
+    return this.detect();
+  }
+
+  async setPiIntegration(enabled: boolean): Promise<void> {
+    if (process.platform !== "darwin") throw new Error("Pi 集成开关仅用于 macOS；Windows 由安装器维护");
+    const extensionDir = fileURLToPath(new URL("../../pi-extension/", import.meta.url));
+    if (!extensionDir.includes(".app/Contents/Resources/runtime/")) {
+      this.log("开发运行时不改动 Pi 配置；打包后的 Orbis Host 才会登记 Pi 扩展");
+      return;
+    }
+    await updatePiIntegration({ extensionDir, uninstall: !enabled });
+    this.log(enabled ? "已为本机 Pi 登记 Orbis 扩展；新启动的 Pi 会连接 Host，已在运行的 Pi 需重启" : "已从本机 Pi 配置中移除 Orbis 扩展");
+    // 关闭集成是「删除 Orbis Host 之前的收尾」：终端命令也一起撤掉（可能需要管理员授权）。
+    if (!enabled) await removeMacPiCommand();
+  }
+
   async start(settings: DesktopSettings): Promise<void> {
     settings.relayUrl = validateDesktopRelay(settings.relayUrl);
     if (!/^orbis_host_[\w-]{43}$/.test(settings.credential)) throw new Error("请先通过 QQ 邮箱注册并激活这台电脑");
@@ -290,6 +386,10 @@ export class DesktopRuntime {
     await this.#checkExistingHost();
     if (this.#installation) throw new Error("请等待 Agent 安装完成或取消后再启动 Host");
     await this.#environment(settings);
+    if (process.platform === "darwin" && settings.piIntegrationEnabled !== false) {
+      // 失败不阻止 Host 启动：最坏只是终端里的 Pi 连不上，Host 打开的 Pi 仍带着扩展。
+      await this.setPiIntegration(true).catch(error => this.log(`登记 Pi 扩展失败：${error instanceof Error ? error.message : String(error)}`));
+    }
     this.#desired = settings;
     this.#attempt = 0;
     await this.#connect();
@@ -320,12 +420,12 @@ export class DesktopRuntime {
           this.#codexRuntime = new CodexRuntime({ server: this.#codex, sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS, log: line => this.log(line), onEvent: () => {} });
         } catch (error) { this.log(`Codex 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
         // 桌面版接入走 Orbis 包装器：它给桌面版自己的 app-server 多开一个本地 ws，
-        // 官方 `app-server proxy` 那条路在 Windows 上被上游关掉了（ADR-0022）。
+        // 官方 `app-server proxy` 那条路在 Windows 上被上游关掉了，macOS 默认也不走（ADR-0022）。
         const wrapper = resolveCodexWrapper();
         const endpointPath = codexDesktopEndpointPath(this.#stateDir);
         const staged = wrapper === undefined ? undefined : stageCodexWrapper(wrapper, undefined, endpointPath);
-        if (wrapper === undefined) this.log("未找到 Orbis 包装器（codex-launcher.exe），本轮无法接入 Codex 桌面版");
-        // 桌面版接入的入口是用户级 CODEX_CLI_PATH：这样用户从开始菜单直接打开桌面版也会
+        if (wrapper === undefined) this.log("未找到 Orbis 包装器（codex-launcher 或 codex-desktop-wrapper.js），本轮无法接入 Codex 桌面版");
+        // 桌面版接入的入口是用户级 CODEX_CLI_PATH（macOS 上是 launchd 会话环境）：这样用户从开始菜单／程序坞直接打开桌面版也会
         // 走包装器，不依赖 Orbis 拉起，也不分先后。幂等，且不覆盖别人的值。
         if (staged !== undefined) {
           void ensureCodexDesktopEntry(staged.launcher).then(entry => {
@@ -542,6 +642,7 @@ export class DesktopRuntime {
       }
       this.#agentInstallProgress({ kind: selected, stage: result.restartWarning ? "restartFailed" : "done", version: result.version });
       this.log(`${kind} ${result.version} 安装完成，已选中新版本`);
+      if (selected === "pi" && installationSource(result.entry, managed) === "managed") await this.#offerPiCommand();
       return result;
     })();
     try { return await this.#installationTask; }
@@ -553,6 +654,10 @@ export class DesktopRuntime {
     let status = this.#detected.get(selected);
     if (!status) status = (await this.detect()).find(candidate => candidate.kind === selected);
     const mode = status?.installationSource === "npm" ? "current" : "managed";
+    // pnpm、Volta、Bun 管理的 Pi 只能用它们自己更新；Host 另装一份也不会被用上（用户自己的 Pi 优先）。
+    if (selected === "pi" && status?.installed && status.installationSource === "custom") {
+      throw new Error("这份 Pi 由 pnpm、Volta 或 Bun 管理，请用它们自己的更新命令更新");
+    }
     return this.install(selected, "latest", mode);
   }
 

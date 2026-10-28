@@ -1,11 +1,16 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { readLaunchdEnvironment, writeLaunchdEnvironment } from "./codex-desktop-macos.js";
+
 const execFileAsync = promisify(execFile);
 function orbisBin(): string { return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Orbis", "bin"); }
+/** Windows 上 Orbis 生成的终端命令（`codex.cmd`、`pi.cmd`）所在目录。 */
+export function orbisBinDirectory(): string { return orbisBin(); }
 function shimPath(): string { return join(orbisBin(), "codex.cmd"); }
 function manifestPath(): string { return join(orbisBin(), "codex-shim.json"); }
 
@@ -42,6 +47,9 @@ export async function installCodexShim(runtimeRoot: string): Promise<void> {
 
 export async function uninstallCodexShim(): Promise<void> {
   await removeCodexDesktopEntry();
+  // 同一目录里的 `pi.cmd`（见 pi-command.ts）随卸载一起移除；只删带 Orbis 标记的那份。
+  const piCommand = join(orbisBin(), "pi.cmd");
+  if ((await readFile(piCommand, "utf8").catch(() => "")).includes("orbis-pi-command")) await rm(piCommand, { force: true });
   const current = await readUserPath();
   await updateUserPath(current, path => path.filter(entry => !samePath(entry, orbisBin())));
   // 提权失败不该让卸载失败：临时 PATH 项没了，杀余的机器 PATH 项只是指向不存在的目录。
@@ -175,6 +183,15 @@ async function updateUserPath(current: string[], update: (path: string[]) => str
   await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ENVIRONMENT_BROADCAST], { windowsHide: true, timeout: 10_000 }).catch(() => {});
 }
 
+/** 把 Orbis bin 放进用户 PATH（已在就不动）；`pi.cmd` 与 `codex.cmd` 共用这一项。 */
+export async function ensureOrbisBinOnUserPath(): Promise<void> {
+  if (process.platform !== "win32") return;
+  await mkdir(orbisBin(), { recursive: true });
+  const current = await readUserPath();
+  if (current.some(entry => samePath(expandVariables(entry), orbisBin()))) return;
+  await updateUserPath(current, path => [...path, orbisBin()]);
+}
+
 async function readUserPath(): Promise<string[]> {
   return await readRegistryPath("HKCU\\Environment");
 }
@@ -203,16 +220,17 @@ export type CodexDesktopEntry =
 /** 这个值像不像 Orbis 自己的桌面版包装器入口（接管与卸载都靠它判断）。 */
 export function looksLikeOrbisWrapperEntry(value: string): boolean {
   const normalized = value.trim().replaceAll("/", "\\").toLowerCase();
-  return normalized.endsWith("\\codex-launcher.exe") && normalized.includes("\\orbis");
+  return (normalized.endsWith("\\codex-launcher.exe") || normalized.endsWith("\\codex-launcher")) && normalized.includes("\\orbis");
 }
 
 /**
  * 读到的当前值与目标不一致时该怎么办。纯函数：不碰注册表，便于把规则钉在测试里。
  */
-export function codexDesktopEntryDecision(current: string | undefined, launcher: string): { state: "enabled" | "foreign"; write?: string; detail: string } {
+export function codexDesktopEntryDecision(current: string | undefined, launcher: string, platform: NodeJS.Platform = process.platform): { state: "enabled" | "foreign"; write?: string; detail: string } {
   const value = current?.trim() ?? "";
-  if (value.length === 0) return { state: "enabled", write: launcher, detail: "从开始菜单直接打开 Codex 桌面版即可接入" };
-  if (samePath(value, launcher)) return { state: "enabled", detail: "从开始菜单直接打开 Codex 桌面版即可接入" };
+  const ready = platform === "darwin" ? "从程序坞或启动台直接打开 Codex 桌面版即可接入" : "从开始菜单直接打开 Codex 桌面版即可接入";
+  if (value.length === 0) return { state: "enabled", write: launcher, detail: ready };
+  if (samePath(value, launcher)) return { state: "enabled", detail: ready };
   if (looksLikeOrbisWrapperEntry(value)) return { state: "enabled", write: launcher, detail: "包装器位置已更新，已重新指向" };
   return { state: "foreign", detail: `${CODEX_DESKTOP_ENTRY_NAME} 已被其他程序占用（${value}），未改动；桌面版需由 Orbis 打开才能接入` };
 }
@@ -232,7 +250,8 @@ async function writeUserEnvironmentValue(name: string, value: string | undefined
 
 /** 幂等地把桌面版接入入口指向包装器。 */
 export async function ensureCodexDesktopEntry(launcher: string): Promise<CodexDesktopEntry> {
-  if (process.platform !== "win32") return { state: "unsupported", detail: "Codex 桌面版只支持 Windows" };
+  if (process.platform === "darwin") return ensureMacCodexDesktopEntry(launcher);
+  if (process.platform !== "win32") return { state: "unsupported", detail: "Codex 桌面版只支持 Windows 与 macOS" };
   const current = await readUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME);
   const decision = codexDesktopEntryDecision(current, launcher);
   if (decision.write !== undefined) {
@@ -244,11 +263,32 @@ export async function ensureCodexDesktopEntry(launcher: string): Promise<CodexDe
 
 /** 只在值确实是我们的时候才删：用户自己设过别的 CLI，不该被顺手抹掉。 */
 export async function removeCodexDesktopEntry(): Promise<void> {
+  if (process.platform === "darwin") {
+    const current = await readLaunchdEnvironment(CODEX_DESKTOP_ENTRY_NAME);
+    if (current === undefined || looksLikeOrbisWrapperEntry(current)) await writeLaunchdEnvironment(CODEX_DESKTOP_ENTRY_NAME, undefined).catch(() => {});
+    return;
+  }
   if (process.platform !== "win32") return;
   const current = await readUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME);
   if (current === undefined || !looksLikeOrbisWrapperEntry(current)) return;
   await writeUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME, undefined).catch(() => {});
 }
+/**
+ * macOS 的入口在 launchd 用户会话里：从程序坞、启动台、Finder 打开的应用都从这里继承环境。
+ * launcher 没写出来时绝不写入口——指向不存在的文件虽然会被桌面版忽略，但会让诊断说谎。
+ */
+async function ensureMacCodexDesktopEntry(launcher: string): Promise<CodexDesktopEntry> {
+  if (!existsSync(launcher)) return { state: "unsupported", detail: `Orbis 包装器 launcher 未就位（${launcher}）；桌面版暂时无法接入` };
+  const decision = codexDesktopEntryDecision(await readLaunchdEnvironment(CODEX_DESKTOP_ENTRY_NAME), launcher, "darwin");
+  // 已经是我们的值也重写一次：它同时保证登录项（LaunchAgent）存在且一致。
+  const write = decision.write ?? (decision.state === "enabled" ? launcher : undefined);
+  if (write !== undefined) {
+    try { await writeLaunchdEnvironment(CODEX_DESKTOP_ENTRY_NAME, write); }
+    catch { return { state: "foreign", detail: `无法写入 launchd 环境变量 ${CODEX_DESKTOP_ENTRY_NAME}；桌面版需由 Orbis 打开才能接入` }; }
+  }
+  return { state: decision.state, detail: decision.detail };
+}
+
 function samePath(left: string, right: string): boolean {
   return resolve(left).replaceAll("/", "\\").replace(/[\\]+$/u, "").toLowerCase()
     === resolve(right).replaceAll("/", "\\").replace(/[\\]+$/u, "").toLowerCase();

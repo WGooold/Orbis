@@ -27,6 +27,7 @@ ApplicationWindow {
     function codexDesktopState() { return (host.codexDesktop && host.codexDesktop.state) ? host.codexDesktop.state : "" }
     function codexDesktopLabel() { return ({attached:"已接入", closed:"未接入", notInstalled:"未安装", unsupported:"不可用", error:"接入失败"})[window.codexDesktopState()] || (!host.bridgeReady ? "未知" : host.codexEnabled ? "正在检测" : "未启用") }
     function codexDesktopColor() { return ({attached:"#278868", closed:"#b46b19", error:"#a63838", notInstalled:"#73819a", unsupported:"#73819a"})[window.codexDesktopState()] || "#73819a" }
+    function piAgent() { return host.agents.find(a => a.kind === "pi") || {} }
     function codexDesktopReason() { return (host.codexDesktop && host.codexDesktop.reason) ? host.codexDesktop.reason : "" }
     function installationStage() { return ({queued:"准备安装", resolving:"检查安装位置", downloading:"下载与安装依赖", verifying:"验证 CLI 和版本", activating:"保存新版本", restarting:"正在重启 Agent 后台", restartFailed:"已更新，后台需手动重启", cancelling:"正在取消并清理", cancelled:"已取消", error:"安装失败", done:"安装完成"})[host.agentInstallStage] || "" }
     function showAgentInstaller(agent) { installKind = agent.kind; installAgentData = agent; installDialog.open() }
@@ -874,7 +875,7 @@ ApplicationWindow {
                     Card {
                         id: settingsPane
                         visible: window.page === 3; Layout.fillWidth: true
-                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled }
+                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled; piIntegrationSwitch.checked = host.piIntegrationEnabled }
                         ColumnLayout {
                             anchors.fill: parent; spacing: 15
                             Heading { text: "常规" }
@@ -883,6 +884,21 @@ ApplicationWindow {
                             SoftSwitch { id: startupSwitch; text: Qt.platform.os === "osx" ? "登录 macOS 后自动启动" : "登录 Windows 后自动启动" }
                             SoftSwitch { id: codexSwitch; text: "启动 Host 时启用 Codex" }
                             SoftSwitch { id: dshSwitch; text: "启动 Host 时启用 DeepSeek Harness" }
+                            SoftSwitch { id: piIntegrationSwitch; visible: Qt.platform.os === "osx"; text: "让终端里运行的 Pi 连接 Orbis" }
+                            Hint { visible: Qt.platform.os === "osx"; text: "会在 Pi 的 settings.json 里追加 Orbis 扩展，不影响你已有的扩展；已在运行的 Pi 需重启后才会连接。删除 Orbis Host 前请先关闭此项（终端命令 pi 也会一并移除）。"; Layout.fillWidth: true }
+                            RowLayout {
+                                objectName: "piCommandRow"
+                                visible: ["installed", "available", "foreign"].includes(window.piAgent().terminalCommand)
+                                Layout.fillWidth: true; spacing: 12
+                                Hint { text: "终端命令 pi：" + (window.piAgent().terminalCommandDetail || ""); Layout.fillWidth: true }
+                                ActionButton {
+                                    visible: Qt.platform.os === "osx" && (window.piAgent().terminalCommand === "available" || window.piAgent().terminalCommand === "installed")
+                                    text: window.piAgent().terminalCommand === "installed" ? "移除 pi 命令" : "安装 pi 命令"
+                                    primary: window.piAgent().terminalCommand === "available"
+                                    enabled: host.bridgeReady && !host.busy
+                                    onClicked: host.piCommand(window.piAgent().terminalCommand === "installed" ? "remove" : "install")
+                                }
+                            }
                             RowLayout {
                                 visible: host.agents.some(a => a.kind === "codex" && a.terminalNeedsElevation === true)
                                 Layout.fillWidth: true; spacing: 12
@@ -893,7 +909,7 @@ ApplicationWindow {
                             Field { id: relayField; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
                             Label { text: "DeepSeek Web 启动链接（可选）"; color: "#4b5d78" }
                             Field { id: dshWebUrlField; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
-                            ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text) }
+                            ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked) }
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#e5eaf2"; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "更新 Host"; visible: host.message.indexOf("点击“更新 Host”") >= 0; onClicked: host.updateHost() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
                             DownloadBar { visible: host.downloadReceived >= 0; label: host.downloadLabel || "Host 更新"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }

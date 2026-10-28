@@ -46,6 +46,18 @@ describe("installed Pi integration", () => {
     expect(await json(controlPath)).toEqual({ relayUrl: "wss://example.test", runtimeCredential: "private", custom: 7 });
   });
 
+  it("replaces the entry of a moved or deleted Host but keeps a missing package of the user's own", async () => {
+    const { agentDir, extensionDir } = await fixture();
+    const settingsPath = join(agentDir, "settings.json");
+    const deletedHost = join(agentDir, "..", "Trash", "OrbisHost.app", "Contents", "Resources", "runtime", "packages", "pi-extension");
+    const deletedWindowsHost = "C:\\Users\\x\\AppData\\Local\\Programs\\Orbis Host\\runtime\\packages\\pi-extension";
+    const userMissing = join(agentDir, "..", "my-extensions", "pi-extension");
+    await writeFile(settingsPath, JSON.stringify({ packages: [deletedHost, deletedWindowsHost, userMissing] }));
+
+    await updatePiIntegration({ extensionDir, agentDir });
+    expect(await json(settingsPath)).toEqual({ packages: [userMissing, extensionDir] });
+  });
+
   it("does not overwrite an explicit opt-out or malformed Pi settings", async () => {
     const { agentDir, extensionDir } = await fixture();
     const settingsPath = join(agentDir, "settings.json");

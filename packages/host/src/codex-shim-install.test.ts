@@ -109,3 +109,17 @@ describe("Codex desktop entry ownership", () => {
     expect(decision.detail).toContain("CODEX_CLI_PATH");
   });
 });
+
+describe("Codex desktop entry ownership on macOS", () => {
+  const launcher = "/Users/x/Library/Application Support/Orbis/wrapper/bin/codex-launcher";
+
+  it("recognizes its own generated launcher and still leaves foreign values alone", () => {
+    expect(looksLikeOrbisWrapperEntry(launcher)).toBe(true);
+    expect(codexDesktopEntryDecision(undefined, launcher, "darwin")).toMatchObject({ state: "enabled", write: launcher });
+    expect(codexDesktopEntryDecision(undefined, launcher, "darwin").detail).toContain("程序坞");
+    expect(codexDesktopEntryDecision("/Users/old/Library/Application Support/Orbis/wrapper/bin/codex-launcher", launcher, "darwin"))
+      .toMatchObject({ state: "enabled", write: launcher });
+    expect(looksLikeOrbisWrapperEntry("/opt/homebrew/bin/codex")).toBe(false);
+    expect(codexDesktopEntryDecision("/opt/homebrew/bin/codex", launcher, "darwin")).toMatchObject({ state: "foreign" });
+  });
+});

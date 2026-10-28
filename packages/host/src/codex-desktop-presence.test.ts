@@ -32,6 +32,18 @@ describe("Codex desktop presence", () => {
     await expect(detect([desktopProcess()])).resolves.toMatchObject({ ready: true, pid: 42 });
   });
 
+  it("treats the running macOS main process as ready, but not its Electron helpers", async () => {
+    const mac = "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT";
+    const detectMac = (processes: readonly CodexDesktopProcess[]) => detectCodexDesktopPresence({
+      platform: "darwin", resolveExecutable: async () => mac, listProcesses: async () => processes,
+    });
+    await expect(detectMac([desktopProcess({ executable: "/Applications/ChatGPT.app/Contents/Frameworks/ChatGPT Helper (Renderer).app/Contents/MacOS/ChatGPT Helper (Renderer)" })]))
+      .resolves.toMatchObject({ ready: false, executable: mac, reason: "Codex 桌面版未运行" });
+    await expect(detectMac([desktopProcess({ executable: mac, pid: 7 })])).resolves.toMatchObject({ ready: true, pid: 7 });
+    await expect(detectCodexDesktopPresence({ platform: "darwin", resolveExecutable: async () => undefined }))
+      .resolves.toMatchObject({ ready: false, reason: "未找到 Codex 桌面版安装包" });
+  });
+
   it("reports unsupported platforms as offline", async () => {
     await expect(detectCodexDesktopPresence({ platform: "linux" })).resolves.toMatchObject({ ready: false });
   });

@@ -40,6 +40,7 @@ class HostController : public QObject {
     Q_PROPERTY(bool autoStart READ autoStart NOTIFY changed)
     Q_PROPERTY(bool codexEnabled READ codexEnabled NOTIFY changed)
     Q_PROPERTY(bool dshEnabled READ dshEnabled NOTIFY changed)
+    Q_PROPERTY(bool piIntegrationEnabled READ piIntegrationEnabled NOTIFY changed)
     Q_PROPERTY(int cooldown READ cooldown NOTIFY changed)
     Q_PROPERTY(int pairSeconds READ pairSeconds NOTIFY changed)
     Q_PROPERTY(int runtimeCount READ runtimeCount NOTIFY changed)
@@ -87,6 +88,7 @@ public:
     bool autoStart() const { return m_settings.value("autoStart", false).toBool(); }
     bool codexEnabled() const { return m_settings.value("codexEnabled", true).toBool(); }
     bool dshEnabled() const { return m_settings.value("dshEnabled", false).toBool(); }
+    bool piIntegrationEnabled() const { return m_settings.value("piIntegrationEnabled", true).toBool(); }
     int cooldown() const { return m_cooldown; }
     int pairSeconds() const;
     int runtimeCount() const { return m_runtimeCount; }
@@ -118,6 +120,7 @@ public:
     Q_INVOKABLE void installAllAgents(const QString &action);
     Q_INVOKABLE void activateInstallation(const QString &kind, const QString &id);
     Q_INVOKABLE void enableCodexTerminal();
+    Q_INVOKABLE void piCommand(const QString &action);
     Q_INVOKABLE void selectCodexEntry(const QString &entry);
     Q_INVOKABLE void cancelInstall();
     Q_INVOKABLE void loadProviders(const QString &kind);
@@ -138,7 +141,7 @@ public:
     Q_INVOKABLE void restartDshServer();
     Q_INVOKABLE void openAgent(const QString &kind);
     Q_INVOKABLE void openAgentTui(const QString &kind);
-    Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl);
+    Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration = true);
     Q_INVOKABLE void diagnose();
     Q_INVOKABLE void exportDiagnostics();
     Q_INVOKABLE void copyDiagnostics();

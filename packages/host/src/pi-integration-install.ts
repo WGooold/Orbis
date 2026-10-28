@@ -57,10 +57,14 @@ async function isOtherOrbisPackage(entry: unknown, agentDir: string): Promise<bo
   try {
     const manifest: unknown = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
     return isObject(manifest) && (manifest.name === "@orbis/pi-extension" || manifest.name === "@pi-remote/pi-extension");
-  } catch {
-    return false;
+  } catch (error) {
+    // A moved or deleted Host leaves nothing to read. Recognize it by the runtime layout Orbis
+    // installs, so the stale entry is replaced; a missing package of the user's own is kept.
+    return error instanceof Error && "code" in error && error.code === "ENOENT" && ORBIS_RUNTIME_EXTENSION.test(root);
   }
 }
+
+const ORBIS_RUNTIME_EXTENSION = /[\\/]runtime[\\/]packages[\\/]pi-extension[\\/]?$/iu;
 
 export async function updatePiIntegration(input: {
   extensionDir: string;

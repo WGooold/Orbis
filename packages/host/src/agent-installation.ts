@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
@@ -36,6 +36,8 @@ export type AgentInstallStatus = LocalAgent & {
   terminalCompatible?: boolean;
   /** Official Windows desktop package plus a runnable Codex CLI, independent of terminal integration. */
   desktopInstalled?: boolean;
+  /** Pi only: the terminal `pi` command Orbis provides for its own installation (see pi-command.ts). */
+  terminalCommand?: "installed" | "available" | "foreign" | "unavailable"; terminalCommandDetail?: string;
   /** 机器 PATH 抢先，只有提权能修；界面只在为真时给出一次修复入口。 */
   terminalNeedsElevation?: boolean;
 };
@@ -111,7 +113,10 @@ export function installationSource(entry: string | undefined, root: string): Age
 /** Never invoke npm.cmd via PATH. Pin npm and its Node interpreter to one installation. */
 export async function resolveNpmTool(prefix?: string): Promise<{ command: string; args: string[] }> {
   const node = prefix && await exists(join(prefix, "node.exe")) ? join(prefix, "node.exe") : process.execPath;
-  const adjacent = join(dirname(node), "node_modules", "npm", "bin", "npm-cli.js");
+  // Host 运行时与 Windows 官方包把 npm 放在 node 旁边；POSIX 官方包是 `bin/node` + `lib/node_modules/npm`。
+  const candidates = [join(dirname(node), "node_modules", "npm", "bin", "npm-cli.js"), join(dirname(node), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")];
+  let adjacent = candidates[0]!;
+  for (const candidate of candidates) if (await exists(candidate)) { adjacent = candidate; break; }
   if (!await exists(adjacent)) throw new Error("缺少当前 Node 对应的 npm，请修复 Orbis Host 安装");
   return { command: node, args: [adjacent] };
 }
@@ -168,8 +173,17 @@ function failureMessage(error: unknown): string {
   return "Agent 下载或验证失败，请检查网络、npm 源和版本号";
 }
 
-async function verifyPackage(kind: InstallableAgentKind, prefix: string, requested: string, signal: AbortSignal, run: InstallRun): Promise<{ entry: string; version: string }> {
-  const packageRoot = join(prefix, "node_modules", agentPackages[kind]);
+/**
+ * npm 全局目录的两种布局：Windows 是 `<prefix>\node_modules`，POSIX 是 `<prefix>/lib/node_modules`
+ * （PATH 上只有 `<prefix>/bin`）。按 Windows 布局去推 POSIX 的前缀会得到 `<prefix>/lib`，npm 随后装进
+ * `lib/lib/node_modules`，校验又读回旧版本——更新看似成功，实际什么都没变。
+ */
+export function globalModulesDir(prefix: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? join(prefix, "node_modules") : join(prefix, "lib", "node_modules");
+}
+
+async function verifyPackage(kind: InstallableAgentKind, modulesDir: string, requested: string, signal: AbortSignal, run: InstallRun): Promise<{ entry: string; version: string }> {
+  const packageRoot = join(modulesDir, agentPackages[kind]);
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as { name?: string; version?: string; bin?: string | Record<string, string> };
   if (manifest.name !== agentPackages[kind] || typeof manifest.version !== "string" || !parseAgentVersion(manifest.version) || requested !== "latest" && manifest.version !== requested) throw new Error("安装包名称或版本不匹配");
   const bin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.[kind];
@@ -210,6 +224,10 @@ export async function installAgentPackage(
       prefix = resolve(resolve(options.existingEntry).slice(0, -suffix.length));
       // A workspace dependency is not a global installation. Never mutate another project's node_modules.
       if (await exists(join(prefix, "package.json"))) throw new Error("此入口属于项目依赖，请在项目中更新或选择 Orbis 独立安装");
+      if (process.platform !== "win32") {
+        if (basename(prefix) !== "lib") throw new Error("无法确定原安装位置，请选择 Orbis 独立安装");
+        prefix = dirname(prefix);
+      }
     } else {
       installations = await listManagedAgentInstallations(kind, root);
       prefix = join(root, kind, id);
@@ -267,7 +285,7 @@ export async function installAgentPackage(
       stopSampling?.();
     }
     signal.throwIfAborted(); report("verifying");
-    const result = await verifyPackage(kind, prefix, version, signal, run);
+    const result = await verifyPackage(kind, external ? globalModulesDir(prefix) : join(prefix, "node_modules"), version, signal, run);
     signal.throwIfAborted(); report("activating", result.version);
     if (!external) {
       // The atomic manifest is the commit point. Keep paths stable for native packages/postinstall shims.
@@ -305,7 +323,7 @@ export async function activateManagedAgent(kind: InstallableAgentKind, id: strin
   if (kind === "dsh" && compareAgentVersions(selected.version, DSH_VERSION) === -1) throw new Error(`Orbis 手机接入需要 DeepSeek Harness ${DSH_VERSION} 或兼容版本`);
   const prefix = join(root, kind, selected.id);
   if (!within(join(root, kind), prefix)) throw new Error("安装入口无效");
-  const result = await verifyPackage(kind, prefix, selected.version, signal, runAgentInstaller);
+  const result = await verifyPackage(kind, join(prefix, "node_modules"), selected.version, signal, runAgentInstaller);
   signal.throwIfAborted();
   await saveInstallations(root, kind, installations.map(item => ({ ...item, active: item.id === id })));
   return result;
@@ -348,12 +366,15 @@ export async function queryAgentStatus(kind: InstallableAgentKind, root: string,
 }
 
 /** Enumerate npm copies in PATH order, including packages whose CLI entry is missing. */
-export async function findAgentCopies(kind: InstallableAgentKind, env: NodeJS.ProcessEnv): Promise<{ entry: string; version?: string }[]> {
+export async function findAgentCopies(kind: InstallableAgentKind, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): Promise<{ entry: string; version?: string }[]> {
   const roots = (env.PATH ?? env.Path ?? "").split(delimiter).map(value => value.trim().replace(/^"|"$/g, "")).filter(Boolean);
   if (env.APPDATA) roots.push(join(env.APPDATA, "npm"));
+  // POSIX 的 PATH 上是 `<prefix>/bin`，包在 `<prefix>/lib/node_modules`（npm、nvm、fnm、Homebrew node 都如此）。
+  const modules = roots.flatMap(dir => platform === "win32" ? [join(dir, "node_modules")]
+    : [join(dir, "node_modules"), ...(basename(dir) === "bin" ? [globalModulesDir(dirname(dir), platform)] : [])]);
   const copies: { entry: string; version?: string }[] = []; const seen = new Set<string>();
-  for (const prefix of roots) {
-    const packageRoot = join(prefix, "node_modules", agentPackages[kind]);
+  for (const modulesDir of modules) {
+    const packageRoot = join(modulesDir, agentPackages[kind]);
     try {
       const actual = (await realpath(packageRoot)).toLowerCase();
       if (seen.has(actual)) continue;

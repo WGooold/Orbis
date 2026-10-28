@@ -36,7 +36,10 @@ async function bundle(source, target) {
     await cp(actual, target, { recursive: true, dereference: true, filter: sourcePath => !relative(actual, sourcePath).split(sep).includes("node_modules") });
   }
   inventory.push({ name: manifest.name, version: manifest.version, license: manifest.license ?? "See package source", path: relative(output, target).replaceAll("\\", "/") });
-  const dependencies = { ...manifest.dependencies, ...manifest.optionalDependencies, ...manifest.peerDependencies };
+  // Our own peers are supplied by the host program: Pi aliases @earendil-works/pi-coding-agent to the
+  // running copy for every extension it loads. Bundling one would ship an extra, unused Pi that Host
+  // then mistakes for the user's installation.
+  const dependencies = { ...manifest.dependencies, ...manifest.optionalDependencies, ...(workspace ? {} : manifest.peerDependencies) };
   for (const name of Object.keys(dependencies)) {
     const dependency = await locate(name, actual);
     if (!dependency) {

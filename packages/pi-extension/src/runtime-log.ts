@@ -1,8 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { resolveStateDir } from "@orbis/e2e";
 import { orbisEnvironment } from "@orbis/protocol";
-
-const DEFAULT_PI_EXTENSION_RUNTIME_LOG = join("data", "pi-extension-runtime.log");
 
 type PiExtensionRuntimeLogLevel = "off" | "error" | "warn" | "info" | "debug";
 type PiExtensionRuntimeLogFields = Record<string, string | number | boolean | undefined>;
@@ -84,7 +83,8 @@ export function piExtensionRuntimeLogPath(
   cwd: string = process.cwd(),
 ): string {
   const configured = orbisEnvironment(env, "RUNTIME_LOG");
-  if (!configured) return join(cwd, DEFAULT_PI_EXTENSION_RUNTIME_LOG);
+  // 默认放进 Orbis 自己的状态目录：Pi 的工作目录是用户的项目，不能往里面写 `data/` 文件夹。
+  if (!configured) return join(resolveStateDir(env.ORBIS_HOST_STATE_DIR?.trim() || undefined), "logs", "pi-extension-runtime.log");
   return isAbsolute(configured) ? configured : resolve(cwd, configured);
 }
 

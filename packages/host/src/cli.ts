@@ -124,7 +124,7 @@ async function runHost(
     const wrapper = resolveCodexWrapper();
     const endpointPath = codexDesktopEndpointPath(stateDir);
     const staged = wrapper === undefined ? undefined : stageCodexWrapper(wrapper, undefined, endpointPath);
-    if (wrapper === undefined) console.error("[codex-desktop] 未找到 Orbis 包装器（codex-launcher.exe），本轮无法接入");
+    if (wrapper === undefined) console.error("[codex-desktop] 未找到 Orbis 包装器（codex-launcher 或 codex-desktop-wrapper.js），本轮无法接入");
     if (staged !== undefined) {
       void ensureCodexDesktopEntry(staged.launcher).then(entry => console.log(`[codex-desktop] ${entry.state}：${entry.detail}`))
         .catch(error => console.error(`[codex-desktop] 设置接入入口失败：${error instanceof Error ? error.message : String(error)}`));

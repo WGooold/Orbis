@@ -1,12 +1,30 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 
-/** Open the target on the verified local Windows desktop, without restarting the app. */
+import { CODEX_DESKTOP_BUNDLE_ID } from "./codex-desktop-macos.js";
+
+/** Orbis 交给桌面版的变量；macOS 的 `open` 不转交调用方环境，只能逐个用 `--env` 带过去。 */
+const DESKTOP_ENV_KEYS = ["CODEX_CLI_PATH", "ORBIS_CODEX_WRAPPER_NODE", "ORBIS_CODEX_WRAPPER_SCRIPT", "ORBIS_CODEX_DESKTOP_ENDPOINT"] as const;
+
+function runOpen(args: readonly string[], failure: string): Promise<void> {
+  const child = spawn("/usr/bin/open", args, { stdio: ["ignore", "ignore", "pipe"], cwd: homedir(), timeout: 15_000 });
+  let stderr = "";
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-2_000); });
+  return new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", code => code === 0 ? resolve() : reject(new Error(`${failure}${stderr.trim() ? `：${stderr.trim()}` : ""}`)));
+  });
+}
+
+/** Open the target on the verified local desktop, without restarting the app. */
 export async function openCodexDesktopThread(threadId: string, hostId: string): Promise<void> {
-  if (process.platform !== "win32" || hostId !== "local" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(threadId)) {
+  if (!["win32", "darwin"].includes(process.platform) || hostId !== "local" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(threadId)) {
     throw new Error("desktop_refresh_route_unverified");
   }
   const uri = `codex://threads/${encodeURIComponent(threadId)}?hostId=local`;
+  // 同一个 ChatGPT.app 名字也属于普通 ChatGPT：按 bundle id 交给 Codex，不让系统挑默认处理者。
+  if (process.platform === "darwin") return runOpen(["-g", "-b", CODEX_DESKTOP_BUNDLE_ID, uri], "无法重新打开 Codex 桌面会话");
   const script = `$ErrorActionPreference = 'Stop'\nStart-Process -FilePath '${uri}' -WindowStyle Hidden`;
   const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
     { stdio: "ignore", windowsHide: true, cwd: homedir(), timeout: 15_000 });
@@ -23,8 +41,9 @@ export async function openCodexDesktopThread(threadId: string, hostId: string): 
  */
 export async function launchCodexDesktopApp(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   if (process.platform === "darwin") {
-    const child = spawn("open", ["-a", "Codex"], { stdio: "ignore", cwd: homedir(), env });
-    await new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开 Codex 桌面版"))); });
+    // 应用已经在跑时 `open` 只是把它带到前台，`--env` 不会改变它的环境。
+    const forwarded = DESKTOP_ENV_KEYS.flatMap(key => env[key]?.trim() ? ["--env", `${key}=${env[key]!.trim()}`] : []);
+    await runOpen(["-b", CODEX_DESKTOP_BUNDLE_ID, ...forwarded], "无法打开 Codex 桌面版");
     return;
   }
   const script = String.raw`

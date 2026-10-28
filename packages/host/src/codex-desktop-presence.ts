@@ -3,6 +3,8 @@ import { platform } from "node:os";
 import { promisify } from "node:util";
 import { join } from "node:path";
 
+import { listMacProcesses, resolveMacCodexDesktopExecutable } from "./codex-desktop-macos.js";
+
 const execute = promisify(execFile);
 
 export type CodexDesktopProcess = {
@@ -39,24 +41,25 @@ export type CodexDesktopPresenceOptions = {
  * closed.
  */
 export async function detectCodexDesktopPresence(options: CodexDesktopPresenceOptions = {}): Promise<CodexDesktopPresence> {
-  if ((options.platform ?? platform()) !== "win32") return { ready: false, reason: "Codex 桌面版只支持 Windows" };
+  const target = options.platform ?? platform();
+  if (!supportsCodexDesktop(target)) return { ready: false, reason: "Codex 桌面版只支持 Windows 与 macOS" };
   let executable: string | undefined;
   try {
-    executable = await (options.resolveExecutable ?? resolveCodexDesktopExecutable)();
+    executable = await (options.resolveExecutable ?? defaultResolver(target))();
   } catch (error) {
     return { ready: false, reason: "无法查询 Codex 桌面版安装位置", scanError: describeError(error) };
   }
   if (executable === undefined) return { ready: false, reason: "未找到 Codex 桌面版安装包" };
   let processes: readonly CodexDesktopProcess[];
   try {
-    processes = await (options.listProcesses ?? listCodexDesktopProcesses)();
+    processes = await (options.listProcesses ?? (target === "darwin" ? listMacCodexDesktopProcesses : listCodexDesktopProcesses))();
   } catch (error) {
     return { ready: false, executable, reason: "无法查询 Codex 桌面版进程", scanError: describeError(error) };
   }
   const normalized = executable.toLowerCase().replaceAll("/", "\\");
   const process = processes.find(candidate => candidate.executable.toLowerCase().replaceAll("/", "\\") === normalized
     && candidate.mainWindowHandle !== 0);
-  if (process === undefined) return { ready: false, executable, reason: "Codex 桌面版未打开可见窗口" };
+  if (process === undefined) return { ready: false, executable, reason: target === "darwin" ? "Codex 桌面版未运行" : "Codex 桌面版未打开可见窗口" };
   return { ready: true, executable: process.executable, pid: process.pid, title: process.title, reason: "Codex 桌面版已就绪" };
 }
 
@@ -69,6 +72,22 @@ export async function waitForCodexDesktop(options: CodexDesktopPresenceOptions =
   }
   if (!latest.ready) throw new Error(`Codex 桌面版启动后未就绪：${latest.reason}${latest.scanError === undefined ? "" : `（${latest.scanError}）`}`);
   return latest;
+}
+
+export function supportsCodexDesktop(target: NodeJS.Platform = platform()): boolean {
+  return target === "win32" || target === "darwin";
+}
+
+function defaultResolver(target: NodeJS.Platform): () => Promise<string | undefined> {
+  return target === "darwin" ? () => resolveMacCodexDesktopExecutable() : resolveCodexDesktopExecutable;
+}
+
+/**
+ * macOS 没有 Windows 那样廉价的「主窗口句柄」：主进程在跑就算就绪（关掉最后一个窗口的
+ * Electron 应用仍持有 app-server，手机照样能驱动它）。句柄字段只为与 Windows 共用匹配规则。
+ */
+async function listMacCodexDesktopProcesses(): Promise<readonly CodexDesktopProcess[]> {
+  return (await listMacProcesses()).map(({ pid, executable }) => ({ pid, executable, mainWindowHandle: 1, title: "Codex" }));
 }
 
 /** 查不到安装位置是「没装」；查询本身报错必须抛出，那是两种不同的结论。 */
@@ -87,8 +106,9 @@ async function resolveCodexDesktopExecutable(): Promise<string | undefined> {
  * GUI 启动应使用注册的应用标识，避免任务栏固定到带版本号的 EXE 路径。
  */
 export async function resolveCodexDesktopExecutablePath(options: CodexDesktopPresenceOptions = {}): Promise<string | undefined> {
-  if ((options.platform ?? platform()) !== "win32") return undefined;
-  return (options.resolveExecutable ?? resolveCodexDesktopExecutable)();
+  const target = options.platform ?? platform();
+  if (!supportsCodexDesktop(target)) return undefined;
+  return (options.resolveExecutable ?? defaultResolver(target))();
 }
 
 /** 导出给回归测试：这条查询脚本的语句边界必须留在文本里（见 `runPowerShell`）。 */

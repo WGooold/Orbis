@@ -324,6 +324,7 @@ function Resolve-PiLogs {
                 $candidateRoots.Add((Join-Path $file.Cwd 'data'))
             }
         }
+        $candidateRoots.Add((Join-Path $HOME '.orbis\logs'))
         $candidateRoots.Add((Join-Path $HOME '.pi\agent'))
         $candidateRoots.Add((Join-Path $HOME '.pi\agent\data'))
         $candidateRoots.Add($repo)

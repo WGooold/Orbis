@@ -139,14 +139,27 @@ describe("Agent download and installation lifecycle", () => {
 
   it("updates the detected global npm prefix and verifies its actual version", async () => {
     const root = await fixture(); const prefix = join(root, "Global Node");
-    const entry = await fakePackage(prefix, "codex", "1.0.0");
-    const run = vi.fn(packageRunner("codex", "2.0.0"));
+    // npm 全局布局：Windows 是 <prefix>\node_modules，POSIX 是 <prefix>/lib/node_modules。
+    const modules = (dir: string) => process.platform === "win32" ? dir : join(dir, "lib");
+    const entry = await fakePackage(modules(prefix), "codex", "1.0.0");
+    const run = vi.fn<InstallRun>(async (command, args, runOptions) => {
+      if (args.includes("install")) { await fakePackage(modules(args[args.indexOf("--prefix") + 1]!), "codex", "2.0.0"); return { stdout: "", stderr: "" }; }
+      return runAgentInstaller(command, args, runOptions);
+    });
     const result = await installAgentPackage("codex", "2.0.0", join(root, "managed"), signal(), undefined, { existingEntry: entry, run });
     expect(result.entry).toBe(entry);
     // 更新已有 npm 安装时仍然要落在原 prefix 上：安装调用不一定是第一次调用（闭包解析会先跑一次）。
     const installCall = run.mock.calls.map(call => call[1] as string[]).find(args => args.includes("install") && args.includes("--include=optional"));
     expect(installCall).toEqual(expect.arrayContaining(["--global", "--prefix", prefix, "--include=optional", "@openai/codex@2.0.0"]));
     expect(await listManagedAgentInstallations("codex", join(root, "managed"))).toEqual([]);
+  });
+
+  it("finds POSIX npm global copies through the bin directory on PATH", async () => {
+    const root = await fixture(); const prefix = join(root, "nvm", "v22");
+    const entry = await fakePackage(join(prefix, "lib"), "pi", "1.4.0");
+    await mkdir(join(prefix, "bin"), { recursive: true });
+    expect(await findAgentCopies("pi", { PATH: join(prefix, "bin") }, "darwin")).toEqual([{ entry, version: "1.4.0" }]);
+    expect(await findAgentCopies("pi", { PATH: join(prefix, "bin") }, "win32")).toEqual([]);
   });
 
   it("does not mistake project dependencies for a global npm installation", async () => {
@@ -176,5 +189,15 @@ describe("Agent download and installation lifecycle", () => {
     const pending = runAgentInstaller(process.execPath, ["-e", "setInterval(()=>{},1000)"], { signal: abort.signal, timeout: 10_000 });
     setTimeout(() => abort.abort(), 200);
     await expect(pending).rejects.toThrow("取消");
+  });
+});
+
+describe("Orbis-managed agent location", () => {
+  it("uses each platform's application data folder", async () => {
+    const { agentInstallRoot } = await import("./agent-root.js");
+    expect(agentInstallRoot({}, "darwin", "/Users/a")).toBe("/Users/a/Library/Application Support/Orbis/agents");
+    expect(agentInstallRoot({ LOCALAPPDATA: "C:\\Users\\a\\AppData\\Local" }, "win32", "C:\\Users\\a")).toBe(join("C:\\Users\\a\\AppData\\Local", "Orbis", "agents"));
+    expect(agentInstallRoot({}, "linux", "/home/a")).toBe("/home/a/.local/share/Orbis/agents");
+    expect(agentInstallRoot({ ORBIS_AGENT_INSTALL_ROOT: "/custom" }, "darwin", "/Users/a")).toBe("/custom");
   });
 });

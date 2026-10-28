@@ -271,7 +271,7 @@ void HostController::startHost() {
     if (!activated() || !m_bridgeReady || m_desiredRunning || agentInstalling()) return;
     m_desiredRunning = true; m_state = "connecting"; m_settings.setValue("runHost", true);
     auto params = agentSettings(); params.insert("relayUrl", relayUrl()); params.insert("credential", m_credential); params.insert("codexEnabled", codexEnabled());
-    params.insert("dshEnabled", dshEnabled());
+    params.insert("dshEnabled", dshEnabled()); params.insert("piIntegrationEnabled", piIntegrationEnabled());
     command("start", params);
 }
 void HostController::stopHost() { m_desiredRunning = false; m_settings.setValue("runHost", false); m_qr.clear(); command("stop"); }
@@ -317,6 +317,12 @@ void HostController::installAllAgents(const QString &action) {
 void HostController::activateInstallation(const QString &kind, const QString &id) {
     command("activateInstallation", {{"kind", kind}, {"id", id}}, [this](const QJsonValue &value) {
         setMessage("已切换到 Agent " + value.toObject().value("version").toString()); detectAgents();
+    });
+}
+void HostController::piCommand(const QString &action) {
+    command("piCommand", {{"action", action}}, [this, action](const QJsonValue &value) {
+        m_agents = value.toArray().toVariantList(); emit changed();
+        setMessage(action == "install" ? "已安装终端命令 pi，新开的终端窗口里即可使用" : "已移除终端命令 pi");
     });
 }
 void HostController::enableCodexTerminal() {
@@ -456,7 +462,7 @@ void HostController::openAgentTui(const QString &kind) {
         setMessage(kind == "dsh" ? "已打开 DeepSeek Harness 网页工作台" : QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(kind == "pi" ? "Pi" : "Codex"));
     });
 }
-void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl) {
+void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration) {
     QString normalized = relay.trimmed(); while (normalized.endsWith('/')) normalized.chop(1);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }
     if (m_desiredRunning) { setMessage("请先在概览中暂停连接，再修改设置"); return; }
@@ -488,7 +494,13 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
 #endif
     if (normalized != relayUrl()) { m_credential.clear(); m_email.clear(); m_challenge.clear(); m_verificationRequired = true; m_registrationAvailable = false; QFile::remove(activationPath()); }
     m_settings.setValue("relayUrl", normalized); m_settings.setValue("autoStart", startup); m_settings.setValue("codexEnabled", codex);
-    m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed()); m_settings.sync();
+    m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed());
+#ifdef Q_OS_MACOS
+    // 立即生效，不等下次启动 Host：用户关掉它往往是为了接着删除应用。
+    if (piIntegration != piIntegrationEnabled()) command("piIntegration", {{"enabled", piIntegration}});
+    m_settings.setValue("piIntegrationEnabled", piIntegration);
+#endif
+    m_settings.sync();
     if (!name.trimmed().isEmpty() && name.trimmed() != m_hostName) command("rename", {{"name", name.trimmed()}}, [this, name](const QJsonValue &) { m_hostName = name.trimmed(); emit changed(); });
     setMessage("设置已保存"); detectAgents(); refreshRegistrationPolicy();
 }

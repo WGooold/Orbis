@@ -15,7 +15,7 @@ const activation = vi.hoisted(() => ({ launch: vi.fn(), ensureEntry: vi.fn() }))
 vi.mock("./codex-desktop-app.js", () => ({ launchCodexDesktopApp: activation.launch }));
 vi.mock("./codex-shim-install.js", () => ({ ensureCodexDesktopEntry: activation.ensureEntry }));
 
-import { codexWrapperRoot, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, stageCodexWrapper } from "./codex-desktop-launcher.js";
+import { codexWrapperRoot, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper, stageCodexWrapper } from "./codex-desktop-launcher.js";
 
 async function descriptor(value: unknown): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "orbis-desktop-endpoint-"));
@@ -58,7 +58,7 @@ describe("staged Codex wrapper runtime", () => {
   it("stages only the two files the desktop app locks, and only copies what changed", async () => {
     const wrapper = await source();
     const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-staged-"));
-    const staged = stageCodexWrapper(wrapper, root);
+    const staged = stageCodexWrapper(wrapper, root, undefined, "win32");
 
     // 固定布局：launcher 靠“相对自身”找 node 与脚本，换位置不能换形状。
     expect(staged.launcher).toBe(join(root, "bin", "codex-launcher.exe"));
@@ -74,14 +74,14 @@ describe("staged Codex wrapper runtime", () => {
     // 早就存在且没变的本份不重拷（node.exe 有 80MB+），改了才刷新。
     const beforeLauncher = (await stat(staged.launcher)).mtimeMs;
     const beforeStub = (await stat(staged.script)).mtimeMs;
-    stageCodexWrapper(wrapper, root);
+    stageCodexWrapper(wrapper, root, undefined, "win32");
     expect((await stat(staged.launcher)).mtimeMs).toBe(beforeLauncher);
     expect((await stat(staged.script)).mtimeMs).toBe(beforeStub);
     await writeFile(wrapper.script, "wrapper-script-v2");
-    stageCodexWrapper(wrapper, root);
+    stageCodexWrapper(wrapper, root, undefined, "win32");
     expect((await stat(staged.script)).mtimeMs).not.toBe(beforeStub);
 
-    expect(codexWrapperRoot({ LOCALAPPDATA: "C:\\Users\\x\\AppData\\Local" })).toBe(join("C:\\Users\\x\\AppData\\Local", "Orbis", "wrapper"));
+    expect(codexWrapperRoot({ LOCALAPPDATA: "C:\\Users\\x\\AppData\\Local" }, "win32")).toBe(join("C:\\Users\\x\\AppData\\Local", "Orbis", "wrapper"));
     expect(codexWrapperRoot({ ORBIS_CODEX_WRAPPER_ROOT: root })).toBe(root);
     expect(existsSync(staged.launcher)).toBe(true);
   });
@@ -91,14 +91,16 @@ describe("staged Codex wrapper runtime", () => {
   // app-server 起不来（应用退到内存兜底，表现是“组织设置无法安全加载”）。
   it("is idempotent when handed an already staged wrapper", async () => {
     const wrapper = await source();
+  for (const platform of ["win32", "darwin"] as const) {
     const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-idempotent-"));
-    const staged = stageCodexWrapper(wrapper, root);
-    const again = stageCodexWrapper(staged, root);
+    const staged = stageCodexWrapper(wrapper, root, undefined, platform);
+    const again = stageCodexWrapper(staged, root, undefined, platform);
     expect(again).toEqual(staged);
     const stub = await readFile(staged.script, "utf8");
     expect(stub).toContain("wrapper.js");
     expect(stub).not.toContain(staged.script.replaceAll("\\", "/"));
     expect(stub).not.toContain(staged.script.replaceAll("/", "\\"));
+  }
   });
 
   it("keeps the custom Host endpoint available when Shell activation does not inherit Host environment", async () => {
@@ -140,5 +142,52 @@ describe("staged Codex wrapper runtime", () => {
     activation.launch.mockRejectedValueOnce(new Error("activation failed"));
     activation.ensureEntry.mockResolvedValue(undefined);
     await expect(launchCodexDesktopThroughWrapper(wrapper, endpointPath, root)).resolves.toBe(false);
+  });
+});
+
+// macOS 不分发 launcher：暂存时生成 sh 脚本，桌面版经 CODEX_CLI_PATH 直接执行它。
+describe("staged Codex wrapper runtime on macOS", () => {
+  const run = promisify(execFile);
+
+  it("generates an executable launcher that hands the desktop argv to the wrapper", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "orbis wrapper's source-"));
+    const script = join(dir, "wrapper.js");
+    await writeFile(join(dir, "package.json"), '{"type":"module"}');
+    await writeFile(script, "export function main(argv) { console.log(JSON.stringify(argv)); }");
+    const root = await mkdtemp(join(tmpdir(), "orbis wrapper's root-"));
+    const staged = stageCodexWrapper({ launcher: "", node: process.execPath, script }, root, undefined, "darwin");
+
+    expect(staged.launcher).toBe(join(root, "bin", "codex-launcher"));
+    // 不复制 node：macOS 上运行中的文件照样能被替换，直接用运行 Host 的那个。
+    expect(staged.node).toBe(process.execPath);
+    expect(staged.script).toBe(join(root, "packages", "host", "dist", "codex-desktop-wrapper.js"));
+    expect((await stat(staged.launcher)).mode & 0o111).not.toBe(0);
+    const before = (await stat(staged.launcher)).mtimeMs;
+    stageCodexWrapper({ launcher: "", node: process.execPath, script }, root, undefined, "darwin");
+    expect((await stat(staged.launcher)).mtimeMs).toBe(before);
+
+    if (process.platform !== "win32") {
+      await expect(run(staged.launcher, ["app-server", "--analytics-default-enabled", "it's"])).resolves
+        .toMatchObject({ stdout: `${JSON.stringify(["app-server", "--analytics-default-enabled", "it's"])}\n` });
+    }
+  });
+
+  it.runIf(process.platform !== "win32")("falls back to an explicit real CLI when node or the script is gone", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "orbis-wrapper-fallback-"));
+    const real = join(dir, "codex");
+    await writeFile(real, "#!/bin/sh\necho real \"$@\"\n", { mode: 0o755 });
+    const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-fallback-root-"));
+    const staged = stageCodexWrapper({ launcher: "", node: join(dir, "missing-node"), script: join(dir, "missing.js") }, root, undefined, "darwin");
+    await expect(run(staged.launcher, ["--version"], { env: { ...process.env, ORBIS_CODEX_REAL: real } })).resolves.toMatchObject({ stdout: "real --version\n" });
+    await expect(run(staged.launcher, ["--version"], { env: { ...process.env, ORBIS_CODEX_REAL: "" } })).rejects.toMatchObject({ code: 127 });
+  });
+
+  it("resolves the wrapper without a shipped launcher binary", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-resolve-"));
+    const script = join(root, "wrapper.js");
+    await writeFile(script, "");
+    const resolved = resolveCodexWrapper({ ORBIS_CODEX_WRAPPER_ROOT: root, ORBIS_CODEX_WRAPPER_SCRIPT: script }, "darwin");
+    expect(resolved?.launcher).toBe(join(root, "bin", "codex-launcher"));
+    expect(codexWrapperRoot({}, "darwin")).toContain(join("Library", "Application Support", "Orbis", "wrapper"));
   });
 });

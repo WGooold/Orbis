@@ -2,7 +2,7 @@
 
 Date: 2026-10-04
 
-Status: accepted; revised 2026-10-04 to separate terminal and desktop backends; revised 2026-10-05 to record automatic re-attachment and the attach state published to the two clients; **replaced 2026-10-05**: the proxy/daemon route cannot work on Windows, so the desktop backend attaches through an Orbis wrapper instead (see the withdrawal note at the end).
+Status: accepted; revised 2026-10-28 to support macOS; revised 2026-10-04 to separate terminal and desktop backends; revised 2026-10-05 to record automatic re-attachment and the attach state published to the two clients; **replaced 2026-10-05**: the proxy/daemon route cannot work on Windows, so the desktop backend attaches through an Orbis wrapper instead (see the withdrawal note at the end).
 
 ## Context
 
@@ -47,6 +47,15 @@ The desktop `request_user_input_async` tool produces an `agentMessage` with a `q
 Native turn status, history and live items determine which questions remain actionable, so attachment, reconnect, desktop answers and revert all reconcile the same pending interactions. Verified against desktop `26.1002.7124.0`: its answer action and submission path require the question's owning turn to be `inProgress`. Completed, interrupted or failed turns leave readable question history but disable answering even without a reply. Host sends `interaction.cancelled` when that turn ends, excludes those questions from snapshots, and rejects late answers instead of starting another turn. A later ordinary user message or another question does not itself expire an unanswered question in a still-running turn.
 
 The desktop also initializes a 30-second composer-panel deadline and clears it on user interaction. That timer only minimizes the panel; the transcript can reopen an unanswered question while its turn continues. It is local presentation state, not a shared expiration or an approval timeout. Host therefore keeps `expiresAt` unbounded and derives answerability from native turn status. Cancelling the mobile form dismisses it locally without sending an answer or stopping the turn. Conversation Entries retain readable question/option text and render reply envelopes as readable answers. The mobile client keeps its existing questionnaire UI and generic interaction protocol.
+
+### Revision 2026-10-28: macOS uses the same wrapper
+
+The macOS desktop application (`com.openai.codex`, installed as `ChatGPT.app` — the same bundle name as the plain ChatGPT app `com.openai.chat`, so Host identifies it by bundle id only) also spawns its app-server as a private stdio child by default. Its WebSocket/daemon branch is taken only when `CODEX_APP_SERVER_USE_LOCAL_DAEMON=1` and no `CODEX_CLI_PATH` is set, and it honours an absolute `CODEX_CLI_PATH` as a CLI override (verified against `26.1023.50603` with `codex-cli 0.165.0-alpha.1.2`). macOS therefore attaches through the same wrapper and endpoint descriptor; only the platform pieces differ:
+
+- No launcher binary ships. Staging generates `~/Library/Application Support/Orbis/wrapper/bin/codex-launcher`, a POSIX `sh` script that runs the Host's own `node` on the staged stub. Node is not copied, because macOS can replace files that running processes hold open. When node or the script is missing, the launcher executes `ORBIS_CODEX_REAL` or the CLI bundled with its parent `.app`, so the desktop application still starts.
+- The wrapper resolves the real CLI from its parent process, which is the GUI main process: `<app>/Contents/Resources/codex-cli/bin/codex`. That CLI and `codex-code-mode-host` update in place with the application, so the Windows install-race wait does not apply.
+- The entry is the launchd user-session environment (`launchctl setenv CODEX_CLI_PATH …`), which apps opened from the Dock, Launchpad, Finder or Spotlight inherit. A LaunchAgent (`~/Library/LaunchAgents/dev.orbis.codex-desktop-entry.plist`) sets it again at every login. The ownership rules match Windows: a foreign value is reported and left alone. An application that is already running keeps its old environment and has to be reopened.
+- Presence means the bundle's main executable is in `ps`. Electron helpers live under `Contents/Frameworks` and do not match. Launch and thread links use `open -b com.openai.codex`, passing the wrapper variables with `--env`.
 
 ### Withdrawn: proxy through the desktop daemon
 

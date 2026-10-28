@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join, isAbsolute } from "node:path";
 
+import { agentInstallRoot } from "./agent-root.js";
+
 export function codexSelectionPath(): string {
-  return join(process.env.ORBIS_AGENT_INSTALL_ROOT ?? join(process.env.LOCALAPPDATA ?? homedir(), "Orbis", "agents"), "codex-selection.json");
+  return join(agentInstallRoot(), "codex-selection.json");
 }
 
 export async function readCodexSelection(): Promise<string | undefined> {

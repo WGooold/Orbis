@@ -4,13 +4,17 @@
  * 包装器本体是 `codex-launcher.exe` + `codex-desktop-wrapper.js`（随 Host 运行时
  * 一起分发）。通过用户级 `CODEX_CLI_PATH` 接入包装器，GUI 使用 Windows 注册的
  * 应用标识启动，保留正式图标和不依赖安装版本目录的任务栏快捷方式。
+ *
+ * macOS 不分发 launcher：暂存时生成一段 sh 脚本（见 `renderMacCodexLauncher`），
+ * 它直接用运行 Host 的那个 node 跑包装器。
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { launchCodexDesktopApp } from "./codex-desktop-app.js";
+import { renderMacCodexLauncher } from "./codex-desktop-macos.js";
 import { ensureCodexDesktopEntry } from "./codex-shim-install.js";
 import type { DesktopRefreshEndpoint } from "./codex-desktop-refresh-bridge.js";
 
@@ -34,9 +38,10 @@ export function codexDesktopEndpointPath(stateDir: string): string {
  * 桌面版一启动，launcher 与 node 就整个会话期常驻，于是它们会被锁住；如果它们就住在
  * Host 的 runtime 里，Host 升级时安装器替换不掉那两个文件（用户会看到“文件被占用”）。
  */
-export function codexWrapperRoot(env: NodeJS.ProcessEnv = process.env): string {
+export function codexWrapperRoot(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
   const explicit = env.ORBIS_CODEX_WRAPPER_ROOT?.trim();
   if (explicit) return explicit;
+  if (platform === "darwin") return join(homedir(), "Library", "Application Support", "Orbis", "wrapper");
   return join(env.LOCALAPPDATA ?? homedir(), "Orbis", "wrapper");
 }
 
@@ -57,7 +62,9 @@ type WrapperStamp = Record<string, { size: number; mtimeMs: number }>;
  * 放一个转发到真实实现的 stub：launcher 的“相对自身解析”回退因此仍然能用（用户自己带
  * 持久环境变量启动桌面版的场景）。
  */
-export function stageCodexWrapper(wrapper: CodexDesktopWrapper, root = codexWrapperRoot(), endpointPath?: string): CodexDesktopWrapper {
+export function stageCodexWrapper(wrapper: CodexDesktopWrapper, root = codexWrapperRoot(), endpointPath?: string,
+  platform: NodeJS.Platform = process.platform): CodexDesktopWrapper {
+  if (platform === "darwin") return stageMacCodexWrapper(wrapper, root, endpointPath);
   // 已经是暂存目录里的那份：再 stage 一次会把 stub 指向它自己（自引用 import → 包装器
   // 进程爆栈 → 桌面版 app-server 起不来 → 应用退到内存兜底 → “组织设置无法加载”。
   if (isInsideDirectory(wrapper.launcher, root)) return wrapper;
@@ -115,6 +122,32 @@ export function stageCodexWrapper(wrapper: CodexDesktopWrapper, root = codexWrap
   return staged;
 }
 
+/**
+ * macOS 的暂存：文件被运行中的进程打开时照样能替换，所以不复制 node，也不需要身份戳；
+ * 只生成两样东西——转发到安装目录实现的 stub，以及桌面版经 `CODEX_CLI_PATH` 执行的
+ * sh launcher。内容不变就不重写，避免每次拉起都改动 mtime。
+ */
+function stageMacCodexWrapper(wrapper: CodexDesktopWrapper, root: string, endpointPath?: string): CodexDesktopWrapper {
+  const script = isInsideDirectory(wrapper.script, root) ? wrapper.script : join(root, "packages", "host", "dist", "codex-desktop-wrapper.js");
+  const staged: CodexDesktopWrapper = { launcher: join(root, "bin", "codex-launcher"), node: wrapper.node, script };
+  const writeIfChanged = (path: string, content: string, mode: number) => {
+    let current: string | undefined;
+    try { current = readFileSync(path, "utf8"); } catch { /* 首次暂存 */ }
+    if (current !== content) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content, { mode });
+    }
+    chmodSync(path, mode);
+  };
+  try {
+    if (script !== wrapper.script) writeIfChanged(script, wrapperStub(wrapper.script, endpointPath), 0o644);
+    writeIfChanged(staged.launcher, renderMacCodexLauncher(staged.node, staged.script), 0o755);
+  } catch {
+    // 写不进去时 launcher 不存在：入口不会指向它，拉起也会回退到普通应用激活。
+  }
+  return staged;
+}
+
 /** 这个路径是否落在某个目录里（都取绝对路径比较，不管结尾斜杠与大小写）。 */
 function isInsideDirectory(path: string, directory: string): boolean {
   const target = join(directory).replaceAll("/", "\\").replace(/[\\]+$/u, "").toLowerCase();
@@ -138,12 +171,14 @@ function wrapperStub(source: string, endpointPath?: string): string {
  * 包装器随 Host 运行时一起分发；缺任何一件就当没有包装器。
  * 环境变量只用于开发/测试时的显式覆盖。
  */
-export function resolveCodexWrapper(env: NodeJS.ProcessEnv = process.env): CodexDesktopWrapper | undefined {
+export function resolveCodexWrapper(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): CodexDesktopWrapper | undefined {
   const runtimeRoot = fileURLToPath(new URL("../../../", import.meta.url));
-  const launcher = env.ORBIS_CODEX_WRAPPER?.trim() || join(runtimeRoot, "bin", "codex-launcher.exe");
   const node = env.ORBIS_CODEX_WRAPPER_NODE?.trim() || process.execPath;
   const script = env.ORBIS_CODEX_WRAPPER_SCRIPT?.trim() || fileURLToPath(new URL("./codex-desktop-wrapper.js", import.meta.url));
-  if (!existsSync(launcher) || !existsSync(script)) return undefined;
+  // macOS 的 launcher 在暂存时生成，这里只给出它将要在的位置。
+  const launcher = env.ORBIS_CODEX_WRAPPER?.trim()
+    || (platform === "darwin" ? join(codexWrapperRoot(env, platform), "bin", "codex-launcher") : join(runtimeRoot, "bin", "codex-launcher.exe"));
+  if (!existsSync(script) || (platform === "darwin" ? !existsSync(node) : !existsSync(launcher))) return undefined;
   return { launcher, node, script };
 }
 

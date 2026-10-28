@@ -59,6 +59,8 @@ input.on("line", line => {
         case "activateInstallation": result = await runtime.activateInstallation(String(p.kind), String(p.id)); break;
         case "selectCodexEntry": result = await runtime.selectCodexEntry(String(p.entry)); break;
         case "enableCodexTerminal": result = await runtime.enableCodexTerminal(String(p.runtimeRoot)); break;
+        case "piIntegration": await runtime.setPiIntegration(p.enabled === true); break;
+        case "piCommand": result = await runtime.piCommand(String(p.action)); break;
         case "provider.list": result = await runtime.listProviders(String(p.kind)); break;
         case "provider.reorder": result = await runtime.reorderProviders(String(p.kind), p.ids); break;
         case "provider.get": result = await runtime.getProvider(String(p.kind), String(p.id)); break;
