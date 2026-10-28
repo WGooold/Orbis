@@ -29,6 +29,27 @@ struct PresentationTests {
         let assistant = ChatMessage(messageId: "a", role: "assistant", content: [ChatContent(type: "text", text: "不要用助手开场命名", toolName: nil, artifact: nil)], timestamp: 0, isError: nil)
         #expect(sessionTitle(alias: nil, runtime: runtimeWithoutTitle, session: nil, messages: [assistant]) == "session")
     }
+    @Test func liveToolsAreMaterializedIntoTheAssistantTurnByOrder() {
+        func tool(_ id: String, order: Int64) -> ToolSummary {
+            ToolSummary(tool: ToolIdentity(agent: ToolAgent(hostId: "h", agentKind: "codex", sessionId: "s"), toolCallId: id), order: order,
+                        toolName: "shell", phase: "finished", isError: nil, inputSummary: nil, resultSummary: nil, errorSummary: nil)
+        }
+        func text(_ id: String, _ role: String = "assistant") -> ChatMessage {
+            ChatMessage(messageId: id, role: role, content: [ChatContent(type: "text", text: id, toolName: nil, artifact: nil)], timestamp: 0, isError: nil)
+        }
+        let persisted = ChatMessage(messageId: "old", role: "assistant", content: [
+            ChatContent(type: "tool_call", text: nil, toolName: "shell", artifact: nil, toolCallId: "inline"),
+        ], timestamp: 0, isError: nil)
+        let messages = [text("history", "user"), persisted, text("prompt", "user"), text("answer")]
+        let result = materializeLiveTools(messages, tools: [tool("second", order: 2), tool("inline", order: 0), tool("first", order: 1)],
+                                          liveOrders: ["prompt": 0, "answer": 3])
+        #expect(result.map(\.messageId) == ["history", "old", "prompt", "tool-live:first", "tool-live:second", "answer"])
+        #expect(result[3].content.first?.summary?.tool?.toolCallId == "first")
+        let rows = chatRows(result)
+        #expect(rows.count == 4 && rows[3].messages.map(\.messageId) == ["tool-live:first", "tool-live:second", "answer"])
+        #expect(materializeLiveTools(messages, tools: [], liveOrders: ["answer": 3]) == messages)
+    }
+
     private var runtimeWithoutTitle: RuntimeSummary { RuntimeSummary(runtimeId: "runtime", name: "Agent", cwd: "/repo", status: "idle", sessionId: "session") }
 
     @Test func aliasesAndPreviewsHaveAndroidLengthWhitespaceAndSentenceRules() {

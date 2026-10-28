@@ -132,6 +132,25 @@ func chatRows(_ messages: [ChatMessage]) -> [ChatRow] {
     return rows
 }
 
+/// 宿主在运行中的回合里不会下发只含工具调用的 live 消息，而是放进工具清单（与 Android materializeToolPayload 一致）。
+/// 这里把还没出现在消息里的工具还原成助手消息，并和 live 消息按 order 排序，使工具卡片落在对应的回复气泡里。
+func materializeLiveTools(_ messages: [ChatMessage], tools: [ToolSummary], liveOrders: [String: Int64]) -> [ChatMessage] {
+    let represented = Set(messages.flatMap { message in
+        message.content.flatMap { [$0.toolCallId, $0.summary?.tool?.toolCallId].compactMap { $0 } } + [message.toolSummary?.tool?.toolCallId].compactMap { $0 }
+    })
+    let synthetic = tools.compactMap { tool -> (order: Int64, message: ChatMessage)? in
+        guard let id = tool.tool?.toolCallId, !represented.contains(id) else { return nil }
+        let content = ChatContent(type: "tool_call", text: nil, toolName: tool.toolName, artifact: nil, summary: tool, toolCallId: id)
+        return (tool.order, ChatMessage(messageId: "tool-live:\(id)", role: "assistant", content: [content], timestamp: 0, isError: nil))
+    }
+    guard !synthetic.isEmpty else { return messages }
+    let settled = messages.filter { liveOrders[$0.messageId] == nil }
+    let live = messages.compactMap { message in liveOrders[message.messageId].map { (order: $0, message: message) } }
+    return settled + (live + synthetic).enumerated()
+        .sorted { ($0.element.order, $0.offset) < ($1.element.order, $1.offset) }
+        .map(\.element.message)
+}
+
 // Fenced blocks are kept verbatim, including unfinished streamed blocks. Inline
 // formatting is rendered by AttributedString; code has its own scroll/copy UI.
 func markdownBlocks(_ text: String) -> [MarkdownBlock] {

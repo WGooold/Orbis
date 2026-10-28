@@ -47,17 +47,12 @@ struct LiveToolsView: View {
     @EnvironmentObject private var inventory: ToolInventories
     let runtime: RuntimeSummary
     var body: some View {
-        let represented = Set(store.messages.flatMap { message in
-            message.content.compactMap { $0.summary?.tool?.toolCallId } + [message.toolSummary?.tool?.toolCallId].compactMap { $0 }
-        })
-        let tools = (inventory.visible[runtime.runtimeId] ?? []).filter { !represented.contains($0.tool?.toolCallId ?? "") }
         VStack(alignment: .leading, spacing: 12) {
             if inventory.loading.contains(runtime.runtimeId) { ProgressView("正在同步工具活动…").font(.system(size: 12)) }
             if let error = inventory.errors[runtime.runtimeId] {
                 OrbisNotice(text: error, error: true)
                 OrbisActionButton(title: "重试工具清单", symbol: "arrow.clockwise") { inventory.retry(runtime.runtimeId) }.disabled(!store.canSend)
             }
-            ForEach(tools, id: \.tool?.toolCallId) { tool in ToolSummaryView(summary: tool) }
         }
     }
 }

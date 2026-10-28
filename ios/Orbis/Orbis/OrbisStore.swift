@@ -64,6 +64,10 @@ final class OrbisStore: ObservableObject {
     private var connectionGeneration = UUID()
     private var conversations: [String: [ChatMessage]] = [:]
     private var liveMessageIds: [String: Set<String>] = [:]
+    // 宿主会从 live.messages 里去掉只含工具调用的消息，改由工具清单承载；这里记录还原它们所需的顺序和清单版本。
+    private var liveOrders: [String: [String: Int64]] = [:]
+    private var liveToolReferences: [String: ToolReference] = [:]
+    private var liveTools: [String: [ToolSummary]] = [:]
     private var displayMessageIds: [String: [String: String]] = [:]
     private var runtimeEventSequences: [String: Int64] = [:]
     private var pendingSyncs: [String: (runtimeId: String, sessionId: String, commandId: String, range: String, boundary: String?, leaf: String?)] = [:]
@@ -104,6 +108,7 @@ final class OrbisStore: ObservableObject {
             guard let self else { return }
             let ids = self.toolAcknowledgements.filter { $0.value.runtimeId == runtime && $0.value.reference == reference }.map(\.key)
             for id in ids { self.toolAcknowledgements[id] = nil; self.acknowledge(runtimeId: runtime, syncId: id, result: "applied") }
+            if runtime == self.selectedRuntimeId { self.publishMessages() }
         }
         if autoConnect, let selectedHostId { connect(hostId: selectedHostId) }
     }
@@ -211,6 +216,7 @@ final class OrbisStore: ObservableObject {
         toolContent.close(); toolInventories.clear(); toolAcknowledgements = [:]
         runtimes = []; sessions = []; messages = []; selectedRuntimeId = nil
         conversations = [:]; liveMessageIds = [:]; displayMessageIds = [:]
+        liveOrders = [:]; liveToolReferences = [:]; liveTools = [:]
         oldestEntries = [:]; sessionLeaves = [:]; hasOlderHistory = [:]; historyErrors = [:]; historyLoading = []
         sourcePositions = [:]; runtimeEventSequences = [:]
         pendingActivation = nil; activePath = nil
@@ -794,7 +800,7 @@ final class OrbisStore: ObservableObject {
         }
         if event["mode"] as? String == "replace" {
             conversations[runtimeId] = prefix
-            liveMessageIds[runtimeId] = []
+            liveMessageIds[runtimeId] = []; liveOrders[runtimeId] = [:]
             if prefix.isEmpty { displayMessageIds[runtimeId] = [:] }
         }
         applyProjection(event, runtimeId: runtimeId)
@@ -819,12 +825,13 @@ final class OrbisStore: ObservableObject {
            reference.agent.hostId == selectedHostId,
            reference.agent.sessionId == runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId {
             toolInventories.require(reference, runtime: runtimeId)
-        }
+            if liveToolReferences[runtimeId] != reference { liveToolReferences[runtimeId] = reference }
+        } else if live != nil { liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil }
         if live?["complete"] as? Bool == true {
             let previousLive = liveMessageIds[runtimeId] ?? []
             let canonical = Set((displayMessageIds[runtimeId] ?? [:]).values)
             conversations[runtimeId]?.removeAll { previousLive.contains($0.messageId) && !canonical.contains($0.messageId) }
-            liveMessageIds[runtimeId] = []
+            liveMessageIds[runtimeId] = []; liveOrders[runtimeId] = [:]
         }
         if let display = event["display"] as? [String: Any], let entries = display["entries"] as? [[String: Any]] {
             for row in entries {
@@ -852,6 +859,7 @@ final class OrbisStore: ObservableObject {
                         continue
                     }
                     liveMessageIds[runtimeId, default: []].insert(message.messageId)
+                    if let order = integer(row["order"]) { liveOrders[runtimeId, default: [:]][message.messageId] = order }
                     upsert(message, runtimeId: runtimeId)
                 }
             }
@@ -879,13 +887,18 @@ final class OrbisStore: ObservableObject {
         guard (0...1024).contains(index) else { return }
         while content.count <= index { content.append(ChatContent(type: kind, text: "", toolName: nil, artifact: nil)) }
         let item = content[index]
-        content[index] = ChatContent(type: item.type, text: (item.text ?? "") + delta, toolName: item.toolName, artifact: item.artifact)
+        content[index] = ChatContent(type: item.type, text: (item.text ?? "") + delta, toolName: item.toolName, artifact: item.artifact, summary: item.summary, toolCallId: item.toolCallId)
         upsert(ChatMessage(messageId: id, role: previous?.role ?? "assistant", content: content,
             timestamp: previous?.timestamp ?? Int64(Date().timeIntervalSince1970 * 1000), isError: previous?.isError), runtimeId: runtimeId)
     }
 
     private func publishMessages() {
-        messages = selectedRuntimeId.flatMap { conversations[$0] } ?? []
+        guard let runtimeId = selectedRuntimeId else { messages = []; updateSyncing(); return }
+        // 清单尚未追上本次投影时沿用上一次已确认的工具，避免卡片闪烁或用旧清单造出重复卡片。
+        if let reference = liveToolReferences[runtimeId], toolInventories.covers(reference, runtime: runtimeId) {
+            liveTools[runtimeId] = toolInventories.visible[runtimeId] ?? []
+        }
+        messages = materializeLiveTools(conversations[runtimeId] ?? [], tools: liveTools[runtimeId] ?? [], liveOrders: liveOrders[runtimeId] ?? [:])
         updateSyncing()
     }
 
@@ -899,7 +912,7 @@ final class OrbisStore: ObservableObject {
         let actions = runtimeActions.filter { $0.value.runtimeId == runtimeId }.map(\.key)
         for id in actions { runtimeActions[id] = nil; pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel() }
         conversations[runtimeId] = nil
-        liveMessageIds[runtimeId] = nil
+        liveMessageIds[runtimeId] = nil; liveOrders[runtimeId] = nil; liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil
         displayMessageIds[runtimeId] = nil
         sourcePositions[runtimeId] = nil
         syncedSessions = syncedSessions.filter { !$0.hasPrefix(runtimeId + "|") }

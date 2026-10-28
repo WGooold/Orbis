@@ -129,6 +129,7 @@ struct ChatContent: Codable, Hashable {
     let toolName: String?
     let artifact: RemoteArtifact?
     var summary: ToolSummary? = nil
+    var toolCallId: String? = nil
 }
 
 struct ToolSummary: Codable, Hashable {
