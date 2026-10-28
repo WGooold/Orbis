@@ -1,0 +1,6 @@
+{
+  "name": "orbis-mod-validation-probe",
+  "version": "0.1.0",
+  "description": "Isolated Mods API compatibility probe for the Orbis Claude Code integration ADR",
+  "author": { "name": "Orbis" }
+}

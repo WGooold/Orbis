@@ -6,9 +6,8 @@ import {
   activateManagedAgent, activeManagedEntry, agentEntries, agentPackages, compareAgentVersions,
   extractAgentVersion, fetchNpmLatestVersion, findAgentCopies, installAgentPackage, installPackage,
   listManagedAgentInstallations, queryAgentStatus, resolveNpmTool, runAgentInstaller,
-  type AgentInstallProgress, type InstallRun,
+  type AgentInstallProgress, type InstallRun, type InstallableAgentKind,
 } from "./agent-installation.js";
-import type { AgentKind } from "@pi-remote/protocol";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -18,7 +17,7 @@ afterEach(async () => {
 async function fixture(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "orbis-install-")); roots.push(root); return root;
 }
-async function fakePackage(prefix: string, kind: AgentKind, version: string, options: { output?: string; bin?: string; name?: string; exit?: number } = {}): Promise<string> {
+async function fakePackage(prefix: string, kind: InstallableAgentKind, version: string, options: { output?: string; bin?: string; name?: string; exit?: number } = {}): Promise<string> {
   const packageRoot = join(prefix, "node_modules", agentPackages[kind]);
   const entry = join(packageRoot, agentEntries[kind]);
   await mkdir(dirname(entry), { recursive: true });
@@ -26,7 +25,7 @@ async function fakePackage(prefix: string, kind: AgentKind, version: string, opt
   await writeFile(entry, "console.log(" + JSON.stringify(options.output ?? version) + "); process.exit(" + (options.exit ?? 0) + ");");
   return entry;
 }
-function packageRunner(kind: AgentKind, version: string, options: Parameters<typeof fakePackage>[3] = {}): InstallRun {
+function packageRunner(kind: InstallableAgentKind, version: string, options: Parameters<typeof fakePackage>[3] = {}): InstallRun {
   return async (command, args, runOptions) => {
     if (args.includes("install")) {
       await fakePackage(args[args.indexOf("--prefix") + 1]!, kind, version, options);

@@ -10,5 +10,10 @@
     "packages/**/*.test.ts",
     "vitest.config.ts",
     "eslint.config.js"
+  ],
+  "exclude": [
+    // Claude Mods tests are compiled and executed by `claude plugin test`,
+    // which provides the version-specific `claude-code/testing` module.
+    "packages/claude-mod/tests/**/*.test.ts"
   ]
 }

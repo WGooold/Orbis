@@ -30,6 +30,7 @@ import {
   type RuntimeMetadata,
 } from "@pi-remote/protocol";
 import WebSocket, { WebSocketServer } from "ws";
+import type { ClaudeModsPoll } from "./claude-mods-bridge.js";
 
 export type CodexLaunchRequest = { cwd: string };
 export type CodexLaunchResult = { endpoint: string; command: string; prefixArgs: readonly string[] };
@@ -44,6 +45,12 @@ export type HostLoopbackServerOptions = {
   onRuntimeEvent?: (runtimeId: string, sequence: number, event: RuntimeEvent) => void;
   /** 终端 shim 请求官方 Codex 接入同一个 app-server。 */
   onCodexLaunch?: (request: CodexLaunchRequest) => Promise<CodexLaunchResult>;
+  /** Claude Code command Hook bridge. The request is held synchronously until resolved. */
+  onClaudeHook?: (input: unknown, signal?: AbortSignal) => Promise<unknown>;
+  /** Authenticated Claude Mods long-poll bridge; the TUI remains the execution owner. */
+  onClaudeModsHello?: (input: unknown) => { ok: boolean; [key: string]: unknown };
+  onClaudeModsPoll?: (input: unknown) => ClaudeModsPoll;
+  onClaudeModsEvent?: (input: unknown) => "accepted" | "invalid" | "stale" | "offline";
 
   /** 本机 runtime 推上来的二进制帧（artifact 分片）。 */
   onRuntimeFrame?: (runtimeId: string, frame: Buffer) => void;
@@ -212,7 +219,8 @@ export class HostLoopbackServer {
 
   async #handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
-    if (path !== "/v1/codex/launch") {
+    const claudeModsPath = path === "/v1/claude/mods/hello" || path === "/v1/claude/mods/poll" || path === "/v1/claude/mods/event";
+    if (path !== "/v1/codex/launch" && path !== "/v1/claude/hook" && !claudeModsPath) {
       response.writeHead(404).end();
       return;
     }
@@ -222,6 +230,65 @@ export class HostLoopbackServer {
     }
     if (request.headers.authorization !== `Bearer ${this.#token}`) {
       this.#writeJson(response, 401, { error: "unauthorized" });
+      return;
+    }
+    if (claudeModsPath) {
+      const callback = path.endsWith("/hello") ? this.#options.onClaudeModsHello
+        : path.endsWith("/poll") ? this.#options.onClaudeModsPoll : this.#options.onClaudeModsEvent;
+      if (callback === undefined) {
+        this.#writeJson(response, 503, { error: "claude_mods_unavailable" });
+        return;
+      }
+      try {
+        const input = await readJsonRequest(request, 256 * 1024);
+        const result = callback(input);
+        const status = typeof result === "string" ? result === "accepted" ? 202 : result === "invalid" ? 400 : 409
+          : "ok" in result && result.ok === false ? 409 : 200;
+        this.#writeJson(response, status, typeof result === "string" ? { result } : result);
+      } catch (error) {
+        const tooLarge = error instanceof Error && error.message === "request too large";
+        this.#writeJson(response, tooLarge ? 413 : 400, { error: tooLarge ? "request_too_large" : "invalid_json" });
+      }
+      return;
+    }
+    if (path === "/v1/claude/hook") {
+      if (this.#options.onClaudeHook === undefined) {
+        this.#writeJson(response, 503, { error: "claude_unavailable" });
+        return;
+      }
+      const abortController = new AbortController();
+      const abortIfRequestDisconnected = (): void => {
+        if (!request.complete && !response.writableEnded) abortController.abort();
+      };
+      // The request can be complete while the Hook response is still pending. In that
+      // state the response-side close event is the only reliable disconnect signal.
+      const abortIfResponseDisconnected = (): void => {
+        if (!response.writableEnded) abortController.abort();
+      };
+      const cleanupAbort = (): void => {
+        request.off("aborted", abortIfRequestDisconnected);
+        request.off("close", abortIfRequestDisconnected);
+        response.off("close", abortIfResponseDisconnected);
+      };
+      request.on("aborted", abortIfRequestDisconnected);
+      request.on("close", abortIfRequestDisconnected);
+      response.on("close", abortIfResponseDisconnected);
+      try {
+        const raw = await readRequestBody(request, 256 * 1024);
+        let input: unknown;
+        try { input = JSON.parse(raw) as unknown; } catch { this.#writeJson(response, 400, { error: "invalid_json" }); return; }
+        const result = await this.#options.onClaudeHook(input, abortController.signal);
+        if (!response.writableEnded && !abortController.signal.aborted) this.#writeJson(response, 200, result);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.#options.log?.(`Claude Hook 请求失败：${message}`);
+        if (!response.writableEnded && !abortController.signal.aborted) {
+          this.#writeJson(response, message === "request too large" ? 413 : 400,
+            { error: message === "request too large" ? "request_too_large" : "invalid_hook" });
+        }
+      } finally {
+        cleanupAbort();
+      }
       return;
     }
     if (this.#options.onCodexLaunch === undefined) {
@@ -413,6 +480,12 @@ async function readRequestBody(request: IncomingMessage, maximumBytes: number): 
     request.on("end", () => { if (!rejected) resolve(body); });
     request.on("error", error => { if (!rejected) reject(error); });
   });
+}
+
+async function readJsonRequest(request: IncomingMessage, maximumBytes: number): Promise<unknown> {
+  const raw = await readRequestBody(request, maximumBytes);
+  try { return JSON.parse(raw) as unknown; }
+  catch { throw new Error("invalid JSON"); }
 }
 
 async function writePrivateJson(path: string, value: unknown): Promise<void> {

@@ -55,9 +55,9 @@ export function providerMetadata(value: unknown): ProviderMetadata {
   }
   return result;
 }
-export function agentKind(value: unknown): Exclude<AgentKind, "codexDesktop"> {
-  if (!kinds.includes(value as Exclude<AgentKind, "codexDesktop">)) throw new ProviderError("未知 Agent");
-  return value as Exclude<AgentKind, "codexDesktop">;
+export function agentKind(value: unknown): Exclude<AgentKind, "codexDesktop" | "claude"> {
+  if (!kinds.includes(value as Exclude<AgentKind, "codexDesktop" | "claude">)) throw new ProviderError("未知 Agent");
+  return value as Exclude<AgentKind, "codexDesktop" | "claude">;
 }
 const missing = (error: unknown): boolean => object(error) && error.code === "ENOENT";
 async function read(path: string): Promise<string | null> {

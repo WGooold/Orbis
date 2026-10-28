@@ -1,0 +1,135 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { ClaudeHookBridge, ClaudeHookInputError } from "./claude-hook-bridge.js";
+import type { RuntimeEvent } from "@pi-remote/protocol";
+
+const permission = (sessionId = "session-1") => ({
+  hook_event_name: "PermissionRequest",
+  session_id: sessionId,
+  cwd: "C:\\work",
+  tool_name: "Bash",
+  tool_input: { command: "echo ok" },
+});
+
+const questions = [
+  { question: "环境？", header: "env", options: [{ label: "dev", description: "开发环境" }, { label: "prod" }] },
+  { question: "备注？", options: [], allowOther: true },
+];
+
+const ask = (sessionId = "session-1") => ({
+  hook_event_name: "PreToolUse",
+  session_id: sessionId,
+  cwd: "C:\\work",
+  tool_name: "AskUserQuestion",
+  tool_input: { questions },
+});
+
+function interaction(events: RuntimeEvent[]): Extract<RuntimeEvent, { type: "interaction.requested" }> {
+  const event = events.find((candidate): candidate is Extract<RuntimeEvent, { type: "interaction.requested" }> => candidate.type === "interaction.requested");
+  if (event === undefined) throw new Error("interaction.requested not emitted");
+  return event;
+}
+
+describe("ClaudeHookBridge", () => {
+  it("holds PermissionRequest and returns the official allow decision", async () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    const pending = bridge.accept(permission());
+    await Promise.resolve();
+    const request = interaction(events).request;
+    expect(request.kind).toBe("confirm");
+    expect(bridge.respond(request.requestId, bridge.generation, { kind: "confirm", value: true })).toBe("accepted");
+    await expect(pending).resolves.toEqual({
+      hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } },
+    });
+  });
+
+  it("returns deny for a rejected permission and deduplicates the same response", async () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    const pending = bridge.accept(permission());
+    await Promise.resolve();
+    const requestId = interaction(events).request.requestId;
+    const response = { kind: "confirm" as const, value: false };
+    expect(bridge.respond(requestId, bridge.generation, response)).toBe("accepted");
+    expect(bridge.respond(requestId, bridge.generation, response)).toBe("duplicate");
+    await expect(pending).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: "deny" } } });
+  });
+
+  it("maps AskUserQuestion answers to the official PreToolUse updatedInput shape", async () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    const pending = bridge.accept(ask());
+    await Promise.resolve();
+    const request = interaction(events).request;
+    expect(request.kind).toBe("questionnaire");
+    if (request.kind !== "questionnaire") throw new Error("expected questionnaire");
+    const first = request.questions[0];
+    const second = request.questions[1];
+    if (first === undefined || second === undefined) throw new Error("expected two questions");
+    expect(second).toMatchObject({ question: "备注？", allowOther: true, options: [] });
+    expect(bridge.respond(request.requestId, bridge.generation, {
+      kind: "questionnaire",
+      answers: [
+        { id: first.id, values: ["dev"] },
+        { id: second.id, values: [], other: "临时环境" },
+      ],
+    })).toBe("accepted");
+    await expect(pending).resolves.toEqual({ hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: { questions, answers: { "环境？": "dev", "备注？": "临时环境" } },
+    } });
+  });
+
+  it("rejects incomplete or invalid questionnaire answers", async () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    const pending = bridge.accept(ask());
+    await Promise.resolve();
+    const requestId = interaction(events).request.requestId;
+    expect(bridge.respond(requestId, bridge.generation, { kind: "questionnaire", answers: [] })).toBe("conflict");
+    expect(bridge.respond(requestId, bridge.generation, { kind: "confirm", value: true })).toBe("conflict");
+    bridge.cancelRuntime("claude:session-1");
+    await expect(pending).resolves.toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
+  });
+
+  it("fails closed on timeout and on an aborted Hook request", async () => {
+    vi.useFakeTimers();
+    try {
+      const timeoutEvents: RuntimeEvent[] = [];
+      const timeoutBridge = new ClaudeHookBridge({ timeoutMs: 10, onEvent: (_runtimeId, event) => timeoutEvents.push(event) });
+      const timeoutPending = timeoutBridge.accept(permission());
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(timeoutPending).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: "deny" } } });
+      expect(timeoutEvents).toContainEqual(expect.objectContaining({ type: "interaction.cancelled", reason: "timeout" }));
+
+      const controller = new AbortController();
+      const disconnectEvents: RuntimeEvent[] = [];
+      const disconnectBridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => disconnectEvents.push(event) });
+      const disconnectPending = disconnectBridge.accept(permission("session-2"), controller.signal);
+      await Promise.resolve();
+      controller.abort();
+      await expect(disconnectPending).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: "deny" } } });
+      expect(disconnectEvents).toContainEqual(expect.objectContaining({ type: "interaction.cancelled", reason: "disconnected" }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects malformed Hook payloads and stale generations", async () => {
+    const bridge = new ClaudeHookBridge();
+    await expect(bridge.accept({ hook_event_name: "PreToolUse", session_id: "s", tool_name: "AskUserQuestion", tool_input: { questions: [] } })).rejects.toBeInstanceOf(ClaudeHookInputError);
+    await expect(bridge.accept({ ...permission(), tool_input: [] })).rejects.toBeInstanceOf(ClaudeHookInputError);
+    await expect(bridge.accept({ ...ask(), tool_input: { questions: [{ question: "问题", options: [{ label: "是" }], allowNotes: true }] } })).rejects.toBeInstanceOf(ClaudeHookInputError);
+    await expect(bridge.accept({ ...ask(), tool_input: { questions: [{ question: "问题", options: [{ label: "" }] }] } })).rejects.toBeInstanceOf(ClaudeHookInputError);
+    await expect(bridge.accept({ ...permission(), session_id: "  " })).rejects.toBeInstanceOf(ClaudeHookInputError);
+    const pending = bridge.accept(permission());
+    await Promise.resolve();
+    const requestId = [...(bridge.runtimeMetadata())][0]?.runtimeId;
+    expect(requestId).toBe("claude:session-1");
+    // The request is deliberately left unresolved; closing the bridge settles it fail-closed.
+    bridge.cancelRuntime(requestId!, "owner_closed");
+    await expect(pending).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: "deny" } } });
+  });
+});
