@@ -248,9 +248,20 @@ async function bridgeStdio(child: ChildProcess, socket: WebSocket, endpointFile:
       writeEndpointFile(endpointFile, descriptor);
     }, 5_000);
     republish.unref?.();
+    // 桌面版退出时给 CLI（也就是本进程）发 SIGTERM。node 默认直接退出、不跑 finish，
+    // app-server 带着 --listen 不看 stdin，于是变成孤儿继续握着会话的写锁，下一次打开的
+    // 桌面版就会提示「已在另一个应用中打开」。
+    const onSignal = (signal: NodeJS.Signals) => {
+      log(`收到 ${signal}，收起桥接`);
+      finish();
+      process.exit(128 + (signal === "SIGHUP" ? 1 : signal === "SIGINT" ? 2 : 15));
+    };
+    const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+    for (const signal of signals) process.on(signal, onSignal);
     const finish = () => {
       if (finished) return;
       finished = true;
+      for (const signal of signals) process.off(signal, onSignal);
       clearInterval(republish);
       clearEndpointFile(endpointFile);
       try { socket.close(); } catch { /* 已经关了 */ }
