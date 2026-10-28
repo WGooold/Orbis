@@ -258,3 +258,13 @@ describe("CodexAppServer", () => {
     await expect(CodexAppServer.createExternal({ endpoint: "" })).rejects.toThrow("缺少端点");
   });
 });
+
+describe("CodexAppServer owned 模式启动失败", () => {
+  it("codex 不存在（ENOENT）时 create 正常 reject，而不是打崩进程", async () => {
+    const { spawn } = await import("node:child_process");
+    await expect(CodexAppServer.create({
+      requestTimeoutMs: 20_000,
+      spawnImpl: (_command, args) => spawn("orbis-missing-codex-binary", [...args], { stdio: ["pipe", "pipe", "pipe"] }),
+    })).rejects.toThrow(/ENOENT/);
+  });
+});

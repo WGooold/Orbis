@@ -163,7 +163,13 @@ export class CodexAppServer {
         const child = spawnFn(command, [...prefixArgs, "app-server", "--listen", server.#endpoint]);
         server.#child = child;
         server.#attachChildLogging(child);
-        await waitHealthz(port, timeoutMs);
+        // codex 不在 PATH（ENOENT）或一启动就退出：立刻失败，别空等 healthz 超时。
+        const spawnFailed = new Promise<never>((_, reject) => {
+          child.once("error", error => reject(new Error(`无法启动 codex app-server：${error.message}`)));
+          child.once("exit", code => reject(new Error(`codex app-server 启动即退出（code=${code ?? "signal"}）`)));
+        });
+        spawnFailed.catch(() => undefined);
+        await Promise.race([waitHealthz(port, timeoutMs), spawnFailed]);
         server.#transport = await wsTransport(server.#endpoint, timeoutMs);
       }
       server.#attachTransport();
@@ -221,6 +227,12 @@ export class CodexAppServer {
     (child.stdout ?? process.stdin).on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8").trim();
       if (text.length > 0) this.#options.log?.(`[codex:out] ${text.slice(0, 300)}`);
+    });
+    // 没有 error 监听时，spawn 失败会作为未处理事件直接打崩整个 Host。
+    child.on("error", (error) => {
+      this.#options.log?.(`codex app-server 进程错误：${error.message}`);
+      if (this.#closed) return;
+      this.#handleClosed(null);
     });
     child.on("exit", (code) => {
       if (this.#closed) return;
