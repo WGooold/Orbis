@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Existing draft release tag with a verified Android APK'
+        description: 'Existing draft release tag'
         required: true
         type: string
       windows_build_run_id:
@@ -15,8 +15,8 @@ on:
         description: 'Successful main macOS Host build for the exact release tag commit'
         required: true
         type: string
-      android_apk_sha256:
-        description: 'Locally verified Android APK SHA-256'
+      android_build_run_id:
+        description: 'Successful main Android build for the exact release tag commit'
         required: true
         type: string
 
@@ -37,7 +37,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.release_tag }}
       WINDOWS_BUILD_RUN: ${{ inputs.windows_build_run_id }}
       MACOS_BUILD_RUN: ${{ inputs.macos_build_run_id }}
-      ANDROID_APK_SHA256: ${{ inputs.android_apk_sha256 }}
+      ANDROID_BUILD_RUN: ${{ inputs.android_build_run_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -49,7 +49,7 @@ jobs:
           if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid release tag' }
           if ($env:WINDOWS_BUILD_RUN -notmatch '^[0-9]+$') { throw 'Invalid build run ID' }
           if ($env:MACOS_BUILD_RUN -notmatch '^[0-9]+$') { throw 'Invalid macOS build run ID' }
-          if ($env:ANDROID_APK_SHA256 -notmatch '^[a-f0-9]{64}$') { throw 'Invalid APK SHA-256' }
+          if ($env:ANDROID_BUILD_RUN -notmatch '^[0-9]+$') { throw 'Invalid Android build run ID' }
           $commit = git rev-list -n 1 "refs/tags/$env:RELEASE_TAG"
           if ($LASTEXITCODE -ne 0 -or !$commit) { throw 'Release tag not found' }
           $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:WINDOWS_BUILD_RUN" | ConvertFrom-Json
@@ -61,6 +61,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot read macOS build run' }
           if ($mac.conclusion -ne 'success' -or $mac.head_branch -ne 'main' -or $mac.path -ne '.github/workflows/macos-host-build.yml' -or $mac.head_sha -ne $commit) {
             throw 'macOS build does not match the successful main build for this release tag'
+          }
+          $android = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:ANDROID_BUILD_RUN" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read Android build run' }
+          if ($android.conclusion -ne 'success' -or $android.head_branch -ne 'main' -or $android.path -ne '.github/workflows/android-build.yml' -or $android.head_sha -ne $commit) {
+            throw 'Android build does not match the successful main build for this release tag'
           }
           $release = gh release view $env:RELEASE_TAG --json isDraft | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or !$release.isDraft) { throw 'Expected an existing draft release' }
@@ -90,22 +95,27 @@ jobs:
           path: client-artifacts-macos/x64
           run-id: ${{ inputs.macos_build_run_id }}
           github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: Orbis-android
+          path: android-release
+          run-id: ${{ inputs.android_build_run_id }}
+          github-token: ${{ github.token }}
       - name: Verify clients and upload Host assets
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path android-release | Out-Null
-          gh release download $env:RELEASE_TAG --pattern orbis.apk --pattern orbis.apk.sha256 --dir android-release
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot download Android release assets' }
+          # APK 的签名证书已在 Android build 里按固定指纹核对过；这里核对它没被换掉。
           $apkHash = (Get-FileHash android-release/orbis.apk -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($apkHash -ne $env:ANDROID_APK_SHA256 -or (Get-Content android-release/orbis.apk.sha256 -Raw).Trim() -ne "$apkHash  orbis.apk") { throw 'Android checksum mismatch' }
+          if ((Get-Content android-release/orbis.apk.sha256 -Raw).Trim() -ne "$apkHash  orbis.apk") { throw 'Android checksum mismatch' }
+          Write-Output "Verified orbis.apk SHA-256: $apkHash"
           $names = @("OrbisHost-$env:HOST_VERSION-windows-x64-setup.exe", "OrbisHost-$env:HOST_VERSION-windows-x64.zip")
           $roots = @('client-artifacts')
           if ($env:MACOS_BUILD_RUN) {
             $names += @("OrbisHost-$env:HOST_VERSION-macos-arm64.dmg", "OrbisHost-$env:HOST_VERSION-macos-x64.dmg")
             $roots += 'client-artifacts-macos'
           }
-          $uploads = @()
+          $uploads = @((Resolve-Path android-release/orbis.apk).Path, (Resolve-Path android-release/orbis.apk.sha256).Path)
           foreach ($name in $names) {
             $files = @(Get-ChildItem $roots -Recurse -File -Filter $name)
             if ($files.Count -ne 1) { throw "Expected one artifact: $name" }

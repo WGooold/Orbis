@@ -37,14 +37,16 @@ Confirm the successful Actions run, public health `commit`, and `/opt/orbis/shar
 
 Release order for a tagged build on `main`:
 
-1. Dispatch **Windows Host build** and **macOS Host build**, both on `main` from the release commit. Each run uploads its own artifacts (`OrbisHost-windows-x64`, `OrbisHost-macos-arm64`, `OrbisHost-macos-x64`), and each artifact carries the `.sha256` files next to the binaries.
-2. Put the verified APK and its checksum on the draft release for the tag (see the Android paragraph below).
-3. Dispatch **Publish client release** with `release_tag`, `windows_build_run_id`, `macos_build_run_id` and `android_apk_sha256`. It refuses runs whose `head_sha` is not the tagged commit, re-checks every host checksum, uploads the installer, portable ZIP and both dmgs to the release, then undrafts it as latest.
-4. Dispatch **Relay deploy** with the same `windows_build_run_id` and `macos_build_run_id` plus `android_release_tag` and `android_apk_sha256`. It re-verifies the runs, archives the four host files, and publishes them from a read-only mount; the server re-verifies every archived checksum before switching traffic.
+1. Dispatch **Windows Host build**, **macOS Host build** and **Android build**, all on `main` from the release commit. Each run uploads its own artifacts (`OrbisHost-windows-x64`, `OrbisHost-macos-arm64`, `OrbisHost-macos-x64`, `Orbis-android`), and each artifact carries the `.sha256` files next to the binaries.
+2. Create a draft release for the tag.
+3. Dispatch **Publish client release** with `release_tag`, `windows_build_run_id`, `macos_build_run_id` and `android_build_run_id`. It refuses runs whose `head_sha` is not the tagged commit, re-checks every checksum, uploads the installer, portable ZIP, both dmgs and `orbis.apk` to the release, then undrafts it as latest.
+4. Dispatch **Relay deploy** with the same `windows_build_run_id` and `macos_build_run_id` plus `android_release_tag` and the `android_apk_sha256` printed by the Android build. It re-verifies the runs, archives the four host files, and publishes them from a read-only mount; the server re-verifies every archived checksum before switching traffic.
 
 Without those inputs a push-triggered **Relay deploy** still moves the Relay but publishes no downloads. The version in the client, packaging scripts, allowlist (`packages/relay/src/web.ts`) and release workflow must agree: the deploy fails if a file named after the version in `packages/windows-host/CMakeLists.txt` is missing from the artifacts.
 
-Build Android with the Windows wrapper, publish the verified APK as `/var/www/orbis-downloads/orbis.apk` and its checksum as `orbis.apk.sha256`. Preserve the signing identity for upgrades. Never publish signing keys. Binary releases belong in GitHub Releases or the download directory, not source history.
+**Android build** signs the APK with the release key from the `ORBIS_RELEASE_*` repository secrets and fails unless the signing certificate matches the pinned SHA-256 in the workflow; a different certificate would stop installed clients from upgrading. Local release builds read the same `ORBIS_RELEASE_*` properties from `~/.gradle/gradle.properties` and refuse to build without them. Never publish signing keys.
+
+**iOS TestFlight** archives the app with automatic signing through an App Store Connect API key (`APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_P8_BASE64`) and uploads it to TestFlight; the build number is the workflow run number. It is independent of the GitHub release. Binary releases belong in GitHub Releases or the download directory, not source history.
 
 To publish an existing local Android build, first verify its build-manifest SHA-256 and compare its signing certificate with the current website APK. Upload `orbis.apk` and `orbis.apk.sha256` to a GitHub Release, then dispatch **Relay deploy** with `android_release_tag` and the exact `android_apk_sha256`. The production job verifies the release asset, publishes both files, and downloads them again through the public website to verify their hashes. It preserves the previous APK and checksum outside the public directory and restores them if publication fails. The Android version may remain unchanged for a preview refresh; the pinned hash identifies the exact build.
 
