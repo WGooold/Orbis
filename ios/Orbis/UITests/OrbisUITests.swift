@@ -64,6 +64,19 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(slash.buttons.matching(NSPredicate(format: "label CONTAINS %@", "/compact")).firstMatch.waitForExistence(timeout: 8))
         capture("slash-menu", app: slash)
     }
+    func testSlashPickerStaysAboveKeyboard() {
+        let app = launch("slash")
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap()
+
+        let keyboard = app.keyboards.firstMatch
+        let command = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "/compact")).firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        XCTAssertTrue(command.waitForExistence(timeout: 5))
+        XCTAssertTrue(command.isHittable)
+        XCTAssertLessThanOrEqual(command.frame.maxY, keyboard.frame.minY)
+    }
     func testHistoryPreviewAndNavigation() {
         let app = launch("chat")
         XCTAssertTrue(app.buttons["历史与分支"].waitForExistence(timeout: 8))

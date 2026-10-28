@@ -198,7 +198,6 @@ struct ChatView: View {
                 Text(feedback).font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary)
             }
             InteractionWorkspaceView(runtimeId: runtime.runtimeId)
-            if slash { SlashPickerView(runtime: runtime, selected: $selectedCommand, input: draft, onHistory: onHistory) }
             if deliveryChoices {
                 HStack(spacing: 12) {
                     OrbisActionButton(title: "Follow-up", tint: accent) { submit(delivery: "followUp") }
@@ -246,6 +245,13 @@ struct ChatView: View {
                 }
             }.padding(.horizontal, 12).padding(.bottom, 12)
         }.padding(.top, 8).background(OrbisPalette(scheme).base)
+            .overlay(alignment: .bottom) {
+                if slash {
+                    SlashPickerView(runtime: runtime, selected: $selectedCommand, input: draft, onHistory: onHistory)
+                        .padding(.bottom, 68)
+                        .zIndex(1)
+                }
+            }
     }
 
     private var branchTitle: String {
@@ -555,7 +561,9 @@ private struct SlashPickerView: View {
                     }
                 }
             }.padding(8)
-        }.frame(maxHeight: 180).padding(.horizontal, 12)
+        }.frame(maxHeight: 180).padding(6)
+            .neuSurface(radius: 16, intensity: 0.5)
+            .padding(.horizontal, 12)
     }
 }
 
