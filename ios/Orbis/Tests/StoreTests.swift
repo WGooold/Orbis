@@ -259,6 +259,68 @@ struct StoreTests {
         #expect(transport.syncCommands.count == 2)
         #expect(store.isSyncing)
     }
+    /// Codex 用 App 的 clientId 广播用户消息，落盘 entry 用原生 item id；两者只能靠运行时给的映射合并。
+    @Test func lifecycleRowsWithTemporaryIdsRetireOnceTheirEntryIsProjected() throws {
+        let (store, transport) = setup()
+        transport.ready([runtime("a")])
+        let sync = try #require(transport.syncCommands.last)
+        var initial = snapshot(sync, text: "History")
+        initial["source"] = ["epoch": "epoch-1", "seq": 1, "ready": true]
+        initial["live"] = ["complete": false, "messages": []]
+        transport.event(initial)
+        func user(_ id: String) -> [String: Any] {
+            ["messageId": id, "role": "user", "timestamp": 101, "content": [["type": "text", "text": "hello"]]]
+        }
+        transport.event(["type": "message.started", "message": user("client-1")], sequence: 2)
+        transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 1,
+            "source": ["epoch": "epoch-1", "seq": 2, "ready": true],
+            "live": ["complete": false, "messages": [["message": user("native-1")]]]], sequence: 3)
+        transport.event(["type": "message.finished", "message": user("client-1")], sequence: 4)
+        transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 2,
+            "source": ["epoch": "epoch-1", "seq": 3, "ready": true],
+            "display": ["entries": [["entryId": "native-1", "message": user("native-1")]]],
+            "live": ["complete": false, "messages": []]], sequence: 5)
+        transport.event(["type": "turn.finished", "turnId": "turn-1", "startedAt": 100, "durationMs": 1,
+            "persistedMessages": [["messageId": "client-1", "entryId": "native-1"]]], sequence: 6)
+        #expect(store.messages.map(\.messageId) == ["History", "native-1"])
+        // A late lifecycle replay of the retired id must not bring the row back.
+        transport.event(["type": "message.finished", "message": user("client-1")], sequence: 7)
+        #expect(store.messages.map(\.messageId) == ["History", "native-1"])
+
+        // Without any mapping, a complete live inventory still retires a lifecycle-only row.
+        transport.event(["type": "message.finished", "message": user("orphan")], sequence: 8)
+        #expect(store.messages.map(\.messageId) == ["History", "native-1", "orphan"])
+        transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 3,
+            "source": ["epoch": "epoch-1", "seq": 4, "ready": true],
+            "display": ["entries": [["entryId": "native-2", "message": user("native-2")]]],
+            "live": ["complete": true, "messages": []]], sequence: 9)
+        #expect(store.messages.map(\.messageId) == ["History", "native-1", "native-2"])
+    }
+
+    /// Pi/DSH 在提交 entry 的同一版 patch 里去掉流式行；运行中（complete=false）也不能并排显示两行。
+    @Test func streamedRowsLeaveWithTheirLiveInventoryWhileTheTurnIsStillRunning() throws {
+        let (store, transport) = setup()
+        transport.ready([runtime("a")])
+        let sync = try #require(transport.syncCommands.last)
+        var initial = snapshot(sync, text: "History")
+        initial["source"] = ["epoch": "epoch-1", "seq": 1, "ready": true]
+        initial["live"] = ["complete": false, "messages": []]
+        transport.event(initial)
+        func user(_ id: String) -> [String: Any] {
+            ["messageId": id, "role": "user", "timestamp": 101, "content": [["type": "text", "text": "hello"]]]
+        }
+        transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 1,
+            "source": ["epoch": "epoch-1", "seq": 2, "ready": true],
+            "live": ["complete": false, "messages": [["message": user("stream-1")]]]], sequence: 2)
+        #expect(store.messages.map(\.messageId) == ["History", "stream-1"])
+        transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 2,
+            "source": ["epoch": "epoch-1", "seq": 3, "ready": true],
+            "display": ["entries": [["entryId": "entry-1", "message": user("entry-1")]]],
+            "live": ["complete": false, "messages": [["message": message("reply", text: "Thinking more")]]]], sequence: 3)
+        #expect(store.messages.map(\.messageId) == ["History", "entry-1", "reply"])
+        #expect(store.messages.map(\.text) == ["History", "hello", "Thinking more"])
+    }
+
     @Test func draftsAndAliasesSurviveRuntimeNavigationAndFollowSessionIdentity() throws {
         let (store, transport) = setup()
         transport.ready([runtime("a"), runtime("b")])

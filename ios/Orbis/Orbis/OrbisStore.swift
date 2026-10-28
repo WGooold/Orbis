@@ -74,6 +74,9 @@ final class OrbisStore: ObservableObject {
     private var liveToolReferences: [String: ToolReference] = [:]
     private var liveTools: [String: [ToolSummary]] = [:]
     private var displayMessageIds: [String: [String: String]] = [:]
+    // 运行时临时 id → 持久化 entry id（turn.finished.persistedMessages / live.persistedEntryId）。
+    // Codex 用 App 的 clientId、Pi 用流式 id 上屏，落盘后 entry 才是权威行；靠这张映射退掉临时行，绝不按文本猜。
+    private var messageAliases: [String: [String: String]] = [:]
     private var runtimeEventSequences: [String: Int64] = [:]
     private var pendingSyncs: [String: (runtimeId: String, sessionId: String, commandId: String, range: String, boundary: String?, leaf: String?)] = [:]
     private var oldestEntries: [String: String] = [:]
@@ -221,7 +224,7 @@ final class OrbisStore: ObservableObject {
         transfers.setConnection(pairing, connected: false)
         toolContent.close(); toolInventories.clear(); toolAcknowledgements = [:]
         runtimes = []; sessions = cachedSessions(pairing); messages = []; selectedRuntimeId = nil
-        conversations = [:]; liveMessageIds = [:]; displayMessageIds = [:]
+        conversations = [:]; liveMessageIds = [:]; displayMessageIds = [:]; messageAliases = [:]
         liveOrders = [:]; liveToolReferences = [:]; liveTools = [:]
         oldestEntries = [:]; sessionLeaves = [:]; hasOlderHistory = [:]; historyErrors = [:]; historyLoading = []
         sourcePositions = [:]; runtimeEventSequences = [:]
@@ -751,8 +754,20 @@ final class OrbisStore: ObservableObject {
                 syncSession(runtime, force: true)
             }
         } else if type == "message.started" || type == "message.finished" {
-            if let object = event["message"] as? [String: Any], let message: ChatMessage = jsonDecode(object) { upsert(message, runtimeId: runtimeId) }
+            // 生命周期事件只是 live 叠加层：记进 liveMessageIds，live 清单完整时没有成为权威行的就会被退掉。
+            if let object = event["message"] as? [String: Any], let message: ChatMessage = jsonDecode(object),
+               !isRetiredAlias(message.messageId, runtimeId: runtimeId) {
+                liveMessageIds[runtimeId, default: []].insert(message.messageId)
+                upsert(message, runtimeId: runtimeId)
+            }
         } else if type == "message.delta" { applyDelta(event, runtimeId: runtimeId) }
+        else if type == "turn.finished" {
+            for row in event["persistedMessages"] as? [[String: Any]] ?? [] {
+                if let liveId = row["messageId"] as? String, let entryId = row["entryId"] as? String { addAlias(liveId, entryId: entryId, runtimeId: runtimeId) }
+            }
+            if let liveId = event["messageId"] as? String, let entryId = event["persistedMessageId"] as? String { addAlias(liveId, entryId: entryId, runtimeId: runtimeId) }
+            retireAliases(runtimeId)
+        }
         publishMessages()
     }
 
@@ -805,6 +820,7 @@ final class OrbisStore: ObservableObject {
             }
             let ids = Set(older.map(\.messageId))
             conversations[runtimeId] = older + (conversations[runtimeId] ?? []).filter { !ids.contains($0.messageId) }
+            retireAliases(runtimeId)
             if let first = (event["entries"] as? [[String: Any]])?.first?["entryId"] as? String { oldestEntries[runtimeId] = first }
             hasOlderHistory[runtimeId] = event["hasOlder"] as? Bool ?? false
             finishSync(syncId); acknowledge(runtimeId: runtimeId, syncId: syncId, result: "applied")
@@ -848,10 +864,13 @@ final class OrbisStore: ObservableObject {
             toolInventories.require(reference, runtime: runtimeId)
             if liveToolReferences[runtimeId] != reference { liveToolReferences[runtimeId] = reference }
         } else if live != nil { liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil }
-        if live?["complete"] as? Bool == true {
+        // 每一版 live.messages 都是源端完整的 live 清单（Host 也整份替换）：Pi/DSH 在提交 entry 的同一版里
+        // 去掉对应的流式行，这里只等 complete 的话，整轮运行期间流式行会和落盘行并排出现。
+        if let rows = live?["messages"] as? [[String: Any]] {
             let previousLive = liveMessageIds[runtimeId] ?? []
             let canonical = Set((displayMessageIds[runtimeId] ?? [:]).values)
-            conversations[runtimeId]?.removeAll { previousLive.contains($0.messageId) && !canonical.contains($0.messageId) }
+            let next = Set(rows.compactMap { ($0["message"] as? [String: Any])?["messageId"] as? String })
+            conversations[runtimeId]?.removeAll { previousLive.contains($0.messageId) && !canonical.contains($0.messageId) && !next.contains($0.messageId) }
             liveMessageIds[runtimeId] = []; liveOrders[runtimeId] = [:]
         }
         if let display = event["display"] as? [String: Any], let entries = display["entries"] as? [[String: Any]] {
@@ -875,7 +894,8 @@ final class OrbisStore: ObservableObject {
         if let live, let entries = live["messages"] as? [[String: Any]] {
             for row in entries {
                 if let object = row["message"] as? [String: Any], let message: ChatMessage = jsonDecode(object) {
-                    if let entryId = row["persistedEntryId"] as? String, let canonicalId = displayMessageIds[runtimeId]?[entryId], canonicalId != message.messageId {
+                    if let entryId = row["persistedEntryId"] as? String { addAlias(message.messageId, entryId: entryId, runtimeId: runtimeId) }
+                    if isRetiredAlias(message.messageId, runtimeId: runtimeId) {
                         conversations[runtimeId]?.removeAll { $0.messageId == message.messageId }
                         continue
                     }
@@ -885,6 +905,30 @@ final class OrbisStore: ObservableObject {
                 }
             }
         }
+        retireAliases(runtimeId)
+    }
+
+    private func addAlias(_ liveId: String, entryId: String, runtimeId: String) {
+        guard liveId != entryId else { return }
+        var aliases = messageAliases[runtimeId] ?? [:]
+        if aliases.count >= 1024 { aliases.removeAll() }
+        aliases[liveId] = entryId
+        messageAliases[runtimeId] = aliases
+    }
+
+    /// 临时 id 对应的 entry 已经作为权威行上屏，且权威行用的是另一个 id。
+    private func isRetiredAlias(_ id: String, runtimeId: String) -> Bool {
+        guard let entryId = messageAliases[runtimeId]?[id], let canonical = displayMessageIds[runtimeId]?[entryId] else { return false }
+        return canonical != id
+    }
+
+    /// 权威行到达后退掉它的临时行；映射保留，迟到的同 id 生命周期事件不会再把临时行带回来。
+    private func retireAliases(_ runtimeId: String) {
+        guard let aliases = messageAliases[runtimeId], !aliases.isEmpty else { return }
+        let retired = Set(aliases.keys.filter { isRetiredAlias($0, runtimeId: runtimeId) })
+        guard !retired.isEmpty else { return }
+        conversations[runtimeId]?.removeAll { retired.contains($0.messageId) }
+        liveMessageIds[runtimeId]?.subtract(retired)
     }
 
     private func acknowledge(runtimeId: String, syncId: String, result: String) {
@@ -900,7 +944,8 @@ final class OrbisStore: ObservableObject {
     }
 
     private func applyDelta(_ event: [String: Any], runtimeId: String) {
-        guard let id = event["messageId"] as? String, let delta = event["delta"] as? String else { return }
+        guard let id = event["messageId"] as? String, let delta = event["delta"] as? String,
+              !isRetiredAlias(id, runtimeId: runtimeId) else { return }
         let kind = event["contentType"] as? String ?? "text"
         let previous = conversations[runtimeId]?.first { $0.messageId == id }
         var content = previous?.content ?? []
@@ -934,7 +979,7 @@ final class OrbisStore: ObservableObject {
         for id in actions { runtimeActions[id] = nil; pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel() }
         conversations[runtimeId] = nil
         liveMessageIds[runtimeId] = nil; liveOrders[runtimeId] = nil; liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil
-        displayMessageIds[runtimeId] = nil
+        displayMessageIds[runtimeId] = nil; messageAliases[runtimeId] = nil
         sourcePositions[runtimeId] = nil
         syncedSessions = syncedSessions.filter { !$0.hasPrefix(runtimeId + "|") }
         let ids = pendingSyncs.filter { $0.value.runtimeId == runtimeId }.map(\.key)
