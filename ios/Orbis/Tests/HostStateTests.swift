@@ -1,0 +1,191 @@
+import Foundation
+import Testing
+@testable import OrbisCore
+
+@Suite("Host settings and diagnostic state") @MainActor
+struct HostStateTests {
+    private final class Sent {
+        var values: [[String: Any]] = []
+        var accepts = true
+        var last: [String: Any] { values.last ?? [:] }
+    }
+    private func pairing(_ id: String = "host-a", device: String = "device-a") -> HostPairing {
+        HostPairing(hostId: id, hostName: id, hostPub: "pub", pskRoot: "root",
+                    relay: RelayCredential(relayUrl: "wss://example.test", deviceId: device, credential: "test"), lan: [])
+    }
+    private func setup() -> (HostState, Sent) {
+        let state = HostState(), sent = Sent()
+        state.send = { if sent.accepts { sent.values.append($0) }; return sent.accepts }
+        state.setConnection(pairing(), connected: true)
+        return (state, sent)
+    }
+    private func domain(_ name: String, revision: Int = 1, value: [String: Any] = [:], availability: String = "ready", epoch: String = "model-a") -> [String: Any] {
+        ["domain": name, "modelEpoch": epoch, "revision": revision, "availability": availability, "completeness": "complete",
+         "source": ["producer": "host", "sourceId": "source", "sourceEpoch": "source-a", "sourceRevision": revision],
+         "checkedAt": 100, "value": value, "projectionComplete": true]
+    }
+    private func snapshot(_ sent: Sent, domains: [[String: Any]], missing: [[String: String]] = [], epoch: String = "model-a") -> [String: Any] {
+        ["type": "agent.state.snapshot", "requestId": sent.last["requestId"]!, "scope": "host", "modelEpoch": epoch,
+         "domains": domains, "missing": missing, "truncated": false]
+    }
+    private func providers(enabled: String = "official", kind: String = "codex", additive: Bool = false) -> [String: Any] {
+        ["providers": [["agentKind": kind, "availability": "ready", "current": enabled, "modelProvider": "native-provider", "switching": false,
+                        "profiles": ["official", "team"].map { id in ["id": id, "name": id, "enabled": id == enabled,
+                            "mode": additive ? "additive" : "exclusive", "globalDefault": additive && id == "official"] as [String: Any] }]]]
+    }
+    private func installProviders(_ state: HostState, _ sent: Sent, kind: String = "codex", additive: Bool = false) {
+        state.consume(snapshot(sent, domains: [domain("providers", value: providers(kind: kind, additive: additive))]))
+    }
+
+    @Test func domainsMergeAcrossSplitResponsesAndRefreshRetainsSubscription() throws {
+        let (state, sent) = setup()
+        let original = snapshot(sent, domains: [domain("diagnostics", value: ["records": 12])])
+        state.consume(original)
+        installProviders(state, sent)
+        #expect(state.domains["diagnostics"]?.value["records"].integer == 12)
+        #expect(state.currentProviders["codex"] == "native-provider")
+        #expect(!state.providersLoading)
+        state.loadProviders("pi")
+        #expect(Set(sent.last["domains"] as? [String] ?? []) == Set(HostState.domainNames))
+        #expect((sent.last["known"] as? [[String: Any]])?.contains { $0["domain"] as? String == "diagnostics" } == true)
+        state.consume(original) // The previous request is no longer an active subscription.
+        #expect(state.providersLoading)
+        var response = snapshot(sent, domains: [domain("providers", revision: 2, value: providers(kind: "pi", additive: true))])
+        response["unchanged"] = ["diagnostics"]
+        state.consume(response)
+        #expect(state.domains["diagnostics"]?.revision == 1)
+        #expect(state.providers.count == 2)
+    }
+
+    @Test func malformedSnapshotIsAtomicAndSameRevisionCannotChangeFacts() {
+        let (state, sent) = setup()
+        installProviders(state, sent)
+        var malformed = domain("diagnostics")
+        malformed["checkedAt"] = nil
+        state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers(enabled: "team")), malformed]))
+        #expect(state.modelError != nil)
+        #expect(state.providers.first(where: \.enabled)?.id == "official")
+        state.consume(snapshot(sent, domains: [domain("providers", value: providers(enabled: "team"))]))
+        #expect(state.providers.first(where: \.enabled)?.id == "official")
+        state.consume(snapshot(sent, domains: [domain("providers", revision: 3, value: providers(enabled: "team"))]))
+        state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers())]))
+        #expect(state.providers.first(where: \.enabled)?.id == "team")
+        state.consume(snapshot(sent, domains: [domain("providers", revision: 100, value: providers(), epoch: "retired")], epoch: "retired"))
+        #expect(state.domains["providers"]?.revision == 3)
+    }
+
+    @Test func missingUnknownAndEmptyCatalogHaveDifferentMeaning() {
+        let (state, sent) = setup()
+        installProviders(state, sent)
+        #expect(state.canChangeProvider)
+        state.consume(snapshot(sent, domains: [], missing: [["domain": "providers", "reason": "no_state"]]))
+        #expect(state.providerCatalogProblem == "电脑尚未报告这个状态领域")
+        #expect(!state.canChangeProvider)
+        state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers(), availability: "unknown")]))
+        #expect(state.providerCatalogProblem == "电脑尚未核对")
+        var empty = providers()
+        empty["providers"] = [["agentKind": "codex", "profiles": [], "switching": false]]
+        state.consume(snapshot(sent, domains: [domain("providers", revision: 3, value: empty)]))
+        #expect(state.providerCatalogProblem == nil)
+        #expect(state.providers.isEmpty)
+        #expect(state.currentProviders.isEmpty)
+    }
+
+    @Test func providerChangeWaitsForMatchingResultAndAuthoritativeRefresh() throws {
+        let (state, sent) = setup()
+        installProviders(state, sent)
+        let team = try #require(state.providers.first { $0.id == "team" })
+        let key = try #require(state.hostKey)
+        state.changeProvider(team, expectedHostKey: key)
+        let operation = sent.last
+        #expect(operation["type"] as? String == "provider.switch")
+        #expect(operation["enabled"] as? Bool == true)
+        #expect(state.changingProvider)
+        state.consume(["type": "provider.result", "requestId": operation["requestId"]!, "kind": "pi"])
+        #expect(state.changingProvider)
+        // A subscription update may arrive before this device's operation result.
+        let subscription = try #require(sent.values.first { $0["type"] as? String == "agent.state.request" })
+        let response: [String: Any] = ["type": "agent.state.snapshot", "requestId": subscription["requestId"]!, "scope": "host", "modelEpoch": "model-a",
+            "domains": [domain("providers", revision: 2, value: providers(enabled: "team"))], "missing": [], "truncated": false]
+        state.consume(response)
+        #expect(state.changingProvider)
+        state.consume(["type": "provider.result", "requestId": operation["requestId"]!, "kind": "codex", "notice": "请重新打开会话"])
+        #expect(!state.changingProvider)
+        #expect(state.providerNotice == "请重新打开会话")
+        #expect(sent.last["type"] as? String == "agent.state.request")
+        #expect(state.providersLoading)
+    }
+
+    @Test func providerActionsRejectOldHostStaleListAndExclusiveRemoval() throws {
+        let (state, sent) = setup()
+        installProviders(state, sent)
+        let team = try #require(state.providers.first { $0.id == "team" })
+        let key = try #require(state.hostKey)
+        let before = sent.values.count
+        state.changeProvider(try #require(state.providers.first { $0.enabled }), expectedHostKey: key)
+        #expect(sent.values.count == before)
+        state.loadProviders("codex"); installProviders(state, sent)
+        state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers(enabled: "team"))]))
+        state.changeProvider(team, expectedHostKey: key)
+        #expect(!state.changingProvider)
+        state.setConnection(pairing("host-b"), connected: true)
+        state.changeProvider(team, expectedHostKey: key)
+        #expect(!state.changingProvider)
+        #expect(state.domains.isEmpty)
+        state.consume(snapshot(sent, domains: [domain("providers", value: providers())]))
+        #expect(state.providerError != nil)
+    }
+
+    @Test func piDefaultRemovalUsesSameGuardAndExplicitDisable() throws {
+        let (state, sent) = setup()
+        state.loadProviders("pi"); installProviders(state, sent, kind: "pi", additive: true)
+        let current = try #require(state.providers.first { $0.enabled })
+        #expect(current.confirmation.contains("全局默认供应商"))
+        state.changeProvider(current, expectedHostKey: try #require(state.hostKey))
+        #expect(sent.last["enabled"] as? Bool == false)
+        #expect(state.changingProvider)
+        state.setConnection(pairing(), connected: false)
+        #expect(!state.changingProvider)
+        #expect(state.providerError?.contains("确认操作结果") == true)
+        #expect(!state.canChangeProvider)
+    }
+
+    @Test func diagnosticPagesAreCorrelatedHostScopedAndExposeWindowGaps() throws {
+        let (state, sent) = setup()
+        state.readDiagnostics()
+        let id = try #require(sent.last["requestId"] as? String)
+        func page(_ id: String, host: String = "host-a") -> [String: Any] {
+            ["type": "diagnostics.page", "requestId": id, "page": ["records": [
+                ["recordId": "r1", "hostId": host, "category": "provider", "severity": "warning", "message": "配置读取失败", "at": 100]
+            ], "nextCursor": "next-page", "truncated": true]]
+        }
+        state.consume(page("old-request"))
+        #expect(state.diagnosticsLoading)
+        state.consume(page(id))
+        #expect(!state.diagnosticsLoading)
+        #expect(state.diagnosticPage?.truncated == true)
+        state.readDiagnostics(cursor: state.diagnosticPage?.nextCursor)
+        #expect(sent.last["cursor"] as? String == "next-page")
+        state.consume(page(try #require(sent.last["requestId"] as? String), host: "host-b"))
+        #expect(state.diagnosticsError != nil)
+        #expect(state.diagnosticPage?.records.first?.hostId == "host-a")
+    }
+
+    @Test func failedSendsAndProtocolErrorsLeaveRecoverablePageState() throws {
+        let (state, sent) = setup()
+        installProviders(state, sent)
+        sent.accepts = false
+        state.changeProvider(try #require(state.providers.last), expectedHostKey: try #require(state.hostKey))
+        #expect(!state.changingProvider)
+        #expect(state.providerError?.contains("未发送") == true)
+        state.readDiagnostics()
+        #expect(!state.diagnosticsLoading)
+        #expect(state.diagnosticsError != nil)
+        sent.accepts = true
+        state.readDiagnostics()
+        state.consume(["type": "protocol.error", "requestId": sent.last["requestId"]!, "message": "读取失败"])
+        #expect(!state.diagnosticsLoading)
+        #expect(state.diagnosticsError == "读取失败")
+        state.setConnection(pairing(), connected: false)
+    }
+}

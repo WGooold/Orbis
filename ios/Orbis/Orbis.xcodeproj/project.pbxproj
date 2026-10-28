@@ -1,0 +1,361 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A00100010000000000000001 /* OrbisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000001 /* OrbisApp.swift */; };
+		A00100010000000000000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000002 /* Models.swift */; };
+		A00100010000000000000003 /* Base64URL.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000003 /* Base64URL.swift */; };
+		A00100010000000000000004 /* Crypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000004 /* Crypto.swift */; };
+		A00100010000000000000005 /* SecureStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000005 /* SecureStore.swift */; };
+		A00100010000000000000006 /* Pairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000006 /* Pairing.swift */; };
+		A00100010000000000000007 /* Envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000007 /* Envelope.swift */; };
+		A00100010000000000000008 /* WebSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000008 /* WebSocketTransport.swift */; };
+		A00100010000000000000009 /* OrbisStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000009 /* OrbisStore.swift */; };
+		A0010001000000000000000A /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000000A /* ContentView.swift */; };
+		A0010001000000000000000B /* PairingScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000000B /* PairingScannerView.swift */; };
+		A0010001000000000000000C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000000C /* Assets.xcassets */; };
+		A0010001000000000000000D /* EnvelopePieces.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000000F /* EnvelopePieces.swift */; };
+		A00100010000000000000020 /* OrbisDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000020 /* OrbisDesign.swift */; };
+		A00100010000000000000021 /* Presentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000021 /* Presentation.swift */; };
+		A00100010000000000000022 /* SessionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000022 /* SessionViews.swift */; };
+		A00100010000000000000023 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000023 /* ChatView.swift */; };
+		A00100010000000000000024 /* StatusViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000024 /* StatusViews.swift */; };
+		A00100010000000000000025 /* HistoryBranchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000025 /* HistoryBranchView.swift */; };
+		A00100010000000000000026 /* PreviewSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000026 /* PreviewSupport.swift */; };
+		A00100010000000000000027 /* InteractionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000027 /* InteractionView.swift */; };
+		A00100010000000000000028 /* FileTransfers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000028 /* FileTransfers.swift */; };
+		A00100010000000000000029 /* DownloadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000029 /* DownloadView.swift */; };
+        B00100010000000000000001 /* OrbisUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00110010000000000000001; };
+		A0010001000000000000002A /* ToolContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000002A /* ToolContent.swift */; };
+		A0010001000000000000002B /* ToolInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000002B /* ToolInventory.swift */; };
+		A0010001000000000000002C /* ToolDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000002C /* ToolDetailView.swift */; };
+		A0010001000000000000002D /* HostState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000002D /* HostState.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A00110010000000000000001 /* OrbisApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbisApp.swift; sourceTree = "<group>"; };
+		A00110010000000000000002 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		A00110010000000000000003 /* Base64URL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Base64URL.swift; sourceTree = "<group>"; };
+		A00110010000000000000004 /* Crypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Crypto.swift; sourceTree = "<group>"; };
+		A00110010000000000000005 /* SecureStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStore.swift; sourceTree = "<group>"; };
+		A00110010000000000000006 /* Pairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairing.swift; sourceTree = "<group>"; };
+		A00110010000000000000007 /* Envelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Envelope.swift; sourceTree = "<group>"; };
+		A00110010000000000000008 /* WebSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketTransport.swift; sourceTree = "<group>"; };
+		A00110010000000000000009 /* OrbisStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbisStore.swift; sourceTree = "<group>"; };
+		A0011001000000000000000A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A0011001000000000000000B /* PairingScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingScannerView.swift; sourceTree = "<group>"; };
+		A0011001000000000000000C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A0011001000000000000000D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A0011001000000000000000E /* Orbis.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Orbis.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A0011001000000000000000F /* EnvelopePieces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvelopePieces.swift; sourceTree = "<group>"; };
+		A00110010000000000000020 /* OrbisDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbisDesign.swift; sourceTree = "<group>"; };
+		A00110010000000000000021 /* Presentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Presentation.swift; sourceTree = "<group>"; };
+		A00110010000000000000022 /* SessionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionViews.swift; sourceTree = "<group>"; };
+		A00110010000000000000023 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		A00110010000000000000024 /* StatusViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusViews.swift; sourceTree = "<group>"; };
+		A00110010000000000000025 /* HistoryBranchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryBranchView.swift; sourceTree = "<group>"; };
+		A00110010000000000000026 /* PreviewSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSupport.swift; sourceTree = "<group>"; };
+		A00110010000000000000027 /* InteractionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionView.swift; sourceTree = "<group>"; };
+		A00110010000000000000028 /* FileTransfers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTransfers.swift; sourceTree = "<group>"; };
+		A00110010000000000000029 /* DownloadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadView.swift; sourceTree = "<group>"; };
+        B00110010000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITests/OrbisUITests.swift; sourceTree = SOURCE_ROOT; };
+        B00110010000000000000002 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = OrbisUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A0011001000000000000002A /* ToolContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolContent.swift; sourceTree = "<group>"; };
+		A0011001000000000000002B /* ToolInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolInventory.swift; sourceTree = "<group>"; };
+		A0011001000000000000002C /* ToolDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolDetailView.swift; sourceTree = "<group>"; };
+		A0011001000000000000002D /* HostState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostState.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A00140010000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+        B00140010000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A00120010000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A00120010000000000000004 /* Orbis */,
+			);
+			sourceTree = "<group>";
+		};
+		A00120010000000000000002 /* Orbis */ = {
+			isa = PBXGroup;
+			children = (
+				A00110010000000000000001 /* OrbisApp.swift */,
+				A00110010000000000000002 /* Models.swift */,
+				A00110010000000000000003 /* Base64URL.swift */,
+				A00110010000000000000004 /* Crypto.swift */,
+				A00110010000000000000005 /* SecureStore.swift */,
+				A00110010000000000000006 /* Pairing.swift */,
+				A00110010000000000000007 /* Envelope.swift */,
+				A00110010000000000000008 /* WebSocketTransport.swift */,
+				A00110010000000000000009 /* OrbisStore.swift */,
+				A0011001000000000000000A /* ContentView.swift */,
+				A0011001000000000000000B /* PairingScannerView.swift */,
+				A0011001000000000000000C /* Assets.xcassets */,
+				A0011001000000000000000D /* Info.plist */,
+				A0011001000000000000000F /* EnvelopePieces.swift */,
+				A0011001000000000000002C /* ToolDetailView.swift */,
+				A0011001000000000000002D /* HostState.swift */,
+				A0011001000000000000002B /* ToolInventory.swift */,
+				A0011001000000000000002A /* ToolContent.swift */,
+                B00110010000000000000001,
+				A00110010000000000000029 /* DownloadView.swift */,
+				A00110010000000000000028 /* FileTransfers.swift */,
+				A00110010000000000000027 /* InteractionView.swift */,
+				A00110010000000000000026 /* PreviewSupport.swift */,
+				A00110010000000000000025 /* HistoryBranchView.swift */,
+				A00110010000000000000024 /* StatusViews.swift */,
+				A00110010000000000000023 /* ChatView.swift */,
+				A00110010000000000000022 /* SessionViews.swift */,
+				A00110010000000000000021 /* Presentation.swift */,
+				A00110010000000000000020 /* OrbisDesign.swift */,
+			);
+			path = Orbis;
+			sourceTree = "<group>";
+		};
+		A00120010000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A0011001000000000000000E /* Orbis.app */,
+                B00110010000000000000002,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A00120010000000000000004 /* Orbis */ = {
+			isa = PBXGroup;
+			children = (
+				A00120010000000000000002 /* Orbis */,
+				A00120010000000000000003 /* Products */,
+			);
+			name = Orbis;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A00130010000000000000001 /* Orbis */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00150010000000000000001 /* Build configuration list for PBXNativeTarget "Orbis" */;
+			buildPhases = (
+				A00140010000000000000001 /* Sources */,
+				A00140010000000000000003 /* Frameworks */,
+				A00140010000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Orbis;
+			productName = Orbis;
+			productReference = A0011001000000000000000E /* Orbis.app */;
+			productType = "com.apple.product-type.application";
+		};
+        B00130010000000000000001 = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = B00150010000000000000001;
+            buildPhases = (B00140010000000000000001, B00140010000000000000002, B00140010000000000000003);
+            buildRules = ();
+            dependencies = (B00160010000000000000002);
+            name = OrbisUITests;
+            productName = OrbisUITests;
+            productReference = B00110010000000000000002;
+            productType = "com.apple.product-type.bundle.ui-testing";
+        };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A00160010000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1600;
+				ORGANIZATIONNAME = Orbis;
+				TargetAttributes = {
+					A00130010000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = A00150010000000000000002 /* Build configuration list for PBXProject "Orbis" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				"zh-Hans",
+			);
+			mainGroup = A00120010000000000000001;
+			productRefGroup = A00120010000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A00130010000000000000001 /* Orbis */,
+                B00130010000000000000001,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A00140010000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A0010001000000000000000C /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+        B00140010000000000000003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A00140010000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00100010000000000000001 /* OrbisApp.swift in Sources */,
+				A00100010000000000000002 /* Models.swift in Sources */,
+				A00100010000000000000003 /* Base64URL.swift in Sources */,
+				A00100010000000000000004 /* Crypto.swift in Sources */,
+				A00100010000000000000005 /* SecureStore.swift in Sources */,
+				A00100010000000000000006 /* Pairing.swift in Sources */,
+				A00100010000000000000007 /* Envelope.swift in Sources */,
+				A00100010000000000000008 /* WebSocketTransport.swift in Sources */,
+				A00100010000000000000009 /* OrbisStore.swift in Sources */,
+				A0010001000000000000000A /* ContentView.swift in Sources */,
+				A0010001000000000000000B /* PairingScannerView.swift in Sources */,
+				A0010001000000000000000D /* EnvelopePieces.swift in Sources */,
+				A0010001000000000000002C /* ToolDetailView.swift in Sources */,
+				A0010001000000000000002D /* HostState.swift in Sources */,
+				A0010001000000000000002B /* ToolInventory.swift in Sources */,
+				A0010001000000000000002A /* ToolContent.swift in Sources */,
+				A00100010000000000000029 /* DownloadView.swift in Sources */,
+				A00100010000000000000028 /* FileTransfers.swift in Sources */,
+				A00100010000000000000027 /* InteractionView.swift in Sources */,
+				A00100010000000000000026 /* PreviewSupport.swift in Sources */,
+				A00100010000000000000025 /* HistoryBranchView.swift in Sources */,
+				A00100010000000000000024 /* StatusViews.swift in Sources */,
+				A00100010000000000000023 /* ChatView.swift in Sources */,
+				A00100010000000000000022 /* SessionViews.swift in Sources */,
+				A00100010000000000000021 /* Presentation.swift in Sources */,
+				A00100010000000000000020 /* OrbisDesign.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+        B00140010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00100010000000000000001); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+        B00160010000000000000001 = {isa = PBXContainerItemProxy; containerPortal = A00160010000000000000001; proxyType = 1; remoteGlobalIDString = A00130010000000000000001; remoteInfo = Orbis; };
+        B00160010000000000000002 = {isa = PBXTargetDependency; target = A00130010000000000000001; targetProxy = B00160010000000000000001; };
+
+
+/* Begin XCBuildConfiguration section */
+		A00170010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Z5KBY7SP63;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Orbis/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A00170010000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Z5KBY7SP63;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Orbis/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A00170010000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A00170010000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+        B00170010000000000000001 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = Orbis;}; name = Debug; };
+        B00170010000000000000002 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = Orbis;}; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A00150010000000000000001 /* Build configuration list for PBXNativeTarget "Orbis" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00170010000000000000001 /* Debug */,
+				A00170010000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00150010000000000000002 /* Build configuration list for PBXProject "Orbis" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00170010000000000000003 /* Debug */,
+				A00170010000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+        B00150010000000000000001 = {isa = XCConfigurationList; buildConfigurations = (B00170010000000000000001, B00170010000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = A00160010000000000000001 /* Project object */;
+}

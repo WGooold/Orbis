@@ -26,6 +26,7 @@ Remote Interaction SDK 是一等能力：第三方扩展把 confirm、select、m
 - `packages/pi-extension`：轻量 Pi 事件/命令适配器，以及支持重连的出站 transport；它的唯一通道是本机 Host 的 loopback。
 - `packages/remote-interaction-sdk`：协调 Pi 本地 UI 与手机端 `confirm`、`select`、`multi-select`、`input` 交互。
 - `android`：原生 Android/Compose 客户端，包含加密身份、扫码配对、Session catalog、Session graph cache、重连、runtime view、路径显示和聊天 projection。
+- `ios/Orbis`：原生 SwiftUI iOS 17 客户端首版，包含扫码配对、Keychain 身份保存、CryptoKit 端到端加密、Relay 重连、runtime/session 浏览和聊天。
 - `deploy`：服务器侧部署脚本与 Nginx 反代片段（TLS 由服务器现有 Nginx 终止）。
 
 `runtimeId` 标识一个在线 runtime 连接。它不是 session ID、branch ID 或 leaf ID。Host 本身也以 runtime 身份接入 Relay（`role = "host"`），所以「电脑上在跑几个 agent 进程」和「Relay 上有几条 runtime 连接」是两件事：网关不是手机要看见的进程，进程目录由 Host 自己维护。
@@ -44,6 +45,10 @@ npm run build
 ```
 
 使用 Android Studio 打开 `android/`。构建原生客户端和运行 reducer 测试需要 JDK 17 与 Android SDK 35。
+
+使用 Xcode 打开 `ios/Orbis/Orbis.xcodeproj`，运行 `Orbis` scheme。iOS 首版最低支持 iOS 17；需要相机权限来扫描电脑端配对二维码。当前仓库提供可直接打开的工程与源码，正式安装包需在 macOS/Xcode 环境完成签名和真机验证。
+
+可在仓库根目录运行 `bash scripts/check-ios.sh`：先执行 Swift 核心协议与状态测试，安装完整 Xcode 后继续构建模拟器 App。详细范围和真机验收步骤见 [`ios/Orbis/README.md`](ios/Orbis/README.md)。
 
 ## 本地运行 Relay
 

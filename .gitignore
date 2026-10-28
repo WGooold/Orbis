@@ -7,6 +7,12 @@ dist/
 .gradle/
 android/local.properties
 android/**/build/
+.DS_Store
+ios/**/build/
+ios/**/.build/
+ios/**/.swiftpm/
+ios/**/DerivedData/
+ios/**/xcuserdata/
 *.tsbuildinfo
 data/
 deploy/.deploy.env

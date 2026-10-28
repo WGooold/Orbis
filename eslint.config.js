@@ -8,6 +8,8 @@ export default tseslint.config(
       "node_modules/**",
       "agent/**",
       "android/**",
+      "ios/**/.build/**",
+      "ios/**/build/**",
       // 本地草稿：一次性探测脚本，没有跟踪进 Git，clean checkout 里也不存在。
       // 不忽略的话本地 lint 会长期挂着几十个只有本机才看得见的错误，等于把这道门禁作废。
       ".scratch/**",
@@ -25,7 +27,7 @@ export default tseslint.config(
     } },
   },
   {
-    files: ["scripts/**/*.mjs"],
+    files: ["scripts/**/*.mjs", "ios/Orbis/Tests/Fixtures/*.mjs"],
     languageOptions: {
       globals: {
         Buffer: "readonly",
