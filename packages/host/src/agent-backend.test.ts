@@ -9,7 +9,9 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { ActivationError } from "./spawner.js";
-import { PiBackend } from "./agent-backend.js";
+import { ClaudeBackend, PiBackend } from "./agent-backend.js";
+import { ClaudeHookBridge } from "./claude-hook-bridge.js";
+import { ClaudeModsBridge } from "./claude-mods-bridge.js";
 import type { SpawnedAgent } from "./spawner.js";
 
 function makeSpawned(overrides: Partial<SpawnedAgent> = {}): SpawnedAgent {
@@ -97,5 +99,78 @@ describe("PiBackend（统一端口的原生实现）", () => {
     const { backend } = makeBackend({ sessionsRoot: root });
     const error = await backend.activate({ type: "resume", sessionId: "x" }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ActivationError);
+  });
+});
+
+describe("ClaudeBackend（Hook bridge 的统一端口）", () => {
+  const permission = {
+    hook_event_name: "PermissionRequest",
+    session_id: "claude-session",
+    cwd: "D:/repo",
+    tool_name: "Bash",
+    tool_input: { command: "echo ok" },
+  };
+  const ask = {
+    hook_event_name: "PreToolUse",
+    session_id: "claude-session",
+    cwd: "D:/repo",
+    tool_name: "AskUserQuestion",
+    tool_input: { questions: [{ question: "环境？", options: [{ label: "dev" }] }] },
+  };
+
+  function fixture() {
+    const events: unknown[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    const modsBridge = new ClaudeModsBridge();
+    let runtimes = ["claude:claude-session"];
+    const backend = new ClaudeBackend({
+      bridge,
+      modsBridge,
+      runtimeIds: () => runtimes,
+      onCommandResult: (_runtimeId, event) => events.push(event),
+    });
+    return { bridge, backend, events, removeRuntime: () => { runtimes = []; } };
+  }
+
+  it("只认领在线 Claude runtime，并通过 interaction.respond 返回回执", async () => {
+    const { bridge, backend, events } = fixture();
+    const pending = bridge.accept(permission);
+    await Promise.resolve();
+    const request = events.find((event): event is { type: "interaction.requested"; request: { requestId: string } } =>
+      typeof event === "object" && event !== null && (event as { type?: unknown }).type === "interaction.requested");
+    expect(request).toBeDefined();
+    expect(backend.kind).toBe("claude");
+    expect(backend.isReady()).toBe(true);
+    expect(backend.ownsRuntime("claude:claude-session")).toBe(true);
+    expect(backend.ownsRuntime("claude:other")).toBe(false);
+    expect(backend.dispatchCommand("claude:claude-session", "command-1", {
+      type: "interaction.respond", requestId: request!.request.requestId, extensionId: "claude-code", response: { kind: "confirm", value: true },
+    })).toBe("handled");
+    await expect(pending).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: "allow" } } });
+    expect(events).toContainEqual({ type: "command.result", commandId: "command-1", ok: true, status: "success" });
+    expect(backend.dispatchCommand("claude:claude-session", "command-2", {
+      type: "interaction.respond", requestId: request!.request.requestId, extensionId: "claude-code", response: { kind: "confirm", value: true },
+    })).toBe("handled");
+    expect(events).toContainEqual({ type: "command.result", commandId: "command-2", ok: true, status: "already_delivered" });
+  });
+
+  it("对取消、未知请求和非交互命令返回明确结果", async () => {
+    const { bridge, backend, events, removeRuntime } = fixture();
+    const pending = bridge.accept(ask);
+    await Promise.resolve();
+    const request = events.find((event): event is { type: "interaction.requested"; request: { requestId: string } } =>
+      typeof event === "object" && event !== null && (event as { type?: unknown }).type === "interaction.requested");
+    expect(request).toBeDefined();
+    expect(backend.dispatchCommand("claude:claude-session", "cancel", {
+      type: "interaction.respond", requestId: request!.request.requestId, extensionId: "claude-code", response: { kind: "cancel" },
+    })).toBe("handled");
+    await expect(pending).resolves.toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
+    expect(backend.dispatchCommand("claude:claude-session", "cancel", {
+      type: "interaction.respond", requestId: "missing", extensionId: "claude-code", response: { kind: "cancel" },
+    })).toBe("handled");
+    expect(events).toContainEqual({ type: "command.result", commandId: "cancel", ok: false, status: "failure", error: "interaction_not_found" });
+    expect(backend.dispatchCommand("claude:claude-session", "unsupported", { type: "stop" })).toBe("unsupported");
+    removeRuntime();
+    expect(backend.dispatchCommand("claude:claude-session", "offline", { type: "stop" })).toBe("offline");
   });
 });

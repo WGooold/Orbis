@@ -14,6 +14,8 @@ export default tseslint.config(
       // 不忽略的话本地 lint 会长期挂着几十个只有本机才看得见的错误，等于把这道门禁作废。
       ".scratch/**",
       ".artifacts/**",
+      // Claude Code compatibility spike contains generated upstream declarations.
+      "spikes/**",
     ],
   },
   js.configs.recommended,
@@ -41,6 +43,17 @@ export default tseslint.config(
         URL: "readonly",
         URLSearchParams: "readonly",
         WebSocket: "readonly",
+      },
+    },
+  },
+  {
+    files: ["packages/claude-mod/scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        AbortSignal: "readonly",
+        Buffer: "readonly",
+        fetch: "readonly",
+        process: "readonly",
       },
     },
   },

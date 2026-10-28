@@ -1,0 +1,4 @@
+{
+  "description": "Relay native Claude Code session facts and Orbis commands over authenticated localhost HTTP",
+  "modules": ["../src/register.ts"]
+}

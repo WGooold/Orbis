@@ -20,6 +20,8 @@ import type { ToolContentReader, ToolContentStore } from "@orbis/runtime-bridge"
 import { ActivationError, type SessionSpawner } from "./spawner.js";
 import { defaultPiSessionsRoot, listPiSessions } from "./sessions.js";
 import { piArchiveRoot, SessionArchiveError, setPiSessionArchived } from "./session-archive.js";
+import type { ClaudeHookBridge } from "./claude-hook-bridge.js";
+import type { ClaudeModsBridge } from "./claude-mods-bridge.js";
 
 export type AgentActivateTarget =
   | { type: "new"; cwd: string }
@@ -156,5 +158,92 @@ export class PiBackend implements AgentBackend {
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
     if (!this.ownsRuntime(runtimeId)) return "offline";
     return this.#options.sendCommand(runtimeId, commandId, command) ? "handled" : "offline";
+  }
+}
+
+export type ClaudeBackendOptions = {
+  bridge: ClaudeHookBridge;
+  modsBridge: ClaudeModsBridge;
+  runtimeIds: () => readonly string[];
+  onCommandResult?: (runtimeId: string, event: Extract<import("@orbis/protocol").RuntimeEvent, { type: "command.result" }>) => void;
+};
+
+/** Backend for the native Claude Code TUI Hook bridge. */
+export class ClaudeBackend implements AgentBackend {
+  readonly kind = "claude" as const;
+  readonly #options: ClaudeBackendOptions;
+
+  constructor(options: ClaudeBackendOptions) { this.#options = options; }
+  isReady(): boolean { return this.#options.runtimeIds().length > 0; }
+  ownsRuntime(runtimeId: string): boolean { return runtimeId.startsWith("claude:") && this.#options.runtimeIds().includes(runtimeId); }
+  async catalog(): Promise<AgentSessionSummary[]> { return []; }
+  async setArchived(): Promise<void> { throw new ActivationError("session_not_found", "Claude Code 会话目录尚未接入"); }
+  async activate(): Promise<BackendActivation> { throw new ActivationError("agent_unsupported", "Claude Code 只能接入已运行且已加载 bridge 的官方 TUI"); }
+  dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
+    if (!this.ownsRuntime(runtimeId)) return "offline";
+    if (command.type === "interaction.respond") {
+      const result = this.#options.bridge.respond(command.requestId, this.#options.bridge.generation, command.response);
+      if (result === "accepted") {
+        this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: true, status: "success" });
+        return "handled";
+      }
+      if (result === "duplicate") {
+        this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: true, status: "already_delivered" });
+        return "handled";
+      }
+      const error = result === "unknown" ? "interaction_not_found" :
+        result === "stale" ? "stale_generation" : "interaction_conflict";
+      this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: false, status: "failure", error });
+      // The runtime is still online and this backend owns it. A rejected response
+      // is a command failure, not an offline or unsupported-runtime condition.
+      return "handled";
+    }
+
+    if (command.type === "user_message") {
+      if (!this.#options.modsBridge.isOnline(runtimeId)) return "unsupported";
+      // Claude Mods currently only provides a submit-after-idle API. Do not
+      // disguise Pi-style steer, or silently drop files the API cannot attach.
+      if (command.delivery === "steer" || (command.attachments !== undefined && command.attachments.length > 0)) {
+        this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: false,
+          status: "failure", error: command.delivery === "steer" ? "claude_steer_unsupported" : "claude_attachments_unsupported" });
+        return "handled";
+      }
+      const result = this.#options.modsBridge.sendCommand(runtimeId, commandId,
+        { type: "user_message", text: command.text, ...(command.messageId === undefined ? {} : { messageId: command.messageId }) });
+      return this.#reportModsCommandResult(runtimeId, commandId, result);
+    }
+    if (command.type === "stop") {
+      if (!this.#options.modsBridge.isOnline(runtimeId)) return "unsupported";
+      const result = this.#options.modsBridge.sendCommand(runtimeId, commandId, { type: "stop" });
+      return this.#reportModsCommandResult(runtimeId, commandId, result);
+    }
+    if (command.type === "user_message.cancel") {
+      this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: false,
+        status: "not_cancelable", error: "claude_prompt_submit_not_cancelable" });
+      return "handled";
+    }
+    return "unsupported";
+  }
+  directoryEntries(): RuntimeMetadata[] {
+    const byId = new Map(this.#options.bridge.runtimeMetadata().map(runtime => [runtime.runtimeId, runtime]));
+    for (const runtime of this.#options.modsBridge.runtimeMetadata()) {
+      byId.set(runtime.runtimeId, { ...runtime, status: this.#options.bridge.runtimeMetadata().find(item => item.runtimeId === runtime.runtimeId)?.status ?? runtime.status });
+    }
+    return [...byId.values()];
+  }
+
+  #reportModsCommandResult(runtimeId: string, commandId: string,
+    result: ReturnType<ClaudeModsBridge["sendCommand"]>): CommandDispatch {
+    if (result === "offline") return "offline";
+    if (result === "accepted") {
+      this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: true, status: "pending" });
+      return "handled";
+    }
+    const error = result === "queue_full" ? "claude_command_queue_full" :
+      result === "id_conflict" ? "command_id_conflict" :
+        result === "not_cancelable" ? "claude_turn_not_running" : "claude_bridge_offline";
+    this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: false,
+      status: result === "not_cancelable" ? "not_cancelable" : "failure", error });
+    return "handled";
   }
 }

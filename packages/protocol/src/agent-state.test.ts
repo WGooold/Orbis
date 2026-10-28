@@ -26,7 +26,7 @@ describe("Agent 状态模型身份", () => {
   it("接受四个接入 kind，并保留 identity 校验", () => {
     expect(AgentKeySchema.parse({ hostId: "host", agentKind: "pi", sessionId: "s" }).agentKind).toBe("pi");
     expect(AgentKeySchema.parse({ hostId: "host", agentKind: "codexDesktop", sessionId: "s" }).agentKind).toBe("codexDesktop");
-    expect(() => AgentKeySchema.parse({ hostId: "host", agentKind: "claude", sessionId: "s" })).toThrow();
+    expect(AgentKeySchema.parse({ hostId: "host", agentKind: "claude", sessionId: "s" }).agentKind).toBe("claude");
     expect(() => AgentKeySchema.parse({ hostId: "   ", agentKind: "pi", sessionId: "s" })).toThrow();
     expect(() => AgentKeySchema.parse({ hostId: "host", agentKind: "pi", sessionId: "s", runtimeId: "r" })).toThrow();
   });

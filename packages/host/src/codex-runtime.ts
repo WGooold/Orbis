@@ -1259,11 +1259,16 @@ export class CodexRuntime implements AgentBackend {
       await this.#waitForReconcile(existing);
       return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
     }
-    const thread: ThreadState = this.#newThreadState(id, cwd, {
+    // Resuming an attached thread keeps its source sequence, pending interactions and queue.
+    // Native replay announces a new epoch itself if the verified history was rewritten.
+    const thread: ThreadState = existing ?? this.#newThreadState(id, cwd, {
       name: codexSessionName(threadJson?.name),
       model: typeof result.model === "string" ? result.model : undefined,
     });
-    thread.modelProvider = typeof result.modelProvider === "string" ? result.modelProvider : undefined;
+    thread.cwd = cwd;
+    thread.name = codexSessionName(threadJson?.name);
+    if (typeof result.model === "string") thread.model = result.model;
+    if (typeof result.modelProvider === "string") thread.modelProvider = result.modelProvider;
     thread.permissions = codexPermissions(result) ?? thread.permissions;
     if (codexPermissions(result)) this.#effectiveSettings.set(id, object(result));
     this.#threads.set(id, thread);
@@ -1282,6 +1287,7 @@ export class CodexRuntime implements AgentBackend {
     thread.sourceReady = thread.historyError === undefined;
     // #publishMetadataEvent 里会一并补发 capabilities（按 thread 粒度），无需重复。
     this.#publishMetadataEvent(thread);
+    if (existing !== undefined) this.#touchSource(thread);
     // 历史由设备的有界 session.sync 请求加载，metadata 不附带无人请求的整图。
     this.#openHeadWindow(id, cwd);
     this.#options.log?.(`Codex 会话已激活：${id}（cwd=${cwd}）`);

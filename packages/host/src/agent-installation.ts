@@ -15,6 +15,8 @@ type PlanDownload = (options: AgentDownloadPlanOptions) => Promise<AgentDownload
 const execute = promisify(execFile);
 export const agentPackages = { pi: "@earendil-works/pi-coding-agent", codex: "@openai/codex", codexDesktop: "@openai/codex", dsh: "@deepseek-ai/dsh" } as const;
 export const agentEntries = { pi: "dist/bundle/cli.js", codex: "bin/codex.js", codexDesktop: "bin/codex.js", dsh: "lib/bin.js" } as const;
+/** Agent kinds backed by an npm package managed by the desktop installer. */
+export type InstallableAgentKind = keyof typeof agentPackages;
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 export type AgentInstallation = { id: string; kind: AgentKind; version: string; entry: string; installedAt: string; active: boolean };
 export type AgentInstallProgress = {
@@ -76,9 +78,9 @@ function within(root: string, path: string): boolean {
   const rel = relative(resolve(root), resolve(path));
   return rel !== "" && rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel);
 }
-function registryPath(root: string, kind: AgentKind): string { return join(root, kind, "installations.json"); }
+function registryPath(root: string, kind: InstallableAgentKind): string { return join(root, kind, "installations.json"); }
 
-export async function listManagedAgentInstallations(kind: AgentKind, root: string): Promise<AgentInstallation[]> {
+export async function listManagedAgentInstallations(kind: InstallableAgentKind, root: string): Promise<AgentInstallation[]> {
   try {
     const data = JSON.parse(await readFile(registryPath(root, kind), "utf8")) as { version: number; installations: AgentInstallation[] };
     if (data.version !== 1 || !Array.isArray(data.installations) || data.installations.some(item => !item || item.kind !== kind || typeof item.id !== "string" || !/^[\w-]+$/.test(item.id) || typeof item.version !== "string" || !parseAgentVersion(item.version) || typeof item.entry !== "string" || !within(join(root, kind, item.id), item.entry) || typeof item.installedAt !== "string" || typeof item.active !== "boolean") || data.installations.filter(item => item.active).length > 1) throw new Error("invalid manifest");
@@ -88,14 +90,14 @@ export async function listManagedAgentInstallations(kind: AgentKind, root: strin
     throw new Error("Agent 安装记录不可读，请检查文件权限和 installations.json");
   }
 }
-async function saveInstallations(root: string, kind: AgentKind, installations: AgentInstallation[]): Promise<void> {
+async function saveInstallations(root: string, kind: InstallableAgentKind, installations: AgentInstallation[]): Promise<void> {
   const path = registryPath(root, kind); const temporary = path + "." + randomUUID() + ".tmp";
   try {
     await writeFile(temporary, JSON.stringify({ version: 1, installations }, null, 2), { encoding: "utf8", mode: 0o600 });
     await rename(temporary, path);
   } finally { await rm(temporary, { force: true }); }
 }
-export async function activeManagedEntry(kind: AgentKind, root: string): Promise<string | undefined> {
+export async function activeManagedEntry(kind: InstallableAgentKind, root: string): Promise<string | undefined> {
   return (await listManagedAgentInstallations(kind, root)).find(item => item.active)?.entry;
 }
 export function installationSource(entry: string | undefined, root: string): AgentInstallStatus["installationSource"] {
@@ -166,7 +168,7 @@ function failureMessage(error: unknown): string {
   return "Agent 下载或验证失败，请检查网络、npm 源和版本号";
 }
 
-async function verifyPackage(kind: AgentKind, prefix: string, requested: string, signal: AbortSignal, run: InstallRun): Promise<{ entry: string; version: string }> {
+async function verifyPackage(kind: InstallableAgentKind, prefix: string, requested: string, signal: AbortSignal, run: InstallRun): Promise<{ entry: string; version: string }> {
   const packageRoot = join(prefix, "node_modules", agentPackages[kind]);
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as { name?: string; version?: string; bin?: string | Record<string, string> };
   if (manifest.name !== agentPackages[kind] || typeof manifest.version !== "string" || !parseAgentVersion(manifest.version) || requested !== "latest" && manifest.version !== requested) throw new Error("安装包名称或版本不匹配");
@@ -181,7 +183,7 @@ async function verifyPackage(kind: AgentKind, prefix: string, requested: string,
 
 /** Update a detected npm installation in its original prefix, or prepare an isolated managed version. */
 export async function installAgentPackage(
-  kind: AgentKind, version: string, root: string, signal: AbortSignal,
+  kind: InstallableAgentKind, version: string, root: string, signal: AbortSignal,
   onProgress?: (progress: AgentInstallProgress) => void,
   options: { existingEntry?: string; run?: InstallRun; planDir?: string; planDownload?: PlanDownload; sampleInflightBytes?: () => Promise<number> } = {},
 ): Promise<{ entry: string; version: string; id?: string }> {
@@ -295,7 +297,7 @@ export async function installAgentPackage(
   }
 }
 
-export async function activateManagedAgent(kind: AgentKind, id: string, root: string, signal: AbortSignal): Promise<{ entry: string; version: string }> {
+export async function activateManagedAgent(kind: InstallableAgentKind, id: string, root: string, signal: AbortSignal): Promise<{ entry: string; version: string }> {
   root = resolve(root);
   const installations = await listManagedAgentInstallations(kind, root);
   const selected = installations.find(item => item.id === id);
@@ -323,7 +325,7 @@ export async function fetchNpmLatestVersion(packageName: string, signal?: AbortS
   } catch { return undefined; }
 }
 
-export async function queryAgentStatus(kind: AgentKind, root: string, local: LocalAgent, checkLatest = false): Promise<AgentInstallStatus> {
+export async function queryAgentStatus(kind: InstallableAgentKind, root: string, local: LocalAgent, checkLatest = false): Promise<AgentInstallStatus> {
   const installations = await listManagedAgentInstallations(kind, root);
   const status: AgentInstallStatus = { ...local, kind, package: agentPackages[kind], updateAvailable: false, installationSource: installationSource(local.entry, root), installations, copies: [] };
   if (status.installationSource === "npm" && local.entry) {
@@ -346,7 +348,7 @@ export async function queryAgentStatus(kind: AgentKind, root: string, local: Loc
 }
 
 /** Enumerate npm copies in PATH order, including packages whose CLI entry is missing. */
-export async function findAgentCopies(kind: AgentKind, env: NodeJS.ProcessEnv): Promise<{ entry: string; version?: string }[]> {
+export async function findAgentCopies(kind: InstallableAgentKind, env: NodeJS.ProcessEnv): Promise<{ entry: string; version?: string }[]> {
   const roots = (env.PATH ?? env.Path ?? "").split(delimiter).map(value => value.trim().replace(/^"|"$/g, "")).filter(Boolean);
   if (env.APPDATA) roots.push(join(env.APPDATA, "npm"));
   const copies: { entry: string; version?: string }[] = []; const seen = new Set<string>();

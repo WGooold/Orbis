@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 // Public Host projections only: credentials, native configuration and private receipts never enter these values.
-const kind = z.enum(["pi", "codex", "codexDesktop", "dsh"]);
+const kind = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude"]);
 const id = z.string().min(1).max(1_024);
 const count = z.number().int().nonnegative();
 const availability = z.enum(["ready", "unknown", "unavailable"]);

@@ -76,7 +76,9 @@ import { HostStateFacts, providerSwitchingFact } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
-import { PiBackend } from "./agent-backend.js";
+import { ClaudeBackend, PiBackend } from "./agent-backend.js";
+import { ClaudeHookBridge } from "./claude-hook-bridge.js";
+import { ClaudeModsBridge } from "./claude-mods-bridge.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import type { DshRuntime } from "./dsh-runtime.js";
@@ -257,6 +259,10 @@ export class HostService {
    * 接口，不为单个后端写特判。
    */
   #backends: AgentBackend[];
+  readonly #claudeBridge: ClaudeHookBridge;
+  readonly #claudeModsBridge: ClaudeModsBridge;
+  readonly #claudePublishedRuntimes = new Set<string>();
+  #claudeModsSweep: ReturnType<typeof setInterval> | undefined;
   readonly #downloads: HostDownloadService;
   readonly #uploads: HostUploadService;
   /**
@@ -371,6 +377,27 @@ export class HostService {
     this.#recordAgentDiagnostic(runtimeId, "recovery", "Source disconnected; current baseline requires reconciliation", "warning");
   }
 
+  #registerClaudeRuntime(runtime: RuntimeMetadata): void {
+    const alreadyPublished = this.#claudePublishedRuntimes.has(runtime.runtimeId);
+    const displaced = this.#agentFacts.displacedRuntime(runtime.runtimeId, runtime);
+    if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
+    this.#claudePublishedRuntimes.add(runtime.runtimeId);
+    this.#agentFacts.observe(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
+    this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
+    if (alreadyPublished) this.#publishRuntimeEvent(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
+    else this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+    this.refreshHostFacts();
+  }
+
+  #unregisterClaudeRuntime(runtimeId: string, reason: string): void {
+    if (this.#claudeBridge.runtimeIds().includes(runtimeId) || this.#claudeModsBridge.runtimeIds().includes(runtimeId)) return;
+    if (!this.#claudePublishedRuntimes.delete(runtimeId) && this.#agentFacts.scopeOf(runtimeId) === undefined) return;
+    this.#markRuntimeOffline(runtimeId, reason);
+    this.#notifications.offline(runtimeId);
+    this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason });
+    this.refreshHostFacts();
+  }
+
   /**
    * 设备视图的传输摘要（模块 24/33）：只发布这台设备自己未完成的上传和 Host 确认的持久前缀。
    * 手机本地前缀仍由 App 权威；这里不做 IO，值来自上传服务的内存状态。
@@ -412,6 +439,7 @@ export class HostService {
     }
     const generation = ++this.#providerFactsGeneration;
     const modelEpoch = this.#agentStateRegistry.currentModelEpoch();
+    // Claude Code is attached through the native Hook bridge and has no provider-manager profile.
     const kinds: AgentKind[] = ["pi", "codex", "dsh"];
     if (this.#backends.some(backend => backend.kind === "codexDesktop")) kinds.push("codexDesktop");
     const providers = await Promise.all(kinds.map(async (kind) => {
@@ -459,7 +487,7 @@ export class HostService {
     }
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
-    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh"];
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude"];
     facts.backends({ backends: kinds.map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
@@ -666,6 +694,18 @@ export class HostService {
     // 后端装配：Pi 恒有；Codex 由调用方注入（CLI 在 --codex 时创建 app-server）。
     // Codex 的事件出口 / 元数据重播 / 离线广播都在这里挂上——对 Host 其余部分而言
     // 它只是 #backends 里多了一个 AgentBackend。
+    this.#claudeBridge = new ClaudeHookBridge({
+      onRuntimeOnline: runtime => this.#registerClaudeRuntime(runtime),
+      onRuntimeOffline: (runtimeId, reason) => this.#unregisterClaudeRuntime(runtimeId, reason),
+      onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
+    });
+    this.#claudeModsBridge = new ClaudeModsBridge({
+      onRuntimeOnline: runtime => this.#registerClaudeRuntime(runtime),
+      // A Hook can keep the runtime online for an interaction while the Mods poller reconnects.
+      // Only remove the public runtime after both sources have gone offline.
+      onRuntimeOffline: (runtimeId, reason) => this.#unregisterClaudeRuntime(runtimeId, reason),
+      onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
+    });
     this.#piToolContents = new PiToolContentReader({
       send: (runtimeId, commandId, command) => this.#loopback?.sendCommand(runtimeId, commandId, command) ?? false,
       scope: runtimeId => { const scope = this.#agentFacts.scopeOf(runtimeId); return scope?.kind === "agent" ? scope.key : undefined; },
@@ -681,6 +721,9 @@ export class HostService {
         ...(options.sessionsRoot === undefined ? {} : { sessionsRoot: options.sessionsRoot }),
         ...(options.log === undefined ? {} : { log: options.log }),
       }),
+      new ClaudeBackend({ bridge: this.#claudeBridge, modsBridge: this.#claudeModsBridge,
+        runtimeIds: () => [...new Set([...this.#claudeBridge.runtimeIds(), ...this.#claudeModsBridge.runtimeIds()])],
+        onCommandResult: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event) }),
     ];
     this.#backends = backends;
     // 共享同一个单写者：Agent 事实与设备视图回执都写进这一份模型。
@@ -1094,6 +1137,8 @@ export class HostService {
   }
 
   async start(): Promise<void> {
+    this.#claudeModsSweep = setInterval(() => { this.#claudeModsBridge.expireStale(); }, 5_000);
+    this.#claudeModsSweep.unref();
     this.#modelLifecycle = "starting";
     this.refreshHostFacts();
     // Host 在 Relay 眼里就是一个普通 runtime，直接复用 v1 的身份空间。
@@ -1170,6 +1215,10 @@ export class HostService {
         hostId: this.#identity.hostId,
         ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
         ...(this.#options.codexLaunch === undefined ? {} : { onCodexLaunch: this.#options.codexLaunch }),
+        onClaudeHook: (input, signal) => this.#claudeBridge.accept(input, signal),
+        onClaudeModsHello: input => this.#claudeModsBridge.hello(input),
+        onClaudeModsPoll: input => this.#claudeModsBridge.pollRequest(input),
+        onClaudeModsEvent: input => this.#claudeModsBridge.receiveRequest(input),
         onRuntimeOnline: (metadata) => {
           const displaced = this.#agentFacts.displacedRuntime(metadata.runtimeId, metadata);
           if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
@@ -1262,6 +1311,10 @@ export class HostService {
     this.#modelLifecycle = "stopping";
     this.refreshHostFacts();
     this.#notifications.close();
+    if (this.#claudeModsSweep !== undefined) clearInterval(this.#claudeModsSweep);
+    this.#claudeModsSweep = undefined;
+    this.#claudeModsBridge.close();
+    this.#claudeBridge.close();
     await this.#desktopLedgerWrite;
     this.#sessionSync.close();
     this.#agentStateSubscriptions.close();

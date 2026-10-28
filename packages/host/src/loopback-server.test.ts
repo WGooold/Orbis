@@ -6,10 +6,11 @@
  * 扩展会照它连上去然后空等——那是这条通道最容易踩、也最难查的坑。
  */
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 
 import { LOOPBACK_DESCRIPTOR_FILE, LOOPBACK_PATH, LoopbackDescriptorSchema, PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE } from "@orbis/protocol";
@@ -47,6 +48,113 @@ describe("HostLoopbackServer 的发现文件", () => {
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ endpoint: "ws://127.0.0.1:9000", command: "node.exe", prefixArgs: ["codex.js", "C:\\work\\repo"] });
+  });
+
+  it("通过认证的 Claude Hook 端点保持请求直到 bridge 返回结构化结果", async () => {
+    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    const calls: { input: unknown; signal?: AbortSignal }[] = [];
+    server = new HostLoopbackServer({
+      stateDir: dir,
+      hostId: "host-1",
+      onClaudeHook: async (input, signal) => {
+        calls.push(signal === undefined ? { input } : { input, signal });
+        return { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } };
+      },
+    });
+    const descriptor = await server.start();
+    const url = descriptor.url.replace(/^ws:/u, "http:");
+    const body = JSON.stringify({ hook_event_name: "PermissionRequest", session_id: "s1" });
+
+    const unauthorized = await fetch(`${url}/v1/claude/hook`, { method: "POST", body });
+    expect(unauthorized.status).toBe(401);
+    const response = await fetch(`${url}/v1/claude/hook`, {
+      method: "POST", body,
+      headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toEqual(JSON.parse(body));
+    expect(calls[0]?.signal?.aborted).toBe(false);
+  });
+
+  it("为 Claude Mods 握手、poll 和 native event 提供认证的本机 HTTP 路由", async () => {
+    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    const received: unknown[] = [];
+    server = new HostLoopbackServer({
+      stateDir: dir,
+      hostId: "host-1",
+      onClaudeModsHello: input => { received.push(input); return { ok: true, runtimeId: "claude:s1", generation: "g1" }; },
+      onClaudeModsPoll: input => { received.push(input); return { ok: true, generation: "g1", commands: [] }; },
+      onClaudeModsEvent: input => { received.push(input); return "accepted"; },
+    });
+    const descriptor = await server.start();
+    const base = descriptor.url.replace(/^ws:/u, "http:");
+    const headers = { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" };
+    const hello = await fetch(`${base}/v1/claude/mods/hello`, { method: "POST", headers, body: JSON.stringify({ type: "hello" }) });
+    expect(hello.status).toBe(200);
+    expect(await hello.json()).toEqual({ ok: true, runtimeId: "claude:s1", generation: "g1" });
+    const poll = await fetch(`${base}/v1/claude/mods/poll`, { method: "POST", headers, body: JSON.stringify({ runtimeId: "claude:s1", generation: "g1" }) });
+    expect(poll.status).toBe(200);
+    expect(await poll.json()).toEqual({ ok: true, generation: "g1", commands: [] });
+    const event = await fetch(`${base}/v1/claude/mods/event`, { method: "POST", headers,
+      body: JSON.stringify({ runtimeId: "claude:s1", generation: "g1", event: { type: "turn.start" } }) });
+    expect(event.status).toBe(202);
+    expect(await event.json()).toEqual({ result: "accepted" });
+    const unauthorized = await fetch(`${base}/v1/claude/mods/poll`, { method: "POST", body: "{}" });
+    expect(unauthorized.status).toBe(401);
+    expect(received).toHaveLength(3);
+  });
+
+  it("拒绝无效 JSON、无效 Hook、未配置 bridge 和超大请求", async () => {
+    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    server = new HostLoopbackServer({ stateDir: dir, hostId: "host-1", onClaudeHook: async input => {
+      if (typeof input === "object" && input !== null && "nope" in input) throw new Error("invalid Claude Hook input");
+      return { ok: true };
+    } });
+    const descriptor = await server.start();
+    const url = descriptor.url.replace(/^ws:/u, "http:");
+    const headers = { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" };
+    const invalidJson = await fetch(`${url}/v1/claude/hook`, { method: "POST", headers, body: "{" });
+    expect(invalidJson.status).toBe(400);
+    expect(await invalidJson.json()).toEqual({ error: "invalid_json" });
+    const invalidHook = await fetch(`${url}/v1/claude/hook`, { method: "POST", headers, body: JSON.stringify({ nope: true }) });
+    expect(invalidHook.status).toBe(400);
+    expect(await invalidHook.json()).toEqual({ error: "invalid_hook" });
+    const unavailable = new HostLoopbackServer({ stateDir: dir, hostId: "host-2" });
+    const unavailableDescriptor = await unavailable.start();
+    try {
+      const response = await fetch(`${unavailableDescriptor.url.replace(/^ws:/u, "http:")}/v1/claude/hook`, { method: "POST", headers: { authorization: `Bearer ${unavailableDescriptor.token}` }, body: "{}" });
+      expect(response.status).toBe(503);
+    } finally {
+      await unavailable.stop();
+    }
+    const oversized = await fetch(`${url}/v1/claude/hook`, { method: "POST", headers, body: "x".repeat(256 * 1024 + 1) });
+    expect(oversized.status).toBe(413);
+    expect(await oversized.json()).toEqual({ error: "request_too_large" });
+  });
+
+  it("客户端断开时取消正在等待的 Claude Hook", async () => {
+    dir = await mkdtemp(join(tmpdir(), "pi-remote-loopback-"));
+    let aborted: AbortSignal | undefined;
+    server = new HostLoopbackServer({
+      stateDir: dir,
+      hostId: "host-1",
+      onClaudeHook: async (_input, signal) => {
+        aborted = signal;
+        await new Promise<void>(resolve => signal?.addEventListener("abort", () => resolve(), { once: true }));
+        return { cancelled: true };
+      },
+    });
+    const descriptor = await server.start();
+    const address = new URL(descriptor.url.replace(/^ws:/u, "http:"));
+    await new Promise<void>((resolve, reject) => {
+      const req = httpRequest({ hostname: address.hostname, port: Number(address.port), path: "/v1/claude/hook", method: "POST", headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json", "content-length": "2" } });
+      req.once("error", () => resolve());
+      req.write("{}");
+      void vi.waitFor(() => expect(aborted).toBeDefined(), { timeout: 1_000 }).then(() => { req.destroy(); resolve(); }, reject);
+    });
+    await vi.waitFor(() => expect(aborted?.aborted).toBe(true));
   });
 
   it("启动时写 0600 的发现文件，停止时删掉它", async () => {
