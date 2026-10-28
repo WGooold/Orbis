@@ -23,6 +23,7 @@ import { DshWebClient } from "./dsh-web-client.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
 import { updatePiIntegration } from "./pi-integration-install.js";
+import { updateClaudeIntegration } from "./claude-integration-install.js";
 import { adoptLoginShellEnvironment } from "./login-shell-env.js";
 import { agentInstallRoot } from "./agent-root.js";
 import { PiCommandCancelledError, installMacPiCommand, piCommandStatus, refreshMacPiCommand, removeMacPiCommand, syncWindowsPiCommand } from "./pi-command.js";
@@ -61,6 +62,8 @@ export type DesktopSettings = {
   dshEnabled?: boolean; dshEntry?: string; dshWebUrl?: string;
   /** macOS：让用户自己在终端里运行的 Pi 也加载 Orbis 扩展（缺省开启）。 */
   piIntegrationEnabled?: boolean;
+  /** Claude Code 插件只在用户明确开启后登记（ADR-0033 §5：插件启用须单独授权），缺省关闭。 */
+  claudeIntegrationEnabled?: boolean;
   lanPort?: number; stunServers?: string[];
 };
 export type DesktopEvent = { event: string; [key: string]: unknown };
@@ -379,6 +382,21 @@ export class DesktopRuntime {
     if (!enabled) await removeMacPiCommand();
   }
 
+  async setClaudeIntegration(enabled: boolean): Promise<void> {
+    const pluginDir = fileURLToPath(new URL("../../claude-mod/", import.meta.url));
+    if (!/[\\/]runtime[\\/]packages[\\/]claude-mod[\\/]?$/u.test(pluginDir)) {
+      this.log("开发运行时不改动 Claude Code 配置；打包后的 Orbis Host 才会登记 Claude Code 插件");
+      return;
+    }
+    const result = await updateClaudeIntegration({ pluginDir, uninstall: !enabled });
+    if (result === "claude_not_found") {
+      if (enabled) throw new Error("没有找到 Claude Code（claude 命令）；请先安装 Claude Code 再开启");
+      return;
+    }
+    this.log(enabled ? "已为本机 Claude Code 安装 Orbis 插件；新启动的 Claude Code 会连接 Host，已在运行的请执行 /reload-plugins 或重启"
+      : "已从本机 Claude Code 卸载 Orbis 插件");
+  }
+
   async start(settings: DesktopSettings): Promise<void> {
     settings.relayUrl = validateDesktopRelay(settings.relayUrl);
     if (!/^orbis_host_[\w-]{43}$/.test(settings.credential)) throw new Error("请先通过 QQ 邮箱注册并激活这台电脑");
@@ -389,6 +407,10 @@ export class DesktopRuntime {
     if (process.platform === "darwin" && settings.piIntegrationEnabled !== false) {
       // 失败不阻止 Host 启动：最坏只是终端里的 Pi 连不上，Host 打开的 Pi 仍带着扩展。
       await this.setPiIntegration(true).catch(error => this.log(`登记 Pi 扩展失败：${error instanceof Error ? error.message : String(error)}`));
+    }
+    if (settings.claudeIntegrationEnabled === true) {
+      // 应用更新后插件目录可能换了位置：重新指向当前运行时。失败同样不阻止 Host 启动。
+      await this.setClaudeIntegration(true).catch(error => this.log(`登记 Claude Code 插件失败：${error instanceof Error ? error.message : String(error)}`));
     }
     this.#desired = settings;
     this.#attempt = 0;

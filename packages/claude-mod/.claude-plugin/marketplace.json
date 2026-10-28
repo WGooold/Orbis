@@ -1,0 +1,12 @@
+{
+  "name": "orbis-host",
+  "owner": { "name": "Orbis" },
+  "description": "Plugins shipped with the local Orbis Host",
+  "plugins": [
+    {
+      "name": "orbis-host-session-link",
+      "source": "./",
+      "description": "Connect Claude Code TUI sessions to the local Orbis Host"
+    }
+  ]
+}

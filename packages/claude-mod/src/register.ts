@@ -28,20 +28,11 @@ export const register: Register = on => {
     return result;
   });
 
+  // The Host reads the row from the native transcript; announcing its identity is enough.
   on("session.append", async ($, event, next) => {
     const stored = await next(event);
     if (!("message" in stored) || stored.message === undefined || stored.uuid === undefined) return stored;
-    const message = stored.message;
-    await emit($, {
-      type: "session.append",
-      uuid: stored.uuid,
-      door: event.door,
-      message: {
-        type: message.type,
-        ...(message.role === undefined ? {} : { role: message.role }),
-        content: compactContent(message.content),
-      },
-    });
+    await emit($, { type: "session.append", uuid: stored.uuid, door: event.door });
     return stored;
   }).catch(($, event, next) => next(event));
 
@@ -143,8 +134,10 @@ async function connect($: Api): Promise<Connection | undefined> {
   const descriptor = await readDescriptor($);
   if (descriptor === undefined) return undefined;
   descriptorCache = descriptor;
+  const configDir = await $.env.get("CLAUDE_CONFIG_DIR");
   const response = await request<HelloReply>($, "/v1/claude/mods/hello", {
     type: "hello", instanceId: INSTANCE_ID, sessionId, cwd,
+    ...(configDir === undefined || configDir.length === 0 ? {} : { configDir }),
     claudeVersion: version.version, bridgeVersion: "1",
     capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call"],
   }, descriptor);
@@ -247,20 +240,6 @@ async function request<T>($: Api, path: string, body: unknown, supplied?: Descri
   if (response.text.length > MAX_HTTP_BODY) return { ok: false, status: response.status };
   try { return { ok: response.ok, status: response.status, body: JSON.parse(response.text) as T }; }
   catch { return { ok: response.ok, status: response.status }; }
-}
-
-function compactContent(value: readonly unknown[]): unknown[] {
-  const result: unknown[] = [];
-  for (const item of value) {
-    if (!isRecord(item)) continue;
-    if ((item.type === "text" || item.type === "thinking") && typeof item.text === "string") {
-      result.push({ type: item.type, [item.type]: clipText(item.text, 64_000) });
-    } else if (item.type === "tool_use" && typeof item.id === "string" && typeof item.name === "string") {
-      result.push({ type: item.type, id: item.id, name: item.name, input: boundedValue(item.input, 16_000) });
-    }
-    if (result.length >= 96) break;
-  }
-  return result;
 }
 
 function boundedValue(value: unknown, maximum: number): unknown {

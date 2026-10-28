@@ -166,6 +166,7 @@ export type ClaudeBackendOptions = {
   modsBridge: ClaudeModsBridge;
   runtimeIds: () => readonly string[];
   onCommandResult?: (runtimeId: string, event: Extract<import("@orbis/protocol").RuntimeEvent, { type: "command.result" }>) => void;
+  onEvent?: (runtimeId: string, event: import("@orbis/protocol").RuntimeEvent) => void;
 };
 
 /** Backend for the native Claude Code TUI Hook bridge. */
@@ -222,7 +223,29 @@ export class ClaudeBackend implements AgentBackend {
         status: "not_cancelable", error: "claude_prompt_submit_not_cancelable" });
       return "handled";
     }
+    if (command.type === "session.sync") {
+      if (!this.#options.modsBridge.isOnline(runtimeId)) return "unsupported";
+      void this.#sync(runtimeId, commandId, command);
+      return "handled";
+    }
     return "unsupported";
+  }
+
+  async #sync(runtimeId: string, commandId: string, command: Extract<RuntimeCommand, { type: "session.sync" }>): Promise<void> {
+    const emit = (event: import("@orbis/protocol").RuntimeEvent): void => this.#options.onEvent?.(runtimeId, event);
+    // Claude submits wait for idle inside the TUI; there is no Host-visible delivery queue.
+    emit({ type: "delivery.snapshot", items: [], complete: true });
+    emit({ type: "execution.activity", retry: "unavailable", compaction: "unavailable" });
+    let snapshot: Awaited<ReturnType<ClaudeModsBridge["sync"]>>;
+    let error = "claude_bridge_offline";
+    try { snapshot = await this.#options.modsBridge.sync(runtimeId, command); }
+    catch (cause) { error = cause instanceof Error ? cause.message.slice(0, 256) : "claude_history_unavailable"; }
+    if (snapshot === undefined) {
+      this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: false, status: "failure", error });
+      return;
+    }
+    emit(snapshot);
+    emit({ type: "interaction.snapshot", requests: this.#options.bridge.pendingRequests(runtimeId) });
   }
   directoryEntries(): RuntimeMetadata[] {
     const byId = new Map(this.#options.bridge.runtimeMetadata().map(runtime => [runtime.runtimeId, runtime]));

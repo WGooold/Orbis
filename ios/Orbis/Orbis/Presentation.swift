@@ -133,7 +133,7 @@ func defaultExpandedDirectory(_ directories: [SessionDirectory], preferred: Stri
 
 /// Host 的 runtime 元数据（`RuntimeMetadata`）不携带 agentKind，缺省会被当成 Pi。
 /// 展示时先用会话目录里同一 sessionId 的 agentKind（Host 扫描出的事实），
-/// 再退回 Host 的 runtimeId 约定：`codex` / `codex:<thread>`、`codex-desktop` / `codex-desktop:<thread>`、`dsh:<id>`。
+/// 再退回 Host 的 runtimeId 约定：`codex` / `codex:<thread>`、`codex-desktop` / `codex-desktop:<thread>`、`dsh:<id>`、`claude:<session>`。
 /// Pi 的 runtimeId 是随机 UUID，不会命中这些前缀。
 /// `catalogKind` 是目录里同一 sessionId 的 agentKind，调用方用索引查好再传入。
 func resolvedAgentKind(runtimeId: String, declared: String?, catalogKind: String?) -> String? {
@@ -147,6 +147,7 @@ func runtimeAgentKind(_ runtimeId: String) -> String? {
     if owned(by: "codex-desktop") { return "codexDesktop" }
     if owned(by: "codex") { return "codex" }
     if runtimeId.hasPrefix("dsh:") { return "dsh" }
+    if runtimeId.hasPrefix("claude:") { return "claude" }
     return nil
 }
 

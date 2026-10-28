@@ -91,6 +91,7 @@ struct PresentationTests {
         #expect(resolvedAgentKind(runtimeId: "codex", declared: nil, catalogKind: nil) == "codex")
         #expect(resolvedAgentKind(runtimeId: "codex-desktop:t", declared: nil, catalogKind: nil) == "codexDesktop")
         #expect(resolvedAgentKind(runtimeId: "dsh:abc", declared: nil, catalogKind: nil) == "dsh")
+        #expect(resolvedAgentKind(runtimeId: "claude:9f3c-session", declared: nil, catalogKind: nil) == "claude")
         #expect(resolvedAgentKind(runtimeId: "7d0c4f1e-uuid", declared: nil, catalogKind: "pi") == "pi")
         #expect(resolvedAgentKind(runtimeId: "7d0c4f1e-uuid", declared: nil, catalogKind: "codex") == "codex")
         #expect(resolvedAgentKind(runtimeId: "7d0c4f1e-uuid", declared: nil, catalogKind: nil) == nil)
@@ -99,6 +100,7 @@ struct PresentationTests {
         #expect(runtimeAgentKind("codexDesktop") == nil)
         #expect(runtimeAgentKind("codex-desktopish") == nil)
         #expect(runtimeAgentKind("dsh") == nil)
+        #expect(runtimeAgentKind("claude") == nil)
     }
 
     @Test func remotePathsUseComputerSeparatorsAndRootEntriesVerbatim() {

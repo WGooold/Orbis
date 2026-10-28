@@ -11,7 +11,8 @@ import { describe, expect, it, vi } from "vitest";
 import { ActivationError } from "./spawner.js";
 import { ClaudeBackend, PiBackend } from "./agent-backend.js";
 import { ClaudeHookBridge } from "./claude-hook-bridge.js";
-import { ClaudeModsBridge } from "./claude-mods-bridge.js";
+import { CLAUDE_BRIDGE_CAPABILITIES, ClaudeModsBridge } from "./claude-mods-bridge.js";
+import { ClaudeSessionHistory } from "./claude-session-history.js";
 import type { SpawnedAgent } from "./spawner.js";
 
 function makeSpawned(overrides: Partial<SpawnedAgent> = {}): SpawnedAgent {
@@ -172,5 +173,24 @@ describe("ClaudeBackend（Hook bridge 的统一端口）", () => {
     expect(backend.dispatchCommand("claude:claude-session", "unsupported", { type: "stop" })).toBe("unsupported");
     removeRuntime();
     expect(backend.dispatchCommand("claude:claude-session", "offline", { type: "stop" })).toBe("offline");
+  });
+  it("answers session.sync with delivery, transcript snapshot and pending interactions", async () => {
+    const events: { type: string }[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    const modsBridge = new ClaudeModsBridge({ createHistory: (sessionId, configDir, publish) =>
+      new ClaudeSessionHistory(sessionId, configDir, publish, { locate: async () => undefined }) });
+    const hello = modsBridge.hello({ type: "hello", instanceId: "i", sessionId: "claude-session", cwd: "D:/repo", claudeVersion: "2.1.312",
+      bridgeVersion: "1", capabilities: [...CLAUDE_BRIDGE_CAPABILITIES] });
+    expect(hello.ok).toBe(true);
+    const backend = new ClaudeBackend({ bridge, modsBridge, runtimeIds: () => ["claude:claude-session"],
+      onCommandResult: (_runtimeId, event) => events.push(event), onEvent: (_runtimeId, event) => events.push(event) });
+    void bridge.accept(permission);
+    await Promise.resolve();
+    expect(backend.dispatchCommand("claude:claude-session", "sync-1", { type: "session.sync", sessionId: "claude-session", syncId: "sync-1", range: "preview" })).toBe("handled");
+    await vi.waitFor(() => expect(events.some(event => event.type === "interaction.snapshot")).toBe(true));
+    const types = events.map(event => event.type);
+    expect(types.indexOf("delivery.snapshot")).toBeLessThan(types.indexOf("session.snapshot"));
+    expect(events.find(event => event.type === "interaction.snapshot")).toMatchObject({ requests: [{ kind: "confirm", runtimeId: "claude:claude-session" }] });
+    bridge.close();
   });
 });

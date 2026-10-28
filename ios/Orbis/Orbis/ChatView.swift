@@ -35,6 +35,8 @@ struct ChatView: View {
     @FocusState private var composerFocused: Bool
 
     private var kind: String? { store.agentKind(runtime) }
+    /// Claude Code 只能等当前回合结束后提交（没有 Steer），也不能随消息附带文件。
+    private var claudeComposer: Bool { kind == "claude" }
     private var accent: Color { OrbisPalette(scheme).agent(kind) }
     private var draft: Binding<String> { Binding(get: { store.draft(for: runtime) }, set: { store.saveDraft($0, for: runtime) }) }
     private var slash: Bool { draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
@@ -227,9 +229,11 @@ struct ChatView: View {
             AttachmentStrip(runtime: runtime)
             if slash { SlashPickerView(runtime: runtime, selected: $selectedCommand, input: draft, onHistory: onHistory) }
             HStack(alignment: .bottom, spacing: 10) {
-                OrbisIconButton(symbol: "paperclip", label: "发送文件到电脑", tint: accent) {
-                    composerFocused = false; filePickerOpen = true
-                }.disabled(!store.canSend || transfers.preparing || attachments.count >= 10)
+                if !claudeComposer {
+                    OrbisIconButton(symbol: "paperclip", label: "发送文件到电脑", tint: accent) {
+                        composerFocused = false; filePickerOpen = true
+                    }.disabled(!store.canSend || transfers.preparing || attachments.count >= 10)
+                }
                 TextField("发送消息", text: draft, axis: .vertical)
                     .accessibilityIdentifier("chat-composer")
                     .font(.system(size: 15)).lineLimit(1...6).focused($composerFocused)
@@ -240,7 +244,8 @@ struct ChatView: View {
                     OrbisIconButton(symbol: "stop.fill", label: "停止生成", tint: OrbisPalette(scheme).error, action: store.stopRuntime).disabled(!store.canSend)
                 } else {
                     OrbisIconButton(symbol: "arrow.up", label: "发送消息", tint: accent) {
-                        if runtime.status == "running" && !slash { deliveryChoices.toggle() }
+                        if runtime.status == "running" && !slash && claudeComposer { submit(delivery: "followUp") }
+                        else if runtime.status == "running" && !slash { deliveryChoices.toggle() }
                         else { submit() }
                     }.disabled(!canSubmit)
                 }

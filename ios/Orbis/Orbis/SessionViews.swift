@@ -109,7 +109,7 @@ struct SessionDrawerView: View {
 
     private var filterMenuItems: [OrbisMenuItem] {
         var items = [OrbisMenuItem(title: "全部", checked: state.kind == nil) { state.kind = nil }]
-        items += ["pi", "codex", "codexDesktop", "dsh"].map { kind in
+        items += ["pi", "codex", "codexDesktop", "dsh", "claude"].map { kind in
             OrbisMenuItem(title: filterTitle(kind), checked: state.kind == kind) { state.kind = kind }
         }
         items.append(.divider)
@@ -272,6 +272,7 @@ private func filterTitle(_ kind: String) -> String {
     case "codex": return "Codex 终端"
     case "codexDesktop": return "Codex 桌面版"
     case "dsh": return "DeepSeek"
+    case "claude": return "Claude Code"
     default: return "Pi"
     }
 }

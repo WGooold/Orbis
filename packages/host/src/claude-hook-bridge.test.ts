@@ -91,17 +91,17 @@ describe("ClaudeHookBridge", () => {
     expect(bridge.respond(requestId, bridge.generation, { kind: "questionnaire", answers: [] })).toBe("conflict");
     expect(bridge.respond(requestId, bridge.generation, { kind: "confirm", value: true })).toBe("conflict");
     bridge.cancelRuntime("claude:session-1");
-    await expect(pending).resolves.toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
+    await expect(pending).resolves.toEqual({});
   });
 
-  it("fails closed on timeout and on an aborted Hook request", async () => {
+  it("defers to the native dialog on timeout and on an aborted Hook request", async () => {
     vi.useFakeTimers();
     try {
       const timeoutEvents: RuntimeEvent[] = [];
       const timeoutBridge = new ClaudeHookBridge({ timeoutMs: 10, onEvent: (_runtimeId, event) => timeoutEvents.push(event) });
       const timeoutPending = timeoutBridge.accept(permission());
       await vi.advanceTimersByTimeAsync(10);
-      await expect(timeoutPending).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: "deny" } } });
+      await expect(timeoutPending).resolves.toEqual({});
       expect(timeoutEvents).toContainEqual(expect.objectContaining({ type: "interaction.cancelled", reason: "timeout" }));
 
       const controller = new AbortController();
@@ -110,7 +110,7 @@ describe("ClaudeHookBridge", () => {
       const disconnectPending = disconnectBridge.accept(permission("session-2"), controller.signal);
       await Promise.resolve();
       controller.abort();
-      await expect(disconnectPending).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: "deny" } } });
+      await expect(disconnectPending).resolves.toEqual({});
       expect(disconnectEvents).toContainEqual(expect.objectContaining({ type: "interaction.cancelled", reason: "disconnected" }));
     } finally {
       vi.useRealTimers();
@@ -128,8 +128,50 @@ describe("ClaudeHookBridge", () => {
     await Promise.resolve();
     const requestId = [...(bridge.runtimeMetadata())][0]?.runtimeId;
     expect(requestId).toBe("claude:session-1");
-    // The request is deliberately left unresolved; closing the bridge settles it fail-closed.
+    // The request is deliberately left unresolved; closing the bridge defers it to the native dialog.
     bridge.cancelRuntime(requestId!, "owner_closed");
-    await expect(pending).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: "deny" } } });
+    await expect(pending).resolves.toEqual({});
+  });
+
+  it("denies a question the phone explicitly cancelled", async () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    const pending = bridge.accept(ask());
+    await Promise.resolve();
+    expect(bridge.respond(interaction(events).request.requestId, bridge.generation, { kind: "cancel" })).toBe("accepted");
+    await expect(pending).resolves.toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
+  });
+
+  it("makes no decision and publishes nothing when no device can answer", async () => {
+    const online = vi.fn();
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ hasRemoteDevice: () => false, onRuntimeOnline: online, onEvent: (_id, event) => events.push(event) });
+    await expect(bridge.accept(permission())).resolves.toEqual({});
+    await expect(bridge.accept(ask())).resolves.toEqual({});
+    expect(online).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(bridge.runtimeIds()).toEqual([]);
+  });
+
+  it("publishes the runtime only while interactions are pending and restores the Mods status", async () => {
+    const events: RuntimeEvent[] = [];
+    const offline = vi.fn();
+    const bridge = new ClaudeHookBridge({ baseStatus: () => "running", onRuntimeOffline: offline,
+      onEvent: (_id, event) => events.push(event) });
+    const first = bridge.accept(permission());
+    const second = bridge.accept(permission());
+    await Promise.resolve();
+    const [a, b] = events.filter((event): event is Extract<RuntimeEvent, { type: "interaction.requested" }> => event.type === "interaction.requested");
+    expect(bridge.runtimeMetadata()).toMatchObject([{ runtimeId: "claude:session-1", status: "waiting_local_interaction" }]);
+    bridge.respond(a!.request.requestId, bridge.generation, { kind: "confirm", value: true });
+    await first;
+    expect(bridge.runtimeIds()).toEqual(["claude:session-1"]);
+    expect(offline).not.toHaveBeenCalled();
+    bridge.respond(b!.request.requestId, bridge.generation, { kind: "confirm", value: true });
+    await second;
+    expect(bridge.runtimeIds()).toEqual([]);
+    expect(offline).toHaveBeenCalledWith("claude:session-1", "interaction_settled");
+    expect(events.filter(event => event.type === "runtime.status").at(-1)).toEqual({ type: "runtime.status", status: "running" });
+    expect(events.some(event => event.type === "runtime.status" && event.status === "idle")).toBe(false);
   });
 });

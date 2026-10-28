@@ -875,7 +875,7 @@ ApplicationWindow {
                     Card {
                         id: settingsPane
                         visible: window.page === 3; Layout.fillWidth: true
-                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled; piIntegrationSwitch.checked = host.piIntegrationEnabled }
+                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled; piIntegrationSwitch.checked = host.piIntegrationEnabled; claudeIntegrationSwitch.checked = host.claudeIntegrationEnabled }
                         ColumnLayout {
                             anchors.fill: parent; spacing: 15
                             Heading { text: "常规" }
@@ -886,6 +886,8 @@ ApplicationWindow {
                             SoftSwitch { id: dshSwitch; text: "启动 Host 时启用 DeepSeek Harness" }
                             SoftSwitch { id: piIntegrationSwitch; visible: Qt.platform.os === "osx"; text: "让终端里运行的 Pi 连接 Orbis" }
                             Hint { visible: Qt.platform.os === "osx"; text: "会在 Pi 的 settings.json 里追加 Orbis 扩展，不影响你已有的扩展；已在运行的 Pi 需重启后才会连接。删除 Orbis Host 前请先关闭此项（终端命令 pi 也会一并移除）。"; Layout.fillWidth: true }
+                            SoftSwitch { id: claudeIntegrationSwitch; text: "让终端里运行的 Claude Code 连接 Orbis" }
+                            Hint { text: "通过 Claude Code 自己的插件命令安装 Orbis 插件（需要 Claude Code 2.1.287 或更新版本，以及 PATH 中的 node）。开启后手机可查看和继续同一个 Claude Code 会话、回答权限请求与提问；没有手机在线时仍由电脑上的原生界面处理。已在运行的 Claude Code 需执行 /reload-plugins 或重启。"; Layout.fillWidth: true }
                             RowLayout {
                                 objectName: "piCommandRow"
                                 visible: ["installed", "available", "foreign"].includes(window.piAgent().terminalCommand)
@@ -909,7 +911,7 @@ ApplicationWindow {
                             Field { id: relayField; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
                             Label { text: "DeepSeek Web 启动链接（可选）"; color: "#4b5d78" }
                             Field { id: dshWebUrlField; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
-                            ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked) }
+                            ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked, claudeIntegrationSwitch.checked) }
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#e5eaf2"; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "更新 Host"; visible: host.message.indexOf("点击“更新 Host”") >= 0; onClicked: host.updateHost() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
                             DownloadBar { visible: host.downloadReceived >= 0; label: host.downloadLabel || "Host 更新"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }

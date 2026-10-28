@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const MAX_INPUT_BYTES = 256 * 1024;
-const TIMEOUT_MS = 540_000;
+// Longer than the Host's own interaction timeout (570 s), shorter than the Hook timeout (600 s).
+const TIMEOUT_MS = 590_000;
 
 const input = await readStdin();
 const hookEvent = typeof input?.hook_event_name === "string" ? input.hook_event_name : input?.event_name;
@@ -21,7 +22,9 @@ try {
     });
     if (!response.ok) throw new Error(`Orbis Host returned HTTP ${response.status}`);
     const result = await response.json();
-    if (hookEvent === "PermissionRequest") {
+    if (result?.hookSpecificOutput === undefined) {
+      // The Host deferred (no device, timeout): Claude Code shows its native dialog.
+    } else if (hookEvent === "PermissionRequest") {
       const behavior = result?.hookSpecificOutput?.decision?.behavior;
       if (behavior !== "allow" && behavior !== "deny") throw new Error("Orbis Host returned no PermissionRequest decision");
     } else {
@@ -34,7 +37,8 @@ try {
   }
 } catch (error) {
   process.stderr.write(`Orbis Claude Hook bridge: ${error instanceof Error ? error.message : String(error)}\n`);
-  write(failClosed(hookEvent));
+  // Without a usable Host answer, make no decision: the native TUI dialog stays in charge.
+  write({});
 }
 
 async function readStdin() {
@@ -61,16 +65,6 @@ async function readDescriptor() {
     throw new Error("Host loopback descriptor is invalid");
   }
   return { url: descriptor.url.replace(/^ws:/u, "http:"), token: descriptor.token };
-}
-
-function failClosed(eventName) {
-  if (eventName === "PermissionRequest") return {
-    hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: "Orbis Host did not return an approval" } },
-  };
-  if (eventName === "PreToolUse") return {
-    hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Orbis Host did not return an answer" },
-  };
-  return {};
 }
 
 function write(value) {

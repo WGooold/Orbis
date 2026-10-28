@@ -1227,7 +1227,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val attachedUploads = runtimeUploads.filter { it.taskId in attachedTaskIds }
     val attachablePaths = attachedUploads.filter { it.status == "completed" }.mapNotNull(UploadTask::remotePath)
     // 附件现在是无条件支持的（ADR-0008 删掉了 `messageAttachments` 能力位）。
-    val canAttachFiles = runtime != null && state.hostId != null
+    // Claude Code 提交只接受文字：Host 会拒绝附件，入口直接不显示。
+    val canAttachFiles = runtime != null && state.hostId != null && runtime.agentKind != "claude"
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
@@ -1754,6 +1755,10 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                                 model.executeSlashCommand(selectedCommand.name, slash.second),
                                                 clearInputAfterSubmit = true,
                                             )
+                                        } else if (runtime?.status == "running" && runtime.agentKind == "claude") {
+                                            // Claude Code 只有「等当前回合结束后提交」，没有 Steer 可选。
+                                            showDeliveryChoices = false
+                                            trackSubmission(model.sendMessage(input, "followUp"))
                                         } else if (runtime?.status == "running") {
                                             showDeliveryChoices = true
                                         } else {

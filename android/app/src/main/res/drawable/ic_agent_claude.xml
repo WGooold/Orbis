@@ -1,0 +1,6 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <!-- Neutral eight-ray burst for Claude Code sessions; not a vendor logo. -->
+    <path android:fillColor="#B4572E" android:pathData="M12.00,1.00L13.22,9.04L19.78,4.22L14.96,10.78L23.00,12.00L14.96,13.22L19.78,19.78L13.22,14.96L12.00,23.00L10.78,14.96L4.22,19.78L9.04,13.22L1.00,12.00L9.04,10.78L4.22,4.22L10.78,9.04Z" />
+</vector>

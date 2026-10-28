@@ -57,6 +57,18 @@ async function bundle(source, target) {
 }
 
 for (const name of ["host", "pi-extension"]) await bundle(join(root, "packages", name), join(output, "packages", name));
+// The Claude Code plugin is loaded in place by Claude itself (TypeScript hooks module, Node hook
+// script), so it ships as source. Its directory is also the local marketplace Host registers.
+{
+  const source = join(root, "packages", "claude-mod");
+  const target = join(output, "packages", "claude-mod");
+  for (const entry of [".claude-plugin", "hooks", "scripts", "src", "package.json"]) {
+    await cp(join(source, entry), join(target, entry), { recursive: true, filter: path => !path.endsWith(".gitignore") });
+  }
+  await cp(join(root, "LICENSE"), join(target, "LICENSE"));
+  const manifest = JSON.parse(await readFile(join(source, "package.json"), "utf8"));
+  inventory.push({ name: manifest.name, version: manifest.version, license: "See package source", path: relative(output, target).replaceAll("\\", "/") });
+}
 const nodeRoot = dirname(process.execPath);
 await mkdir(join(output, "node", "node_modules"), { recursive: true });
 const windows = process.platform === "win32";

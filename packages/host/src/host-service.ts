@@ -695,6 +695,8 @@ export class HostService {
     // Codex 的事件出口 / 元数据重播 / 离线广播都在这里挂上——对 Host 其余部分而言
     // 它只是 #backends 里多了一个 AgentBackend。
     this.#claudeBridge = new ClaudeHookBridge({
+      hasRemoteDevice: () => [...this.#links.values()].some(link => link.active !== undefined),
+      baseStatus: runtimeId => this.#claudeModsBridge.statusOf(runtimeId),
       onRuntimeOnline: runtime => this.#registerClaudeRuntime(runtime),
       onRuntimeOffline: (runtimeId, reason) => this.#unregisterClaudeRuntime(runtimeId, reason),
       onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
@@ -723,7 +725,8 @@ export class HostService {
       }),
       new ClaudeBackend({ bridge: this.#claudeBridge, modsBridge: this.#claudeModsBridge,
         runtimeIds: () => [...new Set([...this.#claudeBridge.runtimeIds(), ...this.#claudeModsBridge.runtimeIds()])],
-        onCommandResult: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event) }),
+        onCommandResult: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
+        onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event) }),
     ];
     this.#backends = backends;
     // 共享同一个单写者：Agent 事实与设备视图回执都写进这一份模型。
@@ -1090,7 +1093,8 @@ export class HostService {
   }
 
   #launchableAgentsSnapshot(): AgentKind[] {
-    const agents = this.#agentsSnapshot();
+    // Claude Code only attaches to a TUI the user already runs; the Host cannot create one.
+    const agents = this.#agentsSnapshot().filter(kind => kind !== "claude");
     if (this.#options.codexDesktopLaunchable === true && !agents.includes("codexDesktop")) agents.push("codexDesktop");
     return agents;
   }

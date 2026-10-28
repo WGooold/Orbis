@@ -14,7 +14,7 @@ import { userInfo } from "node:os";
 const MARKER = "__ORBIS_LOGIN_ENV__";
 
 /** 只合并这些：其余变量（代理、语言等）Host 自己的行为不依赖，也不该被用户 shell 随意改写。 */
-const ADOPTED = ["PI_CODING_AGENT_DIR", "NVM_DIR", "VOLTA_HOME", "FNM_DIR", "PNPM_HOME", "BUN_INSTALL", "npm_config_prefix", "NPM_CONFIG_PREFIX"] as const;
+const ADOPTED = ["PI_CODING_AGENT_DIR", "CLAUDE_CONFIG_DIR", "NVM_DIR", "VOLTA_HOME", "FNM_DIR", "PNPM_HOME", "BUN_INSTALL", "npm_config_prefix", "NPM_CONFIG_PREFIX"] as const;
 
 export type LoginShellOptions = {
   shell?: string;

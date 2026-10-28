@@ -30,12 +30,14 @@ internal enum class AgentBrand(val title: String, val icon: Int) {
     Pi("Pi", R.drawable.ic_agent_pi),
     Codex("Codex", R.drawable.ic_agent_codex),
     DeepSeek("DeepSeek", R.drawable.ic_agent_dsh),
+    Claude("Claude Code", R.drawable.ic_agent_claude),
 }
 
 internal fun agentBrand(isCodex: Boolean) = if (isCodex) AgentBrand.Codex else AgentBrand.Pi
 internal fun agentBrand(kind: String?) = when (kind) {
     "codex", "codexDesktop" -> AgentBrand.Codex
     "dsh" -> AgentBrand.DeepSeek
+    "claude" -> AgentBrand.Claude
     else -> AgentBrand.Pi
 }
 internal val LocalAgentBrand = staticCompositionLocalOf { AgentBrand.Pi }
@@ -46,6 +48,7 @@ internal fun AgentBrand.accent(): Color = when (this) {
     AgentBrand.Codex -> if (isSystemInDarkTheme()) Color(0xFF77D6C7) else Color(0xFF006C64)
     // DeepSeek brand blue; the dark theme keeps a light tint of the same hue for contrast.
     AgentBrand.DeepSeek -> if (isSystemInDarkTheme()) Color(0xFFA1B5FF) else Color(0xFF4D6BFE)
+    AgentBrand.Claude -> if (isSystemInDarkTheme()) Color(0xFFF0B48C) else Color(0xFFB4572E)
 }
 
 /** Keep the shared soft base; focus rings, actions and selection inherit the agent accent. */

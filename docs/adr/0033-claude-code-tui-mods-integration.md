@@ -85,7 +85,9 @@ Claude Code 已公开 Mods：通过插件加载 JavaScript/TypeScript 函数，�
 
 `PermissionRequest` 没有原生 `tool_use_id`，需在每个 hook 进程内生成不可猜测的请求 ID，并将答复限定到该进程和 Session；hook 运行受其配置的超时约束，默认 600 秒。`PreToolUse` 有 `tool_use_id`，但对每个工具调用触发，只有匹配 `AskUserQuestion` 时才按问卷流程处理。远程回答、用户在电脑端作答、Session 取消、Hook 超时或 Host 断开同时发生时必须实测 Claude Code 的最终裁决与另一端状态；不能因掉线、超时或结果不明自动批准。
 
-当前 bridge 对 `allowNotes: true` 的问题 fail-closed，因为 Claude Hook 的 `updatedInput.answers` 只能表达每个问题的字符串答案，不能安全保留独立 notes；该缺口必须在兼容性 ticket 中保留，不能静默丢弃字段。
+只有手机的明确回答产生 `allow` / `deny`（手机取消问卷返回 `deny`）。Host 不可达、没有设备在线、超时、断开或 Host 退出时，Hook 返回空输出、不做决定，由 Claude Code 原生权限对话框或问题界面继续处理；这不是自动批准，也避免本地用户在手机缺席时被锁死或被统一拒绝。Host 交互超时（570 秒）短于插件脚本请求超时（590 秒）和 Hook 超时（600 秒），保证手机看到的 `expiresAt` 准确。Hook bridge 只在有待答交互时发布 runtime，长期在线状态由 Mods bridge 决定；交互结束后恢复 Mods 报告的运行状态。
+
+当前 bridge 不向手机转发 `allowNotes: true` 的问题（交由原生界面作答），因为 Claude Hook 的 `updatedInput.answers` 只能表达每个问题的字符串答案，不能安全保留独立 notes；该缺口必须在兼容性 ticket 中保留，不能静默丢弃字段。
 
 官方 Channels 可作为另一种有 Anthropic 认证前提的工具审批 relay，不覆盖 `AskUserQuestion`。Agent SDK 的 `canUseTool` 可等待用户回答审批和 `AskUserQuestion`，但只控制 SDK 自己创建/管理的执行，不能附着到现有官方 TUI。尚未通过上述 Hook 的当前 TUI 运行测试前，ADR 只确认官方契约存在，不宣称 Orbis 已支持远程审批或问卷作答。
 
@@ -108,6 +110,14 @@ Host 退出只断开 bridge，不结束用户 TUI。CLI 升级、插件启用及
 按 ADR-0032 完成 Claude 所需的来源 → Registry → 版本化同步 → App 镜像纵向链路；显式身份、统一 displayEntries、执行、交互、权限及能力必须从模型读取，不能只转发 Mods payload。其余领域明确 unknown/unavailable。
 
 原生 Session 仍是持久历史权威，Host 只保存有界当前投影与页缓存。正式协议变更按 ADR-0032 硬版本切换，Host/App 配套更新。Relay 保持密文转发，不承担 Claude 会话语义。
+
+### 7. 实施记录（2026-10-29）
+
+- **历史权威**：Host 直接读取原生 transcript（`<CLAUDE_CONFIG_DIR 或 ~/.claude>/projects/*/<sessionId>.jsonl`），按 `uuid` / `parentUuid` 投影为标准条目，经 `RecoverableSessionSource` + `SessionSyncPreparer` 回答 `session.sync`，与 DSH 后端同一路径。`isMeta`、侧链（子 Agent）、附件、系统行不进主路径，但仍参与父链解析；多块 `tool_result` 拆成独立条目；空 thinking（仅签名）不显示；压缩摘要投影为 `compaction`。bridge 的 `session.append` 只通告行身份，正文以磁盘行为准，不从文本推断身份。`$.session.messages()` 在 v2.1.312 的测试环境无法取得返回形状，未采用。
+- **实时内容**：`turn.step` 流式输出与工具事件进入会话源的 live 状态；回合结束后等待本回合通告的行全部落盘（上限 3 秒）再撤下流式副本，避免与 canonical 行重复。
+- **插件登记**：桌面 Host 设置“让终端里运行的 Claude Code 连接 Orbis”（缺省关闭，需用户明确开启）调用 Claude 自己的 `claude plugin marketplace add <插件目录>` 与 `claude plugin install orbis-host-session-link@orbis-host --scope user`；插件目录同时是本地 marketplace，Claude 原地加载，应用更新后启动 Host 时重新指向。关闭时 `uninstall` 并移除 marketplace。v2.1.312 隔离配置下实测通过。
+- **客户端**：iOS / Android 新增 `claude` 身份（名称、配色、中性图形标记）、目录筛选；Claude 会话不提供附件入口，运行中发送直接按 follow-up 提交，不提供 Steer；新建会话列表不含 Claude（Host 的 `launchableAgents` 也排除它）。
+- **仍未验收**：真实 TUI 内的端到端双向操作、Hook 返回空输出后原生对话框的行为、v2.1.287 最低版本兼容性，仍按 §2、§4 要求单独记录。
 
 ## Alternatives not selected
 

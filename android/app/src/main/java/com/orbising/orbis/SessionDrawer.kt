@@ -77,7 +77,8 @@ private enum class DrawerAgentFilter(
     Pi("pi", "Pi", "pi"),
     Codex("codex", "Codex 终端", "codex"),
     CodexDesktop("codexDesktop", "Codex 桌面版", "codexDesktop"),
-    DeepSeek("dsh", "DeepSeek", "dsh");
+    DeepSeek("dsh", "DeepSeek", "dsh"),
+    Claude("claude", "Claude Code", "claude");
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
     val hasProviderFilter: Boolean get() = this == Codex || this == CodexDesktop

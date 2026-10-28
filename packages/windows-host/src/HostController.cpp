@@ -272,6 +272,7 @@ void HostController::startHost() {
     m_desiredRunning = true; m_state = "connecting"; m_settings.setValue("runHost", true);
     auto params = agentSettings(); params.insert("relayUrl", relayUrl()); params.insert("credential", m_credential); params.insert("codexEnabled", codexEnabled());
     params.insert("dshEnabled", dshEnabled()); params.insert("piIntegrationEnabled", piIntegrationEnabled());
+    params.insert("claudeIntegrationEnabled", claudeIntegrationEnabled());
     command("start", params);
 }
 void HostController::stopHost() { m_desiredRunning = false; m_settings.setValue("runHost", false); m_qr.clear(); command("stop"); }
@@ -462,7 +463,7 @@ void HostController::openAgentTui(const QString &kind) {
         setMessage(kind == "dsh" ? "已打开 DeepSeek Harness 网页工作台" : QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(kind == "pi" ? "Pi" : "Codex"));
     });
 }
-void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration) {
+void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration, bool claudeIntegration) {
     QString normalized = relay.trimmed(); while (normalized.endsWith('/')) normalized.chop(1);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }
     if (m_desiredRunning) { setMessage("请先在概览中暂停连接，再修改设置"); return; }
@@ -500,6 +501,14 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
     if (piIntegration != piIntegrationEnabled()) command("piIntegration", {{"enabled", piIntegration}});
     m_settings.setValue("piIntegrationEnabled", piIntegration);
 #endif
+    // Applied immediately as well; the setting is only kept once Claude Code accepted the change.
+    if (claudeIntegration != claudeIntegrationEnabled()) {
+        command("claudeIntegration", {{"enabled", claudeIntegration}}, [this, claudeIntegration](const QJsonValue &) {
+            m_settings.setValue("claudeIntegrationEnabled", claudeIntegration); m_settings.sync(); emit changed();
+            setMessage(claudeIntegration ? "已为 Claude Code 安装 Orbis 插件；新开的 Claude Code 会连接 Orbis，已在运行的请执行 /reload-plugins"
+                                         : "已从 Claude Code 卸载 Orbis 插件");
+        });
+    }
     m_settings.sync();
     if (!name.trimmed().isEmpty() && name.trimmed() != m_hostName) command("rename", {{"name", name.trimmed()}}, [this, name](const QJsonValue &) { m_hostName = name.trimmed(); emit changed(); });
     setMessage("设置已保存"); detectAgents(); refreshRegistrationPolicy();

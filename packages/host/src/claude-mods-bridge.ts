@@ -3,11 +3,14 @@ import {
   ChatMessageSchema,
   RuntimeEventSchema,
   type ChatMessage,
+  type RuntimeCommand,
   type RuntimeEvent,
   type RuntimeMetadata,
   type RemoteContent,
   type RuntimeCommandStatus,
 } from "@orbis/protocol";
+import { ClaudeSessionHistory } from "./claude-session-history.js";
+import { claudeConfigDir } from "./claude-transcript.js";
 
 /** The bridge contract is deliberately independent of the TUI's internal API. */
 export const CLAUDE_BRIDGE_VERSION = "1";
@@ -25,6 +28,8 @@ export type ClaudeModsHello = {
   claudeVersion: string;
   bridgeVersion: string;
   capabilities: readonly string[];
+  /** `CLAUDE_CONFIG_DIR` of the TUI process, when set; locates the native transcript. */
+  configDir?: string;
 };
 
 export type ClaudeModsCommand =
@@ -33,7 +38,7 @@ export type ClaudeModsCommand =
 
 export type ClaudeModsNativeEvent =
   | { type: "prompt.submit"; text: string; origin: string; turnId?: string; wait?: boolean }
-  | { type: "session.append"; uuid: string; door: string; message: { type: string; role?: string; content: unknown } }
+  | { type: "session.append"; uuid: string; door: string }
   | { type: "turn.start"; turnId: string; startedAt?: number; turnIndex?: number }
   | { type: "turn.step.chunks"; turnId: string; stepIndex: number; chunks: readonly { blockIndex: number; contentType: "text" | "thinking"; delta: string }[] }
   | { type: "turn.complete"; turnId: string; durationMs?: number; turnIndex?: number; answer?: string; reason?: string; isAborted?: boolean }
@@ -61,11 +66,13 @@ type Session = {
   generation: string;
   commands: Map<string, { commandId: string; command: ClaudeModsCommand }>;
   lastSeenAt: number;
+  history: ClaudeSessionHistory;
   activeTurn?: {
     turnId: string;
     startedAt: number;
     messages: Map<string, { blocks: Map<number, { type: "text" | "thinking"; text: string }> }>;
-    appendedAssistant: { uuid: string; content: RemoteContent[] }[];
+    /** Transcript rows announced by `session.append` during the turn. */
+    announced: string[];
   };
   pendingStopId?: string;
   completedStops: Map<string, { turnId: string; event: Extract<RuntimeEvent, { type: "command.result" }> }>;
@@ -78,6 +85,7 @@ export type ClaudeModsBridgeOptions = {
   onRuntimeOnline?: (runtime: RuntimeMetadata) => void;
   onRuntimeOffline?: (runtimeId: string, reason: string) => void;
   onEvent?: (runtimeId: string, event: RuntimeEvent) => void;
+  createHistory?: (sessionId: string, configDir: string, publish: (event: Extract<RuntimeEvent, { type: "session.patch" }>) => void) => ClaudeSessionHistory;
 };
 
 /**
@@ -87,6 +95,9 @@ export type ClaudeModsBridgeOptions = {
  * calls `hello`, `poll`, and `receiveEvent` over the authenticated loopback HTTP
  * endpoint. This class owns connection generations and the bounded command queue;
  * a successful HTTP request is never treated as a completed native command.
+ *
+ * Conversation state is published through a versioned session source: the native
+ * transcript is canonical history, streamed turn output is live state.
  */
 export class ClaudeModsBridge {
   readonly #options: ClaudeModsBridgeOptions;
@@ -96,6 +107,7 @@ export class ClaudeModsBridge {
 
   runtimeIds(): readonly string[] { return [...this.#sessions.keys()]; }
   isOnline(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
+  statusOf(runtimeId: string): RuntimeMetadata["status"] | undefined { return this.#sessions.get(runtimeId)?.runtime.status; }
 
   runtimeMetadata(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => session.runtime); }
   isHookCommandId(runtimeId: string, commandId: string): boolean { return this.#sessions.get(runtimeId)?.commands.has(commandId) ?? false; }
@@ -117,12 +129,22 @@ export class ClaudeModsBridge {
       }
     }
     const previous = this.#sessions.get(runtimeId);
-    if (previous !== undefined) this.#options.onRuntimeOffline?.(runtimeId, "replaced_by_new_bridge");
+    if (previous !== undefined) {
+      this.#abandonCommands(runtimeId, previous);
+      previous.history.close();
+      this.#options.onRuntimeOffline?.(runtimeId, "replaced_by_new_bridge");
+    }
     const generation = randomUUID();
     const runtime: RuntimeMetadata = { runtimeId, name: "Claude Code", cwd: parsed.cwd, status: "idle", sessionId: parsed.sessionId };
+    const publish = (event: Extract<RuntimeEvent, { type: "session.patch" }>): void => {
+      if (this.#sessions.get(runtimeId)?.generation === generation) this.#options.onEvent?.(runtimeId, event);
+    };
+    const configDir = claudeConfigDir(parsed.configDir);
+    const history = this.#options.createHistory?.(parsed.sessionId, configDir, publish) ?? new ClaudeSessionHistory(parsed.sessionId, configDir, publish);
     this.#sessions.set(runtimeId, { runtime, instanceId: parsed.instanceId, claudeVersion: parsed.claudeVersion, bridgeVersion: parsed.bridgeVersion,
-      capabilities, generation, commands: new Map(), completedStops: new Map(), completedTurns: new Set(), lastSeenAt: Date.now() });
+      capabilities, generation, commands: new Map(), completedStops: new Map(), completedTurns: new Set(), lastSeenAt: Date.now(), history });
     this.#options.onRuntimeOnline?.(runtime);
+    void history.refresh().catch(() => undefined);
     return { ok: true, runtimeId, generation, capabilities: [...capabilities] };
   }
 
@@ -145,6 +167,14 @@ export class ClaudeModsBridge {
     // and replays that result if the HTTP response carrying it was lost.
     const commands = [...session.commands.values()];
     return { ok: true, generation, commands };
+  }
+
+  /** Answers a device `session.sync` from the transcript and the current live state. */
+  async sync(runtimeId: string, request: Extract<RuntimeCommand, { type: "session.sync" }>): Promise<Extract<RuntimeEvent, { type: "session.snapshot" }> | undefined> {
+    const session = this.#sessions.get(runtimeId);
+    if (session === undefined || request.sessionId !== session.runtime.sessionId) return undefined;
+    const snapshot = await session.history.sync(request);
+    return this.#sessions.get(runtimeId) === session ? snapshot : undefined;
   }
 
   sendCommand(runtimeId: string, commandId: string, command: ClaudeModsCommand): ClaudeModsCommandResult {
@@ -172,9 +202,14 @@ export class ClaudeModsBridge {
       }
       return "accepted";
     }
+    if (parsed.type === "session.append") {
+      session.activeTurn?.announced.push(parsed.uuid);
+      void session.history.refresh().catch(() => undefined);
+      return "accepted";
+    }
     if (parsed.type === "turn.start") {
       const startedAt = finiteTime(parsed.startedAt) ?? Date.now();
-      session.activeTurn = { turnId: parsed.turnId, startedAt, messages: new Map(), appendedAssistant: [] };
+      session.activeTurn = { turnId: parsed.turnId, startedAt, messages: new Map(), announced: [] };
       this.#status(runtimeId, "running");
     } else if (parsed.type === "turn.complete") {
       const stopCommandId = session.pendingStopId;
@@ -199,10 +234,11 @@ export class ClaudeModsBridge {
         if (session.pendingStopId === parsed.commandId) delete session.pendingStopId;
       }
     }
-    const events = normalizeNativeEvent(runtimeId, parsed, session);
+    const events = normalizeNativeEvent(parsed, session);
     if (!events.every(event => RuntimeEventSchema.safeParse(event).success)) return "invalid";
-    for (const event of events) this.#options.onEvent?.(runtimeId, event);
+    for (const event of events) if (!session.history.observe(event)) this.#options.onEvent?.(runtimeId, event);
     if (parsed.type === "turn.complete") {
+      if (session.activeTurn?.turnId === parsed.turnId) void session.history.settleTurn(session.activeTurn.announced).catch(() => undefined);
       delete session.activeTurn;
       session.completedTurns.add(parsed.turnId);
       while (session.completedTurns.size > 128) session.completedTurns.delete(session.completedTurns.values().next().value!);
@@ -213,6 +249,8 @@ export class ClaudeModsBridge {
   disconnect(runtimeId: string, generation?: string, reason = "bridge_disconnected"): void {
     const session = this.#sessions.get(runtimeId);
     if (session === undefined || (generation !== undefined && session.generation !== generation)) return;
+    this.#abandonCommands(runtimeId, session);
+    session.history.close();
     this.#sessions.delete(runtimeId);
     this.#options.onRuntimeOffline?.(runtimeId, reason);
   }
@@ -233,6 +271,20 @@ export class ClaudeModsBridge {
     for (const [runtimeId, session] of this.#sessions) this.disconnect(runtimeId, session.generation, "host_shutdown");
   }
 
+  /**
+   * The Mods side drops its command cache with the generation, so queued commands
+   * can never report a native result. Retire them explicitly; delivery is unknown,
+   * because a submit may have run before the result was lost.
+   */
+  #abandonCommands(runtimeId: string, session: Session): void {
+    for (const { commandId } of session.commands.values()) {
+      this.#options.onEvent?.(runtimeId, { type: "command.result", commandId, ok: false, status: "failure",
+        error: "claude_bridge_disconnected_result_unknown" });
+    }
+    session.commands.clear();
+    delete session.pendingStopId;
+  }
+
   #status(runtimeId: string, status: RuntimeMetadata["status"]): void {
     const session = this.#sessions.get(runtimeId);
     if (session === undefined || session.runtime.status === status) return;
@@ -245,14 +297,16 @@ function parseHello(value: unknown): ClaudeModsHello | undefined {
   if (!isRecord(value) || value.type !== "hello" || !text(value.sessionId, 256) || !text(value.instanceId, 128) || !text(value.cwd, 4096) ||
       !text(value.claudeVersion, 64) || !text(value.bridgeVersion, 64) || !Array.isArray(value.capabilities) ||
       !validVersion(value.claudeVersion) || value.capabilities.length > 64 || !value.capabilities.every(item => typeof item === "string" && text(item, 128))) return undefined;
+  if (value.configDir !== undefined && !text(value.configDir, 4096)) return undefined;
   return { type: "hello", sessionId: value.sessionId, instanceId: value.instanceId, cwd: value.cwd, claudeVersion: value.claudeVersion,
-    bridgeVersion: value.bridgeVersion, capabilities: value.capabilities };
+    bridgeVersion: value.bridgeVersion, capabilities: value.capabilities, ...(value.configDir === undefined ? {} : { configDir: value.configDir }) };
 }
 
 function parseNativeEvent(value: unknown): ClaudeModsNativeEvent | undefined {
   if (!isRecord(value) || typeof value.type !== "string") return undefined;
   if (value.type === "prompt.submit" && text(value.text, 100_000) && text(value.origin, 128)) return { type: value.type, text: value.text, origin: value.origin, ...(text(value.turnId, 256) ? { turnId: value.turnId } : {}), ...(typeof value.wait === "boolean" ? { wait: value.wait } : {}) };
-  if (value.type === "session.append" && text(value.uuid, 256) && text(value.door, 64) && isRecord(value.message) && text(value.message.type, 64)) return { type: value.type, uuid: value.uuid, door: value.door, message: { type: value.message.type, ...(text(value.message.role, 32) ? { role: value.message.role } : {}), content: value.message.content } };
+  // The row itself is read from the transcript; the event only announces its identity.
+  if (value.type === "session.append" && text(value.uuid, 256) && text(value.door, 64)) return { type: value.type, uuid: value.uuid, door: value.door };
   if (value.type === "turn.start" && text(value.turnId, 256)) {
     const startedAt = finiteTime(value.startedAt); const turnIndex = integer(value.turnIndex);
     return { type: value.type, turnId: value.turnId, ...(startedAt === undefined ? {} : { startedAt }), ...(turnIndex === undefined ? {} : { turnIndex }) };
@@ -278,26 +332,13 @@ function parseNativeEvent(value: unknown): ClaudeModsNativeEvent | undefined {
   return undefined;
 }
 
-function normalizeNativeEvent(runtimeId: string, native: ClaudeModsNativeEvent, session: Session): RuntimeEvent[] {
+function normalizeNativeEvent(native: ClaudeModsNativeEvent, session: Session): RuntimeEvent[] {
   switch (native.type) {
-    case "prompt.submit": {
-      // The native prompt.submit observer is not emitted for a Mods API submission in
-      // the tested build, and composer prompts are persisted again by session.append.
-      // Treating this observation as a message would create duplicates.
-      return [];
-    }
-    case "session.append": {
-      const role = native.message.role === "assistant" ? "assistant" : native.message.role === "user" ? "user" : native.message.type === "system" ? "system" : undefined;
-      if (role === undefined) return [];
-      const content = contentOf(native.message.content);
-      if (content.length === 0) return [];
-      if (role === "assistant" && session.activeTurn !== undefined) {
-        session.activeTurn.appendedAssistant.push({ uuid: native.uuid, content });
-        return [];
-      }
-      const message = messageOf(native.uuid, role, content);
-      return [{ type: "message.started", message }, { type: "message.finished", message }];
-    }
+    // The native prompt.submit observer is not emitted for a Mods API submission in the
+    // tested build, and every prompt reaches the transcript. Treating it as a message
+    // would create duplicates. Transcript rows are handled before normalization.
+    case "prompt.submit":
+    case "session.append": return [];
     case "turn.start": return [{ type: "turn.started", turnId: native.turnId, startedAt: native.startedAt ?? Date.now(), ...(native.turnIndex === undefined ? {} : { turnIndex: native.turnIndex }) }];
     case "turn.step.chunks": {
       const active = session.activeTurn;
@@ -321,26 +362,16 @@ function normalizeNativeEvent(runtimeId: string, native: ClaudeModsNativeEvent, 
     case "turn.complete": {
       const startedAt = session.activeTurn?.startedAt ?? Date.now();
       const active = session.activeTurn?.turnId === native.turnId ? session.activeTurn : undefined;
-      const appended = [...(active?.appendedAssistant ?? [])];
-      const persistedMessages: { messageId: string; entryId: string }[] = [];
       const events: RuntimeEvent[] = [];
+      // Streamed messages stay live until the transcript rows of this turn replace them.
       for (const [messageId, live] of active?.messages ?? []) {
         const content = [...live.blocks.entries()].sort(([a], [b]) => a - b)
           .map(([, block]) => ({ type: block.type, text: block.text } satisfies RemoteContent));
-        const textKey = contentKey(content);
-        const matchIndex = appended.findIndex(entry => contentKey(entry.content) === textKey && textKey !== "[]");
-        if (matchIndex >= 0) persistedMessages.push({ messageId, entryId: appended.splice(matchIndex, 1)[0]!.uuid });
-        const message = messageOf(messageId, "assistant", content);
-        events.push({ type: "message.finished", message });
-      }
-      for (const entry of appended) {
-        const message = messageOf(entry.uuid, "assistant", entry.content);
-        events.push({ type: "message.started", message }, { type: "message.finished", message });
+        events.push({ type: "message.finished", message: messageOf(messageId, "assistant", content) });
       }
       events.push({ type: "turn.finished", turnId: native.turnId, startedAt,
         durationMs: native.durationMs ?? Math.max(0, Date.now() - startedAt),
-        ...(native.turnIndex === undefined ? {} : { turnIndex: native.turnIndex }),
-        ...(persistedMessages.length === 0 ? {} : { persistedMessages }) });
+        ...(native.turnIndex === undefined ? {} : { turnIndex: native.turnIndex }) });
       return events;
     }
     case "tool.started": return [{ type: "tool.started", toolCallId: native.toolCallId, toolName: native.toolName, arguments: native.arguments }];
@@ -352,22 +383,6 @@ function normalizeNativeEvent(runtimeId: string, native: ClaudeModsNativeEvent, 
 function messageOf(messageId: string, role: ChatMessage["role"], content: readonly RemoteContent[]): ChatMessage {
   const result = ChatMessageSchema.parse({ messageId, role, content, timestamp: Date.now() });
   return result;
-}
-
-function contentOf(value: unknown): RemoteContent[] {
-  if (typeof value === "string") return [{ type: "text", text: value }];
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item: unknown): RemoteContent[] => {
-    if (!isRecord(item) || typeof item.type !== "string") return [];
-    if (item.type === "text" && typeof item.text === "string") return [{ type: "text", text: item.text }];
-    if (item.type === "thinking" && typeof item.thinking === "string") return [{ type: "thinking", text: item.thinking }];
-    if (item.type === "tool_use" && text(item.id, 256) && text(item.name, 256)) return [{ type: "tool_call", toolCallId: item.id, toolName: item.name, arguments: item.input }];
-    return [];
-  });
-}
-
-function contentKey(content: readonly RemoteContent[]): string {
-  return JSON.stringify(content.filter(item => item.type === "text" || item.type === "thinking"));
 }
 
 function compareVersion(a: string, b: string): number {

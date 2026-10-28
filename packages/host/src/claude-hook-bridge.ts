@@ -10,6 +10,7 @@ import {
 } from "@orbis/protocol";
 
 export type ClaudeHookDecision = "allow" | "deny";
+type RuntimeStatus = "idle" | "running" | "waiting_local_interaction";
 
 export type ClaudeHookOutput = {
   hookSpecificOutput?: {
@@ -40,8 +41,14 @@ type Pending = {
 
 type ClaudeSession = { runtimeId: string; sessionId: string; cwd: string };
 
+const FINISHED_LIMIT = 256;
+
 export type ClaudeHookBridgeOptions = {
   timeoutMs?: number;
+  /** Without a connected device nobody can answer remotely; the Hook then defers to the native TUI dialog. */
+  hasRemoteDevice?: () => boolean;
+  /** Status owned by the Mods bridge, restored once no Hook interaction is pending. */
+  baseStatus?: (runtimeId: string) => RuntimeStatus | undefined;
   onRuntimeOnline?: (runtime: RuntimeMetadata) => void;
   onRuntimeOffline?: (runtimeId: string, reason: string) => void;
   onEvent?: (runtimeId: string, event: RuntimeEvent) => void;
@@ -50,7 +57,14 @@ export type ClaudeHookBridgeOptions = {
 /**
  * Synchronous Claude Code Hook requests are held here until the Host receives an
  * ordinary `interaction.respond` command.  This class deliberately knows nothing
- * about HTTP or devices, which keeps fail-closed and generation checks testable.
+ * about HTTP or devices, which keeps decision and generation checks testable.
+ *
+ * Only an explicit remote answer produces allow/deny. Timeout, disconnect and
+ * shutdown return an empty output, which leaves the decision to Claude Code's
+ * native dialog instead of locking the local user out.
+ *
+ * A Session is published here only while it has pending interactions; the Mods
+ * bridge owns the long-lived runtime presence.
  */
 export class ClaudeHookBridge {
   readonly #options: ClaudeHookBridgeOptions;
@@ -58,7 +72,6 @@ export class ClaudeHookBridge {
   readonly #pending = new Map<string, Pending>();
   readonly #finished = new Map<string, { generation: string; fingerprint?: string; output: ClaudeHookOutput }>();
   readonly #sessions = new Map<string, ClaudeSession>();
-  readonly #statuses = new Map<string, "idle" | "running" | "waiting_local_interaction">();
 
   constructor(options: ClaudeHookBridgeOptions = {}) {
     this.#options = options;
@@ -66,13 +79,16 @@ export class ClaudeHookBridge {
 
   get generation(): string { return this.#generation; }
   runtimeIds(): readonly string[] { return [...this.#sessions.keys()]; }
+  pendingRequests(runtimeId: string): InteractionRequest[] {
+    return [...this.#pending.values()].filter(item => `claude:${item.sessionId}` === runtimeId).map(item => item.request);
+  }
 
   runtimeMetadata(): RuntimeMetadata[] {
     return [...this.#sessions.values()].map(session => ({
       runtimeId: session.runtimeId,
       name: "Claude Code",
       cwd: session.cwd,
-      status: this.#statuses.get(session.runtimeId) ?? "idle",
+      status: "waiting_local_interaction" as const,
       sessionId: session.sessionId,
     }));
   }
@@ -80,12 +96,12 @@ export class ClaudeHookBridge {
   async accept(input: unknown, signal?: AbortSignal): Promise<ClaudeHookOutput> {
     const parsed = parseHookInput(input);
     if (parsed === undefined) throw new ClaudeHookInputError("invalid Claude Hook input");
+    if (this.#options.hasRemoteDevice?.() === false) return passthrough();
     const runtimeId = `claude:${parsed.sessionId}`;
     if (!this.#sessions.has(runtimeId)) {
       const session = { runtimeId, sessionId: parsed.sessionId, cwd: parsed.cwd };
       this.#sessions.set(runtimeId, session);
-      this.#statuses.set(runtimeId, "idle");
-      this.#options.onRuntimeOnline?.({ runtimeId, name: "Claude Code", cwd: session.cwd, status: "idle", sessionId: session.sessionId });
+      this.#options.onRuntimeOnline?.({ runtimeId, name: "Claude Code", cwd: session.cwd, status: "waiting_local_interaction", sessionId: session.sessionId });
     }
     const requestId = `claude-hook:${randomUUID()}`;
     const timeoutMs = this.#timeoutMs();
@@ -105,15 +121,13 @@ export class ClaudeHookBridge {
         this.#pending.delete(requestId);
         this.#finished.set(requestId, { generation: this.#generation,
           ...(finishedFingerprint === undefined ? {} : { fingerprint: finishedFingerprint }), output });
+        while (this.#finished.size > FINISHED_LIMIT) this.#finished.delete(this.#finished.keys().next().value!);
         if (reason !== undefined) this.#options.onEvent?.(runtimeId, { type: "interaction.cancelled", requestId, reason });
-        this.#emitStatus(runtimeId, this.#pendingForRuntime(runtimeId) ? "waiting_local_interaction" : "idle");
+        if (!this.#pendingForRuntime(runtimeId)) this.#release(runtimeId, reason ?? "interaction_settled");
         resolve(output);
       };
-      timer = setTimeout(() => {
-        const output = failClosed(parsed.hook, "Orbis interaction timed out");
-        finish(output, undefined, "timeout");
-      }, timeoutMs);
-      const onAbort = () => finish(failClosed(parsed.hook, "Claude Hook 请求已断开"), undefined, "disconnected");
+      timer = setTimeout(() => finish(passthrough(), undefined, "timeout"), timeoutMs);
+      const onAbort = () => finish(passthrough(), undefined, "disconnected");
       abortCleanup = () => signal?.removeEventListener("abort", onAbort);
       if (signal?.aborted) {
         onAbort();
@@ -126,7 +140,7 @@ export class ClaudeHookBridge {
         }, timer, fingerprint, rawToolInput: parsed.toolInput,
         ...(parsed.rawQuestions === undefined ? {} : { rawQuestions: parsed.rawQuestions }), abortCleanup });
       this.#options.onEvent?.(runtimeId, { type: "interaction.requested", request: requestWithExpiry });
-      this.#emitStatus(runtimeId, "waiting_local_interaction");
+      this.#options.onEvent?.(runtimeId, { type: "runtime.status", status: "waiting_local_interaction" });
     });
   }
 
@@ -147,7 +161,7 @@ export class ClaudeHookBridge {
       if (data.kind !== "confirm" && data.kind !== "cancel") return "conflict";
     } else {
       if (data.kind === "cancel") {
-        const output = failClosed(pending.hook, "Claude Code 问题已取消");
+        const output = denyQuestion("Claude Code 问题已取消");
         pending.settle(output, fingerprint, "cancelled");
         return "accepted";
       }
@@ -158,40 +172,40 @@ export class ClaudeHookBridge {
       ? permissionOutput(data.kind === "confirm" && data.value)
       : questionnaireOutput(pending.request, data.kind === "questionnaire" ? data.answers : [], pending.rawToolInput);
     const runtimeId = `claude:${pending.sessionId}`;
-    pending.settle(output, fingerprint);
     this.#options.onEvent?.(runtimeId, { type: "interaction.resolved", requestId, source: "remote" });
+    pending.settle(output, fingerprint);
     return "accepted";
   }
 
+  /** Defers every pending interaction of the runtime to the native TUI dialog. */
   cancelRuntime(runtimeId: string, reason: "cancelled" | "disconnected" | "owner_closed" = "disconnected"): void {
-    for (const pending of this.#pending.values()) {
-      if (`claude:${pending.sessionId}` !== runtimeId) continue;
-      const output = failClosed(pending.hook, `Claude runtime ${reason}`);
-      pending.settle(output, undefined, reason);
+    for (const pending of [...this.#pending.values()]) {
+      if (`claude:${pending.sessionId}` === runtimeId) pending.settle(passthrough(), undefined, reason);
     }
-    this.#sessions.delete(runtimeId);
-    this.#statuses.delete(runtimeId);
-    this.#options.onRuntimeOffline?.(runtimeId, reason);
+    this.#release(runtimeId, reason);
   }
 
   close(): void {
-    for (const runtimeId of this.#sessions.keys()) this.cancelRuntime(runtimeId, "owner_closed");
+    for (const runtimeId of [...this.#sessions.keys()]) this.cancelRuntime(runtimeId, "owner_closed");
+  }
+
+  #release(runtimeId: string, reason: string): void {
+    if (!this.#sessions.delete(runtimeId)) return;
+    this.#options.onEvent?.(runtimeId, { type: "runtime.status", status: this.#options.baseStatus?.(runtimeId) ?? "idle" });
+    this.#options.onRuntimeOffline?.(runtimeId, reason);
   }
 
   #pendingForRuntime(runtimeId: string): boolean {
     return [...this.#pending.values()].some(item => `claude:${item.sessionId}` === runtimeId);
   }
 
-  #emitStatus(runtimeId: string, status: "idle" | "running" | "waiting_local_interaction"): void {
-    if (this.#sessions.has(runtimeId)) this.#statuses.set(runtimeId, status);
-    this.#options.onEvent?.(runtimeId, { type: "runtime.status", status });
-  }
-
   #timeoutMs(): number {
     const value = this.#options.timeoutMs;
+    // Must expire before the plugin script's fetch (590 s) and the Hook timeout (600 s),
+    // so the phone sees an accurate expiresAt and the Host owns the timeout outcome.
     return value !== undefined && Number.isFinite(value) && value > 0
       ? Math.max(1, Math.floor(value))
-      : 600_000;
+      : 570_000;
   }
 }
 
@@ -324,9 +338,12 @@ function permissionOutput(allow: boolean): ClaudeHookOutput {
   return { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: allow ? "allow" : "deny", ...(allow ? {} : { message: "Orbis 拒绝了 Claude Code 工具权限请求" }) } } };
 }
 
-function failClosed(hook: HookKind, reason: string): ClaudeHookOutput {
-  return hook === "PermissionRequest" ? permissionOutput(false) : { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } };
+function denyQuestion(reason: string): ClaudeHookOutput {
+  return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } };
 }
+
+/** No decision: Claude Code continues with its native permission dialog or question. */
+function passthrough(): ClaudeHookOutput { return {}; }
 
 function safeSummary(input: Record<string, unknown>): string {
   try { return JSON.stringify(input).slice(0, 4_000); } catch { return "工具参数不可序列化"; }
