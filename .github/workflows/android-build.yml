@@ -46,8 +46,11 @@ jobs:
           build_tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           echo "apksigner from $build_tools"
           "$build_tools/apksigner" verify --print-certs "$apk" > "$RUNNER_TEMP/certs.txt"
-          signers=$(grep -c 'certificate SHA-256 digest' "$RUNNER_TEMP/certs.txt" || true)
-          digest=$(sed -nE 's/^Signer #1 certificate SHA-256 digest: ([a-f0-9]{64})$/\1/p' "$RUNNER_TEMP/certs.txt")
+          # 行前缀随 build-tools 版本变化（`Signer #1 certificate …` / `V2 Signer: certificate …`），
+          # 只认指纹本身：所有签名者去重后必须恰好是一个、且等于发版证书。
+          digests=$(grep -oE 'certificate SHA-256 digest: [a-f0-9]{64}' "$RUNNER_TEMP/certs.txt" | awk '{print $NF}' | sort -u || true)
+          signers=$(printf '%s' "$digests" | grep -c . || true)
+          digest=$digests
           if [ "$signers" != 1 ] || [ "$digest" != "$ORBIS_RELEASE_CERT_SHA256" ]; then
             # 证书指纹是公开信息；打出来才看得出是签错了还是输出格式变了。
             echo "Unexpected signing certificate: ${digest:-<none>} (signers=$signers)"
