@@ -64,6 +64,24 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(slash.buttons.matching(NSPredicate(format: "label CONTAINS %@", "/compact")).firstMatch.waitForExistence(timeout: 8))
         capture("slash-menu", app: slash)
     }
+    func testChatSwipeBackReboundsThenReturnsHome() {
+        let app = launch("chat")
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.55))
+        start.press(forDuration: 0.05,
+                    thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.55)),
+                    withVelocity: .slow, thenHoldForDuration: 0.3)
+        XCTAssertTrue(composer.isHittable)
+        XCTAssertFalse(app.buttons["打开会话目录"].isHittable)
+        capture("chat-swipe-rebounded", app: app)
+        start.press(forDuration: 0.05,
+                    thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.55)),
+                    withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
+        XCTAssertFalse(composer.exists)
+        capture("chat-swipe-home", app: app)
+    }
     func testSlashPickerStaysAboveKeyboard() {
         let app = launch("slash")
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch

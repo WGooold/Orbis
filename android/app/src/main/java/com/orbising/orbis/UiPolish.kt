@@ -33,6 +33,7 @@ import kotlin.math.sqrt
 internal object OrbisMotion {
     // Compose expresses damping as a ratio: c / (2 * sqrt(k * mass)).
     fun drag() = spring<Float>(stiffness = 1200f, dampingRatio = 80f / (2f * sqrt(1200f)))
+    fun swipeBack() = spring<Float>(stiffness = 260f, dampingRatio = 24f / (2f * sqrt(260f)))
     fun pop() = spring<Float>(stiffness = 380f, dampingRatio = 18f / (2f * sqrt(380f)))
 }
 

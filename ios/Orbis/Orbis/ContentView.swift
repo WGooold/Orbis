@@ -38,10 +38,7 @@ struct ContentView: View {
                 if store.pairings.isEmpty {
                     PairingEntryView(onCancel: nil, onCode: store.pair)
                 } else {
-                    HomeView(onDirectory: { setDrawer(true) }, onStatus: { pages.append(.status) },
-                             onSettings: { pages.append(.settings) }, onAddHost: { pages.append(.pairing) },
-                             onDownloads: { pages.append(.downloads) }, onUnpair: { confirmUnpair(store.selectedHost) }, onAlias: { aliasRuntime = $0 },
-                             onOpenRuntime: openRuntime)
+                    home
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -64,8 +61,7 @@ struct ContentView: View {
                 .foregroundStyle(OrbisPalette(scheme).text)
                 .background(OrbisPalette(scheme).base.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
-                // 位移作用在整个页面（含底色）上，拖动时底层露出的是会话列表，而不是空白。
-                .modifier(SwipeBackModifier(enabled: page == .chat, onBack: back))
+                .modifier(SwipeBackModifier(enabled: page == .chat, onBack: back, underlay: { home }))
             }
         }
         .environmentObject(store.transfers)
@@ -125,6 +121,13 @@ struct ContentView: View {
             }
         }
         .orbisOverlayHost(overlay)
+    }
+
+    private var home: some View {
+        HomeView(onDirectory: { setDrawer(true) }, onStatus: { pages.append(.status) },
+                 onSettings: { pages.append(.settings) }, onAddHost: { pages.append(.pairing) },
+                 onDownloads: { pages.append(.downloads) }, onUnpair: { confirmUnpair(store.selectedHost) },
+                 onAlias: { aliasRuntime = $0 }, onOpenRuntime: openRuntime)
     }
 
     private var drawer: some View {
@@ -282,41 +285,89 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
 }
 
 /// 聊天页右滑返回。导航栏隐藏后系统侧滑返回失效，这里在页面上同时识别一个横向拖动：
-/// 按第一段位移锁定方向，向右横拖时页面跟随手指，松手按位置与速度决定返回或回弹。
-private struct SwipeBackModifier: ViewModifier {
+/// 首页固定在原位，起始轻微横向受压，随右滑逐步恢复原状并渐亮；吸附完成后再返回。
+private struct SwipeBackModifier<Underlay: View>: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var scheme
     let enabled: Bool
     let onBack: () -> Void
+    @ViewBuilder let underlay: () -> Underlay
     @State private var offset: CGFloat = 0
     @State private var horizontalDrag: Bool?
     @State private var containerWidth: CGFloat = 390
+    @State private var returning = false
+    @State private var revealing = false
+    @State private var settleID = UUID()
+    @GestureState private var gestureActive = false
+
+    private var progress: CGFloat { max(0, min(1, offset / max(1, containerWidth))) }
+    private var compression: CGFloat { 1 - progress }
 
     func body(content: Content) -> some View {
-        content
-            .offset(x: offset)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
-            .simultaneousGesture(enabled ? gesture : nil)
+        ZStack {
+            if enabled && revealing {
+                underlay()
+                    .overlay { OrbisPalette(scheme).scrim.opacity(0.34 * (1 - progress)).ignoresSafeArea() }
+                    .scaleEffect(x: reduceMotion ? 1 : 1 - 0.025 * compression,
+                                 y: reduceMotion ? 1 : 1 + 0.008 * compression,
+                                 anchor: .leading)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            content.offset(x: max(0, offset))
+        }
+        .background(OrbisPalette(scheme).base.ignoresSafeArea())
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
+        .simultaneousGesture(enabled ? gesture : nil)
+        .onChange(of: gestureActive) { _, active in
+            // System interruptions may cancel a gesture without calling onEnded.
+            if !active && horizontalDrag != nil && !returning {
+                horizontalDrag = nil
+                settle(back: false, velocity: 0)
+            }
+        }
+        .onDisappear { returning = false; settleID = UUID() }
     }
 
     private var gesture: some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .global)
+            .updating($gestureActive) { _, active, _ in active = true }
             .onChanged { value in
+                guard !returning else { return }
                 if horizontalDrag == nil {
                     horizontalDrag = value.translation.width > abs(value.translation.height) * 1.5
+                    settleID = UUID()
                 }
                 guard horizontalDrag == true else { return }
-                offset = max(0, value.translation.width)
+                revealing = true
+                let distance = max(0, value.translation.width)
+                offset = distance > containerWidth ? containerWidth + (distance - containerWidth) * 0.18 : distance
             }
             .onEnded { value in
                 let horizontal = horizontalDrag == true
                 horizontalDrag = nil
-                guard horizontal else { return }
-                if value.predictedEndTranslation.width > containerWidth / 3 {
-                    onBack()
-                } else {
-                    withAnimation(reduceMotion ? nil : .orbisDrag) { offset = 0 }
-                }
+                guard horizontal && !returning else { return }
+                let velocity = (value.predictedEndTranslation.width - value.translation.width) / 0.2
+                settle(back: offset + velocity * 0.15 > containerWidth / 3, velocity: velocity)
             }
+    }
+
+    private func settle(back: Bool, velocity: CGFloat) {
+        let id = UUID()
+        settleID = id
+        returning = back
+        let target = back ? containerWidth : 0
+        let distance = target - offset
+        let initialVelocity = abs(distance) > 1 ? max(-8, min(8, velocity / distance)) : 0
+        withAnimation(reduceMotion ? nil : .orbisSwipeBack(velocity: Double(initialVelocity)), completionCriteria: .removed) {
+            offset = target
+        } completion: {
+            guard settleID == id else { return }
+            guard back && returning else { revealing = false; return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { onBack() }
+        }
     }
 }
 

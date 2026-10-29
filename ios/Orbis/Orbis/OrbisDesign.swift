@@ -81,6 +81,10 @@ enum OrbisRadius {
 extension Animation {
     /// Drag release: stiffness 1200, damping 80. Overdamped, so it settles without overshoot.
     static let orbisDrag = Animation.interpolatingSpring(mass: 1, stiffness: 1200, damping: 80)
+    /// Page release keeps a visible elastic settle, matching Android's swipe-back spring.
+    static func orbisSwipeBack(velocity: Double) -> Animation {
+        .interpolatingSpring(mass: 1, stiffness: 260, damping: 24, initialVelocity: velocity)
+    }
     /// Small confirmations (checks, toggles): stiffness 380, damping 18, a slight bounce.
     static let orbisPop = Animation.interpolatingSpring(mass: 1, stiffness: 380, damping: 18)
     static let orbisCollapse = Animation.smooth(duration: 0.26)
