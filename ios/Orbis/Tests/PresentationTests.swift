@@ -22,12 +22,11 @@ struct PresentationTests {
     }
     @Test func titlePrecedenceMatchesAndroidAndUsesOnlyUserContent() {
         let runtime = RuntimeSummary(runtimeId: "runtime", name: "Agent", cwd: "/repo", status: "idle", sessionId: "session", sessionName: "电脑标题")
-        #expect(sessionTitle(alias: "手机别名", runtime: runtime, session: session("session", name: "目录标题")) == "手机别名")
-        #expect(sessionTitle(alias: "  ", runtime: runtime, session: session("session", name: "目录标题")) == "电脑标题")
-        #expect(sessionTitle(alias: nil, runtime: nil, session: session("session", name: "目录标题")) == "目录标题")
-        #expect(sessionTitle(alias: nil, runtime: nil, session: session("session")) == "第一句。")
+        #expect(sessionTitle(runtime: runtime, session: session("session", name: "目录标题")) == "电脑标题")
+        #expect(sessionTitle(runtime: nil, session: session("session", name: "目录标题")) == "目录标题")
+        #expect(sessionTitle(runtime: nil, session: session("session")) == "第一句。")
         let assistant = ChatMessage(messageId: "a", role: "assistant", content: [ChatContent(type: "text", text: "不要用助手开场命名", toolName: nil, artifact: nil)], timestamp: 0, isError: nil)
-        #expect(sessionTitle(alias: nil, runtime: runtimeWithoutTitle, session: nil, messages: [assistant]) == "session")
+        #expect(sessionTitle(runtime: runtimeWithoutTitle, session: nil, messages: [assistant]) == "session")
     }
     @Test func liveToolsAreMaterializedIntoTheAssistantTurnByOrder() {
         func tool(_ id: String, order: Int64) -> ToolSummary {
@@ -52,10 +51,7 @@ struct PresentationTests {
 
     private var runtimeWithoutTitle: RuntimeSummary { RuntimeSummary(runtimeId: "runtime", name: "Agent", cwd: "/repo", status: "idle", sessionId: "session") }
 
-    @Test func aliasesAndPreviewsHaveAndroidLengthWhitespaceAndSentenceRules() {
-        #expect(normalizedAlias("  会话\n 名称\t\u{0000} ") == "会话 名称")
-        #expect(normalizedAlias(" \t\n") == nil)
-        #expect(normalizedAlias(String(repeating: "中", count: 60))?.count == 40)
+    @Test func previewsHaveAndroidLengthWhitespaceAndSentenceRules() {
         #expect(sessionMessagePreview("\n第一行\n第二行") == "第一行")
         #expect(sessionMessagePreview(" What   happened? More text") == "What happened?")
         #expect(sessionMessagePreview(String(repeating: "字", count: 60)) == String(repeating: "字", count: 39) + "…")

@@ -251,7 +251,7 @@ pi -e ./packages/pi-extension/dist/index.js
 
 Android 输入框保留普通聊天消息；命令则只有一个入口：输入 `/` 打开当前 runtime 发布的菜单，选择命令后执行。App 不维护命令白名单，也不会把任意 `/...` 文本当成普通消息发送；未从当前菜单选择的 Slash 输入不能提交。
 
-APP 顶层以在线 Runtime 列表为入口；一个 Runtime 对应一个在线 agent 交互窗口（一个 Pi 进程，或 Codex 的一个活跃 thread），点击后直接显示该 Runtime 当前 Session 和 branch。Session Catalog 只按 Session ID 合并存储元数据，不记录 Runtime 归属或在线状态；另保留最近一次写入缓存的 `hostname`，仅用于侧边栏按“主机 → 目录 → 会话”树状分组。在线 Runtime 列表页左侧的“缓存的历史记录”侧边栏按该树状结构列出所有已缓存 Session：有在线 Runtime 的点击进入该 Runtime，没有在线 Runtime 的以只读缓存历史显示。APP 手动别名、Pi Session display 名称和主机名仍分别用于本地显示、Session 标题和运行实例区分。
+APP 顶层以在线 Runtime 列表为入口；一个 Runtime 对应一个在线 agent 交互窗口（一个 Pi 进程，或 Codex 的一个活跃 thread），点击后直接显示该 Runtime 当前 Session 和 branch，左滑卡片可关闭对应会话。Session Catalog 只按 Session ID 合并存储元数据，不记录 Runtime 归属或在线状态；另保留最近一次写入缓存的 `hostname`，仅用于侧边栏按“主机 → 目录 → 会话”树状分组。在线 Runtime 列表页左侧的“缓存的历史记录”侧边栏按该树状结构列出所有已缓存 Session：有在线 Runtime 的点击进入该 Runtime，没有在线 Runtime 的以只读缓存历史显示。电脑端会话标题和主机名分别用于 Session 标题和运行实例区分。
 
 菜单由电脑端 Pi runtime 动态生成并合并以下来源：
 

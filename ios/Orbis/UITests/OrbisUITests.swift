@@ -90,6 +90,26 @@ final class OrbisUITests: XCTestCase {
         dsh.tap()
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 3))
     }
+    func testHomeShortSwipeReboundsAndLongSwipeClosesOnlyThatRuntime() {
+        let app = launch("home")
+        let codex = app.buttons["home-runtime-preview-codex"]
+        let pi = app.buttons["home-runtime-preview-pi"]
+        XCTAssertTrue(codex.waitForExistence(timeout: 8))
+        let originalFrame = codex.frame
+        capture("home-neumorphic-cards", app: app)
+        let start = codex.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -originalFrame.width * 0.45, dy: 0)))
+        XCTAssertTrue(codex.exists)
+        let rebounded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            abs(codex.frame.minX - originalFrame.minX) <= 1
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [rebounded], timeout: 3), .completed)
+        XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].firstMatch.exists)
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -originalFrame.width * 0.6, dy: 0)))
+        XCTAssertTrue(codex.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(pi.exists)
+        XCTAssertTrue(app.buttons["打开会话目录"].exists)
+    }
     func testSwipeRightFromLeftSideOpensDirectory() {
         let app = launch("home")
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))

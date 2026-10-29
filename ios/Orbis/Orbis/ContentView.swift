@@ -12,7 +12,6 @@ struct ContentView: View {
     @State private var directoryState = SessionDirectoryState()
     @State private var newSessionOpen = false
     @State private var newSessionCwd: String?
-    @State private var aliasRuntime: RuntimeSummary?
     @StateObject private var overlay = OrbisOverlay()
 
     init() {
@@ -47,7 +46,7 @@ struct ContentView: View {
                     switch page {
                     case .chat:
                         if let runtime = store.selectedRuntime {
-                            ChatView(runtime: runtime, onBack: back, onHistory: { pages.append(.history) }, onDownloads: { pages.append(.downloads) }, onAlias: { aliasRuntime = runtime })
+                            ChatView(runtime: runtime, onBack: back, onHistory: { pages.append(.history) }, onDownloads: { pages.append(.downloads) })
                                 .id(localSessionKey(host: store.selectedHost, runtime: runtime))
                         } else { OrbisEmptyState(symbol: "desktopcomputer", title: "会话已离线") }
                     case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
@@ -90,9 +89,6 @@ struct ContentView: View {
             NewSessionView(presetCwd: newSessionCwd) { newSessionOpen = false }
                 .environmentObject(store).orbisSheet([.large])
         }
-        .sheet(item: $aliasRuntime) { runtime in
-            SessionAliasView(runtime: runtime).environmentObject(store).orbisSheet([.medium])
-        }
         .onChange(of: pages) { _, _ in overlay.dismissMenu() }
         .onChange(of: drawerOpen) { _, open in if !open { overlay.dismissMenu() } }
         .onChange(of: store.activationRevision) { _, _ in
@@ -127,7 +123,7 @@ struct ContentView: View {
         HomeView(onDirectory: { setDrawer(true) }, onStatus: { pages.append(.status) },
                  onSettings: { pages.append(.settings) }, onAddHost: { pages.append(.pairing) },
                  onDownloads: { pages.append(.downloads) }, onUnpair: { confirmUnpair(store.selectedHost) },
-                 onAlias: { aliasRuntime = $0 }, onOpenRuntime: openRuntime)
+                 onOpenRuntime: openRuntime)
     }
 
     private var drawer: some View {
@@ -152,7 +148,7 @@ struct ContentView: View {
     }
     private func confirmUnpair(_ host: HostPairing?) {
         guard let host else { return }
-        overlay.showDialog("取消配对这台电脑？", message: "此电脑在本机保存的配对、草稿和别名将被移除。之后可以重新扫码连接。", actions: [
+        overlay.showDialog("取消配对这台电脑？", message: "此电脑在本机保存的配对和草稿将被移除。之后可以重新扫码连接。", actions: [
             OrbisDialogAction(title: "返回", role: .cancel),
             OrbisDialogAction(title: "取消配对 \(host.hostName)", role: .destructive) {
                 store.unpair(hostId: host.hostId); pages = []; setDrawer(false)
@@ -384,16 +380,21 @@ private struct TransferErrorBanner: View {
 }
 
 struct HomeView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     @State private var selectedRuntimeIds: Set<String> = []
+    @State private var swipeTranslations: [String: CGFloat] = [:]
+    @State private var armedCloseRuntimeIds: Set<String> = []
+    @State private var closeHapticRuntimeIds: Set<String> = []
+    @State private var swipingRuntimeIds: Set<String> = []
+    @State private var runtimeCardWidths: [String: CGFloat] = [:]
     let onDirectory: () -> Void
     let onStatus: () -> Void
     let onSettings: () -> Void
     let onAddHost: () -> Void
     let onDownloads: () -> Void
     let onUnpair: () -> Void
-    let onAlias: (RuntimeSummary) -> Void
     let onOpenRuntime: (RuntimeSummary) -> Void
 
     var body: some View {
@@ -461,15 +462,26 @@ struct HomeView: View {
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(OrbisPalette(scheme).base.ignoresSafeArea())
-            .onChange(of: store.selectedHostId) { _, _ in selectedRuntimeIds = [] }
+            .onChange(of: store.selectedHostId) { _, _ in
+                selectedRuntimeIds = []
+                resetCloseSwipes()
+            }
+            .onChange(of: selecting) { _, active in if active { resetCloseSwipes() } }
             .onChange(of: currentHost?.runtimes.map(\.runtimeId) ?? []) { _, ids in
                 selectedRuntimeIds.formIntersection(ids)
             }
-            .onDisappear { selectedRuntimeIds = [] }
+            .onDisappear { selectedRuntimeIds = []; resetCloseSwipes() }
     }
 
     private var currentHost: HostSnapshot? { store.hosts.first { $0.hostId == store.selectedHostId } }
     private var selecting: Bool { !selectedRuntimeIds.isEmpty }
+
+    private func resetCloseSwipes() {
+        swipeTranslations = [:]
+        armedCloseRuntimeIds = []
+        closeHapticRuntimeIds = []
+        swipingRuntimeIds = []
+    }
 
     private func toggleSelection(_ id: String) {
         if selectedRuntimeIds.contains(id) { selectedRuntimeIds.remove(id) }
@@ -514,39 +526,95 @@ struct HomeView: View {
         let kind = host.connection.agentKind(runtime)
         let pending = !(host.connection.interactions[runtime.runtimeId] ?? []).isEmpty
         let selected = selectedRuntimeIds.contains(runtime.runtimeId)
+        let translation = swipeTranslations[runtime.runtimeId] ?? 0
+        let cardWidth = runtimeCardWidths[runtime.runtimeId] ?? 0
+        let closeThreshold = cardWidth / 2
+        let reveal = min(cardWidth, max(0, -translation))
+        let armed = armedCloseRuntimeIds.contains(runtime.runtimeId)
         return HStack(spacing: 0) {
-            Button {
-                if selecting { toggleSelection(runtime.runtimeId) }
-                else { store.selectRuntime(hostId: host.hostId, runtimeId: runtime.runtimeId); onOpenRuntime(runtime) }
-            } label: {
-                HStack(spacing: 12) {
-                    AgentEmblem(kind: kind)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(host.connection.displayName(runtime)).font(.orbisBody(.semibold)).lineLimit(1)
-                        Text(runtime.cwd)
-                            .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
-                        HStack(spacing: 10) {
-                            Text(agentTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
-                            // A pending interaction takes the status slot instead of adding a line to the card.
-                            if pending {
-                                Label("待确认", systemImage: "exclamationmark.circle").font(.orbisCaption(.semibold))
-                                    .foregroundStyle(OrbisPalette(scheme).error)
-                            } else { RuntimeStatusLabel(status: runtime.status) }
+            ZStack(alignment: .trailing) {
+                if !selecting {
+                    HStack(spacing: 6) {
+                        Image(systemName: armed ? "checkmark" : "xmark").font(.system(size: 14, weight: .bold))
+                        Text(armed ? "松手关闭" : "关闭").font(.orbisLabel(.semibold)).lineLimit(1)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(width: 116).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .background(armed ? OrbisPalette(scheme).secondary : OrbisPalette(scheme).error)
+                    .clipShape(RoundedRectangle(cornerRadius: OrbisRadius.card, style: .continuous))
+                    .opacity(reveal > 0 ? 1 : 0)
+                    .scaleEffect(reveal > 0 ? 1 : 0.88, anchor: .trailing)
+                    .offset(x: reveal > 0 ? 0 : 10)
+                    .animation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.22, dampingFraction: 0.78), value: reveal > 0)
+                    .accessibilityHidden(true)
+                }
+                Button {
+                    guard !swipingRuntimeIds.contains(runtime.runtimeId) else { return }
+                    if selecting { toggleSelection(runtime.runtimeId) }
+                    else { store.selectRuntime(hostId: host.hostId, runtimeId: runtime.runtimeId); onOpenRuntime(runtime) }
+                } label: {
+                    HStack(spacing: 12) {
+                        AgentEmblem(kind: kind)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(host.connection.displayName(runtime)).font(.orbisBody(.semibold)).lineLimit(1)
+                            Text(runtime.cwd)
+                                .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
+                            HStack(spacing: 10) {
+                                Text(agentTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
+                                // A pending interaction takes the status slot instead of adding a line to the card.
+                                if pending {
+                                    Label("待确认", systemImage: "exclamationmark.circle").font(.orbisCaption(.semibold))
+                                        .foregroundStyle(OrbisPalette(scheme).error)
+                                } else { RuntimeStatusLabel(status: runtime.status) }
+                            }
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }.buttonStyle(NeuButtonStyle(selected: selected, radius: OrbisRadius.card, padding: OrbisRadius.cardPadding + 4))
-                .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(runtime.runtimeId) })
-                .accessibilityIdentifier("home-runtime-\(runtime.runtimeId)")
-                .accessibilityAddTraits(selected ? .isSelected : [])
-                .accessibilityAction(named: "选择会话") { beginSelection(runtime.runtimeId) }
+                }.buttonStyle(NeuButtonStyle(selected: selected, radius: OrbisRadius.card, padding: OrbisRadius.cardPadding + 4))
+                    .offset(x: -reveal)
+                    .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(runtime.runtimeId) })
+                    .accessibilityIdentifier("home-runtime-\(runtime.runtimeId)")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityAction(named: "选择会话") { beginSelection(runtime.runtimeId) }
+                    .simultaneousGesture(DragGesture(minimumDistance: 8, coordinateSpace: .global)
+                        .onChanged { value in
+                            guard !selecting else { return }
+                            let horizontal = value.translation.width
+                            guard abs(horizontal) > abs(value.translation.height) else {
+                                swipeTranslations[runtime.runtimeId] = 0
+                                armedCloseRuntimeIds.remove(runtime.runtimeId)
+                                return
+                            }
+                            swipingRuntimeIds.insert(runtime.runtimeId)
+                            if closeThreshold > 0, !armedCloseRuntimeIds.contains(runtime.runtimeId), horizontal <= -closeThreshold,
+                               !closeHapticRuntimeIds.contains(runtime.runtimeId) {
+                                closeHapticRuntimeIds.insert(runtime.runtimeId)
+                                OrbisHaptics.commit()
+                            }
+                            swipeTranslations[runtime.runtimeId] = min(0, max(-cardWidth, horizontal))
+                            if closeThreshold > 0, horizontal <= -closeThreshold { armedCloseRuntimeIds.insert(runtime.runtimeId) }
+                            else { armedCloseRuntimeIds.remove(runtime.runtimeId) }
+                        }
+                        .onEnded { value in
+                            guard !selecting else { return }
+                            // Let this release's button action finish before accepting taps again.
+                            DispatchQueue.main.async { swipingRuntimeIds.remove(runtime.runtimeId) }
+                            if closeThreshold > 0, armedCloseRuntimeIds.contains(runtime.runtimeId), value.translation.width <= -closeThreshold,
+                               abs(value.translation.width) > abs(value.translation.height) {
+                                _ = store.closeRuntimes(hostId: host.hostId, runtimeIds: [runtime.runtimeId])
+                            }
+                            withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.28, dampingFraction: 0.82)) {
+                                swipeTranslations[runtime.runtimeId] = 0
+                                armedCloseRuntimeIds.remove(runtime.runtimeId)
+                                closeHapticRuntimeIds.remove(runtime.runtimeId)
+                            }
+                        })
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { runtimeCardWidths[runtime.runtimeId] = $0 }
             if selecting {
                 OrbisIconButton(symbol: selected ? "checkmark.circle.fill" : "circle", label: selected ? "取消选择会话" : "选择会话",
                                 tint: selected ? OrbisPalette(scheme).accent : nil, selected: selected, compact: true) {
                     toggleSelection(runtime.runtimeId)
                 }
-            } else {
-                OrbisIconButton(symbol: "pencil", label: "修改会话别名", compact: true) { store.selectHost(host.hostId); onAlias(runtime) }
             }
         }.accessibilityElement(children: .contain)
     }

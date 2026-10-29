@@ -34,7 +34,6 @@ final class HostConnection: ObservableObject {
     @Published private(set) var launchableAgents: [String]?
     @Published private(set) var codexDesktop: CodexDesktopAttach?
     @Published private(set) var drafts: [String: String] = [:]
-    @Published private(set) var aliases: [String: String] = [:]
     @Published private(set) var pathRTT: Double?
     @Published private(set) var activationRevision = 0
     @Published private(set) var pendingActionIds: Set<String> = []
@@ -145,7 +144,7 @@ final class HostConnection: ObservableObject {
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Orbis"))
         transfers = FileTransfers(root: root, pairing: initialPairing)
         self.historyWorker = historyWorker ?? SessionHistoryWorker(root: root.appendingPathComponent("SessionHistory", isDirectory: true))
-        aliases = preferences?.dictionary(forKey: "orbis.sessionAliases") as? [String: String] ?? [:]
+        preferences?.removeObject(forKey: "orbis.sessionAliases")
         drafts = preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? [:]
         pathPreference = normalizedPathPreference(preferences?.stringArray(forKey: "orbis.pathPreference") ?? [])
         #if canImport(UIKit)
@@ -254,21 +253,13 @@ final class HostConnection: ObservableObject {
     var canSend: Bool { connection == .secured && selectedOfflineSession == nil && selectedRuntime != nil }
 
     func displayName(_ runtime: RuntimeSummary) -> String {
-        sessionTitle(alias: aliases[localSessionKey(host: selectedHost, runtime: runtime)], runtime: runtime,
-                     session: runtime.sessionId.flatMap { sessionIndex[$0] }, messages: conversations[runtime.runtimeId] ?? [])
+        sessionTitle(runtime: runtime, session: runtime.sessionId.flatMap { sessionIndex[$0] },
+                     messages: conversations[runtime.runtimeId] ?? [])
     }
 
     func displayName(_ session: SessionSummary) -> String {
         if let runtime = runtimes.first(where: { $0.sessionId == session.sessionId }) { return displayName(runtime) }
-        return sessionTitle(alias: aliases[offlineAliasKey(host: selectedHost, sessionId: session.sessionId)], runtime: nil, session: session)
-    }
-
-    func alias(for runtime: RuntimeSummary) -> String { aliases[localSessionKey(host: selectedHost, runtime: runtime)] ?? "" }
-    func setAlias(_ alias: String, for runtime: RuntimeSummary) {
-        aliases = preferences?.dictionary(forKey: "orbis.sessionAliases") as? [String: String] ?? aliases
-        aliases[localSessionKey(host: selectedHost, runtime: runtime)] = normalizedAlias(alias)
-        if let session = runtime.sessionId { aliases[offlineAliasKey(host: selectedHost, sessionId: session)] = normalizedAlias(alias) }
-        preferences?.set(aliases, forKey: "orbis.sessionAliases")
+        return sessionTitle(runtime: nil, session: session)
     }
     func draft(for runtime: RuntimeSummary) -> String { drafts[localSessionKey(host: selectedHost, runtime: runtime)] ?? "" }
     func saveDraft(_ text: String, for runtime: RuntimeSummary) {
@@ -281,7 +272,6 @@ final class HostConnection: ObservableObject {
     func purgeLocalData() {
         guard let hostId = selectedHostId else { return }
         drafts = preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? drafts
-        aliases = preferences?.dictionary(forKey: "orbis.sessionAliases") as? [String: String] ?? aliases
         if let host = pairings.first(where: { $0.hostId == hostId }) {
             transfers.removeAll(for: host)
             let prefix = hostKeyPrefix(host)
@@ -296,8 +286,6 @@ final class HostConnection: ObservableObject {
             cleanupTask = Task { [historyWorker] in try? await historyWorker.remove(host: host) }
             drafts = drafts.filter { !$0.key.hasPrefix(prefix) }
             preferences?.set(drafts, forKey: "orbis.sessionDrafts")
-            aliases = aliases.filter { !$0.key.hasPrefix(prefix) }
-            preferences?.set(aliases, forKey: "orbis.sessionAliases")
         }
         pairings = []
         guard selectedHostId == hostId else { return }
@@ -999,7 +987,7 @@ final class HostConnection: ObservableObject {
             if action.name == "tree", let runtime = runtimes.first(where: { $0.runtimeId == action.runtimeId }) {
                 let editorText = branchEditorNode == nil ? nil : (result?["editorText"] as? String ?? branchEditorText ?? (branchEditorNode == entryPreview?.entryId ? entryPreview?.message?.text : nil))
                 if let sessionId = result?["sessionId"] as? String, sessionId != runtime.sessionId {
-                    if let editorText { pendingBranchDrafts[offlineAliasKey(host: selectedHost, sessionId: sessionId)] = editorText }
+                    if let editorText { pendingBranchDrafts[offlineSessionKey(host: selectedHost, sessionId: sessionId)] = editorText }
                     var target: [String: Any] = ["type": "resume", "sessionId": sessionId]
                     if let kind = runtime.agentKind { target["agentKind"] = kind }
                     activateTarget(target, sessionId: sessionId)
@@ -1198,7 +1186,7 @@ final class HostConnection: ObservableObject {
                     runtimes[index] = runtime
                 } else { runtimes.append(runtime) }
                 if pendingActivation == runtime.sessionId {
-                    if let session = runtime.sessionId, let text = pendingBranchDrafts.removeValue(forKey: offlineAliasKey(host: selectedHost, sessionId: session)) { saveDraft(text, for: runtime) }
+                    if let session = runtime.sessionId, let text = pendingBranchDrafts.removeValue(forKey: offlineSessionKey(host: selectedHost, sessionId: session)) { saveDraft(text, for: runtime) }
                     clearActivation()
                     selectedRuntimeId = runtime.runtimeId
                     activationRevision += 1

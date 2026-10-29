@@ -144,22 +144,19 @@ struct MultiHostTests {
         }
     }
 
-    @Test func draftAndAliasWritesMergeFreshPreferencesAcrossHosts() async throws {
+    @Test func draftWritesMergeFreshPreferencesAcrossHosts() async throws {
         let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
         await fixture.ready()
         let store = fixture.store
         let first = try #require(store.connection(for: "host-1"))
         let second = try #require(store.connection(for: "host-2"))
         let runtime = try #require(first.runtimes.first)
-        first.saveDraft("First draft", for: runtime); first.setAlias("First alias", for: runtime)
-        second.saveDraft("Second draft", for: runtime); second.setAlias("Second alias", for: runtime)
-        first.saveDraft("First draft revised", for: runtime); first.setAlias("First alias revised", for: runtime)
+        first.saveDraft("First draft", for: runtime)
+        second.saveDraft("Second draft", for: runtime)
+        first.saveDraft("First draft revised", for: runtime)
         let drafts = fixture.preferences.dictionary(forKey: "orbis.sessionDrafts") as? [String: String]
-        let aliases = fixture.preferences.dictionary(forKey: "orbis.sessionAliases") as? [String: String]
-        for (host, expectedDraft, expectedAlias) in [(fixture.secure.hosts[0], "First draft revised", "First alias revised"), (fixture.secure.hosts[1], "Second draft", "Second alias")] {
+        for (host, expectedDraft) in [(fixture.secure.hosts[0], "First draft revised"), (fixture.secure.hosts[1], "Second draft")] {
             #expect(drafts?[localSessionKey(host: host, runtime: runtime)] == expectedDraft)
-            #expect(aliases?[localSessionKey(host: host, runtime: runtime)] == expectedAlias)
-            #expect(aliases?[offlineAliasKey(host: host, sessionId: "shared-session")] == expectedAlias)
         }
         #expect(first.draft(for: runtime) == "First draft revised")
         #expect(second.draft(for: runtime) == "Second draft")
@@ -182,8 +179,8 @@ struct MultiHostTests {
         interactionDrafts.save(InteractionDraftValue(input: "Keep interaction"), for: survivingDraftKey, request: request)
         try await fixture.transports["host-1"]!.snapshot(text: "Remove this history")
         try await fixture.transports["host-2"]!.snapshot(text: "Keep this history")
-        first.saveDraft("Remove me", for: runtime); first.setAlias("Remove me", for: runtime)
-        second.saveDraft("Keep me", for: runtime); second.setAlias("Keep me", for: runtime)
+        first.saveDraft("Remove me", for: runtime)
+        second.saveDraft("Keep me", for: runtime)
         let disconnects = fixture.transports.mapValues(\.disconnectCount)
         fixture.store.selectHost("host-1")
         fixture.store.unpair(hostId: "host-1")
@@ -196,11 +193,8 @@ struct MultiHostTests {
         #expect(fixture.transports["host-1"]!.disconnectCount == disconnects["host-1"]! + 1)
         #expect(fixture.transports["host-2"]!.disconnectCount == disconnects["host-2"])
         let drafts = fixture.preferences.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? [:]
-        let aliases = fixture.preferences.dictionary(forKey: "orbis.sessionAliases") as? [String: String] ?? [:]
         #expect(!drafts.keys.contains { $0.hasPrefix(hostKeyPrefix(removed)) })
-        #expect(!aliases.keys.contains { $0.hasPrefix(hostKeyPrefix(removed)) })
         #expect(drafts[localSessionKey(host: surviving, runtime: runtime)] == "Keep me")
-        #expect(aliases[localSessionKey(host: surviving, runtime: runtime)] == "Keep me")
         #expect(second.draft(for: runtime) == "Keep me")
         let restoredInteractions = InteractionDraftCache(preferences: fixture.preferences)
         #expect(restoredInteractions.value(for: removedDraftKey, request: request).input.isEmpty)

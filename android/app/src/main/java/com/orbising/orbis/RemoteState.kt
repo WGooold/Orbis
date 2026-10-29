@@ -477,7 +477,6 @@ data class RemoteState(
     /** 手机发往电脑的上传任务（spec: 手机上传文件到电脑），key = taskId。 */
     val uploads: Map<String, UploadTask> = emptyMap(),
     val pendingDownloads: Map<String, PendingDownload> = emptyMap(),
-    val sessionAliases: Map<SessionAliasIdentity, String> = emptyMap(),
     /** Each list request records the archive revision it started under. */
     val sessionListEpoch: Long = 0,
     val sessionListRequestEpochs: Map<String, Long> = emptyMap(),
@@ -1103,7 +1102,7 @@ internal fun RemoteState.canCreateSessionOn(expectedHostId: String?): Boolean =
  * Builds the sidebar tree (`host -> directory -> session`). Online runtimes and offline catalog
  * Sessions share one tree, and a Session currently open by an online Runtime takes precedence over
  * any cached entry for the same sessionId. All surfaces resolve the title through
- * sessionDisplayName: local alias, agent name, then a first-user-message preview.
+ * sessionDisplayName: agent-provided name, then a first-user-message preview.
  *
  * 侧栏是**聊天记录的全量目录**：电脑上存在过的会话都要出现，不管手机有没有缓存过它。
  * 只看 `hasHistoryCache` 会把「电脑上有、本机没打开过」的会话藏起来，而那正是用户要

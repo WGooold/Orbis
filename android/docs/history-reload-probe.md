@@ -108,7 +108,7 @@ $checksums | Set-Content (Join-Path $target 'SHA256SUMS.txt')
 
 确认短轮次可稳定到达分页边界后再增加 `-Reloads 3`，同时给整轮设置明确预算，例如 `-TotalTimeoutSeconds 360`。`TimeoutSeconds` 是单页预算，`TotalTimeoutSeconds` 包含选择/重开/手势的整轮预算；最后的证据收集与 App 恢复可能另需几个有界 adb 调用。若外部工具也设超时，应大于总预算并预留收尾时间；直接强杀外层 shell 可能跳过 `finally`。
 
-省略 `-SessionTitles` 时，只从 Runtime 首页中带“修改会话别名”控件的在线卡片识别 Codex，不从可能激活后端的历史目录选择。若只想测一条已在线 Runtime，可在自己的终端传精确标题：
+省略 `-SessionTitles` 时，只从 Runtime 首页中带 Codex 标识的在线卡片识别会话，不从可能激活后端的历史目录选择。若只想测一条已在线 Runtime，可在自己的终端传精确标题：
 
 ```powershell
 $titles = @(Read-Host '已在线 Runtime 首页卡片的精确标题')

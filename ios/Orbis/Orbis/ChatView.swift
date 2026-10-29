@@ -48,7 +48,6 @@ struct ChatView: View {
     let onBack: () -> Void
     let onHistory: () -> Void
     let onDownloads: () -> Void
-    let onAlias: () -> Void
     @State private var following = true
     /// Per-frame scroll facts live in a reference box: writing them must not re-render the chat.
     /// Only `showJump` (derived from them) is view state, and it changes at a threshold.
@@ -59,7 +58,6 @@ struct ChatView: View {
     @State private var deliveryChoices = false
     @State private var permissionsOpen = false
     @State private var runtimeInfoOpen = false
-    @State private var aliasAfterInfo = false
     @State private var filePickerOpen = false
     @State private var historyAnchor: String?
     @State private var topArmed = false
@@ -100,11 +98,8 @@ struct ChatView: View {
             .sheet(isPresented: $permissionsOpen) {
                 PermissionsView(runtime: runtime).orbisSheet([.medium, .large])
             }
-            .sheet(isPresented: $runtimeInfoOpen, onDismiss: {
-                // The alias editor opens only after the info sheet has gone, never on top of it.
-                if aliasAfterInfo { aliasAfterInfo = false; onAlias() }
-            }) {
-                RuntimeInfoView(runtime: runtime) { aliasAfterInfo = true; runtimeInfoOpen = false }.orbisSheet([.large])
+            .sheet(isPresented: $runtimeInfoOpen) {
+                RuntimeInfoView(runtime: runtime).orbisSheet([.large])
             }
             .onChange(of: draft.wrappedValue) { _, next in
                 if let selectedCommand, !(next == "/" + selectedCommand || next.hasPrefix("/" + selectedCommand + " ")) { self.selectedCommand = nil }
@@ -1253,13 +1248,11 @@ private struct RuntimeInfoView: View {
     @EnvironmentObject private var agent: AgentState
     @Environment(\.dismiss) private var dismiss
     let runtime: RuntimeSummary
-    let onAlias: () -> Void
     private var snapshot: AgentSnapshot? { agent.snapshots[runtime.runtimeId] }
     private func ready(_ name: String) -> Bool { snapshot?.missing[name] == nil && (snapshot?.domains[name]?.availability ?? "ready") == "ready" }
     var body: some View {
         VStack(spacing: 0) {
             OrbisPageHeader(title: "会话信息", closes: true, back: { dismiss() }) {
-                OrbisIconButton(symbol: "pencil", label: "修改会话别名", action: onAlias)
                 OrbisIconButton(symbol: "arrow.clockwise", label: "核对会话状态") { agent.subscribe(runtime: runtime, force: true) }.disabled(!store.canSend)
             }
             ScrollView {

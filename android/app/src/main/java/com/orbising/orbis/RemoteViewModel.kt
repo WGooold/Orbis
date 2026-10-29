@@ -180,7 +180,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             val uploadIds = stores.uploads.load().filter { it.hostId == id }.map(UploadTask::taskId).toSet()
             if (downloadIds.isNotEmpty()) stores.downloads.delete(downloadIds)
             if (uploadIds.isNotEmpty()) stores.uploads.delete(uploadIds)
-            stores.sessionAlias.clear(credential)
             stores.draft.clear(credential)
             viewModelScope.launch(Dispatchers.IO) {
                 runCatching { SessionCatalogStore(getApplication(), id).clear() }
@@ -359,11 +358,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun saveDraft(runtimeId: String, value: String) = active()?.saveDraft(runtimeId, value)
 
     fun clearDraft(runtimeId: String) = active()?.clearDraft(runtimeId)
-
-    fun setSessionAlias(runtimeId: String, value: String) = active()?.setSessionAlias(runtimeId, value)
-
-    fun setSessionAliasOn(hostId: String, runtimeId: String, value: String) =
-        connectionFor(hostId)?.setSessionAlias(runtimeId, value)
 
     fun setSessionArchivedOn(hostId: String, sessionId: String, archived: Boolean) =
         connectionFor(hostId)?.setSessionArchived(sessionId, archived)

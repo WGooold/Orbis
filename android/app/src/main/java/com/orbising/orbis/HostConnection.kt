@@ -72,7 +72,6 @@ internal const val UPLOAD_READ_IDLE_MS = 10_000L
  */
 internal class HostStores(application: Application) {
     val sessionGraph = SessionGraphStore(application)
-    val sessionAlias = SessionAliasStore(application)
     val draft = DraftStore(application)
     val downloads = ArtifactDownloadStore(application)
     val uploads = ArtifactUploadStore(application)
@@ -125,7 +124,6 @@ internal class HostConnection(
     private val notifier = stores.notifier
     private val sessionCatalogStore = SessionCatalogStore(application, initial.hostId)
     private val sessionGraphStore = stores.sessionGraph
-    private val sessionAliasStore = stores.sessionAlias
     private val draftStore = stores.draft
     private val artifactDownloadStore = stores.downloads
     private val artifactUploadStore = stores.uploads
@@ -237,7 +235,6 @@ internal class HostConnection(
             hostName = pairing.hostName,
             sessions = sessionCatalogStore.load(device, pairing.hostId)
                 .associateBy(SessionCatalogEntry::sessionId),
-            sessionAliases = sessionAliasStore.load(device),
         )
         connect(device)
         // 掉线重连 / APP 重启后回到上次打开的会话（spec 第 16 行、§14 B7）。
@@ -1075,16 +1072,6 @@ internal class HostConnection(
 
     fun clearDraft(runtimeId: String) {
         saveDraft(runtimeId, "")
-    }
-
-    fun setSessionAlias(runtimeId: String, value: String) {
-        val pairedDevice = device ?: return
-        val runtime = mutableState.value.runtimes[runtimeId] ?: return
-        val identity = runtime.sessionAliasIdentity()
-        val alias = normalizeSessionAlias(value)
-        sessionAliasStore.save(pairedDevice, runtime, value)
-        updateState { it.copy(sessionAliases = if (alias == null) it.sessionAliases - identity
-            else it.sessionAliases + (identity to alias)) }
     }
 
     /**

@@ -111,14 +111,7 @@ function Find-OnlineSessions {
     for ($page = 0; $page -lt 4; $page++) {
         $layout = Read-OnlineHome
         $beforeCount = $titles.Count
-        foreach ($alias in @($layout.SelectNodes('//node') | Where-Object { $_.'content-desc' -eq '修改会话别名' })) {
-            $row = $alias.ParentNode
-            while ($row.Name -eq 'node' -and $null -ne $row.ParentNode) {
-                $texts = @($row.SelectNodes('.//node') | Where-Object { $_.text } | ForEach-Object { [string]$_.text })
-                if ($row.clickable -eq 'true' -and @($texts | Where-Object { $_ -in @('Codex','Codex 终端','Codex 桌面版') }).Count -gt 0) { break }
-                $row = $row.ParentNode
-            }
-            if ($row.Name -ne 'node' -or $row.clickable -ne 'true') { continue }
+        foreach ($row in @($layout.SelectNodes('//node') | Where-Object { $_.clickable -eq 'true' })) {
             $texts = @($row.SelectNodes('.//node') | Where-Object { $_.text } | ForEach-Object { [string]$_.text })
             if (@($texts | Where-Object { $_ -in @('Codex','Codex 终端','Codex 桌面版') }).Count -eq 0) { continue }
             if ($texts.Count -gt 0 -and -not $titles.Contains($texts[0])) { $titles.Add($texts[0]) }
@@ -134,7 +127,7 @@ function Find-OnlineSessions {
 }
 function Open-Session([string] $Title) {
     # Runtime home cards invoke only selectRuntime. Unlike catalog rows they cannot activate
-    # an offline backend; the alias control proves we are in the runtime-only card surface.
+    # an offline backend; the agent label proves this is a live Codex runtime card.
     $nodes = @()
     for ($page = 0; $page -lt 4; $page++) {
         $layout = Read-OnlineHome
@@ -147,8 +140,8 @@ function Open-Session([string] $Title) {
     if ($nodes.Count -ne 1) { throw 'Runtime title is not uniquely visible; no arbitrary row was tapped.' }
     $row = $nodes[0]
     while ($row.Name -eq 'node' -and $row.clickable -ne 'true' -and $null -ne $row.ParentNode) { $row = $row.ParentNode }
-    $aliases = @($row.SelectNodes('.//node') | Where-Object { $_.'content-desc' -eq '修改会话别名' })
-    if ($row.Name -ne 'node' -or $row.clickable -ne 'true' -or $aliases.Count -ne 1) { throw 'Not a verified runtime-only card; refusing to activate a session.' }
+    $agentLabels = @($row.SelectNodes('.//node') | Where-Object { $_.text -in @('Codex','Codex 终端','Codex 桌面版') })
+    if ($row.Name -ne 'node' -or $row.clickable -ne 'true' -or $agentLabels.Count -eq 0) { throw 'Not a verified online Codex runtime card; refusing to activate a session.' }
     # Capture before selection: Compose may start and finish cached pages before
     # Open-Session's initial settling delay or the next Measure-Page call returns.
     $script:roundTraces = @{}

@@ -20,7 +20,7 @@
 | 上传 | 后台建立私有副本与 SHA-256、Host 持久进度与恢复范围验证；迟到失败不能覆盖完成/取消终态；配对身份变化暂停旧任务 | `FileTransfers.swift` |
 | 工具库存 | 固定页版本和补丁连续性；有界保留精确已验证版本证明；旧引用不回滚；新 checkpoint 不反复打断分页；失败/过期释放等待回执 | `ToolInventory.swift` |
 | 工具详情 | read / viewer / request 身份、UTF-8 字节范围、缺口及版本验证；流式文件导出，上限 64 MiB，后台串行写盘、进度/取消、完整后发布文件 | `ToolContent.swift` |
-| 多 Host 与本地上下文 | 每台 Host 独立常驻连接、状态和传输任务；选择 Host 不重连；相同 runtime/session ID 隔离；配对草稿、交互输入、别名、缓存及上次选择；取消配对仅清所属 Host，异步清理可等待 | `OrbisHub.swift`、`OrbisStore.swift` |
+| 多 Host 与本地上下文 | 每台 Host 独立常驻连接、状态和传输任务；选择 Host 不重连；相同 runtime/session ID 隔离；配对草稿、交互输入、缓存及上次选择；取消配对仅清所属 Host，异步清理可等待 | `OrbisHub.swift`、`OrbisStore.swift` |
 | 功能入口 | 多 Host 主页、离线会话与分支、历史分页/预览、队列撤回、通知关闭、执行/模型/上下文/timing、Desktop 接入原因、工具导出与分享、手动路径下载、截断提示与按需全文、工具参数和结果关联；普通交互草稿持久化、敏感输入仅内存 | SwiftUI 页面、`Presentation.swift` |
 
 以上是对现有 ADR-0007、0013、0025、0026、0028、0029、0032、0037、0040、0045 的客户端实现，未改变协议架构。

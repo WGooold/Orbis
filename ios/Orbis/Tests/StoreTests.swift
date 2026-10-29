@@ -360,21 +360,19 @@ struct StoreTests {
         #expect(store.messages.map(\.text) == ["History", "hello", "Thinking more"])
     }
 
-    @Test func draftsAndAliasesSurviveRuntimeNavigationAndFollowSessionIdentity() async throws {
+    @Test func draftsSurviveRuntimeNavigationAndFollowSessionIdentity() async throws {
         let (store, transport) = setup()
         await transport.ready([runtime("a"), runtime("b")])
         let a = try #require(store.selectedRuntime)
         store.saveDraft("保留草稿", for: a)
-        store.setAlias(" 手机  别名 ", for: a)
         store.selectRuntime("b")
         #expect(store.draft(for: try #require(store.selectedRuntime)).isEmpty)
         store.selectRuntime("a")
         #expect(store.draft(for: a) == "保留草稿")
-        #expect(store.displayName(a) == "手机 别名")
+        #expect(store.displayName(a) == "session-a")
         await transport.event(["type": "runtime.metadata", "metadata": ["sessionId": "new-session"]], sequence: 1, channel: "ctl")
         let next = try #require(store.selectedRuntime)
         #expect(store.draft(for: next).isEmpty)
-        #expect(store.alias(for: next).isEmpty)
         #expect(store.draft(for: a) == "保留草稿")
     }
 
@@ -527,16 +525,15 @@ struct StoreTests {
         let store = OrbisStore(secure: secure, preferences: nil, transportFactory: { $0.hostId == "host-1" ? transport : other })
         transport.drain = { [weak store] in await store?.waitForPendingEvents() }; other.drain = transport.drain
         await transport.ready([runtime("a")]); let first = try #require(store.selectedRuntime)
-        store.saveDraft("first", for: first); store.setAlias("first alias", for: first)
+        store.saveDraft("first", for: first)
         store.connect(hostId: "host-2"); await other.ready([runtime("a")]); let second = try #require(store.selectedRuntime)
         #expect(store.draft(for: second).isEmpty)
-        store.saveDraft("second", for: second); store.setAlias("second alias", for: second)
+        store.saveDraft("second", for: second)
         store.unpair(hostId: "host-1")
         #expect(store.draft(for: second) == "second")
-        #expect(store.alias(for: second) == "second alias")
         #expect(secure.hosts.map(\.hostId) == ["host-2"])
         store.unpair(hostId: "host-2")
-        #expect(store.pairings.isEmpty); #expect(store.drafts.isEmpty); #expect(store.aliases.isEmpty)
+        #expect(store.pairings.isEmpty); #expect(store.drafts.isEmpty)
         #expect(store.selectedHostId == nil); #expect(store.connection == .offline)
     }
 

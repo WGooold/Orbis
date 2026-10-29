@@ -446,30 +446,3 @@ struct RemoteDirectoryView: View {
         }
     }
 }
-
-struct SessionAliasView: View {
-    @EnvironmentObject private var store: OrbisStore
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var scheme
-    let runtime: RuntimeSummary
-    @State private var alias = ""
-    @FocusState private var focused: Bool
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            OrbisPageHeader(title: "会话别名", closes: true, back: { dismiss() }) { EmptyView() }
-            VStack(alignment: .leading, spacing: 18) {
-                TextField("会话别名", text: $alias, axis: .vertical)
-                    .font(.orbisBody()).lineLimit(1...3).focused($focused).orbisInput(focused: focused).accessibilityLabel("会话别名")
-                Text("\(alias.count)/40").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                HStack(spacing: 14) {
-                    OrbisActionButton(title: "恢复默认") { store.setAlias("", for: runtime); dismiss() }
-                    OrbisActionButton(title: "保存", symbol: "checkmark") { store.setAlias(alias, for: runtime); dismiss() }
-                }
-            }.padding(.horizontal, 24)
-            Spacer(minLength: 12)
-        }.background(OrbisPalette(scheme).base.ignoresSafeArea())
-            .onAppear { alias = store.alias(for: runtime) }
-            .onChange(of: alias) { _, value in if value.count > 40 { alias = String(value.prefix(40)) } }
-    }
-}

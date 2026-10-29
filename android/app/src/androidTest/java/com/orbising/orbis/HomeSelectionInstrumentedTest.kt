@@ -34,7 +34,7 @@ class HomeSelectionInstrumentedTest {
                             state = state.copy(runtimes = state.runtimes - ids)
                             ids
                         },
-                        setSessionAlias = { _, _, _ -> }, onOpenDownloads = {}, onUnpairHost = {},
+                        onOpenDownloads = {}, onUnpairHost = {},
                         onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> }, onNewSession = { _, _ -> },
                         onSetArchived = { _, _, _ -> }, onSelectHost = {}, onAddHost = {}, onOpenStatus = {}, onRequestProviders = {})
                 }

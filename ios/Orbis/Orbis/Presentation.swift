@@ -73,12 +73,6 @@ func runtimeStatusTitle(_ status: String) -> String {
     }
 }
 
-func normalizedAlias(_ raw: String) -> String? {
-    let clean = raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) || CharacterSet.whitespacesAndNewlines.contains($0) }
-    let value = String(String.UnicodeScalarView(clean)).split(whereSeparator: \.isWhitespace).joined(separator: " ")
-    return value.isEmpty ? nil : String(value.prefix(40))
-}
-
 func sessionMessagePreview(_ raw: String?) -> String? {
     guard let raw else { return nil }
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -93,8 +87,8 @@ func sessionMessagePreview(_ raw: String?) -> String? {
     return sentence.count > 40 ? String(sentence.prefix(39)).trimmingCharacters(in: .whitespaces) + "…" : sentence
 }
 
-func sessionTitle(alias: String?, runtime: RuntimeSummary?, session: SessionSummary?, messages: [ChatMessage] = []) -> String {
-    for candidate in [alias, runtime?.sessionName, session?.name] {
+func sessionTitle(runtime: RuntimeSummary?, session: SessionSummary?, messages: [ChatMessage] = []) -> String {
+    for candidate in [runtime?.sessionName, session?.name] {
         if let title = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
     }
     if let preview = sessionMessagePreview(session?.firstMessage) { return preview }
@@ -122,11 +116,11 @@ func localSessionKey(host: HostPairing?, runtime: RuntimeSummary) -> String {
     return components.map { "\($0.utf8.count):\($0)" }.joined()
 }
 
-func offlineAliasKey(host: HostPairing?, sessionId: String) -> String {
+func offlineSessionKey(host: HostPairing?, sessionId: String) -> String {
     [host?.relay.relayUrl ?? "", host?.relay.deviceId ?? "", host?.hostId ?? ""].map { "\($0.utf8.count):\($0)" }.joined() + "session:\(sessionId.utf8.count):\(sessionId)"
 }
 
-/// 一台已配对电脑在本机偏好里的键前缀；草稿、别名与会话目录缓存都以它开头。
+/// 一台已配对电脑在本机偏好里的键前缀；草稿与会话目录缓存都以它开头。
 func hostKeyPrefix(_ host: HostPairing) -> String {
     [host.relay.relayUrl, host.relay.deviceId, host.hostId].map { "\($0.utf8.count):\($0)" }.joined()
 }

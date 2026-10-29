@@ -15,14 +15,22 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -128,6 +136,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -138,6 +147,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -161,6 +174,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.widthIn
 import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -522,7 +536,6 @@ internal fun RuntimeListScreen(
     onOpenStatus: () -> Unit,
     onRequestProviders: () -> Unit,
 ) {
-    var aliasEditor by remember { mutableStateOf<Pair<String, RuntimeSummary>?>(null) }
     var moreMenuOpen by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -693,59 +706,131 @@ internal fun RuntimeListScreen(
                             key = { "${it.hostId}:${it.runtime.runtimeId}" },
                         ) { row ->
                             val runtime = row.runtime
+                            var cardWidth by remember(row.hostId, runtime.runtimeId) { mutableFloatStateOf(0f) }
+                            val closeThreshold = cardWidth / 2f
+                            var swipeOffset by remember(row.hostId, runtime.runtimeId) { mutableFloatStateOf(0f) }
+                            var closeArmed by remember(row.hostId, runtime.runtimeId) { mutableStateOf(false) }
+                            val swipeScope = rememberCoroutineScope()
+                            val swipeAnim = remember(row.hostId, runtime.runtimeId) { Animatable(0f) }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(0.dp),
                             ) {
-                                NeumorphSurface(
-                                    modifier = Modifier.weight(1f).testTag("home-runtime-${runtime.runtimeId}")
-                                        .semantics { selected = runtime.runtimeId in selectedIds },
-                                    shape = RoundedCornerShape(20.dp),
-                                    shadowScale = 0.8f,
-                                    style = if (runtime.runtimeId in selectedIds) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-                                    onClick = {
-                                        if (selecting) toggleSelection(runtime.runtimeId)
-                                        else onOpenRuntime(row.hostId, runtime.runtimeId)
-                                    },
-                                    onLongClick = {
-                                        if (!selecting) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        selectedRuntimeIds = selectedIds + runtime.runtimeId
-                                    },
-                                    contentInset = 16.dp,
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                // Keep the card's outer shadows outside the swipe container.
+                                Box(Modifier.weight(1f).onSizeChanged { cardWidth = it.width.toFloat() }) {
+                                    if (!selecting) {
+                                        val armedColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                        Row(
+                                            Modifier.matchParentSize().background(
+                                                if (closeArmed) armedColor else MaterialTheme.colorScheme.error,
+                                                RoundedCornerShape(20.dp),
+                                            )
+                                                .padding(end = 20.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.End,
+                                        ) {
+                                            AnimatedVisibility(
+                                                visible = swipeOffset > 4f,
+                                                enter = slideInHorizontally(
+                                                    initialOffsetX = { it / 3 },
+                                                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                                ) + fadeIn(tween(140)) + scaleIn(
+                                                    initialScale = 0.82f,
+                                                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                                ),
+                                                exit = slideOutHorizontally(
+                                                    targetOffsetX = { it / 4 },
+                                                    animationSpec = tween(100),
+                                                ) + fadeOut(tween(90)) + scaleOut(
+                                                    targetScale = 0.82f,
+                                                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                                                ),
+                                            ) {
+                                                Row(
+                                                    Modifier.width(116.dp),
+                                                    horizontalArrangement = Arrangement.Center,
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                ) {
+                                                    Icon(if (closeArmed) Icons.Rounded.Check else Icons.Rounded.Close, contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.onError, modifier = Modifier.size(18.dp))
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text(if (closeArmed) "松手关闭" else "关闭", color = MaterialTheme.colorScheme.onError,
+                                                        style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    NeumorphSurface(
+                                        modifier = Modifier.fillMaxWidth().offset { IntOffset(-swipeAnim.value.roundToInt(), 0) }
+                                            .testTag("home-runtime-${runtime.runtimeId}")
+                                            .semantics { selected = runtime.runtimeId in selectedIds }
+                                            .pointerInput(selecting, runtime.runtimeId, cardWidth) {
+                                                if (!selecting) {
+                                                    var hapticSent = false
+                                                    detectHorizontalDragGestures(
+                                                        onDragStart = { hapticSent = false },
+                                                        onDragEnd = {
+                                                            val shouldClose = closeThreshold > 0f && swipeOffset >= closeThreshold
+                                                            if (shouldClose) onCloseRuntimes(row.hostId, setOf(runtime.runtimeId))
+                                                            swipeOffset = 0f
+                                                            closeArmed = false
+                                                            swipeScope.launch { swipeAnim.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow)) }
+                                                        },
+                                                        onDragCancel = {
+                                                            swipeOffset = 0f; closeArmed = false
+                                                            swipeScope.launch { swipeAnim.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow)) }
+                                                        },
+                                                        onHorizontalDrag = { change, dragAmount ->
+                                                            val next = (swipeOffset - dragAmount).coerceIn(0f, cardWidth)
+                                                            swipeOffset = next
+                                                            val armed = closeThreshold > 0f && next >= closeThreshold
+                                                            if (armed && !closeArmed && !hapticSent) {
+                                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                                hapticSent = true
+                                                            }
+                                                            closeArmed = armed
+                                                            swipeScope.launch { swipeAnim.snapTo(next) }
+                                                            change.consume()
+                                                        },
+                                                    )
+                                                }
+                                            },
+                                        shape = RoundedCornerShape(20.dp),
+                                        shadowScale = 0.8f,
+                                        style = if (runtime.runtimeId in selectedIds) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                                        onClick = {
+                                            if (selecting) toggleSelection(runtime.runtimeId)
+                                            else if (swipeOffset == 0f) onOpenRuntime(row.hostId, runtime.runtimeId)
+                                        },
+                                        onLongClick = {
+                                            if (!selecting) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            swipeOffset = 0f; closeArmed = false
+                                            swipeScope.launch { swipeAnim.snapTo(0f) }
+                                            selectedRuntimeIds = selectedIds + runtime.runtimeId
+                                        },
+                                        contentInset = 16.dp,
                                     ) {
-                                        AgentEmblem(agentBrand(runtime.agentKind), 44.dp)
-                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text(
-                                                state.runtimeDisplayName(runtime),
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.SemiBold,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                            Text(
-                                                runtime.cwd,
-                                                fontFamily = FontFamily.Monospace,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                                Text(agentBrand(runtime.agentKind).title, color = agentBrand(runtime.agentKind).accent(), style = MaterialTheme.typography.labelMedium)
-                                                // 待确认占用状态位，不给卡片多加一行（与 iOS 一致）。
-                                                if (row.state.hasPendingInteraction(runtime.runtimeId)) {
-                                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                        Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
-                                                        Text("待确认", color = MaterialTheme.colorScheme.error,
-                                                            style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                                                    }
-                                                } else RuntimeStatus(runtime.status)
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        ) {
+                                            AgentEmblem(agentBrand(runtime.agentKind), 44.dp)
+                                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text(state.runtimeDisplayName(runtime), style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                Text(runtime.cwd, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                    Text(agentBrand(runtime.agentKind).title, color = agentBrand(runtime.agentKind).accent(), style = MaterialTheme.typography.labelMedium)
+                                                    if (row.state.hasPendingInteraction(runtime.runtimeId)) {
+                                                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                            Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
+                                                            Text("待确认", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                                        }
+                                                    } else RuntimeStatus(runtime.status)
+                                                }
                                             }
                                         }
                                     }
@@ -763,22 +848,6 @@ internal fun RuntimeListScreen(
                 }
             }
         }
-    }
-    aliasEditor?.let { (hostId, runtime) ->
-        SessionAliasDialog(
-            runtime = runtime,
-            currentAlias = hosts.firstOrNull { it.hostId == hostId }
-                ?.state?.sessionAliases?.get(runtime.sessionAliasIdentity()),
-            onDismiss = { aliasEditor = null },
-            onSave = { alias ->
-                setSessionAlias(hostId, runtime.runtimeId, alias)
-                aliasEditor = null
-            },
-            onClear = {
-                setSessionAlias(hostId, runtime.runtimeId, "")
-                aliasEditor = null
-            },
-        )
     }
 }
 
@@ -1979,73 +2048,6 @@ private val MetaLineLeadingSlot = 20.dp
 
 /** 顶部元信息行里图形与文字之间的间距。 */
 private val MetaLineGap = 6.dp
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun SessionAliasDialog(
-    runtime: RuntimeSummary,
-    currentAlias: String?,
-    onDismiss: () -> Unit,
-    onSave: (String) -> Unit,
-    onClear: () -> Unit,
-) {
-    var alias by remember(runtime.runtimeId, runtime.sessionId, currentAlias) {
-        mutableStateOf(currentAlias.orEmpty())
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { AgentLabel(agentBrand(runtime.agentKind), suffix = "设置会话别名") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = alias,
-                    onValueChange = { alias = it.take(SESSION_ALIAS_MAX_LENGTH) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("APP 显示名称") },
-                    singleLine = true,
-                    supportingText = {
-                        Text("${alias.length}/$SESSION_ALIAS_MAX_LENGTH")
-                    },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                )
-                runtime.hostname?.trim()?.takeIf(String::isNotEmpty)?.let { host ->
-                    Text(
-                        "主机名：$host",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Text(
-                    "Session 显示名称：${runtime.sessionName?.trim()?.takeIf(String::isNotEmpty) ?: "未设置"}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        },
-        confirmButton = {
-            NeumorphTextButton(
-                text = "保存",
-                filled = true,
-                enabled = normalizeSessionAlias(alias) != null,
-                onClick = { onSave(alias) },
-            )
-        },
-        dismissButton = {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                NeumorphTextButton(
-                    text = "恢复默认",
-                    enabled = currentAlias != null,
-                    onClick = onClear,
-                )
-                NeumorphTextButton(text = "取消", onClick = onDismiss)
-            }
-        },
-    )
-}
 
 @Composable
 private fun SlashCommandPicker(
