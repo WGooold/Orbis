@@ -287,6 +287,45 @@ private fun RemoteApp(
     }
     // Keep the directory page's drawer, filters, expansion and scroll position across navigation.
     val runtimeListStateHolder = rememberSaveableStateHolder()
+    // 会话列表既是默认页，也是聊天页右滑返回时露出的底层页面，因此抽成一处复用。
+    val runtimeList: @Composable () -> Unit = {
+        runtimeListStateHolder.SaveableStateProvider("runtime-list") {
+            RuntimeListScreen(
+                state = state,
+                hosts = hosts,
+                onOpenRuntime = { hostId, runtimeId ->
+                    allDownloadsOpen = false
+                    model.openRuntime(hostId, runtimeId)
+                },
+                setSessionAlias = { hostId, runtimeId, alias ->
+                    model.setSessionAliasOn(hostId, runtimeId, alias)
+                },
+                onOpenDownloads = { allDownloadsOpen = true },
+                onUnpairHost = { hostId -> model.unpair(hostId) },
+                onOpenSession = { hostId, sessionId ->
+                    allDownloadsOpen = false
+                    model.openSession(hostId, sessionId)
+                },
+                onOpenHistory = { hostId, sessionId ->
+                    allDownloadsOpen = false
+                    model.openOfflineSession(hostId, sessionId)
+                },
+                onNewSession = { hostId, cwd ->
+                    model.selectHost(hostId)
+                    newSessionHostId = hostId
+                    newSessionCwd = cwd
+                    newSessionOpen = true
+                },
+                onSetArchived = { hostId, sessionId, archived ->
+                    model.setSessionArchivedOn(hostId, sessionId, archived)
+                },
+                onSelectHost = model::selectHost,
+                onAddHost = { addingHost = true },
+                onRequestProviders = model::refreshProviderFacts,
+                onOpenStatus = { statusOpen = true },
+            )
+        }
+    }
     val context = androidx.compose.ui.platform.LocalContext.current
     // session.activated（spec §8）：只证明进程已拉起；会话真正上线后 runtime.online 会接管 UI。
     LaunchedEffect(state.sessionActivation) {
@@ -344,46 +383,13 @@ private fun RemoteApp(
                 onOpenSettings = { settingsOpen = true },
             )
         } else {
-            runtimeListStateHolder.SaveableStateProvider("runtime-list") {
-                RuntimeListScreen(
-                    state = state,
-                    hosts = hosts,
-                    onOpenRuntime = { hostId, runtimeId ->
-                        allDownloadsOpen = false
-                        model.openRuntime(hostId, runtimeId)
-                    },
-                    setSessionAlias = { hostId, runtimeId, alias ->
-                        model.setSessionAliasOn(hostId, runtimeId, alias)
-                    },
-                    onOpenDownloads = { allDownloadsOpen = true },
-                    onUnpairHost = { hostId -> model.unpair(hostId) },
-                    onOpenSession = { hostId, sessionId ->
-                        allDownloadsOpen = false
-                        model.openSession(hostId, sessionId)
-                    },
-                    onOpenHistory = { hostId, sessionId ->
-                        allDownloadsOpen = false
-                        model.openOfflineSession(hostId, sessionId)
-                    },
-                    onNewSession = { hostId, cwd ->
-                        model.selectHost(hostId)
-                        newSessionHostId = hostId
-                        newSessionCwd = cwd
-                        newSessionOpen = true
-                    },
-                    onSetArchived = { hostId, sessionId, archived ->
-                        model.setSessionArchivedOn(hostId, sessionId, archived)
-                    },
-                    onSelectHost = model::selectHost,
-                    onAddHost = { addingHost = true },
-                    onRequestProviders = model::refreshProviderFacts,
-                    onOpenStatus = { statusOpen = true },
-                )
-            }
+            runtimeList()
         }
-        else -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?:
-            state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
-            ChatScreen(state, model)
+        else -> SwipeBackLayer(onBack = { model.selectRuntime(null) }, underlay = runtimeList) {
+            AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?:
+                state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
+                ChatScreen(state, model)
+            }
         }
     }
     if (newSessionOpen && state.hostId == newSessionHostId) {
@@ -1491,7 +1497,6 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
 
     Scaffold(
-        modifier = Modifier.swipeToGoBack { model.selectRuntime(null) },
         topBar = {
             Column {
             TopAppBar(

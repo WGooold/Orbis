@@ -52,7 +52,6 @@ struct ContentView: View {
                         if let runtime = store.selectedRuntime {
                             ChatView(runtime: runtime, onBack: back, onHistory: { pages.append(.history) }, onDownloads: { pages.append(.downloads) }, onAlias: { aliasRuntime = runtime })
                                 .id(localSessionKey(host: store.selectedHost, runtime: runtime))
-                                .modifier(SwipeBackModifier(onBack: back))
                         } else { OrbisEmptyState(symbol: "desktopcomputer", title: "会话已离线") }
                     case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
                     case .status: ConnectionStatusView(onBack: back, onSettings: { pages.append(.settings) })
@@ -65,6 +64,8 @@ struct ContentView: View {
                 .foregroundStyle(OrbisPalette(scheme).text)
                 .background(OrbisPalette(scheme).base.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
+                // 位移作用在整个页面（含底色）上，拖动时底层露出的是会话列表，而不是空白。
+                .modifier(SwipeBackModifier(enabled: page == .chat, onBack: back))
             }
         }
         .environmentObject(store.transfers)
@@ -284,6 +285,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
 /// 按第一段位移锁定方向，向右横拖时页面跟随手指，松手按位置与速度决定返回或回弹。
 private struct SwipeBackModifier: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let enabled: Bool
     let onBack: () -> Void
     @State private var offset: CGFloat = 0
     @State private var horizontalDrag: Bool?
@@ -293,7 +295,7 @@ private struct SwipeBackModifier: ViewModifier {
         content
             .offset(x: offset)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
-            .simultaneousGesture(gesture)
+            .simultaneousGesture(enabled ? gesture : nil)
     }
 
     private var gesture: some Gesture {
