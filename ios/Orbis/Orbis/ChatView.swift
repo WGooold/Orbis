@@ -132,18 +132,19 @@ struct ChatView: View {
                 }
                 HStack(spacing: 8) {
                     if store.connection == .secured {
-                        RuntimeStatusLabel(status: runtime.status)
+                        RuntimeStatusLabel(status: runtime.status, syncing: store.isSyncing)
+                            .fixedSize(horizontal: true, vertical: false)
                     } else {
                         HStack(spacing: 5) {
-                            Circle().fill(store.connection == .error ? p.error : p.warning).frame(width: 7, height: 7)
-                            Text(connectionTitle(store.connection)).font(.orbisCaption())
-                        }.foregroundStyle(p.secondary)
+                            Circle().fill(store.connection == .error ? p.error : p.warning)
+                                .frame(width: 7, height: 7).frame(width: 14, height: 14)
+                            Text(connectionTitle(store.connection)).font(.orbisCaption()).lineLimit(1)
+                        }.foregroundStyle(p.secondary).fixedSize(horizontal: true, vertical: false)
                     }
                     if let model = runtime.model, domainReady("model") {
                         Text(model.name ?? model.id).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    // A fixed slot: syncing never pushes the status or model label sideways.
-                    ProgressView().controlSize(.mini).opacity(store.isSyncing ? 1 : 0).accessibilityHidden(!store.isSyncing)
                 }
             }.contentShape(Rectangle()).onTapGesture { composerFocused = false; runtimeInfoOpen = true }
                 .accessibilityElement(children: .ignore)

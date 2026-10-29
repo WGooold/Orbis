@@ -3031,7 +3031,7 @@ private fun ComposerContextNotice(status: ComposerStatus) {
 }
 
 @Composable
-private fun ChatRuntimeStatus(
+internal fun ChatRuntimeStatus(
     status: String,
     isChatSyncing: Boolean,
     modelLabel: String?,
@@ -3042,8 +3042,25 @@ private fun ChatRuntimeStatus(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(MetaLineGap),
     ) {
-        MetaLineSlot { RuntimeStatusDot(status) }
-        Text(runtimeStatusText(status), color = runtimeStatusColor(status), style = MaterialTheme.typography.labelSmall)
+        // Reuse the leading icon slot: syncing must never change the text's width budget.
+        MetaLineSlot {
+            if (isChatSyncing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(11.dp),
+                    strokeWidth = 1.5.dp,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            } else {
+                RuntimeStatusDot(status)
+            }
+        }
+        Text(
+            runtimeStatusText(status),
+            color = runtimeStatusColor(status),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         modelLabel?.takeIf(String::isNotBlank)?.let { label ->
             Text(
                 "$label",
@@ -3065,13 +3082,6 @@ private fun ChatRuntimeStatus(
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (isChatSyncing) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(11.dp),
-                strokeWidth = 1.5.dp,
-                color = MaterialTheme.colorScheme.secondary,
             )
         }
     }

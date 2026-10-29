@@ -912,10 +912,17 @@ private func agentAsset(_ kind: String?) -> String {
 struct RuntimeStatusLabel: View {
     @Environment(\.colorScheme) private var scheme
     let status: String
+    var syncing = false
     var body: some View {
         HStack(spacing: 5) {
+            // Keep the status dot and refresh spinner in the same measured slot.
             Circle().fill(color).frame(width: 7, height: 7)
-            Text(runtimeStatusTitle(status)).font(.orbisCaption())
+                .opacity(syncing ? 0 : 1)
+                .frame(width: 14, height: 14)
+                .overlay {
+                    if syncing { ProgressView().controlSize(.mini).accessibilityLabel("正在刷新") }
+                }
+            Text(runtimeStatusTitle(status)).font(.orbisCaption()).lineLimit(1)
         }.foregroundStyle(OrbisPalette(scheme).secondary)
     }
     private var color: Color {

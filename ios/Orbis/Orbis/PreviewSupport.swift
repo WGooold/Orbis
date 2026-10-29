@@ -53,6 +53,8 @@ private final class PreviewTransport: OrbisTransport {
     private var providerRevision = 1
     private var viewportTail = 0
     private var sourceSequence = 1
+    private var slowSync: Bool { ProcessInfo.processInfo.arguments.contains("--preview-slow-sync") }
+    private var modelName: String { slowSync ? "A very long model name that needs truncation" : "GPT-5.4" }
     private var enabledProviders: [String: Set<String>] = ["codex": ["official"], "pi": ["official"], "dsh": ["official"]]
     func pair(qr: PairingQR, deviceName: String, identity: DeviceIdentity, completion: @escaping (Result<HostPairing, Error>) -> Void) { completion(.failure(PairingError.invalidQR)) }
     func disconnect() {}
@@ -69,7 +71,7 @@ private final class PreviewTransport: OrbisTransport {
             }
             receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": [
                 ["runtimeId": "preview-codex", "sessionId": "session-1", "sessionName": "对齐移动端的使用体验", "name": "Codex", "cwd": "/Projects/orbis", "status": "idle", "agentKind": "codex",
-                 "model": ["provider": "openai", "id": "gpt-5.4", "name": "GPT-5.4"], "thinkingLevel": "high", "contextUsage": ["tokens": 24000, "contextWindow": 128000, "percent": 18.75],
+                 "model": ["provider": "openai", "id": "gpt-5.4", "name": self.modelName], "thinkingLevel": "high", "contextUsage": ["tokens": 24000, "contextWindow": 128000, "percent": 18.75],
                  "permissionManagement": ["summary": "工作区写入", "details": "允许在工作区中编辑文件，需要时请求确认。", "tone": "restricted", "settings": []]],
                 ["runtimeId": "preview-pi", "sessionId": "session-2", "sessionName": "梳理项目中的页面结构", "name": "Pi", "cwd": "/Projects/website", "status": "running", "agentKind": "pi"],
                 ["runtimeId": "preview-dsh", "sessionId": "session-3", "sessionName": "检查服务端连接状态", "name": "DeepSeek", "cwd": "/Projects/orbis", "status": "idle", "agentKind": "dsh"]
@@ -87,7 +89,12 @@ private final class PreviewTransport: OrbisTransport {
         receive?(["type": "runtime.event", "runtimeId": runtimeId, "sequence": sequence, "event": event], "msg")
     }
     func send(_ object: [String: Any]) -> Bool {
-        Task { @MainActor in self.reply(object) }
+        Task { @MainActor in
+            if slowSync, (object["command"] as? [String: Any])?["type"] as? String == "session.sync" {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+            self.reply(object)
+        }
         return true
     }
     private func reply(_ object: [String: Any]) {
@@ -117,7 +124,7 @@ private final class PreviewTransport: OrbisTransport {
         } else if object["type"] as? String == "agent.state.request", object["scope"] as? String == "agent" {
             let runtime = object["runtimeId"] as? String ?? "preview-codex", session = object["sessionId"] as? String ?? "session-1"
             let domains = ["execution", "model", "context"].map { name -> [String: Any] in
-                let value: [String: Any] = name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": "GPT-5.4", "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
+                let value: [String: Any] = name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
                 return ["domain": name, "modelEpoch": "preview-model", "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,
                         "source": ["producer": "host", "sourceId": "preview-host", "sourceEpoch": "preview-source", "sourceRevision": 1], "checkedAt": 1793232000000, "value": value]
             }
