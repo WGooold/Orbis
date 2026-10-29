@@ -909,7 +909,7 @@ struct AgentEmblem: View {
         }.accessibilityLabel(agentTitle(kind))
     }
     private var mark: some View {
-        Image(agentAsset(kind)).renderingMode(kind == "pi" || kind == nil ? .original : .template)
+        Image(agentAsset(kind)).renderingMode(kind == "pi" || kind == "claude" || kind == nil ? .original : .template)
             .resizable().scaledToFit().foregroundStyle(OrbisPalette(scheme).agent(kind))
             .frame(width: size * (recessed ? 0.56 : 0.9), height: size * (recessed ? 0.56 : 0.9))
     }

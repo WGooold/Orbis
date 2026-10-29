@@ -74,7 +74,10 @@ internal fun AgentIcon(brand: AgentBrand, modifier: Modifier = Modifier, descrip
         painter = painterResource(brand.icon),
         contentDescription = description,
         modifier = modifier.size(22.dp),
-        tint = if (brand == AgentBrand.Pi) Color.Unspecified else brand.accent(),
+        tint = when (brand) {
+            AgentBrand.Pi, AgentBrand.Claude -> Color.Unspecified
+            else -> brand.accent()
+        },
     )
 }
 

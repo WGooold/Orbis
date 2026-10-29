@@ -7,7 +7,11 @@ Codex mark (Lobe Icons)
 Source: https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/codex.svg
 Copyright (c) 2023 LobeHub
 
-The Pi and Codex marks are distributed under the following MIT License. Their
+Claude mark (Lobe Icons)
+Source: https://github.com/lobehub/lobe-icons/blob/f25f22c0e7295a76077fe417d23deeb56eefdf3e/packages/static-svg/icons/claude-color.svg
+Copyright (c) 2023 LobeHub
+
+The Pi, Codex and Claude marks are distributed under the following MIT License. Their
 product names and marks identify the corresponding third-party agents.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
