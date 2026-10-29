@@ -89,6 +89,7 @@ final class HostConnection: ObservableObject {
     private var activationRequestId: String?
     private var runtimeActions: [String: (runtimeId: String, name: String)] = [:]
     private var actionTimeouts: [String: Task<Void, Never>] = [:]
+    private var feedbackTimeout: Task<Void, Never>?
     private var previewTimeout: Task<Void, Never>?
     private var branchEditorNode: String?
     private var interactionCommands: [String: String] = [:]
@@ -354,7 +355,7 @@ final class HostConnection: ObservableObject {
         pendingActivation = nil; activePath = nil
         interactions = [:]; queuedMessages = [:]; queueCommands = [:]; pendingQueueCancellations = []; interactionCommands = [:]; submittingInteractions = []
         workingBranches = [:]; dismissPreview()
-        actionTimeouts.values.forEach { $0.cancel() }; actionTimeouts = [:]; runtimeActions = [:]; pendingActionIds = []; actionFeedback = nil
+        actionTimeouts.values.forEach { $0.cancel() }; actionTimeouts = [:]; runtimeActions = [:]; pendingActionIds = []; setActionFeedback(nil)
         pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil
         dismissBrowse(); clearActivation()
         clearSyncs()
@@ -925,7 +926,7 @@ final class HostConnection: ObservableObject {
         guard sendCommand(runtimeId: runtimeId, commandId: id, command: command) else {
             errorMessage = "操作未送达，请连接后重试。"; return false
         }
-        runtimeActions[id] = (runtimeId, name); pendingActionIds.insert(id); actionFeedback = nil; updateSyncing()
+        runtimeActions[id] = (runtimeId, name); pendingActionIds.insert(id); setActionFeedback(nil); updateSyncing()
         actionTimeouts[id] = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
             guard let self, self.runtimeActions[id] != nil else { return }
@@ -934,11 +935,22 @@ final class HostConnection: ObservableObject {
         return true
     }
 
+    /// 操作完成提示只是短暂确认，不能长期停在聊天页上；新操作开始或断开时立即清掉。
+    private func setActionFeedback(_ text: String?) {
+        feedbackTimeout?.cancel(); feedbackTimeout = nil
+        actionFeedback = text
+        guard text != nil else { return }
+        feedbackTimeout = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 2_500_000_000) } catch { return }
+            self?.actionFeedback = nil; self?.feedbackTimeout = nil
+        }
+    }
+
     private func finishAction(_ id: String, succeeded: Bool, message: String? = nil, result: [String: Any]? = nil) {
         guard let action = runtimeActions.removeValue(forKey: id) else { return }
         pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel(); updateSyncing()
         if succeeded {
-            actionFeedback = "\(action.name) 已完成"
+            setActionFeedback("\(action.name) 已完成")
             if action.name == "tree", let runtime = runtimes.first(where: { $0.runtimeId == action.runtimeId }) {
                 let editorText = branchEditorNode == nil ? nil : (result?["editorText"] as? String ?? (branchEditorNode == entryPreview?.entryId ? entryPreview?.message?.text : nil))
                 if let sessionId = result?["sessionId"] as? String, sessionId != runtime.sessionId {

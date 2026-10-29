@@ -1791,7 +1791,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         Box(Modifier.fillMaxSize().padding(padding)) {
         Column(Modifier.fillMaxSize()) {
             state.notificationProjections[runtimeId]?.takeIf { it.sessionId == sessionId }?.let { projection ->
-                RuntimeNotifications(projection, state.notificationEpoch) { model.dismissNotification(runtimeId, it) }
+                // 只有 Codex（含桌面版）会上报通知来源；其他运行时没有「待核对」可言，不显示这一行。
+                RuntimeNotifications(projection, state.notificationEpoch, supported = state.runtimes[runtimeId]?.agentKind in setOf("codex", "codexDesktop")) { model.dismissNotification(runtimeId, it) }
             }
             LazyColumn(
                 state = listState,
@@ -3450,12 +3451,12 @@ private fun ErrorBanner(message: String, needsAction: Boolean, onDismiss: () -> 
 private fun WarningCard(text: String) = FeedbackCard(text, isError = true)
 
 @Composable
-internal fun RuntimeNotifications(projection: NoticeProjection, expectedEpoch: String?, onDismiss: (String) -> Unit) {
-    if (projection.items.isEmpty() && projection.complete) return
+internal fun RuntimeNotifications(projection: NoticeProjection, expectedEpoch: String?, supported: Boolean, onDismiss: (String) -> Unit) {
+    if (projection.items.isEmpty() && (!supported || projection.complete)) return
     Column(Modifier.fillMaxWidth().heightIn(max = 192.dp)
         .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (projection.verification == "unknown" || projection.hostEpoch != expectedEpoch) {
+        if (supported && (projection.verification == "unknown" || projection.hostEpoch != expectedEpoch)) {
             Text("通知状态待核对", style = MaterialTheme.typography.labelSmall)
         }
         projection.items.forEach { notice ->

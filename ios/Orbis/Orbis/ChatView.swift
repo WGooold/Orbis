@@ -70,7 +70,7 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            conversation.overlay(alignment: .top) { RuntimeNoticesView(runtimeId: runtime.runtimeId).padding(.horizontal, 16) }
+            conversation.overlay(alignment: .top) { RuntimeNoticesView(runtimeId: runtime.runtimeId, supported: ["codex", "codexDesktop"].contains(runtime.agentKind)).padding(.horizontal, 16) }
             if store.isViewingCachedSession { cachedComposer } else { composer }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent)
             .fileImporter(isPresented: $filePickerOpen, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
@@ -1116,11 +1116,13 @@ struct RuntimeNoticesView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var notifications: RuntimeNotifications
     let runtimeId: String
+    /// 只有 Codex（含桌面版）会上报通知来源；其他运行时没有「待核对」可言，不显示这一行。
+    let supported: Bool
     var body: some View {
-        if let projection = notifications.projections[runtimeId], !projection.items.isEmpty || !projection.complete {
+        if let projection = notifications.projections[runtimeId], !projection.items.isEmpty || (supported && !projection.complete) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                if projection.verification == "unknown" || !projection.complete || store.connection != .secured {
+                if supported && (projection.verification == "unknown" || !projection.complete || store.connection != .secured) {
                     HStack {
                         Text("通知状态待核对").font(.orbisCaption())
                         Spacer()
