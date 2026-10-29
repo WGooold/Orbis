@@ -110,10 +110,19 @@ private struct OrbisSurfaceKey: EnvironmentKey {
     static let defaultValue: OrbisSurfaceContext? = nil
 }
 
+private struct OrbisAccentKey: EnvironmentKey {
+    static let defaultValue: Color? = nil
+}
+
 extension EnvironmentValues {
     var orbisSurface: OrbisSurfaceContext? {
         get { self[OrbisSurfaceKey.self] }
         set { self[OrbisSurfaceKey.self] = newValue }
+    }
+    /// The agent color of the page (a chat); controls default to the app accent outside one.
+    var orbisAccent: Color? {
+        get { self[OrbisAccentKey.self] }
+        set { self[OrbisAccentKey.self] = newValue }
     }
 }
 
@@ -309,6 +318,7 @@ struct NeuIconButtonStyle: ButtonStyle {
 /// Small raised text action (Android `NeumorphTextButton`): replaces bare system-tinted text buttons.
 struct OrbisTextButton: View {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisAccent) private var pageAccent
     let title: String
     var symbol: String? = nil
     var tint: Color? = nil
@@ -327,7 +337,7 @@ struct OrbisTextButton: View {
                 }
                 Text(title).lineLimit(1)
             }.font(.orbisLabel(.semibold))
-                .foregroundStyle(tint ?? OrbisPalette(scheme).accent)
+                .foregroundStyle(tint ?? pageAccent ?? OrbisPalette(scheme).accent)
                 .padding(.horizontal, 14).frame(maxWidth: fill ? .infinity : nil, minHeight: 40)
         }.buttonStyle(NeuButtonStyle(radius: 14))
     }
@@ -813,6 +823,7 @@ private struct OrbisDialogPanel: View {
 
 struct OrbisActionButton: View {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisAccent) private var pageAccent
     let title: String
     var symbol: String? = nil
     var tint: Color? = nil
@@ -823,7 +834,7 @@ struct OrbisActionButton: View {
                 if let symbol { Image(systemName: symbol) }
                 Text(title)
             }.font(.orbisBody(.semibold))
-                .foregroundStyle(tint ?? OrbisPalette(scheme).accent)
+                .foregroundStyle(tint ?? pageAccent ?? OrbisPalette(scheme).accent)
                 .frame(maxWidth: .infinity, minHeight: 52).padding(.horizontal, 12)
         }.buttonStyle(NeuButtonStyle())
     }
@@ -844,11 +855,13 @@ struct OrbisHeader<Leading: View, Title: View, Trailing: View>: View {
 
 struct OrbisPageHeader<Trailing: View>: View {
     let title: String
+    /// Sheets close with ×; pushed pages go back with ←.
+    var closes = false
     let back: () -> Void
     @ViewBuilder var trailing: Trailing
     var body: some View {
         OrbisHeader {
-            OrbisIconButton(symbol: "arrow.left", label: "返回", action: back)
+            OrbisIconButton(symbol: closes ? "xmark" : "arrow.left", label: closes ? "关闭" : "返回", action: back)
         } title: {
             Text(title).font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
         } trailing: { trailing }

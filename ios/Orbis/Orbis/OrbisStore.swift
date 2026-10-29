@@ -170,8 +170,9 @@ final class HostConnection: ObservableObject {
         hostState.didProject = { [weak self] domains in
             guard let self else { return }
             if let backends = domains["backends"], backends.availability == "ready" {
-                self.supportedAgents = backends.value["agents"].array.compactMap(\.string)
-                self.launchableAgents = backends.value["launchableAgents"].array.compactMap(\.string)
+                // A missing list means unknown (no restriction), the same as Android; never "nothing can start".
+                self.supportedAgents = backends.value["agents"].isArray ? backends.value["agents"].array.compactMap(\.string) : nil
+                self.launchableAgents = backends.value["launchableAgents"].isArray ? backends.value["launchableAgents"].array.compactMap(\.string) : nil
                 self.codexDesktop = backends.value["codexDesktop"].decoded(CodexDesktopAttach.self).flatMap { $0.valid ? $0 : nil }
             }
         }

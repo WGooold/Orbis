@@ -235,4 +235,23 @@ struct PresentationTests {
         #expect(desktopAttachTitle("unsupported") == "不可用")
     }
 
+    @Test func sessionListTimeUsesChineseRelativeWordsAndOnlyTagsAForeignProvider() {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 29, hour: 18))!
+        func ms(_ month: Int, _ day: Int, _ year: Int = 2026, hour: Int = 9) -> Int64 {
+            Int64(calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: 5))!.timeIntervalSince1970 * 1000)
+        }
+        #expect(sessionTimeTitle(ms(10, 29), now: now, calendar: calendar) == "今天 09:05")
+        #expect(sessionTimeTitle(ms(10, 28), now: now, calendar: calendar) == "昨天 09:05")
+        #expect(sessionTimeTitle(ms(3, 2), now: now, calendar: calendar) == "3月2日")
+        #expect(sessionTimeTitle(ms(12, 31, 2025), now: now, calendar: calendar) == "2025年12月31日")
+        var codex = session("a"); codex.modelProvider = "team"
+        #expect(sessionOtherProvider(codex, current: "openai") == "team")
+        #expect(sessionOtherProvider(codex, current: "team") == nil)
+        #expect(sessionOtherProvider(codex, current: nil) == nil)
+        #expect(sessionOtherProvider(session("p", kind: "pi"), current: "openai") == nil)
+        #expect(deliveryTitle("steer") == "插入当前任务" && deliveryTitle("followUp") == "完成后发送")
+        #expect(slashSourceTitle("builtin") == nil && slashSourceTitle("extension") == "扩展")
+    }
+
 }

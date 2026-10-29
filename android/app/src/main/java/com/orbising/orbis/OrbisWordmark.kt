@@ -24,8 +24,9 @@ internal fun OrbisWordmark(modifier: Modifier = Modifier) {
         fontWeight = FontWeight.SemiBold,
         letterSpacing = 0.sp,
     )
-    val face = if (dark) Color(0xFFB8C0CE) else Color(0xFFAAB8CB)
-    val darkWall = if (dark) colors.darkShadow.copy(alpha = 0.9f) else Color(0xFF71819A).copy(alpha = 0.9f)
+    // The face carries the contrast (about 6:1 on the base); the walls stay a soft relief around it.
+    val face = if (dark) Color(0xFFD3D9E3) else Color(0xFF4E5F7A)
+    val darkWall = if (dark) colors.darkShadow.copy(alpha = 0.9f) else Color(0xFFA6B2C6).copy(alpha = 0.6f)
     val lightWall = if (dark) Color(0xFF3A3F4A).copy(alpha = 0.92f) else Color.White.copy(alpha = 0.92f)
 
     // Keep one semantic Text node while the two wall layers remain purely visual.

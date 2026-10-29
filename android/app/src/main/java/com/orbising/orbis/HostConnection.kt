@@ -1182,6 +1182,16 @@ internal class HostConnection(
         trackCommand(relay.stop(runtimeId), runtimeId, "停止请求未发送：中继服务器当前离线")
     }
 
+    /** Returns the command id while the withdrawal is pending, or null when it could not be sent. */
+    fun cancelQueuedMessage(queueId: String): String? {
+        val state = mutableState.value
+        val runtimeId = state.selectedRuntimeId ?: return null
+        if (state.conversations[runtimeId]?.queuedMessages?.get(queueId)?.state != "accepted") return null
+        val commandId = relay.cancelQueuedMessage(runtimeId, queueId)
+        trackCommand(commandId, runtimeId, "撤回请求未发送：中继服务器当前离线")
+        return commandId
+    }
+
     /**
      * 下载一个 artifact。
      *

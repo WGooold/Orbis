@@ -214,22 +214,28 @@ private fun MarkdownList(list: ListBlock, listener: LinkInteractionListener) {
     }
 }
 
+/** Copies [text] and shows a check for 2.5 s; copying again restarts the timer (iOS `OrbisCopyButton`). */
 @Composable
-private fun MarkdownCode(code: String, info: String = "") {
+internal fun CopyIconButton(label: String, size: androidx.compose.ui.unit.Dp = 32.dp, text: () -> String) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     var copyGeneration by remember { mutableStateOf(0) }
     LaunchedEffect(copyGeneration) { if (copied) { delay(2_500); copied = false } }
+    NeumorphIconButton(
+        onClick = { clipboard.setText(AnnotatedString(text())); copied = true; copyGeneration++ },
+        icon = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+        contentDescription = if (copied) "已复制" else label,
+        size = size,
+    )
+}
+
+@Composable
+private fun MarkdownCode(code: String, info: String = "") {
     NeumorphSurface(shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed) {
         Column(Modifier.fillMaxWidth()) {
             Row(Modifier.fillMaxWidth().padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(info.substringBefore(' ').ifBlank { "代码" }, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
-                NeumorphIconButton(
-                    onClick = { clipboard.setText(AnnotatedString(code)); copied = true; copyGeneration++ },
-                    icon = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
-                    contentDescription = if (copied) "已复制" else "复制代码",
-                    size = 32.dp,
-                )
+                CopyIconButton("复制代码") { code }
             }
             // Keep scrolling outside selection so selecting text doesn't swallow horizontal drags.
             Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(10.dp)) {

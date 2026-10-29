@@ -92,7 +92,7 @@ final class OrbisUITests: XCTestCase {
     }
     func testToolDetailsLoadPagesAndClose() {
         let app = launch("tool")
-        let disclosure = app.buttons["展开read，完成"]
+        let disclosure = app.buttons["展开read，已完成"]
         XCTAssertTrue(disclosure.waitForExistence(timeout: 8)); disclosure.tap()
         XCTAssertTrue(app.buttons["查看输出"].waitForExistence(timeout: 3)); app.buttons["查看输出"].tap()
         XCTAssertTrue(app.buttons["读取下一页"].waitForExistence(timeout: 5))
@@ -102,7 +102,7 @@ final class OrbisUITests: XCTestCase {
         }
         XCTAssertTrue(app.staticTexts["已到当前读取范围末尾"].waitForExistence(timeout: 5))
         capture("tool-detail", app: app)
-        app.buttons["返回"].firstMatch.tap()
+        app.buttons["关闭"].firstMatch.tap()
         XCTAssertTrue(app.buttons["历史与分支"].waitForExistence(timeout: 3))
     }
 
@@ -249,12 +249,12 @@ final class OrbisUITests: XCTestCase {
         let app = launch("queue")
         let cancel = app.buttons["queue-cancel-preview-queue"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 8)); cancel.tap()
-        XCTAssertTrue(app.staticTexts["Follow-up，已撤回"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["完成后发送，已撤回"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["通知状态待核对"].waitForExistence(timeout: 5))
         capture("queue-notification", app: app)
         app.buttons["关闭通知"].firstMatch.tap()
-        XCTAssertFalse(app.staticTexts["模型服务等待恢复，电脑端会继续核对。 状态待核对"].waitForExistence(timeout: 2))
-        app.buttons["会话信息"].tap()
+        XCTAssertFalse(app.staticTexts["模型服务等待恢复，电脑端会继续核对。"].waitForExistence(timeout: 2))
+        app.buttons["chat-title"].tap()
         XCTAssertTrue(app.staticTexts["模型与上下文"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["high"].exists)
         XCTAssertTrue(app.staticTexts["本轮耗时"].exists)
@@ -263,7 +263,7 @@ final class OrbisUITests: XCTestCase {
 
     func testToolExportAndInteractionDraftSwitching() {
         let tool = launch("tool")
-        XCTAssertTrue(tool.buttons["展开read，完成"].waitForExistence(timeout: 8)); tool.buttons["展开read，完成"].tap()
+        XCTAssertTrue(tool.buttons["展开read，已完成"].waitForExistence(timeout: 8)); tool.buttons["展开read，已完成"].tap()
         tool.buttons["查看输出"].tap()
         XCTAssertTrue(tool.buttons["tool-export"].waitForExistence(timeout: 5)); tool.buttons["tool-export"].tap()
         XCTAssertTrue(tool.buttons["tool-export-share"].waitForExistence(timeout: 8))

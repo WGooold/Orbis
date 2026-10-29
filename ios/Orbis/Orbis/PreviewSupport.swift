@@ -6,7 +6,10 @@ import Foundation
 @MainActor
 func makePreviewStore(screen: String) -> OrbisStore {
     let transport = PreviewTransport(screen: screen)
-    let store = OrbisStore(secure: PreviewStorage(empty: screen == "pairing"), transport: transport, preferences: nil)
+    // `--preview-hosts=2` pairs a second computer, to review how several computers are switched.
+    let twoHosts = ProcessInfo.processInfo.arguments.contains("--preview-hosts=2")
+    let store = OrbisStore(secure: PreviewStorage(empty: screen == "pairing", twoHosts: twoHosts), preferences: nil,
+                           transportFactory: { pairing in pairing.hostId == "preview-host" ? transport : PreviewTransport(screen: screen, variant: 1) })
     if screen == "slash" || screen == "approval" || screen == "interactions" {
         Task { @MainActor in
             for _ in 0..<10 where store.selectedRuntime == nil { await Task.yield() }
@@ -26,9 +29,13 @@ func makePreviewStore(screen: String) -> OrbisStore {
 
 private final class PreviewStorage: SecureStorage {
     var hosts: [HostPairing]
-    init(empty: Bool) {
+    init(empty: Bool, twoHosts: Bool = false) {
         hosts = empty ? [] : [HostPairing(hostId: "preview-host", hostName: "工作电脑", hostPub: Base64URL.encode(Data(repeating: 2, count: 32)),
             pskRoot: Base64URL.encode(Data(repeating: 1, count: 32)), relay: RelayCredential(relayUrl: "wss://relay.example", deviceId: "preview-device", credential: "preview-only"), lan: [])]
+        if twoHosts && !empty {
+            hosts.append(HostPairing(hostId: "preview-host-2", hostName: "家里的电脑", hostPub: Base64URL.encode(Data(repeating: 4, count: 32)),
+                pskRoot: Base64URL.encode(Data(repeating: 3, count: 32)), relay: RelayCredential(relayUrl: "wss://relay.example", deviceId: "preview-device-2", credential: "preview-only"), lan: []))
+        }
     }
     func deviceIdentity() throws -> DeviceIdentity { .generate() }
     func savePairings(_ pairings: [HostPairing]) throws { hosts = pairings }
@@ -38,7 +45,9 @@ private final class PreviewStorage: SecureStorage {
 @MainActor
 private final class PreviewTransport: OrbisTransport {
     let screen: String
-    init(screen: String) { self.screen = screen }
+    /// 0 is the main fixture computer; 1 is a second computer with its own sessions.
+    let variant: Int
+    init(screen: String, variant: Int = 0) { self.screen = screen; self.variant = variant }
     var receive: (([String: Any], String?) -> Void)?
     var sequence = 0
     private var providerRevision = 1
@@ -51,6 +60,13 @@ private final class PreviewTransport: OrbisTransport {
         self.receive = receive
         state(.secured, nil)
         Task { @MainActor in
+            if self.variant == 1 {
+                receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model-2", "notificationEpoch": "preview-notices-2", "runtimes": [
+                    ["runtimeId": "home-pi", "sessionId": "home-session-1", "sessionName": "整理家庭照片脚本", "name": "Pi", "cwd": "/Users/home/scripts", "status": "idle", "agentKind": "pi"]
+                ], "agents": ["pi"], "launchableAgents": ["pi"]], "ctl")
+                receive(["type": "device.path", "path": "lan", "rttMs": 8], "ctl")
+                return
+            }
             receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": [
                 ["runtimeId": "preview-codex", "sessionId": "session-1", "sessionName": "对齐移动端的使用体验", "name": "Codex", "cwd": "/Projects/orbis", "status": "idle", "agentKind": "codex",
                  "model": ["provider": "openai", "id": "gpt-5.4", "name": "GPT-5.4"], "thinkingLevel": "high", "contextUsage": ["tokens": 24000, "contextWindow": 128000, "percent": 18.75],
@@ -75,6 +91,14 @@ private final class PreviewTransport: OrbisTransport {
         return true
     }
     private func reply(_ object: [String: Any]) {
+        if variant == 1 {
+            if object["type"] as? String == "session.list" {
+                receive?(["type": "session.list.result", "requestId": object["requestId"]!, "sessions": [
+                    ["sessionId": "home-session-1", "name": "整理家庭照片脚本", "cwd": "/Users/home/scripts", "createdAt": 1793145600000,
+                     "modifiedAt": 1793232000000, "messageCount": 4, "agentKind": "pi", "archived": false]], "currentProviders": []], "ctl")
+            }
+            return
+        }
         if object["type"] as? String == "session.list" {
             let names = ["对齐移动端的使用体验", "梳理项目中的页面结构", "检查服务端连接状态", "优化聊天滚动与输入体验", "整理测试结果", "添加扫码配对", "检查深色模式"]
             let sessions: [[String: Any]] = (1...7).map { index -> [String: Any] in
@@ -198,6 +222,7 @@ private final class PreviewTransport: OrbisTransport {
         case "catalog": return ["totalSessions": 7, "truncated": false, "nextCursor": NSNull(),
                                 "backends": ["pi", "codex", "dsh"].map { ["kind": $0, "ready": true, "complete": true] }]
         case "backends": return ["backends": ["pi", "codex", "dsh"].map { ["kind": $0, "ready": true] },
+                                 "agents": ["pi", "codex", "dsh"], "launchableAgents": ["pi", "codex", "dsh"],
                                  "codexDesktop": ["state": "closed", "reason": "Codex 桌面版未打开"]]
         case "management": return ["lifecycle": "running", "platform": "darwin", "nodeVersion": "v24"]
         default: return [:]

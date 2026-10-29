@@ -32,14 +32,14 @@ class NotificationsInstrumentedTest {
         val sandbox = notice("sandbox", "沙箱需要配置")
         val state = mutableStateOf(receive(initial(), 1, listOf(retry, sandbox)))
         val dismissed = mutableListOf<String>()
-        compose.setContent { OrbisTheme { RuntimeNotifications(state.value.notificationProjections.getValue("runtime"), "host", dismissed::add) } }
+        compose.setContent { OrbisTheme { RuntimeNotifications(state.value.notificationProjections.getValue("runtime"), "host", supported = true, onRecheck = null, onDismiss = dismissed::add) } }
         compose.onNodeWithText("Reconnecting...").assertIsDisplayed()
         compose.onNodeWithText("沙箱需要配置").assertIsDisplayed()
         // Revision 2 was lost. A later full inventory repairs the missing clear.
         compose.runOnIdle { state.value = receive(state.value, 3, listOf(sandbox)) }
         compose.onNodeWithText("Reconnecting...").assertDoesNotExist()
         compose.onNodeWithText("沙箱需要配置").assertIsDisplayed()
-        compose.onNodeWithText("关闭").performClick()
+        compose.onNodeWithContentDescription("关闭通知").performClick()
         compose.runOnIdle { assertEquals(listOf("sandbox"), dismissed) }
         compose.onNodeWithText("沙箱需要配置").assertIsDisplayed() // A click does not fabricate source recovery.
         val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
@@ -49,7 +49,7 @@ class NotificationsInstrumentedTest {
     @Test fun incompleteEmptyInventoryKeepsTheLastConditionAndShowsUnknown() {
         val retry = notice("retry", "Reconnecting...")
         val state = mutableStateOf(receive(initial(), 1, listOf(retry)))
-        compose.setContent { OrbisTheme { RuntimeNotifications(state.value.notificationProjections.getValue("runtime"), "host") {} } }
+        compose.setContent { OrbisTheme { RuntimeNotifications(state.value.notificationProjections.getValue("runtime"), "host", supported = true, onRecheck = null) {} } }
         compose.runOnIdle { state.value = receive(state.value, 2, emptyList(), complete = false) }
         compose.onNodeWithText("Reconnecting...").assertIsDisplayed()
         compose.onNodeWithText("通知状态待核对").assertIsDisplayed()

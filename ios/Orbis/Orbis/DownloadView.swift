@@ -103,7 +103,7 @@ private struct DownloadBrowserView: View {
     @State private var selected: BrowseEntry?
     var body: some View {
         VStack(spacing: 16) {
-            OrbisPageHeader(title: "浏览电脑文件", back: onDismiss) { EmptyView() }
+            OrbisPageHeader(title: "浏览电脑文件", closes: true, back: onDismiss) { EmptyView() }
             ScrollView {
                 VStack(spacing: 14) {
                     HStack {

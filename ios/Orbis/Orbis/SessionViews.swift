@@ -79,10 +79,8 @@ struct SessionDrawerView: View {
                     }
                 }
                 Spacer(minLength: 4)
-                HStack(spacing: 8) {
-                    Text("\(directories.count) 个目录")
-                    Text("\(directories.reduce(0) { $0 + $1.sessions.count }) 个会话")
-                }.font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).fixedSize()
+                Text("\(directories.count) 个目录，\(directories.reduce(0) { $0 + $1.sessions.count }) 个会话")
+                    .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).fixedSize()
             }.frame(minHeight: 28)
             ScrollView {
                 LazyVStack(spacing: 14) {
@@ -225,9 +223,15 @@ struct SessionDrawerView: View {
                         HStack(spacing: 8) {
                             if let runtime { RuntimeStatusLabel(status: runtime.status) }
                             else { Text("缓存历史").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
-                            Text(Date(timeIntervalSince1970: Double(session.modifiedAt) / 1000), style: .date)
+                            Text(sessionTimeTitle(session.modifiedAt))
                                 .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                        }
+                            if session.agentKind == "codexDesktop" {
+                                Text("桌面版").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).agent(session.agentKind))
+                            }
+                            if let provider = sessionOtherProvider(session, current: store.currentProvider(for: session.agentKind ?? "")) {
+                                Text(provider).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).warning)
+                            }
+                        }.lineLimit(1)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.padding(12).contentShape(Rectangle())
             }.buttonStyle(.plain)
@@ -243,17 +247,6 @@ struct SessionDrawerView: View {
         }.neuSurface(inset: store.selectedRuntime?.sessionId == session.sessionId, radius: 16, intensity: 0.45)
     }
 
-    private func hostMenuItems() -> [OrbisMenuItem] {
-        var items: [OrbisMenuItem] = store.pairings.map { host in
-            OrbisMenuItem(title: host.hostName + (store.hosts.first(where: { $0.hostId == host.hostId }).map { "，" + connectionTitle($0.connectionState) } ?? ""), symbol: "desktopcomputer", checked: host.hostId == store.selectedHostId) {
-                if host.hostId != store.selectedHostId { store.connect(hostId: host.hostId) }
-            }
-        }
-        items.append(.divider)
-        items.append(OrbisMenuItem(title: "添加电脑", symbol: "plus", action: onAddHost))
-        return items
-    }
-
     private func showMismatch(_ problem: String) {
         overlay.showDialog("需要切换 provider", message: problem, actions: [
             OrbisDialogAction(title: "取消", role: .cancel),
@@ -263,7 +256,7 @@ struct SessionDrawerView: View {
 
     private var hostSelector: some View {
         HStack(spacing: 10) {
-            OrbisMenuButton(accessibilityLabel: "切换电脑，当前 \(store.selectedHost?.hostName ?? "未选择")", items: hostMenuItems) {
+            OrbisMenuButton(accessibilityLabel: "切换电脑，当前 \(store.selectedHost?.hostName ?? "未选择")", items: { hostSwitchMenuItems(store, onAddHost: onAddHost) }) {
                 HStack(spacing: 10) {
                     Image(systemName: "desktopcomputer").foregroundStyle(OrbisPalette(scheme).accent)
                     VStack(alignment: .leading, spacing: 3) {
@@ -309,10 +302,12 @@ struct NewSessionView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            OrbisPageHeader(title: "新建会话", back: onDismiss) { EmptyView() }
+            OrbisPageHeader(title: "新建会话", closes: true, back: onDismiss) {
+                Label(store.selectedHost?.hostName ?? "电脑", systemImage: "desktopcomputer").font(.orbisCaption())
+                    .foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Text("在\(store.selectedHost?.hostName ?? "电脑")上新建会话").font(.orbisBody(.semibold))
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                         ForEach(["pi", "codex", "codexDesktop", "dsh", "claude"], id: \.self) { agent in
                             Button { kind = agent } label: {
@@ -398,7 +393,7 @@ struct SessionAliasView: View {
     @FocusState private var focused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            OrbisPageHeader(title: "会话别名", back: { dismiss() }) { EmptyView() }
+            OrbisPageHeader(title: "会话别名", closes: true, back: { dismiss() }) { EmptyView() }
             VStack(alignment: .leading, spacing: 18) {
                 TextField("会话别名", text: $alias, axis: .vertical)
                     .font(.orbisBody()).lineLimit(1...3).focused($focused).orbisInput(focused: focused).accessibilityLabel("会话别名")

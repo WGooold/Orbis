@@ -126,3 +126,21 @@ class SessionCatalogStore internal constructor(
         }
     }
 }
+
+/** Session list time in the app's own language: 今天 / 昨天 with a clock time, then a date (same rules as iOS). */
+internal fun sessionTimeText(
+    millis: Long,
+    now: Long = System.currentTimeMillis(),
+    zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+): String {
+    val time = java.time.Instant.ofEpochMilli(millis).atZone(zone)
+    val today = java.time.Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+    val day = time.toLocalDate()
+    val pattern = when {
+        day == today -> "今天 HH:mm"
+        day == today.minusDays(1) -> "昨天 HH:mm"
+        day.year == today.year -> "M月d日"
+        else -> "yyyy年M月d日"
+    }
+    return java.time.format.DateTimeFormatter.ofPattern(pattern, java.util.Locale.SIMPLIFIED_CHINESE).format(time)
+}

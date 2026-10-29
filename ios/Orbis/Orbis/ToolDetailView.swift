@@ -9,7 +9,7 @@ struct ToolDetailView: View {
     let title: String
     var body: some View {
         VStack(spacing: 16) {
-            OrbisPageHeader(title: title, back: { dismiss() }) {
+            OrbisPageHeader(title: title, closes: true, back: { dismiss() }) {
                 OrbisCopyButton(label: "复制已读取内容", size: 40) { reader.text }.disabled(reader.text.isEmpty)
             }
             HStack {
