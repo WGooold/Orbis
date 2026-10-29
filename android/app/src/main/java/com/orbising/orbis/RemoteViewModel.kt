@@ -325,8 +325,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun activateSession(sessionId: String) = active()?.activateSession(sessionId)
 
-    fun createSession(agentKind: String, cwd: String, expectedHostId: String?) =
-        active()?.createSession(agentKind, cwd, expectedHostId)
+    fun createSession(agentKind: String, cwd: String, expectedHostId: String?): Boolean =
+        active()?.createSession(agentKind, cwd, expectedHostId) == true
 
     fun loadAgentProviders(kind: String) = active()?.loadAgentProviders(kind)
 
@@ -390,7 +390,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun consumeCommandResult(commandId: String) = active()?.consumeCommandResult(commandId)
 
-    fun stopRuntime() = active()?.stopRuntime()
+    fun stopRuntime(): String? = active()?.stopRuntime()
     fun cancelQueuedMessage(queueId: String): String? = active()?.cancelQueuedMessage(queueId)
     fun openToolDetail(runtimeId: String, summary: ToolSummary,
         part: String = summary.contents.firstOrNull { it.availability != "absent" }?.part ?: "arguments",
@@ -417,16 +417,16 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun retryDownload(taskId: String) = active()?.retryDownload(taskId)
 
-    fun respondConfirm(request: PendingInteraction, approved: Boolean) =
-        active()?.respondConfirm(request, approved)
+    fun respondConfirm(request: PendingInteraction, approved: Boolean): Boolean =
+        active()?.respondConfirm(request, approved) == true
 
-    fun respondValue(request: PendingInteraction, value: String) = active()?.respondValue(request, value)
+    fun respondValue(request: PendingInteraction, value: String): Boolean = active()?.respondValue(request, value) == true
 
-    fun respondValues(request: PendingInteraction, values: List<String>) =
-        active()?.respondValues(request, values)
+    fun respondValues(request: PendingInteraction, values: List<String>): Boolean =
+        active()?.respondValues(request, values) == true
 
-    fun respondQuestionnaire(request: PendingInteraction, answers: List<QuestionnaireAnswer>?) =
-        active()?.respondQuestionnaire(request, answers)
+    fun respondQuestionnaire(request: PendingInteraction, answers: List<QuestionnaireAnswer>?): Boolean =
+        active()?.respondQuestionnaire(request, answers) == true
 
     fun cancelInteraction(request: PendingInteraction) = active()?.cancelInteraction(request)
 

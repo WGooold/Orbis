@@ -349,7 +349,9 @@ struct ChatView: View {
                     .padding(.horizontal, 14).padding(.vertical, 15).frame(minHeight: 56)
                     .orbisField(focused: composerFocused)
                 if runtime.status == "running" && draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty {
-                    OrbisIconButton(symbol: "stop.fill", label: "停止生成", tint: p.error, action: store.stopRuntime).disabled(!store.canSend)
+                    OrbisIconButton(symbol: "stop.fill", label: "停止生成", tint: p.error) {
+                        if store.stopRuntime() { OrbisHaptics.commit() }
+                    }.disabled(!store.canSend)
                 } else {
                     OrbisIconButton(symbol: "arrow.up", label: "发送消息", tint: accent) {
                         if runtime.status == "running" && !slash && claudeComposer { submit(delivery: "followUp") }
@@ -384,7 +386,10 @@ struct ChatView: View {
         let accepted: Bool
         if slash, let command { accepted = store.executeSlash(command.name, args: commandArguments(command)) }
         else { accepted = store.sendMessage(draft.wrappedValue.isEmpty ? "请查看附件。" : draft.wrappedValue, delivery: delivery, attachmentIds: Set(attachments.map(\.id))) }
-        if accepted { transfers.detach(Set(attachments.map(\.id))); draft.wrappedValue = ""; selectedCommand = nil; deliveryChoices = false }
+        if accepted {
+            OrbisHaptics.commit()
+            transfers.detach(Set(attachments.map(\.id))); draft.wrappedValue = ""; selectedCommand = nil; deliveryChoices = false
+        }
     }
 }
 

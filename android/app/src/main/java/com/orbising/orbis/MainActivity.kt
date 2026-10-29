@@ -249,6 +249,7 @@ private fun RemoteApp(
     pairingInProgress: Boolean,
     model: RemoteViewModel,
 ) {
+    val actionHaptic = rememberActionHaptic()
     val modelLifecycle = LocalLifecycleOwner.current
     LaunchedEffect(model, modelLifecycle) {
         modelLifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -397,7 +398,7 @@ private fun RemoteApp(
                 newSessionOpen = false
                 newSessionCwd = null
                 model.dismissBrowse()
-                model.createSession(agentKind, cwd, newSessionHostId)
+                if (model.createSession(agentKind, cwd, newSessionHostId) == true) actionHaptic()
             },
         )
     }
@@ -1084,6 +1085,7 @@ private fun OfflineHistoryScreen(
 @Composable
 internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState: LazyListState? = null) {
     val runtimeId = state.selectedRuntimeId ?: return
+    val actionHaptic = rememberActionHaptic()
     val runtime = state.runtimes[runtimeId]
     val sessionId = runtime?.sessionId
     val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
@@ -1213,6 +1215,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             historyActionError = "跳转未送达：当前会话没有提供 /tree 命令"
             return
         }
+        actionHaptic()
         historyAction = action
         historyActionCommandId = commandId
     }
@@ -1259,6 +1262,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
     fun trackSubmission(commandId: String?, clearInputAfterSubmit: Boolean = false) {
         if (commandId == null) return
+        actionHaptic()
         val submittedText = input
         commandFeedback = null
         pendingMessageCommandId = commandId
@@ -1725,7 +1729,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                 when (composerMode) {
                                     ComposerAction.Abort -> {
                                         showDeliveryChoices = false
-                                        model.stopRuntime()
+                                        if (model.stopRuntime() != null) actionHaptic()
                                     }
 
                                     ComposerAction.Send -> {
@@ -1896,8 +1900,18 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                     InteractionWorkspace(
                         requests = conversation.interactions.values.toList(), connected = state.e2eReady && runtime != null,
                         pendingCommands = state.pendingCommands.keys, error = null,
-                        respondConfirm = model::respondConfirm, respondValue = model::respondValue,
-                        respondValues = model::respondValues, respondQuestionnaire = model::respondQuestionnaire,
+                        respondConfirm = { request, approved ->
+                            if (model.respondConfirm(request, approved) == true) actionHaptic()
+                        },
+                        respondValue = { request, value ->
+                            if (model.respondValue(request, value) == true) actionHaptic()
+                        },
+                        respondValues = { request, values ->
+                            if (model.respondValues(request, values) == true) actionHaptic()
+                        },
+                        respondQuestionnaire = { request, answers ->
+                            if (model.respondQuestionnaire(request, answers) == true && answers != null) actionHaptic()
+                        },
                         onCancel = model::cancelInteraction,
                     )
                 }

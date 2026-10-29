@@ -231,7 +231,7 @@ final class OrbisStore: ObservableObject {
     func updatePermission(settingId: String, value: String) { activeConnection.updatePermission(settingId: settingId, value: value) }
     func sendMessage(_ text: String, delivery: String? = nil, attachmentIds: Set<String> = []) -> Bool { activeConnection.sendMessage(text, delivery: delivery, attachmentIds: attachmentIds) }
     func cancelQueuedMessage(_ queueId: String) -> Bool { activeConnection.cancelQueuedMessage(queueId) }
-    func stopRuntime() { activeConnection.stopRuntime() }
+    @discardableResult func stopRuntime() -> Bool { activeConnection.stopRuntime() }
     func setPathPreference(_ order: [String]) {
         preferences?.set(normalizedPathPreference(order), forKey: "orbis.pathPreference")
         emptyConnection.setPathPreference(order)

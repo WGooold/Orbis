@@ -331,7 +331,7 @@ struct NewSessionView: View {
             OrbisActionButton(title: "在这里新建 \(agentTitle(kind)) 会话", symbol: "plus", tint: OrbisPalette(scheme).agent(kind)) {
                 if let cwd = presetCwd ?? store.browse?.path {
                     store.createSession(agentKind: kind, cwd: cwd)
-                    if store.activatingSessionId != nil { onDismiss() }
+                    if store.activatingSessionId != nil { OrbisHaptics.commit(); onDismiss() }
                 }
             }.disabled(!canCreate).padding(.horizontal, 24).padding(.bottom, 24)
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())

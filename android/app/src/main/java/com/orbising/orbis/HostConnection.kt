@@ -520,22 +520,22 @@ internal class HostConnection(
     }
 
     /** L2：在指定目录新建会话（agentKind = pi | codex）。 */
-    fun createSession(agentKind: String, cwd: String, expectedHostId: String?) {
+    fun createSession(agentKind: String, cwd: String, expectedHostId: String?): Boolean {
         if (!mutableState.value.canCreateSessionOn(expectedHostId)) {
             updateState { it.copy(error = "目标电脑已变更、未连接或正在创建会话，请返回目录重试") }
-            return
+            return false
         }
-        activateTarget(buildJsonObject {
+        return activateTarget(buildJsonObject {
             put("type", "new")
             put("agentKind", agentKind)
             put("cwd", cwd)
         })
     }
 
-    private fun activateTarget(target: JsonObject) {
+    private fun activateTarget(target: JsonObject): Boolean {
         restoreSettled = true
         val requestId = UUID.randomUUID().toString()
-        sendSessionPayload(
+        return sendSessionPayload(
             requestId = requestId,
             payload = buildJsonObject {
                 put("type", "session.activate")
@@ -611,17 +611,19 @@ internal class HostConnection(
         payload: JsonObject,
         register: (RemoteState) -> RemoteState,
         rollback: (RemoteState) -> RemoteState,
-    ) {
+    ): Boolean {
         val current = mutableState.value
         if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank()) {
             updateState { it.copy(error = "尚未连接到电脑，连接建立后才能操作会话") }
-            return
+            return false
         }
         // 先登记再发送：响应走独立协程回来，登记必须先于 reducer 可能看到响应。
         updateState(register)
         if (!relay.sendDeviceMessage(payload)) {
             updateState { rollback(it).copy(error = "当前连接没有端到端加密通道，会话操作未发送") }
+            return false
         }
+        return true
     }
 
     /**
@@ -1177,9 +1179,11 @@ internal class HostConnection(
         updateState { it.copy(commandResults = it.commandResults - commandId) }
     }
 
-    fun stopRuntime() {
-        val runtimeId = mutableState.value.selectedRuntimeId ?: return
-        trackCommand(relay.stop(runtimeId), runtimeId, "停止请求未发送：中继服务器当前离线")
+    fun stopRuntime(): String? {
+        val runtimeId = mutableState.value.selectedRuntimeId ?: return null
+        val commandId = relay.stop(runtimeId)
+        trackCommand(commandId, runtimeId, "停止请求未发送：中继服务器当前离线")
+        return commandId
     }
 
     /** Returns the command id while the withdrawal is pending, or null when it could not be sent. */
@@ -1466,26 +1470,26 @@ internal class HostConnection(
         ) }
     }
 
-    fun respondConfirm(request: PendingInteraction, approved: Boolean) {
-        respond(request) { runtimeId ->
+    fun respondConfirm(request: PendingInteraction, approved: Boolean): Boolean {
+        return respond(request) { runtimeId ->
             relay.respond(runtimeId, request, "confirm", booleanValue = approved)
         }
     }
 
-    fun respondValue(request: PendingInteraction, value: String) {
-        respond(request) { runtimeId ->
+    fun respondValue(request: PendingInteraction, value: String): Boolean {
+        return respond(request) { runtimeId ->
             relay.respond(runtimeId, request, request.kind, stringValue = value)
         }
     }
 
-    fun respondValues(request: PendingInteraction, values: List<String>) {
-        respond(request) { runtimeId ->
+    fun respondValues(request: PendingInteraction, values: List<String>): Boolean {
+        return respond(request) { runtimeId ->
             relay.respond(runtimeId, request, "multi-select", stringValues = values)
         }
     }
 
-    fun respondQuestionnaire(request: PendingInteraction, answers: List<QuestionnaireAnswer>?) {
-        respond(request) { runtimeId -> relay.respondQuestionnaire(runtimeId, request, answers) }
+    fun respondQuestionnaire(request: PendingInteraction, answers: List<QuestionnaireAnswer>?): Boolean {
+        return respond(request) { runtimeId -> relay.respondQuestionnaire(runtimeId, request, answers) }
     }
 
     fun cancelInteraction(request: PendingInteraction) {
@@ -1553,16 +1557,16 @@ internal class HostConnection(
         )
     }
 
-    private fun respond(request: PendingInteraction, send: (String) -> String?) {
-        val runtimeId = mutableState.value.selectedRuntimeId ?: return
+    private fun respond(request: PendingInteraction, send: (String) -> String?): Boolean {
+        val runtimeId = mutableState.value.selectedRuntimeId ?: return false
         val current = mutableState.value
-        val conversation = current.conversations[runtimeId] ?: return
-        val pending = conversation.interactions[request.requestId] ?: return
+        val conversation = current.conversations[runtimeId] ?: return false
+        val pending = conversation.interactions[request.requestId] ?: return false
         if (current.runtimes[runtimeId]?.domainAvailability?.get("interactions") != "ready") {
             refreshAgentModel(runtimeId, force = true)
-            return
+            return false
         }
-        if (!current.e2eReady || pending.submitted || isInteractionExpired(pending, System.currentTimeMillis()) || pending.responseCommandId in current.pendingCommands) return
+        if (!current.e2eReady || pending.submitted || isInteractionExpired(pending, System.currentTimeMillis()) || pending.responseCommandId in current.pendingCommands) return false
         val commandId = send(runtimeId)
         trackCommand(commandId, runtimeId, "交互响应未发送：当前离线，请连接后重试")
         if (commandId != null) {
@@ -1574,6 +1578,7 @@ internal class HostConnection(
                 )))
             }
         }
+        return commandId != null
     }
 
     private fun trackCommand(commandId: String?, runtimeId: String, offlineError: String) {

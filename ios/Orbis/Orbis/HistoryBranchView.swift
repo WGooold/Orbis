@@ -113,6 +113,7 @@ struct HistoryBranchView: View {
                 OrbisActionButton(title: actionPending ? "正在切换分支…" : option.tree?.role == "user" ? "编辑这条消息并重新开始" : "从这条回复后继续",
                                   symbol: "arrow.turn.down.right") {
                     actionPending = store.moveHistory(to: option)
+                    if actionPending { OrbisHaptics.commit() }
                 }.disabled(actionPending || !store.canSend || !store.pendingActionIds.isEmpty || store.entryPreview?.loading == true)
             }
         }.neuSurface(radius: OrbisRadius.card, padding: 12).padding(.horizontal, 20).padding(.bottom, 12)

@@ -1015,9 +1015,13 @@ final class HostConnection: ObservableObject {
         return true
     }
 
-    func stopRuntime() {
-        guard let runtime = selectedRuntime else { return }
-        if !sendCommand(runtimeId: runtime.runtimeId, command: ["type": "stop"]) { errorMessage = "端到端加密连接尚未就绪。" }
+    @discardableResult
+    func stopRuntime() -> Bool {
+        guard let runtime = selectedRuntime else { return false }
+        guard sendCommand(runtimeId: runtime.runtimeId, command: ["type": "stop"]) else {
+            errorMessage = "端到端加密连接尚未就绪。"; return false
+        }
+        return true
     }
 
     private func sendCommand(runtimeId: String, commandId: String = UUID().uuidString, command: [String: Any]) -> Bool {

@@ -271,6 +271,17 @@ struct OrbisCollapse<Content: View>: View {
 
 // MARK: - Controls
 
+/// Reserved for deliberate submissions, rather than every button press.
+@MainActor
+enum OrbisHaptics {
+    private static let impact = UIImpactFeedbackGenerator(style: .light)
+
+    static func commit() {
+        impact.impactOccurred(intensity: 0.65)
+        impact.prepare()
+    }
+}
+
 struct NeuButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     let selected: Bool

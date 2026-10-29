@@ -121,7 +121,8 @@ private struct InteractionRequestView: View {
                         }.frame(maxHeight: inSheet ? .infinity : 220).scrollBounceBehavior(.basedOnSize)
                         HStack(spacing: 12) {
                             OrbisActionButton(title: request.cancelLabel ?? (request.kind == "confirm" ? "拒绝" : "取消")) {
-                                _ = store.respond(request, response: request.kind == "confirm" ? ["kind": "confirm", "value": false] : ["kind": "cancel"])
+                                let accepted = store.respond(request, response: request.kind == "confirm" ? ["kind": "confirm", "value": false] : ["kind": "cancel"])
+                                if accepted && request.kind == "confirm" { OrbisHaptics.commit() }
                             }
                             OrbisActionButton(title: request.confirmLabel ?? (request.kind == "confirm" ? "允许" : "提交"), symbol: "checkmark") { submit() }.disabled(!valid)
                         }.disabled(pending || expired || store.connection != .secured)
@@ -216,6 +217,6 @@ private struct InteractionRequestView: View {
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
     private func submit() {
-        _ = store.respond(request, response: draftValue.response(for: request))
+        if store.respond(request, response: draftValue.response(for: request)) { OrbisHaptics.commit() }
     }
 }
