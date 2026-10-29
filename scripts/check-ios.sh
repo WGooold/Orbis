@@ -30,4 +30,6 @@ else
     -destination 'generic/platform=iOS Simulator' \
     -derivedDataPath "$repo_root/ios/Orbis/build/DerivedData" \
     CODE_SIGN_IDENTITY=- build
+  python3 "$repo_root/scripts/check-ios-bundle.py" \
+    "$repo_root/ios/Orbis/build/DerivedData/Build/Products/Debug-iphonesimulator/Orbis.app"
 fi

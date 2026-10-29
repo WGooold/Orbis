@@ -51,6 +51,8 @@ swift test --package-path ios/Orbis --disable-xctest
 
 安装 Node.js 后，`check-ios.sh` 还会运行独立本地 WebSocket 夹具，验证真实 HTTP 配对、加密长消息双向分片、探针回声、Host 重启、Relay / LAN 回退及双 Host 并存。也可通过 `ORBIS_TEST_NODE=/absolute/path/to/node` 指定可执行文件；未找到 Node 时仅跳过这一项网络测试，CI 已配置 Node。
 
+构建后脚本还会检查 App 的动态库依赖能否通过包内运行时路径解析，防止 WebRTC 已链接、已嵌入但普通启动仍找不到库。可对真机或模拟器产物单独运行 `python3 scripts/check-ios-bundle.py /absolute/path/to/Orbis.app`；这项检查不使用 Xcode / UI 测试器注入的动态库路径。
+
 ## 原生 P2P 互通测试
 
 普通 Swift 核心测试不下载或链接 WebRTC，使用可控 peer 验证 ICE 回调顺序、独立握手、重放防护、优先级、超时和断线宽限。原生互通测试还会启动本地 `node-datachannel` Host，验证真实 WebRTC 传输、加密文本与二进制分片、Relay 回退，以及两台 Host 的 peer 共存；不会连接生产 Relay 或读取真实配对。

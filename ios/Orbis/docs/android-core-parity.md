@@ -37,6 +37,8 @@
 
 专用 Orbis Core Parity 模拟器完整 UI 回归 13/13 通过（含浅深色截图）。已实际检查交互输入、普通/敏感草稿、队列撤回、通知关闭、工具导出保留正文、截断全文和 Desktop 原因；页面截图经过检查。结果包：`.scratch/ui-parity-complete-verified.xcresult`。
 
+2026-10-29 补充普通启动验证：修复 Debug / Release 缺少 `@executable_path/Frameworks` 导致 WebRTC 无法加载的问题。旧产物在脱离测试器直接启动时重现 DYLD 崩溃；修复后同一专用模拟器直接启动并显示界面，iPhoneOS Debug / Release 无签名构建及运行时依赖检查均通过。`check-ios.sh` 现包含包内动态库依赖检查，可检出旧产物；此前 UI 测试器提供的库搜索路径不能代替普通启动验证。
+
 ## 平台边界与现场验收
 
 - iOS 后台执行、系统通知和权限遵循系统生命周期；没有新增 APNs 或假设 Android 前台服务在 iOS 可直接复用。
