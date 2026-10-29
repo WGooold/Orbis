@@ -12,6 +12,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HistoryTreeTest {
+    @Test
+    fun `message rewind uses advertised canonical targets rather than display ids`() {
+        val user = ChatMessage("visible-user", "user", emptyList(), 0)
+        val graph = SessionGraph("session", display = mapOf(
+            "entry-user" to DisplayEntry("entry-user", entryId = "entry-user", kind = "message", message = user),
+        ))
+        val target = option("entry-user", active = true)
+        val command = RuntimeSlashCommand("tree", source = "builtin", argument = RuntimeSlashCommandArgument(
+            "tree", true, options = listOf(target, option("reply", role = "assistant", active = true), option("other-branch")),
+        ))
+        assertEquals(mapOf("visible-user" to target), userMessageRewindOptions(listOf(command), graph))
+        assertTrue(userMessageRewindOptions(emptyList(), graph).isEmpty())
+        assertTrue(userMessageRewindOptions(listOf(command.copy(argument = command.argument?.copy(kind = "select"))), graph).isEmpty())
+        assertEquals(mapOf("entry-user" to target), userMessageRewindOptions(listOf(command), null))
+    }
+
     private fun option(
         id: String,
         parent: String? = null,

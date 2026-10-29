@@ -160,6 +160,7 @@ struct ChatView: View {
     private var conversation: some View {
         let kind = self.kind
         let transcript = store.chatTranscript
+        let rewindOptions = store.userMessageRewindOptions(for: runtime)
         return ScrollViewReader { proxy in
             GeometryReader { viewport in
                 ScrollView {
@@ -171,7 +172,14 @@ struct ChatView: View {
                         }
                         ForEach(transcript.rows) { row in
                             ChatMessageRow(row: row, kind: kind, toolResults: transcript.toolResultsByRow[row.id] ?? [:],
-                                           timings: transcript.timingsByRow[row.id] ?? []).equatable().id(row.id)
+                                           timings: transcript.timingsByRow[row.id] ?? [],
+                                           rewindOption: row.isUser ? rewindOptions[row.id] : nil,
+                                           rewindEnabled: store.canSend && runtime.status == "idle" && store.pendingActionIds.isEmpty) { option in
+                                if store.moveHistory(to: option, fallbackText: row.messages.first?.text) {
+                                    composerFocused = false
+                                    OrbisHaptics.commit()
+                                }
+                            }.equatable().id(row.id)
                                 .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: [row.id: geometry.frame(in: .named("chat-viewport"))]) })
                         }
                         LiveToolsView(runtime: runtime)
@@ -220,6 +228,7 @@ struct ChatView: View {
                     }
                     .animation(reduceMotion ? nil : .orbisFade, value: showJump)
                     .onChange(of: following) { _, _ in updateJump() }
+                    .onChange(of: store.historyRevision) { _, _ in following = true; hasPositioned = false }
                     .animation(reduceMotion ? nil : .orbisFade, value: store.actionFeedback)
                     .onChange(of: store.historyPageRevision) { _, _ in
                         if let historyAnchor { proxy.scrollTo(historyAnchor, anchor: .top) }
@@ -490,37 +499,54 @@ struct ChatMessageRow: View, Equatable {
     let kind: String?
     var toolResults: [String: ChatMessage] = [:]
     var timings: [SessionTurnTiming] = []
+    var rewindOption: RuntimeOption? = nil
+    var rewindEnabled = false
+    var onRewind: (RuntimeOption) -> Void = { _ in }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row.messages == rhs.row.messages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings
+        lhs.row.messages == rhs.row.messages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled
     }
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            if row.isUser { Spacer(minLength: 36) }
-            VStack(alignment: .leading, spacing: 12) {
-                if !row.isUser {
-                    HStack(spacing: 6) {
-                        AgentEmblem(kind: kind, size: 17, recessed: false)
-                        Text(agentTitle(kind)).font(.orbisCaption(.semibold)).foregroundStyle(OrbisPalette(scheme).agent(kind))
-                        Spacer(minLength: 8)
-                        // 复制整轮回复。不用长按手势：它挂在每条消息上会和滚动、文本选择抢触摸。
-                        OrbisCopyButton(label: "复制回复", size: 26) { copyText }
-                            .padding(.vertical, -10)
+        VStack(alignment: .trailing, spacing: 2) {
+            HStack(alignment: .top, spacing: 0) {
+                if row.isUser { Spacer(minLength: 36) }
+                VStack(alignment: .leading, spacing: 12) {
+                    if !row.isUser {
+                        HStack(spacing: 6) {
+                            AgentEmblem(kind: kind, size: 17, recessed: false)
+                            Text(agentTitle(kind)).font(.orbisCaption(.semibold)).foregroundStyle(OrbisPalette(scheme).agent(kind))
+                            Spacer(minLength: 8)
+                            // 复制整轮回复。不用长按手势：它挂在每条消息上会和滚动、文本选择抢触摸。
+                            OrbisCopyButton(label: "复制回复", size: 26) { copyText }
+                                .padding(.vertical, -10)
+                        }
+                    }
+                    ForEach(row.messages) { message in
+                        MessageContentView(message: message, toolResults: toolResults)
+                    }
+                    ForEach(timings, id: \.turnId) { timing in
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            let elapsed = timing.durationMs.map(Double.init) ?? max(0, context.date.timeIntervalSince1970 * 1000 - Double(timing.startedAt))
+                            Text(String(format: timing.durationMs == nil ? "本轮已运行 %.1f 秒" : "本轮耗时 %.1f 秒", elapsed / 1000))
+                                .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary)
+                        }
+                    }
+                }.frame(maxWidth: row.isUser ? nil : .infinity, alignment: .leading)
+                    .neuSurface(inset: row.isUser, radius: OrbisRadius.card, intensity: row.isUser ? 0.6 : 0.4, padding: OrbisRadius.cardPadding + 2)
+                    .accessibilityAction(named: "复制") { UIPasteboard.general.string = copyText }
+                if !row.isUser { Spacer(minLength: 8) }
+            }
+            if row.isUser {
+                HStack(spacing: 2) {
+                    OrbisCopyButton(label: "复制消息", size: 26) { copyText }
+                        .accessibilityIdentifier("copy-message-" + row.id)
+                    if let rewindOption {
+                        OrbisIconButton(symbol: "backward.end", label: "Rewind", size: 26) { onRewind(rewindOption) }
+                            .disabled(!rewindEnabled)
+                            .accessibilityHint("回到这条消息之前，并将原文放回输入框")
+                            .accessibilityIdentifier("rewind-message-" + row.id)
                     }
                 }
-                ForEach(row.messages) { message in
-                    MessageContentView(message: message, toolResults: toolResults)
-                }
-                ForEach(timings, id: \.turnId) { timing in
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        let elapsed = timing.durationMs.map(Double.init) ?? max(0, context.date.timeIntervalSince1970 * 1000 - Double(timing.startedAt))
-                        Text(String(format: timing.durationMs == nil ? "本轮已运行 %.1f 秒" : "本轮耗时 %.1f 秒", elapsed / 1000))
-                            .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary)
-                    }
-                }
-            }.frame(maxWidth: row.isUser ? nil : .infinity, alignment: .leading)
-                .neuSurface(inset: row.isUser, radius: OrbisRadius.card, intensity: row.isUser ? 0.6 : 0.4, padding: OrbisRadius.cardPadding + 2)
-                .accessibilityAction(named: "复制") { UIPasteboard.general.string = copyText }
-            if !row.isUser { Spacer(minLength: 8) }
+            }
         }
     }
     private var copyText: String { row.messages.map(\.text).joined(separator: "\n\n") }

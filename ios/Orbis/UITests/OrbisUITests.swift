@@ -169,6 +169,21 @@ final class OrbisUITests: XCTestCase {
         app.buttons["从这条回复后继续"].tap()
         XCTAssertTrue(app.buttons["历史与分支"].waitForExistence(timeout: 5))
     }
+    func testUserMessageCopyAndRewind() {
+        let app = launch("chat")
+        let copy = app.buttons["copy-message-m3"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 8))
+        if !copy.isHittable { app.swipeDown() }
+        copy.tap()
+        XCTAssertEqual(copy.label, "已复制")
+        let rewind = app.buttons["rewind-message-m3"]
+        XCTAssertTrue(rewind.isEnabled)
+        capture("user-message-actions", app: app)
+        rewind.tap()
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        let restored = NSPredicate(format: "value CONTAINS %@", "聊天输入和滚动也要保持一致。")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: restored, object: composer)], timeout: 8), .completed)
+    }
     func testToolDetailsLoadPagesAndClose() {
         let app = launch("tool")
         let disclosure = app.buttons["展开read，已完成"]

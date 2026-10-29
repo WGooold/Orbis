@@ -412,6 +412,47 @@ struct StoreTests {
         #expect(store.errorMessage == "模型不可用")
     }
 
+    @Test func messageRewindUsesCanonicalTargetAndRestoresDraftOnlyAfterSuccess() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        transport.state?(.secured, nil)
+        let selected = try #require(store.selectedRuntime)
+        #expect(store.userMessageRewindOptions(for: selected).isEmpty)
+        let sync = try #require(transport.syncCommands.last)
+        var user = message("display-user", text: "original prompt")
+        user["role"] = "user"
+        await transport.event([
+            "type": "session.snapshot", "sessionId": "session-a", "syncId": sync["syncId"]!, "mode": "replace",
+            "display": ["entries": [["entryId": "canonical-user", "message": user]]]
+        ])
+        let option: [String: Any] = ["value": "canonical-user", "label": "original prompt", "tree": [
+            "entryType": "message", "role": "user", "defaultHidden": false, "isCurrent": true, "isOnActivePath": true
+        ]]
+        await transport.event(["type": "runtime.capabilities", "capabilities": ["commands": [
+            ["name": "tree", "source": "builtin", "argument": ["kind": "tree", "required": true, "options": [option]]]
+        ]]], sequence: 2, channel: "ctl")
+        let target = try #require(store.userMessageRewindOptions(for: selected)["display-user"])
+        #expect(target.value == "canonical-user")
+        #expect(store.userMessageRewindOptions(for: selected)["canonical-user"] == nil)
+        store.saveDraft("existing draft", for: selected)
+        #expect(store.moveHistory(to: target, fallbackText: "original prompt"))
+        #expect(!store.moveHistory(to: target, fallbackText: "duplicate"))
+        let failed = try #require(transport.sent.last)
+        #expect((failed["command"] as? [String: Any])?["args"] as? String == "canonical-user")
+        #expect(store.draft(for: selected) == "existing draft")
+        await transport.event(["type": "command.result", "commandId": failed["commandId"]!, "ok": false, "error": "busy"], sequence: 3, channel: "ctl")
+        #expect(store.draft(for: selected) == "existing draft")
+        #expect(store.moveHistory(to: target, fallbackText: "original prompt"))
+        let succeeded = try #require(transport.sent.last)
+        let syncCount = transport.syncCommands.count
+        await transport.event(["type": "command.result", "commandId": succeeded["commandId"]!, "ok": true], sequence: 4, channel: "ctl")
+        #expect(store.draft(for: selected) == "original prompt")
+        #expect(store.historyRevision == 1)
+        #expect(transport.syncCommands.count > syncCount)
+        await transport.event(["type": "runtime.capabilities", "capabilities": ["commands": []]], sequence: 5, channel: "ctl")
+        #expect(store.userMessageRewindOptions(for: selected).isEmpty)
+        #expect(!store.moveHistory(to: target))
+    }
+
     @Test func activationStaysPendingUntilItsRuntimeIsOnline() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
         store.createSession(agentKind: "codex", cwd: "/new-project")

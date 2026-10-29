@@ -100,6 +100,7 @@ final class HostConnection: ObservableObject {
     private var feedbackTimeout: Task<Void, Never>?
     private var previewTimeout: Task<Void, Never>?
     private var branchEditorNode: String?
+    private var branchEditorText: String?
     private var interactionCommands: [String: String] = [:]
     private var queueCommands: [String: (runtimeId: String, queueId: String)] = [:]
     private var pendingBranchDrafts: [String: String] = [:]
@@ -446,10 +447,25 @@ final class HostConnection: ObservableObject {
 
     func dismissPreview() { previewTimeout?.cancel(); entryPreview = nil }
 
-    func moveHistory(to option: RuntimeOption) -> Bool {
-        guard runtimeActions.isEmpty else { return false }
+    func userMessageRewindOptions(for runtime: RuntimeSummary) -> [String: RuntimeOption] {
+        guard !isViewingCachedSession,
+              let argument = commands[runtime.runtimeId]?.first(where: { $0.name == "tree" })?.argument,
+              argument.kind == "tree" else { return [:] }
+        var options: [String: RuntimeOption] = [:]
+        for option in argument.options ?? [] where option.tree?.role == "user" && option.tree?.isOnActivePath == true {
+            let messageId = displayMessageIds[runtime.runtimeId]?[option.value] ?? option.value
+            options[messageId] = option
+        }
+        return options
+    }
+
+    func moveHistory(to option: RuntimeOption, fallbackText: String? = nil) -> Bool {
+        guard runtimeActions.isEmpty, let runtime = selectedRuntime,
+              commands[runtime.runtimeId]?.first(where: { $0.name == "tree" })?.argument?.options?.contains(option) == true else { return false }
+        guard executeSlash("tree", args: option.value) else { return false }
         branchEditorNode = option.tree?.role == "user" ? option.value : nil
-        return executeSlash("tree", args: option.value)
+        branchEditorText = branchEditorNode == nil ? nil : fallbackText
+        return true
     }
 
     @discardableResult
@@ -976,11 +992,12 @@ final class HostConnection: ObservableObject {
 
     private func finishAction(_ id: String, succeeded: Bool, message: String? = nil, result: [String: Any]? = nil) {
         guard let action = runtimeActions.removeValue(forKey: id) else { return }
+        defer { if action.name == "tree" { branchEditorNode = nil; branchEditorText = nil } }
         pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel(); updateSyncing()
         if succeeded {
             setActionFeedback("\(action.name) 已完成")
             if action.name == "tree", let runtime = runtimes.first(where: { $0.runtimeId == action.runtimeId }) {
-                let editorText = branchEditorNode == nil ? nil : (result?["editorText"] as? String ?? (branchEditorNode == entryPreview?.entryId ? entryPreview?.message?.text : nil))
+                let editorText = branchEditorNode == nil ? nil : (result?["editorText"] as? String ?? branchEditorText ?? (branchEditorNode == entryPreview?.entryId ? entryPreview?.message?.text : nil))
                 if let sessionId = result?["sessionId"] as? String, sessionId != runtime.sessionId {
                     if let editorText { pendingBranchDrafts[offlineAliasKey(host: selectedHost, sessionId: sessionId)] = editorText }
                     var target: [String: Any] = ["type": "resume", "sessionId": sessionId]

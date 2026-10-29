@@ -481,6 +481,15 @@ internal fun SessionGraph.historyNodeText(nodeId: String): String? =
         ?.trim()
         ?.takeIf(String::isNotEmpty)
 
+/** Only backend-advertised user nodes may rewind; display IDs need not equal Entry IDs. */
+internal fun userMessageRewindOptions(
+    commands: List<RuntimeSlashCommand>,
+    graph: SessionGraph?,
+): Map<String, RuntimeSlashCommandOption> = commands.firstOrNull { it.name == "tree" }
+    ?.argument?.takeIf { it.kind == "tree" }?.options.orEmpty()
+    .filter { it.tree?.role == "user" && it.tree.isOnActivePath }
+    .associateBy { graph?.display?.get(it.value)?.message?.messageId ?: it.value }
+
 /**
  * `/tree` 成功执行时后端回传的原文。只有落到用户消息才有：两边都会把历史回退到那条消息
  * 之前，并把它的正文交回来，手机据此回填输入框（Pi 走 `navigateTree`，codex 走

@@ -218,7 +218,8 @@ final class OrbisStore: ObservableObject {
     @discardableResult func openCachedSession(_ session: SessionSummary) -> Bool { activeConnection.openCachedSession(session) }
     func selectCachedBranch(_ leafId: String) { activeConnection.selectCachedBranch(leafId) }
     func dismissPreview() { activeConnection.dismissPreview() }
-    func moveHistory(to option: RuntimeOption) -> Bool { activeConnection.moveHistory(to: option) }
+    func userMessageRewindOptions(for runtime: RuntimeSummary) -> [String: RuntimeOption] { activeConnection.userMessageRewindOptions(for: runtime) }
+    func moveHistory(to option: RuntimeOption, fallbackText: String? = nil) -> Bool { activeConnection.moveHistory(to: option, fallbackText: fallbackText) }
     func respond(_ request: InteractionRequest, response: [String: Any]) -> Bool { activeConnection.respond(request, response: response) }
     func refresh() { activeConnection.refresh() }
     func loadOlderHistory() -> Bool { activeConnection.loadOlderHistory() }

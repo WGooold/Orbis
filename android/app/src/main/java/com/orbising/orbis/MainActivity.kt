@@ -76,6 +76,7 @@ import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Menu
@@ -1126,6 +1127,9 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val runtime = state.runtimes[runtimeId]
     val sessionId = runtime?.sessionId
     val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
+    val rewindCommands = state.capabilities[runtimeId]?.commands.orEmpty()
+    val rewindGraph = sessionId?.let(state.sessionGraphs::get)
+    val rewindOptions = remember(rewindCommands, rewindGraph?.display) { userMessageRewindOptions(rewindCommands, rewindGraph) }
     val activeTurn = conversation.activeTurnId?.let(conversation.turnTimings::get)
     var timerNow by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(activeTurn?.turnId, activeTurn?.startedAt) {
@@ -1246,6 +1250,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     var historyActionCommandId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     var historyActionError by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     fun runHistoryAction(action: HistoryTreeAction) {
+        if (historyActionCommandId != null) return
         historyActionError = null
         val commandId = model.executeSlashCommand("tree", action.nodeId)
         if (commandId == null) {
@@ -1860,7 +1865,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 item(key = "chat-status") {
                     val errors = listOfNotNull(
                         if (runtime == null) "会话已离线" else null,
-                        historyPagingFeedback, historyRead?.takeIf { it.phase == HistoryReadPhase.FAILED }?.error,
+                        historyPagingFeedback, historyActionError, historyRead?.takeIf { it.phase == HistoryReadPhase.FAILED }?.error,
                         firstReadError, rangeError, state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError,
                         if (conversation.waitingLocalInteraction) "请在电脑端完成交互" else null,
                         conversation.interactionNotice, conversation.systemNotice,
@@ -1906,6 +1911,10 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             downloads = state.downloads,
                             downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
                             downloadFile = { path -> model.downloadFile(path) },
+                            onRewind = rewindOptions[item.message.messageId]?.let { option ->
+                                { runHistoryAction(HistoryTreeAction.EditAndRestart(option.value, item.message.content.mapNotNull { it.text }.joinToString("\n"))) }
+                            },
+                            rewindEnabled = state.e2eReady && runtime?.status == "idle" && historyActionCommandId == null,
                         )
 
                         is ChatListItem.AssistantTurn -> AssistantTurnCard(
@@ -3186,20 +3195,31 @@ internal fun UserMessageCard(
     downloads: Map<String, ArtifactDownload>,
     downloadArtifact: (RemoteArtifact) -> Unit,
     downloadFile: (String) -> Unit,
+    onRewind: (() -> Unit)? = null,
+    rewindEnabled: Boolean = false,
 ) {
     // 右对齐、按内容收窄的气泡，最宽 85%：位置已说明是谁发的，不再加「你」（与 iOS 一致）。
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Spacer(Modifier.weight(0.15f))
-        NeumorphSurface(Modifier.weight(0.85f, fill = false), style = NeumorphStyle.Pressed, shadowScale = 0.55f, contentPadding = 14.dp) {
-            Column(Modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (message.isError == true) Text("发送异常", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                MessageBlocks(
-                    runtimeId = runtimeId,
-                    message = message,
-                    downloads = downloads,
-                    downloadArtifact = downloadArtifact,
-                    downloadFile = downloadFile,
-                )
+        Column(Modifier.weight(0.85f, fill = false), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            NeumorphSurface(style = NeumorphStyle.Pressed, shadowScale = 0.55f, contentPadding = 14.dp) {
+                Column(Modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (message.isError == true) Text("发送异常", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    MessageBlocks(
+                        runtimeId = runtimeId,
+                        message = message,
+                        downloads = downloads,
+                        downloadArtifact = downloadArtifact,
+                        downloadFile = downloadFile,
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                CopyIconButton("复制消息", size = 28.dp) { message.content.mapNotNull { it.text }.joinToString("\n") }
+                if (onRewind != null) {
+                    NeumorphIconButton(onClick = onRewind, icon = Icons.Rounded.SkipPrevious,
+                        contentDescription = "Rewind", size = 28.dp, enabled = rewindEnabled)
+                }
             }
         }
     }
