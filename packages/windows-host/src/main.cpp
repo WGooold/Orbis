@@ -49,7 +49,11 @@ int main(int argc, char *argv[]) {
     });
     QApplication app(argc, argv);
     app.setOrganizationName("Orbis"); app.setApplicationName("Orbis Host"); app.setApplicationVersion(ORBIS_VERSION);
+#ifdef Q_OS_MACOS
+    app.setWindowIcon(QIcon(":/src/assets/orbis-macos.png"));
+#else
     app.setWindowIcon(QIcon(":/src/assets/orbis.png"));
+#endif
     QQuickStyle::setStyle("Basic");
     // Reliable scaling and soft surfaces on integrated graphics and Windows Remote Desktop.
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
@@ -103,7 +107,7 @@ int main(int argc, char *argv[]) {
     QObject::connect(&instance, &QLocalServer::newConnection, &app, [&instance, show] {
         while (auto *socket = instance.nextPendingConnection()) { show(); socket->disconnectFromServer(); socket->deleteLater(); }
     });
-    QSystemTrayIcon tray(app.windowIcon());
+    QSystemTrayIcon tray(QIcon(":/src/assets/orbis.png"));
     QMenu menu;
     menu.addAction("打开 Orbis", &app, show);
     menu.addAction("添加手机", &controller, [&controller, show] { show(); controller.pair(); });

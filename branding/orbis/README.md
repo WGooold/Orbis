@@ -20,6 +20,7 @@
 | `geometry.json` | 间隙、安全区域等实际导出参数 |
 | `source-generated.png` | gpt-image-2 生成的材质源图 |
 | `build_icons.py` | 可复现的提取、轮廓、缩放和资源导出脚本 |
+| `build_macos_icon.swift` | 在 macOS 上从图标母版导出带圆角底板的应用 PNG 和完整尺寸 ICNS |
 
 ## 品牌字标
 
@@ -53,3 +54,11 @@ python branding/orbis/build_icons.py
 ```
 
 脚本会重新写入本套图标和 `android/app/src/main/res/` 对应的 Orbis 图标资源。不要用它覆盖其他任务正在编辑的图标。
+
+macOS Host 的访达、启动台和 Dock 使用带深蓝圆角底板的应用图标；菜单栏和窗口内使用透明符号。在 macOS 上重新导出：
+
+```sh
+swift branding/orbis/build_macos_icon.swift
+```
+
+输出位于 `packages/windows-host/src/assets/orbis-macos.png` 和 `orbis.icns`。CMake 将 ICNS 放入应用包并写入 `CFBundleIconFile`，运行时使用同版 PNG。
