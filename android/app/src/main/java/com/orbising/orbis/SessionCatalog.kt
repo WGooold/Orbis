@@ -31,6 +31,8 @@ data class SessionCatalogEntry(
     val archived: Boolean? = null,
     /** Provider ownership from the Host catalog; null means unknown, never the current provider. */
     val modelProvider: String? = null,
+    /** Client-local Pi label: captured once, persisted without loading the transcript again. */
+    val cachedDisplayName: String? = null,
 )
 
 /** Loading history must not erase the host supplied by the session directory. */

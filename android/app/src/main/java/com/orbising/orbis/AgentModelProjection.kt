@@ -134,7 +134,10 @@ internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentSta
             entry.sessionId in online || entry.agentKind !in completeKinds }.toMutableMap()
         for (entry in entries) {
             val previous = merged[entry.sessionId]
-            merged[entry.sessionId] = entry.copy(hasHistoryCache = previous?.hasHistoryCache == true || entry.hasHistoryCache)
+            merged[entry.sessionId] = entry.copy(
+                hasHistoryCache = previous?.hasHistoryCache == true || entry.hasHistoryCache,
+                cachedDisplayName = previous?.cachedDisplayName,
+            )
         }
         state = state.copy(sessions = merged)
     }

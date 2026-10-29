@@ -229,13 +229,15 @@ internal class HostConnection(
     private var relayEventJob: Job? = null
 
     init {
-        mutableState.value = mutableState.value.copy(
+        val restored = mutableState.value.copy(
             deviceId = device.deviceId,
             hostId = pairing.hostId,
             hostName = pairing.hostName,
             sessions = sessionCatalogStore.load(device, pairing.hostId)
                 .associateBy(SessionCatalogEntry::sessionId),
         )
+        mutableState.value = restored.cachePiSessionNames()
+        if (mutableState.value !== restored) scheduleSessionCatalogSave()
         connect(device)
         // 掉线重连 / APP 重启后回到上次打开的会话（spec 第 16 行、§14 B7）。
         // 放在状态流上而不是消息处理里：恢复要在「Runtime 目录已就绪」之后才可能成功，
@@ -1770,15 +1772,7 @@ internal class HostConnection(
                                 runCatching { processUploadPayload(payload) }
                                     .onFailure { error -> Log.e(RELOAD_TRACE_TAG, "upload.payload_failed", error) }
                                 if (previous.sessions != next.sessions) {
-                                    device?.let { pairedDevice ->
-                                        scope.launch(Dispatchers.IO) {
-                                            catalogWriteLock.withLock {
-                                                if (device == pairedDevice) {
-                                                    runCatching { saveSessionCatalog(pairedDevice) }
-                                                }
-                                            }
-                                        }
-                                    }
+                                    scheduleSessionCatalogSave()
                                 }
                                 device?.let { pairedDevice ->
                                     val graphRuntimes = next.sessionSyncRequests.mapNotNull(next.runtimes::get)
@@ -2144,20 +2138,24 @@ internal class HostConnection(
                 }
             }
             if (previous.sessions != next.sessions) {
-                scope.launch(Dispatchers.IO) {
-                    catalogWriteLock.withLock {
-                        if (device == pairedDevice) {
-                            runCatching {
-                                saveSessionCatalog(pairedDevice)
-                            }
-                        }
-                    }
-                }
+                scheduleSessionCatalogSave()
             }
             val graphRuntimes = next.sessionSyncRequests.mapNotNull(next.runtimes::get)
             scheduleSessionGraphLoad(pairedDevice, graphRuntimes)
             if (next.connection == RelayConnection.ONLINE) reconnectDelayMs = 500
             notifyNewInteractions(previous, next)
+        }
+    }
+
+    private fun scheduleSessionCatalogSave() {
+        val pairedDevice = device
+        scope.launch(Dispatchers.IO) {
+            catalogWriteLock.withLock {
+                if (device == pairedDevice) {
+                    runCatching { saveSessionCatalog(pairedDevice) }
+                        .onFailure { Log.e(RELOAD_TRACE_TAG, "session.catalog_save_failed", it) }
+                }
+            }
         }
     }
 
@@ -2331,11 +2329,18 @@ internal class HostConnection(
      * outside it and submits identity-bearing results for a fresh ownership check.
      */
     private fun updateState(transform: (RemoteState) -> RemoteState) {
+        var capturedName = false
         synchronized(stateWriterLock) {
             val current = mutableState.value
-            val next = transform(current).openAcknowledgedSession().trackSessionReadDemands(current).reconcileHistoryReads(current)
+            var next = transform(current).openAcknowledgedSession().trackSessionReadDemands(current).reconcileHistoryReads(current)
+            val named = next.cachePiSessionNames(current)
+            capturedName = named !== next
+            next = named
             if (next !== current) mutableState.value = next
         }
+        // Local graph hydration also learns names; it need not receive another remote event
+        // to persist them. Disk IO stays outside the state writer lock and the UI thread.
+        if (capturedName) scheduleSessionCatalogSave()
     }
 
     /**

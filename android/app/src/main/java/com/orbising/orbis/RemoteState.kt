@@ -602,11 +602,12 @@ internal fun RemoteState.hasPendingInteraction(runtimeId: String): Boolean =
 /** 顶层 decoder：供类外的 session.* 帮助函数使用（RelayReducer 的 json 成员不可见）。 */
 private val sessionMessageJson = Json { ignoreUnknownKeys = true }
 
-private fun mergeSessionCatalogEntry(
+internal fun mergeSessionCatalogEntry(
     existing: SessionCatalogEntry?,
     incoming: SessionCatalogEntry,
 ): SessionCatalogEntry {
-    if (existing == null) return incoming
+    // The Host may replace its own metadata, but cannot supply the phone's frozen label.
+    if (existing == null) return incoming.copy(cachedDisplayName = null)
     return existing.copy(
         name = incoming.name ?: existing.name,
         cwd = incoming.cwd.ifBlank { existing.cwd },
@@ -1010,7 +1011,7 @@ private fun previousViewNeedsRefresh(state: RemoteState, runtime: RuntimeSummary
         view.sessionId != runtime.sessionId || view.leafId != runtime.sessionLeafId
     } ?: true
 
-private fun RuntimeSummary.catalogEntry(): SessionCatalogEntry? = sessionId?.let { id ->
+internal fun RuntimeSummary.catalogEntry(): SessionCatalogEntry? = sessionId?.let { id ->
     SessionCatalogEntry(
         sessionId = id,
         // Empty means the current runtime is explicitly unnamed, so a cleared title
