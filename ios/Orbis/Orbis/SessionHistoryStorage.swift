@@ -277,7 +277,7 @@ private final class SessionHistoryDatabase {
             [.text(key), .text(session), .text(value.turnId), value.messageId.map(HistorySQLValue.text) ?? .null, .blob(try JSONEncoder().encode(value)), .integer(seq)])
     }
     private func isDescendant(key: String, session: String, child: String, ancestor: String) throws -> Bool {
-        let rows = try query("WITH RECURSIVE ancestry(id,parent) AS (SELECT id,parent FROM entries WHERE host=? AND session=? AND id=? UNION SELECT e.id,e.parent FROM entries e JOIN ancestry a ON e.id=a.parent WHERE e.host=? AND e.session=?) SELECT 1 FROM ancestry WHERE id=? LIMIT 1",
+        let rows = try query("WITH RECURSIVE ancestry(id,parent) AS (SELECT id,parent FROM entries WHERE host=? AND session=? AND id=? UNION SELECT e.id,e.parent FROM ancestry a CROSS JOIN entries e ON e.host=? AND e.session=? AND e.id=a.parent) SELECT 1 FROM ancestry WHERE id=? LIMIT 1",
             [.text(key), .text(session), .text(child), .text(key), .text(session), .text(ancestor)]) { _ in true }
         return !rows.isEmpty
     }
@@ -446,7 +446,10 @@ private final class SessionHistoryDatabase {
     private func coverage(key: String, session: String, leaf: String, window: String?) throws -> (Bool, SessionCatchupGap?) {
         // Recursive sets live inside SQLite's bounded page cache/temp file, not an app-sized
         // graph. UNION terminates even a corrupt cycle and missing parents stay observable.
-        let cte = "WITH RECURSIVE path(id,parent) AS (SELECT id,parent FROM entries WHERE host=? AND session=? AND id=? UNION SELECT e.id,e.parent FROM entries e JOIN path p ON e.id=p.parent WHERE e.host=? AND e.session=?), excluded(id,parent) AS (SELECT e.id,e.parent FROM entries e WHERE e.host=? AND e.session=? AND e.id=(SELECT parent FROM entries WHERE host=? AND session=? AND id=?) UNION SELECT e.id,e.parent FROM entries e JOIN excluded x ON e.id=x.parent WHERE e.host=? AND e.session=?) "
+        // Every recursive step is written `<recursive set> CROSS JOIN entries` so SQLite keeps
+        // that order and fetches each parent by primary key; left to the planner it scanned the
+        // whole session through entry_parents on every step (quadratic in the session length).
+        let cte = "WITH RECURSIVE path(id,parent) AS (SELECT id,parent FROM entries WHERE host=? AND session=? AND id=? UNION SELECT e.id,e.parent FROM path p CROSS JOIN entries e ON e.host=? AND e.session=? AND e.id=p.parent), excluded(id,parent) AS (SELECT e.id,e.parent FROM entries e WHERE e.host=? AND e.session=? AND e.id=(SELECT parent FROM entries WHERE host=? AND session=? AND id=?) UNION SELECT e.id,e.parent FROM excluded x CROSS JOIN entries e ON e.host=? AND e.session=? AND e.id=x.parent) "
         let bindings: [HistorySQLValue] = [.text(key), .text(session), .text(leaf), .text(key), .text(session), .text(key), .text(session), .text(key), .text(session), window.map(HistorySQLValue.text) ?? .null, .text(key), .text(session)]
         let missing = try query(cte + "SELECT p.parent FROM path p WHERE p.parent IS NOT NULL AND NOT EXISTS(SELECT 1 FROM entries e WHERE e.host=? AND e.session=? AND e.id=p.parent) LIMIT 1", bindings + [.text(key), .text(session)]) { text($0, 0)! }.first
         if let missing {
@@ -472,14 +475,14 @@ private final class SessionHistoryDatabase {
         let sql = """
             WITH RECURSIVE excluded(id,parent) AS (
                 SELECT id,parent FROM entries WHERE host=? AND session=? AND id=(SELECT parent FROM entries WHERE host=? AND session=? AND id=?)
-                UNION SELECT e.id,e.parent FROM entries e JOIN excluded x ON e.id=x.parent WHERE e.host=? AND e.session=?
+                UNION SELECT e.id,e.parent FROM excluded x CROSS JOIN entries e ON e.host=? AND e.session=? AND e.id=x.parent
             ), available(id,parent,seq) AS (
                 SELECT e.id,e.parent,e.seq FROM entries e WHERE e.host=? AND e.session=? AND
                     (?=0 OR EXISTS(SELECT 1 FROM display d WHERE d.host=e.host AND d.session=e.session AND d.entry_id=e.id)
                         OR EXISTS(SELECT 1 FROM excluded x WHERE x.id=e.id))
             ), continuous(id,depth,seq) AS (
                 SELECT id,0,seq FROM available WHERE parent IS NULL
-                UNION ALL SELECT e.id,c.depth+1,e.seq FROM available e JOIN continuous c ON e.parent=c.id
+                UNION ALL SELECT e.id,c.depth+1,e.seq FROM continuous c CROSS JOIN available e ON e.parent=c.id
             ) SELECT id FROM continuous ORDER BY depth DESC,seq DESC,id LIMIT 1
             """
         return try query(sql, [.text(key), .text(session), .text(key), .text(session), window.map(HistorySQLValue.text) ?? .null,
@@ -503,7 +506,7 @@ private final class SessionHistoryDatabase {
         let sql = """
             WITH RECURSIVE excluded(id,parent) AS (
                 SELECT id,parent FROM entries WHERE host=? AND session=? AND id=(SELECT parent FROM entries WHERE host=? AND session=? AND id=?)
-                UNION SELECT e.id,e.parent FROM entries e JOIN excluded x ON e.id=x.parent WHERE e.host=? AND e.session=?
+                UNION SELECT e.id,e.parent FROM excluded x CROSS JOIN entries e ON e.host=? AND e.session=? AND e.id=x.parent
             ) SELECT x.id FROM excluded x JOIN temp.display_filter_candidates c ON c.id=x.id
             """
         return Set(try query(sql, [.text(key), .text(session), .text(key), .text(session), .text(window), .text(key), .text(session)]) { text($0, 0)! })

@@ -254,6 +254,39 @@ func desktopAttachTitle(_ state: String?) -> String {
     ["attached": "已接入", "closed": "未接入", "notInstalled": "未安装", "unsupported": "不可用", "error": "接入失败"][state ?? ""] ?? "未知"
 }
 
+/// Everything the chat list derives from messages and turn timings. It is built once per change
+/// of those inputs, never per view update (Android remembers the same projection by its inputs);
+/// rebuilding it on every scroll frame kept the main thread busy on long sessions.
+struct ChatTranscript {
+    let rows: [ChatRow]
+    let firstMessageId: String?
+    /// Only the tool results and timings that belong to each row, so an unchanged row compares equal.
+    let toolResultsByRow: [String: [String: ChatMessage]]
+    let timingsByRow: [String: [SessionTurnTiming]]
+
+    static let empty = ChatTranscript(messages: [], turnTimings: [:])
+
+    init(messages: [ChatMessage], turnTimings: [String: SessionTurnTiming]) {
+        let presentation = chatPresentation(messages)
+        let timings = turnTimings.values.sorted { ($0.startedAt, $0.turnId) < ($1.startedAt, $1.turnId) }
+        let turnIds = Dictionary(timings.compactMap { timing in timing.messageId.map { ($0, timing.turnId) } }, uniquingKeysWith: { _, last in last })
+        let timingsByMessage = Dictionary(grouping: timings.filter { $0.messageId != nil }, by: { $0.messageId! })
+        rows = chatRows(presentation.messages, turnIdsByMessageId: turnIds)
+        firstMessageId = presentation.messages.first?.messageId
+        var results: [String: [String: ChatMessage]] = [:], rowTimings: [String: [SessionTurnTiming]] = [:]
+        for row in rows {
+            let calls = row.messages.flatMap { message in
+                message.content.flatMap { [$0.toolCallId, $0.summary?.tool?.toolCallId].compactMap { $0 } } + [message.toolCallId].compactMap { $0 }
+            }
+            let owned = Dictionary(calls.compactMap { id in presentation.toolResults[id].map { (id, $0) } }, uniquingKeysWith: { first, _ in first })
+            if !owned.isEmpty { results[row.id] = owned }
+            let rowTiming = row.messages.flatMap { timingsByMessage[$0.messageId] ?? [] }
+            if !rowTiming.isEmpty { rowTimings[row.id] = rowTiming }
+        }
+        toolResultsByRow = results; timingsByRow = rowTimings
+    }
+}
+
 func chatRows(_ messages: [ChatMessage], turnIdsByMessageId: [String: String] = [:]) -> [ChatRow] {
     var rows: [ChatRow] = [], boundaryPending = false
     for message in messages {

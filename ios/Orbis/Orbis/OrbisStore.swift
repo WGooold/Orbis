@@ -20,7 +20,7 @@ final class HostConnection: ObservableObject {
     }
     /// sessionId → 目录条目。聊天页每条消息、每次流式更新都会查询，不能线性扫描整个目录。
     private var sessionIndex: [String: SessionSummary] = [:]
-    @Published private(set) var messages: [ChatMessage] = []
+    @Published private(set) var messages: [ChatMessage] = [] { didSet { transcriptCache = nil } }
     @Published private(set) var selectedRuntimeId: String?
     @Published private(set) var connection: ConnectionState = .offline
     @Published private(set) var activePath: String?
@@ -63,7 +63,15 @@ final class HostConnection: ObservableObject {
     @Published private(set) var cachedSessionIds: Set<String> = []
     @Published private(set) var selectedOfflineSession: SessionSummary?
     @Published private(set) var cachedHistoryOptions: [RuntimeOption] = []
-    @Published private(set) var turnTimings: [String: SessionTurnTiming] = [:]
+    @Published private(set) var turnTimings: [String: SessionTurnTiming] = [:] { didSet { transcriptCache = nil } }
+    private var transcriptCache: ChatTranscript?
+    /// Rows of the selected conversation, rebuilt only after its messages or timings change.
+    var chatTranscript: ChatTranscript {
+        if let transcriptCache { return transcriptCache }
+        let built = ChatTranscript(messages: messages, turnTimings: turnTimings)
+        transcriptCache = built
+        return built
+    }
     private var timingsBySession: [String: [String: SessionTurnTiming]] = [:]
     private var cachedIndexLoaded = false
     private var pendingEvents: [(message: [String: Any], channel: String?, bytes: Int)] = []
@@ -1842,7 +1850,10 @@ final class HostConnection: ObservableObject {
         if let reference = liveToolReferences[runtimeId], toolInventories.covers(reference, runtime: runtimeId) {
             liveTools[runtimeId] = toolInventories.visible[runtimeId] ?? []
         }
-        messages = materializeLiveTools(conversations[runtimeId] ?? [], tools: liveTools[runtimeId] ?? [], liveOrders: liveOrders[runtimeId] ?? [:])
+        // Publishing an identical transcript would re-render the whole chat for nothing; the
+        // comparison is O(1) when the array storage is unchanged.
+        let next = materializeLiveTools(conversations[runtimeId] ?? [], tools: liveTools[runtimeId] ?? [], liveOrders: liveOrders[runtimeId] ?? [:])
+        if next != messages { messages = next }
         updateSyncing()
         dispatchSyncDemands()
     }

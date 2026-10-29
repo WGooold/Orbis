@@ -254,4 +254,27 @@ struct PresentationTests {
         #expect(slashSourceTitle("builtin") == nil && slashSourceTitle("extension") == "扩展")
     }
 
+    @Test func transcriptGroupsRowsOnceAndKeepsEachRowsToolResultsAndTimings() {
+        func text(_ id: String, _ role: String) -> ChatMessage {
+            ChatMessage(messageId: id, role: role, content: [ChatContent(type: "text", text: id, toolName: nil, artifact: nil)], timestamp: 0, isError: nil)
+        }
+        let call = ChatMessage(messageId: "call", role: "assistant", content: [ChatContent(type: "tool_call", text: nil, toolName: "read", artifact: nil, toolCallId: "tool")], timestamp: 0, isError: nil)
+        let result = ChatMessage(messageId: "result", role: "tool", content: [ChatContent(type: "text", text: "done", toolName: nil, artifact: nil)], timestamp: 1, isError: nil, toolCallId: "tool", toolName: "read")
+        let timing = SessionTurnTiming(turnId: "turn", startedAt: 1, durationMs: 2, turnIndex: nil, messageId: "a2")
+        let transcript = ChatTranscript(messages: [text("u1", "user"), call, result, text("a2", "assistant"), text("u2", "user")], turnTimings: ["turn": timing])
+        #expect(transcript.rows.map(\.id) == ["u1", "call", "u2"])
+        #expect(transcript.firstMessageId == "u1")
+        #expect(transcript.toolResultsByRow["call"]?["tool"] == result)
+        #expect(transcript.toolResultsByRow["u2"] == nil)
+        #expect(transcript.timingsByRow["call"] == [timing])
+        #expect(ChatTranscript.empty.rows.isEmpty)
+    }
+
+    @Test func base64URLDecodesBytewiseAndRejectsMalformedInput() throws {
+        let data = Data((0..<255).map(UInt8.init))
+        #expect(try Base64URL.decode(Base64URL.encode(data)) == data)
+        #expect(try Base64URL.decode("-_8") == Data([0xFB, 0xFF]))
+        for bad in ["", "abc=", "ab+c", "a", "abcde", "中文"] { #expect(throws: Base64URLError.self) { try Base64URL.decode(bad) } }
+    }
+
 }

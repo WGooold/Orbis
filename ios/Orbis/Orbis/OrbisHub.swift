@@ -169,6 +169,7 @@ final class OrbisStore: ObservableObject {
     var runtimes: [RuntimeSummary] { activeConnection.runtimes }
     var sessions: [SessionSummary] { activeConnection.sessions }
     var messages: [ChatMessage] { activeConnection.messages }
+    var chatTranscript: ChatTranscript { activeConnection.chatTranscript }
     var selectedRuntimeId: String? { activeConnection.selectedRuntimeId }
     var connection: ConnectionState { activeConnection.connection }
     var activePath: String? { activeConnection.activePath }

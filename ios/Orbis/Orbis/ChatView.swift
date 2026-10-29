@@ -8,6 +8,11 @@ private struct ChatBottomPreference: PreferenceKey {
     static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) { value = nextValue() ?? value }
 }
 
+final class ChatScrollMetrics {
+    var bottomDistance: CGFloat = 0
+    var firstVisibleRow: String?
+}
+
 private struct ChatRowsPreference: PreferenceKey {
     static var defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, next in next }) }
@@ -35,7 +40,10 @@ struct ChatView: View {
     @State private var following = true
     @State private var userScrolling = false
     @State private var jumping = false
-    @State private var bottomDistance: CGFloat = 0
+    /// Per-frame scroll facts live in a reference box: writing them must not re-render the chat.
+    /// Only `showJump` (derived from them) is view state, and it changes at a threshold.
+    @State private var metrics = ChatScrollMetrics()
+    @State private var showJump = false
     @State private var hasPositioned = false
     @State private var selectedCommand: String?
     @State private var deliveryChoices = false
@@ -43,7 +51,6 @@ struct ChatView: View {
     @State private var runtimeInfoOpen = false
     @State private var aliasAfterInfo = false
     @State private var filePickerOpen = false
-    @State private var firstVisibleRow: String?
     @State private var historyAnchor: String?
     @State private var topArmed = false
     @FocusState private var composerFocused: Bool
@@ -141,18 +148,19 @@ struct ChatView: View {
 
     private var conversation: some View {
         let kind = self.kind
-        let presentation = chatPresentation(store.messages)
+        let transcript = store.chatTranscript
         return ScrollViewReader { proxy in
             GeometryReader { viewport in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         transcriptHeader
-                        if presentation.messages.isEmpty {
+                        if transcript.rows.isEmpty {
                             OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: store.isSyncing ? "正在加载会话" : "继续这段会话")
                                 .frame(minHeight: max(180, viewport.size.height - 100))
                         }
-                        ForEach(chatRows(presentation.messages, turnIdsByMessageId: Dictionary(store.turnTimings.compactMap { timing in timing.messageId.map { ($0, timing.turnId) } }, uniquingKeysWith: { _, last in last }))) { row in
-                            ChatMessageRow(row: row, kind: kind, toolResults: presentation.toolResults).id(row.id)
+                        ForEach(transcript.rows) { row in
+                            ChatMessageRow(row: row, kind: kind, toolResults: transcript.toolResultsByRow[row.id] ?? [:],
+                                           timings: transcript.timingsByRow[row.id] ?? []).equatable().id(row.id)
                                 .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: [row.id: geometry.frame(in: .named("chat-viewport"))]) })
                         }
                         LiveToolsView(runtime: runtime)
@@ -167,16 +175,16 @@ struct ChatView: View {
                                                  onDistance: { bottomDistanceChanged($0, proxy: proxy) },
                                                  onInteraction: { userInteractionChanged($0) }))
                     .onPreferenceChange(ChatRowsPreference.self) { frames in
-                        firstVisibleRow = frames.filter { $0.value.maxY > 0 && $0.value.minY < viewport.size.height }.min { $0.value.minY < $1.value.minY }?.key
-                        let first = presentation.messages.first?.messageId
+                        metrics.firstVisibleRow = frames.filter { $0.value.maxY > 0 && $0.value.minY < viewport.size.height }.min { $0.value.minY < $1.value.minY }?.key
+                        let first = transcript.firstMessageId
                         let atTop = first.flatMap { frames[$0] }.map { $0.minY >= -40 && $0.minY < viewport.size.height } ?? false
-                        if !atTop { topArmed = hasPositioned }
+                        if !atTop && topArmed != hasPositioned { topArmed = hasPositioned }
                         if atTop && topArmed && historyAnchor == nil && !store.isSyncing && !store.historyLoading.contains(runtime.runtimeId) && store.historyErrors[runtime.runtimeId] == nil {
                             topArmed = false; loadOlder()
                         }
                     }
                     .overlay(alignment: .bottomTrailing) {
-                        if !following && bottomDistance > ChatFollow.line * 3 && !store.messages.isEmpty {
+                        if showJump && !transcript.rows.isEmpty {
                             OrbisIconButton(symbol: "arrow.down", label: "跳到最新消息", tint: accent) { jumpToLatest(proxy) }
                                 .padding(16)
                                 .transition(.opacity.combined(with: .scale(scale: 0.85)))
@@ -192,7 +200,8 @@ struct ChatView: View {
                                 .transition(.opacity)
                         }
                     }
-                    .animation(reduceMotion ? nil : .orbisFade, value: !following && bottomDistance > ChatFollow.line * 3)
+                    .animation(reduceMotion ? nil : .orbisFade, value: showJump)
+                    .onChange(of: following) { _, _ in updateJump() }
                     .animation(reduceMotion ? nil : .orbisFade, value: store.actionFeedback)
                     .onChange(of: store.historyPageRevision) { _, _ in
                         if let historyAnchor { proxy.scrollTo(historyAnchor, anchor: .top) }
@@ -201,7 +210,7 @@ struct ChatView: View {
                     .onChange(of: store.historyLoading.contains(runtime.runtimeId)) { old, loading in
                         if old && !loading && store.historyErrors[runtime.runtimeId] != nil { historyAnchor = nil }
                     }
-                    .onAppear { proxy.scrollTo(ChatFollow.bottomID, anchor: .bottom); hasPositioned = !store.messages.isEmpty }
+                    .onAppear { proxy.scrollTo(ChatFollow.bottomID, anchor: .bottom); hasPositioned = !transcript.rows.isEmpty }
             }
         }
     }
@@ -240,8 +249,9 @@ struct ChatView: View {
     }
 
     private func bottomDistanceChanged(_ distance: CGFloat, proxy: ScrollViewProxy) {
-        bottomDistance = distance
-        if distance.isFinite && !store.messages.isEmpty { hasPositioned = true }
+        metrics.bottomDistance = distance
+        updateJump()
+        if distance.isFinite && !hasPositioned && !store.messages.isEmpty { hasPositioned = true }
         if jumping {
             if distance <= 0.5 { jumping = false }
             return
@@ -258,9 +268,14 @@ struct ChatView: View {
         userScrolling = active
         if active {
             following = false; jumping = false
-        } else if bottomDistance <= ChatFollow.line {
+        } else if metrics.bottomDistance <= ChatFollow.line {
             following = true
         }
+    }
+
+    private func updateJump() {
+        let next = !following && metrics.bottomDistance > ChatFollow.line * 3
+        if next != showJump { showJump = next }
     }
 
     private func jumpToLatest(_ proxy: ScrollViewProxy) {
@@ -343,7 +358,7 @@ struct ChatView: View {
     }
 
     private func loadOlder() {
-        let anchor = firstVisibleRow
+        let anchor = metrics.firstVisibleRow
         if store.loadOlderHistory() { historyAnchor = anchor; following = false }
     }
 
@@ -446,12 +461,16 @@ private struct LegacyScrollInteraction: UIViewRepresentable {
     }
 }
 
-struct ChatMessageRow: View {
-    @EnvironmentObject private var store: OrbisStore
+/// Inputs are plain values so an unchanged row is skipped: it does not observe the whole store.
+struct ChatMessageRow: View, Equatable {
     @Environment(\.colorScheme) private var scheme
     let row: ChatRow
     let kind: String?
     var toolResults: [String: ChatMessage] = [:]
+    var timings: [SessionTurnTiming] = []
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.row.messages == rhs.row.messages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings
+    }
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             if row.isUser { Spacer(minLength: 36) }
@@ -469,7 +488,7 @@ struct ChatMessageRow: View {
                 ForEach(row.messages) { message in
                     MessageContentView(message: message, toolResults: toolResults)
                 }
-                ForEach(store.turnTimings.filter { timing in timing.messageId.map { id in row.messages.contains { $0.messageId == id } } == true }, id: \.turnId) { timing in
+                ForEach(timings, id: \.turnId) { timing in
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         let elapsed = timing.durationMs.map(Double.init) ?? max(0, context.date.timeIntervalSince1970 * 1000 - Double(timing.startedAt))
                         Text(String(format: timing.durationMs == nil ? "本轮已运行 %.1f 秒" : "本轮耗时 %.1f 秒", elapsed / 1000))
