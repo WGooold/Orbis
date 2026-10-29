@@ -197,7 +197,10 @@ class MainActivity : ComponentActivity() {
                     pendingToolExport = null
                     if (uri != null && detail != null) model.exportToolDetail(uri, detail)
                 }
-                CompositionLocalProvider(LocalToolDetailAction provides { runtime, summary -> model.openToolDetail(runtime, summary) }) {
+                CompositionLocalProvider(
+                    LocalToolDetailAction provides { runtime, summary, part -> model.openToolDetail(runtime, summary, part) },
+                    LocalToolContentAvailable provides (state.connection == RelayConnection.ONLINE),
+                ) {
                     RemoteApp(state, hosts, pairingError, pairingInProgress, model)
                     state.toolDetail?.let { detail -> ToolDetailDialog(detail, model) {
                         pendingToolExport = detail
@@ -210,7 +213,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private val LocalToolDetailAction = staticCompositionLocalOf<(String, ToolSummary) -> Unit> { { _, _ -> } }
+private val LocalToolDetailAction = staticCompositionLocalOf<(String, ToolSummary, String) -> Unit> { { _, _, _ -> } }
+private val LocalToolContentAvailable = staticCompositionLocalOf { false }
 
 @Composable
 private fun ToolDetailDialog(detail: ToolDetailView, model: RemoteViewModel, onExport: () -> Unit) {
@@ -226,34 +230,14 @@ private fun ToolDetailDialog(detail: ToolDetailView, model: RemoteViewModel, onE
             model.readToolDetail()
         }
     }
-    AlertDialog(
-        onDismissRequest = { model.closeToolDetail() },
-        title = { Text(detail.summary.toolName) },
-        confirmButton = { TextButton(onClick = { model.closeToolDetail() }) { Text("关闭") } },
-        text = {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row {
-                    detail.summary.contents.filter { it.availability != "absent" }.forEach { part ->
-                        TextButton(onClick = { model.changeToolPart(part.part) }, enabled = !detail.exporting) { Text(when (part.part) { "arguments" -> "参数"; "output" -> "执行输出"; else -> "最终结果" }) }
-                    }
-                }
-                Text(if (detail.requestId != null) "正在读取…" else if (detail.contentFinal && detail.nextCursor == null && detail.gaps.isEmpty()) "读取完成" else if (detail.nextCursor == null) "已到当前末尾" else "已读取 ${detail.offset} 字节")
-                detail.gaps.forEach { Text("缺失范围 ${it.fromOffset}–${it.throughOffset}：${it.reason}", color = MaterialTheme.colorScheme.error) }
-                detail.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (detail.error != null) TextButton(onClick = { model.changeToolPart(detail.part) }) { Text("从头重新读取") }
-                if (detail.exporting || detail.exportComplete) Text("${if (detail.exportComplete) "已导出" else "正在导出"} ${detail.exportedBytes} 字节")
-                SelectionContainer {
-                    Text(detail.text.ifEmpty { "尚未读取内容" }, modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp).verticalScroll(rememberScrollState()),
-                        fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-                }
-                Row {
-                    TextButton(onClick = { model.readToolDetail() }, enabled = detail.requestId == null && !detail.exporting) { Text(if (detail.error != null) "重试" else "读取下一页") }
-                    TextButton(onClick = { if (detail.follow) model.stopToolFollow() else model.readToolDetail(follow = true) }, enabled = !detail.exporting) { Text(if (detail.follow) "停止跟随" else "跟随输出") }
-                }
-                TextButton(onClick = { if (detail.exporting) model.closeToolDetail() else onExport() }) { Text(if (detail.exporting) "取消导出" else "导出当前部分") }
-                if (detail.error?.contains("缓存上限") == true) TextButton(onClick = { model.readToolDetail(clear = true) }) { Text("清空已读并继续") }
-            }
-        },
+    ToolDetailSheet(
+        detail = detail,
+        onClose = { model.closeToolDetail() },
+        onReadNext = { model.readToolDetail() },
+        onRetry = { if (detail.nextCursor != null) model.readToolDetail() else model.changeToolPart(detail.part) },
+        onClear = { model.readToolDetail(clear = true) },
+        onFollow = { if (it) model.readToolDetail(follow = true) else model.stopToolFollow() },
+        onExport = onExport,
     )
 }
 
@@ -3292,7 +3276,8 @@ private fun MessageBlocks(
                         result = result,
                         live = live,
                         summary = summary,
-                        openDetail = { summary?.let { openDetail(runtimeId, it) } },
+                        canRead = LocalToolContentAvailable.current,
+                        openDetail = { part -> summary?.let { openDetail(runtimeId, it, part) } },
                     )
                 }
             }
@@ -3342,7 +3327,7 @@ private fun ArtifactCard(
     }
 }
 
-private fun formatByteCount(bytes: Long): String = when {
+internal fun formatByteCount(bytes: Long): String = when {
     bytes >= 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
     bytes >= 1024 -> "%.1f KB".format(bytes / 1024.0)
     else -> "$bytes B"
@@ -3371,28 +3356,30 @@ private fun CollapsedTool(
     result: ChatMessage?,
     live: Boolean = false,
     summary: ToolSummary? = null,
-    openDetail: () -> Unit = {},
+    canRead: Boolean = false,
+    openDetail: (String) -> Unit = {},
 ) {
+    if (summary != null) {
+        ToolSummaryDisclosure(summary, canRead, openDetail)
+        return
+    }
     var expanded by rememberSaveable { mutableStateOf(false) }
     val resultText = result?.content.orEmpty().mapNotNull { it.text }.joinToString("\n").trim()
     val detail = resultText.ifBlank { activity?.detail }
-    val failed = summary?.isError == true || activity?.isError == true || result?.isError == true
+    val failed = activity?.isError == true || result?.isError == true
     val status = when {
         failed -> "执行失败"
         live -> "参数接收中"
-        summary != null -> when (summary.phase) { "started", "running" -> "执行中"; "cancelled" -> "已取消"; else -> "已完成" }
         else -> activity?.let { toolStateText(it.state) } ?: "已完成"
     }
     CompactDisclosure(
         icon = Icons.Rounded.Build,
         title = toolName,
         status = status,
-        summary = if (summary != null) listOfNotNull(summary.inputSummary?.text,
-            summary.errorSummary?.text ?: summary.resultSummary?.text, summary.exitCode?.let { "退出码 $it" }).joinToString("，")
-            else listOfNotNull(arguments, detail).joinToString("\n"),
-        collapsedSummary = if (summary == null) detail?.let(::compactActivitySummary).orEmpty() else null,
+        summary = listOfNotNull(arguments, detail).joinToString("\n"),
+        collapsedSummary = detail?.let(::compactActivitySummary).orEmpty(),
         expanded = expanded,
-        onClick = { if (summary != null) openDetail() else expanded = !expanded },
+        onClick = { expanded = !expanded },
         tint = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
     )
 }

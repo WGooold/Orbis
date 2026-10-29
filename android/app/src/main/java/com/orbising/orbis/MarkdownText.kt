@@ -216,7 +216,7 @@ private fun MarkdownList(list: ListBlock, listener: LinkInteractionListener) {
 
 /** Copies [text] and shows a check for 2.5 s; copying again restarts the timer (iOS `OrbisCopyButton`). */
 @Composable
-internal fun CopyIconButton(label: String, size: androidx.compose.ui.unit.Dp = 32.dp, text: () -> String) {
+internal fun CopyIconButton(label: String, size: androidx.compose.ui.unit.Dp = 32.dp, enabled: Boolean = true, text: () -> String) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     var copyGeneration by remember { mutableStateOf(0) }
@@ -226,6 +226,7 @@ internal fun CopyIconButton(label: String, size: androidx.compose.ui.unit.Dp = 3
         icon = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
         contentDescription = if (copied) "已复制" else label,
         size = size,
+        enabled = enabled,
     )
 }
 

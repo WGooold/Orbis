@@ -392,7 +392,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun stopRuntime() = active()?.stopRuntime()
     fun cancelQueuedMessage(queueId: String): String? = active()?.cancelQueuedMessage(queueId)
-    fun openToolDetail(runtimeId: String, summary: ToolSummary) = active()?.openToolDetail(runtimeId, summary)
+    fun openToolDetail(runtimeId: String, summary: ToolSummary,
+        part: String = summary.contents.firstOrNull { it.availability != "absent" }?.part ?: "arguments",
+    ) = active()?.openToolDetail(runtimeId, summary, part)
     fun changeToolPart(part: String) { state.value.toolDetail?.let { active()?.openToolDetail(it.runtimeId, it.summary, part) } }
     fun closeToolDetail() = active()?.closeToolDetail()
     fun exportToolDetail(uri: Uri, detail: ToolDetailView) {
