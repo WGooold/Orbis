@@ -21,9 +21,23 @@ struct ConnectionStatusView: View {
                         OrbisActionButton(title: "重新连接", symbol: "arrow.clockwise", action: store.reconnectSelectedHost)
                             .disabled(store.selectedHost == nil || store.connection == .connecting)
                     }
+                    if store.hosts.count > 1 {
+                        StatusSection(title: "已配对电脑") {
+                            ForEach(store.hosts) { computer in
+                                Button { store.selectHost(computer.hostId) } label: {
+                                    HStack {
+                                        Text(computer.name).font(.system(size: 14, weight: .semibold))
+                                        Spacer()
+                                        Text(connectionTitle(computer.connectionState)).font(.system(size: 11))
+                                        if computer.hostId == store.selectedHostId { Image(systemName: "checkmark") }
+                                    }.frame(minHeight: 44)
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                    }
                     StatusSection(title: "连接与加密") {
                         StatusFact(label: "连接方式", value: pathTitle(store.activePath), tone: store.connection == .secured ? OrbisPalette(scheme).success : nil)
-                        StatusFact(label: "中继连接", value: store.connection == .secured ? "已连接" : connectionTitle(store.connection))
+                        StatusFact(label: "电脑通道", value: connectionTitle(store.connection))
                         StatusFact(label: "加密通道", value: store.connection == .secured ? "已建立" : "未建立", tone: store.connection == .secured ? OrbisPalette(scheme).success : nil)
                         StatusFact(label: "路径延迟", value: store.pathRTT.map { "\(Int($0)) ms" } ?? "—")
                         StatusFact(label: "Relay 地址", value: store.selectedHost?.relay.relayUrl ?? "—")
@@ -94,7 +108,7 @@ struct SettingsView: View {
                             }.accessibilityElement(children: .contain).accessibilityIdentifier("path-priority-\(kind)")
                         }
                     }
-                    Text("顺序会保存在本机，并在安全连接建立后同步给电脑。iOS 当前可用 Relay 中继；LAN / P2P 直连仍在接入中。")
+                    Text("顺序会保存在本机，并同步给电脑。电脑根据各路径的可达性与延迟选择当前路径，连接状态页显示实际使用的链路。")
                         .font(.system(size: 13)).foregroundStyle(OrbisPalette(scheme).secondary)
                 }.padding(.horizontal, 20).padding(.vertical, 16)
             }
@@ -284,14 +298,16 @@ private struct HostModelSection: View {
 }
 
 private struct HostServicesSection: View {
+    @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var host: HostState
+    @Environment(\.colorScheme) private var scheme
     var body: some View {
         StatusSection(title: "电脑 Agent 服务") {
+            StatusFact(label: "Codex 桌面版接入", value: desktopAttachTitle(store.codexDesktop?.state),
+                tone: store.codexDesktop?.state == "attached" ? OrbisPalette(scheme).success : store.codexDesktop?.state == "error" ? OrbisPalette(scheme).error : nil)
+            if let reason = store.codexDesktop?.reason { StatusFact(label: "说明", value: reason) }
             if let problem = host.problem(for: "backends") { StatusFact(label: "服务状态", value: problem) }
             else if let value = host.domains["backends"]?.value {
-                let desktop = value["codexDesktop"]
-                StatusFact(label: "Codex 桌面版接入", value: desktopTitle(desktop["state"].string))
-                if let reason = desktop["reason"].string { StatusFact(label: "说明", value: reason) }
                 ForEach(Array(value["backends"].array.enumerated()), id: \.offset) { _, backend in
                     StatusFact(label: agentTitle(backend["kind"].string), value: backend["reason"].string ?? boolTitle(backend["ready"].bool, yes: "已就绪", no: "未就绪"))
                 }
@@ -306,9 +322,6 @@ private struct HostServicesSection: View {
 
 private func boolTitle(_ value: Bool?, yes: String, no: String) -> String { value.map { $0 ? yes : no } ?? "尚未核对" }
 private func severityTitle(_ severity: String) -> String { severity == "error" ? "错误" : severity == "warning" ? "警告" : "信息" }
-private func desktopTitle(_ state: String?) -> String {
-    switch state { case "attached": return "已接入"; case "closed": return "桌面版未打开"; case "notInstalled": return "未安装"; case "unsupported": return "暂不支持"; case "error": return "接入失败"; default: return "尚未核对" }
-}
 private func domainTitle(_ name: String) -> String {
     ["identity": "电脑身份", "backends": "Agent 服务", "catalog": "会话目录", "providers": "供应商", "workspaces": "工作区", "files": "文件", "operations": "操作", "diagnostics": "诊断记录", "connections": "电脑连接", "management": "服务管理"][name] ?? name
 }

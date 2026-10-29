@@ -5,26 +5,50 @@ struct InteractionWorkspaceView: View {
     @Environment(\.colorScheme) private var scheme
     let runtimeId: String
     @State private var selectedId: String?
+    @State private var open = false
+    @StateObject private var drafts = InteractionDraftCache(preferences: ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-screen=") }) ? nil : .standard)
     var body: some View {
         let requests = store.interactions[runtimeId] ?? []
-        if !requests.isEmpty {
-            VStack(spacing: 10) {
+        Group {
+            if !requests.isEmpty {
+                Button { open = true } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.bubble")
+                        Text(requests.count == 1 ? requests[0].title : "\(requests.count) 项交互待确认").font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                        Spacer()
+                        Text("打开").font(.system(size: 12))
+                        Image(systemName: "chevron.up").font(.system(size: 11))
+                    }.padding(14).frame(minHeight: 48)
+                }.buttonStyle(NeuButtonStyle(radius: 16)).padding(.horizontal, 16).accessibilityIdentifier("interaction-open")
+            }
+        }
+        .sheet(isPresented: $open) {
+            VStack(spacing: 14) {
+                OrbisPageHeader(title: "远程交互", back: { open = false }) { Text("\(requests.count) 项").font(.system(size: 12)) }
                 if requests.count > 1 {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
                             ForEach(requests) { request in
                                 Button { selectedId = request.requestId } label: {
-                                    Text(request.title).font(.system(size: 12)).lineLimit(1).padding(.horizontal, 14).frame(minHeight: 40)
+                                    Text(request.title).font(.system(size: 12)).lineLimit(1).padding(.horizontal, 14).frame(minHeight: 44)
                                 }.buttonStyle(NeuButtonStyle(selected: (selectedId ?? requests.first?.requestId) == request.requestId, radius: 12))
                             }
                         }.padding(6)
-                    }
+                    }.padding(.horizontal, 16)
                 }
                 if let request = requests.first(where: { $0.requestId == selectedId }) ?? requests.first {
-                    InteractionRequestView(request: request).id(request.requestId)
+                    let key = interactionDraftKey(host: store.selectedHost, sessionId: store.runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId, request: request)
+                    InteractionRequestView(request: request, draft: drafts.value(for: key, request: request), onDraftChange: { drafts.save($0, for: key, request: request) }).id(key)
+                        .padding(.horizontal, 16).padding(.bottom, 20)
                 }
-            }.padding(.horizontal, 16)
+            }.foregroundStyle(OrbisPalette(scheme).text).background(OrbisPalette(scheme).base.ignoresSafeArea()).orbisSheet([.large])
         }
+        .onAppear { if !requests.isEmpty { open = true } }
+        .onChange(of: requests.map(\.requestId)) { old, next in
+            if next.isEmpty { open = false; selectedId = nil }
+            else if next.contains(where: { !old.contains($0) }) { open = true }
+        }
+        .onChange(of: store.selectedHostId) { _, _ in open = false }
     }
 }
 
@@ -33,24 +57,18 @@ private struct InteractionRequestView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.openURL) private var openURL
     let request: InteractionRequest
+    let draft: InteractionDraftValue
+    let onDraftChange: (InteractionDraftValue) -> Void
     @State private var choices: Set<String> = []
     @State private var input = ""
     @State private var answers: [String: Set<String>] = [:]
     @State private var other: [String: String] = [:]
     @State private var notes: [String: String] = [:]
-    @State private var expanded = false
+    @State private var expanded = true
+    private var draftValue: InteractionDraftValue { InteractionDraftValue(input: input, choices: choices, answers: answers, other: other, notes: notes) }
 
     private var pending: Bool { store.submittingInteractions.contains(request.requestId) || request.submitted == true }
-    private var valid: Bool {
-        switch request.kind {
-        case "select": return choices.count == 1
-        case "multi-select": return choices.count >= (request.minSelections ?? 0) && choices.count <= (request.maxSelections ?? Int.max)
-        case "input": return input.count >= (request.minLength ?? 0) && input.count <= (request.maxLength ?? 100_000)
-        case "questionnaire":
-            return (request.questions ?? []).allSatisfy { !(answers[$0.id] ?? []).isEmpty || ($0.allowOther == true && !(other[$0.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
-        default: return true
-        }
-    }
+    private var valid: Bool { request.acceptsResponse(draftValue.response(for: request)) }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -64,7 +82,7 @@ private struct InteractionRequestView: View {
                     else { Text(expired ? "已过期" : "待确认").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).accent) }
                     OrbisIconButton(symbol: expanded ? "chevron.up" : "chevron.down", label: expanded ? "收起交互" : "展开交互", size: 32) { expanded.toggle() }
                 }
-                if expanded || request.kind == "confirm" {
+                if expanded {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
                             if let description = request.description { Text(description).font(.system(size: 13)) }
@@ -74,7 +92,7 @@ private struct InteractionRequestView: View {
                             }
                             content
                         }
-                    }.frame(maxHeight: 220)
+                    }.frame(maxHeight: .infinity)
                     HStack(spacing: 12) {
                         OrbisActionButton(title: request.cancelLabel ?? (request.kind == "confirm" ? "拒绝" : "取消")) {
                             _ = store.respond(request, response: request.kind == "confirm" ? ["kind": "confirm", "value": false] : ["kind": "cancel"])
@@ -86,7 +104,10 @@ private struct InteractionRequestView: View {
                 }
                 if pending { Text("已提交，等待电脑端确认").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary) }
             }.padding(16).neuSurface(inset: true, radius: 20, intensity: 0.6)
-        }.onAppear { input = request.initialValue ?? "" }
+        }.onAppear {
+            input = draft.input; choices = draft.choices.intersection(Set((request.options ?? []).map(\.value)))
+            answers = draft.answers; other = draft.other; notes = draft.notes
+        }.onChange(of: draftValue) { _, value in onDraftChange(value) }
     }
 
     @ViewBuilder private var content: some View {
@@ -99,8 +120,8 @@ private struct InteractionRequestView: View {
                 }
             }
         case "input":
-            if request.secret == true { SecureField(request.placeholder ?? "输入内容", text: $input).orbisInput() }
-            else { TextField(request.placeholder ?? "输入内容", text: $input, axis: .vertical).lineLimit(2...6).orbisInput() }
+            if request.secret == true { SecureField(request.placeholder ?? "输入内容", text: $input).orbisInput().accessibilityIdentifier("interaction-input") }
+            else { TextField(request.placeholder ?? "输入内容", text: $input, axis: .vertical).lineLimit(2...6).orbisInput().accessibilityIdentifier("interaction-input") }
         case "questionnaire":
             ForEach(request.questions ?? []) { question in
                 VStack(alignment: .leading, spacing: 12) {
@@ -112,17 +133,27 @@ private struct InteractionRequestView: View {
                                 var values = answers[question.id] ?? []
                                 if !values.insert(option.value).inserted { values.remove(option.value) }
                                 answers[question.id] = values
-                            } else { answers[question.id] = [option.value] }
+                            } else { answers[question.id] = [option.value]; other[question.id] = nil }
                         }
                     }
                     if question.allowOther == true {
                         if question.secret == true { SecureField("其他回答", text: textBinding($other, question.id)).orbisInput() }
                         else { TextField("其他回答", text: textBinding($other, question.id), axis: .vertical).orbisInput() }
                     }
-                    if question.allowNotes == true { TextField("补充说明（可选）", text: textBinding($notes, question.id), axis: .vertical).orbisInput() }
+                    if question.allowNotes == true {
+                        if question.secret == true { SecureField("补充说明（可选）", text: textBinding($notes, question.id)).orbisInput() }
+                        else { TextField("补充说明（可选）", text: textBinding($notes, question.id), axis: .vertical).orbisInput() }
+                    }
+                    if (other[question.id]?.utf16.count ?? 0) > 4_000 || (notes[question.id]?.utf16.count ?? 0) > 4_000 {
+                        Text("其他回答和补充说明各不能超过 4,000 个字符。").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).error)
+                    }
+                }
+                .onChange(of: other[question.id]) { _, value in
+                    if question.multiSelect != true, value?.isEmpty == false { answers[question.id] = [] }
                 }
             }
-        default: EmptyView()
+        case "confirm": EmptyView()
+        default: Text("此交互需要在电脑端完成。").font(.system(size: 13)).foregroundStyle(OrbisPalette(scheme).secondary)
         }
     }
 
@@ -142,21 +173,6 @@ private struct InteractionRequestView: View {
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
     private func submit() {
-        var response: [String: Any] = ["kind": request.kind]
-        switch request.kind {
-        case "confirm": response["value"] = true
-        case "select": response["value"] = choices.first ?? ""
-        case "multi-select": response["values"] = (request.options ?? []).map(\.value).filter { choices.contains($0) }
-        case "input": response["value"] = input
-        case "questionnaire":
-            response["answers"] = (request.questions ?? []).map { question -> [String: Any] in
-                var answer: [String: Any] = ["id": question.id, "values": question.options.map(\.value).filter { answers[question.id]?.contains($0) == true }]
-                if question.allowOther == true, let value = other[question.id], !value.isEmpty { answer["other"] = value }
-                if question.allowNotes == true, let value = notes[question.id], !value.isEmpty { answer["notes"] = value }
-                return answer
-            }
-        default: return
-        }
-        _ = store.respond(request, response: response)
+        _ = store.respond(request, response: draftValue.response(for: request))
     }
 }

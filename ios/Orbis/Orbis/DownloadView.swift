@@ -8,6 +8,7 @@ struct DownloadsView: View {
     let onBack: () -> Void
     @State private var browserOpen = false
     @State private var selected: Set<String> = []
+    @State private var path = ""
     private var downloads: [FileTransfer] { transfers.currentTasks.filter { $0.direction == "download" } }
     var body: some View {
         VStack(spacing: 0) {
@@ -16,6 +17,11 @@ struct DownloadsView: View {
                     OrbisIconButton(symbol: "trash", label: "删除所选下载", tint: OrbisPalette(scheme).error, action: confirmDelete)
                 }
             }
+            HStack(spacing: 10) {
+                TextField("电脑文件的完整路径", text: $path).textInputAutocapitalization(.never).autocorrectionDisabled().orbisInput().accessibilityIdentifier("download-path")
+                OrbisIconButton(symbol: "arrow.down.to.line", label: "按路径下载") { transfers.download(path: path.trimmingCharacters(in: .whitespacesAndNewlines)); path = "" }
+                    .disabled(store.connection != .secured || path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }.padding(.horizontal, 24).padding(.top, 8)
             OrbisActionButton(title: "浏览电脑文件", symbol: "folder") { browserOpen = true }
                 .disabled(store.connection != .secured).padding(.horizontal, 24).padding(.vertical, 12)
             if downloads.isEmpty { OrbisEmptyState(symbol: "arrow.down.to.line", title: "暂无下载", detail: "浏览电脑文件，或点击消息中的文件链接下载。") }

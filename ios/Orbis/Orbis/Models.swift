@@ -94,6 +94,8 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
     var contextUsage: RuntimeContextUsage?
     var thinkingLevel: String? = nil
     var permissionManagement: PermissionManagement? = nil
+    var sessionGraphSync: Bool? = nil
+    var sessionLeafId: String? = nil
     var id: String { runtimeId }
 }
 
@@ -109,6 +111,16 @@ struct RuntimeContextUsage: Codable, Hashable {
     let percent: Double?
 }
 
+/// Host-owned attachment facts; an installed desktop app may still be closed or unable to attach.
+struct CodexDesktopAttach: Codable, Hashable {
+    let state: String
+    let reason: String
+    var valid: Bool {
+        ["unsupported", "notInstalled", "closed", "attached", "error"].contains(state) &&
+            !reason.isEmpty && reason.utf16.count <= 256
+    }
+}
+
 struct SessionSummary: Codable, Hashable, Identifiable {
     let sessionId: String
     var name: String?
@@ -120,6 +132,7 @@ struct SessionSummary: Codable, Hashable, Identifiable {
     var agentKind: String?
     var archived: Bool?
     var modelProvider: String? = nil
+    var hostname: String? = nil
     var id: String { sessionId }
 }
 
@@ -130,6 +143,62 @@ struct ChatContent: Codable, Hashable {
     let artifact: RemoteArtifact?
     var summary: ToolSummary? = nil
     var toolCallId: String? = nil
+    var truncated: Bool? = nil
+    var originalBytes: Int64? = nil
+    var arguments: RemoteJSONValue? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case type, text, toolName, artifact, summary, toolCallId, truncated, originalBytes, arguments
+    }
+}
+
+extension ChatContent {
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        type = try values.decode(String.self, forKey: .type)
+        text = try values.decodeIfPresent(String.self, forKey: .text)
+        toolName = try values.decodeIfPresent(String.self, forKey: .toolName)
+        artifact = try values.decodeIfPresent(RemoteArtifact.self, forKey: .artifact)
+        summary = try values.decodeIfPresent(ToolSummary.self, forKey: .summary)
+        toolCallId = try values.decodeIfPresent(String.self, forKey: .toolCallId)
+        truncated = try values.decodeIfPresent(Bool.self, forKey: .truncated)
+        originalBytes = try values.decodeIfPresent(Int64.self, forKey: .originalBytes)
+        // An explicit null argument is a JSON value, distinct from an absent arguments field.
+        arguments = values.contains(.arguments) ? try values.decode(RemoteJSONValue.self, forKey: .arguments) : nil
+    }
+}
+
+/// Preserve native tool arguments across wire decoding, history persistence and exports.
+/// Integer cases avoid rounding IDs and other large integral arguments through Double.
+indirect enum RemoteJSONValue: Codable, Hashable {
+    case object([String: RemoteJSONValue]), array([RemoteJSONValue]), string(String)
+    case integer(Int64), unsigned(UInt64), number(Double), bool(Bool), null
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null }
+        else if let bool = try? value.decode(Bool.self) { self = .bool(bool) }
+        else if let integer = try? value.decode(Int64.self) { self = .integer(integer) }
+        else if let unsigned = try? value.decode(UInt64.self) { self = .unsigned(unsigned) }
+        else if let number = try? value.decode(Double.self) { self = .number(number) }
+        else if let string = try? value.decode(String.self) { self = .string(string) }
+        else if let array = try? value.decode([RemoteJSONValue].self) { self = .array(array) }
+        else { self = .object(try value.decode([String: RemoteJSONValue].self)) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case .object(let object): try value.encode(object)
+        case .array(let array): try value.encode(array)
+        case .string(let string): try value.encode(string)
+        case .integer(let integer): try value.encode(integer)
+        case .unsigned(let unsigned): try value.encode(unsigned)
+        case .number(let number): try value.encode(number)
+        case .bool(let bool): try value.encode(bool)
+        case .null: try value.encodeNil()
+        }
+    }
 }
 
 struct ToolSummary: Codable, Hashable {
@@ -251,6 +320,8 @@ struct ChatMessage: Codable, Hashable, Identifiable {
     let timestamp: Int64
     let isError: Bool?
     var toolSummary: ToolSummary? = nil
+    var toolCallId: String? = nil
+    var toolName: String? = nil
     var id: String { messageId }
     var text: String {
         content.compactMap { item -> String? in
@@ -332,6 +403,7 @@ struct InteractionRequest: Codable, Hashable, Identifiable {
     let externalUrl: String?
     let questions: [Question]?
     var submitted: Bool? = nil
+    var toolName: String? = nil
     var id: String { requestId }
     struct Question: Codable, Hashable, Identifiable {
         let id: String

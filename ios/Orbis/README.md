@@ -1,6 +1,6 @@
 # Orbis for iOS
 
-原生 SwiftUI 客户端，最低支持 iOS 17，适配 iPhone 和 iPad。App 只依赖 Apple 系统框架，无第三方包。
+原生 SwiftUI 客户端，最低支持 iOS 17，适配 iPhone 和 iPad。协议与加密使用 Apple 系统框架；P2P DataChannel 使用精确锁定的 WebRTC 140.0.0 XCFramework，由 Xcode Swift Package 管理。源码与二进制依赖保留各自许可，见 [第三方声明](../../THIRD-PARTY-NOTICES.md) 和 [WebRTC 许可](THIRD-PARTY-NOTICES/WebRTC-LICENSE.txt)。
 
 当前界面按 Android 的新拟物主题和页面流程逐页对齐，包含：
 
@@ -9,9 +9,11 @@
 - 文件浏览下载、可续传任务及附件上传；任务 / 分片格式和完整性校验已有隔离测试。
 - 供应商配置与切换、连接优先级保存、Host 状态与诊断分页、会话 provider 归属筛选。
 - 与 Android 同源的 Agent 标识、浅色 / 深色配色、凸起 / 凹陷材质和操作反馈。
-- 协议 v15、Keychain 身份、CryptoKit 端到端加密、Relay 重连、最近历史预览及更早历史分页。
+- 协议 v15、Keychain 身份、CryptoKit 端到端加密、Relay / LAN / P2P 三路径与 Host 选路、最近历史预览及更早历史分页。
 
 逐页完成项、与 Android 尚有的差距和验收范围见 [UI / UX 对齐记录](docs/android-ui-parity.md)。
+
+不涉及界面渲染的数据、协议与 Host 交互对齐范围见 [核心对齐记录](docs/android-core-parity.md)。
 
 ## 构建与运行
 
@@ -47,7 +49,28 @@ swift test --package-path ios/Orbis --disable-xctest
 
 独立 Command Line Tools 如遇测试宏加载错误，使用上面的 `check-ios.sh` 自动补充插件路径。测试使用内存凭据存储，不访问用户 Keychain；固定密钥测试向量与 Node / Android 实现对齐。覆盖配对、握手、AAD/密文、跨 channel 序号、重放/篡改、分片乱序与缓冲上限、会话切换、快照回执、旧连接回调隔离及发送失败。
 
-安装 Node.js 后，`check-ios.sh` 还会运行独立本地 WebSocket 夹具，验证真实 HTTP 配对、加密长消息双向分片、探针回声、Host 重启与正常关连接后的重连。也可通过 `ORBIS_TEST_NODE=/absolute/path/to/node` 指定可执行文件；未找到 Node 时仅跳过这一项网络测试，CI 已配置 Node。
+安装 Node.js 后，`check-ios.sh` 还会运行独立本地 WebSocket 夹具，验证真实 HTTP 配对、加密长消息双向分片、探针回声、Host 重启、Relay / LAN 回退及双 Host 并存。也可通过 `ORBIS_TEST_NODE=/absolute/path/to/node` 指定可执行文件；未找到 Node 时仅跳过这一项网络测试，CI 已配置 Node。
+
+## 原生 P2P 互通测试
+
+普通 Swift 核心测试不下载或链接 WebRTC，使用可控 peer 验证 ICE 回调顺序、独立握手、重放防护、优先级、超时和断线宽限。原生互通测试还会启动本地 `node-datachannel` Host，验证真实 WebRTC 传输、加密文本与二进制分片、Relay 回退，以及两台 Host 的 peer 共存；不会连接生产 Relay 或读取真实配对。
+
+安装仓库 Node 依赖和完整 Xcode 后，可在仓库根目录运行：
+
+```sh
+xcodebuild -resolvePackageDependencies -project ios/Orbis/Orbis.xcodeproj \
+  -scheme Orbis -clonedSourcePackagesDirPath /tmp/orbis-webrtc-packages
+orbis_webrtc_frameworks=/tmp/orbis-webrtc-packages/artifacts/webrtc/WebRTC/WebRTC.xcframework/macos-x86_64_arm64
+ORBIS_TEST_NODE="$(command -v node)" \
+ORBIS_TEST_DATACHANNEL_MODULE="$(node --input-type=module -e 'console.log(import.meta.resolve("node-datachannel"))')" \
+  swift test --package-path ios/Orbis --scratch-path /tmp/orbis-native-p2p-tests --disable-xctest \
+  -Xswiftc -F -Xswiftc "$orbis_webrtc_frameworks" \
+  -Xlinker -F -Xlinker "$orbis_webrtc_frameworks" \
+  -Xlinker -rpath -Xlinker "$orbis_webrtc_frameworks" \
+  --filter 'P2PTransportTests|RelayTransportTests'
+```
+
+2026-10-29 本地验证：WebRTC 140.0.0 与 node-datachannel 0.33.4 的真实回环通过，包括两台 Host 同时使用 P2P 时关闭一台不影响另一台。此项覆盖本机 host candidate；蜂窝网络、跨 NAT 打洞和真实 Host / iOS 真机仍需现场验收。
 
 ## 验收与范围
 
@@ -57,7 +80,9 @@ Relay 地址支持反向代理路径前缀，例如 `wss://example.com/relay`。
 
 真机验收应覆盖：相机授权与退出、配对、首次安全握手、runtime/session 目录、历史预览、双向聊天、切换 runtime、停止、恢复会话、断网重连、Host 重启后的重新握手，以及前后台切换。
 
-当前传输仅实现 Relay 路径。LAN/P2P 实际链路、多电脑同时在线、完整条目图恢复、持久化离线会话缓存、后台通知和 TestFlight / App Store 分发尚未实现；运行依赖前台连接。附件、审批、Slash、历史分页、工具清单/详情、供应商配置与切换、Host 状态域与诊断分页已接入协议与界面。连接优先级可保存并同步给 Host，页面明确标注当前可用链路；目录按原生 provider 归属筛选。真实 Host / 真机联调仍需单独验收，不能据此认定 Android 的全部功能已对齐。
+传输支持 Relay、LAN 和 WebRTC DataChannel P2P。Host 通过 `device.path` 决定当前路径；每条路径独立完成端到端握手并维护密钥、序号与分片重组。P2P 的请求与应答信令经过加密的 Relay；短暂 ICE 断开有 5 秒恢复窗口，协商或原生组件失败会保留其它可用路径。Orbis 只创建 DataChannel，不创建相机或麦克风轨道。会话条目与 Host 显示投影已按配对身份持久化，重新连接后先显示缓存，再核对源端状态；缓存本身不会冒充当前已应用基线。统一模型可恢复执行、模型、上下文、权限、命令、审批和队列；通知拥有独立版本与清单恢复。
+
+多台 Host 各自保持认证连接，选择电脑只切换交互目标。系统后台通知和 TestFlight / App Store 分发尚未实现；运行仍依赖前台连接。历史已使用后台 SQLite 增量事务和有界分页，支持完整 timing、固定目标 catchup 与离线分支；下载和上传磁盘工作由独立 worker 完成，持久进度在写盘同步后发布。真实 Host / 真机联调需单独验收，不能据此认定 Android 的全部功能已对齐。
 
 ## 界面回归
 

@@ -7,10 +7,15 @@ import Foundation
 func makePreviewStore(screen: String) -> OrbisStore {
     let transport = PreviewTransport(screen: screen)
     let store = OrbisStore(secure: PreviewStorage(empty: screen == "pairing"), transport: transport, preferences: nil)
-    if screen == "slash" || screen == "approval" {
+    if screen == "slash" || screen == "approval" || screen == "interactions" {
         Task { @MainActor in
             for _ in 0..<10 where store.selectedRuntime == nil { await Task.yield() }
             if screen == "slash", let runtime = store.selectedRuntime { store.saveDraft("/", for: runtime) }
+            if screen == "interactions" {
+                for (id, title, kind) in [("draft-one", "填写验证说明", "input"), ("draft-two", "确认下一步", "confirm")] {
+                    transport.event(["type": "interaction.requested", "request": ["runtimeId": "preview-codex", "requestId": id, "extensionId": "preview", "kind": kind, "title": title, "placeholder": "输入验证说明", "expiresAt": Int64(Date().timeIntervalSince1970 * 1000) + 300000]])
+                }
+            }
             if screen == "approval" {
                 transport.event(["type": "interaction.requested", "request": ["runtimeId": "preview-codex", "requestId": "preview-approval", "extensionId": "preview", "kind": "confirm", "title": "允许执行验证命令？", "description": "Agent 请求运行项目的测试，以检查本次修改。", "argumentSummary": "swift test --package-path ios/Orbis", "expiresAt": Int64(Date().timeIntervalSince1970 * 1000) + 300000]])
             }
@@ -44,9 +49,9 @@ private final class PreviewTransport: OrbisTransport {
         self.receive = receive
         state(.secured, nil)
         Task { @MainActor in
-            receive(["type": "device.ready", "runtimes": [
+            receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": [
                 ["runtimeId": "preview-codex", "sessionId": "session-1", "sessionName": "对齐移动端的使用体验", "name": "Codex", "cwd": "/Projects/orbis", "status": "idle", "agentKind": "codex",
-                 "model": ["provider": "openai", "id": "gpt-5.4", "name": "GPT-5.4"], "contextUsage": ["tokens": 24000, "contextWindow": 128000, "percent": 18.75],
+                 "model": ["provider": "openai", "id": "gpt-5.4", "name": "GPT-5.4"], "thinkingLevel": "high", "contextUsage": ["tokens": 24000, "contextWindow": 128000, "percent": 18.75],
                  "permissionManagement": ["summary": "工作区写入", "details": "允许在工作区中编辑文件，需要时请求确认。", "tone": "restricted", "settings": []]],
                 ["runtimeId": "preview-pi", "sessionId": "session-2", "sessionName": "梳理项目中的页面结构", "name": "Pi", "cwd": "/Projects/website", "status": "running", "agentKind": "pi"],
                 ["runtimeId": "preview-dsh", "sessionId": "session-3", "sessionName": "检查服务端连接状态", "name": "DeepSeek", "cwd": "/Projects/orbis", "status": "idle", "agentKind": "dsh"]
@@ -78,6 +83,19 @@ private final class PreviewTransport: OrbisTransport {
             }
             receive?(["type": "session.list.result", "requestId": object["requestId"]!, "sessions": sessions,
                       "currentProviders": [["agentKind": "codex", "provider": "openai"], ["agentKind": "codexDesktop", "provider": "openai"]]], "ctl")
+        } else if object["type"] as? String == "notification.sync", let runtime = object["runtimeId"] as? String {
+            let notices: [[String: Any]] = screen == "queue" || screen == "notices" ? [["notificationId": "preview-notice", "producerEpoch": "preview-producer", "code": "test_ready", "occurrenceId": "preview-occurrence", "scope": [:], "severity": "warning", "message": "模型服务等待恢复，电脑端会继续核对。", "lifecycle": "condition", "createdAt": 1793232000000, "updatedAt": 1793232000000, "verification": "unknown"]] : []
+            receive?(["type": "notification.snapshot", "protocolVersion": orbisProtocolVersion, "hostEpoch": "preview-notices", "runtimeId": runtime, "sessionId": runtime == "preview-codex" ? "session-1" : runtime == "preview-pi" ? "session-2" : "session-3", "revision": 1, "complete": true, "verification": notices.isEmpty ? "confirmed" : "unknown", "notifications": notices], "ctl")
+        } else if object["type"] as? String == "notification.dismiss", let runtime = object["runtimeId"] as? String {
+            receive?(["type": "notification.snapshot", "protocolVersion": orbisProtocolVersion, "hostEpoch": "preview-notices", "runtimeId": runtime, "sessionId": "session-1", "revision": 2, "complete": true, "verification": "confirmed", "notifications": []], "ctl")
+        } else if object["type"] as? String == "agent.state.request", object["scope"] as? String == "agent" {
+            let runtime = object["runtimeId"] as? String ?? "preview-codex", session = object["sessionId"] as? String ?? "session-1"
+            let domains = ["execution", "model", "context"].map { name -> [String: Any] in
+                let value: [String: Any] = name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": "GPT-5.4", "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
+                return ["domain": name, "modelEpoch": "preview-model", "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,
+                        "source": ["producer": "host", "sourceId": "preview-host", "sourceEpoch": "preview-source", "sourceRevision": 1], "checkedAt": 1793232000000, "value": value]
+            }
+            receive?(["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "agent", "runtimeId": runtime, "sessionId": session, "agentKind": object["agentKind"] ?? "codex", "modelEpoch": "preview-model", "domains": domains, "missing": [], "truncated": false], "ctl")
         } else if object["type"] as? String == "agent.state.request" {
             let requested = object["domains"] as? [String] ?? HostState.domainNames
             let domains = requested.map { name -> [String: Any] in
@@ -112,8 +130,14 @@ private final class PreviewTransport: OrbisTransport {
         } else if let command = object["command"] as? [String: Any], let type = command["type"] as? String {
             let runtime = object["runtimeId"] as? String ?? "preview-codex"
             if type == "session.sync" {
-                event(["type": "session.snapshot", "sessionId": command["sessionId"]!, "syncId": command["syncId"]!, "mode": "replace",
-                       "display": ["entries": messages.map { ["message": $0] }]], runtimeId: runtime)
+                let entries: [[String: Any]] = messages.enumerated().map { index, message in
+                    ["entryId": "node-\(index + 1)", "parentId": index == 0 ? NSNull() : "node-\(index)" as Any, "type": "message", "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": message]]
+                }
+                let display: [[String: Any]] = messages.enumerated().map { ["displayId": "node-\($0.offset + 1)", "entryId": "node-\($0.offset + 1)", "kind": "message", "message": $0.element] }
+                event(["type": "session.snapshot", "sessionId": command["sessionId"]!, "syncId": command["syncId"]!, "range": "preview", "mode": "replace", "selection": "snapshot", "cursor": ["leafId": "node-\(messages.count)"], "entries": entries,
+                       "source": ["epoch": "preview-source", "seq": 1, "ready": true], "checkpoint": ["checkpointId": "preview-checkpoint", "head": ["leafId": "node-\(messages.count)"], "headCompleteness": "complete", "inventoryComplete": true],
+                       "live": ["complete": true, "messages": [], "tools": []], "hasOlder": false, "complete": true, "rangeStatus": "complete", "display": ["projectionVersion": 3, "entries": display]], runtimeId: runtime)
+                if screen == "queue" { event(["type": "message.queued", "queueId": "preview-queue", "text": "接着检查 iOS 的历史同步和文件传输。", "delivery": "followUp", "state": "accepted"], runtimeId: runtime) }
             } else if type == "session.tool.content.read" {
                 let text = "Reading project files...\nSources checked: 18\nNo errors found.\nValidation completed successfully.\n"
                 let offset = (command["offset"] as? NSNumber)?.intValue ?? 0
@@ -127,7 +151,11 @@ private final class PreviewTransport: OrbisTransport {
                 event(page, runtimeId: runtime)
             } else if type == "session.entry.request" {
                 let index = command["entryId"] as? String == "node-1" ? 0 : 1
-                event(["type": "session.entry.result", "requestId": command["requestId"]!, "entryId": command["entryId"]!, "entry": ["data": ["message": messages[index]]]], runtimeId: runtime)
+                let full = screen == "truncated" ? message("truncated-message", role: "assistant", text: "完整返回内容：这条消息已按需从电脑取回。") : messages[index]
+                event(["type": "session.entry.result", "requestId": command["requestId"]!, "entryId": command["entryId"]!, "entry": ["data": ["message": full]]], runtimeId: runtime)
+            } else if type == "user_message.cancel" {
+                event(["type": "message.queued", "queueId": command["messageId"]!, "text": "接着检查 iOS 的历史同步和文件传输。", "delivery": "followUp", "state": "cancelled"], runtimeId: runtime)
+                event(["type": "command.result", "commandId": object["commandId"]!, "ok": true], runtimeId: runtime)
             } else if type == "user_message", let text = command["text"] as? String {
                 event(["type": "message.finished", "message": message(command["messageId"] as? String ?? UUID().uuidString, role: "user", text: text)], runtimeId: runtime)
             } else if type == "slash.execute" {
@@ -164,6 +192,13 @@ private final class PreviewTransport: OrbisTransport {
         ["messageId": id, "role": role, "timestamp": 1793232000000, "content": [["type": "text", "text": text]]]
     }
     private var messages: [[String: Any]] {
+        if screen == "truncated" {
+            return [["messageId": "truncated-message", "role": "assistant", "timestamp": 1793232000000,
+                "content": [["type": "text", "text": "这条消息的线路投影只保留了前半部分。", "truncated": true, "originalBytes": 2048],
+                    ["type": "tool_call", "toolCallId": "legacy-tool", "toolName": "read", "arguments": ["path": "/repo/source.swift", "limit": 40]]]],
+                ["messageId": "legacy-result", "role": "tool", "toolCallId": "legacy-tool", "toolName": "read", "timestamp": 1793232000001,
+                 "content": [["type": "text", "text": "已完成工具参数验证。"]]]]
+        }
         if screen == "tool" {
             let summary: [String: Any] = ["projectionVersion": 1, "tool": ["agent": ["hostId": "preview-host", "agentKind": "codex", "sessionId": "session-1"], "toolCallId": "preview-tool"],
                 "toolName": "read", "phase": "finished", "order": 1, "contents": [["part": "output", "format": "text", "availability": "readable", "readCapability": "range"]],

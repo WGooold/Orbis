@@ -200,7 +200,7 @@ struct SessionDrawerView: View {
         return HStack(spacing: 4) {
             Button {
                 searchFocused = false
-                if let problem = store.providerMismatch(session) { showMismatch(problem) }
+                if runtime != nil, let problem = store.providerMismatch(session) { showMismatch(problem) }
                 else { onOpenSession(session) }
             } label: {
                 HStack(spacing: 8) {
@@ -209,7 +209,7 @@ struct SessionDrawerView: View {
                         Text(store.displayName(session)).font(.system(size: 14, weight: .medium)).lineLimit(2)
                         HStack(spacing: 6) {
                             if let runtime { RuntimeStatusLabel(status: runtime.status) }
-                            else { Text("未运行").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary) }
+                            else { Text("缓存历史").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary) }
                             Text(Date(timeIntervalSince1970: Double(session.modifiedAt) / 1000), style: .date)
                                 .font(.system(size: 10)).foregroundStyle(OrbisPalette(scheme).secondary)
                         }
@@ -217,19 +217,21 @@ struct SessionDrawerView: View {
                     if store.activatingSessionId == session.sessionId { ProgressView().controlSize(.small) }
                 }.padding(12).contentShape(Rectangle())
             }.buttonStyle(.plain)
-                .disabled((runtime == nil && store.connection != .secured) || store.activatingSessionId != nil)
+                .disabled(store.activatingSessionId != nil)
             OrbisMenuIconButton(symbol: "ellipsis", label: "会话操作", size: 30) {
-                [OrbisMenuItem(title: state.archived ? "取消归档" : "归档会话", symbol: state.archived ? "tray.and.arrow.up" : "archivebox",
+                [OrbisMenuItem(title: "在电脑继续会话", symbol: "play", disabled: store.connection != .secured || store.activatingSessionId != nil) {
+                    if let problem = store.providerMismatch(session) { showMismatch(problem) } else { store.activate(session) }
+                }, OrbisMenuItem(title: state.archived ? "取消归档" : "归档会话", symbol: state.archived ? "tray.and.arrow.up" : "archivebox",
                                disabled: store.connection != .secured || session.agentKind == nil) {
                     store.archive(session, archived: !state.archived)
                 }]
-            }.padding(.trailing, 2)
+            }.padding(.trailing, 2).accessibilityIdentifier("session-actions-" + session.sessionId)
         }.neuSurface(inset: store.selectedRuntime?.sessionId == session.sessionId, radius: 16, intensity: 0.45)
     }
 
     private func hostMenuItems() -> [OrbisMenuItem] {
         var items: [OrbisMenuItem] = store.pairings.map { host in
-            OrbisMenuItem(title: host.hostName, symbol: "desktopcomputer", checked: host.hostId == store.selectedHostId) {
+            OrbisMenuItem(title: host.hostName + (store.hosts.first(where: { $0.hostId == host.hostId }).map { " · " + connectionTitle($0.connectionState) } ?? ""), symbol: "desktopcomputer", checked: host.hostId == store.selectedHostId) {
                 if host.hostId != store.selectedHostId { store.connect(hostId: host.hostId) }
             }
         }

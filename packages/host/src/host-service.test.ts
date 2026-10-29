@@ -815,13 +815,15 @@ describe("host end-to-end over relay", () => {
       // A marker on the same msg channel proves all earlier unwanted snapshots were suppressed.
       await expect(second.device.receiveMessage()).resolves.toMatchObject({ event: { type: "message.started", message: { messageId: "barrier" } } });
       await expect(device.receiveMessage()).resolves.toMatchObject({ event: { type: "message.started", message: { messageId: "barrier" } } });
+      // Keep these reads pending at the runtime: the completed preview above can be served from the Host cache.
       for (let index = 0; index < 33; index++) {
         device.sendPayload(Buffer.from(JSON.stringify({ ...command, commandId: `busy-${index}`,
-          command: { ...command.command, syncId: `busy-sync-${index}` } })));
+          command: { ...command.command, syncId: `busy-sync-${index}`, targetLeafId: "uncached-busy-target" } })));
       }
       let busy: Record<string, unknown> | undefined;
-      for (let index = 0; index < 10; index++) {
-        const message = await device.receiveMessage(true);
+      const busyDeadline = Date.now() + 5_000;
+      while (Date.now() < busyDeadline) {
+        const message = await device.expectOn("relay", Math.max(1, busyDeadline - Date.now()));
         if (message.type === "protocol.error" && message.code === "session_sync_busy") { busy = message; break; }
       }
       expect(busy).toMatchObject({ type: "protocol.error", code: "session_sync_busy", commandId: "busy-32" });

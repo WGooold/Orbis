@@ -118,7 +118,7 @@ final class OrbisUITests: XCTestCase {
         let team = app.buttons["provider-action-team"]
         XCTAssertTrue(team.waitForExistence(timeout: 5))
         team.tap()
-        let dialog = app.otherElements["orbis-dialog"]
+        let dialog = app.descendants(matching: .any)["orbis-dialog"].firstMatch
         XCTAssertTrue(dialog.waitForExistence(timeout: 3))
         XCTAssertTrue(dialog.staticTexts["启用供应商"].exists)
         dialog.buttons["取消"].tap()
@@ -160,8 +160,12 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(codexFilter.waitForExistence(timeout: 3)); codexFilter.tap()
         drawer.buttons["team"].tap()
         let session = drawer.buttons.matching(NSPredicate(format: "label CONTAINS %@", "优化聊天滚动与输入体验")).firstMatch
-        XCTAssertTrue(session.waitForExistence(timeout: 3)); session.tap()
-        let dialog = drawer.otherElements["orbis-dialog"]
+        XCTAssertTrue(session.waitForExistence(timeout: 3))
+        // History rows browse the local cache; provider compatibility is checked
+        // only when explicitly continuing the session on the computer.
+        drawer.buttons["session-actions-session-4"].tap()
+        drawer.buttons["在电脑继续会话"].tap()
+        let dialog = drawer.descendants(matching: .any)["orbis-dialog"].firstMatch
         XCTAssertTrue(dialog.waitForExistence(timeout: 3))
         XCTAssertTrue(dialog.staticTexts["需要切换 provider"].exists)
         capture("provider-mismatch", app: drawer)
@@ -190,11 +194,68 @@ final class OrbisUITests: XCTestCase {
             for screen in ["pairing", "home", "drawer", "chat", "status", "settings", "providers", "downloads", "approval"] {
                 let app = launch(screen, dark: dark)
                 XCTAssertTrue(app.wait(for: .runningForeground, timeout: 8))
-                let expected = screen == "pairing" ? "连接你的电脑" : screen == "status" ? "连接状态" : screen == "settings" ? "设置" : screen == "providers" ? "供应商" : screen == "downloads" ? "下载" : screen == "drawer" ? "会话目录" : "Codex"
+                let expected = screen == "pairing" ? "连接你的电脑" : screen == "status" ? "连接状态" : screen == "settings" ? "设置" : screen == "providers" ? "供应商" : screen == "downloads" ? "下载" : screen == "drawer" ? "会话目录" : screen == "approval" ? "远程交互" : "Codex"
                 XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", expected)).firstMatch.waitForExistence(timeout: 5))
                 capture(screen + (dark ? "-dark" : "-light"), app: app)
                 app.terminate()
             }
         }
     }
+    func testQueueCancellationNotificationsAndRuntimeFacts() {
+        let app = launch("queue")
+        let cancel = app.buttons["queue-cancel-preview-queue"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 8)); cancel.tap()
+        XCTAssertTrue(app.staticTexts["Follow-up · 已撤回"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["通知状态待核对"].waitForExistence(timeout: 5))
+        capture("queue-notification", app: app)
+        app.buttons["关闭通知"].firstMatch.tap()
+        XCTAssertFalse(app.staticTexts["模型服务等待恢复，电脑端会继续核对。 · 状态待核对"].waitForExistence(timeout: 2))
+        app.buttons["会话信息"].tap()
+        XCTAssertTrue(app.staticTexts["模型与上下文"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["high"].exists)
+        XCTAssertTrue(app.staticTexts["本轮耗时"].exists)
+        capture("runtime-facts", app: app)
+    }
+
+    func testToolExportAndInteractionDraftSwitching() {
+        let tool = launch("tool")
+        XCTAssertTrue(tool.buttons["展开read · 完成"].waitForExistence(timeout: 8)); tool.buttons["展开read · 完成"].tap()
+        tool.buttons["查看输出"].tap()
+        XCTAssertTrue(tool.buttons["tool-export"].waitForExistence(timeout: 5)); tool.buttons["tool-export"].tap()
+        XCTAssertTrue(tool.buttons["tool-export-share"].waitForExistence(timeout: 8))
+        XCTAssertTrue(tool.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Sources checked: 18")).firstMatch.exists)
+        capture("tool-export-complete", app: tool)
+        tool.terminate()
+        let interactions = launch("interactions")
+        // SwiftUI's vertical TextField becomes a TextView after its first value.
+        let input = interactions.descendants(matching: .any)["interaction-input"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 8)); input.tap(); input.typeText("保留输入草稿")
+        interactions.buttons["确认下一步"].firstMatch.tap()
+        interactions.buttons["填写验证说明"].firstMatch.tap()
+        XCTAssertTrue((input.value as? String)?.contains("保留输入草稿") == true)
+        capture("interaction-draft-restored", app: interactions)
+    }
+
+    func testTruncatedContentToolArgumentsAndDesktopAttachFacts() {
+        let app = launch("truncated")
+        XCTAssertTrue(app.buttons["展开read · 已完成"].waitForExistence(timeout: 8))
+        app.buttons["展开read · 已完成"].tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "/repo/source.swift")).firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["已完成工具参数验证。"].exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "有内容因超长被截断")).firstMatch.exists)
+        capture("tool-arguments-truncated", app: app)
+        app.buttons["full-entry-truncated-message"].tap()
+        XCTAssertTrue(app.staticTexts["完整返回内容：这条消息已按需从电脑取回。"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["复制完整内容"].isEnabled)
+        capture("full-entry", app: app)
+        app.terminate()
+        let status = launch("status")
+        let desktop = status.staticTexts["Codex 桌面版接入"]
+        for _ in 0..<6 where !desktop.isHittable { status.swipeUp() }
+        XCTAssertTrue(desktop.isHittable)
+        XCTAssertTrue(status.staticTexts["未接入"].exists)
+        XCTAssertTrue(status.staticTexts["Codex 桌面版未打开"].exists)
+        capture("desktop-attach", app: status)
+    }
+
 }

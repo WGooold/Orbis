@@ -15,6 +15,7 @@ private struct ChatRowsPreference: PreferenceKey {
 struct ChatView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var transfers: FileTransfers
+    @EnvironmentObject private var agent: AgentState
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let runtime: RuntimeSummary
@@ -28,6 +29,7 @@ struct ChatView: View {
     @State private var selectedCommand: String?
     @State private var deliveryChoices = false
     @State private var permissionsOpen = false
+    @State private var runtimeInfoOpen = false
     @State private var filePickerOpen = false
     @State private var firstVisibleRow: String?
     @State private var historyAnchor: String?
@@ -68,17 +70,19 @@ struct ChatView: View {
                     HStack(spacing: 7) {
                         if store.isSyncing { ProgressView().controlSize(.mini) }
                         RuntimeStatusLabel(status: runtime.status)
-                        if let model = runtime.model {
+                        if let model = runtime.model, domainReady("model") {
                             Text(model.name ?? model.id).font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
                         }
                     }
                 }.onTapGesture(perform: onAlias).accessibilityLabel("\(agentTitle(kind))，\(store.displayName(runtime))，\(runtimeStatusTitle(runtime.status))")
             } trailing: {
+                OrbisIconButton(symbol: "info.circle", label: "会话信息") { composerFocused = false; runtimeInfoOpen = true }
                 OrbisIconButton(symbol: "clock.arrow.circlepath", label: "历史与分支", action: onHistory)
                 OrbisIconButton(symbol: "arrow.down.to.line", label: "下载", action: onDownloads)
             }
+            RuntimeNoticesView(runtimeId: runtime.runtimeId).padding(.horizontal, 16)
             conversation
-            composer
+            if store.isViewingCachedSession { cachedComposer } else { composer }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent)
             .fileImporter(isPresented: $filePickerOpen, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                 switch result {
@@ -89,6 +93,7 @@ struct ChatView: View {
             .sheet(isPresented: $permissionsOpen) {
                 PermissionsView(runtime: runtime).orbisSheet([.medium, .large])
             }
+            .sheet(isPresented: $runtimeInfoOpen) { RuntimeInfoView(runtime: runtime).orbisSheet([.large]) }
             .onChange(of: draft.wrappedValue) { _, next in
                 if let selectedCommand, !(next == "/" + selectedCommand || next.hasPrefix("/" + selectedCommand + " ")) { self.selectedCommand = nil }
                 if next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { deliveryChoices = false }
@@ -105,6 +110,7 @@ struct ChatView: View {
 
     private var conversation: some View {
         let kind = self.kind
+        let presentation = chatPresentation(store.messages)
         return ScrollViewReader { proxy in
             GeometryReader { viewport in
                 ScrollView {
@@ -117,25 +123,25 @@ struct ChatView: View {
                                     if store.historyLoading.contains(runtime.runtimeId) { ProgressView().controlSize(.small) }
                                     else {
                                         OrbisTextButton(title: store.historyErrors[runtime.runtimeId] == nil ? "加载" : "重试", symbol: "arrow.up", tint: accent) { loadOlder() }
-                                            .disabled(store.isSyncing || !store.canSend)
+                                            .disabled(store.isSyncing || (!store.canSend && !store.isViewingCachedSession))
                                     }
                                 }
                                 if let error = store.historyErrors[runtime.runtimeId] { Text(error).font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).error) }
                             }.padding(12).neuSurface(inset: true, radius: 14, intensity: 0.35)
                         }
                         HStack {
-                            Text(store.isSyncing ? "正在同步最近消息…" : "最近消息")
+                            Text(store.isViewingCachedSession ? "本机缓存" : store.isSyncing ? "正在同步最近消息…" : "最近消息")
                                 .font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary)
                             Spacer()
                             OrbisTextButton(title: "刷新", symbol: "arrow.clockwise", tint: accent) { store.refresh() }
                                 .disabled(store.isSyncing || !store.canSend)
                         }.padding(.horizontal, 4)
-                        if store.messages.isEmpty {
+                        if presentation.messages.isEmpty {
                             OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: store.isSyncing ? "正在加载会话" : "继续这段会话", detail: store.isSyncing ? nil : "发送消息，或输入 / 选择命令。")
                                 .frame(minHeight: max(180, viewport.size.height - 100))
                         }
-                        ForEach(chatRows(store.messages)) { row in
-                            ChatMessageRow(row: row, kind: kind).id(row.id)
+                        ForEach(chatRows(presentation.messages, turnIdsByMessageId: Dictionary(store.turnTimings.compactMap { timing in timing.messageId.map { ($0, timing.turnId) } }, uniquingKeysWith: { _, last in last }))) { row in
+                            ChatMessageRow(row: row, kind: kind, toolResults: presentation.toolResults).id(row.id)
                                 .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: [row.id: geometry.frame(in: .named("chat-viewport"))]) })
                         }
                         LiveToolsView(runtime: runtime)
@@ -149,7 +155,7 @@ struct ChatView: View {
                     }
                     .onPreferenceChange(ChatRowsPreference.self) { frames in
                         firstVisibleRow = frames.filter { $0.value.maxY > 0 && $0.value.minY < viewport.size.height }.min { $0.value.minY < $1.value.minY }?.key
-                        let first = store.messages.first?.messageId
+                        let first = presentation.messages.first?.messageId
                         let atTop = first.flatMap { frames[$0] }.map { $0.minY >= -40 && $0.minY < viewport.size.height } ?? false
                         if !atTop { topArmed = hasPositioned }
                         if atTop && topArmed && historyAnchor == nil && !store.isSyncing && !store.historyLoading.contains(runtime.runtimeId) && store.historyErrors[runtime.runtimeId] == nil {
@@ -185,9 +191,19 @@ struct ChatView: View {
         }
     }
 
+    private var cachedComposer: some View {
+        VStack(spacing: 10) {
+            Text("本机缓存 · 可离线浏览，发送消息前需在电脑继续此会话").font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary)
+            if let session = store.sessions.first(where: { $0.sessionId == runtime.sessionId }) {
+                OrbisActionButton(title: "在电脑继续会话", symbol: "play") { store.activate(session) }
+                    .disabled(store.connection != .secured || store.activatingSessionId != nil)
+            }
+        }.padding(16)
+    }
+
     private var composer: some View {
         VStack(spacing: 10) {
-            if let percent = runtime.contextUsage?.percent {
+            if let percent = contextUsagePercent(runtime.contextUsage), domainReady("context") {
                 GeometryReader { geometry in
                     Rectangle().fill(accent.opacity(0.15))
                         .overlay(alignment: .leading) { Rectangle().fill(percent >= 90 ? OrbisPalette(scheme).error : accent).frame(width: geometry.size.width * min(100, max(0, percent)) / 100) }
@@ -199,6 +215,7 @@ struct ChatView: View {
             if let feedback = store.actionFeedback {
                 Text(feedback).font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary)
             }
+            QueuedMessagesView(runtimeId: runtime.runtimeId)
             InteractionWorkspaceView(runtimeId: runtime.runtimeId)
             if deliveryChoices {
                 HStack(spacing: 12) {
@@ -251,6 +268,11 @@ struct ChatView: View {
         }.padding(.top, 8).background(OrbisPalette(scheme).base)
     }
 
+    private func domainReady(_ name: String) -> Bool {
+        guard let snapshot = agent.snapshots[runtime.runtimeId] else { return true }
+        return snapshot.missing[name] == nil && (snapshot.domains[name]?.availability ?? "ready") == "ready"
+    }
+
     private var branchTitle: String {
         guard let branch = store.workingBranches[runtime.runtimeId], branch.cwd == runtime.cwd, branch.sessionId == runtime.sessionId else { return "分支信息待同步" }
         return branch.branch ?? branch.commit.map { "HEAD · \(String($0.prefix(8)))（分离）" } ?? (branch.loaded ? "未获取到 Git 分支" : "分支信息待同步")
@@ -274,10 +296,12 @@ struct ChatView: View {
 }
 
 struct ChatMessageRow: View {
+    @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     @State private var copied = false
     let row: ChatRow
     let kind: String?
+    var toolResults: [String: ChatMessage] = [:]
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             if row.isUser { Spacer(minLength: 36) }
@@ -294,7 +318,14 @@ struct ChatMessageRow: View {
                     }
                 }
                 ForEach(row.messages) { message in
-                    MessageContentView(message: message)
+                    MessageContentView(message: message, toolResults: toolResults)
+                }
+                ForEach(store.turnTimings.filter { timing in timing.messageId.map { id in row.messages.contains { $0.messageId == id } } == true }, id: \.turnId) { timing in
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let elapsed = timing.durationMs.map(Double.init) ?? max(0, context.date.timeIntervalSince1970 * 1000 - Double(timing.startedAt))
+                        Text(String(format: timing.durationMs == nil ? "本轮已运行 %.1f 秒" : "本轮耗时 %.1f 秒", elapsed / 1000))
+                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(OrbisPalette(scheme).secondary)
+                    }
                 }
             }.padding(16).frame(maxWidth: row.isUser ? nil : .infinity, alignment: .leading)
                 .neuSurface(inset: row.isUser, radius: 20, intensity: row.isUser ? 0.6 : 0.4)
@@ -313,9 +344,13 @@ struct ChatMessageRow: View {
 }
 
 private struct MessageContentView: View {
+    @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var transfers: FileTransfers
     @Environment(\.colorScheme) private var scheme
+    @State private var fullOpen = false
+    @State private var fullEntryId = ""
     let message: ChatMessage
+    var toolResults: [String: ChatMessage] = [:]
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let summary = message.toolSummary { ToolSummaryView(summary: summary) }
@@ -326,8 +361,20 @@ private struct MessageContentView: View {
                         Text(content.text ?? "思考中…").font(.system(size: 13)).textSelection(.enabled)
                     }
                 case "tool_call", "toolCall":
-                    if let summary = content.summary { ToolSummaryView(summary: summary) }
-                    else { CompactDisclosure(title: content.toolName ?? "工具调用", symbol: "wrench.and.screwdriver") { Text(content.text ?? "暂无工具摘要").font(.system(size: 13)) } }
+                    let result = content.toolCallId.flatMap { toolResults[$0] }
+                    if let summary = result?.toolSummary ?? content.summary { ToolSummaryView(summary: summary) }
+                    else {
+                        let live = content.toolCallId == nil && content.arguments == nil && content.text?.isEmpty == false
+                        let status = result?.isError == true ? "执行失败" : live ? "参数接收中" : "已完成"
+                        CompactDisclosure(title: (content.toolName ?? result?.toolName ?? message.toolName ?? "工具") + " · " + status, symbol: "wrench.and.screwdriver") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                if let arguments = toolArgumentsText(content), !arguments.isEmpty {
+                                    Text(arguments).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                                }
+                                if let result { Text(fullMessageText(result)).font(.system(size: 12, design: .monospaced)).textSelection(.enabled) }
+                            }
+                        }
+                    }
                 case "artifact":
                     if let file = content.artifact {
                         Button { transfers.download(artifact: file) } label: {
@@ -341,8 +388,48 @@ private struct MessageContentView: View {
                     }
                 }
             }
+            if let truncated = message.content.first(where: { $0.truncated == true }) {
+                Text(truncated.originalBytes.map { "有内容因超长被截断（原始 \($0.formatted()) 字节）" } ?? "有内容因超长被截断。")
+                    .font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary)
+                OrbisTextButton(title: "查看完整内容", symbol: "doc.text.magnifyingglass") {
+                    store.previewEntry(message.messageId)
+                    fullEntryId = store.entryPreview?.entryId ?? message.messageId
+                    fullOpen = true
+                }.disabled(!store.canSend).accessibilityIdentifier("full-entry-" + message.messageId)
+                if !store.canSend { Text("连接电脑并继续此会话后可取回完整内容。").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary) }
+            }
             if message.content.isEmpty && message.toolSummary == nil { Text("…").foregroundStyle(OrbisPalette(scheme).secondary) }
         }.foregroundStyle(message.isError == true ? OrbisPalette(scheme).error : OrbisPalette(scheme).text)
+            .sheet(isPresented: $fullOpen) { FullMessageView(entryId: fullEntryId).orbisSheet([.large]) }
+    }
+}
+
+private struct FullMessageView: View {
+    @EnvironmentObject private var store: OrbisStore
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var scheme
+    let entryId: String
+    private var preview: EntryPreview? { store.entryPreview?.entryId == entryId ? store.entryPreview : nil }
+    var body: some View {
+        VStack(spacing: 16) {
+            OrbisPageHeader(title: "完整内容", back: { dismiss() }) {
+                OrbisIconButton(symbol: "doc.on.doc", label: "复制完整内容") {
+                    if let message = preview?.message { UIPasteboard.general.string = fullMessageText(message) }
+                }.disabled(preview?.message == nil)
+            }
+            if preview?.loading == true { ProgressView("正在取回…") }
+            if let message = preview?.message {
+                ScrollView([.horizontal, .vertical]) {
+                    Text(fullMessageText(message)).font(.system(size: 13, design: .monospaced)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(20)
+                }
+            } else if preview?.loading != true {
+                OrbisNotice(text: preview?.error ?? "当前没有可显示的完整内容。", error: true).padding(.horizontal, 20)
+                OrbisActionButton(title: "重试", symbol: "arrow.clockwise") { store.previewEntry(entryId) }.disabled(!store.canSend).padding(.horizontal, 20)
+            }
+            Spacer(minLength: 0)
+        }.foregroundStyle(OrbisPalette(scheme).text).background(OrbisPalette(scheme).base.ignoresSafeArea())
+            .onDisappear { if preview != nil { store.dismissPreview() } }
     }
 }
 
@@ -374,6 +461,12 @@ struct ToolSummaryView: View {
     var body: some View {
         CompactDisclosure(title: "\(summary.toolName) · \(phase)", symbol: summary.isError == true ? "exclamationmark.circle" : "terminal") {
             VStack(alignment: .leading, spacing: 10) {
+                if summary.durationMs != nil || summary.exitCode != nil {
+                    HStack {
+                        if let duration = summary.durationMs { Text(String(format: "耗时 %.1f 秒", Double(duration) / 1000)) }
+                        if let code = summary.exitCode { Text("退出码 \(code)") }
+                    }.font(.system(size: 11)).foregroundStyle(.secondary)
+                }
                 ForEach(Array([summary.inputSummary, summary.resultSummary, summary.errorSummary].compactMap { $0 }.enumerated()), id: \.offset) { _, part in
                     Text(part.text).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                     if part.omitted { Text("内容已省略，当前显示摘要").font(.system(size: 11)).foregroundStyle(.secondary) }
@@ -383,7 +476,10 @@ struct ToolSummaryView: View {
                         if part.availability != "absent" {
                             OrbisActionButton(title: "查看" + toolPartTitle(part.part), symbol: "doc.text.magnifyingglass") {
                                 store.toolContent.open(runtimeId: runtime.runtimeId, locator: ToolLocator(tool: tool, part: part.part)); detailOpen = true
-                            }.disabled(!store.canSend || !["readable", "pending"].contains(part.availability))
+                            }.disabled(!store.canSend || part.readCapability == "none" || !["readable", "pending"].contains(part.availability))
+                            if ["temporarily-unavailable", "unrecoverable"].contains(part.availability) {
+                                Text(part.availability == "unrecoverable" ? "此部分内容已无法恢复" : "来源暂时无法提供此部分内容").font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -645,4 +741,131 @@ private struct MarkdownImageView: View {
             Link(alt.isEmpty ? "打开图片" : alt, destination: url).font(.system(size: 12))
         }.padding(12).neuSurface(inset: true, radius: 14, intensity: 0.35)
     }
+}
+
+
+struct QueuedMessagesView: View {
+    @EnvironmentObject private var store: OrbisStore
+    @Environment(\.colorScheme) private var scheme
+    let runtimeId: String
+    var body: some View {
+        let items = store.queuedMessages[runtimeId] ?? []
+        if !items.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(items) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text((item.delivery == "steer" ? "Steer" : "Follow-up") + " · " + queueStateTitle(item.state)).font(.system(size: 11, weight: .semibold))
+                                if item.state == "accepted" {
+                                    OrbisTextButton(title: store.pendingQueueCancellations.contains(item.queueId) ? "撤回中…" : "撤回", symbol: "xmark") { _ = store.cancelQueuedMessage(item.queueId) }
+                                        .disabled(!store.canSend || store.pendingQueueCancellations.contains(item.queueId)).accessibilityIdentifier("queue-cancel-" + item.queueId)
+                                }
+                            }
+                            Text(item.text).font(.system(size: 12)).lineLimit(3).textSelection(.enabled)
+                            if let error = item.error { Text(error).font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).error) }
+                        }.frame(width: 240, alignment: .leading).padding(12).neuSurface(inset: true, radius: 14, intensity: 0.35)
+                    }
+                }.padding(.horizontal, 16)
+            }.frame(maxHeight: 130).accessibilityIdentifier("queued-messages")
+        }
+    }
+}
+
+struct RuntimeNoticesView: View {
+    @EnvironmentObject private var store: OrbisStore
+    @EnvironmentObject private var notifications: RuntimeNotifications
+    let runtimeId: String
+    var body: some View {
+        if let projection = notifications.projections[runtimeId], !projection.items.isEmpty || !projection.complete {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                if projection.verification == "unknown" || !projection.complete || store.connection != .secured {
+                    HStack {
+                        Text("通知状态待核对").font(.system(size: 12))
+                        Spacer()
+                        OrbisTextButton(title: "重新核对", symbol: "arrow.clockwise") { notifications.sync(runtimeId: runtimeId) }.disabled(store.connection != .secured)
+                    }
+                }
+                ForEach(projection.items) { notice in
+                    HStack(alignment: .top, spacing: 8) {
+                        OrbisNotice(text: notice.message + (notice.verification == "unknown" ? " · 状态待核对" : ""), error: notice.severity != "info")
+                        OrbisIconButton(symbol: "xmark", label: "关闭通知", size: 32) { notifications.dismiss(runtimeId: runtimeId, notificationId: notice.notificationId) }.disabled(store.connection != .secured)
+                    }
+                }
+                }
+            }.frame(maxHeight: 160).accessibilityIdentifier("runtime-notifications")
+        }
+    }
+}
+
+private struct RuntimeInfoView: View {
+    @EnvironmentObject private var store: OrbisStore
+    @EnvironmentObject private var agent: AgentState
+    @Environment(\.dismiss) private var dismiss
+    let runtime: RuntimeSummary
+    private var snapshot: AgentSnapshot? { agent.snapshots[runtime.runtimeId] }
+    private func ready(_ name: String) -> Bool { snapshot?.missing[name] == nil && (snapshot?.domains[name]?.availability ?? "ready") == "ready" }
+    var body: some View {
+        VStack(spacing: 0) {
+            OrbisPageHeader(title: "会话信息", back: { dismiss() }) {
+                OrbisIconButton(symbol: "arrow.clockwise", label: "核对会话状态") { agent.subscribe(runtime: runtime, force: true) }.disabled(!store.canSend)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    StatusSection(title: "模型与上下文") {
+                        StatusFact(label: "模型", value: ready("model") ? runtime.model?.name ?? runtime.model?.id ?? "未报告" : "状态待核对")
+                        StatusFact(label: "供应商", value: ready("model") ? runtime.model?.provider ?? "未报告" : "状态待核对")
+                        StatusFact(label: "思考级别", value: ready("model") ? runtime.thinkingLevel ?? "来源未报告" : "状态待核对")
+                        StatusFact(label: "上下文", value: ready("context") ? contextText : "状态待核对")
+                    }
+                    StatusSection(title: "执行状态") {
+                        StatusFact(label: "当前状态", value: ready("execution") ? runtimeStatusTitle(runtime.status) : "状态待核对")
+                        if ready("execution"), let execution = snapshot?.domains["execution"]?.value {
+                            StatusFact(label: "重试", value: activity(execution["retry"]))
+                            StatusFact(label: "上下文压缩", value: activity(execution["compaction"]))
+                            if let start = execution["turn"]["startedAt"].number {
+                                TimelineView(.periodic(from: .now, by: 1)) { context in
+                                    let duration = execution["turn"]["durationMs"].number ?? max(0, context.date.timeIntervalSince1970 * 1000 - start)
+                                    StatusFact(label: execution["turn"]["durationMs"] == .null ? "本轮已运行" : "本轮耗时", value: String(format: "%.1f 秒", duration / 1000))
+                                }
+                            }
+                        }
+                    }
+                    ForEach((store.commands[runtime.runtimeId] ?? []).filter { ["model", "thinking"].contains($0.name) && $0.argument?.options?.isEmpty == false }) { command in
+                        StatusSection(title: command.description ?? command.name) {
+                            ForEach(command.argument?.options ?? []) { option in
+                                OrbisActionButton(title: option.label) { _ = store.executeSlash(command.name, args: option.value) }.disabled(!store.canSend || !store.pendingActionIds.isEmpty)
+                            }
+                        }
+                    }
+                    StatusSection(title: "状态来源") {
+                        if let snapshot {
+                            if let error = snapshot.error { OrbisNotice(text: error, error: true) }
+                            ForEach(AgentState.domainNames, id: \.self) { name in
+                                StatusFact(label: agentDomainTitle(name), value: snapshot.missing[name] ?? snapshot.domains[name].map { $0.availability == "ready" ? ($0.completeness == "complete" || $0.projectionComplete == true ? "已核对" : "部分状态") : "当前不可用" } ?? "尚未读取")
+                            }
+                        } else { Text("尚未读取会话状态").font(.system(size: 13)) }
+                    }
+                }.padding(20)
+            }
+        }
+    }
+    private var contextText: String {
+        guard let usage = runtime.contextUsage else { return "来源未报告" }
+        var parts: [String] = []
+        if let percent = contextUsagePercent(usage) { parts.append(String(format: "%.1f%%", percent)) }
+        if let tokens = usage.tokens { parts.append("\(tokens.formatted()) tokens") }
+        if let window = usage.contextWindow { parts.append("窗口 \(window.formatted())") }
+        return parts.isEmpty ? "来源未报告" : parts.joined(separator: " · ")
+    }
+    private func activity(_ value: HostJSON) -> String {
+        guard value != .null, value.string != "unavailable" else { return "来源尚未提供" }
+        let phase = ["idle": "空闲", "running": "进行中", "failed": "失败"][value["phase"].string ?? ""] ?? "待核对"
+        return [phase, value["attempt"].number.map { "第 \(Int($0)) 次" }, value["detail"].string].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+private func agentDomainTitle(_ name: String) -> String {
+    ["identity": "会话身份", "availability": "可用性", "execution": "执行", "delivery": "消息队列", "interactions": "交互", "permissions": "权限", "model": "模型", "context": "上下文", "capabilities": "可用命令", "resources": "资源", "providerBinding": "供应商归属", "workspaceRef": "工作区", "artifacts": "附件", "records": "诊断记录"][name] ?? name
 }

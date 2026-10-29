@@ -19,7 +19,7 @@ struct ContentView: View {
         #if DEBUG
         let preview = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-screen=") }?.split(separator: "=").last.map(String.init)
         switch preview {
-        case "chat", "slash", "approval", "tool": _pages = State(initialValue: [.chat])
+        case "chat", "slash", "approval", "tool", "queue", "notices", "interactions", "truncated": _pages = State(initialValue: [.chat])
         case "status": _pages = State(initialValue: [.status])
         case "settings": _pages = State(initialValue: [.settings])
         case "providers": _pages = State(initialValue: [.settings, .providers])
@@ -70,6 +70,8 @@ struct ContentView: View {
         .environmentObject(store.transfers)
         .environmentObject(store.toolInventories)
         .environmentObject(store.hostState)
+        .environmentObject(store.notifications)
+        .environmentObject(store.agentState)
         .tint(OrbisPalette(scheme).accent)
         .foregroundStyle(OrbisPalette(scheme).text)
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
@@ -128,7 +130,10 @@ struct ContentView: View {
         SessionDrawerView(state: $directoryState, onClose: { setDrawer(false) },
                           onOpenSession: { session in
                               if let runtime = store.runtimes.first(where: { $0.sessionId == session.sessionId }) { openRuntime(runtime) }
-                              else { store.activate(session) }
+                              else if store.openCachedSession(session) { setDrawer(false); pages = [.chat] }
+                              else {
+                                  overlay.showDialog("本机尚无缓存", message: "连接电脑并打开会话后，可把历史保存在本机。", actions: [OrbisDialogAction(title: "返回", role: .cancel)] + (store.connection == .secured ? [OrbisDialogAction(title: "在电脑继续会话") { store.activate(session) }] : []))
+                              }
                           },
                           onNewSession: { cwd in
                               newSessionCwd = cwd; setDrawer(false); newSessionOpen = true
@@ -367,7 +372,7 @@ struct HomeView: View {
                     OrbisTextButton(title: "重新连接", symbol: "arrow.clockwise", action: store.reconnectSelectedHost)
                 }
             }.padding(.horizontal, 20).padding(.bottom, 6)
-            if store.runtimes.isEmpty {
+            if store.hosts.allSatisfy({ $0.runtimes.isEmpty }) {
                 OrbisEmptyState(symbol: "desktopcomputer", title: "暂无在线会话",
                                 detail: store.connection == .secured ? "在电脑端启动 Agent，或在会话目录中新建。" : "连接电脑后，在线会话会出现在这里。")
                 OrbisActionButton(title: "查看会话目录", symbol: "folder", action: onDirectory)
@@ -375,8 +380,19 @@ struct HomeView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 16) {
-                        ForEach(store.runtimes.sorted { store.displayName($0).localizedStandardCompare(store.displayName($1)) == .orderedAscending }) { runtime in
-                            runtimeCard(runtime)
+                        ForEach(store.hosts) { host in
+                            HStack {
+                                Button { store.selectHost(host.hostId) } label: {
+                                    Label(host.name, systemImage: host.hostId == store.selectedHostId ? "desktopcomputer" : "desktopcomputer.trianglebadge.exclamationmark")
+                                        .font(.system(size: 13, weight: .semibold))
+                                }.buttonStyle(.plain)
+                                Spacer()
+                                Text(connectionTitle(host.connectionState)).font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary)
+                            }.padding(.horizontal, 4).padding(.top, 8)
+                            ForEach(host.runtimes.sorted { host.connection.displayName($0).localizedStandardCompare(host.connection.displayName($1)) == .orderedAscending }) { runtime in
+                                runtimeCard(runtime, host: host)
+                            }
+                            if host.runtimes.isEmpty { Text("这台电脑暂无在线会话").font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary).padding(12) }
                         }
                     }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 28)
                 }.refreshable { store.refresh() }
@@ -385,20 +401,20 @@ struct HomeView: View {
             .background(OrbisPalette(scheme).base.ignoresSafeArea())
     }
 
-    private func runtimeCard(_ runtime: RuntimeSummary) -> some View {
-        let kind = store.agentKind(runtime)
-        return Button { onOpenRuntime(runtime) } label: {
+    private func runtimeCard(_ runtime: RuntimeSummary, host: HostSnapshot) -> some View {
+        let kind = host.connection.agentKind(runtime)
+        return Button { store.selectRuntime(hostId: host.hostId, runtimeId: runtime.runtimeId); onOpenRuntime(runtime) } label: {
             HStack(spacing: 12) {
                 AgentEmblem(kind: kind)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(store.displayName(runtime)).font(.system(size: 16, weight: .semibold)).lineLimit(1)
-                    Text("\(store.selectedHost?.hostName ?? "电脑")-\(runtime.cwd)")
+                    Text(host.connection.displayName(runtime)).font(.system(size: 16, weight: .semibold)).lineLimit(1)
+                    Text("\(host.name) · \(runtime.cwd)")
                         .font(.system(size: 12, design: .monospaced)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
                     HStack(spacing: 10) {
                         Text(agentTitle(kind)).font(.system(size: 12, weight: .medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
                         RuntimeStatusLabel(status: runtime.status)
                     }
-                    if !(store.interactions[runtime.runtimeId] ?? []).isEmpty {
+                    if !(host.connection.interactions[runtime.runtimeId] ?? []).isEmpty {
                         Label("待确认 · 打开会话完成交互", systemImage: "exclamationmark.circle")
                             .font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).error)
                     }
@@ -406,7 +422,7 @@ struct HomeView: View {
             }.padding(16).padding(.trailing, 52)
         }.buttonStyle(NeuButtonStyle(radius: 20))
             .overlay(alignment: .trailing) {
-                OrbisIconButton(symbol: "pencil", label: "修改会话别名") { onAlias(runtime) }.padding(.trailing, 12)
+                OrbisIconButton(symbol: "pencil", label: "修改会话别名") { store.selectHost(host.hostId); onAlias(runtime) }.padding(.trailing, 12)
             }.accessibilityElement(children: .contain)
     }
 
