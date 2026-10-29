@@ -369,7 +369,7 @@ private fun RemoteApp(
                 onBack = { model.selectOfflineSession(null) },
             )
         }
-        state.selectedRuntimeId == null -> if (allDownloadsOpen) {
+        state.selectedRuntimeId == null && allDownloadsOpen -> {
             AllDownloadsScreen(
                 state = state,
                 onBack = { allDownloadsOpen = false },
@@ -382,19 +382,23 @@ private fun RemoteApp(
                 onCancel = model::cancelDownload,
                 onDelete = model::deleteDownloads,
             )
-        } else if (settingsOpen) {
+        }
+        state.selectedRuntimeId == null && settingsOpen -> {
             SettingsScreen(model = model, onBack = { settingsOpen = false })
-        } else if (statusOpen) {
+        }
+        state.selectedRuntimeId == null && statusOpen -> {
             StatusScreen(
                 state = state,
                 pairing = model.pairingStatus(),
                 onBack = { statusOpen = false },
                 onOpenSettings = { settingsOpen = true },
             )
-        } else {
-            runtimeList()
         }
-        else -> SwipeBackLayer(onBack = { model.selectRuntime(null) }, underlay = runtimeList) {
+        else -> SwipeBackLayer(
+            onBack = { model.selectRuntime(null) },
+            underlay = runtimeList,
+            open = state.selectedRuntimeId != null,
+        ) {
             AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?:
                 state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
                 ChatScreen(state, model)
@@ -711,6 +715,21 @@ internal fun RuntimeListScreen(
                             var closeArmed by remember(row.hostId, runtime.runtimeId) { mutableStateOf(false) }
                             val swipeScope = rememberCoroutineScope()
                             val swipeAnim = remember(row.hostId, runtime.runtimeId) { Animatable(0f) }
+                            var touchPressed by remember { mutableStateOf(false) }
+                            var opening by remember { mutableStateOf(false) }
+                            val currentOpenRuntime by rememberUpdatedState(onOpenRuntime)
+                            LaunchedEffect(opening, selecting) {
+                                if (opening) {
+                                    if (!selecting) {
+                                        // A quick tap can press and release in one frame. Paint the
+                                        // depressed card before navigation starts composing the chat.
+                                        androidx.compose.runtime.withFrameNanos { }
+                                        androidx.compose.runtime.withFrameNanos { }
+                                        currentOpenRuntime(row.hostId, runtime.runtimeId)
+                                    }
+                                    opening = false
+                                }
+                            }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -764,6 +783,7 @@ internal fun RuntimeListScreen(
                                         modifier = Modifier.fillMaxWidth().offset { IntOffset(-swipeAnim.value.roundToInt(), 0) }
                                             .testTag("home-runtime-${runtime.runtimeId}")
                                             .semantics { selected = runtime.runtimeId in selectedIds }
+                                            .immediatePressFeedback(!selecting) { touchPressed = it }
                                             .pointerInput(selecting, runtime.runtimeId, cardWidth) {
                                                 if (!selecting) {
                                                     var hapticSent = false
@@ -797,10 +817,11 @@ internal fun RuntimeListScreen(
                                             },
                                         shape = RoundedCornerShape(20.dp),
                                         shadowScale = 0.8f,
-                                        style = if (runtime.runtimeId in selectedIds) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                                        style = if (runtime.runtimeId in selectedIds || touchPressed || opening)
+                                            NeumorphStyle.Pressed else NeumorphStyle.Raised,
                                         onClick = {
                                             if (selecting) toggleSelection(runtime.runtimeId)
-                                            else if (swipeOffset == 0f) onOpenRuntime(row.hostId, runtime.runtimeId)
+                                            else if (swipeOffset == 0f && !opening) opening = true
                                         },
                                         onLongClick = {
                                             if (!selecting) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
