@@ -189,8 +189,25 @@ struct MarkdownBlock: Identifiable, Equatable {
 
 struct ChatRow: Identifiable {
     var messages: [ChatMessage]
+    /// A long turn is virtualized in small rows; its copy action still owns the complete turn.
+    var copyMessages: [ChatMessage]? = nil
     var id: String { messages[0].messageId }
     var isUser: Bool { messages[0].role == "user" }
+}
+
+func chatViewportRows(_ rows: [ChatRow], previous: [ChatRow] = []) -> [ChatRow] {
+    let starts = Set(previous.filter { !$0.isUser }.map(\.id))
+    return rows.flatMap { row in
+        guard !row.isUser, row.messages.count > 4 else { return [row] }
+        var result: [ChatRow] = [], start = 0
+        while start < row.messages.count {
+            let limit = min(start + 4, row.messages.count)
+            let end = ((start + 1)..<limit).first { starts.contains(row.messages[$0].messageId) } ?? limit
+            result.append(ChatRow(messages: Array(row.messages[start..<end]), copyMessages: row.messages))
+            start = end
+        }
+        return result
+    }
 }
 
 struct ChatPresentation {
@@ -260,12 +277,12 @@ struct ChatTranscript {
 
     static let empty = ChatTranscript(messages: [], turnTimings: [:])
 
-    init(messages: [ChatMessage], turnTimings: [String: SessionTurnTiming]) {
+    init(messages: [ChatMessage], turnTimings: [String: SessionTurnTiming], previousRows: [ChatRow] = []) {
         let presentation = chatPresentation(messages)
         let timings = turnTimings.values.sorted { ($0.startedAt, $0.turnId) < ($1.startedAt, $1.turnId) }
         let turnIds = Dictionary(timings.compactMap { timing in timing.messageId.map { ($0, timing.turnId) } }, uniquingKeysWith: { _, last in last })
         let timingsByMessage = Dictionary(grouping: timings.filter { $0.messageId != nil }, by: { $0.messageId! })
-        rows = chatRows(presentation.messages, turnIdsByMessageId: turnIds)
+        rows = chatViewportRows(chatRows(presentation.messages, turnIdsByMessageId: turnIds), previous: previousRows)
         firstMessageId = presentation.messages.first?.messageId
         var results: [String: [String: ChatMessage]] = [:], rowTimings: [String: [SessionTurnTiming]] = [:]
         for row in rows {

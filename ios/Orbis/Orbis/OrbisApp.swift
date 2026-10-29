@@ -13,10 +13,21 @@ struct OrbisApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            ContentView().environmentObject(store)
-                #if DEBUG
-                .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--preview-dark") ? .dark : nil)
-                #endif
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--preview-screen=disclosure") {
+                DisclosurePerformancePreview()
+            } else {
+                appContent
+            }
+            #else
+            appContent
+            #endif
         }
+    }
+    private var appContent: some View {
+        ContentView().environmentObject(store)
+            #if DEBUG
+            .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--preview-dark") ? .dark : nil)
+            #endif
     }
 }

@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import SwiftUI
 
 // Explicit launch arguments opt into isolated, in-memory fixtures for UI review.
 // They never read Keychain, connect to a real Host, or persist preview content.
@@ -96,6 +97,9 @@ private final class PreviewTransport: OrbisTransport {
         receive?(["type": "runtime.event", "runtimeId": runtimeId, "sequence": sequence, "event": event], "msg")
     }
     func send(_ object: [String: Any]) -> Bool {
+        if (object["command"] as? [String: Any])?["type"] as? String == "session.sync" {
+            ChatEntryProbe.shared.sentSync()
+        }
         Task { @MainActor in
             if slowSync, (object["command"] as? [String: Any])?["type"] as? String == "session.sync" {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -255,6 +259,18 @@ private final class PreviewTransport: OrbisTransport {
         ["messageId": id, "role": role, "timestamp": 1793232000000, "content": [["type": "text", "text": text]]]
     }
     private var messages: [[String: Any]] {
+        if screen == "entry" {
+            let longTurn = ProcessInfo.processInfo.arguments.contains("--preview-entry-long-turn")
+            let history = (1...80).flatMap { index in
+                [message("entry-user-\(index)", role: "user", text: "检查第 \(index) 个文件"),
+                 message("entry-reply-\(index)", role: "assistant", text: String(repeating: "检查完成，缓存的历史不应阻塞再次进入。\n\n", count: 8))]
+            }
+            let turn = (1...(longTurn ? 80 : 1)).map { index in
+                message("entry-step-\(index)", role: "assistant", text: "步骤 \(index)\n\n**验证**源文件、布局与工具执行状态。\n\n保持完整正文和原有阅读位置。")
+            }
+            return history + [message("entry-question", role: "user", text: "检查长轮次的进入性能")] + turn +
+                [message("entry-latest", role: "assistant", text: "ENTRY_LATEST")]
+        }
         if screen == "truncated" {
             return [["messageId": "truncated-message", "role": "assistant", "timestamp": 1793232000000,
                 "content": [["type": "text", "text": "这条消息的线路投影只保留了前半部分。", "truncated": true, "originalBytes": 2048],
@@ -295,6 +311,58 @@ private final class PreviewTransport: OrbisTransport {
             let tree: [String: Any] = ["parentId": parent, "entryType": "message", "role": index % 2 == 1 ? "user" : "assistant", "defaultHidden": false, "isCurrent": index == 4, "isOnActivePath": true]
             return ["value": "node-\(index)", "label": labels[index - 1], "tree": tree]
         }
+    }
+}
+
+/// Opt-in fixture diagnostics. The draw callback measures app rendering, not source-sync latency
+/// or the display's physical presentation time. No message text or identity is recorded.
+@MainActor
+final class ChatEntryProbe: ObservableObject {
+    static let shared = ChatEntryProbe()
+    static let enabled = ProcessInfo.processInfo.arguments.contains("--measure-chat-entry")
+    @Published private(set) var report = "idle"
+    @Published private(set) var syncRequests = 0
+    private var start: TimeInterval?
+    private var selectionMs: Double = 0
+    private var recorded = false
+    private var generation = 0
+    func sentSync() { if Self.enabled { syncRequests += 1 } }
+    func begin() {
+        guard Self.enabled else { return }
+        generation += 1; recorded = false; selectionMs = 0
+        start = ProcessInfo.processInfo.systemUptime
+    }
+    func selected() {
+        guard Self.enabled, let start else { return }
+        selectionMs = (ProcessInfo.processInfo.systemUptime - start) * 1000
+    }
+    func drew() {
+        guard Self.enabled, let start, !recorded else { return }
+        recorded = true
+        let value = String(format: "entry=%d selectionMs=%.1f drawMs=%.1f", generation, selectionMs,
+                           (ProcessInfo.processInfo.systemUptime - start) * 1000)
+        DispatchQueue.main.async { self.report = value; NSLog("OrbisChatEntry %@", value) }
+    }
+}
+
+struct ChatEntryDrawProbe: UIViewRepresentable {
+    final class ProbeView: UIView {
+        override func draw(_ rect: CGRect) { ChatEntryProbe.shared.drew() }
+    }
+    func makeUIView(context: Context) -> ProbeView {
+        let view = ProbeView(); view.isOpaque = false; view.backgroundColor = .clear
+        return view
+    }
+    func updateUIView(_ view: ProbeView, context: Context) {}
+}
+
+struct ChatEntryReport: View {
+    @ObservedObject private var probe = ChatEntryProbe.shared
+    var body: some View {
+        VStack {
+            Text(probe.report).accessibilityIdentifier("chat-entry-metrics")
+            Text(String(probe.syncRequests)).accessibilityIdentifier("chat-entry-sync-count")
+        }.font(.system(size: 12)).allowsHitTesting(false)
     }
 }
 #endif

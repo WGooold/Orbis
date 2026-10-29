@@ -7,6 +7,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MessagePresentationTest {
+    @Test fun longTurnsKeepFullCopyAndStableRowsWhenHistoryIsPrepended() {
+        fun text(index: Int) = ChatMessage("m$index", "assistant", listOf(RemoteContent("text", "message $index")), 1)
+        val messages = (0 until 13).map(::text)
+        val first = chatViewportItems(buildChatListItems(messages))
+        val turns = first.filterIsInstance<ChatListItem.AssistantTurn>()
+        assertEquals(listOf(4, 4, 4, 1), turns.map { it.messages.size })
+        assertEquals(messages, turns.flatMap { it.messages })
+        assertTrue(turns.all { it.copyMessages === messages || it.copyMessages == messages })
+        val prefixed = listOf(text(-2), text(-1)) + messages
+        val next = chatViewportItems(buildChatListItems(prefixed), first)
+        assertEquals(listOf("m-2") + first.map { it.key }, next.map { it.key })
+        assertEquals(prefixed, next.filterIsInstance<ChatListItem.AssistantTurn>().flatMap { it.messages })
+        assertEquals(1, chatListItemIndexByMessageId(next)["m0"])
+        assertEquals(4, chatListItemIndexByMessageId(next)["m12"])
+    }
+
     @Test
     fun `normal conversation text stays visible while thinking and tools start collapsed`() {
         assertEquals(ContentPresentation.MESSAGE, contentPresentation("assistant", "text"))

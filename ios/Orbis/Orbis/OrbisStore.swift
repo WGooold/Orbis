@@ -64,11 +64,13 @@ final class HostConnection: ObservableObject {
     @Published private(set) var cachedHistoryOptions: [RuntimeOption] = []
     @Published private(set) var turnTimings: [String: SessionTurnTiming] = [:] { didSet { transcriptCache = nil } }
     private var transcriptCache: ChatTranscript?
+    private var lastTranscriptRows: [ChatRow] = []
     /// Rows of the selected conversation, rebuilt only after its messages or timings change.
     var chatTranscript: ChatTranscript {
         if let transcriptCache { return transcriptCache }
-        let built = ChatTranscript(messages: messages, turnTimings: turnTimings)
+        let built = ChatTranscript(messages: messages, turnTimings: turnTimings, previousRows: lastTranscriptRows)
         transcriptCache = built
+        lastTranscriptRows = built.rows
         return built
     }
     private var timingsBySession: [String: [String: SessionTurnTiming]] = [:]
@@ -388,7 +390,7 @@ final class HostConnection: ObservableObject {
         if let runtime = selectedRuntime { seedCachedHistory(runtime) }
         publishMessages()
         if let runtime = selectedRuntime { saveLastSession(runtime); agentState.subscribe(runtime: runtime); syncSession(runtime, force: true) }
-        refreshWorkingBranch()
+        // The visible ChatView owns the initial Git refresh and its polling lifetime.
     }
 
     func refreshWorkingBranch() {

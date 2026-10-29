@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -15,11 +17,59 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
 class SwipeBackInstrumentedTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun everyEntrySlidesLeftAndOnlyComposesTheHomeUnderlayOnce() {
+        val opened = mutableStateOf(true)
+        var underlayBuilds = 0
+        var underlayMounted = false
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            OrbisTheme {
+                if (opened.value) SwipeBackLayer(onBack = {}, underlay = {
+                    SideEffect { underlayBuilds++ }
+                    DisposableEffect(Unit) {
+                        underlayMounted = true
+                        onDispose { underlayMounted = false }
+                    }
+                    Text("Home preview")
+                }) {
+                    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) { Text("Chat") }
+                } else Text("Home")
+            }
+        }
+        repeat(2) { entry ->
+            compose.onNodeWithText("Chat").assertIsNotDisplayed()
+            compose.runOnIdle { assertTrue(underlayMounted) }
+            compose.mainClock.advanceTimeBy(80)
+            val firstX = compose.onNodeWithText("Chat").fetchSemanticsNode().boundsInRoot.left
+            val width = compose.onRoot().fetchSemanticsNode().boundsInRoot.width
+            assertTrue("The chat must slide in from the right: x=$firstX width=$width", firstX > 0f && firstX < width)
+            compose.mainClock.advanceTimeBy(80)
+            val nextX = compose.onNodeWithText("Chat").fetchSemanticsNode().boundsInRoot.left
+            assertTrue("The entry must move left", nextX < firstX)
+            compose.mainClock.advanceTimeBy(1_500)
+            compose.onNodeWithText("Chat").assertIsDisplayed()
+            assertEquals(0f, compose.onNodeWithText("Chat").fetchSemanticsNode().boundsInRoot.left, 0.5f)
+            compose.runOnIdle {
+                assertFalse(underlayMounted)
+                assertEquals("Animation frames must not recompose the home", entry + 1, underlayBuilds)
+            }
+            if (entry == 0) {
+                compose.runOnIdle { opened.value = false }
+                compose.mainClock.advanceTimeByFrame()
+                compose.onNodeWithText("Home").assertIsDisplayed()
+                compose.runOnIdle { opened.value = true }
+                compose.mainClock.advanceTimeByFrame()
+            }
+        }
+    }
 
     @Test fun navigationWaitsForReleaseAnimation() {
         val home = mutableStateOf(false)

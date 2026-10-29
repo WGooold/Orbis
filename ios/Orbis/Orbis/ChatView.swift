@@ -89,6 +89,9 @@ struct ChatView: View {
             conversation.overlay(alignment: .top) { RuntimeNoticesView(runtimeId: runtime.runtimeId, supported: ["codex", "codexDesktop"].contains(runtime.agentKind)).padding(.horizontal, 16) }
             if store.isViewingCachedSession { cachedComposer } else { composer }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent).environment(\.orbisAccent, accent)
+            #if DEBUG
+            .background { if ChatEntryProbe.enabled { ChatEntryDrawProbe().allowsHitTesting(false) } }
+            #endif
             .fileImporter(isPresented: $filePickerOpen, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                 switch result {
                 case .success(let urls): transfers.upload(urls: Array(urls.prefix(max(0, 10 - attachments.count))), runtime: runtime)
@@ -498,7 +501,7 @@ struct ChatMessageRow: View, Equatable {
     var rewindEnabled = false
     var onRewind: (RuntimeOption) -> Void = { _ in }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row.messages == rhs.row.messages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled
+        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled
     }
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -544,7 +547,7 @@ struct ChatMessageRow: View, Equatable {
             }
         }
     }
-    private var copyText: String { row.messages.map(\.text).joined(separator: "\n\n") }
+    private var copyText: String { (row.copyMessages ?? row.messages).map(\.text).joined(separator: "\n\n") }
 }
 
 private struct MessageContentView: View {
@@ -663,7 +666,7 @@ struct CompactDisclosure<Content: View>: View {
     let title: String
     var detail: String? = nil
     let symbol: String
-    @ViewBuilder let content: Content
+    @ViewBuilder let content: () -> Content
     @State private var expanded = false
     var body: some View {
         let p = OrbisPalette(scheme)
@@ -680,7 +683,7 @@ struct CompactDisclosure<Content: View>: View {
                 }.font(.orbisLabel()).foregroundStyle(p.secondary).frame(minHeight: 40).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel("\(expanded ? "收起" : "展开")\(title)\(detail.map { "，" + $0 } ?? "")")
             OrbisCollapse(expanded: expanded) {
-                content.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 10)
+                content().frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 10)
             }
         }.padding(.horizontal, 12).padding(.vertical, 4).neuSurface(inset: true, radius: 14, intensity: 0.35)
     }

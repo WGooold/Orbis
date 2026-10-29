@@ -16,6 +16,51 @@ final class OrbisUITests: XCTestCase {
         screenshot.name = name; screenshot.lifetime = .keepAlways
         add(screenshot)
     }
+    func testCachedOnlineChatEntryTiming() {
+        let app = launch("entry", arguments: ["--measure-chat-entry", "--preview-entry-long-turn"])
+        let card = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(card.waitForExistence(timeout: 15))
+        for entry in 1...3 {
+            let syncsBefore = Int(app.staticTexts["chat-entry-sync-count"].label)!
+            card.tap()
+            let report = app.staticTexts["chat-entry-metrics"]
+            let measured = NSPredicate(format: "label BEGINSWITH %@", "entry=\(entry) ")
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: measured, object: report)], timeout: 15), .completed)
+            print("OrbisChatEntry \(report.label)")
+            let drawMs = Double(report.label.components(separatedBy: "drawMs=").last!)!
+            XCTAssertLessThan(drawMs, entry == 1 ? 1200 : 500)
+            XCTAssertTrue(app.staticTexts["ENTRY_LATEST"].isHittable)
+            XCTAssertEqual(Int(app.staticTexts["chat-entry-sync-count"].label), syncsBefore + 1)
+            if entry == 3 { capture("long-turn-entry-segments", app: app) }
+            app.buttons["返回"].firstMatch.tap()
+            XCTAssertTrue(card.waitForExistence(timeout: 5))
+        }
+    }
+    func testClosedDisclosureDefersWorkAcrossChatReentryAndRetainsState() {
+        let app = launch("disclosure")
+        let disclosure = app.buttons["展开Detail 0"]
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 8))
+        for _ in 0..<3 {
+            app.buttons["Sample"].tap()
+            XCTAssertEqual(app.staticTexts["disclosure-counts"].label, "builds=0 layouts=0")
+            app.buttons["Reopen"].tap()
+        }
+        disclosure.tap()
+        let counter = app.buttons["disclosure-counter"].firstMatch
+        XCTAssertTrue(counter.waitForExistence(timeout: 3))
+        XCTAssertTrue(counter.isHittable)
+        counter.tap()
+        XCTAssertEqual(counter.label, "Count 1")
+        app.buttons["Sample"].tap()
+        XCTAssertFalse(app.staticTexts["disclosure-counts"].label.contains("builds=0"))
+        XCTAssertFalse(app.staticTexts["disclosure-counts"].label.contains("layouts=0"))
+        app.buttons["收起Detail 0"].tap()
+        XCTAssertFalse(counter.isHittable)
+        app.buttons["Update"].tap()
+        disclosure.tap()
+        XCTAssertEqual(counter.label, "Count 1")
+        XCTAssertTrue(app.staticTexts["Updated body"].firstMatch.isHittable)
+    }
     func testRefreshKeepsHeaderTextAndTruncationStable() throws {
         let app = launch("chat", arguments: ["--preview-slow-sync"])
         let title = app.descendants(matching: .any)["chat-title"].firstMatch

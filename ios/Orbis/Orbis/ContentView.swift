@@ -117,13 +117,19 @@ struct ContentView: View {
             }
         }
         .orbisOverlayHost(overlay)
+        #if DEBUG
+        .overlay(alignment: .topLeading) { if ChatEntryProbe.enabled { ChatEntryReport() } }
+        #endif
     }
 
     private var home: some View {
         HomeView(onDirectory: { setDrawer(true) }, onStatus: { pages.append(.status) },
                  onSettings: { pages.append(.settings) }, onAddHost: { pages.append(.pairing) },
                  onDownloads: { pages.append(.downloads) }, onUnpair: { confirmUnpair(store.selectedHost) },
-                 onOpenRuntime: openRuntime)
+                 onOpenRuntime: { hostId, runtime in
+                     store.selectHost(hostId)
+                     openRuntime(runtime)
+                 })
     }
 
     private var drawer: some View {
@@ -395,7 +401,7 @@ struct HomeView: View {
     let onAddHost: () -> Void
     let onDownloads: () -> Void
     let onUnpair: () -> Void
-    let onOpenRuntime: (RuntimeSummary) -> Void
+    let onOpenRuntime: (String, RuntimeSummary) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -551,7 +557,15 @@ struct HomeView: View {
                 Button {
                     guard !swipingRuntimeIds.contains(runtime.runtimeId) else { return }
                     if selecting { toggleSelection(runtime.runtimeId) }
-                    else { store.selectRuntime(hostId: host.hostId, runtimeId: runtime.runtimeId); onOpenRuntime(runtime) }
+                    else {
+                        #if DEBUG
+                        ChatEntryProbe.shared.begin()
+                        #endif
+                        onOpenRuntime(host.hostId, runtime)
+                        #if DEBUG
+                        ChatEntryProbe.shared.selected()
+                        #endif
+                    }
                 } label: {
                     HStack(spacing: 12) {
                         AgentEmblem(kind: kind)

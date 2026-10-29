@@ -227,40 +227,48 @@ struct OrbisLayerFill: View {
 }
 
 /// Animates a clipping frame between 0 and the content's natural height (the grid
-/// `0fr → 1fr` technique): the content keeps its own layout the whole time, so nothing
-/// above or below jumps to the end state before the animation catches up.
+/// `0fr → 1fr` technique). Mount only on first expansion (ADR-0047), then keep content
+/// identity and natural layout across subsequent toggles.
 struct OrbisCollapse<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let expanded: Bool
-    @ViewBuilder var content: Content
+    @ViewBuilder var content: () -> Content
+    @State private var hasExpanded: Bool
     @State private var shown: Bool
     @State private var animating = false
     @State private var height: CGFloat?
     @State private var token = 0
 
-    init(expanded: Bool, @ViewBuilder content: () -> Content) {
+    init(expanded: Bool, @ViewBuilder content: @escaping () -> Content) {
         self.expanded = expanded
-        self.content = content()
+        self.content = content
+        _hasExpanded = State(initialValue: expanded)
         _shown = State(initialValue: expanded)
     }
 
     var body: some View {
-        content
-            .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
-            // At rest an open container takes the content's live height, so growing content is never clipped.
-            .frame(height: shown ? (animating ? height : nil) : 0, alignment: .top)
-            .clipped()
-            .opacity(shown ? 1 : 0)
-            .allowsHitTesting(shown)
-            .accessibilityHidden(!shown)
+        Group {
+            if expanded || hasExpanded {
+                content()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                    // At rest an open container takes the content's live height, so growing content is never clipped.
+                    .frame(height: shown ? (animating ? height : nil) : 0, alignment: .top)
+                    .clipped()
+                    .opacity(shown ? 1 : 0)
+                    .allowsHitTesting(shown)
+                    .accessibilityHidden(!shown)
+            }
+        }
             .onChange(of: expanded) { _, value in
-                if reduceMotion { shown = value; animating = false; return }
+                if value { hasExpanded = true }
                 token += 1
                 let current = token
+                if reduceMotion { shown = value; animating = false; return }
                 // Pin the measured height first so the animation interpolates between two numbers.
                 animating = true
                 DispatchQueue.main.async {
+                    guard token == current else { return }
                     withAnimation(.orbisCollapse) { shown = value } completion: {
                         if token == current { animating = false }
                     }
@@ -270,6 +278,65 @@ struct OrbisCollapse<Content: View>: View {
 }
 
 // MARK: - Controls
+
+#if DEBUG
+/// Isolated launch-argument fixture: counts actual builder invocations and layout passes.
+private final class DisclosureWorkCounts {
+    var builds = 0
+    var layouts = 0
+}
+
+private struct DisclosureProbeLayout: Layout {
+    let counts: DisclosureWorkCounts
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        counts.layouts += 1
+        return subviews.first?.sizeThatFits(proposal) ?? .zero
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: proposal)
+    }
+}
+
+private struct DisclosureStateProbe: View {
+    let text: String
+    @State private var count = 0
+    var body: some View {
+        VStack(alignment: .leading) {
+            Button("Count \(count)") { count += 1 }.accessibilityIdentifier("disclosure-counter")
+            Text(text)
+            Text(String(repeating: "Long hidden thinking\n", count: 300))
+        }
+    }
+}
+
+struct DisclosurePerformancePreview: View {
+    @State private var counts = DisclosureWorkCounts()
+    @State private var generation = 0
+    @State private var report = ""
+    @State private var text = "Original body"
+    var body: some View {
+        VStack {
+            HStack {
+                Button("Sample") { report = "builds=\(counts.builds) layouts=\(counts.layouts)" }
+                Button("Reopen") { counts = DisclosureWorkCounts(); generation += 1; report = "" }
+                Button("Update") { text = "Updated body" }
+            }
+            Text(report).accessibilityIdentifier("disclosure-counts")
+            ScrollView {
+                VStack {
+                    ForEach(0..<30) { index in
+                        CompactDisclosure(title: "Detail \(index)", symbol: "sparkles") { probe() }
+                    }
+                }.id(generation)
+            }
+        }.padding()
+    }
+    private func probe() -> some View {
+        counts.builds += 1
+        return DisclosureProbeLayout(counts: counts) { DisclosureStateProbe(text: text) }
+    }
+}
+#endif
 
 /// Reserved for deliberate submissions, rather than every button press.
 @MainActor

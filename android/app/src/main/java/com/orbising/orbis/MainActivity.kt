@@ -1236,7 +1236,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
     // 下载不属于任何会话：会话页的下载按钮显示的是这台电脑全部在途任务。
     val activeDownloadCount = state.downloads.values.count { it.status == "queued" || it.status == "downloading" }
-    val listState = scrollState ?: remember(runtimeId, sessionId) { LazyListState() }
+    // Enter at the cached tail; laying out the oldest card and then jumping doubles first-frame work.
+    val listState = scrollState ?: remember(runtimeId, sessionId) {
+        LazyListState(firstVisibleItemIndex = chatItems.size + orphanTools.size,
+            firstVisibleItemScrollOffset = if (chatItems.isEmpty()) 0 else Int.MAX_VALUE)
+    }
     val sourceRead = state.sessionReadForWindow(runtimeId, SessionReadKind.SOURCE)
     val firstRead = state.sessionReadForWindow(runtimeId, SessionReadKind.FIRST_PAGE)
     val firstReadError = firstRead?.takeIf { it.phase == SessionReadPhase.FAILED &&
@@ -1990,6 +1994,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                         is ChatListItem.AssistantTurn -> AssistantTurnCard(
                             runtimeId = runtimeId,
                             messages = item.messages,
+                            copyMessages = item.copyMessages,
                             turnTiming = groupTurnTiming(item.messages.mapNotNull { messageTurnTimings[it.messageId] }),
                             nowMs = timerNow,
                             streamingMessageIds = conversation.streamingMessageIds,
@@ -3241,6 +3246,7 @@ internal fun AssistantTurnCard(
     downloadArtifact: (RemoteArtifact) -> Unit,
     downloadFile: (String) -> Unit,
     streamingMessageIds: Set<String> = emptySet(),
+    copyMessages: List<ChatMessage> = messages,
 ) {
     NeumorphSurface(Modifier.fillMaxWidth(), shadowScale = 0.55f, contentPadding = 16.dp) {
         Column(Modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -3249,9 +3255,9 @@ internal fun AssistantTurnCard(
                 Spacer(Modifier.weight(1f))
                 turnTiming?.let { TurnStartLabel(it.startedAt) }
                 // 整段回复的复制入口，与 iOS 卡片右上角一致。
-                if (messages.any { message -> message.content.any { it.type == "text" && !it.text.isNullOrBlank() } }) {
+                if (copyMessages.any { message -> message.content.any { it.type == "text" && !it.text.isNullOrBlank() } }) {
                     CopyIconButton("复制回复", size = 30.dp) {
-                        messages.flatMap { message -> message.content.filter { it.type == "text" }.mapNotNull { it.text } }
+                        copyMessages.flatMap { message -> message.content.filter { it.type == "text" }.mapNotNull { it.text } }
                             .filter(String::isNotBlank).joinToString("\n\n")
                     }
                 }
@@ -4016,6 +4022,7 @@ private class PresentationCache {
     private var lastItemMessages: List<ChatMessage>? = null
     private var lastTurnIds: Map<String, String>? = null
     private var lastItems: List<ChatListItem>? = null
+    private var lastViewportItems: List<ChatListItem>? = null
 
     private fun sameIdentity(a: List<ChatMessage>?, b: List<ChatMessage>): Boolean {
         if (a === b) return true
@@ -4034,12 +4041,12 @@ private class PresentationCache {
 
     fun items(messages: List<ChatMessage>, turnIdsByMessageId: Map<String, String>): List<ChatListItem> {
         val cached = lastItems
-        if (cached != null && sameIdentity(lastItemMessages, messages) && lastTurnIds == turnIdsByMessageId) return cached
+        if (cached != null && sameIdentity(lastItemMessages, messages) && lastTurnIds == turnIdsByMessageId) return lastViewportItems!!
         return buildChatListItems(messages, turnIdsByMessageId, previous = cached.orEmpty()).also {
             lastItemMessages = messages
             lastTurnIds = turnIdsByMessageId
             lastItems = it
-        }
+        }.let { chatViewportItems(it, lastViewportItems.orEmpty()) }.also { lastViewportItems = it }
     }
 }
 

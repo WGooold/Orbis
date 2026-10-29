@@ -134,15 +134,22 @@ internal fun RemoteState.waitForSessionRead(operationId: String): RemoteState {
 internal fun SessionGraph.hasDisplayFor(entry: SessionGraphEntry, windowStart: String? = displayWindowStart): Boolean =
     entry.entryId in display || windowStart != null && entry.entryId != windowStart && isDescendant(windowStart, entry.entryId)
 
-private fun RemoteState.reconcileHistoryDisplayCoverage(): RemoteState {
+private fun RemoteState.reconcileHistoryDisplayCoverage(previous: RemoteState?): RemoteState {
     var histories = sessionHistory
     for ((key, history) in sessionHistory) {
         val graph = sessionGraphs[history.sessionId] ?: continue
+        if (previous != null && history === previous.sessionHistory[key] && graph === previous.sessionGraphs[history.sessionId]) continue
         val path = buildSessionPath(graph.entries, history.leafId)
         val boundary = path.indexOfFirst { it.entryId == history.oldestEntryId }
         // Older temporary pages can be outside the bounded graph; absence cannot revoke them.
         if (boundary < 0) continue
-        val gap = path.indexOfLast { !graph.hasDisplayFor(it) }
+        // A compacted history can have thousands of intentionally hidden ancestors. Walking
+        // the window's parent chain once per entry made every selection update quadratic.
+        val excludedAncestors by lazy {
+            buildSessionPath(graph.entries, graph.displayWindowStart).asSequence()
+                .map(SessionGraphEntry::entryId).filter { it != graph.displayWindowStart }.toHashSet()
+        }
+        val gap = path.indexOfLast { it.entryId !in graph.display && it.entryId !in excludedAncestors }
         val restart = path.getOrNull(gap + 1)?.takeIf { gap >= boundary } ?: continue
         histories = histories + (key to history.copy(oldestEntryId = restart.entryId, hasOlder = true))
     }
@@ -150,8 +157,8 @@ private fun RemoteState.reconcileHistoryDisplayCoverage(): RemoteState {
 }
 
 /** All phases are changed here; IO and reducers report facts, never write a phase or spinner. */
-internal fun RemoteState.reconcileHistoryReads(): RemoteState {
-    var next = reconcileHistoryDisplayCoverage()
+internal fun RemoteState.reconcileHistoryReads(previous: RemoteState? = null): RemoteState {
+    var next = reconcileHistoryDisplayCoverage(previous)
     for (operation in sessionReads.values.filter { it.phase.active }) {
         if (!next.readOwnerValid(operation)) {
             next = next.finishHistoryRead(operation.operationId, SessionReadPhase.SUPERSEDED)

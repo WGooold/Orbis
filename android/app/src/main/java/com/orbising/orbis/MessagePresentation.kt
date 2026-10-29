@@ -35,8 +35,28 @@ internal sealed interface ChatListItem {
         override val key: String get() = message.messageId
     }
 
-    data class AssistantTurn(val messages: List<ChatMessage>) : ChatListItem {
+    data class AssistantTurn(val messages: List<ChatMessage>, val copyMessages: List<ChatMessage> = messages) : ChatListItem {
         override val key: String get() = messages.first().messageId
+    }
+}
+
+/** Keep lazy-list work bounded even when a single turn contains hundreds of tool/text messages. */
+internal fun chatViewportItems(items: List<ChatListItem>, previous: List<ChatListItem> = emptyList()): List<ChatListItem> {
+    val previousTurns = previous.filterIsInstance<ChatListItem.AssistantTurn>().associateBy { it.key }
+    return items.flatMap { item ->
+        if (item !is ChatListItem.AssistantTurn || item.messages.size <= 4) listOf(item)
+        else buildList {
+            var start = 0
+            while (start < item.messages.size) {
+                // Keep existing row starts when paging prepends messages to this same turn.
+                val end = (start + 1 until minOf(start + 4, item.messages.size))
+                    .firstOrNull { item.messages[it].messageId in previousTurns } ?: minOf(start + 4, item.messages.size)
+                val cached = previousTurns[item.messages[start].messageId]
+                add(if (cached?.copyMessages === item.messages && cached.messages.size == end - start) cached
+                    else ChatListItem.AssistantTurn(item.messages.subList(start, end).toList(), copyMessages = item.messages))
+                start = end
+            }
+        }
     }
 }
 

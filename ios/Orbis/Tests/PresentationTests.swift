@@ -266,6 +266,23 @@ struct PresentationTests {
         #expect(ChatTranscript.empty.rows.isEmpty)
     }
 
+    @Test func longTurnsKeepFullCopyTimingAndStableRowsWhenHistoryIsPrepended() {
+        func text(_ index: Int) -> ChatMessage {
+            ChatMessage(messageId: "m\(index)", role: "assistant", content: [ChatContent(type: "text", text: "message \(index)", toolName: nil, artifact: nil)], timestamp: 0, isError: nil)
+        }
+        let messages = (0..<13).map(text)
+        let timing = SessionTurnTiming(turnId: "turn", startedAt: 1, durationMs: 2, turnIndex: nil, messageId: "m12")
+        let first = ChatTranscript(messages: messages, turnTimings: ["turn": timing])
+        #expect(first.rows.map { $0.messages.count } == [4, 4, 4, 1])
+        #expect(first.rows.flatMap(\.messages) == messages)
+        #expect(first.rows.allSatisfy { $0.copyMessages == messages })
+        #expect(first.timingsByRow == ["m12": [timing]])
+        let prefixed = ChatTranscript(messages: [text(-2), text(-1)] + messages,
+                                      turnTimings: ["turn": timing], previousRows: first.rows)
+        #expect(prefixed.rows.map(\.id) == ["m-2"] + first.rows.map(\.id))
+        #expect(prefixed.rows.flatMap(\.messages) == [text(-2), text(-1)] + messages)
+    }
+
     @Test func base64URLDecodesBytewiseAndRejectsMalformedInput() throws {
         let data = Data((0..<255).map(UInt8.init))
         #expect(try Base64URL.decode(Base64URL.encode(data)) == data)

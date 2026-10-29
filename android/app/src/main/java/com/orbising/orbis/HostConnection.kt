@@ -2333,7 +2333,7 @@ internal class HostConnection(
     private fun updateState(transform: (RemoteState) -> RemoteState) {
         synchronized(stateWriterLock) {
             val current = mutableState.value
-            val next = transform(current).openAcknowledgedSession().trackSessionReadDemands(current).reconcileHistoryReads()
+            val next = transform(current).openAcknowledgedSession().trackSessionReadDemands(current).reconcileHistoryReads(current)
             if (next !== current) mutableState.value = next
         }
     }

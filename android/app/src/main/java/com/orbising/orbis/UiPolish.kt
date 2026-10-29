@@ -7,7 +7,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.text
@@ -37,15 +41,20 @@ internal object OrbisMotion {
     fun pop() = spring<Float>(stiffness = 380f, dampingRatio = 18f / (2f * sqrt(380f)))
 }
 
-/** Measure the full content once, then animate only the clipping viewport (0fr → 1fr). */
+/** Mount on first expansion; retain content identity for later clipping animations (ADR-0047). */
 @Composable
 internal fun OrbisCollapse(expanded: Boolean, content: @Composable () -> Unit) {
-    val fraction by animateFloatAsState(if (expanded) 1f else 0f, tween(260), label = "collapse")
+    var hasExpanded by remember { mutableStateOf(expanded) }
+    if (expanded) SideEffect { hasExpanded = true }
+    val fraction = animateFloatAsState(if (expanded) 1f else 0f, tween(260), label = "collapse")
+    // A zero-height Layout still composes and measures its children. Do not create them
+    // until requested, especially long thinking/tool text in an otherwise visible turn.
+    if (!expanded && !hasExpanded) return
     Layout(content = content, modifier = Modifier.clipToBounds().then(if (!expanded) Modifier.clearAndSetSemantics {} else Modifier)) { measurables, constraints ->
         val children = measurables.map { it.measure(constraints.copy(minHeight = 0)) }
         val width = children.maxOfOrNull { it.width } ?: constraints.minWidth
         val fullHeight = children.maxOfOrNull { it.height } ?: 0
-        layout(width, (fullHeight * fraction).toInt()) { children.forEach { it.placeRelative(0, 0) } }
+        layout(width, (fullHeight * fraction.value).toInt()) { children.forEach { it.placeRelative(0, 0) } }
     }
 }
 
