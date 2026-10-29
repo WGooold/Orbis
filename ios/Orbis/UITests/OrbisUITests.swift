@@ -85,7 +85,6 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["历史与分支"].waitForExistence(timeout: 3))
         let node = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "梳理页面和交互")).firstMatch
         XCTAssertTrue(node.waitForExistence(timeout: 3)); node.tap()
-        XCTAssertTrue(app.staticTexts["不会改变电脑端会话"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["从这条回复后继续"].waitForExistence(timeout: 3))
         capture("history-preview", app: app)
         app.buttons["从这条回复后继续"].tap()
@@ -93,7 +92,7 @@ final class OrbisUITests: XCTestCase {
     }
     func testToolDetailsLoadPagesAndClose() {
         let app = launch("tool")
-        let disclosure = app.buttons["展开read · 完成"]
+        let disclosure = app.buttons["展开read，完成"]
         XCTAssertTrue(disclosure.waitForExistence(timeout: 8)); disclosure.tap()
         XCTAssertTrue(app.buttons["查看输出"].waitForExistence(timeout: 3)); app.buttons["查看输出"].tap()
         XCTAssertTrue(app.buttons["读取下一页"].waitForExistence(timeout: 5))
@@ -105,6 +104,47 @@ final class OrbisUITests: XCTestCase {
         capture("tool-detail", app: app)
         app.buttons["返回"].firstMatch.tap()
         XCTAssertTrue(app.buttons["历史与分支"].waitForExistence(timeout: 3))
+    }
+
+    func testLongFinalReplyKeepsReadingPositionAndOnlyFollowsAfterJump() {
+        let app = launch("viewport")
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
+        let transcript = app.scrollViews.firstMatch
+        transcript.swipeDown()
+        transcript.swipeDown()
+        let visible = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 "))
+            .allElementsBoundByIndex.filter { $0.isHittable && $0.frame.minY > transcript.frame.minY + 10 && $0.frame.maxY < transcript.frame.maxY - 10 }
+        XCTAssertFalse(visible.isEmpty)
+        guard let anchor = visible.first else { return }
+        let before = anchor.frame.minY
+        let refresh = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch
+        XCTAssertTrue(refresh.waitForExistence(timeout: 3))
+        refresh.tap()
+        XCTAssertTrue(app.buttons["跳到最新消息"].waitForExistence(timeout: 3))
+        XCTAssertEqual(before, anchor.frame.minY, accuracy: 1)
+        capture("viewport-reading", app: app)
+        app.buttons["跳到最新消息"].tap()
+        let last = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "新增尾部 ")).allElementsBoundByIndex.last
+        XCTAssertTrue(last?.isHittable == true)
+        refresh.tap()
+        let newest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "新增尾部 ")).allElementsBoundByIndex.last
+        XCTAssertTrue(newest?.isHittable == true)
+        XCTAssertFalse(app.buttons["跳到最新消息"].exists)
+        capture("viewport-following", app: app)
+    }
+
+    func testApprovalOverlayKeepsComposerStableWhileSubmitting() {
+        let app = launch("approval")
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        let allow = app.buttons["允许"]
+        XCTAssertTrue(allow.waitForExistence(timeout: 3))
+        XCTAssertTrue(allow.isHittable)
+        let before = composer.frame
+        allow.tap()
+        XCTAssertEqual(before.minY, composer.frame.minY, accuracy: 1)
+        XCTAssertEqual(before.height, composer.frame.height, accuracy: 1)
+        capture("approval-submitting", app: app)
     }
     func testSettingsPriorityAndProviderSwitchConfirmation() {
         let app = launch("settings")
@@ -118,7 +158,7 @@ final class OrbisUITests: XCTestCase {
         let team = app.buttons["provider-action-team"]
         XCTAssertTrue(team.waitForExistence(timeout: 5))
         team.tap()
-        let dialog = app.otherElements["orbis-dialog"]
+        let dialog = app.descendants(matching: .any)["orbis-dialog"]
         XCTAssertTrue(dialog.waitForExistence(timeout: 3))
         XCTAssertTrue(dialog.staticTexts["启用供应商"].exists)
         dialog.buttons["取消"].tap()
@@ -161,7 +201,7 @@ final class OrbisUITests: XCTestCase {
         drawer.buttons["team"].tap()
         let session = drawer.buttons.matching(NSPredicate(format: "label CONTAINS %@", "优化聊天滚动与输入体验")).firstMatch
         XCTAssertTrue(session.waitForExistence(timeout: 3)); session.tap()
-        let dialog = drawer.otherElements["orbis-dialog"]
+        let dialog = drawer.descendants(matching: .any)["orbis-dialog"]
         XCTAssertTrue(dialog.waitForExistence(timeout: 3))
         XCTAssertTrue(dialog.staticTexts["需要切换 provider"].exists)
         capture("provider-mismatch", app: drawer)

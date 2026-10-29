@@ -36,7 +36,7 @@ class InteractionWorkspaceInstrumentedTest {
         ) } }
         compose.onNode(hasSetTextAction()).performTextInput("D:/reports")
         compose.onNodeWithText("收起").performClick()
-        compose.onNodeWithText("待处理 2 项 · 填写目录").performClick()
+        compose.onNodeWithText("待处理 2 项，填写目录").performClick()
         compose.onNode(hasSetTextAction()).assertTextContains("D:/reports")
         compose.onNodeWithText("2. 批准执行命令").performClick()
         compose.onNodeWithText("Get-ChildItem D:/project").assertIsDisplayed()
@@ -67,11 +67,11 @@ class InteractionWorkspaceInstrumentedTest {
         ) } }
         compose.onNodeWithText("API").performClick()
         compose.onNodeWithText("其他答案").performClick()
-        compose.onNodeWithText("填写其他答案").performScrollTo().performTextInput("cache")
+        compose.onNode(hasSetTextAction() and hasAnyAncestor(hasTestTag("questionnaire-answer-scope"))).performScrollTo().performTextInput("cache")
         compose.onNodeWithText("收起").performClick()
         compose.runOnIdle { assertEquals(0, cancellation); assertTrue(answers.isEmpty()) }
-        compose.onNodeWithText("待处理 1 项 · 实施方案").performClick()
-        compose.onNodeWithText("填写其他答案").performScrollTo().assertTextContains("cache")
+        compose.onNodeWithText("待处理 1 项，实施方案").performClick()
+        compose.onNode(hasSetTextAction() and hasAnyAncestor(hasTestTag("questionnaire-answer-scope"))).performScrollTo().assertTextContains("cache")
         capture("mobile-controls-questionnaire.png")
         compose.onNodeWithText("提交答案").performClick()
         compose.runOnIdle { assertEquals(listOf(QuestionnaireAnswer("scope", listOf("api"), "cache")), answers.single()) }

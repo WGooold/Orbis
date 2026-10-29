@@ -266,9 +266,9 @@ internal fun RemoteState.modelStatusFacts(): List<ModelStatusFact> = buildList {
         snapshot.error?.let { add(ModelStatusFact(label, "读取失败：$it")) }
         for ((name, domain) in snapshot.domains.toSortedMap()) {
             val status = when (domain.availability) { "ready" -> "已核对"; "unavailable" -> "不支持"; else -> "待核对" }
-            add(ModelStatusFact("$label · $name", "$status · v${domain.revision} · ${domain.completeness}"))
+            add(ModelStatusFact("$label，$name", "$status，v${domain.revision}，${domain.completeness}"))
         }
-        for ((name, reason) in snapshot.missing) add(ModelStatusFact("$label · $name", "尚无状态：$reason"))
+        for ((name, reason) in snapshot.missing) add(ModelStatusFact("$label，$name", "尚无状态：$reason"))
     }
 }
 
@@ -282,7 +282,7 @@ internal fun RemoteState.providerPublicFacts(): List<ModelStatusFact> = buildLis
             val available = fact?.string("availability") ?: "unknown"
             val detail = fact?.get("detail")?.takeUnless { it is JsonNull }?.toString()?.trim('"')
             val summary = if (available != "ready") "未核对" else detail ?: fact.toString()
-            add(ModelStatusFact("$kind · $title", summary.take(800)))
+            add(ModelStatusFact("$kind，$title", summary.take(800)))
         }
     }
 }

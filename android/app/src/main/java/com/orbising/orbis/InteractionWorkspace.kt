@@ -91,9 +91,9 @@ internal fun InteractionWorkspace(
         if (ids.isEmpty()) open = false
     }
     val request = requests.find { it.requestId == selectedId } ?: requests.firstOrNull()
-    if (request == null) return
+    if (request == null) { Spacer(Modifier.height(56.dp)); return }
     NeumorphTextButton(
-        text = "待处理 ${requests.size} 项 · ${request.title}", filled = true,
+        text = "待处理 ${requests.size} 项，${request.title}", filled = true,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), onClick = { open = true },
     )
     if (open) SessionControlDialog("待处理 ${requests.size} 项", onClose = { open = false }) {

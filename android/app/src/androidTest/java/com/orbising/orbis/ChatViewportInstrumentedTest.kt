@@ -11,6 +11,10 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
@@ -80,10 +84,13 @@ class ChatViewportInstrumentedTest {
                 OrbisTheme { ChatScreen(displayed.value, model, scroll) }
             }
             compose.waitForIdle()
-            compose.runOnIdle { scope.launch { scroll.scrollToItem(1, 350) } }
+            // A real drag opts out of following before placing the reading anchor.
+            compose.onNodeWithTag("chat-transcript").performTouchInput { swipeDown() }
             compose.waitForIdle()
-            assertEquals(1, scroll.firstVisibleItemIndex)
-            assertEquals(350, scroll.firstVisibleItemScrollOffset)
+            compose.runOnIdle { scope.launch { scroll.scrollToItem(2, 350) } }
+            compose.waitForIdle()
+            assertEquals(2, scroll.firstVisibleItemIndex)
+            assertEquals("layout=${scroll.layoutInfo.visibleItemsInfo.map { Triple(it.index, it.offset, it.size) }} viewport=${scroll.layoutInfo.viewportEndOffset} padding=${scroll.layoutInfo.afterContentPadding}", 350, scroll.firstVisibleItemScrollOffset)
             exercise(displayed, scroll)
         } finally {
             compose.runOnIdle { owner.clear() }
@@ -108,8 +115,8 @@ class ChatViewportInstrumentedTest {
             }
             compose.waitForIdle()
             assertFalse(displayed.value.conversations.getValue("r").isChatSyncing)
-            assertEquals(1, scroll.firstVisibleItemIndex)
-            assertEquals(350, scroll.firstVisibleItemScrollOffset)
+            assertEquals(2, scroll.firstVisibleItemIndex)
+            assertEquals("layout=${scroll.layoutInfo.visibleItemsInfo.map { Triple(it.index, it.offset, it.size) }} viewport=${scroll.layoutInfo.viewportEndOffset} padding=${scroll.layoutInfo.afterContentPadding}", 350, scroll.firstVisibleItemScrollOffset)
         }
     }
 
@@ -123,8 +130,38 @@ class ChatViewportInstrumentedTest {
             conversation.copy(revision = conversation.revision + 2)
         }) }
         compose.waitForIdle()
-        assertEquals(1, scroll.firstVisibleItemIndex)
-        assertEquals(350, scroll.firstVisibleItemScrollOffset)
+        assertEquals(2, scroll.firstVisibleItemIndex)
+        assertEquals("layout=${scroll.layoutInfo.visibleItemsInfo.map { Triple(it.index, it.offset, it.size) }} viewport=${scroll.layoutInfo.viewportEndOffset} padding=${scroll.layoutInfo.afterContentPadding}", 350, scroll.firstVisibleItemScrollOffset)
+    }
+
+    @Test fun streamingGrowthInsideTheLastTallCardDoesNotPullTheReader() = withChat { displayed, scroll ->
+        compose.runOnIdle {
+            val before = displayed.value
+            val conversation = before.conversations.getValue("r")
+            val messages = conversation.messages.map { message ->
+                if (message.messageId == "assistant") message.copy(content = listOf(RemoteContent("text",
+                    message.content.first().text + "\n\n" + "new streaming line\n".repeat(30)))) else message
+            }
+            displayed.value = before.copy(conversations = mapOf("r" to conversation.copy(messages = messages,
+                revision = conversation.revision + 1)))
+        }
+        compose.waitForIdle()
+        assertEquals(2, scroll.firstVisibleItemIndex)
+        assertEquals("layout=${scroll.layoutInfo.visibleItemsInfo.map { Triple(it.index, it.offset, it.size) }} viewport=${scroll.layoutInfo.viewportEndOffset} padding=${scroll.layoutInfo.afterContentPadding}", 350, scroll.firstVisibleItemScrollOffset)
+        compose.onNodeWithContentDescription("回到最新消息").assertIsDisplayed().performClick()
+        compose.waitForIdle()
+        compose.runOnIdle {
+            val before = displayed.value
+            val conversation = before.conversations.getValue("r")
+            displayed.value = before.copy(conversations = mapOf("r" to conversation.copy(messages = conversation.messages.map {
+                if (it.messageId == "assistant") it.copy(content = listOf(RemoteContent("text", it.content.first().text + "\nfollowed tail"))) else it
+            }, revision = conversation.revision + 1)))
+        }
+        compose.waitForIdle()
+        val layout = scroll.layoutInfo
+        val last = layout.visibleItemsInfo.last()
+        org.junit.Assert.assertTrue(chatBottomDistance(last.index, layout.totalItemsCount,
+            last.offset + last.size, layout.viewportEndOffset, layout.afterContentPadding) < 2f)
     }
 
     @Test fun toolAndThinkingStayExpandedWhenOutputAndCanonicalResultArrive() {

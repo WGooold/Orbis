@@ -31,7 +31,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import com.orbising.orbis.NeumorphTextField as OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -200,7 +200,7 @@ internal fun HistoryTreePage(
                 }
                 Text(
                     if (query.isBlank()) {
-                        "${rows.count { it is HistoryTurnRow }} 轮 · ${rows.count { it is HistoryBranchRow }} 个分支"
+                        "${rows.count { it is HistoryTurnRow }} 轮，${rows.count { it is HistoryBranchRow }} 个分支"
                     } else {
                         "${rows.size} 个匹配节点"
                     },
@@ -297,7 +297,7 @@ private fun HistorySearchField(
     OutlinedTextField(
         value = query,
         onValueChange = onQueryChange,
-        modifier = modifier.fillMaxWidth().neumorphInsetOverlay(RemoteUi.ControlShape),
+        modifier = modifier.fillMaxWidth(),
         placeholder = { Text("搜索消息、分支或书签", style = MaterialTheme.typography.bodyMedium) },
         leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
         trailingIcon = if (query.isEmpty()) {
@@ -383,7 +383,7 @@ private fun HistoryTurnCard(
                     )
                 }
             }
-            if (row.detailsExpanded) {
+            OrbisCollapse(expanded = row.detailsExpanded) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     row.details.forEach { node ->
                         NeumorphSurface(
@@ -518,6 +518,7 @@ private fun HistoryPreviewPanel(
         shape = RemoteUi.CardShape,
         shadowScale = 0.8f,
         modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding, vertical = 8.dp),
+        contentInset = 16.dp,
     ) {
         Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

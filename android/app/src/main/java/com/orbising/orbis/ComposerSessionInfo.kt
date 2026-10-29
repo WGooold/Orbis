@@ -61,7 +61,7 @@ internal fun ComposerSessionInfo(
 private fun ComposerLocation(path: String?, branch: WorkingBranch?, modifier: Modifier = Modifier) {
     val branchLabel = when {
         branch?.branch != null -> branch.branch
-        branch?.commit != null -> "HEAD · ${branch.commit}（分离）"
+        branch?.commit != null -> "HEAD，${branch.commit}（分离）"
         branch?.loaded == true -> "未获取到 Git 分支"
         else -> "分支信息待同步"
     }
@@ -74,7 +74,7 @@ private fun ComposerLocation(path: String?, branch: WorkingBranch?, modifier: Mo
 @Composable
 private fun LocationFact(icon: ImageVector, description: String, text: String) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Icon(icon, contentDescription = description, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Icon(icon, contentDescription = description, modifier = Modifier.size(14.dp).orbisIconBaseline(MaterialTheme.typography.labelSmall.fontSize), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(text, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelSmall,
             fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1, overflow = TextOverflow.Ellipsis)

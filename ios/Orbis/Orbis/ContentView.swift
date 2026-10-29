@@ -19,7 +19,7 @@ struct ContentView: View {
         #if DEBUG
         let preview = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-screen=") }?.split(separator: "=").last.map(String.init)
         switch preview {
-        case "chat", "slash", "approval", "tool": _pages = State(initialValue: [.chat])
+        case "chat", "slash", "approval", "tool", "viewport": _pages = State(initialValue: [.chat])
         case "status": _pages = State(initialValue: [.status])
         case "settings": _pages = State(initialValue: [.settings])
         case "providers": _pages = State(initialValue: [.settings, .providers])
@@ -53,7 +53,7 @@ struct ContentView: View {
                             ChatView(runtime: runtime, onBack: back, onHistory: { pages.append(.history) }, onDownloads: { pages.append(.downloads) }, onAlias: { aliasRuntime = runtime })
                                 .id(localSessionKey(host: store.selectedHost, runtime: runtime))
                                 .modifier(SwipeBackModifier(onBack: back))
-                        } else { OrbisEmptyState(symbol: "desktopcomputer", title: "会话已离线", detail: "返回会话目录，重新打开会话。") }
+                        } else { OrbisEmptyState(symbol: "desktopcomputer", title: "会话已离线") }
                     case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
                     case .status: ConnectionStatusView(onBack: back, onSettings: { pages.append(.settings) })
                     case .settings: SettingsView(onBack: back, onProviders: { pages.append(.providers) })
@@ -113,11 +113,11 @@ struct ContentView: View {
         .overlay {
             if store.isPairing {
                 ZStack {
-                    Color.black.opacity(0.25).ignoresSafeArea()
+                    OrbisPalette(scheme).scrim.opacity(0.25).ignoresSafeArea()
                     VStack(spacing: 14) {
                         ProgressView()
-                        Text("正在安全配对…").font(.system(size: 15, weight: .medium))
-                    }.padding(30).neuSurface(radius: 28)
+                        Text("正在安全配对…").font(.orbisBody(.medium))
+                    }.neuSurface(radius: OrbisRadius.dialog, padding: 30)
                 }.accessibilityAddTraits(.updatesFrequently)
             }
         }
@@ -139,7 +139,7 @@ struct ContentView: View {
 
     private func back() { if !pages.isEmpty { pages.removeLast() } }
     private func setDrawer(_ open: Bool) {
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { drawerOpen = open }
+        withAnimation(reduceMotion ? nil : .orbisDrag) { drawerOpen = open }
     }
     private func confirmUnpair(_ host: HostPairing?) {
         guard let host else { return }
@@ -184,7 +184,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                 let progress = visible ? max(0, min(1, 1 + (offset ?? 0) / width)) : 0
                 ZStack(alignment: .leading) {
                     if visible {
-                        Color.black.opacity(0.32 * progress).ignoresSafeArea()
+                        OrbisPalette(scheme).scrim.opacity(0.32 * progress).ignoresSafeArea()
                             .contentShape(Rectangle())
                             .onTapGesture { close() }
                             .accessibilityLabel("关闭会话目录").accessibilityAddTraits(.isButton)
@@ -257,7 +257,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     }
 
     private func settle(open: Bool) {
-        let animation: Animation? = reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)
+        let animation: Animation? = reduceMotion ? nil : .orbisDrag
         if open {
             withAnimation(animation) { isOpen = true; offset = nil }
         } else if offset == nil {
@@ -271,7 +271,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     }
 
     private func close() {
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { isOpen = false; offset = nil }
+        withAnimation(reduceMotion ? nil : .orbisDrag) { isOpen = false; offset = nil }
     }
 }
 
@@ -307,7 +307,7 @@ private struct SwipeBackModifier: ViewModifier {
                 if value.predictedEndTranslation.width > containerWidth / 3 {
                     onBack()
                 } else {
-                    withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)) { offset = 0 }
+                    withAnimation(reduceMotion ? nil : .orbisDrag) { offset = 0 }
                 }
             }
     }
@@ -342,13 +342,13 @@ struct HomeView: View {
             OrbisHeader {
                 OrbisIconButton(symbol: "line.3.horizontal", label: "打开会话目录", action: onDirectory)
             } title: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Orbis").font(.system(size: 23, weight: .semibold))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Orbis").font(.orbisTitle())
                         .foregroundStyle(Color(hex: scheme == .dark ? 0xB8C0CE : 0x899CB7))
                         .shadow(color: OrbisPalette(scheme).light, radius: 0, x: 1, y: 1)
-                    Text("Easy Agents EveryWhere").font(.system(size: 10, weight: .semibold)).tracking(0.6)
+                    Text("Easy Agents EveryWhere").font(.orbisCaption(.semibold)).tracking(0.4)
                         .foregroundStyle(LinearGradient(colors: [OrbisPalette(scheme).accent, OrbisPalette(scheme).success], startPoint: .leading, endPoint: .trailing))
-                        .lineLimit(1).minimumScaleFactor(0.8)
+                        .lineLimit(1)
                 }
             } trailing: {
                 OrbisIconButton(symbol: "arrow.down.to.line", label: "下载", action: onDownloads)
@@ -360,16 +360,16 @@ struct HomeView: View {
                      OrbisMenuItem(title: "取消配对当前电脑", symbol: "link", destructive: true, action: onUnpair)]
                 }
             }
+            // Fixed height: the reconnect action appears inside this row without moving the cards.
             HStack {
                 Button(action: onStatus) { ConnectionPill() }.buttonStyle(.plain)
                 Spacer()
                 if store.connection == .offline || store.connection == .error {
                     OrbisTextButton(title: "重新连接", symbol: "arrow.clockwise", action: store.reconnectSelectedHost)
                 }
-            }.padding(.horizontal, 20).padding(.bottom, 6)
+            }.frame(height: 48).padding(.horizontal, 20).padding(.bottom, 2)
             if store.runtimes.isEmpty {
-                OrbisEmptyState(symbol: "desktopcomputer", title: "暂无在线会话",
-                                detail: store.connection == .secured ? "在电脑端启动 Agent，或在会话目录中新建。" : "连接电脑后，在线会话会出现在这里。")
+                OrbisEmptyState(symbol: "desktopcomputer", title: "暂无在线会话")
                 OrbisActionButton(title: "查看会话目录", symbol: "folder", action: onDirectory)
                     .padding(.horizontal, 24).padding(.bottom, 32)
             } else {
@@ -387,26 +387,28 @@ struct HomeView: View {
 
     private func runtimeCard(_ runtime: RuntimeSummary) -> some View {
         let kind = store.agentKind(runtime)
+        let pending = !(store.interactions[runtime.runtimeId] ?? []).isEmpty
         return Button { onOpenRuntime(runtime) } label: {
             HStack(spacing: 12) {
                 AgentEmblem(kind: kind)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(store.displayName(runtime)).font(.system(size: 16, weight: .semibold)).lineLimit(1)
+                    Text(store.displayName(runtime)).font(.orbisBody(.semibold)).lineLimit(1)
                     Text("\(store.selectedHost?.hostName ?? "电脑")-\(runtime.cwd)")
-                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
+                        .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
                     HStack(spacing: 10) {
-                        Text(agentTitle(kind)).font(.system(size: 12, weight: .medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
-                        RuntimeStatusLabel(status: runtime.status)
-                    }
-                    if !(store.interactions[runtime.runtimeId] ?? []).isEmpty {
-                        Label("待确认 · 打开会话完成交互", systemImage: "exclamationmark.circle")
-                            .font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).error)
+                        Text(agentTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
+                        // A pending interaction takes the status slot instead of adding a line to the card.
+                        if pending {
+                            Label("待确认", systemImage: "exclamationmark.circle").font(.orbisCaption(.semibold))
+                                .foregroundStyle(OrbisPalette(scheme).error)
+                        } else { RuntimeStatusLabel(status: runtime.status) }
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-            }.padding(16).padding(.trailing, 52)
-        }.buttonStyle(NeuButtonStyle(radius: 20))
+            }.padding(.trailing, 52)
+        }.buttonStyle(NeuButtonStyle(radius: OrbisRadius.card, padding: OrbisRadius.cardPadding + 4))
             .overlay(alignment: .trailing) {
-                OrbisIconButton(symbol: "pencil", label: "修改会话别名") { onAlias(runtime) }.padding(.trailing, 12)
+                OrbisIconButton(symbol: "pencil", label: "修改会话别名") { onAlias(runtime) }
+                    .orbisNested().padding(.trailing, 12)
             }.accessibilityElement(children: .contain)
     }
 
@@ -417,12 +419,12 @@ struct ConnectionPill: View {
     @Environment(\.colorScheme) private var scheme
     var body: some View {
         HStack(spacing: 7) {
-            Circle().fill(store.connection == .secured ? OrbisPalette(scheme).success : store.connection == .error ? OrbisPalette(scheme).error : .orange)
+            Circle().fill(store.connection == .secured ? OrbisPalette(scheme).success : store.connection == .error ? OrbisPalette(scheme).error : OrbisPalette(scheme).warning)
                 .frame(width: 7, height: 7)
-            Text(connectionTitle(store.connection)).font(.system(size: 12, weight: .medium))
-            if store.connection == .secured { Image(systemName: "lock.shield").font(.system(size: 11)) }
-        }.foregroundStyle(OrbisPalette(scheme).secondary).padding(.horizontal, 12).frame(minHeight: 36)
-            .neuSurface(inset: true, radius: 18, intensity: 0.35)
+            Text(connectionTitle(store.connection))
+            if store.connection == .secured { Image(systemName: "lock.shield") }
+        }.font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).secondary).padding(.horizontal, 12).frame(minHeight: 36)
+            .neuSurface(inset: true, radius: 18, intensity: 0.35, concentric: false)
     }
 }
 

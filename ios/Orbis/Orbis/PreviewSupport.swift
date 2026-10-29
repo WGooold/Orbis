@@ -37,6 +37,7 @@ private final class PreviewTransport: OrbisTransport {
     var receive: (([String: Any], String?) -> Void)?
     var sequence = 0
     private var providerRevision = 1
+    private var viewportTail = 0
     private var enabledProviders: [String: Set<String>] = ["codex": ["official"], "pi": ["official"], "dsh": ["official"]]
     func pair(qr: PairingQR, deviceName: String, identity: DeviceIdentity, completion: @escaping (Result<HostPairing, Error>) -> Void) { completion(.failure(PairingError.invalidQR)) }
     func disconnect() {}
@@ -109,6 +110,10 @@ private final class PreviewTransport: OrbisTransport {
                       "entries": [["name": "orbis", "isDir": true, "hasSessions": true], ["name": "website", "isDir": true, "hasSessions": true], ["name": "experiments", "isDir": true, "hasSessions": false]]], "ctl")
         } else if object["type"] as? String == "runtime.git.request" {
             receive?(["type": "runtime.git", "requestId": object["requestId"]!, "runtimeId": object["runtimeId"]!, "sessionId": "session-1", "cwd": "/Projects/orbis", "branch": "main"], "ctl")
+            if screen == "viewport" {
+                viewportTail += 1
+                event(["type": "message.finished", "message": messages[1]])
+            }
         } else if let command = object["command"] as? [String: Any], let type = command["type"] as? String {
             let runtime = object["runtimeId"] as? String ?? "preview-codex"
             if type == "session.sync" {
@@ -164,6 +169,12 @@ private final class PreviewTransport: OrbisTransport {
         ["messageId": id, "role": role, "timestamp": 1793232000000, "content": [["type": "text", "text": text]]]
     }
     private var messages: [[String: Any]] {
+        if screen == "viewport" {
+            let paragraphs = (1...80).map { "阅读锚点 \($0)" }
+            let tail = (0..<viewportTail).map { "新增尾部 \($0 + 1)" }
+            return [message("viewport-user", role: "user", text: "检查长回复滚动"),
+                    message("viewport-assistant", role: "assistant", text: (paragraphs + tail).joined(separator: "\n\n"))]
+        }
         if screen == "tool" {
             let summary: [String: Any] = ["projectionVersion": 1, "tool": ["agent": ["hostId": "preview-host", "agentKind": "codex", "sessionId": "session-1"], "toolCallId": "preview-tool"],
                 "toolName": "read", "phase": "finished", "order": 1, "contents": [["part": "output", "format": "text", "availability": "readable", "readCapability": "range"]],

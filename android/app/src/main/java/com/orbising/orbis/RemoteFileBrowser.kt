@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -114,6 +115,7 @@ internal fun RemoteDirectoryBrowser(
                     shape = RemoteUi.ControlShape,
                     style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
                     shadowScale = 0.45f,
+                    contentInset = 12.dp,
                 ) {
                     Row(Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -122,8 +124,9 @@ internal fun RemoteDirectoryBrowser(
                             contentDescription = if (entry.isDir) "目录" else "文件",
                             tint = if (entry.hasSessions || selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp))
-                        Text(entry.name, style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        if (entry.isDir) Text(entry.name, style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        else FileNameText(entry.name, Modifier.weight(1f))
                         if (entry.isDir && entry.hasSessions) {
                             Badge(containerColor = MaterialTheme.colorScheme.secondaryContainer) {
                                 Text("有历史", style = MaterialTheme.typography.labelSmall)
@@ -177,11 +180,8 @@ internal fun DownloadFileSheet(
                 modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
                 showFiles = true, selectedFile = selectedFile, onSelectFile = { selectedFile = it },
             )
-            selected?.let {
-                Text(remoteBrowsePath(browse?.path, it.name), fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            FileNameText(selected?.name.orEmpty(), Modifier.fillMaxWidth().height(24.dp),
+                style = MaterialTheme.typography.labelSmall)
             NeumorphActionButton(
                 text = "下载到手机", icon = Icons.Rounded.Download, modifier = Modifier.fillMaxWidth(),
                 enabled = connected && browse?.isLoading == false && browse.error == null && selected != null,

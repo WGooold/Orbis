@@ -43,7 +43,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.OutlinedTextField
+import com.orbising.orbis.NeumorphTextField as OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -101,7 +101,7 @@ private fun DrawerAgentFilterMenu(
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
     val filterLabel = if (selected.hasProviderFilter) {
-        "${selected.label} · ${providerOptions.firstOrNull { it.key == providerFilterKey }?.label.orEmpty()}"
+        "${selected.label}，${providerOptions.firstOrNull { it.key == providerFilterKey }?.label.orEmpty()}"
     } else selected.label
     Box {
         NeumorphIconButton(
@@ -117,7 +117,7 @@ private fun DrawerAgentFilterMenu(
         NeumorphMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             if (showProviders) {
                 NeumorphMenuItem(
-                    text = { Text("${selected.label} · provider") },
+                    text = { Text("${selected.label}，provider") },
                     leadingIcon = { Icon(Icons.Rounded.ArrowBack, contentDescription = "返回会话筛选", modifier = Modifier.size(18.dp)) },
                     onClick = { showProviders = false },
                 )
@@ -289,7 +289,7 @@ internal fun SessionDrawer(
                     OutlinedTextField(
                         value = query,
                         onValueChange = { query = it },
-                        modifier = Modifier.weight(1f).neumorphInsetOverlay(RemoteUi.ControlShape),
+                        modifier = Modifier.weight(1f),
                         placeholder = { Text("搜索目录或会话", style = MaterialTheme.typography.bodyMedium) },
                         leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
                         trailingIcon = if (query.isNotEmpty()) {
@@ -329,7 +329,7 @@ internal fun SessionDrawer(
                 }
             if (agentFilter.hasProviderFilter) {
                 Text(
-                    "${agentFilter.label} · $providerLabel",
+                    "${agentFilter.label}，$providerLabel",
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
@@ -346,7 +346,7 @@ internal fun SessionDrawer(
                     modifier = Modifier.semantics { heading() },
                 )
                 Text(
-                    "$directoryCount 个目录 · $sessionCount 个会话",
+                    "$directoryCount 个目录，$sessionCount 个会话",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -403,11 +403,11 @@ internal fun SessionDrawer(
                                 focusManager.clearFocus()
                             }
                         }
-                        if (expanded) {
-                            val visibleSessions = if (showAllSessions || searchTerm.isNotEmpty()) {
-                                directory.sessions
-                            } else directory.sessions.take(5)
-                            items(visibleSessions, key = { "session:${section.hostId}:${it.sessionId}" }) { row ->
+                        val visibleSessions = if (expanded && (showAllSessions || searchTerm.isNotEmpty())) {
+                            directory.sessions
+                        } else directory.sessions.take(5)
+                        items(visibleSessions, key = { "session:${section.hostId}:${it.sessionId}" }) { row ->
+                            OrbisCollapse(expanded = expanded) {
                                 DrawerBranch {
                                     DrawerSessionRow(
                                         row = row,
@@ -430,8 +430,10 @@ internal fun SessionDrawer(
                                     )
                                 }
                             }
-                            if (directory.sessions.size > 5 && searchTerm.isEmpty()) {
-                                item(key = "more:$branchKey") {
+                        }
+                        if (directory.sessions.size > 5 && searchTerm.isEmpty()) {
+                            item(key = "more:$branchKey") {
+                                OrbisCollapse(expanded = expanded) {
                                     DrawerBranch {
                                         NeumorphTextButton(
                                             text = if (showAllSessions) "收起较早会话" else "再显示 ${directory.sessions.size - 5} 个会话",
@@ -616,6 +618,7 @@ private fun DrawerDirectoryHeader(
         style = if (expanded) NeumorphStyle.Pressed else NeumorphStyle.Raised,
         shadowScale = 0.75f,
         onClick = onClick,
+        contentInset = 14.dp,
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -661,7 +664,7 @@ private fun DrawerDirectoryHeader(
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = if (expanded) Int.MAX_VALUE else 1,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

@@ -14,20 +14,28 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.material3.TextFieldColors
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 
 /** 页面、控件与内容共用的尺寸规范；阴影不参与这些尺寸的计算。 */
@@ -38,7 +46,7 @@ internal object RemoteUi {
     val IconSize = 22.dp
     val FieldHeight = 56.dp
     val ControlShape = RoundedCornerShape(16.dp)
-    val CardShape = RoundedCornerShape(20.dp)
+    val CardShape = RoundedCornerShape(24.dp)
 }
 
 /** 所有页面共用顶栏高度、标题字号和两侧留白。 */
@@ -64,16 +72,20 @@ internal fun RemoteTopAppBar(
 /** Menus retain Material's anchoring, keyboard focus and outside-tap dismissal. */
 @Composable
 internal fun NeumorphMenu(expanded: Boolean, onDismissRequest: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
-    DropdownMenu(
-        expanded = expanded,
-        onDismissRequest = onDismissRequest,
-        modifier = Modifier.neumorphRaised(RemoteUi.CardShape),
-        shape = RemoteUi.CardShape,
-        containerColor = MaterialTheme.colorScheme.surface,
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
-    ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
+    CompositionLocalProvider(LocalOrbisSurface provides null) {
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = onDismissRequest,
+            modifier = Modifier.neumorphRaised(RemoteUi.CardShape),
+            shape = RemoteUi.CardShape,
+            containerColor = MaterialTheme.colorScheme.surface,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+        ) {
+            CompositionLocalProvider(LocalOrbisSurface provides OrbisSurfaceContext(1, 1, 16.dp)) {
+                Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), content = content)
+            }
+        }
     }
 }
 
@@ -91,7 +103,7 @@ internal fun NeumorphMenuItem(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            leadingIcon?.invoke()
+            leadingIcon?.let { Box(Modifier.orbisIconBaseline(MaterialTheme.typography.labelLarge.fontSize)) { it() } }
             Box(Modifier.weight(1f)) { ProvideTextStyle(MaterialTheme.typography.labelLarge, text) }
             trailingIcon?.invoke()
         }
@@ -111,17 +123,19 @@ internal fun NeumorphDialog(
     properties: DialogProperties = DialogProperties(),
 ) {
     BasicAlertDialog(onDismissRequest = onDismissRequest, properties = properties, modifier = Modifier.padding(vertical = 12.dp)) {
-        NeumorphSurface(shape = shape, shadowScale = 1.1f) {
-            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                ProvideTextStyle(MaterialTheme.typography.titleLarge, title)
-                Box(Modifier.weight(1f, fill = false)) { ProvideTextStyle(MaterialTheme.typography.bodyMedium, text) }
-                FlowRow(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    dismissButton?.invoke()
-                    confirmButton()
+        CompositionLocalProvider(LocalOrbisSurface provides null) {
+            NeumorphSurface(shape = shape, shadowScale = 1.1f, contentPadding = 16.dp) {
+                Column(Modifier, verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                    ProvideTextStyle(MaterialTheme.typography.titleLarge, title)
+                    Box(Modifier.weight(1f, fill = false)) { ProvideTextStyle(MaterialTheme.typography.bodyMedium, text) }
+                    FlowRow(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        dismissButton?.invoke()
+                        confirmButton()
+                    }
                 }
             }
         }
@@ -137,6 +151,7 @@ internal fun NeumorphTextField(
     label: (@Composable () -> Unit)? = null,
     placeholder: (@Composable () -> Unit)? = null,
     leadingIcon: (@Composable () -> Unit)? = null,
+    trailingIcon: (@Composable () -> Unit)? = null,
     supportingText: (@Composable () -> Unit)? = null,
     enabled: Boolean = true,
     isError: Boolean = false,
@@ -144,8 +159,15 @@ internal fun NeumorphTextField(
     minLines: Int = 1,
     maxLines: Int = if (singleLine) 1 else Int.MAX_VALUE,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
     visualTransformation: VisualTransformation = VisualTransformation.None,
+    textStyle: TextStyle = MaterialTheme.typography.bodyLarge,
+    colors: TextFieldColors? = null,
+    shape: Shape = RemoteUi.ControlShape,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val fieldShape = concentricShape(shape)
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         label?.let {
             ProvideTextStyle(
@@ -157,19 +179,22 @@ internal fun NeumorphTextField(
             value = value,
             onValueChange = onValueChange,
             modifier = Modifier.fillMaxWidth().heightIn(min = RemoteUi.FieldHeight)
-                .neumorphInsetOverlay(RemoteUi.ControlShape),
+                .orbisFieldFocus(focused, fieldShape).neumorphInsetOverlay(fieldShape),
             placeholder = placeholder,
             leadingIcon = leadingIcon,
+            trailingIcon = trailingIcon,
             enabled = enabled,
             isError = isError,
             singleLine = singleLine,
             minLines = minLines,
             maxLines = maxLines,
             keyboardOptions = keyboardOptions,
+            keyboardActions = keyboardActions,
             visualTransformation = visualTransformation,
-            textStyle = MaterialTheme.typography.bodyLarge,
-            colors = neumorphFieldColors(),
-            shape = RemoteUi.ControlShape,
+            textStyle = textStyle,
+            colors = colors ?: neumorphFieldColors(),
+            shape = fieldShape,
+            interactionSource = interaction,
         )
         supportingText?.let {
             ProvideTextStyle(

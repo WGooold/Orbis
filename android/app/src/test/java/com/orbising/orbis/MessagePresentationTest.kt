@@ -124,13 +124,6 @@ class MessagePresentationTest {
     }
 
     @Test
-    fun `conversation follows latest only initially or while user remains near the end`() {
-        assertTrue(shouldFollowLatest(initialPositioned = false, lastVisibleIndex = 0, totalItems = 30))
-        assertTrue(shouldFollowLatest(initialPositioned = true, lastVisibleIndex = 28, totalItems = 30))
-        assertFalse(shouldFollowLatest(initialPositioned = true, lastVisibleIndex = 12, totalItems = 30))
-    }
-
-    @Test
     fun `delivery choices are transient and only visible while running`() {
         assertFalse(deliveryChoicesVisible(requested = false, runtimeStatus = "running"))
         assertFalse(deliveryChoicesVisible(requested = true, runtimeStatus = "idle"))

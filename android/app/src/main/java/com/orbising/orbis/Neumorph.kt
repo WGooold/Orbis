@@ -45,7 +45,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -70,10 +69,14 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -102,6 +105,17 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
+/** A child uses its parent's inset corner and a flat tonal step, never another shadow frame. */
+internal data class OrbisSurfaceContext(val layer: Int, val depth: Int, val innerRadius: Dp?)
+internal val LocalOrbisSurface = staticCompositionLocalOf<OrbisSurfaceContext?> { null }
+
+internal fun nestedSurfaceLayer(parent: Int, pressed: Boolean): Int =
+    if (pressed) { if (parent > 0) parent - 1 else 1 } else { if (parent < 3) parent + 1 else 2 }
+
+@Composable
+internal fun concentricShape(shape: Shape): Shape =
+    if (shape == CircleShape) shape else LocalOrbisSurface.current?.innerRadius?.let { RoundedCornerShape(it) } ?: shape
+
 /** 新拟物配色：底板 + 一对阴影。 */
 @Immutable
 data class NeumorphColors(
@@ -114,6 +128,14 @@ data class NeumorphColors(
     /** 凹下（Pressed）时的底板色，比 base 深一点。 */
     val insetBase: Color,
 ) {
+    fun layer(index: Int): Color = when (index.coerceIn(0, 3)) {
+        0 -> insetBase
+        1 -> base
+        2 -> if (this == Dark) Color(0xFF292D36) else Color(0xFFEDF1F8)
+        else -> if (this == Dark) Color(0xFF2F333D) else Color(0xFFF3F6FB)
+    }
+
+    val scrim: Color get() = if (this == Dark) Color(0xFF0A0C11) else Color(0xFF2A3344)
     companion object {
         val Light = NeumorphColors(
             base = Color(0xFFE6EBF4),
@@ -132,7 +154,7 @@ data class NeumorphColors(
 
 @Composable
 fun rememberNeumorphColors(): NeumorphColors =
-    if (isSystemInDarkTheme()) NeumorphColors.Dark else NeumorphColors.Light
+    if (LocalOrbisDarkTheme.current) NeumorphColors.Dark else NeumorphColors.Light
 
 /** 凸起 = Raised（按钮/卡片），凹下 = Pressed（输入框/内嵌面板）。 */
 enum class NeumorphStyle { Raised, Pressed }
@@ -560,26 +582,37 @@ fun NeumorphSurface(
     enabled: Boolean = true,
     onLongClick: (() -> Unit)? = null,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    contentPadding: Dp = 0.dp,
+    contentInset: Dp = contentPadding,
     content: @Composable () -> Unit,
 ) {
     val colors = rememberNeumorphColors()
+    val parent = LocalOrbisSurface.current
+    val resolvedShape = concentricShape(shape)
     val paints = rememberShadowPaints(colors, shadowScale)
     val pressed by interactionSource.collectIsPressedAsState()
     val currentStyle = if (pressed && enabled) NeumorphStyle.Pressed else style
-    val bodyColor = if (currentStyle == NeumorphStyle.Pressed) colors.insetBase else colors.base
+    val layer = parent?.let { nestedSurfaceLayer(it.layer, currentStyle == NeumorphStyle.Pressed) }
+        ?: if (currentStyle == NeumorphStyle.Pressed) 0 else 1
+    val bodyColor = if (parent != null) {
+        if (parent.depth >= 2 && currentStyle == NeumorphStyle.Raised) Color.Transparent else colors.layer(layer)
+    } else if (currentStyle == NeumorphStyle.Pressed) colors.insetBase else colors.base
+    val corner = (resolvedShape as? RoundedCornerShape)?.topStart?.let { size ->
+        with(LocalDensity.current) { size.toPx(Size(1000f, 1000f), this).toDp() }
+    }
     // 凹陷阴影须画在底色之上；外阴影须在 clip 之外。两种状态共用同一块底板。
     Box(
         modifier.then(
-            if (currentStyle == NeumorphStyle.Raised) {
-                Modifier.neumorphShadows(shape, currentStyle, colors, shadowScale, paints)
+            if (parent == null && currentStyle == NeumorphStyle.Raised) {
+                Modifier.neumorphShadows(resolvedShape, currentStyle, colors, shadowScale, paints)
             } else Modifier,
         ),
         propagateMinConstraints = true,
     ) {
         Box(
-            Modifier.clip(shape).background(bodyColor).then(
-                if (currentStyle == NeumorphStyle.Pressed) {
-                    Modifier.neumorphShadows(shape, currentStyle, colors, shadowScale, paints)
+            Modifier.clip(resolvedShape).background(bodyColor).then(
+                if (parent == null && currentStyle == NeumorphStyle.Pressed) {
+                    Modifier.neumorphShadows(resolvedShape, currentStyle, colors, shadowScale, paints)
                 } else Modifier,
             ).then(
                 if (onClick != null) Modifier.combinedClickable(
@@ -593,8 +626,12 @@ fun NeumorphSurface(
             ),
             propagateMinConstraints = true,
         ) {
-            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
-                content()
+            CompositionLocalProvider(
+                LocalContentColor provides MaterialTheme.colorScheme.onSurface,
+                LocalOrbisSurface provides OrbisSurfaceContext(layer, (parent?.depth ?: 0) + 1,
+                    corner?.let { (it - contentInset).coerceAtLeast(0.dp) }),
+            ) {
+                Box(Modifier.padding(contentPadding), propagateMinConstraints = true) { content() }
             }
         }
     }
@@ -603,6 +640,7 @@ fun NeumorphSurface(
 /** Native menu/sheet containers keep their layout and semantics while sharing our outer shadows. */
 @Composable
 internal fun Modifier.neumorphRaised(shape: Shape, shadowScale: Float = 0.65f): Modifier {
+    if (LocalOrbisSurface.current != null) return this
     val colors = rememberNeumorphColors()
     return neumorphShadows(shape, NeumorphStyle.Raised, colors, shadowScale, rememberShadowPaints(colors, shadowScale))
 }
@@ -689,7 +727,7 @@ fun NeumorphActionButton(
                 horizontalArrangement = Arrangement.Center,
             ) {
                 icon?.let {
-                    Icon(it, contentDescription = null, tint = contentColor, modifier = Modifier.size(RemoteUi.IconSize))
+                    Icon(it, contentDescription = null, tint = contentColor, modifier = Modifier.size(RemoteUi.IconSize).orbisIconBaseline(MaterialTheme.typography.labelLarge.fontSize))
                     Spacer(Modifier.width(8.dp))
                 }
                 Text(
@@ -707,17 +745,23 @@ fun NeumorphActionButton(
  * 配合 [neumorphInsetOverlay]（内阴影）使用（shape 建议传 RoundedCornerShape(16.dp)）。
  */
 @Composable
-fun neumorphFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedContainerColor = rememberNeumorphColors().insetBase,
-    unfocusedContainerColor = rememberNeumorphColors().insetBase,
-    disabledContainerColor = rememberNeumorphColors().insetBase,
-    errorContainerColor = rememberNeumorphColors().insetBase,
-    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.65f),
-    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-    disabledBorderColor = Color.Transparent,
-    focusedTextColor = MaterialTheme.colorScheme.onSurface,
-    unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-)
+fun neumorphFieldColors(): androidx.compose.material3.TextFieldColors {
+    val parent = LocalOrbisSurface.current
+    val colors = rememberNeumorphColors()
+    val fill = parent?.let { colors.layer(nestedSurfaceLayer(it.layer, true)) } ?: colors.insetBase
+    return OutlinedTextFieldDefaults.colors(
+        focusedContainerColor = fill,
+        unfocusedContainerColor = fill,
+        disabledContainerColor = fill,
+        errorContainerColor = fill,
+        focusedBorderColor = Color.Transparent,
+        unfocusedBorderColor = Color.Transparent,
+        disabledBorderColor = Color.Transparent,
+        errorBorderColor = Color.Transparent,
+        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+    )
+}
 
 /**
  * 给「平铺凹陷面」叠一对内阴影（在内容**之上**绘制，本体即整个节点）。
@@ -727,6 +771,7 @@ fun neumorphFieldColors() = OutlinedTextFieldDefaults.colors(
  */
 @Composable
 fun Modifier.neumorphInsetOverlay(shape: Shape): Modifier {
+    if (LocalOrbisSurface.current != null) return this
     val colors = rememberNeumorphColors()
     val paints = rememberShadowPaints(colors, 1f)
     return then(remember(shape, colors, paints) {
@@ -735,13 +780,18 @@ fun Modifier.neumorphInsetOverlay(shape: Shape): Modifier {
             val offsetPx = ShadowOffset.toPx()
             val reachPx = ShadowBlur.toPx()
             val corner = shapeCornerPx(shape, bodySize, this)
+            val patch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                ShadowPatchCache.patch(corner, offsetPx, reachPx, NeumorphStyle.Pressed, paints)
+            } else null
             val paths = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 InnerBlurPaths(bodySize, offsetPx, corner, reachPx)
             } else null
             onDrawWithContent {
                 drawContent()
                 if (bodySize.width <= 0f || bodySize.height <= 0f) return@onDrawWithContent
-                if (paths != null) {
+                if (patch != null && bodySize.width >= patch.block * 2 && bodySize.height >= patch.block * 2) {
+                    drawShadowPatch(patch, bodySize)
+                } else if (paths != null) {
                     drawInnerBlur(paths, paints)
                 } else {
                     drawInnerShadow(shape, bodySize, colors.darkShadow, 1f, offsetPx, reachPx, InnerDarkAlphas)
@@ -785,10 +835,11 @@ fun NeumorphTextButton(
             horizontalArrangement = Arrangement.Center,
         ) {
             icon?.let {
-                Icon(it, contentDescription = null, tint = contentColor, modifier = Modifier.size(18.dp))
+                Icon(it, contentDescription = null, tint = contentColor, modifier = Modifier.size(18.dp).orbisIconBaseline(MaterialTheme.typography.labelLarge.fontSize))
                 Spacer(Modifier.width(5.dp))
             }
-            Text(text, color = contentColor, style = MaterialTheme.typography.labelLarge)
+            Text(text, color = contentColor, style = MaterialTheme.typography.labelLarge,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -805,6 +856,7 @@ fun NeumorphCheckbox(
     enabled: Boolean = true,
 ) {
     val interaction = remember { MutableInteractionSource() }
+    val checkProgress by animateFloatAsState(if (checked) 1f else 0f, OrbisMotion.pop(), label = "check")
     val checkColor = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
     Box(
         modifier.size(RemoteUi.TouchTarget).then(
@@ -827,13 +879,17 @@ fun NeumorphCheckbox(
             style = if (checked) NeumorphStyle.Pressed else NeumorphStyle.Raised,
             shadowScale = 0.42f,
         ) {
-            if (checked) {
+            if (checkProgress > 0f) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Icon(
                         Icons.Rounded.Check,
                         contentDescription = null,
                         tint = checkColor,
-                        modifier = Modifier.size(16.dp),
+                        modifier = Modifier.size(16.dp).graphicsLayer {
+                            alpha = checkProgress.coerceIn(0f, 1f)
+                            scaleX = checkProgress.coerceAtLeast(0f)
+                            scaleY = checkProgress.coerceAtLeast(0f)
+                        },
                     )
                 }
             }

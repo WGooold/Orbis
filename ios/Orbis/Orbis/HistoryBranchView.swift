@@ -9,6 +9,7 @@ struct HistoryBranchView: View {
     @State private var showOtherBranches = false
     @State private var showDetails = false
     @State private var actionPending = false
+    @FocusState private var searchFocused: Bool
 
     private var options: [RuntimeOption] {
         guard let id = store.selectedRuntimeId else { return [] }
@@ -35,16 +36,18 @@ struct HistoryBranchView: View {
             }
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass").foregroundStyle(OrbisPalette(scheme).secondary)
-                TextField("搜索历史与分支", text: $query).autocorrectionDisabled().font(.system(size: 14)).textInputAutocapitalization(.never)
-                if !query.isEmpty { OrbisIconButton(symbol: "xmark", label: "清除搜索", size: 28) { query = "" } }
-            }.padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).neuSurface(inset: true, radius: 16, intensity: 0.6).padding(.horizontal, 20)
+                TextField("搜索历史与分支", text: $query).autocorrectionDisabled().font(.orbisBody()).textInputAutocapitalization(.never)
+                    .focused($searchFocused)
+                OrbisIconButton(symbol: "xmark", label: "清除搜索", size: 28) { query = "" }
+                    .opacity(query.isEmpty ? 0 : 1).disabled(query.isEmpty).accessibilityHidden(query.isEmpty)
+            }.padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).orbisField(focused: searchFocused).padding(.horizontal, 20)
             if options.isEmpty {
-                OrbisEmptyState(symbol: "clock.arrow.circlepath", title: "当前会话尚未提供历史分支", detail: "连接电脑并刷新会话后重试。")
+                OrbisEmptyState(symbol: "clock.arrow.circlepath", title: "当前会话尚未提供历史分支")
                 OrbisActionButton(title: "刷新会话", symbol: "arrow.clockwise", action: store.refresh).padding(.horizontal, 24).padding(.bottom, 24).disabled(!store.canSend)
             } else {
                 ScrollViewReader { proxy in
                     HStack {
-                        Text("\(visible.count) 条记录").font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary)
+                        Text("\(visible.count) 条记录").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                         Spacer()
                         OrbisTextButton(title: "回到当前位置", symbol: "scope") {
                             query = ""
@@ -58,7 +61,7 @@ struct HistoryBranchView: View {
                             }
                             let others = options.filter { $0.tree?.isOnActivePath == false }.count
                             if !showOtherBranches && others > 0 && query.isEmpty {
-                                OrbisActionButton(title: "其他分支 · \(others) 条记录", symbol: "chevron.right") { showOtherBranches = true }
+                                OrbisActionButton(title: "其他分支（\(others) 条记录）", symbol: "chevron.right") { showOtherBranches = true }
                             }
                         }.padding(.horizontal, 24).padding(.vertical, 10)
                     }.scrollDismissesKeyboard(.interactively)
@@ -76,12 +79,12 @@ struct HistoryBranchView: View {
         Button { selected = option; store.previewEntry(option.value) } label: {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 8) {
-                    Text(role(option)).font(.system(size: 11, weight: .semibold))
-                    if option.tree?.isCurrent == true { Text("当前位置").font(.system(size: 11)) }
-                    if selected?.value == option.value { Text("正在预览").font(.system(size: 11)) }
+                    Text(role(option)).fontWeight(.semibold)
+                    if option.tree?.isCurrent == true { Text("当前位置") }
+                    if selected?.value == option.value { Text("正在预览") }
                     Spacer()
-                }.foregroundStyle(OrbisPalette(scheme).accent)
-                Text(option.label).font(.system(size: 14)).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                }.font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).accent)
+                Text(option.label).font(.orbisBody()).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
             }.padding(14).frame(minHeight: 64)
         }.buttonStyle(NeuButtonStyle(selected: selected?.value == option.value || option.tree?.isCurrent == true))
             .disabled(!store.canSend || actionPending)
@@ -91,24 +94,24 @@ struct HistoryBranchView: View {
     private func preview(_ option: RuntimeOption) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("正在预览").font(.system(size: 13, weight: .semibold)).foregroundStyle(OrbisPalette(scheme).accent)
-                Text("不会改变电脑端会话").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary)
+                Text("正在预览").font(.orbisLabel(.semibold)).foregroundStyle(OrbisPalette(scheme).accent)
                 Spacer()
                 OrbisIconButton(symbol: "xmark", label: "退出预览", size: 32) { selected = nil; store.dismissPreview() }
             }
             ScrollView {
-                if store.entryPreview?.loading == true { ProgressView("读取中…").padding(20) }
+                if store.entryPreview?.loading == true { ProgressView("读取中…").font(.orbisCaption()).padding(20) }
                 else if let message = store.entryPreview?.message {
                     ChatMessageRow(row: ChatRow(messages: [message]), kind: store.selectedRuntime.flatMap { store.agentKind($0) })
-                } else { Text(store.entryPreview?.error ?? "该节点没有可预览的消息内容。").font(.system(size: 13)).foregroundStyle(OrbisPalette(scheme).secondary).padding(12) }
+                } else { Text(store.entryPreview?.error ?? "该节点没有可预览的消息内容。").font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(12) }
             }.frame(maxHeight: 160)
             if ["user", "assistant"].contains(option.tree?.role ?? "") {
-                OrbisActionButton(title: option.tree?.role == "user" ? "编辑这条消息并重新开始" : "从这条回复后继续", symbol: "arrow.turn.down.right") {
+                // The pending state lives in the button's own title, so the panel never grows.
+                OrbisActionButton(title: actionPending ? "正在切换分支…" : option.tree?.role == "user" ? "编辑这条消息并重新开始" : "从这条回复后继续",
+                                  symbol: "arrow.turn.down.right") {
                     actionPending = store.moveHistory(to: option)
-                }.disabled(!store.canSend || !store.pendingActionIds.isEmpty || store.entryPreview?.loading == true)
-                if actionPending { ProgressView("正在切换分支…").font(.system(size: 12)) }
+                }.disabled(actionPending || !store.canSend || !store.pendingActionIds.isEmpty || store.entryPreview?.loading == true)
             }
-        }.padding(16).neuSurface(radius: 20).padding(.horizontal, 20).padding(.bottom, 12)
+        }.neuSurface(radius: OrbisRadius.card, padding: 12).padding(.horizontal, 20).padding(.bottom, 12)
     }
     private func role(_ option: RuntimeOption) -> String {
         switch option.tree?.role { case "user": return "你的消息"; case "assistant": return "助手回复"; case "toolResult", "tool": return "工具"; default: return "记录" }

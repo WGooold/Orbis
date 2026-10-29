@@ -32,7 +32,7 @@ class ComposerStatusTest {
         )
 
         assertEquals("Claude Sonnet 4.5", status.modelLabel)
-        assertEquals("12% · 24.6k/200k", status.contextLabel)
+        assertEquals("12%，24.6k/200k", status.contextLabel)
         assertEquals(0.123f, status.contextProgress!!, 0.001f)
         assertEquals(ContextUsageSeverity.Normal, status.severity)
         assertFalse(status.isEmpty)
@@ -66,7 +66,7 @@ class ComposerStatusTest {
         val status = composerStatus(
             runtime(usage = RuntimeContextUsage(tokens = 1, contextWindow = 200_000, percent = 42.5)),
         )
-        assertEquals("43% · 1/200k", status.contextLabel)
+        assertEquals("43%，1/200k", status.contextLabel)
         assertEquals(0.425f, status.contextProgress!!, 0.001f)
     }
 

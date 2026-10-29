@@ -169,12 +169,6 @@ internal fun orphanToolActivities(
     tool.toolCallId in representedToolIds || tool.state == "finished"
 }
 
-internal fun shouldFollowLatest(
-    initialPositioned: Boolean,
-    lastVisibleIndex: Int,
-    totalItems: Int,
-): Boolean = !initialPositioned || totalItems <= 0 || lastVisibleIndex >= totalItems - 2
-
 internal fun deliveryChoicesVisible(requested: Boolean, runtimeStatus: String?): Boolean =
     requested && runtimeStatus == "running"
 
