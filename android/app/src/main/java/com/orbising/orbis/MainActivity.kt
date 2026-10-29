@@ -662,55 +662,61 @@ private fun RuntimeListScreen(
                             key = { "${it.hostId}:${it.runtime.runtimeId}" },
                         ) { row ->
                             val runtime = row.runtime
-                            NeumorphSurface(
+                            Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(20.dp),
-                                shadowScale = 0.8f,
-                                onClick = { onOpenRuntime(row.hostId, runtime.runtimeId) },
-                                contentInset = 16.dp,
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(0.dp),
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                NeumorphSurface(
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(20.dp),
+                                    shadowScale = 0.8f,
+                                    onClick = { onOpenRuntime(row.hostId, runtime.runtimeId) },
+                                    contentInset = 16.dp,
                                 ) {
-                                    AgentEmblem(agentBrand(runtime.agentKind), 44.dp)
-                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Text(
-                                            state.runtimeDisplayName(runtime),
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        Text(
-                                            runtime.cwd,
-                                            fontFamily = FontFamily.Monospace,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            Text(agentBrand(runtime.agentKind).title, color = agentBrand(runtime.agentKind).accent(), style = MaterialTheme.typography.labelMedium)
-                                            // 待确认占用状态位，不给卡片多加一行（与 iOS 一致）。
-                                            if (row.state.hasPendingInteraction(runtime.runtimeId)) {
-                                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                    Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
-                                                    Text("待确认", color = MaterialTheme.colorScheme.error,
-                                                        style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                                                }
-                                            } else RuntimeStatus(runtime.status)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    ) {
+                                        AgentEmblem(agentBrand(runtime.agentKind), 44.dp)
+                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text(
+                                                state.runtimeDisplayName(runtime),
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            Text(
+                                                runtime.cwd,
+                                                fontFamily = FontFamily.Monospace,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                Text(agentBrand(runtime.agentKind).title, color = agentBrand(runtime.agentKind).accent(), style = MaterialTheme.typography.labelMedium)
+                                                // 待确认占用状态位，不给卡片多加一行（与 iOS 一致）。
+                                                if (row.state.hasPendingInteraction(runtime.runtimeId)) {
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                        Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
+                                                        Text("待确认", color = MaterialTheme.colorScheme.error,
+                                                            style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                                    }
+                                                } else RuntimeStatus(runtime.status)
+                                            }
                                         }
                                     }
-                                    NeumorphIconButton(
-                                        onClick = { aliasEditor = row.hostId to runtime },
-                                        icon = Icons.Rounded.Edit,
-                                        contentDescription = "修改会话别名",
-                                        size = 40.dp,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
                                 }
+                                NeumorphIconButton(
+                                    onClick = { aliasEditor = row.hostId to runtime },
+                                    icon = Icons.Rounded.Edit,
+                                    contentDescription = "修改会话别名",
+                                    compact = true,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
                     }
@@ -2337,7 +2343,6 @@ private fun DownloadTaskCard(
     val total = task.artifact?.size
     val progress = total?.takeIf { it > 0 }?.let { (task.receivedBytes.toFloat() / it).coerceIn(0f, 1f) }
     val active = task.status == "queued" || task.status == "downloading"
-    val canCancel = active
     // 重试不看 runtime 在不在：文件在电脑磁盘上，Host 会直接读盘发分片（spec §8.1）。
     val canRetry = !active && task.status != "completed" &&
         (task.sourcePath != null || task.sourceArtifactId != null)
@@ -2347,74 +2352,68 @@ private fun DownloadTaskCard(
         "paused", "cancelled" -> MaterialTheme.colorScheme.secondary
         else -> MaterialTheme.colorScheme.primary
     }
-    NeumorphSurface(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = { if (selectionMode) onClick() },
-        onLongClick = onLongClick,
-        shape = RemoteUi.CardShape,
-        style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-        contentInset = 16.dp,
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (selectionMode) {
-                    NeumorphCheckbox(
-                        checked = selected,
-                        onCheckedChange = { onClick() },
-                    )
-                }
-                Icon(
-                    when (task.status) {
-                        "completed" -> Icons.Rounded.CheckCircle
-                        "failed" -> Icons.Rounded.ErrorOutline
-                        else -> Icons.Rounded.Download
-                    },
-                    contentDescription = null,
-                    tint = statusColor,
-                )
-                Column(Modifier.weight(1f)) {
-                    FileNameText(task.displayName, fontWeight = FontWeight.SemiBold)
-                    Text(downloadStatusText(task), style = MaterialTheme.typography.bodySmall, color = statusColor)
-                }
-                if (active) {
-                    if (canCancel) {
-                        NeumorphIconButton(
-                            onClick = { onCancel(task.taskId) },
-                            icon = Icons.Rounded.StopCircle,
-                            contentDescription = "取消下载",
-                            size = 40.dp,
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(0.dp)) {
+        NeumorphSurface(
+            modifier = Modifier.weight(1f),
+            onClick = { if (selectionMode) onClick() },
+            onLongClick = onLongClick,
+            shape = RemoteUi.CardShape,
+            style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+            contentInset = 16.dp,
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (selectionMode) {
+                        NeumorphCheckbox(
+                            checked = selected,
+                            onCheckedChange = { onClick() },
                         )
-                    } else {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     }
-                } else if (canRetry) {
-                    NeumorphIconButton(
-                        onClick = { onRetry(task.taskId) },
-                        icon = Icons.Rounded.Refresh,
-                        contentDescription = "继续下载",
-                        size = 40.dp,
+                    Icon(
+                        when (task.status) {
+                            "completed" -> Icons.Rounded.CheckCircle
+                            "failed" -> Icons.Rounded.ErrorOutline
+                            else -> Icons.Rounded.Download
+                        },
+                        contentDescription = null,
+                        tint = statusColor,
+                    )
+                    Column(Modifier.weight(1f)) {
+                        FileNameText(task.displayName, fontWeight = FontWeight.SemiBold)
+                        Text(downloadStatusText(task), style = MaterialTheme.typography.bodySmall, color = statusColor)
+                    }
+                }
+                if (active || task.status == "paused" || task.status == "failed") {
+                    if (progress == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    else LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                }
+                val source = task.sourcePath
+                if (source != null) {
+                    Text(source, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                task.savedLocation?.let { location ->
+                    Text(
+                        "保存到：${savedLocationText(task, location)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-            }
-            if (active || task.status == "paused" || task.status == "failed") {
-                if (progress == null) LinearProgressIndicator(Modifier.fillMaxWidth())
-                else LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-            }
-            val source = task.sourcePath
-            if (source != null) {
-                Text(source, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
-            task.savedLocation?.let { location ->
-                Text(
-                    "保存到：${savedLocationText(task, location)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            task.error?.let { error ->
-                if (task.status == "failed" || task.status == "paused") {
-                    Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                task.error?.let { error ->
+                    if (task.status == "failed" || task.status == "paused") {
+                        Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
                 }
+            }
+        }
+        // Keep the slot even after completion: status changes do not reflow the file name.
+        Box(Modifier.size(RemoteUi.TouchTarget), contentAlignment = Alignment.Center) {
+            if (active) {
+                NeumorphIconButton(onClick = { onCancel(task.taskId) }, icon = Icons.Rounded.StopCircle,
+                    contentDescription = "取消下载", compact = true)
+            } else if (canRetry) {
+                NeumorphIconButton(onClick = { onRetry(task.taskId) }, icon = Icons.Rounded.Refresh,
+                    contentDescription = "继续下载", compact = true)
             }
         }
     }
@@ -2657,7 +2656,7 @@ private fun SettingsScreen(model: RemoteViewModel, onBack: () -> Unit) {
                 }
             }
             StatusSectionTitle("连接优先级")
-            StatusCard {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 order.forEachIndexed { index, kind ->
                     PriorityOrderRow(
                         rank = index + 1,
@@ -2703,13 +2702,19 @@ private fun AgentProvidersScreen(state: RemoteState, model: RemoteViewModel, onB
             catalog.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
             if (!catalog.loading && catalog.error == null && catalog.providers.isEmpty()) Text("还没有供应商")
             catalog.providers.forEach { provider ->
-                StatusCard {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    NeumorphSurface(Modifier.weight(1f), shape = RemoteUi.CardShape, contentPadding = 16.dp) {
+                        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(provider.name, fontWeight = FontWeight.SemiBold)
                             Text(if (provider.enabled) (if (provider.additive) "已启用" else "当前使用") else "未启用", style = MaterialTheme.typography.bodySmall)
                         }
-                        if (!provider.enabled || provider.additive) TextButton(onClick = { pending = provider }, enabled = available) { Text(if (provider.enabled) "移除" else "启用") }
+                    }
+                    Box(Modifier.width(64.dp).heightIn(min = RemoteUi.TouchTarget), contentAlignment = Alignment.Center) {
+                        if (!provider.enabled || provider.additive) NeumorphTextButton(
+                            text = if (provider.enabled) "移除" else "启用", onClick = { pending = provider },
+                            enabled = available, danger = provider.enabled,
+                        )
                     }
                 }
             }
@@ -2733,33 +2738,27 @@ private fun PriorityOrderRow(
     onMoveDown: () -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(0.dp),
     ) {
-        Text(
-            "第 $rank 优先",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(0.8f),
-        )
-        Text(
-            transportPathLabel(kind) ?: kind,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1f),
-        )
+        Column(Modifier.weight(1f).padding(start = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("第 $rank 优先", style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(transportPathLabel(kind) ?: kind, style = MaterialTheme.typography.bodyMedium)
+        }
         NeumorphIconButton(
             onClick = onMoveUp,
             icon = Icons.Rounded.ArrowUpward,
             contentDescription = "上移",
-            size = 40.dp,
+            compact = true,
             enabled = canMoveUp,
         )
         NeumorphIconButton(
             onClick = onMoveDown,
             icon = Icons.Rounded.ArrowDownward,
             contentDescription = "下移",
-            size = 40.dp,
+            compact = true,
             enabled = canMoveDown,
         )
     }

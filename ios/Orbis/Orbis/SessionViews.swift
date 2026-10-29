@@ -170,7 +170,7 @@ struct SessionDrawerView: View {
         let hidden = directory.sessions.count - directorySessionPreviewLimit
         let visible = expanded && (state.showAllSessions || searching || hidden <= 0) ? directory.sessions : Array(directory.sessions.prefix(directorySessionPreviewLimit))
         return VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 0) {
                 Button { toggle(directory.path) } label: {
                     HStack(spacing: 9) {
                         Image(systemName: expanded ? "folder.fill" : "folder").foregroundStyle(OrbisPalette(scheme).accent)
@@ -184,7 +184,7 @@ struct SessionDrawerView: View {
                     }.padding(12).frame(minHeight: 60).contentShape(Rectangle())
                 }.buttonStyle(NeuButtonStyle(selected: expanded))
                     .accessibilityLabel("\(expanded ? "收起" : "展开")目录 \(directory.path)，\(directory.sessions.count) 个会话")
-                OrbisIconButton(symbol: "plus", label: "在此目录新建会话") { onNewSession(directory.path) }
+                OrbisIconButton(symbol: "plus", label: "在此目录新建会话", compact: true) { onNewSession(directory.path) }
                     .disabled(store.connection != .secured || store.activatingSessionId != nil)
             }
             OrbisCollapse(expanded: expanded) {
@@ -205,7 +205,7 @@ struct SessionDrawerView: View {
 
     private func sessionRow(_ session: SessionSummary) -> some View {
         let runtime = store.runtimes.first { $0.sessionId == session.sessionId }
-        return HStack(spacing: 4) {
+        return HStack(spacing: 0) {
             Button {
                 searchFocused = false
                 if runtime != nil, let problem = store.providerMismatch(session) { showMismatch(problem) }
@@ -234,17 +234,17 @@ struct SessionDrawerView: View {
                         }.lineLimit(1)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.padding(12).contentShape(Rectangle())
-            }.buttonStyle(.plain)
+            }.buttonStyle(NeuButtonStyle(selected: store.selectedRuntime?.sessionId == session.sessionId, radius: 16))
                 .disabled(store.activatingSessionId != nil)
-            OrbisMenuIconButton(symbol: "ellipsis", label: "会话操作", size: 30) {
+            OrbisMenuIconButton(symbol: "ellipsis", label: "会话操作", compact: true) {
                 [OrbisMenuItem(title: "在电脑继续会话", symbol: "play", disabled: store.connection != .secured || store.activatingSessionId != nil) {
                     if let problem = store.providerMismatch(session) { showMismatch(problem) } else { store.activate(session) }
                 }, OrbisMenuItem(title: state.archived ? "取消归档" : "归档会话", symbol: state.archived ? "tray.and.arrow.up" : "archivebox",
                                disabled: store.connection != .secured || session.agentKind == nil) {
                     store.archive(session, archived: !state.archived)
                 }]
-            }.padding(.trailing, 2).accessibilityIdentifier("session-actions-" + session.sessionId)
-        }.neuSurface(inset: store.selectedRuntime?.sessionId == session.sessionId, radius: 16, intensity: 0.45)
+            }.accessibilityIdentifier("session-actions-" + session.sessionId)
+        }
     }
 
     private func showMismatch(_ problem: String) {

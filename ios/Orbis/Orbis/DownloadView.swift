@@ -50,48 +50,51 @@ struct DownloadsView: View {
         ])
     }
 
-    /// Every status uses the same rows: name, one status line, one action slot and the progress
-    /// track. A status change only swaps content in place, so cards below never move.
+    /// Keep the progress card and its action side by side. The action slot has a fixed
+    /// size across states, so a transfer update never changes the available text width.
     private func transferCard(_ task: FileTransfer) -> some View {
         let p = OrbisPalette(scheme)
         let failed = task.status == "failed"
         let active = ["queued", "downloading", "verifying"].contains(task.status)
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                ZStack {
-                    if selected.isEmpty { Image(systemName: "doc").font(.system(size: 22)).foregroundStyle(p.accent) }
-                    else {
-                        OrbisCheckbox(checked: selected.contains(task.id), label: "选择 \(task.name)") {
-                            if !selected.insert(task.id).inserted { selected.remove(task.id) }
+        return HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        if selected.isEmpty { Image(systemName: "doc").font(.system(size: 22)).foregroundStyle(p.accent) }
+                        else {
+                            OrbisCheckbox(checked: selected.contains(task.id), label: "选择 \(task.name)") {
+                                if !selected.insert(task.id).inserted { selected.remove(task.id) }
+                            }
                         }
-                    }
-                }.frame(width: 44, height: 44)
-                VStack(alignment: .leading, spacing: 4) {
-                    FileNameText(name: task.name).font(.orbisBody(.semibold))
-                    HStack(spacing: 8) {
-                        Text(task.error ?? transferStatusTitle(task.status)).lineLimit(1)
-                        Spacer(minLength: 4)
-                        Text("\(byteCount(task.received)) / \(byteCount(task.size))").fixedSize()
-                    }.font(.orbisCaption()).foregroundStyle(failed ? p.error : p.secondary)
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                Group {
-                    if task.status == "completed", let path = task.localPath {
-                        ShareLink(item: URL(fileURLWithPath: path)) {
-                            Image(systemName: "square.and.arrow.up").font(.system(size: 20, weight: .medium)).foregroundStyle(p.accent)
-                                .frame(width: 40, height: 40)
-                        }.buttonStyle(NeuIconButtonStyle(selected: false)).accessibilityLabel("打开或分享")
-                    } else if active {
-                        OrbisIconButton(symbol: "xmark", label: "取消下载") { transfers.cancel(task.id) }
-                    } else {
-                        OrbisIconButton(symbol: "arrow.clockwise", label: task.status == "paused" ? "继续下载" : "重试", tint: p.accent) { transfers.restart(task.id) }
-                            .disabled(store.connection != .secured)
-                    }
-                }.frame(width: 48, height: 48)
-            }
-            ProgressView(value: min(Double(max(task.size, 1)), Double(task.received)), total: Double(max(task.size, 1)))
-                .tint(failed ? p.error : task.status == "completed" ? p.success : p.accent)
-                .accessibilityHidden(true)
-        }.neuSurface(inset: selected.contains(task.id), radius: OrbisRadius.card, padding: 16)
+                    }.frame(width: 44, height: 44)
+                    VStack(alignment: .leading, spacing: 4) {
+                        FileNameText(name: task.name).font(.orbisBody(.semibold))
+                        HStack(spacing: 8) {
+                            Text(task.error ?? transferStatusTitle(task.status)).lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text("\(byteCount(task.received)) / \(byteCount(task.size))").fixedSize()
+                        }.font(.orbisCaption()).foregroundStyle(failed ? p.error : p.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ProgressView(value: min(Double(max(task.size, 1)), Double(task.received)), total: Double(max(task.size, 1)))
+                    .tint(failed ? p.error : task.status == "completed" ? p.success : p.accent)
+                    .accessibilityHidden(true)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+                .neuSurface(inset: selected.contains(task.id), radius: OrbisRadius.card, padding: 16)
+            Group {
+                if task.status == "completed", let path = task.localPath {
+                    ShareLink(item: URL(fileURLWithPath: path)) {
+                        Image(systemName: "square.and.arrow.up").font(.system(size: 18, weight: .medium)).foregroundStyle(p.accent)
+                            .frame(width: 36, height: 36)
+                    }.buttonStyle(NeuIconButtonStyle(selected: false, size: 36, compact: true)).accessibilityLabel("打开或分享")
+                } else if active {
+                    OrbisIconButton(symbol: "xmark", label: "取消下载", compact: true) { transfers.cancel(task.id) }
+                } else {
+                    OrbisIconButton(symbol: "arrow.clockwise", label: task.status == "paused" ? "继续下载" : "重试", tint: p.accent, compact: true) { transfers.restart(task.id) }
+                        .disabled(store.connection != .secured)
+                }
+            }.frame(width: 48, height: 48)
+        }
     }
 }
 

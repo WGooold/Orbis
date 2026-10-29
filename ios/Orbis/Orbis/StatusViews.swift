@@ -68,16 +68,20 @@ struct SettingsView: View {
                             }.frame(minHeight: 32).contentShape(Rectangle())
                         }.buttonStyle(.plain).foregroundStyle(OrbisPalette(scheme).accent)
                     }
-                    StatusSection(title: "连接优先级") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("连接优先级").font(.orbisLabel(.semibold)).foregroundStyle(OrbisPalette(scheme).secondary)
+                            .padding(.horizontal, 4).accessibilityAddTraits(.isHeader)
                         ForEach(Array(store.pathPreference.enumerated()), id: \.element) { index, kind in
-                            HStack(spacing: 8) {
-                                Text("第 \(index + 1) 优先").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                                Text(priorityPathTitle(kind)).font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
-                                OrbisIconButton(symbol: "arrow.up", label: "上移\(priorityPathTitle(kind))") { move(index, to: index - 1) }
+                            HStack(spacing: 0) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("第 \(index + 1) 优先").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                                    Text(priorityPathTitle(kind)).font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
+                                }.padding(.leading, 4)
+                                OrbisIconButton(symbol: "arrow.up", label: "上移\(priorityPathTitle(kind))", compact: true) { move(index, to: index - 1) }
                                     .disabled(index == 0)
-                                OrbisIconButton(symbol: "arrow.down", label: "下移\(priorityPathTitle(kind))") { move(index, to: index + 1) }
+                                OrbisIconButton(symbol: "arrow.down", label: "下移\(priorityPathTitle(kind))", compact: true) { move(index, to: index + 1) }
                                     .disabled(index == store.pathPreference.count - 1)
-                            }.accessibilityElement(children: .contain).accessibilityIdentifier("path-priority-\(kind)")
+                            }.frame(minHeight: 60).accessibilityElement(children: .contain).accessibilityIdentifier("path-priority-\(kind)")
                         }
                     }
                 }.padding(.horizontal, 20).padding(.vertical, 16)
@@ -131,19 +135,22 @@ struct AgentProvidersView: View {
                         OrbisEmptyState(symbol: "shippingbox", title: "还没有供应商")
                     }
                     ForEach(host.providers) { provider in
-                        HStack(spacing: 12) {
+                        HStack(spacing: 0) {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(provider.name).font(.orbisBody(.semibold))
                                 Text(provider.enabled ? (provider.additive ? "已启用" : "当前使用") : "未启用")
                                     .font(.orbisCaption()).foregroundStyle(provider.enabled ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
                             }.frame(maxWidth: .infinity, alignment: .leading)
-                            if !provider.enabled || provider.additive {
-                                OrbisTextButton(title: provider.enabled ? "移除" : "启用",
-                                                tint: provider.enabled ? OrbisPalette(scheme).error : OrbisPalette(scheme).accent) {
-                                    if let key = host.hostKey { confirm(provider, hostKey: key) }
-                                }.disabled(!host.canChangeProvider).accessibilityIdentifier("provider-action-\(provider.id)")
-                            }
-                        }.neuSurface(radius: OrbisRadius.card, padding: 16)
+                                .neuSurface(radius: OrbisRadius.card, padding: 16)
+                            ZStack {
+                                if !provider.enabled || provider.additive {
+                                    OrbisTextButton(title: provider.enabled ? "移除" : "启用",
+                                                    tint: provider.enabled ? OrbisPalette(scheme).error : OrbisPalette(scheme).accent) {
+                                        if let key = host.hostKey { confirm(provider, hostKey: key) }
+                                    }.disabled(!host.canChangeProvider).accessibilityIdentifier("provider-action-\(provider.id)")
+                                }
+                            }.frame(width: 64, height: 48)
+                        }
                     }
                 }.padding(20)
             }

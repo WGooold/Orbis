@@ -584,65 +584,68 @@ private fun DrawerDirectoryHeader(
 ) {
     val accent = if (expanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
     val rotation by animateFloatAsState(if (expanded) 90f else 0f, label = "directory-disclosure")
-    NeumorphSurface(
-        modifier = Modifier.fillMaxWidth().semantics { stateDescription = if (expanded) "已展开" else "已收起" },
-        shape = RemoteUi.CardShape,
-        style = if (expanded) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-        shadowScale = 0.75f,
-        onClick = onClick,
-        contentInset = 14.dp,
-    ) {
-        Column(Modifier.padding(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(
-                    if (expanded) Icons.Rounded.FolderOpen else Icons.Rounded.Folder,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                    tint = accent,
-                )
-                // 名称与完整路径同一列对齐；会话数靠右（与 iOS 一致）。
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(
-                        directoryDisplayName(directory.cwd).ifBlank { "未记录目录" },
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (expanded) accent else MaterialTheme.colorScheme.onSurface,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(0.dp)) {
+        NeumorphSurface(
+            modifier = Modifier.weight(1f).semantics { stateDescription = if (expanded) "已展开" else "已收起" },
+            shape = RemoteUi.CardShape,
+            style = if (expanded) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+            shadowScale = 0.75f,
+            onClick = onClick,
+            contentInset = 14.dp,
+        ) {
+            Column(Modifier.padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(
+                        if (expanded) Icons.Rounded.FolderOpen else Icons.Rounded.Folder,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                        tint = accent,
                     )
-                    if (directory.cwd.isNotBlank()) {
+                    // 名称与完整路径同一列对齐；会话数靠右（与 iOS 一致）。
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(
-                            directory.cwd,
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
+                            directoryDisplayName(directory.cwd).ifBlank { "未记录目录" },
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (expanded) accent else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
+                        if (directory.cwd.isNotBlank()) {
+                            Text(
+                                directory.cwd,
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
+                    Text(
+                        "${directory.sessions.size}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.semantics { contentDescription = "${directory.sessions.size} 个会话" },
+                    )
+                    Icon(
+                        Icons.Rounded.ChevronRight,
+                        contentDescription = if (expanded) "收起目录" else "展开目录",
+                        tint = accent,
+                        modifier = Modifier.size(20.dp).rotate(rotation),
+                    )
                 }
-                Text(
-                    "${directory.sessions.size}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.semantics { contentDescription = "${directory.sessions.size} 个会话" },
-                )
-                NeumorphIconButton(
-                    onClick = onCreate,
-                    icon = Icons.Rounded.Add,
-                    contentDescription = "在此目录新建会话",
-                    enabled = createEnabled,
-                    size = 32.dp,
-                    tint = accent,
-                )
-                Icon(
-                    Icons.Rounded.ChevronRight,
-                    contentDescription = if (expanded) "收起目录" else "展开目录",
-                    tint = accent,
-                    modifier = Modifier.size(20.dp).rotate(rotation),
-                )
             }
         }
+        NeumorphIconButton(
+            onClick = onCreate,
+            icon = Icons.Rounded.Add,
+            contentDescription = "在此目录新建会话",
+            enabled = createEnabled,
+            compact = true,
+            tint = accent,
+        )
     }
 }
 
@@ -676,76 +679,79 @@ private fun DrawerSessionRow(
     onSetArchived: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    NeumorphSurface(
-        modifier = Modifier.fillMaxWidth(),
-        style = NeumorphStyle.Pressed,
-        shape = RemoteUi.ControlShape,
-        shadowScale = 0.45f,
-        onClick = {
-            if (!row.isArchived) onOpenSession()
-            else if (row.catalogEntry?.hasHistoryCache == true) onOpenHistory()
-            else menuOpen = true
-        },
-    ) {
-        Row(
-            Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(start = 12.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(0.dp)) {
+        NeumorphSurface(
+            modifier = Modifier.weight(1f),
+            style = NeumorphStyle.Pressed,
+            shape = RemoteUi.ControlShape,
+            shadowScale = 0.45f,
+            onClick = {
+                if (!row.isArchived) onOpenSession()
+                else if (row.catalogEntry?.hasHistoryCache == true) onOpenHistory()
+                else menuOpen = true
+            },
         ) {
-            // 与 iOS 同一行结构：agent 图标、标题，下面是状态、时间与必要的标注；整行可点，不再另放箭头。
-            AgentIcon(agentBrand(row.agentKind), modifier = Modifier.size(22.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(row.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val caption = MaterialTheme.typography.labelSmall
-                    val muted = MaterialTheme.colorScheme.onSurfaceVariant
-                    if (runtimeStatus != null) RuntimeStatusIndicator(runtimeStatus)
-                    else if (row.catalogEntry?.hasHistoryCache == true) Text("缓存历史", style = caption, color = muted)
-                    if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = caption, color = muted, maxLines = 1)
-                    if (row.agentKind == "codexDesktop") Text("桌面版", style = caption, color = agentBrand(row.agentKind).accent(), maxLines = 1)
-                    // 与 iOS 同一个提示色（橙），不是错误。
-                    val warning = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFFF2C26B) else Color(0xFF9A5B00)
-                    otherProvider?.let { Text(it, style = caption, color = warning, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(start = 12.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                // 与 iOS 同一行结构：agent 图标、标题，下面是状态、时间与必要的标注；整行可点，不再另放箭头。
+                AgentIcon(agentBrand(row.agentKind), modifier = Modifier.size(22.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(row.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val caption = MaterialTheme.typography.labelSmall
+                        val muted = MaterialTheme.colorScheme.onSurfaceVariant
+                        if (runtimeStatus != null) RuntimeStatusIndicator(runtimeStatus)
+                        else if (row.catalogEntry?.hasHistoryCache == true) Text("缓存历史", style = caption, color = muted)
+                        if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = caption, color = muted, maxLines = 1)
+                        if (row.agentKind == "codexDesktop") Text("桌面版", style = caption, color = agentBrand(row.agentKind).accent(), maxLines = 1)
+                        // 与 iOS 同一个提示色（橙），不是错误。
+                        val warning = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFFF2C26B) else Color(0xFF9A5B00)
+                        otherProvider?.let { Text(it, style = caption, color = warning, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    }
                 }
             }
-            Box {
-                NeumorphIconButton(
-                    onClick = { menuOpen = true },
-                    icon = Icons.Rounded.MoreVert,
-                    contentDescription = "会话操作",
-                    size = 30.dp,
-                )
-                NeumorphMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    if (!row.isOnline && row.catalogEntry?.hasHistoryCache == true) {
-                        NeumorphMenuItem(
-                            text = { Text("查看只读历史") },
-                            onClick = { menuOpen = false; onOpenHistory() },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Rounded.HistoryEdu,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            },
-                        )
-                    }
+        }
+        Box {
+            NeumorphIconButton(
+                onClick = { menuOpen = true },
+                icon = Icons.Rounded.MoreVert,
+                contentDescription = "会话操作",
+                compact = true,
+            )
+            NeumorphMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                if (!row.isOnline && row.catalogEntry?.hasHistoryCache == true) {
                     NeumorphMenuItem(
-                        text = { Text(when {
-                            archivePending -> "处理中…"
-                            row.isArchived -> "恢复会话"
-                            row.isOnline && row.agentKind == "pi" -> "请先退出 Pi 会话"
-                            row.isOnline && !archiveEnabled -> "等待任务完成后归档"
-                            else -> "归档会话"
-                        }) },
-                        enabled = archiveEnabled,
-                        onClick = { menuOpen = false; onSetArchived() },
-                        leadingIcon = { Icon(
-                            if (row.isArchived) Icons.Rounded.Unarchive else Icons.Rounded.Archive,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        ) },
+                        text = { Text("查看只读历史") },
+                        onClick = { menuOpen = false; onOpenHistory() },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Rounded.HistoryEdu,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
                     )
                 }
+                NeumorphMenuItem(
+                    text = { Text(when {
+                        archivePending -> "处理中…"
+                        row.isArchived -> "恢复会话"
+                        row.isOnline && row.agentKind == "pi" -> "请先退出 Pi 会话"
+                        row.isOnline && !archiveEnabled -> "等待任务完成后归档"
+                        else -> "归档会话"
+                    }) },
+                    enabled = archiveEnabled,
+                    onClick = { menuOpen = false; onSetArchived() },
+                    leadingIcon = { Icon(
+                        if (row.isArchived) Icons.Rounded.Unarchive else Icons.Rounded.Archive,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    ) },
+                )
             }
         }
     }

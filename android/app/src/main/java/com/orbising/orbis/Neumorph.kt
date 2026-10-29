@@ -662,6 +662,8 @@ fun NeumorphIconButton(
     /** 图标染色；null = onSurface。 */
     tint: Color? = null,
     style: NeumorphStyle = NeumorphStyle.Raised,
+    /** A 36dp disc in a 48dp target already leaves 6dp beside a card; use no extra row spacing. */
+    compact: Boolean = false,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
@@ -678,10 +680,10 @@ fun NeumorphIconButton(
         contentAlignment = Alignment.Center,
     ) {
         NeumorphSurface(
-            modifier = Modifier.size(size),
+            modifier = Modifier.size(if (compact) 36.dp else size),
             shape = shape,
             style = if (pressed) NeumorphStyle.Pressed else style,
-            shadowScale = compactShadowScale(size) * 0.8f,
+            shadowScale = if (compact) 0.32f else compactShadowScale(size) * 0.8f,
         ) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Icon(
@@ -690,7 +692,7 @@ fun NeumorphIconButton(
                     tint = (tint ?: MaterialTheme.colorScheme.onSurface).let {
                         if (enabled) it else it.copy(alpha = 0.38f)
                     },
-                    modifier = Modifier.size(RemoteUi.IconSize),
+                    modifier = Modifier.size(if (compact) 18.dp else RemoteUi.IconSize),
                 )
             }
         }

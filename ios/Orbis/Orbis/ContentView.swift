@@ -474,28 +474,27 @@ struct HomeView: View {
     private func runtimeCard(_ runtime: RuntimeSummary, host: HostSnapshot) -> some View {
         let kind = host.connection.agentKind(runtime)
         let pending = !(host.connection.interactions[runtime.runtimeId] ?? []).isEmpty
-        return Button { store.selectRuntime(hostId: host.hostId, runtimeId: runtime.runtimeId); onOpenRuntime(runtime) } label: {
-            HStack(spacing: 12) {
-                AgentEmblem(kind: kind)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(host.connection.displayName(runtime)).font(.orbisBody(.semibold)).lineLimit(1)
-                    Text(runtime.cwd)
-                        .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
-                    HStack(spacing: 10) {
-                        Text(agentTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
-                        // A pending interaction takes the status slot instead of adding a line to the card.
-                        if pending {
-                            Label("待确认", systemImage: "exclamationmark.circle").font(.orbisCaption(.semibold))
-                                .foregroundStyle(OrbisPalette(scheme).error)
-                        } else { RuntimeStatusLabel(status: runtime.status) }
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            }.padding(.trailing, 52)
-        }.buttonStyle(NeuButtonStyle(radius: OrbisRadius.card, padding: OrbisRadius.cardPadding + 4))
-            .overlay(alignment: .trailing) {
-                OrbisIconButton(symbol: "pencil", label: "修改会话别名") { store.selectHost(host.hostId); onAlias(runtime) }
-                    .orbisNested().padding(.trailing, 12)
-            }.accessibilityElement(children: .contain)
+        return HStack(spacing: 0) {
+            Button { store.selectRuntime(hostId: host.hostId, runtimeId: runtime.runtimeId); onOpenRuntime(runtime) } label: {
+                HStack(spacing: 12) {
+                    AgentEmblem(kind: kind)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(host.connection.displayName(runtime)).font(.orbisBody(.semibold)).lineLimit(1)
+                        Text(runtime.cwd)
+                            .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
+                        HStack(spacing: 10) {
+                            Text(agentTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
+                            // A pending interaction takes the status slot instead of adding a line to the card.
+                            if pending {
+                                Label("待确认", systemImage: "exclamationmark.circle").font(.orbisCaption(.semibold))
+                                    .foregroundStyle(OrbisPalette(scheme).error)
+                            } else { RuntimeStatusLabel(status: runtime.status) }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }.buttonStyle(NeuButtonStyle(radius: OrbisRadius.card, padding: OrbisRadius.cardPadding + 4))
+            OrbisIconButton(symbol: "pencil", label: "修改会话别名", compact: true) { store.selectHost(host.hostId); onAlias(runtime) }
+        }.accessibilityElement(children: .contain)
     }
 
 }

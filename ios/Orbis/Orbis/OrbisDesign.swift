@@ -295,14 +295,18 @@ struct OrbisIconButton: View {
     var tint: Color? = nil
     var selected = false
     var size: CGFloat = 40
+    /// Side actions: 36pt disc, 48pt target. Adjacent rows need no extra spacing
+    /// because the target already leaves 6pt between the disc and the card.
+    var compact = false
     let action: () -> Void
     var body: some View {
+        let diameter: CGFloat = compact ? 36 : size
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: size * 0.55, weight: .medium))
+            Image(systemName: symbol).font(.system(size: compact ? 18 : size * 0.55, weight: .medium))
                 .foregroundStyle(tint ?? OrbisPalette(scheme).secondary)
-                .frame(width: size, height: size)
+                .frame(width: diameter, height: diameter)
         }
-        .buttonStyle(NeuIconButtonStyle(selected: selected, size: size)).accessibilityLabel(label)
+        .buttonStyle(NeuIconButtonStyle(selected: selected, size: diameter, compact: compact)).accessibilityLabel(label)
     }
 }
 
@@ -310,11 +314,12 @@ struct NeuIconButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     let selected: Bool
     var size: CGFloat = 40
+    var compact = false
     func makeBody(configuration: Configuration) -> some View {
-        let target = max(44, size + 8)
+        let target = compact ? 48 : max(44, size + 8)
         return configuration.label
             .neuSurface(inset: selected || configuration.isPressed, radius: size / 2,
-                        intensity: size < 36 ? 0.4 : 0.5, concentric: false)
+                        intensity: compact ? 0.32 : size < 36 ? 0.4 : 0.5, concentric: false)
             .frame(width: target, height: target).contentShape(Rectangle()).opacity(enabled ? 1 : 0.4)
     }
 }
@@ -581,14 +586,16 @@ struct OrbisMenuIconButton: View {
     var tint: Color? = nil
     var selected = false
     var size: CGFloat = 40
+    var compact = false
     let items: () -> [OrbisMenuItem]
     var body: some View {
+        let diameter: CGFloat = compact ? 36 : size
         Button { overlay.showMenu(items(), from: anchor.frame) } label: {
-            Image(systemName: symbol).font(.system(size: size * 0.55, weight: .medium))
+            Image(systemName: symbol).font(.system(size: compact ? 18 : size * 0.55, weight: .medium))
                 .foregroundStyle(tint ?? OrbisPalette(scheme).secondary)
-                .frame(width: size, height: size)
+                .frame(width: diameter, height: diameter)
         }
-        .buttonStyle(NeuIconButtonStyle(selected: selected, size: size))
+        .buttonStyle(NeuIconButtonStyle(selected: selected, size: diameter, compact: compact))
         .orbisAnchor(anchor)
         .accessibilityLabel(label)
     }
