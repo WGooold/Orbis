@@ -30,6 +30,7 @@ type Pending = {
   request: InteractionRequest;
   hook: HookKind;
   sessionId: string;
+  toolName: string;
   generation: string;
   settle: (output: ClaudeHookOutput, fingerprint?: string, reason?: "timeout" | "disconnected" | "cancelled" | "owner_closed") => void;
   timer: ReturnType<typeof setTimeout>;
@@ -134,7 +135,7 @@ export class ClaudeHookBridge {
         return;
       }
       signal?.addEventListener("abort", onAbort, { once: true });
-      this.#pending.set(requestId, { request: requestWithExpiry, hook: parsed.hook, sessionId: parsed.sessionId,
+      this.#pending.set(requestId, { request: requestWithExpiry, hook: parsed.hook, sessionId: parsed.sessionId, toolName: parsed.toolName,
         generation: this.#generation, settle: (output, responseFingerprint, reason) => {
           finish(output, responseFingerprint, reason);
         }, timer, fingerprint, rawToolInput: parsed.toolInput,
@@ -176,6 +177,24 @@ export class ClaudeHookBridge {
     pending.settle(output, fingerprint);
     return "accepted";
   }
+
+  /**
+   * The TUI decided first: a native tool finished, or the turn ended, while its Hook still
+   * waited for a phone. Claude ignores the Hook's late empty output; the phone card closes
+   * as answered on the computer. Without a tool name every pending Hook of the runtime closes.
+   */
+  resolveLocally(runtimeId: string, toolName?: string, input?: unknown): void {
+    for (const pending of [...this.#pending.values()]) {
+      if (`claude:${pending.sessionId}` !== runtimeId) continue;
+      if (toolName !== undefined && (pending.hook !== "PermissionRequest" || pending.toolName !== toolName)) continue;
+      if (toolName !== undefined && !sameInput(pending.rawToolInput, input)) continue;
+      this.#options.onEvent?.(runtimeId, { type: "interaction.resolved", requestId: pending.request.requestId, source: "local" });
+      pending.settle(passthrough());
+    }
+  }
+
+  /** The person at the computer asked to answer there: every pending Hook makes no decision now. */
+  deferToLocal(runtimeId: string): void { this.resolveLocally(runtimeId); }
 
   /** Defers every pending interaction of the runtime to the native TUI dialog. */
   cancelRuntime(runtimeId: string, reason: "cancelled" | "disconnected" | "owner_closed" = "disconnected"): void {
@@ -324,6 +343,21 @@ function validQuestionInput(value: unknown): boolean {
     return typeof option.label === "string" && boundedText(option.label, 512) ? option.label : undefined;
   });
   return labels.every(label => label !== undefined) && new Set(labels).size === labels.length;
+}
+
+/**
+ * A tool's Mods arguments against the Hook's `tool_input`. A bounded (truncated) or missing
+ * copy cannot tell two calls of the same tool apart, so it matches by name alone.
+ */
+function sameInput(hookInput: Record<string, unknown>, modsInput: unknown): boolean {
+  if (!isRecord(modsInput) || modsInput.truncated === true || modsInput.unavailable === true) return true;
+  const own = Object.fromEntries(Object.entries(modsInput).filter(([key]) => !["agentId", "requestMeta", "consent"].includes(key)));
+  return canonical(hookInput) === canonical(own);
+}
+
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) => isRecord(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : item) ?? "null";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

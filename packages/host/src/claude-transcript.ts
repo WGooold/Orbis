@@ -14,19 +14,33 @@ const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/u;
 
 type Row = Record<string, unknown>;
 
+/** Session facts Claude keeps in metadata rows beside the conversation. */
+export type ClaudeTranscriptFacts = {
+  /** `/rename` beats the generated title. */
+  title?: string;
+  /** The Session's permission mode as of its latest `permission-mode` row. */
+  permissionMode?: string;
+  /** The model of the latest assistant reply. */
+  model?: string;
+  cwd?: string;
+};
+
 /** Incremental projection state; rows must be fed in file order. */
 export class ClaudeTranscriptProjection {
   readonly entries: RemoteSessionEntry[] = [];
+  readonly facts: ClaudeTranscriptFacts = {};
   /** Every row uuid (rendered or not) → nearest rendered ancestor entry id. */
   readonly #anchor = new Map<string, string | null>();
   readonly #toolNames = new Map<string, string>();
   readonly #ids = new Set<string>();
   #leaf: string | null = null;
+  #customTitle = false;
 
   get leafId(): string | null { return this.#leaf; }
   has(uuid: string): boolean { return this.#anchor.has(uuid); }
 
   push(row: Row): void {
+    this.#observeFacts(row);
     const uuid = text(row.uuid);
     if (uuid === undefined || this.#anchor.has(uuid)) return;
     const parentUuid = text(row.parentUuid);
@@ -46,6 +60,21 @@ export class ClaudeTranscriptProjection {
     if (produced.length > 0) this.#leaf = previous;
   }
 
+  #observeFacts(row: Row): void {
+    const customTitle = row.type === "custom-title" ? text(row.customTitle) : undefined;
+    const aiTitle = row.type === "ai-title" ? text(row.aiTitle) : undefined;
+    const permissionMode = row.type === "permission-mode" ? text(row.permissionMode) : undefined;
+    if (customTitle !== undefined) {
+      this.facts.title = customTitle;
+      this.#customTitle = true;
+    } else if (aiTitle !== undefined && !this.#customTitle) this.facts.title = aiTitle;
+    if (permissionMode !== undefined) this.facts.permissionMode = permissionMode;
+    if (typeof row.cwd === "string" && row.cwd.length > 0 && row.isSidechain !== true) this.facts.cwd = row.cwd;
+    const model = row.type === "assistant" && row.isSidechain !== true ? text(record(row.message)?.model) : undefined;
+    // `<synthetic>` marks replies the CLI wrote itself (errors, interruptions), not a model.
+    if (model !== undefined && !model.startsWith("<")) this.facts.model = model;
+  }
+
   #project(row: Row, uuid: string, timestamp: string): Omit<RemoteSessionEntry, "parentId">[] {
     const message = record(row.message);
     if (message === undefined || row.isMeta === true) return [];
@@ -55,6 +84,9 @@ export class ClaudeTranscriptProjection {
       const summary = row.isCompactSummary === true ? plainText(message.content) : undefined;
       if (summary !== undefined) return [{ entryId: uuid, type: "compaction", timestamp, data: { summary } }];
       const content = message.content;
+      const tagged = taggedRow(plainText(content));
+      if (tagged === null) return [];
+      if (tagged !== undefined) return [messageEntry(uuid, timestamp, { ...tagged, timestamp: at })];
       if (typeof content === "string") {
         return content.trim().length === 0 ? [] : [messageEntry(uuid, timestamp, { role: "user", content, timestamp: at })];
       }
@@ -165,6 +197,38 @@ export async function findClaudeTranscript(sessionId: string, configDir: string)
   }
   return undefined;
 }
+
+/**
+ * Slash commands, their local output and `!` shell runs are stored as user rows wrapped in
+ * Claude's own tags. Show what the person ran and what it printed, not the markup.
+ * `null` is a recognised row with nothing to show.
+ */
+function taggedRow(value: string | undefined): Record<string, unknown> | null | undefined {
+  if (value === undefined || !value.trimStart().startsWith("<")) return undefined;
+  const tag = (name: string): string | undefined => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, "u").exec(value)?.[1];
+  const joined = (...parts: (string | undefined)[]): string =>
+    parts.flatMap(part => part === undefined ? [] : [part.replace(ANSI, "").trim()]).filter(part => part.length > 0).join("\n");
+  const name = tag("command-name")?.trim();
+  if (name !== undefined && name.length > 0) {
+    const args = tag("command-args")?.trim();
+    const command = name.startsWith("/") ? name : `/${name}`;
+    return { role: "user", content: args ? `${command} ${args}` : command };
+  }
+  if (tag("local-command-stdout") !== undefined || tag("local-command-stderr") !== undefined) {
+    const output = joined(tag("local-command-stdout"), tag("local-command-stderr"));
+    return output.length === 0 ? null : { role: "bashExecution", command: "", output };
+  }
+  const input = tag("bash-input")?.trim();
+  if (input !== undefined) return input.length === 0 ? null : { role: "bashExecution", command: input, output: "" };
+  if (tag("bash-stdout") !== undefined || tag("bash-stderr") !== undefined) {
+    const output = joined(tag("bash-stdout"), tag("bash-stderr"));
+    return output.length === 0 ? null : { role: "bashExecution", command: "", output: clip(output) };
+  }
+  return undefined;
+}
+
+// eslint-disable-next-line no-control-regex -- Claude stores colored command output verbatim.
+const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/gu;
 
 function messageEntry(entryId: string, timestamp: string, message: Record<string, unknown>): Omit<RemoteSessionEntry, "parentId"> {
   return { entryId, type: "message", timestamp, data: { message } };

@@ -1,16 +1,23 @@
 import { randomUUID } from "node:crypto";
+import type { ToolContentStore } from "@orbis/runtime-bridge";
 import {
   ChatMessageSchema,
   RuntimeEventSchema,
   type ChatMessage,
+  type PermissionManagement,
+  type RuntimeCapabilities,
   type RuntimeCommand,
   type RuntimeEvent,
   type RuntimeMetadata,
   type RemoteContent,
   type RuntimeCommandStatus,
+  type RuntimeSlashCommand,
+  type ToolContentPage,
+  type ToolContentReadRequest,
 } from "@orbis/protocol";
 import { ClaudeSessionHistory } from "./claude-session-history.js";
-import { claudeConfigDir } from "./claude-transcript.js";
+import { claudeConfigDir, type ClaudeTranscriptFacts } from "./claude-transcript.js";
+import { localHostname } from "./sessions.js";
 
 /** The bridge contract is deliberately independent of the TUI's internal API. */
 export const CLAUDE_BRIDGE_VERSION = "1";
@@ -19,6 +26,9 @@ export const CLAUDE_BRIDGE_CAPABILITIES = [
   "prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call",
 ] as const;
 export type ClaudeBridgeCapability = typeof CLAUDE_BRIDGE_CAPABILITIES[number];
+
+/** Claude's `/effort` levels; a model that lacks one says so in the command's output. */
+export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 export type ClaudeModsHello = {
   type: "hello";
@@ -30,15 +40,34 @@ export type ClaudeModsHello = {
   capabilities: readonly string[];
   /** `CLAUDE_CONFIG_DIR` of the TUI process, when set; locates the native transcript. */
   configDir?: string;
+  /** Set when the Host opened this TUI for a phone (`ORBIS_CLAUDE_LAUNCH_ID`). */
+  launchId?: string;
 };
 
 export type ClaudeModsCommand =
   | { type: "user_message"; text: string; messageId?: string }
+  | { type: "slash"; name: string; args: string }
   | { type: "stop" };
+
+/** What the TUI reports about itself; each field present replaces the previous value. */
+export type ClaudeSessionState = {
+  model?: string;
+  /** Claude's own display name of the model (`Opus 5.5`). */
+  modelName?: string;
+  /** The `/config` model row: its choices and the current one. */
+  modelOptions?: readonly string[];
+  modelSetting?: string;
+  effort?: string;
+  context?: { tokens?: number; window: number; percent?: number };
+  commands?: readonly { name: string; description?: string; source: string }[];
+};
 
 export type ClaudeModsNativeEvent =
   | { type: "prompt.submit"; text: string; origin: string; turnId?: string; wait?: boolean }
   | { type: "session.append"; uuid: string; door: string }
+  | { type: "session.state"; state: ClaudeSessionState }
+  | { type: "compaction"; phase: "running" | "idle" | "failed" }
+  | { type: "interactions.local" }
   | { type: "turn.start"; turnId: string; startedAt?: number; turnIndex?: number }
   | { type: "turn.step.chunks"; turnId: string; stepIndex: number; chunks: readonly { blockIndex: number; contentType: "text" | "thinking"; delta: string }[] }
   | { type: "turn.complete"; turnId: string; durationMs?: number; turnIndex?: number; answer?: string; reason?: string; isAborted?: boolean }
@@ -50,6 +79,8 @@ export type ClaudeModsPoll = {
   ok: true;
   generation: string;
   commands: readonly { commandId: string; command: ClaudeModsCommand }[];
+  /** Hook interactions of this Session waiting for a phone; the TUI shows how to take them back. */
+  pendingInteractions?: number;
 } | {
   ok: false;
   error: string;
@@ -67,6 +98,10 @@ type Session = {
   commands: Map<string, { commandId: string; command: ClaudeModsCommand }>;
   lastSeenAt: number;
   history: ClaudeSessionHistory;
+  state: ClaudeSessionState;
+  facts: ClaudeTranscriptFacts;
+  compaction: "running" | "idle" | "failed";
+  published: { metadata: string; capabilities: string };
   activeTurn?: {
     turnId: string;
     startedAt: number;
@@ -74,6 +109,8 @@ type Session = {
     /** Transcript rows announced by `session.append` during the turn. */
     announced: string[];
   };
+  /** Arguments of running tools, so a finished one can be matched to a pending Hook. */
+  runningTools: Map<string, { toolName: string; arguments: unknown }>;
   pendingStopId?: string;
   completedStops: Map<string, { turnId: string; event: Extract<RuntimeEvent, { type: "command.result" }> }>;
   completedTurns: Set<string>;
@@ -85,7 +122,18 @@ export type ClaudeModsBridgeOptions = {
   onRuntimeOnline?: (runtime: RuntimeMetadata) => void;
   onRuntimeOffline?: (runtimeId: string, reason: string) => void;
   onEvent?: (runtimeId: string, event: RuntimeEvent) => void;
-  createHistory?: (sessionId: string, configDir: string, publish: (event: Extract<RuntimeEvent, { type: "session.patch" }>) => void) => ClaudeSessionHistory;
+  /** A hello the Host refused; the reason belongs in diagnostics, not only in the TUI. */
+  onRejected?: (reason: string, hello: Partial<ClaudeModsHello>) => void;
+  /** A native tool finished: any Hook asking about it was answered in the TUI. */
+  onToolFinished?: (runtimeId: string, toolName: string, input: unknown) => void;
+  /** A main turn ended: nothing of it can still be waiting for permission. */
+  onTurnFinished?: (runtimeId: string) => void;
+  /** The person at the computer asked to answer pending interactions there. */
+  onLocalInteractions?: (runtimeId: string) => void;
+  pendingInteractions?: (runtimeId: string) => number;
+  hostId?: () => string;
+  createHistory?: (sessionId: string, configDir: string, publish: (event: Extract<RuntimeEvent, { type: "session.patch" | "session.tools.produced" }>) => void,
+    onFacts: (facts: ClaudeTranscriptFacts) => void) => ClaudeSessionHistory;
 };
 
 /**
@@ -102,26 +150,63 @@ export type ClaudeModsBridgeOptions = {
 export class ClaudeModsBridge {
   readonly #options: ClaudeModsBridgeOptions;
   readonly #sessions = new Map<string, Session>();
+  readonly #launches = new Map<string, { resolve: (runtime: RuntimeMetadata) => void; timer: ReturnType<typeof setTimeout> }>();
+  #toolStore: ToolContentStore | undefined;
 
   constructor(options: ClaudeModsBridgeOptions = {}) { this.#options = options; }
 
   runtimeIds(): readonly string[] { return [...this.#sessions.keys()]; }
   isOnline(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
   statusOf(runtimeId: string): RuntimeMetadata["status"] | undefined { return this.#sessions.get(runtimeId)?.runtime.status; }
-
   runtimeMetadata(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => session.runtime); }
-  isHookCommandId(runtimeId: string, commandId: string): boolean { return this.#sessions.get(runtimeId)?.commands.has(commandId) ?? false; }
+  configDirs(): string[] { return [...new Set([...this.#sessions.values()].map(session => session.history.configDir))]; }
+  capabilities(runtimeId: string): RuntimeCapabilities | undefined {
+    const session = this.#sessions.get(runtimeId);
+    return session === undefined ? undefined : claudeCapabilities(session.state);
+  }
+  hasCommand(runtimeId: string, name: string): boolean {
+    return this.capabilities(runtimeId)?.commands.some(command => command.name === name) ?? false;
+  }
+  /** Claude reports compaction through Mods; it has no visible retry state. */
+  activity(runtimeId: string): Extract<RuntimeEvent, { type: "execution.activity" }> | undefined {
+    const session = this.#sessions.get(runtimeId);
+    if (session === undefined) return undefined;
+    const turnId = session.activeTurn?.turnId;
+    return { type: "execution.activity", retry: "unavailable", compaction: { phase: session.compaction, ...(turnId === undefined ? {} : { turnId }) } };
+  }
+
+  attachToolStore(store: ToolContentStore): void {
+    this.#toolStore = store;
+    for (const session of this.#sessions.values()) session.history.attachToolStore(store);
+  }
+
+  readTool(owner: string, request: ToolContentReadRequest, signal?: AbortSignal): Promise<ToolContentPage> | undefined {
+    return this.#sessions.get(request.runtimeId)?.history.readTool(owner, request, signal);
+  }
+
+  /** Resolves with the runtime of the TUI that reports `launchId`, or undefined on timeout. */
+  waitForLaunch(launchId: string, timeoutMs: number): Promise<RuntimeMetadata | undefined> {
+    return new Promise(resolve => {
+      const timer = setTimeout(() => { this.#launches.delete(launchId); resolve(undefined); }, timeoutMs);
+      timer.unref?.();
+      this.#launches.set(launchId, { resolve: runtime => { clearTimeout(timer); this.#launches.delete(launchId); resolve(runtime); }, timer });
+    });
+  }
 
   hello(input: unknown): { ok: true; runtimeId: string; generation: string; capabilities: readonly string[] } | { ok: false; error: string } {
     const parsed = parseHello(input);
-    if (parsed === undefined) return { ok: false, error: "invalid_hello" };
-    if (parsed.bridgeVersion !== CLAUDE_BRIDGE_VERSION) return { ok: false, error: `bridge_version_unsupported:${CLAUDE_BRIDGE_VERSION}` };
+    const reject = (error: string) => {
+      this.#options.onRejected?.(error, parsed ?? (isRecord(input) ? input as Partial<ClaudeModsHello> : {}));
+      return { ok: false as const, error };
+    };
+    if (parsed === undefined) return reject("invalid_hello");
+    if (parsed.bridgeVersion !== CLAUDE_BRIDGE_VERSION) return reject(`bridge_version_unsupported:${CLAUDE_BRIDGE_VERSION}`);
     const minimum = this.#options.minClaudeVersion ?? CLAUDE_MIN_VERSION;
-    if (compareVersion(parsed.claudeVersion, minimum) < 0) return { ok: false, error: `claude_version_too_old:${minimum}` };
+    if (compareVersion(parsed.claudeVersion, minimum) < 0) return reject(`claude_version_too_old:${minimum}`);
     const required = this.#options.requiredCapabilities ?? CLAUDE_BRIDGE_CAPABILITIES;
     const capabilities = new Set(parsed.capabilities);
     const missing = required.find(capability => !capabilities.has(capability));
-    if (missing !== undefined) return { ok: false, error: `missing_capability:${missing}` };
+    if (missing !== undefined) return reject(`missing_capability:${missing}`);
     const runtimeId = `claude:${parsed.sessionId}`;
     for (const [otherRuntimeId, session] of this.#sessions) {
       if (otherRuntimeId !== runtimeId && session.instanceId === parsed.instanceId) {
@@ -135,16 +220,33 @@ export class ClaudeModsBridge {
       this.#options.onRuntimeOffline?.(runtimeId, "replaced_by_new_bridge");
     }
     const generation = randomUUID();
-    const runtime: RuntimeMetadata = { runtimeId, name: "Claude Code", cwd: parsed.cwd, status: "idle", sessionId: parsed.sessionId };
-    const publish = (event: Extract<RuntimeEvent, { type: "session.patch" }>): void => {
+    const publish = (event: Extract<RuntimeEvent, { type: "session.patch" | "session.tools.produced" }>): void => {
       if (this.#sessions.get(runtimeId)?.generation === generation) this.#options.onEvent?.(runtimeId, event);
     };
+    const onFacts = (facts: ClaudeTranscriptFacts): void => {
+      const session = this.#sessions.get(runtimeId);
+      if (session?.generation !== generation) return;
+      session.facts = facts;
+      this.#publishMetadata(runtimeId, session);
+    };
     const configDir = claudeConfigDir(parsed.configDir);
-    const history = this.#options.createHistory?.(parsed.sessionId, configDir, publish) ?? new ClaudeSessionHistory(parsed.sessionId, configDir, publish);
-    this.#sessions.set(runtimeId, { runtime, instanceId: parsed.instanceId, claudeVersion: parsed.claudeVersion, bridgeVersion: parsed.bridgeVersion,
-      capabilities, generation, commands: new Map(), completedStops: new Map(), completedTurns: new Set(), lastSeenAt: Date.now(), history });
-    this.#options.onRuntimeOnline?.(runtime);
+    const history = this.#options.createHistory?.(parsed.sessionId, configDir, publish, onFacts) ??
+      new ClaudeSessionHistory(parsed.sessionId, configDir, publish, {
+        onFacts, ...(this.#options.hostId === undefined ? {} : { hostId: this.#options.hostId }),
+        ...(this.#toolStore === undefined ? {} : { toolStore: this.#toolStore }),
+      });
+    const session: Session = {
+      runtime: { runtimeId, name: "Claude Code", cwd: parsed.cwd, status: "idle", sessionId: parsed.sessionId, hostname: localHostname() },
+      instanceId: parsed.instanceId, claudeVersion: parsed.claudeVersion, bridgeVersion: parsed.bridgeVersion,
+      capabilities, generation, commands: new Map(), completedStops: new Map(), completedTurns: new Set(), runningTools: new Map(),
+      lastSeenAt: Date.now(), history, state: {}, facts: {}, compaction: "idle", published: { metadata: "", capabilities: "" },
+    };
+    this.#sessions.set(runtimeId, session);
+    session.runtime = this.#metadata(session);
+    session.published.metadata = JSON.stringify(session.runtime);
+    this.#options.onRuntimeOnline?.(session.runtime);
     void history.refresh().catch(() => undefined);
+    if (parsed.launchId !== undefined) this.#launches.get(parsed.launchId)?.resolve(session.runtime);
     return { ok: true, runtimeId, generation, capabilities: [...capabilities] };
   }
 
@@ -166,7 +268,8 @@ export class ClaudeModsBridge {
     // Keep commands outstanding until a native result arrives. Mods caches command IDs
     // and replays that result if the HTTP response carrying it was lost.
     const commands = [...session.commands.values()];
-    return { ok: true, generation, commands };
+    const pending = this.#options.pendingInteractions?.(runtimeId) ?? 0;
+    return { ok: true, generation, commands, ...(pending > 0 ? { pendingInteractions: pending } : {}) };
   }
 
   /** Answers a device `session.sync` from the transcript and the current live state. */
@@ -207,6 +310,21 @@ export class ClaudeModsBridge {
       void session.history.refresh().catch(() => undefined);
       return "accepted";
     }
+    if (parsed.type === "session.state") {
+      session.state = { ...session.state, ...parsed.state };
+      this.#publishMetadata(runtimeId, session);
+      this.#publishCapabilities(runtimeId, session);
+      return "accepted";
+    }
+    if (parsed.type === "compaction") {
+      session.compaction = parsed.phase;
+      this.#options.onEvent?.(runtimeId, this.activity(runtimeId)!);
+      return "accepted";
+    }
+    if (parsed.type === "interactions.local") {
+      this.#options.onLocalInteractions?.(runtimeId);
+      return "accepted";
+    }
     if (parsed.type === "turn.start") {
       const startedAt = finiteTime(parsed.startedAt) ?? Date.now();
       session.activeTurn = { turnId: parsed.turnId, startedAt, messages: new Map(), announced: [] };
@@ -224,6 +342,13 @@ export class ClaudeModsBridge {
         while (session.completedStops.size > 64) session.completedStops.delete(session.completedStops.keys().next().value!);
         this.#options.onEvent?.(runtimeId, event);
       }
+    } else if (parsed.type === "tool.started") {
+      session.runningTools.set(parsed.toolCallId, { toolName: parsed.toolName, arguments: parsed.arguments });
+      while (session.runningTools.size > 256) session.runningTools.delete(session.runningTools.keys().next().value!);
+    } else if (parsed.type === "tool.finished") {
+      const started = session.runningTools.get(parsed.toolCallId);
+      session.runningTools.delete(parsed.toolCallId);
+      this.#options.onToolFinished?.(runtimeId, parsed.toolName, started?.arguments);
     } else if (parsed.type === "command.result") {
       const pending = session.commands.get(parsed.commandId);
       // Stop completion is owned by the native turn.complete event observed above.
@@ -240,8 +365,10 @@ export class ClaudeModsBridge {
     if (parsed.type === "turn.complete") {
       if (session.activeTurn?.turnId === parsed.turnId) void session.history.settleTurn(session.activeTurn.announced).catch(() => undefined);
       delete session.activeTurn;
+      session.runningTools.clear();
       session.completedTurns.add(parsed.turnId);
       while (session.completedTurns.size > 128) session.completedTurns.delete(session.completedTurns.values().next().value!);
+      this.#options.onTurnFinished?.(runtimeId);
     }
     return "accepted";
   }
@@ -269,6 +396,16 @@ export class ClaudeModsBridge {
 
   close(): void {
     for (const [runtimeId, session] of this.#sessions) this.disconnect(runtimeId, session.generation, "host_shutdown");
+    for (const launch of this.#launches.values()) clearTimeout(launch.timer);
+    this.#launches.clear();
+  }
+
+  /** Re-announces metadata and commands, e.g. after a device reconnects or syncs. */
+  announce(runtimeId: string): void {
+    const session = this.#sessions.get(runtimeId);
+    if (session === undefined) return;
+    this.#options.onEvent?.(runtimeId, { type: "runtime.metadata", metadata: session.runtime });
+    this.#options.onEvent?.(runtimeId, { type: "runtime.capabilities", capabilities: claudeCapabilities(session.state) });
   }
 
   /**
@@ -285,12 +422,111 @@ export class ClaudeModsBridge {
     delete session.pendingStopId;
   }
 
+  #metadata(session: Session): RuntimeMetadata {
+    const { state, facts } = session;
+    const model = state.model ?? facts.model;
+    const context = state.context;
+    const permissions = claudePermissionManagement(facts.permissionMode);
+    return {
+      runtimeId: session.runtime.runtimeId, name: "Claude Code", cwd: session.runtime.cwd, status: session.runtime.status,
+      ...(session.runtime.sessionId === undefined ? {} : { sessionId: session.runtime.sessionId }), hostname: localHostname(),
+      ...(facts.title === undefined ? {} : { sessionName: facts.title }),
+      ...(model === undefined ? {} : { model: { provider: "claude-code", id: model.slice(0, 256),
+        ...(state.modelName === undefined || state.model === undefined ? {} : { name: state.modelName.slice(0, 256) }) } }),
+      ...(state.effort === undefined ? {} : { thinkingLevel: state.effort.slice(0, 64) }),
+      ...(context === undefined || !(context.window > 0) ? {} : { contextUsage: {
+        tokens: context.tokens === undefined ? null : Math.max(0, Math.round(context.tokens)),
+        contextWindow: Math.round(context.window),
+        percent: context.percent === undefined ? null : Math.min(100, Math.max(0, context.percent)),
+      } }),
+      ...(permissions === undefined ? {} : { permissionManagement: permissions }),
+    };
+  }
+
+  #publishMetadata(runtimeId: string, session: Session): void {
+    session.runtime = this.#metadata(session);
+    const encoded = JSON.stringify(session.runtime);
+    if (encoded === session.published.metadata) return;
+    session.published.metadata = encoded;
+    this.#options.onEvent?.(runtimeId, { type: "runtime.metadata", metadata: session.runtime });
+  }
+
+  #publishCapabilities(runtimeId: string, session: Session): void {
+    const capabilities = claudeCapabilities(session.state);
+    const encoded = JSON.stringify(capabilities);
+    if (encoded === session.published.capabilities) return;
+    session.published.capabilities = encoded;
+    this.#options.onEvent?.(runtimeId, { type: "runtime.capabilities", capabilities });
+  }
+
   #status(runtimeId: string, status: RuntimeMetadata["status"]): void {
     const session = this.#sessions.get(runtimeId);
     if (session === undefined || session.runtime.status === status) return;
     session.runtime = { ...session.runtime, status };
+    session.published.metadata = JSON.stringify(session.runtime);
     this.#options.onEvent?.(runtimeId, { type: "runtime.status", status });
   }
+}
+
+/**
+ * Built-in commands that open a TUI panel, act on the terminal or the account, leave the
+ * Session, or bill a cloud run. From the phone they would only change the computer's screen.
+ */
+const HIDDEN_BUILTINS = new Set([
+  "add-dir", "advisor", "agents", "artifacts", "autocompact", "background", "branch", "btw", "bug", "cd", "chrome", "claim-credit", "clear",
+  "color", "config", "context", "copy", "design-consent", "design-login", "design-revoke", "desktop", "exit", "export", "extra-usage",
+  "feedback", "focus", "fork", "heapdump", "help", "hooks", "ide", "import", "install-github-app", "install-slack-app", "keybindings",
+  "limit-reset", "list-agents", "login", "logout", "low-priority", "mcp", "memory", "mobile", "output-style", "passes", "permissions",
+  "plugin", "powerup", "privacy-settings", "pro-trial-expired", "radio", "rate-limit-options", "release-notes", "reload-plugins",
+  "remote-control", "remote-env", "resume", "rewind", "sandbox", "scroll-speed", "setup-bedrock", "setup-vertex", "skill-doctor", "skills",
+  "statusline", "status", "stickers", "tasks", "teleport", "terminal-setup", "theme", "tui", "ultrareview", "upgrade", "usage",
+  "usage-credits", "voice", "web-setup", "workflow-launch-exec", "__remote-workflow",
+]);
+
+const SOURCES: Record<string, RuntimeSlashCommand["source"]> = { builtin: "builtin", plugin: "extension", user: "prompt", mcp: "mcp" };
+
+/** The slash menu the phone can use: model and effort as choices, then what runs headless. */
+export function claudeCapabilities(state: ClaudeSessionState): RuntimeCapabilities {
+  const commands: RuntimeSlashCommand[] = [];
+  const models = (state.modelOptions ?? []).filter(option => text(option, 256));
+  if (models.length > 0) {
+    commands.push({ name: "model", description: `切换模型${state.modelName === undefined ? "" : `（当前 ${state.modelName}）`}`, source: "builtin",
+      argument: { kind: "select", required: true, options: models.map(option => ({ value: option, label: option,
+        ...(option === state.modelSetting ? { description: "当前设置" } : {}) })) } });
+  }
+  commands.push({ name: "effort", description: `设置思考强度${state.effort === undefined ? "" : `（当前 ${state.effort}）`}`, source: "builtin",
+    argument: { kind: "select", required: true, options: CLAUDE_EFFORT_LEVELS.map(level => ({ value: level, label: level })) } });
+  for (const command of state.commands ?? []) {
+    if (command.name === "model" || command.name === "effort" || command.name.startsWith("orbis-")) continue;
+    if (command.source === "builtin" && HIDDEN_BUILTINS.has(command.name)) continue;
+    if (!/^[^\s/]{1,256}$/u.test(command.name) || commands.some(item => item.name === command.name)) continue;
+    commands.push({ name: command.name, ...(command.description ? { description: command.description.slice(0, 4_000) } : {}),
+      source: SOURCES[command.source] ?? "prompt", argument: { kind: "text", required: false } });
+  }
+  return { commands: commands.slice(0, 256) };
+}
+
+const PERMISSION_MODES: Record<string, { label: string; tone: PermissionManagement["tone"]; description: string }> = {
+  default: { label: "默认（需要时询问）", tone: "restricted", description: "编辑文件和运行命令前会请求权限" },
+  acceptEdits: { label: "自动接受编辑", tone: "restricted", description: "文件编辑直接执行，其他操作仍会询问" },
+  plan: { label: "计划模式", tone: "restricted", description: "只读分析并给出计划，不修改文件" },
+  auto: { label: "自动模式", tone: "restricted", description: "由分类器批准或拒绝权限请求" },
+  dontAsk: { label: "不询问", tone: "restricted", description: "未预先允许的操作直接拒绝" },
+  bypassPermissions: { label: "跳过权限检查", tone: "full", description: "所有操作都不再询问" },
+};
+
+/** The Session's mode as the transcript records it; Claude offers no API to change it remotely. */
+export function claudePermissionManagement(mode: string | undefined): PermissionManagement | undefined {
+  if (mode === undefined) return undefined;
+  const known = PERMISSION_MODES[mode];
+  return {
+    summary: known?.label ?? mode,
+    details: known?.description ?? "Claude Code 报告的权限模式",
+    tone: known?.tone ?? "unknown",
+    settings: [{ id: "mode", label: "权限模式", currentValue: mode,
+      disabledReason: "当前会话的权限模式只能在电脑上按 Shift+Tab 切换；计划模式也可以用 /plan 进入",
+      options: Object.entries(PERMISSION_MODES).map(([value, item]) => ({ value, label: item.label, description: item.description })) }],
+  };
 }
 
 function parseHello(value: unknown): ClaudeModsHello | undefined {
@@ -298,8 +534,38 @@ function parseHello(value: unknown): ClaudeModsHello | undefined {
       !text(value.claudeVersion, 64) || !text(value.bridgeVersion, 64) || !Array.isArray(value.capabilities) ||
       !validVersion(value.claudeVersion) || value.capabilities.length > 64 || !value.capabilities.every(item => typeof item === "string" && text(item, 128))) return undefined;
   if (value.configDir !== undefined && !text(value.configDir, 4096)) return undefined;
+  if (value.launchId !== undefined && !text(value.launchId, 128)) return undefined;
   return { type: "hello", sessionId: value.sessionId, instanceId: value.instanceId, cwd: value.cwd, claudeVersion: value.claudeVersion,
-    bridgeVersion: value.bridgeVersion, capabilities: value.capabilities, ...(value.configDir === undefined ? {} : { configDir: value.configDir }) };
+    bridgeVersion: value.bridgeVersion, capabilities: value.capabilities, ...(value.configDir === undefined ? {} : { configDir: value.configDir }),
+    ...(value.launchId === undefined ? {} : { launchId: value.launchId }) };
+}
+
+function parseState(value: unknown): ClaudeSessionState | undefined {
+  if (!isRecord(value)) return undefined;
+  const state: ClaudeSessionState = {};
+  if (value.model !== undefined) { if (!text(value.model, 256)) return undefined; state.model = value.model; }
+  if (value.modelName !== undefined) { if (!text(value.modelName, 256)) return undefined; state.modelName = value.modelName; }
+  if (value.modelSetting !== undefined) { if (!text(value.modelSetting, 256)) return undefined; state.modelSetting = value.modelSetting; }
+  if (value.effort !== undefined) { if (!text(value.effort, 64)) return undefined; state.effort = value.effort; }
+  if (value.modelOptions !== undefined) {
+    if (!Array.isArray(value.modelOptions) || value.modelOptions.length > 64 || !value.modelOptions.every(item => text(item, 256))) return undefined;
+    state.modelOptions = value.modelOptions;
+  }
+  if (value.context !== undefined) {
+    const context = value.context;
+    if (!isRecord(context) || typeof context.window !== "number" || !Number.isFinite(context.window) || context.window < 0) return undefined;
+    state.context = { window: context.window,
+      ...(typeof context.tokens === "number" && Number.isFinite(context.tokens) ? { tokens: context.tokens } : {}),
+      ...(typeof context.percent === "number" && Number.isFinite(context.percent) ? { percent: context.percent } : {}) };
+  }
+  if (value.commands !== undefined) {
+    if (!Array.isArray(value.commands) || value.commands.length > 512) return undefined;
+    const commands = value.commands.flatMap(item => isRecord(item) && text(item.name, 256) && text(item.source, 32)
+      ? [{ name: item.name, source: item.source, ...(typeof item.description === "string" ? { description: item.description.slice(0, 4_000) } : {}) }] : []);
+    if (commands.length !== value.commands.length) return undefined;
+    state.commands = commands;
+  }
+  return state;
 }
 
 function parseNativeEvent(value: unknown): ClaudeModsNativeEvent | undefined {
@@ -307,6 +573,12 @@ function parseNativeEvent(value: unknown): ClaudeModsNativeEvent | undefined {
   if (value.type === "prompt.submit" && text(value.text, 100_000) && text(value.origin, 128)) return { type: value.type, text: value.text, origin: value.origin, ...(text(value.turnId, 256) ? { turnId: value.turnId } : {}), ...(typeof value.wait === "boolean" ? { wait: value.wait } : {}) };
   // The row itself is read from the transcript; the event only announces its identity.
   if (value.type === "session.append" && text(value.uuid, 256) && text(value.door, 64)) return { type: value.type, uuid: value.uuid, door: value.door };
+  if (value.type === "session.state") {
+    const state = parseState(value.state);
+    return state === undefined ? undefined : { type: value.type, state };
+  }
+  if (value.type === "compaction" && (value.phase === "running" || value.phase === "idle" || value.phase === "failed")) return { type: value.type, phase: value.phase };
+  if (value.type === "interactions.local") return { type: value.type };
   if (value.type === "turn.start" && text(value.turnId, 256)) {
     const startedAt = finiteTime(value.startedAt); const turnIndex = integer(value.turnIndex);
     return { type: value.type, turnId: value.turnId, ...(startedAt === undefined ? {} : { startedAt }), ...(turnIndex === undefined ? {} : { turnIndex }) };
@@ -338,7 +610,10 @@ function normalizeNativeEvent(native: ClaudeModsNativeEvent, session: Session): 
     // tested build, and every prompt reaches the transcript. Treating it as a message
     // would create duplicates. Transcript rows are handled before normalization.
     case "prompt.submit":
-    case "session.append": return [];
+    case "session.append":
+    case "session.state":
+    case "compaction":
+    case "interactions.local": return [];
     case "turn.start": return [{ type: "turn.started", turnId: native.turnId, startedAt: native.startedAt ?? Date.now(), ...(native.turnIndex === undefined ? {} : { turnIndex: native.turnIndex }) }];
     case "turn.step.chunks": {
       const active = session.activeTurn;

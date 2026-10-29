@@ -174,4 +174,38 @@ describe("ClaudeHookBridge", () => {
     expect(events.filter(event => event.type === "runtime.status").at(-1)).toEqual({ type: "runtime.status", status: "running" });
     expect(events.some(event => event.type === "runtime.status" && event.status === "idle")).toBe(false);
   });
+
+  it("closes the phone card when the TUI ran the same tool call first, and leaves other calls pending", async () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    const first = bridge.accept(permission());
+    const other = bridge.accept({ ...permission(), tool_input: { command: "rm -rf build" } });
+    await Promise.resolve();
+    const [firstRequest, otherRequest] = events.filter((event): event is Extract<RuntimeEvent, { type: "interaction.requested" }> => event.type === "interaction.requested");
+    // A different tool, or different arguments, is not the call that ran.
+    bridge.resolveLocally("claude:session-1", "Read", { command: "echo ok" });
+    bridge.resolveLocally("claude:session-1", "Bash", { command: "echo different" });
+    expect(bridge.pendingRequests("claude:session-1")).toHaveLength(2);
+    bridge.resolveLocally("claude:session-1", "Bash", { command: "echo ok", agentId: "main-loop-field" });
+    await expect(first).resolves.toEqual({});
+    expect(events).toContainEqual({ type: "interaction.resolved", requestId: firstRequest!.request.requestId, source: "local" });
+    expect(bridge.pendingRequests("claude:session-1").map(request => request.requestId)).toEqual([otherRequest!.request.requestId]);
+    // A late phone answer is refused; Claude already decided.
+    expect(bridge.respond(firstRequest!.request.requestId, bridge.generation, { kind: "confirm", value: true })).toBe("conflict");
+    bridge.resolveLocally("claude:session-1");
+    await expect(other).resolves.toEqual({});
+    expect(bridge.runtimeIds()).toEqual([]);
+  });
+
+  it("hands every pending question back to the TUI when the person asks to answer there", async () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    const pending = bridge.accept(ask());
+    await Promise.resolve();
+    bridge.deferToLocal("claude:other");
+    expect(bridge.pendingRequests("claude:session-1")).toHaveLength(1);
+    bridge.deferToLocal("claude:session-1");
+    await expect(pending).resolves.toEqual({});
+    expect(events).toContainEqual(expect.objectContaining({ type: "interaction.resolved", source: "local" }));
+  });
 });

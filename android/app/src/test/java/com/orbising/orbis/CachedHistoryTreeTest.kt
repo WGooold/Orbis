@@ -92,6 +92,20 @@ class CachedHistoryTreeTest {
     }
 
     @Test
+    fun `an online Claude Session without a catalog agent kind takes the runtime's committed identity`() {
+        val claude = runtime("claude:s1", "s1", "D:\\work\\alpha", "devbox").copy(agentKind = "claude")
+        val state = RemoteState(hostId = "paired-host", hostName = "devbox",
+            runtimes = mapOf("claude:s1" to claude),
+            // runtime.online merged this entry before the identity domain said what the Session is.
+            sessions = mapOf("s1" to session("s1", "D:\\work\\alpha", modifiedAt = 1)),
+        )
+
+        val row = cachedHistoryTree(state).single().directories.single().sessions.single()
+
+        assertEquals("claude", row.agentKind)
+    }
+
+    @Test
     fun `offline sessions with different legacy names share the paired Host`() {
         val state = RemoteState(hostId = "paired-host", hostName = "devbox",
             sessions = mapOf(

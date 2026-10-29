@@ -298,7 +298,7 @@ struct NewSessionView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     Text("在\(store.selectedHost?.hostName ?? "电脑")上新建会话").font(.system(size: 16, weight: .semibold))
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                        ForEach(["pi", "codex", "codexDesktop", "dsh"], id: \.self) { agent in
+                        ForEach(["pi", "codex", "codexDesktop", "dsh", "claude"], id: \.self) { agent in
                             Button { kind = agent } label: {
                                 HStack(spacing: 8) {
                                     AgentEmblem(kind: agent, size: 22, recessed: false)

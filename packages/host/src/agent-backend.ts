@@ -14,13 +14,18 @@
  *   `unsupported_command`，不认领任何后端才回 `runtime_offline`（§8：手机据此
  *   区分「该重拉进程」和「这个后端做不到」）。
  */
-import type { AgentKind, AgentSessionSummary, RuntimeCommand, RuntimeMetadata, SpawnMode } from "@orbis/protocol";
-import type { ToolContentReader, ToolContentStore } from "@orbis/runtime-bridge";
+import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
+import type { AgentKind, AgentSessionSummary, RuntimeCommand, RuntimeEvent, RuntimeMetadata, SpawnMode } from "@orbis/protocol";
+import { ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 
 import { ActivationError, type SessionSpawner } from "./spawner.js";
-import { defaultPiSessionsRoot, listPiSessions } from "./sessions.js";
+import { defaultPiSessionsRoot, listPiSessions, localHostname } from "./sessions.js";
 import { piArchiveRoot, SessionArchiveError, setPiSessionArchived } from "./session-archive.js";
+import type { ClaudeArchiveStore, ClaudeSessionCatalog } from "./claude-catalog.js";
 import type { ClaudeHookBridge } from "./claude-hook-bridge.js";
+import type { ClaudeLauncher } from "./claude-launcher.js";
 import type { ClaudeModsBridge } from "./claude-mods-bridge.js";
 
 export type AgentActivateTarget =
@@ -165,21 +170,86 @@ export type ClaudeBackendOptions = {
   bridge: ClaudeHookBridge;
   modsBridge: ClaudeModsBridge;
   runtimeIds: () => readonly string[];
-  onCommandResult?: (runtimeId: string, event: Extract<import("@orbis/protocol").RuntimeEvent, { type: "command.result" }>) => void;
-  onEvent?: (runtimeId: string, event: import("@orbis/protocol").RuntimeEvent) => void;
+  /** Claude config directories whose transcripts form the Session directory. */
+  configDirs?: () => readonly string[];
+  catalog?: ClaudeSessionCatalog;
+  archive?: ClaudeArchiveStore;
+  launcher?: ClaudeLauncher;
+  /** How long an opened terminal may take to report its bridge. */
+  launchTimeoutMs?: number;
+  onCommandResult?: (runtimeId: string, event: Extract<RuntimeEvent, { type: "command.result" }>) => void;
+  onEvent?: (runtimeId: string, event: RuntimeEvent) => void;
+  log?: (line: string) => void;
 };
 
-/** Backend for the native Claude Code TUI Hook bridge. */
+/**
+ * Backend for Claude Code's official TUI (ADR-0033). Live Sessions attach through the
+ * Mods and Hook bridges; the directory comes from the native transcripts; opening a
+ * Session from the phone opens the official TUI in a terminal window on this computer.
+ */
 export class ClaudeBackend implements AgentBackend {
   readonly kind = "claude" as const;
   readonly #options: ClaudeBackendOptions;
+  #unavailable: Promise<string | undefined> | undefined;
 
   constructor(options: ClaudeBackendOptions) { this.#options = options; }
-  isReady(): boolean { return this.#options.runtimeIds().length > 0; }
+
+  readonly toolContents: ToolContentReader = {
+    read: (owner, request, signal) => this.#options.modsBridge.readTool(owner, request, signal) ??
+      Promise.reject(new ToolContentReadError("content_unavailable")),
+    cancel: async () => undefined,
+  };
+
+  setToolContentStore(store: ToolContentStore): void { this.#options.modsBridge.attachToolStore(store); }
+
+  /** Ready while a TUI is attached or this computer has Claude Code installed. */
+  isReady(): boolean {
+    return this.#options.runtimeIds().length > 0 || this.#options.catalog !== undefined;
+  }
+
+  /** Whether the phone can open a Claude Code terminal here (`launchableAgents`). */
+  async launchable(): Promise<boolean> { return await this.#launchUnavailable() === undefined; }
+
   ownsRuntime(runtimeId: string): boolean { return runtimeId.startsWith("claude:") && this.#options.runtimeIds().includes(runtimeId); }
-  async catalog(): Promise<AgentSessionSummary[]> { return []; }
-  async setArchived(): Promise<void> { throw new ActivationError("session_not_found", "Claude Code 会话目录尚未接入"); }
-  async activate(): Promise<BackendActivation> { throw new ActivationError("agent_unsupported", "Claude Code 只能接入已运行且已加载 bridge 的官方 TUI"); }
+
+  async catalog(archived = false): Promise<AgentSessionSummary[]> {
+    const catalog = this.#options.catalog;
+    if (catalog === undefined) return [];
+    const [files, hidden] = await Promise.all([catalog.scan(this.#configDirs()), this.#options.archive?.archived() ?? new Set<string>()]);
+    return files.filter(file => hidden.has(file.sessionId) === archived).map(file => ({
+      sessionId: file.sessionId, agentKind: "claude", hostname: localHostname(), cwd: file.cwd,
+      ...(file.name === undefined ? {} : { name: file.name }), ...(file.firstMessage === undefined ? {} : { firstMessage: file.firstMessage }),
+      createdAt: file.createdAt, modifiedAt: file.modifiedAt, messageCount: 0, archived,
+    }));
+  }
+
+  async setArchived(sessionId: string, archived: boolean): Promise<void> {
+    const archive = this.#options.archive;
+    if (archive === undefined || this.#options.catalog === undefined) throw new SessionArchiveError("session_not_found", "Claude Code 会话目录不可用");
+    if (await this.#options.catalog.find(sessionId, this.#configDirs()) === undefined) {
+      throw new SessionArchiveError("session_not_found", "找不到这个 Claude Code 会话");
+    }
+    if (this.#options.runtimeIds().includes(`claude:${sessionId}`)) {
+      throw new SessionArchiveError("session_busy", "请先在电脑上退出这个 Claude Code 会话，再进行归档或恢复");
+    }
+    await archive.set(sessionId, archived);
+  }
+
+  async activate(target: AgentActivateTarget): Promise<BackendActivation> {
+    if (target.type === "resume") {
+      if (this.#options.runtimeIds().includes(`claude:${target.sessionId}`)) return { sessionId: target.sessionId, spawnMode: "tui" };
+      const file = await this.#options.catalog?.find(target.sessionId, this.#configDirs());
+      if (file === undefined) throw new ActivationError("session_not_found", `Claude Code 会话目录里没有 ${target.sessionId}`);
+      await this.#requireDirectory(file.cwd);
+      const runtime = await this.#launch({ cwd: file.cwd, resume: target.sessionId });
+      return { sessionId: runtime.sessionId ?? target.sessionId, spawnMode: "tui" };
+    }
+    if (!isAbsolute(target.cwd)) throw new ActivationError("cwd_missing", "请选择存在的绝对目录");
+    await this.#requireDirectory(target.cwd);
+    const runtime = await this.#launch({ cwd: target.cwd });
+    return { ...(runtime.sessionId === undefined ? {} : { sessionId: runtime.sessionId }), spawnMode: "tui" };
+  }
+
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
     if (!this.ownsRuntime(runtimeId)) return "offline";
     if (command.type === "interaction.respond") {
@@ -202,15 +272,23 @@ export class ClaudeBackend implements AgentBackend {
 
     if (command.type === "user_message") {
       if (!this.#options.modsBridge.isOnline(runtimeId)) return "unsupported";
-      // Claude Mods currently only provides a submit-after-idle API. Do not
-      // disguise Pi-style steer, or silently drop files the API cannot attach.
-      if (command.delivery === "steer" || (command.attachments !== undefined && command.attachments.length > 0)) {
+      // Claude Mods only submits once the turn ends; a Pi-style steer would be a lie.
+      if (command.delivery === "steer") {
         this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: false,
-          status: "failure", error: command.delivery === "steer" ? "claude_steer_unsupported" : "claude_attachments_unsupported" });
+          status: "failure", error: "claude_steer_unsupported" });
         return "handled";
       }
+      // Like Codex and DSH: the agent reads attachments with its own tools from their paths.
+      const text = command.attachments === undefined || command.attachments.length === 0
+        ? command.text : `${command.text}\n\n附件路径：\n${command.attachments.join("\n")}`;
       const result = this.#options.modsBridge.sendCommand(runtimeId, commandId,
-        { type: "user_message", text: command.text, ...(command.messageId === undefined ? {} : { messageId: command.messageId }) });
+        { type: "user_message", text, ...(command.messageId === undefined ? {} : { messageId: command.messageId }) });
+      return this.#reportModsCommandResult(runtimeId, commandId, result);
+    }
+    if (command.type === "slash.execute") {
+      if (!this.#options.modsBridge.isOnline(runtimeId)) return "unsupported";
+      if (!this.#options.modsBridge.hasCommand(runtimeId, command.name)) return "unsupported";
+      const result = this.#options.modsBridge.sendCommand(runtimeId, commandId, { type: "slash", name: command.name, args: command.args });
       return this.#reportModsCommandResult(runtimeId, commandId, result);
     }
     if (command.type === "stop") {
@@ -231,11 +309,26 @@ export class ClaudeBackend implements AgentBackend {
     return "unsupported";
   }
 
+  directoryEntries(): RuntimeMetadata[] {
+    const hooks = new Map(this.#options.bridge.runtimeMetadata().map(runtime => [runtime.runtimeId, runtime]));
+    const entries = new Map(hooks);
+    for (const runtime of this.#options.modsBridge.runtimeMetadata()) {
+      entries.set(runtime.runtimeId, { ...runtime, status: hooks.get(runtime.runtimeId)?.status ?? runtime.status });
+    }
+    return [...entries.values()];
+  }
+
+  /** Re-sends what a reconnecting device needs before it syncs: metadata and the slash menu. */
+  announce(runtimeId?: string): void {
+    for (const id of runtimeId === undefined ? this.#options.modsBridge.runtimeIds() : [runtimeId]) this.#options.modsBridge.announce(id);
+  }
+
   async #sync(runtimeId: string, commandId: string, command: Extract<RuntimeCommand, { type: "session.sync" }>): Promise<void> {
-    const emit = (event: import("@orbis/protocol").RuntimeEvent): void => this.#options.onEvent?.(runtimeId, event);
+    const emit = (event: RuntimeEvent): void => this.#options.onEvent?.(runtimeId, event);
     // Claude submits wait for idle inside the TUI; there is no Host-visible delivery queue.
     emit({ type: "delivery.snapshot", items: [], complete: true });
-    emit({ type: "execution.activity", retry: "unavailable", compaction: "unavailable" });
+    const activity = this.#options.modsBridge.activity(runtimeId);
+    if (activity !== undefined) emit(activity);
     let snapshot: Awaited<ReturnType<ClaudeModsBridge["sync"]>>;
     let error = "claude_bridge_offline";
     try { snapshot = await this.#options.modsBridge.sync(runtimeId, command); }
@@ -245,14 +338,49 @@ export class ClaudeBackend implements AgentBackend {
       return;
     }
     emit(snapshot);
+    this.#options.modsBridge.announce(runtimeId);
     emit({ type: "interaction.snapshot", requests: this.#options.bridge.pendingRequests(runtimeId) });
   }
-  directoryEntries(): RuntimeMetadata[] {
-    const byId = new Map(this.#options.bridge.runtimeMetadata().map(runtime => [runtime.runtimeId, runtime]));
-    for (const runtime of this.#options.modsBridge.runtimeMetadata()) {
-      byId.set(runtime.runtimeId, { ...runtime, status: this.#options.bridge.runtimeMetadata().find(item => item.runtimeId === runtime.runtimeId)?.status ?? runtime.status });
+
+  #configDirs(): string[] {
+    return [...new Set([...(this.#options.configDirs?.() ?? []), ...this.#options.modsBridge.configDirs()])];
+  }
+
+  #launchUnavailable(): Promise<string | undefined> {
+    const launcher = this.#options.launcher;
+    if (launcher === undefined) return Promise.resolve("这台 Host 没有启用 Claude Code 终端启动");
+    // The answer depends on the installed CLI and the desktop session; re-check after a failure.
+    this.#unavailable ??= launcher.unavailable().then(reason => {
+      if (reason !== undefined) this.#unavailable = undefined;
+      return reason;
+    }, () => { this.#unavailable = undefined; return "无法检查 Claude Code 是否可用"; });
+    return this.#unavailable;
+  }
+
+  async #requireDirectory(cwd: string): Promise<void> {
+    if (!await stat(cwd).then(info => info.isDirectory(), () => false)) {
+      throw new ActivationError("cwd_missing", `会话目录已不存在：${cwd}`);
     }
-    return [...byId.values()];
+  }
+
+  async #launch(request: { cwd: string; resume?: string }): Promise<RuntimeMetadata> {
+    const reason = await this.#launchUnavailable();
+    if (reason !== undefined || this.#options.launcher === undefined) throw new ActivationError("agent_unsupported", reason ?? "无法打开 Claude Code");
+    const launchId = randomUUID();
+    const timeoutMs = this.#options.launchTimeoutMs ?? 60_000;
+    const connected = this.#options.modsBridge.waitForLaunch(launchId, timeoutMs);
+    try {
+      await this.#options.launcher.launch({ ...request, launchId });
+    } catch (error) {
+      throw new ActivationError("spawn_failed", `无法在电脑上打开 Claude Code 终端：${error instanceof Error ? error.message : String(error)}`);
+    }
+    this.#options.log?.(`[activate] 已在电脑上打开 Claude Code 终端（${request.resume === undefined ? "新会话" : `恢复 ${request.resume}`}，cwd=${request.cwd}）`);
+    const runtime = await connected;
+    if (runtime === undefined) {
+      throw new ActivationError("spawn_failed", `已在电脑上打开 Claude Code，但 ${Math.round(timeoutMs / 1000)} 秒内没有连上 Orbis。`
+        + "请在电脑上确认目录信任提示，并确认 Claude Code 为 2.1.287 或更新版本。");
+    }
+    return runtime;
   }
 
   #reportModsCommandResult(runtimeId: string, commandId: string,

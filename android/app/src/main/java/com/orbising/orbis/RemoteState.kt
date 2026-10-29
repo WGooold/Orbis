@@ -1115,7 +1115,10 @@ internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
     val rows = linkedMapOf<String, CachedSessionRow>()
     for ((sessionId, runtimes) in runtimesBySession) {
         val runtime = runtimes.firstOrNull() ?: continue
-        val session = state.sessions[sessionId]
+        // An online Session merged into the catalog before its identity domain arrived has no
+        // agentKind yet; the runtime's committed identity fills it (Claude has no catalog row then).
+        val session = (state.sessions[sessionId] ?: runtime.catalogEntry())
+            ?.let { entry -> if (entry.agentKind == null && runtime.agentKind != null) entry.copy(agentKind = runtime.agentKind) else entry }
         rows[sessionId] = CachedSessionRow(
             sessionId = sessionId,
             runtimeId = runtime.runtimeId,

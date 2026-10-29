@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { RuntimeEventSchema, type RuntimeEvent } from "@orbis/protocol";
-import { CLAUDE_BRIDGE_CAPABILITIES, ClaudeModsBridge, type ClaudeModsBridgeOptions } from "./claude-mods-bridge.js";
+import { CLAUDE_BRIDGE_CAPABILITIES, ClaudeModsBridge, claudeCapabilities, type ClaudeModsBridgeOptions } from "./claude-mods-bridge.js";
 import { ClaudeSessionHistory } from "./claude-session-history.js";
 
 /** Never touches the real ~/.claude: an absent transcript is an empty, ready history. */
@@ -131,5 +131,88 @@ describe("ClaudeModsBridge", () => {
     expect(bridge.receiveRequest({ runtimeId: current.runtimeId, generation: current.generation, event: { type: "nope" } })).toBe("invalid");
     for (let index = 0; index < 64; index++) expect(bridge.sendCommand(current.runtimeId, `c-${index}`, { type: "user_message", text: "x" })).toBe("accepted");
     expect(bridge.sendCommand(current.runtimeId, "overflow", { type: "user_message", text: "x" })).toBe("queue_full");
+  });
+
+  it("publishes the TUI's model, effort, context and slash menu as metadata and capabilities", () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = bridgeWith({ onEvent: (_id, event) => events.push(event) });
+    const current = online(bridge);
+    expect(bridge.receiveEvent(current.runtimeId, current.generation, { type: "session.state", state: {
+      model: "claude-opus-5-5", modelName: "Opus 5.5", modelOptions: ["default", "sonnet", "opus"], modelSetting: "opus", effort: "xhigh",
+      context: { tokens: 50_000, window: 200_000, percent: 25 },
+      commands: [{ name: "compact", description: "Free up context", source: "builtin" }, { name: "config", description: "Open settings", source: "builtin" },
+        { name: "pdf", description: "PDF skill", source: "user" }, { name: "diff", description: "Toggle diff", source: "plugin" },
+        { name: "orbis-local", description: "ours", source: "plugin" }, { name: "model", description: "Set model", source: "builtin" }],
+    } })).toBe("accepted");
+    const metadata = events.filter(event => event.type === "runtime.metadata").at(-1);
+    expect(metadata).toMatchObject({ metadata: { runtimeId: current.runtimeId, model: { provider: "claude-code", id: "claude-opus-5-5", name: "Opus 5.5" },
+      thinkingLevel: "xhigh", contextUsage: { tokens: 50_000, contextWindow: 200_000, percent: 25 } } });
+    const capabilities = events.filter(event => event.type === "runtime.capabilities").at(-1);
+    expect(capabilities).toMatchObject({ capabilities: { commands: [
+      { name: "model", argument: { kind: "select", options: [{ value: "default" }, { value: "sonnet" }, { value: "opus", description: "当前设置" }] } },
+      { name: "effort", argument: { kind: "select" } },
+      { name: "compact", source: "builtin" }, { name: "pdf", source: "prompt" }, { name: "diff", source: "extension" },
+    ] } });
+    expect((capabilities as Extract<RuntimeEvent, { type: "runtime.capabilities" }>).capabilities.commands.map(command => command.name))
+      .toEqual(["model", "effort", "compact", "pdf", "diff"]);
+    expect(events.every(event => RuntimeEventSchema.safeParse(event).success)).toBe(true);
+    // An unchanged report publishes nothing new.
+    const count = events.length;
+    bridge.receiveEvent(current.runtimeId, current.generation, { type: "session.state", state: { effort: "xhigh" } });
+    expect(events).toHaveLength(count);
+    expect(bridge.hasCommand(current.runtimeId, "compact")).toBe(true);
+    expect(bridge.hasCommand(current.runtimeId, "config")).toBe(false);
+    expect(bridge.receiveEvent(current.runtimeId, current.generation, { type: "session.state", state: { commands: "nope" } })).toBe("invalid");
+  });
+
+  it("queues slash commands for the TUI and reports compaction as execution activity", () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = bridgeWith({ onEvent: (_id, event) => events.push(event) });
+    const current = online(bridge);
+    expect(bridge.sendCommand(current.runtimeId, "slash-1", { type: "slash", name: "compact", args: "keep the plan" })).toBe("accepted");
+    expect(bridge.poll(current.runtimeId, current.generation)).toMatchObject({ commands: [{ commandId: "slash-1", command: { type: "slash", name: "compact" } }] });
+    expect(bridge.receiveEvent(current.runtimeId, current.generation, { type: "compaction", phase: "running" })).toBe("accepted");
+    expect(events.at(-1)).toEqual({ type: "execution.activity", retry: "unavailable", compaction: { phase: "running" } });
+    expect(bridge.receiveEvent(current.runtimeId, current.generation, { type: "command.result", commandId: "slash-1", ok: true, status: "success",
+      result: { text: "Compacted" } })).toBe("accepted");
+    expect(events).toContainEqual({ type: "command.result", commandId: "slash-1", ok: true, status: "success", result: { text: "Compacted" } });
+    expect(bridge.activity(current.runtimeId)).toMatchObject({ compaction: { phase: "running" } });
+  });
+
+  it("matches a TUI the Host opened by its launch id", async () => {
+    const bridge = bridgeWith();
+    const waiting = bridge.waitForLaunch("launch-1", 1_000);
+    online(bridge, hello({ sessionId: "other" }));
+    online(bridge, hello({ instanceId: "instance-2", sessionId: "launched", launchId: "launch-1" }));
+    await expect(waiting).resolves.toMatchObject({ runtimeId: "claude:launched", sessionId: "launched" });
+    await expect(bridge.waitForLaunch("never", 5)).resolves.toBeUndefined();
+  });
+
+  it("tells the Hook side when the TUI ran a tool or ended a turn, and when the person takes interactions back", () => {
+    const finished = vi.fn();
+    const turns = vi.fn();
+    const local = vi.fn();
+    const bridge = bridgeWith({ onToolFinished: finished, onTurnFinished: turns, onLocalInteractions: local, pendingInteractions: () => 2 });
+    const current = online(bridge);
+    bridge.receiveEvent(current.runtimeId, current.generation, { type: "turn.start", turnId: "t1" });
+    bridge.receiveEvent(current.runtimeId, current.generation, { type: "tool.started", toolCallId: "toolu_1", toolName: "Bash", arguments: { command: "ls" } });
+    bridge.receiveEvent(current.runtimeId, current.generation, { type: "tool.finished", toolCallId: "toolu_1", toolName: "Bash", result: "a" });
+    expect(finished).toHaveBeenCalledWith(current.runtimeId, "Bash", { command: "ls" });
+    bridge.receiveEvent(current.runtimeId, current.generation, { type: "interactions.local" });
+    expect(local).toHaveBeenCalledWith(current.runtimeId);
+    expect(bridge.poll(current.runtimeId, current.generation)).toMatchObject({ pendingInteractions: 2 });
+    bridge.receiveEvent(current.runtimeId, current.generation, { type: "turn.complete", turnId: "t1" });
+    expect(turns).toHaveBeenCalledWith(current.runtimeId);
+  });
+
+  it("reports why a hello was refused", () => {
+    const rejected = vi.fn();
+    const bridge = bridgeWith({ onRejected: rejected });
+    bridge.hello(hello({ claudeVersion: "2.1.200" }));
+    expect(rejected).toHaveBeenCalledWith("claude_version_too_old:2.1.287", expect.objectContaining({ claudeVersion: "2.1.200", sessionId: "session-1" }));
+  });
+
+  it("keeps the effort choice even before the TUI reports its model list", () => {
+    expect(claudeCapabilities({}).commands.map(command => command.name)).toEqual(["effort"]);
   });
 });

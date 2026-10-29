@@ -35,7 +35,7 @@ struct ChatView: View {
     @FocusState private var composerFocused: Bool
 
     private var kind: String? { store.agentKind(runtime) }
-    /// Claude Code 只能等当前回合结束后提交（没有 Steer），也不能随消息附带文件。
+    /// Claude Code 只能等当前回合结束后提交（没有 Steer）；附件和其他后端一样以路径交给它。
     private var claudeComposer: Bool { kind == "claude" }
     private var accent: Color { OrbisPalette(scheme).agent(kind) }
     private var draft: Binding<String> { Binding(get: { store.draft(for: runtime) }, set: { store.saveDraft($0, for: runtime) }) }
@@ -229,11 +229,9 @@ struct ChatView: View {
             AttachmentStrip(runtime: runtime)
             if slash { SlashPickerView(runtime: runtime, selected: $selectedCommand, input: draft, onHistory: onHistory) }
             HStack(alignment: .bottom, spacing: 10) {
-                if !claudeComposer {
-                    OrbisIconButton(symbol: "paperclip", label: "发送文件到电脑", tint: accent) {
-                        composerFocused = false; filePickerOpen = true
-                    }.disabled(!store.canSend || transfers.preparing || attachments.count >= 10)
-                }
+                OrbisIconButton(symbol: "paperclip", label: "发送文件到电脑", tint: accent) {
+                    composerFocused = false; filePickerOpen = true
+                }.disabled(!store.canSend || transfers.preparing || attachments.count >= 10)
                 TextField("发送消息", text: draft, axis: .vertical)
                     .accessibilityIdentifier("chat-composer")
                     .font(.system(size: 15)).lineLimit(1...6).focused($composerFocused)

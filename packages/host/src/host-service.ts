@@ -77,8 +77,11 @@ import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
 import { ClaudeBackend, PiBackend } from "./agent-backend.js";
+import { ClaudeArchiveStore, ClaudeSessionCatalog } from "./claude-catalog.js";
 import { ClaudeHookBridge } from "./claude-hook-bridge.js";
+import { TerminalClaudeLauncher, type ClaudeLauncher } from "./claude-launcher.js";
 import { ClaudeModsBridge } from "./claude-mods-bridge.js";
+import { claudeConfigDir } from "./claude-transcript.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import type { DshRuntime } from "./dsh-runtime.js";
@@ -213,6 +216,11 @@ export type HostServiceOptions = {
   /** 终端 shim 通过 loopback 请求官方 Codex TUI 接入 Host app-server。 */
   codexLaunch?: (request: CodexLaunchRequest) => Promise<CodexLaunchResult>;
   dshRuntime?: DshRuntime;
+  /**
+   * Claude Code's transcript directory and phone-opened terminals (ADR-0033). Absent, Claude
+   * Sessions appear only while an attached TUI reports in.
+   */
+  claude?: { configDir?: string; launcher?: ClaudeLauncher };
   providers?: ProviderManager;
   providerUsage?: (kind: AgentKind, providerId: string) => UsageSnapshot | undefined;
   managementBackends?: () => HostManagementState["backends"];
@@ -261,7 +269,10 @@ export class HostService {
   #backends: AgentBackend[];
   readonly #claudeBridge: ClaudeHookBridge;
   readonly #claudeModsBridge: ClaudeModsBridge;
+  readonly #claudeBackend: ClaudeBackend;
   readonly #claudePublishedRuntimes = new Set<string>();
+  readonly #claudeRejections = new Map<string, number>();
+  #claudeLaunchable = false;
   #claudeModsSweep: ReturnType<typeof setInterval> | undefined;
   readonly #downloads: HostDownloadService;
   readonly #uploads: HostUploadService;
@@ -387,6 +398,20 @@ export class HostService {
     if (alreadyPublished) this.#publishRuntimeEvent(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
     else this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
     this.refreshHostFacts();
+  }
+
+  /** A refused bridge is retried by the TUI every poll; record each distinct refusal once per ten minutes. */
+  #recordClaudeRejection(reason: string, hello: { sessionId?: unknown; claudeVersion?: unknown; instanceId?: unknown }): void {
+    const key = `${reason}|${typeof hello.instanceId === "string" ? hello.instanceId : ""}`;
+    const now = Date.now();
+    if ((this.#claudeRejections.get(key) ?? 0) > now - 600_000) return;
+    this.#claudeRejections.set(key, now);
+    while (this.#claudeRejections.size > 64) this.#claudeRejections.delete(this.#claudeRejections.keys().next().value!);
+    this.#options.log?.(`拒绝 Claude Code 连接：${reason}`);
+    this.recordDiagnostic({ scope: "host", agentKind: "claude",
+      sessionId: typeof hello.sessionId === "string" ? hello.sessionId.slice(0, 256) : null,
+      category: "backend.transport", severity: "warning", message: "Claude Code bridge refused",
+      detail: { reason: reason.slice(0, 256), ...(typeof hello.claudeVersion === "string" ? { claudeVersion: hello.claudeVersion.slice(0, 64) } : {}) } });
   }
 
   #unregisterClaudeRuntime(runtimeId: string, reason: string): void {
@@ -702,12 +727,32 @@ export class HostService {
       onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
     });
     this.#claudeModsBridge = new ClaudeModsBridge({
+      hostId: () => this.#identity.hostId,
       onRuntimeOnline: runtime => this.#registerClaudeRuntime(runtime),
       // A Hook can keep the runtime online for an interaction while the Mods poller reconnects.
       // Only remove the public runtime after both sources have gone offline.
       onRuntimeOffline: (runtimeId, reason) => this.#unregisterClaudeRuntime(runtimeId, reason),
       onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
+      onRejected: (reason, hello) => this.#recordClaudeRejection(reason, hello),
+      // Native outcomes close the phone's copy of a Hook the TUI already answered.
+      onToolFinished: (runtimeId, toolName, input) => this.#claudeBridge.resolveLocally(runtimeId, toolName, input),
+      onTurnFinished: runtimeId => this.#claudeBridge.resolveLocally(runtimeId),
+      onLocalInteractions: runtimeId => this.#claudeBridge.deferToLocal(runtimeId),
+      pendingInteractions: runtimeId => this.#claudeBridge.pendingRequests(runtimeId).length,
     });
+    const claudeOptions = options.claude;
+    const claudeConfig = claudeConfigDir(claudeOptions?.configDir ?? process.env.CLAUDE_CONFIG_DIR);
+    this.#claudeBackend = new ClaudeBackend({ bridge: this.#claudeBridge, modsBridge: this.#claudeModsBridge,
+      runtimeIds: () => [...new Set([...this.#claudeBridge.runtimeIds(), ...this.#claudeModsBridge.runtimeIds()])],
+      ...(claudeOptions === undefined ? {} : {
+        configDirs: () => [claudeConfig],
+        catalog: new ClaudeSessionCatalog(),
+        archive: new ClaudeArchiveStore(join(stateDir, "claude-archive.json")),
+        launcher: claudeOptions.launcher ?? new TerminalClaudeLauncher({ stateDir, configDir: claudeConfig }),
+      }),
+      onCommandResult: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
+      onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
+      ...(options.log === undefined ? {} : { log: options.log }) });
     this.#piToolContents = new PiToolContentReader({
       send: (runtimeId, commandId, command) => this.#loopback?.sendCommand(runtimeId, commandId, command) ?? false,
       scope: runtimeId => { const scope = this.#agentFacts.scopeOf(runtimeId); return scope?.kind === "agent" ? scope.key : undefined; },
@@ -723,10 +768,7 @@ export class HostService {
         ...(options.sessionsRoot === undefined ? {} : { sessionsRoot: options.sessionsRoot }),
         ...(options.log === undefined ? {} : { log: options.log }),
       }),
-      new ClaudeBackend({ bridge: this.#claudeBridge, modsBridge: this.#claudeModsBridge,
-        runtimeIds: () => [...new Set([...this.#claudeBridge.runtimeIds(), ...this.#claudeModsBridge.runtimeIds()])],
-        onCommandResult: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
-        onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event) }),
+      this.#claudeBackend,
     ];
     this.#backends = backends;
     // 共享同一个单写者：Agent 事实与设备视图回执都写进这一份模型。
@@ -1012,6 +1054,7 @@ export class HostService {
         if (entry?.sessionId) backend.announce(entry.sessionId);
       }
       if (this.#options.dshRuntime?.ownsRuntime(runtimeId)) this.#options.dshRuntime.announce();
+      if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
     if (!this.#agentStateSubscriptions.register(deviceId, scope, request)) {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "model_subscription_limit", message: "模型订阅已达上限" });
@@ -1093,8 +1136,8 @@ export class HostService {
   }
 
   #launchableAgentsSnapshot(): AgentKind[] {
-    // Claude Code only attaches to a TUI the user already runs; the Host cannot create one.
-    const agents = this.#agentsSnapshot().filter(kind => kind !== "claude");
+    // Claude Code runs only in its official TUI: launchable where the Host can open a terminal.
+    const agents = this.#agentsSnapshot().filter(kind => kind !== "claude" || this.#claudeLaunchable);
     if (this.#options.codexDesktopLaunchable === true && !agents.includes("codexDesktop")) agents.push("codexDesktop");
     return agents;
   }
@@ -1143,6 +1186,11 @@ export class HostService {
   async start(): Promise<void> {
     this.#claudeModsSweep = setInterval(() => { this.#claudeModsBridge.expireStale(); }, 5_000);
     this.#claudeModsSweep.unref();
+    void this.#claudeBackend.launchable().then(launchable => {
+      if (launchable === this.#claudeLaunchable || this.#serviceClosed) return;
+      this.#claudeLaunchable = launchable;
+      this.#broadcastDeviceReady();
+    });
     this.#modelLifecycle = "starting";
     this.refreshHostFacts();
     // Host 在 Relay 眼里就是一个普通 runtime，直接复用 v1 的身份空间。
@@ -2105,6 +2153,7 @@ export class HostService {
       }
     }
     this.#options.dshRuntime?.announce();
+    this.#claudeBackend.announce();
     // Pi 侧同理：扩展只在自己的 transport 重连时才重播 capabilities，而那和“手机刚重连”
     // 是两件事——手机侧被 `device.ready` / `runtime.online` 清掉词表后，只要扩展的 transport
     // 没断过，`/` 菜单就一直空着（一直要到下一轮 turn 结束刷新 capabilities）。

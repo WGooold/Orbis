@@ -4,28 +4,46 @@ type Api = Parameters<Hook<"session.start">>[0];
 type Connection = { runtimeId: string; generation: string; sessionId: string };
 type Descriptor = { url: string; token: string };
 type HelloReply = { ok: true; runtimeId: string; generation: string } | { ok: false; error: string };
-type PollReply = { ok: true; commands: { commandId: string; command: RemoteCommand }[] } | { ok: false; error: string };
+type PollReply = { ok: true; commands: { commandId: string; command: RemoteCommand }[]; pendingInteractions?: number } | { ok: false; error: string };
 type BridgeEvent = Record<string, unknown>;
-type RemoteCommand = { type: "user_message"; text: string; messageId?: string } | { type: "stop" };
-type CachedCommand = { state: "running"; commandType: "user_message" } |
+type RemoteCommand = { type: "user_message"; text: string; messageId?: string } | { type: "slash"; name: string; args: string } | { type: "stop" };
+type CachedCommand = { state: "running"; commandType: "user_message" | "slash" } |
   { state: "running"; commandType: "stop"; turnId: string } | { state: "result"; event: BridgeEvent };
 
 const INSTANCE_ID = crypto.randomUUID();
 const COMMAND_CACHE_LIMIT = 128;
 const MAX_HTTP_BODY = 240_000;
+/** Polls between unchanged state reports (750 ms each). */
+const STATE_EVERY = 20;
+/** A Host refusal is not retried at poll speed. */
+const REJECTED_RETRY_MS = 60_000;
+const RESERVED_TOOL_FIELDS = new Set(["tool", "tool_use_id", "agentId", "requestMeta", "consent"]);
 const commands = new Map<string, CachedCommand>();
 let connection: Connection | undefined;
 let descriptorCache: Descriptor | undefined;
 let activeTurnId: string | undefined;
 let polling = false;
 let pollingTimer: ReturnType<Api["clock"]["every"]> | undefined;
+let polls = 0;
+let reportedState: { sessionId: string; encoded: string } | undefined;
+let reporting = false;
+let rejected: { error: string; until: number } | undefined;
+let status: string | undefined;
 
 export const register: Register = on => {
   on("session.start", async ($, event, next) => {
     const result = await next(event);
+    // Lets the person at the computer take back interactions that were sent to a phone.
+    void $.command.register({ name: "orbis-local", description: "把已发到手机的权限请求和问题收回到电脑上回答",
+      immediate: true }).catch(() => undefined);
     void poll($);
     if (pollingTimer === undefined) pollingTimer = $.clock.every(750, () => { void poll($); });
     return result;
+  });
+
+  on("command.run", { command: "orbis-local" }, async $ => {
+    const delivered = await emit($, { type: "interactions.local" });
+    return { text: delivered ? "Orbis：待回答的请求已交回电脑。" : "Orbis：没有连上 Host，请直接在电脑上回答。" };
   });
 
   // The Host reads the row from the native transcript; announcing its identity is enough.
@@ -35,6 +53,18 @@ export const register: Register = on => {
     await emit($, { type: "session.append", uuid: stored.uuid, door: event.door });
     return stored;
   }).catch(($, event, next) => next(event));
+
+  on("session.compact", async ($, event, next) => {
+    await emit($, { type: "compaction", phase: "running" });
+    try {
+      const result = await next(event);
+      await emit($, { type: "compaction", phase: "idle" });
+      return result;
+    } catch (error) {
+      await emit($, { type: "compaction", phase: "failed" });
+      throw error;
+    }
+  });
 
   on("turn.start", async ($, event, next) => {
     const result = await next(event);
@@ -81,6 +111,8 @@ export const register: Register = on => {
         if (delivered) commands.delete(commandId);
         else commands.set(commandId, { state: "result", event: nativeEvent });
       }
+      // Context fill and the model can change with every turn.
+      void reportState($, true);
     }
     return result;
   }).catch(($, event, next) => next(event));
@@ -88,7 +120,8 @@ export const register: Register = on => {
   on("tool.call", async ($, event, next) => {
     const toolName = event.tool;
     const toolCallId = event.tool_use_id;
-    const argumentsValue = Object.fromEntries(Object.entries(event).filter(([key]) => key !== "tool" && key !== "tool_use_id"));
+    // The tool's own input, as a Hook's `tool_input` carries it: the engine's reserved fields left out.
+    const argumentsValue = Object.fromEntries(Object.entries(event).filter(([key]) => !RESERVED_TOOL_FIELDS.has(key)));
     await emit($, { type: "tool.started", toolCallId, toolName, arguments: boundedValue(argumentsValue, 24_000) });
     const result = await next(event);
     const resultRecord = result as { deny?: unknown; result?: unknown; text?: unknown; isError?: unknown };
@@ -117,7 +150,12 @@ async function poll($: Api): Promise<void> {
       }
       return;
     }
-    for (const item of body.commands) await runCommand($, current, item.commandId, item.command);
+    const pending = body.pendingInteractions ?? 0;
+    showStatus($, pending > 0 ? `Orbis：${pending} 个请求已发到手机等待回答；要在电脑上回答，输入 /orbis-local` : undefined);
+    // Never awaited here: a submit or command can wait for the turn, and polling must go on
+    // or the Host lease lapses. The command cache keeps a repeated poll from running it twice.
+    for (const item of body.commands) void runCommand($, current, item.commandId, item.command);
+    if (++polls % STATE_EVERY === 0) void reportState($, false);
   } catch {
     // Keep the current generation across transient HTTP failures. The Host lease
     // expires independently; a stale-generation response triggers a fresh hello.
@@ -129,23 +167,76 @@ async function poll($: Api): Promise<void> {
 async function connect($: Api): Promise<Connection | undefined> {
   const sessionId = await $.session.id();
   if (connection?.sessionId === sessionId) return connection;
+  if (rejected !== undefined && rejected.until > Date.now()) return undefined;
   const version = await $.session.version();
   const cwd = await $.session.cwd();
   const descriptor = await readDescriptor($);
   if (descriptor === undefined) return undefined;
   descriptorCache = descriptor;
   const configDir = await $.env.get("CLAUDE_CONFIG_DIR");
+  const launchId = await $.env.get("ORBIS_CLAUDE_LAUNCH_ID");
   const response = await request<HelloReply>($, "/v1/claude/mods/hello", {
     type: "hello", instanceId: INSTANCE_ID, sessionId, cwd,
     ...(configDir === undefined || configDir.length === 0 ? {} : { configDir }),
+    ...(launchId === undefined || launchId.length === 0 ? {} : { launchId }),
     claudeVersion: version.version, bridgeVersion: "1",
     capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call"],
   }, descriptor);
-  if (!response.ok || response.body?.ok !== true) return undefined;
+  if (!response.ok || response.body?.ok !== true) {
+    const error = response.body !== undefined && "error" in response.body ? response.body.error : undefined;
+    if (error !== undefined) {
+      rejected = { error, until: Date.now() + REJECTED_RETRY_MS };
+      showStatus($, `Orbis：这个 Claude Code 会话无法连接 Host（${error}）`);
+    }
+    return undefined;
+  }
+  rejected = undefined;
+  showStatus($, undefined);
   const next = { runtimeId: response.body.runtimeId, generation: response.body.generation, sessionId };
   if (connection?.generation !== next.generation) commands.clear();
   connection = next;
+  void reportState($, true);
   return next;
+}
+
+/** Model, context fill, slash commands and effort: sent when they change, or forced. */
+async function reportState($: Api, force: boolean): Promise<void> {
+  if (reporting) return;
+  reporting = true;
+  try {
+    const target = connection;
+    if (target === undefined) return;
+    const state: Record<string, unknown> = {};
+    const model = await $.session.model().catch(() => undefined);
+    if (typeof model === "string" && model.length > 0) state.model = model.slice(0, 256);
+    const usage = await $.session.usage().catch(() => undefined);
+    if (usage?.context !== undefined && usage.context.window > 0) {
+      state.context = { window: usage.context.window,
+        ...(usage.context.tokens === undefined ? {} : { tokens: usage.context.tokens }),
+        ...(usage.context.percent === undefined ? {} : { percent: usage.context.percent }) };
+    }
+    const listed = await $.command.list().catch(() => undefined);
+    if (listed !== undefined) {
+      state.commands = listed.slice(0, 512).map(command => ({ name: command.name, source: command.source,
+        description: clipText(command.description, 300) }));
+      // `/model`'s own line names the model as Claude shows it: "(currently Opus 5.5)".
+      const current = /\(currently ([^)]+)\)\s*$/u.exec(listed.find(command => command.name === "model")?.description ?? "")?.[1];
+      if (current !== undefined) state.modelName = current.slice(0, 256);
+    }
+    const rows = await $.config.list().catch(() => undefined);
+    const modelRow = rows?.find(row => row.key === "model");
+    if (modelRow?.options !== undefined) state.modelOptions = modelRow.options.slice(0, 64);
+    if (typeof modelRow?.value === "string" && modelRow.value.length > 0) state.modelSetting = modelRow.value;
+    const settings = await $.settings.read().catch(() => undefined) as Record<string, unknown> | undefined;
+    if (typeof settings?.effortLevel === "string" && settings.effortLevel.length > 0) state.effort = settings.effortLevel;
+    const encoded = JSON.stringify(state);
+    if (!force && reportedState?.sessionId === target.sessionId && reportedState.encoded === encoded) return;
+    if (await postEvent($, target, { type: "session.state", state })) reportedState = { sessionId: target.sessionId, encoded };
+  } catch {
+    // Reported again on the next turn or interval.
+  } finally {
+    reporting = false;
+  }
 }
 
 async function readDescriptor($: Api): Promise<Descriptor | undefined> {
@@ -172,7 +263,7 @@ async function runCommand($: Api, target: Connection, commandId: string,
   if (cached?.state === "running") return;
   commands.set(commandId, command.type === "stop" && activeTurnId !== undefined
     ? { state: "running", commandType: "stop", turnId: activeTurnId }
-    : { state: "running", commandType: "user_message" });
+    : { state: "running", commandType: command.type === "slash" ? "slash" : "user_message" });
   trimCommands();
   if (command.type === "user_message") {
     try {
@@ -187,6 +278,27 @@ async function runCommand($: Api, target: Connection, commandId: string,
       await finishCommand($, target, commandId, { type: "command.result", commandId, ok: false,
         status: "failure", error: errorText(error) });
     }
+    return;
+  }
+  if (command.type === "slash") {
+    try {
+      let output: string | undefined;
+      if (command.name === "model") {
+        // The `/config` model row, as the settings menu changes it; `/model` alone opens a picker.
+        const set = await $.config.set({ key: "model", value: command.args.trim() });
+        if ("deny" in set && typeof set.deny === "string") throw new Error(set.deny);
+        output = `Model set to ${command.args.trim()}`;
+      } else {
+        const ran = await $.command.run({ command: command.name, args: command.args });
+        output = ran.text;
+      }
+      await finishCommand($, target, commandId, { type: "command.result", commandId, ok: true, status: "success",
+        ...(output === undefined || output.length === 0 ? {} : { result: { text: clipText(output, 16_000) } }) });
+    } catch (error) {
+      await finishCommand($, target, commandId, { type: "command.result", commandId, ok: false,
+        status: "failure", error: errorText(error) });
+    }
+    void reportState($, true);
     return;
   }
   if (command.type === "stop") {
@@ -240,6 +352,13 @@ async function request<T>($: Api, path: string, body: unknown, supplied?: Descri
   if (response.text.length > MAX_HTTP_BODY) return { ok: false, status: response.status };
   try { return { ok: response.ok, status: response.status, body: JSON.parse(response.text) as T }; }
   catch { return { ok: response.ok, status: response.status }; }
+}
+
+/** One pinned line under the prompt; only redrawn when it changes. */
+function showStatus($: Api, text: string | undefined): void {
+  if (text === status) return;
+  status = text;
+  $.ui.status(text);
 }
 
 function boundedValue(value: unknown, maximum: number): unknown {

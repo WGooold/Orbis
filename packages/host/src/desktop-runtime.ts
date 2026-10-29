@@ -494,6 +494,7 @@ export class DesktopRuntime {
         ...(this.#codexDesktopLifecycle === undefined ? {} : { codexDesktopLaunchable }),
         ...(this.#codexDesktopLifecycle === undefined ? {} : { codexDesktopStatus: () => this.#codexDesktopLifecycle!.status }),
         ...(this.#dshRuntime === undefined ? {} : { dshRuntime: this.#dshRuntime }),
+        claude: {},
         log: line => this.log(line),
         // 只有“当前这次连接”的链路状态才会到界面：暂停或重启后被作废的尝试还在收尾巴，
         // 它事后发出的 closed/reconnecting 会盖掉“已暂停”，把界面卡在“连接已断开”。

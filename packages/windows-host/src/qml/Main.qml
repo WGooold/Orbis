@@ -887,7 +887,7 @@ ApplicationWindow {
                             SoftSwitch { id: piIntegrationSwitch; visible: Qt.platform.os === "osx"; text: "让终端里运行的 Pi 连接 Orbis" }
                             Hint { visible: Qt.platform.os === "osx"; text: "会在 Pi 的 settings.json 里追加 Orbis 扩展，不影响你已有的扩展；已在运行的 Pi 需重启后才会连接。删除 Orbis Host 前请先关闭此项（终端命令 pi 也会一并移除）。"; Layout.fillWidth: true }
                             SoftSwitch { id: claudeIntegrationSwitch; text: "让终端里运行的 Claude Code 连接 Orbis" }
-                            Hint { text: "通过 Claude Code 自己的插件命令安装 Orbis 插件（需要 Claude Code 2.1.287 或更新版本，以及 PATH 中的 node）。开启后手机可查看和继续同一个 Claude Code 会话、回答权限请求与提问；没有手机在线时仍由电脑上的原生界面处理。已在运行的 Claude Code 需执行 /reload-plugins 或重启。"; Layout.fillWidth: true }
+                            Hint { text: "通过 Claude Code 自己的插件命令安装 Orbis 插件（需要 Claude Code 2.1.287 或更新版本，以及 PATH 中的 node）。开启后终端里运行的 Claude Code 会出现在手机上，手机可继续同一个会话、回答权限请求与提问；电脑上的原生对话框同时可用，谁先回答算谁，也可以输入 /orbis-local 把发到手机的请求收回。已在运行的 Claude Code 需执行 /reload-plugins 或重启。不开启时，从手机打开的 Claude Code 终端只为那一个会话临时加载插件。"; Layout.fillWidth: true }
                             RowLayout {
                                 objectName: "piCommandRow"
                                 visible: ["installed", "available", "foreign"].includes(window.piAgent().terminalCommand)

@@ -773,11 +773,14 @@ internal fun NewSessionSheet(
     val codexSupported = state.supportedAgents?.contains("codex") != false
     val codexDesktopSupported = state.launchableAgents?.contains("codexDesktop") == true
     val dshSupported = state.supportedAgents?.contains("dsh") == true
-    LaunchedEffect(codexSupported, codexDesktopSupported, dshSupported) {
+    // Claude Code 只在电脑能打开终端窗口时可新建（Host 的 launchableAgents）。
+    val claudeSupported = state.launchableAgents?.contains("claude") == true
+    LaunchedEffect(codexSupported, codexDesktopSupported, dshSupported, claudeSupported) {
         // chip 可能停在上一轮选中的 Codex 上（rememberSaveable），电脑不支持就拉回来。
         if (!codexSupported && agentKind == "codex") agentKind = "pi"
         if (!codexDesktopSupported && agentKind == "codexDesktop") agentKind = "pi"
         if (!dshSupported && agentKind == "dsh") agentKind = "pi"
+        if (!claudeSupported && agentKind == "claude") agentKind = "pi"
     }
     LaunchedEffect(Unit) {
         if (presetCwd == null && state.sessionBrowse == null) onBrowse(null)
@@ -809,6 +812,7 @@ internal fun NewSessionSheet(
             }
             AgentChoice(AgentBrand.Codex, agentKind == "codexDesktop", { agentKind = "codexDesktop" }, Modifier.fillMaxWidth(), codexDesktopSupported, "Codex 桌面版")
             AgentChoice(AgentBrand.DeepSeek, agentKind == "dsh", { agentKind = "dsh" }, Modifier.fillMaxWidth(), dshSupported)
+            AgentChoice(AgentBrand.Claude, agentKind == "claude", { agentKind = "claude" }, Modifier.fillMaxWidth(), claudeSupported)
             if (!codexSupported) {
                 Text(
                     "这台电脑没启用 Codex 后端",
@@ -1197,8 +1201,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val attachedUploads = runtimeUploads.filter { it.taskId in attachedTaskIds }
     val attachablePaths = attachedUploads.filter { it.status == "completed" }.mapNotNull(UploadTask::remotePath)
     // 附件现在是无条件支持的（ADR-0008 删掉了 `messageAttachments` 能力位）。
-    // Claude Code 提交只接受文字：Host 会拒绝附件，入口直接不显示。
-    val canAttachFiles = runtime != null && state.hostId != null && runtime.agentKind != "claude"
+    val canAttachFiles = runtime != null && state.hostId != null
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->

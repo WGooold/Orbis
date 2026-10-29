@@ -2808,3 +2808,114 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     second.close();
   });
 });
+
+describe("Claude Code TUI 接线（ADR-0033）", () => {
+  let relay: RelayServer | undefined;
+  let host: HostService | undefined;
+  let device: TestDevice | undefined;
+  let stateDir: string | undefined;
+
+  afterEach(async () => {
+    device?.close();
+    await host?.stop();
+    await relay?.close();
+    if (stateDir !== undefined) await rm(stateDir, { recursive: true, force: true });
+    relay = undefined; host = undefined; device = undefined; stateDir = undefined;
+  });
+
+  it("carries a Claude TUI's directory, slash menu, commands and tool activity over the encrypted device channel", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-claude-host-"));
+    const config = join(stateDir, "claude-config");
+    await mkdir(join(config, "projects", "-repo"), { recursive: true });
+    await writeFile(join(config, "projects", "-repo", "saved-session.jsonl"), [
+      { type: "user", uuid: "u", cwd: stateDir, timestamp: "2026-10-01T00:00:00.000Z", message: { content: "earlier work" } },
+      { type: "ai-title", aiTitle: "Earlier" },
+    ].map(row => JSON.stringify(row)).join("\n") + "\n");
+    relay = await createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret", stateFile: join(stateDir, "relay-state.json") });
+    const launches: unknown[] = [];
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
+      claude: { configDir: config, launcher: { unavailable: async () => undefined, launch: async request => { launches.push(request); } } } });
+    await host.start();
+    const opened = await host.openPairingWindow();
+    const connected = await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Pixel 9" });
+    device = connected.device;
+    const pskRoot = await device.pair(opened.payload);
+    await device.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
+    const until = async (predicate: (message: Record<string, unknown>) => boolean, label: string) => {
+      for (let i = 0; i < 80; i++) {
+        const message = await device!.receiveMessage().catch((error: unknown) => { throw new Error(`Waiting for ${label}`, { cause: error }); }) as Record<string, unknown>;
+        if (predicate(message)) return message;
+      }
+      throw new Error(`Expected ${label}`);
+    };
+    const ready = await until(message => message.type === "device.ready" && (message.launchableAgents as string[] | undefined)?.includes("claude") === true, "claude launchable");
+    expect(ready.agents).toContain("claude");
+
+    device.sendPayload(Buffer.from(JSON.stringify({ type: "session.list", protocolVersion: PROTOCOL_VERSION, requestId: "list-1" })));
+    const listed = await until(message => message.type === "session.list.result", "session.list.result");
+    expect(listed.sessions).toContainEqual(expect.objectContaining({ sessionId: "saved-session", agentKind: "claude", name: "Earlier", firstMessage: "earlier work" }));
+
+    const descriptor = JSON.parse(await readFile(join(stateDir, "loopback.json"), "utf8")) as { url: string; token: string };
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`${descriptor.url.replace(/^ws/u, "http")}${path}`, { method: "POST",
+        headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+      return await response.json() as Record<string, unknown>;
+    };
+    const hello = await post("/v1/claude/mods/hello", { type: "hello", instanceId: "tui-1", sessionId: "live-session", cwd: stateDir,
+      claudeVersion: "2.1.312", bridgeVersion: "1", configDir: config,
+      capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call"] });
+    expect(hello).toMatchObject({ ok: true, runtimeId: "claude:live-session" });
+    const generation = hello.generation as string;
+    await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata).runtimeId === "claude:live-session", "runtime.online");
+    const event = (body: unknown) => post("/v1/claude/mods/event", { runtimeId: "claude:live-session", generation, event: body });
+
+    expect(await event({ type: "session.state", state: { model: "claude-opus-5-5", modelName: "Opus 5.5", modelOptions: ["sonnet", "opus"],
+      context: { tokens: 1000, window: 200000, percent: 0.5 }, commands: [{ name: "compact", description: "Free up context", source: "builtin" }] } }))
+      .toEqual({ result: "accepted" });
+    const capabilities = await until(message => message.runtimeId === "claude:live-session" &&
+      (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities", "runtime.capabilities");
+    expect((capabilities.event as Extract<RuntimeEvent, { type: "runtime.capabilities" }>).capabilities.commands.map(command => command.name))
+      .toEqual(["model", "effort", "compact"]);
+
+    device.sendPayload(Buffer.from(JSON.stringify({ type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "claude:live-session",
+      commandId: "slash-1", command: { type: "slash.execute", name: "compact", args: "" } })));
+    await vi.waitFor(async () => expect(await post("/v1/claude/mods/poll", { runtimeId: "claude:live-session", generation }))
+      .toMatchObject({ ok: true, commands: [{ commandId: "slash-1", command: { type: "slash", name: "compact", args: "" } }] }));
+
+    device.sendPayload(Buffer.from(JSON.stringify({ type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "claude:live-session",
+      commandId: "sync-1", command: { type: "session.sync", sessionId: "live-session", syncId: "sync-1", range: "preview" } })));
+    expect(await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.snapshot", "session.snapshot"))
+      .toMatchObject({ runtimeId: "claude:live-session", event: { sessionId: "live-session", syncId: "sync-1" } });
+    await event({ type: "turn.start", turnId: "turn-1", startedAt: Date.now() });
+    await event({ type: "tool.started", toolCallId: "toolu_1", toolName: "Bash", arguments: { command: "ls -la", description: "List" } });
+    // ADR-0045: the patch only references the tool inventory; the phone pages summaries and reads bodies on demand.
+    const patch = await until(message => message.runtimeId === "claude:live-session" && (message.event as RuntimeEvent | undefined)?.type === "session.patch" &&
+      (message.event as Extract<RuntimeEvent, { type: "session.patch" }>).live?.toolInventory !== undefined, "tool inventory patch");
+    const reference = (patch.event as Extract<RuntimeEvent, { type: "session.patch" }>).live!.toolInventory!;
+    expect(reference).toMatchObject({ agent: { agentKind: "claude", sessionId: "live-session" }, totalCount: 1 });
+    const send = (command: unknown) => device!.sendPayload(Buffer.from(JSON.stringify({ type: "runtime.command", protocolVersion: PROTOCOL_VERSION,
+      runtimeId: "claude:live-session", commandId: "tools", command })));
+    send({ type: "session.tools.open", requestId: "open", runtimeId: "claude:live-session", reference });
+    const inventory = await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.tools.opened", "tools opened");
+    send({ type: "session.tools.read", requestId: "page", runtimeId: "claude:live-session",
+      snapshot: (inventory.event as { snapshot: ToolInventorySnapshot }).snapshot, cursor: null, maxItems: 16 });
+    const page = (await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.tools.page", "tools page"))
+      .event as Extract<RuntimeEvent, { type: "session.tools.page" }>;
+    expect(page.tools).toEqual([expect.objectContaining({ toolName: "Bash", inputSummary: expect.objectContaining({ text: "ls -la" }), phase: "started" })]);
+    send({ type: "session.tool.content.read", requestId: "args", runtimeId: "claude:live-session", viewerId: "v",
+      locator: { projectionVersion: 1, tool: { agent: reference.agent, toolCallId: "toolu_1" }, part: "arguments" }, read: null, offset: 0, maxBytes: 16_384 });
+    const content = await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.tool.content.page", "tool content");
+    expect(JSON.stringify(content.event)).toContain("ls -la");
+    expect(host.readDiagnostics({ category: "recovery" }).records.filter(record => record.message.includes("Rejected conversation"))).toEqual([]);
+
+
+    // A refused bridge leaves a diagnostic instead of failing silently.
+    expect(await post("/v1/claude/mods/hello", { type: "hello", instanceId: "old", sessionId: "old-session", cwd: stateDir,
+      claudeVersion: "2.1.100", bridgeVersion: "1", capabilities: [] })).toMatchObject({ ok: false, error: "claude_version_too_old:2.1.287" });
+    expect(host.readDiagnostics({ category: "backend.transport" }).records).toContainEqual(expect.objectContaining({ agentKind: "claude",
+      message: "Claude Code bridge refused", detail: expect.objectContaining({ reason: "claude_version_too_old:2.1.287", claudeVersion: "2.1.100" }) }));
+    expect(launches).toEqual([]);
+  });
+});

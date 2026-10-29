@@ -2,7 +2,7 @@
 
 日期：2026-10-14
 
-Status: accepted（接入方向已确认；Hook bridge 已实现阶段性能力，完整兼容性验收及运行环境迁移尚未实现）
+Status: accepted（接入方向已确认；Host/插件已对齐其他后端的主要能力并在 v2.1.312 真实 TUI 验证，v2.1.287 最低版本、Windows 终端启动和手机实机界面尚未验收）
 
 关联：[ADR-0001](<0001-pi-runtime-control-boundary.md>)、[ADR-0003](<0003-runtime-owned-slash-command-menu.md>)、[ADR-0021](<0021-codex-terminal-host-attachment.md>)、[ADR-0025](<0025-native-history-authority-and-versioned-caches.md>)、[ADR-0026](<0026-host-selected-session-sync.md>)、[ADR-0031](<0031-host-permission-management.md>)、[ADR-0032](<0032-host-owned-agent-state-model.md>)。
 
@@ -117,7 +117,23 @@ Host 退出只断开 bridge，不结束用户 TUI。CLI 升级、插件启用及
 - **实时内容**：`turn.step` 流式输出与工具事件进入会话源的 live 状态；回合结束后等待本回合通告的行全部落盘（上限 3 秒）再撤下流式副本，避免与 canonical 行重复。
 - **插件登记**：桌面 Host 设置“让终端里运行的 Claude Code 连接 Orbis”（缺省关闭，需用户明确开启）调用 Claude 自己的 `claude plugin marketplace add <插件目录>` 与 `claude plugin install orbis-host-session-link@orbis-host --scope user`；插件目录同时是本地 marketplace，Claude 原地加载，应用更新后启动 Host 时重新指向。关闭时 `uninstall` 并移除 marketplace。v2.1.312 隔离配置下实测通过。
 - **客户端**：iOS / Android 新增 `claude` 身份（名称、配色、中性图形标记）、目录筛选；Claude 会话不提供附件入口，运行中发送直接按 follow-up 提交，不提供 Steer；新建会话列表不含 Claude（Host 的 `launchableAgents` 也排除它）。
-- **仍未验收**：真实 TUI 内的端到端双向操作、Hook 返回空输出后原生对话框的行为、v2.1.287 最低版本兼容性，仍按 §2、§4 要求单独记录。
+- **仍未验收**：见 §8 末尾。
+
+### 8. 对齐其他后端（2026-10-29）
+
+依据目标构建（v2.1.312）加载插件后生成的类型声明，补齐 Pi/DSH 已有而 Claude 缺少的能力；每项只用公开接口，做不到的明确标为不可用。
+
+- **会话目录与归档**：Host 扫描 `<config>/projects/<project>/<sessionId>.jsonl`（子 Agent 记录在更深一层，不算会话），每个文件只读头 64 KiB、尾 32 KiB，取目录、首条用户消息与标题（`custom-title` 优先于 `ai-title`）；按大小与修改时间缓存。Claude 没有归档，Host 把已归档会话 ID 记在自己的 `claude-archive.json`，不移动、不改写记录；在线会话拒绝归档。
+- **从手机打开会话**：只能打开官方 TUI，不提供无界面执行（那等于 Agent SDK 后端，见“Alternatives not selected”）。macOS 用 Terminal.app 运行 Host 写入的一次性脚本，Windows 用 Windows Terminal，缺失时用控制台；其他系统报告不可用。脚本带 `ORBIS_CLAUDE_LAUNCH_ID`，插件在 hello 中回报，Host 据此确认打开的就是这个 TUI；60 秒未连上则如实报告（目录信任提示、版本）。用户未安装插件时只为这个 TUI 传 `--plugin-dir`，已安装时不传，避免同一进程跑两个 bridge。`launchableAgents` 只在能打开终端且找到 `claude` 时包含 Claude。
+- **斜杠命令、模型、思考强度**：插件用 `$.command.list()` 上报命令；Host 隐藏会打开 TUI 面板、操作终端或账号、离开会话或计费的内置命令，其余（含技能与自定义命令）以可选参数提供给手机，经 `$.command.run` 执行，输出随回执返回。模型用 `/config` 的 `model` 行（`$.config.list()` 的选项、`$.config.set` 修改）；思考强度走 `/effort`。
+- **运行时元数据**：模型（`$.session.model()`，显示名取自 `/model` 的说明）、上下文用量（`$.session.usage()`）、思考强度（设置中的 `effortLevel`）、标题；权限模式读自记录里的 `permission-mode` 行，只读展示——`$.config` 的 `permissionMode` 是“新会话默认值”，不能改当前会话，Mods 也没有切换接口。
+- **工具卡片**：与 Pi/DSH 共用 ADR-0045 的工具摘要/库存/按需读取；正文从原生记录按 `tool_use_id` 读取。共享摘要函数补上 Claude 的 `Bash`、`file_path`、`Grep`/`Glob`。工具库存页必须带 `claude:<sessionId>` 作为 runtimeId（与会话 ID 不同）。
+- **记录投影**：斜杠命令行显示为 `/name args`，本地命令输出与 `!` shell 运行显示为系统行，去掉 Claude 的标签与 ANSI 控制符。
+- **压缩、附件**：`session.compact` 前后上报压缩活动；附件与 Codex/DSH 一样以“附件路径”追加到消息正文。
+- **交互竞答（v2.1.312 实测）**：`PermissionRequest` Hook 等待手机期间，电脑上的原生对话框同时显示；电脑先回答后，插件上报的 `tool.finished`（按工具名与参数匹配 Hook 的 `tool_input`）或回合结束让 Host 关闭手机卡片并标为电脑端完成。`AskUserQuestion` 的 `PreToolUse` Hook 在等待期间会挡住原生问题界面，所以插件在状态行提示并注册 `/orbis-local`（`immediate`，回合中也能运行），把待答交互交回原生界面。插件转发工具参数前剔除 `agentId`、`requestMeta`、`consent` 等引擎保留字段。
+- **可见的失败**：Host 拒绝 hello（版本、能力、bridge 版本）时写入诊断（同一原因十分钟一次）；插件在 TUI 状态行显示原因，并在 60 秒内不再重试。
+- **v2.1.312 真实 TUI 验证**（`--plugin-dir`、Haiku，经真实 loopback HTTP 与 Host 桥）：握手与状态上报；手机消息产生真实回复并进入历史；手机批准权限；电脑先批准后手机卡片关闭；手机回答 AskUserQuestion；`/orbis-local` 收回问题后在电脑作答；停止运行中的回合；启动脚本新建会话、退出后出现在目录、再恢复并带回历史（脚本在伪终端中执行，未实际弹出 Terminal 窗口）。
+- **仍未验收**：v2.1.287 最低版本；Windows 终端启动；Terminal.app 实际开窗；手机 App 实机界面；子 Agent 工具调用与本地停止后的竞答。当前会话权限模式不能从手机切换，运行中只能排队（没有 Steer），手机不能做 `/clear`、`/resume`、`/rewind` 之类改变会话或打开面板的操作。
 
 ## Alternatives not selected
 

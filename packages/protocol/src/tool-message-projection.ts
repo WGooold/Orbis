@@ -11,9 +11,13 @@ export type ToolMessageProjectionContext = { agent: AgentKey; order: number; ent
 export function messageToolSummary(context: ToolMessageProjectionContext, callId: string, name: string,
   args?: unknown, isError?: boolean): ToolSummary {
   const input = record(args);
-  const inputSummary = ["bash", "shell", "execute", "commandExecution"].includes(name) && typeof input.command === "string" ? input.command
-    : ["read", "write", "edit", "Read", "Write", "Edit"].includes(name) && typeof input.path === "string" ? input.path
-      : undefined;
+  const path = typeof input.path === "string" ? input.path : typeof input.file_path === "string" ? input.file_path
+    : typeof input.notebook_path === "string" ? input.notebook_path : undefined;
+  // Claude Code names its tools in PascalCase and its paths `file_path`.
+  const inputSummary = ["bash", "shell", "execute", "commandExecution", "Bash"].includes(name) && typeof input.command === "string" ? input.command
+    : ["read", "write", "edit", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit"].includes(name) && path !== undefined ? path
+      : ["Grep", "Glob"].includes(name) && typeof input.pattern === "string" ? input.pattern
+        : undefined;
   const phase = context.phase ?? "started", terminal = phase === "finished" || phase === "cancelled";
   const capability = context.readCapability ?? "none";
   return createToolSummary({ tool: { agent: context.agent, toolCallId: callId }, toolName: name, phase,

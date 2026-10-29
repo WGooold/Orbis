@@ -165,6 +165,7 @@ async function runHost(
       ...(codexDesktopLifecycle === undefined ? {} : { codexDesktopLaunchable }),
       ...(codexDesktopLifecycle === undefined ? {} : { codexDesktopStatus: () => codexDesktopLifecycle!.status }),
       ...(dshRuntime === undefined ? {} : { dshRuntime }),
+      claude: {},
       log: (line) => console.log(`[host] ${line}`),
       onStateChange: (state) => console.log(`[host] relay ${state}`),
       onPathChange: (deviceId, change) => {

@@ -10,7 +10,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ActivationError } from "./spawner.js";
 import { ClaudeBackend, PiBackend } from "./agent-backend.js";
+import { ClaudeArchiveStore, ClaudeSessionCatalog } from "./claude-catalog.js";
 import { ClaudeHookBridge } from "./claude-hook-bridge.js";
+import type { ClaudeLauncher, ClaudeLaunchRequest } from "./claude-launcher.js";
 import { CLAUDE_BRIDGE_CAPABILITIES, ClaudeModsBridge } from "./claude-mods-bridge.js";
 import { ClaudeSessionHistory } from "./claude-session-history.js";
 import type { SpawnedAgent } from "./spawner.js";
@@ -192,5 +194,91 @@ describe("ClaudeBackend（Hook bridge 的统一端口）", () => {
     expect(types.indexOf("delivery.snapshot")).toBeLessThan(types.indexOf("session.snapshot"));
     expect(events.find(event => event.type === "interaction.snapshot")).toMatchObject({ requests: [{ kind: "confirm", runtimeId: "claude:claude-session" }] });
     bridge.close();
+  });
+});
+
+describe("ClaudeBackend directory, archive and phone-opened TUIs", () => {
+  async function fixture(launch: (request: ClaudeLaunchRequest, mods: ClaudeModsBridge) => Promise<void> = async () => undefined) {
+    const root = await mkdtemp(join(tmpdir(), "orbis-claude-backend-"));
+    const config = join(root, "config");
+    const repo = join(root, "repo");
+    await mkdir(join(config, "projects", "-repo"), { recursive: true });
+    await mkdir(repo, { recursive: true });
+    await writeFile(join(config, "projects", "-repo", "saved.jsonl"), [
+      { type: "user", uuid: "u", cwd: repo, timestamp: "2026-10-01T00:00:00.000Z", message: { content: "hello" } },
+      { type: "ai-title", aiTitle: "Saved work" },
+    ].map(row => JSON.stringify(row)).join("\n") + "\n");
+    const events: unknown[] = [];
+    const bridge = new ClaudeHookBridge();
+    const mods = new ClaudeModsBridge({ createHistory: (sessionId, configDir, publish) =>
+      new ClaudeSessionHistory(sessionId, configDir, publish, { locate: async () => undefined, settleTimeoutMs: 0 }) });
+    const launches: ClaudeLaunchRequest[] = [];
+    const launcher: ClaudeLauncher = { unavailable: async () => undefined, launch: async request => { launches.push(request); await launch(request, mods); } };
+    const backend = new ClaudeBackend({ bridge, modsBridge: mods, runtimeIds: () => mods.runtimeIds(), configDirs: () => [config],
+      catalog: new ClaudeSessionCatalog(), archive: new ClaudeArchiveStore(join(root, "claude-archive.json")), launcher, launchTimeoutMs: 200,
+      onCommandResult: (_id, event) => events.push(event), onEvent: (_id, event) => events.push(event) });
+    return { backend, mods, launches, events, repo, root };
+  }
+  const connect = (mods: ClaudeModsBridge, sessionId: string, launchId?: string, cwd = "/repo") => {
+    const result = mods.hello({ type: "hello", instanceId: `i-${sessionId}`, sessionId, cwd, claudeVersion: "2.1.312", bridgeVersion: "1",
+      capabilities: [...CLAUDE_BRIDGE_CAPABILITIES], ...(launchId === undefined ? {} : { launchId }) });
+    if (!result.ok) throw new Error(result.error);
+    return result;
+  };
+
+  it("lists transcripts as the Claude directory and archives them in Host state", async () => {
+    const { backend, mods } = await fixture();
+    expect(backend.isReady()).toBe(true);
+    expect(await backend.catalog()).toEqual([expect.objectContaining({ sessionId: "saved", agentKind: "claude", name: "Saved work", firstMessage: "hello", archived: false })]);
+    await backend.setArchived("saved", true);
+    expect(await backend.catalog()).toEqual([]);
+    expect(await backend.catalog(true)).toEqual([expect.objectContaining({ sessionId: "saved", archived: true })]);
+    await expect(backend.setArchived("missing", true)).rejects.toMatchObject({ code: "session_not_found" });
+    connect(mods, "saved");
+    await expect(backend.setArchived("saved", false)).rejects.toMatchObject({ code: "session_busy" });
+  });
+
+  it("resumes a saved Session by opening its TUI and waiting for that bridge", async () => {
+    const { backend, launches, repo } = await fixture(async (request, mods) => { setTimeout(() => connect(mods, request.resume!, request.launchId, repo), 5); });
+    await expect(backend.activate({ type: "resume", sessionId: "saved" })).resolves.toEqual({ sessionId: "saved", spawnMode: "tui" });
+    expect(launches).toEqual([expect.objectContaining({ cwd: repo, resume: "saved" })]);
+    // Already attached: nothing to open.
+    await expect(backend.activate({ type: "resume", sessionId: "saved" })).resolves.toEqual({ sessionId: "saved", spawnMode: "tui" });
+    expect(launches).toHaveLength(1);
+    // Codex thread ids are UUIDs too; a Session without a transcript belongs to another backend.
+    await expect(backend.activate({ type: "resume", sessionId: "not-claude" })).rejects.toMatchObject({ code: "session_not_found" });
+  });
+
+  it("starts a new Session in a terminal and reports why an opened TUI never connected", async () => {
+    const { backend, repo, root } = await fixture(async (request, mods) => {
+      if (request.cwd.endsWith("repo")) setTimeout(() => connect(mods, "fresh", request.launchId, request.cwd), 5);
+    });
+    await expect(backend.activate({ type: "new", cwd: repo })).resolves.toEqual({ sessionId: "fresh", spawnMode: "tui" });
+    await expect(backend.activate({ type: "new", cwd: join(root, "missing") })).rejects.toMatchObject({ code: "cwd_missing" });
+    await expect(backend.activate({ type: "new", cwd: root })).rejects.toMatchObject({ code: "spawn_failed", message: expect.stringContaining("目录信任") });
+  });
+
+  it("routes slash commands the TUI listed and passes attachments as paths", async () => {
+    const { backend, mods, events } = await fixture();
+    const current = connect(mods, "live");
+    mods.receiveEvent(current.runtimeId, current.generation, { type: "session.state", state: { commands: [{ name: "compact", source: "builtin" }] } });
+    expect(backend.dispatchCommand(current.runtimeId, "c1", { type: "slash.execute", name: "compact", args: "" })).toBe("handled");
+    expect(backend.dispatchCommand(current.runtimeId, "c2", { type: "slash.execute", name: "config", args: "" })).toBe("unsupported");
+    expect(backend.dispatchCommand(current.runtimeId, "c3", { type: "user_message", text: "看这个", attachments: ["/tmp/a.png"] })).toBe("handled");
+    expect(backend.dispatchCommand(current.runtimeId, "c4", { type: "user_message", text: "now", delivery: "steer" })).toBe("handled");
+    expect(mods.poll(current.runtimeId, current.generation)).toMatchObject({ commands: [
+      { commandId: "c1", command: { type: "slash", name: "compact", args: "" } },
+      { commandId: "c3", command: { type: "user_message", text: "看这个\n\n附件路径：\n/tmp/a.png" } },
+    ] });
+    expect(events).toContainEqual({ type: "command.result", commandId: "c4", ok: false, status: "failure", error: "claude_steer_unsupported" });
+  });
+
+  it("is not launchable without a launcher and stays out of the directory without a catalog", async () => {
+    const mods = new ClaudeModsBridge();
+    const backend = new ClaudeBackend({ bridge: new ClaudeHookBridge(), modsBridge: mods, runtimeIds: () => mods.runtimeIds() });
+    expect(backend.isReady()).toBe(false);
+    expect(await backend.launchable()).toBe(false);
+    expect(await backend.catalog()).toEqual([]);
+    await expect(backend.activate({ type: "resume", sessionId: "x" })).rejects.toMatchObject({ code: "session_not_found" });
   });
 });

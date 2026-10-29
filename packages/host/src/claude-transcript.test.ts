@@ -23,6 +23,36 @@ async function tempConfig(): Promise<string> {
 }
 
 describe("ClaudeTranscriptProjection", () => {
+  it("shows slash commands, their output and shell runs without Claude's markup", () => {
+    const projection = new ClaudeTranscriptProjection();
+    projection.push(user("c1", null, "<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>sonnet</command-args>"));
+    projection.push(user("o1", "c1", "<local-command-stdout>\u001b[1mSet model to Sonnet\u001b[22m</local-command-stdout>"));
+    projection.push(user("o2", "o1", "<local-command-stdout></local-command-stdout>"));
+    projection.push(user("b1", "o2", [{ type: "text", text: "<bash-input>git status</bash-input>" }]));
+    projection.push(user("b2", "b1", "<bash-stdout>clean</bash-stdout><bash-stderr></bash-stderr>"));
+    expect(projection.entries.map(entry => entry.data.message)).toMatchObject([
+      { role: "user", content: "/model sonnet" },
+      { role: "bashExecution", command: "", output: "Set model to Sonnet" },
+      { role: "bashExecution", command: "git status", output: "" },
+      { role: "bashExecution", command: "", output: "clean" },
+    ]);
+    // The empty output row is skipped but still anchors its child.
+    expect(projection.entries[2]?.parentId).toBe("o1");
+  });
+
+  it("keeps the Session's title, permission mode, model and directory from metadata rows", () => {
+    const projection = new ClaudeTranscriptProjection();
+    projection.push({ type: "permission-mode", permissionMode: "plan", sessionId: "s" });
+    projection.push({ type: "ai-title", aiTitle: "Generated", sessionId: "s" });
+    projection.push(user("u1", null, "hi", { cwd: "/repo" }));
+    projection.push(assistant("a1", "u1", [{ type: "text", text: "hello" }]));
+    projection.push({ type: "assistant", uuid: "x", parentUuid: "a1", timestamp: at, message: { role: "assistant", model: "<synthetic>", content: [] } });
+    projection.push({ type: "custom-title", customTitle: "Renamed", sessionId: "s" });
+    projection.push({ type: "ai-title", aiTitle: "Later generated", sessionId: "s" });
+    projection.push({ type: "permission-mode", permissionMode: "acceptEdits", sessionId: "s" });
+    expect(projection.facts).toEqual({ title: "Renamed", permissionMode: "acceptEdits", model: "claude-opus-5-5", cwd: "/repo" });
+  });
+
   it("projects the main conversation and links entries through skipped native rows", () => {
     const projection = new ClaudeTranscriptProjection();
     projection.push(user("meta", null, "<local-command-caveat>", { isMeta: true }));
@@ -96,7 +126,8 @@ describe("ClaudeSessionHistory", () => {
     const path = join(root, "projects", "-repo", "session-1.jsonl");
     await writeFile(path, line(user("u1", null, "hi")));
     const patches: Extract<RuntimeEvent, { type: "session.patch" }>[] = [];
-    const history = new ClaudeSessionHistory("session-1", root, event => patches.push(event), { settleIntervalMs: 5, settleTimeoutMs: 500 });
+    const history = new ClaudeSessionHistory("session-1", root, event => { if (event.type === "session.patch") patches.push(event); },
+      { settleIntervalMs: 5, settleTimeoutMs: 500 });
 
     const snapshot = await history.sync({ type: "session.sync", sessionId: "session-1", syncId: "sync-1", range: "preview" });
     expect(snapshot).toMatchObject({ sessionId: "session-1", syncId: "sync-1", cursor: { leafId: "u1" }, source: { ready: true } });
