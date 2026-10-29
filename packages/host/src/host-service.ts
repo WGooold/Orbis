@@ -1682,9 +1682,11 @@ export class HostService {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "provider_switching", commandId: message.commandId, message: "正在切换供应商，请稍后重新打开会话" });
       return;
     }
-    // 下载的取消先给 Host 的下载服务认领：它服务的那条传输只有它认识。
+    // 下载只归 Host 管理。暂停后删除、超时或重连后的重复取消是幂等操作；
+    // 即使传输已经释放，也不能把 hostId 当成 runtimeId 再转交给 agent。
     if (command.type === "artifact.cancel") {
-      if (this.#downloads.handleTransferControl(deviceId, message.runtimeId, command)) return;
+      this.#downloads.handleTransferControl(deviceId, message.runtimeId, command);
+      return;
     }
     if (command.type === "file.download" || command.type === "artifact.download") {
       // 下载完全由 Host 服务（spec §9.4 的 Host→APP 模型）：文件就在这台机器的磁盘上，

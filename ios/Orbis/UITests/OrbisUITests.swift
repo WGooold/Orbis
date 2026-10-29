@@ -507,6 +507,33 @@ final class OrbisUITests: XCTestCase {
         capture("drawer-older-sessions-collapsed", app: app)
     }
 
+    func testDownloadCardsPauseResumeAndSelectWithoutSideButtons() {
+        let app = launch("downloads")
+        let path = app.textFields["download-path"]
+        XCTAssertTrue(path.waitForExistence(timeout: 8))
+        path.tap(); path.typeText("/preview/report.zip")
+        app.buttons["按路径下载"].tap()
+        let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "download-card-")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["取消下载"].exists)
+        let active = NSPredicate(format: "label CONTAINS %@", "轻点暂停")
+        let paused = NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "已暂停", "轻点继续")
+        XCTAssertTrue(active.evaluate(with: card))
+        let cardWidth = card.frame.width
+        card.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: paused, object: card)], timeout: 3), .completed)
+        XCTAssertEqual(card.frame.width, cardWidth)
+        capture("download-card-paused", app: app)
+        card.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: active, object: card)], timeout: 3), .completed)
+        card.press(forDuration: 0.8)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        card.tap()
+        XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
+        XCTAssertTrue(active.evaluate(with: card), "选择和取消选择不能暂停下载")
+        capture("download-card-active", app: app)
+    }
+
     func testPageScreenshotsInBothAppearances() {
         for dark in [false, true] {
             for screen in ["pairing", "home", "drawer", "chat", "status", "settings", "providers", "downloads", "approval"] {

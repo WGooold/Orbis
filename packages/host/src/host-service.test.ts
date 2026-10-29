@@ -1226,6 +1226,43 @@ describe("host end-to-end over relay", () => {
     });
   });
 
+  it("暂停后删除、完成后取消及过期下载的取消不回落到 runtime", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
+    relay = await startRelay(stateDir);
+    host = await HostService.create({
+      relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false,
+    });
+    await host.start();
+    const paired = await pairDevice({ relay, host });
+    device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await device.receiveMessage(); // device.ready
+    await device.receiveMessage(); // device.path
+    const filePath = join(stateDir, "unfinished.bin");
+    await writeFile(filePath, Buffer.from([1, 2, 3, 4]));
+
+    for (const terminal of ["cancelled", "completed"]) {
+      device.sendCommand(paired.payload.hostId, `download-${terminal}`, { type: "file.download", path: filePath });
+      const started = await device.receiveMessage();
+      expect(started).toMatchObject({ type: "runtime.event", event: { type: "artifact.started" } });
+      const transferId = (started.event as Record<string, unknown>).transferId as string;
+      if (terminal === "cancelled") {
+        device.sendCommand(paired.payload.hostId, "pause", { type: "artifact.cancel", transferId });
+      } else {
+        device.sendData(JSON.stringify({ type: "artifact.done", protocolVersion: PROTOCOL_VERSION, transferId }));
+      }
+      device.sendCommand(paired.payload.hostId, `delete-${terminal}`, { type: "artifact.cancel", transferId });
+      device.sendCommand(paired.payload.hostId, `stale-${terminal}`, { type: "artifact.cancel", transferId: "expired-transfer" });
+      // A read response acts as an ordering barrier: no runtime error may precede it.
+      device.sendData(JSON.stringify({ type: "artifact.read", protocolVersion: PROTOCOL_VERSION,
+        transferId, requestId: `read-${terminal}`, offset: 0, length: 4 }));
+      await expect(device.receiveMessage()).resolves.toMatchObject({
+        type: "artifact.read.failed", transferId, requestId: `read-${terminal}`, reason: "unknown_transfer",
+      });
+    }
+  });
+
   it("pull 模式：设备按范围索取，Host 只回被请求的那一段", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);

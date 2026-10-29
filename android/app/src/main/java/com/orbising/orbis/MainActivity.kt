@@ -2304,7 +2304,7 @@ internal fun AllDownloadsScreen(
     val visibleTaskIds = downloads.mapTo(mutableSetOf(), ArtifactDownload::taskId)
     val effectiveSelectedTaskIds = selectedTaskIds.intersect(visibleTaskIds)
     val selectionMode = effectiveSelectedTaskIds.isNotEmpty()
-    BackHandler(onBack = onBack)
+    BackHandler { if (selectionMode) selectedTaskIds = emptySet() else onBack() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -2368,6 +2368,7 @@ internal fun AllDownloadsScreen(
                             task = task,
                             onRetry = { taskId -> onRetry(taskId) },
                             onCancel = onCancel,
+                            connected = state.e2eReady,
                             selected = task.taskId in effectiveSelectedTaskIds,
                             selectionMode = selectionMode,
                             onClick = {
@@ -2404,6 +2405,7 @@ private fun DownloadTaskCard(
     task: ArtifactDownload,
     onRetry: (String) -> Unit,
     onCancel: (String) -> Unit = {},
+    connected: Boolean = true,
     selected: Boolean = false,
     selectionMode: Boolean = false,
     onClick: () -> Unit = {},
@@ -2415,74 +2417,78 @@ private fun DownloadTaskCard(
     // 重试不看 runtime 在不在：文件在电脑磁盘上，Host 会直接读盘发分片（spec §8.1）。
     val canRetry = !active && task.status != "completed" &&
         (task.sourcePath != null || task.sourceArtifactId != null)
+    val actionHint = when {
+        selectionMode || (!active && !canRetry) -> null
+        active -> "轻点暂停"
+        !connected -> "连接电脑后继续"
+        task.status == "failed" -> "轻点重试"
+        else -> "轻点继续"
+    }
     val statusColor = when (task.status) {
         "completed" -> MaterialTheme.colorScheme.tertiary
         "failed" -> MaterialTheme.colorScheme.error
         "paused", "cancelled" -> MaterialTheme.colorScheme.secondary
         else -> MaterialTheme.colorScheme.primary
     }
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-        NeumorphSurface(
-            modifier = Modifier.weight(1f),
-            onClick = { if (selectionMode) onClick() },
-            onLongClick = onLongClick,
-            shape = RemoteUi.CardShape,
-            style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-            contentInset = 16.dp,
-        ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (selectionMode) {
-                        NeumorphCheckbox(
-                            checked = selected,
-                            onCheckedChange = { onClick() },
-                        )
-                    }
-                    Icon(
-                        when (task.status) {
-                            "completed" -> Icons.Rounded.CheckCircle
-                            "failed" -> Icons.Rounded.ErrorOutline
-                            else -> Icons.Rounded.Download
-                        },
-                        contentDescription = null,
-                        tint = statusColor,
+    NeumorphSurface(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = {
+            when {
+                selectionMode -> onClick()
+                active -> onCancel(task.taskId)
+                canRetry && connected -> onRetry(task.taskId)
+            }
+        },
+        onLongClick = onLongClick,
+        shape = RemoteUi.CardShape,
+        style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+        contentInset = 16.dp,
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (selectionMode) {
+                    NeumorphCheckbox(
+                        checked = selected,
+                        onCheckedChange = { onClick() },
                     )
-                    Column(Modifier.weight(1f)) {
-                        FileNameText(task.displayName, fontWeight = FontWeight.SemiBold)
-                        Text(downloadStatusText(task), style = MaterialTheme.typography.bodySmall, color = statusColor)
-                    }
                 }
-                if (active || task.status == "paused" || task.status == "failed") {
-                    if (progress == null) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    else LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                }
-                val source = task.sourcePath
-                if (source != null) {
-                    Text(source, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                }
-                task.savedLocation?.let { location ->
+                Icon(
+                    when (task.status) {
+                        "completed" -> Icons.Rounded.CheckCircle
+                        "failed" -> Icons.Rounded.ErrorOutline
+                        else -> Icons.Rounded.Download
+                    },
+                    contentDescription = null,
+                    tint = statusColor,
+                )
+                Column(Modifier.weight(1f)) {
+                    FileNameText(task.displayName, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "保存到：${savedLocationText(task, location)}",
+                        listOfNotNull(downloadStatusText(task), actionHint).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = statusColor,
                     )
-                }
-                task.error?.let { error ->
-                    if (task.status == "failed" || task.status == "paused") {
-                        Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                    }
                 }
             }
-        }
-        // Keep the slot even after completion: status changes do not reflow the file name.
-        Box(Modifier.size(RemoteUi.TouchTarget), contentAlignment = Alignment.Center) {
-            if (active) {
-                NeumorphIconButton(onClick = { onCancel(task.taskId) }, icon = Icons.Rounded.StopCircle,
-                    contentDescription = "取消下载", compact = true)
-            } else if (canRetry) {
-                NeumorphIconButton(onClick = { onRetry(task.taskId) }, icon = Icons.Rounded.Refresh,
-                    contentDescription = "继续下载", compact = true)
+            if (active || task.status in setOf("paused", "cancelled", "failed")) {
+                if (progress == null && active) LinearProgressIndicator(Modifier.fillMaxWidth())
+                else LinearProgressIndicator(progress = { progress ?: 0f }, modifier = Modifier.fillMaxWidth(), color = statusColor)
+            }
+            val source = task.sourcePath
+            if (source != null) {
+                Text(source, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            task.savedLocation?.let { location ->
+                Text(
+                    "保存到：${savedLocationText(task, location)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            task.error?.let { error ->
+                if (task.status == "failed" || task.status == "paused") {
+                    Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }
@@ -2498,7 +2504,8 @@ private fun downloadStatusText(task: ArtifactDownload): String = when (task.stat
     } ?: "正在下载"
     "completed" -> "下载完成"
     "paused" -> "已暂停，${formatByteCount(task.receivedBytes)}"
-    "cancelled" -> "已取消，${formatByteCount(task.receivedBytes)}"
+    // User-stopped transfers keep their partial file and only resume on an explicit tap.
+    "cancelled" -> "已暂停，${formatByteCount(task.receivedBytes)}"
     "failed" -> "下载失败，${formatByteCount(task.receivedBytes)}"
     else -> task.status
 }

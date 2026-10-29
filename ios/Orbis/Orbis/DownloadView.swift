@@ -31,7 +31,7 @@ struct DownloadsView: View {
                 ScrollView {
                     LazyVStack(spacing: 18) {
                         ForEach(downloads) { task in
-                            transferCard(task).onLongPressGesture { selected.insert(task.id) }
+                            transferCard(task)
                         }
                     }.padding(24)
                 }
@@ -50,51 +50,66 @@ struct DownloadsView: View {
         ])
     }
 
-    /// Keep the progress card and its action side by side. The action slot has a fixed
-    /// size across states, so a transfer update never changes the available text width.
+    @ViewBuilder
     private func transferCard(_ task: FileTransfer) -> some View {
+        Group {
+            if selected.isEmpty, task.status == "completed", let path = task.localPath {
+                ShareLink(item: URL(fileURLWithPath: path)) { transferCardContent(task) }
+            } else {
+                Button {
+                    if !selected.isEmpty {
+                        if !selected.insert(task.id).inserted { selected.remove(task.id) }
+                    } else if ["queued", "downloading", "verifying"].contains(task.status) {
+                        // Cancellation preserves the partial file and prevents automatic resumption.
+                        transfers.cancel(task.id)
+                    } else if task.status != "completed", store.connection == .secured {
+                        transfers.restart(task.id)
+                    }
+                } label: { transferCardContent(task) }
+            }
+        }
+        .buttonStyle(NeuButtonStyle(selected: selected.contains(task.id), radius: OrbisRadius.card))
+        .highPriorityGesture(LongPressGesture().onEnded { _ in selected.insert(task.id) })
+        .accessibilityIdentifier("download-card-\(task.id)")
+        .accessibilityHint(selected.isEmpty ? "长按进入多选" : "轻点切换选择")
+        .accessibilityAction(named: "选择下载") { selected.insert(task.id) }
+    }
+
+    private func transferCardContent(_ task: FileTransfer) -> some View {
         let p = OrbisPalette(scheme)
         let failed = task.status == "failed"
         let active = ["queued", "downloading", "verifying"].contains(task.status)
-        return HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 10) {
-                    ZStack {
-                        if selected.isEmpty { Image(systemName: "doc").font(.system(size: 22)).foregroundStyle(p.accent) }
-                        else {
-                            OrbisCheckbox(checked: selected.contains(task.id), label: "选择 \(task.name)") {
-                                if !selected.insert(task.id).inserted { selected.remove(task.id) }
-                            }
-                        }
-                    }.frame(width: 44, height: 44)
-                    VStack(alignment: .leading, spacing: 4) {
-                        FileNameText(name: task.name).font(.orbisBody(.semibold))
-                        HStack(spacing: 8) {
-                            Text(task.error ?? transferStatusTitle(task.status)).lineLimit(1)
-                            Spacer(minLength: 4)
-                            Text("\(byteCount(task.received)) / \(byteCount(task.size))").fixedSize()
-                        }.font(.orbisCaption()).foregroundStyle(failed ? p.error : p.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }
+        let stopped = ["paused", "cancelled"].contains(task.status)
+        let actionHint: String = {
+            if !selected.isEmpty { return selected.contains(task.id) ? "已选择" : "轻点选择" }
+            if active { return "轻点暂停" }
+            if task.status == "completed" { return task.localPath == nil ? "" : "轻点分享" }
+            if store.connection != .secured { return "连接电脑后继续" }
+            return failed ? "轻点重试" : "轻点继续"
+        }()
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: selected.isEmpty ? "doc" : selected.contains(task.id) ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 22)).foregroundStyle(p.accent)
+                    .frame(width: 44, height: 44).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    FileNameText(name: task.name).font(.orbisBody(.semibold)).foregroundStyle(p.text)
+                    Text(task.status == "cancelled" ? "已暂停" : task.error ?? transferStatusTitle(task.status))
+                        .font(.orbisCaption()).foregroundStyle(failed ? p.error : p.secondary).lineLimit(2)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            VStack(spacing: 8) {
                 ProgressView(value: min(Double(max(task.size, 1)), Double(task.received)), total: Double(max(task.size, 1)))
-                    .tint(failed ? p.error : task.status == "completed" ? p.success : p.accent)
+                    .tint(failed ? p.error : task.status == "completed" ? p.success : stopped ? p.secondary : p.accent)
                     .accessibilityHidden(true)
-            }.frame(maxWidth: .infinity, alignment: .leading)
-                .neuSurface(inset: selected.contains(task.id), radius: OrbisRadius.card, padding: 16)
-            Group {
-                if task.status == "completed", let path = task.localPath {
-                    ShareLink(item: URL(fileURLWithPath: path)) {
-                        Image(systemName: "square.and.arrow.up").font(.system(size: 18, weight: .medium)).foregroundStyle(p.accent)
-                            .frame(width: 36, height: 36)
-                    }.buttonStyle(NeuIconButtonStyle(selected: false, size: 36, compact: true)).accessibilityLabel("打开或分享")
-                } else if active {
-                    OrbisIconButton(symbol: "xmark", label: "取消下载", compact: true) { transfers.cancel(task.id) }
-                } else {
-                    OrbisIconButton(symbol: "arrow.clockwise", label: task.status == "paused" ? "继续下载" : "重试", tint: p.accent, compact: true) { transfers.restart(task.id) }
-                        .disabled(store.connection != .secured)
+                HStack(spacing: 8) {
+                    Text("\(byteCount(task.received)) / \(byteCount(task.size))")
+                    Spacer(minLength: 0)
+                    Text(actionHint)
                 }
-            }.frame(width: 48, height: 48)
-        }
+                .font(.orbisCaption()).foregroundStyle(p.secondary)
+            }
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

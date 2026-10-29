@@ -2087,6 +2087,9 @@ class RelayReducer(
                 if (message.string("code") in P2P_FALLBACK_ERROR_CODES) return state
                 val commandId = message.string("commandId")
                 if (commandId?.startsWith("session-sync-ack:") == true) return state
+                // Older Hosts route an already-ended download's cancellation to a runtime.
+                // Local pause/deletion is complete; only this misrouted cancellation is harmless.
+                if (commandId?.startsWith("artifact-cancel:") == true && message.string("code") == "runtime_offline") return state
                 val requestId = message.string("requestId")
                 val syncError = protocolErrorText(message.string("code"), message.string("message"))
                 // 先按 requestId 归位进程激活类请求（spec §8：错误带回 requestId）。
