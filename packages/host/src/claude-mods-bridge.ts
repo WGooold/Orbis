@@ -18,6 +18,7 @@ import {
 import { ClaudeSessionHistory } from "./claude-session-history.js";
 import { claudeConfigDir, type ClaudeTranscriptFacts } from "./claude-transcript.js";
 import { localHostname } from "./sessions.js";
+import { LocalClaudeProcessControl, type ClaudeProcessControl, type ClaudeProcessIdentity } from "./claude-process.js";
 
 /** The bridge contract is deliberately independent of the TUI's internal API. */
 export const CLAUDE_BRIDGE_VERSION = "1";
@@ -42,6 +43,7 @@ export type ClaudeModsHello = {
   configDir?: string;
   /** Set when the Host opened this TUI for a phone (`ORBIS_CLAUDE_LAUNCH_ID`). */
   launchId?: string;
+  processId?: number;
 };
 
 export type ClaudeModsCommand =
@@ -89,6 +91,8 @@ export type ClaudeModsPoll = {
 export type ClaudeModsCommandResult = "accepted" | "offline" | "queue_full" | "id_conflict" | "not_cancelable";
 
 type Session = {
+  process?: ClaudeProcessIdentity;
+  closing?: Promise<void>;
   runtime: RuntimeMetadata;
   instanceId: string;
   claudeVersion: string;
@@ -117,6 +121,7 @@ type Session = {
 };
 
 export type ClaudeModsBridgeOptions = {
+  processControl?: ClaudeProcessControl;
   minClaudeVersion?: string;
   requiredCapabilities?: readonly ClaudeBridgeCapability[];
   onRuntimeOnline?: (runtime: RuntimeMetadata) => void;
@@ -152,8 +157,12 @@ export class ClaudeModsBridge {
   readonly #sessions = new Map<string, Session>();
   readonly #launches = new Map<string, { resolve: (runtime: RuntimeMetadata) => void; timer: ReturnType<typeof setTimeout> }>();
   #toolStore: ToolContentStore | undefined;
+  readonly #processControl: ClaudeProcessControl;
 
-  constructor(options: ClaudeModsBridgeOptions = {}) { this.#options = options; }
+  constructor(options: ClaudeModsBridgeOptions = {}) {
+    this.#options = options;
+    this.#processControl = options.processControl ?? new LocalClaudeProcessControl();
+  }
 
   runtimeIds(): readonly string[] { return [...this.#sessions.keys()]; }
   isOnline(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
@@ -162,7 +171,7 @@ export class ClaudeModsBridge {
   configDirs(): string[] { return [...new Set([...this.#sessions.values()].map(session => session.history.configDir))]; }
   capabilities(runtimeId: string): RuntimeCapabilities | undefined {
     const session = this.#sessions.get(runtimeId);
-    return session === undefined ? undefined : claudeCapabilities(session.state);
+    return session === undefined ? undefined : claudeCapabilities(session.state, session.process !== undefined);
   }
   hasCommand(runtimeId: string, name: string): boolean {
     return this.capabilities(runtimeId)?.commands.some(command => command.name === name) ?? false;
@@ -242,6 +251,13 @@ export class ClaudeModsBridge {
       lastSeenAt: Date.now(), history, state: {}, facts: {}, compaction: "idle", published: { metadata: "", capabilities: "" },
     };
     this.#sessions.set(runtimeId, session);
+    if (parsed.processId !== undefined) {
+      void this.#processControl.capture(parsed.processId).then(identity => {
+        if (identity === undefined || this.#sessions.get(runtimeId) !== session) return;
+        session.process = identity;
+        this.#publishCapabilities(runtimeId, session);
+      }).catch(() => undefined);
+    }
     session.runtime = this.#metadata(session);
     session.published.metadata = JSON.stringify(session.runtime);
     this.#options.onRuntimeOnline?.(session.runtime);
@@ -384,6 +400,15 @@ export class ClaudeModsBridge {
 
   generationOf(runtimeId: string): string | undefined { return this.#sessions.get(runtimeId)?.generation; }
 
+  /** Host-owned /quit: keep the row online until the exact native process has exited. */
+  async quit(runtimeId: string): Promise<void> {
+    const session = this.#sessions.get(runtimeId);
+    if (session?.process === undefined) throw new Error("无法核对 Claude Code 进程，请更新插件并重新打开会话。");
+    session.closing ??= this.#processControl.terminate(session.process, () => this.#sessions.get(runtimeId) === session);
+    try { await session.closing; }
+    catch (error) { delete session.closing; throw error; }
+  }
+
   expireStale(now = Date.now(), leaseMs = 15_000): number {
     let expired = 0;
     for (const [runtimeId, session] of this.#sessions) {
@@ -405,7 +430,7 @@ export class ClaudeModsBridge {
     const session = this.#sessions.get(runtimeId);
     if (session === undefined) return;
     this.#options.onEvent?.(runtimeId, { type: "runtime.metadata", metadata: session.runtime });
-    this.#options.onEvent?.(runtimeId, { type: "runtime.capabilities", capabilities: claudeCapabilities(session.state) });
+    this.#options.onEvent?.(runtimeId, { type: "runtime.capabilities", capabilities: claudeCapabilities(session.state, session.process !== undefined) });
   }
 
   /**
@@ -452,7 +477,7 @@ export class ClaudeModsBridge {
   }
 
   #publishCapabilities(runtimeId: string, session: Session): void {
-    const capabilities = claudeCapabilities(session.state);
+    const capabilities = claudeCapabilities(session.state, session.process !== undefined);
     const encoded = JSON.stringify(capabilities);
     if (encoded === session.published.capabilities) return;
     session.published.capabilities = encoded;
@@ -486,8 +511,8 @@ const HIDDEN_BUILTINS = new Set([
 const SOURCES: Record<string, RuntimeSlashCommand["source"]> = { builtin: "builtin", plugin: "extension", user: "prompt", mcp: "mcp" };
 
 /** The slash menu the phone can use: model and effort as choices, then what runs headless. */
-export function claudeCapabilities(state: ClaudeSessionState): RuntimeCapabilities {
-  const commands: RuntimeSlashCommand[] = [];
+export function claudeCapabilities(state: ClaudeSessionState, canQuit = false): RuntimeCapabilities {
+  const commands: RuntimeSlashCommand[] = canQuit ? [{ name: "quit", description: "关闭这个 Claude Code 会话（保留历史）", source: "builtin" }] : [];
   const models = (state.modelOptions ?? []).filter(option => text(option, 256));
   if (models.length > 0) {
     commands.push({ name: "model", description: `切换模型${state.modelName === undefined ? "" : `（当前 ${state.modelName}）`}`, source: "builtin",
@@ -497,7 +522,7 @@ export function claudeCapabilities(state: ClaudeSessionState): RuntimeCapabiliti
   commands.push({ name: "effort", description: `设置思考强度${state.effort === undefined ? "" : `（当前 ${state.effort}）`}`, source: "builtin",
     argument: { kind: "select", required: true, options: CLAUDE_EFFORT_LEVELS.map(level => ({ value: level, label: level })) } });
   for (const command of state.commands ?? []) {
-    if (command.name === "model" || command.name === "effort" || command.name.startsWith("orbis-")) continue;
+    if (command.name === "quit" || command.name === "model" || command.name === "effort" || command.name.startsWith("orbis-")) continue;
     if (command.source === "builtin" && HIDDEN_BUILTINS.has(command.name)) continue;
     if (!/^[^\s/]{1,256}$/u.test(command.name) || commands.some(item => item.name === command.name)) continue;
     commands.push({ name: command.name, ...(command.description ? { description: command.description.slice(0, 4_000) } : {}),
@@ -535,9 +560,11 @@ function parseHello(value: unknown): ClaudeModsHello | undefined {
       !validVersion(value.claudeVersion) || value.capabilities.length > 64 || !value.capabilities.every(item => typeof item === "string" && text(item, 128))) return undefined;
   if (value.configDir !== undefined && !text(value.configDir, 4096)) return undefined;
   if (value.launchId !== undefined && !text(value.launchId, 128)) return undefined;
+  if (value.processId !== undefined && (typeof value.processId !== "number" || !Number.isSafeInteger(value.processId) || value.processId <= 1)) return undefined;
   return { type: "hello", sessionId: value.sessionId, instanceId: value.instanceId, cwd: value.cwd, claudeVersion: value.claudeVersion,
     bridgeVersion: value.bridgeVersion, capabilities: value.capabilities, ...(value.configDir === undefined ? {} : { configDir: value.configDir }),
-    ...(value.launchId === undefined ? {} : { launchId: value.launchId }) };
+    ...(value.launchId === undefined ? {} : { launchId: value.launchId }),
+    ...(value.processId === undefined ? {} : { processId: value.processId as number }) };
 }
 
 function parseState(value: unknown): ClaudeSessionState | undefined {

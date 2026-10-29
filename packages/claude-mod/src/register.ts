@@ -189,8 +189,13 @@ async function connectOnce($: Api): Promise<Connection | undefined> {
   const cwd = await $.session.cwd();
   const configDir = await $.env.get("CLAUDE_CONFIG_DIR");
   const launchId = await $.env.get("ORBIS_CLAUDE_LAUNCH_ID");
+  // process.run uses argv without a shell, so this child's parent is the native TUI.
+  // A missing Node helper only disables remote close; the bridge still connects.
+  const processId = await $.process.run(["node", "-e", "process.stdout.write(String(process.ppid))"], { timeoutMs: 3000 })
+    .then(result => result.exitCode === 0 ? Number(result.stdout.trim()) : undefined, () => undefined);
   const response = await request<HelloReply>($, "/v1/claude/mods/hello", {
     type: "hello", instanceId: INSTANCE_ID, sessionId, cwd,
+    ...(Number.isSafeInteger(processId) && processId! > 1 ? { processId } : {}),
     ...(configDir === undefined || configDir.length === 0 ? {} : { configDir }),
     ...(launchId === undefined || launchId.length === 0 ? {} : { launchId }),
     claudeVersion: version.version, bridgeVersion: "1",

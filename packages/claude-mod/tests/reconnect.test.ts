@@ -20,6 +20,10 @@ function setup(on: On) {
   on("session.id", () => ({ value: "same-native-session" }));
   on("session.version", () => ({ value: { version: "2.1.312", base: "2.1.312", builtAt: "2026-10-29" } }));
   on("session.cwd", () => ({ value: "/workspace" }));
+  on("process.run", (_$, event) => {
+    expect(event.argv).toEqual(["node", "-e", "process.stdout.write(String(process.ppid))"]);
+    return { value: { exitCode: 0, stdout: "4242", stderr: "", isStdoutTruncated: false, isStderrTruncated: false } };
+  });
   on("session.model", () => ({ value: "test-model" }));
   on("session.usage", () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [] } }));
   on("command.register", (_$, event) => ({ value: { command: event.name } }));
@@ -59,6 +63,7 @@ test("rediscovers a restarted Host without restarting the native Claude session"
   await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
   await clock.settle();
   expect(hellos()).toHaveLength(1);
+  expect(hellos()[0]?.body.processId).toBe(4242);
 
   world.reachable = false;
   await clock.advance(1500);

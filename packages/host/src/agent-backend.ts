@@ -288,6 +288,21 @@ export class ClaudeBackend implements AgentBackend {
     if (command.type === "slash.execute") {
       if (!this.#options.modsBridge.isOnline(runtimeId)) return "unsupported";
       if (!this.#options.modsBridge.hasCommand(runtimeId, command.name)) return "unsupported";
+      if (command.name === "quit") {
+        if (command.args.trim()) return "unsupported";
+        const generation = this.#options.modsBridge.generationOf(runtimeId);
+        this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: true, status: "pending" });
+        void this.#options.modsBridge.quit(runtimeId).then(() => {
+          this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: true, status: "success" });
+          if (this.#options.modsBridge.generationOf(runtimeId) !== generation) return;
+          this.#options.bridge.cancelRuntime(runtimeId, "owner_closed");
+          this.#options.modsBridge.disconnect(runtimeId, generation, "closed_by_phone");
+        }, error => {
+          this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: false, status: "failure",
+            error: error instanceof Error ? error.message : "Claude Code 关闭失败" });
+        });
+        return "handled";
+      }
       const result = this.#options.modsBridge.sendCommand(runtimeId, commandId, { type: "slash", name: command.name, args: command.args });
       return this.#reportModsCommandResult(runtimeId, commandId, result);
     }

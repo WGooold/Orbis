@@ -1164,6 +1164,26 @@ internal class HostConnection(
         return commandId
     }
 
+    /** Home selections are routed explicitly, without opening a chat or changing its draft. */
+    fun closeRuntimes(runtimeIds: Set<String>): Set<String> {
+        val state = mutableState.value
+        if (!state.e2eReady) {
+            updateState { it.copy(error = "关闭会话未发送：请先连接电脑。") }
+            return emptySet()
+        }
+        return runtimeIds.filterTo(mutableSetOf()) { runtimeId ->
+            if (runtimeId !in state.runtimes) return@filterTo false
+            if (state.capabilities[runtimeId]?.commands?.any { it.name == "quit" && it.argument?.required != true } != true) {
+                refreshAgentModel(runtimeId, force = true)
+                updateState { it.copy(error = "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。") }
+                return@filterTo false
+            }
+            val commandId = relay.executeSlashCommand(runtimeId, "quit", "")
+            trackCommand(commandId, runtimeId, "关闭会话未发送：请连接电脑后重试。")
+            commandId != null
+        }
+    }
+
     fun updatePermissions(settingId: String, value: String): String? {
         val runtimeId = mutableState.value.selectedRuntimeId ?: return null
         if (mutableState.value.runtimes[runtimeId]?.domainAvailability?.get("permissions") != "ready") {

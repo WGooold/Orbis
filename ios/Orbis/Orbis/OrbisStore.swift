@@ -923,6 +923,25 @@ final class HostConnection: ObservableObject {
         return performAction(runtimeId: runtime.runtimeId, name: name, command: ["type": "slash.execute", "name": name, "args": args])
     }
 
+    /// Close a home-list selection without changing the active conversation or its draft.
+    func closeRuntimes(_ runtimeIds: Set<String>) -> Set<String> {
+        guard connection == .secured else {
+            errorMessage = "关闭会话未发送：请先连接电脑。"; return []
+        }
+        var submitted: Set<String> = []
+        for runtime in runtimes where runtimeIds.contains(runtime.runtimeId) {
+            guard commands[runtime.runtimeId]?.contains(where: { $0.name == "quit" && $0.argument?.required != true }) == true else {
+                agentState.subscribe(runtime: runtime, force: true)
+                errorMessage = "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。"
+                continue
+            }
+            if performAction(runtimeId: runtime.runtimeId, name: "quit", command: ["type": "slash.execute", "name": "quit", "args": ""]) {
+                submitted.insert(runtime.runtimeId)
+            }
+        }
+        return submitted
+    }
+
     func updatePermission(settingId: String, value: String) {
         guard canSend, let runtime = selectedRuntime, runtime.status == "idle", (interactions[runtime.runtimeId] ?? []).isEmpty, pendingActionIds.isEmpty,
               let setting = runtime.permissionManagement?.settings.first(where: { $0.id == settingId }),

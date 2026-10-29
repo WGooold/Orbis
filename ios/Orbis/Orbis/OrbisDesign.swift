@@ -275,6 +275,12 @@ struct OrbisCollapse<Content: View>: View {
 @MainActor
 enum OrbisHaptics {
     private static let impact = UIImpactFeedbackGenerator(style: .light)
+    private static let selection = UISelectionFeedbackGenerator()
+
+    static func beginSelection() {
+        selection.selectionChanged()
+        selection.prepare()
+    }
 
     static func commit() {
         impact.impactOccurred(intensity: 0.65)

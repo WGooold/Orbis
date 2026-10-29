@@ -78,10 +78,16 @@ private final class PreviewTransport: OrbisTransport {
             ], "agents": ["pi", "codex", "dsh"], "launchableAgents": ["pi", "codex", "dsh"]], "ctl")
             receive(["type": "device.path", "path": "relay", "rttMs": 42], "ctl")
             self.event(["type": "runtime.capabilities", "capabilities": ["commands": [
+                ["name": "quit", "source": "builtin", "description": "关闭会话"],
                 ["name": "model", "source": "builtin", "description": "切换当前模型", "argument": ["kind": "select", "required": true, "options": [["value": "model-a", "label": "默认模型"]]]],
                 ["name": "compact", "source": "builtin", "description": "压缩会话上下文"],
                 ["name": "tree", "source": "builtin", "description": "历史与分支", "argument": ["kind": "tree", "required": true, "options": self.treeOptions]]
             ]]])
+            for runtime in ["preview-pi", "preview-dsh"] {
+                self.event(["type": "runtime.capabilities", "capabilities": ["commands": [
+                    ["name": "quit", "source": "builtin", "description": "关闭会话"]
+                ]]], runtimeId: runtime)
+            }
         }
     }
     func event(_ event: [String: Any], runtimeId: String = "preview-codex") {
@@ -206,6 +212,9 @@ private final class PreviewTransport: OrbisTransport {
                 event(["type": "message.finished", "message": message(command["messageId"] as? String ?? UUID().uuidString, role: "user", text: text)], runtimeId: runtime)
             } else if type == "slash.execute" {
                 event(["type": "command.result", "commandId": object["commandId"]!, "ok": true], runtimeId: runtime)
+                if command["name"] as? String == "quit" {
+                    receive?(["type": "runtime.offline", "runtimeId": runtime], "ctl")
+                }
             }
         }
     }

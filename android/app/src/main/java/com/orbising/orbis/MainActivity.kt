@@ -50,6 +50,9 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Lock
@@ -291,9 +294,7 @@ private fun RemoteApp(
                     allDownloadsOpen = false
                     model.openRuntime(hostId, runtimeId)
                 },
-                setSessionAlias = { hostId, runtimeId, alias ->
-                    model.setSessionAliasOn(hostId, runtimeId, alias)
-                },
+                onCloseRuntimes = model::closeRuntimesOn,
                 onOpenDownloads = { allDownloadsOpen = true },
                 onUnpairHost = { hostId -> model.unpair(hostId) },
                 onOpenSession = { hostId, sessionId ->
@@ -504,11 +505,11 @@ private fun PairingScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RuntimeListScreen(
+internal fun RuntimeListScreen(
     state: RemoteState,
     hosts: List<HostSnapshot>,
     onOpenRuntime: (String, String) -> Unit,
-    setSessionAlias: (String, String, String) -> Unit,
+    onCloseRuntimes: (String, Set<String>) -> Set<String>,
     onOpenDownloads: () -> Unit,
     onUnpairHost: (String) -> Unit,
     onOpenSession: (String, String) -> Unit,
@@ -525,6 +526,8 @@ private fun RuntimeListScreen(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val activeHostId = state.hostId
+    val haptic = LocalHapticFeedback.current
+    var selectedRuntimeIds by remember(activeHostId) { mutableStateOf(emptySet<String>()) }
     // 主页只列当前电脑的会话：多台电脑不混在一张列表里，切换入口就在下面的电脑行（ADR-0030 修订）。
     val visibleRuntimes = remember(hosts, activeHostId) {
         // 按中文拼音排序，与 iOS 的 localizedStandardCompare 一致。
@@ -535,8 +538,17 @@ private fun RuntimeListScreen(
                 .map { HostRuntimeRow(snapshot.hostId, snapshot.name, it, snapshot.state) }
         }
     }
+    val visibleIds = visibleRuntimes.map { it.runtime.runtimeId }.toSet()
+    val selectedIds = selectedRuntimeIds.intersect(visibleIds)
+    val selecting = selectedIds.isNotEmpty()
+    LaunchedEffect(visibleIds) { selectedRuntimeIds = selectedRuntimeIds.intersect(visibleIds) }
+    fun toggleSelection(id: String) {
+        selectedRuntimeIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+    }
+    BackHandler(enabled = selecting && drawerState.isClosed) { selectedRuntimeIds = emptySet() }
     ModalNavigationDrawer(
         drawerState = drawerState,
+        gesturesEnabled = !selecting,
         drawerContent = {
             SessionDrawer(
                 state = state,
@@ -564,16 +576,18 @@ private fun RuntimeListScreen(
             containerColor = MaterialTheme.colorScheme.background,
             topBar = {
                 TopAppBar(
-                navigationIcon = {
-                    NeumorphIconButton(
-                        onClick = { scope.launch { drawerState.open() } },
-                        icon = Icons.Rounded.Menu,
-                        contentDescription = "打开会话目录",
-                        size = 40.dp,
-                    )
-                },
+                    navigationIcon = {
+                        NeumorphIconButton(
+                            onClick = { if (selecting) selectedRuntimeIds = emptySet() else scope.launch { drawerState.open() } },
+                            icon = if (selecting) Icons.Rounded.Close else Icons.Rounded.Menu,
+                            contentDescription = if (selecting) "退出多选" else "打开会话目录",
+                            size = 40.dp,
+                        )
+                    },
                     title = {
-                        Column {
+                        if (selecting) {
+                            Text("已选择 ${selectedIds.size} 项", style = MaterialTheme.typography.titleLarge)
+                        } else Column {
                             OrbisWordmark()
                             Text(
                                 "Easy Agents EveryWhere",
@@ -592,33 +606,47 @@ private fun RuntimeListScreen(
                         }
                     },
                     actions = {
-                        DownloadStatusButton(
-                            activeCount = state.downloads.count { it.value.status in setOf("queued", "downloading") },
-                            enabled = true,
-                            onClick = onOpenDownloads,
-                        )
-                        Box {
-                            NeumorphIconButton(
-                                onClick = { moreMenuOpen = true },
-                                icon = Icons.Rounded.MoreVert,
-                                contentDescription = "更多操作",
+                        if (selecting) {
+                            NeumorphTextButton(
+                                text = "关闭",
+                                onClick = {
+                                    activeHostId?.let { hostId ->
+                                        selectedRuntimeIds = selectedIds - onCloseRuntimes(hostId, selectedIds)
+                                    }
+                                },
+                                enabled = state.e2eReady,
+                                danger = true,
+                                modifier = Modifier.semantics { contentDescription = "关闭选中会话" },
                             )
-                            DropdownMenu(expanded = moreMenuOpen, onDismissRequest = { moreMenuOpen = false }) {
-                                DropdownMenuItem(
-                                    text = { Text("连接状态") },
-                                    leadingIcon = { Icon(Icons.Rounded.Info, contentDescription = null) },
-                                    onClick = { moreMenuOpen = false; onOpenStatus() },
+                        } else {
+                            DownloadStatusButton(
+                                activeCount = state.downloads.count { it.value.status in setOf("queued", "downloading") },
+                                enabled = true,
+                                onClick = onOpenDownloads,
+                            )
+                            Box {
+                                NeumorphIconButton(
+                                    onClick = { moreMenuOpen = true },
+                                    icon = Icons.Rounded.MoreVert,
+                                    contentDescription = "更多操作",
                                 )
-                                DropdownMenuItem(
-                                    text = { Text("添加电脑") },
-                                    leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null) },
-                                    onClick = { moreMenuOpen = false; onAddHost() },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("取消配对当前电脑", color = MaterialTheme.colorScheme.error) },
-                                    leadingIcon = { Icon(Icons.Rounded.LinkOff, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                                    onClick = { moreMenuOpen = false; activeHostId?.let(onUnpairHost) },
-                                )
+                                DropdownMenu(expanded = moreMenuOpen, onDismissRequest = { moreMenuOpen = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text("连接状态") },
+                                        leadingIcon = { Icon(Icons.Rounded.Info, contentDescription = null) },
+                                        onClick = { moreMenuOpen = false; onOpenStatus() },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("添加电脑") },
+                                        leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null) },
+                                        onClick = { moreMenuOpen = false; onAddHost() },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("取消配对当前电脑", color = MaterialTheme.colorScheme.error) },
+                                        leadingIcon = { Icon(Icons.Rounded.LinkOff, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                        onClick = { moreMenuOpen = false; activeHostId?.let(onUnpairHost) },
+                                    )
+                                }
                             }
                         }
                     },
@@ -669,10 +697,19 @@ private fun RuntimeListScreen(
                                 horizontalArrangement = Arrangement.spacedBy(0.dp),
                             ) {
                                 NeumorphSurface(
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier.weight(1f).testTag("home-runtime-${runtime.runtimeId}")
+                                        .semantics { selected = runtime.runtimeId in selectedIds },
                                     shape = RoundedCornerShape(20.dp),
                                     shadowScale = 0.8f,
-                                    onClick = { onOpenRuntime(row.hostId, runtime.runtimeId) },
+                                    style = if (runtime.runtimeId in selectedIds) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                                    onClick = {
+                                        if (selecting) toggleSelection(runtime.runtimeId)
+                                        else onOpenRuntime(row.hostId, runtime.runtimeId)
+                                    },
+                                    onLongClick = {
+                                        if (!selecting) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        selectedRuntimeIds = selectedIds + runtime.runtimeId
+                                    },
                                     contentInset = 16.dp,
                                 ) {
                                     Row(
@@ -711,13 +748,13 @@ private fun RuntimeListScreen(
                                         }
                                     }
                                 }
-                                NeumorphIconButton(
-                                    onClick = { aliasEditor = row.hostId to runtime },
-                                    icon = Icons.Rounded.Edit,
-                                    contentDescription = "修改会话别名",
-                                    compact = true,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                                if (selecting) {
+                                    NeumorphCheckbox(
+                                        checked = runtime.runtimeId in selectedIds,
+                                        onCheckedChange = { toggleSelection(runtime.runtimeId) },
+                                        modifier = Modifier.semantics { contentDescription = "选择会话 ${state.runtimeDisplayName(runtime)}" },
+                                    )
+                                }
                             }
                         }
                     }

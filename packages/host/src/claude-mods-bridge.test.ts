@@ -24,6 +24,35 @@ function online(bridge: ClaudeModsBridge, input: unknown = hello()) {
 }
 
 describe("ClaudeModsBridge", () => {
+  it("advertises Host-owned quit only after process identity is verified and shares concurrent closes", async () => {
+    let finish!: () => void;
+    const stopped = new Promise<void>(resolve => { finish = resolve; });
+    const identity = { pid: 4242, started: "start-1", executable: "claude", command: "claude" };
+    const terminate = vi.fn(() => stopped);
+    const bridge = bridgeWith({ processControl: { capture: async () => identity, terminate } });
+    const current = online(bridge, hello({ processId: 4242 }));
+    expect(bridge.hasCommand(current.runtimeId, "quit")).toBe(false);
+    await Promise.resolve();
+    expect(bridge.hasCommand(current.runtimeId, "quit")).toBe(true);
+    const first = bridge.quit(current.runtimeId), duplicate = bridge.quit(current.runtimeId);
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(bridge.isOnline(current.runtimeId)).toBe(true);
+    finish(); await Promise.all([first, duplicate]);
+    bridge.close();
+  });
+
+  it("does not publish a delayed process identity into a replacement generation", async () => {
+    let finish!: (value: { pid: number; started: string; executable: string; command: string }) => void;
+    const capture = new Promise<{ pid: number; started: string; executable: string; command: string }>(resolve => { finish = resolve; });
+    const bridge = bridgeWith({ processControl: { capture: () => capture, terminate: vi.fn() } });
+    const current = online(bridge, hello({ processId: 4242 }));
+    online(bridge, hello());
+    finish({ pid: 4242, started: "old", executable: "claude", command: "claude" });
+    await Promise.resolve();
+    expect(bridge.hasCommand(current.runtimeId, "quit")).toBe(false);
+    await expect(bridge.quit(current.runtimeId)).rejects.toThrow("无法核对");
+    bridge.close();
+  });
   it("validates the Claude version and every required native capability", () => {
     const bridge = bridgeWith();
     expect(bridge.hello(hello({ claudeVersion: "2.1.286" }))).toEqual({ ok: false, error: "claude_version_too_old:2.1.287" });

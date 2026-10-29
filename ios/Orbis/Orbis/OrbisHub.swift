@@ -228,6 +228,9 @@ final class OrbisStore: ObservableObject {
     func browseDirectory(_ path: String? = nil) { activeConnection.browseDirectory(path) }
     func dismissBrowse() { activeConnection.dismissBrowse() }
     func executeSlash(_ name: String, args: String = "") -> Bool { activeConnection.executeSlash(name, args: args) }
+    func closeRuntimes(hostId: String, runtimeIds: Set<String>) -> Set<String> {
+        connections[hostId]?.closeRuntimes(runtimeIds) ?? []
+    }
     func updatePermission(settingId: String, value: String) { activeConnection.updatePermission(settingId: settingId, value: value) }
     func sendMessage(_ text: String, delivery: String? = nil, attachmentIds: Set<String> = []) -> Bool { activeConnection.sendMessage(text, delivery: delivery, attachmentIds: attachmentIds) }
     func cancelQueuedMessage(_ queueId: String) -> Bool { activeConnection.cancelQueuedMessage(queueId) }

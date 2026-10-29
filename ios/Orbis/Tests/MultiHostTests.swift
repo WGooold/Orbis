@@ -80,6 +80,33 @@ private final class MultiHostFixture {
 
 @Suite("Independent always-on Hosts") @MainActor
 struct MultiHostTests {
+    @Test func closingSelectedRuntimesUsesTheirHostWithoutChangingTheActiveChat() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        let first = try #require(fixture.transports["host-1"])
+        let second = try #require(fixture.transports["host-2"])
+        await first.emit(["type": "runtime.online", "runtime": [
+            "runtimeId": "other-runtime", "name": "Other", "cwd": "/other", "status": "running", "sessionId": "other-session"
+        ]])
+        for id in ["shared-runtime", "other-runtime"] {
+            await first.emit(["type": "runtime.event", "runtimeId": id, "sequence": 2, "event": [
+                "type": "runtime.capabilities", "capabilities": ["commands": [["name": "quit", "source": "builtin"]]]
+            ]])
+        }
+        fixture.store.selectRuntime(hostId: "host-2", runtimeId: "shared-runtime")
+        let ids: Set<String> = ["shared-runtime", "other-runtime"]
+        #expect(fixture.store.closeRuntimes(hostId: "host-1", runtimeIds: ids) == ids)
+        let requests = first.sent.filter { ($0["command"] as? [String: Any])?["name"] as? String == "quit" }
+        #expect(Set(requests.compactMap { $0["runtimeId"] as? String }) == ids)
+        #expect(requests.allSatisfy { ($0["command"] as? [String: Any])?["type"] as? String == "slash.execute" })
+        #expect(second.commands.allSatisfy { $0["name"] as? String != "quit" })
+        #expect(fixture.store.selectedHostId == "host-2")
+        #expect(fixture.store.selectedRuntimeId == "shared-runtime")
+        #expect(fixture.store.closeRuntimes(hostId: "host-2", runtimeIds: ["shared-runtime"]).isEmpty)
+        first.state?(.offline, nil)
+        #expect(fixture.store.closeRuntimes(hostId: "host-1", runtimeIds: ids).isEmpty)
+        #expect(first.sent.filter { ($0["command"] as? [String: Any])?["name"] as? String == "quit" }.count == 2)
+    }
     @Test func identicalRuntimeAndSessionIDsKeepMessagesStateAndCommandsIsolated() async throws {
         let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
         await fixture.ready()

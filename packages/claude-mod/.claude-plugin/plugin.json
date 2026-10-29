@@ -1,6 +1,6 @@
 {
   "name": "orbis-host-session-link",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Connect this Claude Code TUI session to its local Orbis Host",
   "icon": "./.claude-plugin/icon.png",
   "hooks": "./hooks/classic-hooks.json",

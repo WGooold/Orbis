@@ -106,6 +106,52 @@ describe("PiBackend（统一端口的原生实现）", () => {
 });
 
 describe("ClaudeBackend（Hook bridge 的统一端口）", () => {
+  it("closes only the selected native process and sends success before taking its runtime offline", async () => {
+    let finish!: () => void;
+    const terminate = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const events: unknown[] = [];
+    const bridge = new ClaudeHookBridge();
+    const modsBridge = new ClaudeModsBridge({
+      processControl: { capture: async pid => ({ pid, started: "start", executable: "claude", command: "claude" }), terminate },
+      createHistory: (id, config, publish) => new ClaudeSessionHistory(id, config, publish, { locate: async () => undefined }),
+      onRuntimeOffline: runtimeId => events.push({ offline: runtimeId }),
+    });
+    const backend = new ClaudeBackend({ bridge, modsBridge, runtimeIds: () => modsBridge.runtimeIds(),
+      onCommandResult: (_id, event) => events.push(event) });
+    for (const [sessionId, processId] of [["first", 4242], ["second", 4243]] as const) {
+      expect(modsBridge.hello({ type: "hello", instanceId: sessionId, sessionId, cwd: "/repo", claudeVersion: "2.1.310",
+        bridgeVersion: "1", capabilities: CLAUDE_BRIDGE_CAPABILITIES, processId }).ok).toBe(true);
+    }
+    await Promise.resolve();
+    expect(backend.dispatchCommand("claude:first", "close", { type: "slash.execute", name: "quit", args: "" })).toBe("handled");
+    expect(terminate).toHaveBeenCalledWith(expect.objectContaining({ pid: 4242 }), expect.any(Function));
+    expect(modsBridge.runtimeIds()).toEqual(["claude:first", "claude:second"]);
+    expect(events).toEqual([{ type: "command.result", commandId: "close", ok: true, status: "pending" }]);
+    finish();
+    await vi.waitFor(() => expect(modsBridge.runtimeIds()).toEqual(["claude:second"]));
+    expect(events.slice(-2)).toEqual([
+      { type: "command.result", commandId: "close", ok: true, status: "success" }, { offline: "claude:first" },
+    ]);
+    modsBridge.close(); bridge.close();
+  });
+
+  it("keeps the runtime online when the Host cannot terminate its process", async () => {
+    const events: unknown[] = [];
+    const modsBridge = new ClaudeModsBridge({
+      processControl: { capture: async pid => ({ pid, started: "start", executable: "claude", command: "claude" }),
+        terminate: async () => { throw new Error("permission denied"); } },
+      createHistory: (id, config, publish) => new ClaudeSessionHistory(id, config, publish, { locate: async () => undefined }),
+    });
+    const backend = new ClaudeBackend({ bridge: new ClaudeHookBridge(), modsBridge, runtimeIds: () => modsBridge.runtimeIds(),
+      onCommandResult: (_id, event) => events.push(event) });
+    modsBridge.hello({ type: "hello", instanceId: "one", sessionId: "one", cwd: "/repo", claudeVersion: "2.1.310",
+      bridgeVersion: "1", capabilities: CLAUDE_BRIDGE_CAPABILITIES, processId: 4242 });
+    await Promise.resolve();
+    backend.dispatchCommand("claude:one", "close", { type: "slash.execute", name: "quit", args: "" });
+    await vi.waitFor(() => expect(events).toContainEqual({ type: "command.result", commandId: "close", ok: false, status: "failure", error: "permission denied" }));
+    expect(modsBridge.isOnline("claude:one")).toBe(true);
+    modsBridge.close();
+  });
   const permission = {
     hook_event_name: "PermissionRequest",
     session_id: "claude-session",

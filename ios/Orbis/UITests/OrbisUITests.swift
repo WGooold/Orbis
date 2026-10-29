@@ -64,6 +64,32 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["在这里新建 Pi 会话"].exists)
         capture("new-session", app: app)
     }
+    func testHomeLongPressSelectsAndClosesOnlyCheckedSessions() {
+        let app = launch("home")
+        let codex = app.buttons["home-runtime-preview-codex"]
+        let pi = app.buttons["home-runtime-preview-pi"]
+        let dsh = app.buttons["home-runtime-preview-dsh"]
+        XCTAssertTrue(codex.waitForExistence(timeout: 8))
+        codex.press(forDuration: 0.8)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].firstMatch.exists)
+        pi.tap()
+        XCTAssertTrue(app.staticTexts["已选择 2 项"].waitForExistence(timeout: 3))
+        pi.tap()
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].exists)
+        app.buttons["退出多选"].tap()
+        XCTAssertTrue(app.buttons["打开会话目录"].exists)
+        codex.press(forDuration: 0.8)
+        pi.tap()
+        capture("home-session-selection", app: app)
+        app.buttons["关闭选中会话"].tap()
+        XCTAssertTrue(codex.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(pi.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(dsh.exists)
+        XCTAssertTrue(app.buttons["打开会话目录"].exists)
+        dsh.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 3))
+    }
     func testSwipeRightFromLeftSideOpensDirectory() {
         let app = launch("home")
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))

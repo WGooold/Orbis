@@ -386,6 +386,7 @@ private struct TransferErrorBanner: View {
 struct HomeView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @State private var selectedRuntimeIds: Set<String> = []
     let onDirectory: () -> Void
     let onStatus: () -> Void
     let onSettings: () -> Void
@@ -398,24 +399,40 @@ struct HomeView: View {
     var body: some View {
         VStack(spacing: 0) {
             OrbisHeader {
-                OrbisIconButton(symbol: "line.3.horizontal", label: "打开会话目录", action: onDirectory)
+                if selecting {
+                    OrbisIconButton(symbol: "xmark", label: "退出多选") { selectedRuntimeIds = [] }
+                } else {
+                    OrbisIconButton(symbol: "line.3.horizontal", label: "打开会话目录", action: onDirectory)
+                }
             } title: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Orbis").font(.orbisTitle())
-                        .foregroundStyle(Color(hex: scheme == .dark ? 0xD3D9E3 : 0x4E5F7A))
-                        .shadow(color: OrbisPalette(scheme).light, radius: 0, x: 1, y: 1)
-                    Text("Easy Agents EveryWhere").font(.orbisCaption(.semibold)).tracking(0.4)
-                        .foregroundStyle(LinearGradient(colors: [OrbisPalette(scheme).accent, OrbisPalette(scheme).success], startPoint: .leading, endPoint: .trailing))
-                        .lineLimit(1)
+                if selecting {
+                    Text("已选择 \(selectedRuntimeIds.count) 项").font(.orbisTitle())
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Orbis").font(.orbisTitle())
+                            .foregroundStyle(Color(hex: scheme == .dark ? 0xD3D9E3 : 0x4E5F7A))
+                            .shadow(color: OrbisPalette(scheme).light, radius: 0, x: 1, y: 1)
+                        Text("Easy Agents EveryWhere").font(.orbisCaption(.semibold)).tracking(0.4)
+                            .foregroundStyle(LinearGradient(colors: [OrbisPalette(scheme).accent, OrbisPalette(scheme).success], startPoint: .leading, endPoint: .trailing))
+                            .lineLimit(1)
+                    }
                 }
             } trailing: {
-                OrbisIconButton(symbol: "arrow.down.to.line", label: "下载", action: onDownloads)
-                OrbisMenuIconButton(symbol: "ellipsis", label: "更多操作") {
-                    [OrbisMenuItem(title: "连接状态", symbol: "info.circle", action: onStatus),
-                     OrbisMenuItem(title: "设置", symbol: "gearshape", action: onSettings),
-                     OrbisMenuItem(title: "添加电脑", symbol: "plus", action: onAddHost),
-                     .divider,
-                     OrbisMenuItem(title: "取消配对当前电脑", symbol: "link", destructive: true, action: onUnpair)]
+                if selecting {
+                    Button("关闭") { closeSelectedRuntimes() }
+                        .font(.orbisLabel(.semibold)).foregroundStyle(OrbisPalette(scheme).error)
+                        .buttonStyle(NeuButtonStyle(padding: 12))
+                        .accessibilityLabel("关闭选中会话")
+                        .disabled(store.connection != .secured)
+                } else {
+                    OrbisIconButton(symbol: "arrow.down.to.line", label: "下载", action: onDownloads)
+                    OrbisMenuIconButton(symbol: "ellipsis", label: "更多操作") {
+                        [OrbisMenuItem(title: "连接状态", symbol: "info.circle", action: onStatus),
+                         OrbisMenuItem(title: "设置", symbol: "gearshape", action: onSettings),
+                         OrbisMenuItem(title: "添加电脑", symbol: "plus", action: onAddHost),
+                         .divider,
+                         OrbisMenuItem(title: "取消配对当前电脑", symbol: "link", destructive: true, action: onUnpair)]
+                    }
                 }
             }
             // One fixed row: which computer this page shows, and how it is connected.
@@ -444,9 +461,31 @@ struct HomeView: View {
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(OrbisPalette(scheme).base.ignoresSafeArea())
+            .onChange(of: store.selectedHostId) { _, _ in selectedRuntimeIds = [] }
+            .onChange(of: currentHost?.runtimes.map(\.runtimeId) ?? []) { _, ids in
+                selectedRuntimeIds.formIntersection(ids)
+            }
+            .onDisappear { selectedRuntimeIds = [] }
     }
 
     private var currentHost: HostSnapshot? { store.hosts.first { $0.hostId == store.selectedHostId } }
+    private var selecting: Bool { !selectedRuntimeIds.isEmpty }
+
+    private func toggleSelection(_ id: String) {
+        if selectedRuntimeIds.contains(id) { selectedRuntimeIds.remove(id) }
+        else { selectedRuntimeIds.insert(id) }
+    }
+
+    private func beginSelection(_ id: String) {
+        if !selecting { OrbisHaptics.beginSelection() }
+        selectedRuntimeIds.insert(id)
+    }
+
+    private func closeSelectedRuntimes() {
+        guard let hostId = store.selectedHostId else { return }
+        let submitted = store.closeRuntimes(hostId: hostId, runtimeIds: selectedRuntimeIds)
+        selectedRuntimeIds.subtract(submitted)
+    }
 
     /// The current computer; with several paired computers it is also the switcher.
     @ViewBuilder private var hostSwitcher: some View {
@@ -474,8 +513,12 @@ struct HomeView: View {
     private func runtimeCard(_ runtime: RuntimeSummary, host: HostSnapshot) -> some View {
         let kind = host.connection.agentKind(runtime)
         let pending = !(host.connection.interactions[runtime.runtimeId] ?? []).isEmpty
+        let selected = selectedRuntimeIds.contains(runtime.runtimeId)
         return HStack(spacing: 0) {
-            Button { store.selectRuntime(hostId: host.hostId, runtimeId: runtime.runtimeId); onOpenRuntime(runtime) } label: {
+            Button {
+                if selecting { toggleSelection(runtime.runtimeId) }
+                else { store.selectRuntime(hostId: host.hostId, runtimeId: runtime.runtimeId); onOpenRuntime(runtime) }
+            } label: {
                 HStack(spacing: 12) {
                     AgentEmblem(kind: kind)
                     VStack(alignment: .leading, spacing: 6) {
@@ -492,8 +535,19 @@ struct HomeView: View {
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
-            }.buttonStyle(NeuButtonStyle(radius: OrbisRadius.card, padding: OrbisRadius.cardPadding + 4))
-            OrbisIconButton(symbol: "pencil", label: "修改会话别名", compact: true) { store.selectHost(host.hostId); onAlias(runtime) }
+            }.buttonStyle(NeuButtonStyle(selected: selected, radius: OrbisRadius.card, padding: OrbisRadius.cardPadding + 4))
+                .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(runtime.runtimeId) })
+                .accessibilityIdentifier("home-runtime-\(runtime.runtimeId)")
+                .accessibilityAddTraits(selected ? .isSelected : [])
+                .accessibilityAction(named: "选择会话") { beginSelection(runtime.runtimeId) }
+            if selecting {
+                OrbisIconButton(symbol: selected ? "checkmark.circle.fill" : "circle", label: selected ? "取消选择会话" : "选择会话",
+                                tint: selected ? OrbisPalette(scheme).accent : nil, selected: selected, compact: true) {
+                    toggleSelection(runtime.runtimeId)
+                }
+            } else {
+                OrbisIconButton(symbol: "pencil", label: "修改会话别名", compact: true) { store.selectHost(host.hostId); onAlias(runtime) }
+            }
         }.accessibilityElement(children: .contain)
     }
 
