@@ -19,6 +19,7 @@ struct SessionDrawerView: View {
     @Environment(\.colorScheme) private var scheme
     @Binding var state: SessionDirectoryState
     @FocusState private var searchFocused: Bool
+    @State private var selectedSessionIds: Set<String> = []
     let onClose: () -> Void
     let onOpenSession: (SessionSummary) -> Void
     let onNewSession: (String?) -> Void
@@ -43,17 +44,32 @@ struct SessionDrawerView: View {
 
     var body: some View {
         let directories = self.directories
+        let selectedSessions = directories.flatMap(\.sessions).filter { selectedSessionIds.contains($0.sessionId) }
         VStack(spacing: 16) {
             HStack(spacing: 12) {
-                Text("会话目录").font(.orbisTitle()).accessibilityAddTraits(.isHeader)
+                Text(selecting ? "已选择 \(selectedSessions.count) 项" : "会话目录").font(.orbisTitle()).accessibilityAddTraits(.isHeader)
                 Spacer()
-                OrbisIconButton(symbol: "xmark", label: "关闭会话目录", action: onClose)
+                OrbisIconButton(symbol: "xmark", label: selecting ? "退出多选" : "关闭会话目录") {
+                    if selecting { selectedSessionIds = [] } else { onClose() }
+                }
             }.padding(.top, 8)
             HStack(spacing: 12) {
-                OrbisActionButton(title: "新会话", symbol: "plus") { onNewSession(nil) }
-                    .disabled(store.connection != .secured || store.activatingSessionId != nil)
-                OrbisIconButton(symbol: "arrow.clockwise", label: "刷新会话目录", action: store.refresh)
-                    .disabled(store.selectedHost == nil)
+                if selecting {
+                    OrbisActionButton(title: state.archived ? "恢复选中会话" : "归档选中会话",
+                                      symbol: state.archived ? "tray.and.arrow.up" : "archivebox", action: archiveSelection)
+                        .disabled(selectedSessions.contains { archiveUnavailableReason($0) != nil })
+                    if selectedSessions.count == 1, let session = selectedSessions.first, !state.archived {
+                        OrbisIconButton(symbol: "play", label: "在电脑继续会话") {
+                            if let problem = store.providerMismatch(session) { showMismatch(problem) }
+                            else { store.activate(session) }
+                        }.disabled(store.connection != .secured || store.activatingSessionId != nil)
+                    }
+                } else {
+                    OrbisActionButton(title: "新会话", symbol: "plus") { onNewSession(nil) }
+                        .disabled(store.connection != .secured || store.activatingSessionId != nil)
+                    OrbisIconButton(symbol: "arrow.clockwise", label: "刷新会话目录", action: store.refresh)
+                        .disabled(store.selectedHost == nil)
+                }
                 OrbisMenuIconButton(symbol: "line.3.horizontal.decrease", label: "筛选会话：\(state.kind.map(filterTitle) ?? "全部")",
                                     tint: state.kind == nil ? OrbisPalette(scheme).secondary : OrbisPalette(scheme).accent,
                                     selected: state.kind != nil) { filterMenuItems }
@@ -108,9 +124,46 @@ struct SessionDrawerView: View {
             .onChange(of: state.archived) { _, _ in restartExpansion() }
             .onChange(of: state.providerKey) { _, _ in restartExpansion() }
             .onChange(of: state.query) { _, _ in restartExpansion() }
+            .onChange(of: directories.flatMap(\.sessions).map(\.sessionId)) { _, ids in
+                selectedSessionIds.formIntersection(ids)
+            }
+            .onDisappear { selectedSessionIds = [] }
     }
 
     private var searching: Bool { !state.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var selectedSessions: [SessionSummary] {
+        directories.flatMap(\.sessions).filter { selectedSessionIds.contains($0.sessionId) }
+    }
+    private var selecting: Bool { !selectedSessionIds.isEmpty }
+
+    private func beginSelection(_ id: String) {
+        if !selecting { OrbisHaptics.beginSelection() }
+        searchFocused = false
+        selectedSessionIds.insert(id)
+    }
+
+    private func toggleSelection(_ id: String) {
+        if selectedSessionIds.contains(id) { selectedSessionIds.remove(id) }
+        else { selectedSessionIds.insert(id) }
+    }
+
+    private func archiveUnavailableReason(_ session: SessionSummary) -> String? {
+        guard store.connection == .secured else { return "连接电脑后可操作" }
+        guard let kind = session.agentKind else { return "尚未获取会话类型" }
+        guard session.archived != true else { return nil }
+        let runtimes = store.runtimes.filter { $0.sessionId == session.sessionId }
+        guard !runtimes.isEmpty else { return nil }
+        if kind == "pi" { return "请先退出 Pi 会话" }
+        if kind == "claude" { return "请先退出 Claude Code 会话" }
+        return runtimes.allSatisfy { $0.status == "idle" } ? nil : "等待任务完成后归档"
+    }
+
+    private func archiveSelection() {
+        let sessions = selectedSessions
+        guard !sessions.isEmpty, sessions.allSatisfy({ archiveUnavailableReason($0) == nil }) else { return }
+        for session in sessions { store.archive(session, archived: !state.archived) }
+        selectedSessionIds = []
+    }
 
     private var filterMenuItems: [OrbisMenuItem] {
         var items: [OrbisMenuItem] = []
@@ -154,6 +207,7 @@ struct SessionDrawerView: View {
     }
 
     private func restartExpansion() {
+        selectedSessionIds = []
         state.needsDefaultExpansion = true
         resolveExpansion()
     }
@@ -210,46 +264,50 @@ struct SessionDrawerView: View {
 
     private func sessionRow(_ session: SessionSummary) -> some View {
         let runtime = store.runtimes.first { $0.sessionId == session.sessionId }
-        return HStack(spacing: 0) {
-            Button {
-                searchFocused = false
-                if runtime != nil, let problem = store.providerMismatch(session) { showMismatch(problem) }
-                else { onOpenSession(session) }
-            } label: {
-                HStack(spacing: 8) {
-                    // Activation swaps the emblem for a spinner in the same slot; the title never reflows.
-                    ZStack {
-                        AgentEmblem(kind: session.agentKind, size: 24, recessed: false)
-                            .opacity(store.activatingSessionId == session.sessionId ? 0 : 1)
-                        if store.activatingSessionId == session.sessionId { ProgressView().controlSize(.small) }
-                    }.frame(width: 24, height: 24)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(store.displayName(session)).font(.orbisBody()).lineLimit(2)
-                        HStack(spacing: 8) {
-                            if let runtime { RuntimeStatusLabel(status: runtime.status) }
-                            else { Text("缓存历史").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
-                            Text(sessionTimeTitle(session.modifiedAt))
-                                .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                            if session.agentKind == "codexDesktop" {
-                                Text("桌面版").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).agent(session.agentKind))
-                            }
-                            if let provider = sessionOtherProvider(session, current: store.currentProvider(for: session.agentKind ?? "")) {
-                                Text(provider).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).warning)
-                            }
-                        }.lineLimit(1)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }.padding(12).contentShape(Rectangle())
-            }.buttonStyle(NeuButtonStyle(selected: store.selectedRuntime?.sessionId == session.sessionId, radius: 16))
-                .disabled(store.activatingSessionId != nil)
-            OrbisMenuIconButton(symbol: "ellipsis", label: "会话操作", compact: true) {
-                [OrbisMenuItem(title: "在电脑继续会话", symbol: "play", disabled: store.connection != .secured || store.activatingSessionId != nil) {
-                    if let problem = store.providerMismatch(session) { showMismatch(problem) } else { store.activate(session) }
-                }, OrbisMenuItem(title: state.archived ? "取消归档" : "归档会话", symbol: state.archived ? "tray.and.arrow.up" : "archivebox",
-                               disabled: store.connection != .secured || session.agentKind == nil) {
-                    store.archive(session, archived: !state.archived)
-                }]
-            }.accessibilityIdentifier("session-actions-" + session.sessionId)
-        }
+        let selected = selectedSessionIds.contains(session.sessionId)
+        return Button {
+            searchFocused = false
+            if selecting { toggleSelection(session.sessionId) }
+            else if runtime != nil, let problem = store.providerMismatch(session) { showMismatch(problem) }
+            else { onOpenSession(session) }
+        } label: {
+            HStack(spacing: 8) {
+                if selecting {
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selected ? OrbisPalette(scheme).accent : OrbisPalette(scheme).secondary)
+                        .accessibilityHidden(true)
+                }
+                // Activation swaps the emblem for a spinner in the same slot; the title never reflows.
+                ZStack {
+                    AgentEmblem(kind: session.agentKind, size: 24, recessed: false)
+                        .opacity(store.activatingSessionId == session.sessionId ? 0 : 1)
+                    if store.activatingSessionId == session.sessionId { ProgressView().controlSize(.small) }
+                }.frame(width: 24, height: 24)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(store.displayName(session)).font(.orbisBody()).lineLimit(2)
+                    HStack(spacing: 8) {
+                        if let runtime { RuntimeStatusLabel(status: runtime.status) }
+                        else { Text("缓存历史").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
+                        Text(sessionTimeTitle(session.modifiedAt))
+                            .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                        if session.agentKind == "codexDesktop" {
+                            Text("桌面版").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).agent(session.agentKind))
+                        }
+                        if let provider = sessionOtherProvider(session, current: store.currentProvider(for: session.agentKind ?? "")) {
+                            Text(provider).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).warning)
+                        }
+                    }.lineLimit(1)
+                    if selecting, let reason = archiveUnavailableReason(session) {
+                        Text(reason).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }.padding(12).contentShape(Rectangle())
+        }.buttonStyle(NeuButtonStyle(selected: selecting ? selected : store.selectedRuntime?.sessionId == session.sessionId, radius: 16))
+            .disabled(store.activatingSessionId != nil && !selecting)
+            .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(session.sessionId) })
+            .accessibilityIdentifier("drawer-session-" + session.sessionId)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+            .accessibilityAction(named: "选择会话") { beginSelection(session.sessionId) }
     }
 
     private func showMismatch(_ problem: String) {

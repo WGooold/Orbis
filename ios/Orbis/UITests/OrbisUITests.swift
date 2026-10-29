@@ -325,7 +325,7 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(session.waitForExistence(timeout: 3))
         // History rows browse the local cache; provider compatibility is checked
         // only when explicitly continuing the session on the computer.
-        drawer.buttons["session-actions-session-4"].tap()
+        session.press(forDuration: 0.8)
         drawer.buttons["在电脑继续会话"].tap()
         let dialog = drawer.descendants(matching: .any)["orbis-dialog"].firstMatch
         XCTAssertTrue(dialog.waitForExistence(timeout: 3))
@@ -334,6 +334,64 @@ final class OrbisUITests: XCTestCase {
         dialog.buttons["供应商设置"].tap()
         XCTAssertTrue(drawer.staticTexts["供应商"].waitForExistence(timeout: 3))
     }
+    func testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions() {
+        let app = launch("drawer")
+        let first = app.buttons["drawer-session-session-4"]
+        let second = app.buttons["drawer-session-session-5"]
+        XCTAssertTrue(first.waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["会话操作"].exists)
+        first.press(forDuration: 0.8)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].exists)
+        second.tap()
+        XCTAssertTrue(app.staticTexts["已选择 2 项"].exists)
+        first.tap()
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].exists)
+        first.tap()
+        capture("drawer-multiselect", app: app)
+        app.buttons["归档选中会话"].tap()
+        XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
+        XCTAssertFalse(first.exists)
+        XCTAssertFalse(second.exists)
+        XCTAssertTrue(app.buttons["drawer-session-session-1"].exists)
+
+        app.buttons["筛选会话：全部"].tap()
+        app.buttons["查看已归档会话"].tap()
+        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        first.press(forDuration: 0.8)
+        second.tap()
+        XCTAssertTrue(app.staticTexts["已选择 2 项"].exists)
+        app.buttons["恢复选中会话"].tap()
+        XCTAssertTrue(app.staticTexts["没有已归档的会话"].waitForExistence(timeout: 3))
+        app.buttons["筛选会话：全部"].tap()
+        app.buttons["查看未归档会话"].tap()
+        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        XCTAssertTrue(second.exists)
+    }
+
+    func testDrawerSelectionClearsOnCancelSearchAndClose() {
+        let app = launch("drawer", dark: true)
+        let session = app.buttons["drawer-session-session-4"]
+        XCTAssertTrue(session.waitForExistence(timeout: 8))
+        session.press(forDuration: 0.8)
+        app.buttons["退出多选"].tap()
+        XCTAssertTrue(app.staticTexts["会话目录"].exists)
+        session.press(forDuration: 0.8)
+        let search = app.textFields["搜索会话或目录"]
+        search.tap(); search.typeText("优化")
+        XCTAssertFalse(app.buttons["归档选中会话"].exists)
+        app.buttons["清除搜索"].tap()
+        session.press(forDuration: 0.8)
+        capture("drawer-multiselect-dark", app: app)
+        // Closing the drawer with a swipe also ends selection.
+        let window = app.windows.firstMatch
+        let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.45))
+        start.press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.45)))
+        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
+        app.buttons["打开会话目录"].tap()
+        XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["退出多选"].exists)
+    }
+
     func testDrawerFollowsEdgeDragAndShowsOneDirectory() {
         let app = launch("home")
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))

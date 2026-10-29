@@ -554,6 +554,7 @@ internal fun RuntimeListScreen(
             SessionDrawer(
                 state = state,
                 hosts = hosts,
+                isOpen = drawerState.isOpen,
                 onSelectHost = onSelectHost,
                 onUnpairHost = onUnpairHost,
                 onAddHost = onAddHost,

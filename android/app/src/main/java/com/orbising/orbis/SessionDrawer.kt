@@ -1,5 +1,6 @@
 package com.orbising.orbis
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +30,8 @@ import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Unarchive
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Computer
@@ -46,6 +49,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import com.orbising.orbis.NeumorphTextField as OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,12 +63,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -187,6 +195,7 @@ internal fun SessionDrawer(
     onNewSession: (String, String?) -> Unit,
     onSetArchived: (String, String, Boolean) -> Unit,
     onRequestProviders: () -> Unit = {},
+    isOpen: Boolean = true,
 ) {
     val activeHostId = state.hostId
     // 只列当前电脑的目录：多台电脑不合并成一棵树，切换在页脚的电脑行（ADR-0030 修订）。
@@ -240,6 +249,16 @@ internal fun SessionDrawer(
     }
     val directoryCount = sections.sumOf { it.directories.size }
     val sessionCount = sections.sumOf { section -> section.directories.sumOf { it.sessions.size } }
+    var selectedSessionIds by remember(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, isOpen) {
+        mutableStateOf(emptySet<String>())
+    }
+    val visibleSessions = sections.flatMap { it.directories }.flatMap { it.sessions }
+    val visibleIds = visibleSessions.map { it.sessionId }.toSet()
+    val selectedIds = selectedSessionIds.intersect(visibleIds)
+    val selectedSessions = visibleSessions.filter { it.sessionId in selectedIds }
+    val selecting = selectedIds.isNotEmpty()
+    LaunchedEffect(visibleIds) { selectedSessionIds = selectedSessionIds.intersect(visibleIds) }
+    BackHandler(enabled = isOpen && selecting) { selectedSessionIds = emptySet() }
     // Keep only one branch open. Searching reveals the first result without losing its parent.
     var expandedKey by rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider) {
         mutableStateOf(
@@ -255,6 +274,7 @@ internal fun SessionDrawer(
     }
     val canCreate = state.canCreateSessionOn(activeHostId)
     val focusManager = LocalFocusManager.current
+    val haptic = LocalHapticFeedback.current
     val drawerWidth = (LocalConfiguration.current.screenWidthDp.dp - 32.dp).coerceAtMost(384.dp)
 
     blockedSession?.let { (hostId, sessionId) ->
@@ -343,16 +363,46 @@ internal fun SessionDrawer(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(
-                    if (searchTerm.isNotEmpty()) "搜索结果" else if (showArchived) "已归档" else "工作目录",
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier.semantics { heading() },
-                )
-                Text(
-                    "$directoryCount 个目录，$sessionCount 个会话",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (selecting) {
+                    NeumorphIconButton(
+                        onClick = { selectedSessionIds = emptySet() },
+                        icon = Icons.Rounded.Close,
+                        contentDescription = "退出多选",
+                    )
+                    Text("已选择 ${selectedIds.size} 项", style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.weight(1f))
+                    selectedSessions.singleOrNull()?.takeIf { !it.isOnline && it.catalogEntry?.hasHistoryCache == true }?.let { row ->
+                        NeumorphIconButton(
+                            onClick = { activeHostId?.let { onOpenHistory(it, row.sessionId) }; selectedSessionIds = emptySet() },
+                            icon = Icons.Rounded.HistoryEdu,
+                            contentDescription = "查看只读历史",
+                        )
+                    }
+                    NeumorphIconButton(
+                        onClick = {
+                            val hostId = activeHostId
+                            if (hostId != null && selectedSessions.all { drawerArchiveUnavailableReason(it, state) == null }) {
+                                selectedSessions.forEach { onSetArchived(hostId, it.sessionId, !showArchived) }
+                                selectedSessionIds = emptySet()
+                            }
+                        },
+                        icon = if (showArchived) Icons.Rounded.Unarchive else Icons.Rounded.Archive,
+                        contentDescription = if (showArchived) "恢复选中会话" else "归档选中会话",
+                        enabled = selectedSessions.all { drawerArchiveUnavailableReason(it, state) == null },
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    Text(
+                        if (searchTerm.isNotEmpty()) "搜索结果" else if (showArchived) "已归档" else "工作目录",
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.semantics { heading() },
+                    )
+                    Text(
+                        "$directoryCount 个目录，$sessionCount 个会话",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             LazyColumn(
                 state = listState,
@@ -385,7 +435,6 @@ internal fun SessionDrawer(
                     }
                 }
                 sections.forEach { section ->
-                    val hostSnapshot = hosts.firstOrNull { it.hostId == section.hostId }
                     val isActiveHost = section.hostId == activeHostId
                     section.directories.forEach { directory ->
                         val branchKey = section.hostId + '\u0000' + directory.cwd
@@ -419,14 +468,17 @@ internal fun SessionDrawer(
                                             }
                                         },
                                         onOpenHistory = { onOpenHistory(section.hostId, row.sessionId) },
-                                        archiveEnabled = isActiveHost && hostSnapshot?.state?.e2eReady == true &&
-                                            row.catalogEntry?.agentKind != null &&
-                                            row.sessionId !in state.sessionArchiveRequests.values &&
-                                            (row.isArchived || !row.isOnline ||
-                                                (row.isCodex && state.runtimes[row.runtimeId]?.status == "idle") ||
-                                                (row.agentKind == "dsh" && state.runtimes[row.runtimeId]?.status == "idle")),
-                                        archivePending = row.sessionId in state.sessionArchiveRequests.values,
-                                        onSetArchived = { onSetArchived(section.hostId, row.sessionId, !row.isArchived) },
+                                        selecting = selecting,
+                                        selected = row.sessionId in selectedIds,
+                                        archiveUnavailableReason = drawerArchiveUnavailableReason(row, state),
+                                        onToggleSelection = {
+                                            selectedSessionIds = if (row.sessionId in selectedIds) selectedIds - row.sessionId else selectedIds + row.sessionId
+                                        },
+                                        onBeginSelection = {
+                                            if (!selecting) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            focusManager.clearFocus()
+                                            selectedSessionIds = selectedIds + row.sessionId
+                                        },
                                     )
                                 }
                             }
@@ -674,87 +726,70 @@ private fun DrawerSessionRow(
     otherProvider: String?,
     onOpenSession: () -> Unit,
     onOpenHistory: () -> Unit,
-    archiveEnabled: Boolean,
-    archivePending: Boolean,
-    onSetArchived: () -> Unit,
+    selecting: Boolean,
+    selected: Boolean,
+    archiveUnavailableReason: String?,
+    onToggleSelection: () -> Unit,
+    onBeginSelection: () -> Unit,
 ) {
-    var menuOpen by remember { mutableStateOf(false) }
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-        NeumorphSurface(
-            modifier = Modifier.weight(1f),
-            style = NeumorphStyle.Pressed,
-            shape = RemoteUi.ControlShape,
-            shadowScale = 0.45f,
-            onClick = {
-                if (!row.isArchived) onOpenSession()
-                else if (row.catalogEntry?.hasHistoryCache == true) onOpenHistory()
-                else menuOpen = true
-            },
+    NeumorphSurface(
+        modifier = Modifier.fillMaxWidth().testTag("drawer-session-${row.sessionId}")
+            .semantics(mergeDescendants = true) { this.selected = selected },
+        style = NeumorphStyle.Pressed,
+        shape = RemoteUi.ControlShape,
+        shadowScale = 0.45f,
+        onClick = {
+            if (selecting) onToggleSelection()
+            else if (!row.isArchived) onOpenSession()
+            else if (row.catalogEntry?.hasHistoryCache == true) onOpenHistory()
+            else onBeginSelection()
+        },
+        onLongClick = onBeginSelection,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(start = 12.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Row(
-                Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(start = 12.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                // 与 iOS 同一行结构：agent 图标、标题，下面是状态、时间与必要的标注；整行可点，不再另放箭头。
-                AgentIcon(agentBrand(row.agentKind), modifier = Modifier.size(22.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(row.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        val caption = MaterialTheme.typography.labelSmall
-                        val muted = MaterialTheme.colorScheme.onSurfaceVariant
-                        if (runtimeStatus != null) RuntimeStatusIndicator(runtimeStatus)
-                        else if (row.catalogEntry?.hasHistoryCache == true) Text("缓存历史", style = caption, color = muted)
-                        if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = caption, color = muted, maxLines = 1)
-                        if (row.agentKind == "codexDesktop") Text("桌面版", style = caption, color = agentBrand(row.agentKind).accent(), maxLines = 1)
-                        // 与 iOS 同一个提示色（橙），不是错误。
-                        val warning = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFFF2C26B) else Color(0xFF9A5B00)
-                        otherProvider?.let { Text(it, style = caption, color = warning, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                    }
-                }
-            }
-        }
-        Box {
-            NeumorphIconButton(
-                onClick = { menuOpen = true },
-                icon = Icons.Rounded.MoreVert,
-                contentDescription = "会话操作",
-                compact = true,
+            if (selecting) Icon(
+                if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                contentDescription = null,
+                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp),
             )
-            NeumorphMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                if (!row.isOnline && row.catalogEntry?.hasHistoryCache == true) {
-                    NeumorphMenuItem(
-                        text = { Text("查看只读历史") },
-                        onClick = { menuOpen = false; onOpenHistory() },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Rounded.HistoryEdu,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
-                    )
+            // 与 iOS 同一行结构：agent 图标、标题，下面是状态、时间与必要的标注；整行可点，不再另放箭头。
+            AgentIcon(agentBrand(row.agentKind), modifier = Modifier.size(22.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(row.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val caption = MaterialTheme.typography.labelSmall
+                    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+                    if (runtimeStatus != null) RuntimeStatusIndicator(runtimeStatus)
+                    else if (row.catalogEntry?.hasHistoryCache == true) Text("缓存历史", style = caption, color = muted)
+                    if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = caption, color = muted, maxLines = 1)
+                    if (row.agentKind == "codexDesktop") Text("桌面版", style = caption, color = agentBrand(row.agentKind).accent(), maxLines = 1)
+                    // 与 iOS 同一个提示色（橙），不是错误。
+                    val warning = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFFF2C26B) else Color(0xFF9A5B00)
+                    otherProvider?.let { Text(it, style = caption, color = warning, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
-                NeumorphMenuItem(
-                    text = { Text(when {
-                        archivePending -> "处理中…"
-                        row.isArchived -> "恢复会话"
-                        row.isOnline && row.agentKind == "pi" -> "请先退出 Pi 会话"
-                        row.isOnline && !archiveEnabled -> "等待任务完成后归档"
-                        else -> "归档会话"
-                    }) },
-                    enabled = archiveEnabled,
-                    onClick = { menuOpen = false; onSetArchived() },
-                    leadingIcon = { Icon(
-                        if (row.isArchived) Icons.Rounded.Unarchive else Icons.Rounded.Archive,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    ) },
+                if (selecting && archiveUnavailableReason != null) Text(
+                    archiveUnavailableReason, style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
     }
+}
+
+private fun drawerArchiveUnavailableReason(row: CachedSessionRow, state: RemoteState): String? = when {
+    !state.e2eReady -> "连接电脑后可操作"
+    row.catalogEntry?.agentKind == null -> "尚未获取会话类型"
+    row.sessionId in state.sessionArchiveRequests.values -> "处理中…"
+    row.isArchived || !row.isOnline -> null
+    row.agentKind == "pi" -> "请先退出 Pi 会话"
+    row.agentKind == "claude" -> "请先退出 Claude Code 会话"
+    (row.isCodex || row.agentKind == "dsh") && state.runtimes[row.runtimeId]?.status == "idle" -> null
+    else -> "等待任务完成后归档"
 }
 
 internal fun directoryDisplayName(cwd: String): String =

@@ -50,6 +50,7 @@ private final class PreviewTransport: OrbisTransport {
     init(screen: String, variant: Int = 0) { self.screen = screen; self.variant = variant }
     var receive: (([String: Any], String?) -> Void)?
     var sequence = 0
+    private var archivedSessionIds: Set<String> = []
     private var providerRevision = 1
     private var viewportTail = 0
     private var sourceSequence = 1
@@ -119,10 +120,15 @@ private final class PreviewTransport: OrbisTransport {
                 let agent = index == 2 ? "pi" : index == 3 ? "dsh" : "codex"
                 return ["sessionId": "session-\(index)", "name": index <= names.count ? names[index - 1] : "较早会话 \(index)",
                  "cwd": index == 2 ? "/Projects/website" : "/Projects/orbis", "createdAt": 1793145600000, "modifiedAt": 1793232000000 - index * 100000,
-                 "messageCount": 12, "agentKind": agent, "archived": false, "modelProvider": index == 4 ? "team" : "openai"]
+                 "messageCount": 12, "agentKind": agent, "archived": archivedSessionIds.contains("session-\(index)"), "modelProvider": index == 4 ? "team" : "openai"]
             }
             receive?(["type": "session.list.result", "requestId": object["requestId"]!, "sessions": sessions,
                       "currentProviders": [["agentKind": "codex", "provider": "openai"], ["agentKind": "codexDesktop", "provider": "openai"]]], "ctl")
+        } else if object["type"] as? String == "session.archive", let id = object["sessionId"] as? String,
+                  let archived = object["archived"] as? Bool {
+            if archived { archivedSessionIds.insert(id) } else { archivedSessionIds.remove(id) }
+            receive?(["type": "session.archive.changed", "requestId": object["requestId"]!,
+                      "sessionId": id, "agentKind": object["agentKind"]!, "archived": archived], "ctl")
         } else if object["type"] as? String == "notification.sync", let runtime = object["runtimeId"] as? String {
             let notices: [[String: Any]] = screen == "queue" || screen == "notices" ? [["notificationId": "preview-notice", "producerEpoch": "preview-producer", "code": "test_ready", "occurrenceId": "preview-occurrence", "scope": [:], "severity": "warning", "message": "模型服务等待恢复，电脑端会继续核对。", "lifecycle": "condition", "createdAt": 1793232000000, "updatedAt": 1793232000000, "verification": "unknown"]] : []
             receive?(["type": "notification.snapshot", "protocolVersion": orbisProtocolVersion, "hostEpoch": "preview-notices", "runtimeId": runtime, "sessionId": runtime == "preview-codex" ? "session-1" : runtime == "preview-pi" ? "session-2" : "session-3", "revision": 1, "complete": true, "verification": notices.isEmpty ? "confirmed" : "unknown", "notifications": notices], "ctl")
