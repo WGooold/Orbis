@@ -1997,7 +1997,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             copyMessages = item.copyMessages,
                             turnTiming = groupTurnTiming(item.messages.mapNotNull { messageTurnTimings[it.messageId] }),
                             nowMs = timerNow,
-                            streamingMessageIds = conversation.streamingMessageIds,
+                            streamingMessageIds = if (state.e2eReady && conversation.sourceReady && !conversation.isChatSyncing)
+                                conversation.streamingMessageIds - conversation.finishedMessageIds else emptySet(),
                             toolActivities = conversation.tools,
                             toolResults = presentation.toolResults,
                             downloads = state.downloads,

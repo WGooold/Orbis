@@ -158,6 +158,7 @@ struct ChatView: View {
     private var conversation: some View {
         let kind = self.kind
         let transcript = store.chatTranscript
+        let streamingMessageIds = store.connection == .secured && !store.isSyncing && !store.isViewingCachedSession ? store.streamingMessageIds : []
         let rewindOptions = store.userMessageRewindOptions(for: runtime)
         return ScrollViewReader { proxy in
             GeometryReader { viewport in
@@ -171,6 +172,7 @@ struct ChatView: View {
                         ForEach(transcript.rows) { row in
                             ChatMessageRow(row: row, kind: kind, toolResults: transcript.toolResultsByRow[row.id] ?? [:],
                                            timings: transcript.timingsByRow[row.id] ?? [],
+                                           streamingMessageIds: streamingMessageIds.intersection(row.messages.map(\.messageId)),
                                            rewindOption: row.isUser ? rewindOptions[row.id] : nil,
                                            rewindEnabled: store.canSend && runtime.status == "idle" && store.pendingActionIds.isEmpty) { option in
                                 if store.moveHistory(to: option, fallbackText: row.messages.first?.text) {
@@ -497,11 +499,12 @@ struct ChatMessageRow: View, Equatable {
     let kind: String?
     var toolResults: [String: ChatMessage] = [:]
     var timings: [SessionTurnTiming] = []
+    var streamingMessageIds: Set<String> = []
     var rewindOption: RuntimeOption? = nil
     var rewindEnabled = false
     var onRewind: (RuntimeOption) -> Void = { _ in }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled
+        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled
     }
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -519,7 +522,7 @@ struct ChatMessageRow: View, Equatable {
                         }
                     }
                     ForEach(row.messages) { message in
-                        MessageContentView(message: message, toolResults: toolResults)
+                        MessageContentView(message: message, toolResults: toolResults, streaming: streamingMessageIds.contains(message.messageId))
                     }
                     ForEach(timings, id: \.turnId) { timing in
                         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -558,6 +561,7 @@ private struct MessageContentView: View {
     @State private var fullEntryId = ""
     let message: ChatMessage
     var toolResults: [String: ChatMessage] = [:]
+    var streaming = false
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let summary = message.toolSummary { ToolSummaryView(summary: summary) }
@@ -594,7 +598,7 @@ private struct MessageContentView: View {
                 default:
                     if let text = content.text, !text.isEmpty {
                         if message.role == "user" { Text(text).font(.orbisBody()).textSelection(.enabled) }
-                        else { MarkdownMessage(text: text) }
+                        else { MarkdownMessage(text: text, streaming: streaming) }
                     }
                 }
             }
@@ -841,22 +845,26 @@ struct MarkdownMessage: View {
     @EnvironmentObject private var transfers: FileTransfers
     @Environment(\.colorScheme) private var scheme
     let text: String
+    let streaming: Bool
     @State private var clock: RevealClock
     @State private var settleTick = 0
 
-    init(text: String) {
+    init(text: String, streaming: Bool = false) {
         self.text = text
+        self.streaming = streaming
         _clock = State(initialValue: RevealClock(known: MarkdownCache.renderedLength(text)))
     }
 
     var body: some View {
         let rows = MarkdownCache.rows(text)
         let length = MarkdownCache.renderedLength(text)
-        let animating = !reduceMotion && settleTick >= 0 && clock.isAnimating(at: Date().timeIntervalSinceReferenceDate)
+        let revealEnabled = streaming && !reduceMotion
+        let animating = revealEnabled && settleTick >= 0 && clock.isAnimating(at: Date().timeIntervalSinceReferenceDate)
+        let visibleClock = revealEnabled ? clock : RevealClock(known: length)
         TimelineView(.animation(minimumInterval: nil, paused: !animating)) { context in
             let now = reduceMotion ? TimeInterval.greatestFiniteMagnitude : max(context.date.timeIntervalSinceReferenceDate, Date().timeIntervalSinceReferenceDate)
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(rows) { row in rowView(row, now: now) }
+                ForEach(rows) { row in rowView(row, clock: visibleClock, now: now) }
             }
         }.font(.orbisBody()).textSelection(.enabled)
             .environment(\.openURL, OpenURLAction { url in
@@ -865,7 +873,11 @@ struct MarkdownMessage: View {
                 transfers.download(path: path)
                 return .handled
             })
-            .onChange(of: length) { _, value in clock.observe(length: value, at: Date().timeIntervalSinceReferenceDate) }
+            .onChange(of: text) { previous, value in
+                if revealEnabled && value.hasPrefix(previous) { clock.observe(length: length, at: Date().timeIntervalSinceReferenceDate) }
+                else { clock = RevealClock(known: length) }
+            }
+            .onChange(of: revealEnabled) { _, _ in clock = RevealClock(known: length) }
             .task(id: clock.end) {
                 // Pause the timeline once the last character has settled.
                 let wait = clock.end - Date().timeIntervalSinceReferenceDate
@@ -875,7 +887,7 @@ struct MarkdownMessage: View {
             }
     }
 
-    @ViewBuilder private func rowView(_ row: MarkdownRow, now: TimeInterval) -> some View {
+    @ViewBuilder private func rowView(_ row: MarkdownRow, clock: RevealClock, now: TimeInterval) -> some View {
         let p = OrbisPalette(scheme)
         switch row.kind {
         case .spacer: Spacer().frame(height: 2)

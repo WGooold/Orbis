@@ -175,6 +175,7 @@ struct StoreTests {
         let (store, transport) = setup()
         await transport.ready([runtime("a")])
         await transport.event(["type": "message.started", "message": message("m", text: "Hello")], sequence: 1)
+        #expect(store.streamingMessageIds == ["m"])
         await transport.event(["type": "runtime.status", "status": "running"], sequence: 10, channel: "ctl")
         await transport.event(["type": "message.delta", "messageId": "m", "delta": " world"], sequence: 2)
         await transport.event(["type": "message.delta", "messageId": "m", "delta": " duplicate"], sequence: 2)
@@ -183,6 +184,7 @@ struct StoreTests {
         await transport.ready([runtime("a")])
         await transport.event(["type": "message.finished", "message": message("m", text: "After restart")], sequence: 1)
         #expect(store.messages.first?.text == "After restart")
+        #expect(store.streamingMessageIds.isEmpty)
     }
 
     @Test func deltasCanArriveBeforeStartedAndRespectContentIndices() async {
@@ -277,21 +279,47 @@ struct StoreTests {
         #expect(store.selectedRuntimeId == "a")
     }
 
+    @Test func onlyUnfinishedLiveAssistantMessagesEnableStreaming() async throws {
+        let (store, transport) = setup()
+        await transport.ready([runtime("a")])
+        let sync = try #require(transport.syncCommands.last)
+        var initial = snapshot(sync, text: "History")
+        var user = message("user", text: "Question")
+        user["role"] = "user"
+        initial["live"] = ["complete": true, "messages": [
+            ["message": message("live", text: "Reply"), "finished": false],
+            ["message": message("done", text: "Finished reply"), "finished": true],
+            ["message": user, "finished": false]
+        ]]
+        await transport.event(initial)
+        #expect(store.streamingMessageIds == ["live"])
+        // Completion can change only metadata, with no new text to trigger a view update.
+        await transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 1,
+            "source": ["epoch": "fixture", "seq": 2, "ready": true],
+            "live": ["complete": true, "messages": [
+                ["message": message("live", text: "Reply"), "finished": true]
+            ]]], sequence: 2)
+        #expect(store.messages.map(\.text) == ["History", "Reply"])
+        #expect(store.streamingMessageIds.isEmpty)
+    }
+
     @Test func authoritativeLiveInventoryReplacesTemporaryMessagesWhenPersisted() async throws {
         let (store, transport) = setup()
         await transport.ready([runtime("a")])
         let sync = try #require(transport.syncCommands.last)
         var initial = snapshot(sync, text: "History")
         initial["source"] = ["epoch": "epoch-1", "seq": 1, "ready": true]
-        initial["live"] = ["complete": true, "messages": [["message": message("temporary", text: "Streaming")]]]
+        initial["live"] = ["complete": true, "messages": [["message": message("temporary", text: "Streaming"), "finished": false]]]
         await transport.event(initial)
         #expect(store.messages.map(\.text) == ["History", "Streaming"])
+        #expect(store.streamingMessageIds == ["temporary"])
         await transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 1,
             "source": ["epoch": "epoch-1", "seq": 2, "ready": true],
             "display": ["entries": [["entryId": "entry-2", "message": message("persisted", text: "Finished")]]],
             "live": ["complete": true, "messages": [["persistedEntryId": "entry-2", "message": message("temporary", text: "Finished")]]]], sequence: 2)
         #expect(store.messages.map(\.text) == ["History", "Finished"])
         #expect(store.messages.map(\.messageId) == ["History", "persisted"])
+        #expect(store.streamingMessageIds.isEmpty)
         // A missing source transition must recover via a preview, never append guessed state.
         await transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 5,
             "source": ["epoch": "epoch-1", "seq": 6, "ready": true]], sequence: 3)

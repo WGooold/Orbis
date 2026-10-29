@@ -115,6 +115,8 @@ final class HostConnection: ObservableObject {
     private var historyConnected = false
     private var conversations: [String: [ChatMessage]] = [:]
     private var liveMessageIds: [String: Set<String>] = [:]
+    private var unfinishedLiveMessageIds: [String: Set<String>] = [:]
+    @Published private(set) var streamingMessageIds: Set<String> = []
     // 宿主会从 live.messages 里去掉只含工具调用的消息，改由工具清单承载；这里记录还原它们所需的顺序和清单版本。
     private var liveOrders: [String: [String: Int64]] = [:]
     private var liveToolReferences: [String: ToolReference] = [:]
@@ -348,7 +350,7 @@ final class HostConnection: ObservableObject {
         runtimes = []; sessions = cachedSessions(pairing); messages = []; selectedRuntimeId = nil; selectedOfflineSession = nil
         cachedSessionIds = []; cachedIndexLoaded = false; cachedHistoryOptions = []; turnTimings = [:]; timingsBySession = [:]
         loadCachedIndex(pairing)
-        conversations = [:]; liveMessageIds = [:]; displayMessageIds = [:]; messageAliases = [:]; excludedDisplayEntries = [:]
+        conversations = [:]; liveMessageIds = [:]; unfinishedLiveMessageIds = [:]; streamingMessageIds = []; displayMessageIds = [:]; messageAliases = [:]; excludedDisplayEntries = [:]
         liveOrders = [:]; liveToolReferences = [:]; liveTools = [:]
         oldestEntries = [:]; sessionLeaves = [:]; hasOlderHistory = [:]; historyErrors = [:]; historyLoading = []
         sourcePositions = [:]; appliedBaselines = [:]; retiredEpochs = [:]; graphs = [:]; runtimeEventSequences = [:]
@@ -1422,10 +1424,13 @@ final class HostConnection: ObservableObject {
             if let object = event["message"] as? [String: Any], let message: ChatMessage = jsonDecode(object),
                !isRetiredAlias(message.messageId, runtimeId: runtimeId) {
                 liveMessageIds[runtimeId, default: []].insert(message.messageId)
+                if type == "message.started" { unfinishedLiveMessageIds[runtimeId, default: []].insert(message.messageId) }
+                else { unfinishedLiveMessageIds[runtimeId]?.remove(message.messageId) }
                 upsert(message, runtimeId: runtimeId)
             }
         } else if type == "message.delta" { applyDelta(event, runtimeId: runtimeId) }
         else if type == "turn.finished" {
+            unfinishedLiveMessageIds[runtimeId] = []
             for row in event["persistedMessages"] as? [[String: Any]] ?? [] {
                 if let liveId = row["messageId"] as? String, let entryId = row["entryId"] as? String { addAlias(liveId, entryId: entryId, runtimeId: runtimeId) }
             }
@@ -1618,7 +1623,7 @@ final class HostConnection: ObservableObject {
         }
         if event["mode"] as? String == "replace" {
             conversations[runtimeId] = prefix
-            liveMessageIds[runtimeId] = []; liveOrders[runtimeId] = [:]
+            liveMessageIds[runtimeId] = []; unfinishedLiveMessageIds[runtimeId] = []; liveOrders[runtimeId] = [:]
             if prefix.isEmpty { displayMessageIds[runtimeId] = [:] }
         }
         applyProjection(event, runtimeId: runtimeId)
@@ -1767,7 +1772,7 @@ final class HostConnection: ObservableObject {
             let canonical = Set((displayMessageIds[runtimeId] ?? [:]).values)
             let next = Set(rows.compactMap { ($0["message"] as? [String: Any])?["messageId"] as? String })
             conversations[runtimeId]?.removeAll { previousLive.contains($0.messageId) && !canonical.contains($0.messageId) && !next.contains($0.messageId) }
-            liveMessageIds[runtimeId] = []; liveOrders[runtimeId] = [:]
+            liveMessageIds[runtimeId] = []; unfinishedLiveMessageIds[runtimeId] = []; liveOrders[runtimeId] = [:]
         }
         if let display = event["display"] as? [String: Any], let entries = display["entries"] as? [[String: Any]] {
             for row in entries {
@@ -1803,6 +1808,7 @@ final class HostConnection: ObservableObject {
                         continue
                     }
                     liveMessageIds[runtimeId, default: []].insert(message.messageId)
+                    if row["finished"] as? Bool == false { unfinishedLiveMessageIds[runtimeId, default: []].insert(message.messageId) }
                     if let order = integer(row["order"]) { liveOrders[runtimeId, default: [:]][message.messageId] = order }
                     upsert(message, runtimeId: runtimeId)
                 }
@@ -1837,6 +1843,7 @@ final class HostConnection: ObservableObject {
         guard !retired.isEmpty else { return }
         conversations[runtimeId]?.removeAll { retired.contains($0.messageId) }
         liveMessageIds[runtimeId]?.subtract(retired)
+        unfinishedLiveMessageIds[runtimeId]?.subtract(retired)
     }
 
     private func acknowledge(runtimeId: String, syncId: String, result: String) {
@@ -1873,7 +1880,7 @@ final class HostConnection: ObservableObject {
     }
 
     private func publishMessages() {
-        guard let runtimeId = selectedRuntimeId else { messages = []; updateSyncing(); return }
+        guard let runtimeId = selectedRuntimeId else { messages = []; streamingMessageIds = []; updateSyncing(); return }
         let visibleTimings = selectedRuntime?.sessionId.flatMap { timingsBySession[$0] } ?? [:]
         if visibleTimings != turnTimings { turnTimings = visibleTimings }
         // 清单尚未追上本次投影时沿用上一次已确认的工具，避免卡片闪烁或用旧清单造出重复卡片。
@@ -1883,6 +1890,8 @@ final class HostConnection: ObservableObject {
         // Publishing an identical transcript would re-render the whole chat for nothing; the
         // comparison is O(1) when the array storage is unchanged.
         let next = materializeLiveTools(conversations[runtimeId] ?? [], tools: liveTools[runtimeId] ?? [], liveOrders: liveOrders[runtimeId] ?? [:])
+        let streaming = (unfinishedLiveMessageIds[runtimeId] ?? []).intersection(next.filter { $0.role == "assistant" }.map(\.messageId))
+        if streaming != streamingMessageIds { streamingMessageIds = streaming }
         if next != messages { messages = next }
         updateSyncing()
         dispatchSyncDemands()
@@ -1922,7 +1931,7 @@ final class HostConnection: ObservableObject {
         let actions = runtimeActions.filter { $0.value.runtimeId == runtimeId }.map(\.key)
         for id in actions { runtimeActions[id] = nil; pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel() }
         conversations[runtimeId] = nil
-        liveMessageIds[runtimeId] = nil; liveOrders[runtimeId] = nil; liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil
+        liveMessageIds[runtimeId] = nil; unfinishedLiveMessageIds[runtimeId] = nil; liveOrders[runtimeId] = nil; liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil
         displayMessageIds[runtimeId] = nil; messageAliases[runtimeId] = nil
         sourcePositions[runtimeId] = nil; appliedBaselines[runtimeId] = nil; retiredEpochs[runtimeId] = nil; syncDemands.remove(runtimeId)
         pendingLiveBaselines[runtimeId] = nil

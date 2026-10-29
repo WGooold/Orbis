@@ -30,9 +30,13 @@ import java.util.Locale
 internal val LocalStreamingText = staticCompositionLocalOf { false }
 
 /** Existing text stays still. Only newly appended graphemes get arrival times. */
-internal class GlyphRevealClock {
-    private var previous = ""
+internal class GlyphRevealClock(initialText: String = "") {
+    private var previous = initialText
     private val arrivals = linkedMapOf<Int, Pair<Int, Long>>()
+    fun settle(text: String) {
+        previous = text
+        arrivals.clear()
+    }
     fun observe(text: String, now: Long) {
         if (!text.startsWith(previous)) arrivals.clear()
         val start = (if (text.startsWith(previous)) previous.length else text.length).coerceAtLeast(text.length - 128)
@@ -64,7 +68,8 @@ internal fun StreamingMarkdownText(
     textAlign: TextAlign,
 ) {
     val streaming = LocalStreamingText.current && ValueAnimator.areAnimatorsEnabled()
-    val clock = remember { GlyphRevealClock() }
+    // Mounting a row or enabling live rendering establishes a baseline; only later appends animate.
+    val clock = remember(streaming) { GlyphRevealClock(text.text) }
     var frame by remember { mutableLongStateOf(0L) }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val density = LocalDensity.current
@@ -74,7 +79,7 @@ internal fun StreamingMarkdownText(
         Array(8) { BlurMaskFilter(6 * density.density * (it + 1) / 8, BlurMaskFilter.Blur.NORMAL) }
     }
     LaunchedEffect(text.text, streaming) {
-        if (!streaming) return@LaunchedEffect
+        if (!streaming) { clock.settle(text.text); return@LaunchedEffect }
         withFrameMillis { now -> clock.observe(text.text, now); frame = now }
         while (clock.active(frame).isNotEmpty()) withFrameMillis { frame = it }
     }
