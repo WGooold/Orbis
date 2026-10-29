@@ -21,7 +21,6 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material3.Badge
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -43,6 +42,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.dp
 
 /** Paths belong to the computer, so Android's local File.separator must never be used. */
@@ -101,8 +101,10 @@ internal fun RemoteDirectoryBrowser(
             Text(if (showFiles) "此目录没有可浏览的文件或子目录" else "此目录没有子目录",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        // The 8dp content padding only keeps the soft shadows; the list bleeds by the same amount,
+        // so its rows line up with the「上一级」button and the action below.
         LazyColumn(
-            modifier = Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 320.dp),
+            modifier = Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 320.dp).bleedHorizontally(8.dp),
             contentPadding = PaddingValues(8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -128,9 +130,7 @@ internal fun RemoteDirectoryBrowser(
                             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                         else FileNameText(entry.name, Modifier.weight(1f))
                         if (entry.isDir && entry.hasSessions) {
-                            Badge(containerColor = MaterialTheme.colorScheme.secondaryContainer) {
-                                Text("有历史", style = MaterialTheme.typography.labelSmall)
-                            }
+                            Text("有历史", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                         }
                         if (entry.isDir || selected) {
                             Icon(if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.ChevronRight,
@@ -191,4 +191,15 @@ internal fun DownloadFileSheet(
             )
         }
     }
+}
+
+/** Lets a list draw [amount] past both side edges, so content padding kept for shadows does not indent its rows. */
+private fun Modifier.bleedHorizontally(amount: androidx.compose.ui.unit.Dp): Modifier = layout { measurable, constraints ->
+    val extra = amount.roundToPx()
+    val wide = constraints.copy(
+        minWidth = constraints.minWidth + extra * 2,
+        maxWidth = if (constraints.hasBoundedWidth) constraints.maxWidth + extra * 2 else constraints.maxWidth,
+    )
+    val placeable = measurable.measure(wide)
+    layout((placeable.width - extra * 2).coerceAtLeast(0), placeable.height) { placeable.place(-extra, 0) }
 }

@@ -593,6 +593,9 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
     )
 }
 
+/** Any Runtime on this computer is waiting for an answer (shown on the computer switcher). */
+internal fun RemoteState.hasAnyPendingInteraction(): Boolean = runtimes.keys.any(::hasPendingInteraction)
+
 internal fun RemoteState.hasPendingInteraction(runtimeId: String): Boolean =
     runtimes[runtimeId]?.status == "waiting_local_interaction" ||
         conversations[runtimeId]?.interactions?.isNotEmpty() == true

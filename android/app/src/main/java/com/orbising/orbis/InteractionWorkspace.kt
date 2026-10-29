@@ -80,9 +80,12 @@ internal fun InteractionWorkspace(
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var seenIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     val ids = requests.map { it.requestId }
+    // 单个确认直接在输入框上方回答，不打开整页面板（与 iOS 一致）；其余交互仍自动展开面板。
+    val inlineConfirm = requests.size == 1 && requests[0].kind == "confirm"
     LaunchedEffect(ids) {
         val newRequest = ids.firstOrNull { it !in seenIds }
-        if (newRequest != null) {
+        if (inlineConfirm) open = false
+        else if (newRequest != null) {
             if (!open) selectedId = newRequest
             open = true
         }
@@ -90,8 +93,18 @@ internal fun InteractionWorkspace(
         drafts.keys.retainAll(ids.toSet())
         if (ids.isEmpty()) open = false
     }
-    val request = requests.find { it.requestId == selectedId } ?: requests.firstOrNull()
-    if (request == null) { Spacer(Modifier.height(56.dp)); return }
+    val request = requests.find { it.requestId == selectedId } ?: requests.firstOrNull() ?: return
+    if (inlineConfirm) {
+        val draft = drafts.getOrPut(request.requestId) { InteractionDraft() }
+        InteractionPanel(
+            request, request.responseCommandId in pendingCommands, respondConfirm = { respondConfirm(request, it) },
+            respondValue = { respondValue(request, it) }, respondValues = { respondValues(request, it) },
+            modifier = Modifier.fillMaxWidth(), connected = connected,
+            error = if (!connected) "连接已断开，连接后可重试" else request.responseError ?: error,
+            draftState = draft, compact = true,
+        )
+        return
+    }
     NeumorphTextButton(
         text = "待处理 ${requests.size} 项，${request.title}", filled = true,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), onClick = { open = true },

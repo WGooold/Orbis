@@ -349,7 +349,7 @@ struct HomeView: View {
             } title: {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Orbis").font(.orbisTitle())
-                        .foregroundStyle(Color(hex: scheme == .dark ? 0xB8C0CE : 0x899CB7))
+                        .foregroundStyle(Color(hex: scheme == .dark ? 0xD3D9E3 : 0x4E5F7A))
                         .shadow(color: OrbisPalette(scheme).light, radius: 0, x: 1, y: 1)
                     Text("Easy Agents EveryWhere").font(.orbisCaption(.semibold)).tracking(0.4)
                         .foregroundStyle(LinearGradient(colors: [OrbisPalette(scheme).accent, OrbisPalette(scheme).success], startPoint: .leading, endPoint: .trailing))
@@ -365,40 +365,57 @@ struct HomeView: View {
                      OrbisMenuItem(title: "取消配对当前电脑", symbol: "link", destructive: true, action: onUnpair)]
                 }
             }
-            // Fixed height: the reconnect action appears inside this row without moving the cards.
-            HStack {
+            // One fixed row: which computer this page shows, and how it is connected.
+            // The reconnect action appears inside it without moving the cards.
+            HStack(spacing: 10) {
+                hostSwitcher
+                Spacer(minLength: 8)
                 Button(action: onStatus) { ConnectionPill() }.buttonStyle(.plain)
-                Spacer()
                 if store.connection == .offline || store.connection == .error {
-                    OrbisTextButton(title: "重新连接", symbol: "arrow.clockwise", action: store.reconnectSelectedHost)
+                    OrbisIconButton(symbol: "arrow.clockwise", label: "重新连接", size: 36, action: store.reconnectSelectedHost)
                 }
             }.frame(height: 48).padding(.horizontal, 20).padding(.bottom, 2)
-            if store.hosts.allSatisfy({ $0.runtimes.isEmpty }) {
-                OrbisEmptyState(symbol: "desktopcomputer", title: "暂无在线会话")
-                OrbisActionButton(title: "查看会话目录", symbol: "folder", action: onDirectory)
-                    .padding(.horizontal, 24).padding(.bottom, 32)
-            } else {
+            // Only the current computer's sessions: several paired computers never share one list (ADR-0030 修订).
+            if let host = currentHost, !host.runtimes.isEmpty {
                 ScrollView {
                     LazyVStack(spacing: 16) {
-                        ForEach(store.hosts) { host in
-                            HStack {
-                                Button { store.selectHost(host.hostId) } label: {
-                                    Label(host.name, systemImage: host.hostId == store.selectedHostId ? "desktopcomputer" : "desktopcomputer.trianglebadge.exclamationmark")
-                                        .font(.orbisLabel(.semibold))
-                                }.buttonStyle(.plain)
-                                Spacer()
-                                Text(connectionTitle(host.connectionState)).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                            }.padding(.horizontal, 4).padding(.top, 8)
-                            ForEach(host.runtimes.sorted { host.connection.displayName($0).localizedStandardCompare(host.connection.displayName($1)) == .orderedAscending }) { runtime in
-                                runtimeCard(runtime, host: host)
-                            }
-                            if host.runtimes.isEmpty { Text("这台电脑暂无在线会话").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).padding(12) }
+                        ForEach(host.runtimes.sorted { host.connection.displayName($0).localizedStandardCompare(host.connection.displayName($1)) == .orderedAscending }) { runtime in
+                            runtimeCard(runtime, host: host)
                         }
                     }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 28)
                 }.refreshable { store.refresh() }
+            } else {
+                OrbisEmptyState(symbol: "desktopcomputer", title: "暂无在线会话")
+                OrbisActionButton(title: "查看会话目录", symbol: "folder", action: onDirectory)
+                    .padding(.horizontal, 24).padding(.bottom, 32)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(OrbisPalette(scheme).base.ignoresSafeArea())
+    }
+
+    private var currentHost: HostSnapshot? { store.hosts.first { $0.hostId == store.selectedHostId } }
+
+    /// The current computer; with several paired computers it is also the switcher.
+    @ViewBuilder private var hostSwitcher: some View {
+        let p = OrbisPalette(scheme)
+        let name = store.selectedHost?.hostName ?? "选择电脑"
+        if store.pairings.count > 1 {
+            OrbisMenuButton(accessibilityLabel: "切换电脑，当前 \(name)", padding: 0,
+                            items: { hostSwitchMenuItems(store, onAddHost: onAddHost) }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "desktopcomputer").foregroundStyle(p.accent)
+                    Text(name).font(.orbisLabel(.semibold)).lineLimit(1)
+                    // A waiting approval on another computer; the menu names which one.
+                    if store.hosts.contains(where: { $0.hostId != store.selectedHostId && hostHasPendingInteraction($0) }) {
+                        Circle().fill(p.error).frame(width: 7, height: 7).accessibilityLabel("其他电脑有待确认")
+                    }
+                    Image(systemName: "chevron.up.chevron.down").imageScale(.small).foregroundStyle(p.secondary)
+                }.padding(.horizontal, 12).frame(minHeight: 36)
+            }
+        } else {
+            Label(name, systemImage: "desktopcomputer").font(.orbisLabel(.semibold)).lineLimit(1)
+                .padding(.horizontal, 4)
+        }
     }
 
     private func runtimeCard(_ runtime: RuntimeSummary, host: HostSnapshot) -> some View {
@@ -409,7 +426,7 @@ struct HomeView: View {
                 AgentEmblem(kind: kind)
                 VStack(alignment: .leading, spacing: 6) {
                     Text(host.connection.displayName(runtime)).font(.orbisBody(.semibold)).lineLimit(1)
-                    Text("\(host.name)-\(runtime.cwd)")
+                    Text(runtime.cwd)
                         .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
                     HStack(spacing: 10) {
                         Text(agentTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
@@ -437,12 +454,33 @@ struct ConnectionPill: View {
         HStack(spacing: 7) {
             Circle().fill(store.connection == .secured ? OrbisPalette(scheme).success : store.connection == .error ? OrbisPalette(scheme).error : OrbisPalette(scheme).warning)
                 .frame(width: 7, height: 7)
-            Text(connectionTitle(store.connection))
-            if store.connection == .secured { Image(systemName: "lock.shield") }
+            // Secured: the transport path; otherwise the connection phase. Color carries the state.
+            Text(store.connection == .secured ? pathTitle(store.activePath ?? "relay") : connectionTitle(store.connection))
+            if store.connection == .secured { Image(systemName: "lock.shield").accessibilityLabel("端到端加密") }
         }.font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).secondary).padding(.horizontal, 12).frame(minHeight: 36)
             .neuSurface(inset: true, radius: 18, intensity: 0.35, concentric: false)
     }
 }
+
+/// Shared by the home row and the drawer footer: pick another paired computer, or add one.
+@MainActor
+func hostSwitchMenuItems(_ store: OrbisStore, onAddHost: @escaping () -> Void) -> [OrbisMenuItem] {
+    var items: [OrbisMenuItem] = store.pairings.map { host in
+        let snapshot = store.hosts.first { $0.hostId == host.hostId }
+        let state = snapshot.map { "，" + connectionTitle($0.connectionState) } ?? ""
+        let pending = snapshot.map(hostHasPendingInteraction) == true ? "，有待确认" : ""
+        return OrbisMenuItem(title: host.hostName + state + pending, symbol: "desktopcomputer", checked: host.hostId == store.selectedHostId) {
+            if host.hostId != store.selectedHostId { store.connect(hostId: host.hostId) }
+        }
+    }
+    items.append(.divider)
+    items.append(OrbisMenuItem(title: "添加电脑", symbol: "plus", action: onAddHost))
+    return items
+}
+
+/// Another computer's approvals stay visible from the switcher once the list shows only one computer.
+@MainActor
+func hostHasPendingInteraction(_ host: HostSnapshot) -> Bool { host.connection.interactions.values.contains { !$0.isEmpty } }
 
 func connectionTitle(_ state: ConnectionState) -> String {
     switch state {

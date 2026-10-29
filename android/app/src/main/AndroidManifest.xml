@@ -13,9 +13,13 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
         android:theme="@style/Theme.Orbis">
+        <!-- adjustResize: the keyboard shrinks the content instead of panning the whole page
+             (which pushed the top bar off-screen). Edge-to-edge windows get the same result
+             from the composer's imePadding(). -->
         <activity
             android:name=".MainActivity"
-            android:exported="true" />
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize" />
         <!-- Keep the installed launcher component so existing shortcuts and notifications survive upgrades. -->
         <activity-alias
             android:name="dev.pi.remote.MainActivity"

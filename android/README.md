@@ -48,7 +48,7 @@ LAN 地址不可达或握手失败时自动尝试下一个地址，并定期重�
 
 会话目录由 Host 聚合下发，按 cwd 分组，Pi、Codex 与 DeepSeek 的会话在同一棵树里，`agentKind` 只做角标。点开一个只有历史、没在跑的会话会触发激活：Host 按会话记录里的原目录把 agent 拉起来；「新建」则进入只读的目录浏览，选好目录后由 Host 在那里起一个全新会话。
 
-手机可以同时配对并连接多台电脑：每台 Host 一条独立的 Relay 与加密会话，主页与会话侧栏按电脑分组、目录前显示所属电脑，抽屉底部的「电脑」用来切换当前操作对象。同一台电脑重复配对按 `hostId` 覆盖旧凭据，不会出现两条记录。会话与目录归属各自的 `hostId`；`sessionId` 只在单台电脑内唯一，两台电脑上的同名会话是两行。会话中的可选 `hostname` 只提供名称，不能生成另一台主机。空会话、离线缓存、主机改名和目录筛选都不改变归属。Session Catalog 按 Host 分文件落盘并校验 Relay、设备与 Host 身份；旧缓存只在原配对的设备命名空间内迁移。新建操作要求当前 Host 的加密连接，切换电脑会使原操作失效。
+手机可以同时配对并连接多台电脑：每台 Host 一条独立的 Relay 与加密会话，主页与会话侧栏只显示当前电脑的会话；主页顶部的电脑行与抽屉底部的「电脑」都可以切换当前电脑（见 ADR-0030 修订）。同一台电脑重复配对按 `hostId` 覆盖旧凭据，不会出现两条记录。会话与目录归属各自的 `hostId`；`sessionId` 只在单台电脑内唯一，两台电脑上的同名会话是两行。会话中的可选 `hostname` 只提供名称，不能生成另一台主机。空会话、离线缓存、主机改名和目录筛选都不改变归属。Session Catalog 按 Host 分文件落盘并校验 Relay、设备与 Host 身份；旧缓存只在原配对的设备命名空间内迁移。新建操作要求当前 Host 的加密连接，切换电脑会使原操作失效。
 
 APP 启动时只加载并持久化轻量 Session Catalog；用户打开在线 Runtime 后，才根据其当前 Session 读取对应的本地加密 Entry Graph Cache。没有在线 Runtime 的 Session 只能从独立历史入口打开已有缓存，并且只读。聊天页采用聊天气泡布局，普通消息完整显示；thinking 和工具调用默认折叠，点击后查看完整内容。Android 按选中 Runtime 的 leaf 从共享 graph 计算 branch、compaction、custom message、工具关联和显示顺序；同一 Session 的不同 runtime 不会把 sibling branch 合并。graph 同步使用 `sessionId`、graph version、entry digest、leaf、branch fingerprint 和 `syncId`，可验证时只追加缺失 entry，否则完整替换。消息生成期间的内容只作为 runtime/session-scoped overlay，直到持久化 entry 可以关联。取消配对某台电脑时会删除它在本地 Session catalog、graph cache 和传输任务中的记录，其他已配对电脑不受影响；取消最后一台后回到配对页。Slash 菜单来自当前 runtime 发布的 capability manifest；Android 只负责选择命令和参数，并通过统一的 `slash.execute` 提交，Session、分支、上下文、模型和 thinking level 的实际语义均由电脑端的 agent 执行。
 

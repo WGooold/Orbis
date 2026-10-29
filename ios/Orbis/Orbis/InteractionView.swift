@@ -10,9 +10,11 @@ struct InteractionWorkspaceView: View {
     var body: some View {
         let requests = store.interactions[runtimeId] ?? []
         let inline = requests.count == 1 && requests[0].kind == "confirm"
-        Color.clear.frame(height: 48).overlay(alignment: .bottom) {
+        // No reserved space: the panel floats above the composer over the transcript,
+        // so neither an empty slot nor an arriving request moves the input field.
+        Color.clear.frame(height: 0).overlay(alignment: .bottom) {
             if inline, let request = requests.first {
-                requestView(request, inSheet: false).padding(.horizontal, 16).fixedSize(horizontal: false, vertical: true)
+                requestView(request, inSheet: false).padding(.horizontal, 16).padding(.bottom, 10).fixedSize(horizontal: false, vertical: true)
             } else if !requests.isEmpty {
                 Button { open = true } label: {
                     HStack(spacing: 10) {
@@ -22,12 +24,12 @@ struct InteractionWorkspaceView: View {
                         Text("打开").font(.orbisCaption())
                         Image(systemName: "chevron.up").font(.orbisCaption())
                     }.padding(14).frame(minHeight: 48)
-                }.buttonStyle(NeuButtonStyle(radius: 16)).padding(.horizontal, 16).accessibilityIdentifier("interaction-open")
+                }.buttonStyle(NeuButtonStyle(radius: 16)).padding(.horizontal, 16).padding(.bottom, 10).accessibilityIdentifier("interaction-open")
             }
         }
         .sheet(isPresented: $open) {
             VStack(spacing: 14) {
-                OrbisPageHeader(title: "远程交互", back: { open = false }) { Text("\(requests.count) 项").font(.orbisCaption()) }
+                OrbisPageHeader(title: "远程交互", closes: true, back: { open = false }) { Text("\(requests.count) 项").font(.orbisCaption()) }
                 if requests.count > 1 {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
@@ -65,6 +67,7 @@ private struct InteractionRequestView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     @Environment(\.openURL) private var openURL
+    @Environment(\.orbisAccent) private var pageAccent
     let request: InteractionRequest
     let draft: InteractionDraftValue
     let onDraftChange: (InteractionDraftValue) -> Void
@@ -88,12 +91,12 @@ private struct InteractionRequestView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Button { if request.kind != "confirm" { expanded.toggle() } } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.bubble").foregroundStyle(p.accent)
+                        Image(systemName: "exclamationmark.bubble").foregroundStyle(pageAccent ?? p.accent)
                         Text(request.title).font(.orbisBody(.semibold)).lineLimit(2)
                         Spacer(minLength: 0)
                         // One fixed status slot: submitting swaps the label for a spinner without reflowing the title.
                         ZStack(alignment: .trailing) {
-                            Text(expired ? "已过期" : "待确认").font(.orbisCaption()).foregroundStyle(p.accent).opacity(pending ? 0 : 1)
+                            Text(expired ? "已过期" : "待确认").font(.orbisCaption()).foregroundStyle(pageAccent ?? p.accent).opacity(pending ? 0 : 1)
                             if pending { ProgressView().controlSize(.small) }
                         }.accessibilityLabel(pending ? "已提交，等待电脑端确认" : expired ? "已过期" : "待确认")
                         if request.kind != "confirm" {

@@ -18,7 +18,7 @@ struct ConnectionStatusView: View {
                     if store.hosts.count > 1 {
                         StatusSection(title: "已配对电脑") {
                             ForEach(store.hosts) { computer in
-                                Button { store.selectHost(computer.hostId) } label: {
+                                Button { store.connect(hostId: computer.hostId) } label: {
                                     HStack {
                                         Text(computer.name).font(.orbisBody(.semibold))
                                         Spacer()
@@ -30,15 +30,17 @@ struct ConnectionStatusView: View {
                         }
                     }
                     StatusSection(title: "当前连接") {
-                        StatusFact(label: "连接状态", value: store.connection == .secured ? "已连接" : connectionTitle(store.connection),
-                                   tone: store.connection == .secured ? OrbisPalette(scheme).success : store.connection == .error ? OrbisPalette(scheme).error : nil)
-                        StatusFact(label: "连接方式", value: pathTitle(store.activePath))
-                        StatusFact(label: "端到端加密", value: store.connection == .secured ? "已启用" : "未建立",
-                                   tone: store.connection == .secured ? OrbisPalette(scheme).success : nil)
+                        StatusRow(label: "连接状态", value: store.connection == .secured ? "已连接" : connectionTitle(store.connection),
+                                  tone: store.connection == .secured ? OrbisPalette(scheme).success : store.connection == .error ? OrbisPalette(scheme).error : OrbisPalette(scheme).warning)
+                        StatusRow(label: "连接方式", value: pathTitle(store.activePath),
+                                  tone: ["lan", "p2p"].contains(store.activePath ?? "") ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
+                        StatusRow(label: "端到端加密", value: store.connection == .secured ? "已启用" : "未建立",
+                                  tone: store.connection == .secured ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
                     }
                     StatusSection(title: "配对信息") {
-                        StatusFact(label: "电脑", value: store.selectedHost?.hostName ?? "已配对的电脑")
-                        StatusFact(label: "配对状态", value: store.selectedHost == nil ? "未配对" : "已配对", tone: store.selectedHost == nil ? nil : OrbisPalette(scheme).success)
+                        StatusRow(label: "电脑", value: store.selectedHost?.hostName ?? "已配对的电脑")
+                        StatusRow(label: "配对状态", value: store.selectedHost == nil ? "未配对" : "已配对",
+                                  tone: store.selectedHost == nil ? OrbisPalette(scheme).error : OrbisPalette(scheme).success)
                     }
                 }.padding(.horizontal, 20).padding(.vertical, 16)
             }
@@ -57,13 +59,14 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     StatusSection(title: "Agent 供应商") {
+                        // The card is the only surface: the row inside it is plain, not a second raised layer.
                         Button(action: onProviders) {
                             HStack {
                                 Text("供应商配置与切换").font(.orbisBody(.semibold))
                                 Spacer()
                                 Image(systemName: "chevron.right").font(.orbisLabel(.semibold))
-                            }.padding(.horizontal, 14).frame(minHeight: 48).contentShape(Rectangle())
-                        }.buttonStyle(NeuButtonStyle()).foregroundStyle(OrbisPalette(scheme).accent)
+                            }.frame(minHeight: 32).contentShape(Rectangle())
+                        }.buttonStyle(.plain).foregroundStyle(OrbisPalette(scheme).accent)
                     }
                     StatusSection(title: "连接优先级") {
                         ForEach(Array(store.pathPreference.enumerated()), id: \.element) { index, kind in
@@ -98,7 +101,7 @@ struct AgentProvidersView: View {
     var body: some View {
         VStack(spacing: 0) {
             OrbisPageHeader(title: "供应商", back: onBack) {
-                OrbisTextButton(title: "刷新", symbol: "arrow.clockwise") { host.loadProviders(host.providerKind) }
+                OrbisIconButton(symbol: "arrow.clockwise", label: "刷新供应商") { host.loadProviders(host.providerKind) }
                     .disabled(host.providersLoading || host.changingProvider || !host.connected)
             }
             ScrollView {
@@ -202,6 +205,25 @@ struct StatusFact: View {
     }
 }
 
-private func pathTitle(_ path: String?) -> String {
+/// One fact on a line: label on the left, value (with its state color) on the right, as on Android.
+struct StatusRow: View {
+    @Environment(\.colorScheme) private var scheme
+    let label: String
+    let value: String
+    var tone: Color? = nil
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(label).font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                if let tone { Circle().fill(tone).frame(width: 7, height: 7) }
+                Text(value).font(.orbisLabel(.medium)).lineLimit(1)
+                    .foregroundStyle(tone ?? OrbisPalette(scheme).text).textSelection(.enabled)
+            }.padding(.horizontal, tone == nil ? 0 : 10).frame(minHeight: 30)
+                .background { if tone != nil { Capsule().fill(OrbisPalette(scheme).well) } }
+        }
+    }
+}
+
+func pathTitle(_ path: String?) -> String {
     switch path { case "lan": return "局域网"; case "p2p": return "P2P 直连"; case "relay": return "中继"; default: return "尚未确认" }
 }

@@ -740,6 +740,12 @@ class RelayClient(
 
     fun stop(runtimeId: String): String? = sendCommand(runtimeId, buildJsonObject { put("type", "stop") })
 
+    /** Withdraws a queued (not yet delivered) message; the queue event reports the outcome. */
+    fun cancelQueuedMessage(runtimeId: String, queueId: String): String? = sendCommand(runtimeId, buildJsonObject {
+        put("type", "user_message.cancel")
+        put("messageId", queueId)
+    })
+
     fun respond(
         runtimeId: String,
         request: PendingInteraction,

@@ -29,6 +29,39 @@ func matchesSessionProvider(_ session: SessionSummary, filter: String, current: 
     }
 }
 
+/// Session list time in the app's own language: 今天 / 昨天 with a clock time, then a date.
+func sessionTimeTitle(_ milliseconds: Int64, now: Date = Date(), calendar: Calendar = .current) -> String {
+    let date = Date(timeIntervalSince1970: Double(milliseconds) / 1000)
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN"); formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
+    if calendar.isDate(date, inSameDayAs: now) { formatter.dateFormat = "今天 HH:mm" }
+    else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) { formatter.dateFormat = "昨天 HH:mm" }
+    else if calendar.isDate(date, equalTo: now, toGranularity: .year) { formatter.dateFormat = "M月d日" }
+    else { formatter.dateFormat = "yyyy年M月d日" }
+    return formatter.string(from: date)
+}
+
+/// A Codex session owned by a provider other than the current one; nil when it matches or is unknown.
+func sessionOtherProvider(_ session: SessionSummary, current: String?) -> String? {
+    guard session.agentKind == "codex" || session.agentKind == "codexDesktop",
+          let provider = session.modelProvider, !provider.isEmpty, let current, provider != current else { return nil }
+    return provider
+}
+
+/// Label for a slash command's source; nil for the agent's own built-ins (same words as Android).
+func slashSourceTitle(_ source: String?) -> String? {
+    switch source {
+    case nil, "builtin": return nil
+    case "extension": return "扩展"
+    case "prompt": return "模板"
+    case "skill": return "Skill"
+    default: return source
+    }
+}
+
+/// How a message sent during a running turn is delivered; the same words on Android.
+func deliveryTitle(_ delivery: String) -> String { delivery == "steer" ? "插入当前任务" : "完成后发送" }
+
 func runtimeStatusTitle(_ status: String) -> String {
     switch status {
     case "running": return "运行中"

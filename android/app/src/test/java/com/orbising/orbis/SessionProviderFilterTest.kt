@@ -97,4 +97,22 @@ class SessionProviderFilterTest {
         assertNull(state.codexProviderMismatch("pi"))
         assertNull(state.copy(currentProviders = emptyMap()).codexProviderMismatch("other"))
     }
+
+    @Test fun `session list time uses Chinese relative words and only a foreign provider is tagged`() {
+        val zone = java.time.ZoneId.of("Asia/Shanghai")
+        fun ms(month: Int, day: Int, year: Int = 2026) = java.time.ZonedDateTime.of(year, month, day, 9, 5, 0, 0, zone).toInstant().toEpochMilli()
+        val now = java.time.ZonedDateTime.of(2026, 10, 29, 18, 0, 0, 0, zone).toInstant().toEpochMilli()
+        assertEquals("今天 09:05", sessionTimeText(ms(10, 29), now, zone))
+        assertEquals("昨天 09:05", sessionTimeText(ms(10, 28), now, zone))
+        assertEquals("3月2日", sessionTimeText(ms(3, 2), now, zone))
+        assertEquals("2025年12月31日", sessionTimeText(ms(12, 31, 2025), now, zone))
+        val rows = cachedHistoryTree(RemoteState(hostId = "paired-host", sessions = sessions)).single().directories.single().sessions
+        val other = rows.single { it.sessionId == "other" }
+        assertEquals("openai", sessionOtherProvider(other, "custom"))
+        assertNull(sessionOtherProvider(other, "openai"))
+        assertNull(sessionOtherProvider(other, null))
+        assertNull(sessionOtherProvider(rows.single { it.sessionId == "pi" }, "custom"))
+        assertEquals("插入当前任务", queuedMessageDeliveryText("steer"))
+        assertEquals("完成后发送", queuedMessageDeliveryText("followUp"))
+    }
 }

@@ -56,9 +56,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -185,10 +188,11 @@ internal fun SessionDrawer(
     onSetArchived: (String, String, Boolean) -> Unit,
     onRequestProviders: () -> Unit = {},
 ) {
-    val tree = remember(hosts) {
-        cachedHistoryTree(hosts.map { it.state })
-    }
     val activeHostId = state.hostId
+    // 只列当前电脑的目录：多台电脑不合并成一棵树，切换在页脚的电脑行（ADR-0030 修订）。
+    val tree = remember(hosts, activeHostId) {
+        cachedHistoryTree(hosts.filter { it.hostId == activeHostId }.map { it.state })
+    }
     var agentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
     val agentFilter = drawerAgentFilter(agentFilterKey)
     val currentProvider = state.currentProviders[agentFilter.key]
@@ -236,7 +240,6 @@ internal fun SessionDrawer(
     }
     val directoryCount = sections.sumOf { it.directories.size }
     val sessionCount = sections.sumOf { section -> section.directories.sumOf { it.sessions.size } }
-    val showHostHeaders = sections.size > 1
     // Keep only one branch open. Searching reveals the first result without losing its parent.
     var expandedKey by rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider) {
         mutableStateOf(
@@ -384,11 +387,6 @@ internal fun SessionDrawer(
                 sections.forEach { section ->
                     val hostSnapshot = hosts.firstOrNull { it.hostId == section.hostId }
                     val isActiveHost = section.hostId == activeHostId
-                    if (showHostHeaders) {
-                        item(key = "host:${section.hostId}") {
-                            DrawerHostHeader(section.hostName, isActiveHost)
-                        }
-                    }
                     section.directories.forEach { directory ->
                         val branchKey = section.hostId + '\u0000' + directory.cwd
                         val expanded = branchKey == expandedKey
@@ -411,6 +409,8 @@ internal fun SessionDrawer(
                                 DrawerBranch {
                                     DrawerSessionRow(
                                         row = row,
+                                        runtimeStatus = row.runtimeId?.let(state.runtimes::get)?.status,
+                                        otherProvider = sessionOtherProvider(row, state.currentProviders[row.agentKind]),
                                         onOpenSession = {
                                             if (isActiveHost && state.codexProviderMismatch(row.sessionId) != null) {
                                                 blockedSession = section.hostId to row.sessionId
@@ -574,34 +574,6 @@ private fun DrawerHostSwitcher(
     }
 }
 
-/** Host name above its directories when the sidebar shows more than one computer. */
-@Composable
-private fun DrawerHostHeader(name: String, active: Boolean) {
-    Row(
-        Modifier.fillMaxWidth().padding(start = 4.dp, top = 8.dp, bottom = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Icon(
-            Icons.Rounded.Computer,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            name,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (active) {
-            Text("当前", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-        }
-    }
-}
-
 @Composable
 private fun DrawerDirectoryHeader(
     directory: CachedDirectoryGroup,
@@ -620,7 +592,7 @@ private fun DrawerDirectoryHeader(
         onClick = onClick,
         contentInset = 14.dp,
     ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(
                     if (expanded) Icons.Rounded.FolderOpen else Icons.Rounded.Folder,
@@ -628,7 +600,8 @@ private fun DrawerDirectoryHeader(
                     modifier = Modifier.size(24.dp),
                     tint = accent,
                 )
-                Column(Modifier.weight(1f)) {
+                // 名称与完整路径同一列对齐；会话数靠右（与 iOS 一致）。
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
                         directoryDisplayName(directory.cwd).ifBlank { "未记录目录" },
                         style = MaterialTheme.typography.titleSmall,
@@ -637,12 +610,23 @@ private fun DrawerDirectoryHeader(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        "${directory.sessions.size} 个会话",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    if (directory.cwd.isNotBlank()) {
+                        Text(
+                            directory.cwd,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
+                Text(
+                    "${directory.sessions.size}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.semantics { contentDescription = "${directory.sessions.size} 个会话" },
+                )
                 NeumorphIconButton(
                     onClick = onCreate,
                     icon = Icons.Rounded.Add,
@@ -656,16 +640,6 @@ private fun DrawerDirectoryHeader(
                     contentDescription = if (expanded) "收起目录" else "展开目录",
                     tint = accent,
                     modifier = Modifier.size(20.dp).rotate(rotation),
-                )
-            }
-            if (directory.cwd.isNotBlank()) {
-                Text(
-                    directory.cwd,
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -691,6 +665,10 @@ private fun DrawerBranch(content: @Composable () -> Unit) {
 @Composable
 private fun DrawerSessionRow(
     row: CachedSessionRow,
+    /** Status of the live Runtime for an online row; null for a catalog/history row. */
+    runtimeStatus: String?,
+    /** Provider that owns this Codex session when it differs from the current one. */
+    otherProvider: String?,
     onOpenSession: () -> Unit,
     onOpenHistory: () -> Unit,
     archiveEnabled: Boolean,
@@ -714,36 +692,22 @@ private fun DrawerSessionRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            // 与 iOS 同一行结构：agent 图标、标题，下面是状态、时间与必要的标注；整行可点，不再另放箭头。
+            AgentIcon(agentBrand(row.agentKind), modifier = Modifier.size(22.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(row.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    AgentIcon(agentBrand(row.agentKind), modifier = Modifier.size(14.dp))
-                    Text(
-                        if (row.agentKind == "codexDesktop") "Codex 桌面版" else if (row.agentKind == "codex") "Codex 终端" else agentBrand(row.agentKind).title,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = agentBrand(row.agentKind).accent(),
-                    )
-                    if (row.isOnline) {
-                        Box(Modifier.size(4.dp).background(MaterialTheme.colorScheme.tertiary, CircleShape))
-                        Text("在线", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
-                    }
-                }
-                if (row.isCodex) {
-                    Text(
-                        row.modelProvider ?: "未知 provider",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val caption = MaterialTheme.typography.labelSmall
+                    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+                    if (runtimeStatus != null) RuntimeStatusIndicator(runtimeStatus)
+                    else if (row.catalogEntry?.hasHistoryCache == true) Text("缓存历史", style = caption, color = muted)
+                    if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = caption, color = muted, maxLines = 1)
+                    if (row.agentKind == "codexDesktop") Text("桌面版", style = caption, color = agentBrand(row.agentKind).accent(), maxLines = 1)
+                    // 与 iOS 同一个提示色（橙），不是错误。
+                    val warning = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFFF2C26B) else Color(0xFF9A5B00)
+                    otherProvider?.let { Text(it, style = caption, color = warning, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
             }
-            Icon(
-                Icons.Rounded.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(16.dp),
-            )
             Box {
                 NeumorphIconButton(
                     onClick = { menuOpen = true },

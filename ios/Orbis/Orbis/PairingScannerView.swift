@@ -81,7 +81,7 @@ struct PairingScannerView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            OrbisPageHeader(title: "扫描配对二维码", back: { dismiss() }) { EmptyView() }
+            OrbisPageHeader(title: "扫描配对二维码", closes: true, back: { dismiss() }) { EmptyView() }
             QRScannerRepresentable(onCode: { code in
                 do { _ = try PairingQR.parse(code); onCode(code) }
                 catch { failure = error.localizedDescription }
