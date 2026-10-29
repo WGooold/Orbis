@@ -119,7 +119,7 @@ internal fun RuntimePermissionsStatus(
         modifier = modifier.clip(RoundedCornerShape(12.dp))
             .clickable(role = Role.Button, onClickLabel = "查看权限与审批设置") { expanded = true }
             .semantics { contentDescription = "当前会话权限"; stateDescription = label }
-            .heightIn(min = 48.dp).padding(horizontal = 8.dp, vertical = 8.dp),
+            .heightIn(min = 32.dp).padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {

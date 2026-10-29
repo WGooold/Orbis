@@ -1686,7 +1686,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                     }
                     Row(
                         Modifier.fillMaxWidth().navigationBarsPadding()
-                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                            .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp),
                         verticalAlignment = Alignment.Bottom,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
@@ -3018,15 +3018,15 @@ private fun ComposerContextRail(status: ComposerStatus) {
 /** Numeric detail is noise until the context actually starts running out; then it fades in. */
 @Composable
 private fun ComposerContextNotice(status: ComposerStatus) {
-    val label = status.contextLabel.orEmpty()
+    val label = status.contextLabel ?: return
+    if (status.severity == ContextUsageSeverity.Normal) return
     Text(
-        if (status.severity != ContextUsageSeverity.Normal) "上下文 $label" else "",
-        modifier = Modifier.fillMaxWidth().height(22.dp).padding(horizontal = 16.dp, vertical = 2.dp),
+        "上下文 $label",
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
         style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.Medium,
         color = if (status.severity == ContextUsageSeverity.Critical) MaterialTheme.colorScheme.error
             else MaterialTheme.colorScheme.primary,
-        maxLines = 1,
     )
 }
 
