@@ -83,7 +83,9 @@ struct SessionDrawerView: View {
                     .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).fixedSize()
             }.frame(minHeight: 28)
             ScrollView {
-                LazyVStack(spacing: 14) {
+                // A directory can shrink by several screens while its header is offscreen.
+                // Measure every group so the scroll extent never retains an old lazy estimate.
+                VStack(spacing: 14) {
                     if directories.isEmpty {
                         OrbisEmptyState(symbol: state.query.isEmpty ? "folder" : "magnifyingglass", title: emptyTitle)
                             .padding(.top, 40)
@@ -92,7 +94,10 @@ struct SessionDrawerView: View {
                         directoryGroup(directory)
                     }
                 }.padding(6).padding(.bottom, 16)
-            }.scrollDismissesKeyboard(.interactively)
+            }
+            // As in the transcript, let the scroll view resolve shrinking content itself.
+            .defaultScrollAnchor(.top)
+            .scrollDismissesKeyboard(.interactively)
             OrbisPalette(scheme).well.frame(height: 2).clipShape(Capsule()).accessibilityHidden(true)
             hostSelector
         }.padding(.horizontal, 18)

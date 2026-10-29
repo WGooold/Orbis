@@ -114,9 +114,10 @@ private final class PreviewTransport: OrbisTransport {
         }
         if object["type"] as? String == "session.list" {
             let names = ["对齐移动端的使用体验", "梳理项目中的页面结构", "检查服务端连接状态", "优化聊天滚动与输入体验", "整理测试结果", "添加扫码配对", "检查深色模式"]
-            let sessions: [[String: Any]] = (1...7).map { index -> [String: Any] in
+            let longDirectory = ProcessInfo.processInfo.arguments.contains("--preview-long-directory")
+            let sessions: [[String: Any]] = (1...(longDirectory ? 25 : 7)).map { index -> [String: Any] in
                 let agent = index == 2 ? "pi" : index == 3 ? "dsh" : "codex"
-                return ["sessionId": "session-\(index)", "name": names[index - 1],
+                return ["sessionId": "session-\(index)", "name": index <= names.count ? names[index - 1] : "较早会话 \(index)",
                  "cwd": index == 2 ? "/Projects/website" : "/Projects/orbis", "createdAt": 1793145600000, "modifiedAt": 1793232000000 - index * 100000,
                  "messageCount": 12, "agentKind": agent, "archived": false, "modelProvider": index == 4 ? "team" : "openai"]
             }

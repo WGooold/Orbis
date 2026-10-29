@@ -351,6 +351,39 @@ final class OrbisUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["会话目录"].exists)
     }
 
+    func testDrawerCollapseShrinksContentWithoutAnotherDrag() {
+        let app = launch("drawer", arguments: ["--preview-long-directory"])
+        let expanded = app.buttons["收起目录 /Projects/orbis，24 个会话"]
+        let collapsed = app.buttons["展开目录 /Projects/orbis，24 个会话"]
+        let nextDirectory = app.buttons["展开目录 /Projects/website，1 个会话"]
+        XCTAssertTrue(expanded.waitForExistence(timeout: 8))
+
+        for _ in 0..<2 {
+            expanded.tap()
+            XCTAssertTrue(collapsed.waitForExistence(timeout: 3))
+            XCTAssertTrue(nextDirectory.isHittable)
+            XCTAssertEqual(nextDirectory.frame.minY - collapsed.frame.maxY, 14, accuracy: 2)
+            capture("drawer-directory-collapsed", app: app)
+            collapsed.tap()
+            XCTAssertTrue(expanded.waitForExistence(timeout: 3))
+        }
+
+        let scroll = app.scrollViews.firstMatch
+        let showMore = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "再显示 19 个会话")).firstMatch
+        for _ in 0..<4 where !showMore.isHittable { scroll.swipeUp() }
+        XCTAssertTrue(showMore.isHittable)
+        showMore.tap()
+        let showLess = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "收起较早会话")).firstMatch
+        for _ in 0..<12 where !showLess.isHittable { scroll.swipeUp() }
+        XCTAssertTrue(showLess.isHittable)
+        showLess.tap()
+        // Shrinking the list must clamp the old offset without requiring a corrective drag.
+        XCTAssertTrue(showMore.waitForExistence(timeout: 3))
+        XCTAssertTrue(showMore.isHittable)
+        XCTAssertTrue(nextDirectory.isHittable)
+        capture("drawer-older-sessions-collapsed", app: app)
+    }
+
     func testPageScreenshotsInBothAppearances() {
         for dark in [false, true] {
             for screen in ["pairing", "home", "drawer", "chat", "status", "settings", "providers", "downloads", "approval"] {
