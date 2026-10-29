@@ -141,4 +141,98 @@ struct PresentationTests {
         #expect(sections[2].text == "# 小标题")
     }
 
+    @Test func contextRailRequiresKnownWindowAndFallsBackToTokens() {
+        #expect(contextUsagePercent(nil) == nil)
+        #expect(contextUsagePercent(RuntimeContextUsage(tokens: 30, contextWindow: nil, percent: 50)) == nil)
+        #expect(contextUsagePercent(RuntimeContextUsage(tokens: 30, contextWindow: 120, percent: nil)) == 25)
+        #expect(contextUsagePercent(RuntimeContextUsage(tokens: 300, contextWindow: 120, percent: nil)) == 100)
+        #expect(runtimeStatusTitle("unknown") == "状态待核对")
+        #expect(queueStateTitle("accepted") == "已排队")
+        #expect(queueStateTitle("not_cancelable") == "无法撤回")
+    }
+
+    @Test @MainActor func ordinaryInteractionDraftsRestoreWhileSecretsStayInMemory() throws {
+        let suite = "orbis-interaction-test-" + UUID().uuidString
+        let preferences = try #require(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let request = InteractionRequest(runtimeId: "r", requestId: "q", extensionId: "e", kind: "questionnaire", title: "问题", description: nil, expiresAt: 9_999_999_999_999, options: nil, placeholder: nil, initialValue: nil, minLength: nil, maxLength: nil, minSelections: nil, maxSelections: nil, secret: true, confirmLabel: nil, cancelLabel: nil, argumentSummary: nil, externalUrl: nil,
+            questions: [.init(id: "public", header: nil, question: "普通回答", options: [], multiSelect: false, allowOther: true, allowNotes: true, secret: false), .init(id: "private", header: nil, question: "保密回答", options: [], multiSelect: false, allowOther: true, allowNotes: true, secret: true)])
+        let cache = InteractionDraftCache(preferences: preferences)
+        let draft = InteractionDraftValue(input: "secret-input", choices: ["one"], answers: ["public": ["normal"], "private": ["secret-choice"]], other: ["public": "普通文本", "private": "secret-other"], notes: ["private": "secret-note"])
+        cache.save(draft, for: "host/session/request", request: request)
+        #expect(cache.value(for: "host/session/request", request: request) == draft)
+        let restored = InteractionDraftCache(preferences: preferences).value(for: "host/session/request", request: request)
+        #expect(restored.input.isEmpty); #expect(restored.answers["public"] == ["normal"])
+        #expect(restored.other["public"] == "普通文本"); #expect(restored.answers["private"] == nil)
+        #expect(restored.other["private"] == nil); #expect(restored.notes["private"] == nil)
+        let bytes = try #require(preferences.data(forKey: "orbis.interactionDrafts.v1"))
+        #expect(!String(decoding: bytes, as: UTF8.self).contains("secret"))
+        func host(_ id: String, device: String = "device") -> HostPairing {
+            HostPairing(hostId: id, hostName: id, hostPub: "pub", pskRoot: "root", relay: RelayCredential(relayUrl: "wss://relay.test", deviceId: device, credential: "credential"), lan: [])
+        }
+        let first = interactionDraftKey(host: host("a"), sessionId: "s", request: request)
+        let second = interactionDraftKey(host: host("b"), sessionId: "s", request: request)
+        #expect(first != second)
+        #expect(first != interactionDraftKey(host: host("a"), sessionId: "other", request: request))
+        #expect(first != interactionDraftKey(host: host("a", device: "repaired"), sessionId: "s", request: request))
+        cache.save(InteractionDraftValue(other: ["public": "电脑 A"]), for: first, request: request)
+        cache.save(InteractionDraftValue(other: ["public": "电脑 B"]), for: second, request: request)
+        let fresh = InteractionDraftCache(preferences: preferences)
+        #expect(fresh.value(for: first, request: request).other["public"] == "电脑 A")
+        #expect(fresh.value(for: second, request: request).other["public"] == "电脑 B")
+    }
+
+    @Test func assistantCardsRespectTurnBoundariesAndKeepFollowingToolResultsTogether() {
+        func message(_ id: String, _ role: String) -> ChatMessage {
+            ChatMessage(messageId: id, role: role, content: [ChatContent(type: "text", text: id, toolName: nil, artifact: nil)], timestamp: 0, isError: nil)
+        }
+        let messages = [message("user", "user"), message("first", "assistant"), message("tool", "tool"), message("next", "assistant"), message("last", "assistant")]
+        #expect(chatRows(messages).map { $0.messages.map(\.messageId) } == [["user"], ["first", "tool", "next", "last"]])
+        #expect(chatRows(messages, turnIdsByMessageId: ["first": "turn-a", "next": "turn-b"]).map { $0.messages.map(\.messageId) } == [["user"], ["first", "tool"], ["next"], ["last"]])
+    }
+
+    @Test @MainActor func independentInteractionCachesMergeWithoutRemovingOtherRuntimesDrafts() throws {
+        let suite = "orbis-interaction-merge-" + UUID().uuidString
+        let preferences = try #require(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let data = try JSONSerialization.data(withJSONObject: ["runtimeId": "r", "requestId": "q", "extensionId": "e", "kind": "input", "title": "Input", "expiresAt": 9_999_999_999_999])
+        let request = try JSONDecoder().decode(InteractionRequest.self, from: data)
+        let first = InteractionDraftCache(preferences: preferences), second = InteractionDraftCache(preferences: preferences)
+        first.save(InteractionDraftValue(input: "First"), for: "runtime-a", request: request)
+        second.save(InteractionDraftValue(input: "Second"), for: "runtime-b", request: request)
+        first.save(InteractionDraftValue(input: "First revised"), for: "runtime-a", request: request)
+        let restored = InteractionDraftCache(preferences: preferences)
+        #expect(restored.value(for: "runtime-a", request: request).input == "First revised")
+        #expect(restored.value(for: "runtime-b", request: request).input == "Second")
+    }
+
+    @Test func questionnaireSubmitUsesTheSameConstraintsAsTheCommandBoundary() throws {
+        let data = try JSONSerialization.data(withJSONObject: ["runtimeId": "r", "requestId": "q", "extensionId": "e", "kind": "questionnaire", "title": "Question", "expiresAt": 9_999_999_999_999,
+            "questions": [["id": "one", "question": "Choose", "options": [["value": "a", "label": "A"]], "multiSelect": false, "allowOther": true, "allowNotes": true]]])
+        let request = try JSONDecoder().decode(InteractionRequest.self, from: data)
+        var draft = InteractionDraftValue(answers: ["one": ["a"]], other: ["one": "custom"])
+        #expect(!request.acceptsResponse(draft.response(for: request)))
+        draft.answers = [:]
+        #expect(request.acceptsResponse(draft.response(for: request)))
+        draft.notes["one"] = String(repeating: "a", count: 4_001)
+        #expect(!request.acceptsResponse(draft.response(for: request)))
+        draft.notes["one"] = "valid"
+        draft.other["one"] = "  "
+        #expect(!request.acceptsResponse(draft.response(for: request)))
+    }
+
+    @Test func legacyToolArgumentsAndResultsStayAssociatedWithoutDuplicatingRows() {
+        let block = ChatContent(type: "tool_call", text: nil, toolName: nil, artifact: nil, toolCallId: "tool", arguments: .object(["line": .integer(9_007_199_254_740_993)]))
+        let call = ChatMessage(messageId: "call", role: "assistant", content: [block], timestamp: 0, isError: nil, toolName: "read")
+        let result = ChatMessage(messageId: "result", role: "tool", content: [ChatContent(type: "text", text: "done", toolName: nil, artifact: nil)], timestamp: 1, isError: nil, toolCallId: "tool", toolName: "read")
+        let presentation = chatPresentation([call, result, call])
+        #expect(presentation.messages.map(\.messageId) == ["call"])
+        #expect(presentation.toolResults["tool"] == result)
+        #expect(toolArgumentsText(block)?.contains("9007199254740993") == true)
+        #expect(fullMessageText(call).contains("[工具] read"))
+        #expect(desktopAttachTitle(nil) == "未知")
+        #expect(desktopAttachTitle("closed") == "未接入")
+        #expect(desktopAttachTitle("unsupported") == "不可用")
+    }
+
 }

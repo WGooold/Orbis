@@ -63,7 +63,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>用于扫描电脑上的 Orbis 配对二维码。</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>用于连接同一局域网内的 Orbis 调试中继服务。</string>
+	<string>用于通过加密直连访问局域网内已配对的 Orbis Host。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

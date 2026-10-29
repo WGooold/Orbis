@@ -29,17 +29,34 @@ struct ToolDetailView: View {
                 OrbisNotice(text: error, error: true).padding(.horizontal, 24)
                 OrbisActionButton(title: "重新读取", symbol: "arrow.clockwise", action: reader.retry).padding(.horizontal, 24)
             } else if reader.nextCursor != nil {
-                OrbisActionButton(title: "读取下一页", symbol: "arrow.down", action: reader.loadNext).disabled(reader.loading).padding(.horizontal, 24)
+                OrbisActionButton(title: "读取下一页", symbol: "arrow.down", action: reader.loadNext).disabled(reader.loading || reader.exporting).padding(.horizontal, 24)
             } else if !reader.loading {
                 Text(reader.final ? "已到当前读取范围末尾" : "已到当前末尾 · 工具可能仍在运行").font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary)
             }
+            if reader.exporting {
+                ProgressView("正在导出 · \(byteCount(reader.exportedBytes))").font(.system(size: 12)).accessibilityIdentifier("tool-export-progress")
+                OrbisActionButton(title: "取消导出", symbol: "xmark", action: reader.cancelExport).padding(.horizontal, 24)
+            } else {
+                HStack(spacing: 12) {
+                    OrbisActionButton(title: "导出当前部分", symbol: "square.and.arrow.down", action: export).disabled(reader.loading).accessibilityIdentifier("tool-export")
+                    if reader.exportComplete, let path = reader.exportedPath {
+                        ShareLink(item: URL(fileURLWithPath: path)) { Label("分享导出文件", systemImage: "square.and.arrow.up").font(.system(size: 12)).frame(minHeight: 48) }
+                            .buttonStyle(NeuButtonStyle()).accessibilityIdentifier("tool-export-share")
+                    }
+                }.padding(.horizontal, 24)
+                if reader.exportComplete { Text("已导出 \(byteCount(reader.exportedBytes))").font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary) }
+            }
             Toggle("跟随输出", isOn: Binding(get: { reader.following }, set: reader.follow))
                 .toggleStyle(NeuToggleStyle())
-                .font(.system(size: 14)).padding(.horizontal, 24).padding(.bottom, 24).disabled(reader.final && reader.nextCursor == nil)
+                .font(.system(size: 14)).padding(.horizontal, 24).padding(.bottom, 24).disabled(reader.exporting || (reader.final && reader.nextCursor == nil))
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
             .onDisappear { reader.close() }
             .onChange(of: scenePhase) { _, phase in if phase != .active { reader.close(); dismiss() } }
             .onChange(of: reader.locator) { _, locator in if locator == nil { dismiss() } }
+    }
+    private func export() {
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        reader.export(to: documents.appendingPathComponent("Tool Exports", isDirectory: true).appendingPathComponent("tool-" + UUID().uuidString + ".txt"))
     }
 }
 

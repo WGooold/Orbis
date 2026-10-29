@@ -188,4 +188,95 @@ struct HostStateTests {
         #expect(state.diagnosticsError == "读取失败")
         state.setConnection(pairing(), connected: false)
     }
+
+    private func session(_ id: String) -> [String: Any] {
+        ["sessionId": id, "cwd": "/repo", "createdAt": 1, "modifiedAt": 2, "messageCount": 1, "agentKind": "pi"]
+    }
+    private func catalog(_ state: HostState, _ sent: Sent, revision: Int = 1, snapshotId: String = "catalog") {
+        let request = sent.values.last { $0["type"] as? String == "agent.state.request" }!
+        state.consume(["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "model-a",
+            "domains": [domain("catalog", revision: revision, value: ["totalSessions": 2, "sessions": [session("first")],
+                "snapshotId": snapshotId, "nextCursor": "cursor-" + snapshotId, "truncated": false,
+                "backends": [["kind": "pi", "ready": true, "complete": true, "sessions": 2]]])], "missing": [], "truncated": false])
+    }
+    private func catalogPage(_ request: [String: Any], snapshot: String = "catalog", revision: Int = 1,
+                             offset: Int = 1, sessions: [[String: Any]], cursor: String? = nil) -> [String: Any] {
+        ["type": "agent.state.range.page", "requestId": request["requestId"]!, "scope": "host", "domain": "catalog",
+         "page": ["modelEpoch": "model-a", "revision": revision, "snapshotId": snapshot, "offset": offset,
+                  "totalSessions": 2, "sessions": sessions, "nextCursor": cursor as Any? ?? NSNull(), "complete": true, "truncated": false]]
+    }
+
+    @Test func catalogPagesAccumulateFixedSnapshotBeforeAllowingPruning() throws {
+        let (state, sent) = setup()
+        var inventories: [([SessionSummary], Set<String>)] = []
+        state.didChangeCatalog = { inventories.append(($0, $1)) }
+        catalog(state, sent)
+        #expect(inventories.last?.0.map(\.sessionId) == ["first"])
+        #expect(inventories.last?.1.isEmpty == true)
+        #expect(state.problem(for: "catalog")?.contains("1 / 2") == true)
+        let request = sent.last
+        #expect(request["type"] as? String == "agent.state.range.request")
+        #expect(request["limit"] as? Int == 200)
+        state.consume(catalogPage(request, sessions: [session("second")]))
+        #expect(inventories.last?.0.map(\.sessionId) == ["first", "second"])
+        #expect(inventories.last?.1 == ["pi"])
+        #expect(state.catalogRange?.nextCursor == nil)
+        #expect(state.problem(for: "catalog") == nil)
+        #expect(state.domains["catalog"]?.value["sessions"].array.count == 1) // Applied first-window baseline stays immutable.
+    }
+
+    @Test func catalogRetiresOldCursorsAndRejectsDuplicateOrIncompletePages() throws {
+        let (state, sent) = setup()
+        catalog(state, sent)
+        let stale = sent.last
+        catalog(state, sent, revision: 2, snapshotId: "new")
+        let current = sent.last
+        state.consume(catalogPage(stale, sessions: [session("old")]))
+        #expect(state.catalogRange?.sessions.map(\.sessionId) == ["first"])
+        #expect(state.catalogRange?.error == nil)
+        state.consume(catalogPage(current, snapshot: "new", revision: 2, sessions: [session("first")]))
+        #expect(state.catalogRange?.error == "invalid_page")
+        #expect(state.catalogRange?.sessions.map(\.sessionId) == ["first"])
+        state.refresh(["catalog"])
+        catalog(state, sent, revision: 3, snapshotId: "third")
+        state.consume(catalogPage(sent.last, snapshot: "third", revision: 3, sessions: []))
+        #expect(state.catalogRange?.error == "invalid_page")
+    }
+
+    @Test func scopeErrorsAndDiagnosticFailuresAreCorrelated() {
+        let (state, sent) = setup()
+        var agent = snapshot(sent, domains: [domain("identity")]); agent["scope"] = "agent"
+        #expect(!state.consume(agent))
+        state.readDiagnostics()
+        state.consume(["type": "diagnostics.page", "requestId": sent.last["requestId"]!, "error": "source_unavailable"])
+        #expect(state.diagnosticsError == "source_unavailable")
+        #expect(!state.diagnosticsLoading)
+    }
+
+    @Test func invalidCatalogDoesNotAdvanceBaselineAndRefreshCanRetryAFailedCursor() {
+        let (state, sent) = setup()
+        catalog(state, sent)
+        state.consume(catalogPage(sent.last, sessions: [session("first")]))
+        #expect(state.catalogRange?.error == "invalid_page")
+        state.refresh(["catalog"]); catalog(state, sent)
+        #expect(state.catalogRange?.error == nil)
+        #expect(sent.last["type"] as? String == "agent.state.range.request")
+        let request = sent.values.last { $0["type"] as? String == "agent.state.request" }!
+        state.consume(["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "model-a",
+            "domains": [domain("catalog", revision: 2, value: ["totalSessions": 0, "sessions": [session("bad")], "truncated": false])], "missing": [], "truncated": false])
+        #expect(state.domains["catalog"]?.revision == 1)
+        #expect(state.modelError != nil)
+    }
+
+    @Test func hostModelGenerationCanChangeOnAnAuthenticatedReady() {
+        let (state, sent) = setup()
+        installProviders(state, sent)
+        let old = snapshot(sent, domains: [domain("providers", revision: 99, value: providers())])
+        #expect(state.beginEpoch("next"))
+        state.consume(snapshot(sent, domains: [domain("providers", value: providers(enabled: "team"), epoch: "next")], epoch: "next"))
+        state.consume(old)
+        #expect(state.domains["providers"]?.modelEpoch == "next")
+        #expect(state.providers.first(where: \.enabled)?.id == "team")
+        #expect(!state.beginEpoch("model-a"))
+    }
 }

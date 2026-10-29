@@ -12,7 +12,7 @@ struct HistoryBranchView: View {
 
     private var options: [RuntimeOption] {
         guard let id = store.selectedRuntimeId else { return [] }
-        return store.commands[id]?.first { $0.name == "tree" }?.argument?.options ?? []
+        return store.isViewingCachedSession ? store.cachedHistoryOptions : store.commands[id]?.first { $0.name == "tree" }?.argument?.options ?? store.cachedHistoryOptions
     }
     private var visible: [RuntimeOption] {
         options.filter { option in
@@ -38,6 +38,7 @@ struct HistoryBranchView: View {
                 TextField("搜索历史与分支", text: $query).autocorrectionDisabled().font(.system(size: 14)).textInputAutocapitalization(.never)
                 if !query.isEmpty { OrbisIconButton(symbol: "xmark", label: "清除搜索", size: 28) { query = "" } }
             }.padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).neuSurface(inset: true, radius: 16, intensity: 0.6).padding(.horizontal, 20)
+            if store.isViewingCachedSession { OrbisNotice(text: "当前显示本机缓存。浏览节点和分支不会改变电脑端会话。").padding(.horizontal, 20) }
             if options.isEmpty {
                 OrbisEmptyState(symbol: "clock.arrow.circlepath", title: "当前会话尚未提供历史分支", detail: "连接电脑并刷新会话后重试。")
                 OrbisActionButton(title: "刷新会话", symbol: "arrow.clockwise", action: store.refresh).padding(.horizontal, 24).padding(.bottom, 24).disabled(!store.canSend)
@@ -84,7 +85,7 @@ struct HistoryBranchView: View {
                 Text(option.label).font(.system(size: 14)).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
             }.padding(14).frame(minHeight: 64)
         }.buttonStyle(NeuButtonStyle(selected: selected?.value == option.value || option.tree?.isCurrent == true))
-            .disabled(!store.canSend || actionPending)
+            .disabled((!store.canSend && !store.isViewingCachedSession) || actionPending)
             .padding(.leading, option.tree?.isOnActivePath == false ? 16 : 0)
     }
 
@@ -102,7 +103,10 @@ struct HistoryBranchView: View {
                     ChatMessageRow(row: ChatRow(messages: [message]), kind: store.selectedRuntime.flatMap { store.agentKind($0) })
                 } else { Text(store.entryPreview?.error ?? "该节点没有可预览的消息内容。").font(.system(size: 13)).foregroundStyle(OrbisPalette(scheme).secondary).padding(12) }
             }.frame(maxHeight: 160)
-            if ["user", "assistant"].contains(option.tree?.role ?? "") {
+            if store.isViewingCachedSession {
+                OrbisActionButton(title: "查看这个分支的缓存", symbol: "arrow.triangle.branch") { store.selectCachedBranch(option.value); selected = nil; store.dismissPreview() }
+                    .disabled(store.entryPreview?.loading == true)
+            } else if ["user", "assistant"].contains(option.tree?.role ?? "") {
                 OrbisActionButton(title: option.tree?.role == "user" ? "编辑这条消息并重新开始" : "从这条回复后继续", symbol: "arrow.turn.down.right") {
                     actionPending = store.moveHistory(to: option)
                 }.disabled(!store.canSend || !store.pendingActionIds.isEmpty || store.entryPreview?.loading == true)

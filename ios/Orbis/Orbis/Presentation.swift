@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 struct SessionProviderOption: Identifiable {
     let key: String
@@ -34,6 +35,7 @@ func runtimeStatusTitle(_ status: String) -> String {
     case "waiting", "waiting_interaction", "waiting_local_interaction": return "等待确认"
     case "error": return "异常"
     case "idle": return "空闲"
+    case "unknown": return "状态待核对"
     default: return status
     }
 }
@@ -164,12 +166,69 @@ struct ChatRow: Identifiable {
     var isUser: Bool { messages[0].role == "user" }
 }
 
-func chatRows(_ messages: [ChatMessage]) -> [ChatRow] {
-    var rows: [ChatRow] = []
+struct ChatPresentation {
+    let messages: [ChatMessage]
+    let toolResults: [String: ChatMessage]
+}
+
+/// Tool results belong to their call, and a persisted replacement keeps the
+/// first message's position while replacing its content.
+func chatPresentation(_ messages: [ChatMessage]) -> ChatPresentation {
+    var order: [String] = [], byId: [String: ChatMessage] = [:]
     for message in messages {
-        if message.role != "user", let last = rows.indices.last, !rows[last].isUser {
-            rows[last].messages.append(message)
-        } else { rows.append(ChatRow(messages: [message])) }
+        if byId[message.messageId] == nil { order.append(message.messageId) }
+        byId[message.messageId] = message
+    }
+    let normalized = order.compactMap { byId[$0] }.filter { message in
+        message.toolSummary != nil || message.content.contains { block in
+            if block.type == "artifact" { return block.artifact != nil }
+            if ["tool_call", "toolCall"].contains(block.type) { return block.toolCallId?.isEmpty == false || block.toolName?.isEmpty == false || block.arguments != nil || block.text?.isEmpty == false }
+            return block.text?.isEmpty == false
+        }
+    }
+    let results = Dictionary(normalized.compactMap { message -> (String, ChatMessage)? in
+        guard message.role == "tool", let id = message.toolCallId else { return nil }
+        return (id, message)
+    }, uniquingKeysWith: { _, last in last })
+    let represented = Set(normalized.flatMap(\.content).compactMap(\.toolCallId))
+    let visible = normalized.compactMap { message -> ChatMessage? in
+        guard message.role == "tool" else { return message }
+        guard let summary = message.toolSummary, !represented.contains(message.toolCallId ?? "") else { return nil }
+        return ChatMessage(messageId: message.messageId, role: "assistant", content: [
+            ChatContent(type: "tool_call", text: nil, toolName: message.toolName ?? summary.toolName, artifact: nil,
+                summary: summary, toolCallId: message.toolCallId ?? summary.tool?.toolCallId)
+        ], timestamp: message.timestamp, isError: message.isError)
+    }
+    return ChatPresentation(messages: visible, toolResults: results)
+}
+
+func toolArgumentsText(_ content: ChatContent) -> String? {
+    guard let arguments = content.arguments else { return content.text }
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    return (try? encoder.encode(arguments)).map { String(decoding: $0, as: UTF8.self) }
+}
+
+func fullMessageText(_ message: ChatMessage) -> String {
+    message.content.compactMap { content in
+        if ["tool_call", "toolCall"].contains(content.type) {
+            return "[工具] " + (content.toolName ?? message.toolName ?? "工具") + "\n" + (toolArgumentsText(content) ?? "")
+        }
+        return content.text
+    }.joined(separator: "\n\n")
+}
+
+func desktopAttachTitle(_ state: String?) -> String {
+    ["attached": "已接入", "closed": "未接入", "notInstalled": "未安装", "unsupported": "不可用", "error": "接入失败"][state ?? ""] ?? "未知"
+}
+
+func chatRows(_ messages: [ChatMessage], turnIdsByMessageId: [String: String] = [:]) -> [ChatRow] {
+    var rows: [ChatRow] = [], boundaryPending = false
+    for message in messages {
+        if message.role == "user" { rows.append(ChatRow(messages: [message])); boundaryPending = false; continue }
+        if boundaryPending && message.role != "tool" { rows.append(ChatRow(messages: [message])); boundaryPending = false }
+        else if let last = rows.indices.last, !rows[last].isUser { rows[last].messages.append(message) }
+        else { rows.append(ChatRow(messages: [message])) }
+        if turnIdsByMessageId[message.messageId] != nil { boundaryPending = true }
     }
     return rows
 }
@@ -276,4 +335,78 @@ func markdownTextSections(_ text: String) -> [MarkdownTextSection] {
     }
     flush()
     return sections
+}
+
+
+struct InteractionDraftValue: Codable, Equatable {
+    var input = ""
+    var choices: Set<String> = []
+    var answers: [String: Set<String>] = [:]
+    var other: [String: String] = [:]
+    var notes: [String: String] = [:]
+    func response(for request: InteractionRequest) -> [String: Any] {
+        var result: [String: Any] = ["kind": request.kind]
+        switch request.kind {
+        case "confirm": result["value"] = true
+        case "select": result["value"] = choices.first ?? ""
+        case "multi-select": result["values"] = (request.options ?? []).map(\.value).filter { choices.contains($0) }
+        case "input": result["value"] = input
+        case "questionnaire":
+            result["answers"] = (request.questions ?? []).map { question -> [String: Any] in
+                var answer: [String: Any] = ["id": question.id, "values": question.options.map(\.value).filter { answers[question.id]?.contains($0) == true }]
+                if question.allowOther == true, let value = other[question.id], !value.isEmpty { answer["other"] = value }
+                if question.allowNotes == true, let value = notes[question.id], !value.isEmpty { answer["notes"] = value }
+                return answer
+            }
+        default: break
+        }
+        return result
+    }
+    func savable(for request: InteractionRequest) -> InteractionDraftValue {
+        var copy = self
+        if request.secret == true { copy.input = "" }
+        let secrets = Set((request.questions ?? []).filter { $0.secret == true }.map(\.id))
+        copy.answers = copy.answers.filter { !secrets.contains($0.key) }
+        copy.other = copy.other.filter { !secrets.contains($0.key) }
+        copy.notes = copy.notes.filter { !secrets.contains($0.key) }
+        return copy
+    }
+}
+
+@MainActor
+final class InteractionDraftCache: ObservableObject {
+    @Published private(set) var values: [String: InteractionDraftValue] = [:]
+    private let preferences: UserDefaults?
+    private let storageKey = "orbis.interactionDrafts.v1"
+    init(preferences: UserDefaults? = .standard) {
+        self.preferences = preferences
+        if let data = preferences?.data(forKey: storageKey), let stored = try? JSONDecoder().decode([String: InteractionDraftValue].self, from: data) { values = stored }
+    }
+    func value(for key: String, request: InteractionRequest) -> InteractionDraftValue {
+        values[key] ?? InteractionDraftValue(input: request.initialValue ?? "")
+    }
+    func save(_ value: InteractionDraftValue, for key: String, request: InteractionRequest) {
+        if values[key] == nil, values.count >= 128, let oldest = values.keys.sorted().first { values[oldest] = nil }
+        values[key] = value
+        // Secret values remain in this cache's memory and never enter UserDefaults.
+        var stored = preferences?.data(forKey: storageKey).flatMap { try? JSONDecoder().decode([String: InteractionDraftValue].self, from: $0) } ?? [:]
+        stored[key] = value.savable(for: request)
+        while stored.count > 128, let oldest = stored.keys.filter({ $0 != key }).sorted().first { stored[oldest] = nil }
+        if let data = try? JSONEncoder().encode(stored) { preferences?.set(data, forKey: storageKey) }
+    }
+}
+
+func contextUsagePercent(_ usage: RuntimeContextUsage?) -> Double? {
+    guard let usage, let window = usage.contextWindow, window > 0 else { return nil }
+    if let percent = usage.percent, percent.isFinite { return min(100, max(0, percent)) }
+    return usage.tokens.map { min(100, max(0, Double($0) / Double(window) * 100)) }
+}
+
+func queueStateTitle(_ state: String) -> String {
+    ["accepted": "已排队", "queued": "排队中", "sending": "正在发送", "delivered": "已送达", "applied": "已应用", "cancelled": "已撤回", "rejected": "已拒绝", "not_cancelable": "无法撤回", "failed": "发送失败", "expired": "已过期"][state] ?? state
+}
+
+func interactionDraftKey(host: HostPairing?, sessionId: String?, request: InteractionRequest) -> String {
+    [host?.relay.relayUrl ?? "", host?.relay.deviceId ?? "", host?.hostId ?? "", request.runtimeId, sessionId ?? "", request.extensionId, request.requestId]
+        .map { "\($0.utf8.count):\($0)" }.joined()
 }
