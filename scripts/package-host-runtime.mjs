@@ -63,7 +63,8 @@ for (const name of ["host", "pi-extension"]) await bundle(join(root, "packages",
   const source = join(root, "packages", "claude-mod");
   const target = join(output, "packages", "claude-mod");
   for (const entry of [".claude-plugin", "hooks", "scripts", "src", "package.json"]) {
-    await cp(join(source, entry), join(target, entry), { recursive: true, filter: path => !path.endsWith(".gitignore") });
+    await cp(join(source, entry), join(target, entry), { recursive: true,
+      filter: path => !path.endsWith(".gitignore") && path !== join(source, ".claude-plugin", "types") });
   }
   await cp(join(root, "LICENSE"), join(target, "LICENSE"));
   const manifest = JSON.parse(await readFile(join(source, "package.json"), "utf8"));

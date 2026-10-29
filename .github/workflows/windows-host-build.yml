@@ -44,16 +44,40 @@ jobs:
           $installDir = Join-Path $env:RUNNER_TEMP 'OrbisHost-installed'
           $smokeDir = Join-Path $setup.DirectoryName 'installer-smoke'
           New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
+          # Exercise setup's real plugin commands without installing Claude Code or using an account.
+          $claudeFixture = Join-Path $smokeDir 'claude-fixture'
+          New-Item -ItemType Directory -Path $claudeFixture -Force | Out-Null
+          $originalPath = $env:Path
+          $originalClaudeConfig = $env:CLAUDE_CONFIG_DIR
+          $env:CLAUDE_CONFIG_DIR = Join-Path $claudeFixture 'config'
+          $env:ORBIS_CLAUDE_INSTALL_TEST_LOG = Join-Path $claudeFixture 'calls.jsonl'
+          $node = (Get-Command node).Source
+          [IO.File]::WriteAllText((Join-Path $claudeFixture 'claude.cmd'), "@echo off`r`n`"$node`" `"%~dp0record.cjs`" %*`r`n", [Text.Encoding]::ASCII)
+          [IO.File]::WriteAllText((Join-Path $claudeFixture 'record.cjs'), 'require("node:fs").appendFileSync(process.env.ORBIS_CLAUDE_INSTALL_TEST_LOG, JSON.stringify(process.argv.slice(2))+"\n");', [Text.Encoding]::ASCII)
+          $env:Path = "$claudeFixture;$originalPath"
           try {
             $installer = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOICONS',('/DIR="' + $installDir + '"'),('/LOG="' + $smokeDir + '\install.log"') -WindowStyle Hidden -PassThru -Wait
             if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
+            $calls = @(Get-Content $env:ORBIS_CLAUDE_INSTALL_TEST_LOG | ForEach-Object { ,($_ | ConvertFrom-Json) })
+            if ($calls.Count -ne 3 -or ($calls[0][0..2] -join ' ') -ne 'plugin marketplace add' -or ($calls[1] -join ' ') -ne 'plugin install orbis-host-session-link@orbis-host --scope user' -or ($calls[2] -join ' ') -ne 'plugin update orbis-host-session-link@orbis-host --scope user') { throw 'Installer did not register and update the Claude plugin' }
+            if (!(Test-Path "$installDir\runtime\packages\claude-mod\.claude-plugin\plugin.json")) { throw 'Claude plugin missing from installed package' }
             $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
             $app = Start-Process -FilePath "$installDir\OrbisHost.exe" -ArgumentList '--smoke-test','--data-dir',('"' + $smokeDir + '"'),'--screenshot',('"' + $smokeDir + '\preview.png"') -WindowStyle Hidden -PassThru -Wait -RedirectStandardError "$smokeDir\qml.log"
             if ($app.ExitCode -ne 0) { throw "Installed application smoke test failed: $($app.ExitCode)" }
+            if (@(Get-Content $env:ORBIS_CLAUDE_INSTALL_TEST_LOG).Count -ne 3) { throw 'Smoke test changed Claude integration' }
           } finally {
-            if (Test-Path -LiteralPath "$installDir\unins000.exe") {
-              $uninstaller = Start-Process -FilePath "$installDir\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -PassThru -Wait
-              if ($uninstaller.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstaller.ExitCode)" }
+            try {
+              $env:Path = "$claudeFixture;$originalPath"
+              if (Test-Path -LiteralPath "$installDir\unins000.exe") {
+                $uninstaller = Start-Process -FilePath "$installDir\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -PassThru -Wait
+                if ($uninstaller.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstaller.ExitCode)" }
+                $calls = @(Get-Content $env:ORBIS_CLAUDE_INSTALL_TEST_LOG | ForEach-Object { ,($_ | ConvertFrom-Json) })
+                if ($calls.Count -ne 5 -or ($calls[3][0..1] -join ' ') -ne 'plugin uninstall' -or ($calls[4] -join ' ') -ne 'plugin marketplace remove orbis-host') { throw 'Uninstaller did not remove the Claude plugin' }
+              }
+            } finally {
+              $env:Path = $originalPath
+              $env:CLAUDE_CONFIG_DIR = $originalClaudeConfig
+              Remove-Item Env:ORBIS_CLAUDE_INSTALL_TEST_LOG -ErrorAction SilentlyContinue
             }
           }
       - uses: actions/upload-artifact@v4

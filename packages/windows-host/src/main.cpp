@@ -91,7 +91,7 @@ int main(int argc, char *argv[]) {
     }
     QString hostStateDir = parser.value("host-state-dir");
     if (parser.isSet("smoke-test") && hostStateDir.isEmpty()) hostStateDir = dataDir + "/test-host";
-    HostController controller(QDir(runtimeRoot).absolutePath(), dataDir, hostStateDir, credentialDir);
+    HostController controller(QDir(runtimeRoot).absolutePath(), dataDir, hostStateDir, credentialDir, !parser.isSet("smoke-test"));
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("host", &controller);
     engine.rootContext()->setContextProperty("trayAvailable", QSystemTrayIcon::isSystemTrayAvailable());
@@ -145,8 +145,19 @@ int main(int argc, char *argv[]) {
             bool imageOk = true;
             if (parser.isSet("screenshot")) imageOk = window->grabWindow().save(parser.value("screenshot"));
             QFile report(dataDir + "/smoke-result.json");
-            if (report.open(QIODevice::WriteOnly)) report.write(QJsonDocument(QJsonObject{{"bridgeReady", controller.bridgeReady()}, {"windowVisible", window->isVisible()}, {"screenshotSaved", imageOk}, {"message", controller.message()}, {"agents", QJsonArray::fromVariantList(controller.agents())}}).toJson());
+            if (report.open(QIODevice::WriteOnly)) report.write(QJsonDocument(QJsonObject{{"bridgeReady", controller.bridgeReady()}, {"windowVisible", window->isVisible()}, {"screenshotSaved", imageOk}, {"message", controller.message()}, {"claudeInstalled", controller.claudeInstalled()}, {"agents", QJsonArray::fromVariantList(controller.agents())}}).toJson());
             if (!controller.bridgeReady() || !imageOk) { app.exit(5); return; }
+#ifdef ORBIS_SMOKE_INTERACTION
+            QList<QRectF> launchBounds;
+            for (const auto &name : {"overviewOpenPiTui", "overviewOpenCodexTui", "overviewOpenClaudeTui", "overviewOpenCodexDesktop", "overviewOpenDsh"}) {
+                auto *button = findVisualItem(window->contentItem(), name);
+                if (!button || !button->isVisible()) { app.exit(44); return; }
+                const auto bounds = button->mapRectToScene(button->boundingRect());
+                if (!QRectF(0, 0, window->width(), window->height()).contains(bounds)) { app.exit(45); return; }
+                for (const auto &other : launchBounds) if (bounds.intersects(other)) { app.exit(46); return; }
+                launchBounds.append(bounds);
+            }
+#endif
             controller.requestCode("not-a-qq-mailbox@example.com");
             if (!controller.message().contains("@qq.com")) { app.exit(6); return; }
             controller.clearMessage();

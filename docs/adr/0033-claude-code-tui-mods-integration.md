@@ -53,7 +53,7 @@ Claude Code 已公开 Mods：通过插件加载 JavaScript/TypeScript 函数，�
 
 两端共享同一个执行实例和会话，不增加第二个执行器。Native Claude Code 继续拥有执行与持久历史的权威；bridge/backend 解释并报告事实；Host 按 ADR-0032 管理标准投影；App 不解释 Claude 原生事件或权限值。
 
-本 ADR 覆盖 CLI/TUI 接入，Desktop、IDE 聊天面板及 headless SDK 不属于首版支持范围。已运行但未加载 bridge 的 TUI 不自动宣称可控；如何安装、启用或重新加载插件须使用官方支持方式，并尊重用户确认和组织策略。
+本 ADR 覆盖 CLI/TUI 接入，Desktop、IDE 聊天面板及 headless SDK 不属于首版支持范围。已运行但未加载 bridge 的 TUI 不自动宣称可控；安装、启用或重新加载插件使用官方支持方式，并尊重组织策略。按 2026-10-29 的产品要求，安装 Host 默认自动登记插件，用户可在设置中关闭。
 
 ### 2. 必须支持的版本与兼容性门槛
 
@@ -103,7 +103,7 @@ mod 无普通 Node.js 网络/定时器 API；通道实现须基于目标版本�
 
 来源库存、版本与代次必须可核对。新连接或 reload 后先确认实例和当前 Session，再恢复历史/live/执行/交互等基线；不从日志文字、屏幕 spinner、心跳或旧持久快照复活当前状态。不承诺失去原生确认后的自动重发或跨 Host 重启恰好一次执行。
 
-Host 退出只断开 bridge，不结束用户 TUI。CLI 升级、插件启用及任何需要中断会话或 Host 的迁移均须单独授权；本 ADR 不授予安装、升级、重启、push 或发版权限。
+Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确要求，安装 Host 时默认登记 Orbis 插件；macOS 拖拽安装与便携包在首次打开应用时登记，无需 Relay 激活。电脑没有 Claude Code 时跳过，后续打开 Host 时重试；明确关闭的设置在更新时保留。此安装授权不包含升级 Claude Code、终止已有会话、重启 Host、push 或发版。
 
 ### 6. 纳入统一 Host 模型，不新增客户端原生分支
 
@@ -115,7 +115,7 @@ Host 退出只断开 bridge，不结束用户 TUI。CLI 升级、插件启用及
 
 - **历史权威**：Host 直接读取原生 transcript（`<CLAUDE_CONFIG_DIR 或 ~/.claude>/projects/*/<sessionId>.jsonl`），按 `uuid` / `parentUuid` 投影为标准条目，经 `RecoverableSessionSource` + `SessionSyncPreparer` 回答 `session.sync`，与 DSH 后端同一路径。`isMeta`、侧链（子 Agent）、附件、系统行不进主路径，但仍参与父链解析；多块 `tool_result` 拆成独立条目；空 thinking（仅签名）不显示；压缩摘要投影为 `compaction`。bridge 的 `session.append` 只通告行身份，正文以磁盘行为准，不从文本推断身份。`$.session.messages()` 在 v2.1.312 的测试环境无法取得返回形状，未采用。
 - **实时内容**：`turn.step` 流式输出与工具事件进入会话源的 live 状态；回合结束后等待本回合通告的行全部落盘（上限 3 秒）再撤下流式副本，避免与 canonical 行重复。
-- **插件登记**：桌面 Host 设置“让终端里运行的 Claude Code 连接 Orbis”（缺省关闭，需用户明确开启）调用 Claude 自己的 `claude plugin marketplace add <插件目录>` 与 `claude plugin install orbis-host-session-link@orbis-host --scope user`；插件目录同时是本地 marketplace，Claude 原地加载，应用更新后启动 Host 时重新指向。关闭时 `uninstall` 并移除 marketplace。v2.1.312 隔离配置下实测通过。
+- **插件登记**：安装 Host 默认调用 Claude 自己的 `claude plugin marketplace add <插件目录>` 与 `claude plugin install orbis-host-session-link@orbis-host --scope user`；Windows 安装器直接登记，macOS 拖拽安装与便携包在首次打开 Host 时登记。插件目录同时是本地 marketplace，Claude 原地加载，应用更新后重新打开 Host 时重新指向，不依赖 Relay 激活。未安装 Claude Code 时跳过；安装后重开 Host 会重试。设置“让终端里运行的 Claude Code 连接 Orbis”默认开启，关闭时 `uninstall` 并移除 marketplace，更新保留显式关闭。Windows 卸载器也移除插件；macOS 删除应用前可先关闭此项。原登记命令在 v2.1.312 隔离配置下实测通过。
 - **客户端**：iOS / Android 新增 `claude` 身份（名称、配色、中性图形标记）、目录筛选；Claude 会话不提供附件入口，运行中发送直接按 follow-up 提交，不提供 Steer；新建会话列表不含 Claude（Host 的 `launchableAgents` 也排除它）。
 - **仍未验收**：见 §8 末尾。
 
@@ -134,6 +134,28 @@ Host 退出只断开 bridge，不结束用户 TUI。CLI 升级、插件启用及
 - **可见的失败**：Host 拒绝 hello（版本、能力、bridge 版本）时写入诊断（同一原因十分钟一次）；插件在 TUI 状态行显示原因，并在 60 秒内不再重试。
 - **v2.1.312 真实 TUI 验证**（`--plugin-dir`、Haiku，经真实 loopback HTTP 与 Host 桥）：握手与状态上报；手机消息产生真实回复并进入历史；手机批准权限；电脑先批准后手机卡片关闭；手机回答 AskUserQuestion；`/orbis-local` 收回问题后在电脑作答；停止运行中的回合；启动脚本新建会话、退出后出现在目录、再恢复并带回历史（脚本在伪终端中执行，未实际弹出 Terminal 窗口）。
 - **仍未验收**：v2.1.287 最低版本；Windows 终端启动；Terminal.app 实际开窗；手机 App 实机界面；子 Agent 工具调用与本地停止后的竞答。当前会话权限模式不能从手机切换，运行中只能排队（没有 Steer），手机不能做 `/clear`、`/resume`、`/rewind` 之类改变会话或打开面板的操作。
+
+### 9. 随 Host 自动安装插件（2026-10-29）
+
+- Windows 安装器使用内置 Node 执行插件登记入口，卸载时执行移除；安装 / 更新读取桌面 `settings.ini`，保留显式关闭。
+- macOS 拖拽安装与便携包在桌面 bridge 初始化时登记，尚未激活 Relay 也会执行。缺少 Claude Code 时跳过，登记失败记日志，后续打开 Host 或启动连接时可重试。一个 Host 进程成功登记后不在启动连接时重复执行。
+- 桌面集成开关默认开启，主动关闭会卸载插件。原生 smoke 测试显式关闭自动登记，不改动测试者的 Claude 配置。
+- 本机验证：TypeScript 类型检查与修改文件 lint 通过；Claude、桌面生命周期与 Pi 安装相关 60 项测试通过；macOS Qt 构建、4 组 CTest 和独立数据目录的原生 smoke 测试通过。
+- 使用临时 HOME、配置目录和假 Claude CLI，实际运行编译后的安装入口与具有打包目录结构的桌面 bridge，验证自动安装、关闭保留、卸载、未安装 Claude、命令失败与参数错误。日志在忽略目录 `.scratch/claude-auto-*.log`。
+- Windows 构建工作流增加真实安装器 / 卸载器调用假 CLI 的检查，同时核对插件文件入包和 smoke 测试不触发插件登记；本机未执行 Windows 安装器。
+
+### 10. 桌面首页 Claude Code 入口（2026-10-29）
+
+- 概览页新增“打开 Claude Code”，选择工作区后复用 `TerminalClaudeLauncher` 打开官方 TUI；已安装插件直接复用，缺少全局登记时仅为本次启动加载随包插件。
+- 初始化与刷新 Agent 检测时独立探测 Claude 原生 CLI，并更新首页按钮和接入数量。Claude 不加入 Pi / Codex / DSH 的 npm 安装、批量更新或供应商管理。
+- 工作台按钮随窗口宽度换行，原生 smoke 同时检查五个入口可见、位于窗口内且不相互重叠。
+
+### 11. Host 重启后插件自动重连（2026-10-29）
+
+- 修复插件保留旧 loopback 端口、请求失败后始终重试旧地址的问题。每次轮询重新读取发现文件，端口或 token 改变后使用同一原生 Session / 插件实例重新握手；短暂 HTTP 故障保留同一 Host 的连接代次。
+- 握手串行化；请求绑定握手时的端点，旧请求和旧命令结果不能覆盖新连接。新代次重新发送会话状态，拒绝握手的退避只约束对应的端点与 token。Host 未启动、发现文件暂缺或正在重连时，在 Claude 状态行给出提示。
+- 插件版本提升到 `0.1.1`。Claude 的重复 `plugin install` 不刷新已安装缓存，所以 Host 登记流程追加官方 `plugin update`，确保随 Host 更新的修复进入插件缓存；明确关闭仍保持关闭。已打开的旧版插件需要执行一次 `/reload-plugins` 或重启 Claude Code。
+- 回归覆盖 Host 换端口 / token、发现文件暂缺、临时 HTTP 故障、握手拒绝、认证失效、过期代次与未完成命令隔离。原版不能通过新增重启用例；修复版通过官方插件测试。另以同一插件模块和真实、认证的 loopback HTTP 服务验证连续两次 Host 重建，不调用模型。
 
 ## Alternatives not selected
 

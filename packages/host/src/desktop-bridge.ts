@@ -36,7 +36,7 @@ input.on("line", line => {
       const p = request.params ?? {};
       let result: unknown = {};
       switch (request.method) {
-        case "initialize": result = await runtime.initialize(); break;
+        case "initialize": result = await runtime.initialize({ claudeIntegrationEnabled: p.claudeIntegrationEnabled !== false }); break;
         case "detect": result = await runtime.detect(p, p.checkLatest === true); break;
         case "state.read": {
           const domains = p.domains;

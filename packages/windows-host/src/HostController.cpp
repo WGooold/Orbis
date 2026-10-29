@@ -40,7 +40,7 @@ static bool validRelay(const QString &value) {
         && (url.scheme() == "wss" || (url.scheme() == "ws" && (url.host() == "localhost" || url.host() == "127.0.0.1" || url.host() == "::1")));
 }
 
-HostController::HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QString credentialDir, QObject *parent)
+HostController::HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QString credentialDir, bool automaticIntegrations, QObject *parent)
     : QObject(parent), m_runtimeRoot(std::move(runtimeRoot)), m_dataDir(std::move(dataDir)), m_hostStateDir(std::move(hostStateDir)), m_credentialDir(std::move(credentialDir)),
       m_settings(m_dataDir + "/settings.ini", QSettings::IniFormat) {
     QDir().mkpath(m_dataDir);
@@ -59,8 +59,8 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         m_hostId = stored.value("hostId").toString();
     }
     if (!error.isEmpty()) setMessage(error);
-    connect(&m_bridge, &QProcess::started, this, [this] {
-        command("initialize", {}, [this](const QJsonValue &result) {
+    connect(&m_bridge, &QProcess::started, this, [this, automaticIntegrations] {
+        command("initialize", {{"claudeIntegrationEnabled", automaticIntegrations && claudeIntegrationEnabled()}}, [this](const QJsonValue &result) {
             const auto obj = result.toObject();
             const auto actualId = obj.value("hostId").toString();
             if (!m_hostId.isEmpty() && m_hostId != actualId) { m_credential.clear(); setMessage("电脑身份与激活凭据不匹配，请重新验证邮箱"); }
@@ -95,6 +95,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         // 接入分档说的是「现在接上了吗」：Host 核心没了就没有现在，留着会在诊断页上
         // 显示一个已经不成立的「已接入」。
         m_codexDesktop.clear();
+        m_claudeInstalled = false;
         if (agentInstalling()) m_agentInstallStage = "error";
         if (m_shutdown) return;
         m_state = "error";
@@ -190,6 +191,7 @@ void HostController::receiveLine(const QJsonObject &line) {
         else if (event == "status") { m_devices = line.value("devices").toArray().toVariantList(); refreshDeviceUpdateIndicators(); m_runtimeCount = line.value("runtimeCount").toInt(); }
         // Codex 桌面版 app-server 的接入分档（ADR-0022）：分档真的变了才会到这条事件。
         else if (event == "codexDesktop") { m_codexDesktop = line.value("status").toObject().toVariantMap(); }
+        else if (event == "claudeStatus") { m_claudeInstalled = line.value("installed").toBool(); }
         else if (event == "paired") { m_qr.clear(); m_pairExpires = 0; setMessage("手机配对成功，现在可以在手机上使用 Orbis"); emit paired(); emit notification("Orbis", "新手机已配对"); }
     }
     emit changed();
@@ -434,7 +436,7 @@ void HostController::copyProvider(const QString &id) {
 }
 QString HostController::selectWorkspace(const QString &kind) {
     const auto cwd = QFileDialog::getExistingDirectory(nullptr,
-        QString("选择 %1 工作区").arg(kind == "pi" ? "Pi" : "Codex"),
+        QString("选择 %1 工作区").arg(kind == "pi" ? "Pi" : kind == "claude" ? "Claude Code" : "Codex"),
         m_settings.value("lastWorkspace", QDir::homePath()).toString());
     if (!cwd.isEmpty()) m_settings.setValue("lastWorkspace", cwd);
     return cwd;
@@ -448,19 +450,19 @@ void HostController::restartDshServer() {
     });
 }
 void HostController::openAgent(const QString &kind) {
-    if (kind == "pi") { openAgentTui(kind); return; }
+    if (kind == "pi" || kind == "claude") { openAgentTui(kind); return; }
     command("openAgent", {{"kind", kind}});
 }
 void HostController::openAgentTui(const QString &kind) {
     if (!m_bridgeReady || busy()) return;
     QJsonObject params{{"kind", kind}, {"mode", "tui"}};
-    if (kind == "pi" || kind == "codex") {
+    if (kind == "pi" || kind == "codex" || kind == "claude") {
         const auto cwd = selectWorkspace(kind);
         if (cwd.isEmpty()) return;
         params.insert("cwd", cwd);
     }
     command("openAgent", params, [this, kind](const QJsonValue &) {
-        setMessage(kind == "dsh" ? "已打开 DeepSeek Harness 网页工作台" : QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(kind == "pi" ? "Pi" : "Codex"));
+        setMessage(kind == "dsh" ? "已打开 DeepSeek Harness 网页工作台" : QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(kind == "pi" ? "Pi" : kind == "claude" ? "Claude Code" : "Codex"));
     });
 }
 void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration, bool claudeIntegration) {

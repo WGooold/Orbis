@@ -2,14 +2,48 @@ import { mkdtemp, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createRelayServer } from "../../relay/src/index.js";
 import { RegistrationAuthority } from "../../relay/src/registration.js";
 import { loadDeviceStore, saveDeviceStore } from "@orbis/e2e";
 import { DesktopRuntime, validateDesktopRelay, type DesktopEvent } from "./desktop-runtime.js";
+import * as claudeInstallation from "./claude-integration-install.js";
 
 describe("desktop Host lifecycle", () => {
+  it.each([undefined, "/local/bin/claude"])("reports native Claude availability %s independently of managed npm Agents", async executable => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-claude-detect-"));
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const find = vi.spyOn(claudeInstallation, "findClaudeExecutable").mockResolvedValue(executable);
+    try {
+      await runtime.initialize({ claudeIntegrationEnabled: false });
+      expect(events).toContainEqual({ event: "claudeStatus", installed: executable !== undefined });
+    } finally { find.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([undefined, true, false])("applies the Claude integration preference %s before Relay activation", async enabled => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-claude-"));
+    const runtime = new DesktopRuntime(() => {}, join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const install = vi.spyOn(runtime, "setClaudeIntegration").mockResolvedValue(undefined);
+    try {
+      await runtime.initialize(enabled === undefined ? {} : { claudeIntegrationEnabled: enabled });
+      if (enabled === false) expect(install).not.toHaveBeenCalled();
+      else expect(install).toHaveBeenCalledWith(true, true);
+    } finally { install.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps the desktop usable when automatic Claude registration fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-claude-"));
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const install = vi.spyOn(runtime, "setClaudeIntegration").mockRejectedValue(new Error("plugin command failed"));
+    try {
+      await expect(runtime.initialize()).resolves.toHaveProperty("hostId");
+      expect(events).toContainEqual({ event: "log", message: "登记 Claude Code 插件失败：plugin command failed" });
+    } finally { install.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
   it("previews incomplete provider drafts without weakening save validation", async () => {
     const root = await mkdtemp(join(tmpdir(), "orbis-provider-drafts-"));
     const runtime = new DesktopRuntime(() => {}, join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });

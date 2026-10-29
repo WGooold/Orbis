@@ -57,6 +57,11 @@ begin
     '"' + RuntimeRoot + '\packages\host\dist\codex-shim-install.js" --install "' + RuntimeRoot + '"',
     '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
     RaiseException('Could not install the Codex terminal shim.');
+  ExitCode := -1;
+  if not Exec(RuntimeRoot + '\node\node.exe',
+    '"' + RuntimeRoot + '\packages\host\dist\claude-integration-install.js" "' + RuntimeRoot + '\packages\claude-mod" --settings "' + ExpandConstant('{localappdata}\Orbis\Orbis Host\settings.ini') + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+    Log('Could not register Orbis with Claude Code. The desktop app will retry when opened.');
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -79,6 +84,13 @@ begin
       '"' + RuntimeRoot + '\packages\host\dist\codex-shim-install.js" --uninstall',
       '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
       Log('Could not remove the Orbis Codex terminal shim.');
+  end;
+  if FileExists(RuntimeRoot + '\packages\host\dist\claude-integration-install.js') then begin
+    ExitCode := -1;
+    if not Exec(RuntimeRoot + '\node\node.exe',
+      '"' + RuntimeRoot + '\packages\host\dist\claude-integration-install.js" "' + RuntimeRoot + '\packages\claude-mod" --uninstall',
+      '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+      Log('Could not remove the Orbis Claude Code plugin.');
   end;
 end;
 

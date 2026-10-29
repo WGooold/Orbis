@@ -19,12 +19,13 @@ function recorder(codes: Record<string, number> = {}) {
 }
 
 describe("updateClaudeIntegration", () => {
-  it("registers the plugin directory as a marketplace and installs at user scope", async () => {
+  it("registers the plugin directory, installs and refreshes its cached version at user scope", async () => {
     const { calls, run } = recorder();
     await expect(updateClaudeIntegration({ pluginDir: "/app/runtime/packages/claude-mod", uninstall: false, claude: "/bin/claude", run })).resolves.toBe("installed");
     expect(calls).toEqual([
       ["plugin", "marketplace", "add", "/app/runtime/packages/claude-mod"],
       ["plugin", "install", "orbis-host-session-link@orbis-host", "--scope", "user"],
+      ["plugin", "update", "orbis-host-session-link@orbis-host", "--scope", "user"],
     ]);
   });
 
@@ -35,10 +36,44 @@ describe("updateClaudeIntegration", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("reports a failed cache refresh so a later Host launch can retry the upgrade", async () => {
+    const { calls, run } = recorder({ "plugin update orbis-host-session-link@orbis-host": 1 });
+    await expect(updateClaudeIntegration({ pluginDir: "/app/plugin", uninstall: false, claude: "/bin/claude", run }))
+      .rejects.toThrow("更新 Orbis Claude Code 插件失败");
+    expect(calls).toHaveLength(3);
+  });
+
   it("removes plugin and marketplace, tolerating either being absent", async () => {
     const { calls, run } = recorder({ "plugin uninstall orbis-host-session-link@orbis-host": 1, "plugin marketplace remove": 1 });
     await expect(updateClaudeIntegration({ pluginDir: "/x", uninstall: true, claude: "/bin/claude", run })).resolves.toBe("removed");
     expect(calls.map(call => call.slice(0, 2).join(" "))).toEqual(["plugin uninstall", "plugin marketplace"]);
+  });
+
+  it("installs for a new desktop profile without a saved preference", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-claude-install-")); roots.push(root);
+    const { calls, run } = recorder();
+    await expect(updateClaudeIntegration({ pluginDir: root, uninstall: false, desktopSettingsPath: join(root, "settings.ini"), claude: "/bin/claude", run })).resolves.toBe("installed");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("preserves an explicit desktop opt-out during an update, but still removes on uninstall", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-claude-install-")); roots.push(root);
+    const settings = join(root, "settings.ini");
+    await writeFile(settings, "\uFEFF[General]\r\nclaudeIntegrationEnabled=false\r\n");
+    const { calls, run } = recorder();
+    const input = { pluginDir: root, desktopSettingsPath: settings, claude: "/bin/claude", run };
+    await expect(updateClaudeIntegration({ ...input, uninstall: false })).resolves.toBe("disabled");
+    expect(calls).toEqual([]);
+    await expect(updateClaudeIntegration({ ...input, uninstall: true })).resolves.toBe("removed");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not confuse another QSettings section with the integration preference", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-claude-install-")); roots.push(root);
+    const settings = join(root, "settings.ini");
+    await writeFile(settings, "[General]\nclaudeIntegrationEnabled=true\n[Other]\nclaudeIntegrationEnabled=false\n");
+    const { run } = recorder();
+    await expect(updateClaudeIntegration({ pluginDir: root, uninstall: false, desktopSettingsPath: settings, claude: "/bin/claude", run })).resolves.toBe("installed");
   });
 });
 

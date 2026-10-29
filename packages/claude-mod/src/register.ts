@@ -1,7 +1,7 @@
 import type { Hook, Register } from "claude-code";
 
 type Api = Parameters<Hook<"session.start">>[0];
-type Connection = { runtimeId: string; generation: string; sessionId: string };
+type Connection = { runtimeId: string; generation: string; sessionId: string; descriptor: Descriptor };
 type Descriptor = { url: string; token: string };
 type HelloReply = { ok: true; runtimeId: string; generation: string } | { ok: false; error: string };
 type PollReply = { ok: true; commands: { commandId: string; command: RemoteCommand }[]; pendingInteractions?: number } | { ok: false; error: string };
@@ -20,14 +20,14 @@ const REJECTED_RETRY_MS = 60_000;
 const RESERVED_TOOL_FIELDS = new Set(["tool", "tool_use_id", "agentId", "requestMeta", "consent"]);
 const commands = new Map<string, CachedCommand>();
 let connection: Connection | undefined;
-let descriptorCache: Descriptor | undefined;
+let connecting: Promise<Connection | undefined> | undefined;
 let activeTurnId: string | undefined;
 let polling = false;
 let pollingTimer: ReturnType<Api["clock"]["every"]> | undefined;
 let polls = 0;
-let reportedState: { sessionId: string; encoded: string } | undefined;
+let reportedState: { connection: Connection; encoded: string } | undefined;
 let reporting = false;
-let rejected: { error: string; until: number } | undefined;
+let rejected: { error: string; until: number; descriptor: Descriptor } | undefined;
 let status: string | undefined;
 
 export const register: Register = on => {
@@ -140,13 +140,14 @@ async function poll($: Api): Promise<void> {
     if (current === undefined) return;
     const response = await request<PollReply>($, "/v1/claude/mods/poll", {
       runtimeId: current.runtimeId, generation: current.generation,
-    });
+    }, current.descriptor);
+    if (connection !== current) return;
     const body = response.body;
     if (!response.ok || body === undefined || body.ok !== true) {
       const error = body !== undefined && "error" in body ? body.error : undefined;
-      if (response.status === 401 || error === "stale_generation" || error === "bridge_offline") {
+      if (connection === current && (response.status === 401 || error === "stale_generation" || error === "bridge_offline")) {
         connection = undefined;
-        descriptorCache = undefined;
+        showStatus($, "Orbis：Host 连接已断开，正在自动重连…");
       }
       return;
     }
@@ -157,22 +158,35 @@ async function poll($: Api): Promise<void> {
     for (const item of body.commands) void runCommand($, current, item.commandId, item.command);
     if (++polls % STATE_EVERY === 0) void reportState($, false);
   } catch {
-    // Keep the current generation across transient HTTP failures. The Host lease
-    // expires independently; a stale-generation response triggers a fresh hello.
+    // Keep a generation across a transient request failure. The next poll still
+    // rediscovers the Host, whose port and token change after a restart.
+    showStatus($, "Orbis：Host 连接已断开，正在自动重连…");
   } finally {
     polling = false;
   }
 }
 
 async function connect($: Api): Promise<Connection | undefined> {
+  if (connecting !== undefined) return connecting;
+  const pending = connectOnce($);
+  connecting = pending;
+  try { return await pending; }
+  finally { if (connecting === pending) connecting = undefined; }
+}
+
+async function connectOnce($: Api): Promise<Connection | undefined> {
   const sessionId = await $.session.id();
-  if (connection?.sessionId === sessionId) return connection;
-  if (rejected !== undefined && rejected.until > Date.now()) return undefined;
+  // A cached endpoint can stay unreachable forever: Host restarts on a random
+  // port and with a new token. Read discovery even while we have a generation.
+  const descriptor = await readDescriptor($);
+  if (descriptor === undefined) {
+    showStatus($, "Orbis：正在等待本机 Host，启动后会自动连接…");
+    return undefined;
+  }
+  if (connection?.sessionId === sessionId && sameDescriptor(connection.descriptor, descriptor)) return connection;
+  if (rejected !== undefined && sameDescriptor(rejected.descriptor, descriptor) && rejected.until > Date.now()) return undefined;
   const version = await $.session.version();
   const cwd = await $.session.cwd();
-  const descriptor = await readDescriptor($);
-  if (descriptor === undefined) return undefined;
-  descriptorCache = descriptor;
   const configDir = await $.env.get("CLAUDE_CONFIG_DIR");
   const launchId = await $.env.get("ORBIS_CLAUDE_LAUNCH_ID");
   const response = await request<HelloReply>($, "/v1/claude/mods/hello", {
@@ -185,14 +199,14 @@ async function connect($: Api): Promise<Connection | undefined> {
   if (!response.ok || response.body?.ok !== true) {
     const error = response.body !== undefined && "error" in response.body ? response.body.error : undefined;
     if (error !== undefined) {
-      rejected = { error, until: Date.now() + REJECTED_RETRY_MS };
+      rejected = { error, until: Date.now() + REJECTED_RETRY_MS, descriptor };
       showStatus($, `Orbis：这个 Claude Code 会话无法连接 Host（${error}）`);
     }
     return undefined;
   }
   rejected = undefined;
   showStatus($, undefined);
-  const next = { runtimeId: response.body.runtimeId, generation: response.body.generation, sessionId };
+  const next = { runtimeId: response.body.runtimeId, generation: response.body.generation, sessionId, descriptor };
   if (connection?.generation !== next.generation) commands.clear();
   connection = next;
   void reportState($, true);
@@ -230,8 +244,8 @@ async function reportState($: Api, force: boolean): Promise<void> {
     const settings = await $.settings.read().catch(() => undefined) as Record<string, unknown> | undefined;
     if (typeof settings?.effortLevel === "string" && settings.effortLevel.length > 0) state.effort = settings.effortLevel;
     const encoded = JSON.stringify(state);
-    if (!force && reportedState?.sessionId === target.sessionId && reportedState.encoded === encoded) return;
-    if (await postEvent($, target, { type: "session.state", state })) reportedState = { sessionId: target.sessionId, encoded };
+    if (!force && reportedState?.connection === target && reportedState.encoded === encoded) return;
+    if (await postEvent($, target, { type: "session.state", state })) reportedState = { connection: target, encoded };
   } catch {
     // Reported again on the next turn or interval.
   } finally {
@@ -255,6 +269,7 @@ async function readDescriptor($: Api): Promise<Descriptor | undefined> {
 
 async function runCommand($: Api, target: Connection, commandId: string,
   command: RemoteCommand): Promise<void> {
+  if (connection !== target) return;
   const cached = commands.get(commandId);
   if (cached?.state === "result") {
     if (await postEvent($, target, cached.event)) commands.delete(commandId);
@@ -316,6 +331,8 @@ async function runCommand($: Api, target: Connection, commandId: string,
 }
 
 async function finishCommand($: Api, target: Connection, commandId: string, event: BridgeEvent): Promise<void> {
+  // A result from the previous Host must not enter the new generation's cache.
+  if (connection !== target) return;
   commands.set(commandId, { state: "result", event });
   trimCommands();
   await postEvent($, target, event);
@@ -328,23 +345,23 @@ async function emit($: Api, event: BridgeEvent): Promise<boolean> {
 }
 
 async function postEvent($: Api, target: Connection, event: BridgeEvent): Promise<boolean> {
+  if (connection !== target) return false;
   let response: { ok: boolean; status: number; body?: { result?: string } };
   try {
     response = await request<{ result?: string }>($, "/v1/claude/mods/event", {
       runtimeId: target.runtimeId, generation: target.generation, event,
-    });
+    }, target.descriptor);
   } catch {
     return false;
   }
+  if (connection !== target) return false;
   const accepted = response.ok && response.body?.result === "accepted";
   if (accepted && event.type === "command.result" && typeof event.commandId === "string") commands.delete(event.commandId);
-  if (!response.ok && (response.body?.result === "stale" || response.body?.result === "offline")) connection = undefined;
+  if (connection === target && !response.ok && (response.status === 401 || response.body?.result === "stale" || response.body?.result === "offline")) connection = undefined;
   return accepted;
 }
 
-async function request<T>($: Api, path: string, body: unknown, supplied?: Descriptor): Promise<{ ok: boolean; status: number; body?: T }> {
-  const descriptor = supplied ?? descriptorCache ?? await readDescriptor($);
-  if (descriptor === undefined) return { ok: false, status: 0 };
+async function request<T>($: Api, path: string, body: unknown, descriptor: Descriptor): Promise<{ ok: boolean; status: number; body?: T }> {
   const response = await $.http.fetch(`${descriptor.url}${path}`, {
     method: "POST", headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -352,6 +369,10 @@ async function request<T>($: Api, path: string, body: unknown, supplied?: Descri
   if (response.text.length > MAX_HTTP_BODY) return { ok: false, status: response.status };
   try { return { ok: response.ok, status: response.status, body: JSON.parse(response.text) as T }; }
   catch { return { ok: response.ok, status: response.status }; }
+}
+
+function sameDescriptor(left: Descriptor, right: Descriptor): boolean {
+  return left.url === right.url && left.token === right.token;
 }
 
 /** One pinned line under the prompt; only redrawn when it changes. */

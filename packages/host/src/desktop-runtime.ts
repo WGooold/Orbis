@@ -23,7 +23,9 @@ import { DshWebClient } from "./dsh-web-client.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
 import { updatePiIntegration } from "./pi-integration-install.js";
-import { updateClaudeIntegration } from "./claude-integration-install.js";
+import { findClaudeExecutable, updateClaudeIntegration } from "./claude-integration-install.js";
+import { TerminalClaudeLauncher } from "./claude-launcher.js";
+import { claudeConfigDir } from "./claude-transcript.js";
 import { adoptLoginShellEnvironment } from "./login-shell-env.js";
 import { agentInstallRoot } from "./agent-root.js";
 import { PiCommandCancelledError, installMacPiCommand, piCommandStatus, refreshMacPiCommand, removeMacPiCommand, syncWindowsPiCommand } from "./pi-command.js";
@@ -62,7 +64,7 @@ export type DesktopSettings = {
   dshEnabled?: boolean; dshEntry?: string; dshWebUrl?: string;
   /** macOS：让用户自己在终端里运行的 Pi 也加载 Orbis 扩展（缺省开启）。 */
   piIntegrationEnabled?: boolean;
-  /** Claude Code 插件只在用户明确开启后登记（ADR-0033 §5：插件启用须单独授权），缺省关闭。 */
+  /** 安装 / 首次打开 Host 时自动登记 Claude Code 插件；保留用户明确关闭的设置。 */
   claudeIntegrationEnabled?: boolean;
   lanPort?: number; stunServers?: string[];
 };
@@ -109,6 +111,7 @@ async function terminalWorkspace(cwd: string | undefined): Promise<string> {
 /** Owns only the Host process started by the desktop app. No TCP management endpoint is exposed. */
 export class DesktopRuntime {
   readonly #stateDir: string;
+  #claudeIntegrationInstalled = false;
   readonly #emit: (event: DesktopEvent) => void;
   #service: HostService | undefined;
   #codex: CodexAppServer | undefined;
@@ -157,9 +160,12 @@ export class DesktopRuntime {
     });
   }
 
-  async initialize(): Promise<unknown> {
+  async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled"> = {}): Promise<unknown> {
     // 先于一切 Agent 检测：从程序坞打开的 Host 只有 launchd 的最小 PATH。
     await adoptLoginShellEnvironment(line => this.log(line));
+    // DMG / portable installs have no installer hook. Register before Relay activation as well.
+    await this.#ensureClaudeIntegration(settings);
+    await this.#detectClaude();
     const identity = await loadOrCreateHostIdentity({ dir: this.#stateDir });
     try { await this.#providers.startRouting(); }
     catch (error) { this.log(error instanceof ProviderError ? error.message : "Codex local routing could not start; check its port and settings"); }
@@ -238,6 +244,7 @@ export class DesktopRuntime {
 
   async detect(settings?: Partial<DesktopSettings>, checkLatest = false): Promise<AgentInstallStatus[]> {
     await this.#environment(settings);
+    await this.#detectClaude();
     const managed = this.#managedRoot();
     return Promise.all((["pi", "codex", "dsh"] as const).map(async (kind) => {
       const copies = await findAgentCopies(kind, process.env);
@@ -311,6 +318,11 @@ export class DesktopRuntime {
     }));
   }
 
+  async #detectClaude(): Promise<void> {
+    // Claude uses its native installer and settings, outside the managed npm Agents.
+    this.#emit({ event: "claudeStatus", installed: await findClaudeExecutable(process.env) !== undefined });
+  }
+
   /**
    * macOS 的 Pi 集成：把安装包里的 Orbis 扩展登记进用户自己的 `~/.pi/agent/settings.json`。
    *
@@ -382,7 +394,7 @@ export class DesktopRuntime {
     if (!enabled) await removeMacPiCommand();
   }
 
-  async setClaudeIntegration(enabled: boolean): Promise<void> {
+  async setClaudeIntegration(enabled: boolean, allowMissing = false): Promise<void> {
     const pluginDir = fileURLToPath(new URL("../../claude-mod/", import.meta.url));
     if (!/[\\/]runtime[\\/]packages[\\/]claude-mod[\\/]?$/u.test(pluginDir)) {
       this.log("开发运行时不改动 Claude Code 配置；打包后的 Orbis Host 才会登记 Claude Code 插件");
@@ -390,11 +402,18 @@ export class DesktopRuntime {
     }
     const result = await updateClaudeIntegration({ pluginDir, uninstall: !enabled });
     if (result === "claude_not_found") {
-      if (enabled) throw new Error("没有找到 Claude Code（claude 命令）；请先安装 Claude Code 再开启");
+      if (enabled && !allowMissing) throw new Error("没有找到 Claude Code（claude 命令）；请先安装 Claude Code 再开启");
       return;
     }
+    this.#claudeIntegrationInstalled = enabled;
     this.log(enabled ? "已为本机 Claude Code 安装 Orbis 插件；新启动的 Claude Code 会连接 Host，已在运行的请执行 /reload-plugins 或重启"
       : "已从本机 Claude Code 卸载 Orbis 插件");
+  }
+
+  async #ensureClaudeIntegration(settings: Pick<DesktopSettings, "claudeIntegrationEnabled">): Promise<void> {
+    if (settings.claudeIntegrationEnabled === false || this.#claudeIntegrationInstalled) return;
+    // Missing Claude Code or a failed plugin command must not prevent Host from opening.
+    await this.setClaudeIntegration(true, true).catch(error => this.log(`登记 Claude Code 插件失败：${error instanceof Error ? error.message : String(error)}`));
   }
 
   async start(settings: DesktopSettings): Promise<void> {
@@ -408,10 +427,7 @@ export class DesktopRuntime {
       // 失败不阻止 Host 启动：最坏只是终端里的 Pi 连不上，Host 打开的 Pi 仍带着扩展。
       await this.setPiIntegration(true).catch(error => this.log(`登记 Pi 扩展失败：${error instanceof Error ? error.message : String(error)}`));
     }
-    if (settings.claudeIntegrationEnabled === true) {
-      // 应用更新后插件目录可能换了位置：重新指向当前运行时。失败同样不阻止 Host 启动。
-      await this.setClaudeIntegration(true).catch(error => this.log(`登记 Claude Code 插件失败：${error instanceof Error ? error.message : String(error)}`));
-    }
+    await this.#ensureClaudeIntegration(settings);
     this.#desired = settings;
     this.#attempt = 0;
     await this.#connect();
@@ -896,6 +912,12 @@ export class DesktopRuntime {
       if (mode !== "setup") throw new Error("未知打开方式");
       if (this.#codexDesktopLifecycle !== undefined) await this.#codexDesktopLifecycle.ensureReady();
       else await launchCodexDesktopApp();
+      return;
+    }
+    if (kind === "claude") {
+      const workingDirectory = await terminalWorkspace(cwd);
+      const launcher = new TerminalClaudeLauncher({ stateDir: this.#stateDir, configDir: claudeConfigDir(process.env.CLAUDE_CONFIG_DIR) });
+      await launcher.launch({ cwd: workingDirectory, launchId: randomUUID() });
       return;
     }
     if (kind !== "pi" && kind !== "codex") throw new Error("未知 agent");

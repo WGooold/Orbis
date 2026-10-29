@@ -42,6 +42,7 @@ class HostController : public QObject {
     Q_PROPERTY(bool dshEnabled READ dshEnabled NOTIFY changed)
     Q_PROPERTY(bool piIntegrationEnabled READ piIntegrationEnabled NOTIFY changed)
     Q_PROPERTY(bool claudeIntegrationEnabled READ claudeIntegrationEnabled NOTIFY changed)
+    Q_PROPERTY(bool claudeInstalled READ claudeInstalled NOTIFY changed)
     Q_PROPERTY(int cooldown READ cooldown NOTIFY changed)
     Q_PROPERTY(int pairSeconds READ pairSeconds NOTIFY changed)
     Q_PROPERTY(int runtimeCount READ runtimeCount NOTIFY changed)
@@ -59,7 +60,7 @@ class HostController : public QObject {
     Q_PROPERTY(QStringList checkingProviderIds READ checkingProviderIds NOTIFY changed)
     Q_PROPERTY(bool providerModelsLoading READ providerModelsLoading NOTIFY changed)
 public:
-    HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QString credentialDir = {}, QObject *parent = nullptr);
+    HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QString credentialDir = {}, bool automaticIntegrations = true, QObject *parent = nullptr);
     ~HostController() override;
     QString state() const { return m_state; }
     bool desiredRunning() const { return m_desiredRunning; }
@@ -90,8 +91,8 @@ public:
     bool codexEnabled() const { return m_settings.value("codexEnabled", true).toBool(); }
     bool dshEnabled() const { return m_settings.value("dshEnabled", false).toBool(); }
     bool piIntegrationEnabled() const { return m_settings.value("piIntegrationEnabled", true).toBool(); }
-    // Off by default: installing a Claude Code plugin needs the user's explicit consent (ADR-0033 §5).
-    bool claudeIntegrationEnabled() const { return m_settings.value("claudeIntegrationEnabled", false).toBool(); }
+    bool claudeIntegrationEnabled() const { return m_settings.value("claudeIntegrationEnabled", true).toBool(); }
+    bool claudeInstalled() const { return m_claudeInstalled; }
     int cooldown() const { return m_cooldown; }
     int pairSeconds() const;
     int runtimeCount() const { return m_runtimeCount; }
@@ -144,7 +145,7 @@ public:
     Q_INVOKABLE void restartDshServer();
     Q_INVOKABLE void openAgent(const QString &kind);
     Q_INVOKABLE void openAgentTui(const QString &kind);
-    Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration = true, bool claudeIntegration = false);
+    Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration = true, bool claudeIntegration = true);
     Q_INVOKABLE void diagnose();
     Q_INVOKABLE void exportDiagnostics();
     Q_INVOKABLE void copyDiagnostics();
@@ -213,6 +214,7 @@ private:
     int m_policyTicks = 0;
     qint64 m_pairExpires = 0;
     bool m_bridgeReady = false, m_shutdown = false, m_desiredRunning = false;
+    bool m_claudeInstalled = false;
     bool m_verificationRequired = true, m_registrationAvailable = false;
     QString m_updateVersion, m_updateInstallerUrl, m_updateChecksumUrl;
     QString m_androidLatestVersion;

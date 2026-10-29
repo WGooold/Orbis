@@ -28,6 +28,12 @@ Orbis pins npm to its Node interpreter and the selected installation prefix. Man
 
 Desktop settings and DPAPI-encrypted activation are stored in the current Windows user's local Orbis application-data directory. New Host installations use `~/.orbis/`; an existing `~/.pi-remote/` directory is reused when the new directory does not exist, preserving the Host identity, device pairings and loopback discovery. An already-running CLI Host is detected; stop it in its original window before starting the desktop Host. Credentials cannot be copied to another Windows account.
 
+Claude Code integration is enabled by default. The Windows installer registers the bundled Orbis plugin through Claude Code's own plugin commands; macOS DMG and portable installations register it when the app first opens, before Relay activation. If Claude Code is absent, installation continues and Host retries on a later launch. Turning off **Let terminal Claude Code connect to Orbis** uninstalls the plugin; updates preserve that explicit opt-out. Already-running Claude Code sessions need `/reload-plugins` or a restart. Windows uninstall removes the plugin and its local marketplace; on macOS, turn off the setting before deleting Host.
+
+The Overview page includes **Open Claude Code** when its native CLI is detected. Choose a workspace to open the official TUI in a terminal window with the Orbis connection. An installed Orbis plugin is reused; otherwise the bundled plugin is loaded for that launch. Claude is detected independently of the npm Agents and is not included in their installation or provider management. Overview launch buttons wrap at smaller window widths.
+
+Claude Code sessions automatically rediscover and reconnect after Host restarts, retaining the same native session. Host also refreshes the installed plugin cache when registering the bundled plugin. When upgrading from plugin 0.1.0, run `/reload-plugins` once in already-open Claude Code sessions to load the reconnect fix; later Host restarts do not require a Claude restart.
+
 ## Development
 
 Use the Windows toolchain. Node >=22.19, CMake and Ninja must be on PATH. Install the matching Qt/MinGW kit once:
