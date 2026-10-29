@@ -153,9 +153,10 @@ internal fun RuntimePermissionsStatus(
                         style = if (chosen) NeumorphStyle.Pressed else NeumorphStyle.Raised,
                         enabled = canEdit,
                         onClick = { selectedValue = option.value; feedback = null },
+                        contentInset = 14.dp,
                     ) {
                         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("${if (chosen) "● " else "○ "}${option.label}${if (option.value == current) " · 当前" else ""}")
+                            Text("${if (chosen) "● " else "○ "}${option.label}${if (option.value == current) "，当前" else ""}")
                             option.description?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                         }
                     }

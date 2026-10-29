@@ -9,6 +9,7 @@ struct DownloadsView: View {
     @State private var browserOpen = false
     @State private var selected: Set<String> = []
     @State private var path = ""
+    @FocusState private var pathFocused: Bool
     private var downloads: [FileTransfer] { transfers.currentTasks.filter { $0.direction == "download" } }
     var body: some View {
         VStack(spacing: 0) {
@@ -18,13 +19,14 @@ struct DownloadsView: View {
                 }
             }
             HStack(spacing: 10) {
-                TextField("电脑文件的完整路径", text: $path).textInputAutocapitalization(.never).autocorrectionDisabled().orbisInput().accessibilityIdentifier("download-path")
+                TextField("电脑文件的完整路径", text: $path).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .font(.orbisBody()).focused($pathFocused).orbisInput(focused: pathFocused).accessibilityIdentifier("download-path")
                 OrbisIconButton(symbol: "arrow.down.to.line", label: "按路径下载") { transfers.download(path: path.trimmingCharacters(in: .whitespacesAndNewlines)); path = "" }
                     .disabled(store.connection != .secured || path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding(.horizontal, 24).padding(.top, 8)
             OrbisActionButton(title: "浏览电脑文件", symbol: "folder") { browserOpen = true }
                 .disabled(store.connection != .secured).padding(.horizontal, 24).padding(.vertical, 12)
-            if downloads.isEmpty { OrbisEmptyState(symbol: "arrow.down.to.line", title: "暂无下载", detail: "浏览电脑文件，或点击消息中的文件链接下载。") }
+            if downloads.isEmpty { OrbisEmptyState(symbol: "arrow.down.to.line", title: "暂无下载") }
             else {
                 ScrollView {
                     LazyVStack(spacing: 18) {
@@ -48,41 +50,48 @@ struct DownloadsView: View {
         ])
     }
 
+    /// Every status uses the same rows: name, one status line, one action slot and the progress
+    /// track. A status change only swaps content in place, so cards below never move.
     private func transferCard(_ task: FileTransfer) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "doc").font(.system(size: 24)).foregroundStyle(OrbisPalette(scheme).accent)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(task.name).font(.system(size: 15, weight: .semibold)).lineLimit(2)
-                    Text(store.selectedHost?.hostName ?? "电脑").font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary)
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                if !selected.isEmpty {
-                    OrbisCheckbox(checked: selected.contains(task.id), label: "选择 \(task.name)") {
-                        if !selected.insert(task.id).inserted { selected.remove(task.id) }
+        let p = OrbisPalette(scheme)
+        let failed = task.status == "failed"
+        let active = ["queued", "downloading", "verifying"].contains(task.status)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                ZStack {
+                    if selected.isEmpty { Image(systemName: "doc").font(.system(size: 22)).foregroundStyle(p.accent) }
+                    else {
+                        OrbisCheckbox(checked: selected.contains(task.id), label: "选择 \(task.name)") {
+                            if !selected.insert(task.id).inserted { selected.remove(task.id) }
+                        }
                     }
-                }
+                }.frame(width: 44, height: 44)
+                VStack(alignment: .leading, spacing: 4) {
+                    FileNameText(name: task.name).font(.orbisBody(.semibold))
+                    HStack(spacing: 8) {
+                        Text(task.error ?? transferStatusTitle(task.status)).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text("\(byteCount(task.received)) / \(byteCount(task.size))").fixedSize()
+                    }.font(.orbisCaption()).foregroundStyle(failed ? p.error : p.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                Group {
+                    if task.status == "completed", let path = task.localPath {
+                        ShareLink(item: URL(fileURLWithPath: path)) {
+                            Image(systemName: "square.and.arrow.up").font(.system(size: 20, weight: .medium)).foregroundStyle(p.accent)
+                                .frame(width: 40, height: 40)
+                        }.buttonStyle(NeuIconButtonStyle(selected: false)).accessibilityLabel("打开或分享")
+                    } else if active {
+                        OrbisIconButton(symbol: "xmark", label: "取消下载") { transfers.cancel(task.id) }
+                    } else {
+                        OrbisIconButton(symbol: "arrow.clockwise", label: task.status == "paused" ? "继续下载" : "重试", tint: p.accent) { transfers.restart(task.id) }
+                            .disabled(store.connection != .secured)
+                    }
+                }.frame(width: 48, height: 48)
             }
-            HStack {
-                Text(transferStatusTitle(task.status)).font(.system(size: 12, weight: .medium))
-                Spacer()
-                Text("\(byteCount(task.received)) / \(byteCount(task.size))").font(.system(size: 11, design: .monospaced))
-            }.foregroundStyle(task.status == "failed" ? OrbisPalette(scheme).error : OrbisPalette(scheme).secondary)
-            if task.size > 0 && ["downloading", "queued", "paused", "verifying"].contains(task.status) {
-                ProgressView(value: min(Double(task.size), Double(task.received)), total: Double(task.size)).tint(OrbisPalette(scheme).accent)
-            }
-            if let error = task.error { Text(error).font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).error) }
-            if task.status == "completed", let path = task.localPath {
-                Text("已保存到“文件”App · Orbis").font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary)
-                ShareLink(item: URL(fileURLWithPath: path)) {
-                    Label("打开或分享", systemImage: "square.and.arrow.up").font(.system(size: 13, weight: .semibold))
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                }.buttonStyle(NeuButtonStyle())
-            } else if ["queued", "downloading", "verifying"].contains(task.status) {
-                OrbisActionButton(title: "取消", symbol: "xmark") { transfers.cancel(task.id) }
-            } else {
-                OrbisActionButton(title: task.status == "paused" ? "继续下载" : "重试", symbol: "arrow.clockwise") { transfers.restart(task.id) }.disabled(store.connection != .secured)
-            }
-        }.padding(18).neuSurface(inset: selected.contains(task.id))
+            ProgressView(value: min(Double(max(task.size, 1)), Double(task.received)), total: Double(max(task.size, 1)))
+                .tint(failed ? p.error : task.status == "completed" ? p.success : p.accent)
+                .accessibilityHidden(true)
+        }.neuSurface(inset: selected.contains(task.id), radius: OrbisRadius.card, padding: 16)
     }
 }
 
@@ -98,9 +107,11 @@ private struct DownloadBrowserView: View {
             ScrollView {
                 VStack(spacing: 14) {
                     HStack {
-                        Text(store.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? "电脑根目录").font(.system(size: 12, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading)
-                        if store.browse?.loading == true { ProgressView().controlSize(.small) }
-                        else { OrbisIconButton(symbol: "arrow.clockwise", label: "刷新目录") { store.browseDirectory(store.browse?.path) } }
+                        Text(store.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? "电脑根目录").font(.orbisCaption(mono: true)).frame(maxWidth: .infinity, alignment: .leading)
+                        ZStack {
+                            if store.browse?.loading == true { ProgressView().controlSize(.small) }
+                            else { OrbisIconButton(symbol: "arrow.clockwise", label: "刷新目录") { store.browseDirectory(store.browse?.path) } }
+                        }.frame(width: 48, height: 48)
                     }
                     if store.browse?.path?.isEmpty == false {
                         OrbisActionButton(title: "上一级", symbol: "arrow.up") { selected = nil; store.browseDirectory(store.browse?.parent) }.disabled(store.browse?.loading == true)
@@ -116,13 +127,16 @@ private struct DownloadBrowserView: View {
                             } label: {
                                 HStack(spacing: 10) {
                                     Image(systemName: entry.isDir ? "folder" : "doc").foregroundStyle(OrbisPalette(scheme).accent)
-                                    Text(entry.name).font(.system(size: 14)).frame(maxWidth: .infinity, alignment: .leading)
-                                    if entry.isDir { Image(systemName: "chevron.right").font(.system(size: 12)) }
-                                    else if selected?.id == entry.id { Image(systemName: "checkmark.circle.fill") }
+                                    Group {
+                                        if entry.isDir { Text(entry.name).lineLimit(1) } else { FileNameText(name: entry.name) }
+                                    }.font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
+                                    // Files reserve the check slot, so selecting one never shifts its name.
+                                    if entry.isDir { Image(systemName: "chevron.right").imageScale(.small) }
+                                    else { Image(systemName: "checkmark.circle.fill").opacity(selected?.id == entry.id ? 1 : 0) }
                                 }.padding(14).frame(minHeight: 52)
                             }.buttonStyle(NeuButtonStyle(selected: selected?.id == entry.id))
                         }
-                        if store.browse?.entries.isEmpty == true { Text("此目录没有可浏览的文件或子目录").font(.system(size: 13)).foregroundStyle(OrbisPalette(scheme).secondary).padding(24) }
+                        if store.browse?.entries.isEmpty == true { Text("此目录没有可浏览的文件或子目录").font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(24) }
                     }
                 }.padding(.horizontal, 24).padding(.vertical, 10)
             }.disabled(store.connection != .secured)
@@ -144,7 +158,7 @@ struct AttachmentStrip: View {
     let runtime: RuntimeSummary
     var body: some View {
         let tasks = transfers.currentTasks.filter { $0.direction == "upload" && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.attached }
-        if transfers.preparing { ProgressView("正在准备附件…").font(.system(size: 12)) }
+        if transfers.preparing { ProgressView("正在准备附件…").font(.orbisCaption()).padding(.top, 10) }
         if !tasks.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
@@ -152,9 +166,11 @@ struct AttachmentStrip: View {
                         HStack(spacing: 10) {
                             Image(systemName: "doc")
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(task.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                                Text(task.error ?? (task.status == "completed" ? "已上传" : "\(transferStatusTitle(task.status)) · \(byteCount(task.received))"))
-                                    .font(.system(size: 10)).lineLimit(1)
+                                FileNameText(name: task.name).font(.orbisCaption(.medium))
+                                HStack(spacing: 6) {
+                                    Text(task.error ?? (task.status == "completed" ? "已上传" : transferStatusTitle(task.status))).lineLimit(1)
+                                    if task.error == nil && task.status != "completed" { Text(byteCount(task.received)).fixedSize() }
+                                }.font(.orbisCaption())
                             }.frame(maxWidth: 180, alignment: .leading)
                             if ["paused", "failed"].contains(task.status) {
                                 OrbisIconButton(symbol: "arrow.clockwise", label: "重试上传", size: 28) { transfers.restart(task.id) }
@@ -162,7 +178,7 @@ struct AttachmentStrip: View {
                             OrbisIconButton(symbol: "xmark", label: "移除附件 \(task.name)", size: 28) { transfers.detach([task.id]) }
                         }.padding(.horizontal, 12).padding(.vertical, 6).neuSurface(inset: true, radius: 14, intensity: 0.45)
                     }
-                }.padding(.horizontal, 16).padding(.vertical, 6)
+                }.padding(.horizontal, 16).padding(.vertical, 6).padding(.top, 4)
             }
         }
     }

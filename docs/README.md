@@ -7,6 +7,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 - `docs/adr/`: accepted architecture decisions. ADRs preserve historical reasoning; a superseded ADR is marked in its header.
 - `docs/architecture/agent-state-acceptance.md`: living acceptance checklist for ADR-0032, mapping the 36 audited state modules to their model scope and migration status.
 - `docs/testing/isolated-host/README.md`: isolated Host test rig — its own process, state directory and local Relay, so Host/App verification never touches the Host the user is running. Read it before any on-machine pairing or display-projection regression run.
+- `docs/testing/mobile-ui-polish.md`: mobile UI constraints and isolated iOS / Android regression evidence for ADR-0046.
 - `docs/deployment.md`: production Relay deployment and release checks.
 - `docs/mail-server.md`: QQ verification mail configuration.
 - `docs/deepseek-harness.md`: DeepSeek Harness installation, configuration and supported behavior.

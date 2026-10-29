@@ -11,24 +11,22 @@ struct ConnectionStatusView: View {
     var body: some View {
         VStack(spacing: 0) {
             OrbisPageHeader(title: "连接状态", back: onBack) {
+                // Always in the header, so a connection change never inserts or removes page content.
+                OrbisIconButton(symbol: "arrow.clockwise", label: "重新连接", action: store.reconnectSelectedHost)
+                    .disabled(store.selectedHost == nil || store.connection == .connecting)
                 OrbisIconButton(symbol: "gearshape", label: "设置", action: onSettings)
                 OrbisTextButton(title: "原始事件") { rawEventsOpen = true }
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    if store.connection != .secured {
-                        OrbisNotice(text: store.connection == .connecting || store.connection == .online ? "正在连接电脑并建立安全通道。" : "检查电脑端 Host 和网络连接，然后重试。", error: store.connection == .error)
-                        OrbisActionButton(title: "重新连接", symbol: "arrow.clockwise", action: store.reconnectSelectedHost)
-                            .disabled(store.selectedHost == nil || store.connection == .connecting)
-                    }
                     if store.hosts.count > 1 {
                         StatusSection(title: "已配对电脑") {
                             ForEach(store.hosts) { computer in
                                 Button { store.selectHost(computer.hostId) } label: {
                                     HStack {
-                                        Text(computer.name).font(.system(size: 14, weight: .semibold))
+                                        Text(computer.name).font(.orbisBody(.semibold))
                                         Spacer()
-                                        Text(connectionTitle(computer.connectionState)).font(.system(size: 11))
+                                        Text(connectionTitle(computer.connectionState)).font(.orbisCaption())
                                         if computer.hostId == store.selectedHostId { Image(systemName: "checkmark") }
                                     }.frame(minHeight: 44)
                                 }.buttonStyle(.plain)
@@ -37,7 +35,8 @@ struct ConnectionStatusView: View {
                     }
                     StatusSection(title: "连接与加密") {
                         StatusFact(label: "连接方式", value: pathTitle(store.activePath), tone: store.connection == .secured ? OrbisPalette(scheme).success : nil)
-                        StatusFact(label: "电脑通道", value: connectionTitle(store.connection))
+                        StatusFact(label: "电脑通道", value: connectionTitle(store.connection),
+                                   tone: store.connection == .error ? OrbisPalette(scheme).error : store.connection == .secured ? nil : OrbisPalette(scheme).warning)
                         StatusFact(label: "加密通道", value: store.connection == .secured ? "已建立" : "未建立", tone: store.connection == .secured ? OrbisPalette(scheme).success : nil)
                         StatusFact(label: "路径延迟", value: store.pathRTT.map { "\(Int($0)) ms" } ?? "—")
                         StatusFact(label: "Relay 地址", value: store.selectedHost?.relay.relayUrl ?? "—")
@@ -63,7 +62,7 @@ struct ConnectionStatusView: View {
                     OrbisPageHeader(title: "原始事件", back: { rawEventsOpen = false }) { EmptyView() }
                     ScrollView {
                         Text(store.connectionEvents.reversed().joined(separator: "\n"))
-                            .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                            .font(.orbisCaption(mono: true)).textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(20)
                     }
                 }.foregroundStyle(OrbisPalette(scheme).text).background(OrbisPalette(scheme).base)
@@ -90,17 +89,17 @@ struct SettingsView: View {
                     StatusSection(title: "Agent 供应商") {
                         Button(action: onProviders) {
                             HStack {
-                                Text("供应商配置与切换").font(.system(size: 14, weight: .semibold))
+                                Text("供应商配置与切换").font(.orbisBody(.semibold))
                                 Spacer()
-                                Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
+                                Image(systemName: "chevron.right").font(.orbisLabel(.semibold))
                             }.padding(.horizontal, 14).frame(minHeight: 48).contentShape(Rectangle())
-                        }.buttonStyle(NeuButtonStyle(radius: 14)).foregroundStyle(OrbisPalette(scheme).accent)
+                        }.buttonStyle(NeuButtonStyle()).foregroundStyle(OrbisPalette(scheme).accent)
                     }
                     StatusSection(title: "连接优先级") {
                         ForEach(Array(store.pathPreference.enumerated()), id: \.element) { index, kind in
                             HStack(spacing: 8) {
-                                Text("第 \(index + 1) 优先").font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary)
-                                Text(priorityPathTitle(kind)).font(.system(size: 14)).frame(maxWidth: .infinity, alignment: .leading)
+                                Text("第 \(index + 1) 优先").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                                Text(priorityPathTitle(kind)).font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
                                 OrbisIconButton(symbol: "arrow.up", label: "上移\(priorityPathTitle(kind))") { move(index, to: index - 1) }
                                     .disabled(index == 0)
                                 OrbisIconButton(symbol: "arrow.down", label: "下移\(priorityPathTitle(kind))") { move(index, to: index + 1) }
@@ -108,8 +107,6 @@ struct SettingsView: View {
                             }.accessibilityElement(children: .contain).accessibilityIdentifier("path-priority-\(kind)")
                         }
                     }
-                    Text("顺序会保存在本机，并同步给电脑。电脑根据各路径的可达性与延迟选择当前路径，连接状态页显示实际使用的链路。")
-                        .font(.system(size: 13)).foregroundStyle(OrbisPalette(scheme).secondary)
                 }.padding(.horizontal, 20).padding(.vertical, 16)
             }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
@@ -136,34 +133,36 @@ struct AgentProvidersView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text(store.selectedHost?.hostName ?? "已配对的电脑").font(.system(size: 16, weight: .medium))
+                    Text(store.selectedHost?.hostName ?? "已配对的电脑").font(.orbisBody(.medium))
                     HStack(spacing: 10) {
                         ForEach(["pi", "codex", "dsh"], id: \.self) { kind in
                             Button { host.loadProviders(kind) } label: {
                                 HStack(spacing: 6) {
                                     AgentEmblem(kind: kind, size: 22, recessed: false)
-                                    Text(agentTitle(kind)).font(.system(size: 13, weight: .semibold))
+                                    Text(agentTitle(kind)).font(.orbisLabel(.semibold))
                                 }.frame(maxWidth: .infinity, minHeight: 48)
                             }.buttonStyle(NeuButtonStyle(selected: host.providerKind == kind))
                                 .disabled(host.providersLoading || host.changingProvider)
                                 .accessibilityLabel("\(agentTitle(kind))供应商").accessibilityAddTraits(host.providerKind == kind ? .isSelected : [])
                         }
                     }
-                    if host.providersLoading || host.changingProvider {
-                        ProgressView().progressViewStyle(.linear).accessibilityLabel(host.changingProvider ? "正在更新供应商" : "正在读取供应商")
-                    }
+                    // Always laid out; loading only changes its opacity, so the list below never moves.
+                    ProgressView().progressViewStyle(.linear)
+                        .opacity(host.providersLoading || host.changingProvider ? 1 : 0)
+                        .accessibilityHidden(!(host.providersLoading || host.changingProvider))
+                        .accessibilityLabel(host.changingProvider ? "正在更新供应商" : "正在读取供应商")
                     if let problem = host.providerCatalogProblem, !host.providersLoading { OrbisNotice(text: problem, error: host.connected) }
                     if let notice = host.providerNotice { OrbisNotice(text: notice) }
                     if host.providerSummary?["switching"].bool == true { OrbisNotice(text: "电脑正在切换供应商，请等待完成后再操作。") }
                     if !host.providersLoading && host.providerCatalogProblem == nil && host.providers.isEmpty {
-                        OrbisEmptyState(symbol: "shippingbox", title: "还没有供应商", detail: "请先在电脑端 Host 添加供应商配置。")
+                        OrbisEmptyState(symbol: "shippingbox", title: "还没有供应商")
                     }
                     ForEach(host.providers) { provider in
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text(provider.name).font(.system(size: 15, weight: .semibold))
+                                Text(provider.name).font(.orbisBody(.semibold))
                                 Text(provider.enabled ? (provider.additive ? "已启用" : "当前使用") : "未启用")
-                                    .font(.system(size: 12)).foregroundStyle(provider.enabled ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
+                                    .font(.orbisCaption()).foregroundStyle(provider.enabled ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                             if !provider.enabled || provider.additive {
                                 OrbisTextButton(title: provider.enabled ? "移除" : "启用",
@@ -171,7 +170,7 @@ struct AgentProvidersView: View {
                                     if let key = host.hostKey { confirm(provider, hostKey: key) }
                                 }.disabled(!host.canChangeProvider).accessibilityIdentifier("provider-action-\(provider.id)")
                             }
-                        }.padding(18).neuSurface()
+                        }.neuSurface(radius: OrbisRadius.card, padding: 16)
                     }
                 }.padding(20)
             }
@@ -206,11 +205,11 @@ private struct HostDiagnosticsSection: View {
             if let page = host.diagnosticPage {
                 StatusFact(label: "最近读到的", value: page.records.last?.message ?? "本页没有记录")
                 if page.truncated { OrbisNotice(text: "记录窗口已变化，部分较早记录已淘汰。") }
-                if page.nextCursor != nil { Text("还有更新的记录未读取").font(.system(size: 12)) }
+                if page.nextCursor != nil { Text("还有更新的记录未读取").font(.orbisCaption()) }
                 ForEach(page.records) { record in
                     VStack(alignment: .leading, spacing: 5) {
-                        StatusFact(label: "\(record.category) · \(severityTitle(record.severity))", value: record.message)
-                        Text(Date(timeIntervalSince1970: Double(record.at) / 1000), style: .time).font(.system(size: 11)).foregroundStyle(.secondary)
+                        StatusFact(label: record.category, tag: severityTitle(record.severity), value: record.message)
+                        Text(Date(timeIntervalSince1970: Double(record.at) / 1000), style: .time).font(.orbisCaption()).foregroundStyle(.secondary)
                     }
                 }
                 if let cursor = page.nextCursor {
@@ -250,22 +249,23 @@ private struct HostProvidersSection: View {
                 let rows = host.domains["providers"]?.value["providers"].array ?? []
                 if rows.isEmpty { StatusFact(label: "供应商状态", value: "电脑没有报告任何供应商") }
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    let title = agentTitle(row["agentKind"].string)
+                    // Each agent gets a small heading; its facts keep plain labels instead of "Agent，项".
+                    Text(agentTitle(row["agentKind"].string)).font(.orbisLabel(.semibold)).accessibilityAddTraits(.isHeader)
                     if let availability = row["availability"].string, availability != "ready" {
-                        StatusFact(label: title + " · 配置状态", value: "电脑尚未核对，以下保留最后读取的配置")
+                        StatusFact(label: "配置状态", value: "电脑尚未核对，以下保留最后读取的配置")
                     }
-                    StatusFact(label: title + " · 切换状态", value: boolTitle(row["switching"].bool, yes: "正在切换", no: "未报告进行中的切换"))
-                    StatusFact(label: title + " · 当前供应商", value: row["current"].string ?? "尚未核对")
-                    StatusFact(label: title + " · 可选供应商", value: row["profiles"] == .null ? "清单尚未读取" : "\(row["profiles"].array.count) 个\(row["profilesTruncated"].bool == true ? "（清单不完整）" : "")")
-                    StatusFact(label: title + " · 认证绑定", value: boolTitle(row["authenticated"].bool, yes: "已绑定凭据", no: "缺少凭据，请在电脑端配置"))
+                    StatusFact(label: "切换状态", value: boolTitle(row["switching"].bool, yes: "正在切换", no: "未报告进行中的切换"))
+                    StatusFact(label: "当前供应商", value: row["current"].string ?? "尚未核对")
+                    StatusFact(label: "可选供应商", value: row["profiles"] == .null ? "清单尚未读取" : "\(row["profiles"].array.count) 个\(row["profilesTruncated"].bool == true ? "（清单不完整）" : "")")
+                    StatusFact(label: "认证绑定", value: boolTitle(row["authenticated"].bool, yes: "已绑定凭据", no: "缺少凭据，请在电脑端配置"))
                     if row["authentication"] != .null {
-                        StatusFact(label: title + " · 远端认证", value: boolTitle(row["authentication"]["verified"].bool, yes: "已验证", no: "未通过验证"))
+                        StatusFact(label: "远端认证", value: boolTitle(row["authentication"]["verified"].bool, yes: "已验证", no: "未通过验证"))
                     }
-                    StatusFact(label: title + " · 用量", value: usageTitle(row["usage"]))
-                    StatusFact(label: title + " · 路由", value: row["routing"]["availability"].string == "ready" ? boolTitle(row["routing"]["running"].bool, yes: "运行中", no: "未运行") : "尚未核对")
+                    StatusFact(label: "用量", value: usageTitle(row["usage"]))
+                    StatusFact(label: "路由", value: row["routing"]["availability"].string == "ready" ? boolTitle(row["routing"]["running"].bool, yes: "运行中", no: "未运行") : "尚未核对")
                     if row["health"]["availability"].string == "ready" {
                         let open = row["health"]["circuits"].array.filter { $0["state"].string == "open" }.count
-                        StatusFact(label: title + " · 健康度", value: open > 0 ? "\(open) 个供应商熔断中" : "无熔断中的供应商")
+                        StatusFact(label: "健康度", value: open > 0 ? "\(open) 个供应商熔断中" : "无熔断中的供应商")
                     }
                 }
             }
@@ -289,7 +289,7 @@ private struct HostModelSection: View {
             if !host.pendingDomains.isEmpty { ProgressView().accessibilityLabel("正在读取电脑端状态") }
             if let error = host.modelError { OrbisNotice(text: error, error: true) }
             ForEach(HostState.domainNames, id: \.self) { name in
-                StatusFact(label: domainTitle(name), value: host.problem(for: name) ?? host.domains[name].map { "已核对 · 版本 \($0.revision)" } ?? "尚未读取")
+                StatusFact(label: domainTitle(name), value: host.problem(for: name) ?? host.domains[name].map { "已核对（版本 \($0.revision)）" } ?? "尚未读取")
             }
             OrbisActionButton(title: "刷新电脑端状态", symbol: "arrow.clockwise") { host.refresh() }
                 .disabled(!host.connected || !host.pendingDomains.isEmpty)
@@ -335,9 +335,11 @@ struct StatusSection<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(OrbisPalette(scheme).secondary).accessibilityAddTraits(.isHeader)
+            Text(title).font(.orbisLabel(.semibold)).foregroundStyle(OrbisPalette(scheme).secondary)
+                .padding(.horizontal, 4).accessibilityAddTraits(.isHeader)
             VStack(alignment: .leading, spacing: 14) { content }
-                .padding(18).frame(maxWidth: .infinity, alignment: .leading).neuSurface()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .neuSurface(radius: OrbisRadius.card, padding: 16)
         }
     }
 }
@@ -345,15 +347,20 @@ struct StatusSection<Content: View>: View {
 struct StatusFact: View {
     @Environment(\.colorScheme) private var scheme
     let label: String
+    /// A short qualifier shown beside the label in its own color, instead of joining them with a dot.
+    var tag: String? = nil
     let value: String
     var tone: Color? = nil
     var monospaced = false
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(label).font(.system(size: 11)).foregroundStyle(OrbisPalette(scheme).secondary)
+            HStack(spacing: 8) {
+                Text(label).foregroundStyle(OrbisPalette(scheme).secondary)
+                if let tag { Text(tag).fontWeight(.semibold).foregroundStyle(OrbisPalette(scheme).text) }
+            }.font(.orbisCaption())
             HStack(alignment: .firstTextBaseline, spacing: 7) {
-                if let tone { Circle().fill(tone).frame(width: 7, height: 7) }
-                Text(value).font(.system(size: 14, design: monospaced ? .monospaced : .default))
+                if let tone { Circle().fill(tone).frame(width: 7, height: 7).orbisIconBaseline(OrbisTextSize.body) }
+                Text(value).font(.orbisBody(mono: monospaced))
                     .foregroundStyle(tone ?? OrbisPalette(scheme).text).textSelection(.enabled)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)

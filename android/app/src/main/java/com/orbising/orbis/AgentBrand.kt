@@ -1,6 +1,5 @@
 package com.orbising.orbis
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,11 +43,11 @@ internal val LocalAgentBrand = staticCompositionLocalOf { AgentBrand.Pi }
 
 @Composable
 internal fun AgentBrand.accent(): Color = when (this) {
-    AgentBrand.Pi -> if (isSystemInDarkTheme()) Color(0xFFF2AD90) else Color(0xFF99482F)
-    AgentBrand.Codex -> if (isSystemInDarkTheme()) Color(0xFF77D6C7) else Color(0xFF006C64)
+    AgentBrand.Pi -> if (LocalOrbisDarkTheme.current) Color(0xFFF2AD90) else Color(0xFF99482F)
+    AgentBrand.Codex -> if (LocalOrbisDarkTheme.current) Color(0xFF77D6C7) else Color(0xFF006C64)
     // DeepSeek brand blue; the dark theme keeps a light tint of the same hue for contrast.
-    AgentBrand.DeepSeek -> if (isSystemInDarkTheme()) Color(0xFFA1B5FF) else Color(0xFF4D6BFE)
-    AgentBrand.Claude -> if (isSystemInDarkTheme()) Color(0xFFF0B48C) else Color(0xFFB4572E)
+    AgentBrand.DeepSeek -> if (LocalOrbisDarkTheme.current) Color(0xFFA1B5FF) else Color(0xFF4D6BFE)
+    AgentBrand.Claude -> if (LocalOrbisDarkTheme.current) Color(0xFFF0B48C) else Color(0xFFB4572E)
 }
 
 /** Keep the shared soft base; focus rings, actions and selection inherit the agent accent. */
@@ -60,7 +59,7 @@ internal fun AgentTheme(brand: AgentBrand, content: @Composable () -> Unit) {
         MaterialTheme(
             colorScheme = colors.copy(
                 primary = accent,
-                onPrimary = if (isSystemInDarkTheme()) Color(0xFF192326) else Color.White,
+                onPrimary = if (LocalOrbisDarkTheme.current) Color(0xFF192326) else Color.White,
                 primaryContainer = lerp(colors.surface, accent, 0.14f),
                 onPrimaryContainer = accent,
             ),
@@ -97,9 +96,9 @@ internal fun AgentEmblem(brand: AgentBrand, size: Dp = 40.dp) {
 @Composable
 internal fun AgentLabel(brand: AgentBrand, modifier: Modifier = Modifier, suffix: String? = null) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        AgentIcon(brand, Modifier.size(16.dp))
+        AgentIcon(brand, Modifier.size(16.dp).orbisIconBaseline(MaterialTheme.typography.labelMedium.fontSize))
         Text(
-            if (suffix == null) brand.title else "${brand.title} · $suffix",
+            if (suffix == null) brand.title else "${brand.title}，$suffix",
             color = brand.accent(),
             style = MaterialTheme.typography.labelMedium,
         )

@@ -75,6 +75,8 @@ import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.StopCircle
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.selection.selectableGroup
@@ -122,6 +124,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -466,12 +473,11 @@ private fun PairingScreen(
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !pairingInProgress,
             )
-            if (pairingInProgress) {
-                Spacer(Modifier.height(16.dp))
-                CircularProgressIndicator()
+            Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
+                if (pairingInProgress) CircularProgressIndicator(Modifier.size(24.dp))
+                else Text(error ?: scanError.orEmpty(), color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 12.dp)) }
-            scanError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
         }
     }
     if (scannerOpen) {
@@ -650,6 +656,7 @@ private fun RuntimeListScreen(
                                 shape = RoundedCornerShape(20.dp),
                                 shadowScale = 0.8f,
                                 onClick = { onOpenRuntime(row.hostId, runtime.runtimeId) },
+                                contentInset = 16.dp,
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -681,33 +688,10 @@ private fun RuntimeListScreen(
                                                 Text(row.hostName, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
                                             }
                                         }
-                                        if (row.state.hasPendingInteraction(runtime.runtimeId)) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                            ) {
-                                                Icon(
-                                                    Icons.Rounded.ErrorOutline,
-                                                    contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.error,
-                                                    modifier = Modifier.size(17.dp),
-                                                )
-                                                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                                                    Text(
-                                                        "待确认",
-                                                        color = MaterialTheme.colorScheme.error,
-                                                        style = MaterialTheme.typography.labelMedium,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                    )
-                                                    Text(
-                                                        "打开此窗口完成交互，否则流程会一直等待",
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis,
-                                                    )
-                                                }
-                                            }
+                                        Box(Modifier.height(24.dp)) {
+                                            if (row.state.hasPendingInteraction(runtime.runtimeId)) Text("待确认",
+                                                color = MaterialTheme.colorScheme.error,
+                                                style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                                         }
                                     }
                                     NeumorphIconButton(
@@ -1123,17 +1107,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val historyState = state.sessionHistory[runtimeId]
     val historyRead = state.historyReadForWindow(runtimeId)
     val rangeError = state.sessionRangeFailures[sessionRangeFailureKey(runtimeId, "catchup")]
-    val chatHeaderCount = listOf(
-        runtime == null,
-        historyState?.hasOlder == true || historyRead?.phase?.active == true,
-        historyRead?.phase == HistoryReadPhase.FAILED && historyState?.hasOlder != true,
-        firstReadError != null,
-        rangeError != null,
-        (state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError) != null,
-        state.sessionSyncCommands.values.any { it.runtimeId == runtimeId && it.slow && it.exhaustedAt == null },
-        conversation.waitingLocalInteraction,
-        conversation.interactionNotice != null,
-    ).count { it }
+    // One reserved status slot: sync, paging and error updates never insert transcript rows.
+    val chatHeaderCount = 1
     // A catch-up can connect a large cached prefix in one projection. LazyColumn's nearby-key
     // lookup may then lose the old row. Capture its key before the new list is laid out.
     val previousItemKeys = remember(runtimeId, sessionId) { mutableSetOf<String>() }
@@ -1156,12 +1131,42 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     var historyPagingFeedback by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     var initialPositioned by remember(runtimeId, sessionId) { mutableStateOf(false) }
-    val isNearLatest by remember(listState, initialPositioned) {
+    val lineHeightPx = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toPx() }
+    var following by remember(runtimeId, sessionId) { mutableStateOf(true) }
+    var userScrolling by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    val dragging by listState.interactionSource.collectIsDraggedAsState()
+    val distanceToBottom by remember(listState) {
         derivedStateOf {
             val layout = listState.layoutInfo
-            val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index ?: -1
-            shouldFollowLatest(initialPositioned, lastVisible, layout.totalItemsCount)
+            val last = layout.visibleItemsInfo.lastOrNull()
+            chatBottomDistance(last?.index ?: -1, layout.totalItemsCount,
+                (last?.offset ?: 0) + (last?.size ?: 0), layout.viewportEndOffset, layout.afterContentPadding)
         }
+    }
+    val scrollIntent = remember(runtimeId, sessionId) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                    following = false
+                    userScrolling = true
+                }
+                return Offset.Zero
+            }
+        }
+    }
+    LaunchedEffect(runtimeId, sessionId, listState) {
+        snapshotFlow { Triple(distanceToBottom, listState.isScrollInProgress || dragging, listState.layoutInfo.totalItemsCount) }
+            .collect { (distance, scrolling, count) ->
+                if (userScrolling) {
+                    if (!scrolling) {
+                        userScrolling = false
+                        following = distance < lineHeightPx
+                    }
+                } else if (!scrolling && count > chatHeaderCount) {
+                    if (following && distance > 0.5f) listState.scrollToItem(count - 1, Int.MAX_VALUE)
+                    else if (distance < lineHeightPx) following = true
+                }
+            }
     }
     var input by remember(runtimeId, sessionId, state.deviceId) {
         mutableStateOf(model.loadDraft(runtimeId))
@@ -1188,6 +1193,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     var pendingMessageCommandId by remember(runtimeId) { mutableStateOf<String?>(null) }
     var pendingMessageText by remember(runtimeId) { mutableStateOf("") }
     var commandFeedback by remember(runtimeId) { mutableStateOf<String?>(null) }
+    var commandFeedbackTransient by remember(runtimeId) { mutableStateOf(false) }
     var showDeliveryChoices by remember(runtimeId, sessionId) { mutableStateOf(false) }
     // 这个 composer 上挂着的上传任务（taskId）。只有传完的才能随消息发出。
     // 关联记在 ViewModel（按会话）：退出会话窗口再回来，chip 原样恢复——上传不因退出窗口取消。
@@ -1211,6 +1217,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             model.queueUpload(uri, runtimeId) { taskId -> updateAttachedTaskIds(attachedTaskIds + taskId) }
         }
         if (uris.size > MAX_ATTACHMENTS_PER_MESSAGE) {
+            commandFeedbackTransient = false
             commandFeedback = "一次最多发送 $MAX_ATTACHMENTS_PER_MESSAGE 个文件"
         }
     }
@@ -1220,19 +1227,12 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     var refreshAnchorIndex by remember(runtimeId, sessionId) { mutableStateOf<Int?>(null) }
     var refreshAnchorOffset by remember(runtimeId, sessionId) { mutableStateOf(0) }
     var refreshAnchorArmed by remember(runtimeId, sessionId) { mutableStateOf(false) }
-    // Sending is the one intent that should move the viewport to the newest row; a periodic
-    // refresh must not.
-    var followNewestAfterSync by remember(runtimeId, sessionId) { mutableStateOf(false) }
     fun refreshConversation() {
         model.refreshRuntime(runtimeId)
         model.refreshWorkingBranch(runtimeId)
     }
     fun trackSubmission(commandId: String?, clearInputAfterSubmit: Boolean = false) {
         if (commandId == null) return
-        // Sending is an explicit intent to see new content, so stop pinning the refresh viewport
-        // and follow the newest row once the resulting sync settles.
-        refreshAnchorArmed = false
-        followNewestAfterSync = true
         val submittedText = input
         commandFeedback = null
         pendingMessageCommandId = commandId
@@ -1244,6 +1244,9 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             selectedSlashCommandName = null
             model.clearDraft(runtimeId)
         }
+    }
+    LaunchedEffect(commandFeedback, commandFeedbackTransient) {
+        if (commandFeedback != null && commandFeedbackTransient) { delay(2_500); commandFeedback = null }
     }
     LaunchedEffect(runtime?.status) {
         if (runtime?.status != "running") showDeliveryChoices = false
@@ -1343,7 +1346,6 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         if (branchSessionId != null) {
             historyOpen = false
             refreshAnchorArmed = false
-            followNewestAfterSync = true
             initialPositioned = false
             model.activateSession(branchSessionId)
             return@LaunchedEffect
@@ -1352,7 +1354,6 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         // 而不是停在旧锚点上；并立刻拉一次快照——后端广播的快照用自造 syncId，手机不采，
         // 不主动问这一下就还显示着已经不存在的那几轮。
         refreshAnchorArmed = false
-        followNewestAfterSync = true
         initialPositioned = false
         historyOpen = false
         // A tree/rewind action is an explicit branch replacement. It must supersede any older
@@ -1408,7 +1409,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
 
     LaunchedEffect(runtimeId, sessionId, displayReadPending, chatItemKeys, chatHeaderCount, orphanTools.size,
         sourceRead?.operationId, sourceRead?.phase) {
-        if (refreshTasksPending && initialPositioned && !refreshAnchorArmed && !followNewestAfterSync) {
+        if (refreshTasksPending && initialPositioned && !refreshAnchorArmed && !following) {
             refreshStartAnchor?.let { (key, index, offset) ->
                 refreshAnchorMessageId = key
                 refreshAnchorIndex = index
@@ -1420,9 +1421,13 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         val anchorRead = refreshAnchorOperationId?.let(state.sessionReads::get)
         val refreshFinished = refreshAnchorArmed && anchorRead?.phase?.active != true
         if (chatItems.isEmpty()) {
-            if (refreshFinished) {
-                refreshAnchorArmed = false
-                refreshAnchorOperationId = null
+            if (initialPositioned && !following && !refreshAnchorArmed) {
+                projectionAnchor?.let { (key, index, offset) ->
+                    refreshAnchorMessageId = key
+                    refreshAnchorIndex = index
+                    refreshAnchorOffset = offset
+                    refreshAnchorArmed = true
+                }
             }
             return@LaunchedEffect
         }
@@ -1432,16 +1437,6 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             layout.totalItemsCount == chatHeaderCount + chatItems.size + orphanTools.size &&
                 layout.visibleItemsInfo.any { it.key in chatItemIndexById }
         }.totalItemsCount
-        if (displayReadPending && !refreshFinished) {
-            // Recovery can run for a long time. It must not keep the viewport
-            // "unpositioned": that hid the jump-to-latest button for the whole sync. Still open
-            // a freshly selected conversation on its newest message the first time items appear.
-            if (!initialPositioned) {
-                listState.scrollToItem(itemCount - 1)
-                initialPositioned = true
-            }
-            return@LaunchedEffect
-        }
         if (refreshAnchorArmed) {
             // A refresh must not move the viewport. Restore the row that was visible before the
             // replacement projection, falling back to its old index when that row disappeared.
@@ -1464,15 +1459,9 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             initialPositioned = true
             return@LaunchedEffect
         }
-        // A settled sync only moves to the newest message when the user just sent something.
-        // A periodic refresh leaves the viewport where the user left it.
-        if (!initialPositioned || followNewestAfterSync) {
-            listState.scrollToItem(itemCount - 1)
-        } else if (!historyAnchorPending) {
+        if (!following && !historyAnchorPending) {
             projectionAnchor?.let { (key, _, offset) ->
                 chatItemIndexById[key]?.let { index ->
-                    // LazyColumn already preserves an unchanged visible key. Reposition only
-                    // when a large prefix replacement actually lost it, never on each tool update.
                     val first = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById }
                     if (!listState.isScrollInProgress && first?.key != key) {
                         listState.scrollToItem(chatHeaderCount + index, offset)
@@ -1480,7 +1469,6 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 }
             }
         }
-        followNewestAfterSync = false
         initialPositioned = true
     }
 
@@ -1495,6 +1483,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         // 失败也必须落在 composer 上方：斜杠命令不再像以前那样「发完没动静」，
         // 而是明确说出是中断失败、电脑端拒绝，还是连接把请求丢了。
         if (pendingMessageText.trim().startsWith("/")) {
+            commandFeedbackTransient = result.ok
             commandFeedback = if (result.ok) slashCommandFeedback(pendingMessageText, result)
                 else slashCommandError(pendingMessageText, result)
         }
@@ -1570,11 +1559,10 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             Surface {
                 Column {
                     ComposerContextRail(composerStatus(runtime))
-                    commandFeedback?.let { NoticeCard(it) }
                     PendingMessagesPanel(
                         messages = conversation.queuedMessages.values.toList(),
                     )
-                    AnimatedVisibility(visible = deliveryChoicesVisible(showDeliveryChoices, runtime?.status)) {
+                    OrbisCollapse(expanded = deliveryChoicesVisible(showDeliveryChoices, runtime?.status)) {
                         Row(
                             Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding, vertical = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1690,7 +1678,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             }
                         },
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("发给 ${LocalAgentBrand.current.title} · / 命令", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        placeholder = { Text("发给 ${LocalAgentBrand.current.title}，/ 命令", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         enabled = runtime != null,
                         minLines = 1,
                         maxLines = 5,
@@ -1777,13 +1765,17 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         }
         },
         floatingActionButton = {
-            AnimatedVisibility(visible = initialPositioned && !isNearLatest) {
+            AnimatedVisibility(visible = initialPositioned && !following && distanceToBottom > lineHeightPx * 3) {
                 // 回到最新是可交互控件：凸起圆钮（平铺 FAB 会变成一块无影的染色圆）。
                 NeumorphIconButton(
                     onClick = {
                         scope.launch {
                             val lastIndex = listState.layoutInfo.totalItemsCount - 1
-                            if (lastIndex >= 0) listState.animateScrollToItem(lastIndex)
+                            if (lastIndex >= 0) {
+                                userScrolling = false
+                                following = true
+                                listState.animateScrollToItem(lastIndex, Int.MAX_VALUE)
+                            }
                         }
                     },
                     icon = Icons.Rounded.KeyboardArrowDown,
@@ -1793,87 +1785,59 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             }
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize()) {
             state.notificationProjections[runtimeId]?.takeIf { it.sessionId == sessionId }?.let { projection ->
                 RuntimeNotifications(projection, state.notificationEpoch) { model.dismissNotification(runtimeId, it) }
             }
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxWidth().weight(1f),
+                modifier = Modifier.fillMaxWidth().weight(1f).nestedScroll(scrollIntent).testTag("chat-transcript"),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
                 // 轮次间距 24，组内间距由 AssistantTurnCard 提供。
                 verticalArrangement = Arrangement.spacedBy(24.dp),
             ) {
-                if (historyState?.hasOlder == true || historyRead?.phase?.active == true) item(key = "history-paging") {
-                    HistoryPagingHeader(historyRead?.phase, historyRead?.error, historyPagingFeedback, ::loadHistoryPage)
-                }
-                if (runtime == null) item { WarningCard("此运行实例已离线。") }
-                if (historyRead?.phase == HistoryReadPhase.FAILED && historyState?.hasOlder != true) item {
-                    Column {
-                        WarningCard(historyPagingFeedback ?: historyRead.error ?: "历史记录加载失败")
-                        TextButton(onClick = { loadHistoryPage() }) { Text("重试历史加载") }
-                    }
-                }
-                if (historyPagingFeedback != null && historyState?.hasOlder != true && historyRead?.phase != HistoryReadPhase.FAILED) {
-                    item { WarningCard(historyPagingFeedback!!) }
-                }
-                firstReadError?.let { message -> item {
-                    WarningCard(message)
-                    TextButton(onClick = { model.refreshRuntime(runtimeId, explicitRetry = true) }) { Text("重试读取") }
-                } }
-                rangeError?.let { message -> item {
-                    Column {
-                        WarningCard(message)
-                        TextButton(onClick = { model.refreshRuntime(runtimeId, explicitRetry = true) }) { Text("重试补齐") }
-                    }
-                } }
-                (state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError)?.let { syncError ->
-                    item {
-                        Column {
-                            WarningCard("聊天记录加载失败：$syncError")
-                            TextButton(onClick = { model.refreshRuntime(runtimeId, explicitRetry = true) }) { Text("重试") }
+                item(key = "chat-status") {
+                    val errors = listOfNotNull(
+                        if (runtime == null) "会话已离线" else null,
+                        historyPagingFeedback, historyRead?.takeIf { it.phase == HistoryReadPhase.FAILED }?.error,
+                        firstReadError, rangeError, state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError,
+                        if (conversation.waitingLocalInteraction) "请在电脑端完成交互" else null,
+                        conversation.interactionNotice, conversation.systemNotice,
+                    ).distinct()
+                    var detailsOpen by remember { mutableStateOf(false) }
+                    Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                            if (displayReadPending || historyRead?.phase?.active == true)
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         }
-                    }
-                }
-                if (state.sessionSyncCommands.values.any { it.runtimeId == runtimeId && it.slow && it.exhaustedAt == null }) {
-                    item { NoticeCard("聊天记录仍在同步，请稍候…") }
-                }
-                // ADR-0038 §8：可见分支里有被线路投影截断的内容时，给一个取全文的入口。
-                if (truncatedContent != null) {
-                    item {
-                        var open by remember { mutableStateOf(false) }
-                        val full = state.fullEntries[truncatedContent.first]
-                        Column {
-                            NoticeCard(
-                                if (full == null) "有内容因超长被截断（原始 ${truncatedContent.second} 字节）"
-                                else "已取回完整内容（原始 ${truncatedContent.second} 字节）",
-                            )
-                            TextButton(onClick = {
-                                open = true
-                                model.requestFullEntry(runtimeId, truncatedContent.first)
-                            }) { Text("查看完整内容") }
+                        when {
+                            errors.isNotEmpty() -> NeumorphTextButton(errors.first(), { detailsOpen = true }, Modifier.weight(1f))
+                            historyState?.hasOlder == true -> NeumorphTextButton("更早的消息", { loadHistoryPage() },
+                                Modifier.weight(1f), enabled = historyRead?.phase?.active != true)
+                            else -> Spacer(Modifier.weight(1f))
                         }
-                        if (open) {
-                            AlertDialog(
-                                onDismissRequest = { open = false },
-                                confirmButton = { TextButton(onClick = { open = false }) { Text("关闭") } },
-                                title = { Text("完整内容") },
-                                text = {
-                                    val text = full?.let { fullEntryText(it) }
-                                    if (text == null) Text("正在取回…")
-                                    else Box(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
-                                        SelectionContainer { Text(text) }
-                                    }
-                                },
-                            )
-                        }
+                        if (truncatedContent != null) NeumorphTextButton("完整内容", {
+                            model.requestFullEntry(runtimeId, truncatedContent.first)
+                            detailsOpen = true
+                        })
                     }
+                    if (detailsOpen) AlertDialog(onDismissRequest = { detailsOpen = false },
+                        title = { Text(if (errors.isEmpty()) "完整内容" else "会话状态") },
+                        text = {
+                            val full = truncatedContent?.let { state.fullEntries[it.first] }?.let(::fullEntryText)
+                            Box(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                                SelectionContainer { Text(full ?: errors.joinToString("\n").ifEmpty { "正在读取…" }) }
+                            }
+                        },
+                        confirmButton = { NeumorphTextButton("关闭", { detailsOpen = false }) },
+                        dismissButton = { if (errors.isNotEmpty()) NeumorphTextButton("重试", {
+                            detailsOpen = false
+                            if (historyRead?.phase == HistoryReadPhase.FAILED) loadHistoryPage()
+                            else model.refreshRuntime(runtimeId, explicitRetry = true)
+                        }) })
                 }
-                if (conversation.waitingLocalInteraction) {
-                    item { WarningCard("此交互必须在电脑端完成。停止操作仅为尽力而为。") }
-                }
-                conversation.interactionNotice?.let { notice -> item { NoticeCard(notice) } }
-                conversation.systemNotice?.let { notice -> item { NoticeCard(notice) } }
                 items(chatItems, key = ChatListItem::key) { item ->
                     when (item) {
                         is ChatListItem.UserMessage -> UserMessageCard(
@@ -1889,6 +1853,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             messages = item.messages,
                             turnTiming = groupTurnTiming(item.messages.mapNotNull { messageTurnTimings[it.messageId] }),
                             nowMs = timerNow,
+                            streamingMessageIds = conversation.streamingMessageIds,
                             toolActivities = conversation.tools,
                             toolResults = presentation.toolResults,
                             downloads = state.downloads,
@@ -1899,6 +1864,12 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 }
                 items(orphanTools, key = ToolActivity::toolCallId) { tool -> ToolCard(tool) }
             }
+        }
+        commandFeedback?.let { feedback ->
+            Text(feedback, Modifier.align(Alignment.BottomCenter).padding(12.dp)
+                .background(rememberNeumorphColors().layer(2), RemoteUi.ControlShape).padding(12.dp),
+                style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
         }
     }
 
@@ -2034,6 +2005,7 @@ private fun SlashCommandPicker(
                 shape = RemoteUi.ControlShape,
                 shadowScale = 0.5f,
                 modifier = Modifier.fillMaxWidth(),
+                contentInset = 12.dp,
             ) {
                 Column(Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp)) {
                     Row(
@@ -2091,6 +2063,7 @@ private fun SlashOptionList(
                 shape = RemoteUi.ControlShape,
                 shadowScale = 0.5f,
                 modifier = Modifier.fillMaxWidth(),
+                contentInset = 12.dp,
             ) {
                 Column(Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp)) {
                     Text(
@@ -2356,6 +2329,7 @@ private fun DownloadTaskCard(
         onLongClick = onLongClick,
         shape = RemoteUi.CardShape,
         style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+        contentInset = 16.dp,
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -2375,7 +2349,7 @@ private fun DownloadTaskCard(
                     tint = statusColor,
                 )
                 Column(Modifier.weight(1f)) {
-                    Text(task.displayName, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    FileNameText(task.displayName, fontWeight = FontWeight.SemiBold)
                     Text(downloadStatusText(task), style = MaterialTheme.typography.bodySmall, color = statusColor)
                 }
                 if (active) {
@@ -2423,7 +2397,7 @@ private fun DownloadTaskCard(
 }
 
 private fun savedLocationText(task: ArtifactDownload, location: String): String =
-    if (location.startsWith("content://")) "手机系统“下载”目录 · ${task.displayName}" else location
+    if (location.startsWith("content://")) "手机系统“下载”目录，${task.displayName}" else location
 
 private fun downloadStatusText(task: ArtifactDownload): String = when (task.status) {
     "queued" -> "正在请求文件"
@@ -2431,9 +2405,9 @@ private fun downloadStatusText(task: ArtifactDownload): String = when (task.stat
         "${formatByteCount(task.receivedBytes)} / ${formatByteCount(size)}"
     } ?: "正在下载"
     "completed" -> "下载完成"
-    "paused" -> "已暂停 · ${formatByteCount(task.receivedBytes)}"
-    "cancelled" -> "已取消 · ${formatByteCount(task.receivedBytes)}"
-    "failed" -> "下载失败 · ${formatByteCount(task.receivedBytes)}"
+    "paused" -> "已暂停，${formatByteCount(task.receivedBytes)}"
+    "cancelled" -> "已取消，${formatByteCount(task.receivedBytes)}"
+    "failed" -> "下载失败，${formatByteCount(task.receivedBytes)}"
     else -> task.status
 }
 
@@ -2565,7 +2539,7 @@ private fun StatusScreen(
                 NeumorphTextButton(text = "重新读取", onClick = { onLoadDiagnostics(null) })
                 state.diagnosticPage?.let { page ->
                     page.records.forEach { record ->
-                        StatusFact("${record.category} · ${record.severity}", record.message)
+                        StatusFact("${record.category}，${record.severity}", record.message)
                     }
                     page.nextCursor?.let { cursor ->
                         NeumorphTextButton(text = "读取下一页", onClick = { onLoadDiagnostics(cursor) })
@@ -2908,6 +2882,7 @@ private fun StatusCard(content: @Composable ColumnScope.() -> Unit) {
     NeumorphSurface(
         modifier = Modifier.fillMaxWidth(),
         shape = RemoteUi.CardShape,
+        contentInset = 16.dp,
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp), content = content)
     }
@@ -2980,7 +2955,7 @@ private fun TurnDurationLabel(timing: TurnTiming, nowMs: Long) {
     val active = timing.durationMs == null
     val durationMs = timing.durationMs ?: max(0L, nowMs - timing.startedAt)
     Text(
-        text = "耗时 ${formatTurnDuration(durationMs)}${if (active) " · 进行中" else ""}",
+        text = "耗时 ${formatTurnDuration(durationMs)}${if (active) "，进行中" else ""}",
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
@@ -3003,7 +2978,7 @@ private fun formatTurnDuration(durationMs: Long): String {
  */
 @Composable
 private fun ComposerContextRail(status: ComposerStatus) {
-    val progress = status.contextProgress ?: return
+    val progress = status.contextProgress ?: 0f
     val color = when (status.severity) {
         ContextUsageSeverity.Normal -> MaterialTheme.colorScheme.outlineVariant
         ContextUsageSeverity.Elevated -> MaterialTheme.colorScheme.primary
@@ -3032,25 +3007,16 @@ private fun ComposerContextRail(status: ComposerStatus) {
 /** Numeric detail is noise until the context actually starts running out; then it fades in. */
 @Composable
 private fun ComposerContextNotice(status: ComposerStatus) {
-    val label = status.contextLabel ?: return
-    AnimatedVisibility(
-        visible = status.severity != ContextUsageSeverity.Normal,
-        enter = fadeIn(tween(200)) + expandVertically(),
-        exit = fadeOut(tween(200)) + shrinkVertically(),
-    ) {
-        Text(
-            "上下文 $label",
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Medium,
-            color = if (status.severity == ContextUsageSeverity.Critical) {
-                MaterialTheme.colorScheme.error
-            } else {
-                MaterialTheme.colorScheme.primary
-            },
-            maxLines = 1,
-        )
-    }
+    val label = status.contextLabel.orEmpty()
+    Text(
+        if (status.severity != ContextUsageSeverity.Normal) "上下文 $label" else "",
+        modifier = Modifier.fillMaxWidth().height(22.dp).padding(horizontal = 16.dp, vertical = 2.dp),
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Medium,
+        color = if (status.severity == ContextUsageSeverity.Critical) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.primary,
+        maxLines = 1,
+    )
 }
 
 @Composable
@@ -3069,7 +3035,7 @@ private fun ChatRuntimeStatus(
         Text(runtimeStatusText(status), color = runtimeStatusColor(status), style = MaterialTheme.typography.labelSmall)
         modelLabel?.takeIf(String::isNotBlank)?.let { label ->
             Text(
-                "· $label",
+                "$label",
                 // fill = false：短标签只占自身宽度，不撑满剩余空间把内容推到行尾。
                 modifier = Modifier.weight(1f, fill = false).widthIn(max = 132.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -3081,7 +3047,7 @@ private fun ChatRuntimeStatus(
         }
         thinkingLevel?.takeIf(String::isNotBlank)?.let { level ->
             Text(
-                "· $level",
+                "$level",
                 modifier = Modifier.widthIn(max = 96.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.labelSmall,
@@ -3117,7 +3083,7 @@ private fun RuntimeStatus(
         RuntimeStatusIndicator(status)
         modelLabel?.takeIf(String::isNotBlank)?.let { label ->
             Text(
-                "· $label",
+                "$label",
                 modifier = Modifier.weight(1f, fill = false),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.labelSmall,
@@ -3167,9 +3133,9 @@ internal fun UserMessageCard(
     downloadFile: (String) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
-        NeumorphSurface(Modifier.fillMaxWidth(0.9f), style = NeumorphStyle.Pressed, shadowScale = 0.55f) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(if (message.isError == true) "你 · 发送异常" else "你", style = MaterialTheme.typography.labelSmall,
+        NeumorphSurface(Modifier.fillMaxWidth(0.9f), style = NeumorphStyle.Pressed, shadowScale = 0.55f, contentPadding = 16.dp) {
+            Column(Modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(if (message.isError == true) "你，发送异常" else "你", style = MaterialTheme.typography.labelSmall,
                     color = if (message.isError == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
                 MessageBlocks(
                     runtimeId = runtimeId,
@@ -3195,15 +3161,17 @@ internal fun AssistantTurnCard(
     downloads: Map<String, ArtifactDownload>,
     downloadArtifact: (RemoteArtifact) -> Unit,
     downloadFile: (String) -> Unit,
+    streamingMessageIds: Set<String> = emptySet(),
 ) {
-    NeumorphSurface(Modifier.fillMaxWidth(), shadowScale = 0.55f) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    NeumorphSurface(Modifier.fillMaxWidth(), shadowScale = 0.55f, contentPadding = 16.dp) {
+        Column(Modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 AgentLabel(LocalAgentBrand.current)
                 turnTiming?.let { TurnStartLabel(it.startedAt) }
             }
             messages.forEach { message ->
                 key(runtimeId, message.messageId) {
+                    CompositionLocalProvider(LocalStreamingText provides (message.messageId in streamingMessageIds)) {
                     AssistantTurnMessage(
                         runtimeId = runtimeId,
                         message = message,
@@ -3213,6 +3181,7 @@ internal fun AssistantTurnCard(
                         downloadArtifact = downloadArtifact,
                         downloadFile = downloadFile,
                     )
+                    }
                 }
             }
             turnTiming?.let { TurnDurationLabel(it, nowMs) }
@@ -3322,6 +3291,7 @@ private fun ArtifactCard(
         enabled = !isDownloading,
         shape = RemoteUi.ControlShape,
         modifier = Modifier.fillMaxWidth(),
+        contentInset = 16.dp,
     ) {
         Row(
             Modifier.padding(16.dp),
@@ -3330,9 +3300,9 @@ private fun ArtifactCard(
         ) {
             Icon(Icons.Rounded.Download, contentDescription = "下载文件", tint = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f)) {
-                Text(artifact.fileName, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                FileNameText(artifact.fileName, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "${formatByteCount(artifact.size)} · $status",
+                    "${formatByteCount(artifact.size)}，$status",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (download?.status == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -3354,7 +3324,8 @@ private fun CollapsedThinking(text: String) {
     CompactDisclosure(
         icon = Icons.Rounded.Psychology,
         title = "思考",
-        summary = if (expanded) text else "${text.lineSequence().count()} 行",
+        summary = text,
+        collapsedSummary = "${text.lineSequence().count()} 行",
         expanded = expanded,
         onClick = { expanded = !expanded },
         tint = MaterialTheme.colorScheme.secondary,
@@ -3385,8 +3356,9 @@ private fun CollapsedTool(
         icon = Icons.Rounded.Build,
         title = toolName,
         summary = if (summary != null) listOfNotNull(status, summary.inputSummary?.text,
-            summary.errorSummary?.text ?: summary.resultSummary?.text, summary.exitCode?.let { "退出码 $it" }).joinToString(" · ")
-            else if (expanded) listOfNotNull(arguments, detail).joinToString("\n") else "$status${detail?.let { " · ${compactActivitySummary(it)}" }.orEmpty()}",
+            summary.errorSummary?.text ?: summary.resultSummary?.text, summary.exitCode?.let { "退出码 $it" }).joinToString("，")
+            else listOfNotNull(arguments, detail).joinToString("\n"),
+        collapsedSummary = if (summary == null) "$status${detail?.let { "，${compactActivitySummary(it)}" }.orEmpty()}" else null,
         expanded = expanded,
         onClick = { if (summary != null) openDetail() else expanded = !expanded },
         tint = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
@@ -3401,6 +3373,7 @@ private fun CompactDisclosure(
     expanded: Boolean,
     onClick: () -> Unit,
     tint: Color,
+    collapsedSummary: String? = null,
 ) {
     NeumorphSurface(
         onClick = onClick,
@@ -3408,19 +3381,20 @@ private fun CompactDisclosure(
         shape = RemoteUi.ControlShape,
         shadowScale = 0.5f,
         modifier = Modifier.fillMaxWidth(),
+        contentInset = 12.dp,
     ) {
         Row(Modifier.heightIn(min = 56.dp).padding(12.dp), verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp))
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                Text(
-                    summary,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = if (expanded) Int.MAX_VALUE else 1,
-                    overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
-                    fontFamily = if (expanded) FontFamily.Monospace else FontFamily.Default,
-                )
+                OrbisCollapse(expanded = !expanded) {
+                    Text(collapsedSummary ?: summary.lineSequence().firstOrNull().orEmpty(), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                OrbisCollapse(expanded = expanded) {
+                    Text(summary, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontFamily = FontFamily.Monospace)
+                }
             }
             Icon(
                 if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
@@ -3439,9 +3413,10 @@ private fun ToolCard(tool: ToolActivity) {
         modifier = Modifier.fillMaxWidth(),
         shape = RemoteUi.ControlShape,
         style = NeumorphStyle.Pressed,
+        contentPadding = 12.dp,
     ) {
-        Column(Modifier.padding(12.dp)) {
-            Text("${tool.toolName} • ${toolStateText(tool.state)}", style = MaterialTheme.typography.titleSmall)
+        Column(Modifier) {
+            Text("${tool.toolName}，${toolStateText(tool.state)}", style = MaterialTheme.typography.titleSmall)
             tool.detail?.let { Text(it.take(2_000), fontFamily = FontFamily.Monospace) }
             if (tool.isError) Text("工具执行失败", color = MaterialTheme.colorScheme.error)
         }
@@ -3488,7 +3463,7 @@ private fun QueuedMessageRow(message: QueuedMessage) {
         Column(Modifier.weight(1f)) {
             Text(message.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
             Text(
-                "${queuedMessageDeliveryText(message.delivery)} · ${queuedMessageStateText(message.state)}${message.error?.let { "：$it" }.orEmpty()}",
+                "${queuedMessageDeliveryText(message.delivery)}，${queuedMessageStateText(message.state)}${message.error?.let { "：$it" }.orEmpty()}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -3591,8 +3566,8 @@ private fun NoticeCard(text: String) = FeedbackCard(text, isError = false)
 
 @Composable
 private fun FeedbackCard(text: String, isError: Boolean) {
-    NeumorphSurface(Modifier.fillMaxWidth(), style = NeumorphStyle.Pressed, shadowScale = 0.5f) {
-        Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    NeumorphSurface(Modifier.fillMaxWidth(), style = NeumorphStyle.Pressed, shadowScale = 0.5f, contentPadding = 14.dp) {
+        Row(Modifier, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Icon(if (isError) Icons.Rounded.ErrorOutline else Icons.Rounded.Info, contentDescription = null,
                 tint = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
             Text(text, style = MaterialTheme.typography.bodyMedium)
@@ -3637,7 +3612,7 @@ internal fun InteractionPanel(
     Column(
         modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
-        NeumorphSurface(modifier = Modifier.fillMaxSize(), shape = RemoteUi.CardShape) {
+        NeumorphSurface(modifier = Modifier.fillMaxSize(), shape = RemoteUi.CardShape, contentInset = 12.dp) {
             Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -3689,6 +3664,7 @@ internal fun InteractionPanel(
                                 shape = RemoteUi.ControlShape,
                                 shadowScale = 0.5f,
                                 modifier = Modifier.fillMaxWidth(),
+                                contentInset = 12.dp,
                             ) {
                                 Column(Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp)) {
                                     Text(option.label)
@@ -3720,6 +3696,7 @@ internal fun InteractionPanel(
                                     shape = RemoteUi.ControlShape,
                                     style = if (checked) NeumorphStyle.Pressed else NeumorphStyle.Raised,
                                     shadowScale = 0.45f,
+                                    contentInset = 8.dp,
                                 ) {
                                     Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                         NeumorphCheckbox(checked = checked, onCheckedChange = null, enabled = responseEnabled)
@@ -3837,12 +3814,7 @@ private fun AttachmentChips(uploads: List<UploadTask>, onRemove: (String) -> Uni
                     },
                 )
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        upload.displayName,
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    FileNameText(upload.displayName, style = MaterialTheme.typography.labelMedium)
                     Text(
                         uploadProgressText(upload),
                         style = MaterialTheme.typography.labelSmall,

@@ -36,7 +36,7 @@ class SessionProviderFilterInstrumentedTest {
         compose.onNodeWithContentDescription("Codex 终端：按 provider 筛选").performClick()
         compose.onNodeWithText("custom（当前使用）").assertIsDisplayed()
         compose.onNodeWithContentDescription("当前 provider 筛选").assertExists()
-        compose.onNodeWithText("Codex 终端 · provider").assertIsDisplayed()
+        compose.onNodeWithText("Codex 终端，provider").assertIsDisplayed()
         capture("provider-menu")
         compose.onNodeWithText("custom（当前使用）").performClick()
         compose.onNodeWithText("Custom session").assertIsDisplayed()
@@ -67,7 +67,7 @@ class SessionProviderFilterInstrumentedTest {
         compose.runOnIdle { state.value = state.value.copy(currentProviders = mapOf("codex" to "openai")) }
         compose.onNodeWithText("Other session").assertIsDisplayed()
         compose.onNodeWithText("Custom session").assertDoesNotExist()
-        compose.onNodeWithText("Codex 终端 · openai（当前使用）").assertIsDisplayed()
+        compose.onNodeWithText("Codex 终端，openai（当前使用）").assertIsDisplayed()
         compose.onNode(hasSetTextAction()).performTextInput("no-match")
         compose.onNodeWithText("没有找到匹配的目录或会话").assertIsDisplayed()
         compose.onNodeWithContentDescription("清除搜索").performClick()
@@ -115,7 +115,7 @@ class SessionProviderFilterInstrumentedTest {
         } }
         openFilter()
         compose.onNodeWithContentDescription("Codex 桌面版：按 provider 筛选").performClick()
-        compose.onNodeWithText("Codex 桌面版 · provider").assertIsDisplayed()
+        compose.onNodeWithText("Codex 桌面版，provider").assertIsDisplayed()
         compose.onNodeWithText("custom（当前使用）").assertIsDisplayed()
         compose.runOnIdle { assertEquals(1, providerReads) }
         compose.onNodeWithText("terminal", useUnmergedTree = true).assertDoesNotExist()
@@ -124,7 +124,7 @@ class SessionProviderFilterInstrumentedTest {
         compose.onNodeWithText("Desktop current").assertIsDisplayed()
         compose.onNodeWithText("Desktop other").assertDoesNotExist()
         compose.onNodeWithText("Terminal session").assertDoesNotExist()
-        compose.onNodeWithText("Codex 桌面版 · custom（当前使用）").assertIsDisplayed()
+        compose.onNodeWithText("Codex 桌面版，custom（当前使用）").assertIsDisplayed()
         capture("desktop-current-provider")
 
         openFilter()

@@ -17,50 +17,43 @@ struct PairingEntryView: View {
             OrbisHeader {
                 if let onCancel { OrbisIconButton(symbol: "xmark", label: "取消添加电脑", action: onCancel) }
             } title: {
-                Text("Orbis").font(.system(size: 20, weight: .semibold))
+                Text("Orbis").font(.orbisTitle())
             } trailing: { EmptyView() }
             GeometryReader { geometry in
                 ScrollView {
                     VStack(spacing: 0) {
                         Image("OrbisMark").resizable().scaledToFit().frame(width: 52, height: 52)
                             .frame(width: 76, height: 76).neuSurface(inset: true, radius: 20)
-                        Text("连接你的电脑").font(.system(size: 24, weight: .semibold)).padding(.top, 18)
+                        Text("连接你的电脑").font(.orbisTitle()).padding(.top, 18).padding(.bottom, 28)
                             .accessibilityAddTraits(.isHeader)
-                        Text("在电脑端打开 Orbis 配对窗口，扫描二维码。")
-                            .font(.system(size: 14)).foregroundStyle(OrbisPalette(scheme).secondary)
-                            .multilineTextAlignment(.center).padding(.top, 12).padding(.bottom, 28)
                         OrbisActionButton(title: "扫码配对", symbol: "qrcode.viewfinder") {
                             codeFocused = false; validationError = nil; scannerOpen = true
                         }.disabled(store.isPairing)
                         HStack(spacing: 12) {
-                            Rectangle().fill(OrbisPalette(scheme).outline).frame(height: 1)
-                            Text("手动输入").font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary).fixedSize()
-                            Rectangle().fill(OrbisPalette(scheme).outline).frame(height: 1)
+                            OrbisPalette(scheme).well.frame(height: 2).clipShape(Capsule())
+                            Text("手动输入").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).fixedSize()
+                            OrbisPalette(scheme).well.frame(height: 2).clipShape(Capsule())
                         }.padding(.vertical, 22)
                         Button { manualOpen.toggle() } label: {
                             HStack {
                                 Image(systemName: "doc.on.clipboard")
-                                Text("粘贴配对二维码内容").font(.system(size: 14, weight: .medium))
+                                Text("粘贴配对二维码内容").fontWeight(.medium)
                                 Spacer()
-                                Image(systemName: manualOpen ? "chevron.up" : "chevron.down").font(.system(size: 12))
-                            }.padding(16).frame(minHeight: 52)
+                                Image(systemName: "chevron.down").imageScale(.small)
+                                    .rotationEffect(.degrees(manualOpen ? 180 : 0)).animation(.orbisCollapse, value: manualOpen)
+                            }.font(.orbisBody()).padding(16).frame(minHeight: 52)
                         }.buttonStyle(NeuButtonStyle(selected: manualOpen))
-                        if manualOpen {
-                            TextField("粘贴电脑端二维码的 JSON 内容", text: $code, axis: .vertical)
-                                .font(.system(size: 13, design: .monospaced)).lineLimit(5...9)
-                                .textInputAutocapitalization(.never).autocorrectionDisabled().focused($codeFocused)
-                                .orbisInput().padding(.top, 16).accessibilityLabel("配对二维码 JSON 内容")
-                            Text("二维码包含建立安全连接所需的信息，单独的配对码无法完成配对。")
-                                .font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 10)
-                            OrbisActionButton(title: "连接", symbol: "link") { submit(code) }
-                                .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isPairing)
-                                .padding(.top, 16)
+                        OrbisCollapse(expanded: manualOpen) {
+                            VStack(spacing: 16) {
+                                TextField("粘贴电脑端二维码的 JSON 内容", text: $code, axis: .vertical)
+                                    .font(.orbisLabel(mono: true)).lineLimit(5...9)
+                                    .textInputAutocapitalization(.never).autocorrectionDisabled().focused($codeFocused)
+                                    .orbisInput(focused: codeFocused).accessibilityLabel("配对二维码 JSON 内容")
+                                OrbisActionButton(title: "连接", symbol: "link") { submit(code) }
+                                    .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isPairing)
+                            }.padding(.top, 16).padding(.horizontal, 4).padding(.bottom, 4)
                         }
                         if let validationError { OrbisNotice(text: validationError, error: true).padding(.top, 16) }
-                        Label("端到端加密 · 配对信息保存在本机", systemImage: "lock.shield")
-                            .font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary)
-                            .padding(.top, 28)
                     }.frame(maxWidth: 430).padding(24).frame(maxWidth: .infinity, minHeight: geometry.size.height)
                 }.scrollDismissesKeyboard(.interactively)
             }
@@ -89,14 +82,13 @@ struct PairingScannerView: View {
     var body: some View {
         VStack(spacing: 20) {
             OrbisPageHeader(title: "扫描配对二维码", back: { dismiss() }) { EmptyView() }
-            Text("将电脑端二维码放入取景框").font(.system(size: 16, weight: .semibold))
             QRScannerRepresentable(onCode: { code in
                 do { _ = try PairingQR.parse(code); onCode(code) }
                 catch { failure = error.localizedDescription }
             }, onFailure: { failure = $0 })
                 .id(scannerID).aspectRatio(1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 20)).padding(6)
-                .neuSurface(inset: true).padding(.horizontal, 24)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .neuSurface(inset: true, radius: 20, padding: 6).padding(.horizontal, 24)
                 .accessibilityLabel("二维码相机取景框")
             if let failure {
                 OrbisNotice(text: failure, error: true).padding(.horizontal, 24)
@@ -107,8 +99,6 @@ struct PairingScannerView: View {
                     }
                 }.padding(.horizontal, 24)
             }
-            Text("仅在本机识别二维码，识别成功后自动连接。")
-                .font(.system(size: 12)).foregroundStyle(OrbisPalette(scheme).secondary).padding(.horizontal, 24)
             Spacer(minLength: 12)
             OrbisActionButton(title: "取消", action: { dismiss() }).padding(.horizontal, 24).padding(.bottom, 20)
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
@@ -137,7 +127,7 @@ private final class QRScannerController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
+        view.backgroundColor = .clear
         let layer = AVCaptureVideoPreviewLayer(session: capture.session)
         layer.videoGravity = .resizeAspectFill
         view.layer.addSublayer(layer)

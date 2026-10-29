@@ -60,7 +60,7 @@ private fun contextLabel(percent: Double, usage: RuntimeContextUsage): String {
     val used = usage.tokens
     // Percent first: the fill ratio is what the user scans for; token counts are the detail.
     return if (used != null && window != null && window > 0) {
-        "$share · ${formatTokenCount(used)}/${formatTokenCount(window)}"
+        "$share，${formatTokenCount(used)}/${formatTokenCount(window)}"
     } else {
         share
     }

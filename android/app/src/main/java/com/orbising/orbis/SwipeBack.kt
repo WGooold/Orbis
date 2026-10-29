@@ -40,9 +40,9 @@ internal fun Modifier.swipeToGoBack(onBack: () -> Unit): Modifier = composed {
                 onDragEnd = {
                     val projected = offset.value + velocity.calculateVelocity().x * 0.15f
                     if (projected > width / 3f) currentOnBack()
-                    else scope.launch { offset.animateTo(0f) }
+                    else scope.launch { offset.animateTo(0f, OrbisMotion.drag()) }
                 },
-                onDragCancel = { scope.launch { offset.animateTo(0f) } },
+                onDragCancel = { scope.launch { offset.animateTo(0f, OrbisMotion.drag()) } },
             )
         }
         .graphicsLayer { translationX = offset.value }

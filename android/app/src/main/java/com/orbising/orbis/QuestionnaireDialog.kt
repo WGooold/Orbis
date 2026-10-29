@@ -14,7 +14,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import com.orbising.orbis.NeumorphTextField as OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,6 +28,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -89,6 +90,7 @@ internal fun QuestionnairePanel(
         NeumorphSurface(
             modifier = Modifier.fillMaxSize(),
             shape = RemoteUi.CardShape,
+            contentInset = 12.dp,
         ) {
             Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -108,7 +110,7 @@ internal fun QuestionnairePanel(
                     }
                 }
                 Text(
-                    "第 ${current + 1} / ${questions.size} 题 · ${if (question.options.isEmpty()) "填写回答" else if (question.multiSelect) "可多选" else "单选"}",
+                    "第 ${current + 1} / ${questions.size} 题，${if (question.options.isEmpty()) "填写回答" else if (question.multiSelect) "可多选" else "单选"}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -140,7 +142,8 @@ internal fun QuestionnairePanel(
                             if (draft.otherSelected) {
                                 OutlinedTextField(
                                     value = draft.other, onValueChange = { update(draft.copy(other = it)) },
-                                    modifier = Modifier.fillMaxWidth(), enabled = !submitting && !request.submitted && !expired,
+                                    modifier = Modifier.fillMaxWidth().testTag("questionnaire-answer-${question.id}"),
+                                    enabled = !submitting && !request.submitted && !expired,
                                     label = { Text(if (question.options.isEmpty()) "填写回答" else "填写其他答案") },
                                     minLines = if (question.secret) 1 else 2, maxLines = if (question.secret) 1 else 5,
                                     visualTransformation = if (question.secret) PasswordVisualTransformation() else VisualTransformation.None,
@@ -202,6 +205,7 @@ private fun QuestionnaireOption(
         shape = RemoteUi.ControlShape,
         style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
         shadowScale = 0.45f,
+        contentInset = 8.dp,
     ) {
         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (multiple) NeumorphCheckbox(checked = selected, onCheckedChange = null, enabled = enabled)

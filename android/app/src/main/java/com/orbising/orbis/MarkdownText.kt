@@ -1,7 +1,6 @@
 package com.orbising.orbis
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +22,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckBox
 import androidx.compose.material.icons.rounded.CheckBoxOutlineBlank
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -107,7 +109,7 @@ private fun MarkdownBlocks(
                 is OrderedList -> MarkdownList(node, listener)
                 is BlockQuote -> {
                     val stripe = MaterialTheme.colorScheme.outline
-                    NeumorphSurface(Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed, shadowScale = 0.4f) {
+                    NeumorphSurface(Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed, shadowScale = 0.4f, contentInset = 12.dp) {
                         Column(
                             Modifier.padding(12.dp)
                                 .drawBehind { drawLine(stripe, Offset.Zero, Offset(0f, size.height), 3.dp.toPx()) }
@@ -139,7 +141,7 @@ private fun MarkdownInline(
 ) {
     val linkColor = MaterialTheme.colorScheme.primary
     val text = remember(node, listener, linkColor) { renderMarkdownInline(node, listener, linkColor) }
-    Text(text, modifier = modifier, style = style, textAlign = textAlign)
+    StreamingMarkdownText(text, modifier = modifier, style = style, textAlign = textAlign)
 }
 
 @Composable
@@ -180,7 +182,7 @@ private fun MarkdownImages(node: Node, listener: LinkInteractionListener) {
                 onSuccess = { failed = false },
             )
         }
-        if (failed) Text("图片无法加载，点击链接查看", style = MaterialTheme.typography.bodySmall)
+        Text(if (failed) "图片无法加载" else "", Modifier.height(20.dp), style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -215,21 +217,25 @@ private fun MarkdownList(list: ListBlock, listener: LinkInteractionListener) {
 @Composable
 private fun MarkdownCode(code: String, info: String = "") {
     val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    var copyGeneration by remember { mutableStateOf(0) }
+    LaunchedEffect(copyGeneration) { if (copied) { delay(2_500); copied = false } }
     NeumorphSurface(shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed) {
         Column(Modifier.fillMaxWidth()) {
             Row(Modifier.fillMaxWidth().padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(info.substringBefore(' ').ifBlank { "代码" }, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
                 NeumorphIconButton(
-                    onClick = { clipboard.setText(AnnotatedString(code)) },
-                    icon = Icons.Rounded.ContentCopy,
-                    contentDescription = "复制代码",
+                    onClick = { clipboard.setText(AnnotatedString(code)); copied = true; copyGeneration++ },
+                    icon = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                    contentDescription = if (copied) "已复制" else "复制代码",
                     size = 32.dp,
                 )
             }
             // Keep scrolling outside selection so selecting text doesn't swallow horizontal drags.
             Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(10.dp)) {
                 SelectionContainer {
-                    Text(code, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                    StreamingMarkdownText(AnnotatedString(code), Modifier,
+                        MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), TextAlign.Start)
                 }
             }
         }
@@ -249,13 +255,12 @@ private fun MarkdownTable(table: TableBlock, listener: LinkInteractionListener) 
         Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
             SelectionContainer {
                 Column {
-                    rows.forEach { cells ->
+                    rows.forEachIndexed { rowIndex, cells ->
                         Row(Modifier.height(IntrinsicSize.Min)) {
                             cells.forEach { cell ->
                                 Column(
                                     Modifier.width(cellWidth).fillMaxHeight()
-                                        .background(if (cell.isHeader) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface)
-                                        .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                                        .background(rememberNeumorphColors().layer(if (cell.isHeader || rowIndex % 2 == 0) 0 else 1))
                                         .padding(10.dp),
                                 ) {
                                     MarkdownInline(

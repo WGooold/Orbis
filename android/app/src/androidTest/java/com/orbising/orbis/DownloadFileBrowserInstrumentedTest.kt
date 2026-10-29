@@ -80,7 +80,7 @@ class DownloadFileBrowserInstrumentedTest {
         compose.onNodeWithText("下载到手机").assertIsEnabled()
         compose.runOnIdle { state.value = state.value.copy(connection = RelayConnection.RECONNECTING, e2eReady = false) }
         compose.onNodeWithText("下载到手机").assertIsNotEnabled()
-        compose.onNodeWithText("未连接到电脑，连接后可继续浏览").assertIsDisplayed()
+        compose.onNodeWithText("D:\\").assertIsDisplayed()
         compose.runOnIdle { state.value = state.value.copy(connection = RelayConnection.ONLINE, e2eReady = true,
             sessionBrowse = state.value.sessionBrowse!!.copy(isLoading = true)) }
         compose.onNodeWithText("下载到手机").assertIsNotEnabled()

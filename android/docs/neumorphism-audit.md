@@ -1,5 +1,8 @@
 # Android 新拟物覆盖审计
 
+2026-10-29 更新：嵌套表面、字号、焦点、折叠与滚动约束以 [ADR-0046](../../docs/adr/0046-mobile-ui-stability-and-material.md) 为准。
+下面保留原覆盖范围；嵌套内容现已改为明度层平铺，不再逐层加影。验收见 [移动端 UI 打磨](../../docs/testing/mobile-ui-polish.md)。
+
 范围：`MainActivity.kt`、`RemoteUi.kt`、`Neumorph.kt`、`AgentBrand.kt`、`MarkdownText.kt`、`HistoryTreePage.kt`、`QrPairing.kt`、主题与系统入口。本文是 2026-09-24 的实现审计记录，不绑定某个历史 APK 版本。
 
 ## 已采用的区域

@@ -42,6 +42,8 @@ private final class PreviewTransport: OrbisTransport {
     var receive: (([String: Any], String?) -> Void)?
     var sequence = 0
     private var providerRevision = 1
+    private var viewportTail = 0
+    private var sourceSequence = 1
     private var enabledProviders: [String: Set<String>] = ["codex": ["official"], "pi": ["official"], "dsh": ["official"]]
     func pair(qr: PairingQR, deviceName: String, identity: DeviceIdentity, completion: @escaping (Result<HostPairing, Error>) -> Void) { completion(.failure(PairingError.invalidQR)) }
     func disconnect() {}
@@ -127,6 +129,19 @@ private final class PreviewTransport: OrbisTransport {
                       "entries": [["name": "orbis", "isDir": true, "hasSessions": true], ["name": "website", "isDir": true, "hasSessions": true], ["name": "experiments", "isDir": true, "hasSessions": false]]], "ctl")
         } else if object["type"] as? String == "runtime.git.request" {
             receive?(["type": "runtime.git", "requestId": object["requestId"]!, "runtimeId": object["runtimeId"]!, "sessionId": "session-1", "cwd": "/Projects/orbis", "branch": "main"], "ctl")
+            if screen == "viewport" {
+                viewportTail += 1
+                let base = sourceSequence
+                sourceSequence += 1
+                let message = messages[1]
+                // Once a source checkpoint is installed, only contiguous source patches update it.
+                event(["type": "session.patch", "sessionId": "session-1", "baseSeq": base, "seq": sourceSequence,
+                       "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true],
+                       "head": ["leafId": "node-2"], "headCompleteness": "complete",
+                       "entries": [["entryId": "node-2", "parentId": "node-1", "type": "message", "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": message]]],
+                       "display": ["projectionVersion": 3, "entries": [["displayId": "node-2", "entryId": "node-2", "kind": "message", "message": message]]],
+                       "live": ["complete": true, "messages": [], "tools": []]])
+            }
         } else if let command = object["command"] as? [String: Any], let type = command["type"] as? String {
             let runtime = object["runtimeId"] as? String ?? "preview-codex"
             if type == "session.sync" {
@@ -135,7 +150,7 @@ private final class PreviewTransport: OrbisTransport {
                 }
                 let display: [[String: Any]] = messages.enumerated().map { ["displayId": "node-\($0.offset + 1)", "entryId": "node-\($0.offset + 1)", "kind": "message", "message": $0.element] }
                 event(["type": "session.snapshot", "sessionId": command["sessionId"]!, "syncId": command["syncId"]!, "range": "preview", "mode": "replace", "selection": "snapshot", "cursor": ["leafId": "node-\(messages.count)"], "entries": entries,
-                       "source": ["epoch": "preview-source", "seq": 1, "ready": true], "checkpoint": ["checkpointId": "preview-checkpoint", "head": ["leafId": "node-\(messages.count)"], "headCompleteness": "complete", "inventoryComplete": true],
+                       "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true], "checkpoint": ["checkpointId": "preview-checkpoint", "head": ["leafId": "node-\(messages.count)"], "headCompleteness": "complete", "inventoryComplete": true],
                        "live": ["complete": true, "messages": [], "tools": []], "hasOlder": false, "complete": true, "rangeStatus": "complete", "display": ["projectionVersion": 3, "entries": display]], runtimeId: runtime)
                 if screen == "queue" { event(["type": "message.queued", "queueId": "preview-queue", "text": "接着检查 iOS 的历史同步和文件传输。", "delivery": "followUp", "state": "accepted"], runtimeId: runtime) }
             } else if type == "session.tool.content.read" {
@@ -198,6 +213,12 @@ private final class PreviewTransport: OrbisTransport {
                     ["type": "tool_call", "toolCallId": "legacy-tool", "toolName": "read", "arguments": ["path": "/repo/source.swift", "limit": 40]]]],
                 ["messageId": "legacy-result", "role": "tool", "toolCallId": "legacy-tool", "toolName": "read", "timestamp": 1793232000001,
                  "content": [["type": "text", "text": "已完成工具参数验证。"]]]]
+        }
+        if screen == "viewport" {
+            let paragraphs = (1...80).map { "阅读锚点 \($0)" }
+            let tail = (0..<viewportTail).map { "新增尾部 \($0 + 1)" }
+            return [message("viewport-user", role: "user", text: "检查长回复滚动"),
+                    message("viewport-assistant", role: "assistant", text: (paragraphs + tail).joined(separator: "\n\n"))]
         }
         if screen == "tool" {
             let summary: [String: Any] = ["projectionVersion": 1, "tool": ["agent": ["hostId": "preview-host", "agentKind": "codex", "sessionId": "session-1"], "toolCallId": "preview-tool"],
