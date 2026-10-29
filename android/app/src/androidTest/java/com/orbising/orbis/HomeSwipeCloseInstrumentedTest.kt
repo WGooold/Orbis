@@ -53,6 +53,21 @@ class HomeSwipeCloseInstrumentedTest {
         val ground = pixels[(bounds.right + 12 * density).roundToInt(), bounds.center.y.roundToInt()]
         assertTrue("The swipe container clipped the card shadow", abs(shadow.luminance() - ground.luminance()) > 0.005f)
 
+        // A rightward gesture that starts on the card belongs to the drawer, even after
+        // the card's horizontal touch slop is crossed. A short pull should rebound.
+        card.performTouchInput {
+            swipe(Offset(width * 0.1f, center.y), Offset(width * 0.25f, center.y), durationMillis = 600)
+        }
+        compose.onNodeWithText("搜索目录或会话").assertIsNotDisplayed()
+        compose.runOnIdle { assertTrue(opened.isEmpty()); assertTrue(closed.isEmpty()); assertTrue(haptics.isEmpty()) }
+        card.performTouchInput {
+            swipe(Offset(width * 0.1f, center.y), Offset(width * 0.9f, center.y), durationMillis = 400)
+        }
+        compose.onNodeWithText("搜索目录或会话").assertIsDisplayed()
+        compose.runOnIdle { assertTrue(opened.isEmpty()); assertTrue(closed.isEmpty()); assertTrue(haptics.isEmpty()) }
+        compose.onRoot().performTouchInput { click(Offset(width - 8f, center.y)) }
+        compose.onNodeWithText("搜索目录或会话").assertIsNotDisplayed()
+
         // More than the former fixed threshold, but less than half of this card.
         card.performTouchInput { down(Offset(width * 0.85f, center.y)); moveBy(Offset(-cardWidth * 0.4f, 0f)) }
         compose.onNodeWithText("关闭").assertIsDisplayed()
@@ -81,5 +96,17 @@ class HomeSwipeCloseInstrumentedTest {
             assertTrue(opened.isEmpty())
         }
         compose.onNodeWithTag("home-runtime-two").assertIsDisplayed()
+
+        // Reversing an accepted left drag all the way past its start must not open the drawer.
+        card.performTouchInput {
+            down(Offset(width * 0.7f, center.y))
+            moveBy(Offset(-cardWidth * 0.3f, 0f))
+            moveBy(Offset(cardWidth * 0.5f, 0f))
+            up()
+        }
+        compose.onNodeWithText("搜索目录或会话").assertIsNotDisplayed()
+        compose.runOnIdle { assertEquals(2, closed.size); assertTrue(opened.isEmpty()) }
+        card.performTouchInput { click() }
+        compose.runOnIdle { assertEquals(listOf("one"), opened) }
     }
 }
