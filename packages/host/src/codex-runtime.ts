@@ -2515,7 +2515,9 @@ export class CodexRuntime implements AgentBackend {
     if (thread !== undefined && result.status !== "complete") {
       const hint = result.reason === "desktop_refresh_wrapper_upgrade_required"
         ? "请更新 Host，并关闭后重新打开 Codex 桌面版以加载新包装器"
-        : "请手动归档、撤销归档并重新打开该会话";
+        : result.reason === "desktop_refresh_client_version_unverified"
+          ? "当前 Host 尚未支持此 Codex 桌面版本的自动刷新；请更新 Host，或手动归档、撤销归档并重新打开该会话"
+          : "请手动归档、撤销归档并重新打开该会话";
       thread.notifications.upsert({ code: "codex.refresh", occurrenceId: result.operationId,
         scope: { operationId: result.operationId }, severity: "warning", lifecycle: "condition", message: `历史已回退，但桌面刷新尚未完成；${hint}` });
     }

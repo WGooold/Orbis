@@ -21,8 +21,10 @@ type Options = CodexDesktopRefreshOptions & {
 const SOURCE_KINDS = ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"];
 // Match initialize.clientInfo.version, not the MSIX package version. The verified
 // 26.1002.7124.0 package advertises 26.1002.52244 over its GUI protocol connection.
+// macOS 26.1023.50603 (bundle build 22391) advertises 26.1023.50603. Keep its
+// handshake version here as well: desktop refresh uses the same wrapper on both OSes.
 // Unknown versions retain native revert and phone reconciliation with manual reopening.
-const COMPATIBLE_CLIENTS = new Set(["26.930.7945", "26.1002.7124", "26.1002.52244"]);
+const COMPATIBLE_CLIENTS = new Set(["26.930.7945", "26.1002.7124", "26.1002.52244", "26.1023.50603"]);
 
 export function desktopHistoryRevision(turns: unknown): string {
   return createHash("sha256").update(JSON.stringify(turns, (_key, child: unknown) => {
@@ -31,7 +33,7 @@ export function desktopHistoryRevision(turns: unknown): string {
   })).digest("hex");
 }
 
-/** Real Windows wrapper driver. It intentionally refuses native archive subtrees. */
+/** Desktop wrapper driver for Windows and macOS. It refuses native archive subtrees. */
 export class CodexDesktopRefreshDriver implements CodexRefreshDriver {
   readonly #options: Options;
   readonly #resumed = new Set<string>();

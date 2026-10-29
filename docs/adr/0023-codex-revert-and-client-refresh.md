@@ -102,6 +102,8 @@ archive 先卸载运行态再提交持久归档，因此 archive 自身失败或
 
 archive 通知驱动 GUI eviction 是当前桌面版本的兼容方案。Codex 升级后重新验证；无法确认兼容性时，保留回退与手机历史协调，明确报告电脑端需手动重开，不反复尝试归档。
 
+2026-10-29 macOS 修复：本机 Codex 应用版本 `26.1023.50603`（bundle build `22391`）的真实包装器握手为 `initialize.clientInfo.version = 26.1023.50603`。此前兼容表只有旧 Windows 版本，导致该 Mac 版本在归档前返回 `desktop_refresh_client_version_unverified`。现加入该握手版本；未识别版本仍保留原生回退，并明确提示更新 Host。回归覆盖 Mac 路径下的手机 `/tree` → revert → archive/unarchive → resume → GUI 分页读取确认，以及按 `com.openai.codex` bundle ID 重新打开目标的 `/usr/bin/open` 参数。这些是隔离自动测试，真实用户会话的 GUI 刷新尚需更新 Host 后现场验收；修复不要求重启 Codex 包装器。
+
 如果上游 GUI/TUI 将来原生支持外部 `thread/reverted` 后重建 transcript，优先采用其原生流程，并在验证后更新本 ADR，移除相应的归档或进程重开补偿。
 
 ### 8. Codex 源端一致性是跨端同步的前置条件

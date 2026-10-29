@@ -18,7 +18,7 @@ const turns = (count = 2) => Array.from({ length: count }, (_, i) => ({ id: `t${
   items: [{ id: `u${i + 1}`, type: "userMessage", content: [{ type: "text", text: `question ${i + 1}` }] },
     { id: `a${i + 1}`, type: "agentMessage", text: `answer ${i + 1}` }] }));
 
-async function harness() {
+async function harness(clientVersion = "26.1002.52244", nativeRoot = "D:/codex") {
   const directory = await mkdtemp(join(tmpdir(), "orbis-desktop-refresh-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   let retained = turns();
@@ -35,16 +35,16 @@ async function harness() {
   const bridge = new CodexDesktopRefreshBridge((method, params) => request(method, params));
   const response = (id: number, result: unknown) => bridge.guiResponse(JSON.stringify({ id, result }));
   const gui = (method: string, params: unknown, id = 1) => bridge.guiRequest(JSON.stringify({ id, method, params }));
-  // Captured from the actual GUI handshake of Windows MSIX 26.1002.7124.0.
-  gui("initialize", { clientInfo: { name: "codex_desktop", version: "26.1002.52244" } });
+  // Handshake versions differ from bundle build/package versions on both platforms.
+  gui("initialize", { clientInfo: { name: "codex_desktop", version: clientVersion } });
   const request = vi.fn(async (method: string, params: Record<string, unknown> = {}): Promise<unknown> => {
     if (method === "thread/list") return { data: params.ancestorThreadId ? child ? [{ id: "child" }] : []
-      : [{ id: "session", cwd: "D:/repo", path: "D:/codex/sessions/rollout.jsonl", status: { type: "idle" } }], nextCursor: null };
+      : [{ id: "session", cwd: directory, path: `${nativeRoot}/sessions/rollout.jsonl`, status: { type: "idle" } }], nextCursor: null };
     if (method === "thread/loaded/list") return { data: loaded ? ["session"] : [] };
     if (method === "thread/queue/list") return { data: busy ? [{ id: "queued" }] : [] };
     if (method === "thread/read" || method === "thread/resume") {
       if (method === "thread/resume") { loaded = true; subscribed = true; lifecycle.push("resume"); }
-      return { thread: { id: "session", cwd: "D:/repo", path: archived ? "D:/codex/archived_sessions/rollout.jsonl" : "D:/codex/sessions/rollout.jsonl",
+      return { thread: { id: "session", cwd: directory, path: `${nativeRoot}/${archived ? "archived_sessions" : "sessions"}/rollout.jsonl`,
         status: { type: busy ? "active" : loaded ? "idle" : "notLoaded" }, turns: method === "thread/resume" ? retained : [] } };
     }
     if (method === "thread/turns/list") return { data: retained, nextCursor: null };
@@ -228,8 +228,11 @@ describe("phone tree to desktop lifecycle", () => {
     await vi.waitFor(() => expect(inventory().map(item => item.code)).toEqual(["codex.sandbox"]), { timeout: 4000 });
     expect(h.lifecycle.filter(item => item === "revert")).toHaveLength(1);
   });
-  it("does not tell the phone to archive manually when GUI reopening queries its queue", async () => {
-    const h = await harness();
+  it.each([
+    { platform: "Windows", clientVersion: "26.1002.52244", nativeRoot: "D:/codex" },
+    { platform: "macOS", clientVersion: "26.1023.50603", nativeRoot: "/Users/test/.codex" },
+  ])("completes phone rewind and GUI reload for $platform $clientVersion", async ({ clientVersion, nativeRoot }) => {
+    const h = await harness(clientVersion, nativeRoot);
     app.open.mockImplementation(async () => {
       h.gui("thread/queue/list", { threadId: "session" }, 13);
       h.response(13, { data: [] });
@@ -240,8 +243,21 @@ describe("phone tree to desktop lifecycle", () => {
     h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-queue", "session");
     await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-queue", ok: true })));
     expect(h.lifecycle).toEqual(["resume", "revert", "archive", "unarchive", "resume"]);
+    expect(app.open).toHaveBeenCalledExactlyOnceWith("session", "local");
     expect((await h.journal.list())[0]).toMatchObject({ kind: "receipt", result: { status: "complete" } });
     expect(h.events.filter(event => event.type === "runtime.error")).toEqual([]);
+  });
+
+  it("keeps native rewind but reports unsupported desktop versions before archive", async () => {
+    const h = await harness("99.1.0", "/Users/test/.codex");
+    h.runtime.markStarted();
+    await vi.waitFor(() => expect(h.runtime.directoryEntries()).toHaveLength(1));
+    h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-unsupported", "session");
+    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-unsupported", ok: true })));
+    expect(h.lifecycle).toEqual(["resume", "revert"]);
+    expect(app.open).not.toHaveBeenCalled();
+    const notifications = h.events.filter(event => event.type === "notification.source").at(-1)?.notifications ?? [];
+    expect(notifications).toContainEqual(expect.objectContaining({ code: "codex.refresh", message: expect.stringContaining("当前 Host 尚未支持此 Codex 桌面版本") }));
   });
 
   it("wires real refresh after committed tree, retaining the mobile session throughout temporary archive", async () => {

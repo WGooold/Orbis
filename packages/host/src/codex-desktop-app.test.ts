@@ -26,6 +26,21 @@ function script(): string {
 }
 
 describe("registered Codex desktop activation", () => {
+  it.runIf(process.platform === "darwin")("reopens a local thread in the Codex bundle without restarting the Mac app", async () => {
+    await openCodexDesktopThread("thread-123", "local");
+    expect(activation.spawn).toHaveBeenCalledExactlyOnceWith("/usr/bin/open", [
+      "-g", "-b", "com.openai.codex", "codex://threads/thread-123?hostId=local",
+    ], expect.objectContaining({ timeout: 15_000 }));
+    await expect(openCodexDesktopThread("thread-123", "codex-desktop:thread-123")).rejects.toThrow("route_unverified");
+    await expect(openCodexDesktopThread("bad'$(command)", "local")).rejects.toThrow("route_unverified");
+    expect(activation.spawn).toHaveBeenCalledTimes(1);
+    activation.spawn.mockImplementationOnce(() => {
+      const child = Object.assign(new EventEmitter(), { stderr: new PassThrough() });
+      queueMicrotask(() => { child.stderr.write("application unavailable"); child.emit("exit", 1); });
+      return child;
+    });
+    await expect(openCodexDesktopThread("thread-123", "local")).rejects.toThrow("application unavailable");
+  });
   it.runIf(process.platform === "win32")("opens a verified local thread route and rejects unverified routes before spawning", async () => {
     await openCodexDesktopThread("thread-123", "local");
     expect(script()).toContain("codex://threads/thread-123?hostId=local");
