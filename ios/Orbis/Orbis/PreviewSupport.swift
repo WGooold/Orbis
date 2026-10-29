@@ -246,10 +246,16 @@ private final class PreviewTransport: OrbisTransport {
                     message("viewport-assistant", role: "assistant", text: (paragraphs + tail).joined(separator: "\n\n"))]
         }
         if screen == "tool" {
+            let longTranscript = ProcessInfo.processInfo.arguments.contains("--preview-long-transcript")
+            let result = longTranscript ? (1...32).map { "工具输出第 \($0) 行：检查源文件与布局，保留展开位置。" }.joined(separator: "\n") : "已检查 18 个源文件"
             let summary: [String: Any] = ["projectionVersion": 1, "tool": ["agent": ["hostId": "preview-host", "agentKind": "codex", "sessionId": "session-1"], "toolCallId": "preview-tool"],
                 "toolName": "read", "phase": "finished", "order": 1, "contents": [["part": "output", "format": "text", "availability": "readable", "readCapability": "range"]],
-                "resultSummary": ["text": "已检查 18 个源文件", "omitted": false, "originalBytes": "已检查 18 个源文件".utf8.count]]
-            return [message("m1", role: "user", text: "检查项目中的源文件。"), ["messageId": "m2", "role": "assistant", "timestamp": 1793232000001,
+                "resultSummary": ["text": result, "omitted": false, "originalBytes": result.utf8.count]]
+            let history = longTranscript ? (1...40).flatMap { index in
+                [message("tool-user-\(index)", role: "user", text: "检查第 \(index) 个源文件。"),
+                 message("tool-assistant-\(index)", role: "assistant", text: "第 \(index) 个源文件检查完成。\n\n" + String(repeating: "历史消息用于验证懒加载后的首次定位。", count: 8))]
+            } : []
+            return history + [message("m1", role: "user", text: "检查项目中的源文件。"), ["messageId": "m2", "role": "assistant", "timestamp": 1793232000001,
                 "content": [["type": "tool_call", "toolName": "read", "summary": summary], ["type": "text", "text": "源文件检查完成。展开工具可查看摘要和按需读取完整输出。"]]]]
         }
         return [message("m1", role: "user", text: "把 iOS 的 UI 和交互体验对齐到 Android，一个页面一个页面做。"),

@@ -3,9 +3,9 @@ import XCTest
 final class OrbisUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
-    private func launch(_ screen: String, dark: Bool = false) -> XCUIApplication {
+    private func launch(_ screen: String, dark: Bool = false, arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--preview-screen=" + screen]
+        app.launchArguments = ["--preview-screen=" + screen] + arguments
         if dark { app.launchArguments.append("--preview-dark") }
         app.launch()
         return app
@@ -106,6 +106,29 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["历史与分支"].waitForExistence(timeout: 3))
     }
 
+    func testLongTranscriptAppearsAndToolExpansionKeepsItsPositionWithoutDragging() {
+        let app = launch("tool", arguments: ["--preview-long-transcript"])
+        let disclosure = app.buttons["展开read，已完成"]
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 8))
+        XCTAssertTrue(disclosure.isHittable)
+        let before = disclosure.frame.minY
+        disclosure.tap()
+        let expanded = app.buttons["收起read，已完成"]
+        XCTAssertTrue(expanded.waitForExistence(timeout: 3))
+        capture("tool-expanded-without-drag", app: app)
+        XCTAssertTrue(expanded.isHittable, "Expanded tool frame: \(expanded.frame)")
+        XCTAssertEqual(before, expanded.frame.minY, accuracy: 1)
+        expanded.tap()
+        XCTAssertTrue(disclosure.isHittable)
+        XCTAssertTrue(app.staticTexts["源文件检查完成。展开工具可查看摘要和按需读取完整输出。"].isHittable)
+        app.buttons["返回"].firstMatch.tap()
+        let runtime = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "对齐移动端的使用体验")).firstMatch
+        XCTAssertTrue(runtime.waitForExistence(timeout: 3)); runtime.tap()
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 5))
+        XCTAssertTrue(disclosure.isHittable)
+        capture("long-transcript-reopened-without-drag", app: app)
+    }
+
     func testLongFinalReplyKeepsReadingPositionAndOnlyFollowsAfterJump() {
         let app = launch("viewport")
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
@@ -125,7 +148,8 @@ final class OrbisUITests: XCTestCase {
         capture("viewport-reading", app: app)
         app.buttons["跳到最新消息"].tap()
         let last = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "新增尾部 ")).allElementsBoundByIndex.last
-        XCTAssertTrue(last?.isHittable == true)
+        capture("viewport-after-jump", app: app)
+        XCTAssertTrue(last?.isHittable == true, "Latest text frame: \(String(describing: last?.frame)); viewport: \(transcript.frame)")
         refresh.tap()
         let newest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "新增尾部 ")).allElementsBoundByIndex.last
         XCTAssertTrue(newest?.isHittable == true)

@@ -11,6 +11,7 @@ private struct ChatBottomPreference: PreferenceKey {
 final class ChatScrollMetrics {
     var bottomDistance: CGFloat = 0
     var firstVisibleRow: String?
+    var userScrolling = false
 }
 
 private struct ChatRowsPreference: PreferenceKey {
@@ -18,8 +19,19 @@ private struct ChatRowsPreference: PreferenceKey {
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, next in next }) }
 }
 
+private struct ChatReadingInteractionKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+private extension EnvironmentValues {
+    var chatReadingInteraction: () -> Void {
+        get { self[ChatReadingInteractionKey.self] }
+        set { self[ChatReadingInteractionKey.self] = newValue }
+    }
+}
+
 /// The transcript has exactly one viewport policy: within one line of the bottom it follows
-/// new content, any drag stops following at once, and past three lines a jump-to-latest
+/// new content, dragging or opening a disclosure stops following, and past three lines a jump-to-latest
 /// button appears. Nothing else moves the viewport on the reader's behalf.
 private enum ChatFollow {
     static let line: CGFloat = 20
@@ -38,8 +50,6 @@ struct ChatView: View {
     let onDownloads: () -> Void
     let onAlias: () -> Void
     @State private var following = true
-    @State private var userScrolling = false
-    @State private var jumping = false
     /// Per-frame scroll facts live in a reference box: writing them must not re-render the chat.
     /// Only `showJump` (derived from them) is view state, and it changes at a threshold.
     @State private var metrics = ChatScrollMetrics()
@@ -164,15 +174,22 @@ struct ChatView: View {
                                 .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: [row.id: geometry.frame(in: .named("chat-viewport"))]) })
                         }
                         LiveToolsView(runtime: runtime)
-                        Color.clear.frame(height: 20).id(ChatFollow.bottomID)
+                        // Small tail: the last message sits close to the composer (LazyVStack spacing still applies).
+                        Color.clear.frame(height: 4).id(ChatFollow.bottomID)
                             .background(GeometryReader { geo in Color.clear.preference(key: ChatBottomPreference.self, value: geo.frame(in: .named("chat-viewport")).maxY) })
                     }.padding(.horizontal, 16).padding(.top, 4)
+                        .environment(\.chatReadingInteraction) {
+                            // The tap's scroll phase can end before the expansion has grown.
+                            // Do not let that idle event re-enable following during the animation.
+                            metrics.userScrolling = false
+                            following = false
+                        }
                         .background {
                             if #unavailable(iOS 18.0) { LegacyScrollInteraction(onInteraction: userInteractionChanged) }
                         }
                 }.coordinateSpace(name: "chat-viewport").scrollDismissesKeyboard(.interactively)
-                    .modifier(ChatScrollObserver(viewportHeight: viewport.size.height,
-                                                 onDistance: { bottomDistanceChanged($0, proxy: proxy) },
+                    .modifier(ChatScrollObserver(viewportHeight: viewport.size.height, following: following,
+                                                 onDistance: bottomDistanceChanged,
                                                  onInteraction: { userInteractionChanged($0) }))
                     .onPreferenceChange(ChatRowsPreference.self) { frames in
                         metrics.firstVisibleRow = frames.filter { $0.value.maxY > 0 && $0.value.minY < viewport.size.height }.min { $0.value.minY < $1.value.minY }?.key
@@ -210,7 +227,6 @@ struct ChatView: View {
                     .onChange(of: store.historyLoading.contains(runtime.runtimeId)) { old, loading in
                         if old && !loading && store.historyErrors[runtime.runtimeId] != nil { historyAnchor = nil }
                     }
-                    .onAppear { proxy.scrollTo(ChatFollow.bottomID, anchor: .bottom); hasPositioned = !transcript.rows.isEmpty }
             }
         }
     }
@@ -248,28 +264,22 @@ struct ChatView: View {
         }.frame(minHeight: 48)
     }
 
-    private func bottomDistanceChanged(_ distance: CGFloat, proxy: ScrollViewProxy) {
+    // Scrolling from a geometry callback re-enters lazy layout while a disclosure changes height.
+    // Observe here; native anchors handle size changes and an actual scroll ending resumes following.
+    private func bottomDistanceChanged(_ distance: CGFloat) {
         metrics.bottomDistance = distance
         updateJump()
         if distance.isFinite && !hasPositioned && !store.messages.isEmpty { hasPositioned = true }
-        if jumping {
-            if distance <= 0.5 { jumping = false }
-            return
-        }
-        guard !userScrolling else { return }
-        if following {
-            if distance > 0.5 { proxy.scrollTo(ChatFollow.bottomID, anchor: .bottom) }
-        } else if distance <= ChatFollow.line {
-            following = true
-        }
     }
 
     private func userInteractionChanged(_ active: Bool) {
-        userScrolling = active
         if active {
-            following = false; jumping = false
-        } else if metrics.bottomDistance <= ChatFollow.line {
-            following = true
+            metrics.userScrolling = true
+            following = false
+        } else {
+            guard metrics.userScrolling else { return }
+            metrics.userScrolling = false
+            if metrics.bottomDistance <= ChatFollow.line { following = true }
         }
     }
 
@@ -279,10 +289,10 @@ struct ChatView: View {
     }
 
     private func jumpToLatest(_ proxy: ScrollViewProxy) {
-        following = true; jumping = true
+        following = true
         withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
             proxy.scrollTo(ChatFollow.bottomID, anchor: .bottom)
-        } completion: { jumping = false }
+        }
     }
 
     private var composer: some View {
@@ -303,12 +313,14 @@ struct ChatView: View {
                 }.padding(.horizontal, 16).padding(.top, 10)
             }
             if !slash {
+                // One line of session context between the transcript and the field: directory,
+                // branch, permissions. The path gives way first; the branch keeps its name.
                 HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 12) {
                         Label(runtime.cwd, systemImage: "folder").lineLimit(1).truncationMode(.middle)
                         Button(action: store.refreshWorkingBranch) {
                             Label(branchTitle, systemImage: "point.3.connected.trianglepath.dotted").lineLimit(1)
-                        }.buttonStyle(.plain).accessibilityLabel("刷新 Git 工作分支，" + branchTitle)
+                        }.buttonStyle(.plain).layoutPriority(1).accessibilityLabel("刷新 Git 工作分支，" + branchTitle)
                     }.font(.orbisCaption(mono: true)).foregroundStyle(p.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if let permissions = runtime.permissionManagement {
@@ -317,11 +329,12 @@ struct ChatView: View {
                                 Image(systemName: "shield.lefthalf.filled")
                                 Text(permissions.summary).lineLimit(1)
                                 Image(systemName: "chevron.right").imageScale(.small)
-                            }.font(.orbisCaption()).frame(minHeight: 48)
+                            }.font(.orbisCaption()).frame(minHeight: 32)
                                 .foregroundStyle(permissions.tone == "problem" ? p.error : accent)
+                                .contentShape(Rectangle().inset(by: -6))
                         }.buttonStyle(.plain).accessibilityLabel("会话权限：\(permissions.summary)")
                     }
-                }.padding(.horizontal, 20).padding(.top, 10)
+                }.padding(.horizontal, 20).padding(.top, 6)
             }
             AttachmentStrip(runtime: runtime)
             if slash { SlashPickerView(runtime: runtime, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
@@ -343,8 +356,8 @@ struct ChatView: View {
                         else { submit() }
                     }.disabled(!canSubmit)
                 }
-            }.padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 12)
-        }.padding(.top, 8).background(p.base)
+            }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 12)
+        }.padding(.top, 4).background(p.base)
     }
 
     private func domainReady(_ name: String) -> Bool {
@@ -378,13 +391,15 @@ struct ChatView: View {
 /// starts or stops moving it. iOS 18 reads the scroll geometry and phase directly.
 private struct ChatScrollObserver: ViewModifier {
     let viewportHeight: CGFloat
+    let following: Bool
     let onDistance: (CGFloat) -> Void
     let onInteraction: (Bool) -> Void
 
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
             content
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(following ? .bottom : nil, for: .initialOffset)
+                .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
                 .onScrollGeometryChange(for: CGFloat.self) { geometry in
                     max(0, geometry.contentSize.height + geometry.contentInsets.bottom - geometry.visibleRect.maxY)
                 } action: { _, distance in onDistance(distance) }
@@ -397,6 +412,7 @@ private struct ChatScrollObserver: ViewModifier {
                 }
         } else {
             content
+                .defaultScrollAnchor(following ? .bottom : .top)
                 .onPreferenceChange(ChatBottomPreference.self) { bottom in
                     onDistance(bottom.map { max(0, $0 - viewportHeight) } ?? .infinity)
                 }
@@ -616,6 +632,7 @@ func fileNameParts(_ name: String) -> (stem: String, ext: String) {
 
 struct CompactDisclosure<Content: View>: View {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.chatReadingInteraction) private var readingInteraction
     let title: String
     var detail: String? = nil
     let symbol: String
@@ -624,7 +641,7 @@ struct CompactDisclosure<Content: View>: View {
     var body: some View {
         let p = OrbisPalette(scheme)
         VStack(alignment: .leading, spacing: 0) {
-            Button { expanded.toggle() } label: {
+            Button { readingInteraction(); expanded.toggle() } label: {
                 HStack(spacing: 8) {
                     Image(systemName: symbol)
                     Text(title).fontWeight(.medium).foregroundStyle(p.text).lineLimit(2)
