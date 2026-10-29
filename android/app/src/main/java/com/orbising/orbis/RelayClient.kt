@@ -219,7 +219,17 @@ class RelayClient(
             .post(body)
             .build()
         http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("配对失败（HTTP ${response.code}）")
+            if (!response.isSuccessful) {
+                val responseText = response.body?.string().orEmpty()
+                val relayError = runCatching {
+                    json.parseToJsonElement(responseText).jsonObject["error"]?.jsonPrimitive?.contentOrNull
+                }.getOrNull()
+                val message = when (relayError) {
+                    "invalid_pairing_code" -> "配对码已失效、已被使用或电脑端账号已停用：请确认电脑端可用并重新生成二维码"
+                    else -> "配对失败（HTTP ${response.code}${relayError?.let { "：$it" }.orEmpty()}）"
+                }
+                error(message)
+            }
             val paired = json.decodeFromString<PairingResponse>(response.body?.string().orEmpty())
             DeviceCredential(relayUrl.trimEnd('/'), paired.deviceId, paired.credential)
         }

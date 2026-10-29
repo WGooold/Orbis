@@ -68,7 +68,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     private val pairingOrder = MutableStateFlow<List<HostPairing>>(emptyList())
     private val hostStates = MutableStateFlow<Map<String, RemoteState>>(emptyMap())
     private val pairingErrors = MutableStateFlow<String?>(null)
-    private var pairingJob: Job? = null
+    private val pairingProgress = MutableStateFlow(false)
 
     /** What the selected Host last published. */
     val state: StateFlow<RemoteState> = combine(hostStates, activeHostId) { states, active ->
@@ -82,6 +82,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     /** Add-a-computer failures; the pairing screen shows these instead of the session error. */
     val pairingError: StateFlow<String?> = pairingErrors
+    val pairingInProgress: StateFlow<Boolean> = pairingProgress
 
     init {
         migrateLegacyPairing()
@@ -200,69 +201,75 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
      * Pairs one more computer. Uses a dedicated Relay socket so an add-host attempt can never
      * disconnect the computers that are already online.
      */
-    fun pair(relayUrl: String, code: String, qrRaw: String? = null) {
-        pairingJob?.cancel()
+    fun pair(relayUrl: String, code: String, qrRaw: String? = null, onSuccess: (() -> Unit)? = null) {
+        if (pairingProgress.value) return
         pairingErrors.value = null
-        pairingJob = viewModelScope.launch {
-            val qr = qrRaw?.let(::parsePairingQrV2)
-            if (qr == null) {
-                pairingErrors.value = "二维码缺少端到端加密材料或格式无效：请在电脑上重新执行 orbis pair，扫描新二维码"
-                return@launch
-            }
-            if (qr.exp * 1000 < System.currentTimeMillis()) {
-                pairingErrors.value = "配对二维码已过期，请在电脑上重新生成（配对窗口只有几分钟）"
-                return@launch
-            }
-            val relay = RelayClient().apply { setApplicationContext(getApplication()) }
-            val paired = runCatching { relay.pair(relayUrl.trim(), code, Build.MODEL) }.getOrElse { error ->
-                pairingErrors.value = localizedError(error, "配对失败，请检查中继服务器地址、配对码和网络连接")
-                return@launch
-            }
-            val keyPair = legacyIdentity.loadOrCreateDeviceKeyPair()
-            val session = runCatching {
-                DevicePairingSession.create(
-                    hostPublicRaw = Crypto.fromBase64UrlFixed(qr.hostPub, Crypto.X25519_KEY_BYTES, "hostPub"),
-                    psk = Crypto.fromBase64UrlFixed(qr.psk, Crypto.SYMMETRIC_KEY_BYTES, "psk"),
-                    deviceId = paired.deviceId,
-                    deviceKeyPair = keyPair,
-                )
-            }.getOrElse { error ->
-                pairingErrors.value = localizedError(error, "配对材料无效，请重新扫码")
-                return@launch
-            }
-            val accepted = CompletableDeferred<Unit>()
-            relay.connect(
-                device = paired,
-                onMessage = { _, _ -> },
-                onOpen = {},
-                onClosed = { accepted.completeExceptionally(IllegalStateException("配对连接已断开")) },
-                e2eOptions = E2eConnectOptions(
-                    hostId = qr.hostId,
-                    deviceId = paired.deviceId,
-                    deviceKeyPair = keyPair,
-                    pairingSession = session,
-                    onPairAccepted = { accepted.complete(Unit) },
-                ),
-            )
-            val outcome = runCatching { withTimeout(10_000) { accepted.await() } }
-            relay.disconnect()
-            outcome.onSuccess {
-                install(
-                    HostPairing(
-                        hostId = qr.hostId,
-                        hostName = qr.hostName,
-                        hostPub = qr.hostPub,
-                        pskRoot = Crypto.toBase64Url(session.pskRoot),
-                        lanEndpoints = qr.lan,
-                        relayUrl = paired.relayUrl,
+        pairingProgress.value = true
+        viewModelScope.launch {
+            try {
+                val qr = qrRaw?.let(::parsePairingQrV2)
+                if (qr == null) {
+                    pairingErrors.value = "二维码缺少端到端加密材料或格式无效：请在电脑上重新执行 orbis pair，扫描新二维码"
+                    return@launch
+                }
+                if (qr.exp * 1000 < System.currentTimeMillis()) {
+                    pairingErrors.value = "配对二维码已过期，请在电脑上重新生成（配对窗口只有几分钟）"
+                    return@launch
+                }
+                val relay = RelayClient().apply { setApplicationContext(getApplication()) }
+                val paired = runCatching { relay.pair(relayUrl.trim(), code, Build.MODEL) }.getOrElse { error ->
+                    pairingErrors.value = localizedError(error, "配对失败，请检查中继服务器地址、配对码和网络连接")
+                    return@launch
+                }
+                val keyPair = legacyIdentity.loadOrCreateDeviceKeyPair()
+                val session = runCatching {
+                    DevicePairingSession.create(
+                        hostPublicRaw = Crypto.fromBase64UrlFixed(qr.hostPub, Crypto.X25519_KEY_BYTES, "hostPub"),
+                        psk = Crypto.fromBase64UrlFixed(qr.psk, Crypto.SYMMETRIC_KEY_BYTES, "psk"),
                         deviceId = paired.deviceId,
-                        credential = paired.credential,
+                        deviceKeyPair = keyPair,
+                    )
+                }.getOrElse { error ->
+                    pairingErrors.value = localizedError(error, "配对材料无效，请重新扫码")
+                    return@launch
+                }
+                val accepted = CompletableDeferred<Unit>()
+                relay.connect(
+                    device = paired,
+                    onMessage = { _, _ -> },
+                    onOpen = {},
+                    onClosed = { accepted.completeExceptionally(IllegalStateException("配对连接已断开")) },
+                    e2eOptions = E2eConnectOptions(
+                        hostId = qr.hostId,
+                        deviceId = paired.deviceId,
+                        deviceKeyPair = keyPair,
+                        pairingSession = session,
+                        onPairAccepted = { accepted.complete(Unit) },
                     ),
-                    makeActive = true,
                 )
-            }.onFailure {
-                pairingErrors.value = "配对没有完成：电脑没有回确认（配对窗口可能已关闭或过期）。" +
-                    "请确认电脑上的配对窗口还开着，再扫一次二维码"
+                val outcome = runCatching { withTimeout(10_000) { accepted.await() } }
+                relay.disconnect()
+                outcome.onSuccess {
+                    install(
+                        HostPairing(
+                            hostId = qr.hostId,
+                            hostName = qr.hostName,
+                            hostPub = qr.hostPub,
+                            pskRoot = Crypto.toBase64Url(session.pskRoot),
+                            lanEndpoints = qr.lan,
+                            relayUrl = paired.relayUrl,
+                            deviceId = paired.deviceId,
+                            credential = paired.credential,
+                        ),
+                        makeActive = true,
+                    )
+                    onSuccess?.invoke()
+                }.onFailure {
+                    pairingErrors.value = "配对没有完成：电脑没有回确认（配对窗口可能已关闭或过期）。" +
+                        "请确认电脑上的配对窗口还开着，再扫一次二维码"
+                }
+            } finally {
+                pairingProgress.value = false
             }
         }
     }

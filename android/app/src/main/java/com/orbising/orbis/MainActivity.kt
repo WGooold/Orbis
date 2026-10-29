@@ -66,7 +66,6 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Psychology
@@ -175,6 +174,7 @@ class MainActivity : ComponentActivity() {
                 val state by model.state.collectAsStateWithLifecycle()
                 val hosts by model.hosts.collectAsStateWithLifecycle()
                 val pairingError by model.pairingError.collectAsStateWithLifecycle()
+                val pairingInProgress by model.pairingInProgress.collectAsStateWithLifecycle()
                 var pendingToolExport by remember { mutableStateOf<ToolDetailView?>(null) }
                 val toolExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
                     val detail = pendingToolExport
@@ -182,7 +182,7 @@ class MainActivity : ComponentActivity() {
                     if (uri != null && detail != null) model.exportToolDetail(uri, detail)
                 }
                 CompositionLocalProvider(LocalToolDetailAction provides { runtime, summary -> model.openToolDetail(runtime, summary) }) {
-                    RemoteApp(state, hosts, pairingError, model)
+                    RemoteApp(state, hosts, pairingError, pairingInProgress, model)
                     state.toolDetail?.let { detail -> ToolDetailDialog(detail, model) {
                         pendingToolExport = detail
                         model.closeToolDetail()
@@ -246,6 +246,7 @@ private fun RemoteApp(
     state: RemoteState,
     hosts: List<HostSnapshot>,
     pairingError: String?,
+    pairingInProgress: Boolean,
     model: RemoteViewModel,
 ) {
     val modelLifecycle = LocalLifecycleOwner.current
@@ -294,7 +295,10 @@ private fun RemoteApp(
     when {
         !appearsPaired || addingHost -> PairingScreen(
             error = pairingError ?: state.error,
-            pair = model::pair,
+            pairingInProgress = pairingInProgress,
+            pair = { relayUrl, code, qrRaw ->
+                model.pair(relayUrl, code, qrRaw) { addingHost = false }
+            },
             clearError = { model.clearPairingError(); model.clearError() },
             onCancel = if (hosts.isNotEmpty()) {
                 { addingHost = false; model.clearPairingError() }
@@ -410,13 +414,11 @@ private fun RemoteApp(
 @Composable
 private fun PairingScreen(
     error: String?,
+    pairingInProgress: Boolean,
     pair: (String, String, String?) -> Unit,
     clearError: () -> Unit,
     onCancel: (() -> Unit)? = null,
 ) {
-    var relayUrl by remember { mutableStateOf("") }
-    var pairingCode by remember { mutableStateOf("") }
-    var qrRaw by remember { mutableStateOf<String?>(null) }
     var scannerOpen by remember { mutableStateOf(false) }
     var scanError by remember { mutableStateOf<String?>(null) }
     Scaffold(
@@ -425,7 +427,7 @@ private fun PairingScreen(
             TopAppBar(
                 title = { Text("Orbis", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
-                    if (onCancel != null) {
+                    if (onCancel != null && !pairingInProgress) {
                         NeumorphIconButton(
                             onClick = onCancel,
                             icon = Icons.Rounded.Close,
@@ -459,43 +461,15 @@ private fun PairingScreen(
                     scanError = null
                     scannerOpen = true
                 },
-                text = "扫码配对",
+                text = if (pairingInProgress) "正在连接…" else "扫码配对",
                 icon = Icons.Rounded.QrCodeScanner,
                 modifier = Modifier.fillMaxWidth(),
+                enabled = !pairingInProgress,
             )
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                HorizontalDivider(Modifier.weight(1f))
-                Text("手动输入", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                HorizontalDivider(Modifier.weight(1f))
+            if (pairingInProgress) {
+                Spacer(Modifier.height(16.dp))
+                CircularProgressIndicator()
             }
-            OutlinedTextField(
-                value = relayUrl,
-                onValueChange = { relayUrl = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Relay 地址") },
-                leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
-                placeholder = { Text("ws:// 或 wss://") },
-                singleLine = true,
-            )
-            Spacer(Modifier.height(16.dp))
-            OutlinedTextField(
-                value = pairingCode,
-                onValueChange = { pairingCode = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("一次性配对码") },
-                singleLine = true,
-            )
-            Spacer(Modifier.height(12.dp))
-            NeumorphActionButton(
-                onClick = { clearError(); pair(relayUrl, pairingCode, qrRaw) },
-                text = "连接",
-                enabled = isSupportedRelayUrl(relayUrl) && pairingCode.isNotBlank(),
-                modifier = Modifier.fillMaxWidth(),
-            )
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 12.dp)) }
             scanError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
         }
@@ -510,16 +484,12 @@ private fun PairingScreen(
                     if (v1 == null) {
                         scanError = "二维码无效或不是 Orbis 配对二维码"
                     } else {
-                        relayUrl = v1.relayUrl
-                        pairingCode = v1.code
-                        qrRaw = null
                         scanError = "这是旧版二维码（无端到端加密材料）：请在电脑上重新执行 orbis pair"
                     }
                 } else {
-                    relayUrl = v2.relayUrl
-                    pairingCode = v2.code
-                    qrRaw = raw
                     scanError = null
+                    clearError()
+                    pair(v2.relayUrl, v2.code, raw)
                 }
                 scannerOpen = false
             },
