@@ -42,6 +42,10 @@ aqtinstall.log
 
 # Private operational state and credentials
 .scratch/
+/.claude/worktrees/
+/SessionHistory/
+/transfers.json
+/transfers-*.json
 .env.*
 !.env.example
 *.pem
