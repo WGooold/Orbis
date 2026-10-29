@@ -178,20 +178,24 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "显式供应商已更新")).firstMatch.waitForExistence(timeout: 5))
         capture("providers-pi", app: app)
     }
-    func testDiagnosticPagesAndDirectoryProviderMismatch() {
-        let app = launch("status")
-        let read = app.buttons["重新读取"]
-        XCTAssertTrue(read.waitForExistence(timeout: 8))
-        app.swipeUp()
-        if !read.isHittable { app.swipeUp() }
-        read.tap()
-        XCTAssertTrue(app.staticTexts["安全通道已建立"].waitForExistence(timeout: 5))
-        let next = app.buttons["读取下一页"]
-        if !next.isHittable { app.swipeUp() }
-        XCTAssertTrue(next.waitForExistence(timeout: 3)); next.tap()
-        XCTAssertTrue(app.staticTexts["供应商配置读取完成"].firstMatch.waitForExistence(timeout: 5))
-        capture("diagnostic-page", app: app)
-        app.terminate()
+    func testBasicConnectionStatusAndDirectoryProviderMismatch() {
+        for dark in [false, true] {
+            let app = launch("status", dark: dark)
+            XCTAssertTrue(app.staticTexts["当前连接"].waitForExistence(timeout: 8))
+            for label in ["已连接", "连接方式", "端到端加密", "电脑", "配对状态"] {
+                XCTAssertTrue(app.staticTexts[label].firstMatch.isHittable)
+            }
+            for label in ["电脑端诊断记录", "电脑端会话目录", "电脑端供应商", "统一状态模型", "电脑 Agent 服务", "本机 deviceId", "Host hostId", "Host 公钥指纹", "配对根密钥"] {
+                XCTAssertFalse(app.staticTexts[label].exists)
+            }
+            XCTAssertFalse(app.buttons["原始事件"].exists)
+            capture(dark ? "status-basic-dark" : "status-basic-light", app: app)
+            app.buttons["设置"].tap()
+            XCTAssertTrue(app.buttons["供应商配置与切换"].waitForExistence(timeout: 3))
+            app.buttons["供应商配置与切换"].tap()
+            XCTAssertTrue(app.buttons["provider-action-team"].waitForExistence(timeout: 5))
+            app.terminate()
+        }
         let drawer = launch("drawer")
         let filter = drawer.buttons["筛选会话：全部"]
         XCTAssertTrue(filter.waitForExistence(timeout: 8)); filter.tap()
@@ -276,7 +280,7 @@ final class OrbisUITests: XCTestCase {
         capture("interaction-draft-restored", app: interactions)
     }
 
-    func testTruncatedContentToolArgumentsAndDesktopAttachFacts() {
+    func testTruncatedContentAndToolArguments() {
         let app = launch("truncated")
         XCTAssertTrue(app.buttons["展开read，已完成"].waitForExistence(timeout: 8))
         app.buttons["展开read，已完成"].tap()
@@ -289,13 +293,6 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["复制完整内容"].isEnabled)
         capture("full-entry", app: app)
         app.terminate()
-        let status = launch("status")
-        let desktop = status.staticTexts["Codex 桌面版接入"]
-        for _ in 0..<6 where !desktop.isHittable { status.swipeUp() }
-        XCTAssertTrue(desktop.isHittable)
-        XCTAssertTrue(status.staticTexts["未接入"].exists)
-        XCTAssertTrue(status.staticTexts["Codex 桌面版未打开"].exists)
-        capture("desktop-attach", app: status)
     }
 
 }

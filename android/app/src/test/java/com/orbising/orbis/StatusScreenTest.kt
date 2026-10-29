@@ -30,13 +30,21 @@ class StatusScreenTest {
         val advice = statusAdvice(state, pairing(pskRootPresent = false))
         assertTrue(advice!!.contains("配对不完整"))
 
-        assertEquals("缺少加密材料", pairingText(pairing(pskRootPresent = false)))
+        assertEquals("需要重新配对", pairingText(pairing(pskRootPresent = false)))
 
         // 配对材料完整时，才轮到在线但握手未成的通用提示。
         val handshake = statusAdvice(state, pairing())
-        assertTrue(handshake!!.contains("端到端加密握手"))
+        assertTrue(handshake!!.contains("请确认电脑上的 Orbis Host 已打开"))
 
         // 一切就绪就没有提示。
         assertEquals(null, statusAdvice(state.copy(e2eReady = true), pairing()))
+    }
+
+    @Test
+    fun `secured LAN stays connected when relay is offline`() {
+        val state = RemoteState(connection = RelayConnection.OFFLINE, e2eReady = true, path = "lan")
+
+        assertEquals("已连接", connectionStatusText(state))
+        assertEquals(null, statusAdvice(state, pairing()))
     }
 }

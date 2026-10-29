@@ -342,8 +342,6 @@ private fun RemoteApp(
                 pairing = model.pairingStatus(),
                 onBack = { statusOpen = false },
                 onOpenSettings = { settingsOpen = true },
-                onRawDiagnostics = model::diagnosticReport,
-                onLoadDiagnostics = model::refreshDiagnostics,
             )
         } else {
             runtimeListStateHolder.SaveableStateProvider("runtime-list") {
@@ -379,7 +377,7 @@ private fun RemoteApp(
                     onSelectHost = model::selectHost,
                     onAddHost = { addingHost = true },
                     onRequestProviders = model::refreshProviderFacts,
-                    onOpenStatus = { statusOpen = true; model.refreshProviderFacts() },
+                    onOpenStatus = { statusOpen = true },
                 )
             }
         }
@@ -2450,12 +2448,7 @@ private fun ConnectionStatus(connection: RelayConnection, e2eReady: Boolean, pat
 
 }
 
-/**
- * 连接状态页：把控制链底座摊开成可扫读的两段——连接/加密与配对/凭据。
- *
- * 与诊断弹窗的分工：诊断弹窗事后排障（含最近事件轨迹），本页只回答「现在通不通」；
- * 会话同步、下载、缓存等不在这里。没有加密通道（或配对材料不完整）时，置顶给一句可照做的下一步。
- */
+/** 连接状态页只显示当前连接、加密与配对的基本信息。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun StatusScreen(
@@ -2463,13 +2456,8 @@ private fun StatusScreen(
     pairing: PairingStatus,
     onBack: () -> Unit,
     onOpenSettings: () -> Unit,
-    onRawDiagnostics: () -> String,
-    onLoadDiagnostics: (String?) -> Unit,
 ) {
     BackHandler(onBack = onBack)
-    // 原始事件日志是这个 APP 唯一的现场排障面（手机未必能接 logcat），状态页只回答「现在通不通」，
-    // 但两者同源于一个诊断按钮，所以把它降级为次级入口，而不是随旧弹窗一起删掉。
-    var rawLog by remember { mutableStateOf<String?>(null) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -2489,10 +2477,6 @@ private fun StatusScreen(
                         contentDescription = "设置",
                         size = 40.dp,
                     )
-                    NeumorphTextButton(
-                        text = "原始事件",
-                        onClick = { rawLog = onRawDiagnostics() },
-                    )
                 },
             )
         },
@@ -2507,117 +2491,30 @@ private fun StatusScreen(
         ) {
             statusAdvice(state, pairing)?.let { WarningCard(it) }
 
-            StatusSectionTitle("连接与加密")
+            StatusSectionTitle("当前连接")
             StatusCard {
+                StatusRow(
+                    "连接状态",
+                    connectionStatusText(state),
+                    if (state.e2eReady) StatusTone.Good
+                    else if (state.connection == RelayConnection.ONLINE) StatusTone.Warn
+                    else relayConnectionTone(state.connection),
+                )
                 StatusRow("连接方式", connectionMethodText(state), connectionMethodTone(state))
-                StatusRow("中继连接", relayConnectionText(state.connection), relayConnectionTone(state.connection))
-                StatusRow("加密通道", if (state.e2eReady) "已建立" else "未建立", e2eTone(state))
-                StatusFact("路径延迟", state.pathRttMs?.let { "${it}ms" } ?: "—")
-                StatusFact("Relay 地址", pairing.relayUrl ?: "—")
-                StatusFact("本机 deviceId", pairing.deviceId ?: "—")
-                StatusFact("Host hostId", pairing.hostId ?: "—")
+                StatusRow("端到端加密", if (state.e2eReady) "已启用" else "未建立", e2eTone(state))
             }
 
-            StatusSectionTitle("配对与凭据")
+            StatusSectionTitle("配对信息")
             StatusCard {
+                StatusFact("电脑", state.hostName?.takeIf(String::isNotBlank) ?: "已配对的电脑")
                 StatusRow("配对状态", pairingText(pairing), pairingTone(pairing))
-                StatusFact("Host 公钥指纹", pairing.hostPublicKeyFingerprint ?: "—")
-                StatusFact("配对根密钥", if (pairing.pskRootPresent) "已保存" else "缺失")
-            }
-
-            StatusSectionTitle("电脑端诊断记录")
-            StatusCard {
-                // 与上面的「原始事件」不是一回事：那是本机日志，这是电脑端统一状态模型里的
-                // 记录目录（条数、淘汰与落盘缺口）。缺口必须显示出来，否则读的人会以为这就是全部。
-                val directory = state.diagnosticDirectoryView()
-                StatusRow("记录目录", directory.text, directory.tone)
-                directory.detail?.let { StatusFact("说明", it) }
-                val records = state.diagnosticRecordsView()
-                // 只读了第一页时它就不是「最近一条」——标签按实际语义写，别让界面替 Host 说满话。
-                StatusRow("最近读到的", records.text, records.tone)
-                records.detail?.let { StatusFact("类别", it) }
-                NeumorphTextButton(text = "重新读取", onClick = { onLoadDiagnostics(null) })
-                state.diagnosticPage?.let { page ->
-                    page.records.forEach { record ->
-                        StatusFact("${record.category}，${record.severity}", record.message)
-                    }
-                    page.nextCursor?.let { cursor ->
-                        NeumorphTextButton(text = "读取下一页", onClick = { onLoadDiagnostics(cursor) })
-                    }
-                }
-            }
-
-            StatusSectionTitle("电脑端会话目录")
-            StatusCard {
-                // 目录与完整性都来自 Host 模型；范围页尚未收齐时保留已知项。
-                // 某个后端没就绪或读取失败时，缺席的会话不能显示成「没有」。
-                val catalog = state.catalogSummaryView()
-                StatusRow("目录完整性", catalog.text, catalog.tone)
-                catalog.detail?.let { StatusFact("说明", it) }
-            }
-
-            StatusSectionTitle("电脑端供应商")
-            StatusCard {
-                // 手机只知道「我自己发起的那次切换」；带外（桌面端）的切换只有 Host 模型知道。
-                val switching = state.providerSwitchingView()
-                StatusRow("切换状态", switching.text, switching.tone)
-                switching.detail?.let { StatusFact("当前供应商", it) }
-                // 「清单未读到」与「0 个可选」是两件事：前者是这次读取没拿到，后者是拿到且为空。
-                switching.profiles?.let { StatusFact("可选供应商", it) }
-                state.providerPublicFacts().forEach { fact -> StatusFact(fact.label, fact.value) }
-            }
-
-            StatusSectionTitle("统一状态模型")
-            StatusCard {
-                if (state.agentStateSnapshots.isEmpty()) StatusFact("领域基线", "尚未读取")
-                state.modelStatusFacts().forEach { fact -> StatusFact(fact.label, fact.value) }
-            }
-
-            StatusSectionTitle("电脑 Agent 服务")
-            StatusCard {
-                // 这一行只回答「Host 接上了 Codex 桌面版的 app-server 吗」。装了没开、开了
-                // 接不上是两件不同的事，所以分档和原因都由 Host 下发，手机不自己推断。
-                StatusRow("Codex 桌面版接入", codexDesktopText(state.codexDesktop), codexDesktopTone(state.codexDesktop))
-                state.codexDesktop?.reason?.let { reason ->
-                    Text(
-                        reason,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
-                }
             }
         }
-    }
-    rawLog?.let { text ->
-        AlertDialog(
-            onDismissRequest = { rawLog = null },
-            title = { Text("原始事件") },
-            text = {
-                Column(
-                    Modifier
-                        .heightIn(max = 420.dp)
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    Text(
-                        text,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-            },
-            confirmButton = {
-                NeumorphTextButton("刷新", filled = true, onClick = { rawLog = onRawDiagnostics() })
-            },
-            dismissButton = {
-                NeumorphTextButton("关闭", onClick = { rawLog = null })
-            },
-        )
     }
 }
 
 /**
- * 设置页。目前只有一项：连接优先级（§6.2）。
+ * 设置页：供应商配置与切换，以及连接优先级（§6.2）。
  *
  * 顺序是用户显式排的，所以它压过 RTT 证据（Host 侧 PathSelector 的规矩）：
  * 更高优先级的路径一建立就会顶替当前路径，不再需要「快 30% 且连续 3 次」。
@@ -2784,10 +2681,11 @@ internal fun <T> List<T>.moved(from: Int, to: Int): List<T> {
  */
 internal fun statusAdvice(state: RemoteState, pairing: PairingStatus): String? = when {
     pairing.hostId == null || !pairing.pskRootPresent ->
-        "配对不完整（缺少端到端加密材料）：请在主界面点「取消配对」，再扫电脑上的新二维码"
-    state.connection == RelayConnection.ONLINE && !state.e2eReady ->
-        "已连上中继，但电脑没有回应端到端加密握手：请先在电脑上打开 Orbis Host，打开后 APP 会自动重连"
-    state.connection == RelayConnection.OFFLINE -> "未连接到中继服务器：请检查网络与 Relay 地址"
+        "配对不完整：请在主界面点「取消配对」，再扫电脑上的新二维码"
+    state.e2eReady -> null
+    state.connection == RelayConnection.ONLINE ->
+        "正在等待电脑连接：请确认电脑上的 Orbis Host 已打开，APP 会自动重连"
+    state.connection == RelayConnection.OFFLINE -> "暂时无法连接电脑，请检查网络并确认电脑上的 Orbis Host 已打开"
     else -> null
 }
 
@@ -2804,7 +2702,7 @@ internal fun transportPathLabel(path: String?): String? = when (path) {
  */
 internal fun connectionMethodText(state: RemoteState): String =
     transportPathLabel(state.path)
-        ?: if (state.connection == RelayConnection.ONLINE) "中继（默认）" else "未知"
+        ?: if (state.connection == RelayConnection.ONLINE) "中继" else "尚未确认"
 
 /** 直连（P2P/局域网）比经中继更值得一眼看出来，所以给它们更「好」的颜色。 */
 internal fun connectionMethodTone(state: RemoteState): StatusTone = when (state.path) {
@@ -2812,8 +2710,14 @@ internal fun connectionMethodTone(state: RemoteState): StatusTone = when (state.
     else -> StatusTone.Neutral
 }
 
+internal fun connectionStatusText(state: RemoteState): String = when {
+    state.e2eReady -> "已连接"
+    state.connection == RelayConnection.ONLINE -> "正在连接电脑"
+    else -> relayConnectionText(state.connection)
+}
+
 private fun relayConnectionText(connection: RelayConnection): String = when (connection) {
-    RelayConnection.OFFLINE -> "离线"
+    RelayConnection.OFFLINE -> "未连接"
     RelayConnection.CONNECTING -> "正在连接"
     RelayConnection.ONLINE -> "已连接"
     RelayConnection.RECONNECTING -> "正在重新连接"
@@ -2837,8 +2741,8 @@ internal fun e2eTone(state: RemoteState): StatusTone = when {
 
 internal fun pairingText(pairing: PairingStatus): String = when {
     pairing.hostId == null -> "未配对"
-    !pairing.pskRootPresent -> "缺少加密材料"
-    else -> "完整"
+    !pairing.pskRootPresent -> "需要重新配对"
+    else -> "已配对"
 }
 
 /**
@@ -2921,8 +2825,7 @@ private fun StatusFact(label: String, value: String) {
         SelectionContainer {
             Text(
                 value,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
