@@ -64,6 +64,8 @@ private final class PreviewTransport: OrbisTransport {
     private var viewportUpdates: Task<Void, Never>?
     private var viewportRows: Bool { ProcessInfo.processInfo.arguments.contains("--preview-viewport-rows") }
     private var sourceSequence = 1
+    private var homeReplayScheduled = false
+    private var homeReadFailed = false
     /// Messages sent from the composer in this preview; source checkpoints keep them after a re-sync.
     private var sentMessages: [[String: Any]] = []
     /// `--preview-send=pi` answers after a delay with a different id; `fail` rejects the send (ADR-0049).
@@ -78,6 +80,9 @@ private final class PreviewTransport: OrbisTransport {
         self.receive = receive
         state(.secured, nil)
         Task { @MainActor in
+            if ProcessInfo.processInfo.arguments.contains("--preview-home-staged") {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+            }
             if self.variant == 1 {
                 receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model-2", "notificationEpoch": "preview-notices-2", "runtimes": [
                     ["runtimeId": "home-pi", "sessionId": "home-session-1", "sessionName": "整理家庭照片脚本", "name": "Pi", "cwd": "/Users/home/scripts", "status": "idle", "agentKind": "pi"]
@@ -85,13 +90,22 @@ private final class PreviewTransport: OrbisTransport {
                 receive(["type": "device.path", "path": "lan", "rttMs": 8], "ctl")
                 return
             }
-            receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": [
+            var runtimes: [[String: Any]] = [
                 ["runtimeId": "preview-codex", "sessionId": "session-1", "sessionName": "对齐移动端的使用体验", "name": "Codex", "cwd": "/Projects/orbis", "status": "idle", "agentKind": "codex",
                  "model": ["provider": "openai", "id": "gpt-5.4", "name": self.modelName], "thinkingLevel": "high", "contextUsage": ["tokens": 24000, "contextWindow": 128000, "percent": 18.75],
                  "permissionManagement": ["summary": "工作区写入", "details": "允许在工作区中编辑文件，需要时请求确认。", "tone": "restricted", "settings": []]],
                 ["runtimeId": "preview-pi", "sessionId": "session-2", "sessionName": "梳理项目中的页面结构", "name": "Pi", "cwd": "/Projects/website", "status": "running", "agentKind": "pi"],
                 ["runtimeId": "preview-dsh", "sessionId": "session-3", "sessionName": "检查服务端连接状态", "name": "DeepSeek", "cwd": "/Projects/orbis", "status": "idle", "agentKind": "dsh"]
-            ], "agents": ["pi", "codex", "dsh"], "launchableAgents": ["pi", "codex", "dsh"]], "ctl")
+            ]
+            if ProcessInfo.processInfo.arguments.contains("--preview-home-long-list") {
+                runtimes += (4...15).map { index in
+                    ["runtimeId": "preview-scroll-\(index)", "sessionId": "session-\(index)",
+                     "sessionName": "滚动测试会话 \(index)", "name": "Codex", "cwd": "/Projects/orbis",
+                     "status": "idle", "agentKind": "codex"]
+                }
+            }
+            receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": runtimes,
+                     "agents": ["pi", "codex", "dsh"], "launchableAgents": ["pi", "codex", "dsh"]], "ctl")
             receive(["type": "device.path", "path": "relay", "rttMs": 42], "ctl")
             self.event(["type": "runtime.capabilities", "capabilities": ["commands": [
                 ["name": "quit", "source": "builtin", "description": "关闭会话"],
@@ -99,7 +113,7 @@ private final class PreviewTransport: OrbisTransport {
                 ["name": "compact", "source": "builtin", "description": "压缩会话上下文"],
                 ["name": "tree", "source": "builtin", "description": "历史与分支", "argument": ["kind": "tree", "required": true, "options": self.treeOptions]]
             ]]])
-            for runtime in ["preview-pi", "preview-dsh"] {
+            for runtime in runtimes.compactMap({ $0["runtimeId"] as? String }) where runtime != "preview-codex" {
                 self.event(["type": "runtime.capabilities", "capabilities": ["commands": [
                     ["name": "quit", "source": "builtin", "description": "关闭会话"]
                 ]]], runtimeId: runtime)
@@ -147,6 +161,10 @@ private final class PreviewTransport: OrbisTransport {
             ChatEntryProbe.shared.sentSync()
         }
         Task { @MainActor in
+            if ProcessInfo.processInfo.arguments.contains("--preview-home-staged"), object["type"] as? String == "agent.state.request", object["scope"] as? String == "agent" {
+                let delay: UInt64 = object["sessionId"] as? String == "replacement" ? 6 : object["runtimeId"] as? String == "preview-dsh" ? 3 : 1
+                try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+            }
             if slowSync, (object["command"] as? [String: Any])?["type"] as? String == "session.sync" {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
@@ -189,6 +207,27 @@ private final class PreviewTransport: OrbisTransport {
             receive?(["type": "notification.snapshot", "protocolVersion": orbisProtocolVersion, "hostEpoch": "preview-notices", "runtimeId": runtime, "sessionId": "session-1", "revision": 2, "complete": true, "verification": "confirmed", "notifications": []], "ctl")
         } else if object["type"] as? String == "agent.state.request", object["scope"] as? String == "agent" {
             let runtime = object["runtimeId"] as? String ?? "preview-codex", session = object["sessionId"] as? String ?? "session-1"
+            if ProcessInfo.processInfo.arguments.contains("--preview-home-read-failure"), runtime == "preview-pi", !homeReadFailed {
+                homeReadFailed = true
+                receive?(["type": "protocol.error", "requestId": object["requestId"]!, "message": "会话状态读取失败，请重试"], "ctl")
+                return
+            }
+            // Cards are already published; a replaced session then fails its first read in the background.
+            if ProcessInfo.processInfo.arguments.contains("--preview-home-background-failure") {
+                if session == "replacement-pi", !homeReadFailed {
+                    homeReadFailed = true
+                    receive?(["type": "protocol.error", "requestId": object["requestId"]!, "message": "会话状态读取失败，请重试"], "ctl")
+                    return
+                }
+                if runtime == "preview-dsh", !homeReplayScheduled {
+                    homeReplayScheduled = true
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        self?.receive?(["type": "runtime.online", "runtime": ["runtimeId": "preview-pi", "sessionId": "replacement-pi", "name": "Pi",
+                                                                              "cwd": "/Projects/website", "status": "running", "agentKind": "pi"]], "ctl")
+                    }
+                }
+            }
             let epoch = variant == 1 ? "preview-model-2" : "preview-model"
             let kind = object["agentKind"] as? String ?? "codex"
             let titles = ["preview-codex": "对齐移动端的使用体验", "preview-pi": "梳理项目中的页面结构",
@@ -196,12 +235,35 @@ private final class PreviewTransport: OrbisTransport {
             let cwd = variant == 1 ? "/Users/home/scripts" : runtime == "preview-pi" ? "/Projects/website" : "/Projects/orbis"
             let domains = ["identity", "interactions", "execution", "model", "context"].map { name -> [String: Any] in
                 let value: [String: Any] = name == "identity" ? ["runtimeId": runtime, "sessionId": session,
-                    "name": agentTitle(kind), "sessionName": titles[runtime] ?? "", "cwd": cwd, "agentKind": kind] :
+                    "name": agentTitle(kind), "sessionName": session == "replacement" ? "已完整切换的会话" : titles[runtime] ?? "滚动测试会话 \(session)", "cwd": cwd, "agentKind": kind] :
                     name == "interactions" ? [:] : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": compacting && runtime == "preview-codex" ? ["phase": "running"] : "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
                 return ["domain": name, "modelEpoch": epoch, "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,
                         "source": ["producer": "host", "sourceId": "preview-host", "sourceEpoch": "preview-source", "sourceRevision": 1], "checkedAt": 1793232000000, "value": value]
             }
             receive?(["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "agent", "runtimeId": runtime, "sessionId": session, "agentKind": kind, "modelEpoch": epoch, "domains": domains, "missing": [], "truncated": false], "ctl")
+            if ProcessInfo.processInfo.arguments.contains("--preview-home-staged"), runtime == "preview-dsh", !homeReplayScheduled {
+                homeReplayScheduled = true
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    guard let self else { return }
+                    self.receive?(["type": "runtime.online", "runtime": ["runtimeId": "preview-codex", "sessionId": "replacement", "name": "Agent", "cwd": "", "status": "unknown"]], "ctl")
+                    self.receive?(["type": "device.path", "path": "lan", "rttMs": 8], "ctl")
+                }
+            }
+            if ProcessInfo.processInfo.arguments.contains("--preview-home-replay"), !homeReplayScheduled {
+                homeReplayScheduled = true
+                Task { @MainActor [weak self] in
+                    do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+                    guard let self else { return }
+                    let stubs: [[String: Any]] = [("preview-codex", "session-1"), ("preview-pi", "session-2"), ("preview-dsh", "session-3")].map { id, session in
+                        ["runtimeId": id, "sessionId": session, "name": "Agent", "cwd": "", "status": "unknown"]
+                    }
+                    self.receive?(["type": "device.ready", "modelEpoch": "preview-model", "runtimes": stubs], "ctl")
+                    self.receive?(["type": "runtime.online", "runtime": stubs[0]], "ctl")
+                    self.event(["type": "runtime.metadata", "metadata": ["cwd": "", "name": "Agent", "status": "unknown"]])
+                    self.receive?(["type": "device.path", "path": "lan", "rttMs": 8], "ctl")
+                }
+            }
         } else if object["type"] as? String == "agent.state.request" {
             let requested = object["domains"] as? [String] ?? HostState.domainNames
             let domains = requested.map { name -> [String: Any] in

@@ -60,7 +60,10 @@ final class AgentState: ObservableObject {
 
     func subscribe(runtime: RuntimeSummary, force: Bool = false) {
         guard connected, let session = runtime.sessionId, !session.isEmpty else { return }
-        if !force, reads.values.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == session && $0.agentKind == runtime.agentKind }) { return }
+        // A request without agentKind is already bound by runtime/session. Learning the kind
+        // from identity must not replace that live subscription and restart its pending reads.
+        if !force, reads.values.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == session &&
+            ($0.agentKind == nil || $0.agentKind == runtime.agentKind) }) { return }
         removeRead(runtime.runtimeId)
         var snapshot = snapshots[runtime.runtimeId].flatMap { $0.sessionId == session ? $0 : nil }
             ?? AgentSnapshot(runtimeId: runtime.runtimeId, sessionId: session)

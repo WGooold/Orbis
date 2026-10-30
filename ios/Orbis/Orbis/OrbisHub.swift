@@ -14,6 +14,7 @@ struct HostSnapshot: Identifiable {
     var runtimes: [RuntimeSummary] { connection.runtimes }
     /// ADR-0049 §5：首页卡片不含已提交关闭的会话。
     var homeRuntimes: [RuntimeSummary] { connection.homeRuntimes }
+    var homeCards: [HomeRuntimeCard] { connection.homeCards }
     var sessions: [SessionSummary] { connection.sessions }
     var connectionState: ConnectionState { connection.connection }
 }

@@ -410,6 +410,10 @@ data class RemoteState(
     /** Display label from the pairing identity; never a Session ownership or routing key. */
     val hostName: String? = null,
     val runtimes: Map<String, RuntimeSummary> = emptyMap(),
+    /** Only an authenticated Host directory can establish an empty homepage. */
+    val homeDirectoryReceived: Boolean = false,
+    /** In-memory complete cards survive refresh/reconnect; never restored from disk history. */
+    val homeSnapshot: List<HomeRuntimeCard>? = null,
     val workingBranches: Map<String, WorkingBranch> = emptyMap(),
     /** Last known session identity survives a transient runtime.offline event. */
     val knownRuntimeSessions: Map<String, String?> = emptyMap(),
@@ -600,6 +604,9 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
     // 目录/metadata 只提供聊天路由；业务字段由已提交的模型领域写入。
     val sameSession = previous?.takeIf { it.sessionId == sessionId }
     return copy(
+        name = sameSession?.takeIf { it.domainAvailability["identity"] == "ready" }?.name ?: name,
+        cwd = sameSession?.takeIf { it.domainAvailability["identity"] == "ready" }?.cwd ?: cwd,
+        sessionName = if (sameSession?.domainAvailability?.get("identity") == "ready") sameSession.sessionName else sessionName,
         status = sameSession?.status ?: "unknown",
         compactionPhase = sameSession?.compactionPhase,
         model = sameSession?.model,
@@ -611,39 +618,6 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
         domainAvailability = sameSession?.domainAvailability.orEmpty(),
     )
 }
-
-/** 首页整批展示：身份、执行状态和待确认信息到齐前不绘制半成品卡片。 */
-internal val RemoteState.homeRuntimesLoading: Boolean
-    get() = (runtimes.isEmpty() && (connection in setOf(RelayConnection.CONNECTING, RelayConnection.RECONNECTING) ||
-        connection == RelayConnection.ONLINE && !e2eReady)) ||
-        runtimes.values.filter { it.runtimeId !in closingRuntimes }.any { runtime ->
-        runtime.sessionId.isNullOrBlank() || runtime.agentKind.isNullOrBlank() ||
-            runtime.cwd.isBlank() || !runtime.domainAvailability.keys.containsAll(listOf("identity", "execution", "interactions"))
-    }
-
-internal val RemoteState.homeRuntimesError: String?
-    get() {
-        if (!homeRuntimesLoading) return null
-        val sessionIds = runtimes.values.filter { it.runtimeId !in closingRuntimes }.mapNotNull { it.sessionId }.toSet()
-        val snapshots = agentStateSnapshots.values.filter { snapshot ->
-            snapshot.scope == "agent" && agentStateReads[snapshot.requestId]?.sessionId in sessionIds
-        }
-        return snapshots.firstNotNullOfOrNull { it.error } ?: snapshots.firstOrNull {
-            listOf("identity", "execution", "interactions").any(it.missing::containsKey)
-        }?.let { "会话信息未能完整读取，请重新加载" }
-    }
-
-internal val RemoteState.homeRuntimes: List<RuntimeSummary>
-    get() {
-        if (homeRuntimesLoading) return emptyList()
-        // 首页优先按会话最近使用时间倒序；同一时间再按名称、runtimeId 稳定排序。
-        val collator = java.text.Collator.getInstance(java.util.Locale.CHINA)
-        return runtimes.values.filter { it.runtimeId !in closingRuntimes }.sortedWith(
-            compareByDescending<RuntimeSummary> { sessions[it.sessionId]?.modifiedAt ?: 0L }
-                .thenBy(collator) { runtimeDisplayName(it) }
-                .thenBy { it.runtimeId },
-        )
-    }
 
 /** Any Runtime on this computer is waiting for an answer (shown on the computer switcher). */
 internal fun RemoteState.hasAnyPendingInteraction(): Boolean = runtimes.keys.any(::hasPendingInteraction)
@@ -1592,6 +1566,7 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
     }
     return copy(
         connection = RelayConnection.RECONNECTING,
+        homeDirectoryReceived = false,
         toolInventories = emptyMap(), pendingToolConversations = emptyMap(),
         toolDetail = toolDetail?.copy(requestId = null, read = null, follow = false, error = "连接已断开，仅显示已缓存内容"),
         currentProviders = emptyMap(),
@@ -1664,7 +1639,7 @@ class RelayReducer(
         val completed = if (event?.string("type") in setOf("session.snapshot", "session.patch"))
             reduced.confirmSourceRead(input, commandId, response) else reduced
         return completed.markAuthoritative(input, runtimeId, event?.string("type"), commandId)
-            .trackSessionReadDemands(input, changedTargets, setOfNotNull(commandId)).reconcileHistoryReads()
+            .trackSessionReadDemands(input, changedTargets, setOfNotNull(commandId)).reconcileHistoryReads().commitHomePresentation()
     }
 
     private fun materializeToolPayload(state: RemoteState, payload: String): String {
@@ -1898,6 +1873,7 @@ class RelayReducer(
                     connection = RelayConnection.ONLINE,
                     deviceId = message.string("deviceId"),
                     notificationEpoch = message.string("notificationEpoch") ?: state.notificationEpoch,
+                    homeDirectoryReceived = true,
                     sessions = sessions,
                     runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
                         state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
@@ -2085,6 +2061,7 @@ class RelayReducer(
                 val interrupted = state.pendingCommands.keys
                 state.copy(
                     e2eReady = false,
+                    homeDirectoryReceived = false,
                     currentProviders = emptyMap(),
                     sessionActivateRequests = emptySet(),
                     sessionActivateTargets = emptyMap(),
@@ -2171,6 +2148,9 @@ class RelayReducer(
                 if (commandId?.startsWith("artifact-cancel:") == true && message.string("code") == "runtime_offline") return state
                 val requestId = message.string("requestId")
                 val syncError = protocolErrorText(message.string("code"), message.string("message"))
+                if (requestId != null && state.agentStateReads[requestId]?.scope == "agent") {
+                    return state.failHomeRead(requestId, syncError)
+                }
                 if (requestId != null && requestId == state.agentProviders.requestId) {
                     return state.copy(agentProviders = state.agentProviders.stopOperation(syncError))
                 }

@@ -589,9 +589,11 @@ struct StoreTests {
         restored.connect(hostId: "host-1")
         #expect(Set(restored.sessions.map(\.sessionId)) == ["session-a", "session-b"])
         #expect(restored.sessions.allSatisfy { $0.cwd == "/repo" && $0.agentKind == "claude" })
+        #expect(restored.activeConnection.homePresentation == .preparing)
+        #expect(restored.activeConnection.homeCards.isEmpty)
         await transport.emit(["type": "runtime.online", "runtime": runtime("a", session: "replacement")])
-        #expect(host.homeRuntimesLoading)
-        #expect(host.homeRuntimes.isEmpty)
+        #expect(!host.homeRuntimesLoading)
+        #expect(Set(host.homeRuntimes.compactMap(\.sessionId)) == ["session-a", "session-b"])
     }
 
     @Test func sessionDirectoryIsCachedPerHostUntilUnpaired() async throws {

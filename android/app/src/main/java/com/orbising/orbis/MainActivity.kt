@@ -13,6 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Animatable
@@ -61,6 +62,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.clickable
@@ -335,6 +337,7 @@ private fun RemoteApp(
                 onAddHost = { addingHost = true },
                 onRequestProviders = model::refreshProviderFacts,
                 onOpenStatus = { statusOpen = true },
+                onRetryHome = model::refreshHome,
             )
         }
     }
@@ -542,6 +545,7 @@ internal fun RuntimeListScreen(
     onAddHost: () -> Unit,
     onOpenStatus: () -> Unit,
     onRequestProviders: () -> Unit,
+    onRetryHome: () -> Unit = {},
 ) {
     var moreMenuOpen by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -553,7 +557,7 @@ internal fun RuntimeListScreen(
     val visibleRuntimes = remember(hosts, activeHostId) {
         hosts.filter { it.hostId == activeHostId }.flatMap { snapshot ->
             // ADR-0049 §5：已提交关闭的会话先离开首页；电脑拒绝或超时时再回来。
-            snapshot.state.homeRuntimes
+            snapshot.state.homeCards
                 .map { HostRuntimeRow(snapshot.hostId, snapshot.name, it, snapshot.state) }
         }
     }
@@ -631,7 +635,9 @@ internal fun RuntimeListScreen(
                                 text = "关闭",
                                 onClick = {
                                     activeHostId?.let { hostId ->
-                                        selectedRuntimeIds = selectedIds - onCloseRuntimes(hostId, selectedIds)
+                                        val currentIds = visibleRuntimes.filter { it.state.homeCardIsCurrent(it.card) }
+                                            .map { it.runtime.runtimeId }.toSet()
+                                        selectedRuntimeIds = selectedIds - onCloseRuntimes(hostId, selectedIds.intersect(currentIds))
                                     }
                                 },
                                 enabled = state.e2eReady,
@@ -674,7 +680,9 @@ internal fun RuntimeListScreen(
             },
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = RemoteUi.PagePadding)) {
-                // 一行固定高度：这一页是哪台电脑，以及它怎么连着；多台电脑时电脑名就是切换入口。
+                // 一行固定高度：这一页是哪台电脑、怎么连着，以及首版列表发布后是否仍在同步；
+                // 多台电脑时电脑名就是切换入口。重试只在失败时加入这一行，不移动卡片。
+                val backgroundSync = if (state.homeRuntimesLoading) HomeSyncStatus.Idle else state.homeSyncStatus
                 Row(
                     Modifier.fillMaxWidth().height(56.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -682,39 +690,46 @@ internal fun RuntimeListScreen(
                 ) {
                     // The switcher takes the free width (its content stays at the start), so the chip sits flush right.
                     HomeHostSwitcher(hosts, activeHostId, onSelectHost, onAddHost, Modifier.weight(1f))
-                    Box(Modifier.clip(CircleShape).clickable(onClick = onOpenStatus)) {
-                        ConnectionStatus(state.connection, state.e2eReady, state.path)
+                    Box(Modifier.clip(CircleShape).clickable(onClick = onOpenStatus).testTag("home-connection-status")) {
+                        ConnectionStatus(state.connection, state.e2eReady, state.path, backgroundSync)
+                    }
+                    if (backgroundSync is HomeSyncStatus.Failed) {
+                        NeumorphIconButton(
+                            onClick = onRetryHome,
+                            icon = Icons.Rounded.Refresh,
+                            contentDescription = if (state.e2eReady) "重新加载会话" else "重新连接",
+                            tint = MaterialTheme.colorScheme.error,
+                            compact = true,
+                            modifier = Modifier.semantics { stateDescription = backgroundSync.message },
+                        )
                     }
                 }
-                if (state.homeRuntimesLoading) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(state.homeRuntimesError ?: "正在加载会话…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f).testTag("home-session-list"),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
+                ) {
+                    // 首版完整快照发布前列表为空：加载与失败占据空态的位置，而不是压在卡片上方。
+                    if (state.homeRuntimesLoading) {
+                        item(key = "status") { HomeFirstLoadStatus(state.homeSyncStatus, state.e2eReady, onRetryHome) }
+                    } else if (visibleRuntimes.isEmpty()) {
+                        item(key = "empty") {
+                            Column(Modifier.fillMaxWidth().heightIn(min = 180.dp).testTag("home-session-empty"),
+                                verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(44.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(Modifier.height(14.dp))
+                                Text("暂无在线会话", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
                     }
-                } else if (visibleRuntimes.isEmpty()) {
-                    Column(
-                        modifier = Modifier.fillMaxSize().padding(bottom = 48.dp),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Icon(
-                            Icons.Rounded.Computer,
-                            contentDescription = null,
-                            modifier = Modifier.size(44.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(14.dp))
-                        Text("暂无在线会话", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    }
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                        contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
-                    ) {
                         items(
                             visibleRuntimes,
                             key = { "${it.hostId}:${it.runtime.runtimeId}" },
                         ) { row ->
                             val runtime = row.runtime
+                            val cardCurrent = row.state.homeCardIsCurrent(row.card)
+                            val currentCardIsCurrent by rememberUpdatedState(cardCurrent)
                             var cardWidth by remember(row.hostId, runtime.runtimeId) { mutableFloatStateOf(0f) }
                             val closeThreshold = cardWidth / 2f
                             var swipeOffset by remember(row.hostId, runtime.runtimeId) { mutableFloatStateOf(0f) }
@@ -726,12 +741,12 @@ internal fun RuntimeListScreen(
                             val currentOpenRuntime by rememberUpdatedState(onOpenRuntime)
                             LaunchedEffect(opening, selecting) {
                                 if (opening) {
-                                    if (!selecting) {
+                                    if (!selecting && currentCardIsCurrent) {
                                         // A quick tap can press and release in one frame. Paint the
                                         // depressed card before navigation starts composing the chat.
                                         androidx.compose.runtime.withFrameNanos { }
                                         androidx.compose.runtime.withFrameNanos { }
-                                        currentOpenRuntime(row.hostId, runtime.runtimeId)
+                                        if (currentCardIsCurrent) currentOpenRuntime(row.hostId, runtime.runtimeId)
                                     }
                                     opening = false
                                 }
@@ -789,16 +804,16 @@ internal fun RuntimeListScreen(
                                         modifier = Modifier.fillMaxWidth().offset { IntOffset(-swipeAnim.value.roundToInt(), 0) }
                                             .testTag("home-runtime-${runtime.runtimeId}")
                                             .semantics { selected = runtime.runtimeId in selectedIds }
-                                            .immediatePressFeedback(!selecting) { touchPressed = it }
-                                            .pointerInput(selecting, runtime.runtimeId, cardWidth) {
-                                                if (!selecting) {
+                                            .immediatePressFeedback(!selecting && cardCurrent) { touchPressed = it }
+                                            .pointerInput(selecting, runtime.runtimeId, cardWidth, cardCurrent) {
+                                                if (!selecting && cardCurrent) {
                                                     var hapticSent = false
                                                     detectHomeCloseDragGestures(
                                                         onDragStart = { hapticSent = false },
                                                         onDragEnd = {
                                                             val shouldClose = closeThreshold > 0f && swipeOffset >= closeThreshold
                                                             // 提交成功后卡片从松手位置继续向左离开，不先弹回再消失。
-                                                            val closing = shouldClose && onCloseRuntimes(row.hostId, setOf(runtime.runtimeId)).isNotEmpty()
+                                                            val closing = shouldClose && currentCardIsCurrent && onCloseRuntimes(row.hostId, setOf(runtime.runtimeId)).isNotEmpty()
                                                             swipeOffset = 0f
                                                             closeArmed = false
                                                             swipeScope.launch {
@@ -830,6 +845,7 @@ internal fun RuntimeListScreen(
                                                 }
                                             },
                                         shape = RoundedCornerShape(20.dp),
+                                        enabled = cardCurrent,
                                         shadowScale = 0.8f,
                                         style = if (!selecting && (touchPressed || opening)) NeumorphStyle.Pressed else NeumorphStyle.Raised,
                                         selectionSelected = runtime.runtimeId in selectedIds,
@@ -853,13 +869,13 @@ internal fun RuntimeListScreen(
                                         ) {
                                             AgentEmblem(agentBrand(runtime.agentKind), 44.dp)
                                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                Text(state.runtimeDisplayName(runtime), style = MaterialTheme.typography.titleMedium,
+                                                Text(row.card.title, style = MaterialTheme.typography.titleMedium,
                                                     fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                                 Text(runtime.cwd, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                                     Text(agentBrand(runtime.agentKind).title, color = agentBrand(runtime.agentKind).accent(), style = MaterialTheme.typography.labelMedium)
-                                                    if (row.state.hasPendingInteraction(runtime.runtimeId)) {
+                                                    if (row.card.hasPendingInteraction) {
                                                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                                             Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
                                                             Text("待确认", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
@@ -874,19 +890,46 @@ internal fun RuntimeListScreen(
                             }
                         }
                     }
-                }
             }
         }
     }
 }
 
-/** One home-screen card: the Runtime plus the computer that serves it. */
+/** Before the first complete snapshot the list is empty, so its own area says why: loading or a retryable failure. */
+@Composable
+private fun HomeFirstLoadStatus(sync: HomeSyncStatus, e2eReady: Boolean, onRetry: () -> Unit) {
+    Column(Modifier.fillMaxWidth().heightIn(min = 180.dp).testTag("home-session-status"),
+        verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+        if (sync is HomeSyncStatus.Failed) {
+            Icon(Icons.Rounded.ErrorOutline, contentDescription = null, modifier = Modifier.size(44.dp),
+                tint = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.height(14.dp))
+            Text(sync.message, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center)
+            Spacer(Modifier.height(20.dp))
+            NeumorphActionButton(
+                onClick = onRetry,
+                text = if (e2eReady) "重新加载" else "重新连接",
+                icon = Icons.Rounded.Refresh,
+                modifier = Modifier.fillMaxWidth()
+                    .semantics { contentDescription = if (e2eReady) "重新加载会话" else "重新连接" },
+            )
+        } else {
+            CircularProgressIndicator(modifier = Modifier.size(36.dp), strokeWidth = 3.dp)
+            Spacer(Modifier.height(14.dp))
+            Text("正在加载会话…", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** One home-screen card and the computer that serves it. */
 private data class HostRuntimeRow(
     val hostId: String,
     val hostName: String,
-    val runtime: RuntimeSummary,
+    val card: HomeRuntimeCard,
     val state: RemoteState,
-)
+) { val runtime: RuntimeSummary get() = card.runtime }
 
 /**
  * L2 新建会话（spec §8.1 / §8.2）：选 agent 类型 → 浏览电脑目录（session.browse 逐层下钻，
@@ -2669,17 +2712,36 @@ private fun HomeHostSwitcher(
     }
 }
 
+/** One capsule tells the computer's whole lifecycle: connecting, securing, syncing, then the transport path. */
 @Composable
-private fun ConnectionStatus(connection: RelayConnection, e2eReady: Boolean, path: String? = null) {
+private fun ConnectionStatus(
+    connection: RelayConnection,
+    e2eReady: Boolean,
+    path: String? = null,
+    sync: HomeSyncStatus = HomeSyncStatus.Idle,
+) {
+    val secured = connection == RelayConnection.ONLINE && e2eReady
+    val syncing = secured && sync == HomeSyncStatus.Syncing
+    val failed = secured && sync is HomeSyncStatus.Failed
     // 握手中也算「忙」：中继认了、加密通道没成时，这段时间是能恢复的，不该显示成稳态。
     val isBusy = connection == RelayConnection.CONNECTING ||
         connection == RelayConnection.RECONNECTING ||
-        (connection == RelayConnection.ONLINE && !e2eReady)
+        (connection == RelayConnection.ONLINE && !e2eReady) || syncing
+    val securedColor = MaterialTheme.colorScheme.tertiary
     val color = when {
-        connection == RelayConnection.ONLINE && e2eReady -> MaterialTheme.colorScheme.tertiary
+        failed -> MaterialTheme.colorScheme.error
+        secured -> securedColor
         connection == RelayConnection.RECONNECTING -> MaterialTheme.colorScheme.error
         connection == RelayConnection.ONLINE -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    // 加密通道建立后先说同步进度，再说连接方式；之前说连接阶段；颜色始终表达状态（与 iOS 一致）。
+    val label = when {
+        syncing -> "正在同步"
+        failed -> "同步失败"
+        secured -> transportPathLabel(path) ?: "中继"
+        connection == RelayConnection.ONLINE -> "正在建立安全通道"
+        else -> relayConnectionText(connection)
     }
     NeumorphSurface(
         modifier = Modifier.padding(vertical = 8.dp),
@@ -2688,24 +2750,21 @@ private fun ConnectionStatus(connection: RelayConnection, e2eReady: Boolean, pat
         shadowScale = 0.3f,
     ) {
     Row(
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+        modifier = Modifier.animateContentSize(tween(160)).padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (isBusy) {
-            CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = color)
-        } else {
-            Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+        Box(Modifier.size(12.dp), contentAlignment = Alignment.Center) {
+            if (isBusy) {
+                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = color)
+            } else {
+                Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+            }
         }
-        // 加密通道建立后文字说连接方式，之前说连接阶段；颜色始终表达状态（与 iOS 一致）。
-        Text(
-            if (connection == RelayConnection.ONLINE && e2eReady) transportPathLabel(path) ?: "中继"
-            else if (connection == RelayConnection.ONLINE) "正在建立安全通道" else relayConnectionText(connection),
-            color = color,
-            style = MaterialTheme.typography.labelMedium,
-        )
-        if (connection == RelayConnection.ONLINE && e2eReady) {
-            Icon(Icons.Rounded.Lock, contentDescription = "端到端加密", tint = color, modifier = Modifier.size(13.dp))
+        Text(label, color = color, style = MaterialTheme.typography.labelMedium)
+        if (secured) {
+            // 同步失败不影响加密：锁保持已加密的颜色，不把失败画成通道不安全。
+            Icon(Icons.Rounded.Lock, contentDescription = "端到端加密", tint = securedColor, modifier = Modifier.size(13.dp))
         }
     }
 }

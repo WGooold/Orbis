@@ -38,7 +38,7 @@ class HomeNavigationInstrumentedTest {
             OrbisTheme {
                 SwipeBackLayer(open = selected.value != null, onBack = { selected.value = null }, underlay = {
                     DisposableEffect(Unit) { mounts++; onDispose { disposals++ } }
-                    RuntimeListScreen(state, listOf(HostSnapshot(pairing, state)),
+                    RuntimeListScreen(state.withReadyHomeFixture(), listOf(HostSnapshot(pairing, state.withReadyHomeFixture())),
                         onOpenRuntime = { _, id -> opened += id; selected.value = id },
                         onCloseRuntimes = { _, _ -> emptySet() }, onOpenDownloads = {}, onUnpairHost = {},
                         onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> }, onNewSession = { _, _ -> },
