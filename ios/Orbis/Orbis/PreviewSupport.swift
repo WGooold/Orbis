@@ -2,11 +2,18 @@
 import Foundation
 import SwiftUI
 
+@MainActor
+enum PreviewViewportUpdates {
+    static var schedule: (() -> Void)?
+}
+
 // Explicit launch arguments opt into isolated, in-memory fixtures for UI review.
 // They never read Keychain, connect to a real Host, or persist preview content.
 @MainActor
 func makePreviewStore(screen: String) -> OrbisStore {
     let transport = PreviewTransport(screen: screen)
+    PreviewViewportUpdates.schedule = screen == "viewport" && ProcessInfo.processInfo.arguments.contains("--preview-viewport-drag")
+        ? { [weak transport] in transport?.scheduleViewportBatch() } : nil
     // `--preview-hosts=2` pairs a second computer, to review how several computers are switched.
     let twoHosts = ProcessInfo.processInfo.arguments.contains("--preview-hosts=2")
     let store = OrbisStore(secure: PreviewStorage(empty: screen == "pairing", twoHosts: twoHosts), preferences: nil,
@@ -54,12 +61,19 @@ private final class PreviewTransport: OrbisTransport {
     private var archivedSessionIds: Set<String> = []
     private var providerRevision = 1
     private var viewportTail = 0
+    private var viewportUpdates: Task<Void, Never>?
+    private var viewportRows: Bool { ProcessInfo.processInfo.arguments.contains("--preview-viewport-rows") }
     private var sourceSequence = 1
+    /// Messages sent from the composer in this preview; source checkpoints keep them after a re-sync.
+    private var sentMessages: [[String: Any]] = []
+    /// `--preview-send=pi` answers after a delay with a different id; `fail` rejects the send (ADR-0049).
+    private var sendMode: String { ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-send=") }.map { String($0.dropFirst(15)) } ?? "codex" }
     private var slowSync: Bool { ProcessInfo.processInfo.arguments.contains("--preview-slow-sync") }
+    private var compacting: Bool { ProcessInfo.processInfo.arguments.contains("--preview-compacting") }
     private var modelName: String { slowSync ? "A very long model name that needs truncation" : "GPT-5.4" }
-    private var enabledProviders: [String: Set<String>] = ["codex": ["official"], "pi": ["official"], "dsh": ["official"]]
+    private var enabledProviders: [String: Set<String>] = ["codex": ["official"], "pi": ["official"], "claude": ["official"], "dsh": ["official"]]
     func pair(qr: PairingQR, deviceName: String, identity: DeviceIdentity, completion: @escaping (Result<HostPairing, Error>) -> Void) { completion(.failure(PairingError.invalidQR)) }
-    func disconnect() {}
+    func disconnect() { viewportUpdates?.cancel(); viewportUpdates = nil }
     func connect(pairing: HostPairing, identity: DeviceIdentity, receive: @escaping ([String: Any], String?) -> Void, state: @escaping (ConnectionState, String?) -> Void) {
         self.receive = receive
         state(.secured, nil)
@@ -96,6 +110,38 @@ private final class PreviewTransport: OrbisTransport {
         sequence += 1
         receive?(["type": "runtime.event", "runtimeId": runtimeId, "sequence": sequence, "event": event], "msg")
     }
+    private func appendViewportContent() {
+        viewportTail += 1
+        let base = sourceSequence
+        sourceSequence += 1
+        // Replace the growing long reply and append real user/tool rows with stable identities.
+        let changed = Array(messages.enumerated().dropFirst())
+        let entries: [[String: Any]] = changed.map { index, message in
+            ["entryId": "node-\(index + 1)", "parentId": "node-\(index)", "type": "message",
+             "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": message]]
+        }
+        let display: [[String: Any]] = changed.map { index, message in
+            ["displayId": "node-\(index + 1)", "entryId": "node-\(index + 1)", "kind": "message", "message": message]
+        }
+        event(["type": "session.patch", "sessionId": "session-1", "baseSeq": base, "seq": sourceSequence,
+               "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true],
+               "head": ["leafId": "node-\(messages.count)"], "headCompleteness": "complete",
+               "entries": entries, "display": ["projectionVersion": 3, "entries": display],
+               "live": ["complete": true, "messages": [], "tools": []]])
+    }
+    func scheduleViewportBatch() {
+        viewportUpdates?.cancel()
+        viewportUpdates = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                for _ in 0..<6 {
+                    guard let self else { return }
+                    self.appendViewportContent()
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                }
+            } catch { }
+        }
+    }
     func send(_ object: [String: Any]) -> Bool {
         if (object["command"] as? [String: Any])?["type"] as? String == "session.sync" {
             ChatEntryProbe.shared.sentSync()
@@ -120,10 +166,13 @@ private final class PreviewTransport: OrbisTransport {
         if object["type"] as? String == "session.list" {
             let names = ["对齐移动端的使用体验", "梳理项目中的页面结构", "检查服务端连接状态", "优化聊天滚动与输入体验", "整理测试结果", "添加扫码配对", "检查深色模式"]
             let longDirectory = ProcessInfo.processInfo.arguments.contains("--preview-long-directory")
+            let drawerLayout = ProcessInfo.processInfo.arguments.contains("--preview-drawer-layout")
             let sessions: [[String: Any]] = (1...(longDirectory ? 25 : 7)).map { index -> [String: Any] in
                 let agent = index == 2 ? "pi" : index == 3 ? "dsh" : "codex"
-                return ["sessionId": "session-\(index)", "name": index <= names.count ? names[index - 1] : "较早会话 \(index)",
-                 "cwd": index == 2 ? "/Projects/website" : "/Projects/orbis", "createdAt": 1793145600000, "modifiedAt": 1793232000000 - index * 100000,
+                let layoutTitle = index == 4 ? "这是一个需要换行并且超过两行后显示省略号的很长会话标题，用来检查侧边栏卡片是否始终等高" : "短标题"
+                let layoutRow = drawerLayout && (index == 4 || index == 5)
+                return ["sessionId": "session-\(index)", "name": layoutRow ? layoutTitle : index <= names.count ? names[index - 1] : "较早会话 \(index)",
+                 "cwd": index == 2 ? "/Projects/website" : "/Projects/orbis", "createdAt": 1793145600000, "modifiedAt": 1793232000000 - index * 100000 + (layoutRow ? 1000000 : 0),
                  "messageCount": 12, "agentKind": agent, "archived": archivedSessionIds.contains("session-\(index)"), "modelProvider": index == 4 ? "team" : "openai"]
             }
             receive?(["type": "session.list.result", "requestId": object["requestId"]!, "sessions": sessions,
@@ -140,12 +189,19 @@ private final class PreviewTransport: OrbisTransport {
             receive?(["type": "notification.snapshot", "protocolVersion": orbisProtocolVersion, "hostEpoch": "preview-notices", "runtimeId": runtime, "sessionId": "session-1", "revision": 2, "complete": true, "verification": "confirmed", "notifications": []], "ctl")
         } else if object["type"] as? String == "agent.state.request", object["scope"] as? String == "agent" {
             let runtime = object["runtimeId"] as? String ?? "preview-codex", session = object["sessionId"] as? String ?? "session-1"
-            let domains = ["execution", "model", "context"].map { name -> [String: Any] in
-                let value: [String: Any] = name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
-                return ["domain": name, "modelEpoch": "preview-model", "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,
+            let epoch = variant == 1 ? "preview-model-2" : "preview-model"
+            let kind = object["agentKind"] as? String ?? "codex"
+            let titles = ["preview-codex": "对齐移动端的使用体验", "preview-pi": "梳理项目中的页面结构",
+                          "preview-dsh": "检查服务端连接状态", "home-pi": "整理家庭照片脚本"]
+            let cwd = variant == 1 ? "/Users/home/scripts" : runtime == "preview-pi" ? "/Projects/website" : "/Projects/orbis"
+            let domains = ["identity", "interactions", "execution", "model", "context"].map { name -> [String: Any] in
+                let value: [String: Any] = name == "identity" ? ["runtimeId": runtime, "sessionId": session,
+                    "name": agentTitle(kind), "sessionName": titles[runtime] ?? "", "cwd": cwd, "agentKind": kind] :
+                    name == "interactions" ? [:] : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": compacting && runtime == "preview-codex" ? ["phase": "running"] : "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
+                return ["domain": name, "modelEpoch": epoch, "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,
                         "source": ["producer": "host", "sourceId": "preview-host", "sourceEpoch": "preview-source", "sourceRevision": 1], "checkedAt": 1793232000000, "value": value]
             }
-            receive?(["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "agent", "runtimeId": runtime, "sessionId": session, "agentKind": object["agentKind"] ?? "codex", "modelEpoch": "preview-model", "domains": domains, "missing": [], "truncated": false], "ctl")
+            receive?(["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "agent", "runtimeId": runtime, "sessionId": session, "agentKind": kind, "modelEpoch": epoch, "domains": domains, "missing": [], "truncated": false], "ctl")
         } else if object["type"] as? String == "agent.state.request" {
             let requested = object["domains"] as? [String] ?? HostState.domainNames
             let domains = requested.map { name -> [String: Any] in
@@ -156,6 +212,14 @@ private final class PreviewTransport: OrbisTransport {
             }
             receive?(["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "host", "modelEpoch": "preview-model",
                       "domains": domains, "missing": [], "truncated": false], "ctl")
+        } else if object["type"] as? String == "provider.subscription", let kind = object["kind"] as? String {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(900))
+                self?.receive?(["type": "provider.subscription.result", "requestId": object["requestId"]!, "kind": kind, "id": object["id"]!,
+                    "quota": ["checkedAt": 1793232000000, "windows": [
+                        ["name": "five_hour", "remainingPercent": kind == "codex" ? 82 : 64, "resetsAt": 1793242000000],
+                        ["name": "seven_day", "remainingPercent": kind == "codex" ? 35 : 18, "resetsAt": 1793432000000]]]], "ctl")
+            }
         } else if object["type"] as? String == "provider.switch", let kind = object["kind"] as? String, let id = object["id"] as? String {
             if kind == "pi" {
                 if object["enabled"] as? Bool == true { enabledProviders[kind, default: []].insert(id) }
@@ -178,21 +242,12 @@ private final class PreviewTransport: OrbisTransport {
         } else if object["type"] as? String == "runtime.git.request" {
             receive?(["type": "runtime.git", "requestId": object["requestId"]!, "runtimeId": object["runtimeId"]!, "sessionId": "session-1", "cwd": "/Projects/orbis", "branch": "main"], "ctl")
             if screen == "viewport" {
-                viewportTail += 1
-                let base = sourceSequence
-                sourceSequence += 1
-                let message = messages[1]
-                // Once a source checkpoint is installed, only contiguous source patches update it.
-                event(["type": "session.patch", "sessionId": "session-1", "baseSeq": base, "seq": sourceSequence,
-                       "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true],
-                       "head": ["leafId": "node-2"], "headCompleteness": "complete",
-                       "entries": [["entryId": "node-2", "parentId": "node-1", "type": "message", "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": message]]],
-                       "display": ["projectionVersion": 3, "entries": [["displayId": "node-2", "entryId": "node-2", "kind": "message", "message": message]]],
-                       "live": ["complete": true, "messages": [], "tools": []]])
+                appendViewportContent()
             }
         } else if let command = object["command"] as? [String: Any], let type = command["type"] as? String {
             let runtime = object["runtimeId"] as? String ?? "preview-codex"
             if type == "session.sync" {
+                let messages = self.messages + sentMessages
                 let entries: [[String: Any]] = messages.enumerated().map { index, message in
                     ["entryId": "node-\(index + 1)", "parentId": index == 0 ? NSNull() : "node-\(index)" as Any, "type": "message", "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": message]]
                 }
@@ -219,12 +274,38 @@ private final class PreviewTransport: OrbisTransport {
             } else if type == "user_message.cancel" {
                 event(["type": "message.queued", "queueId": command["messageId"]!, "text": "接着检查 iOS 的历史同步和文件传输。", "delivery": "followUp", "state": "cancelled"], runtimeId: runtime)
                 event(["type": "command.result", "commandId": object["commandId"]!, "ok": true], runtimeId: runtime)
-            } else if type == "user_message", let text = command["text"] as? String {
-                event(["type": "message.finished", "message": message(command["messageId"] as? String ?? UUID().uuidString, role: "user", text: text)], runtimeId: runtime)
+            } else if type == "user_message", let text = command["text"] as? String, let clientId = command["messageId"] as? String {
+                let commandId = object["commandId"]!
+                let mode = sendMode
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: mode == "codex" ? 0 : 400_000_000)
+                    if mode == "fail" {
+                        self.event(["type": "command.result", "commandId": commandId, "ok": false, "status": "failure", "error": "runtime_busy"], runtimeId: runtime)
+                        return
+                    }
+                    self.event(["type": "command.result", "commandId": commandId, "ok": true, "status": "success"], runtimeId: runtime)
+                    // Long enough for UI automation to observe the pending row before the Host commits it.
+                    if mode == "pi" { try? await Task.sleep(nanoseconds: 4_000_000_000) }
+                    self.commitSent(text: text, clientId: clientId, runtime: runtime)
+                }
             } else if type == "slash.execute" {
-                event(["type": "command.result", "commandId": object["commandId"]!, "ok": true], runtimeId: runtime)
-                if command["name"] as? String == "quit" {
-                    receive?(["type": "runtime.offline", "runtimeId": runtime], "ctl")
+                // `--preview-close=slow` confirms /quit after a delay; `fail` rejects it (ADR-0049 §5).
+                let close = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-close=") }.map { String($0.dropFirst(16)) }
+                guard command["name"] as? String == "quit", let close else {
+                    event(["type": "command.result", "commandId": object["commandId"]!, "ok": true], runtimeId: runtime)
+                    if command["name"] as? String == "quit" { receive?(["type": "runtime.offline", "runtimeId": runtime], "ctl") }
+                    return
+                }
+                let commandId = object["commandId"]!
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    if close == "fail" {
+                        self.event(["type": "command.result", "commandId": commandId, "ok": false, "status": "failure", "error": "进程仍在运行"], runtimeId: runtime)
+                        return
+                    }
+                    self.event(["type": "command.result", "commandId": commandId, "ok": true], runtimeId: runtime)
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    self.receive?(["type": "runtime.offline", "runtimeId": runtime], "ctl")
                 }
             }
         }
@@ -233,10 +314,11 @@ private final class PreviewTransport: OrbisTransport {
         switch name {
         case "identity": return ["hostId": "preview-host", "hostName": "工作电脑", "protocolVersion": orbisProtocolVersion]
         case "providers":
-            let rows: [[String: Any]] = ["pi", "codex", "dsh"].map { kind in
+            let rows: [[String: Any]] = ["pi", "codex", "claude", "dsh"].map { kind in
                 let profiles: [[String: Any]] = [("official", "官方服务"), ("team", "团队供应商")].map { id, title in
                     ["id": id, "name": title, "enabled": enabledProviders[kind]?.contains(id) == true,
-                     "globalDefault": kind == "pi" && id == "official", "mode": kind == "pi" ? "additive" : "exclusive"]
+                     "globalDefault": kind == "pi" && id == "official", "mode": kind == "pi" ? "additive" : "exclusive",
+                     "official": id == "official", "subscriptionSupported": id == "official" && ["codex", "claude"].contains(kind)]
                 }
                 return ["agentKind": kind, "availability": "ready", "current": enabledProviders[kind]?.sorted().first as Any,
                         "modelProvider": "openai", "profiles": profiles, "profilesTruncated": false,
@@ -254,6 +336,21 @@ private final class PreviewTransport: OrbisTransport {
         case "management": return ["lifecycle": "running", "platform": "darwin", "nodeVersion": "v24"]
         default: return [:]
         }
+    }
+    /// The Host commits the prompt as a canonical entry whose id differs from the App id but declares it.
+    private func commitSent(text: String, clientId: String, runtime: String) {
+        let parent = "node-\(messages.count + sentMessages.count)"
+        let entryId = "node-\(messages.count + sentMessages.count + 1)"
+        var sent = message(entryId, role: "user", text: text); sent["clientMessageId"] = clientId
+        sentMessages.append(sent)
+        let base = sourceSequence
+        sourceSequence += 1
+        event(["type": "session.patch", "sessionId": "session-1", "baseSeq": base, "seq": sourceSequence,
+               "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true],
+               "head": ["leafId": entryId], "headCompleteness": "complete",
+               "entries": [["entryId": entryId, "parentId": parent, "type": "message", "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": sent]]],
+               "display": ["projectionVersion": 3, "entries": [["displayId": entryId, "entryId": entryId, "kind": "message", "message": sent]]],
+               "live": ["complete": true, "messages": [], "tools": []]], runtimeId: runtime)
     }
     private func message(_ id: String, role: String, text: String) -> [String: Any] {
         ["messageId": id, "role": role, "timestamp": 1793232000000, "content": [["type": "text", "text": text]]]
@@ -281,8 +378,14 @@ private final class PreviewTransport: OrbisTransport {
         if screen == "viewport" {
             let paragraphs = (1...80).map { "阅读锚点 \($0)" }
             let tail = (0..<viewportTail).map { "新增尾部 \($0 + 1)" }
+            let appended: [[String: Any]] = viewportRows ? (0..<viewportTail).flatMap { index in
+                [message("viewport-user-\(index)", role: "user", text: "新增消息 \(index)"),
+                 ["messageId": "viewport-tool-\(index)", "role": "assistant", "timestamp": 1793232000001,
+                  "content": [["type": "tool_call", "toolCallId": "viewport-call-\(index)", "toolName": "ViewportTool",
+                               "arguments": ["command": "echo viewport"]]]]]
+            } : []
             return [message("viewport-user", role: "user", text: "检查长回复滚动"),
-                    message("viewport-assistant", role: "assistant", text: (paragraphs + tail).joined(separator: "\n\n"))]
+                    message("viewport-assistant", role: "assistant", text: (paragraphs + tail).joined(separator: "\n\n"))] + appended
         }
         if screen == "tool" {
             let longTranscript = ProcessInfo.processInfo.arguments.contains("--preview-long-transcript")

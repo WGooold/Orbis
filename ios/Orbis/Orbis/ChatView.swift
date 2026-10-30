@@ -49,6 +49,7 @@ struct ChatView: View {
     let onHistory: () -> Void
     let onDownloads: () -> Void
     @State private var following = true
+    @State private var jumpRequest = 0
     /// Per-frame scroll facts live in a reference box: writing them must not re-render the chat.
     /// Only `showJump` (derived from them) is view state, and it changes at a threshold.
     @State private var metrics = ChatScrollMetrics()
@@ -130,7 +131,7 @@ struct ChatView: View {
                 }
                 HStack(spacing: 8) {
                     if store.connection == .secured {
-                        RuntimeStatusLabel(status: runtime.status, syncing: store.isSyncing)
+                        RuntimeStatusLabel(status: runtime.presentationStatus, syncing: store.isSyncing)
                             .fixedSize(horizontal: true, vertical: false)
                     } else {
                         HStack(spacing: 5) {
@@ -146,7 +147,7 @@ struct ChatView: View {
                 }
             }.contentShape(Rectangle()).onTapGesture { composerFocused = false; runtimeInfoOpen = true }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(agentTitle(kind))，\(store.displayName(runtime))，\(store.connection == .secured ? runtimeStatusTitle(runtime.status) : connectionTitle(store.connection))")
+                .accessibilityLabel("\(agentTitle(kind))，\(store.displayName(runtime))，\(store.connection == .secured ? runtimeStatusTitle(runtime.presentationStatus) : connectionTitle(store.connection))")
                 .accessibilityHint("查看会话信息").accessibilityIdentifier("chat-title")
                 .accessibilityAddTraits(.isButton)
         } trailing: {
@@ -160,84 +161,88 @@ struct ChatView: View {
         let transcript = store.chatTranscript
         let streamingMessageIds = store.connection == .secured && !store.isSyncing && !store.isViewingCachedSession ? store.streamingMessageIds : []
         let rewindOptions = store.userMessageRewindOptions(for: runtime)
-        return ScrollViewReader { proxy in
-            GeometryReader { viewport in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 16) {
-                        transcriptHeader
-                        if transcript.rows.isEmpty {
-                            OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: store.isSyncing ? "正在加载会话" : "继续这段会话")
-                                .frame(minHeight: max(180, viewport.size.height - 100))
-                        }
-                        ForEach(transcript.rows) { row in
-                            ChatMessageRow(row: row, kind: kind, toolResults: transcript.toolResultsByRow[row.id] ?? [:],
-                                           timings: transcript.timingsByRow[row.id] ?? [],
-                                           streamingMessageIds: streamingMessageIds.intersection(row.messages.map(\.messageId)),
-                                           rewindOption: row.isUser ? rewindOptions[row.id] : nil,
-                                           rewindEnabled: store.canSend && runtime.status == "idle" && store.pendingActionIds.isEmpty) { option in
-                                if store.moveHistory(to: option, fallbackText: row.messages.first?.text) {
-                                    composerFocused = false
-                                    OrbisHaptics.commit()
-                                }
-                            }.equatable().id(row.id)
-                                .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: [row.id: geometry.frame(in: .named("chat-viewport"))]) })
-                        }
-                        LiveToolsView(runtime: runtime)
-                        // Small tail: the last message sits close to the composer (LazyVStack spacing still applies).
-                        Color.clear.frame(height: 4).id(ChatFollow.bottomID)
-                            .background(GeometryReader { geo in Color.clear.preference(key: ChatBottomPreference.self, value: geo.frame(in: .named("chat-viewport")).maxY) })
-                    }.padding(.horizontal, 16).padding(.top, 4)
-                        .environment(\.chatReadingInteraction) {
-                            // The tap's scroll phase can end before the expansion has grown.
-                            // Do not let that idle event re-enable following during the animation.
-                            metrics.userScrolling = false
-                            following = false
-                        }
-                        .background {
-                            if #unavailable(iOS 18.0) { LegacyScrollInteraction(onInteraction: userInteractionChanged) }
-                        }
-                }.coordinateSpace(name: "chat-viewport").scrollDismissesKeyboard(.interactively)
-                    .modifier(ChatScrollObserver(viewportHeight: viewport.size.height, following: following,
-                                                 onDistance: bottomDistanceChanged,
-                                                 onInteraction: { userInteractionChanged($0) }))
-                    .onPreferenceChange(ChatRowsPreference.self) { frames in
-                        metrics.firstVisibleRow = frames.filter { $0.value.maxY > 0 && $0.value.minY < viewport.size.height }.min { $0.value.minY < $1.value.minY }?.key
-                        let first = transcript.firstMessageId
-                        let atTop = first.flatMap { frames[$0] }.map { $0.minY >= -40 && $0.minY < viewport.size.height } ?? false
-                        if !atTop && topArmed != hasPositioned { topArmed = hasPositioned }
-                        if atTop && topArmed && historyAnchor == nil && !store.isSyncing && !store.historyLoading.contains(runtime.runtimeId) && store.historyErrors[runtime.runtimeId] == nil {
-                            topArmed = false; loadOlder()
-                        }
+        return GeometryReader { viewport in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    transcriptHeader.id("chat-header")
+                    if transcript.rows.isEmpty {
+                        OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: store.isSyncing ? "正在加载会话" : "继续这段会话")
+                            .frame(minHeight: max(180, viewport.size.height - 100))
                     }
-                    .overlay(alignment: .bottomTrailing) {
-                        if showJump && !transcript.rows.isEmpty {
-                            OrbisIconButton(symbol: "arrow.down", label: "跳到最新消息", tint: accent) { jumpToLatest(proxy) }
-                                .padding(16)
-                                .transition(.opacity.combined(with: .scale(scale: 0.85)))
-                        }
+                    ForEach(transcript.rows) { row in
+                        ChatMessageRow(row: row, kind: kind, toolResults: transcript.toolResultsByRow[row.id] ?? [:],
+                                       timings: transcript.timingsByRow[row.id] ?? [],
+                                       streamingMessageIds: streamingMessageIds.intersection(row.messages.map(\.messageId)),
+                                       rewindOption: row.isUser ? rewindOptions[row.id] : nil,
+                                       rewindEnabled: store.canSend && runtime.status == "idle" && store.pendingActionIds.isEmpty,
+                                       pending: row.isUser ? store.pendingSends.item(row.messages.first?.messageId)?.state : nil,
+                                       canResend: store.canSend, onRewind: { option in
+                            if store.moveHistory(to: option, fallbackText: row.messages.first?.text) {
+                                composerFocused = false
+                                OrbisHaptics.commit()
+                            }
+                        }, onPending: { action in pendingAction(action, messageId: row.messages.first?.messageId) }).equatable().id(row.id)
+                            .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: [row.id: geometry.frame(in: .named("chat-viewport"))]) })
                     }
-                    .overlay(alignment: .bottom) {
-                        if let feedback = store.actionFeedback {
-                            Label(feedback, systemImage: "checkmark").font(.orbisCaption(.medium))
-                                .foregroundStyle(OrbisPalette(scheme).success)
-                                .padding(.horizontal, 14).frame(minHeight: 32)
-                                .neuSurface(radius: 16, intensity: 0.5, concentric: false)
-                                .padding(.bottom, 12)
-                                .transition(.opacity)
-                        }
+                    LiveToolsView(runtime: runtime).id("chat-live-tools")
+                    // Small tail: the last message sits close to the composer (LazyVStack spacing still applies).
+                    Color.clear.frame(height: 4).id(ChatFollow.bottomID)
+                        .background(GeometryReader { geo in Color.clear.preference(key: ChatBottomPreference.self, value: geo.frame(in: .named("chat-viewport")).maxY) })
+                }.scrollTargetLayout()
+                    .padding(.horizontal, 16).padding(.top, 4)
+                    .environment(\.chatReadingInteraction) {
+                        // The tap's scroll phase can end before the expansion has grown.
+                        // Do not let that idle event re-enable following during the animation.
+                        metrics.userScrolling = false
+                        following = false
                     }
-                    .animation(reduceMotion ? nil : .orbisFade, value: showJump)
-                    .onChange(of: following) { _, _ in updateJump() }
-                    .onChange(of: store.historyRevision) { _, _ in following = true; hasPositioned = false }
-                    .animation(reduceMotion ? nil : .orbisFade, value: store.actionFeedback)
-                    .onChange(of: store.historyPageRevision) { _, _ in
-                        if let historyAnchor { proxy.scrollTo(historyAnchor, anchor: .top) }
-                        self.historyAnchor = nil
+                    .background {
+                        if #unavailable(iOS 18.0) { LegacyScrollInteraction(onInteraction: userInteractionChanged) }
                     }
-                    .onChange(of: store.historyLoading.contains(runtime.runtimeId)) { old, loading in
-                        if old && !loading && store.historyErrors[runtime.runtimeId] != nil { historyAnchor = nil }
+            }.coordinateSpace(name: "chat-viewport").scrollDismissesKeyboard(.interactively)
+                .modifier(ChatScrollObserver(viewportHeight: viewport.size.height, following: following, jumpRequest: jumpRequest,
+                                             onDistance: bottomDistanceChanged,
+                                             onInteraction: { userInteractionChanged($0) }))
+                .onPreferenceChange(ChatRowsPreference.self) { frames in
+                    metrics.firstVisibleRow = frames.filter { $0.value.maxY > 0 && $0.value.minY < viewport.size.height }.min { $0.value.minY < $1.value.minY }?.key
+                    let first = transcript.firstMessageId
+                    let atTop = first.flatMap { frames[$0] }.map { $0.minY >= -40 && $0.minY < viewport.size.height } ?? false
+                    if !atTop && topArmed != hasPositioned { topArmed = hasPositioned }
+                    if atTop && topArmed && historyAnchor == nil && !store.isSyncing && !store.historyLoading.contains(runtime.runtimeId) && store.historyErrors[runtime.runtimeId] == nil {
+                        topArmed = false; loadOlder()
                     }
-            }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if showJump && !transcript.rows.isEmpty {
+                        OrbisIconButton(symbol: "arrow.down", label: "跳到最新消息", tint: accent) { jumpToLatest() }
+                            .padding(16)
+                            .transition(.opacity.combined(with: .scale(scale: 0.85)))
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if let feedback = store.actionFeedback {
+                        Label(feedback, systemImage: "checkmark").font(.orbisCaption(.medium))
+                            .foregroundStyle(OrbisPalette(scheme).success)
+                            .padding(.horizontal, 14).frame(minHeight: 32)
+                            .neuSurface(radius: 16, intensity: 0.5, concentric: false)
+                            .padding(.bottom, 12)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(reduceMotion ? nil : .orbisFade, value: showJump)
+                .onChange(of: following) { _, _ in updateJump() }
+                .onChange(of: store.historyRevision) { _, _ in
+                    following = true; hasPositioned = false
+                }
+                .animation(reduceMotion ? nil : .orbisFade, value: store.actionFeedback)
+                .onChange(of: store.historyPageRevision) { _, _ in
+                    // Native identity anchoring preserves the current row AND its offset,
+                    // including if the reader scrolled while the older page was in flight.
+                    self.historyAnchor = nil
+                }
+                .onChange(of: store.historyLoading.contains(runtime.runtimeId)) { old, loading in
+                    if old && !loading && store.historyErrors[runtime.runtimeId] != nil { historyAnchor = nil }
+                }
         }
     }
 
@@ -298,11 +303,9 @@ struct ChatView: View {
         if next != showJump { showJump = next }
     }
 
-    private func jumpToLatest(_ proxy: ScrollViewProxy) {
+    private func jumpToLatest() {
         following = true
-        withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
-            proxy.scrollTo(ChatFollow.bottomID, anchor: .bottom)
-        }
+        jumpRequest += 1
     }
 
     private var composer: some View {
@@ -328,7 +331,12 @@ struct ChatView: View {
                 HStack(spacing: 12) {
                     HStack(spacing: 12) {
                         Label(runtime.cwd, systemImage: "folder").lineLimit(1).truncationMode(.middle)
-                        Button(action: store.refreshWorkingBranch) {
+                        Button {
+                            #if DEBUG
+                            PreviewViewportUpdates.schedule?()
+                            #endif
+                            store.refreshWorkingBranch()
+                        } label: {
                             Label(branchTitle, systemImage: "point.3.connected.trianglepath.dotted").lineLimit(1)
                         }.buttonStyle(.plain).layoutPriority(1).accessibilityLabel("刷新 Git 工作分支，" + branchTitle)
                     }.font(.orbisCaption(mono: true)).foregroundStyle(p.secondary)
@@ -390,6 +398,19 @@ struct ChatView: View {
     private func commandArguments(_ command: SlashCommand) -> String {
         String(draft.wrappedValue.dropFirst(command.name.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
+    private func pendingAction(_ action: PendingSendAction, messageId: String?) {
+        guard let messageId else { return }
+        switch action {
+        case .resend: if store.resendPendingSend(messageId) { OrbisHaptics.commit() }
+        case .restore:
+            guard let text = store.restorePendingSend(messageId) else { return }
+            let current = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            draft.wrappedValue = current.isEmpty ? text : draft.wrappedValue + "\n" + text
+            composerFocused = true
+        case .discard: store.discardPendingSend(messageId)
+        }
+    }
+
     private func submit(delivery: String? = nil) {
         guard canSubmit else { return }
         let accepted: Bool
@@ -407,31 +428,63 @@ struct ChatView: View {
 private struct ChatScrollObserver: ViewModifier {
     let viewportHeight: CGFloat
     let following: Bool
+    let jumpRequest: Int
     let onDistance: (CGFloat) -> Void
     let onInteraction: (Bool) -> Void
+    @State private var readingRow: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
             content
-                .defaultScrollAnchor(following ? .bottom : nil, for: .initialOffset)
-                .defaultScrollAnchor(following ? .bottom : .top, for: .sizeChanges)
-                .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                    max(0, geometry.contentSize.height + geometry.contentInsets.bottom - geometry.visibleRect.maxY)
-                } action: { _, distance in onDistance(distance) }
-                .onScrollPhaseChange { _, phase in
-                    switch phase {
-                    case .tracking, .interacting: onInteraction(true)
-                    case .idle: onInteraction(false)
-                    default: break
-                    }
-                }
+                .modifier(ChatNativeScrollPosition(following: following, jumpRequest: jumpRequest,
+                                                   onDistance: onDistance, onInteraction: onInteraction))
         } else {
             content
-                .defaultScrollAnchor(following ? .bottom : .top)
+                .scrollPosition(id: $readingRow)
+                .defaultScrollAnchor(following ? .bottom : nil)
+                .onChange(of: jumpRequest) { _, _ in
+                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { readingRow = ChatFollow.bottomID }
+                }
                 .onPreferenceChange(ChatBottomPreference.self) { bottom in
                     onDistance(bottom.map { max(0, $0 - viewportHeight) } ?? .infinity)
                 }
         }
+    }
+}
+
+/// The native position owns both user motion and layout anchoring. An explicit bottom-edge
+/// request also survives lazy height estimates; a saved row ID is never replayed after a drag.
+@available(iOS 18.0, *)
+private struct ChatNativeScrollPosition: ViewModifier {
+    let following: Bool
+    let jumpRequest: Int
+    let onDistance: (CGFloat) -> Void
+    let onInteraction: (Bool) -> Void
+    @State private var position = ScrollPosition(idType: String.self)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .scrollPosition($position)
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(following ? .bottom : nil, for: .sizeChanges)
+            .onChange(of: jumpRequest) { _, _ in
+                withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { position.scrollTo(edge: .bottom) }
+            }
+            .onChange(of: following) { _, next in
+                if !next { position.isPositionedByUser = true }
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                max(0, geometry.contentSize.height + geometry.contentInsets.bottom - geometry.visibleRect.maxY)
+            } action: { _, distance in onDistance(distance) }
+            .onScrollPhaseChange { _, phase in
+                switch phase {
+                case .tracking, .interacting: onInteraction(true)
+                case .idle: onInteraction(false)
+                default: break
+                }
+            }
     }
 }
 
@@ -502,9 +555,13 @@ struct ChatMessageRow: View, Equatable {
     var streamingMessageIds: Set<String> = []
     var rewindOption: RuntimeOption? = nil
     var rewindEnabled = false
+    /// ADR-0049：本地待确认发送的状态；权威行为 nil。
+    var pending: PendingSend.State? = nil
+    var canResend = false
     var onRewind: (RuntimeOption) -> Void = { _ in }
+    var onPending: (PendingSendAction) -> Void = { _ in }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled
+        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending && lhs.canResend == rhs.canResend
     }
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -536,7 +593,9 @@ struct ChatMessageRow: View, Equatable {
                     .accessibilityAction(named: "复制") { UIPasteboard.general.string = copyText }
                 if !row.isUser { Spacer(minLength: 8) }
             }
-            if row.isUser {
+            if row.isUser, let pending {
+                PendingSendStatus(state: pending, canResend: canResend, rowId: row.id, onAction: onPending)
+            } else if row.isUser {
                 HStack(spacing: 2) {
                     OrbisCopyButton(label: "复制消息", size: 26) { copyText }
                         .accessibilityIdentifier("copy-message-" + row.id)
@@ -551,6 +610,41 @@ struct ChatMessageRow: View, Equatable {
         }
     }
     private var copyText: String { (row.copyMessages ?? row.messages).map(\.text).joined(separator: "\n\n") }
+}
+
+enum PendingSendAction { case resend, restore, discard }
+
+/// 用户气泡下方原本放复制 / 回退的位置，替换为发送状态与恢复操作，不在聊天里另起提示行。
+private struct PendingSendStatus: View {
+    @Environment(\.colorScheme) private var scheme
+    let state: PendingSend.State
+    let canResend: Bool
+    let rowId: String
+    let onAction: (PendingSendAction) -> Void
+    var body: some View {
+        let palette = OrbisPalette(scheme)
+        HStack(spacing: 2) {
+            switch state {
+            case .sending, .accepted:
+                ProgressView().controlSize(.mini).frame(width: 26, height: 26)
+                Text("发送中").font(.orbisCaption()).foregroundStyle(palette.secondary)
+            case .unconfirmed:
+                ProgressView().controlSize(.mini).frame(width: 26, height: 26)
+                Text("正在核对是否送达").font(.orbisCaption()).foregroundStyle(palette.secondary)
+                OrbisIconButton(symbol: "trash", label: "删除", size: 26) { onAction(.discard) }
+                    .accessibilityIdentifier("pending-discard-" + rowId)
+            case .failed(let reason):
+                Image(systemName: "exclamationmark.circle").foregroundStyle(palette.error).font(.orbisCaption())
+                Text(reason).font(.orbisCaption()).foregroundStyle(palette.error).lineLimit(2)
+                OrbisIconButton(symbol: "arrow.clockwise", label: "重新发送", size: 26) { onAction(.resend) }
+                    .disabled(!canResend).accessibilityIdentifier("pending-resend-" + rowId)
+                OrbisIconButton(symbol: "arrow.uturn.backward", label: "放回输入框", size: 26) { onAction(.restore) }
+                    .accessibilityIdentifier("pending-restore-" + rowId)
+                OrbisIconButton(symbol: "trash", label: "删除", size: 26) { onAction(.discard) }
+                    .accessibilityIdentifier("pending-discard-" + rowId)
+            }
+        }.accessibilityElement(children: .contain).accessibilityIdentifier("pending-status-" + rowId)
+    }
 }
 
 private struct MessageContentView: View {
@@ -1178,7 +1272,7 @@ struct QueuedMessagesView: View {
     @Environment(\.colorScheme) private var scheme
     let runtimeId: String
     var body: some View {
-        let items = store.queuedMessages[runtimeId] ?? []
+        let items = store.queuePanelItems(runtimeId)
         if items.count == 1, let item = items.first {
             card(item).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.top, 10)
                 .accessibilityElement(children: .contain).accessibilityIdentifier("queued-messages")
@@ -1279,7 +1373,7 @@ private struct RuntimeInfoView: View {
                         StatusFact(label: "上下文", value: ready("context") ? contextText : "状态待核对")
                     }
                     StatusSection(title: "执行状态") {
-                        StatusFact(label: "当前状态", value: ready("execution") ? runtimeStatusTitle(runtime.status) : "状态待核对")
+                        StatusFact(label: "当前状态", value: ready("execution") ? runtimeStatusTitle(runtime.presentationStatus) : "状态待核对")
                         if ready("execution"), let execution = snapshot?.domains["execution"]?.value {
                             StatusFact(label: "重试", value: activity(execution["retry"]))
                             StatusFact(label: "上下文压缩", value: activity(execution["compaction"]))

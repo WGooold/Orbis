@@ -126,7 +126,7 @@ export class AgentConversationState {
     const key = scopeKey(scope), source = event.source, old = this.#current.get(key);
     if (!source || !Number.isSafeInteger(source.seq) || source.seq < 0) return reject("invalid_source");
     if (old?.retired.has(source.epoch)) return reject("retired_source_epoch");
-    if (!this.#validDisplay(event)) return reject("invalid_display");
+    if (!this.#validDisplay(event, old?.source.epoch === source.epoch ? old : undefined)) return reject("invalid_display");
     const range = event.type === "session.snapshot" && (event.range === "history" || event.range === "catchup");
     if (range) {
       // A delayed page cannot establish a new source, revive an offline source or switch head.
@@ -227,7 +227,7 @@ export class AgentConversationState {
     return result.ok || reject(`registry_${result.code}:${[...changes, ...(companion?.changes ?? [])][result.index]?.domain ?? "unknown"}`);
   }
 
-  #validDisplay(event: Snapshot | Patch): boolean {
+  #validDisplay(event: Snapshot | Patch, old?: Current): boolean {
     if (!event.display) return true;
     const ids = new Set((event.entries ?? []).map(entry => entry.entryId)), seen = new Set<string>();
     for (const row of event.display.entries) {
@@ -235,7 +235,23 @@ export class AgentConversationState {
       seen.add(row.entryId);
     }
     // ADR-0032 §5：显示窗口外的 canonical 前缀可以没有显示行，窗口内仍须逐条覆盖。
-    const entries = event.entries ?? [];
+    let entries = event.entries ?? [];
+    // A patch can commit siblings (Claude's parallel tool results), while its display
+    // covers only the active head path. Require every visible ancestor, not siblings
+    // deliberately excluded by the producer's branch projection.
+    if (event.type === "session.patch" && event.head.leafId !== null) {
+      const byId = new Map([...(old?.entries ?? []), ...entries].map(entry => [entry.entryId, entry]));
+      if (byId.has(event.head.leafId)) {
+        const active = new Set<string>();
+        let id: string | null = event.head.leafId;
+        while (id !== null && byId.has(id)) {
+          if (active.has(id)) return false;
+          active.add(id);
+          id = byId.get(id)!.parentId;
+        }
+        entries = entries.filter(entry => active.has(entry.entryId));
+      }
+    }
     const start = entries.findIndex(entry => entry.entryId === event.display!.windowStart);
     return entries.slice(Math.max(0, start)).every(entry => seen.has(entry.entryId));
   }

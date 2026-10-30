@@ -15,6 +15,9 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.material3.MaterialTheme
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
@@ -27,12 +30,14 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
 class ChatViewportInstrumentedTest {
     @get:Rule val compose = createComposeRule()
     private val json = Json { encodeDefaults = true }
+    private var lineHeightPx = 0f
     private fun canonical(message: ChatMessage, parent: String?) = SessionGraphEntry(message.messageId, parent, "message", "1",
         buildJsonObject { put("message", json.encodeToJsonElement(ChatMessage.serializer(), message)) })
     private fun text(id: String, role: String, body: String) = ChatMessage(id, role, listOf(RemoteContent("text", body)), 1)
@@ -81,7 +86,10 @@ class ChatViewportInstrumentedTest {
         try {
             compose.setContent {
                 scope = rememberCoroutineScope()
-                OrbisTheme { ChatScreen(displayed.value, model, scroll) }
+                OrbisTheme {
+                    lineHeightPx = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toPx() }
+                    ChatScreen(displayed.value, model, scroll)
+                }
             }
             compose.waitForIdle()
             // A real drag opts out of following before placing the reading anchor.
@@ -162,6 +170,141 @@ class ChatViewportInstrumentedTest {
         val last = layout.visibleItemsInfo.last()
         org.junit.Assert.assertTrue(chatBottomDistance(last.index, layout.totalItemsCount,
             last.offset + last.size, layout.viewportEndOffset, layout.afterContentPadding) < 2f)
+    }
+
+    @Test fun newMessagesAndToolsKeepTheAnchorDuringAnActiveDragInEitherDirection() = withChat { displayed, scroll ->
+        val transcript = compose.onNodeWithTag("chat-transcript")
+        transcript.performTouchInput { down(center); moveBy(Offset(0f, 60f)) }
+        compose.waitForIdle()
+        compose.mainClock.autoAdvance = false
+        try {
+            for (number in 1..6) {
+                val index = scroll.firstVisibleItemIndex
+                val offset = scroll.firstVisibleItemScrollOffset
+                compose.runOnIdle {
+                    val before = displayed.value
+                    val conversation = before.conversations.getValue("r")
+                    displayed.value = before.copy(conversations = mapOf("r" to conversation.copy(
+                        messages = conversation.messages.map { message ->
+                            if (message.messageId == "assistant") message.copy(content = listOf(RemoteContent("text",
+                                message.content.first().text + "\n\nstreamed paragraph $number"))) else message
+                        } + text("new-user-$number", "user", "new message $number"),
+                        tools = conversation.tools + ("orphan-$number" to ToolActivity("orphan-$number", "bash", "running")),
+                        revision = conversation.revision + 1)))
+                }
+                // Check successive rendered frames, so a one-frame jump followed by a
+                // corrective scroll cannot masquerade as a stable final idle position.
+                repeat(3) { frame ->
+                    compose.mainClock.advanceTimeByFrame()
+                    compose.waitForIdle()
+                    assertEquals(index, scroll.firstVisibleItemIndex)
+                    assertEquals("incoming update $number, frame $frame moved a held viewport", offset, scroll.firstVisibleItemScrollOffset)
+                }
+                val movement = if (number <= 3) -28f else 28f
+                transcript.performTouchInput { moveBy(Offset(0f, movement), delayMillis = 100) }
+                compose.mainClock.advanceTimeByFrame()
+                compose.waitForIdle()
+                assertEquals(index, scroll.firstVisibleItemIndex)
+                assertEquals("user motion must remain responsive", offset - movement.toInt(), scroll.firstVisibleItemScrollOffset)
+            }
+        } finally {
+            compose.mainClock.autoAdvance = true
+            transcript.performTouchInput { advanceEventTime(200); up() }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("回到最新消息").assertIsDisplayed()
+    }
+
+    @Test fun restoringAPageAfterTheReaderMovesDoesNotReplayTheOldAnchor() = withChat { displayed, scroll ->
+        compose.runOnIdle { displayed.value = displayed.value.beginSessionRead("r", SessionReadKind.SOURCE, "refresh").state }
+        compose.waitForIdle()
+        compose.onNodeWithTag("chat-transcript").performTouchInput {
+            down(center); moveBy(Offset(0f, -90f), delayMillis = 200); advanceEventTime(200); up()
+        }
+        compose.waitForIdle()
+        val offset = scroll.firstVisibleItemScrollOffset
+        assertTrue(offset > 350)
+        compose.runOnIdle { displayed.value = displayed.value.finishHistoryRead("refresh", SessionReadPhase.SUCCEEDED) }
+        compose.waitForIdle()
+        assertEquals(2, scroll.firstVisibleItemIndex)
+        assertEquals(offset, scroll.firstVisibleItemScrollOffset)
+    }
+
+    @Test fun oneLineResumesFollowingAndThreeLinesRevealTheJumpButton() = withChat { displayed, scroll ->
+        val jump = compose.onNodeWithContentDescription("回到最新消息")
+        val transcript = compose.onNodeWithTag("chat-transcript")
+        fun dragDown(distance: Float) {
+            transcript.performTouchInput {
+                down(center); moveBy(Offset(0f, distance), delayMillis = 200); advanceEventTime(200); up()
+            }
+            compose.waitForIdle()
+        }
+        fun bottomDistance(): Float {
+            val layout = scroll.layoutInfo
+            val last = layout.visibleItemsInfo.last()
+            return chatBottomDistance(last.index, layout.totalItemsCount, last.offset + last.size,
+                layout.viewportEndOffset, layout.afterContentPadding)
+        }
+        jump.performClick()
+        compose.waitForIdle()
+        dragDown(lineHeightPx * 2.25f)
+        assertTrue(bottomDistance() > lineHeightPx && bottomDistance() < lineHeightPx * 3)
+        jump.assertDoesNotExist()
+        dragDown(lineHeightPx * 2)
+        assertTrue(bottomDistance() > lineHeightPx * 3)
+        jump.assertIsDisplayed().performClick()
+        compose.waitForIdle()
+        dragDown(lineHeightPx * 0.75f)
+        assertTrue(bottomDistance() < lineHeightPx)
+        compose.runOnIdle {
+            val before = displayed.value
+            val conversation = before.conversations.getValue("r")
+            displayed.value = before.copy(conversations = mapOf("r" to conversation.copy(
+                messages = conversation.messages + text("threshold-new", "user", "new tail after returning within one line"),
+                revision = conversation.revision + 1)))
+        }
+        compose.waitForIdle()
+        assertTrue(bottomDistance() < 2f)
+        jump.assertDoesNotExist()
+    }
+
+    @Test fun incomingRowsDoNotInterruptOrAccelerateTheReadersFling() = withChat { displayed, scroll ->
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.onNodeWithTag("chat-transcript").performTouchInput {
+                down(center)
+                moveBy(Offset(0f, -60f), delayMillis = 16)
+                moveBy(Offset(0f, -60f), delayMillis = 16)
+                up()
+            }
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+            var before = scroll.firstVisibleItemScrollOffset
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+            var previousDelta = scroll.firstVisibleItemScrollOffset - before
+            assertTrue(previousDelta > 0)
+            repeat(6) { number ->
+                before = scroll.firstVisibleItemScrollOffset
+                compose.runOnIdle {
+                    val state = displayed.value
+                    val conversation = state.conversations.getValue("r")
+                    displayed.value = state.copy(conversations = mapOf("r" to conversation.copy(
+                        messages = conversation.messages + text("fling-$number", "user", "new message during inertia"),
+                        revision = conversation.revision + 1)))
+                }
+                compose.mainClock.advanceTimeByFrame()
+                compose.waitForIdle()
+                val delta = scroll.firstVisibleItemScrollOffset - before
+                assertEquals(2, scroll.firstVisibleItemIndex)
+                assertTrue("A layout update reversed or accelerated the fling: $previousDelta -> $delta", delta in 0..previousDelta + 2)
+                assertTrue("A layout restoration cancelled native inertia", scroll.isScrollInProgress)
+                previousDelta = delta
+            }
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+        compose.waitForIdle()
     }
 
     @Test fun toolAndThinkingStayExpandedWhenOutputAndCanonicalResultArrive() {

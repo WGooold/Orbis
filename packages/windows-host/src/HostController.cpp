@@ -393,6 +393,30 @@ void HostController::checkProvider(const QString &id) {
         emit providerInfoReady("端点连通性", failed ? "端点无法连接或请求超时" : QString("端点可达 · %1 ms · HTTP %2\n此检查不验证 API Key 或模型权限。").arg(result.value("latencyMs").toInt()).arg(result.value("httpStatus").toInt()));
     });
 }
+void HostController::querySubscription(const QString &id) {
+    const auto kind = m_providerKind;
+    command("provider.subscription", {{"kind", kind}, {"id", id}}, [this, kind, id](const QJsonValue &value) {
+        if (kind != m_providerKind) return;
+        bool current = false;
+        for (const auto &item : m_providers) {
+            const auto provider = item.toMap();
+            if (provider.value("id").toString() == id && provider.value("enabled").toBool()) current = true;
+        }
+        if (!current) return;
+        const auto quota = value.toObject();
+        QStringList lines;
+        for (const auto &item : quota.value("windows").toArray()) {
+            const auto window = item.toObject();
+            const auto label = window.value("name").toString() == "five_hour" ? QStringLiteral("5 小时配额") : QStringLiteral("周配额");
+            QString line = label + "：" + (window.value("remainingPercent").isDouble()
+                ? "剩余 " + QString::number(window.value("remainingPercent").toDouble(), 'f', 1) + "%" : "暂不可用");
+            if (window.value("resetsAt").isDouble()) line += "\n重置时间：" + QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(window.value("resetsAt").toDouble())).toString("yyyy-MM-dd HH:mm");
+            lines.append(line);
+        }
+        lines.append("查询时间：" + QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(quota.value("checkedAt").toDouble())).toString("yyyy-MM-dd HH:mm"));
+        emit providerInfoReady("当前订阅配额", lines.join("\n\n"));
+    });
+}
 void HostController::fetchProviderModels(const QVariantMap &draft) {
     if (providerModelsLoading()) return;
     const auto generation = m_draftGeneration;

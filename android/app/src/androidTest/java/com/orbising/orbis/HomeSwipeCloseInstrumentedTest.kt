@@ -24,7 +24,8 @@ class HomeSwipeCloseInstrumentedTest {
         val pairing = HostPairing("host", "Test Host", "test-public", "test-root",
             relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
         val state = RemoteState(hostId = "host", e2eReady = true,
-            runtimes = listOf("one", "two").associateWith { RuntimeSummary(it, it, "/repo", "idle", sessionId = it) })
+            runtimes = listOf("one", "two").associateWith { RuntimeSummary(it, it, "/repo", "idle", sessionId = it, agentKind = "pi",
+                domainAvailability = mapOf("identity" to "ready", "execution" to "ready", "interactions" to "ready")) })
         val haptics = mutableListOf<HapticFeedbackType>()
         val opened = mutableListOf<String>()
         val closed = mutableListOf<Pair<String, Set<String>>>()
@@ -52,6 +53,21 @@ class HomeSwipeCloseInstrumentedTest {
         val shadow = pixels[(bounds.right + 3 * density).roundToInt(), bounds.center.y.roundToInt()]
         val ground = pixels[(bounds.right + 12 * density).roundToInt(), bounds.center.y.roundToInt()]
         assertTrue("The swipe container clipped the card shadow", abs(shadow.luminance() - ground.luminance()) > 0.005f)
+
+        // A rightward gesture that starts on the card belongs to the drawer, even after
+        // the card's horizontal touch slop is crossed. A short pull should rebound.
+        card.performTouchInput {
+            swipe(Offset(width * 0.1f, center.y), Offset(width * 0.25f, center.y), durationMillis = 600)
+        }
+        compose.onNodeWithText("搜索目录或会话").assertIsNotDisplayed()
+        compose.runOnIdle { assertTrue(opened.isEmpty()); assertTrue(closed.isEmpty()); assertTrue(haptics.isEmpty()) }
+        card.performTouchInput {
+            swipe(Offset(width * 0.1f, center.y), Offset(width * 0.9f, center.y), durationMillis = 400)
+        }
+        compose.onNodeWithText("搜索目录或会话").assertIsDisplayed()
+        compose.runOnIdle { assertTrue(opened.isEmpty()); assertTrue(closed.isEmpty()); assertTrue(haptics.isEmpty()) }
+        compose.onRoot().performTouchInput { click(Offset(width - 8f, center.y)) }
+        compose.onNodeWithText("搜索目录或会话").assertIsNotDisplayed()
 
         // More than the former fixed threshold, but less than half of this card.
         card.performTouchInput { down(Offset(width * 0.85f, center.y)); moveBy(Offset(-cardWidth * 0.4f, 0f)) }
@@ -81,5 +97,17 @@ class HomeSwipeCloseInstrumentedTest {
             assertTrue(opened.isEmpty())
         }
         compose.onNodeWithTag("home-runtime-two").assertIsDisplayed()
+
+        // Reversing an accepted left drag all the way past its start must not open the drawer.
+        card.performTouchInput {
+            down(Offset(width * 0.7f, center.y))
+            moveBy(Offset(-cardWidth * 0.3f, 0f))
+            moveBy(Offset(cardWidth * 0.5f, 0f))
+            up()
+        }
+        compose.onNodeWithText("搜索目录或会话").assertIsNotDisplayed()
+        compose.runOnIdle { assertEquals(2, closed.size); assertTrue(opened.isEmpty()) }
+        card.performTouchInput { click() }
+        compose.runOnIdle { assertEquals(listOf("one"), opened) }
     }
 }

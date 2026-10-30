@@ -86,6 +86,15 @@ internal fun chatBottomDistance(lastIndex: Int, itemCount: Int, bottom: Int, vie
     if (itemCount == 0) 0f else if (lastIndex == itemCount - 1) (bottom + padding - viewportEnd).coerceAtLeast(0).toFloat()
     else Float.POSITIVE_INFINITY
 
+/** Layout restoration must never replay a position captured before the user's latest motion. */
+internal class ChatViewportMotion {
+    var generation = 0L
+        private set
+    fun moved() { generation++ }
+}
+
+internal data class ChatReadingAnchor(val key: String, val index: Int, val offset: Int, val generation: Long)
+
 /** Two softly feathered accent rings; focus never changes field bounds or draws a dark outline. */
 @Composable
 internal fun Modifier.orbisFieldFocus(focused: Boolean, shape: Shape): Modifier {

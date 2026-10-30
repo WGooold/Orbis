@@ -1,6 +1,7 @@
 import { hostname } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
+  PhoneSendClaims,
   PiMessageStream,
   mergeTurnTimings,
   messageToRemote,
@@ -468,6 +469,44 @@ describe("Pi event adapter", () => {
       .toEqual([{ messageId: "generated-id", entryId: "9966aabb" }]);
     expect(stream.persistedMessageMappings([{ type: "message", id: "deadbeef", message: streamedCopy }]))
       .toEqual([]);
+  });
+});
+
+describe("Phone send claims (ADR-0049)", () => {
+  const user = (content: unknown) => ({ role: "user", content, timestamp: 1 });
+  const start = (stream: PiMessageStream, claims: PhoneSendClaims, message: object) =>
+    claims.started(message, stream.started(message));
+
+  it("tags the user message Pi starts for a phone send, at start and at finish", () => {
+    let id = 0;
+    const stream = new PiMessageStream(() => `live-${++id}`);
+    const claims = new PhoneSendClaims();
+    claims.expect("app-1", [{ type: "text", text: "你好" }, { type: "text", text: "[附件] /tmp/a.txt" }]);
+    const message = user([{ type: "text", text: "你好" }, { type: "text", text: "[附件] /tmp/a.txt" }]);
+    const started = start(stream, claims, message);
+    expect(started.message).toMatchObject({ messageId: "live-1", role: "user", clientMessageId: "app-1" });
+    expect(claims.finished(stream.finished(message)).message).toMatchObject({ messageId: "live-1", clientMessageId: "app-1" });
+  });
+
+  it("claims identical texts in send order and never tags local or assistant messages", () => {
+    let id = 0;
+    const stream = new PiMessageStream(() => `live-${++id}`);
+    const claims = new PhoneSendClaims();
+    claims.expect("app-1", [{ type: "text", text: "继续" }]);
+    claims.expect("app-2", [{ type: "text", text: "继续" }]);
+    expect(start(stream, claims, user("本地输入")).message.clientMessageId).toBeUndefined();
+    expect(start(stream, claims, { role: "assistant", content: [{ type: "text", text: "继续" }] }).message.clientMessageId).toBeUndefined();
+    expect(start(stream, claims, user([{ type: "text", text: "继续" }])).message.clientMessageId).toBe("app-1");
+    expect(start(stream, claims, user("继续")).message.clientMessageId).toBe("app-2");
+    expect(start(stream, claims, user("继续")).message.clientMessageId).toBeUndefined();
+  });
+
+  it("forgets a send Pi rejected before starting it", () => {
+    const stream = new PiMessageStream(() => "live-1");
+    const claims = new PhoneSendClaims();
+    claims.expect("app-1", [{ type: "text", text: "失败" }]);
+    claims.forget("app-1");
+    expect(start(stream, claims, user("失败")).message.clientMessageId).toBeUndefined();
   });
 });
 

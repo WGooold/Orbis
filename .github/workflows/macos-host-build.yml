@@ -57,7 +57,7 @@ jobs:
       - name: Verify native runner and portable behavior
         run: |
           node -e 'if (process.arch !== "${{ matrix.node_architecture }}") throw new Error("Node architecture mismatch")'
-          npx vitest run packages/protocol/src packages/relay/src/admin.test.ts packages/host/src/macos-terminal.test.ts --maxWorkers=1 --testTimeout=30000
+          npx vitest run packages/protocol/src packages/relay/src/admin.test.ts packages/host/src/macos-terminal.test.ts packages/host/src/spawner.test.ts --maxWorkers=1 --testTimeout=30000
       - name: Build and package macOS app
         shell: bash
         run: |

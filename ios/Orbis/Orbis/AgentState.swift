@@ -171,7 +171,7 @@ struct AgentProjection {
         var result = AgentProjection(runtime: runtime, commands: commands, interactions: interactions, queuedMessages: queuedMessages)
         for (name, domain) in domains {
             guard domain.availability == "ready" else {
-                if name == "execution" { result.runtime.status = "unknown" }
+                if name == "execution" { result.runtime.status = "unknown"; result.runtime.compactionPhase = nil }
                 continue
             }
             let value = domain.value, complete = domain.completeness == "complete" || domain.projectionComplete == true
@@ -186,6 +186,7 @@ struct AgentProjection {
             case "execution":
                 guard let phase = value["phase"].string, ["idle", "running", "waiting_local_interaction"].contains(phase) else { return nil }
                 result.runtime.status = phase
+                result.runtime.compactionPhase = value["compaction"]["phase"].string
             case "model":
                 if value == .null { if complete { result.runtime.model = nil; result.runtime.thinkingLevel = nil } }
                 else {

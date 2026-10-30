@@ -622,6 +622,8 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
             config.timeoutIntervalForRequest = 4
             session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
         }
+        // Host serves WS; the direct path authenticates and encrypts via E2E.
+        // Info.plist permits literal IPs, including public campus addresses.
         let task = session!.webSocketTask(with: urls[endpointIndex])
         task.maximumMessageSize = 2 * 1024 * 1024
         socket = task; handshake = DeviceHandshake(pskRoot: root)

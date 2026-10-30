@@ -11,6 +11,7 @@ import { ToolSummarySchema, ToolContentReadRequestSchema, ToolContentCancelSchem
   ToolInventoryPatchSchema, ToolInventoryChangedSchema, ToolInventoryProducedSchema, ToolInventoryReferenceSchema,
   ToolInventoryOpenRequestSchema, ToolInventoryOpenedSchema } from "./tool-activity.js";
 export * from "./notifications.js";
+export * from "./subscription-quota.js";
 export { RecoverableSessionSource } from "./session-source.js";
 export * from "./tool-activity.js";
 export * from "./tool-message-projection.js";
@@ -509,6 +510,11 @@ export const ChatMessageSchema = z.strictObject({
   toolName: z.string().optional(),
   isError: z.boolean().optional(),
   toolSummary: ToolSummarySchema.optional(),
+  /**
+   * ADR-0049 §2：这条用户消息由手机 `user_message` 产生时，后端在首次出现处带回原 `messageId`。
+   * 它只声明对应关系，不替代后端自己的 `messageId`；客户端据此精确对账本地待确认发送。
+   */
+  clientMessageId: z.string().min(1).max(256).optional(),
 });
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 

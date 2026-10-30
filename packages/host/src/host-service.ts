@@ -379,6 +379,9 @@ export class HostService {
   }
 
   #registerClaudeRuntime(runtime: RuntimeMetadata): void {
+    // Hooks and Mods share one public runtime. Keep Mods' history capability when a
+    // permission Hook contributes its waiting status, just as directory snapshots do.
+    runtime = this.#claudeBackend.directoryEntries().find(candidate => candidate.runtimeId === runtime.runtimeId) ?? runtime;
     const alreadyPublished = this.#claudePublishedRuntimes.has(runtime.runtimeId);
     const displaced = this.#agentFacts.displacedRuntime(runtime.runtimeId, runtime);
     if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
@@ -454,8 +457,7 @@ export class HostService {
     }
     const generation = ++this.#providerFactsGeneration;
     const modelEpoch = this.#agentStateRegistry.currentModelEpoch();
-    // Claude Code is attached through the native Hook bridge and has no provider-manager profile.
-    const kinds: AgentKind[] = ["pi", "codex", "dsh"];
+    const kinds: AgentKind[] = ["pi", "codex", "dsh", "claude"];
     if (this.#backends.some(backend => backend.kind === "codexDesktop")) kinds.push("codexDesktop");
     const providers = await Promise.all(kinds.map(async (kind) => {
       const switching = providerSwitchingFact(this.#providerChanging, kind);
@@ -956,6 +958,10 @@ export class HostService {
         }
       }
       if (kind === "dsh") await this.#options.dshRuntime?.assertProviderSwitchReady();
+      if (kind === "claude" && [...new Set([...this.#claudeBridge.runtimeIds(), ...this.#claudeModsBridge.runtimeIds()])].some(id =>
+        this.#claudeModsBridge.statusOf(id) === "running" || this.#claudeBridge.pendingRequests(id).length > 0)) {
+        throw new ProviderError("Claude Code 正在工作或等待权限确认，请完成后再切换供应商");
+      }
     } catch (error) { throw new ProviderError(error instanceof Error ? error.message : "Agent 正在工作"); }
   }
 
@@ -1087,6 +1093,11 @@ export class HostService {
     try {
       const manager = this.#options.providers;
       if (!manager) throw new ProviderError("此 Host 尚未启用供应商管理，请升级并重启 Host");
+      if (request.type === "provider.subscription") {
+        const quota = await manager.querySubscription(request.kind, request.id!);
+        send({ type: "provider.subscription.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind, id: request.id, quota });
+        return;
+      }
       const providers = request.type === "provider.list" ? await manager.list(request.kind)
         : await this.changeProvider(request.kind, () => manager.switch(request.kind, request.id!, request.enabled));
       send(providerResult(request, providers, request.kind === "codex" && manager.proxyTakeoverActive));
@@ -1094,7 +1105,7 @@ export class HostService {
       // 这次真的读了清单：把完整摘要写进模型。会话列表那条路径不再写这个领域，所以不会互相覆盖。
       void this.refreshProviderFacts();
     } catch (error) {
-      send({ type: "provider.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind,
+      send({ type: request.type === "provider.subscription" ? "provider.subscription.result" : "provider.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind, ...(request.id ? { id: request.id } : {}),
         error: error instanceof ProviderError ? error.message : "供应商操作失败，请在 Host 检查配置与文件权限" });
     }
   }
@@ -1508,7 +1519,7 @@ export class HostService {
       }
       return;
     }
-    if (message.type === "provider.list" || message.type === "provider.switch") {
+    if (message.type === "provider.list" || message.type === "provider.switch" || message.type === "provider.subscription") {
       void this.#handleProviderRequest(deviceId, message);
       return;
     }
@@ -1606,9 +1617,11 @@ export class HostService {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "provider_switching", commandId: message.commandId, message: "正在切换供应商，请稍后重新打开会话" });
       return;
     }
-    // 下载的取消先给 Host 的下载服务认领：它服务的那条传输只有它认识。
+    // 下载只归 Host 管理。暂停后删除、超时或重连后的重复取消是幂等操作；
+    // 即使传输已经释放，也不能把 hostId 当成 runtimeId 再转交给 agent。
     if (command.type === "artifact.cancel") {
-      if (this.#downloads.handleTransferControl(deviceId, message.runtimeId, command)) return;
+      this.#downloads.handleTransferControl(deviceId, message.runtimeId, command);
+      return;
     }
     if (command.type === "file.download" || command.type === "artifact.download") {
       // 下载完全由 Host 服务（spec §9.4 的 Host→APP 模型）：文件就在这台机器的磁盘上，

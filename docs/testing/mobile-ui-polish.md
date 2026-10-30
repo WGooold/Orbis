@@ -48,6 +48,14 @@ iOS 使用专用 `Orbis UI Polish` 模拟器；Android 使用独立创建的 `Or
 
 ## 复现
 
+### 阅读位置锁定回归
+
+- Android API 35：`ChatViewportInstrumentedTest` 8 项通过。新增用例在手指持续按住时逐帧插入消息、工具和流式段落，并双向拖动；另测惯性位移不被中断或加速、刷新完成不重放旧锚点，以及一行 / 三行阈值。
+- iOS 27.0：长回复阅读 / 恢复跟随、连续新消息和工具卡片下的双向拖动 / 静止锚定 / 回到底部共 2 项通过。18 及以上使用原生 `ScrollPosition` 的底边请求，避免长懒加载列表按旧行 ID 和估算高度定位到空白区域。iOS 17 兼容路径已编译，尚未在该系统上运行。
+- 本次结果位于 `.scratch/viewport-lock/android-isolated-ui.log` 和 `.scratch/viewport-lock/ios-native-position.xcresult`；Debug / AndroidTest 构建通过，Android `UiPolishTest` 2 项通过。测试使用隔离夹具，没有访问真实 Host 或用户手机。
+
+### 执行命令
+
 ```sh
 bash scripts/check-ios.sh
 xcodebuild -project ios/Orbis/Orbis.xcodeproj -scheme Orbis \
@@ -122,3 +130,14 @@ Android API 35：19 项设备用例全部通过（含 4 项聊天视口、1 项 
 - 首轮核心回归：Android 483 项、iOS 175 项通过。Android lint 被未修改的 `StreamingText.kt:96` 两处 `WrongConstant` 阻塞。
 
 日志、源码快照和截图保存在忽略目录 `.scratch/adjacent-actions/`；`refined-light.png` / `refined-dark.png` 为最终截图拼图。
+
+## 2026-10-30：侧边栏会话卡片统一两行
+
+- 基线：ADR-0051 的 r2 修订，修改 S19，关联 S08、S15、V18；feature 总数仍为 60。同步根目录两个本机指南及 iOS / Android 对齐记录。
+- 两端保留原有满宽卡片，标题统一预留两行；短标题不收缩，长标题最多两行并尾部省略。按文本自然高度布局，不锁死整卡高度；不改变材质、图标、状态、provider 和选择标记槽。
+- iOS：池内 `Orbis Adjacent Actions`（375pt、iOS 27.0）Debug 构建通过；`testDrawerCardsKeepUniformGeometryForShortAndLongTitles`、`testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions` 共 2 项通过。覆盖长短标题等宽等高、浅 / 深色、系统 XXXL 设置和多选 / 归档 / 恢复。现有正文 token 为固定字号，本轮没有新增 Dynamic Type 正文支持。
+- Android：池内 `Orbis_UI_Polish_35`（API 35）Debug / AndroidTest 构建通过；`SessionDrawerLayoutInstrumentedTest` 2 项通过，覆盖 360dp 窄宽度、浅 / 深色、1.0 / 1.5 字体缩放，以及长按多选前后几何。
+- 明暗及大字体设置截图已复核。iOS 旧多选用例的目标原位于视口边缘，XCTest 合成长按会自动滚动；改用显式两行预览夹具把两个目标排到目录前部，再严格比较选择前后 frame。此前失败结果保留，不把自动滚动误记为卡片高度变化。
+- 证据：`.scratch/sidebar-uniform/ios-layout-final.xcresult`、`ios-layout-final.log`、`android-layout.log`、`ios-final-screenshots/` 与 `android-screenshots/drawer-layout-*.png`；此前两次 iOS 结果和日志仍保留在同目录。构建产物来源与 SHA-256 记录在 `artifacts.json`，此前模拟器 App 保留在 `prior/`，未知状态不标作已验证。
+- 全程使用共享池内既有设备和固定构建缓存，按 owner 独占；Xcode 关闭并行克隆，Android 全部安装 / 测试明确指定 `emulator-5554`。未连接真实 Host、未安装到用户手机。设备归还后保留池内身份，未新建模拟器。
+- `git diff --check`、60 项稳定 ID / 本地引用存在性及两个本机指南一致性检查通过。真机、iOS 17 运行和全量 UI 回归未在本轮执行。

@@ -28,32 +28,15 @@
 		<true/>
 		<key>NSExceptionDomains</key>
 		<dict>
-			<key>10.0.0.0/8</key>
+			<!-- Host interface addresses can be public campus IPv4 or IPv6.
+			     iOS 17+ requires explicit IP exceptions even with local networking enabled.
+			     LAN authenticates/encrypts with E2E; RelayURL still requires WSS for public relays. -->
+			<key>0.0.0.0/0</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>
 			</dict>
-			<key>127.0.0.0/8</key>
-			<dict>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-			</dict>
-			<key>169.254.0.0/16</key>
-			<dict>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-			</dict>
-			<key>172.16.0.0/12</key>
-			<dict>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-			</dict>
-			<key>192.168.0.0/16</key>
-			<dict>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-			</dict>
-			<key>::1</key>
+			<key>::/0</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>

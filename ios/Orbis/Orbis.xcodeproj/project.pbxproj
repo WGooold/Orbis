@@ -43,6 +43,7 @@
 		A00100010000000000000034 /* SessionHistoryStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000034 /* SessionHistoryStorage.swift */; };
 		A00100010000000000000035 /* SessionReadOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000035 /* SessionReadOperations.swift */; };
 		A00100010000000000000036 /* TransferIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000036 /* TransferIO.swift */; };
+		A00100010000000000000038 /* PendingSends.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000038 /* PendingSends.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -85,6 +86,7 @@
 		A00110010000000000000034 /* SessionHistoryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHistoryStorage.swift; sourceTree = "<group>"; };
 		A00110010000000000000035 /* SessionReadOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReadOperations.swift; sourceTree = "<group>"; };
 		A00110010000000000000036 /* TransferIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferIO.swift; sourceTree = "<group>"; };
+		A00110010000000000000038 /* PendingSends.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingSends.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -126,6 +128,7 @@
 				A0011001000000000000002C /* ToolDetailView.swift */,
 				A0011001000000000000002D /* HostState.swift */,
 				A00110010000000000000036 /* TransferIO.swift */,
+				A00110010000000000000038 /* PendingSends.swift */,
 				A00110010000000000000035 /* SessionReadOperations.swift */,
 				A00110010000000000000034 /* SessionHistoryStorage.swift */,
 				A00110010000000000000032 /* OrbisHub.swift */,
@@ -264,6 +267,7 @@
 				A0010001000000000000002C /* ToolDetailView.swift in Sources */,
 				A0010001000000000000002D /* HostState.swift in Sources */,
 				A00100010000000000000036 /* TransferIO.swift in Sources */,
+				A00100010000000000000038 /* PendingSends.swift in Sources */,
 				A00100010000000000000035 /* SessionReadOperations.swift in Sources */,
 				A00100010000000000000034 /* SessionHistoryStorage.swift in Sources */,
 				A00100010000000000000032 /* OrbisHub.swift in Sources */,

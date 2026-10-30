@@ -304,6 +304,7 @@ export class ClaudeModsBridge {
     if (command.type === "stop" && (session.activeTurn === undefined || session.pendingStopId !== undefined)) return "not_cancelable";
     if (session.commands.size >= 64) return "queue_full";
     session.commands.set(commandId, { commandId, command });
+    if (command.type === "user_message" && command.messageId !== undefined) session.history.expectPrompt(command.messageId, command.text);
     if (command.type === "stop") session.pendingStopId = commandId;
     return "accepted";
   }
@@ -454,6 +455,7 @@ export class ClaudeModsBridge {
     const permissions = claudePermissionManagement(facts.permissionMode);
     return {
       runtimeId: session.runtime.runtimeId, name: "Claude Code", cwd: session.runtime.cwd, status: session.runtime.status,
+      sessionGraphSync: true,
       ...(session.runtime.sessionId === undefined ? {} : { sessionId: session.runtime.sessionId }), hostname: localHostname(),
       ...(facts.title === undefined ? {} : { sessionName: facts.title }),
       ...(model === undefined ? {} : { model: { provider: "claude-code", id: model.slice(0, 256),

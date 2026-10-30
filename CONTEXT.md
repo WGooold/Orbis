@@ -196,7 +196,7 @@ The deliberately bounded scope of Session activation. L1 continues a session tha
 _Avoid_: Permission tier
 
 **Spawn mode**:
-The `auto` | `tui` | `headless` choice for how an activated session starts. `auto` prefers a visible terminal window and degrades to headless where no desktop session exists; the Host reports what it actually did instead of what was asked.
+The `auto` | `tui` | `headless` choice for how an activated session starts. `tui` is the default and requires a visible terminal window (Terminal on macOS, Windows Terminal on Windows); inability to open it is an activation error. Only `auto` may choose headless when no desktop session or supported terminal entry exists. The Host reports the mode it actually started.
 _Avoid_: Attach mode
 
 **Directory browse**:
@@ -213,6 +213,10 @@ _Avoid_: Immediate queue, context append
 **Queue operation ID**:
 The stable remote identity for one requested steer or follow-up delivery, used to correlate terminal queue states and retries; it is not the agent's own message-entry ID.
 _Avoid_: Message ID
+
+**Pending send**:
+A client-local record of a message the phone wrote to the encrypted channel but has not yet seen in the source's transcript. It renders optimistically and is removed as soon as a source row declares the same identity (`messageId`, `clientMessageId` or a Host alias); it is never written to history caches, applied baselines or queue state, and it is never matched by text. See ADR-0049.
+_Avoid_: Optimistic delivery, local echo, outbox message as delivery fact
 
 **Runtime queue state**:
 The delivery fact reported by the computer side for a remote queue operation; the mobile client displays it but does not infer or execute it. The Host may maintain a shadow projection because Pi does not expose the queue contents through its extension API.

@@ -1,6 +1,6 @@
 import SwiftUI
 
-private enum AppPage: Hashable { case chat, pairing, status, settings, providers, history, downloads }
+private enum AppPage: Hashable { case chat, pairing, status, providers, history, downloads }
 
 struct ContentView: View {
     @EnvironmentObject private var store: OrbisStore
@@ -20,8 +20,7 @@ struct ContentView: View {
         switch preview {
         case "chat", "slash", "approval", "tool", "queue", "notices", "interactions", "truncated", "viewport": _pages = State(initialValue: [.chat])
         case "status": _pages = State(initialValue: [.status])
-        case "settings": _pages = State(initialValue: [.settings])
-        case "providers": _pages = State(initialValue: [.settings, .providers])
+        case "providers": _pages = State(initialValue: [.status, .providers])
         case "downloads": _pages = State(initialValue: [.downloads])
         case "history": _pages = State(initialValue: [.chat, .history])
         case "drawer": _drawerOpen = State(initialValue: true)
@@ -50,8 +49,7 @@ struct ContentView: View {
                                 .id(localSessionKey(host: store.selectedHost, runtime: runtime))
                         } else { OrbisEmptyState(symbol: "desktopcomputer", title: "会话已离线") }
                     case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
-                    case .status: ConnectionStatusView(onBack: back, onSettings: { pages.append(.settings) })
-                    case .settings: SettingsView(onBack: back, onProviders: { pages.append(.providers) })
+                    case .status: ConnectionStatusView(onBack: back)
                     case .providers: AgentProvidersView(onBack: back)
                     case .history: HistoryBranchView(onBack: back)
                     case .downloads: DownloadsView(onBack: back)
@@ -124,7 +122,7 @@ struct ContentView: View {
 
     private var home: some View {
         HomeView(onDirectory: { setDrawer(true) }, onStatus: { pages.append(.status) },
-                 onSettings: { pages.append(.settings) }, onAddHost: { pages.append(.pairing) },
+                 onAddHost: { pages.append(.pairing) },
                  onDownloads: { pages.append(.downloads) }, onUnpair: { confirmUnpair(store.selectedHost) },
                  onOpenRuntime: { hostId, runtime in
                      store.selectHost(hostId)
@@ -144,7 +142,7 @@ struct ContentView: View {
                           onNewSession: { cwd in
                               newSessionCwd = cwd; setDrawer(false); newSessionOpen = true
                           }, onAddHost: { setDrawer(false); pages.append(.pairing) },
-                          onProviders: { setDrawer(false); pages.append(.settings); pages.append(.providers) },
+                          onProviders: { setDrawer(false); pages.append(.status) },
                           onUnpair: { confirmUnpair($0) })
     }
 
@@ -207,6 +205,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                             .background(OrbisPalette(scheme).base.ignoresSafeArea())
                             .offset(x: offset ?? 0)
                             .transition(.move(edge: .leading))
+                            .accessibilityElement(children: .contain)
                             .accessibilityAddTraits(.isModal)
                     }
                     // 紧贴屏幕左缘起手时，挂在内容上的同时手势会被系统边缘手势拦下，这里单独接住。
@@ -397,7 +396,6 @@ struct HomeView: View {
     @State private var runtimeCardWidths: [String: CGFloat] = [:]
     let onDirectory: () -> Void
     let onStatus: () -> Void
-    let onSettings: () -> Void
     let onAddHost: () -> Void
     let onDownloads: () -> Void
     let onUnpair: () -> Void
@@ -435,7 +433,6 @@ struct HomeView: View {
                     OrbisIconButton(symbol: "arrow.down.to.line", label: "下载", action: onDownloads)
                     OrbisMenuIconButton(symbol: "ellipsis", label: "更多操作") {
                         [OrbisMenuItem(title: "连接状态", symbol: "info.circle", action: onStatus),
-                         OrbisMenuItem(title: "设置", symbol: "gearshape", action: onSettings),
                          OrbisMenuItem(title: "添加电脑", symbol: "plus", action: onAddHost),
                          .divider,
                          OrbisMenuItem(title: "取消配对当前电脑", symbol: "link", destructive: true, action: onUnpair)]
@@ -453,11 +450,16 @@ struct HomeView: View {
                 }
             }.frame(height: 48).padding(.horizontal, 20).padding(.bottom, 2)
             // Only the current computer's sessions: several paired computers never share one list (ADR-0030 修订).
-            if let host = currentHost, !host.runtimes.isEmpty {
+            if currentHost?.connection.homeRuntimesLoading == true {
+                Text(currentHost?.connection.homeRuntimesError ?? "正在加载会话…").font(.orbisBody()).foregroundStyle(OrbisPalette(scheme).secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let host = currentHost, !host.homeRuntimes.isEmpty {
                 ScrollView {
                     LazyVStack(spacing: 16) {
-                        ForEach(host.runtimes.sorted { host.connection.displayName($0).localizedStandardCompare(host.connection.displayName($1)) == .orderedAscending }) { runtime in
+                        ForEach(host.homeRuntimes) { runtime in
+                            // ADR-0049 §5：提交关闭后卡片沿滑动方向退场；电脑拒绝时再回到原位置。
                             runtimeCard(runtime, host: host)
+                                .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
                         }
                     }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 28)
                 }.refreshable { store.refresh() }
@@ -473,7 +475,7 @@ struct HomeView: View {
                 resetCloseSwipes()
             }
             .onChange(of: selecting) { _, active in if active { resetCloseSwipes() } }
-            .onChange(of: currentHost?.runtimes.map(\.runtimeId) ?? []) { _, ids in
+            .onChange(of: currentHost?.homeRuntimes.map(\.runtimeId) ?? []) { _, ids in
                 selectedRuntimeIds.formIntersection(ids)
             }
             .onDisappear { selectedRuntimeIds = []; resetCloseSwipes() }
@@ -501,7 +503,9 @@ struct HomeView: View {
 
     private func closeSelectedRuntimes() {
         guard let hostId = store.selectedHostId else { return }
-        let submitted = store.closeRuntimes(hostId: hostId, runtimeIds: selectedRuntimeIds)
+        let submitted = withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.32, dampingFraction: 0.86)) {
+            store.closeRuntimes(hostId: hostId, runtimeIds: selectedRuntimeIds)
+        }
         selectedRuntimeIds.subtract(submitted)
     }
 
@@ -579,11 +583,12 @@ struct HomeView: View {
                                 if pending {
                                     Label("待确认", systemImage: "exclamationmark.circle").font(.orbisCaption(.semibold))
                                         .foregroundStyle(OrbisPalette(scheme).error)
-                                } else { RuntimeStatusLabel(status: runtime.status) }
+                                } else { RuntimeStatusLabel(status: runtime.presentationStatus) }
                             }
-                        }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        OrbisSelectionIndicator(selected: selected, selecting: selecting)
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                }.buttonStyle(NeuButtonStyle(selected: selected, radius: OrbisRadius.card, padding: OrbisRadius.cardPadding + 4))
+                }.buttonStyle(OrbisSelectionButtonStyle(selected: selected, selecting: selecting, padding: OrbisRadius.cardPadding + 4))
                     .offset(x: -reveal)
                     .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(runtime.runtimeId) })
                     .accessibilityIdentifier("home-runtime-\(runtime.runtimeId)")
@@ -612,24 +617,27 @@ struct HomeView: View {
                             guard !selecting else { return }
                             // Let this release's button action finish before accepting taps again.
                             DispatchQueue.main.async { swipingRuntimeIds.remove(runtime.runtimeId) }
+                            var closing = false
                             if closeThreshold > 0, armedCloseRuntimeIds.contains(runtime.runtimeId), value.translation.width <= -closeThreshold,
                                abs(value.translation.width) > abs(value.translation.height) {
-                                _ = store.closeRuntimes(hostId: host.hostId, runtimeIds: [runtime.runtimeId])
+                                closing = withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.32, dampingFraction: 0.86)) {
+                                    !store.closeRuntimes(hostId: host.hostId, runtimeIds: [runtime.runtimeId]).isEmpty
+                                }
                             }
-                            withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.28, dampingFraction: 0.82)) {
-                                swipeTranslations[runtime.runtimeId] = 0
-                                armedCloseRuntimeIds.remove(runtime.runtimeId)
-                                closeHapticRuntimeIds.remove(runtime.runtimeId)
+                            armedCloseRuntimeIds.remove(runtime.runtimeId)
+                            closeHapticRuntimeIds.remove(runtime.runtimeId)
+                            if closing {
+                                // The card leaves from where the finger released it; reset only after the
+                                // exit, so a card restored by a rejected close comes back in place.
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { swipeTranslations[runtime.runtimeId] = 0 }
+                            } else {
+                                withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.28, dampingFraction: 0.82)) {
+                                    swipeTranslations[runtime.runtimeId] = 0
+                                }
                             }
                         })
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { runtimeCardWidths[runtime.runtimeId] = $0 }
-            if selecting {
-                OrbisIconButton(symbol: selected ? "checkmark.circle.fill" : "circle", label: selected ? "取消选择会话" : "选择会话",
-                                tint: selected ? OrbisPalette(scheme).accent : nil, selected: selected, compact: true) {
-                    toggleSelection(runtime.runtimeId)
-                }
-            }
         }.accessibilityElement(children: .contain)
     }
 

@@ -3214,8 +3214,11 @@ export class CodexRuntime implements AgentBackend {
         data = this.#projectToolItem(thread, data, "started", typeof record.turnId === "string" ? record.turnId : undefined, true);
         const raw = toolCallMessage(data) ?? itemToMessage(data);
         if (raw === undefined) return;
+        // The live row stays keyed by the native item id until completion; it still declares
+        // the phone send so a device reading only source checkpoints can reconcile (ADR-0049).
+        const clientId = withClientMessageId(data, raw).clientMessageId;
         this.#setLiveMessage(thread, {
-          message: raw,
+          message: clientId === undefined ? raw : { ...raw, clientMessageId: clientId },
           finished: false,
           contentComplete: true,
         });
@@ -3649,7 +3652,7 @@ export class CodexRuntime implements AgentBackend {
     const regularMessage = itemToMessage(item);
     const tool = toolCallInfo(item);
     const messages = tool === undefined
-      ? (regularMessage === undefined ? [] : [{ entryId, message: regularMessage }])
+      ? (regularMessage === undefined ? [] : [{ entryId, message: withDeclaredClientId(item, regularMessage) }])
       : [
         { entryId, message: toolCallMessage(item) },
         { entryId: `${entryId}:result`, message: toolResultMessage(item) },
@@ -4048,16 +4051,30 @@ function mcpCommands(value: unknown): DynamicSlashCommand[] {
 
 /**
  * app-server 把 turn/start 的 clientUserMessageId 原样放在 UserMessageThreadItem.clientId
- * 带回。有它时用户气泡用 App 的 messageId（与 Pi 的 message_start 单事件链同构）；
- * 没有（旧版 app-server / 测试直调）就保持 item.id——仍然只有一个事件源，只是
- * 无法把 live id 映射回 entry id。
+ * 带回。有它时用户气泡用 App 的 messageId（与 Pi 的 message_start 单事件链同构），并按
+ * ADR-0049 §2 同时声明 `clientMessageId`；没有（旧版 app-server / 测试直调）就保持
+ * item.id——仍然只有一个事件源，只是无法把 live id 映射回 entry id。
  */
 function withClientMessageId(item: Record<string, unknown>, message: ChatMessage): ChatMessage {
-  const clientId = item.clientId;
-  if (message.role !== "user" || typeof clientId !== "string" || clientId.length === 0 || clientId === message.messageId) {
-    return message;
-  }
-  return { ...message, messageId: clientId };
+  const clientId = itemClientId(item, message);
+  return clientId === undefined ? message : { ...message, messageId: clientId, clientMessageId: clientId };
+}
+
+/**
+ * Canonical Entry 保持 item.id，只声明 `clientMessageId`（ADR-0049 §2）。用户消息的 started /
+ * completed 常落在同一个 source 合并窗口里，手机只看得到这条 Entry；不声明就只能等回合结束的兜底。
+ */
+function withDeclaredClientId(item: Record<string, unknown>, message: ChatMessage): ChatMessage {
+  const clientId = itemClientId(item, message);
+  return clientId === undefined ? message : { ...message, clientMessageId: clientId };
+}
+
+/** 通知 / thread/read 用 `clientId`，rollout 落盘的同一 item 用 `client_id`。 */
+function itemClientId(item: Record<string, unknown>, message: ChatMessage): string | undefined {
+  const clientId = item.clientId ?? item.client_id;
+  return message.role === "user" && typeof clientId === "string" && clientId.length > 0 && clientId.length <= 256
+    ? clientId
+    : undefined;
 }
 
 function sameWorkingDirectory(left: string, right: string): boolean {

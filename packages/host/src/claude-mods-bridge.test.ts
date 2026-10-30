@@ -24,6 +24,21 @@ function online(bridge: ClaudeModsBridge, input: unknown = hello()) {
 }
 
 describe("ClaudeModsBridge", () => {
+  it("advertises graph sync on attach and every metadata refresh so clients request their first checkpoint", () => {
+    const onRuntimeOnline = vi.fn();
+    const events: RuntimeEvent[] = [];
+    const bridge = bridgeWith({ onRuntimeOnline, onEvent: (_id, event) => events.push(event) });
+    const current = online(bridge);
+    expect(onRuntimeOnline).toHaveBeenCalledWith(expect.objectContaining({ sessionGraphSync: true }));
+    bridge.receiveEvent(current.runtimeId, current.generation, { type: "session.state", state: { model: "opus" } });
+    bridge.announce(current.runtimeId);
+    expect(bridge.runtimeMetadata()[0]).toMatchObject({ sessionGraphSync: true });
+    const metadata = events.filter(event => event.type === "runtime.metadata");
+    expect(metadata.length).toBeGreaterThan(0);
+    expect(metadata.every(event => event.metadata.sessionGraphSync === true)).toBe(true);
+    bridge.close();
+  });
+
   it("advertises Host-owned quit only after process identity is verified and shares concurrent closes", async () => {
     let finish!: () => void;
     const stopped = new Promise<void>(resolve => { finish = resolve; });

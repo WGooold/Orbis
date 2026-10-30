@@ -57,6 +57,40 @@ class DownloadFileBrowserInstrumentedTest {
         }
     }
 
+    @Test fun longPressKeepsDownloadGeometryAndDeletionRequiresConfirmation() {
+        val task = ArtifactDownload("one", "host", displayName = "应用安装包与说明文件.zip",
+            sourcePath = "/repo/releases/应用安装包与说明文件.zip", status = "downloading")
+        val state = RemoteState(hostId = "host", e2eReady = true, downloads = mapOf(task.taskId to task))
+        val deleted = mutableListOf<Set<String>>()
+        var paused = 0
+        compose.setContent { OrbisTheme { AllDownloadsScreen(
+            state = state, onBack = {}, onBrowse = {}, onBrowseInto = {}, onBrowseUp = {},
+            onDismissBrowse = {}, onDownload = {}, onRetry = {}, onCancel = { paused++ }, onDelete = deleted::add,
+        ) } }
+        val card = compose.onNodeWithTag("download-card-one")
+        val originalBounds = card.fetchSemanticsNode().boundsInRoot
+        val originalTitle = compose.onNodeWithText(task.displayName, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        card.performTouchInput { longClick() }
+        compose.onNodeWithText("已选择 1 项").assertIsDisplayed()
+        assertEquals(originalBounds, card.fetchSemanticsNode().boundsInRoot)
+        assertEquals(originalTitle, compose.onNodeWithText(task.displayName, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot)
+        card.assertIsSelected()
+        capture("download-selection-stable.png")
+        compose.onNodeWithContentDescription("删除所选下载").performClick()
+        compose.onNodeWithText("删除下载记录与本机文件？").assertIsDisplayed()
+        compose.onNodeWithText("取消").performClick()
+        card.assertIsSelected()
+        compose.runOnIdle { assertTrue(deleted.isEmpty()); assertEquals(0, paused) }
+        compose.onNodeWithContentDescription("退出多选").performClick()
+        assertEquals(originalBounds, card.fetchSemanticsNode().boundsInRoot)
+        card.performClick()
+        compose.runOnIdle { assertEquals(1, paused) }
+        card.performTouchInput { longClick() }
+        compose.onNodeWithContentDescription("删除所选下载").performClick()
+        compose.onNodeWithText("删除 1 项").performClick()
+        compose.runOnIdle { assertEquals(listOf(setOf("one")), deleted) }
+    }
+
     @Test fun sessionBrowserFiltersFilesWhileFilePickerHandlesLoadingOfflineAndRetry() {
         val state = mutableStateOf(RemoteState(
             connection = RelayConnection.ONLINE, e2eReady = true,

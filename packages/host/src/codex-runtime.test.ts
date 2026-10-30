@@ -183,6 +183,59 @@ describe("Codex recoverable source checkpoints", () => {
     }
   });
 
+  it("ADR-0049: a coalesced user item reaches the phone as a canonical Entry that declares its client id", async () => {
+    vi.useFakeTimers();
+    const h = makeHarness({ sourceCoalesceMs: 100 });
+    try {
+      await activate(h);
+      await vi.advanceTimersByTimeAsync(100);
+      h.events.length = 0;
+      const user = { id: "item-user", type: "userMessage", clientId: "phone-1", content: [{ type: "text", text: "同一条消息" }] };
+      h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1 } });
+      h.notify("item/started", { threadId: "th-1", turnId: "t", item: user });
+      h.notify("item/completed", { threadId: "th-1", turnId: "t", item: user });
+      await vi.advanceTimersByTimeAsync(100);
+      // started/completed share one window: the live row never reaches the phone, only the Entry does.
+      const patches = h.events.filter(event => event.type === "session.patch");
+      expect(patches).toHaveLength(1);
+      expect(patches[0]?.live.messages).toEqual([]);
+      expect(patches[0]?.entries).toMatchObject([{ entryId: "item-user", data: { message: { messageId: "item-user", clientMessageId: "phone-1" } } }]);
+      expect(patches[0]?.display?.entries).toMatchObject([{ entryId: "item-user", message: { messageId: "item-user", clientMessageId: "phone-1" } }]);
+      // A completion replayed for the committed item must not look like a rewrite of that Entry.
+      h.notify("item/completed", { threadId: "th-1", turnId: "t", item: user });
+      expect(nativeReads(h)).toHaveLength(0);
+    } finally {
+      h.server.onExit?.(0);
+      vi.useRealTimers();
+    }
+  });
+
+  it("ADR-0049: a replayed history keeps the declared client id from thread/read and rollout items", async () => {
+    const h = makeHarness();
+    await resume(h, [{ id: "t", status: "completed", items: [
+      { id: "item-user", type: "userMessage", clientId: "phone-1", content: [{ type: "text", text: "同一条消息" }] },
+      agent("answer"),
+    ] }]);
+    expect(syncHistory(h)).toMatchObject({ entries: [
+      { entryId: "item-user", data: { message: { messageId: "item-user", clientMessageId: "phone-1" } } },
+      { entryId: "answer", data: { message: expect.not.objectContaining({ clientMessageId: expect.anything() }) } },
+    ] });
+
+    // The legacy rollout fallback reads the same item as written to disk (`UserMessage` / `client_id`).
+    const rollout = makeHarness({ initialTurns: [{ id: "t", items: [] }] });
+    const path = join(rollout.rolloutRoot, "rollout-th-1.jsonl");
+    writeFileSync(path, [
+      JSON.stringify({ type: "session_meta", payload: { id: "th-1" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "item_completed", turn_id: "t", item: {
+        type: "UserMessage", id: "item-user", client_id: "phone-2", content: [{ type: "text", text: "落盘格式", text_elements: [] }],
+      } } }),
+    ].join("\n"));
+    const activating = rollout.runtime.activate({ type: "resume", sessionId: "th-1" });
+    rollout.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", turns: [], path } });
+    await activating;
+    expect(syncHistory(rollout)).toMatchObject({ entries: [{ entryId: "item-user", data: { message: { messageId: "item-user", clientMessageId: "phone-2" } } }] });
+  });
+
   const agent = (id: string, text = id) => ({ id, type: "agentMessage", text });
   const tool = (id: string, status?: string) => ({ id, type: "commandExecution", command: "dir", ...(status === undefined ? {} : { status }) });
   const resume = async (h: ReturnType<typeof makeHarness>, turns: unknown[]) => {
@@ -1192,6 +1245,14 @@ describe("CodexRuntime", () => {
       threadId: "th-1",
       item: { id: "entry-user", type: "userMessage", clientId: "live-user", content: [{ type: "text", text: "同一条消息" }] },
     });
+    // ADR-0049: the source checkpoint row is still keyed by the native item, but declares the phone send.
+    h.runtime.handleCommand(
+      { type: "session.sync", sessionId: "th-1", syncId: "client-id-live", range: "preview" },
+      "client-id-live-command",
+      "th-1",
+    );
+    const live = h.events.find((event) => event.type === "session.snapshot" && event.syncId === "client-id-live");
+    expect(live).toMatchObject({ live: { messages: [{ message: { messageId: "entry-user", clientMessageId: "live-user" } }] } });
     h.notify("item/completed", {
       threadId: "th-1",
       item: { id: "entry-user", type: "userMessage", clientId: "live-user", content: [{ type: "text", text: "同一条消息" }] },
@@ -1204,11 +1265,11 @@ describe("CodexRuntime", () => {
     // 唯一一条用户消息事件链：started / finished 各一次，都用 App 的 messageId。
     const started = h.events.filter((event) => event.type === "message.started" && event.message?.role === "user");
     expect(started).toHaveLength(1);
-    expect(started[0]).toMatchObject({ message: { messageId: "live-user", role: "user", content: [{ text: "同一条消息" }] } });
+    expect(started[0]).toMatchObject({ message: { messageId: "live-user", clientMessageId: "live-user", role: "user", content: [{ text: "同一条消息" }] } });
     const finished = h.events.filter((event) => event.type === "message.finished");
     expect(finished).toHaveLength(1);
     expect(finished[0]).toMatchObject({
-      message: { messageId: "live-user", role: "user", content: [{ text: "同一条消息" }] },
+      message: { messageId: "live-user", clientMessageId: "live-user", role: "user", content: [{ text: "同一条消息" }] },
     });
     const turnFinished = h.events.find((event) => event.type === "turn.finished");
     expect(turnFinished).toMatchObject({

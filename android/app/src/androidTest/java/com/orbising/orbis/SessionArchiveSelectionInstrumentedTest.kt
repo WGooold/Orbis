@@ -39,7 +39,10 @@ class SessionArchiveSelectionInstrumentedTest {
                 })
         } }
         compose.onNodeWithContentDescription("会话操作").assertDoesNotExist()
+        val originalBounds = compose.onNodeWithTag("drawer-session-one").fetchSemanticsNode().boundsInRoot
         compose.onNodeWithTag("drawer-session-one").performTouchInput { longClick() }
+        compose.waitForIdle()
+        assertEquals(originalBounds, compose.onNodeWithTag("drawer-session-one").fetchSemanticsNode().boundsInRoot)
         compose.onNodeWithText("已选择 1 项").assertIsDisplayed()
         compose.onNodeWithTag("drawer-session-two").performClick()
         compose.onNodeWithText("已选择 2 项").assertIsDisplayed()

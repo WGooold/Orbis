@@ -1335,6 +1335,24 @@ class RelayReducerTest {
     }
 
     @Test
+    fun `old host runtime errors for download cancellation stay silent without hiding other failures`() {
+        val state = RemoteState(connection = RelayConnection.ONLINE, e2eReady = true, error = "已有提示")
+        val staleCancellation = reducer.reduce(state, """
+          {"type":"protocol.error","code":"runtime_offline","message":"runtime host-1 当前没有在本机运行","commandId":"artifact-cancel:delete-1"}
+        """.trimIndent())
+        assertEquals(state, staleCancellation)
+
+        val runtimeFailure = reducer.reduce(state, """
+          {"type":"protocol.error","code":"runtime_offline","message":"runtime agent-1 当前没有在本机运行","commandId":"chat-1"}
+        """.trimIndent())
+        assertEquals("runtime agent-1 当前没有在本机运行", runtimeFailure.error)
+        val cancellationFailure = reducer.reduce(state, """
+          {"type":"protocol.error","code":"unauthorized","message":"Invalid device credential","commandId":"artifact-cancel:delete-2"}
+        """.trimIndent())
+        assertNotEquals(state.error, cancellationFailure.error)
+    }
+
+    @Test
     fun `history protocol error releases paging without cancelling the forward catch-up`() {
         val state = RemoteState(
             selectedRuntimeId = "runtime-a",

@@ -282,6 +282,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun refreshDiagnostics(cursor: String? = null) = active()?.refreshDiagnostics(cursor)
 
     fun refreshProviderFacts() = active()?.refreshProviderModel()
+    fun refreshHostModel(domains: List<String> = HOST_MODEL_DOMAINS, force: Boolean = false) = active()?.refreshHostModel(domains, force)
 
     /** 前台和定期核对按领域重读；聊天与通知仍保留各自事务和恢复水位。 */
     fun reconcileModels() {
@@ -328,9 +329,13 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         active()?.createSession(agentKind, cwd, expectedHostId) == true
 
     fun loadAgentProviders(kind: String) = active()?.loadAgentProviders(kind)
+    fun querySubscription(provider: AgentProvider, expectedHostId: String?) = active()?.querySubscription(provider, expectedHostId)
 
     fun switchAgentProvider(provider: AgentProvider, expectedHostId: String?) =
         active()?.switchAgentProvider(provider, expectedHostId)
+
+    fun removeAgentProviders(providers: List<AgentProvider>, expectedHostId: String?) =
+        active()?.removeAgentProviders(providers, expectedHostId)
 
     fun clearActivationNotice() = active()?.clearActivationNotice()
 
@@ -389,6 +394,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun stopRuntime(): String? = active()?.stopRuntime()
     fun cancelQueuedMessage(queueId: String): String? = active()?.cancelQueuedMessage(queueId)
+    fun resendPendingSend(messageId: String): String? = active()?.resendPendingSend(messageId)
+    fun restorePendingSend(messageId: String): String? = active()?.restorePendingSend(messageId)
+    fun discardPendingSend(messageId: String) = active()?.discardPendingSend(messageId)
     fun openToolDetail(runtimeId: String, summary: ToolSummary,
         part: String = summary.contents.firstOrNull { it.availability != "absent" }?.part ?: "arguments",
     ) = active()?.openToolDetail(runtimeId, summary, part)

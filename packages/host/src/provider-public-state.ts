@@ -3,6 +3,7 @@ import type {
   AgentKind, HostProviderAuthentication, HostProviderHealth, HostProviderRouting, HostProviderUsage,
 } from "@orbis/protocol";
 import { codexOfficial, codexToken } from "./provider-codex.js";
+import { claudeOfficial } from "./provider-claude.js";
 import { providerFields } from "./provider-form.js";
 import type { ProxyPublicStatus } from "./codex-proxy.js";
 import type { ProviderProfile } from "./provider-manager.js";
@@ -17,6 +18,7 @@ const timestamp = (value: unknown): number | null => typeof value === "number" &
 /** Presence is local evidence. We deliberately never turn it into a claim that the remote credential is valid. */
 export function publicProviderAuthentication(profile: ProviderProfile | undefined, managedAccountIds: ReadonlySet<string>, defaultAccountId?: string): HostProviderAuthentication {
   if (!profile) return { availability: "unknown", method: "unknown", credentialPresent: null, bindingReady: null, verified: null };
+  if (profile.kind === "claude" && claudeOfficial(profile.config)) return { availability: "unknown", method: "native_oauth", credentialPresent: null, bindingReady: null, verified: null };
   if (profile.authBinding) {
     const bound = profile.authBinding.accountId ?? defaultAccountId;
     const present = bound !== undefined && managedAccountIds.has(bound);

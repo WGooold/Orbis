@@ -40,6 +40,31 @@ struct AgentStateTests {
          "options": [["value": "yes", "label": "Yes"]]]
     }
 
+    @Test func compactionActivityDrivesPresentationWithoutChangingExecutionPhase() {
+        let h = Harness()
+        h.receive([domain("execution", ["phase": "idle", "compaction": ["phase": "running"]])])
+        #expect(h.runtime.status == "idle")
+        #expect(runtimeStatusTitle(h.runtime.presentationStatus) == "压缩中")
+        h.receive([domain("execution", ["phase": "running", "compaction": ["phase": "running"]], revision: 2)])
+        #expect(h.runtime.status == "running")
+        #expect(h.runtime.presentationStatus == "compacting")
+        h.receive([domain("execution", ["phase": "waiting_local_interaction", "compaction": ["phase": "running"]], revision: 3)])
+        #expect(h.runtime.presentationStatus == "waiting_local_interaction")
+        h.receive([domain("execution", ["phase": "running", "compaction": ["phase": "idle"]], revision: 4)])
+        #expect(h.runtime.presentationStatus == "running")
+        h.receive([domain("execution", ["phase": "idle", "compaction": ["phase": "failed"]], revision: 5)])
+        #expect(h.runtime.compactionPhase == "failed")
+        #expect(h.runtime.presentationStatus == "idle")
+        h.receive([domain("execution", ["phase": "running", "compaction": ["phase": "running"]], revision: 6)])
+        h.receive([domain("execution", ["phase": "idle", "compaction": "unavailable"], revision: 7)])
+        #expect(h.runtime.compactionPhase == nil)
+        #expect(h.runtime.presentationStatus == "idle")
+        h.receive([domain("execution", ["phase": "running", "compaction": ["phase": "running"]], revision: 8)])
+        h.receive([domain("execution", NSNull(), revision: 9, availability: "unknown")])
+        #expect(h.runtime.compactionPhase == nil)
+        #expect(h.runtime.presentationStatus == "unknown")
+    }
+
     @Test func independentDomainsRestoreStatusModelContextAndOpaqueCapabilities() throws {
         let h = Harness()
         h.receive([domain("execution", ["phase": "waiting_local_interaction"])])

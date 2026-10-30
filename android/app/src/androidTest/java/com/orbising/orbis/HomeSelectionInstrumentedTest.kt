@@ -18,7 +18,8 @@ class HomeSelectionInstrumentedTest {
         val pairing = HostPairing("host", "Test Host", "test-public", "test-root",
             relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
         var state by mutableStateOf(RemoteState(hostId = "host", e2eReady = true,
-            runtimes = listOf("one", "two", "three").associateWith { RuntimeSummary(it, it, "/repo", "idle", sessionId = it) }))
+            runtimes = listOf("one", "two", "three").associateWith { RuntimeSummary(it, it, "/repo", "idle", sessionId = it, agentKind = "pi",
+                domainAvailability = mapOf("identity" to "ready", "execution" to "ready", "interactions" to "ready")) }))
         val haptics = mutableListOf<HapticFeedbackType>()
         val opened = mutableListOf<String>()
         val closed = mutableListOf<Set<String>>()
@@ -40,7 +41,10 @@ class HomeSelectionInstrumentedTest {
                 }
             }
         }
+        val originalBounds = compose.onNodeWithTag("home-runtime-one").fetchSemanticsNode().boundsInRoot
         compose.onNodeWithTag("home-runtime-one").performTouchInput { longClick() }
+        compose.waitForIdle()
+        assertEquals(originalBounds, compose.onNodeWithTag("home-runtime-one").fetchSemanticsNode().boundsInRoot)
         compose.onNodeWithText("已选择 1 项").assertIsDisplayed()
         compose.onNodeWithTag("home-runtime-two").performClick()
         compose.onNodeWithText("已选择 2 项").assertIsDisplayed()

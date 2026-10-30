@@ -37,9 +37,13 @@ export function dshWebMessage(id: string, event: DshWebLogEvent, toolNames: Read
       content: [{ type: "text", text: dshErrorText(record(reason.error).message) }], isError: true };
   }
   if (!["user/message", "assistant/message", "tool/result"].includes(event.type)) return undefined;
+  // ADR-0049 §2：`session/prompt` 的 requestId 就是手机的 messageId，原生日志以 rpcId 保存它。
+  const clientMessageId = event.type === "user/message" && typeof source.rpcId === "string" &&
+    source.rpcId.length > 0 && source.rpcId.length <= 256 ? source.rpcId : undefined;
   return {
     messageId: dshWebEntryId(id, event.seq), role: event.type === "user/message" ? "user" : event.type === "tool/result" ? "tool" : "assistant",
     timestamp: event.time, content: dshContent(raw.content),
+    ...(clientMessageId === undefined ? {} : { clientMessageId }),
     ...(event.type === "tool/result" ? { toolCallId: String(raw.toolCallId), toolName: toolNames.get(String(raw.toolCallId)) ?? "tool", isError: raw.isError === true } : {}),
   };
 }

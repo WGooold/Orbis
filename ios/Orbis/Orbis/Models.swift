@@ -96,7 +96,12 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
     var permissionManagement: PermissionManagement? = nil
     var sessionGraphSync: Bool? = nil
     var sessionLeafId: String? = nil
+    /// Host execution activity; kept separate from the phase used by send/stop logic.
+    var compactionPhase: String? = nil
     var id: String { runtimeId }
+    var presentationStatus: String {
+        compactionPhase == "running" && ["idle", "running"].contains(status) ? "compacting" : status
+    }
 }
 
 struct RuntimeModelInfo: Codable, Hashable {
@@ -322,6 +327,8 @@ struct ChatMessage: Codable, Hashable, Identifiable {
     var toolSummary: ToolSummary? = nil
     var toolCallId: String? = nil
     var toolName: String? = nil
+    /// ADR-0049：由手机发送产生时，源端带回的原 messageId；只用于对账本地待确认发送。
+    var clientMessageId: String? = nil
     var id: String { messageId }
     var text: String {
         content.compactMap { item -> String? in

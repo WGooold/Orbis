@@ -21,7 +21,7 @@ ApplicationWindow {
     // “发现可用更新”提示条只在本轮运行里露一次：关掉后仍可从侧边栏圆点和各页面按钮进入。
     property bool updateNoticeDismissed: false
     readonly property bool canInstallAgents: host.state === "stopped" || host.state === "error"
-    function agentName(kind) { return ({pi:"Pi", codex:"Codex", dsh:"DeepSeek Harness"})[kind] || kind }
+    function agentName(kind) { return ({pi:"Pi", codex:"Codex", claude:"Claude Code", dsh:"DeepSeek Harness"})[kind] || kind }
     // Codex 桌面版接入卡只是把 Host 下发的分档换成人话；文案本身全部来自 Host，
     // 两个客户端不各自拼，免得同一件事在电脑和手机上说法不一。
     function codexDesktopState() { return (host.codexDesktop && host.codexDesktop.state) ? host.codexDesktop.state : "" }
@@ -38,7 +38,7 @@ ApplicationWindow {
     property bool loadingProviderDraft: false
     property string pendingPresetId: ""
     property string draggedProviderId: ""
-    readonly property bool officialProvider: providerDraft.kind === "codex" && providerDraft.official === true
+    readonly property bool officialProvider: ["codex", "claude"].indexOf(providerDraft.kind) >= 0 && providerDraft.official === true
     readonly property var visibleProviders: host.providers.filter(function(p) { return ProviderFlow.matchesProvider(p, providerSearch.text) })
     function changePreset(id) { if (id === (providerDraft.presetId || "custom")) { presetExpanded.checked = false; return } if (providerFormDirty) { pendingPresetId = id; changePresetDialog.open() } else host.presetProvider(id) }
     function moveProvider(source, target) { var ids = ProviderFlow.reorderedIds(host.providers, source, target); if (ids !== null) host.reorderProviders(ids) }
@@ -99,9 +99,12 @@ ApplicationWindow {
         providerKey.text = draft.fields.providerKey
         providerUrl.text = draft.fields.baseUrl; providerApiKey.text = draft.fields.apiKey
         providerModel.text = draft.fields.model || (window.providerDraft.kind === "codex" ? "gpt-5.6-sol" : "")
-        providerApi.model = window.providerDraft.kind === "codex" ? ["openai-responses", "openai-completions", "anthropic-messages"] : ["", "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai", "bedrock-converse-stream"]
+        providerApi.model = window.providerDraft.kind === "claude" ? ["anthropic-messages"] : window.providerDraft.kind === "codex" ? ["openai-responses", "openai-completions", "anthropic-messages"] : ["", "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai", "bedrock-converse-stream"]
         if (providerApi.find(draft.fields.api) < 0) providerApi.model = providerApi.model.concat([draft.fields.api])
         providerApi.currentIndex = Math.max(0, providerApi.find(draft.fields.api))
+        var claude = draft.fields.claude || {}
+        claudeCredential.currentIndex = claude.apiKeyField === "ANTHROPIC_API_KEY" ? 1 : 0
+        claudeHaiku.text = claude.haiku || ""; claudeSonnet.text = claude.sonnet || ""; claudeOpus.text = claude.opus || ""
         piHeaders.text = JSON.stringify(draft.fields.headers || {}, null, 2)
         piCompat.text = JSON.stringify(draft.fields.compat || {}, null, 2)
         // Qt QVariant-backed rows do not retain nested in-place edits when serialized.
@@ -174,6 +177,7 @@ ApplicationWindow {
         if (draft.kind === "codex") draft.metadata.authBinding = providerAccount.currentValue ? {source:"managed_account",authProvider:"codex_oauth",accountId:providerAccount.currentValue === "$default" ? "" : providerAccount.currentValue} : null
         if (basic) {
             draft.fields = {providerKey: providerKey.text.trim(), baseUrl: providerUrl.text.trim(), apiKey: providerApiKey.text, model: providerModel.text.trim(), api: providerApi.currentText}
+            if (draft.kind === "claude") draft.fields.claude = {apiKeyField: claudeCredential.currentText, haiku: claudeHaiku.text.trim(), sonnet: claudeSonnet.text.trim(), opus: claudeOpus.text.trim()}
             if (draft.kind === "codex") draft.fields.reasoningEffort = codexReasoning.currentText
             if (draft.kind === "pi" || (draft.kind === "dsh" && window.explicitProviderModels)) draft.fields.models = window.providerModels
             if (draft.kind === "pi" || draft.kind === "codex") {
@@ -804,6 +808,20 @@ ApplicationWindow {
                                 }
                             }
                         }
+                        Card { Layout.fillWidth: true
+                            ColumnLayout { anchors.fill: parent; spacing: 12
+                                RowLayout { Layout.fillWidth: true
+                                    Heading { text: "Claude Code" }
+                                    Item { Layout.fillWidth: true }
+                                    Hint { text: host.claudeInstalled ? "可用" : "尚未安装" }
+                                }
+                                Hint { text: "供应商切换后，请重新打开 Claude Code 会话。"; Layout.fillWidth: true }
+                                RowLayout {
+                                    ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders("claude") }
+                                    ActionButton { text: "打开 Claude Code"; enabled: host.bridgeReady && !host.busy && host.claudeInstalled; onClicked: host.openAgentTui("claude") }
+                                }
+                            }
+                        }
                         Hint { visible: host.busy && !host.agentInstalling; text: "正在检测 Agent…"; Layout.fillWidth: true }
                     }
 
@@ -812,7 +830,7 @@ ApplicationWindow {
                         RowLayout {
                             Layout.fillWidth: true
                             ActionButton { text: "‹ Agent"; onClicked: window.providersOpen = false }
-                            Heading { text: ({pi: "Pi", codex: "Codex", dsh: "DeepSeek Harness"})[host.providerKind] + " · 供应商" }
+                            Heading { text: ({pi: "Pi", codex: "Codex", claude: "Claude Code", dsh: "DeepSeek Harness"})[host.providerKind] + " · 供应商" }
                             Item { Layout.fillWidth: true }
                         }
                         Flow {
@@ -870,6 +888,7 @@ ApplicationWindow {
                                   RowLayout { Layout.fillWidth: true; spacing: 10
                                     Hint { text: modelData.websiteUrl || modelData.id; Layout.fillWidth: true }
                                     ActionButton { text: host.checkingProviderIds.indexOf(modelData.id) >= 0 ? "检测中…" : "检测连通"; visible: modelData.category !== "official"; enabled: !host.busy && host.checkingProviderIds.indexOf(modelData.id) < 0; onClicked: host.checkProvider(modelData.id) }
+                                    ActionButton { text: "查询订阅配额"; visible: modelData.enabled && modelData.subscriptionSupported === true; enabled: !host.busy; onClicked: host.querySubscription(modelData.id) }
                                     SoftToolButton { text: "↑"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index > 0; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index - 1].id); ToolTip.visible: hovered; ToolTip.text: "上移" }
                                     SoftToolButton { text: "↓"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index + 1 < window.visibleProviders.length; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index + 1].id); ToolTip.visible: hovered; ToolTip.text: "下移" }
                                   }
@@ -1071,11 +1090,12 @@ ApplicationWindow {
                 Label { text: "供应商标识"; visible: window.providerDraft.kind === "pi" || providerDetails.checked; color: "#4b5d78" }
                 Field { id: providerKey; visible: window.providerDraft.kind === "pi" || providerDetails.checked; Layout.fillWidth: true; maximumLength: 128; placeholderText: "custom"; enabled: window.providerDraft.kind !== "pi" || !!window.providerDraft.create }
                 Hint { visible: window.providerDraft.kind === "pi"; text: window.providerDraft.create ? "标识对应 models.json 的节点；保存后不可修改。" : "标识固定；修改名称不会更改模型引用。"; Layout.fillWidth: true }
-                Label { text: "ChatGPT 登录来源"; visible: window.officialProvider; color: "#4b5d78" }
-                SoftComboBox { id: providerAccount; visible: window.officialProvider; Layout.fillWidth: true; textRole: "label"; valueRole: "id"; model: [] }
-                RowLayout { visible: window.officialProvider; Layout.fillWidth: true
+                Label { text: "ChatGPT 登录来源"; visible: window.officialProvider && window.providerDraft.kind === "codex"; color: "#4b5d78" }
+                SoftComboBox { id: providerAccount; visible: window.officialProvider && window.providerDraft.kind === "codex"; Layout.fillWidth: true; textRole: "label"; valueRole: "id"; model: [] }
+                RowLayout { visible: window.officialProvider && window.providerDraft.kind === "codex"; Layout.fillWidth: true
                     ActionButton { text: "管理账号"; enabled: !host.busy; onClicked: { host.oauthAccount("list"); oauthDialog.open() } }
                 }
+                Hint { visible: window.officialProvider && window.providerDraft.kind === "claude"; text: "使用 Claude Code 已登录的官方订阅账号；请在 CLI 中完成登录。"; Layout.fillWidth: true }
                 SoftSwitch { id: providerDetails; marksProviderDirty: false; text: "显示其他信息与高级标识" }
                 ColumnLayout { visible: providerDetails.checked; Layout.fillWidth: true; spacing: 8
                     RowLayout { Layout.fillWidth: true
@@ -1112,6 +1132,13 @@ ApplicationWindow {
                     Field { id: providerUrl; objectName: "providerUrl"; visible: !window.officialProvider; Layout.fillWidth: true; placeholderText: "例如 https://api.example.com/v1" }
                     Label { text: "API Key / 凭据"; visible: !window.officialProvider; color: "#4b5d78" }
                     Field { id: providerApiKey; objectName: "providerApiKey"; visible: !window.officialProvider; Layout.fillWidth: true; placeholderText: "API Key；已有环境变量认证会保留"; echoMode: TextInput.PasswordEchoOnEdit }
+                    ColumnLayout { visible: window.providerDraft.kind === "claude"; Layout.fillWidth: true; spacing: 8
+                        Label { text: "认证字段"; visible: !window.officialProvider; color: "#4b5d78" }
+                        SoftComboBox { id: claudeCredential; visible: !window.officialProvider; Layout.fillWidth: true; model: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] }
+                        Field { id: claudeHaiku; Layout.fillWidth: true; placeholderText: "Haiku 模型 ID（留空使用原生默认）" }
+                        Field { id: claudeSonnet; Layout.fillWidth: true; placeholderText: "Sonnet 模型 ID（留空使用原生默认）" }
+                        Field { id: claudeOpus; Layout.fillWidth: true; placeholderText: "Opus 模型 ID（留空使用原生默认）" }
+                    }
                     Label { text: "默认模型"; visible: window.providerDraft.kind !== "pi"; color: "#4b5d78" }
                     RowLayout { visible: window.providerDraft.kind !== "pi"; Layout.fillWidth: true; spacing: 12
                         Field { id: providerModel; objectName: "providerDefaultModel"; Layout.fillWidth: true; placeholderText: "填写模型 ID，或从模型列表选择" }
@@ -1147,7 +1174,7 @@ ApplicationWindow {
                         Label { text: "请求覆盖（headers / body）"; color: "#4b5d78" }
                         SoftTextArea { id: providerRequestOverrides; Layout.fillWidth: true; Layout.preferredHeight: 90; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
                     }
-                    SoftSwitch { id: providerTransportDetails; marksProviderDirty: false; text: "请求头与兼容配置"; visible: !window.officialProvider && window.providerDraft.kind !== "dsh" }
+                    SoftSwitch { id: providerTransportDetails; marksProviderDirty: false; text: "请求头与兼容配置"; visible: !window.officialProvider && ["pi", "codex"].indexOf(window.providerDraft.kind) >= 0 }
                     Label { text: "请求头（JSON 对象）"; visible: providerTransportDetails.visible && providerTransportDetails.checked; color: "#4b5d78" }
                     SoftTextArea { id: piHeaders; visible: providerTransportDetails.visible && providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
                     ColumnLayout { visible: window.providerDraft.kind === "pi" || window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 8
@@ -1231,7 +1258,7 @@ ApplicationWindow {
                     }
                 }
                 ColumnLayout { visible: advancedProvider.checked; Layout.fillWidth: true; spacing: 10
-                    Hint { text: window.providerDraft.kind === "codex" ? "Codex 的 auth.json、config.toml 和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "dsh" ? "DSH 的 patch YAML、环境变量和其他字段分别编辑，保存时会还原为原生配置对象。" : "Pi：完整的 models.json.providers.<标识> 节点。"; Layout.fillWidth: true }
+                    Hint { text: window.providerDraft.kind === "codex" ? "Codex 的 auth.json、config.toml 和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "dsh" ? "DSH 的 patch YAML、环境变量和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "claude" ? "Claude Code：供应商环境变量、模型和认证配置。" : "Pi：完整的 models.json.providers.<标识> 节点。"; Layout.fillWidth: true }
                     ColumnLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true; spacing: 8
                         Label { text: "auth.json（JSON 对象或 null）"; color: "#4b5d78" }
                         SoftTextArea { id: providerAuthJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
@@ -1248,8 +1275,8 @@ ApplicationWindow {
                         Label { text: "其他字段（JSON 对象，可留空）"; color: "#4b5d78" }
                         SoftTextArea { id: dshExtraJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
                     }
-                    ColumnLayout { visible: window.providerDraft.kind === "pi"; Layout.fillWidth: true
-                        Hint { text: "Pi：完整的 models.json.providers.<标识> 节点。"; Layout.fillWidth: true }
+                    ColumnLayout { visible: ["pi", "claude"].indexOf(window.providerDraft.kind) >= 0; Layout.fillWidth: true
+                        Hint { text: window.providerDraft.kind === "claude" ? "Claude Code：settings.json 中的供应商 env、模型和认证字段。Hooks、权限与共享设置保持不变。" : "Pi：完整的 models.json.providers.<标识> 节点。"; Layout.fillWidth: true }
                         SoftTextArea { id: providerJson; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; color: "#21314d" }
                     }
                 }

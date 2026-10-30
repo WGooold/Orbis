@@ -95,6 +95,34 @@ final class OrbisUITests: XCTestCase {
             XCTAssertTrue(idlePixels == (try headerPixels()), "Header text changed after refresh \(cycle)")
         }
     }
+    func testCompactionStatusInHomeChatAndDrawer() {
+        for dark in [false, true] {
+            let app = launch("home", dark: dark, arguments: ["--preview-compacting", "--preview-slow-sync"])
+            let card = app.buttons["home-runtime-preview-codex"]
+            XCTAssertTrue(card.waitForExistence(timeout: 10))
+            XCTAssertTrue(card.staticTexts["压缩中"].exists)
+            capture("compaction-home-\(dark ? "dark" : "light")", app: app)
+            card.tap()
+            let title = app.descendants(matching: .any)["chat-title"].firstMatch
+            XCTAssertTrue(title.waitForExistence(timeout: 8))
+            XCTAssertTrue(title.label.contains("压缩中"))
+            let refresh = app.buttons["刷新"].firstMatch
+            let ready = NSPredicate(format: "enabled == true")
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: refresh)], timeout: 15), .completed)
+            let frame = title.frame
+            refresh.tap()
+            XCTAssertTrue(title.label.contains("压缩中"))
+            XCTAssertEqual(frame, title.frame)
+            capture("compaction-chat-\(dark ? "dark" : "light")", app: app)
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: refresh)], timeout: 15), .completed)
+            XCTAssertEqual(frame, title.frame)
+            app.buttons["返回"].firstMatch.tap()
+            app.buttons["打开会话目录"].tap()
+            XCTAssertTrue(app.staticTexts["压缩中"].firstMatch.waitForExistence(timeout: 5))
+            capture("compaction-drawer-\(dark ? "dark" : "light")", app: app)
+            app.terminate()
+        }
+    }
     func testHomeDirectorySearchAndNewSession() {
         let app = launch("home")
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))
@@ -115,8 +143,10 @@ final class OrbisUITests: XCTestCase {
         let pi = app.buttons["home-runtime-preview-pi"]
         let dsh = app.buttons["home-runtime-preview-dsh"]
         XCTAssertTrue(codex.waitForExistence(timeout: 8))
+        let selectionFrame = codex.frame
         codex.press(forDuration: 0.8)
         XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        XCTAssertEqual(codex.frame, selectionFrame, "长按选择不能移动或改变卡片大小")
         XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].firstMatch.exists)
         pi.tap()
         XCTAssertTrue(app.staticTexts["已选择 2 项"].waitForExistence(timeout: 3))
@@ -154,6 +184,32 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(codex.waitForNonExistence(timeout: 5))
         XCTAssertTrue(pi.exists)
         XCTAssertTrue(app.buttons["打开会话目录"].exists)
+    }
+    /// ADR-0049 §5: the card leaves as soon as the close is sent and returns if the computer rejects it.
+    func testSwipeCloseHidesBeforeConfirmationAndRestoresOnRejection() {
+        let app = launch("home", arguments: ["--preview-close=slow"])
+        let codex = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(codex.waitForExistence(timeout: 8))
+        let start = codex.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -codex.frame.width * 0.6, dy: 0)))
+        // The preview confirms after 3 s and goes offline 1 s later; the card is already gone.
+        XCTAssertTrue(codex.waitForNonExistence(timeout: 1.5))
+        capture("home-close-optimistic", app: app)
+        XCTAssertFalse(codex.waitForExistence(timeout: 6))
+        app.terminate()
+
+        let rejected = launch("home", arguments: ["--preview-close=fail"])
+        let card = rejected.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(card.waitForExistence(timeout: 8))
+        let originalFrame = card.frame
+        let origin = card.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        origin.press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: -originalFrame.width * 0.6, dy: 0)))
+        XCTAssertTrue(card.waitForNonExistence(timeout: 1.5))
+        XCTAssertTrue(card.waitForExistence(timeout: 6))
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(card.frame.minX - originalFrame.minX) <= 1 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 3), .completed)
+        XCTAssertTrue(rejected.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "关闭会话未完成")).firstMatch.waitForExistence(timeout: 3))
+        capture("home-close-restored", app: rejected)
     }
     func testSwipeRightFromLeftSideOpensDirectory() {
         let app = launch("home")
@@ -233,6 +289,42 @@ final class OrbisUITests: XCTestCase {
         capture("history-preview", app: app)
         app.buttons["从这条回复后继续"].tap()
         XCTAssertTrue(app.buttons["历史与分支"].waitForExistence(timeout: 5))
+    }
+    /// ADR-0049: the bubble appears before the Host answers and is replaced, not duplicated, by the
+    /// canonical row that only declares the App id; a rejected send stays and can return to the composer.
+    func testOptimisticSendReconcilesAndRejectedSendRestores() {
+        let text = "乐观显示的这条消息"
+        let app = launch("chat", arguments: ["--preview-send=pi"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap(); composer.typeText(text)
+        app.buttons["发送消息"].firstMatch.tap()
+        let bubble = app.staticTexts[text]
+        XCTAssertTrue(bubble.waitForExistence(timeout: 1))
+        let sending = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-status-")).firstMatch
+        XCTAssertTrue(sending.waitForExistence(timeout: 1))
+        XCTAssertTrue(app.staticTexts["发送中"].exists)
+        XCTAssertEqual((composer.value as? String)?.contains(text), false)
+        capture("optimistic-send-pending", app: app)
+        let settled = NSPredicate(format: "exists == false")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: sending)], timeout: 8), .completed)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
+        // The remaining bubble is the canonical row, whose id is the Host entry id rather than the App id.
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "copy-message-node-")).firstMatch.exists)
+        capture("optimistic-send-settled", app: app)
+        app.terminate()
+
+        let rejected = launch("chat", arguments: ["--preview-send=fail"])
+        let input = rejected.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        input.tap(); input.typeText("会被拒绝的消息")
+        rejected.buttons["发送消息"].firstMatch.tap()
+        XCTAssertTrue(rejected.staticTexts["会话正在运行，请选择插入或完成后发送"].waitForExistence(timeout: 4))
+        capture("optimistic-send-rejected", app: rejected)
+        rejected.buttons["放回输入框"].firstMatch.tap()
+        let restored = NSPredicate(format: "value CONTAINS %@", "会被拒绝的消息")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: restored, object: input)], timeout: 4), .completed)
+        XCTAssertFalse(rejected.staticTexts["会话正在运行，请选择插入或完成后发送"].exists)
     }
     func testUserMessageCopyAndRewind() {
         let app = launch("chat")
@@ -316,6 +408,49 @@ final class OrbisUITests: XCTestCase {
         capture("viewport-following", app: app)
     }
 
+    func testNewMessagesAndToolsPreserveTheMovingReadingAnchor() {
+        let app = launch("viewport", arguments: ["--preview-viewport-rows", "--preview-viewport-drag"])
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
+        let transcript = app.scrollViews.firstMatch
+        transcript.swipeDown()
+        transcript.swipeDown()
+        var readingAnchor: XCUIElement?
+        let viewport = transcript.frame
+        for _ in 0..<5 {
+            readingAnchor = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 "))
+                .allElementsBoundByIndex.first { $0.exists && $0.isHittable && $0.frame.minY > viewport.minY + 120 && $0.frame.maxY < viewport.maxY - 120 }
+            if readingAnchor != nil { break }
+            transcript.swipeDown()
+        }
+        guard let anchor = readingAnchor else { return XCTFail("No reading anchor inside the viewport") }
+        let refresh = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch
+        func drag(_ direction: Double) {
+            let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
+            let end = start.withOffset(CGVector(dx: 0, dy: direction * 70))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 3)
+        }
+        let calibrationStart = anchor.frame.minY
+        drag(1)
+        let manualDistance = anchor.frame.minY - calibrationStart
+        XCTAssertGreaterThan(manualDistance, 30, "The injected gesture must actually scroll before testing concurrent updates")
+        for direction in [-1.0, 1.0] {
+            let before = anchor.frame.minY
+            refresh.tap() // Six source patches arrive two seconds later, while the finger is held.
+            drag(direction)
+            XCTAssertEqual(anchor.frame.minY - before, direction * manualDistance, accuracy: 2,
+                           "Only finger movement may displace the reading anchor; appended rows must not")
+            let resting = anchor.frame.minY
+            refresh.tap()
+            // Wait for the delayed batch without sending another scroll gesture.
+            RunLoop.current.run(until: Date().addingTimeInterval(3))
+            XCTAssertEqual(anchor.frame.minY, resting, accuracy: 1)
+        }
+        XCTAssertTrue(app.buttons["跳到最新消息"].exists)
+        app.buttons["跳到最新消息"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "ViewportTool")).firstMatch.waitForExistence(timeout: 3))
+        capture("viewport-live-tools-and-manual-drag", app: app)
+    }
+
     func testApprovalOverlayKeepsComposerStableWhileSubmitting() {
         let app = launch("approval")
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
@@ -329,35 +464,65 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(before.height, composer.frame.height, accuracy: 1)
         capture("approval-submitting", app: app)
     }
-    func testSettingsWithoutPriorityAndProviderSwitchConfirmation() {
-        let app = launch("settings")
-        XCTAssertTrue(app.buttons["供应商配置与切换"].waitForExistence(timeout: 8))
-        XCTAssertFalse(app.staticTexts["连接优先级"].exists)
-        XCTAssertFalse(app.buttons["上移中继"].exists)
-        capture("settings-fixed-routing", app: app)
-        app.buttons["供应商配置与切换"].tap()
-        let team = app.buttons["provider-action-team"]
-        XCTAssertTrue(team.waitForExistence(timeout: 5))
-        team.tap()
-        let dialog = app.descendants(matching: .any)["orbis-dialog"].firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3))
-        XCTAssertTrue(dialog.staticTexts["启用供应商"].exists)
-        dialog.buttons["取消"].tap()
+    func testCompactQuotaCardsAndTransparentSwitch() {
+        for dark in [false, true] {
+            let app = launch("status", dark: dark)
+            let codex = app.buttons["provider-quota-codex"]
+            XCTAssertTrue(codex.waitForExistence(timeout: 8))
+            let drag = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+            drag.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55)))
+            let before = codex.frame
+            XCTAssertLessThan(before.height, 130)
+            // Before data exists, the icon also queries. Afterwards it only flips.
+            let coin = app.buttons["quota-coin-codex"]
+            coin.tap()
+            let loaded = NSPredicate(format: "value CONTAINS %@", "82%")
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: loaded, object: codex)], timeout: 8), .completed)
+            XCTAssertEqual(codex.frame.height, before.height, accuracy: 1)
+            RunLoop.current.run(until: Date().addingTimeInterval(3))
+            XCTAssertTrue((coin.value as? String)?.contains("5 小时配额") == true)
+            coin.tap()
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "35%"), object: coin)], timeout: 4), .completed)
+            XCTAssertTrue((coin.value as? String)?.contains("周配额") == true)
+            XCTAssertGreaterThanOrEqual(coin.frame.height, 48)
+            XCTAssertLessThanOrEqual(coin.frame.width, 64)
+            // Refreshing the rest of the card retains the weekly face.
+            codex.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: loaded, object: codex)], timeout: 8), .completed)
+            XCTAssertTrue((coin.value as? String)?.contains("周配额") == true)
+            let claude = app.buttons["provider-quota-claude"]
+            app.buttons["quota-coin-claude"].tap()
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "64%"), object: claude)], timeout: 8), .completed)
+            XCTAssertTrue((codex.value as? String)?.contains("82%") == true)
+            XCTAssertFalse(app.staticTexts["轻点卡片查询配额"].exists)
+            RunLoop.current.run(until: Date().addingTimeInterval(3))
+            app.buttons["quota-coin-claude"].tap()
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "18%"), object: app.buttons["quota-coin-claude"])], timeout: 4), .completed)
+            capture(dark ? "compact-quota-dark" : "compact-quota-light", app: app)
+            app.buttons["provider-switch-codex"].tap()
+            let team = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "团队供应商")).firstMatch
+            XCTAssertTrue(team.waitForExistence(timeout: 3))
+            XCTAssertTrue(team.isHittable)
+            team.tap()
+            XCTAssertTrue(app.staticTexts["团队供应商"].waitForExistence(timeout: 3))
+            app.terminate()
+        }
+    }
+
+    func testFixedRoutingAndStatusProviderSwitch() {
+        let status = launch("status")
+        XCTAssertFalse(status.buttons["设置"].exists)
+        XCTAssertFalse(status.staticTexts["连接优先级"].exists)
+        XCTAssertFalse(status.buttons["上移中继"].exists)
+        let switchButton = status.buttons["provider-switch-codex"]
+        XCTAssertTrue(switchButton.waitForExistence(timeout: 8))
+        switchButton.tap()
+        let team = status.buttons.matching(NSPredicate(format: "label CONTAINS %@", "团队供应商")).firstMatch
         XCTAssertTrue(team.waitForExistence(timeout: 3))
         team.tap()
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3)); dialog.buttons["确认"].tap()
-        XCTAssertTrue(app.buttons["provider-action-official"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["provider-action-team"].exists)
-        capture("providers-switch-complete", app: app)
-        app.buttons["Pi供应商"].tap()
-        let remove = app.buttons["provider-action-official"]
-        XCTAssertTrue(remove.waitForExistence(timeout: 5)); remove.tap()
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3))
-        XCTAssertTrue(dialog.staticTexts["移除供应商"].exists)
-        XCTAssertTrue(dialog.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "全局默认供应商")).firstMatch.exists)
-        dialog.buttons["确认"].tap()
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "显式供应商已更新")).firstMatch.waitForExistence(timeout: 5))
-        capture("providers-pi", app: app)
+        XCTAssertTrue(status.staticTexts["团队供应商"].waitForExistence(timeout: 5))
+        XCTAssertTrue(status.buttons["provider-switch-claude"].exists)
+        capture("status-provider-switch", app: status)
     }
     func testBasicConnectionStatusAndDirectoryProviderMismatch() {
         for dark in [false, true] {
@@ -371,10 +536,8 @@ final class OrbisUITests: XCTestCase {
             }
             XCTAssertFalse(app.buttons["原始事件"].exists)
             capture(dark ? "status-basic-dark" : "status-basic-light", app: app)
-            app.buttons["设置"].tap()
-            XCTAssertTrue(app.buttons["供应商配置与切换"].waitForExistence(timeout: 3))
-            app.buttons["供应商配置与切换"].tap()
-            XCTAssertTrue(app.buttons["provider-action-team"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["provider-switch-codex"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["provider-switch-claude"].exists)
             app.terminate()
         }
         let drawer = launch("drawer")
@@ -394,17 +557,44 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(dialog.waitForExistence(timeout: 3))
         XCTAssertTrue(dialog.staticTexts["需要切换 provider"].exists)
         capture("provider-mismatch", app: drawer)
-        dialog.buttons["供应商设置"].tap()
-        XCTAssertTrue(drawer.staticTexts["供应商"].waitForExistence(timeout: 3))
+        dialog.buttons["连接状态与供应商"].tap()
+        XCTAssertTrue(drawer.staticTexts["连接状态"].waitForExistence(timeout: 3))
+        XCTAssertTrue(drawer.buttons["provider-switch-codex"].exists)
+    }
+    func testDrawerCardsKeepUniformGeometryForShortAndLongTitles() {
+        for (name, dark, category) in [("light", false, "UICTContentSizeCategoryL"),
+                                       ("dark", true, "UICTContentSizeCategoryL"),
+                                       ("large", false, "UICTContentSizeCategoryXXXL")] {
+            let app = launch("drawer", dark: dark, arguments: ["--preview-drawer-layout",
+                "-UIPreferredContentSizeCategoryName", category])
+            let long = app.buttons["drawer-session-session-4"]
+            let short = app.buttons["drawer-session-session-5"]
+            XCTAssertTrue(long.waitForExistence(timeout: 8))
+            XCTAssertTrue(short.waitForExistence(timeout: 3))
+            let longFrame = long.frame
+            let shortFrame = short.frame
+            XCTAssertEqual(longFrame.width, shortFrame.width, accuracy: 0.5)
+            XCTAssertEqual(longFrame.height, shortFrame.height, accuracy: 0.5)
+            short.press(forDuration: 0.8)
+            XCTAssertTrue(app.staticTexts["已选择 1 项"].exists)
+            XCTAssertEqual(longFrame, long.frame)
+            XCTAssertEqual(shortFrame, short.frame)
+            app.buttons["退出多选"].tap()
+            capture("drawer-uniform-\(name)", app: app)
+            app.terminate()
+        }
     }
     func testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions() {
-        let app = launch("drawer")
+        // Keep both target rows visible so XCTest does not scroll while synthesizing long press.
+        let app = launch("drawer", arguments: ["--preview-drawer-layout"])
         let first = app.buttons["drawer-session-session-4"]
         let second = app.buttons["drawer-session-session-5"]
         XCTAssertTrue(first.waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["会话操作"].exists)
+        let selectionFrame = first.frame
         first.press(forDuration: 0.8)
         XCTAssertTrue(app.staticTexts["已选择 1 项"].exists)
+        XCTAssertEqual(first.frame, selectionFrame, "长按选择不能移动或改变卡片大小")
         second.tap()
         XCTAssertTrue(app.staticTexts["已选择 2 项"].exists)
         first.tap()
@@ -505,12 +695,42 @@ final class OrbisUITests: XCTestCase {
         capture("drawer-older-sessions-collapsed", app: app)
     }
 
+    func testDownloadCardsPauseResumeAndSelectWithoutSideButtons() {
+        let app = launch("downloads")
+        let path = app.textFields["download-path"]
+        XCTAssertTrue(path.waitForExistence(timeout: 8))
+        path.tap(); path.typeText("/preview/report.zip")
+        app.buttons["按路径下载"].tap()
+        let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "download-card-")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["取消下载"].exists)
+        let active = NSPredicate(format: "label CONTAINS %@", "轻点暂停")
+        let paused = NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "已暂停", "轻点继续")
+        XCTAssertTrue(active.evaluate(with: card))
+        let cardWidth = card.frame.width
+        card.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: paused, object: card)], timeout: 3), .completed)
+        XCTAssertEqual(card.frame.width, cardWidth)
+        capture("download-card-paused", app: app)
+        card.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: active, object: card)], timeout: 3), .completed)
+        let selectionFrame = card.frame
+        card.press(forDuration: 0.8)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        XCTAssertEqual(card.frame, selectionFrame, "长按选择不能移动或改变卡片大小")
+        capture("download-card-selection", app: app)
+        card.tap()
+        XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
+        XCTAssertTrue(active.evaluate(with: card), "选择和取消选择不能暂停下载")
+        capture("download-card-active", app: app)
+    }
+
     func testPageScreenshotsInBothAppearances() {
         for dark in [false, true] {
-            for screen in ["pairing", "home", "drawer", "chat", "status", "settings", "providers", "downloads", "approval"] {
+            for screen in ["pairing", "home", "drawer", "chat", "status", "providers", "downloads", "approval"] {
                 let app = launch(screen, dark: dark)
                 XCTAssertTrue(app.wait(for: .runningForeground, timeout: 8))
-                let expected = screen == "pairing" ? "连接你的电脑" : screen == "status" ? "连接状态" : screen == "settings" ? "设置" : screen == "providers" ? "供应商" : screen == "downloads" ? "下载" : screen == "drawer" ? "会话目录" : screen == "approval" ? "允许执行验证命令" : "Codex"
+                let expected = screen == "pairing" ? "连接你的电脑" : screen == "status" ? "连接状态" : screen == "providers" ? "供应商" : screen == "downloads" ? "下载" : screen == "drawer" ? "会话目录" : screen == "approval" ? "允许执行验证命令" : "Codex"
                 XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", expected)).firstMatch.waitForExistence(timeout: 5))
                 capture(screen + (dark ? "-dark" : "-light"), app: app)
                 app.terminate()

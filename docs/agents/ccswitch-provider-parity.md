@@ -1,10 +1,10 @@
 # CC Switch provider parity
 
-Reference repository: `D:/cc-switch`, commit `f8788719`. The reference is MIT licensed; the notice and license are in `packages/windows-host/`.
+Original reference repository: `D:/cc-switch`, commit `f8788719`. Claude Code switching and official subscription quota querying additionally reference `../cc-switch` at `4ed071500b07ba5801be84c96ddb4e03bdf48a2d`; see [the current feature guide](claude-providers-and-subscription-quota.md). The reference is MIT licensed; the notice and license are in `packages/windows-host/`.
 
 ## Scope
 
-The requested scope is the three Agent types already exposed by Orbis: Pi, Codex, and DeepSeek Harness (DSH). Claude, Gemini, OpenCode, and the other CC Switch applications are outside this change. DSH has no CC Switch implementation, so its native `cordis.patch.yml` and Web RPC contract define the adaptation (ADR-0020).
+The provider-management scope now includes Pi, Codex, Claude Code, and DeepSeek Harness (DSH). Gemini, OpenCode, and the other CC Switch applications remain outside this change. DSH has no CC Switch implementation, so its native `cordis.patch.yml` and Web RPC contract define the adaptation (ADR-0020).
 
 ## Implemented behavior
 
@@ -13,7 +13,7 @@ The requested scope is the three Agent types already exposed by Orbis: Pi, Codex
 - Pi edits preserve partial built-in overrides. Editing an existing node with only `apiKey` or other sparse fields does not inject default API, URL, or model fields. New cards still require a complete transport and model.
 - Codex stores provider-owned routing separately from shared TOML settings, preserving comments and unrelated tables where the TOML editor can do so. MCP, common preferences, model catalogs, official login preservation, third-party bearer routing, stale reserved IDs, auth conflicts, and rollback are covered.
 - Codex managed OAuth has a Host-owned account file, device-code flow, account binding, refresh-token rotation, identity checks, native-login import, CLI rotation adoption, and a UI for adding, reauthenticating, selecting, and removing accounts.
-- Provider presets, endpoint checks, authenticated model discovery, bounded QuickJS usage scripts, New API/general/official-balance templates, per-provider usage cache, automatic refresh intervals, and last-good snapshots are implemented. Usage querying remains a backend capability; the Windows usage settings, query actions, and result display are deliberately removed.
+- Provider presets, endpoint checks, authenticated model discovery, bounded QuickJS usage scripts, New API/general/official-balance templates, per-provider usage cache, automatic refresh intervals, and last-good snapshots are implemented. Arbitrary usage scripts remain a backend capability. Official Claude/Codex subscription quota queries now have explicit Host, iOS, and Android actions and show 5-hour/weekly remaining percentages and reset times.
 - The Windows provider editor uses a single preset/custom entry point, searchable presets, structured fields with native-config round trips, and explicit confirmation before discarding edits or replacing a dirty draft. Incomplete drafts can switch editor modes without weakening save validation. Official Codex profiles expose login-source selection without requiring an API key or custom endpoint; ordinary form edits preserve native authentication.
 - Provider lists support search, persisted drag/arrow ordering, and copies immediately after their source. Connectivity checks have per-card progress and do not block unrelated editing.
 - Codex's default-model field fills missing values with `gpt-5.6-sol`; missing reasoning effort defaults to `high`, matching CC Switch's Codex templates. Its adjacent discovery button opens a single-selection picker that replaces the default model. The separate Codex catalog editor is removed; existing catalog data remains in native configuration and is not overwritten by ordinary form saves.
@@ -26,7 +26,7 @@ The requested scope is the three Agent types already exposed by Orbis: Pi, Codex
 
 ## Deliberate limits
 
-The parity claim is limited to the three Orbis Agent kinds. CC Switch's Claude, Gemini, OpenCode, xAI OAuth account flow, and other application-specific integrations remain outside this branch. DSH is an adaptation because CC Switch has no DSH backend; its native Web service owns shared sessions; native HMR and credential writes apply provider changes without restarting the service. Official Codex OAuth accounts are deliberately excluded from the proxy failover queue and continue using native routing. Advanced provider fields remain available in the native JSON/TOML editor; the common form covers routing, cache, reasoning, Chat options, and request overrides.
+Claude native provider switching and official subscription quota queries are included alongside the original three Agent kinds. CC Switch's Claude account manager, proxy conversion, Gemini, OpenCode, xAI OAuth account flow, and other application-specific integrations remain outside this branch. DSH is an adaptation because CC Switch has no DSH backend; its native Web service owns shared sessions; native HMR and credential writes apply provider changes without restarting the service. Official Codex OAuth accounts are deliberately excluded from the proxy failover queue and continue using native routing. Advanced provider fields remain available in the native JSON/TOML editor; the common form covers routing, cache, reasoning, Chat options, and request overrides.
 
 ## Model selection verification (2026-09-27)
 

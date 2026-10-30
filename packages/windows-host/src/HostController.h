@@ -135,6 +135,7 @@ public:
     Q_INVOKABLE void loadCodexPreferences();
     Q_INVOKABLE void saveCodexPreferences(const QVariantMap &preferences);
     Q_INVOKABLE void checkProvider(const QString &id);
+    Q_INVOKABLE void querySubscription(const QString &id);
     Q_INVOKABLE void fetchProviderModels(const QVariantMap &draft);
     Q_INVOKABLE void oauthAccount(const QString &operation, const QString &id = "");
     Q_INVOKABLE void openProvider(const QString &id);

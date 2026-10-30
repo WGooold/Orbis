@@ -688,6 +688,24 @@ describe("host end-to-end over relay", () => {
     expect(JSON.stringify(switched)).not.toContain("never-send-this");
     device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "missing", kind: "pi", id: "missing", enabled: true }));
     expect(await device.receiveMessage()).toMatchObject({ type: "provider.result", requestId: "missing", error: expect.any(String) });
+    const claude = (await providers.list("claude"))[0]!;
+    await providers.save("claude", "vendor", "Vendor", { env: { ANTHROPIC_BASE_URL: "https://vendor.test", ANTHROPIC_AUTH_TOKEN: "claude-secret-never-send" } }, true);
+    device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "claude-switch", kind: "claude", id: "vendor", enabled: true }));
+    const claudeResult = await device.receiveMessage();
+    expect(claudeResult).toMatchObject({ type: "provider.result", requestId: "claude-switch", kind: "claude" });
+    expect(JSON.stringify(claudeResult)).not.toContain("claude-secret-never-send");
+    await providers.switch("claude", claude.id);
+    const quota = { checkedAt: 100, windows: [{ name: "five_hour" as const, remainingPercent: 75, resetsAt: 200 }, { name: "seven_day" as const, remainingPercent: null, resetsAt: null }] };
+    const query = vi.spyOn(providers, "querySubscription").mockResolvedValue(quota);
+    device.sendData(JSON.stringify({ type: "provider.subscription", protocolVersion: PROTOCOL_VERSION, requestId: "quota", kind: "claude", id: claude.id }));
+    expect(await device.receiveMessage()).toMatchObject({ type: "provider.subscription.result", requestId: "quota", kind: "claude", id: claude.id, quota });
+    expect(query).toHaveBeenCalledWith("claude", claude.id);
+    query.mockRejectedValueOnce(new Error("secret-upstream-body"));
+    device.sendData(JSON.stringify({ type: "provider.subscription", protocolVersion: PROTOCOL_VERSION, requestId: "quota-failed", kind: "claude", id: claude.id }));
+    const failure = await device.receiveMessage();
+    expect(failure).toMatchObject({ type: "provider.subscription.result", requestId: "quota-failed", id: claude.id, error: expect.any(String) });
+    expect(JSON.stringify(failure)).not.toContain("secret-upstream-body");
+    query.mockRestore();
   });
 
   afterEach(async () => {
@@ -1224,6 +1242,43 @@ describe("host end-to-end over relay", () => {
       runtimeId: "pi-already-gone",
       event: { type: "command.result", commandId: "dl-2", ok: false, status: "failure" },
     });
+  });
+
+  it("暂停后删除、完成后取消及过期下载的取消不回落到 runtime", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
+    relay = await startRelay(stateDir);
+    host = await HostService.create({
+      relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false,
+    });
+    await host.start();
+    const paired = await pairDevice({ relay, host });
+    device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await device.receiveMessage(); // device.ready
+    await device.receiveMessage(); // device.path
+    const filePath = join(stateDir, "unfinished.bin");
+    await writeFile(filePath, Buffer.from([1, 2, 3, 4]));
+
+    for (const terminal of ["cancelled", "completed"]) {
+      device.sendCommand(paired.payload.hostId, `download-${terminal}`, { type: "file.download", path: filePath });
+      const started = await device.receiveMessage();
+      expect(started).toMatchObject({ type: "runtime.event", event: { type: "artifact.started" } });
+      const transferId = (started.event as Record<string, unknown>).transferId as string;
+      if (terminal === "cancelled") {
+        device.sendCommand(paired.payload.hostId, "pause", { type: "artifact.cancel", transferId });
+      } else {
+        device.sendData(JSON.stringify({ type: "artifact.done", protocolVersion: PROTOCOL_VERSION, transferId }));
+      }
+      device.sendCommand(paired.payload.hostId, `delete-${terminal}`, { type: "artifact.cancel", transferId });
+      device.sendCommand(paired.payload.hostId, `stale-${terminal}`, { type: "artifact.cancel", transferId: "expired-transfer" });
+      // A read response acts as an ordering barrier: no runtime error may precede it.
+      device.sendData(JSON.stringify({ type: "artifact.read", protocolVersion: PROTOCOL_VERSION,
+        transferId, requestId: `read-${terminal}`, offset: 0, length: 4 }));
+      await expect(device.receiveMessage()).resolves.toMatchObject({
+        type: "artifact.read.failed", transferId, requestId: `read-${terminal}`, reason: "unknown_transfer",
+      });
+    }
   });
 
   it("pull 模式：设备按范围索取，Host 只回被请求的那一段", async () => {
@@ -2888,7 +2943,8 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
       capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call"] });
     expect(hello).toMatchObject({ ok: true, runtimeId: "claude:live-session" });
     const generation = hello.generation as string;
-    await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata).runtimeId === "claude:live-session", "runtime.online");
+    expect(await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata).runtimeId === "claude:live-session", "runtime.online"))
+      .toMatchObject({ runtime: { sessionGraphSync: true } });
     const event = (body: unknown) => post("/v1/claude/mods/event", { runtimeId: "claude:live-session", generation, event: body });
 
     expect(await event({ type: "session.state", state: { model: "claude-opus-5-5", modelName: "Opus 5.5", modelOptions: ["sonnet", "opus"],
@@ -2929,6 +2985,16 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
     const content = await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.tool.content.page", "tool content");
     expect(JSON.stringify(content.event)).toContain("ls -la");
     expect(host.readDiagnostics({ category: "recovery" }).records.filter(record => record.message.includes("Rejected conversation"))).toEqual([]);
+
+    // A Hook shares the Mods runtime: its waiting status must not erase history capability.
+    const hookReply = post("/v1/claude/hook", { hook_event_name: "PermissionRequest", session_id: "live-session",
+      cwd: stateDir, tool_name: "Bash", tool_input: { command: "fixture-only" } });
+    const waiting = await until(message => message.runtimeId === "claude:live-session" &&
+      (message.event as RuntimeEvent | undefined)?.type === "runtime.metadata" &&
+      (message.event as Extract<RuntimeEvent, { type: "runtime.metadata" }>).metadata.status === "waiting_local_interaction", "hook metadata");
+    await event({ type: "interactions.local" });
+    await hookReply;
+    expect(waiting).toMatchObject({ event: { metadata: { sessionGraphSync: true } } });
 
 
     // A refused bridge leaves a diagnostic instead of failing silently.

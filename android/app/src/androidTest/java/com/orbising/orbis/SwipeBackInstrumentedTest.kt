@@ -17,7 +17,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -58,7 +57,7 @@ class SwipeBackInstrumentedTest {
             compose.onNodeWithText("Chat").assertIsDisplayed()
             assertEquals(0f, compose.onNodeWithText("Chat").fetchSemanticsNode().boundsInRoot.left, 0.5f)
             compose.runOnIdle {
-                assertFalse(underlayMounted)
+                assertTrue("Keep home mounted while the chat covers it", underlayMounted)
                 assertEquals("Animation frames must not recompose the home", entry + 1, underlayBuilds)
             }
             if (entry == 0) {
@@ -69,6 +68,46 @@ class SwipeBackInstrumentedTest {
                 compose.mainClock.advanceTimeByFrame()
             }
         }
+    }
+
+    @Test fun rightSwipeInterruptsEntranceBeforeLoadingFinishes() {
+        val home = mutableStateOf(false)
+        var backs = 0
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            OrbisTheme {
+                SwipeBackLayer(open = !home.value, onBack = { backs++; home.value = true },
+                    underlay = { Text("Home") }) {
+                    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) { Text("Loading chat") }
+                }
+            }
+        }
+        compose.mainClock.advanceTimeBy(80)
+        val enteringX = compose.onNodeWithText("Loading chat").fetchSemanticsNode().positionInRoot.x
+        assertTrue(enteringX > 0f)
+        compose.onRoot().performTouchInput {
+            down(Offset(width * 0.1f, height * 0.5f))
+            moveTo(Offset(width * 0.2f, height * 0.5f), 16)
+        }
+        compose.mainClock.advanceTimeByFrame()
+        // Bounds are clipped to the screen; the drag may already move the label offscreen.
+        val draggedX = compose.onNodeWithText("Loading chat").fetchSemanticsNode().positionInRoot.x
+        // Input injection advances event time, so compare after acquiring the drag. Holding
+        // the finger must stop entry; further movement must move the page to the right.
+        compose.mainClock.advanceTimeBy(80)
+        assertEquals("Entry must stop under the finger", draggedX,
+            compose.onNodeWithText("Loading chat").fetchSemanticsNode().positionInRoot.x, 0.5f)
+        compose.onRoot().performTouchInput { moveTo(Offset(width * 0.4f, height * 0.5f), 16) }
+        compose.mainClock.advanceTimeByFrame()
+        assertTrue("An entering chat must follow the finger immediately",
+            compose.onNodeWithText("Loading chat").fetchSemanticsNode().positionInRoot.x > draggedX)
+        compose.onRoot().performTouchInput {
+            moveTo(Offset(width * 0.85f, height * 0.5f), 160)
+            up()
+        }
+        compose.mainClock.advanceTimeBy(250)
+        compose.onNodeWithText("Home").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(1, backs) }
     }
 
     @Test fun navigationWaitsForReleaseAnimation() {

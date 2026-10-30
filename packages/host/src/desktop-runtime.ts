@@ -34,7 +34,9 @@ import { ProviderManager, ProviderError, agentKind, providerMetadata, type Provi
 import { installAgentPackage, activateManagedAgent, activeManagedEntry, findAgentCopies, fetchNpmLatestVersion, agentPackages, queryAgentStatus, recommendedAgentVersion, extractAgentVersion, compareAgentVersions, installationSource, type AgentInstallProgress, type AgentInstallStatus, type LocalAgent } from "./agent-installation.js";
 import { randomUUID } from "node:crypto";
 import { newProviderConfig, providerFields, applyProviderFields, type ProviderFields } from "./provider-form.js";
-import { providerPresets } from "./provider-presets.js";
+import { providerPresets as existingProviderPresets } from "./provider-presets.js";
+import { claudeProviderPresets } from "./claude-provider-presets.js";
+import { claudeOfficial, claudeProtocolSelectors } from "./provider-claude.js";
 import { codexOfficial, type CodexPreferences } from "./provider-codex.js";
 import { checkProviderEndpoint, fetchProviderModels } from "./provider-network.js";
 import { ProviderUsageCache, type UsageSnapshot } from "./provider-usage-cache.js";
@@ -57,6 +59,8 @@ async function loopbackPortAlive(value: unknown): Promise<boolean> {
     socket.connect(Number(url.port), url.hostname);
   });
 }
+
+const providerPresets = [...existingProviderPresets, ...claudeProviderPresets];
 
 export type DesktopSettings = {
   relayUrl: string; credential: string; codexEnabled?: boolean; piEntry?: string; codexEntry?: string;
@@ -632,6 +636,7 @@ export class DesktopRuntime {
 
   async install(kind: string, version = "latest", mode = "current"): Promise<AgentInstallResult> {
     const selected = agentKind(kind);
+    if (selected === "claude") throw new Error("Claude Code 请使用官方安装程序");
     if (!["current", "managed"].includes(mode)) throw new Error("未知安装方式");
     if (selected === "dsh" && version !== "latest" && compareAgentVersions(version, DSH_VERSION) === -1) throw new Error(`Orbis 手机接入需要 DeepSeek Harness ${DSH_VERSION} 或兼容版本`);
     if (this.#desired) throw new Error("请先暂停 Host，再安装或更新 Agent");
@@ -700,6 +705,7 @@ export class DesktopRuntime {
 
   async activateInstallation(kind: string, id: string): Promise<{ entry: string; version: string }> {
     const selected = agentKind(kind);
+    if (selected === "claude") throw new Error("Claude Code 请使用官方安装程序");
     if (this.#desired || this.#installation) throw new Error("请先暂停 Host，并等待当前安装完成");
     this.#installation = new AbortController();
     const signal = this.#installation.signal;
@@ -786,6 +792,9 @@ export class DesktopRuntime {
     const preview = this.providerPreview(params) as { fields: ProviderFields };
     return fetchProviderModels(preview.fields);
   }
+  querySubscription(kind: string, id: string): ReturnType<ProviderManager["querySubscription"]> {
+    return this.#providers.querySubscription(agentKind(kind), id);
+  }
   async queryProviderUsage(kind: string, id: string): Promise<unknown> {
     const profile = await this.#providers.get(agentKind(kind), id);
     if (!profile.usageScript) throw new ProviderError("请先配置用量查询脚本");
@@ -818,8 +827,8 @@ export class DesktopRuntime {
       if (selected === "pi") profile.id = preset.providerKey ?? "";
     }
     const fields = providerFields(profile);
-    const official = selected === "codex" && codexOfficial(profile.config);
-    const nativeOnly = selected === "codex" ? !official && ["openai", "ollama", "lmstudio", "amazon-bedrock", "amazon-bedrock-runtime"].includes(fields.providerKey) : selected === "dsh" && fields.providerKey === "";
+    const official = selected === "codex" ? codexOfficial(profile.config) : selected === "claude" && claudeOfficial(profile.config);
+    const nativeOnly = selected === "codex" ? !official && ["openai", "ollama", "lmstudio", "amazon-bedrock", "amazon-bedrock-runtime"].includes(fields.providerKey) : selected === "claude" ? Object.entries(profile.config.env ?? {}).some(([key, value]) => claudeProtocolSelectors.includes(key) && ["1", "true"].includes(String(value).toLowerCase())) : selected === "dsh" && fields.providerKey === "";
     return { ...profile, fields, official, nativeOnly, presetId: presetId ?? "custom", create: !id, accounts: selected === "codex" ? await this.#providers.oauth("list") : [] };
   }
   providerPreview(params: Record<string, unknown>): unknown {
@@ -828,7 +837,7 @@ export class DesktopRuntime {
     try { config = typeof params.config === "string" ? JSON.parse(params.config) : params.config; } catch { throw new ProviderError("原生 JSON 格式无效"); }
     if (!config || typeof config !== "object" || Array.isArray(config)) throw new ProviderError("配置必须是对象");
     if (params.fields) config = applyProviderFields(kind, config as Record<string, unknown>, params.fields as ProviderFields, params.create === true, false);
-    return { config, official: kind === "codex" && codexOfficial(config as Record<string, unknown>), fields: providerFields({ kind, id: String(params.id ?? ""), name: String(params.name ?? ""), config: config as Record<string, unknown> }, true) };
+    return { config, official: kind === "codex" ? codexOfficial(config as Record<string, unknown>) : kind === "claude" && claudeOfficial(config as Record<string, unknown>), fields: providerFields({ kind, id: String(params.id ?? ""), name: String(params.name ?? ""), config: config as Record<string, unknown> }, true) };
   }
   codexPreferences(): Promise<CodexPreferences> { return this.#providers.codexPreferences(); }
   proxyStatus(): Promise<object> { return this.#providers.proxyStatus(); }
