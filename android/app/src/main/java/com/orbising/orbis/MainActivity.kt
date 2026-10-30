@@ -167,6 +167,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.draw.clip
@@ -732,7 +733,13 @@ internal fun RuntimeListScreen(
                         .pullToRefresh(isRefreshing = false, state = pullRefreshState, enabled = !selecting, onRefresh = onRetryHome),
                 ) {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize().testTag("home-session-list"),
+                    modifier = Modifier.fillMaxSize()
+                        // M15：跟随 iOS 原生 refreshable 的回弹，将整张会话列表按同一刷新距离下移；
+                        // 用图层位移保留 LazyList 测量尺寸、滚动锚点和卡片手势状态。
+                        .graphicsLayer {
+                            translationY = pullRefreshState.distanceFraction * PullToRefreshDefaults.PositionalThreshold.toPx()
+                        }
+                        .testTag("home-session-list"),
                     state = homeListState,
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),

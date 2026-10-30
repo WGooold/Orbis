@@ -1,10 +1,15 @@
 package com.orbising.orbis
 
+import android.graphics.Bitmap
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -16,6 +21,7 @@ class HomeViewportInstrumentedTest {
     private val cards = (0 until 12).map { "c%02d".format(it) }
     private val state = mutableStateOf(home(cards))
     private var refreshes = 0
+    private val opened = mutableListOf<String>()
 
     /** Newest first: the first id gets the latest modification time. */
     private fun home(order: List<String>): RemoteState {
@@ -25,11 +31,11 @@ class HomeViewportInstrumentedTest {
         return RemoteState(hostId = "host", e2eReady = true, runtimes = runtimes, sessions = sessions).withReadyHomeFixture()
     }
 
-    private fun show() {
+    private fun show(darkTheme: Boolean = false) {
         compose.setContent {
-            OrbisTheme {
+            OrbisTheme(darkTheme = darkTheme) {
                 RuntimeListScreen(state.value, listOf(HostSnapshot(pairing, state.value)),
-                    onOpenRuntime = { _, _ -> }, onCloseRuntimes = { _, _ -> emptySet() }, onOpenDownloads = {}, onUnpairHost = {},
+                    onOpenRuntime = { _, id -> opened += id }, onCloseRuntimes = { _, _ -> emptySet() }, onOpenDownloads = {}, onUnpairHost = {},
                     onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> }, onNewSession = { _, _ -> },
                     onSetArchived = { _, _, _ -> }, onSelectHost = {}, onAddHost = {}, onOpenStatus = {}, onRequestProviders = {},
                     onRetryHome = { refreshes++ })
@@ -82,32 +88,80 @@ class HomeViewportInstrumentedTest {
         assertEquals(next, top("c06"), 1f)
     }
 
-    @Test fun pullingAtTheTopRefreshesOnceWithoutMovingTheCards() {
+    @Test fun pullingAtTheTopMovesTheListAndRestoresItsPositionAfterRefresh() {
         show()
+        val list = compose.onNodeWithTag("home-session-list")
         val before = top("c00")
-        compose.onNodeWithTag("home-session-list").performTouchInput {
-            swipeDown(startY = top + 20f, endY = top + 20f + height * 0.6f, durationMillis = 500)
+        list.performTouchInput {
+            val x = width / 2f
+            down(Offset(x, top + 20f))
+            moveTo(Offset(x, top + height * 0.6f), delayMillis = 500)
         }
         compose.waitForIdle()
-        assertEquals(1, refreshes)
-        assertEquals(before, top("c00"), 1f)
-        // Away from the top the same gesture only scrolls.
-        compose.onNodeWithTag("home-session-list").performScrollToIndex(6)
+        val pulled = top("c00")
+        assertTrue("The whole session list follows the pull gesture", pulled > before + 20f)
+        compose.runOnIdle { assertEquals("Refresh fires on release", 0, refreshes) }
+        capturePull("pulling-during-refresh")
+        list.performTouchInput { up() }
         compose.waitForIdle()
-        compose.onNodeWithTag("home-session-list").performTouchInput {
+        assertEquals(1, refreshes)
+        assertEquals("The list returns to its original viewport", before, top("c00"), 1f)
+        compose.onNodeWithTag("home-runtime-c00").performTouchInput { click() }
+        compose.runOnIdle { assertEquals(listOf("c00"), opened) }
+        // A vertical pull must not leave a transformed hit region that steals horizontal gestures.
+        compose.onNodeWithTag("home-runtime-c00").performTouchInput {
+            swipe(Offset(width * 0.1f, center.y), Offset(width * 0.9f, center.y), durationMillis = 400)
+        }
+        compose.onNodeWithText("搜索目录或会话").assertIsDisplayed()
+        compose.onRoot().performTouchInput { click(Offset(width - 8f, center.y)) }
+        compose.onNodeWithTag("home-runtime-c00").performTouchInput {
+            swipe(Offset(width * 0.9f, center.y), Offset(width * 0.5f, center.y), durationMillis = 400)
+        }
+        compose.onNodeWithTag("home-runtime-c00").assertIsDisplayed()
+        assertEquals(1, refreshes)
+        // Away from the top the same gesture only scrolls.
+        list.performScrollToIndex(6)
+        compose.waitForIdle()
+        list.performTouchInput {
             swipeDown(startY = centerY - 100f, endY = centerY + 50f, durationMillis = 400)
         }
         compose.waitForIdle()
         assertEquals(1, refreshes)
         // While selecting, pulling does nothing.
-        compose.onNodeWithTag("home-session-list").performScrollToIndex(0)
+        list.performScrollToIndex(0)
         compose.onNodeWithTag("home-runtime-c00").performTouchInput { longClick() }
         compose.onNodeWithText("已选择 1 项").assertIsDisplayed()
-        compose.onNodeWithTag("home-session-list").performTouchInput {
+        list.performTouchInput {
             swipeDown(startY = top + 20f, endY = top + 20f + height * 0.6f, durationMillis = 500)
         }
         compose.waitForIdle()
         assertEquals(1, refreshes)
+    }
+
+    @Test fun darkThemePullMovesAndRestoresTheWholeList() {
+        show(darkTheme = true)
+        val list = compose.onNodeWithTag("home-session-list")
+        val before = top("c00")
+        list.performTouchInput {
+            val x = width / 2f
+            down(Offset(x, top + 20f))
+            moveTo(Offset(x, top + height * 0.6f), delayMillis = 500)
+        }
+        compose.waitForIdle()
+        assertTrue("The whole session list follows the pull gesture in dark mode", top("c00") > before + 20f)
+        capturePull("dark-pulling-during-refresh")
+        list.performTouchInput { up() }
+        compose.waitForIdle()
+        assertEquals(1, refreshes)
+        assertEquals("The dark-mode list returns to its original viewport", before, top("c00"), 1f)
+    }
+
+    private fun capturePull(name: String) {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.getExternalFilesDir(null), "home-pull-refresh").apply { mkdirs() }
+        File(directory, "$name.png").outputStream().use {
+            compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
+        }
     }
 
     @Test fun catalogChangesWaitForTheReadersDragToFinish() {
