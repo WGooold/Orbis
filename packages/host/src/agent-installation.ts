@@ -73,6 +73,7 @@ export function recommendedAgentVersion(kind: AgentKind, latest?: string): strin
 }
 export function installPackage(kind: string, version: string): string {
   const selected = agentKind(kind);
+  if (selected === "claude") throw new Error("Claude Code 请使用官方安装程序");
   if (version !== version.trim() || version !== "latest" && !parseAgentVersion(version)) throw new Error("版本应为 latest 或完整版本号，例如 0.1.7-rc.1");
   return `${agentPackages[selected]}@${version}`;
 }

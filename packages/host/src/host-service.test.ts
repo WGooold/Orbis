@@ -688,6 +688,24 @@ describe("host end-to-end over relay", () => {
     expect(JSON.stringify(switched)).not.toContain("never-send-this");
     device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "missing", kind: "pi", id: "missing", enabled: true }));
     expect(await device.receiveMessage()).toMatchObject({ type: "provider.result", requestId: "missing", error: expect.any(String) });
+    const claude = (await providers.list("claude"))[0]!;
+    await providers.save("claude", "vendor", "Vendor", { env: { ANTHROPIC_BASE_URL: "https://vendor.test", ANTHROPIC_AUTH_TOKEN: "claude-secret-never-send" } }, true);
+    device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "claude-switch", kind: "claude", id: "vendor", enabled: true }));
+    const claudeResult = await device.receiveMessage();
+    expect(claudeResult).toMatchObject({ type: "provider.result", requestId: "claude-switch", kind: "claude" });
+    expect(JSON.stringify(claudeResult)).not.toContain("claude-secret-never-send");
+    await providers.switch("claude", claude.id);
+    const quota = { checkedAt: 100, windows: [{ name: "five_hour" as const, remainingPercent: 75, resetsAt: 200 }, { name: "seven_day" as const, remainingPercent: null, resetsAt: null }] };
+    const query = vi.spyOn(providers, "querySubscription").mockResolvedValue(quota);
+    device.sendData(JSON.stringify({ type: "provider.subscription", protocolVersion: PROTOCOL_VERSION, requestId: "quota", kind: "claude", id: claude.id }));
+    expect(await device.receiveMessage()).toMatchObject({ type: "provider.subscription.result", requestId: "quota", kind: "claude", id: claude.id, quota });
+    expect(query).toHaveBeenCalledWith("claude", claude.id);
+    query.mockRejectedValueOnce(new Error("secret-upstream-body"));
+    device.sendData(JSON.stringify({ type: "provider.subscription", protocolVersion: PROTOCOL_VERSION, requestId: "quota-failed", kind: "claude", id: claude.id }));
+    const failure = await device.receiveMessage();
+    expect(failure).toMatchObject({ type: "provider.subscription.result", requestId: "quota-failed", id: claude.id, error: expect.any(String) });
+    expect(JSON.stringify(failure)).not.toContain("secret-upstream-body");
+    query.mockRestore();
   });
 
   afterEach(async () => {

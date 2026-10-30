@@ -4,7 +4,9 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { isSeq, parseDocument } from "yaml";
-import type { AgentKind, HostProviderSummary } from "@orbis/protocol";
+import type { AgentKind, HostProviderSummary, SubscriptionQuota } from "@orbis/protocol";
+import { backfillClaude, claudeOfficial, prepareClaude, validateClaudeConfig } from "./provider-claude.js";
+import { claudeSubscriptionCredentials, codexSubscriptionCredentials, querySubscriptionQuota } from "./subscription-quota.js";
 import { ProviderError } from "./provider-error.js";
 import { backfillCodex, codexOfficial, defaultCodexPreferences, extractCodexCommon, prepareCodex, type CodexPreferences } from "./provider-codex.js";
 import { validateUsageScript, type UsageScript } from "./provider-usage.js";
@@ -19,15 +21,22 @@ export { ProviderError } from "./provider-error.js";
 type ObjectValue = Record<string, unknown>;
 export type ProviderMetadata = { category?: string; notes?: string; websiteUrl?: string; icon?: string; sortIndex?: number; commonConfigEnabled?: boolean; usageScript?: UsageScript; authBinding?: { source: "managed_account"; authProvider: "codex_oauth"; accountId?: string } | null };
 export type ProviderProfile = { id: string; kind: AgentKind; name: string; config: ObjectValue } & ProviderMetadata;
-export type ProviderSummary = { id: string; kind: AgentKind; name: string; enabled: boolean; mode: "exclusive" | "additive"; globalDefault?: boolean; category?: string | undefined; notes?: string | undefined; websiteUrl?: string | undefined; icon?: string | undefined; sortIndex?: number | undefined };
+export type ProviderSummary = { id: string; kind: AgentKind; name: string; enabled: boolean; mode: "exclusive" | "additive"; subscriptionSupported?: boolean; globalDefault?: boolean; category?: string | undefined; notes?: string | undefined; websiteUrl?: string | undefined; icon?: string | undefined; sortIndex?: number | undefined };
 type Store = { version: 1; providers: ProviderProfile[]; current: Partial<Record<AgentKind, string>>; codexPreferences?: CodexPreferences; managedAuth?: ManagedAuthMarker; proxyPreferences?: ProxyPreferences; proxyToken?: string; proxyTakeover?: ProxyTakeover };
 type FileChange = { path: string; before: string | null; after: string | null };
-export type ProviderPaths = { codex: string; pi: string; dsh: string };
+export type ProviderPaths = { codex: string; pi: string; dsh: string; claude?: string };
 /** `liveEdit` 表示这次 apply 改的是当前已经在用的那个供应商，而不是切换到另一个。 */
 export type ProviderHooks = { beforeApply?: (kind: AgentKind, hotSwitch: boolean, liveEdit: boolean) => Promise<void>; afterApply?: (kind: AgentKind, hotSwitch: boolean, liveEdit: boolean) => Promise<void>; proxyStatus?: () => void };
 const object = (value: unknown): value is ObjectValue => value !== null && typeof value === "object" && !Array.isArray(value);
 const json = (value: unknown): string => JSON.stringify(value, null, 2) + "\n";
-const kinds = ["pi", "codex", "dsh"] as const;
+const kinds = ["pi", "codex", "dsh", "claude"] as const;
+function subscriptionSupported(profile: ProviderProfile): boolean {
+  if (profile.kind === "claude") return claudeOfficial(profile.config);
+  if (profile.kind !== "codex" || !codexOfficial(profile.config)) return false;
+  const doc = parseToml(String(profile.config.config ?? ""));
+  const route = object(doc.model_providers) ? doc.model_providers.openai : undefined;
+  return !object(route) || !route.base_url;
+}
 export function providerMetadata(value: unknown): ProviderMetadata {
   if (!object(value)) throw new ProviderError("供应商信息必须是对象");
   const result: ProviderMetadata = {};
@@ -55,9 +64,9 @@ export function providerMetadata(value: unknown): ProviderMetadata {
   }
   return result;
 }
-export function agentKind(value: unknown): Exclude<AgentKind, "codexDesktop" | "claude"> {
-  if (!kinds.includes(value as Exclude<AgentKind, "codexDesktop" | "claude">)) throw new ProviderError("未知 Agent");
-  return value as Exclude<AgentKind, "codexDesktop" | "claude">;
+export function agentKind(value: unknown): Exclude<AgentKind, "codexDesktop"> {
+  if (!kinds.includes(value as Exclude<AgentKind, "codexDesktop">)) throw new ProviderError("未知 Agent");
+  return value as Exclude<AgentKind, "codexDesktop">;
 }
 const missing = (error: unknown): boolean => object(error) && error.code === "ENOENT";
 async function read(path: string): Promise<string | null> {
@@ -83,6 +92,8 @@ function validateConfig(kind: AgentKind, config: unknown): asserts config is Obj
     catalogSpecs(config);
     upstreamFormat(config);
     validateCodexRouting(config);
+  } else if (kind === "claude") {
+    validateClaudeConfig(config);
   } else if (kind === "pi") {
     if (config.models !== undefined && (!Array.isArray(config.models) || config.models.some(model => !object(model) || typeof model.id !== "string" || !model.id))) throw new ProviderError("Pi models 必须是包含模型 id 的数组");
   } else {
@@ -94,7 +105,7 @@ function validateConfig(kind: AgentKind, config: unknown): asserts config is Obj
 
 /** CC Switch semantics: Codex snapshots/backfill, Pi additive native nodes. No remote credentials. */
 export class ProviderManager {
-  readonly paths: ProviderPaths;
+  readonly paths: ProviderPaths & { claude: string };
   readonly #file: string;
   readonly #journal: string;
   readonly #hooks: ProviderHooks;
@@ -105,11 +116,13 @@ export class ProviderManager {
   #revisions = new Map<string, string | null>();
   #piDefault = "";
   #queue: Promise<unknown> = Promise.resolve();
+  #subscriptionQueries = new Map<string, Promise<SubscriptionQuota>>();
   constructor(stateDir: string, paths?: ProviderPaths, hooks: ProviderHooks = {}) {
-    this.paths = paths ?? {
+    this.paths = paths ? { ...paths, claude: paths.claude ?? join(dirname(paths.codex), "claude") } : {
       codex: process.env.CODEX_HOME || join(homedir(), ".codex"),
       pi: process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"),
       dsh: process.env.DSH_HOME || join(homedir(), ".dsh"),
+      claude: process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"),
     };
     this.#file = join(stateDir, "providers.json");
     this.#journal = join(stateDir, "providers-transaction.json");
@@ -186,6 +199,10 @@ export class ProviderManager {
       }
       return value;
     }
+    if (kind === "claude") {
+      const value = parseObject(await readNative(join(this.paths.claude, "settings.json")), "Claude Code settings.json");
+      validateConfig(kind, value); return value;
+    }
     if (kind === "pi") {
       const root = parseObject(await readNative(join(this.paths.pi, "models.json")), "Pi models.json");
       if (root.providers !== undefined && !object(root.providers)) throw new ProviderError("Pi providers 必须是对象");
@@ -217,14 +234,19 @@ export class ProviderManager {
         if (active.authBinding) config.auth = {};
         active.config = config;
       }
+      else if (active && kind === "claude") { active.config = backfillClaude(live, active.config); active.category = claudeOfficial(live) ? "official" : "custom"; }
       else if (active) active.config = { ...live, env: active.config.env };
-      else if ((kind === "codex" && (live.config !== "" || live.auth !== null)) || (kind === "dsh" && live.patch !== "")) {
+      else if (kind === "claude" || (kind === "codex" && (live.config !== "" || live.auth !== null)) || (kind === "dsh" && live.patch !== "")) {
         const profile: ProviderProfile = { id: randomUUID(), kind, name: "已导入的本机配置", config: live };
         if (kind === "codex") {
           profile.category = codexOfficial(live) ? "official" : "custom";
           profile.config = backfillCodex(live, {}, "", false);
           if (object(live.nativeCatalog)) profile.config.modelCatalog = backfillCatalog(live.nativeCatalog, {}, live.config as string);
           delete profile.config.nativeCatalog;
+        }
+        if (kind === "claude") {
+          profile.config = backfillClaude(live); profile.category = claudeOfficial(live) ? "official" : "custom";
+          if (profile.category === "official") profile.name = "Claude 官方订阅";
         }
         store.providers.push(profile); store.current[kind] = profile.id;
       }
@@ -236,6 +258,7 @@ export class ProviderManager {
       id: p.id, kind, name: p.name, category: p.category, notes: p.notes, websiteUrl: p.websiteUrl, icon: p.icon, sortIndex: p.sortIndex,
       enabled: kind === "pi" ? Object.hasOwn(object(live.providers) ? live.providers : {}, p.id) : store.current[kind] === p.id,
       mode: kind === "pi" ? "additive" : "exclusive",
+      subscriptionSupported: store.current[kind] === p.id && subscriptionSupported(p),
       globalDefault: kind === "pi" && p.id === this.#piDefault,
     }));
   }
@@ -263,7 +286,7 @@ export class ProviderManager {
       await atomicWrite(this.#file, json(store));
       return { agentKind: kind, availability: "ready", current: selected?.id ?? null,
         profiles: summaries.slice(0, 64).map(summary => ({ id: summary.id, name: summary.name,
-          enabled: summary.enabled, globalDefault: summary.globalDefault === true, mode: summary.mode })),
+          enabled: summary.enabled, globalDefault: summary.globalDefault === true, mode: summary.mode, subscriptionSupported: summary.subscriptionSupported === true })),
         profilesTruncated: summaries.length > 64,
         authenticated: authentication.bindingReady ?? authentication.credentialPresent,
         authentication, switching: options.switching ?? null,
@@ -280,6 +303,36 @@ export class ProviderManager {
       if (!item) throw new ProviderError("供应商不存在，请刷新列表");
       await atomicWrite(this.#file, json(store)); return structuredClone(item);
     });
+  }
+  /** A query and a switch share the native-config lock, so results always belong to the requested card. */
+  querySubscription(kind: AgentKind, id: string): Promise<SubscriptionQuota> {
+    const key = `${kind}:${id}`;
+    const pending = this.#subscriptionQueries.get(key);
+    if (pending) return pending;
+    const work = this.#run(async () => {
+      const store = await this.#load(); const live = await this.#sync(store, kind);
+      const profile = store.providers.find(p => p.kind === kind && p.id === id);
+      if (!profile || store.current[kind] !== id || !subscriptionSupported(profile)) throw new ProviderError("请先启用官方供应商配置，再查询当前订阅配额");
+      await atomicWrite(this.#file, json(store));
+      if (kind === "claude") {
+        if (!claudeOfficial({ ...live, env: { ...process.env, ...(object(live.env) ? live.env : {}) } })) throw new ProviderError("当前环境变量使用了第三方或 API Key 配置，无法查询官方订阅");
+        const env = object(live.env) ? live.env : {};
+        const token = env.CLAUDE_CODE_OAUTH_TOKEN ?? process.env.CLAUDE_CODE_OAUTH_TOKEN;
+        const credentials = typeof token === "string" && token.trim() ? { claudeAiOauth: { accessToken: token } }
+          : await claudeSubscriptionCredentials(this.paths.claude, !!process.env.CLAUDE_CONFIG_DIR);
+        return querySubscriptionQuota("claude", credentials);
+      }
+      if (kind !== "codex") throw new ProviderError("此 Agent 不支持订阅配额查询");
+      if (process.env.OPENAI_BASE_URL || process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY) throw new ProviderError("当前环境变量覆盖了 Codex 官方登录，请在电脑端检查配置");
+      const doc = parseToml(String(live.config ?? ""));
+      // Query the CLI's current login, including independent native logins made since profile activation.
+      // A read must not rotate a managed refresh token behind the running CLI's back.
+      const credentials = await codexSubscriptionCredentials(this.paths.codex, doc.cli_auth_credentials_store, live.auth);
+      return querySubscriptionQuota("codex", credentials);
+    });
+    this.#subscriptionQueries.set(key, work);
+    void work.then(() => this.#subscriptionQueries.delete(key), () => this.#subscriptionQueries.delete(key));
+    return work;
   }
   save(kind: AgentKind, id: string, name: string, config: unknown, create = false, addToLive = true, metadata: ProviderMetadata = {}): Promise<ProviderSummary[]> {
     validateConfig(kind, config);
@@ -299,6 +352,7 @@ export class ProviderManager {
         profile.config.auth = {}; profile.category = "official";
       }
       if (kind === "codex" && !profile.category) profile.category = codexOfficial(config) ? "official" : "custom";
+      if (kind === "claude") profile.category = claudeOfficial(config) ? "official" : "custom";
       if (kind === "codex" && store.proxyPreferences?.queue.includes(profile.id)) proxyRoute(profile);
       if (kind === "pi" && (create || Object.hasOwn(profile.config, "name"))) profile.config.name = name.trim();
       if (existing) Object.assign(existing, profile); else store.providers.push(profile);
@@ -535,6 +589,10 @@ export class ProviderManager {
       if (Object.hasOwn(prepared, "auth")) desired.push({ path: join(this.paths.codex, "auth.json"), after: prepared.auth === null ? null : json(prepared.auth) });
       desired.push({ path: join(this.paths.codex, "config.toml"), after: projection.config });
       store.current.codex = profile.id;
+    } else if (profile.kind === "claude") {
+      const outgoing = (await this.#load()).providers.find(p => p.kind === "claude" && p.id === store.current.claude)?.config;
+      desired.push({ path: join(this.paths.claude, "settings.json"), after: json(prepareClaude(profile.config, live, outgoing)) });
+      store.current.claude = profile.id;
     } else {
       desired.push({ path: join(this.paths.dsh, "cordis.patch.yml"), after: profile.config.patch as string });
       store.current.dsh = profile.id;

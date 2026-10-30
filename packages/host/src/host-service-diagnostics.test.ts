@@ -86,13 +86,13 @@ describe("HostService 的诊断目录", () => {
     await service.refreshProviderFacts();
 
     const state = service.readHostProviders();
-    expect(state?.providers.map(entry => entry.agentKind)).toEqual(["pi", "codex", "dsh"]);
+    expect(state?.providers.map(entry => entry.agentKind)).toEqual(["pi", "codex", "dsh", "claude"]);
     expect(state?.providers.find(entry => entry.agentKind === "codex")).toMatchObject({
       current: "custom",
       profiles: [{ id: "custom", name: "Custom", enabled: true, globalDefault: false }],
       authenticated: null,
     });
-    expect(calls).toEqual(["pi", "codex", "dsh"]);
+    expect(calls).toEqual(["pi", "codex", "dsh", "claude"]);
   });
 
   it("某个后端读不到清单时如实记 null，并留下诊断", async () => {

@@ -26,6 +26,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -2821,53 +2822,132 @@ private fun SettingsScreen(model: RemoteViewModel, onBack: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AgentProvidersScreen(state: RemoteState, model: RemoteViewModel, onBack: () -> Unit) {
-    BackHandler(onBack = onBack)
+    AgentProvidersContent(state, onBack, model::loadAgentProviders, model::switchAgentProvider, model::removeAgentProviders, model::querySubscription)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun AgentProvidersContent(
+    state: RemoteState,
+    onBack: () -> Unit,
+    onLoad: (String) -> Unit,
+    onEnable: (AgentProvider, String?) -> Unit,
+    onRemove: (List<AgentProvider>, String?) -> Unit,
+    onQuerySubscription: (AgentProvider, String?) -> Unit = { _, _ -> },
+) {
     val catalog = state.agentProviders
     var pending by remember(state.hostId, catalog.kind) { mutableStateOf<AgentProvider?>(null) }
-    val available = state.e2eReady && state.connection == RelayConnection.ONLINE && catalog.hostId == state.hostId && !catalog.loading
+    var pendingRemoval by remember(state.hostId, catalog.kind) { mutableStateOf<List<AgentProvider>?>(null) }
+    var selectedProviders by remember(state.hostId, catalog.kind) { mutableStateOf<Set<AgentProvider>>(emptySet()) }
+    var selecting by remember(state.hostId, catalog.kind) { mutableStateOf(false) }
+    val removable = catalog.providers.filter { it.removable }.toSet()
+    val selected = selectedProviders.intersect(removable)
+    val connected = state.e2eReady && state.connection == RelayConnection.ONLINE && catalog.hostId == state.hostId
+    val available = connected && !catalog.loading && catalog.quotaRequestId == null && catalog.error == null
+    val haptic = LocalHapticFeedback.current
+    fun exitSelection() { selecting = false; selectedProviders = emptySet(); pendingRemoval = null }
+    fun toggle(provider: AgentProvider) {
+        if (available && provider.removable) selectedProviders =
+            if (provider in selected) selected - provider else selected + provider
+    }
+    LaunchedEffect(connected, removable) {
+        selectedProviders = selected
+        if (!connected || removable.isEmpty()) exitSelection()
+        if (!connected) pending = null
+    }
+    BackHandler { if (selecting) exitSelection() else onBack() }
     Scaffold(topBar = {
-        TopAppBar(title = { Text("供应商") }, navigationIcon = {
-            NeumorphIconButton(onClick = onBack, icon = Icons.Rounded.ArrowBack, contentDescription = "返回", size = 40.dp)
-        }, actions = { TextButton(onClick = { model.loadAgentProviders(catalog.kind) }, enabled = !catalog.loading) { Text("刷新") } })
+        TopAppBar(title = { Text(if (selecting) "已选择 ${selected.size} 项" else "供应商") }, navigationIcon = {
+            NeumorphIconButton(onClick = { if (selecting) exitSelection() else onBack() },
+                icon = if (selecting) Icons.Rounded.Close else Icons.Rounded.ArrowBack,
+                contentDescription = if (selecting) "退出多选" else "返回", size = 40.dp)
+        }, actions = {
+            if (selecting) {
+                NeumorphIconButton(onClick = { pendingRemoval = catalog.providers.filter { it in selected } },
+                    icon = Icons.Rounded.Delete, contentDescription = "移除所选供应商", size = 40.dp, tint = MaterialTheme.colorScheme.error,
+                    enabled = available && selected.isNotEmpty())
+            } else TextButton(onClick = { exitSelection(); onLoad(catalog.kind) }, enabled = connected && !catalog.loading) { Text("刷新") }
+        })
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text(state.hostName ?: "已配对的电脑", style = MaterialTheme.typography.titleMedium)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("pi" to "Pi", "codex" to "Codex", "dsh" to "DeepSeek").forEach { (kind, label) ->
-                    FilterChip(selected = catalog.kind == kind, onClick = { model.loadAgentProviders(kind) }, label = { Text(label) }, enabled = !catalog.loading)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("pi" to "Pi", "codex" to "Codex", "claude" to "Claude Code", "dsh" to "DeepSeek").forEach { (kind, label) ->
+                    FilterChip(selected = catalog.kind == kind, onClick = { exitSelection(); pending = null; onLoad(kind) },
+                        label = { Text(label) }, enabled = !catalog.loading)
                 }
             }
             if (catalog.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             catalog.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             catalog.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
             if (!catalog.loading && catalog.error == null && catalog.providers.isEmpty()) Text("还没有供应商")
+            if (removable.isNotEmpty()) Text(if (selecting) "轻点卡片选择，完成后点击右上角移除" else "长按已启用的供应商可多选移除", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
             catalog.providers.forEach { provider ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    NeumorphSurface(Modifier.weight(1f), shape = RemoteUi.CardShape, contentPadding = 16.dp) {
-                        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(provider.name, fontWeight = FontWeight.SemiBold)
-                            Text(if (provider.enabled) (if (provider.additive) "已启用" else "当前使用") else "未启用", style = MaterialTheme.typography.bodySmall)
+                    NeumorphSurface(Modifier.weight(1f).testTag("provider-card-${provider.id}")
+                        .semantics { this.selected = provider in selected }, shape = RemoteUi.CardShape, contentPadding = 16.dp,
+                        selectionSelected = provider in selected, selectionMode = selecting,
+                        enabled = available && provider.removable,
+                        onClick = { if (selecting) toggle(provider) },
+                        onLongClick = {
+                            if (available && provider.removable) {
+                                if (!selecting) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                selecting = true; selectedProviders = selected + provider
+                            }
+                        }) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(provider.name, fontWeight = FontWeight.SemiBold)
+                                Text(if (provider.enabled) (if (provider.additive) "已启用" else "当前使用") else "未启用", style = MaterialTheme.typography.bodySmall)
+                            }
+                            OrbisSelectionIndicator(provider in selected, selecting && provider.removable)
                         }
                     }
-                    Box(Modifier.width(64.dp).heightIn(min = RemoteUi.TouchTarget), contentAlignment = Alignment.Center) {
-                        if (!provider.enabled || provider.additive) NeumorphTextButton(
-                            text = if (provider.enabled) "移除" else "启用", onClick = { pending = provider },
-                            enabled = available, danger = provider.enabled,
-                        )
+                    if (!provider.enabled) {
+                        Box(Modifier.width(64.dp).heightIn(min = RemoteUi.TouchTarget), contentAlignment = Alignment.Center) {
+                            NeumorphTextButton(text = "启用", onClick = { pending = provider }, enabled = available && !selecting)
+                        }
+                    }
+                }
+                if (provider.enabled && provider.subscriptionSupported) {
+                    TextButton(onClick = { onQuerySubscription(provider, catalog.hostId) }, enabled = available && !selecting,
+                        modifier = Modifier.testTag("provider-quota-${provider.id}")) {
+                        Text(if (catalog.quotaRequestId != null && catalog.quotaProviderId == provider.id) "查询中…" else "查询订阅配额")
+                    }
+                    if (catalog.quotaProviderId == provider.id) {
+                        catalog.quotaError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                        catalog.quota?.let { quota ->
+                            val dateFormat = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+                            quota.windows.forEach { window ->
+                                val label = if (window.name == "five_hour") "5 小时配额" else "周配额"
+                                Text(label + "：" + (window.remainingPercent?.let { "剩余 " + String.format(java.util.Locale.getDefault(), "%.1f", it) + "%" } ?: "暂不可用"))
+                                window.remainingPercent?.let { remaining -> LinearProgressIndicator(progress = { (remaining / 100).toFloat() }, modifier = Modifier.fillMaxWidth()) }
+                                window.resetsAt?.let { Text("重置时间：" + dateFormat.format(java.util.Date(it)), style = MaterialTheme.typography.bodySmall) }
+                            }
+                            Text("查询时间：" + dateFormat.format(java.util.Date(quota.checkedAt)), style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }
         }
     }
     pending?.let { provider ->
-        AlertDialog(onDismissRequest = { pending = null }, title = { Text(if (provider.enabled) "移除供应商" else "启用供应商") },
-            text = { Text("${provider.name}\n${if (provider.additive) { if (provider.enabled) "从 Pi 配置移除；Host 中的卡片和配置仍保留。" else "添加到 Pi 配置，可与其他供应商同时启用。" } else "将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。"}${if (provider.enabled && provider.globalDefault) "\n这是 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。" else ""}") },
-            confirmButton = { TextButton(enabled = available, onClick = { model.switchAgentProvider(provider, catalog.hostId); pending = null }) { Text("确认") } },
+        AlertDialog(onDismissRequest = { pending = null }, title = { Text("启用供应商") },
+            text = { Text("${provider.name}\n${if (provider.additive) "添加到 Pi 配置，可与其他供应商同时启用。" else "将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。"}") },
+            confirmButton = { TextButton(enabled = available && provider in catalog.providers, onClick = { onEnable(provider, catalog.hostId); pending = null }) { Text("确认") } },
             dismissButton = { TextButton(onClick = { pending = null }) { Text("取消") } })
+    }
+    pendingRemoval?.let { providers ->
+        AlertDialog(onDismissRequest = { pendingRemoval = null }, title = { Text("移除 ${providers.size} 个供应商？") },
+            text = { Text(providers.joinToString("\n") { it.name } + "\n从 Pi 配置移除；Host 中的卡片和配置仍保留。" +
+                if (providers.any { it.globalDefault }) "\n包含 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。" else "") },
+            confirmButton = { TextButton(enabled = available && catalog.canRemove(providers, state.hostId),
+                onClick = { onRemove(providers, catalog.hostId); exitSelection() }) { Text("移除 ${providers.size} 项", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { pendingRemoval = null }) { Text("取消") } })
     }
 }
 

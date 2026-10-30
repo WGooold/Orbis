@@ -6,14 +6,22 @@ import { codexOfficial, codexToken } from "./provider-codex.js";
 import { setToml } from "./provider-toml.js";
 import { catalogSpecs } from "./provider-catalog.js";
 import { upstreamFormat, validateCodexRouting } from "./provider-proxy-config.js";
+import { claudeOfficial } from "./provider-claude.js";
 
 type Obj = Record<string, unknown>;
 const isObject = (value: unknown): value is Obj => value !== null && typeof value === "object" && !Array.isArray(value);
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
 const dshDefaultSelection = (rows: Obj[]): Obj => object((rows.find(row => row.id === "agent-default-model") ?? rows.find(row => row.id === "acp"))?.config);
-export type ProviderFields = { baseUrl: string; apiKey: string; model: string; api: string; providerKey: string; headers?: Record<string, string>; compat?: Obj; models?: Obj[]; catalog?: Obj[]; reasoningEffort?: string; routing?: Obj };
+export type ProviderFields = { baseUrl: string; apiKey: string; model: string; api: string; providerKey: string; headers?: Record<string, string>; compat?: Obj; models?: Obj[]; catalog?: Obj[]; reasoningEffort?: string; routing?: Obj; claude?: { apiKeyField: string; haiku: string; sonnet: string; opus: string } };
 export function providerFields(profile: ProviderProfile, allowIncomplete = false): ProviderFields {
   const config = profile.config;
+  if (profile.kind === "claude") {
+    const env = object(config.env);
+    const apiKeyField = Object.hasOwn(env, "ANTHROPIC_API_KEY") ? "ANTHROPIC_API_KEY" : "ANTHROPIC_AUTH_TOKEN";
+    return { providerKey: "anthropic", baseUrl: String(env.ANTHROPIC_BASE_URL ?? ""), apiKey: String(env[apiKeyField] ?? ""),
+      model: String(env.ANTHROPIC_MODEL ?? config.model ?? ""), api: "anthropic-messages",
+      claude: { apiKeyField, haiku: String(env.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? ""), sonnet: String(env.ANTHROPIC_DEFAULT_SONNET_MODEL ?? ""), opus: String(env.ANTHROPIC_DEFAULT_OPUS_MODEL ?? "") } };
+  }
   if (profile.kind === "codex") {
     const toml = parse(String(config.config ?? ""));
     const key = String(toml.model_provider ?? "openai");
@@ -35,8 +43,8 @@ export function providerFields(profile: ProviderProfile, allowIncomplete = false
 export function applyProviderFields(kind: AgentKind, previous: Obj, fields: ProviderFields, create = false, validateRequired = true): Obj {
   if (!isObject(previous) || !isObject(fields) || [fields.model, fields.providerKey, fields.baseUrl, fields.apiKey, fields.api].some(value => typeof value !== "string")) throw new ProviderError("供应商表单格式无效");
   if (fields.headers !== undefined && (!isObject(fields.headers) || !Object.values(fields.headers).every(value => typeof value === "string"))) throw new ProviderError("请求头必须是字符串映射");
-  const official = kind === "codex" && codexOfficial(previous) && fields.providerKey === "openai";
-  if (validateRequired && kind !== "pi" && !official && !fields.model.trim()) throw new ProviderError("请填写供应商支持的模型 ID");
+  const official = (kind === "codex" && codexOfficial(previous) && fields.providerKey === "openai") || (kind === "claude" && claudeOfficial(previous));
+  if (validateRequired && kind !== "pi" && kind !== "claude" && !official && !fields.model.trim()) throw new ProviderError("请填写供应商支持的模型 ID");
   if ((validateRequired && !fields.providerKey.trim()) || fields.providerKey.length > 128 || ["__proto__", "prototype", "constructor"].includes(fields.providerKey)) throw new ProviderError("请填写有效的供应商标识");
   if (fields.baseUrl) {
     let url: URL;
@@ -44,7 +52,31 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
     if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) throw new ProviderError("API 地址须为 HTTP(S)，且不能在地址中包含密码");
   }
   const config = structuredClone(previous);
-  if (kind === "codex") {
+  if (kind === "claude") {
+    if (fields.api !== "anthropic-messages") throw new ProviderError("Claude Code 供应商需要 Anthropic Messages 接口");
+    const env = { ...object(config.env) };
+    const initial = providerFields({ kind, id: "", name: "", config: previous });
+    if (!official) {
+      if (validateRequired && !fields.baseUrl) throw new ProviderError("请填写 Claude Code 供应商 API 地址");
+      env.ANTHROPIC_BASE_URL = fields.baseUrl;
+      const key = fields.claude?.apiKeyField ?? initial.claude!.apiKeyField;
+      if (!["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"].includes(key)) throw new ProviderError("Claude Code 凭据字段无效");
+      if (create || fields.apiKey !== initial.apiKey || key !== initial.claude!.apiKeyField) {
+        delete env.ANTHROPIC_AUTH_TOKEN; delete env.ANTHROPIC_API_KEY;
+        env[key] = fields.apiKey;
+      }
+    }
+    if (fields.model !== initial.model) {
+      delete config.model;
+      if (fields.model) env.ANTHROPIC_MODEL = fields.model; else delete env.ANTHROPIC_MODEL;
+    }
+    if (fields.claude) for (const [alias, key] of [["haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"], ["sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"], ["opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"]] as const) {
+      const value = fields.claude[alias];
+      if (typeof value !== "string") throw new ProviderError("Claude Code 模型映射必须是字符串");
+      if (value) env[key] = value; else delete env[key];
+    }
+    config.env = env;
+  } else if (kind === "codex") {
     if (!["openai-responses", "openai-completions", "anthropic-messages"].includes(fields.api)) throw new ProviderError("Codex 上游格式必须是 Responses、Chat Completions 或 Anthropic Messages");
     if (!official && (create || fields.api !== providerFields({ kind, id: "", name: "", config: previous }, !validateRequired).api)) config.apiFormat = fields.api === "openai-completions" ? "openai_chat" : fields.api === "anthropic-messages" ? "anthropic" : "responses";
     if (fields.routing !== undefined) {
@@ -166,6 +198,7 @@ function normalizeModels(kind: "pi" | "dsh", models: Obj[], fields: ProviderFiel
   });
 }
 export function newProviderConfig(kind: AgentKind): Obj {
+  if (kind === "claude") return { env: { ANTHROPIC_BASE_URL: "", ANTHROPIC_AUTH_TOKEN: "" } };
   return kind === "codex" ? { auth: { OPENAI_API_KEY: "" }, config: "model_provider = \"custom\"\nmodel = \"\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n" }
     : kind === "pi" ? { baseUrl: "", apiKey: "", api: "openai-completions", models: [{ id: "" }] }
     : { patch: "[]\n", env: {} };

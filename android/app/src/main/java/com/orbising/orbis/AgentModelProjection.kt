@@ -166,10 +166,11 @@ internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentSta
             val providers = profiles.filterIsInstance<JsonObject>().mapNotNull { profile ->
                 val id = profile.text("id") ?: return@mapNotNull null
                 AgentProvider(id, kind, profile.text("name") ?: id, profile["enabled"]?.jsonPrimitive?.booleanOrNull == true,
-                    profile.text("mode") == "additive", profile["globalDefault"]?.jsonPrimitive?.booleanOrNull == true)
+                    profile.text("mode") == "additive", profile["globalDefault"]?.jsonPrimitive?.booleanOrNull == true,
+                    profile["subscriptionSupported"]?.jsonPrimitive?.booleanOrNull == true)
             }
             providerState = providerState.copy(providers = providers,
-                loading = providerState.requestId != null, error = null)
+                loading = providerState.requestId != null || providerState.pendingRemovals.isNotEmpty())
         }
         state = state.copy(currentProviders = current, agentProviders = providerState)
     }

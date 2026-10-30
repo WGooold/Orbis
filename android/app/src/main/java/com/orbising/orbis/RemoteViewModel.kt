@@ -328,9 +328,13 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         active()?.createSession(agentKind, cwd, expectedHostId) == true
 
     fun loadAgentProviders(kind: String) = active()?.loadAgentProviders(kind)
+    fun querySubscription(provider: AgentProvider, expectedHostId: String?) = active()?.querySubscription(provider, expectedHostId)
 
     fun switchAgentProvider(provider: AgentProvider, expectedHostId: String?) =
         active()?.switchAgentProvider(provider, expectedHostId)
+
+    fun removeAgentProviders(providers: List<AgentProvider>, expectedHostId: String?) =
+        active()?.removeAgentProviders(providers, expectedHostId)
 
     fun clearActivationNotice() = active()?.clearActivationNotice()
 

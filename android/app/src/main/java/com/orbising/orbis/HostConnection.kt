@@ -562,7 +562,8 @@ internal class HostConnection(
     }
 
     fun loadAgentProviders(kind: String) {
-        if (kind !in setOf("pi", "codex", "dsh")) return
+        if (kind !in setOf("pi", "codex", "dsh", "claude") || mutableState.value.agentProviders.requestId != null ||
+            mutableState.value.agentProviders.pendingRemovals.isNotEmpty()) return
         updateState { it.copy(agentProviders = AgentProvidersState(kind = kind, hostId = it.hostId,
             providers = it.agentProviders.providers.takeIf { _ -> it.agentProviders.kind == kind }.orEmpty(), loading = true)) }
         refreshProviderModel()
@@ -577,6 +578,52 @@ internal class HostConnection(
         requestAgentProviders(provider.kind, provider.id, !provider.enabled)
     }
 
+    fun querySubscription(provider: AgentProvider, expectedHostId: String?) {
+        val current = mutableState.value
+        if (expectedHostId == null || current.hostId != expectedHostId || current.agentProviders.hostId != expectedHostId ||
+            !current.e2eReady || current.connection != RelayConnection.ONLINE || current.agentProviders.loading ||
+            current.agentProviders.quotaRequestId != null || provider !in current.agentProviders.providers ||
+            !provider.enabled || !provider.subscriptionSupported) return
+        val request = UUID.randomUUID().toString()
+        updateState { it.copy(agentProviders = it.agentProviders.copy(quotaRequestId = request,
+            quotaProviderId = provider.id, quota = null, quotaError = null)) }
+        val sent = relay.sendDeviceMessage(buildJsonObject {
+            put("type", "provider.subscription"); put("protocolVersion", PROTOCOL_VERSION)
+            put("requestId", request); put("kind", provider.kind); put("id", provider.id)
+        })
+        if (!sent) updateState { it.copy(agentProviders = it.agentProviders.copy(quotaRequestId = null, quotaError = "配额查询未发送，请重新连接")) }
+        scope.launch {
+            delay(45_000)
+            updateState { state -> if (state.hostId == expectedHostId && state.agentProviders.quotaRequestId == request)
+                state.copy(agentProviders = state.agentProviders.copy(quotaRequestId = null, quotaError = "配额查询超时，请稍后重试")) else state }
+        }
+    }
+
+    fun removeAgentProviders(providers: List<AgentProvider>, expectedHostId: String?) {
+        val current = mutableState.value
+        if (current.hostId != expectedHostId || !current.e2eReady || current.connection != RelayConnection.ONLINE ||
+            !current.agentProviders.canRemove(providers, expectedHostId)) {
+            updateState { it.copy(agentProviders = it.agentProviders.copy(error = "目标电脑或供应商列表已变化，请刷新后重试")) }
+            return
+        }
+        updateState { it.copy(agentProviders = it.agentProviders.copy(
+            pendingRemovals = providers, removalCount = providers.size, loading = true, error = null, notice = null)) }
+        sendNextProviderRemoval(expectedHostId)
+    }
+
+    private fun sendNextProviderRemoval(expectedHostId: String?) {
+        val current = mutableState.value
+        val catalog = current.agentProviders
+        if (catalog.requestId != null || catalog.pendingRemovals.isEmpty()) return
+        val provider = catalog.pendingRemovals.first()
+        if (expectedHostId != current.hostId || catalog.hostId != expectedHostId || !current.e2eReady ||
+            current.connection != RelayConnection.ONLINE || !provider.removable || provider !in catalog.providers) {
+            updateState { it.copy(agentProviders = it.agentProviders.stopOperation("目标电脑或供应商列表已变化，请刷新确认结果")) }
+            return
+        }
+        requestAgentProviders(provider.kind, provider.id, false)
+    }
+
     private fun requestAgentProviders(kind: String, id: String?, enabled: Boolean) {
         val current = mutableState.value
         val hostId = current.hostId
@@ -585,18 +632,20 @@ internal class HostConnection(
             return
         }
         val requestId = UUID.randomUUID().toString()
-        updateState { it.copy(agentProviders = AgentProvidersState(kind = kind, hostId = hostId, requestId = requestId, loading = true,
+        updateState { it.copy(agentProviders = it.agentProviders.copy(kind = kind, hostId = hostId, requestId = requestId,
+            quotaRequestId = null, quotaProviderId = null, quota = null, quotaError = null,
+            loading = true, error = null, notice = null,
             providers = if (it.agentProviders.kind == kind && it.agentProviders.hostId == hostId) it.agentProviders.providers else emptyList())) }
         val sent = relay.sendDeviceMessage(buildJsonObject {
             put("type", if (id == null) "provider.list" else "provider.switch")
             put("protocolVersion", PROTOCOL_VERSION); put("requestId", requestId); put("kind", kind)
             if (id != null) { put("id", id); put("enabled", enabled) }
         })
-        if (!sent) updateState { it.copy(agentProviders = it.agentProviders.copy(requestId = null, loading = false, error = "供应商操作未发送，请重新连接")) }
+        if (!sent) updateState { it.copy(agentProviders = it.agentProviders.stopOperation("供应商操作未发送，请重新连接")) }
         scope.launch {
             delay(90_000)
             updateState { state ->
-                if (state.agentProviders.requestId == requestId && state.hostId == hostId) state.copy(agentProviders = state.agentProviders.copy(requestId = null, loading = false, error = "操作超时，请刷新以确认实际状态")) else state
+                if (state.agentProviders.requestId == requestId && state.hostId == hostId) state.copy(agentProviders = state.agentProviders.stopOperation("操作超时，请刷新以确认实际状态")) else state
             }
         }
     }
@@ -1729,7 +1778,7 @@ internal class HostConnection(
                                 }
                                 if (interactiveChannel != null && messageType == "provider.changed") {
                                     val kind = message["kind"]?.jsonPrimitive?.contentOrNull
-                                    if (kind == reduced.agentProviders.kind && !reduced.agentProviders.loading) scope.launch { loadAgentProviders(kind) }
+                                    if (kind == reduced.agentProviders.kind && !reduced.agentProviders.loading) scope.launch { refreshProviderModel() }
                                     if (kind in setOf("pi", "codex", "dsh")) scope.launch { refreshSessions() }
                                 }
                                 if (interactiveChannel != null && messageType == "provider.result" && message?.get("notice")?.jsonPrimitive?.contentOrNull?.isNotBlank() == true) scope.launch { refreshSessions() }
@@ -1763,6 +1812,17 @@ internal class HostConnection(
                                     )
                                 }
                                 next = mutableState.value
+                                if (interactiveChannel != null && messageType == "provider.result" &&
+                                    previous.agentProviders.requestId != null &&
+                                    previous.agentProviders.requestId == message?.get("requestId")?.jsonPrimitive?.contentOrNull &&
+                                    previous.agentProviders.kind == message["kind"]?.jsonPrimitive?.contentOrNull &&
+                                    next.agentProviders.requestId == null && next.agentProviders.error == null) {
+                                    val providerHost = previous.hostId
+                                    scope.launch {
+                                        if (mutableState.value.agentProviders.pendingRemovals.isNotEmpty()) sendNextProviderRemoval(providerHost)
+                                        else refreshProviderModel()
+                                    }
+                                }
                                 previous.sessionSyncCommands.forEach { (id, pending) ->
                                     if (id !in next.sessionSyncCommands && sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull in setOf("session.tools.page", "session.tools.patch")) {
                                         scope.launch(Dispatchers.IO) { relay.acknowledgeSessionSnapshot(pending.runtimeId, pending.syncId) }
@@ -2336,6 +2396,13 @@ internal class HostConnection(
             val named = next.cachePiSessionNames(current)
             capturedName = named !== next
             next = named
+            if ((!next.e2eReady || next.connection != RelayConnection.ONLINE) &&
+                (next.agentProviders.requestId != null || next.agentProviders.pendingRemovals.isNotEmpty())) {
+                next = next.copy(agentProviders = next.agentProviders.stopOperation("连接已断开，请刷新以确认操作结果"))
+            }
+            if ((!next.e2eReady || next.connection != RelayConnection.ONLINE) && next.agentProviders.quotaRequestId != null) {
+                next = next.copy(agentProviders = next.agentProviders.copy(quotaRequestId = null, quota = null, quotaError = "连接已断开，请重新查询配额"))
+            }
             if (next !== current) mutableState.value = next
         }
         // Local graph hydration also learns names; it need not receive another remote event

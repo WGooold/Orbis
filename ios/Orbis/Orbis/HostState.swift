@@ -75,10 +75,28 @@ struct AgentProvider: Identifiable, Hashable {
     let enabled: Bool
     let additive: Bool
     let globalDefault: Bool
+    var subscriptionSupported = false
+    var removable: Bool { kind == "pi" && enabled && additive }
     var confirmation: String {
         let explanation = additive ? (enabled ? "从 Pi 配置移除；Host 中的卡片和配置仍保留。" : "添加到 Pi 配置，可与其他供应商同时启用。") :
             "将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。"
         return name + "\n" + explanation + (enabled && globalDefault ? "\n这是 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。" : "")
+    }
+}
+
+struct SubscriptionQuota: Decodable {
+    struct Window: Decodable, Identifiable {
+        let name: String
+        let remainingPercent: Double?
+        let resetsAt: Int64?
+        var id: String { name }
+        var title: String { name == "five_hour" ? "5 小时配额" : "周配额" }
+    }
+    let checkedAt: Int64
+    let windows: [Window]
+    var valid: Bool {
+        checkedAt >= 0 && windows.count == 2 && Set(windows.map(\.name)) == ["five_hour", "seven_day"] &&
+        windows.allSatisfy { ($0.remainingPercent.map { $0.isFinite && (0...100).contains($0) } ?? true) && ($0.resetsAt.map { $0 >= 0 } ?? true) }
     }
 }
 
@@ -114,6 +132,10 @@ final class HostState: ObservableObject {
     @Published private(set) var providerNotice: String?
     @Published private(set) var providerError: String?
     @Published private(set) var changingProvider = false
+    @Published private(set) var quota: SubscriptionQuota?
+    @Published private(set) var quotaProviderId: String?
+    @Published private(set) var queryingQuota = false
+    @Published private(set) var quotaError: String?
     @Published private(set) var diagnosticPage: HostDiagnosticPage?
     @Published private(set) var diagnosticsLoading = false
     @Published private(set) var diagnosticsError: String?
@@ -133,6 +155,10 @@ final class HostState: ObservableObject {
     private var modelTimeout: Task<Void, Never>?
     private var providerRequest: (id: String, kind: String, hostKey: String)?
     private var providerTimeout: Task<Void, Never>?
+    private var quotaRequest: (id: String, kind: String, providerId: String, hostKey: String)?
+    private var quotaTimeout: Task<Void, Never>?
+    private var pendingProviderRemovals: [AgentProvider] = []
+    private var providerRemovalCount = 0
     private var diagnosticRequest: String?
     private var diagnosticTimeout: Task<Void, Never>?
 
@@ -192,7 +218,8 @@ final class HostState: ObservableObject {
     }
 
     func loadProviders(_ kind: String) {
-        guard ["pi", "codex", "dsh"].contains(kind), !changingProvider else { return }
+        guard ["pi", "codex", "dsh", "claude"].contains(kind), !changingProvider else { return }
+        clearQuota()
         providerKind = kind; providerError = nil; providerNotice = nil
         refresh(["providers"])
     }
@@ -208,7 +235,7 @@ final class HostState: ObservableObject {
             guard let id = profile["id"].string, !id.isEmpty, let enabled = profile["enabled"].bool,
                   let globalDefault = profile["globalDefault"].bool else { return nil }
             return AgentProvider(id: id, kind: providerKind, name: profile["name"].string ?? id, enabled: enabled,
-                                 additive: profile["mode"].string == "additive", globalDefault: globalDefault)
+                                 additive: profile["mode"].string == "additive", globalDefault: globalDefault, subscriptionSupported: profile["subscriptionSupported"].bool == true)
         }
     }
     var providerCatalogProblem: String? {
@@ -229,7 +256,7 @@ final class HostState: ObservableObject {
         return nil
     }
     var canChangeProvider: Bool {
-        connected && !providersLoading && !changingProvider && providerCatalogProblem == nil && providerSummary?["switching"].bool != true
+        connected && !providersLoading && !changingProvider && !queryingQuota && providerCatalogProblem == nil && providerSummary?["switching"].bool != true
     }
     var currentProviders: [String: String] {
         guard let domain = domains["providers"], domain.availability == "ready", missing["providers"] == nil else { return [:] }
@@ -243,19 +270,67 @@ final class HostState: ObservableObject {
     func changeProvider(_ provider: AgentProvider, expectedHostKey: String) {
         guard hostKey == expectedHostKey, canChangeProvider, providers.contains(provider),
               !provider.enabled || provider.additive else { providerError = "目标电脑或供应商列表已变化，请刷新后重试"; return }
+        clearQuota(); sendProviderChange(provider, expectedHostKey: expectedHostKey)
+    }
+
+    func querySubscription(_ provider: AgentProvider, expectedHostKey: String) {
+        guard hostKey == expectedHostKey, canChangeProvider, providers.contains(provider), provider.enabled,
+              provider.subscriptionSupported else { return }
+        clearQuota()
+        let id = UUID().uuidString
+        quotaRequest = (id, provider.kind, provider.id, expectedHostKey)
+        quotaProviderId = provider.id; queryingQuota = true
+        guard send?(["type": "provider.subscription", "protocolVersion": orbisProtocolVersion, "requestId": id,
+                     "kind": provider.kind, "id": provider.id]) == true else {
+            finishQuota(error: "配额查询未发送，请重新连接"); return
+        }
+        quotaTimeout = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 45_000_000_000) } catch { return }
+            guard let self, self.quotaRequest?.id == id else { return }
+            self.finishQuota(error: "配额查询超时，请稍后重试")
+        }
+    }
+
+    private func finishQuota(error: String? = nil) {
+        quotaTimeout?.cancel(); quotaRequest = nil; queryingQuota = false; quotaError = error
+    }
+    private func clearQuota() {
+        finishQuota(); quota = nil; quotaProviderId = nil
+    }
+
+    func removeProviders(_ selected: [AgentProvider], expectedHostKey: String) {
+        guard hostKey == expectedHostKey, canChangeProvider, !selected.isEmpty,
+              Set(selected.map(\.id)).count == selected.count,
+              selected.allSatisfy({ $0.removable && providers.contains($0) }) else {
+            providerError = "目标电脑或供应商列表已变化，请刷新后重试"; return
+        }
+        pendingProviderRemovals = selected
+        providerRemovalCount = selected.count
+        sendProviderChange(selected[0], expectedHostKey: expectedHostKey)
+    }
+
+    private func stopProviderChange(_ error: String) {
+        providerTimeout?.cancel(); providerRequest = nil; changingProvider = false
+        providerError = (providerRemovalCount > 0 ? "批量移除已停止：" : "") + error
+        pendingProviderRemovals = []; providerRemovalCount = 0
+    }
+
+    private func sendProviderChange(_ provider: AgentProvider, expectedHostKey: String) {
+        guard connected, hostKey == expectedHostKey, providers.contains(provider) else {
+            stopProviderChange("目标电脑或供应商列表已变化，请刷新确认结果"); return
+        }
         let id = UUID().uuidString
         providerRequest = (id, provider.kind, expectedHostKey)
         changingProvider = true; providerError = nil; providerNotice = nil
         guard send?(["type": "provider.switch", "protocolVersion": orbisProtocolVersion, "requestId": id,
                      "kind": provider.kind, "id": provider.id, "enabled": !provider.enabled]) == true else {
-            providerRequest = nil; changingProvider = false; providerError = "供应商操作未发送，请重新连接"; return
+            stopProviderChange("供应商操作未发送，请重新连接"); return
         }
         providerTimeout?.cancel()
         providerTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 90_000_000_000) } catch { return }
             guard let self, self.providerRequest?.id == id else { return }
-            self.providerRequest = nil; self.changingProvider = false
-            self.providerError = "操作超时，请刷新以确认实际状态"
+            self.stopProviderChange("操作超时，请刷新以确认实际状态")
         }
     }
 
@@ -279,6 +354,16 @@ final class HostState: ObservableObject {
     func consume(_ message: [String: Any]) -> Bool {
         guard connected, let type = message["type"] as? String else { return false }
         switch type {
+        case "provider.subscription.result":
+            guard let request = quotaRequest, request.id == message["requestId"] as? String,
+                  request.kind == message["kind"] as? String, request.providerId == message["id"] as? String,
+                  request.hostKey == hostKey, request.kind == providerKind,
+                  providers.contains(where: { $0.id == request.providerId && $0.enabled && $0.subscriptionSupported }) else { return true }
+            if let error = message["error"] as? String { finishQuota(error: error); return true }
+            guard let raw = message["quota"] as? [String: Any], let result: SubscriptionQuota = decode(raw), result.valid else {
+                finishQuota(error: "配额数据格式无法识别，请升级 Host 后重试"); return true
+            }
+            quota = result; finishQuota(); return true
         case "agent.state.snapshot":
             guard message["scope"] as? String == "host" else { return false }
             consumeSnapshot(message); return true
@@ -288,14 +373,21 @@ final class HostState: ObservableObject {
         case "provider.result":
             guard let request = providerRequest, request.id == message["requestId"] as? String,
                   request.kind == message["kind"] as? String, request.hostKey == hostKey else { return true }
-            providerTimeout?.cancel(); providerRequest = nil; changingProvider = false
-            providerError = message["error"] as? String
-            if providerError == nil {
-                providerNotice = (message["notice"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            if let error = message["error"] as? String { stopProviderChange(error); return true }
+            providerTimeout?.cancel(); providerRequest = nil
+            if !pendingProviderRemovals.isEmpty { pendingProviderRemovals.removeFirst() }
+            if let next = pendingProviderRemovals.first {
+                sendProviderChange(next, expectedHostKey: request.hostKey)
+            } else {
+                changingProvider = false
+                let notice = (message["notice"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                providerNotice = providerRemovalCount > 0 ? "已移除 \(providerRemovalCount) 个供应商。" + (notice ?? "") : notice
+                providerRemovalCount = 0
                 refresh(["providers"]); didChangeProviders?()
             }
             return true
         case "provider.changed":
+            clearQuota()
             refresh(["providers"]); didChangeProviders?(); return true
         case "diagnostics.page":
             guard diagnosticRequest != nil, diagnosticRequest == message["requestId"] as? String else { return true }
@@ -311,7 +403,7 @@ final class HostState: ObservableObject {
             let error = message["message"] as? String ?? "电脑端无法完成读取"
             if let id, id == diagnosticRequest { finishDiagnostics(error: error); return true }
             if let id, id == providerRequest?.id {
-                providerTimeout?.cancel(); providerRequest = nil; changingProvider = false; providerError = error; return true
+                stopProviderChange(error); return true
             }
             if let id, id == subscriptionId { modelTimeout?.cancel(); pendingDomains = []; modelError = error; return true }
             if let id, id == catalogRequest?.id { rejectCatalog(error); return true }
@@ -389,9 +481,10 @@ final class HostState: ObservableObject {
         diagnosticTimeout?.cancel(); diagnosticRequest = nil; diagnosticsLoading = false; diagnosticsError = error
     }
     private func cancelRequests() {
+        clearQuota()
         modelTimeout?.cancel(); providerTimeout?.cancel(); diagnosticTimeout?.cancel(); catalogTimeout?.cancel()
         catalogRequest = nil
-        if changingProvider { providerError = "连接已断开，请刷新以确认操作结果" }
+        if changingProvider { stopProviderChange("连接已断开，请刷新以确认操作结果") }
         if diagnosticsLoading { diagnosticsError = "连接已断开，请重新读取" }
         subscriptionId = nil; subscribedDomains = []; pendingDomains = []
         providerRequest = nil; changingProvider = false; diagnosticRequest = nil; diagnosticsLoading = false

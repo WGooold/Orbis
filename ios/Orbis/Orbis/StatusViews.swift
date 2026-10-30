@@ -101,19 +101,35 @@ struct AgentProvidersView: View {
     @EnvironmentObject private var host: HostState
     @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.colorScheme) private var scheme
+    @State private var selected: Set<AgentProvider> = []
+    @State private var selecting = false
     let onBack: () -> Void
+    private var removable: Set<AgentProvider> { Set(host.providers.filter(\.removable)) }
+    private var effectiveSelection: Set<AgentProvider> { selected.intersection(removable) }
     var body: some View {
         VStack(spacing: 0) {
-            OrbisPageHeader(title: "供应商", back: onBack) {
-                OrbisIconButton(symbol: "arrow.clockwise", label: "刷新供应商") { host.loadProviders(host.providerKind) }
-                    .disabled(host.providersLoading || host.changingProvider || !host.connected)
+            OrbisHeader {
+                OrbisIconButton(symbol: selecting ? "xmark" : "arrow.left", label: selecting ? "退出多选" : "返回") {
+                    if selecting { exitSelection() } else { onBack() }
+                }
+            } title: {
+                Text(selecting ? "已选择 \(effectiveSelection.count) 项" : "供应商")
+                    .font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
+            } trailing: {
+                if selecting {
+                    OrbisIconButton(symbol: "trash", label: "移除所选供应商", tint: OrbisPalette(scheme).error, action: confirmRemoval)
+                        .disabled(!host.canChangeProvider || effectiveSelection.isEmpty)
+                } else {
+                    OrbisIconButton(symbol: "arrow.clockwise", label: "刷新供应商") { exitSelection(); host.loadProviders(host.providerKind) }
+                        .disabled(host.providersLoading || host.changingProvider || !host.connected)
+                }
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(store.selectedHost?.hostName ?? "已配对的电脑").font(.orbisBody(.medium))
-                    HStack(spacing: 10) {
-                        ForEach(["pi", "codex", "dsh"], id: \.self) { kind in
-                            Button { host.loadProviders(kind) } label: {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        ForEach(["pi", "codex", "claude", "dsh"], id: \.self) { kind in
+                            Button { exitSelection(); overlay.dismissDialog(); host.loadProviders(kind) } label: {
                                 HStack(spacing: 6) {
                                     AgentEmblem(kind: kind, size: 22, recessed: false)
                                     Text(agentTitle(kind)).font(.orbisLabel(.semibold))
@@ -123,7 +139,6 @@ struct AgentProvidersView: View {
                                 .accessibilityLabel("\(agentTitle(kind))供应商").accessibilityAddTraits(host.providerKind == kind ? .isSelected : [])
                         }
                     }
-                    // Always laid out; loading only changes its opacity, so the list below never moves.
                     ProgressView().progressViewStyle(.linear)
                         .opacity(host.providersLoading || host.changingProvider ? 1 : 0)
                         .accessibilityHidden(!(host.providersLoading || host.changingProvider))
@@ -134,37 +149,104 @@ struct AgentProvidersView: View {
                     if !host.providersLoading && host.providerCatalogProblem == nil && host.providers.isEmpty {
                         OrbisEmptyState(symbol: "shippingbox", title: "还没有供应商")
                     }
+                    if !removable.isEmpty {
+                        Text(selecting ? "轻点卡片选择，完成后点击右上角移除" : "长按已启用的供应商可多选移除")
+                            .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
+                    }
                     ForEach(host.providers) { provider in
-                        HStack(spacing: 0) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(provider.name).font(.orbisBody(.semibold))
-                                Text(provider.enabled ? (provider.additive ? "已启用" : "当前使用") : "未启用")
-                                    .font(.orbisCaption()).foregroundStyle(provider.enabled ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                                .neuSurface(radius: OrbisRadius.card, padding: 16)
-                            ZStack {
-                                if !provider.enabled || provider.additive {
-                                    OrbisTextButton(title: provider.enabled ? "移除" : "启用",
-                                                    tint: provider.enabled ? OrbisPalette(scheme).error : OrbisPalette(scheme).accent) {
-                                        if let key = host.hostKey { confirm(provider, hostKey: key) }
-                                    }.disabled(!host.canChangeProvider).accessibilityIdentifier("provider-action-\(provider.id)")
+                        providerRow(provider)
+                        if provider.enabled && provider.subscriptionSupported {
+                            OrbisTextButton(title: host.queryingQuota && host.quotaProviderId == provider.id ? "查询中…" : "查询订阅配额", tint: OrbisPalette(scheme).accent) {
+                                if let key = host.hostKey { host.querySubscription(provider, expectedHostKey: key) }
+                            }.disabled(!host.canChangeProvider || selecting).accessibilityIdentifier("provider-quota-\(provider.id)")
+                            if host.quotaProviderId == provider.id {
+                                if let error = host.quotaError { OrbisNotice(text: error, error: true) }
+                                if let quota = host.quota {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        ForEach(quota.windows) { window in
+                                            Text(window.title + "：" + (window.remainingPercent.map { "剩余 " + String(format: "%.1f", $0) + "%" } ?? "暂不可用"))
+                                                .font(.orbisBody(.medium))
+                                            if let remaining = window.remainingPercent { ProgressView(value: remaining, total: 100) }
+                                            if let reset = window.resetsAt {
+                                                Text("重置时间：" + Date(timeIntervalSince1970: Double(reset) / 1000).formatted(date: .abbreviated, time: .shortened)).font(.orbisCaption())
+                                            }
+                                        }
+                                        Text("查询时间：" + Date(timeIntervalSince1970: Double(quota.checkedAt) / 1000).formatted(date: .abbreviated, time: .shortened))
+                                            .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                                    }.padding(16)
                                 }
-                            }.frame(width: 64, height: 48)
+                            }
                         }
                     }
                 }.padding(20)
             }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
             .onAppear { host.loadProviders(host.providerKind) }
-            // 换了电脑，未确认的切换就不再成立。
-            .onChange(of: host.hostKey) { _, _ in overlay.dismissDialog() }
+            .onChange(of: host.hostKey) { _, _ in exitSelection(); overlay.dismissDialog() }
+            .onChange(of: host.providerKind) { _, _ in exitSelection(); overlay.dismissDialog() }
+            .onChange(of: host.connected) { _, connected in
+                if !connected { exitSelection(); overlay.dismissDialog() }
+            }
+            .onChange(of: removable) { _, values in
+                selected.formIntersection(values)
+                if values.isEmpty { exitSelection() }
+            }
+    }
+
+    private func exitSelection() { selecting = false; selected = [] }
+
+    private func select(_ provider: AgentProvider) {
+        guard host.canChangeProvider, provider.removable else { return }
+        if !selecting { OrbisHaptics.beginSelection() }
+        selecting = true; selected.insert(provider)
+    }
+
+    private func providerRow(_ provider: AgentProvider) -> some View {
+        HStack(spacing: 0) {
+            Button {
+                guard selecting, host.canChangeProvider, provider.removable else { return }
+                if !selected.insert(provider).inserted { selected.remove(provider) }
+            } label: {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(provider.name).font(.orbisBody(.semibold)).foregroundStyle(OrbisPalette(scheme).text)
+                        Text(provider.enabled ? (provider.additive ? "已启用" : "当前使用") : "未启用")
+                            .font(.orbisCaption()).foregroundStyle(provider.enabled ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    OrbisSelectionIndicator(selected: effectiveSelection.contains(provider), selecting: selecting && provider.removable)
+                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            }.buttonStyle(OrbisSelectionButtonStyle(selected: effectiveSelection.contains(provider), selecting: selecting))
+                .highPriorityGesture(LongPressGesture().onEnded { _ in select(provider) })
+                .accessibilityIdentifier("provider-card-\(provider.id)")
+                .accessibilityAddTraits(effectiveSelection.contains(provider) ? .isSelected : [])
+                .accessibilityHint(provider.removable ? (selecting ? "轻点切换选择" : "长按进入多选移除") : "")
+                .accessibilityAction(named: "选择供应商") { select(provider) }
+            if !provider.enabled {
+                OrbisTextButton(title: "启用", tint: OrbisPalette(scheme).accent) {
+                    if let key = host.hostKey { confirm(provider, hostKey: key) }
+                }.disabled(!host.canChangeProvider || selecting).accessibilityIdentifier("provider-action-\(provider.id)")
+                    .frame(width: 64, height: 48)
+            }
+        }
     }
 
     private func confirm(_ provider: AgentProvider, hostKey: String) {
-        overlay.showDialog(provider.enabled ? "移除供应商" : "启用供应商", message: provider.confirmation, actions: [
+        overlay.showDialog("启用供应商", message: provider.confirmation, actions: [
             OrbisDialogAction(title: "取消", role: .cancel),
-            OrbisDialogAction(title: "确认", role: provider.enabled ? .destructive : .normal) {
-                host.changeProvider(provider, expectedHostKey: hostKey)
+            OrbisDialogAction(title: "确认") { host.changeProvider(provider, expectedHostKey: hostKey) }
+        ])
+    }
+
+    private func confirmRemoval() {
+        guard host.canChangeProvider, let key = host.hostKey else { return }
+        let providers = host.providers.filter { effectiveSelection.contains($0) }
+        guard !providers.isEmpty else { return }
+        let message = providers.map(\.name).joined(separator: "\n") + "\n从 Pi 配置移除；Host 中的卡片和配置仍保留。" +
+            (providers.contains(where: \.globalDefault) ? "\n包含 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。" : "")
+        overlay.showDialog("移除 \(providers.count) 个供应商？", message: message, actions: [
+            OrbisDialogAction(title: "取消", role: .cancel),
+            OrbisDialogAction(title: "移除 \(providers.count) 项", role: .destructive) {
+                host.removeProviders(providers, expectedHostKey: key); exitSelection()
             }
         ])
     }

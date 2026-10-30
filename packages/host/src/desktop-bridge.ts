@@ -77,6 +77,7 @@ input.on("line", line => {
         case "provider.check": result = await runtime.checkProvider(String(p.kind), String(p.id)); break;
         case "provider.models": result = await runtime.fetchProviderModels(p); break;
         case "provider.usage": result = await runtime.queryProviderUsage(String(p.kind), String(p.id)); break;
+        case "provider.subscription": result = await runtime.querySubscription(String(p.kind), String(p.id)); break;
         case "provider.saveUsage": await runtime.saveProviderUsage(String(p.kind), String(p.id), p.script); break;
         case "provider.usageTemplate": result = await runtime.providerUsageTemplate(String(p.kind), String(p.id), String(p.template), String(p.baseUrl ?? "")); break;
         case "provider.oauth": result = await runtime.oauth(String(p.operation), String(p.accountId ?? "")); break;

@@ -1733,7 +1733,7 @@ class RelayReducer(
         val messageType = message.string("type")
         if (messageType !in setOf(
                 "device.ready", "runtime.online", "runtime.offline", "runtime.event", "runtime.git", "notification.snapshot",
-                "protocol.error", "provider.result", "provider.changed", "agent.state.snapshot", "agent.state.range.page", "diagnostics.page",
+                "protocol.error", "provider.result", "provider.subscription.result", "provider.changed", "agent.state.snapshot", "agent.state.range.page", "diagnostics.page",
                 "artifact.read.failed",
                 // 上传的入站消息：状态由 ViewModel 的上传处理器维护，reducer 只需不把它当非法消息。
                 "file.upload.ready", "file.upload.read", "file.upload.progress", "file.upload.finished", "file.upload.failed",
@@ -1751,7 +1751,8 @@ class RelayReducer(
         return when (messageType) {
             "notification.snapshot" -> if (channel != null) state.withNotificationSnapshot(message, json) else state
             "provider.result" -> if (channel != null) state.withProviderResult(message) else state
-            "provider.changed" -> state
+            "provider.subscription.result" -> if (channel != null) state.withSubscriptionResult(message) else state
+            "provider.changed" -> if (channel != null) state.copy(agentProviders = state.agentProviders.copy(quotaRequestId = null, quotaProviderId = null, quota = null, quotaError = null)) else state
             "agent.state.snapshot" -> if (channel != null)
                 state.withAgentStateSnapshot(message, json, ::parsePendingInteraction) else state
             "agent.state.range.page" -> if (channel != null) state.withAgentCatalogRangePage(message, json) else state
@@ -2126,6 +2127,9 @@ class RelayReducer(
                 if (commandId?.startsWith("artifact-cancel:") == true && message.string("code") == "runtime_offline") return state
                 val requestId = message.string("requestId")
                 val syncError = protocolErrorText(message.string("code"), message.string("message"))
+                if (requestId != null && requestId == state.agentProviders.requestId) {
+                    return state.copy(agentProviders = state.agentProviders.stopOperation(syncError))
+                }
                 // 先按 requestId 归位进程激活类请求（spec §8：错误带回 requestId）。
                 val listCleared = requestId?.takeIf { it in state.sessionListRequests }
                 val activateCleared = requestId?.takeIf { it in state.sessionActivateRequests }

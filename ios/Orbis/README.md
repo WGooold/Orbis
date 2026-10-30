@@ -99,3 +99,5 @@ xcodebuild -project ios/Orbis/Orbis.xcodeproj -scheme Orbis \
 ```
 
 测试结果包保存各页面的浅色 / 深色截图。Debug 可用 `--preview-screen=pairing|home|drawer|new-session|chat|slash|history|approval|tool|downloads|status|settings|providers` 显式启动隔离预览；加 `--preview-dark` 查看深色。Release 不包含预览夹具。
+
+供应商页支持 Claude Code 切换，以及 Claude Code / Codex 当前官方订阅的 5 小时、周剩余配额查询。详见 [功能说明](../../docs/agents/claude-providers-and-subscription-quota.md)。
