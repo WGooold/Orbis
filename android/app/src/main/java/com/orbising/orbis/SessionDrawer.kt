@@ -756,7 +756,8 @@ private fun DrawerSessionRow(
             // 与 iOS 同一行结构：agent 图标、标题，下面是状态、时间与必要的标注；整行可点，不再另放箭头。
             AgentIcon(agentBrand(row.agentKind), modifier = Modifier.size(22.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(row.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                // Reserve both title lines so short and wrapped titles keep the same card height.
+                Text(row.title, minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                 Box {
                     Row(Modifier.alpha(if (selecting && archiveUnavailableReason != null) 0f else 1f)
                         .then(if (selecting && archiveUnavailableReason != null) Modifier.clearAndSetSemantics {} else Modifier),

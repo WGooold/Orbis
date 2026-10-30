@@ -531,8 +531,32 @@ final class OrbisUITests: XCTestCase {
         dialog.buttons["供应商设置"].tap()
         XCTAssertTrue(drawer.staticTexts["供应商"].waitForExistence(timeout: 3))
     }
+    func testDrawerCardsKeepUniformGeometryForShortAndLongTitles() {
+        for (name, dark, category) in [("light", false, "UICTContentSizeCategoryL"),
+                                       ("dark", true, "UICTContentSizeCategoryL"),
+                                       ("large", false, "UICTContentSizeCategoryXXXL")] {
+            let app = launch("drawer", dark: dark, arguments: ["--preview-drawer-layout",
+                "-UIPreferredContentSizeCategoryName", category])
+            let long = app.buttons["drawer-session-session-4"]
+            let short = app.buttons["drawer-session-session-5"]
+            XCTAssertTrue(long.waitForExistence(timeout: 8))
+            XCTAssertTrue(short.waitForExistence(timeout: 3))
+            let longFrame = long.frame
+            let shortFrame = short.frame
+            XCTAssertEqual(longFrame.width, shortFrame.width, accuracy: 0.5)
+            XCTAssertEqual(longFrame.height, shortFrame.height, accuracy: 0.5)
+            short.press(forDuration: 0.8)
+            XCTAssertTrue(app.staticTexts["已选择 1 项"].exists)
+            XCTAssertEqual(longFrame, long.frame)
+            XCTAssertEqual(shortFrame, short.frame)
+            app.buttons["退出多选"].tap()
+            capture("drawer-uniform-\(name)", app: app)
+            app.terminate()
+        }
+    }
     func testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions() {
-        let app = launch("drawer")
+        // Keep both target rows visible so XCTest does not scroll while synthesizing long press.
+        let app = launch("drawer", arguments: ["--preview-drawer-layout"])
         let first = app.buttons["drawer-session-session-4"]
         let second = app.buttons["drawer-session-session-5"]
         XCTAssertTrue(first.waitForExistence(timeout: 8))

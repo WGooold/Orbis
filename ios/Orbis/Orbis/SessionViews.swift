@@ -281,7 +281,8 @@ struct SessionDrawerView: View {
                     if store.activatingSessionId == session.sessionId { ProgressView().controlSize(.small) }
                 }.frame(width: 24, height: 24)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(store.displayName(session)).font(.orbisBody()).lineLimit(2)
+                    // Reserve both title lines so short and wrapped titles keep the same card height.
+                    Text(store.displayName(session)).font(.orbisBody()).lineLimit(2, reservesSpace: true)
                     ZStack(alignment: .leading) {
                         HStack(spacing: 8) {
                             if let runtime { RuntimeStatusLabel(status: runtime.status) }
