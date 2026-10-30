@@ -19,8 +19,10 @@ deploy/.deploy.env
 .workbuddy/
 android/.kotlin/
 
-# 本机 Agent 行为约束
+# 本机 Agent 开发指南
 /AGENTS.md
+/CLAUDE.md
+/claude.md
 
 # Local phone uploads
 .orbis-uploads/
