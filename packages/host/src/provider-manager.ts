@@ -21,7 +21,7 @@ export { ProviderError } from "./provider-error.js";
 type ObjectValue = Record<string, unknown>;
 export type ProviderMetadata = { category?: string; notes?: string; websiteUrl?: string; icon?: string; sortIndex?: number; commonConfigEnabled?: boolean; usageScript?: UsageScript; authBinding?: { source: "managed_account"; authProvider: "codex_oauth"; accountId?: string } | null };
 export type ProviderProfile = { id: string; kind: AgentKind; name: string; config: ObjectValue } & ProviderMetadata;
-export type ProviderSummary = { id: string; kind: AgentKind; name: string; enabled: boolean; mode: "exclusive" | "additive"; subscriptionSupported?: boolean; globalDefault?: boolean; category?: string | undefined; notes?: string | undefined; websiteUrl?: string | undefined; icon?: string | undefined; sortIndex?: number | undefined };
+export type ProviderSummary = { id: string; kind: AgentKind; name: string; enabled: boolean; mode: "exclusive" | "additive"; official?: boolean; subscriptionSupported?: boolean; globalDefault?: boolean; category?: string | undefined; notes?: string | undefined; websiteUrl?: string | undefined; icon?: string | undefined; sortIndex?: number | undefined };
 type Store = { version: 1; providers: ProviderProfile[]; current: Partial<Record<AgentKind, string>>; codexPreferences?: CodexPreferences; managedAuth?: ManagedAuthMarker; proxyPreferences?: ProxyPreferences; proxyToken?: string; proxyTakeover?: ProxyTakeover };
 type FileChange = { path: string; before: string | null; after: string | null };
 export type ProviderPaths = { codex: string; pi: string; dsh: string; claude?: string };
@@ -36,6 +36,12 @@ function subscriptionSupported(profile: ProviderProfile): boolean {
   const doc = parseToml(String(profile.config.config ?? ""));
   const route = object(doc.model_providers) ? doc.model_providers.openai : undefined;
   return !object(route) || !route.base_url;
+}
+function officialProvider(profile: ProviderProfile): boolean {
+  if (profile.category === "official" || profile.category === "cn_official") return true;
+  if (profile.kind === "claude") return claudeOfficial(profile.config);
+  if (profile.kind === "codex") return codexOfficial(profile.config);
+  return false;
 }
 export function providerMetadata(value: unknown): ProviderMetadata {
   if (!object(value)) throw new ProviderError("供应商信息必须是对象");
@@ -258,6 +264,7 @@ export class ProviderManager {
       id: p.id, kind, name: p.name, category: p.category, notes: p.notes, websiteUrl: p.websiteUrl, icon: p.icon, sortIndex: p.sortIndex,
       enabled: kind === "pi" ? Object.hasOwn(object(live.providers) ? live.providers : {}, p.id) : store.current[kind] === p.id,
       mode: kind === "pi" ? "additive" : "exclusive",
+      official: officialProvider(p),
       subscriptionSupported: store.current[kind] === p.id && subscriptionSupported(p),
       globalDefault: kind === "pi" && p.id === this.#piDefault,
     }));
@@ -286,7 +293,7 @@ export class ProviderManager {
       await atomicWrite(this.#file, json(store));
       return { agentKind: kind, availability: "ready", current: selected?.id ?? null,
         profiles: summaries.slice(0, 64).map(summary => ({ id: summary.id, name: summary.name,
-          enabled: summary.enabled, globalDefault: summary.globalDefault === true, mode: summary.mode, subscriptionSupported: summary.subscriptionSupported === true })),
+          enabled: summary.enabled, globalDefault: summary.globalDefault === true, mode: summary.mode, official: summary.official === true, subscriptionSupported: summary.subscriptionSupported === true })),
         profilesTruncated: summaries.length > 64,
         authenticated: authentication.bindingReady ?? authentication.credentialPresent,
         authentication, switching: options.switching ?? null,

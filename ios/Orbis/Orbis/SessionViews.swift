@@ -188,7 +188,7 @@ struct SessionDrawerView: View {
             }
         }
         items.append(.divider)
-        items.append(OrbisMenuItem(title: "供应商配置与切换", symbol: "slider.horizontal.3", action: onProviders))
+        items.append(OrbisMenuItem(title: "连接状态与供应商", symbol: "slider.horizontal.3", action: onProviders))
         return items
     }
 
@@ -317,7 +317,7 @@ struct SessionDrawerView: View {
     private func showMismatch(_ problem: String) {
         overlay.showDialog("需要切换 provider", message: problem, actions: [
             OrbisDialogAction(title: "取消", role: .cancel),
-            OrbisDialogAction(title: "供应商设置", action: onProviders)
+            OrbisDialogAction(title: "连接状态与供应商", action: onProviders)
         ])
     }
 

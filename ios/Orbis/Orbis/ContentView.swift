@@ -51,7 +51,7 @@ struct ContentView: View {
                         } else { OrbisEmptyState(symbol: "desktopcomputer", title: "会话已离线") }
                     case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
                     case .status: ConnectionStatusView(onBack: back, onSettings: { pages.append(.settings) })
-                    case .settings: SettingsView(onBack: back, onProviders: { pages.append(.providers) })
+                    case .settings: SettingsView(onBack: back)
                     case .providers: AgentProvidersView(onBack: back)
                     case .history: HistoryBranchView(onBack: back)
                     case .downloads: DownloadsView(onBack: back)
@@ -144,7 +144,7 @@ struct ContentView: View {
                           onNewSession: { cwd in
                               newSessionCwd = cwd; setDrawer(false); newSessionOpen = true
                           }, onAddHost: { setDrawer(false); pages.append(.pairing) },
-                          onProviders: { setDrawer(false); pages.append(.settings); pages.append(.providers) },
+                          onProviders: { setDrawer(false); pages.append(.status) },
                           onUnpair: { confirmUnpair($0) })
     }
 

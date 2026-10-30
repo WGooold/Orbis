@@ -1289,7 +1289,7 @@ final class HostConnection: ObservableObject {
     func providerMismatch(_ session: SessionSummary) -> String? {
         guard session.agentKind == "codex", let provider = session.modelProvider, !provider.isEmpty,
               let current = currentProvider(for: "codex"), current != provider else { return nil }
-        return "此会话属于 \(provider)，当前使用 \(current)。请在设置的供应商页面切换到 \(provider)，再打开会话。"
+        return "此会话属于 \(provider)，当前使用 \(current)。请在连接状态页切换到 \(provider)，再打开会话。"
     }
 
     private func recordConnectionEvent(_ event: String) {

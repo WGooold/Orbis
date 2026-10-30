@@ -573,7 +573,7 @@ internal class HostConnection(
 
     fun switchAgentProvider(provider: AgentProvider, expectedHostId: String?) {
         val current = mutableState.value
-        if (expectedHostId == null || expectedHostId != current.hostId || current.agentProviders.hostId != expectedHostId || current.agentProviders.loading || provider !in current.agentProviders.providers) {
+        if (expectedHostId == null || expectedHostId != current.hostId || current.agentProviders.loading || provider !in current.providersForKind(provider.kind)) {
             updateState { it.copy(agentProviders = it.agentProviders.copy(error = "目标电脑或供应商列表已变化，请刷新后重试")) }
             return
         }
@@ -582,22 +582,20 @@ internal class HostConnection(
 
     fun querySubscription(provider: AgentProvider, expectedHostId: String?) {
         val current = mutableState.value
-        if (expectedHostId == null || current.hostId != expectedHostId || current.agentProviders.hostId != expectedHostId ||
-            !current.e2eReady || current.connection != RelayConnection.ONLINE || current.agentProviders.loading ||
-            current.agentProviders.quotaRequestId != null || provider !in current.agentProviders.providers ||
+        if (expectedHostId == null || current.hostId != expectedHostId ||
+            !current.canUseProviders(provider.kind) || provider !in current.providersForKind(provider.kind) ||
             !provider.enabled || !provider.subscriptionSupported) return
         val request = UUID.randomUUID().toString()
-        updateState { it.copy(agentProviders = it.agentProviders.copy(quotaRequestId = request,
-            quotaProviderId = provider.id, quota = null, quotaError = null)) }
+        updateState { it.beginSubscriptionQuery(provider, request) }
         val sent = relay.sendDeviceMessage(buildJsonObject {
             put("type", "provider.subscription"); put("protocolVersion", PROTOCOL_VERSION)
             put("requestId", request); put("kind", provider.kind); put("id", provider.id)
         })
-        if (!sent) updateState { it.copy(agentProviders = it.agentProviders.copy(quotaRequestId = null, quotaError = "配额查询未发送，请重新连接")) }
+        if (!sent) updateState { it.failSubscriptionQuery(request, "配额查询未发送，请重新连接") }
         scope.launch {
             delay(45_000)
             updateState { state -> if (state.hostId == expectedHostId && state.agentProviders.quotaRequestId == request)
-                state.copy(agentProviders = state.agentProviders.copy(quotaRequestId = null, quotaError = "配额查询超时，请稍后重试")) else state }
+                state.failSubscriptionQuery(request, "配额查询超时，请稍后重试") else state }
         }
     }
 
@@ -634,8 +632,8 @@ internal class HostConnection(
             return
         }
         val requestId = UUID.randomUUID().toString()
-        updateState { it.copy(agentProviders = it.agentProviders.copy(kind = kind, hostId = hostId, requestId = requestId,
-            quotaRequestId = null, quotaProviderId = null, quota = null, quotaError = null,
+        updateState { it.clearProviderQuota(kind).copy(agentProviders = it.agentProviders.copy(kind = kind, hostId = hostId, requestId = requestId,
+            quotaRequestId = null, quotaProviderId = null, quotaKind = null, quota = null, quotaError = null,
             loading = true, error = null, notice = null,
             providers = if (it.agentProviders.kind == kind && it.agentProviders.hostId == hostId) it.agentProviders.providers else emptyList())) }
         val sent = relay.sendDeviceMessage(buildJsonObject {

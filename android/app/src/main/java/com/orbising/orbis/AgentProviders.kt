@@ -9,7 +9,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 
-data class AgentProvider(val id: String, val kind: String, val name: String, val enabled: Boolean, val additive: Boolean, val globalDefault: Boolean = false, val subscriptionSupported: Boolean = false) {
+data class AgentProvider(val id: String, val kind: String, val name: String, val enabled: Boolean, val additive: Boolean, val globalDefault: Boolean = false, val subscriptionSupported: Boolean = false, val official: Boolean = false) {
     val removable: Boolean get() = kind == "pi" && enabled && additive
 }
 data class AgentProvidersState(
@@ -26,7 +26,29 @@ data class AgentProvidersState(
     val quotaProviderId: String? = null,
     val quota: SubscriptionQuota? = null,
     val quotaError: String? = null,
+    val quotaKind: String? = null,
 )
+
+internal fun RemoteState.providersForKind(kind: String): List<AgentProvider> =
+    providerCatalogs[kind] ?: agentProviders.providers.takeIf { agentProviders.kind == kind && agentProviders.hostId == hostId }.orEmpty()
+
+internal fun RemoteState.currentProviderForKind(kind: String): AgentProvider? {
+    val enabled = providersForKind(kind).filter { it.enabled }
+    return enabled.firstOrNull { it.globalDefault } ?: enabled.singleOrNull()
+}
+
+internal fun RemoteState.providerNameForKind(kind: String): String {
+    currentProviderForKind(kind)?.let { return it.name }
+    if (providerCatalogProblems[kind] != null || providersForKind(kind).isEmpty()) return "尚未读取"
+    val enabled = providersForKind(kind).filter { it.enabled }
+    return if (enabled.isEmpty()) "未启用供应商" else enabled.joinToString("、") { it.name }
+}
+
+internal fun RemoteState.canUseProviders(kind: String): Boolean = e2eReady && connection == RelayConnection.ONLINE &&
+    !agentProviders.loading && agentProviders.requestId == null && agentProviders.quotaRequestId == null &&
+    providerCatalogProblems[kind] == null && providersForKind(kind).isNotEmpty()
+
+data class ProviderQuotaSnapshot(val providerId: String, val quota: SubscriptionQuota?, val error: String? = null)
 
 data class SubscriptionWindow(val name: String, val remainingPercent: Double?, val resetsAt: Long?)
 data class SubscriptionQuota(val checkedAt: Long, val windows: List<SubscriptionWindow>)
@@ -48,18 +70,45 @@ internal fun parseSubscriptionQuota(value: JsonObject): SubscriptionQuota? {
     return SubscriptionQuota(checkedAt, windows)
 }
 
+internal fun RemoteState.beginSubscriptionQuery(provider: AgentProvider, request: String): RemoteState {
+    val previous = subscriptionQuotas[provider.kind]?.takeIf { it.providerId == provider.id }
+    return copy(subscriptionQuotas = subscriptionQuotas - provider.kind +
+        (provider.kind to ProviderQuotaSnapshot(provider.id, previous?.quota)),
+        agentProviders = agentProviders.copy(hostId = hostId, quotaRequestId = request,
+            quotaProviderId = provider.id, quotaKind = provider.kind, quota = previous?.quota, quotaError = null))
+}
+
+internal fun RemoteState.failSubscriptionQuery(request: String, error: String): RemoteState {
+    val current = agentProviders
+    if (current.quotaRequestId != request || current.hostId != hostId) return this
+    val kind = current.quotaKind ?: current.kind
+    val id = current.quotaProviderId ?: return this
+    val previous = subscriptionQuotas[kind]?.takeIf { it.providerId == id }?.quota
+    return copy(subscriptionQuotas = subscriptionQuotas + (kind to ProviderQuotaSnapshot(id, previous, error)),
+        agentProviders = current.copy(quotaRequestId = null, quota = previous, quotaError = error))
+}
+
 internal fun RemoteState.withSubscriptionResult(message: JsonObject): RemoteState {
     val current = agentProviders
     val request = message["requestId"]?.jsonPrimitive?.contentOrNull ?: return this
     val id = message["id"]?.jsonPrimitive?.contentOrNull ?: return this
+    val kind = current.quotaKind ?: current.kind
     if (request != current.quotaRequestId || id != current.quotaProviderId || current.hostId != hostId ||
-        message["kind"]?.jsonPrimitive?.contentOrNull != current.kind ||
-        current.providers.none { it.id == id && it.enabled && it.subscriptionSupported }) return this
+        message["kind"]?.jsonPrimitive?.contentOrNull != kind ||
+        providersForKind(kind).none { it.id == id && it.enabled && it.subscriptionSupported }) return this
     val failure = message["error"]?.jsonPrimitive?.contentOrNull
     val quota = (message["quota"] as? JsonObject)?.let(::parseSubscriptionQuota)
-    return copy(agentProviders = current.copy(quotaRequestId = null, quota = if (failure == null) quota else null,
-        quotaError = failure ?: if (quota == null) "配额数据格式无法识别，请升级 Host 后重试" else null))
+    val error = failure ?: if (quota == null) "配额数据格式无法识别，请升级 Host 后重试" else null
+    if (error != null) return failSubscriptionQuery(request, error)
+    return copy(subscriptionQuotas = subscriptionQuotas + (kind to ProviderQuotaSnapshot(id, quota)),
+        agentProviders = current.copy(quotaRequestId = null, quota = if (failure == null) quota else null, quotaError = error))
 }
+
+internal fun RemoteState.clearProviderQuota(kind: String? = null): RemoteState = copy(
+    subscriptionQuotas = if (kind == null) emptyMap() else subscriptionQuotas - kind,
+    agentProviders = if (kind == null || (agentProviders.quotaKind ?: agentProviders.kind) == kind)
+        agentProviders.copy(quotaRequestId = null, quotaProviderId = null, quotaKind = null, quota = null, quotaError = null) else agentProviders,
+)
 
 internal fun AgentProvidersState.stopOperation(error: String): AgentProvidersState = copy(
     requestId = null, loading = false, pendingRemovals = emptyList(), removalCount = 0,

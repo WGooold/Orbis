@@ -392,6 +392,7 @@ private fun RemoteApp(
         state.selectedRuntimeId == null && statusOpen -> {
             StatusScreen(
                 state = state,
+                model = model,
                 pairing = model.pairingStatus(),
                 onBack = { statusOpen = false },
                 onOpenSettings = { settingsOpen = true },
@@ -2716,11 +2717,13 @@ private fun ConnectionStatus(connection: RelayConnection, e2eReady: Boolean, pat
 @Composable
 private fun StatusScreen(
     state: RemoteState,
+    model: RemoteViewModel,
     pairing: PairingStatus,
     onBack: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     BackHandler(onBack = onBack)
+    LaunchedEffect(state.hostId, state.e2eReady) { if (state.e2eReady) model.refreshHostModel(listOf("providers"), force = true) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -2767,6 +2770,9 @@ private fun StatusScreen(
                 StatusRow("端到端加密", if (state.e2eReady) "已启用" else "未建立", e2eTone(state))
             }
 
+            StatusSectionTitle("Agent 供应商")
+            AgentStatusProvidersCard(state, model::switchAgentProvider, model::querySubscription)
+
             StatusSectionTitle("配对信息")
             StatusCard {
                 StatusValueRow("电脑", state.hostName?.takeIf(String::isNotBlank) ?: "已配对的电脑")
@@ -2776,8 +2782,9 @@ private fun StatusScreen(
     }
 }
 
+
 /**
- * 设置页：供应商配置与切换，以及连接优先级（§6.2）。
+ * 设置页：连接优先级（§6.2）。供应商状态与切换在连接状态页展示。
  *
  * 顺序是用户显式排的，所以它压过 RTT 证据（Host 侧 PathSelector 的规矩）：
  * 更高优先级的路径一建立就会顶替当前路径，不再需要「快 30% 且连续 3 次」。
@@ -2786,12 +2793,6 @@ private fun StatusScreen(
 @Composable
 private fun SettingsScreen(model: RemoteViewModel, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
-    val state by model.state.collectAsStateWithLifecycle()
-    var providersOpen by remember { mutableStateOf(false) }
-    if (providersOpen) {
-        AgentProvidersScreen(state, model, onBack = { providersOpen = false })
-        return
-    }
     // 顺序改在本地状态里：store 不是 Compose state，不这么写点完箭头界面不会刷新。
     var order by remember { mutableStateOf(model.pathPreference()) }
     Scaffold(
@@ -2817,20 +2818,6 @@ private fun SettingsScreen(model: RemoteViewModel, onBack: () -> Unit) {
                 .padding(horizontal = RemoteUi.PagePadding, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            StatusSectionTitle("Agent 供应商")
-            StatusCard {
-                // 卡片是唯一的一层：入口是卡片里的一整行，右侧箭头说明它会进入下一页（与 iOS 一致）。
-                Row(
-                    Modifier.fillMaxWidth().clip(RemoteUi.ControlShape)
-                        .clickable { providersOpen = true; model.loadAgentProviders("codex") }
-                        .heightIn(min = RemoteUi.TouchTarget).padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("供应商配置与切换", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
-                    Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                }
-            }
             StatusSectionTitle("连接优先级")
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 order.forEachIndexed { index, kind ->

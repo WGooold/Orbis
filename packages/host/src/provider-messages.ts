@@ -20,6 +20,6 @@ export function parseProviderRequest(value: unknown): ProviderRequest | undefine
   return data as ProviderRequest;
 }
 export function providerResult(request: ProviderRequest, providers: ProviderSummary[], hotSwitch = false): object {
-  return { type: "provider.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind, providers: providers.map(({ id, kind, name, enabled, mode, globalDefault, subscriptionSupported }) => ({ id, kind, name, enabled, mode, globalDefault: globalDefault === true, subscriptionSupported: subscriptionSupported === true })),
+  return { type: "provider.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind, providers: providers.map(({ id, kind, name, enabled, mode, globalDefault, official, subscriptionSupported }) => ({ id, kind, name, enabled, mode, globalDefault: globalDefault === true, official: official === true, subscriptionSupported: subscriptionSupported === true })),
     notice: request.type === "provider.switch" ? (request.kind === "pi" ? "显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : hotSwitch ? "本地路由已切换，后续请求使用新供应商；进行中的请求继续完成。" : "供应商已切换；请重新打开会话。独立终端也需重启。") : "" };
 }

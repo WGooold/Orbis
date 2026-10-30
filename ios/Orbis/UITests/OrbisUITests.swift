@@ -464,7 +464,52 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(before.height, composer.frame.height, accuracy: 1)
         capture("approval-submitting", app: app)
     }
-    func testSettingsPriorityAndProviderSwitchConfirmation() {
+    func testCompactQuotaCardsAndTransparentSwitch() {
+        for dark in [false, true] {
+            let app = launch("status", dark: dark)
+            let codex = app.buttons["provider-quota-codex"]
+            XCTAssertTrue(codex.waitForExistence(timeout: 8))
+            let drag = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+            drag.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55)))
+            let before = codex.frame
+            XCTAssertLessThan(before.height, 130)
+            // Before data exists, the icon also queries. Afterwards it only flips.
+            let coin = app.buttons["quota-coin-codex"]
+            coin.tap()
+            let loaded = NSPredicate(format: "value CONTAINS %@", "82%")
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: loaded, object: codex)], timeout: 8), .completed)
+            XCTAssertEqual(codex.frame.height, before.height, accuracy: 1)
+            RunLoop.current.run(until: Date().addingTimeInterval(3))
+            XCTAssertTrue((coin.value as? String)?.contains("5 小时配额") == true)
+            coin.tap()
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "35%"), object: coin)], timeout: 4), .completed)
+            XCTAssertTrue((coin.value as? String)?.contains("周配额") == true)
+            XCTAssertGreaterThanOrEqual(coin.frame.height, 48)
+            XCTAssertLessThanOrEqual(coin.frame.width, 64)
+            // Refreshing the rest of the card retains the weekly face.
+            codex.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: loaded, object: codex)], timeout: 8), .completed)
+            XCTAssertTrue((coin.value as? String)?.contains("周配额") == true)
+            let claude = app.buttons["provider-quota-claude"]
+            app.buttons["quota-coin-claude"].tap()
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "64%"), object: claude)], timeout: 8), .completed)
+            XCTAssertTrue((codex.value as? String)?.contains("82%") == true)
+            XCTAssertFalse(app.staticTexts["轻点卡片查询配额"].exists)
+            RunLoop.current.run(until: Date().addingTimeInterval(3))
+            app.buttons["quota-coin-claude"].tap()
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "18%"), object: app.buttons["quota-coin-claude"])], timeout: 4), .completed)
+            capture(dark ? "compact-quota-dark" : "compact-quota-light", app: app)
+            app.buttons["provider-switch-codex"].tap()
+            let team = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "团队供应商")).firstMatch
+            XCTAssertTrue(team.waitForExistence(timeout: 3))
+            XCTAssertTrue(team.isHittable)
+            team.tap()
+            XCTAssertTrue(app.staticTexts["团队供应商"].waitForExistence(timeout: 3))
+            app.terminate()
+        }
+    }
+
+    func testSettingsPriorityAndStatusProviderSwitch() {
         let app = launch("settings")
         let relay = app.descendants(matching: .any)["path-priority-relay"].firstMatch
         let p2p = app.descendants(matching: .any)["path-priority-p2p"].firstMatch
@@ -472,54 +517,17 @@ final class OrbisUITests: XCTestCase {
         XCTAssertGreaterThan(relay.frame.minY, p2p.frame.minY)
         app.buttons["上移中继"].tap()
         XCTAssertLessThan(relay.frame.minY, p2p.frame.minY)
-        app.buttons["供应商配置与切换"].tap()
-        let team = app.buttons["provider-action-team"]
-        XCTAssertTrue(team.waitForExistence(timeout: 5))
-        team.tap()
-        let dialog = app.descendants(matching: .any)["orbis-dialog"].firstMatch
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3))
-        XCTAssertTrue(dialog.staticTexts["启用供应商"].exists)
-        dialog.buttons["取消"].tap()
+        app.terminate()
+        let status = launch("status")
+        let switchButton = status.buttons["provider-switch-codex"]
+        XCTAssertTrue(switchButton.waitForExistence(timeout: 8))
+        switchButton.tap()
+        let team = status.buttons.matching(NSPredicate(format: "label CONTAINS %@", "团队供应商")).firstMatch
         XCTAssertTrue(team.waitForExistence(timeout: 3))
         team.tap()
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3)); dialog.buttons["确认"].tap()
-        XCTAssertTrue(app.buttons["provider-action-official"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["provider-action-team"].exists)
-        capture("providers-switch-complete", app: app)
-        app.buttons["Pi供应商"].tap()
-        let official = app.buttons["provider-card-official"]
-        XCTAssertTrue(official.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["provider-action-official"].exists)
-        app.buttons["provider-action-team"].tap()
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3)); dialog.buttons["确认"].tap()
-        XCTAssertTrue(app.buttons["provider-action-team"].waitForNonExistence(timeout: 5))
-        let selectionFrame = official.frame
-        official.press(forDuration: 0.8)
-        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
-        XCTAssertEqual(official.frame, selectionFrame, "长按选择不能移动或改变卡片大小")
-        capture("providers-selection", app: app)
-        app.buttons["provider-card-team"].tap()
-        XCTAssertTrue(app.staticTexts["已选择 2 项"].exists)
-        app.buttons["provider-card-team"].tap()
-        XCTAssertTrue(app.staticTexts["已选择 1 项"].exists)
-        app.buttons["退出多选"].tap()
-        XCTAssertFalse(app.buttons["移除所选供应商"].exists)
-        official.press(forDuration: 0.8)
-        app.buttons["provider-card-team"].tap()
-        app.buttons["移除所选供应商"].tap()
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3))
-        XCTAssertTrue(dialog.staticTexts["移除 2 个供应商？"].exists)
-        XCTAssertTrue(dialog.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "全局默认供应商")).firstMatch.exists)
-        dialog.buttons["取消"].tap()
-        XCTAssertTrue(app.staticTexts["已选择 2 项"].exists)
-        app.buttons["移除所选供应商"].tap()
-        XCTAssertTrue(dialog.waitForExistence(timeout: 3)); dialog.buttons["移除 2 项"].tap()
-        XCTAssertTrue(app.buttons["provider-action-official"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["provider-action-team"].exists)
-        XCTAssertTrue(app.buttons["provider-card-official"].exists)
-        XCTAssertTrue(app.buttons["provider-card-team"].exists)
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "显式供应商已更新")).firstMatch.waitForExistence(timeout: 5))
-        capture("providers-pi", app: app)
+        XCTAssertTrue(status.staticTexts["团队供应商"].waitForExistence(timeout: 5))
+        XCTAssertTrue(status.buttons["provider-switch-claude"].exists)
+        capture("status-provider-switch", app: status)
     }
     func testBasicConnectionStatusAndDirectoryProviderMismatch() {
         for dark in [false, true] {
@@ -533,10 +541,8 @@ final class OrbisUITests: XCTestCase {
             }
             XCTAssertFalse(app.buttons["原始事件"].exists)
             capture(dark ? "status-basic-dark" : "status-basic-light", app: app)
-            app.buttons["设置"].tap()
-            XCTAssertTrue(app.buttons["供应商配置与切换"].waitForExistence(timeout: 3))
-            app.buttons["供应商配置与切换"].tap()
-            XCTAssertTrue(app.buttons["provider-action-team"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["provider-switch-codex"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["provider-switch-claude"].exists)
             app.terminate()
         }
         let drawer = launch("drawer")
@@ -556,8 +562,9 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(dialog.waitForExistence(timeout: 3))
         XCTAssertTrue(dialog.staticTexts["需要切换 provider"].exists)
         capture("provider-mismatch", app: drawer)
-        dialog.buttons["供应商设置"].tap()
-        XCTAssertTrue(drawer.staticTexts["供应商"].waitForExistence(timeout: 3))
+        dialog.buttons["连接状态与供应商"].tap()
+        XCTAssertTrue(drawer.staticTexts["连接状态"].waitForExistence(timeout: 3))
+        XCTAssertTrue(drawer.buttons["provider-switch-codex"].exists)
     }
     func testDrawerCardsKeepUniformGeometryForShortAndLongTitles() {
         for (name, dark, category) in [("light", false, "UICTContentSizeCategoryL"),

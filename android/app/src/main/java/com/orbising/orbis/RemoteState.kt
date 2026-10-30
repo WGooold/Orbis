@@ -443,6 +443,9 @@ data class RemoteState(
     val codexDesktop: CodexDesktopAttach? = null,
     /** Native backend modelProvider keys, keyed by agentKind; never Host-managed profile ids. */
     val currentProviders: Map<String, String> = emptyMap(),
+    val providerCatalogs: Map<String, List<AgentProvider>> = emptyMap(),
+    val providerCatalogProblems: Map<String, String> = emptyMap(),
+    val subscriptionQuotas: Map<String, ProviderQuotaSnapshot> = emptyMap(),
     val agentProviders: AgentProvidersState = AgentProvidersState(),
     /**
      * Host 统一状态模型的最近一次读取（ADR-0032 issue #10），key = 作用域 + 会话/运行时身份。
@@ -1789,7 +1792,7 @@ class RelayReducer(
             "notification.snapshot" -> if (channel != null) state.withNotificationSnapshot(message, json) else state
             "provider.result" -> if (channel != null) state.withProviderResult(message) else state
             "provider.subscription.result" -> if (channel != null) state.withSubscriptionResult(message) else state
-            "provider.changed" -> if (channel != null) state.copy(agentProviders = state.agentProviders.copy(quotaRequestId = null, quotaProviderId = null, quota = null, quotaError = null)) else state
+            "provider.changed" -> if (channel != null) state.clearProviderQuota(message["kind"]?.jsonPrimitive?.contentOrNull) else state
             "agent.state.snapshot" -> if (channel != null)
                 state.withAgentStateSnapshot(message, json, ::parsePendingInteraction) else state
             "agent.state.range.page" -> if (channel != null) state.withAgentCatalogRangePage(message, json) else state

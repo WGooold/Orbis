@@ -86,6 +86,28 @@ struct HostStateTests {
         #expect(try !JSONDecoder().decode(SubscriptionQuota.self, from: malformed).valid)
     }
 
+    @Test func refreshingQuotaRetainsLastReadingAndOtherAgentCard() throws {
+        let (state, sent) = setup()
+        let rows = (providers(kind: "codex")["providers"] as! [[String: Any]]) +
+            (providers(kind: "claude")["providers"] as! [[String: Any]])
+        state.consume(snapshot(sent, domains: [domain("providers", value: ["providers": rows])]))
+        for kind in ["codex", "claude"] {
+            let provider = try #require(state.currentProvider(for: kind))
+            state.querySubscription(provider, expectedHostKey: state.hostKey!)
+            state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": kind, "id": provider.id,
+                "quota": ["checkedAt": 1000, "windows": [
+                    ["name": "five_hour", "remainingPercent": 80, "resetsAt": NSNull()],
+                    ["name": "seven_day", "remainingPercent": 40, "resetsAt": NSNull()]]]])
+        }
+        let codex = try #require(state.currentProvider(for: "codex"))
+        state.querySubscription(codex, expectedHostKey: state.hostKey!)
+        #expect(state.subscriptionQuota(for: "codex")?.quota?.windows.first?.remainingPercent == 80)
+        state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": "codex", "id": codex.id, "error": "超时"])
+        #expect(state.subscriptionQuota(for: "codex")?.error == "超时")
+        #expect(state.subscriptionQuota(for: "codex")?.quota?.windows.first?.remainingPercent == 80)
+        #expect(state.subscriptionQuota(for: "claude")?.quota?.windows.last?.remainingPercent == 40)
+    }
+
     @Test func domainsMergeAcrossSplitResponsesAndRefreshRetainsSubscription() throws {
         let (state, sent) = setup()
         let original = snapshot(sent, domains: [domain("diagnostics", value: ["records": 12])])

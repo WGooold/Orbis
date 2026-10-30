@@ -330,6 +330,8 @@ export const HostProviderSummarySchema = z.strictObject({
     /** 后端级默认：新会话不带指定 provider 时用它。 */
     globalDefault: z.boolean(),
     mode: z.enum(["additive", "exclusive"]).optional(),
+    /** A non-secret presentation fact, independent of whether this profile is active. */
+    official: z.boolean().optional(),
     subscriptionSupported: z.boolean().optional(),
   })).max(64).nullable(),
   /** 认证绑定是否就绪：false 表示缺凭据（客户端提示去电脑上配置），`null` 表示未核对。 */

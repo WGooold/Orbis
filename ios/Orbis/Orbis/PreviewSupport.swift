@@ -71,7 +71,7 @@ private final class PreviewTransport: OrbisTransport {
     private var slowSync: Bool { ProcessInfo.processInfo.arguments.contains("--preview-slow-sync") }
     private var compacting: Bool { ProcessInfo.processInfo.arguments.contains("--preview-compacting") }
     private var modelName: String { slowSync ? "A very long model name that needs truncation" : "GPT-5.4" }
-    private var enabledProviders: [String: Set<String>] = ["codex": ["official"], "pi": ["official"], "dsh": ["official"]]
+    private var enabledProviders: [String: Set<String>] = ["codex": ["official"], "pi": ["official"], "claude": ["official"], "dsh": ["official"]]
     func pair(qr: PairingQR, deviceName: String, identity: DeviceIdentity, completion: @escaping (Result<HostPairing, Error>) -> Void) { completion(.failure(PairingError.invalidQR)) }
     func disconnect() { viewportUpdates?.cancel(); viewportUpdates = nil }
     func connect(pairing: HostPairing, identity: DeviceIdentity, receive: @escaping ([String: Any], String?) -> Void, state: @escaping (ConnectionState, String?) -> Void) {
@@ -212,6 +212,14 @@ private final class PreviewTransport: OrbisTransport {
             }
             receive?(["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "host", "modelEpoch": "preview-model",
                       "domains": domains, "missing": [], "truncated": false], "ctl")
+        } else if object["type"] as? String == "provider.subscription", let kind = object["kind"] as? String {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(900))
+                self?.receive?(["type": "provider.subscription.result", "requestId": object["requestId"]!, "kind": kind, "id": object["id"]!,
+                    "quota": ["checkedAt": 1793232000000, "windows": [
+                        ["name": "five_hour", "remainingPercent": kind == "codex" ? 82 : 64, "resetsAt": 1793242000000],
+                        ["name": "seven_day", "remainingPercent": kind == "codex" ? 35 : 18, "resetsAt": 1793432000000]]]], "ctl")
+            }
         } else if object["type"] as? String == "provider.switch", let kind = object["kind"] as? String, let id = object["id"] as? String {
             if kind == "pi" {
                 if object["enabled"] as? Bool == true { enabledProviders[kind, default: []].insert(id) }
@@ -306,10 +314,11 @@ private final class PreviewTransport: OrbisTransport {
         switch name {
         case "identity": return ["hostId": "preview-host", "hostName": "工作电脑", "protocolVersion": orbisProtocolVersion]
         case "providers":
-            let rows: [[String: Any]] = ["pi", "codex", "dsh"].map { kind in
+            let rows: [[String: Any]] = ["pi", "codex", "claude", "dsh"].map { kind in
                 let profiles: [[String: Any]] = [("official", "官方服务"), ("team", "团队供应商")].map { id, title in
                     ["id": id, "name": title, "enabled": enabledProviders[kind]?.contains(id) == true,
-                     "globalDefault": kind == "pi" && id == "official", "mode": kind == "pi" ? "additive" : "exclusive"]
+                     "globalDefault": kind == "pi" && id == "official", "mode": kind == "pi" ? "additive" : "exclusive",
+                     "official": id == "official", "subscriptionSupported": id == "official" && ["codex", "claude"].contains(kind)]
                 }
                 return ["agentKind": kind, "availability": "ready", "current": enabledProviders[kind]?.sorted().first as Any,
                         "modelProvider": "openai", "profiles": profiles, "profilesTruncated": false,

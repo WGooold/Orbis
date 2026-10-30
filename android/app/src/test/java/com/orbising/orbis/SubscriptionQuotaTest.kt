@@ -41,4 +41,22 @@ class SubscriptionQuotaTest {
         val projected = waiting.withModelFixture("providers", """{"providers":[{"agentKind":"claude","profiles":[{"id":"official","name":"Claude","enabled":true,"mode":"exclusive","globalDefault":false,"subscriptionSupported":true}]}]}""", scope = "host")
         assertTrue(projected.agentProviders.providers.single().subscriptionSupported)
     }
+    @Test fun connectionCardQueryRegistersHostAndKeepsOtherAgentResults() {
+        val codex = provider.copy(kind = "codex")
+        val loaded = RemoteState(hostId = "host-a", providerCatalogs = mapOf("claude" to listOf(provider), "codex" to listOf(codex)))
+        val first = loaded.beginSubscriptionQuery(provider, "query").withSubscriptionResult(response())
+        assertEquals("host-a", first.agentProviders.hostId)
+        assertEquals(85.5, first.subscriptionQuotas["claude"]!!.quota!!.windows.first().remainingPercent!!, 0.0)
+        val second = first.beginSubscriptionQuery(codex, "codex-query")
+            .withSubscriptionResult(response(request = "codex-query", kind = "codex"))
+        assertEquals(setOf("claude", "codex"), second.subscriptionQuotas.keys)
+        val refreshing = second.beginSubscriptionQuery(provider, "retry")
+        assertNotNull(refreshing.subscriptionQuotas["claude"]!!.quota)
+        val failed = refreshing.failSubscriptionQuery("retry", "超时")
+        assertEquals("超时", failed.subscriptionQuotas["claude"]!!.error)
+        assertNotNull(failed.subscriptionQuotas["claude"]!!.quota)
+        assertEquals(second.subscriptionQuotas["codex"], failed.subscriptionQuotas["codex"])
+        assertEquals(failed, failed.failSubscriptionQuery("query", "旧错误"))
+    }
+
 }

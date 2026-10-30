@@ -282,6 +282,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun refreshDiagnostics(cursor: String? = null) = active()?.refreshDiagnostics(cursor)
 
     fun refreshProviderFacts() = active()?.refreshProviderModel()
+    fun refreshHostModel(domains: List<String> = HOST_MODEL_DOMAINS, force: Boolean = false) = active()?.refreshHostModel(domains, force)
 
     /** 前台和定期核对按领域重读；聊天与通知仍保留各自事务和恢复水位。 */
     fun reconcileModels() {
