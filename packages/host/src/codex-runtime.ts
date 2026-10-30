@@ -287,6 +287,9 @@ type ThreadState = {
   asyncInputs: CodexAsyncInputs;
   lastError: { message: string; willRetry: boolean; turnId?: string } | undefined;
   activity: Extract<RuntimeEvent, { type: "execution.activity" }>;
+  /** Native owner identities are kept untruncated; delayed item completions cannot settle a newer compaction. */
+  compactionOwner?: { itemId?: string; turnId?: string };
+  settledCompactions: Set<string>;
   notifications: NotificationSource;
   sandboxGeneration: number;
   waitingForApproval: boolean;
@@ -520,24 +523,32 @@ export class CodexRuntime implements AgentBackend {
 
   #attachServer(server: CodexAppServer): void {
     const options = { ...this.#options, server };
+    let exited = false;
     options.server.onNotification = (method: string, params: unknown) => {
+      if (exited || this.#server !== server) return;
       void this.#handleNotification(method, params).catch((error: unknown) => {
         options.log?.(`处理 app-server 通知 ${method} 失败：${describeError(error)}`);
       });
     };
     options.server.onServerRequest = (request: CodexServerRequest) => {
+      if (exited || this.#server !== server) return;
       this.#handleServerRequest(request);
     };
     options.server.onDiagnostic = (message) => {
+      if (exited || this.#server !== server) return;
       for (const thread of this.#threads.values()) {
         if (thread.turnInProgress) this.#sandboxProblem(thread, message);
       }
     };
     options.server.onExit = (code: number | null) => {
+      if (exited || this.#server !== server) return;
+      exited = true;
       // 子进程意外退出：取消设备侧进行中的审批和未确认提交，排队
       // 消息与 thread 状态一并作废（内存 thread 已随进程消失）。offline 广播需要
       // 退出前的目录快照，所以在清空之前取好交给上层。
-      const runtimes = this.directoryEntries();
+      // stop() has already set #started=false. Capture the bindings directly so an
+      // intentional shutdown still invalidates every session in the Host model.
+      const runtimes = [...this.#threads.values()].map(thread => this.threadMetadata(thread));
       for (const [requestId, approval] of this.#approvals) {
         clearTimeout(approval.timer);
         this.#emit(approval.threadId, { type: "interaction.cancelled", requestId, reason: "disconnected" });
@@ -546,7 +557,10 @@ export class CodexRuntime implements AgentBackend {
         }
       }
       this.#approvals.clear();
-      for (const thread of this.#threads.values()) thread.asyncInputs.close("disconnected");
+      for (const thread of this.#threads.values()) {
+        this.#setCompaction(thread, "unavailable");
+        thread.asyncInputs.close("disconnected");
+      }
       for (const pending of this.#permissionUpdates.values()) pending.reject(new Error("Codex 已断开，无法确认权限设置"));
       this.#permissionUpdates.clear();
       this.#effectiveSettings.clear();
@@ -681,6 +695,7 @@ export class CodexRuntime implements AgentBackend {
       asyncInputs: new CodexAsyncInputs(this.runtimeIdFor(id), event => this.#emit(id, event)),
       lastError: undefined,
       activity: { type: "execution.activity", retry: "unavailable", compaction: "unavailable" },
+      settledCompactions: new Set(),
       notifications: new NotificationSource(randomUUID(), this.#publicSessionId(id), event => this.#emit(id, event)),
       sandboxGeneration: 0,
       waitingForApproval: false,
@@ -1413,6 +1428,7 @@ export class CodexRuntime implements AgentBackend {
     const toolReader = this.#toolContentReaders.get(threadId);
     this.#toolContentReaders.delete(threadId); if (toolReader) void toolReader.dispose();
     const metadata = this.threadMetadata(thread);
+    this.#setCompaction(thread, "unavailable");
     thread.asyncInputs.close("owner_closed");
     this.#permissionUpdates.get(threadId)?.reject(new Error(reason));
     this.#effectiveSettings.delete(threadId);
@@ -1465,6 +1481,7 @@ export class CodexRuntime implements AgentBackend {
       }
     } catch (error) {
       if (!this.#isCurrentReconcile(thread, generation)) return;
+      this.#setCompaction(thread, "unavailable");
       thread.historyError = describeError(error);
       thread.sourceReady = false;
       this.#options.log?.(`Codex 原生历史加载失败（thread=${thread.id}）：${thread.historyError}`);
@@ -1657,6 +1674,7 @@ export class CodexRuntime implements AgentBackend {
       thread.lastError = undefined;
     }
     this.#syncTurnNotification(thread);
+    this.#reconcileCompaction(thread, turns);
     return true;
   }
 
@@ -2333,6 +2351,7 @@ export class CodexRuntime implements AgentBackend {
   /** Re-read the source after a revert performed by another Codex client. */
   #reconcileExternalRevert(thread: ThreadState): void {
     const generation = thread.reconcileGeneration + 1;
+    const compactionOwner = thread.compactionOwner;
     void this.#queueReconcile(thread, async (generation) => {
       if (thread.reconcileNotifications.overflowed) thread.reconcileNotifications.reset();
       this.#beginSourceReconcile(thread);
@@ -2341,6 +2360,7 @@ export class CodexRuntime implements AgentBackend {
       const replayed = this.#replayTurns(thread, { turns }, true);
       if (!this.#isCurrentReconcile(thread, generation)) return;
       if (!replayed) {
+        this.#setCompaction(thread, "unavailable");
         thread.sourceReady = false;
         this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
@@ -2355,6 +2375,7 @@ export class CodexRuntime implements AgentBackend {
     }).catch((error: unknown) => {
       this.#options.log?.(`Codex 外部回退协调失败（thread=${thread.id}）：${describeError(error)}`);
       if (this.#isCurrentReconcile(thread, generation)) {
+        if (thread.compactionOwner === compactionOwner) this.#setCompaction(thread, "unavailable");
         thread.historyError = "codex_reconcile_failed";
         this.#publishMetadataEvent(thread);
       }
@@ -2373,6 +2394,7 @@ export class CodexRuntime implements AgentBackend {
           turns = await this.#listAllTurns(thread.id);
         } catch (error) {
           if (!this.#isCurrentReconcile(thread, generation)) return;
+          this.#setCompaction(thread, "unavailable");
           thread.sourceReady = false;
           this.#touchSource(thread);
           throw error;
@@ -2384,6 +2406,7 @@ export class CodexRuntime implements AgentBackend {
             && thread.entries.some(entry => thread.entryTurns.get(entry.entryId) === turn.id);
         });
         if (retainedWithoutItems) {
+          this.#setCompaction(thread, "unavailable");
           thread.sourceReady = false;
           this.#touchSource(thread);
           throw new Error("codex_native_history_incomplete");
@@ -2395,6 +2418,7 @@ export class CodexRuntime implements AgentBackend {
           // Publishing the transient rebuild state here makes every native check look like
           // a source failure to the phone and starts unnecessary checkpoint recovery.
           if (!this.#replayTurns(thread, { turns })) {
+            this.#setCompaction(thread, "unavailable");
             this.#touchSource(thread);
             throw new Error(thread.historyError ?? "codex_reconcile_failed");
           }
@@ -2404,6 +2428,8 @@ export class CodexRuntime implements AgentBackend {
           this.#touchSource(thread);
           this.#publishMetadataEvent(thread);
         } else {
+          // Activity can be stale even when the canonical history signature has not changed.
+          this.#reconcileCompaction(thread, turns);
           await this.#drainReconcileNotifications(thread);
         }
         if (this.#isCurrentReconcile(thread, generation)) thread.lastNativeCheckAt = Date.now();
@@ -3202,9 +3228,19 @@ export class CodexRuntime implements AgentBackend {
         if (item === null || typeof item !== "object") return;
         let data = item as Record<string, unknown>;
         if (data.type === "contextCompaction") {
+          if (typeof record.turnId === "string" && thread.turnId !== undefined && record.turnId !== thread.turnId) return;
+          if (typeof record.turnId === "string" && thread.settledCompactions.has(`turn:${record.turnId}`)
+            || typeof data.id === "string" && thread.settledCompactions.has(`item:${data.id}`)) return;
+          if (typeof data.id === "string" && (thread.completedItems.has(data.id)
+            || thread.itemOrder.indexOf(data.id) >= 0 && thread.itemOrder.indexOf(data.id) < thread.committedItemCount)) return;
+          thread.compactionOwner = {
+            ...(typeof data.id === "string" ? { itemId: data.id } : {}),
+            ...(typeof record.turnId === "string" ? { turnId: record.turnId } : {}),
+          };
           thread.activity.compaction = { phase: "running", ...(typeof record.turnId === "string" ? { turnId: record.turnId.slice(0, 256) } : {}) };
           this.#emit(thread.id, thread.activity);
         }
+        if (data.type === "agentMessage" || data.type === "reasoning") this.#settleCompactionProgress(thread, record.turnId);
         if (typeof data.type === "string" && data.type !== "userMessage") this.#clearRetryError(thread, record.turnId);
         if (typeof record.turnId === "string") thread.asyncInputs.upsert(data, record.turnId);
         if ((data.type === "fileChange" || data.type === "commandExecution") && typeof data.id === "string") {
@@ -3256,13 +3292,19 @@ export class CodexRuntime implements AgentBackend {
       }
       case "item/reasoning/textDelta":
       case "item/reasoning/summaryTextDelta": {
-        if (typeof record.delta === "string" && record.delta.length > 0) this.#clearRetryError(thread, record.turnId);
+        if (typeof record.delta === "string" && record.delta.length > 0) {
+          this.#clearRetryError(thread, record.turnId);
+          this.#settleCompactionProgress(thread, record.turnId);
+        }
         return;
       }
       case "item/agentMessage/delta": {
         const delta = record.delta;
         if (typeof delta !== "string" || typeof record.itemId !== "string") return;
-        if (delta.length > 0) this.#clearRetryError(thread, record.turnId);
+        if (delta.length > 0) {
+          this.#clearRetryError(thread, record.turnId);
+          this.#settleCompactionProgress(thread, record.turnId);
+        }
         if (!thread.liveMessages.has(record.itemId)) {
           thread.streamingMessageId = record.itemId;
           this.#setLiveMessage(thread, {
@@ -3289,9 +3331,12 @@ export class CodexRuntime implements AgentBackend {
         if (item === null || typeof item !== "object") return;
         let data = item as Record<string, unknown>;
         if (data.type === "contextCompaction") {
-          thread.activity.compaction = { phase: data.status === "failed" ? "failed" : "idle",
-            ...(typeof record.turnId === "string" ? { turnId: record.turnId.slice(0, 256) } : {}) };
-          this.#emit(thread.id, thread.activity);
+          const owner = thread.compactionOwner;
+          if (owner === undefined || (owner.itemId === undefined || owner.itemId === data.id)
+            && (owner.turnId === undefined || owner.turnId === record.turnId)) {
+            this.#setCompaction(thread, data.status === "failed" ? "failed" : "idle",
+              typeof record.turnId === "string" ? record.turnId : undefined);
+          }
         }
         if (typeof record.turnId === "string") thread.asyncInputs.upsert(data, record.turnId);
         data = this.#projectToolItem(thread, data, "finished", typeof record.turnId === "string" ? record.turnId : undefined, true);
@@ -3354,6 +3399,8 @@ export class CodexRuntime implements AgentBackend {
         // 手机端也就没有「耗时」那一行）。
         const started = turnRecord(record.turn);
         if (started !== undefined) {
+          const owner = thread.compactionOwner;
+          if (owner !== undefined && owner.turnId !== started.id) this.#settleCompactionTurn(thread, owner.turnId, "idle");
           thread.asyncInputs.updateTurn(started.id, "inProgress");
           thread.turnId = started.id;
           // app-server 的 startedAt 是秒级 epoch；本端事件用毫秒，统一乘 1000。
@@ -3376,6 +3423,7 @@ export class CodexRuntime implements AgentBackend {
         const completed = turnRecord(record.turn);
         const completedTurn = object(record.turn);
         const completedTurnId = completed?.id ?? thread.turnId;
+        this.#settleCompactionTurn(thread, completedTurnId, completedTurn.status === "failed" ? "failed" : "idle");
         if (completedTurnId !== undefined) thread.asyncInputs.updateTurn(completedTurnId, completedTurn.status ?? "completed");
         if (completedTurn.status === "failed") this.#reportError(thread, completedTurn.error, false, completedTurnId);
         else this.#clearRetryError(thread, completedTurnId);
@@ -3555,7 +3603,75 @@ export class CodexRuntime implements AgentBackend {
     this.#clearError(thread);
   }
 
+  #setCompaction(thread: ThreadState, phase: "idle" | "failed" | "unavailable", turnId?: string): void {
+    if (phase !== "unavailable" && thread.compactionOwner?.itemId !== undefined) {
+      this.#rememberCompactionSettlement(thread, `item:${thread.compactionOwner.itemId}`);
+    }
+    delete thread.compactionOwner;
+    const next = phase === "unavailable" ? phase : { phase, ...(turnId === undefined ? {} : { turnId: turnId.slice(0, 256) }) };
+    if (isDeepStrictEqual(thread.activity.compaction, next)) return;
+    thread.activity.compaction = next;
+    this.#emit(thread.id, thread.activity);
+  }
+
+  #settleCompactionTurn(thread: ThreadState, turnId: string | undefined, phase: "idle" | "failed"): void {
+    if (turnId !== undefined) this.#rememberCompactionSettlement(thread, `turn:${turnId}`);
+    const owner = thread.compactionOwner;
+    if (owner === undefined || owner.turnId !== undefined && owner.turnId !== turnId) return;
+    this.#setCompaction(thread, phase, owner.turnId ?? turnId);
+  }
+
+  #rememberCompactionSettlement(thread: ThreadState, id: string): void {
+    thread.settledCompactions.add(id);
+    // Delayed notifications need a bounded tombstone window, not a second history inventory.
+    if (thread.settledCompactions.size > 512) thread.settledCompactions.delete(thread.settledCompactions.values().next().value!);
+  }
+
+  #settleCompactionProgress(thread: ThreadState, turnId: unknown): void {
+    const owner = thread.compactionOwner;
+    if (owner !== undefined && typeof turnId === "string" && owner.turnId === turnId) {
+      this.#setCompaction(thread, "idle", turnId);
+    }
+  }
+
+  /** A stored ContextCompaction has no status. Its presence alone never means it is running.
+   * Only a live start can establish that; a terminal/removed turn or subsequent model item
+   * in a verified full snapshot repairs a lost completion. Ordinary idle is not evidence. */
+  #reconcileCompaction(thread: ThreadState, turns: unknown[]): void {
+    const nativeTurns = turns.map(object);
+    for (const turn of nativeTurns) {
+      if (["completed", "interrupted", "failed"].includes(String(turn.status)) && typeof turn.id === "string") {
+        this.#rememberCompactionSettlement(thread, `turn:${turn.id}`);
+      }
+    }
+    const owner = thread.compactionOwner;
+    if (owner === undefined) return;
+    const turn = nativeTurns.find(value => owner.turnId === undefined
+      ? Array.isArray(value.items) && value.items.some(item => object(item).id === owner.itemId)
+      : value.id === owner.turnId);
+    if (turn === undefined) {
+      this.#setCompaction(thread, "idle", owner.turnId);
+      return;
+    }
+    if (["completed", "interrupted", "failed"].includes(String(turn.status))) {
+      this.#setCompaction(thread, turn.status === "failed" ? "failed" : "idle", owner.turnId);
+      return;
+    }
+    if (!["inProgress", "in_progress"].includes(String(turn.status)) || !Array.isArray(turn.items)) {
+      this.#setCompaction(thread, "unavailable");
+      return;
+    }
+    const items = turn.items.map(object);
+    const index = items.findIndex(item => item.id === owner.itemId);
+    const item = items[index];
+    if (index < 0) this.#setCompaction(thread, "unavailable");
+    else if (item?.status === "failed") this.#setCompaction(thread, "failed", owner.turnId);
+    else if (item?.status === "completed" || index >= 0 && items.slice(index + 1).some(item =>
+      ["agentMessage", "reasoning"].includes(String(item.type)))) this.#setCompaction(thread, "idle", owner.turnId);
+  }
+
   #reportError(thread: ThreadState, error: unknown, willRetry = false, turnId?: string): void {
+    if (!willRetry) this.#settleCompactionTurn(thread, turnId ?? thread.turnId, "failed");
     const message = codexErrorMessage(error);
     if (object(error).codexErrorInfo === "sandboxError") this.#sandboxProblem(thread, message);
     const diagnostic = { message, willRetry,
