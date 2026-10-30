@@ -340,18 +340,15 @@ struct DisclosurePerformancePreview: View {
 #endif
 
 /// Reserved for deliberate submissions, rather than every button press.
+/// Medium at full intensity: the selection tick and light impacts are hard to feel with the phone in hand.
 @MainActor
 enum OrbisHaptics {
-    private static let impact = UIImpactFeedbackGenerator(style: .light)
-    private static let selection = UISelectionFeedbackGenerator()
+    private static let impact = UIImpactFeedbackGenerator(style: .medium)
 
-    static func beginSelection() {
-        selection.selectionChanged()
-        selection.prepare()
-    }
+    static func beginSelection() { commit() }
 
     static func commit() {
-        impact.impactOccurred(intensity: 0.65)
+        impact.impactOccurred()
         impact.prepare()
     }
 }
