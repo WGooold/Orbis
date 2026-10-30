@@ -66,8 +66,10 @@ struct ToolInventoryFailureTests {
         inventory.didFail = { _, reference, reason in failures.append((reference, reason)) }
         let target = reference()
         inventory.require(target, runtime: "runtime")
-        let deadline = Date().addingTimeInterval(2)
-        while failures.isEmpty && Date() < deadline { try await Task.sleep(nanoseconds: 1_000_000) }
+        // Other core tests can occupy MainActor on CI before the timer runs.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(10))
+        while failures.isEmpty && clock.now < deadline { try await Task.sleep(nanoseconds: 1_000_000) }
         #expect(failures.count == 1)
         #expect(failures.first?.0 == target)
         #expect(failures.first?.1.contains("超时") == true)
