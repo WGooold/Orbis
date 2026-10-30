@@ -20,14 +20,6 @@ import java.util.UUID
 internal const val PROTOCOL_VERSION_MISMATCH_ERROR =
     "Orbis 协议版本不兼容，请将手机 App 和电脑 Host 更新到最新版本"
 
-/**
- * Host 为「P2P 走不通、继续走中继」发的 protocol.error 码。
- *
- * 这些不是失败请求：它们描述的是尽力而为的支线路径没起来，业务已经在中继上正常跑。
- * reducer 看到它们直接丢弃，不当模态错误弹给用户。
- */
-internal val P2P_FALLBACK_ERROR_CODES = setOf("p2p_cooling_down", "p2p_unavailable")
-
 /** 协议 14 已以模型/聊天事务替换这些一次性业务通知，迟到帧不能另建写入者。 */
 internal val MODEL_OWNED_LEGACY_EVENTS = setOf(
     "runtime.status", "runtime.capabilities", "message.queued", "interaction.requested", "interaction.snapshot",
@@ -496,7 +488,7 @@ data class RemoteState(
     /** Offline history is a read-only view; online interaction is always selected by Runtime. */
     val selectedOfflineSessionId: String? = null,
     val selectedRuntimeId: String? = null,
-    /** 当前生效的传输路径（device.path 宣布，spec §14 B4）：lan / p2p / relay。 */
+    /** 当前生效的传输路径（device.path 宣布，spec §14 B4）：lan / relay。 */
     val path: String? = null,
     val pathRttMs: Long? = null,
     /**
@@ -2081,10 +2073,6 @@ class RelayReducer(
                 )))
             }
             "protocol.error" -> {
-                // P2P 是尽力而为的支线：打洞失败 / Host 未启用都已自动回落中继，业务照常。
-                // 这两条当模态错误弹出来，只会让每次跨网抖动的连续失败计数达标都变成一次要用户
-                // 点「确定」的噪音，所以静默丢弃；路径现状在连接状态页仍有体现。
-                if (message.string("code") in P2P_FALLBACK_ERROR_CODES) return state
                 val commandId = message.string("commandId")
                 if (commandId?.startsWith("session-sync-ack:") == true) return state
                 val requestId = message.string("requestId")

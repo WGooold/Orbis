@@ -7,6 +7,7 @@ import {
   RuntimeEventSchema,
   RuntimeCapabilitiesSchema,
   RelayToDeviceMessageSchema,
+  HostConnectionsStateSchema,
   ARTIFACT_CHUNK_BYTES,
   decodeArtifactChunkFrame,
   encodeArtifactChunkFrame,
@@ -16,6 +17,34 @@ import {
 } from "./index.js";
 
 describe("runtime command protocol", () => {
+  it("accepts only LAN and Relay paths and rejects unsupported transport controls", () => {
+    for (const path of ["lan", "relay"]) {
+      expect(RelayToDeviceMessageSchema.safeParse({ type: "device.path", protocolVersion: PROTOCOL_VERSION, path }).success).toBe(true);
+    }
+    expect(RelayToDeviceMessageSchema.safeParse({ type: "device.path", protocolVersion: PROTOCOL_VERSION, path: "unsupported" }).success).toBe(false);
+    const connections = {
+      pairedDevices: 1, connectedDevices: 1, relayState: "connected", sequenceChannels: 0,
+      paths: [
+        { kind: "lan", attachedDevices: 1, activeDevices: 1 },
+        { kind: "relay", attachedDevices: 1, activeDevices: 0 },
+      ],
+    };
+    expect(HostConnectionsStateSchema.safeParse(connections).success).toBe(true);
+    expect(HostConnectionsStateSchema.safeParse({
+      ...connections, paths: [{ kind: "unsupported", attachedDevices: 0, activeDevices: 0 }],
+    }).success).toBe(false);
+    expect(HostConnectionsStateSchema.safeParse({
+      ...connections, paths: [...connections.paths, connections.paths[0]],
+    }).success).toBe(false);
+    for (const message of [
+      { type: "transport.unsupported.request" }, { type: "transport.unsupported.offer", sdp: "obsolete" }, { type: "transport.unsupported.answer", sdp: "obsolete" },
+      { type: "device.pathPreference", preference: ["relay", "lan"] },
+    ]) {
+      const payload = { ...message, protocolVersion: PROTOCOL_VERSION };
+      expect(DeviceE2ePayloadSchema.safeParse(payload).success).toBe(false);
+      expect(RelayToDeviceMessageSchema.safeParse(payload).success).toBe(false);
+    }
+  });
 
   it("carries session provider ownership and current backend providers, including an empty catalog", () => {
     const message = {

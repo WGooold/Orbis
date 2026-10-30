@@ -26,7 +26,7 @@ scripts/windows/android-build.ps1 testDebugUnitTest assembleDebug
 
 ## 传输与加密
 
-与 Host 之间流动的是端到端加密的 Envelope，中继只能读到路由头（帧种类、room、收发方、序号），读不到会话内容。客户端支持 **LAN**（WebSocket 直连）、**P2P**（WebRTC DataChannel）和 **Relay** 三条路径；Host 按设置页的连接优先级选择路径，界面显示当前生效的路径。命令与文件传输都遵循这个选择。
+与 Host 之间流动的是端到端加密的 Envelope，中继只能读到路由头（帧种类、room、收发方、序号），读不到会话内容。客户端支持 **LAN**（WebSocket 直连）和 **Relay** 两条路径；Host 固定 LAN 优先、Relay 兜底，设置页没有路径排序入口，界面显示当前生效的路径。命令与文件传输都遵循这个选择。
 
 LAN 地址从配对二维码保存；已有配对会在加密握手后通过 `host.lan.request` / `host.lan` 向 Host 获取并保存最新地址，因此升级 Host 和 APP 后无需重新配对。默认连接电脑的 `42130` 端口、路径 `/v1/lan`。每条路径独立握手和加密；LAN 不发送 Relay 凭据，只信任能证明配对密钥的 Host。地址支持使用公网编号的校园局域网，Relay 地址的 TLS 限制保持原样。
 

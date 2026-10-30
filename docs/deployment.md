@@ -4,7 +4,7 @@ Canonical repository: https://github.com/WGooold/Orbis. Public site: https://orb
 
 ## Server preparation
 
-Use a Linux server with Docker, Nginx, Certbot and coturn. Allow TCP 80/443 and UDP 3478, plus your restricted SSH access. The Relay container binds only `127.0.0.1:8787`.
+Use a Linux server with Docker, Nginx and Certbot. Allow TCP 80/443, plus your restricted SSH access. The Relay container binds only `127.0.0.1:8787`.
 
 Create `/opt/orbis/shared/data` owned by UID/GID 1000 with mode 700. Copy `deploy/relay.env.example` to `/opt/orbis/shared/relay.env`, replace its administrator placeholder with a strong random secret, and make the file mode 600. Keep credentials outside the repository. The console password is this `ORBIS_ADMIN_TOKEN`; there is no default password.
 
@@ -12,7 +12,9 @@ Install `deploy/nginx-proxy.conf` as `/etc/nginx/snippets/orbis-proxy.conf`, ada
 
 If Cloudflare proxies HTTPS, configure Nginx's trusted Cloudflare address ranges and `real_ip_header CF-Connecting-IP` before enabling `ORBIS_TRUST_PROXY=1`. Never trust arbitrary forwarded client addresses from the public internet. Source ranges: https://www.cloudflare.com/ips/.
 
-Install `deploy/turnserver.conf` as `/etc/turnserver.conf` and enable/restart coturn. It is **STUN only**, with no anonymous TURN relay. The official `orbising.com` clients use the UDP origin `45.58.185.226:3478` because the web hostname is proxied. Self-hosted clients default to their Relay hostname; that hostname must resolve directly to a STUN server for P2P. CLI Host configurations may override `stunServers`. Verify from outside the server using `node scripts/stun-probe.mjs YOUR_STUN_HOST`. Failed P2P still falls back to Relay.
+Connections use LAN / Relay only, with a fixed LAN-first order (ADR-0050). The Relay requires TCP 443 through the reverse proxy; local discovery and direct connections follow the Host LAN configuration.
+
+Protocol v16 requires matching Relay, Host, runtime / bridge and mobile builds. Prepare the artifacts before the cutover, update Relay first, and then update the endpoints. Mixed versions reject connections with an upgrade message. Preserve pairing keys and persistent state; roll back matching versions together if needed. Production cutover and service retirement require a separate deployment record.
 
 ## GitHub Actions
 

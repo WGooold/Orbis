@@ -67,8 +67,6 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.UnfoldMore
 import androidx.compose.material.icons.rounded.LinkOff
 import androidx.compose.material.icons.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.ArrowDownward
-import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -2670,10 +2668,9 @@ private fun StatusScreen(
 }
 
 /**
- * 设置页：供应商配置与切换，以及连接优先级（§6.2）。
+ * 设置页：供应商配置与切换。传输固定局域网优先、中继兜底。
  *
- * 顺序是用户显式排的，所以它压过 RTT 证据（Host 侧 PathSelector 的规矩）：
- * 更高优先级的路径一建立就会顶替当前路径，不再需要「快 30% 且连续 3 次」。
+ * 状态页只展示 Host 宣布的连接方式，不提供排序入口。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -2685,8 +2682,6 @@ private fun SettingsScreen(model: RemoteViewModel, onBack: () -> Unit) {
         AgentProvidersScreen(state, model, onBack = { providersOpen = false })
         return
     }
-    // 顺序改在本地状态里：store 不是 Compose state，不这么写点完箭头界面不会刷新。
-    var order by remember { mutableStateOf(model.pathPreference()) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -2722,25 +2717,6 @@ private fun SettingsScreen(model: RemoteViewModel, onBack: () -> Unit) {
                     Text("供应商配置与切换", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
                     Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                }
-            }
-            StatusSectionTitle("连接优先级")
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                order.forEachIndexed { index, kind ->
-                    PriorityOrderRow(
-                        rank = index + 1,
-                        kind = kind,
-                        canMoveUp = index > 0,
-                        canMoveDown = index < order.lastIndex,
-                        onMoveUp = {
-                            order = order.moved(index, index - 1)
-                            model.setPathPreference(order)
-                        },
-                        onMoveDown = {
-                            order = order.moved(index, index + 1)
-                            model.setPathPreference(order)
-                        },
-                    )
                 }
             }
         }
@@ -2797,50 +2773,6 @@ private fun AgentProvidersScreen(state: RemoteState, model: RemoteViewModel, onB
     }
 }
 
-@Composable
-private fun PriorityOrderRow(
-    rank: Int,
-    kind: String,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(0.dp),
-    ) {
-        Column(Modifier.weight(1f).padding(start = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("第 $rank 优先", style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(transportPathLabel(kind) ?: kind, style = MaterialTheme.typography.bodyMedium)
-        }
-        NeumorphIconButton(
-            onClick = onMoveUp,
-            icon = Icons.Rounded.ArrowUpward,
-            contentDescription = "上移",
-            compact = true,
-            enabled = canMoveUp,
-        )
-        NeumorphIconButton(
-            onClick = onMoveDown,
-            icon = Icons.Rounded.ArrowDownward,
-            contentDescription = "下移",
-            compact = true,
-            enabled = canMoveDown,
-        )
-    }
-}
-
-/** 把 [from] 位置的一项挪到 [to]，越界或原地不动时原样返回。 */
-internal fun <T> List<T>.moved(from: Int, to: Int): List<T> {
-    if (from !in indices || to !in indices || from == to) return this
-    val copy = toMutableList()
-    copy.add(to, copy.removeAt(from))
-    return copy
-}
-
 /**
  * 只在控制链底座不健康时给下一步。优先说配对不完整：那是最容易被误当成「网络问题」的一种，
  * 因为手机确实连上了中继，只是永远没有加密通道。
@@ -2856,7 +2788,6 @@ internal fun statusAdvice(state: RemoteState, pairing: PairingStatus): String? =
 }
 
 internal fun transportPathLabel(path: String?): String? = when (path) {
-    "p2p" -> "P2P 直连"
     "lan" -> "局域网"
     "relay" -> "中继"
     else -> null
@@ -2870,9 +2801,9 @@ internal fun connectionMethodText(state: RemoteState): String =
     transportPathLabel(state.path)
         ?: if (state.connection == RelayConnection.ONLINE) "中继" else "尚未确认"
 
-/** 直连（P2P/局域网）比经中继更值得一眼看出来，所以给它们更「好」的颜色。 */
+/** 局域网直连使用成功状态色。 */
 internal fun connectionMethodTone(state: RemoteState): StatusTone = when (state.path) {
-    "p2p", "lan" -> StatusTone.Good
+    "lan" -> StatusTone.Good
     else -> StatusTone.Neutral
 }
 

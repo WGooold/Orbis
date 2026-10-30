@@ -1549,6 +1549,17 @@ describe("host end-to-end over relay", () => {
     await new Promise((resolve) => setTimeout(resolve, 120));
     expect(host.activePathOf(device.deviceId)).toBe("lan");
 
+    // Obsolete controls reach only the generic unknown-payload callback, never the selector.
+    const obsoleteControls = [
+      { type: "device.pathPreference", preference: ["relay", "lan"] },
+      { type: "device.pathPreference", preference: ["unsupported", "relay", "lan"] },
+      { type: "transport.unsupported.request" }, { type: "transport.unsupported.answer", sdp: "obsolete" },
+    ].map(message => JSON.stringify({ ...message, protocolVersion: PROTOCOL_VERSION }));
+    for (const payload of obsoleteControls) device.sendData(payload);
+    await vi.waitFor(() => expect(receivedByHost).toEqual(obsoleteControls));
+    expect(host.activePathOf(device.deviceId)).toBe("lan");
+    receivedByHost.length = 0;
+
     device.sendData(JSON.stringify({ type: "host.lan.request", protocolVersion: PROTOCOL_VERSION }));
     await expect(device.receiveMessage()).resolves.toEqual({
       type: "host.lan",
@@ -1578,6 +1589,13 @@ describe("host end-to-end over relay", () => {
     // 回落之后业务照旧，不需要重新配对，也不需要重新握手。
     host.sendData(device.deviceId, Buffer.from("回到中继", "utf8"), "ctl");
     await expect(device.receiveData()).resolves.toBe("回到中继");
+
+    // LAN recovery restores the fixed priority without a preference message or re-pairing.
+    await device.openLanPath(`ws://127.0.0.1:${lanPort}/v1/lan`);
+    await device.openChannel("lan", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await expect(device.expectOn("lan")).resolves.toMatchObject({ type: "device.ready" });
+    await expect(device.expectOn("lan")).resolves.toMatchObject({ type: "device.path", path: "lan" });
+    expect(host.activePathOf(device.deviceId)).toBe("lan");
   });
 
   it("拒绝未配对设备的 LAN 连接", async () => {

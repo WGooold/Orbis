@@ -201,7 +201,6 @@ final class OrbisStore: ObservableObject {
     var historyLoading: Set<String> { activeConnection.historyLoading }
     var historyErrors: [String: String] { activeConnection.historyErrors }
     var historyPageRevision: Int { activeConnection.historyPageRevision }
-    var pathPreference: [String] { activeConnection.pathPreference }
     var currentProviders: [String: String] { activeConnection.currentProviders }
     var connectionEvents: [String] { activeConnection.connectionEvents }
     var selectedHost: HostPairing? { pairings.first { $0.hostId == selectedHostId } }
@@ -234,11 +233,6 @@ final class OrbisStore: ObservableObject {
     func sendMessage(_ text: String, delivery: String? = nil, attachmentIds: Set<String> = []) -> Bool { activeConnection.sendMessage(text, delivery: delivery, attachmentIds: attachmentIds) }
     func cancelQueuedMessage(_ queueId: String) -> Bool { activeConnection.cancelQueuedMessage(queueId) }
     @discardableResult func stopRuntime() -> Bool { activeConnection.stopRuntime() }
-    func setPathPreference(_ order: [String]) {
-        preferences?.set(normalizedPathPreference(order), forKey: "orbis.pathPreference")
-        emptyConnection.setPathPreference(order)
-        for connection in connections.values { connection.setPathPreference(order) }
-    }
     func currentProvider(for kind: String) -> String? { activeConnection.currentProvider(for: kind) }
     func agentKind(_ runtime: RuntimeSummary) -> String? { activeConnection.agentKind(runtime) }
     func providerMismatch(_ session: SessionSummary) -> String? { activeConnection.providerMismatch(session) }

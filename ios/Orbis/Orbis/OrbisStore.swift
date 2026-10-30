@@ -49,7 +49,6 @@ final class HostConnection: ObservableObject {
     @Published private(set) var historyLoading: Set<String> = []
     @Published private(set) var historyErrors: [String: String] = [:]
     @Published private(set) var historyPageRevision = 0
-    @Published private(set) var pathPreference = defaultPathPreference
     @Published private(set) var currentProviders: [String: String] = [:]
     /// 仅供「原始事件」页查看；每收到一帧都会追加，不发布变更，免得每帧都让整棵视图树重绘。
     private(set) var connectionEvents: [String] = []
@@ -150,7 +149,6 @@ final class HostConnection: ObservableObject {
         self.historyWorker = historyWorker ?? SessionHistoryWorker(root: root.appendingPathComponent("SessionHistory", isDirectory: true))
         preferences?.removeObject(forKey: "orbis.sessionAliases")
         drafts = preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? [:]
-        pathPreference = normalizedPathPreference(preferences?.stringArray(forKey: "orbis.pathPreference") ?? [])
         #if canImport(UIKit)
         self.deviceName = deviceName ?? UIDevice.current.name
         #else
@@ -1089,17 +1087,6 @@ final class HostConnection: ObservableObject {
         if !transport.send(["type": "session.list", "protocolVersion": orbisProtocolVersion, "requestId": id]) { sessionListRequest = nil }
     }
 
-    func setPathPreference(_ order: [String]) {
-        pathPreference = normalizedPathPreference(order)
-        preferences?.set(pathPreference, forKey: "orbis.pathPreference")
-        sendPathPreference()
-    }
-
-    private func sendPathPreference() {
-        guard connection == .secured else { return }
-        _ = transport.send(["type": "device.pathPreference", "protocolVersion": orbisProtocolVersion, "preference": pathPreference])
-    }
-
     func currentProvider(for kind: String) -> String? {
         if hostState.domains["providers"]?.availability == "ready" { return hostState.currentProviders[kind] }
         return currentProviders[kind]
@@ -1173,7 +1160,6 @@ final class HostConnection: ObservableObject {
             hostState.setConnection(selectedHost, connected: true)
             agentState.setConnection(selectedHost, connected: true)
             notifications.setConnection(selectedHost, connected: true)
-            sendPathPreference()
             transfers.setConnection(selectedHost, connected: true)
             supportedAgents = message["agents"] as? [String]
             launchableAgents = message["launchableAgents"] as? [String]
@@ -1225,7 +1211,8 @@ final class HostConnection: ObservableObject {
                 }
             }
         case "device.path":
-            activePath = message["path"] as? String
+            guard let path = message["path"] as? String, ["lan", "relay"].contains(path) else { return }
+            activePath = path
             pathRTT = (message["rttMs"] as? NSNumber)?.doubleValue
         case "runtime.git":
             guard let id = message["runtimeId"] as? String, let runtime = runtimes.first(where: { $0.runtimeId == id }),

@@ -76,7 +76,6 @@ internal class HostStores(application: Application) {
     val downloads = ArtifactDownloadStore(application)
     val uploads = ArtifactUploadStore(application)
     val lastSession = LastSessionStore(application)
-    val pathPreference = PathPreferenceStore(application)
     val notifier = InteractionNotifier(application)
 }
 
@@ -112,14 +111,7 @@ internal class HostConnection(
         private set
 
     val hostId: String get() = pairing.hostId
-    /**
-     * P2P 需要在设备侧构造 WebRTC 的 PeerConnectionFactory，而这要一个 Context。
-     *
-     * 漏掉这一行不会抛任何异常：`startP2pIfPossible` 的第一件事是 `appContext ?: return`，
-     * 于是它每次都静默退出，`p2p.request` 永远发不出去，状态页永远显示中继——
-     * 而且 Logcat 里连一行痕迹都没有。所以这里必须注入，不是可选项。
-     */
-    private val relay = RelayClient().apply { setApplicationContext(application) }
+    private val relay = RelayClient()
     private val reducer = RelayReducer()
     private val notifier = stores.notifier
     private val sessionCatalogStore = SessionCatalogStore(application, initial.hostId)
@@ -128,7 +120,6 @@ internal class HostConnection(
     private val artifactDownloadStore = stores.downloads
     private val artifactUploadStore = stores.uploads
     private val lastSessionStore = stores.lastSession
-    private val pathPreferenceStore = stores.pathPreference
     private val pullDownloads = PullDownloads(
         read = { transferId, requestId, offset, length ->
             relay.readArtifact(transferId, requestId, offset, length)
@@ -1537,33 +1528,6 @@ internal class HostConnection(
         }
     }
 
-    /** 手机本地排的连接优先级（§6.2），顺序即优先级，第 1 位最优先。 */
-    fun pathPreference(): List<String> = pathPreferenceStore.load()
-
-    /**
-     * 用户改了连接优先级：先落盘，再立刻下发给 Host。此刻没连上也不报错——
-     * E2E 就绪时会重发一次（[sendPathPreference]），所以设置不会丢。
-     */
-    fun setPathPreference(order: List<String>) {
-        pathPreferenceStore.save(order)
-        sendPathPreference()
-    }
-
-    /**
-     * 把当前优先级下发给 Host。这是设备→Host 的 E2E 密文载荷，Relay 看不见也不认识它——
-     * 所以它不在共享协议 schema 里（见 Host 侧 path-preference.ts）。
-     */
-    private fun sendPathPreference() {
-        val preference = pathPreferenceStore.load()
-        relay.sendDeviceMessage(
-            buildJsonObject {
-                put("type", "device.pathPreference")
-                put("protocolVersion", PROTOCOL_VERSION)
-                put("preference", buildJsonArray { preference.forEach { add(it) } })
-            },
-        )
-    }
-
     private fun respond(request: PendingInteraction, send: (String) -> String?): Boolean {
         val runtimeId = mutableState.value.selectedRuntimeId ?: return false
         val current = mutableState.value
@@ -1858,7 +1822,6 @@ internal class HostConnection(
                     if (currentGeneration != generation) return@launch
                     updateState { it.copy(path = path, pathRttMs = rttMs) }
                 }
-                sendPathPreference()
             }
         }
         // Transport callbacks share the reducer lock so a late snapshot cannot revert readiness.
@@ -1877,7 +1840,6 @@ internal class HostConnection(
                 }
                 if (ready) {
                     autoResumeDownloads()
-                    sendPathPreference()
                     // device.ready can be reduced before the handshake flips e2eReady (device order:
                     // device.ready, then e2e.hs.confirmed). That first path returns early because the
                     // model read needs an encrypted channel, so the committed-model read has to be

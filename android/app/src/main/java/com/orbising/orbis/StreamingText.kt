@@ -98,8 +98,14 @@ internal fun StreamingMarkdownText(
                 val span = text.spanStyles.lastOrNull { start >= it.start && start < it.end }?.item
                 val weight = span?.fontWeight ?: style.fontWeight ?: FontWeight.Normal
                 val family = if ((span?.fontFamily ?: style.fontFamily) == FontFamily.Monospace) "monospace" else "sans-serif"
-                val nativeStyle = (if (weight >= FontWeight.SemiBold) Typeface.BOLD else Typeface.NORMAL) or
-                    (if ((span?.fontStyle ?: style.fontStyle) == FontStyle.Italic) Typeface.ITALIC else Typeface.NORMAL)
+                val bold = weight >= FontWeight.SemiBold
+                val italic = (span?.fontStyle ?: style.fontStyle) == FontStyle.Italic
+                val nativeStyle = when {
+                    bold && italic -> Typeface.BOLD_ITALIC
+                    bold -> Typeface.BOLD
+                    italic -> Typeface.ITALIC
+                    else -> Typeface.NORMAL
+                }
                 nativePaint.typeface = Typeface.create(family, nativeStyle)
                 nativePaint.fontFeatureSettings = style.fontFeatureSettings ?: "tnum"
                 nativePaint.textSize = with(density) { style.fontSize.toPx() }

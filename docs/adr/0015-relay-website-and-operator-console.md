@@ -1,10 +1,12 @@
 # Relay website and operator console
 
+LAN / Relay routing follows [ADR-0050](0050-fixed-lan-relay-routing.md).
+
 Status: accepted - requested on 2026-09-22.
 
 The Relay serves the Orbis product website and an operator console from its existing HTTP listener. Production publishes them below the existing `/relay/` reverse-proxy prefix, so every browser URL and API call is relative to the served document. Static files use an explicit allowlist and a restrictive Content Security Policy. The public site reports live registration availability and only advertises download artifacts that have both an allowed filename and a valid SHA-256 sidecar.
 
-The operator console is a Relay administration surface. It reports Relay health, registered and currently visible Hosts, device credentials, connection counts, and bounded audit events. It can disable a Host on Relay transport or revoke a device's Relay credential. These operations close matching Relay WebSockets and persist their result. They do not remove Host-side pairing trust or control LAN and P2P paths, and the Relay still cannot decrypt conversation or file payloads.
+The operator console is a Relay administration surface. It reports Relay health, registered and currently visible Hosts, device credentials, connection counts, and bounded audit events. It can disable a Host on Relay transport or revoke a device's Relay credential. These operations close matching Relay WebSockets and persist their result. They do not remove Host-side pairing trust or control LAN paths, and the Relay still cannot decrypt conversation or file payloads.
 
 `ORBIS_ADMIN_TOKEN` remains the long-lived server secret and is never placed in browser storage. A successful same-origin login exchanges it for a random, HttpOnly, SameSite Strict cookie and a CSRF token; sessions expire after eight hours. Login attempts are rate limited, mutations require the session, matching origin, and CSRF token, and the operator state is stored separately from device credentials. The existing bearer-token CLI administration API remains available as an independent operator path.
 

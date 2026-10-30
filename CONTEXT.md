@@ -92,7 +92,7 @@ The operator may make QQ verification optional for new activations; the Host-bou
 
 
 **Path**:
-One replaceable transport that carries envelopes between the Host and a device: `lan`, `p2p`, or `relay`. The loopback endpoint is not a Path — it connects the computer's own agent processes to the Host.
+One replaceable transport that carries envelopes between the Host and a device: `lan` or `relay`. The Host always prefers an authenticated LAN path and falls back to Relay; this order is not configurable (ADR-0050). The loopback endpoint is not a Path — it connects the computer's own agent processes to the Host.
 _Avoid_: Connection, channel, loopback
 
 **Active path**:

@@ -454,10 +454,3 @@ final class HostState: ObservableObject {
         return try? JSONDecoder().decode(T.self, from: data)
     }
 }
-
-let defaultPathPreference = ["lan", "p2p", "relay"]
-func normalizedPathPreference(_ order: [String]) -> [String] {
-    var result: [String] = []
-    for path in order + defaultPathPreference where defaultPathPreference.contains(path) && !result.contains(path) { result.append(path) }
-    return result
-}

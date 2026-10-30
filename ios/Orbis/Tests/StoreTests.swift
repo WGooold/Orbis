@@ -69,22 +69,22 @@ private final class SingleCommitGate: @unchecked Sendable {
 
 @Suite("Native app state") @MainActor
 struct StoreTests {
-    @Test func pathOrderPersistsOfflineAndResendsAfterAuthenticatedReady() async throws {
+    @Test func obsoletePathOrderIsNeverSentAfterAuthenticatedReady() async throws {
         let key = "orbis-settings-test-" + UUID().uuidString
         let preferences = try #require(UserDefaults(suiteName: key))
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(key)
         defer { preferences.removePersistentDomain(forName: key); try? FileManager.default.removeItem(at: root) }
         let transport = TestTransport()
+        preferences.set(["relay", "lan"], forKey: "orbis.pathPreference")
         let store = OrbisStore(secure: MemorySecureStore(), transport: transport, autoConnect: false, preferences: preferences, transferRoot: root)
         transport.drain = { [weak store] in await store?.waitForPendingEvents() }
-        store.setPathPreference(["relay", "relay", "p2p"])
-        #expect(store.pathPreference == ["relay", "p2p", "lan"])
         #expect(transport.sent.isEmpty)
         store.connect(hostId: "host-1")
         await transport.ready([])
-        #expect(transport.sent.contains { $0["type"] as? String == "device.pathPreference" && $0["preference"] as? [String] == store.pathPreference })
-        let restored = OrbisStore(secure: MemorySecureStore(), transport: TestTransport(), autoConnect: false, preferences: preferences, transferRoot: root)
-        #expect(restored.pathPreference == store.pathPreference)
+        #expect(!transport.sent.contains { $0["type"] as? String == "device.pathPreference" })
+        await transport.emit(["type": "device.path", "protocolVersion": orbisProtocolVersion, "path": "lan"])
+        await transport.emit(["type": "device.path", "protocolVersion": orbisProtocolVersion, "path": "unsupported"])
+        #expect(store.activePath == "lan")
     }
 
     @Test func directoryProviderFactsRequireCurrentAuthenticatedRequest() async throws {

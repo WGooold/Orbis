@@ -184,7 +184,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             viewModelScope.launch(Dispatchers.IO) {
                 runCatching { SessionCatalogStore(getApplication(), id).clear() }
                 runCatching { stores.sessionGraph.clearDevice(credential) }
-                runCatching { RelayClient().apply { setApplicationContext(getApplication()) }.revoke(credential) }
+                runCatching { RelayClient().revoke(credential) }
             }
         }
         setActiveHost(activeHostId.value)
@@ -215,7 +215,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     pairingErrors.value = "配对二维码已过期，请在电脑上重新生成（配对窗口只有几分钟）"
                     return@launch
                 }
-                val relay = RelayClient().apply { setApplicationContext(getApplication()) }
+                val relay = RelayClient()
                 val paired = runCatching { relay.pair(relayUrl.trim(), code, Build.MODEL) }.getOrElse { error ->
                     pairingErrors.value = localizedError(error, "配对失败，请检查中继服务器地址、配对码和网络连接")
                     return@launch
@@ -447,9 +447,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun removeUploads(taskIds: Set<String>) = active()?.removeUploads(taskIds)
 
-    fun pathPreference(): List<String> = stores.pathPreference.load()
 
-    fun setPathPreference(order: List<String>) = active()?.setPathPreference(order)
 
     private fun connectionFor(hostId: String): HostConnection? = synchronized(lock) { connections[hostId] }
 

@@ -15,7 +15,6 @@ struct PresentationTests {
         #expect(matchesSessionProvider(other, filter: "provider:native-b", current: "native-a"))
         #expect(matchesSessionProvider(unknown, filter: "unknown", current: "native-a"))
         #expect(matchesSessionProvider(unknown, filter: "all", current: nil))
-        #expect(normalizedPathPreference(["relay", "invalid", "relay", "lan"]) == ["relay", "lan", "p2p"])
     }
     private func session(_ id: String, cwd: String = "/project", kind: String = "codex", name: String? = nil, archived: Bool = false) -> SessionSummary {
         SessionSummary(sessionId: id, name: name, cwd: cwd, firstMessage: "第一句。第二句", createdAt: 0, modifiedAt: 1, messageCount: 1, agentKind: kind, archived: archived)

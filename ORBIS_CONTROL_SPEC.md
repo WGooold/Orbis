@@ -223,7 +223,7 @@ Runtime B → leaf = branch-b-leaf
 4. Relay Server；
 5. Remote Interaction SDK。
 
-电脑上的 Host 通过出站长连接接入 Relay，注册身份为 `role = "host"`；Relay 只接受这一个网关角色，因此它手里没有任何 agent 连接，也没有可下发的明文会话内容。手机扫描 Host 打印的配对二维码完成配对（信任根是二维码里的 Host 公钥），之后与 Host 之间流动的是端到端加密的 Envelope：同一条信封可以走 LAN 直连、P2P 直打或被中继兜底，Host 决定当前走哪条并通知手机。
+电脑上的 Host 通过出站长连接接入 Relay，注册身份为 `role = "host"`；Relay 只接受这一个网关角色，因此它手里没有任何 agent 连接，也没有可下发的明文会话内容。手机扫描 Host 打印的配对二维码完成配对（信任根是二维码里的 Host 公钥），之后与 Host 之间流动的是端到端加密的 Envelope：同一条信封可以走 LAN 直连或 Relay 中继；Host 固定优先使用已握手的 LAN，不可用时回落 Relay，并通知手机。设置页不提供路径排序（ADR-0050）。
 
 Pi 扩展负责：
 

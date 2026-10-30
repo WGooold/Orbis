@@ -52,9 +52,6 @@ if (process.argv.includes("--dsh")) {
 
 const service = await HostService.create({
   relayUrl: config.relayUrl,
-  // 必须显式传：HostService 只在 stunServers 非空时才建 P2P 管理器，漏传就是「P2P 静默关闭」——
-  // 症状是手机状态页永远显示中继，而日志里连一行理由都没有。正式 CLI 也传同一份配置。
-  ...(config.stunServers.length > 0 ? { stunServers: config.stunServers } : {}),
   ...(codexRuntime === undefined ? {} : { codexRuntime }),
   ...(dshRuntime === undefined ? {} : { dshRuntime }),
   credential: config.runtimeCredential,

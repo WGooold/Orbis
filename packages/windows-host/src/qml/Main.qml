@@ -755,7 +755,7 @@ ApplicationWindow {
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: 8
                                         Heading { text: modelData.label || "手机 · " + modelData.deviceId.slice(0, 8); font.pixelSize: 17 }
-                                        Hint { text: "连接方式：" + (({lan: "局域网直连", p2p: "P2P 直连", relay: "中继", offline: "离线"})[modelData.path || "offline"]) }
+                                        Hint { text: "连接方式：" + (({lan: "局域网直连", relay: "中继", offline: "离线"})[modelData.path || "offline"]) }
                                         Hint { text: modelData.lastSeen ? "最近连接：" + new Date(modelData.lastSeen).toLocaleString(Qt.locale(), "MM-dd hh:mm") : "配对时间：" + new Date(modelData.createdAt * 1000).toLocaleDateString(); font.pixelSize: 12 }
                                         Hint { visible: modelData.androidUpdateAvailable; text: "Android " + modelData.appVersion + " → " + modelData.latestAndroidVersion; color: "#b46b19" }
                                     }

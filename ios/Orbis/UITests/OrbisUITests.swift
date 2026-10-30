@@ -329,14 +329,12 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(before.height, composer.frame.height, accuracy: 1)
         capture("approval-submitting", app: app)
     }
-    func testSettingsPriorityAndProviderSwitchConfirmation() {
+    func testSettingsWithoutPriorityAndProviderSwitchConfirmation() {
         let app = launch("settings")
-        let relay = app.descendants(matching: .any)["path-priority-relay"].firstMatch
-        let p2p = app.descendants(matching: .any)["path-priority-p2p"].firstMatch
-        XCTAssertTrue(relay.waitForExistence(timeout: 8))
-        XCTAssertGreaterThan(relay.frame.minY, p2p.frame.minY)
-        app.buttons["上移中继"].tap()
-        XCTAssertLessThan(relay.frame.minY, p2p.frame.minY)
+        XCTAssertTrue(app.buttons["供应商配置与切换"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.staticTexts["连接优先级"].exists)
+        XCTAssertFalse(app.buttons["上移中继"].exists)
+        capture("settings-fixed-routing", app: app)
         app.buttons["供应商配置与切换"].tap()
         let team = app.buttons["provider-action-team"]
         XCTAssertTrue(team.waitForExistence(timeout: 5))

@@ -156,7 +156,7 @@ APP 本地读取提示由操作状态拥有；远端 Runtime notification 继续
 - `SessionLoadQueue.kt` 原子合并请求、取批和交接 worker owner token。新请求不能落在正在退出的 worker 后面，旧 finally 不能释放新 worker；当前窗口优先，取消或失败时仍保留可继续调度的队列请求。
 - UI 的首屏/当前状态等待观察操作 phase，历史锚点与刷新锚点绑定各自的操作身份。成功、失败、取消、替代和无新增显示行都有释放路径；后台 catchup 不延长另一个前台操作的等待。源端数据完整性字段仍独立用于已应用基线判断，不再作为 UI 读取拥有权或 spinner 的凭证。
 
-本地验证：Windows Android wrapper 运行 `:app:testDebugUnitTest :app:lintDebug --console=plain`，43 个文件中的 387 项单测通过、failure/error 为 0；lint 无错误、25 个警告、7 项信息。新增回归覆盖首屏显示与源端确认分离、跨页固定目标与无进展失败、逻辑恢复预算和队列交接；需求更新、撤销、失效及范围错误的变体并入已有行为用例，没有为常量或 UI 文案新增测试。Windows Node typecheck、ESLint 和 88 个文件中的 877 项测试最终通过，差异检查通过。一次 Node 全套运行中的既有 WebRTC 回环用例超时，未修改 P2P 代码或测试超时；该文件单独重跑及随后完整重跑均通过，非确定性失败的根因未因此得到证明。
+本地验证：Windows Android wrapper 运行 `:app:testDebugUnitTest :app:lintDebug --console=plain`，43 个文件中的 387 项单测通过、failure/error 为 0；lint 无错误、25 个警告、7 项信息。新增回归覆盖首屏显示与源端确认分离、跨页固定目标与无进展失败、逻辑恢复预算和队列交接；需求更新、撤销、失效及范围错误的变体并入已有行为用例，没有为常量或 UI 文案新增测试。Windows Node typecheck、ESLint 和 88 个文件中的 877 项测试最终通过，差异检查通过。一次 Node 全套运行中的既有传输回环用例超时，未修改传输代码或测试超时；该文件单独重跑及随后完整重跑均通过，非确定性失败的根因未因此得到证明。
 
 验证证据保存在 `.artifacts/app/session-read-implementation.md` 及同目录的本次日志/检查 JSON；该目录按最新构建规则替换，不是永久归档。工作区已有通知等并行改动，完整检查包含它们，但未将它们归为本次读取迁移。
 

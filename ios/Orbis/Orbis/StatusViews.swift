@@ -33,7 +33,7 @@ struct ConnectionStatusView: View {
                         StatusRow(label: "连接状态", value: store.connection == .secured ? "已连接" : connectionTitle(store.connection),
                                   tone: store.connection == .secured ? OrbisPalette(scheme).success : store.connection == .error ? OrbisPalette(scheme).error : OrbisPalette(scheme).warning)
                         StatusRow(label: "连接方式", value: pathTitle(store.activePath),
-                                  tone: ["lan", "p2p"].contains(store.activePath ?? "") ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
+                                  tone: store.activePath == "lan" ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
                         StatusRow(label: "端到端加密", value: store.connection == .secured ? "已启用" : "未建立",
                                   tone: store.connection == .secured ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
                     }
@@ -49,7 +49,6 @@ struct ConnectionStatusView: View {
 }
 
 struct SettingsView: View {
-    @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     let onBack: () -> Void
     let onProviders: () -> Void
@@ -68,31 +67,9 @@ struct SettingsView: View {
                             }.frame(minHeight: 32).contentShape(Rectangle())
                         }.buttonStyle(.plain).foregroundStyle(OrbisPalette(scheme).accent)
                     }
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("连接优先级").font(.orbisLabel(.semibold)).foregroundStyle(OrbisPalette(scheme).secondary)
-                            .padding(.horizontal, 4).accessibilityAddTraits(.isHeader)
-                        ForEach(Array(store.pathPreference.enumerated()), id: \.element) { index, kind in
-                            HStack(spacing: 0) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("第 \(index + 1) 优先").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                                    Text(priorityPathTitle(kind)).font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
-                                }.padding(.leading, 4)
-                                OrbisIconButton(symbol: "arrow.up", label: "上移\(priorityPathTitle(kind))", compact: true) { move(index, to: index - 1) }
-                                    .disabled(index == 0)
-                                OrbisIconButton(symbol: "arrow.down", label: "下移\(priorityPathTitle(kind))", compact: true) { move(index, to: index + 1) }
-                                    .disabled(index == store.pathPreference.count - 1)
-                            }.frame(minHeight: 60).accessibilityElement(children: .contain).accessibilityIdentifier("path-priority-\(kind)")
-                        }
-                    }
                 }.padding(.horizontal, 20).padding(.vertical, 16)
             }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
-    }
-    private func move(_ from: Int, to: Int) {
-        guard store.pathPreference.indices.contains(to) else { return }
-        var order = store.pathPreference
-        order.insert(order.remove(at: from), at: to)
-        store.setPathPreference(order)
     }
 }
 
@@ -170,10 +147,6 @@ struct AgentProvidersView: View {
     }
 }
 
-private func priorityPathTitle(_ kind: String) -> String {
-    switch kind { case "lan": return "局域网"; case "p2p": return "P2P 直连"; default: return "中继" }
-}
-
 struct StatusSection<Content: View>: View {
     @Environment(\.colorScheme) private var scheme
     let title: String
@@ -232,5 +205,5 @@ struct StatusRow: View {
 }
 
 func pathTitle(_ path: String?) -> String {
-    switch path { case "lan": return "局域网"; case "p2p": return "P2P 直连"; case "relay": return "中继"; default: return "尚未确认" }
+    switch path { case "lan": return "局域网"; case "relay": return "中继"; default: return "尚未确认" }
 }

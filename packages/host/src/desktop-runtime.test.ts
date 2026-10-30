@@ -87,7 +87,7 @@ describe("desktop Host lifecycle", () => {
       const request = { email: "owner@qq.com", hostId: identity.hostId };
       const challenge = await registration.requestCode(request, "test");
       const activated = await registration.activate({ ...request, ...challenge, code: verificationCode });
-      await runtime.start({ relayUrl: relay.url, credential: activated.credential, lanPort: 0, stunServers: [] });
+      await runtime.start({ relayUrl: relay.url, credential: activated.credential, lanPort: 0 });
       expect(events).toContainEqual({ event: "state", state: "connected" });
       await expect(runtime.install("pi")).rejects.toThrow("请先暂停 Host");
       await expect(runtime.installAll("update")).rejects.toThrow("请先暂停 Host");
@@ -126,7 +126,7 @@ describe("desktop Host lifecycle", () => {
       if (phase === 1 && event.state === "connecting") { phase = 2; stopPromise = runtime.stop(); }
     }, stateDir);
     try {
-      await runtime.start({ relayUrl: `ws://127.0.0.1:${port}`, credential: "orbis_host_" + "A".repeat(43), lanPort: 0, stunServers: [], codexEnabled: false, dshEnabled: false });
+      await runtime.start({ relayUrl: `ws://127.0.0.1:${port}`, credential: "orbis_host_" + "A".repeat(43), lanPort: 0, codexEnabled: false, dshEnabled: false });
       const deadline = Date.now() + 2_500;
       while (held.length === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
       await stopPromise;

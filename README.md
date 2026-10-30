@@ -20,7 +20,7 @@ Remote Interaction SDK 是一等能力：第三方扩展把 confirm、select、m
 
 - `packages/protocol`：供各 TypeScript 模块共享、经过校验且带版本的通信协议，也包括 v2 Envelope 的线契约。
 - `packages/e2e`：配对身份与设备记录、配对握手、连接握手、Envelope 加密封装、配对二维码载荷。
-- `packages/host`：电脑上的常驻 Host（`pair` / `host` / `devices`），含本机 loopback 端点、LAN 端点、P2P 传输、多路径聚合、进程激活与文件服务。
+- `packages/host`：电脑上的常驻 Host（`pair` / `host` / `devices`），含本机 loopback 端点、LAN 端点、LAN / Relay 选路、进程激活与文件服务。
 - `packages/relay`：提供认证 HTTP/WebSocket 的 Relay Server。它按信封的路由头转发，读不到会话内容，并且只接受身份为 `host` 的网关连接。
 - `packages/runtime-bridge`：单个 Pi runtime 与 Host/Relay transport 之间经过测试的 seam。
 - `packages/pi-extension`：轻量 Pi 事件/命令适配器，以及支持重连的出站 transport；它的唯一通道是本机 Host 的 loopback。
@@ -31,7 +31,7 @@ Remote Interaction SDK 是一等能力：第三方扩展把 confirm、select、m
 
 `runtimeId` 标识一个在线 runtime 连接。它不是 session ID、branch ID 或 leaf ID。Host 本身也以 runtime 身份接入 Relay（`role = "host"`），所以「电脑上在跑几个 agent 进程」和「Relay 上有几条 runtime 连接」是两件事：网关不是手机要看见的进程，进程目录由 Host 自己维护。
 
-手机与 Host 之间流动的是**端到端加密的 Envelope**：只有路由头（帧种类、room、收发方、序号）对中继可见，会话内容是不透明密文。同一条信封可以走三条路径——LAN 直连、P2P（WebRTC DataChannel）直打、Relay 兜底；Host 选择当前生效的那条并用 `device.path` 通知手机。切换路径只换管子，密钥与业务状态都不受影响。
+手机与 Host 之间流动的是**端到端加密的 Envelope**：只有路由头（帧种类、room、收发方、序号）对中继可见，会话内容是不透明密文。同一条信封可以走两条路径——LAN 直连、Relay 中继；Host 固定选择已就绪的 LAN，LAN 不可用时使用 Relay并用 `device.path` 通知手机。切换路径只换管子，密钥与业务状态都不受影响。
 
 ## 开发
 
@@ -142,7 +142,7 @@ Relay 仍会收到它所要求的 `/v1/device`、`/v1/runtime`、`/v1/pairings` 
 
 ### 构建与部署
 
-正式 Relay 发布只通过 [Relay deploy](.github/workflows/relay-deploy.yml) 工作流；服务器初始化、Secrets、HTTPS、STUN、状态备份和回滚见 [部署指南](docs/deployment.md)。Windows 安装包由 [Windows Host build](.github/workflows/windows-host-build.yml) 工作流构建和验证。
+正式 Relay 发布只通过 [Relay deploy](.github/workflows/relay-deploy.yml) 工作流；服务器初始化、Secrets、HTTPS、状态备份和回滚见 [部署指南](docs/deployment.md)。Windows 安装包由 [Windows Host build](.github/workflows/windows-host-build.yml) 工作流构建和验证。
 
 Android 使用 Windows 工具链及 `scripts/windows/android-build.ps1 testDebugUnitTest assembleDebug`，不要绕过构建锁。配置 JDK / SDK 和设备安装方法见 [Android README](android/README.md)。
 
@@ -199,7 +199,7 @@ node packages/host/dist/cli.js devices revoke <id>  # 撤销一台
 
 撤销是**设备级**的：每台设备有自己独立的 `pskRoot`，撤销一台不影响其他设备，也不必给其他设备重新配对。撤销后重启 Host 才会丢掉那条通道。APP 里的「取消配对」是设备侧主动解除。
 
-新安装的 Host 状态放在 `~/.orbis/`：`host.json`（身份私钥）、`devices.json`（设备记录，0600）、`loopback.json`（给本机 Pi 扩展看的发现文件）、`config.json`（`relayUrl` / `runtimeCredential` 及可选的 `adminToken` / `lanPort` / `stunServers`；`adminToken` 只在配对时用来向 Relay 换取管道凭据）。若旧目录 `~/.pi-remote/` 存在而新目录尚不存在，Host 和本机扩展会继续使用旧目录，保留身份与配对。它与 Pi 扩展的 `~/.pi/agent/remote-control.json` 是两处不同的配置。
+新安装的 Host 状态放在 `~/.orbis/`：`host.json`（身份私钥）、`devices.json`（设备记录，0600）、`loopback.json`（给本机 Pi 扩展看的发现文件）、`config.json`（`relayUrl` / `runtimeCredential` 及可选的 `adminToken` / `lanPort`；`adminToken` 只在配对时用来向 Relay 换取管道凭据）。若旧目录 `~/.pi-remote/` 存在而新目录尚不存在，Host 和本机扩展会继续使用旧目录，保留身份与配对。它与 Pi 扩展的 `~/.pi/agent/remote-control.json` 是两处不同的配置。
 ## 启用 Pi 扩展
 
 Windows Host 安装器把随包附带的 Pi 扩展登记到当前用户的 `~/.pi/agent/settings.json`，并在 `remote-control.json` 写入 `orbisLocalEnabled: true`。因此安装后直接在终端运行 `pi` 也会加载扩展，连接已经启动的本机 Host；Host 未启动时扩展等待它，不会回退到 Relay。用户原有的 `enabled: false` 仍可关闭独立启动的 Pi 连接。卸载安装版时会移除该安装目录的包登记与安装器写入的本机开关，不清除用户的其他 Pi 配置。免安装 ZIP 没有安装步骤，需从 Host 的“打开 Pi”入口运行或手动登记扩展。

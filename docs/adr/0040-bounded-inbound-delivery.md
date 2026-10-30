@@ -66,7 +66,7 @@ Status: accepted（2026-10-23 实现 §1–§7，全部在设备侧；线上协�
 Host 的 `session.sync` 响应里带 `interaction.snapshot` 与会话状态，重同步能把这些事实重建出来。
 
 **不再因此断开连接**（2026-10-23 修订）。真机实测：打开 DSH 会话 12 秒后就出现
-`inbound.overflow lane=ctl dropped=6`，紧接着 `p2p.ice CLOSED` / `p2p.closed`——一次背压被升级成整条链路中断，
+`inbound.overflow lane=ctl dropped=6`，紧接着链路关闭——一次背压被升级成整条链路中断，
 重连后又要从头同步，形成「打开会话 → 断开 → 重连 → 再断开」的循环。内存上界由 §2 的帧数与载荷预算兜住，
 控制面丢失的可见性由 `inbound.overflow` 日志与重同步保证；真正断开的判定留给 socket 失败与健康检查。
 

@@ -384,7 +384,7 @@ describe("DeviceLink", () => {
     h.handshake("relay");
     expect(done.mock.calls).toEqual([[false]]);
     expect(h.link.sessionSyncQueuedBytes).toBe(0);
-    h.link.setPathPreference(["relay", "lan", "p2p"]);
+    h.link.detach("lan");
     h.link.sendSessionSnapshot(Buffer.alloc(100_000), done);
     h.link.close();
     expect(done.mock.calls).toEqual([[false], [false]]);
@@ -410,19 +410,20 @@ describe("DeviceLink", () => {
     ]);
   });
 
-  it("设备上报优先级顺序后当场换路，并宣布给手机", () => {
+  it("LAN 中断回落中继，恢复后立即切回，并宣布给手机", () => {
     const harnessed = harness({ pskRoot: randomKey() });
     harnessed.handshake("lan");
     harnessed.handshake("relay");
     expect(harnessed.link.active).toBe("lan");
 
-    // 用户把中继排到第一位：LAN 虽然可用且档位更高，也必须让位。
-    harnessed.link.setPathPreference(["relay", "lan", "p2p"]);
+    // LAN 断开后，立即回落到仍可用的中继。
+    harnessed.link.detach("lan");
     expect(harnessed.link.active).toBe("relay");
     expect(harnessed.changes.at(-1)).toEqual({ from: "lan", to: "relay" });
 
-    // 排回默认顺序：LAN 重新当选，同样要宣布。
-    harnessed.link.setPathPreference(["lan", "p2p", "relay"]);
+    // LAN 重新握手后恢复为当前路径，同样要宣布。
+    harnessed.attach("lan");
+    harnessed.handshake("lan");
     expect(harnessed.link.active).toBe("lan");
     expect(harnessed.changes.at(-1)).toEqual({ from: "relay", to: "lan" });
   });
@@ -651,7 +652,7 @@ describe("DeviceLink", () => {
   /**
    * `attach` 的幂等性。
    *
-   * LAN / P2P 的调用方是**每收到一帧**就 attach 一次（`host-service` 的 `onEnvelope` 把随帧传下来
+   * LAN 的调用方是**每收到一帧**就 attach 一次（`host-service` 的 `onEnvelope` 把随帧传下来
    * 的出口原样转给 `DeviceLink`）。所以 `attach` 一旦有「重建调度器」这种副作用，下载期间每一次
    * 读盘请求都会把队列里已封好的分片清掉——而它们的发送序号早就消耗了，对端收到的是**永久**
    * 空洞。这组用例把「旧队列只在**新会话确认**时才作废」钉死。

@@ -91,10 +91,8 @@ import { DeviceLink, type ActivePathChange, type PathSink } from "./device-link.
 import { outboundQueueAdmissionRecord, outboundQueueDiagnosticRecords, outboundQueueSource } from "./outbound-queue-diagnostics.js";
 import { DEFAULT_LAN_PORT, HostLanServer, localLanEndpoints, parseLanDiscoveryRequest, type LanDiscoveryRequest } from "./lan-server.js";
 import { HostLoopbackServer, type CodexLaunchRequest, type CodexLaunchResult } from "./loopback-server.js";
-import { HostP2pManager } from "./p2p-manager.js";
 import { HostPairingService, requestPairingCode, type OpenedPairingWindow } from "./pairing.js";
-import { describePath, normalizePreference, type PathChange } from "./path.js";
-import { parsePathPreferenceMessage, type PathPreferenceMessage } from "./path-preference.js";
+import { describePath, type PathChange } from "./path.js";
 import { SessionSyncTasks } from "./session-sync-tasks.js";
 import { NotificationStore } from "./notification-store.js";
 import { HostRelayClient, type HostRelayState } from "./relay-client.js";
@@ -183,8 +181,6 @@ export type HostServiceOptions = {
   lanListen?: boolean;
   /** LAN 监听端口。默认 42130——二维码要能在一个短命进程里写死它（见 `lan-server.ts`）。 */
   lanPort?: number;
-  /** P2P 打洞用的 STUN 服务器（M5）。空表 = 不启用 P2P（本机/内网 relay 没有公网地址，打洞无意义）。 */
-  stunServers?: readonly string[];
   /** 两条路径的 RTT 探测间隔（毫秒）。0 表示不探。测试会调小它。 */
   probeIntervalMs?: number;
   /**
@@ -251,15 +247,9 @@ export class HostService {
   #toolContentStore: ToolContentStore | undefined;
   #toolDiagnosticTimer: ReturnType<typeof setInterval> | undefined;
   readonly #toolTraffic = new Map<string, Record<"summaryJsonBytes" | "bodyJsonBytes" | "detailJsonBytes" | "readRequests" | "readFailures" | "gapResponses", number>>();
-  /**
-   * 每台设备手工排过的连接优先级（§6.2）。手机每次 E2E 就绪后重发，所以只在内存里留一份；
-   * Host 重启后用默认顺序，等手机下一次上报再覆盖。
-   */
-  readonly #pathPreferences = new Map<string, PathKind[]>();
   #relay: HostRelayClient | undefined;
   #loopback: HostLoopbackServer | undefined;
   #lan: HostLanServer | undefined;
-  #p2p: HostP2pManager | undefined;
   readonly #spawner: SessionSpawner;
   /**
    * 本机的全部 agent 后端（spec §7.4 的适配器收口）。顺序即 resume 的尝试顺序：
@@ -535,7 +525,7 @@ export class HostService {
     facts.files(this.#downloads.inventory());
     const links = [...this.#links.values()];
     facts.connections({ pairedDevices: this.devices.filter(device => !device.revoked).length, connectedDevices: links.filter(link => link.active !== undefined).length,
-      paths: (["lan", "p2p", "relay"] as const).map(kind => ({ kind,
+      paths: (["lan", "relay"] as const).map(kind => ({ kind,
         attachedDevices: links.filter(link => link.paths.includes(kind)).length,
         activeDevices: links.filter(link => link.active === kind).length })), relayState: this.relayState, sequenceChannels: this.#eventSequences.size });
     facts.operations({ activationsPending: this.#activationsPending,
@@ -1301,38 +1291,6 @@ export class HostService {
       await loopback.start();
     }
 
-    if (this.#options.stunServers !== undefined && this.#options.stunServers.length > 0) {
-      this.#p2p = new HostP2pManager({
-        stunServers: this.#options.stunServers,
-        sendToDevice: (deviceId, message) => {
-          this.#sendToDevice(deviceId, message as RelayToDeviceMessage);
-        },
-        onEnvelope: (deviceId, envelope, sink) => {
-          try {
-            const link = this.#requireLink(deviceId);
-            link.attach("p2p", sink);
-            link.handle("p2p", envelope);
-          } catch (error) {
-            this.#options.onDeviceError?.(deviceId, error);
-            this.#options.log?.(`P2P 上处理 ${deviceId} 的帧失败：${describeError(error)}`);
-          }
-        },
-        onPathDown: (deviceId) => {
-          this.#links.get(deviceId)?.detach("p2p");
-        },
-        ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
-      });
-      this.#options.log?.(`P2P 已启用（STUN：${this.#options.stunServers.join(", ")}）`);
-    } else {
-      // 刻意不静默。之前漏传 stunServers 时这里什么都不说，于是「手机永远显示中继」在日志里
-      // 完全无迹可寻——排查只能靠读代码。P2P 被关掉必须留下一行理由。
-      // 措辞保持中性：短命进程（`orbis pair`、本地 smoke 脚本）不传 STUN 是有意为之。
-      this.#options.log?.(
-        "P2P 未启用：本进程没有可用的 STUN 服务器 → 一律走中继。" +
-          "要开启需配置 stunServers 或设置 ORBIS_STUN_SERVERS（relayUrl 非 wss:// 时不会自动推导）",
-      );
-    }
-
     if (this.#options.codexRuntime !== undefined) {
       // Codex 后端就绪（app-server 子进程由调用方管理生命周期）。启动时还没有活跃
       // thread，不广播 runtime.online——目录里不该有一条 cwd=homedir 的「空壳 Codex」；
@@ -1373,8 +1331,6 @@ export class HostService {
     this.#pairing.close();
     await this.#lan?.stop();
     this.#lan = undefined;
-    this.#p2p?.stopAll();
-    this.#p2p = undefined;
     for (const link of this.#links.values()) link.close();
     this.#links.clear();
     await this.#loopback?.stop();
@@ -1467,10 +1423,6 @@ export class HostService {
     this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
     this.#downloads.releaseDevice(deviceId);
     this.#uploads.releaseDevice(deviceId, "artifact_transport_disconnected");
-    // P2P 的失败计数是「按设备」记的：设备都撤销了就别让它的历史留在内存里，
-    // 否则同一槽位换一台新手机配对后会莫名继承冷却。
-    this.#p2p?.stop(deviceId);
-    this.#p2p?.forget(deviceId);
     this.#sessionSync.clearDevice(deviceId);
     this.#notifications.releaseDevice(deviceId);
     this.#deviceViewFacts.forget(deviceId);
@@ -1573,10 +1525,6 @@ export class HostService {
       this.#sendJsonToDevice(deviceId, response, "ctl");
       return;
     }
-    if (message.type === "device.pathPreference") {
-      this.#applyPathPreference(deviceId, message.preference);
-      return;
-    }
     // ── 接收方驱动的范围下载（ADR-0005）：设备发 read 索取一段，Host 按范围应答。
     if (message.type === "artifact.read") {
       void this.#downloads.handleRead(deviceId, message);
@@ -1631,30 +1579,6 @@ export class HostService {
         ...(message.agentKind === undefined ? {} : { agentKind: message.agentKind }),
       });
       this.#sendToDevice(deviceId, buildDiagnosticsPageMessage(message, page));
-      return;
-    }
-    if (message.type === "p2p.request" || message.type === "p2p.answer") {
-      if (this.#p2p === undefined) {
-        this.#options.log?.(`P2P 未启用，忽略 ${deviceId} 的 ${message.type}`);
-        this.#sendToDevice(deviceId, {
-          type: "protocol.error",
-          code: "p2p_unavailable",
-          message: "Host 未启用 P2P（缺少 STUN 配置），继续走中继",
-        });
-        return;
-      }
-      if (message.type === "p2p.request") {
-        // 冷却期内 Host 会拒绝。必须明确回报：只让请求「石沉大海」的话，手机既不知道
-        // 该不该重试、也不知道自己还在走中继，状态页就永远停在「中继」而没人知道原因。
-        const refusal = this.#p2p.startOffer(deviceId);
-        if (refusal !== undefined) {
-          this.#sendToDevice(deviceId, {
-            type: "protocol.error",
-            code: "p2p_cooling_down",
-            message: `P2P 连续打洞失败，${Math.ceil(refusal.retryInMs / 1_000)} 秒内不再尝试，继续走中继`,
-          });
-        }
-      } else this.#p2p.acceptAnswer(deviceId, message.sdp);
       return;
     }
     if (message.type === "notification.sync" || message.type === "notification.dismiss") {
@@ -2386,7 +2310,6 @@ export class HostService {
     if (record === undefined) {
       throw new E2eError("mac_mismatch", `设备 ${deviceId} 未配对或已被撤销`);
     }
-    const pathPreference = this.#pathPreferences.get(deviceId);
     // 每台设备一条链路，节流状态跟着闭包走：慢链路的大下载里水位告警会持续触发，
     // 不节流就是每个 pump tick 一行日志（真机实测一次 84MB 下载刷出 1.89 GB）。
     let lastBulkWarnAt = 0;
@@ -2404,7 +2327,6 @@ export class HostService {
         );
       },
       ...(this.#options.probeIntervalMs === undefined ? {} : { probeIntervalMs: this.#options.probeIntervalMs }),
-      ...(pathPreference === undefined ? {} : { pathPreference }),
       ...(this.#options.bulkBytesPerSecond === undefined
         ? {}
         : { bulkBytesPerSecond: this.#options.bulkBytesPerSecond }),
@@ -2436,7 +2358,7 @@ export class HostService {
         this.#handleSessionReady(deviceId, kind, active, change);
       },
       // 底层写入重试耗尽：那几帧真的没出去，而它们的序号已经消耗。重发只会换一个新序号、
-      // 接收侧的洞永远补不上，所以把这条路径摘掉、让选路回落（与 P2P 通道关闭时同一条出口）。
+      // 接收侧的洞永远补不上，所以把这条路径摘掉、让选路回落。
       onPathWriteAbandoned: (kind, error) => {
         this.recordDiagnostic({ scope: "host", agentKind: null, sessionId: null, category: "transport",
           severity: "warning", message: `Path write abandoned: ${kind}` });
@@ -2474,17 +2396,6 @@ export class HostService {
     link.attach("relay", sink);
   }
 
-  /**
-   * 设备改了连接优先级。记下来，并立刻作用到它当前的链路上（生效路径可能当场换掉，
-   * 换掉时 `DeviceLink` 会照常通过 `onActivePathChange` 宣布给手机）。
-   */
-  #applyPathPreference(deviceId: string, preference: readonly PathKind[]): void {
-    const order = normalizePreference(preference);
-    this.#pathPreferences.set(deviceId, order);
-    this.#links.get(deviceId)?.setPathPreference(order);
-    this.#options.log?.(`设备 ${deviceId} 的连接优先级：${order.map(describePath).join(" > ")}`);
-  }
-
   #persist(): void {
     const snapshot: DeviceStore = { version: 1, devices: [...this.#store.devices] };
     this.#persistChain = this.#persistChain.then(() => saveDeviceStore(this.#stateDir, snapshot));
@@ -2496,7 +2407,7 @@ function isAddressInUse(error: unknown): boolean {
     (error as { code?: unknown }).code === "EADDRINUSE";
 }
 
-function parseDevicePayload(payload: Buffer): DeviceE2ePayload | PathPreferenceMessage | LanDiscoveryRequest | GitBranchRequest | ProviderRequest | undefined {
+function parseDevicePayload(payload: Buffer): DeviceE2ePayload | LanDiscoveryRequest | GitBranchRequest | ProviderRequest | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(payload.toString("utf8")) as unknown;
@@ -2505,6 +2416,5 @@ function parseDevicePayload(payload: Buffer): DeviceE2ePayload | PathPreferenceM
   }
   const result = DeviceE2ePayloadSchema.safeParse(parsed);
   if (result.success) return result.data;
-  // 连接优先级不在协议 schema 里（见 path-preference.ts）：Relay 看不见的纯本机偏好。
-  return parsePathPreferenceMessage(parsed) ?? parseLanDiscoveryRequest(parsed) ?? parseGitBranchRequest(parsed) ?? parseProviderRequest(parsed);
+  return parseLanDiscoveryRequest(parsed) ?? parseGitBranchRequest(parsed) ?? parseProviderRequest(parsed);
 }

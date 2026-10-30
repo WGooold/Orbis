@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C00100010000000000000001 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = C00100010000000000000003 /* WebRTC */; };
 		A00100010000000000000001 /* OrbisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000001 /* OrbisApp.swift */; };
 		A00100010000000000000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000002 /* Models.swift */; };
 		A00100010000000000000003 /* Base64URL.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000003 /* Base64URL.swift */; };
@@ -41,11 +40,9 @@
 		A00100010000000000000030 /* SessionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000030 /* SessionHistory.swift */; };
 		A00100010000000000000031 /* Notifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000031 /* Notifications.swift */; };
 		A00100010000000000000032 /* OrbisHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000032 /* OrbisHub.swift */; };
-		A00100010000000000000033 /* P2PTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000033 /* P2PTransport.swift */; };
 		A00100010000000000000034 /* SessionHistoryStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000034 /* SessionHistoryStorage.swift */; };
 		A00100010000000000000035 /* SessionReadOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000035 /* SessionReadOperations.swift */; };
 		A00100010000000000000036 /* TransferIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000036 /* TransferIO.swift */; };
-		A00100010000000000000037 /* WebRTC-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000037; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -85,11 +82,9 @@
 		A00110010000000000000030 /* SessionHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHistory.swift; sourceTree = "<group>"; };
 		A00110010000000000000031 /* Notifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Notifications.swift; sourceTree = "<group>"; };
 		A00110010000000000000032 /* OrbisHub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbisHub.swift; sourceTree = "<group>"; };
-		A00110010000000000000033 /* P2PTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = P2PTransport.swift; sourceTree = "<group>"; };
 		A00110010000000000000034 /* SessionHistoryStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionHistoryStorage.swift; sourceTree = "<group>"; };
 		A00110010000000000000035 /* SessionReadOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReadOperations.swift; sourceTree = "<group>"; };
 		A00110010000000000000036 /* TransferIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferIO.swift; sourceTree = "<group>"; };
-		A00110010000000000000037 /* WebRTC-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "THIRD-PARTY-NOTICES/WebRTC-LICENSE.txt"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -97,7 +92,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C00100010000000000000001 /* WebRTC in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -131,11 +125,9 @@
 				A0011001000000000000000F /* EnvelopePieces.swift */,
 				A0011001000000000000002C /* ToolDetailView.swift */,
 				A0011001000000000000002D /* HostState.swift */,
-				A00110010000000000000037 /* WebRTC-LICENSE.txt */,
 				A00110010000000000000036 /* TransferIO.swift */,
 				A00110010000000000000035 /* SessionReadOperations.swift */,
 				A00110010000000000000034 /* SessionHistoryStorage.swift */,
-				A00110010000000000000033 /* P2PTransport.swift */,
 				A00110010000000000000032 /* OrbisHub.swift */,
 				A00110010000000000000031 /* Notifications.swift */,
 				A00110010000000000000030 /* SessionHistory.swift */,
@@ -192,7 +184,6 @@
 			dependencies = (
 			);
 			name = Orbis;
-			packageProductDependencies = (C00100010000000000000003 /* WebRTC */);
 			productName = Orbis;
 			productReference = A0011001000000000000000E /* Orbis.app */;
 			productType = "com.apple.product-type.application";
@@ -231,7 +222,6 @@
 				"zh-Hans",
 			);
 			mainGroup = A00120010000000000000001;
-			packageReferences = (C00100010000000000000002 /* XCRemoteSwiftPackageReference "WebRTC" */);
 			productRefGroup = A00120010000000000000003 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -248,7 +238,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				A0010001000000000000000C /* Assets.xcassets in Resources */,
-				A00100010000000000000037 /* WebRTC-LICENSE.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -277,7 +266,6 @@
 				A00100010000000000000036 /* TransferIO.swift in Sources */,
 				A00100010000000000000035 /* SessionReadOperations.swift in Sources */,
 				A00100010000000000000034 /* SessionHistoryStorage.swift in Sources */,
-				A00100010000000000000033 /* P2PTransport.swift in Sources */,
 				A00100010000000000000032 /* OrbisHub.swift in Sources */,
 				A00100010000000000000031 /* Notifications.swift in Sources */,
 				A00100010000000000000030 /* SessionHistory.swift in Sources */,
@@ -380,22 +368,6 @@
         B00170010000000000000001 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = Orbis;}; name = Debug; };
         B00170010000000000000002 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = Orbis;}; name = Release; };
 /* End XCBuildConfiguration section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-        C00100010000000000000002 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
-            isa = XCRemoteSwiftPackageReference;
-            repositoryURL = "https://github.com/stasel/WebRTC.git";
-            requirement = { kind = exactVersion; version = 140.0.0; };
-        };
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-        C00100010000000000000003 /* WebRTC */ = {
-            isa = XCSwiftPackageProductDependency;
-            package = C00100010000000000000002 /* XCRemoteSwiftPackageReference "WebRTC" */;
-            productName = WebRTC;
-        };
-/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCConfigurationList section */
 		A00150010000000000000001 /* Build configuration list for PBXNativeTarget "Orbis" */ = {

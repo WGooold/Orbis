@@ -69,7 +69,7 @@ ADR-0024 §已知限制 已经写下「DSH 有界历史：原生 follow tail 不
 
 1. **控制面被状态帧灌满。** `runtime.status` + `runtime.metadata` 每个原生事件发一对（约 40 帧/秒），
    手机的 `ctl` 面（ADR-0040 §2）在 12 秒内顶爆 512 帧预算，溢出处理当时会断开连接
-   （`inbound.overflow lane=ctl dropped=6` 之后 2ms 就是 `p2p.ice CLOSED`）。
+   （`inbound.overflow lane=ctl dropped=6` 之后 2ms 关闭链路）。
    修法：`ctl` 预算 4,096 帧 / 4MB，且溢出不再断链（见 ADR-0040 §5 修订）；Host 侧按内容对
    `runtime.status` + `runtime.metadata` 去重，新设备接入（`announce()`）强制重发。
 2. **catchup 不收敛。** `session.sync range=catchup` 以约 2 次/秒重发 20 秒以上：Host 每次只读尾部

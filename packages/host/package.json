@@ -18,7 +18,6 @@
     "@orbis/protocol": "0.1.0",
     "@orbis/runtime-bridge": "0.1.0",
     "eventsource-parser": "^3.0.6",
-    "node-datachannel": "^0.33.4",
     "qrcode": "^1.5.4",
     "quickjs-emscripten": "0.31.0",
     "smol-toml": "1.9.0",

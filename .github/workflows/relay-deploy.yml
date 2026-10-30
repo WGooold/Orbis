@@ -65,8 +65,7 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run lint
       - run: npm run typecheck
-      # Native WebRTC loopback tests can race with other workers on hosted Windows runners.
-      - run: npx vitest run --maxWorkers=1 --retry=1 --testTimeout=30000
+      - run: npx vitest run --maxWorkers=1 --testTimeout=30000
       - run: npm run build
 
   deploy:

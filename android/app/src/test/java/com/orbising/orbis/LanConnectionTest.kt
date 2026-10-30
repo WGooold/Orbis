@@ -58,6 +58,10 @@ class LanConnectionTest {
             assertEquals("/v1/lan", lanServer.takeRequest(1, TimeUnit.SECONDS)?.path)
             lanHost.send("""{"type":"device.path","protocolVersion":$PROTOCOL_VERSION,"path":"lan"}""")
             assertTrue(lanSelected.await(3, TimeUnit.SECONDS))
+            lanHost.send("""{"type":"device.path","protocolVersion":$PROTOCOL_VERSION,"path":"unsupported"}""")
+            lanHost.send("""{"type":"path-control-processed"}""")
+            assertEquals("""{"type":"path-control-processed"}""", messages.poll(3, TimeUnit.SECONDS))
+            assertEquals("lan", client.activePath)
             assertTrue(client.sendDeviceMessage(buildJsonObject { put("type", "session.list"); put("requestId", "lan-command") }))
             assertTrue(lanHost.received.poll(3, TimeUnit.SECONDS)!!.second.toString(Charsets.UTF_8).contains("lan-command"))
             val chunk = ByteArray(20_000) { it.toByte() }

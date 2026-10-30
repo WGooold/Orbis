@@ -30,7 +30,6 @@ import { adoptLoginShellEnvironment } from "./login-shell-env.js";
 import { agentInstallRoot } from "./agent-root.js";
 import { PiCommandCancelledError, installMacPiCommand, piCommandStatus, refreshMacPiCommand, removeMacPiCommand, syncWindowsPiCommand } from "./pi-command.js";
 import { existsSync } from "node:fs";
-import { defaultStunServers } from "./config.js";
 import { ProviderManager, ProviderError, agentKind, providerMetadata, type ProviderPaths, type ProviderProfile, type ProviderSummary } from "./provider-manager.js";
 import { installAgentPackage, activateManagedAgent, activeManagedEntry, findAgentCopies, fetchNpmLatestVersion, agentPackages, queryAgentStatus, recommendedAgentVersion, extractAgentVersion, compareAgentVersions, installationSource, type AgentInstallProgress, type AgentInstallStatus, type LocalAgent } from "./agent-installation.js";
 import { randomUUID } from "node:crypto";
@@ -66,7 +65,7 @@ export type DesktopSettings = {
   piIntegrationEnabled?: boolean;
   /** 安装 / 首次打开 Host 时自动登记 Claude Code 插件；保留用户明确关闭的设置。 */
   claudeIntegrationEnabled?: boolean;
-  lanPort?: number; stunServers?: string[];
+  lanPort?: number;
 };
 export type DesktopEvent = { event: string; [key: string]: unknown };
 type AgentInstallResult = { entry: string; version: string; restarted?: boolean; restartWarning?: string };
@@ -495,7 +494,6 @@ export class DesktopRuntime {
         catch (error) { this.log(`DeepSeek Harness 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
       }
       const codexDesktopLaunchable = await this.#codexDesktopLifecycle?.isInstalled() ?? false;
-      const stunServers = settings.stunServers ?? defaultStunServers(settings.relayUrl);
       const service = await HostService.create({
         providers: this.#providers,
         providerUsage: (kind, id) => this.#usage.get(kind, id),
@@ -504,7 +502,7 @@ export class DesktopRuntime {
           return { kind, installed: status?.installed ?? null, version: status?.version ?? null };
         }),
         stateDir: this.#stateDir, relayUrl: settings.relayUrl, credential: settings.credential,
-        ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }), stunServers,
+        ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }),
         ...(this.#codexRuntime === undefined ? {} : { codexRuntime: this.#codexRuntime, codexLaunch: (request: { cwd: string }) => this.#codexRuntime!.prepareTerminalLaunch(request.cwd) }),
         ...(this.#codexDesktopLifecycle === undefined ? {} : { ensureCodexDesktop: () => this.#codexDesktopLifecycle!.ensureReady() }),
         ...(this.#codexDesktopLifecycle === undefined ? {} : { codexDesktopLaunchable }),

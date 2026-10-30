@@ -65,8 +65,8 @@ export type HostOperationsState = z.infer<typeof HostOperationsStateSchema>;
 export const HostConnectionsStateSchema = z.strictObject({
   pairedDevices: count, connectedDevices: count,
   paths: z.array(z.strictObject({
-    kind: z.enum(["lan", "p2p", "relay"]), attachedDevices: count, activeDevices: count,
-  })).max(3),
+    kind: z.enum(["lan", "relay"]), attachedDevices: count, activeDevices: count,
+  })).max(2),
   relayState: z.string().min(1).max(64), sequenceChannels: count,
 });
 export type HostConnectionsState = z.infer<typeof HostConnectionsStateSchema>;

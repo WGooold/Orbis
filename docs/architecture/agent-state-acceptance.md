@@ -107,7 +107,7 @@
 | 26 会话激活与电脑侧操作 | HostState.operations | **已接入事实**：`activationsPending`/`commandsPending` 与 `items` 里的激活/归档/供应商切换状态（accepted→running→succeeded/failed）一起发布，超窗口条目按显式淘汰移除并置 `truncated` |
 | 27 同步任务与背压 | HostState.operations | **已接入事实**：`sync` 子域发布记录数/待处理/活动/预留字节（来自 `SessionSyncTasks.aggregateStats()`），传输数另计；背压预算仍由任务队列自己执行，模型只发布摘要 |
 | 28 Host 身份、配对与设备 | HostState.identity / connections | **已接入事实**：`identity` 给 `hostId`/`hostName`/`protocolVersion`，`connections` 给已配对/已连接设备数与路径摘要；凭据、`pskRoot` 与设备记录本身不导出 |
-| 29 连接、路径、加密与序号 | **双侧**：HostState.connections 只发布摘要；App 仍持有 socket / path / handshake / e2eReady / 密钥 / 重放水位（AppLocalState.transport） | **摘要已接入**：`connections` 给出逐路径（lan/p2p/relay）挂接/活动设备数、relay 状态与序号通道数；本端握手判定与端到端可用仍只由 App 自己下结论 |
+| 29 连接、路径、加密与序号 | **双侧**：HostState.connections 只发布摘要；App 仍持有 socket / path / handshake / e2eReady / 密钥 / 重放水位（AppLocalState.transport） | **摘要已接入**：`connections` 给出逐路径（lan/relay，ADR-0050 固定 LAN 优先）挂接/活动设备数、relay 状态与序号通道数；本端握手判定与端到端可用仍只由 App 自己下结论 |
 | 30 安装、桌面与服务生命周期 | HostState.management | **已接入事实**：`lifecycle`（starting/running/stopping/stopped）由 HostService 自己发布，`platform`/`nodeVersion` 给运行环境；逐后端 `installed`/`version` 由桌面检测注入（没有检测来源时是 `null`，不猜） |
 
 模块 29 不是 Host 单方权威：Host 摘要不能代替本端握手判定，Relay 转发路径也不等于已确认的端到端可用。
@@ -389,7 +389,7 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 | 步骤 | 证据 |
 | --- | --- |
-| 重连 | ~out path=relay type=device.pathPreference~ → ~path.announced path=lan~（Host 侧：~路径 中继 → LAN 直连~） |
+| 重连 | 旧版偏好下发（ADR-0050 已删除）→ ~path.announced path=lan~（Host 侧：~路径 中继 → LAN 直连~） |
 | 重新握手 | ~e2e.hs.confirmed hostId=8509e449…~（同一 hostId，宿主进程换了，PID 8992 → 10096） |
 | 重建目录 | ~out path=lan type=session.list requestId=405d5124-…~；Host 侧同一 requestId：~收到 session.list（requestId=405d5124-…）~ |
 | **重新读模型** | ~out path=lan type=agent.state.request requestId=ca7a5dee-…~——换代次后 App 重新读，而不是继续拿旧代次的事实当已确认 |
@@ -711,7 +711,7 @@ ADR §9 把「文件传输的 Host 任务及设备相关结果」划到 `HostSta
 
 **矩阵第 2 项（Host 重建）——通过**
 
-rig Host 进程 21072 → 25624 后，App **在熄屏状态下**自动重连：`host.offline` → 新 `e2e.hs.confirmed` → 重新发 `device.pathPreference`、`session.list`、`agent.state.request`（新 requestId），没有拿旧代次继续当已确认事实（`item2-after-restart.log`、`item2-host-after-restart.log`）。
+rig Host 进程 21072 → 25624 后，App **在熄屏状态下**自动重连：`host.offline` → 新 `e2e.hs.confirmed` → 重新发 `session.list`、`agent.state.request`（新 requestId），没有拿旧代次继续当已确认事实（`item2-after-restart.log`、`item2-host-after-restart.log`）。
 
 **顺带发现的真缺陷（已修）**
 

@@ -77,10 +77,10 @@ const MAX_DIAGNOSTIC_SOURCE_GROUPS = 256;
 const UNATTRIBUTED_QUEUE_SOURCE: OutboundQueueSource = { type: "unattributed", payloadBytes: 0 };
 
 export type OutboundMuxOptions<T> = {
-  /** 把一帧交给底层传输（`socket.send` / `dataChannel.send`）。 */
+  /** 把一帧交给底层传输（`socket.send`）。 */
   write: (frame: T) => void;
   /**
-   * 底层传输还没发出去的字节数（`ws.bufferedAmount` / `RTCDataChannel.bufferedAmount`）。
+   * 底层传输还没发出去的字节数（`ws.bufferedAmount`）。
    * 不提供 = 不做水位控制，只剩优先级重排。
    */
   backlog?: () => number;
@@ -121,8 +121,8 @@ export type OutboundMuxOptions<T> = {
   /**
    * 底层写入连续被拒达到上限，这一帧只能丢掉。
    *
-   * 调用方拿到它应当把那条路径判死（已消耗的序号收不回来了）——例如 Host 的 P2P 出口
-   * 在通道关闭时就是这样。**正常情况不应出现**：写被拒先留在队首重试。
+   * 调用方拿到它应当把那条路径判死（已消耗的序号收不回来了）。
+   * **正常情况不应出现**：写被拒先留在队首重试。
    */
   onWriteAbandoned?: (channel: MuxChannel, attempts: number, error: unknown) => void;
   /** 写被拒后最多重试几次。缺省 [DEFAULT_MAX_WRITE_ATTEMPTS]。 */
@@ -180,14 +180,13 @@ const DEFAULT_PUMP_INTERVAL_MS = 10;
  *
  * 用 `pumpIntervalMs` 的 10 ms 就是 64 KiB / 10 ms = **6.4 MiB/s（≈54 Mbit/s）**——一个千兆
  * 局域网会被压掉一个数量级，50 Mbit/s 的链路正好卡在这条线上。取 1 ms 把它抬到 64 MiB/s，
- * 高于今天任何能走到这里的链路（可达的 relay / P2P 链路通常在 5–50 Mbit/s）。
+ * 避免轮询节拍成为常见 Relay 链路的吞吐瓶颈。
  *
  * 代价是**只在有帧被水位挡住时**每秒多 1000 次定时器唤醒（队列空或链路通畅时一个都不会有）。
  *
  * ## 这是权宜，不是终点
  *
- * 干净的做法是让传输在消化时主动通知，而不是靠定时器猜：WebRTC 有
- * `bufferedAmountLowThreshold` / `onbufferedamountlow`，`ws` 有 `send(data, cb)` 的写出回调。
+ * 干净的做法是让传输在消化时主动通知，而不是靠定时器猜：`ws` 有 `send(data, cb)` 的写出回调。
  * 那需要一个从各条出口反向回到多路复用器的通道，本轮不做。**真有链路超过 64 MiB/s 时，
  * 先做那件事，而不是把这个数再调小**——定时器精度与唤醒开销都会开始咬人。
  */
