@@ -83,7 +83,7 @@
 | 07 回合身份与计时 | AgentState.execution.turn | **已接入事实**：`execution.turn` 带 `turnId`/`startedAt`，结束后**保留已确认的 `durationMs`**（不再清成 null），App 只在 `durationMs == null` 时算「进行中」；快照的 `turnTimings` 另外落进投影（第 33/34 批）|
 | 08 工具调用与执行结果 | AgentState.live.tools；history 引用 | **已接入事实**：工具随 live 库存提交，结果提交与 live 移除同源；投影没画出来的已完成工具不会继续钉在底栏（第 33 批）|
 | 09 运行与等待状态 | AgentState.execution | **已接入事实，App 已消费**：状态 + 待回答交互共同决定 waiting；DSH 审批等待因此有了统一投影。运行状态只认这一格（原生 `runtime.status` 不再驱动），最后已知值按 availability 区分 |
-| 10 重试与上下文压缩 | AgentState.execution.retry / compaction | **部分接入**：`execution.activity` 事件已接成真实阶段——Pi 的 `session_compact`/`session_compact_failed`、Codex 的原生错误/重试与 `contextCompaction` 条目都会报 `idle`/`running`/`failed` 与所属回合；DSH 仍显式 `unavailable`（它不提供这类阶段）。模型/客户端都不按日志文字推断恢复 |
+| 10 重试与上下文压缩 | AgentState.execution.retry / compaction | **部分接入**：`execution.activity` 事件已接成真实阶段——Pi 的 `session_compact`/`session_compact_failed`、Codex 的原生错误/重试与 `contextCompaction` 条目都会报 `idle`/`running`/`failed` 与所属回合，压缩按条目 / 回合完成、中断、最终失败、模型恢复与完整历史核对清理，关闭 / 归档 / 后端停止使活动失效并隔离迟到回调（2026-10-30 生命周期回归记录位于 `.artifacts/compaction-lifecycle/`，真实 Host 更新尚未生效）；DSH 仍显式 `unavailable`（它不提供这类阶段）。模型/客户端都不按日志文字推断恢复 |
 | 11 交互请求与审批 | AgentState.interactions | **已接入事实**：`snapshot` 是完整清单，回答/取消按 id 显式删除；条目带类型、问题/选项、按钮文案、URL、长度/秘密等回答所需字段，App 直接从模型渲染（第 34 批）|
 | 12 消息队列与投递状态 | AgentState.delivery.queue | **已接入事实，有完整清单**：`delivery.snapshot` 给出当前待投递项与 `complete`（Pi 桥接在连接/重同步/sync 时重放，Codex 按 thread 队列发布）；不稳定就没有基线，App 以 `complete` 决定是否用缺席删除（第 33/34 批）|
 | 13 命令关联与执行回执 | HostState.operations；DeviceView | **已接入事实**：受理先记 accepted，后端结果覆盖同一条；回执按设备作用域、有界淘汰并按 id 显式删除。共享操作（会话激活/归档、供应商切换）另在 `HostState.operations.items` 发布状态，设备私有回执仍只对发起设备可见（第 33 批）|

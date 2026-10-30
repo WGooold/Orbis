@@ -8,8 +8,10 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { SESSION_SYNC_PAGE_BYTES, type AgentSessionSummary, type RuntimeEvent, type SessionSyncRequest } from "@orbis/protocol";
+import { SESSION_SYNC_PAGE_BYTES, type AgentExecutionState, type AgentSessionSummary, type RuntimeEvent, type SessionSyncRequest } from "@orbis/protocol";
 
+import { AgentStateFacts } from "./agent-state-facts.js";
+import { AgentStateRegistry } from "./agent-state-registry.js";
 import { CODEX_RUNTIME_ID, type CodexAppServer, type CodexServerRequest } from "./codex-daemon.js";
 import { CodexRuntime, codexHeadWindowLaunch } from "./codex-runtime.js";
 
@@ -24,6 +26,7 @@ function makeHarness(options?: {
   initialHistoryError?: Error;
   holdInitialHistory?: boolean;
   sourceCoalesceMs?: number;
+  desktop?: boolean;
 }): {
   runtime: CodexRuntime;
   server: CodexAppServer;
@@ -72,6 +75,8 @@ function makeHarness(options?: {
     });
   });
   const server = {
+    mode: options?.desktop ? "desktop" : "owned",
+    stop: vi.fn(async () => {}),
     request,
     notify: vi.fn(),
   } as unknown as CodexAppServer;
@@ -136,7 +141,9 @@ async function activate(
   threadId = "th-1",
   threadSettings: { model?: string; modelProvider?: string } = {},
 ): Promise<void> {
-  const activating = h.runtime.activate({ type: "resume", sessionId: threadId });
+  const desktop = h.server.mode === "desktop";
+  if (desktop) h.runtime.seedDesktopThreads([threadId]);
+  const activating = h.runtime.activate({ type: "resume", sessionId: desktop ? `codex-desktop:${threadId}` : threadId });
   h.resolveNext({
     model: threadSettings.model,
     modelProvider: threadSettings.modelProvider,
@@ -155,6 +162,207 @@ function syncHistory(h: ReturnType<typeof makeHarness>, options: Partial<Session
 }
 
 describe("Codex recoverable source checkpoints", () => {
+  const compaction = (h: ReturnType<typeof makeHarness>) => h.events.filter(event => event.type === "execution.activity").at(-1)?.compaction;
+  const startCompaction = (h: ReturnType<typeof makeHarness>, turnId = "t", itemId = "compact") => {
+    h.notify("turn/started", { threadId: "th-1", turn: { id: turnId, startedAt: 1 } });
+    h.notify("item/started", { threadId: "th-1", turnId, item: { id: itemId, type: "contextCompaction" } });
+  };
+
+  it.each(["completed", "interrupted", "failed"])("settles compaction on %s turn even when item completion is lost", async status => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "t", status, error: { message: "stopped" } } });
+    expect(compaction(h)).toEqual({ phase: status === "failed" ? "failed" : "idle", turnId: "t" });
+    h.server.onExit?.(0);
+  });
+
+  it("does not let late compaction completion settle a newer item in the same turn", async () => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: { id: "compact-2", type: "contextCompaction" } });
+    h.notify("item/completed", { threadId: "th-1", turnId: "t", item: { id: "compact", type: "contextCompaction" } });
+    expect(compaction(h)).toEqual({ phase: "running", turnId: "t" });
+    h.notify("item/completed", { threadId: "th-1", turnId: "t", item: { id: "compact-2", type: "contextCompaction" } });
+    expect(compaction(h)).toEqual({ phase: "idle", turnId: "t" });
+    h.server.onExit?.(0);
+  });
+
+  it("clears the previous turn's compaction and ignores its delayed start after a new turn begins", async () => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "next", startedAt: 2 } });
+    expect(compaction(h)).toEqual({ phase: "idle", turnId: "t" });
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: { id: "late", type: "contextCompaction" } });
+    expect(compaction(h)).toEqual({ phase: "idle", turnId: "t" });
+    h.server.onExit?.(0);
+  });
+
+  it.each([false, true])("settles only a terminal native error (willRetry=%s)", async willRetry => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.notify("error", { threadId: "th-1", turnId: "t", willRetry, error: { message: "provider failed" } });
+    expect(compaction(h)).toEqual({ phase: willRetry ? "running" : "failed", turnId: "t" });
+    h.server.onExit?.(0);
+  });
+
+  it("preserves standalone compaction on ordinary idle until native completion", async () => {
+    const h = makeHarness(); await activate(h);
+    h.notify("item/started", { threadId: "th-1", turnId: "manual", item: { id: "compact", type: "contextCompaction" } });
+    h.notify("thread/status/changed", { threadId: "th-1", status: { type: "idle" } });
+    expect(compaction(h)).toEqual({ phase: "running", turnId: "manual" });
+    h.notify("item/completed", { threadId: "th-1", turnId: "manual", item: { id: "compact", type: "contextCompaction" } });
+    expect(compaction(h)).toEqual({ phase: "idle", turnId: "manual" });
+    h.server.onExit?.(0);
+  });
+
+  it.each(["completed", "interrupted", "failed", "removed", "progressed"])("repairs compaction from verified %s history", async status => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+    h.resolveNext({ data: status === "removed" ? [] : [{ id: "t", status: status === "progressed" ? "inProgress" : status,
+      items: [{ id: "compact", type: "contextCompaction" }, ...(status === "progressed" ? [{ id: "answer", type: "agentMessage", text: "continued" }] : [])] }] });
+    await vi.waitFor(() => expect(compaction(h)).toEqual({ phase: status === "failed" ? "failed" : "idle", turnId: "t" }));
+    h.server.onExit?.(0);
+  });
+
+  it("marks compaction unavailable on native read failure and recovers from a later baseline", async () => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+    h.rejectNext(new Error("native unavailable"));
+    await vi.waitFor(() => expect(compaction(h)).toEqual("unavailable"));
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(2));
+    h.resolveNext({ data: [{ id: "t", status: "completed", items: [{ id: "compact", type: "contextCompaction" }] }] });
+    await vi.waitFor(() => expect(compaction(h)).not.toEqual({ phase: "running", turnId: "t" }));
+    h.server.onExit?.(0);
+  });
+
+  it("does not let a failed earlier native read invalidate a newer buffered compaction start", async () => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: { id: "new-compact", type: "contextCompaction" } });
+    h.rejectNext(new Error("old read failed"));
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === "execution.activity").slice(-2).map(event => event.compaction))
+      .toEqual(["unavailable", { phase: "running", turnId: "t" }]));
+    h.server.onExit?.(0);
+  });
+
+  it.each(["thread/archived", "thread/closed", "quit", "exit"])("invalidates compaction on %s and ignores detached callbacks", async method => {
+    const h = makeHarness({ desktop: method !== "exit" }); await activate(h); startCompaction(h);
+    if (method === "exit") h.server.onExit?.(1);
+    else if (method === "quit") h.runtime.handleCommand({ type: "slash.execute", name: "quit", args: "" }, "close", "th-1");
+    else h.notify(method, { threadId: "th-1" });
+    expect(compaction(h)).toEqual("unavailable");
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: { id: "late", type: "contextCompaction" } });
+    expect(compaction(h)).toEqual("unavailable");
+    h.server.onExit?.(0);
+  });
+
+  it("does not resurrect a settled compaction from duplicate starts or an old turn", async () => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.notify("item/completed", { threadId: "th-1", turnId: "t", item: { id: "compact", type: "contextCompaction" } });
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: { id: "compact", type: "contextCompaction" } });
+    expect(compaction(h)).toEqual({ phase: "idle", turnId: "t" });
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "t", status: "interrupted" } });
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: { id: "late", type: "contextCompaction" } });
+    expect(compaction(h)).toEqual({ phase: "idle", turnId: "t" });
+    h.server.onExit?.(0);
+  });
+
+  it("keeps an observed running compaction across a verified active snapshot", async () => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+    h.resolveNext({ data: [{ id: "t", status: "inProgress", items: [{ id: "compact", type: "contextCompaction" }] }] });
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === "session.patch").at(-1)?.live.turn?.turnId).toBe("t"));
+    expect(compaction(h)).toEqual({ phase: "running", turnId: "t" });
+    h.notify("item/completed", { threadId: "th-1", turnId: "t", item: { id: "compact", type: "contextCompaction" } });
+    await vi.waitFor(() => expect(compaction(h)).toEqual({ phase: "idle", turnId: "t" }));
+    h.server.onExit?.(0);
+  });
+
+  it("does not infer a running compaction from stored items on initial attachment", async () => {
+    const h = makeHarness({ initialTurns: [{ id: "t", status: "inProgress", items: [{ id: "compact", type: "contextCompaction" }] }] });
+    await activate(h); h.runtime.announce("th-1");
+    expect(compaction(h)).toBe("unavailable");
+    h.server.onExit?.(0);
+  });
+
+  it.each(["item/agentMessage/delta", "item/reasoning/textDelta", "item/reasoning/summaryTextDelta"])("uses same-turn model progress to repair a lost compaction completion (%s)", async method => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.notify(method, { threadId: "th-1", turnId: "other", itemId: "answer", delta: "late" });
+    expect(compaction(h)).toEqual({ phase: "running", turnId: "t" });
+    h.notify("item/commandExecution/outputDelta", { threadId: "th-1", turnId: "t", itemId: "tool", delta: "parallel output" });
+    expect(compaction(h)).toEqual({ phase: "running", turnId: "t" });
+    h.notify(method, { threadId: "th-1", turnId: "t", itemId: "answer", delta: "continued" });
+    expect(compaction(h)).toEqual({ phase: "idle", turnId: "t" });
+    h.server.onExit?.(0);
+  });
+
+  it("clears a stale compaction even when the verified native history signature is unchanged", async () => {
+    const turns = [{ id: "t", status: "inProgress", items: [{ id: "compact", type: "contextCompaction" }, { id: "answer", type: "agentMessage", text: "continued" }] }];
+    const h = makeHarness({ initialTurns: turns }); await activate(h);
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: { id: "unobserved", type: "contextCompaction" } });
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+    h.resolveNext({ data: turns });
+    await vi.waitFor(() => expect(compaction(h)).toBe("unavailable"));
+    h.server.onExit?.(0);
+  });
+
+  it("clears three settled sessions in the shared Host model while preserving another session's live compaction", async () => {
+    const h = makeHarness();
+    const registry = new AgentStateRegistry({ modelEpoch: "epoch" });
+    const facts = new AgentStateFacts({ registry, hostId: "host", kindOf: () => "codex" });
+    h.runtime.setEventSink((event, id) => {
+      h.events.push(event);
+      if (id) facts.observe(h.runtime.runtimeIdFor(id), event);
+    });
+    h.runtime.onOffline = (reason, runtimes) => {
+      for (const runtime of runtimes) facts.runtimeOffline(runtime.runtimeId, reason);
+    };
+    const read = (sessionId: string) => registry.read<AgentExecutionState>({ kind: "agent", key: { hostId: "host", agentKind: "codex", sessionId } }, "execution");
+    for (const id of ["one", "two", "three", "live"]) {
+      await activate(h, id);
+      h.notify("turn/started", { threadId: id, turn: { id: `turn-${id}`, startedAt: 1 } });
+      h.notify("item/started", { threadId: id, turnId: `turn-${id}`, item: { id: `compact-${id}`, type: "contextCompaction" } });
+    }
+    for (const [id, status] of [["one", "completed"], ["two", "interrupted"], ["three", "failed"]] as const) {
+      h.notify("turn/completed", { threadId: id, turn: { id: `turn-${id}`, status } });
+      expect(read(id)?.value).toMatchObject({ phase: "idle", compaction: { phase: status === "failed" ? "failed" : "idle" } });
+    }
+    expect(read("live")?.value).toMatchObject({ phase: "running", compaction: { phase: "running", turnId: "turn-live" } });
+    h.notify("thread/archived", { threadId: "three" });
+    expect(read("three")?.availability).toBe("unknown");
+    expect(read("live")?.availability).toBe("ready");
+    h.server.onExit?.(0);
+    expect(read("live")?.availability).toBe("unknown");
+  });
+
+  it("does not apply a pending history read to the replacement of a closed session", async () => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+    h.notify("thread/archived", { threadId: "th-1" });
+    const replacement = h.runtime.activate({ type: "resume", sessionId: "th-1" });
+    h.resolveNext({ data: [{ id: "t", status: "inProgress", items: [{ id: "compact", type: "contextCompaction" }] }] });
+    h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", turns: [] } });
+    await replacement;
+    h.runtime.announce("th-1");
+    expect(compaction(h)).toBe("unavailable");
+    h.server.onExit?.(0);
+  });
+
+  it("reports all offline bindings on intentional stop even after the backend is marked stopped", async () => {
+    const h = makeHarness(); h.runtime.markStarted(); await activate(h); startCompaction(h);
+    const offline = vi.fn(); h.runtime.onOffline = offline;
+    await h.runtime.stop();
+    expect(compaction(h)).toBe("unavailable");
+    expect(offline).toHaveBeenCalledWith(expect.any(String), [expect.objectContaining({ runtimeId: "codex:th-1", sessionId: "th-1" })]);
+    h.server.onExit?.(1);
+    expect(offline).toHaveBeenCalledTimes(1);
+    h.notify("thread/started", { thread: { id: "late", cwd: "D:/repo" } });
+    expect(h.runtime.activeThreadIds()).toEqual([]);
+  });
+
   it("coalesces burst live updates and flushes the exact source version before sync", async () => {
     vi.useFakeTimers();
     const h = makeHarness({ sourceCoalesceMs: 100 });
