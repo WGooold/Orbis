@@ -196,7 +196,7 @@ The deliberately bounded scope of Session activation. L1 continues a session tha
 _Avoid_: Permission tier
 
 **Spawn mode**:
-The `auto` | `tui` | `headless` choice for how an activated session starts. `auto` prefers a visible terminal window and degrades to headless where no desktop session exists; the Host reports what it actually did instead of what was asked.
+The `auto` | `tui` | `headless` choice for how an activated session starts. `tui` is the default and requires a visible terminal window (Terminal on macOS, Windows Terminal on Windows); inability to open it is an activation error. Only `auto` may choose headless when no desktop session or supported terminal entry exists. The Host reports the mode it actually started.
 _Avoid_: Attach mode
 
 **Directory browse**:

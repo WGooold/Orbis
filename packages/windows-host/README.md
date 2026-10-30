@@ -56,6 +56,8 @@ The same Qt sources are packaged by `.github/workflows/macos-host-build.yml`, tr
 
 The `.app` includes Qt, Node, npm and the runtime dependency closure in `Contents/Resources/runtime`. Activation credentials use the native macOS Keychain; the local activation file contains only an opaque reference. Login startup uses a per-user LaunchAgent. Pi and Codex terminal shortcuts open Terminal, which may request macOS automation permission. The Windows Codex PATH shim and Codex Desktop wrapper integration are not available on macOS in this preview.
 
+Starting or resuming Pi from a phone also opens its interactive interface in Terminal. A requested terminal window must open successfully; a failed launch reports an activation error instead of starting a headless RPC session. Explicit headless mode remains available to integrations that request it.
+
 These previews are ad-hoc signed, without Developer ID signing or Apple notarization. Native execution and clean-machine installation still need validation on Macs. Updates open the verified DMG; quit Host and drag the replacement app into Applications to install. A build uploads CI artifacts only: it does not create a Release, upload website downloads or deploy the Relay. Publishing the two DMGs and their checksum files to the website remains a separate authorized operation.
 
 ## Registration service

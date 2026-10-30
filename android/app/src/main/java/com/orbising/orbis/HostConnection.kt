@@ -546,7 +546,7 @@ internal class HostConnection(
                 // 明确要「有头」。`auto` 会把判定交给电脑侧的启发式（Windows 上看
                 // SESSIONNAME），而从服务、计划任务或 IDE 内部启动的 Host 根本没有它，
                 // 结果是一律降级成无窗口——那样手机就永远要不到窗口了。电脑侧探不到
-                // 开窗入口时会在 session.activated 里如实回执 headless，不假装开过窗。
+                // 开窗入口时会报启动失败，不把明确的有头请求改成无头。
                 put("spawnMode", "tui")
             },
             register = { it.copy(

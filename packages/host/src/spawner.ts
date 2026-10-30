@@ -10,11 +10,12 @@
  * 外加一条「同一会话不重复拉起」的去重（手机可能重复点同一个会话）。
  */
 import { spawn } from "node:child_process";
-import { access, stat } from "node:fs/promises";
-import { platform } from "node:os";
+import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { platform, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 
 import type { AgentKind, SpawnMode } from "@orbis/protocol";
 import { orbisEnvironment } from "@orbis/protocol";
@@ -120,8 +121,7 @@ export async function resolvePiCommand(env: Record<string, string | undefined> =
  * 本机有没有可用的「开窗」入口：Windows Terminal（PATH 上的 `wt.exe`）。
  *
  * `buildSpawnPlan` 是纯函数，判不了文件是否存在，所以在 `activate` 里探一次再喂进去。
- * 探不到时调用方把 `tui` 请求降级为 headless 并**如实回执**——绝不能让手机以为
- * 电脑上开了窗，实际什么都没发生。
+ * 显式 `tui` 找不到入口时报错；只有 `auto` 允许降级为 headless。
  */
 export async function resolveTerminalCommand(
   env: Record<string, string | undefined> = process.env,
@@ -157,13 +157,15 @@ export function defaultExtensionPath(env: Record<string, string | undefined> = p
  * 有没有可交互桌面会话（§8.3）。
  *
  * Windows：SSH / 计划任务 / 服务里没有 `SESSIONNAME`；桌面与终端会话里有。
- * POSIX：看 DISPLAY / WAYLAND_DISPLAY。
+ * macOS：本地 Host 尝试 Terminal，SSH 会话不自动开窗。
+ * 其他 POSIX：看 DISPLAY / WAYLAND_DISPLAY。
  */
 export function hasDesktopSession(env: Record<string, string | undefined> = process.env): boolean {
   if (platform() === "win32") {
     const sessionName = env.SESSIONNAME;
     return sessionName !== undefined && sessionName.trim().length > 0;
   }
+  if (platform() === "darwin") return env.SSH_CONNECTION === undefined && env.SSH_TTY === undefined;
   return env.DISPLAY !== undefined || env.WAYLAND_DISPLAY !== undefined;
 }
 
@@ -172,14 +174,15 @@ export type SpawnPlan = {
   command: string;
   args: string[];
   cwd: string;
+  /** macOS 的一次性 .command 文件，由 activate 在私有目录里创建。 */
+  script?: string;
 };
 
 /**
  * 纯函数：给定目标与运行环境，算出要 spawn 的确切 argv。
  *
- * TUI 降级链（§8.3）：Windows Terminal（`wt.exe`）→ headless。没有桌面会话、不在
- * Windows、或者本机没装 Windows Terminal 时直接 headless；`auto` 档在 POSIX 上
- * 也走 headless（POSIX 没有通用的「开终端」入口，Host 不猜模拟器）。
+ * Windows 使用 Windows Terminal，macOS 使用 Terminal。显式 `tui` 无法开窗时报错；
+ * `auto` 才允许在没有桌面或受支持的终端入口时使用 headless。
  */
 export function buildSpawnPlan(input: {
   pi: PiCommand;
@@ -191,9 +194,14 @@ export function buildSpawnPlan(input: {
   cwd: string;
   spawnMode: SpawnMode;
   desktop: boolean;
-  posix?: boolean;
-  /** 本机有没有可用的开窗入口（`wt.exe`）。缺省 true；`activate` 探过后再传进来。 */
+  platform?: NodeJS.Platform;
+  /** 本机有没有可用的开窗入口。缺省 true；`activate` 探过后再传进来。 */
   terminal?: boolean;
+  /** Terminal 不继承 Host 的环境，显式传递命令查找路径与本机连接配置。 */
+  env?: Record<string, string | undefined>;
+  /** macOS 启动握手；记录 exec 前的 PID，避免把短命的开窗进程当作 Pi。 */
+  pidFile?: string;
+  scriptFile?: string;
 }): SpawnPlan {
   const piArgs: string[] = [...input.pi.prefixArgs];
   if (input.target.type === "resume") {
@@ -205,15 +213,34 @@ export function buildSpawnPlan(input: {
   }
   piArgs.push("-e", input.extensionPath);
 
-  const isPosix = input.posix ?? platform() !== "win32";
+  const hostPlatform = input.platform ?? platform();
   // 显式档优先：只有 `auto` 才依赖「有没有桌面会话」这条启发式。手机明确要窗口时
   // 不该被 `SESSIONNAME` 挡住——服务、计划任务、SSH、IDE 内部启动的 Host 都没有它。
   const wantTui =
     input.spawnMode === "tui" ? true : input.spawnMode === "headless" ? false : input.desktop;
-  const canOpenWindow = !isPosix && (input.terminal ?? true);
+  const canOpenWindow = (hostPlatform === "win32" || hostPlatform === "darwin") && (input.terminal ?? true);
+  if (wantTui && !canOpenWindow && input.spawnMode === "tui") {
+    throw new ActivationError("spawn_failed", "无法打开 Pi 终端窗口，请检查电脑上的终端配置");
+  }
   if (!wantTui || !canOpenWindow) {
     piArgs.push("--mode", "rpc");
     return { kind: "headless", command: input.pi.command, args: piArgs, cwd: input.cwd };
+  }
+  if (hostPlatform === "darwin") {
+    if (input.scriptFile === undefined) throw new ActivationError("spawn_failed", "缺少 Pi 终端启动文件");
+    const environment = ["PATH", "ORBIS_STATE_DIR", "PI_REMOTE_STATE_DIR", "PI_CODING_AGENT_DIR", "PI_OFFLINE"]
+      .flatMap(key => input.env?.[key] === undefined ? [] : [`${key}=${input.env[key]}`]);
+    const steps = [
+      "#!/bin/sh",
+      `cd -- ${quotePosix(input.cwd)} || exit 1`,
+      ...(input.pidFile === undefined ? [] : [`printf '%s\\n' "$$" > ${quotePosix(input.pidFile)} || exit 1`]),
+      `exec /usr/bin/env ${[...environment, input.pi.command, ...piArgs].map(quotePosix).join(" ")}`,
+      "",
+    ];
+    // Terminal executes the private file with real terminal stdio. Unlike AppleScript
+    // automation, opening a .command file does not require controlling another app.
+    return { kind: "tui", command: "/usr/bin/open", args: ["-a", "Terminal", input.scriptFile],
+      cwd: input.cwd, script: steps.join("\n") };
   }
   // `wt -d <dir> <commandline…>`。命令行走 `-EncodedCommand`：wt 会把命令行里的引号
   // 重新拼接，含空格的路径（cwd、会话文件）会被拆成多个 token，整条命令
@@ -232,6 +259,15 @@ export function buildSpawnPlan(input: {
 /** PowerShell 单引号字面量：内部的 `'` 双写。 */
 function quotePowerShell(value: string): string {
   return `'${value.replace(/'/gu, "''")}'`;
+}
+
+function quotePosix(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
 export type SpawnedAgent = {
@@ -271,6 +307,7 @@ export class SessionSpawner {
   readonly #stateDir: string | undefined;
   readonly #now: () => number;
   readonly #running = new Map<number, SpawnedAgent>();
+  readonly #terminalPids = new Set<number>();
 
   constructor(options: SessionSpawnerOptions = {}) {
     this.#maxRunning = options.maxRunning ?? 8;
@@ -282,6 +319,11 @@ export class SessionSpawner {
   }
 
   get running(): readonly SpawnedAgent[] {
+    for (const pid of this.#terminalPids) {
+      if (isProcessAlive(pid)) continue;
+      this.#terminalPids.delete(pid);
+      this.#running.delete(pid);
+    }
     return [...this.#running.values()];
   }
 
@@ -292,13 +334,14 @@ export class SessionSpawner {
   async activate(input: ActivateInput): Promise<SpawnedAgent> {
     const cwd = input.target.cwd;
     await this.#requireDir(cwd);
+    const running = this.running;
 
     // 先发现，再拉起（§8.4）：这个会话可能已经被本 Host 拉起来的一个进程持有。
     // 不看一眼就 spawn，重复点按会在电脑上堆出多个打开同一会话的 Pi 进程。
     // 只认 resume —— `new` 每次都是新会话，天然不会重复。
     if (input.target.type === "resume") {
       const sessionId = input.target.sessionId;
-      const existing = [...this.#running.values()].find((agent) => agent.sessionId === sessionId);
+      const existing = running.find((agent) => agent.sessionId === sessionId);
       if (existing !== undefined) {
         this.#log(`[activate] 会话 ${sessionId} 已有存活进程 pid=${existing.pid}，复用而不重复拉起`);
         return existing;
@@ -316,30 +359,36 @@ export class SessionSpawner {
     const extensionPath = defaultExtensionPath(this.#env);
     // 缺省按「要窗口」处理：手机端会明确发 `tui`，但更早的 APK 根本不发这个字段，
     // 把它当 `auto` 就会掉进 `SESSIONNAME` 那条启发式——那正是「手机要不到窗口」的
-    // 成因，所以缺省不该再是无头。真正开不了窗时由下面的 `terminal` 探测降级，
-    // 并如实回执，不留假象。
+    // 成因，所以缺省不该再是无头。开不了窗就报告错误。
     const mode = input.spawnMode ?? "tui";
     const desktop = hasDesktopSession(this.#env);
-    // 开窗入口要真探一次：`tui` 是手机明确的请求，在没装 Windows Terminal 的机器上
-    // 只能降级，并且要如实回执（回执里的 spawnMode 就是 plan.kind）。
-    const terminal = (await resolveTerminalCommand(this.#env)) !== undefined;
+    const terminal = platform() === "darwin"
+      ? await access("/usr/bin/open").then(() => true, () => false)
+      : (await resolveTerminalCommand(this.#env)) !== undefined;
+    const env = this.#stateDir === undefined ? this.#env : {
+      ...this.#env,
+      ORBIS_STATE_DIR: this.#stateDir,
+      PI_REMOTE_STATE_DIR: this.#stateDir,
+    };
     // L2 的新会话 id 由 Host 生成（§8.2），要带回给手机对账 runtime.online。
     const newSessionId = input.target.type === "new" ? randomUUID() : undefined;
-    const plan = buildSpawnPlan({
+    const planInput: Parameters<typeof buildSpawnPlan>[0] = {
       pi,
       extensionPath,
       cwd,
       spawnMode: mode,
       desktop,
       terminal,
+      env,
       target:
         input.target.type === "resume"
           ? { type: "resume", sessionId: input.target.sessionId, sessionFile: input.target.sessionFile }
           : { type: "new", sessionId: newSessionId ?? "" },
-    });
-    if (plan.kind === "headless" && mode === "tui") {
-      this.#log("[activate] 本机没有可用的开窗入口（PATH 上找不到 wt.exe），tui 请求降级为 headless");
+    };
+    if (platform() === "darwin" && (mode === "tui" || mode === "auto" && desktop && terminal)) {
+      return this.#activateMac(input, planInput);
     }
+    const plan = buildSpawnPlan(planInput);
 
     const child = this.#spawn(plan.command, plan.args, {
       cwd,
@@ -347,12 +396,7 @@ export class SessionSpawner {
       shell: false,
       // The agent must find *this* Host's loopback descriptor when the Host does not use the
       // default state directory (several Hosts on one machine is supported).
-      env: this.#stateDir === undefined ? this.#env : {
-        ...this.#env,
-        ORBIS_STATE_DIR: this.#stateDir,
-        // An explicitly configured older Pi extension still needs the same isolated Host directory.
-        PI_REMOTE_STATE_DIR: this.#stateDir,
-      },
+      env,
       // stdin 必须是**保持打开**的管道，不能用 `"ignore"`：`"ignore"` 让子进程的
       // stdin 立刻读到 EOF，而 pi 的 rpc 模式把「输入结束」当成「该收工了」，会干净
       // 退出（实测 exit 0）。于是进程被记成「拉起成功」，几秒后自己消失——电脑上没
@@ -397,6 +441,54 @@ export class SessionSpawner {
         + ` cwd=${cwd} pid=${record.pid} 模式=${record.spawnMode}`,
     );
     return record;
+  }
+
+  async #activateMac(input: ActivateInput, planInput: Parameters<typeof buildSpawnPlan>[0]): Promise<SpawnedAgent> {
+    const handshake = await mkdtemp(join(tmpdir(), "orbis-pi-terminal-"));
+    try {
+      const pidFile = join(handshake, "pid");
+      const scriptFile = join(handshake, "Pi.command");
+      const plan = buildSpawnPlan({ ...planInput, pidFile, scriptFile });
+      await writeFile(scriptFile, plan.script!, { mode: 0o700 });
+      const child = this.#spawn(plan.command, plan.args, {
+        cwd: plan.cwd, env: planInput.env, shell: false, stdio: ["ignore", "ignore", "pipe"], timeout: 15_000,
+      });
+      // Wait for Launch Services, then Pi's handshake; spawning open alone proves neither.
+      await new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.stderr?.resume();
+        child.once("close", code => code === 0 ? resolve() : reject(new Error("无法打开 macOS 终端，请检查 Terminal 的安装和权限")));
+      });
+      let pid: number | undefined;
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const text = await readFile(pidFile, "utf8").catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return "";
+          throw error;
+        });
+        if (/^[1-9]\d*\s*$/u.test(text)) {
+          pid = Number(text.trim());
+          break;
+        }
+        await delay(25);
+      }
+      if (pid === undefined || !Number.isSafeInteger(pid) || !isProcessAlive(pid)) {
+        throw new Error("Pi 未在终端中启动，请检查终端窗口中的错误后重试");
+      }
+      const record: SpawnedAgent = {
+        pid, agentKind: "pi", cwd: plan.cwd, sessionId: planInput.target.sessionId,
+        spawnMode: "tui", startedAt: this.#now(),
+      };
+      this.#terminalPids.add(pid);
+      this.#running.set(pid, record);
+      this.#log(`[activate] ${new Date(record.startedAt).toISOString()} 设备=${input.deviceId} 目标=${input.target.type}`
+        + ` cwd=${record.cwd} pid=${pid} 模式=tui`);
+      return record;
+    } catch (cause) {
+      throw new ActivationError("spawn_failed", describe(cause));
+    } finally {
+      await rm(handshake, { recursive: true, force: true });
+    }
   }
 
   async #requireDir(cwd: string): Promise<void> {
