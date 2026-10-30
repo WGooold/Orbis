@@ -7,7 +7,8 @@ import org.junit.Test
 
 class AgentModelConsumerTest {
     private val reducer = RelayReducer()
-    private fun initial() = RemoteState(hostId = "host", agentModelEpoch = "epoch",
+    private fun initial() = RemoteState(hostId = "host", agentModelEpoch = "epoch", e2eReady = true,
+        connection = RelayConnection.ONLINE, homeDirectoryReceived = true,
         runtimes = mapOf("runtime" to RuntimeSummary("runtime", "Agent", "/repo", "idle", "session", agentKind = "pi")),
         agentStateRequests = setOf("read"), agentStateReads = mapOf("read" to AgentStateRead(
             "agent|pi|session", "agent", AGENT_MODEL_DOMAINS.toSet(), "runtime", "session", "pi")))
@@ -72,11 +73,12 @@ class AgentModelConsumerTest {
         assertEquals("running", state.homeRuntimes.single().status)
         val next = RuntimeSummary("second", "Second", "/repo", "unknown", "other")
         val loading = state.copy(runtimes = state.runtimes + (next.runtimeId to next))
-        assertTrue(loading.homeRuntimes.isEmpty())
+        assertEquals(state.homeCards, loading.homeCards)
+        assertTrue(loading.homeRuntimesUpdating)
         assertTrue(next.carryingComposerStatus(state.runtimes.getValue("runtime")).domainAvailability.isEmpty())
         assertEquals(1, loading.copy(runtimes = state.runtimes).homeRuntimes.size)
         assertTrue(RemoteState(connection = RelayConnection.CONNECTING).homeRuntimesLoading)
-        assertFalse(RemoteState(connection = RelayConnection.OFFLINE).homeRuntimesLoading)
+        assertTrue(RemoteState(connection = RelayConnection.OFFLINE).homeRuntimesLoading)
         val failed = reducer.reduce(initial(), """{"type":"agent.state.snapshot","scope":"agent","requestId":"read",
             "runtimeId":"runtime","sessionId":"session","agentKind":"pi","error":"读取失败"}""", channel = "ctl")
         assertEquals("读取失败", failed.homeRuntimesError)

@@ -4,6 +4,26 @@ import Combine
 import UIKit
 #endif
 
+struct HomeRuntimeCard: Equatable, Identifiable {
+    let runtime: RuntimeSummary
+    let title: String
+    let agentKind: String
+    let hasPendingInteraction: Bool
+    var id: String { runtime.runtimeId }
+}
+
+enum HomePresentation: Equatable {
+    case preparing
+    case ready([HomeRuntimeCard])
+}
+
+/// 首页同步进度。首版快照发布前由列表区域显示，发布后由连接胶囊显示，不再占用单独一行。
+enum HomeSyncStatus: Equatable {
+    case idle
+    case syncing
+    case failed(String)
+}
+
 @MainActor
 final class HostConnection: ObservableObject {
     let transfers: FileTransfers
@@ -54,39 +74,79 @@ final class HostConnection: ObservableObject {
     /// ADR-0049 §5：首页关闭命令写入后立即隐藏卡片；失败、超时或电脑仍保留会话时恢复。
     struct ClosingRuntime: Equatable { let commandId: String; var confirmedAt: Date? }
     @Published private(set) var closingRuntimes: [String: ClosingRuntime] = [:]
-    /// 首页显示的会话：不含已提交关闭、仍在等电脑确认退出的会话。
-    var homeRuntimesLoading: Bool {
-        if runtimes.isEmpty { return connection == .connecting || connection == .online }
-        return runtimes.filter { closingRuntimes[$0.runtimeId] == nil }.contains { runtime in
-            guard let session = runtime.sessionId, !session.isEmpty,
-                  let snapshot = agentState.snapshots[runtime.runtimeId], snapshot.sessionId == session,
-                  ["identity", "execution", "interactions"].allSatisfy({ snapshot.domains[$0] != nil && !snapshot.pending.contains($0) }),
-                  !(runtime.agentKind ?? sessionIndex[session]?.agentKind ?? "").isEmpty,
-                  !runtime.cwd.isEmpty else { return true }
-            return false
+    /// 首页只发布完整快照：冷启动准备一次，后续重连/刷新在后台组装下一版。
+    /// 此快照只在当前配对的内存中保留，不把磁盘目录缓存当成本次在线会话。
+    @Published private(set) var homePresentation: HomePresentation = .preparing
+    private var homeDirectoryReceived = false
+    private static let homeDomains = ["identity", "execution", "interactions"]
+    var homeRuntimesLoading: Bool { if case .preparing = homePresentation { return true }; return false }
+    /// 独立于已展示列表的同步进度，只用于首页的小状态行。
+    var homeRuntimesUpdating: Bool {
+        connection != .secured || !homeDirectoryReceived || !runtimes.allSatisfy(homeFactsComplete)
+    }
+    var homeCards: [HomeRuntimeCard] {
+        guard case .ready(let cards) = homePresentation else { return [] }
+        return cards.filter { closingRuntimes[$0.id] == nil }
+    }
+    var homeRuntimes: [RuntimeSummary] { homeCards.map(\.runtime) }
+
+    private func homeFactsComplete(_ runtime: RuntimeSummary) -> Bool {
+        guard let session = runtime.sessionId, !session.isEmpty,
+              let snapshot = agentState.snapshots[runtime.runtimeId], snapshot.sessionId == session,
+              snapshot.error == nil,
+              !(runtime.agentKind ?? sessionIndex[session]?.agentKind ?? "").isEmpty,
+              !runtime.cwd.isEmpty else { return false }
+        return Self.homeDomains.allSatisfy { name in
+            guard !snapshot.pending.contains(name), snapshot.missing[name] == nil,
+                  let domain = snapshot.domains[name] else { return false }
+            return domain.availability == "ready" && (domain.completeness == "complete" || domain.projectionComplete == true)
         }
     }
-    var homeRuntimes: [RuntimeSummary] {
-        guard !homeRuntimesLoading else { return [] }
-        // 首页优先按会话最近使用时间倒序；同一时间再按名称、runtimeId 稳定排序。
-        return runtimes.filter { closingRuntimes[$0.runtimeId] == nil }.sorted { lhs, rhs in
-            let left = lhs.sessionId.flatMap { sessionIndex[$0]?.modifiedAt } ?? 0
-            let right = rhs.sessionId.flatMap { sessionIndex[$0]?.modifiedAt } ?? 0
+
+    /// 在完整消息应用后提交，不能在各 @Published 字段的 willChange 中拼出半张卡片。
+    private func commitHomePresentation() {
+        guard homeDirectoryReceived, connection == .secured, runtimes.allSatisfy(homeFactsComplete) else { return }
+        let cards = runtimes.map { runtime in
+            HomeRuntimeCard(runtime: runtime, title: displayName(runtime),
+                agentKind: runtime.agentKind ?? sessionIndex[runtime.sessionId ?? ""]?.agentKind ?? "",
+                hasPendingInteraction: !(interactions[runtime.runtimeId] ?? []).isEmpty)
+        }.sorted { lhs, rhs in
+            let left = lhs.runtime.sessionId.flatMap { sessionIndex[$0]?.modifiedAt } ?? 0
+            let right = rhs.runtime.sessionId.flatMap { sessionIndex[$0]?.modifiedAt } ?? 0
             if left != right { return left > right }
-            let nameOrder = displayName(lhs).localizedStandardCompare(displayName(rhs))
-            return nameOrder == .orderedSame ? lhs.runtimeId < rhs.runtimeId : nameOrder == .orderedAscending
+            let order = lhs.title.localizedStandardCompare(rhs.title)
+            return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
+        }
+        let next = HomePresentation.ready(cards)
+        if homePresentation != next { homePresentation = next }
+    }
+
+    func homeCardIsCurrent(_ card: HomeRuntimeCard) -> Bool {
+        connection == .secured && homeDirectoryReceived && runtimes.contains {
+            $0.runtimeId == card.id && $0.sessionId == card.runtime.sessionId
         }
     }
     var homeRuntimesError: String? {
-        guard homeRuntimesLoading else { return nil }
+        guard homeRuntimesUpdating else { return nil }
+        if connection == .offline || connection == .error { return "电脑未连接，请重新连接" }
         for runtime in runtimes where closingRuntimes[runtime.runtimeId] == nil {
+            guard let session = runtime.sessionId, !session.isEmpty else {
+                return "会话身份尚未就绪，请重新加载"
+            }
             guard let snapshot = agentState.snapshots[runtime.runtimeId], snapshot.sessionId == runtime.sessionId else { continue }
             if let error = snapshot.error { return error }
-            if ["identity", "execution", "interactions"].contains(where: { snapshot.missing[$0] != nil }) {
+            if Self.homeDomains.contains(where: { snapshot.missing[$0] != nil }) {
+                return "会话信息未能完整读取，请重新加载"
+            }
+            if Self.homeDomains.allSatisfy({ !snapshot.pending.contains($0) }) && !homeFactsComplete(runtime) {
                 return "会话信息未能完整读取，请重新加载"
             }
         }
         return nil
+    }
+    var homeSyncStatus: HomeSyncStatus {
+        guard homeRuntimesUpdating else { return .idle }
+        return homeRuntimesError.map(HomeSyncStatus.failed) ?? .syncing
     }
     @Published private(set) var hasOlderHistory: [String: Bool] = [:]
     @Published private(set) var historyLoading: Set<String> = []
@@ -343,6 +403,7 @@ final class HostConnection: ObservableObject {
         transport.disconnect()
         clearSyncs(); dismissBrowse(); clearActivation()
         conversations = [:]; messages = []; runtimes = []; sessions = []; commands = [:]
+        homeDirectoryReceived = false; homePresentation = .preparing
         selectedRuntimeId = nil; selectedHostId = nil; activePath = nil; pathRTT = nil; connection = .offline
         currentProviders = [:]; sessionListRequest = nil; modelCatalogReceived = false; authenticatedModelEpoch = nil; connectionEvents = []
         transfers.setConnection(nil, connected: false)
@@ -379,6 +440,7 @@ final class HostConnection: ObservableObject {
     }
 
     private func connect(pairing: HostPairing, identity: DeviceIdentity) {
+        homeDirectoryReceived = false
         connectionGeneration = UUID()
         cancelPendingWork()
         historyGeneration = UUID(); historyConnected = false
@@ -417,6 +479,7 @@ final class HostConnection: ObservableObject {
             // 断线时关闭结果未知；重连后的 device.ready 才说明哪些会话仍在。
             if state != .secured { self.pendingSends.connectionLost(); self.closingRuntimes = [:] }
             self.connection = state
+            if state != .secured { self.homeDirectoryReceived = false }
             self.recordConnectionEvent("连接：\(state.rawValue)")
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)
             if state != .secured { self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false) }
@@ -527,7 +590,8 @@ final class HostConnection: ObservableObject {
         if connection == .secured {
             hostState.refresh()
             refreshSessions()
-            if let selectedRuntime { agentState.subscribe(runtime: selectedRuntime, force: true); syncSession(selectedRuntime, force: true) }
+            for runtime in runtimes { agentState.subscribe(runtime: runtime, force: true) }
+            if let selectedRuntime { syncSession(selectedRuntime, force: true) }
         } else { reconnectSelectedHost() }
     }
 
@@ -1291,6 +1355,7 @@ final class HostConnection: ObservableObject {
             if type == "protocol.error" { errorMessage = message["message"] as? String ?? "中继认证失败，请重新连接。"; connection = .error }
             return
         }
+        defer { commitHomePresentation() }
         if let version = message["protocolVersion"] as? Int, version != orbisProtocolVersion {
             errorMessage = "Orbis 协议版本不兼容，请同时更新手机 App 和电脑 Host。"
             return
@@ -1310,6 +1375,10 @@ final class HostConnection: ObservableObject {
             if let selectedRuntime { syncSession(selectedRuntime, force: true) }
         case "device.ready":
             guard channel != nil, let values = message["runtimes"] as? [[String: Any]] else { return }
+            let next: [RuntimeSummary] = values.compactMap(jsonDecode)
+            guard next.count == values.count, Set(next.map(\.runtimeId)).count == next.count else {
+                errorMessage = "会话目录格式无法识别，请重新连接。"; return
+            }
             hostState.setConnection(selectedHost, connected: true)
             agentState.setConnection(selectedHost, connected: true)
             notifications.setConnection(selectedHost, connected: true)
@@ -1317,7 +1386,7 @@ final class HostConnection: ObservableObject {
             let modelEpoch = message["modelEpoch"] as? String
             let hostRestarted = modelEpoch != nil && authenticatedModelEpoch != nil && modelEpoch != authenticatedModelEpoch
             if let modelEpoch { authenticatedModelEpoch = modelEpoch }
-            let next: [RuntimeSummary] = values.compactMap(jsonDecode)
+            homeDirectoryReceived = true
             let selectedLeafChanged = next.first(where: { $0.runtimeId == selectedRuntimeId }).map { next in
                 runtimes.first(where: { $0.runtimeId == next.runtimeId })?.sessionLeafId != next.sessionLeafId
             } ?? false
@@ -1325,7 +1394,7 @@ final class HostConnection: ObservableObject {
             for runtime in next where runtimes.first(where: { $0.runtimeId == runtime.runtimeId })?.sessionId != runtime.sessionId {
                 invalidateConversation(runtime.runtimeId)
             }
-            runtimes = next
+            runtimes = next.map(reprojectRuntime)
             conversations = conversations.filter { id, _ in next.contains { $0.runtimeId == id } }
             runtimeEventSequences = [:]
             if selectedRuntime == nil { selectedRuntimeId = restoredRuntimeId() ?? runtimes.first?.runtimeId }
@@ -1345,7 +1414,8 @@ final class HostConnection: ObservableObject {
             if let selectedRuntime { seedCachedHistory(selectedRuntime); publishMessages(); agentState.subscribe(runtime: selectedRuntime); syncSession(selectedRuntime, force: hostRestarted || selectedLeafChanged) }
             refreshSessions()
         case "runtime.online":
-            if let object = message["runtime"] as? [String: Any], let runtime: RuntimeSummary = jsonDecode(object) {
+            if let object = message["runtime"] as? [String: Any], let incoming: RuntimeSummary = jsonDecode(object) {
+                let runtime = reprojectRuntime(incoming)
                 if let index = runtimes.firstIndex(where: { $0.runtimeId == runtime.runtimeId }) {
                     if runtimes[index].sessionId != runtime.sessionId { invalidateConversation(runtime.runtimeId) }
                     runtimes[index] = runtime
@@ -1439,6 +1509,9 @@ final class HostConnection: ObservableObject {
     private func consumeEvent(_ envelope: [String: Any], channel: String?) async {
         guard let runtimeId = envelope["runtimeId"] as? String, runtimes.contains(where: { $0.runtimeId == runtimeId }),
               let event = envelope["event"] as? [String: Any], let type = event["type"] as? String else { return }
+        let changesHome = ["runtime.metadata", "runtime.status", "interaction.requested", "interaction.snapshot",
+                           "interaction.resolved", "interaction.cancelled"].contains(type)
+        defer { if changesHome { commitHomePresentation() } }
         if let sequence = integer(envelope["sequence"]) {
             let key = "\(runtimeId)\u{0000}\(channel ?? "ctl")"
             if sequence <= (runtimeEventSequences[key] ?? -1) { return }
@@ -1521,7 +1594,7 @@ final class HostConnection: ObservableObject {
                 let owned: String? = ["status": "execution", "model": "model", "thinkingLevel": "model", "contextUsage": "context", "permissionManagement": "permissions"][key]
                 return owned.map { !agentState.owns($0, runtimeId: runtimeId) } ?? true
             }
-            let next = mergeRuntime(previous, metadata: fields)
+            let next = reprojectRuntime(mergeRuntime(previous, metadata: fields))
             runtimes[index] = next
             if previous.sessionId != next.sessionId {
                 invalidateConversation(runtimeId)
@@ -2181,6 +2254,17 @@ final class HostConnection: ObservableObject {
     private func jsonDecode<T: Decodable>(_ value: [String: Any]) -> T? {
         guard let data = try? JSONSerialization.data(withJSONObject: value) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// Directory announcements are transport metadata, not a replacement for committed model
+    /// domains. A duplicate ready/online/metadata must not erase facts while the existing
+    /// subscription is still active. Session replacement and Host epochs clear these baselines.
+    private func reprojectRuntime(_ runtime: RuntimeSummary) -> RuntimeSummary {
+        guard let snapshot = agentState.snapshots[runtime.runtimeId], snapshot.sessionId == runtime.sessionId,
+              let projection = AgentProjection.make(runtime: runtime, hostId: selectedHostId, domains: snapshot.domains,
+                commands: commands[runtime.runtimeId] ?? [], interactions: interactions[runtime.runtimeId] ?? [],
+                queuedMessages: queuedMessages[runtime.runtimeId] ?? []) else { return runtime }
+        return projection.runtime
     }
 
     private func mergeRuntime(_ current: RuntimeSummary, metadata: [String: Any]) -> RuntimeSummary {

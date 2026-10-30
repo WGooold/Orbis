@@ -317,6 +317,18 @@ internal class HostConnection(
             runtime.agentKind ?: current.sessions[sessionId]?.agentKind, force)
     }
 
+    fun refreshHome() {
+        val current = mutableState.value
+        if (!current.e2eReady || !current.homeDirectoryReceived || current.runtimes.values.any { it.sessionId.isNullOrBlank() }) {
+            updateState { it.markReconnecting() }
+            connect(device)
+            return
+        }
+        refreshSessions()
+        refreshHostModel(force = true)
+        current.runtimes.keys.forEach { refreshAgentModel(it, force = true) }
+    }
+
     private fun requestModel(
         modelScope: String,
         domains: List<String>,
@@ -355,8 +367,16 @@ internal class HostConnection(
                 }
             })
         })
-        if (!sent) updateState { it.copy(agentStateRequests = it.agentStateRequests - requestId,
-            agentStateReads = it.agentStateReads - requestId, error = "Model read could not use an authenticated channel") }
+        if (!sent) updateState { it.failHomeRead(requestId, "会话读取未能发送，请重试").copy(
+            agentStateRequests = it.agentStateRequests - requestId, error = "Model read could not use an authenticated channel") }
+        if (sent && modelScope == "agent") scope.launch {
+            delay(12_000)
+            updateState { state ->
+                if (state.agentStateReads[requestId]?.pendingDomains?.any { it in HOME_MODEL_DOMAINS } == true &&
+                    state.agentStateSnapshots.values.none { it.requestId == requestId && it.error != null })
+                    state.failHomeRead(requestId, "会话读取超时，请重试") else state
+            }
+        }
     }
 
     /** Continue a fixed catalog snapshot without mixing versions or pruning omitted pages. */
@@ -2461,7 +2481,7 @@ internal class HostConnection(
             }
             // ADR-0049：每次状态变化都用源端事实核对本地待确认发送。
             val (reconciled, syncs) = next.reconcilePendingSends(System.currentTimeMillis())
-            next = reconciled
+            next = reconciled.commitHomePresentation()
             settlementSyncs = syncs
             recheck = next.pendingSends.values.any { it.state == PendingSendState.Accepted && !it.sawBusy }
             if (next !== current) mutableState.value = next

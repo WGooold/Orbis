@@ -36,7 +36,7 @@ class HomeSwipeCloseInstrumentedTest {
                 override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) { haptics += hapticFeedbackType }
             }) {
                 OrbisTheme {
-                    RuntimeListScreen(state, listOf(HostSnapshot(pairing, state)),
+                    RuntimeListScreen(state.withReadyHomeFixture(), listOf(HostSnapshot(pairing, state.withReadyHomeFixture())),
                         onOpenRuntime = { _, id -> opened += id },
                         onCloseRuntimes = { host, ids -> closed += host to ids; ids },
                         onOpenDownloads = {}, onUnpairHost = {},

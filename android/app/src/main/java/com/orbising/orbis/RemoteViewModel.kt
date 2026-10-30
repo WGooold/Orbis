@@ -278,6 +278,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     // user selects which one with the Host switcher.
 
     fun refreshSessions() = active()?.refreshSessions()
+    fun refreshHome() = active()?.refreshHome()
 
     fun refreshDiagnostics(cursor: String? = null) = active()?.refreshDiagnostics(cursor)
 
