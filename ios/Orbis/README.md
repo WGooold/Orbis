@@ -80,6 +80,8 @@ ORBIS_TEST_DATACHANNEL_MODULE="$(node --input-type=module -e 'console.log(import
 
 在电脑端启动 Orbis Host，打开配对窗口；手机点“添加电脑”扫描二维码。模拟器可粘贴同一个二维码的 JSON 内容。正式 Relay 使用 `wss://`；本机调试允许私有局域网 / localhost 的 `ws://`。
 
+LAN 直连访问配对二维码或已认证 `host.lan` 提供的 Host 地址，使用 `ws://IP:端口/v1/lan`，并以独立 E2E 握手认证和加密消息。Host 网卡地址可能是校园网公网 IPv4，因此不能只允许私有网段。iOS 17+ 的 ATS 配置通过 `NSExceptionDomains` 的 `0.0.0.0/0` 和 `::/0` 允许 IP 字面量直连；`NSAllowsLocalNetworking` 保留本地名称访问。公网 Relay 仍由 `RelayURL` 强制要求 WSS，未启用全局 `NSAllowsArbitraryLoads`。Host 当前不提供 TLS，不能只把 LAN URL 改成 `wss://`。
+
 Relay 地址支持反向代理路径前缀，例如 `wss://example.com/relay`。配对 HTTP 请求与后续 WebSocket 连接均保留该前缀。旧测试版曾将这类地址误判为“二维码无效”；更新 App 后请在电脑端重新生成有效期内的配对二维码。
 
 真机验收应覆盖：相机授权与退出、配对、首次安全握手、runtime/session 目录、历史预览、双向聊天、切换 runtime、停止、恢复会话、断网重连、Host 重启后的重新握手，以及前后台切换。
