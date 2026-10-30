@@ -485,6 +485,14 @@ func queueStateTitle(_ state: String) -> String {
 }
 
 func interactionDraftKey(host: HostPairing?, sessionId: String?, request: InteractionRequest) -> String {
-    [host?.relay.relayUrl ?? "", host?.relay.deviceId ?? "", host?.hostId ?? "", request.runtimeId, sessionId ?? "", request.extensionId, request.requestId]
-        .map { "\($0.utf8.count):\($0)" }.joined()
+    let components: [String] = [
+        host?.relay.relayUrl ?? "",
+        host?.relay.deviceId ?? "",
+        host?.hostId ?? "",
+        request.runtimeId,
+        sessionId ?? "",
+        request.extensionId,
+        request.requestId,
+    ]
+    return components.map { "\($0.utf8.count):\($0)" }.joined()
 }
