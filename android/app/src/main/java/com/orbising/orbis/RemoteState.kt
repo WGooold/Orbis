@@ -864,6 +864,9 @@ internal fun RemoteState.seedCachedSessionView(runtimeId: String, graph: Session
     val source = if (branchChanged) RuntimeConversation(revision = conversation.revision) else conversation
     val sameBranch = previousView != null &&
         (previousView.leafId == leaf || graph.isDescendant(leaf, previousView.leafId))
+    // An entry that arrived before its parent cannot be placed yet; keep the shown rows (ADR-0053 §2).
+    if (!branchChanged && !sameBranch && conversation.messages.isNotEmpty() &&
+        graph.isWaitingForParent(previousView?.leafId, leaf)) return this
     val baseMessages = source.messages.filterNot { it.messageId in source.streamingMessageIds }
     val projection = (if (sameBranch) {
         mergeTemporaryOlderMessages(
@@ -1460,7 +1463,11 @@ private fun RuntimeConversation.applyCompleteSourceState(
     // A proven forward append keeps older paged ancestors just like an unchanged head. A rewind
     // or another branch must still remove rows outside its authoritative path.
     val sameBranch = sourceHeadLeafId == head.leafId || graph.isDescendant(head.leafId, sourceHeadLeafId)
-    val canonical = if (sourceEpoch == source.epoch && sameBranch && headAvailable) {
+    val canonical = if (sourceEpoch == source.epoch && headAvailable && graph.isWaitingForParent(sourceHeadLeafId, head.leafId)) {
+        // The new head arrived before its parent: keep the shown rows until the chain reconnects
+        // instead of publishing the lone entry for a few frames (ADR-0053 §2).
+        SessionProjectionResult(messages.filterNot { it.messageId in streamingMessageIds }, turnTimings = turnTimings.values.toList())
+    } else if (sourceEpoch == source.epoch && sameBranch && headAvailable) {
         mergeTemporaryOlderMessages(projection, graph, messages.filterNot { it.messageId in streamingMessageIds })
     } else projection
     return applyProjection(canonical, keepLiveTiming = false)
@@ -2855,6 +2862,10 @@ class RelayReducer(
                             snapshotForProjection.turnTimings.orEmpty())
                                 .associateBy(TurnTiming::turnId).values.toList(),
                         )
+                    } else if (graphForProjection.isWaitingForParent(oldLeaf, viewLeafId)) {
+                        // The new entry arrived before its parent: keep the current rows until the
+                        // chain reconnects rather than flashing a lone entry (ADR-0053 §2).
+                        SessionProjectionResult(baseMessages, turnTimings = projectionConversation.turnTimings.values.toList())
                     } else {
                         val deltaProjection = graphForProjection.projectLeafDeltaProjection(
                             oldLeafId = oldLeaf,

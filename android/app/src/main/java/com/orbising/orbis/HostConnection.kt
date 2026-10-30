@@ -535,7 +535,8 @@ internal class HostConnection(
     }
 
     /** L2：在指定目录新建会话（agentKind = pi | codex）。 */
-    fun createSession(agentKind: String, cwd: String, expectedHostId: String?): Boolean {
+    /** [spawnMode] overrides the default `tui`; the UI-02 capture harness asks for `headless`. */
+    fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean {
         if (!mutableState.value.canCreateSessionOn(expectedHostId)) {
             updateState { it.copy(error = "目标电脑已变更、未连接或正在创建会话，请返回目录重试") }
             return false
@@ -544,10 +545,10 @@ internal class HostConnection(
             put("type", "new")
             put("agentKind", agentKind)
             put("cwd", cwd)
-        })
+        }, spawnMode)
     }
 
-    private fun activateTarget(target: JsonObject): Boolean {
+    private fun activateTarget(target: JsonObject, spawnMode: String = "tui"): Boolean {
         restoreSettled = true
         val requestId = UUID.randomUUID().toString()
         return sendSessionPayload(
@@ -561,7 +562,7 @@ internal class HostConnection(
                 // SESSIONNAME），而从服务、计划任务或 IDE 内部启动的 Host 根本没有它，
                 // 结果是一律降级成无窗口——那样手机就永远要不到窗口了。电脑侧探不到
                 // 开窗入口时会报启动失败，不把明确的有头请求改成无头。
-                put("spawnMode", "tui")
+                put("spawnMode", spawnMode)
             },
             register = { it.copy(
                 sessionActivateRequests = it.sessionActivateRequests + requestId,

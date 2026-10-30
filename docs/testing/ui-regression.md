@@ -134,7 +134,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 下载 / 文件 | `DownloadFileBrowserInstrumentedTest`（3）、`TurnFileChangesInstrumentedTest`（3） | S09、S15、S20–S21、M13、V19 |
 | 材质 / 字形 / 控件 | `UiPolishInstrumentedTest`（3）、`NeumorphInstrumentedTest`（1） | S01–S09、S12、M04、V15 |
 | 非 UI 但在同一设备套件 | `SessionGraphStoreInstrumentedTest`（32）、`SessionSyncSelectionInstrumentedTest`（6）、`SessionSyncSlowLinkInstrumentedTest`（2） | 缓存 / 同步正确性，全量时一并运行 |
-| 需要隔离 Host | `IsolatedHostPairingInstrumentedTest`（1） | 配对；默认排除，改动配对时运行 |
+| 需要隔离 Host | `IsolatedHostPairingInstrumentedTest`（1）；`ToolContinuityCaptureInstrumentedTest`（1，无参数时自动跳过，传入配对载荷与 cwd 时做真实输出逐帧捕获） | 配对；V20 定位 |
 | r15 首页视口与下拉刷新 | `HomeViewportInstrumentedTest`（4） | M15、V21 |
 | r15 设置与入口 | `SettingsEntryInstrumentedTest`（3） | S18、S22 |
 | r15 页面转场 | `SwipeBackPagesInstrumentedTest`（2，位于 `SwipeBackInstrumentedTest.kt`） | M14 |
