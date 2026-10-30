@@ -174,12 +174,14 @@ struct ChatView: View {
                                        timings: transcript.timingsByRow[row.id] ?? [],
                                        streamingMessageIds: streamingMessageIds.intersection(row.messages.map(\.messageId)),
                                        rewindOption: row.isUser ? rewindOptions[row.id] : nil,
-                                       rewindEnabled: store.canSend && runtime.status == "idle" && store.pendingActionIds.isEmpty) { option in
+                                       rewindEnabled: store.canSend && runtime.status == "idle" && store.pendingActionIds.isEmpty,
+                                       pending: row.isUser ? store.pendingSends.item(row.messages.first?.messageId)?.state : nil,
+                                       canResend: store.canSend, onRewind: { option in
                             if store.moveHistory(to: option, fallbackText: row.messages.first?.text) {
                                 composerFocused = false
                                 OrbisHaptics.commit()
                             }
-                        }.equatable().id(row.id)
+                        }, onPending: { action in pendingAction(action, messageId: row.messages.first?.messageId) }).equatable().id(row.id)
                             .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: [row.id: geometry.frame(in: .named("chat-viewport"))]) })
                     }
                     LiveToolsView(runtime: runtime).id("chat-live-tools")
@@ -396,6 +398,19 @@ struct ChatView: View {
     private func commandArguments(_ command: SlashCommand) -> String {
         String(draft.wrappedValue.dropFirst(command.name.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
+    private func pendingAction(_ action: PendingSendAction, messageId: String?) {
+        guard let messageId else { return }
+        switch action {
+        case .resend: if store.resendPendingSend(messageId) { OrbisHaptics.commit() }
+        case .restore:
+            guard let text = store.restorePendingSend(messageId) else { return }
+            let current = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            draft.wrappedValue = current.isEmpty ? text : draft.wrappedValue + "\n" + text
+            composerFocused = true
+        case .discard: store.discardPendingSend(messageId)
+        }
+    }
+
     private func submit(delivery: String? = nil) {
         guard canSubmit else { return }
         let accepted: Bool
@@ -540,9 +555,13 @@ struct ChatMessageRow: View, Equatable {
     var streamingMessageIds: Set<String> = []
     var rewindOption: RuntimeOption? = nil
     var rewindEnabled = false
+    /// ADR-0049：本地待确认发送的状态；权威行为 nil。
+    var pending: PendingSend.State? = nil
+    var canResend = false
     var onRewind: (RuntimeOption) -> Void = { _ in }
+    var onPending: (PendingSendAction) -> Void = { _ in }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled
+        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending && lhs.canResend == rhs.canResend
     }
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -574,7 +593,9 @@ struct ChatMessageRow: View, Equatable {
                     .accessibilityAction(named: "复制") { UIPasteboard.general.string = copyText }
                 if !row.isUser { Spacer(minLength: 8) }
             }
-            if row.isUser {
+            if row.isUser, let pending {
+                PendingSendStatus(state: pending, canResend: canResend, rowId: row.id, onAction: onPending)
+            } else if row.isUser {
                 HStack(spacing: 2) {
                     OrbisCopyButton(label: "复制消息", size: 26) { copyText }
                         .accessibilityIdentifier("copy-message-" + row.id)
@@ -589,6 +610,41 @@ struct ChatMessageRow: View, Equatable {
         }
     }
     private var copyText: String { (row.copyMessages ?? row.messages).map(\.text).joined(separator: "\n\n") }
+}
+
+enum PendingSendAction { case resend, restore, discard }
+
+/// 用户气泡下方原本放复制 / 回退的位置，替换为发送状态与恢复操作，不在聊天里另起提示行。
+private struct PendingSendStatus: View {
+    @Environment(\.colorScheme) private var scheme
+    let state: PendingSend.State
+    let canResend: Bool
+    let rowId: String
+    let onAction: (PendingSendAction) -> Void
+    var body: some View {
+        let palette = OrbisPalette(scheme)
+        HStack(spacing: 2) {
+            switch state {
+            case .sending, .accepted:
+                ProgressView().controlSize(.mini).frame(width: 26, height: 26)
+                Text("发送中").font(.orbisCaption()).foregroundStyle(palette.secondary)
+            case .unconfirmed:
+                ProgressView().controlSize(.mini).frame(width: 26, height: 26)
+                Text("正在核对是否送达").font(.orbisCaption()).foregroundStyle(palette.secondary)
+                OrbisIconButton(symbol: "trash", label: "删除", size: 26) { onAction(.discard) }
+                    .accessibilityIdentifier("pending-discard-" + rowId)
+            case .failed(let reason):
+                Image(systemName: "exclamationmark.circle").foregroundStyle(palette.error).font(.orbisCaption())
+                Text(reason).font(.orbisCaption()).foregroundStyle(palette.error).lineLimit(2)
+                OrbisIconButton(symbol: "arrow.clockwise", label: "重新发送", size: 26) { onAction(.resend) }
+                    .disabled(!canResend).accessibilityIdentifier("pending-resend-" + rowId)
+                OrbisIconButton(symbol: "arrow.uturn.backward", label: "放回输入框", size: 26) { onAction(.restore) }
+                    .accessibilityIdentifier("pending-restore-" + rowId)
+                OrbisIconButton(symbol: "trash", label: "删除", size: 26) { onAction(.discard) }
+                    .accessibilityIdentifier("pending-discard-" + rowId)
+            }
+        }.accessibilityElement(children: .contain).accessibilityIdentifier("pending-status-" + rowId)
+    }
 }
 
 private struct MessageContentView: View {
@@ -1216,7 +1272,7 @@ struct QueuedMessagesView: View {
     @Environment(\.colorScheme) private var scheme
     let runtimeId: String
     var body: some View {
-        let items = store.queuedMessages[runtimeId] ?? []
+        let items = store.queuePanelItems(runtimeId)
         if items.count == 1, let item = items.first {
             card(item).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.top, 10)
                 .accessibilityElement(children: .contain).accessibilityIdentifier("queued-messages")

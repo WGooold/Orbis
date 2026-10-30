@@ -457,11 +457,13 @@ struct HomeView: View {
             if currentHost?.connection.homeRuntimesLoading == true {
                 Text(currentHost?.connection.homeRuntimesError ?? "正在加载会话…").font(.orbisBody()).foregroundStyle(OrbisPalette(scheme).secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let host = currentHost, !host.connection.homeRuntimes.isEmpty {
+            } else if let host = currentHost, !host.homeRuntimes.isEmpty {
                 ScrollView {
                     LazyVStack(spacing: 16) {
-                        ForEach(host.connection.homeRuntimes) { runtime in
+                        ForEach(host.homeRuntimes) { runtime in
+                            // ADR-0049 §5：提交关闭后卡片沿滑动方向退场；电脑拒绝时再回到原位置。
                             runtimeCard(runtime, host: host)
+                                .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
                         }
                     }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 28)
                 }.refreshable { store.refresh() }
@@ -477,7 +479,7 @@ struct HomeView: View {
                 resetCloseSwipes()
             }
             .onChange(of: selecting) { _, active in if active { resetCloseSwipes() } }
-            .onChange(of: currentHost?.connection.homeRuntimes.map(\.runtimeId) ?? []) { _, ids in
+            .onChange(of: currentHost?.homeRuntimes.map(\.runtimeId) ?? []) { _, ids in
                 selectedRuntimeIds.formIntersection(ids)
             }
             .onDisappear { selectedRuntimeIds = []; resetCloseSwipes() }
@@ -505,7 +507,9 @@ struct HomeView: View {
 
     private func closeSelectedRuntimes() {
         guard let hostId = store.selectedHostId else { return }
-        let submitted = store.closeRuntimes(hostId: hostId, runtimeIds: selectedRuntimeIds)
+        let submitted = withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.32, dampingFraction: 0.86)) {
+            store.closeRuntimes(hostId: hostId, runtimeIds: selectedRuntimeIds)
+        }
         selectedRuntimeIds.subtract(submitted)
     }
 
@@ -617,14 +621,23 @@ struct HomeView: View {
                             guard !selecting else { return }
                             // Let this release's button action finish before accepting taps again.
                             DispatchQueue.main.async { swipingRuntimeIds.remove(runtime.runtimeId) }
+                            var closing = false
                             if closeThreshold > 0, armedCloseRuntimeIds.contains(runtime.runtimeId), value.translation.width <= -closeThreshold,
                                abs(value.translation.width) > abs(value.translation.height) {
-                                _ = store.closeRuntimes(hostId: host.hostId, runtimeIds: [runtime.runtimeId])
+                                closing = withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.32, dampingFraction: 0.86)) {
+                                    !store.closeRuntimes(hostId: host.hostId, runtimeIds: [runtime.runtimeId]).isEmpty
+                                }
                             }
-                            withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.28, dampingFraction: 0.82)) {
-                                swipeTranslations[runtime.runtimeId] = 0
-                                armedCloseRuntimeIds.remove(runtime.runtimeId)
-                                closeHapticRuntimeIds.remove(runtime.runtimeId)
+                            armedCloseRuntimeIds.remove(runtime.runtimeId)
+                            closeHapticRuntimeIds.remove(runtime.runtimeId)
+                            if closing {
+                                // The card leaves from where the finger released it; reset only after the
+                                // exit, so a card restored by a rejected close comes back in place.
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { swipeTranslations[runtime.runtimeId] = 0 }
+                            } else {
+                                withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.28, dampingFraction: 0.82)) {
+                                    swipeTranslations[runtime.runtimeId] = 0
+                                }
                             }
                         })
             }

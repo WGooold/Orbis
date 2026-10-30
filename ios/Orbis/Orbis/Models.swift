@@ -322,6 +322,8 @@ struct ChatMessage: Codable, Hashable, Identifiable {
     var toolSummary: ToolSummary? = nil
     var toolCallId: String? = nil
     var toolName: String? = nil
+    /// ADR-0049：由手机发送产生时，源端带回的原 messageId；只用于对账本地待确认发送。
+    var clientMessageId: String? = nil
     var id: String { messageId }
     var text: String {
         content.compactMap { item -> String? in

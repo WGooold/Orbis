@@ -45,9 +45,19 @@ final class HostConnection: ObservableObject {
     @Published private(set) var submittingInteractions: Set<String> = []
     @Published private(set) var queuedMessages: [String: [QueuedMessage]] = [:]
     @Published private(set) var pendingQueueCancellations: Set<String> = []
+    /// ADR-0049：本机已发出、尚未在源端落地的消息。按 Session 归属，只属于 `pendingSendHostId`。
+    @Published private(set) var pendingSends = PendingSendOutbox()
+    private var pendingSendHostId: String?
+    /// 每个 Session 应用权威状态（快照或完整 patch）的次数，用于兜底核对。
+    private var sessionRevisions: [String: Int] = [:]
+    private var pendingSendCheck: Task<Void, Never>?
+    /// ADR-0049 §5：首页关闭命令写入后立即隐藏卡片；失败、超时或电脑仍保留会话时恢复。
+    struct ClosingRuntime: Equatable { let commandId: String; var confirmedAt: Date? }
+    @Published private(set) var closingRuntimes: [String: ClosingRuntime] = [:]
+    /// 首页显示的会话：不含已提交关闭、仍在等电脑确认退出的会话。
     var homeRuntimesLoading: Bool {
         if runtimes.isEmpty { return connection == .connecting || connection == .online }
-        return runtimes.contains { runtime in
+        return runtimes.filter { closingRuntimes[$0.runtimeId] == nil }.contains { runtime in
             guard let session = runtime.sessionId, !session.isEmpty,
                   let snapshot = agentState.snapshots[runtime.runtimeId], snapshot.sessionId == session,
                   ["identity", "execution", "interactions"].allSatisfy({ snapshot.domains[$0] != nil && !snapshot.pending.contains($0) }),
@@ -59,7 +69,7 @@ final class HostConnection: ObservableObject {
     var homeRuntimes: [RuntimeSummary] {
         guard !homeRuntimesLoading else { return [] }
         // 首页优先按会话最近使用时间倒序；同一时间再按名称、runtimeId 稳定排序。
-        return runtimes.sorted { lhs, rhs in
+        return runtimes.filter { closingRuntimes[$0.runtimeId] == nil }.sorted { lhs, rhs in
             let left = lhs.sessionId.flatMap { sessionIndex[$0]?.modifiedAt } ?? 0
             let right = rhs.sessionId.flatMap { sessionIndex[$0]?.modifiedAt } ?? 0
             if left != right { return left > right }
@@ -69,7 +79,7 @@ final class HostConnection: ObservableObject {
     }
     var homeRuntimesError: String? {
         guard homeRuntimesLoading else { return nil }
-        for runtime in runtimes {
+        for runtime in runtimes where closingRuntimes[runtime.runtimeId] == nil {
             guard let snapshot = agentState.snapshots[runtime.runtimeId], snapshot.sessionId == runtime.sessionId else { continue }
             if let error = snapshot.error { return error }
             if ["identity", "execution", "interactions"].contains(where: { snapshot.missing[$0] != nil }) {
@@ -343,6 +353,7 @@ final class HostConnection: ObservableObject {
         notifications.setConnection(nil, connected: false)
         toolContent.close(); toolInventories.clear(); toolAcknowledgements = [:]; pendingAppliedBaselines = [:]
         interactions = [:]; queuedMessages = [:]; queueCommands = [:]; pendingQueueCancellations = []; submittingInteractions = []; interactionCommands = [:]; workingBranches = [:]; dismissPreview()
+        pendingSends.removeAll(); pendingSendHostId = nil; sessionRevisions = [:]
     }
 
     func shutdown() {
@@ -376,6 +387,8 @@ final class HostConnection: ObservableObject {
         historyWorker.setGeneration(historyGeneration, host: pairing)
         let generation = connectionGeneration
         selectedHostId = pairing.hostId
+        if pendingSendHostId != pairing.hostId { pendingSends.removeAll(); pendingSendHostId = pairing.hostId; sessionRevisions = [:] }
+        else { pendingSends.connectionLost() }
         connection = .connecting
         hostState.setConnection(pairing, connected: false)
         agentState.setConnection(pairing, connected: false)
@@ -403,6 +416,8 @@ final class HostConnection: ObservableObject {
         }, state: { [weak self] state, error in
             guard let self, self.connectionGeneration == generation else { return }
             self.setHistoryConnection(state == .secured)
+            // 断线时关闭结果未知；重连后的 device.ready 才说明哪些会话仍在。
+            if state != .secured { self.pendingSends.connectionLost(); self.closingRuntimes = [:] }
             self.connection = state
             self.recordConnectionEvent("连接：\(state.rawValue)")
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)
@@ -979,7 +994,8 @@ final class HostConnection: ObservableObject {
                 errorMessage = "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。"
                 continue
             }
-            if performAction(runtimeId: runtime.runtimeId, name: "quit", command: ["type": "slash.execute", "name": "quit", "args": ""]) {
+            if let commandId = performActionId(runtimeId: runtime.runtimeId, name: "quit", command: ["type": "slash.execute", "name": "quit", "args": ""]) {
+                closingRuntimes[runtime.runtimeId] = ClosingRuntime(commandId: commandId)
                 submitted.insert(runtime.runtimeId)
             }
         }
@@ -994,9 +1010,13 @@ final class HostConnection: ObservableObject {
     }
 
     private func performAction(runtimeId: String, name: String, command: [String: Any]) -> Bool {
+        performActionId(runtimeId: runtimeId, name: name, command: command) != nil
+    }
+
+    private func performActionId(runtimeId: String, name: String, command: [String: Any]) -> String? {
         let id = UUID().uuidString
         guard sendCommand(runtimeId: runtimeId, commandId: id, command: command) else {
-            errorMessage = "操作未送达，请连接后重试。"; return false
+            errorMessage = "操作未送达，请连接后重试。"; return nil
         }
         runtimeActions[id] = (runtimeId, name); pendingActionIds.insert(id); setActionFeedback(nil); updateSyncing()
         actionTimeouts[id] = Task { [weak self] in
@@ -1004,7 +1024,26 @@ final class HostConnection: ObservableObject {
             guard let self, self.runtimeActions[id] != nil else { return }
             self.finishAction(id, succeeded: false, message: "操作尚未确认，请刷新查看电脑端状态。")
         }
-        return true
+        return id
+    }
+
+    /// 关闭被电脑接受后继续隐藏，直到 Runtime 离线；拒绝立即恢复卡片。接受后迟迟不离线，
+    /// 说明电脑上的会话还在，同样恢复，不能让首页长期少一张真实存在的卡片。
+    private func closeFinished(_ runtimeId: String, succeeded: Bool, message: String?) {
+        guard succeeded else {
+            closingRuntimes[runtimeId] = nil
+            errorMessage = "关闭会话未完成：" + (message ?? "请重试。"); return
+        }
+        guard runtimes.contains(where: { $0.runtimeId == runtimeId }) else { closingRuntimes[runtimeId] = nil; return }
+        closingRuntimes[runtimeId]?.confirmedAt = Date()
+        let commandId = closingRuntimes[runtimeId]?.commandId
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard let self, self.closingRuntimes[runtimeId]?.commandId == commandId,
+                  self.runtimes.contains(where: { $0.runtimeId == runtimeId }) else { return }
+            self.closingRuntimes[runtimeId] = nil
+            self.errorMessage = "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。"
+        }
     }
 
     /// 操作完成提示只是短暂确认，不能长期停在聊天页上；新操作开始或断开时立即清掉。
@@ -1022,6 +1061,9 @@ final class HostConnection: ObservableObject {
         guard let action = runtimeActions.removeValue(forKey: id) else { return }
         defer { if action.name == "tree" { branchEditorNode = nil; branchEditorText = nil } }
         pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel(); updateSyncing()
+        if action.name == "quit", closingRuntimes[action.runtimeId]?.commandId == id {
+            closeFinished(action.runtimeId, succeeded: succeeded, message: message); return
+        }
         if succeeded {
             setActionFeedback("\(action.name) 已完成")
             if action.name == "tree", let runtime = runtimes.first(where: { $0.runtimeId == action.runtimeId }) {
@@ -1051,16 +1093,98 @@ final class HostConnection: ObservableObject {
             errorMessage = "请从命令菜单选择斜杠命令。"
             return false
         }
-        let id = UUID().uuidString
-        var command: [String: Any] = ["type": "user_message", "text": body, "messageId": id]
         let attachments = transfers.currentTasks.filter { attachmentIds.contains($0.id) && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.direction == "upload" }
         guard attachments.count == attachmentIds.count, attachments.allSatisfy({ $0.status == "completed" && $0.remotePath != nil }) else { return false }
-        if !attachments.isEmpty { command["attachments"] = attachments.compactMap(\.remotePath) }
-        if let delivery, ["followUp", "steer"].contains(delivery) { command["delivery"] = delivery }
-        guard performAction(runtimeId: runtime.runtimeId, name: "消息", command: command) else { return false }
-        // Host message events are authoritative. Pi and DSH may assign a different streaming or
-        // persisted ID than the client's command ID, so a local row here would become a duplicate.
+        return sendUserMessage(body, delivery: delivery, attachments: attachments.compactMap(\.remotePath), runtime: runtime)
+    }
+
+    /// ADR-0049：写入加密通道后立即显示本地行；源端带回同一身份时由权威行替换。
+    /// 后端分配的 id 各不相同，对账只认 `messageId` / `clientMessageId` / Host alias，不按正文猜。
+    private func sendUserMessage(_ body: String, delivery: String?, attachments: [String], runtime: RuntimeSummary) -> Bool {
+        guard let sessionId = runtime.sessionId else { return false }
+        let id = UUID().uuidString, commandId = UUID().uuidString
+        var command: [String: Any] = ["type": "user_message", "text": body, "messageId": id]
+        if !attachments.isEmpty { command["attachments"] = attachments }
+        if let delivery { command["delivery"] = delivery }
+        guard sendCommand(runtimeId: runtime.runtimeId, commandId: commandId, command: command) else {
+            errorMessage = "消息未送达，请连接后重试。"; return false
+        }
+        if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
+        let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
+        pendingSends.add(PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: attachments,
+                                     delivery: delivery, createdAt: Date(), anchorMessageId: anchor))
+        publishMessages()
         return true
+    }
+
+    /// 失败行重新发送：用新的 messageId，空闲直发不会被各后端当成同一条消息去重。
+    @discardableResult
+    func resendPendingSend(_ messageId: String) -> Bool {
+        guard canSend, let runtime = selectedRuntime, let send = pendingSends.item(messageId), send.sessionId == runtime.sessionId,
+              case .failed = send.state else { return false }
+        // 按当前状态选择投递方式：忙时直发会被拒绝，Claude 也不支持插入。
+        let delivery: String? = runtime.status == "idle" ? nil
+            : send.delivery == "steer" && agentKind(runtime) != "claude" ? "steer" : "followUp"
+        pendingSends.remove(messageId)
+        guard sendUserMessage(send.text, delivery: delivery, attachments: send.attachments, runtime: runtime) else {
+            pendingSends.add(send); publishMessages(); return false
+        }
+        return true
+    }
+
+    /// 放回输入框：删除本地行并交回正文；附件路径已在电脑上，只能随正文说明。
+    func restorePendingSend(_ messageId: String) -> String? {
+        guard let send = pendingSends.item(messageId) else { return nil }
+        switch send.state { case .failed, .unconfirmed: break; default: return nil }
+        pendingSends.remove(messageId); publishMessages()
+        return send.attachments.isEmpty ? send.text : send.text + "\n\n附件路径：\n" + send.attachments.joined(separator: "\n")
+    }
+
+    func discardPendingSend(_ messageId: String) {
+        guard let send = pendingSends.item(messageId) else { return }
+        switch send.state { case .failed, .unconfirmed: break; default: return }
+        pendingSends.remove(messageId); publishMessages()
+    }
+
+    /// 队列面板：Host 队列项，加上带 `delivery` 且仍在提交中的本地行。
+    func queuePanelItems(_ runtimeId: String) -> [QueuedMessage] {
+        let sessionId = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId
+        let host = (queuedMessages[runtimeId] ?? []).filter { !pendingSends.hidesQueueItem($0.queueId) }
+        let local = pendingSends.queueRows(sessionId: sessionId).filter { send in !host.contains { $0.queueId == send.messageId } }
+            .map { QueuedMessage(queueId: $0.messageId, text: $0.text, delivery: $0.delivery ?? "followUp", state: "submitting", error: nil) }
+        return host + local
+    }
+
+    private func reconcilePendingSends() {
+        guard !pendingSends.isEmpty else { return }
+        let connected = connection == .secured
+        var recheck = false
+        for sessionId in pendingSends.sessionIds {
+            let runtime = runtimes.first { $0.sessionId == sessionId }
+            let runtimeId = runtime?.runtimeId
+            let conversation = runtimeId.flatMap { conversations[$0] } ?? []
+            let aliases = runtimeId.flatMap { messageAliases[$0] } ?? [:]
+            let display = runtimeId.flatMap { displayMessageIds[$0] } ?? [:]
+            let needsSync = pendingSends.reconcile(sessionId: sessionId, status: runtime?.status,
+                queue: runtimeId.flatMap { queuedMessages[$0] } ?? [], revision: sessionRevisions[sessionId] ?? 0,
+                connected: connected) { id in
+                    conversation.contains { $0.messageId == id || $0.clientMessageId == id } || aliases[id].map { display[$0] != nil } == true
+                }
+            if needsSync, let runtimeId { syncDemands.insert(runtimeId) }
+            recheck = recheck || pendingSends.items.contains { $0.sessionId == sessionId && $0.state == .accepted && !$0.sawBusy }
+        }
+        // 接受后 Runtime 一直空闲时没有新事件，到期后需要自己再核对一次。
+        if recheck, pendingSendCheck == nil {
+            pendingSendCheck = Task { [weak self] in
+                do { try await Task.sleep(nanoseconds: UInt64((PendingSendOutbox.acceptedIdleGrace + 0.5) * 1_000_000_000)) } catch { return }
+                self?.pendingSendCheck = nil; self?.publishMessages()
+            }
+        }
+    }
+
+    private func markAuthoritative(_ runtimeId: String) {
+        guard let sessionId = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId else { return }
+        sessionRevisions[sessionId, default: 0] += 1
     }
 
     @discardableResult
@@ -1252,6 +1376,8 @@ final class HostConnection: ObservableObject {
             }
         case "runtime.offline":
             if let id = message["runtimeId"] as? String {
+                pendingSends.runtimeLost(sessionId: runtimes.first { $0.runtimeId == id }?.sessionId)
+                closingRuntimes[id] = nil
                 runtimes.removeAll { $0.runtimeId == id }
                 notifications.offline(runtimeId: id)
                 invalidateConversation(id)
@@ -1354,6 +1480,12 @@ final class HostConnection: ObservableObject {
             commands[runtimeId] = (capabilities["commands"] as? [[String: Any]] ?? []).compactMap(jsonDecode)
             return
         }
+        if type == "command.result", let commandId = event["commandId"] as? String, pendingSends.owns(commandId: commandId) {
+            pendingSends.commandResult(commandId, ok: event["ok"] as? Bool == true, status: event["status"] as? String, error: event["error"] as? String)
+            publishMessages(); return
+        }
+        // 首页关闭的回执由 closeFinished 给出带上下文的提示，通用失败分支不再覆盖它。
+        let closeResult = type == "command.result" && closingRuntimes.values.contains { $0.commandId == event["commandId"] as? String }
         if type == "command.result", let commandId = event["commandId"] as? String, event["status"] as? String != "pending" {
             if let pending = queueCommands[commandId], pending.runtimeId == runtimeId {
                 queueCommands[commandId] = nil; pendingQueueCancellations.remove(pending.queueId)
@@ -1415,7 +1547,7 @@ final class HostConnection: ObservableObject {
             }
             return
         }
-        if type == "runtime.error" || (type == "command.result" && event["ok"] as? Bool == false) {
+        if type == "runtime.error" || (type == "command.result" && event["ok"] as? Bool == false && !closeResult) {
             if let commandId = event["commandId"] as? String, let syncId = pendingSyncs.first(where: { $0.value.commandId == commandId && $0.value.runtimeId == runtimeId })?.key {
                 let pending = pendingSyncs[syncId]; finishSync(syncId, readPhase: .failed)
                 if pending?.range == "history" { historyErrors[runtimeId] = event["error"] as? String ?? event["message"] as? String ?? "历史读取失败，请重试。"; return }
@@ -1455,6 +1587,7 @@ final class HostConnection: ObservableObject {
                 applyProjection(event, runtimeId: runtimeId)
                 if let leaf = (event["head"] as? [String: Any])?["leafId"] as? String { sessionLeaves[runtimeId] = leaf }
                 sourcePositions[runtimeId] = (epoch, seq)
+                markAuthoritative(runtimeId)
                 if event["headCompleteness"] as? String == "complete", (event["live"] as? [String: Any])?["complete"] as? Bool == true,
                    let head = event["head"] as? [String: Any], liveToolReferences[runtimeId].map({ toolInventories.covers($0, runtime: runtimeId) }) ?? true {
                     appliedBaselines[runtimeId] = SessionAppliedBaseline(epoch: epoch, seq: seq, leaf: head["leafId"] as? String)
@@ -1685,6 +1818,7 @@ final class HostConnection: ObservableObject {
             sourcePositions[runtimeId] = (epoch, seq)
         }
         syncedSessions.insert("\(runtimeId)|\(pending.sessionId)")
+        markAuthoritative(runtimeId)
         finishSync(syncId, readPhase: nil)
         let baseline = baselineForCompleteCheckpoint(event, runtimeId: runtimeId)
         appliedBaselines[runtimeId] = nil
@@ -1931,6 +2065,7 @@ final class HostConnection: ObservableObject {
     }
 
     private func publishMessages() {
+        reconcilePendingSends()
         guard let runtimeId = selectedRuntimeId else { messages = []; streamingMessageIds = []; updateSyncing(); return }
         let visibleTimings = selectedRuntime?.sessionId.flatMap { timingsBySession[$0] } ?? [:]
         if visibleTimings != turnTimings { turnTimings = visibleTimings }
@@ -1940,7 +2075,8 @@ final class HostConnection: ObservableObject {
         }
         // Publishing an identical transcript would re-render the whole chat for nothing; the
         // comparison is O(1) when the array storage is unchanged.
-        let next = materializeLiveTools(conversations[runtimeId] ?? [], tools: liveTools[runtimeId] ?? [], liveOrders: liveOrders[runtimeId] ?? [:])
+        let next = PendingSendOutbox.merge(materializeLiveTools(conversations[runtimeId] ?? [], tools: liveTools[runtimeId] ?? [], liveOrders: liveOrders[runtimeId] ?? [:]),
+                                           pending: pendingSends.chatRows(sessionId: selectedRuntime?.sessionId))
         let streaming = (unfinishedLiveMessageIds[runtimeId] ?? []).intersection(next.filter { $0.role == "assistant" }.map(\.messageId))
         if streaming != streamingMessageIds { streamingMessageIds = streaming }
         if next != messages { messages = next }

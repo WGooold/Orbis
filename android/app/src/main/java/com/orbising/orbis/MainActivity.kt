@@ -551,6 +551,7 @@ internal fun RuntimeListScreen(
     // 主页只列当前电脑的会话：多台电脑不混在一张列表里，切换入口就在下面的电脑行（ADR-0030 修订）。
     val visibleRuntimes = remember(hosts, activeHostId) {
         hosts.filter { it.hostId == activeHostId }.flatMap { snapshot ->
+            // ADR-0049 §5：已提交关闭的会话先离开首页；电脑拒绝或超时时再回来。
             snapshot.state.homeRuntimes
                 .map { HostRuntimeRow(snapshot.hostId, snapshot.name, it, snapshot.state) }
         }
@@ -735,7 +736,7 @@ internal fun RuntimeListScreen(
                                 }
                             }
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().animateItem(),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(0.dp),
                             ) {
@@ -795,10 +796,18 @@ internal fun RuntimeListScreen(
                                                         onDragStart = { hapticSent = false },
                                                         onDragEnd = {
                                                             val shouldClose = closeThreshold > 0f && swipeOffset >= closeThreshold
-                                                            if (shouldClose) onCloseRuntimes(row.hostId, setOf(runtime.runtimeId))
+                                                            // 提交成功后卡片从松手位置继续向左离开，不先弹回再消失。
+                                                            val closing = shouldClose && onCloseRuntimes(row.hostId, setOf(runtime.runtimeId)).isNotEmpty()
                                                             swipeOffset = 0f
                                                             closeArmed = false
-                                                            swipeScope.launch { swipeAnim.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow)) }
+                                                            swipeScope.launch {
+                                                                if (closing) {
+                                                                    swipeAnim.animateTo(cardWidth, tween(180))
+                                                                    // 正常情况下卡片随列表项淡出、协程随之取消；仍在列表里说明
+                                                                    // 关闭没有隐藏它，等淡出时长后回到原位。延迟属于动画，由帧时钟驱动。
+                                                                    swipeAnim.animateTo(0f, tween(240, delayMillis = 400))
+                                                                } else swipeAnim.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow))
+                                                            }
                                                         },
                                                         onDragCancel = {
                                                             swipeOffset = 0f; closeArmed = false
@@ -1238,7 +1247,10 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     // ADR-0039 §5：按消息对象身份复用上一次的列表行。`revision` 每条 patch 都会变，
     // 用它当 key 等于每次都重建整段会话的呈现；这里改成"只有消息对象真的换了才重建"。
     val presentationCache = remember { PresentationCache() }
-    val presentation = presentationCache.presentation(conversation.messages)
+    // ADR-0049：本地待确认发送只在呈现时叠加，权威记录与缓存都不包含它们。
+    val pendingRows = state.pendingSends.chatRows(sessionId)
+    val visibleMessages = remember(conversation.messages, pendingRows) { mergePendingSends(conversation.messages, pendingRows) }
+    val presentation = presentationCache.presentation(visibleMessages)
     val chatItems = presentationCache.items(presentation.messages, turnIdsByMessageId)
     val truncatedContent = remember(presentation.messages) {
         presentation.messages.firstNotNullOfOrNull { message ->
@@ -1412,6 +1424,15 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     fun refreshConversation() {
         model.refreshRuntime(runtimeId)
         model.refreshWorkingBranch(runtimeId)
+    }
+    /** ADR-0049：消息写入通道即显示本地行，输入框立即清空；结果落在那一行上，不再锁住发送键。 */
+    fun submitMessage(commandId: String?) {
+        if (commandId == null) return
+        actionHaptic()
+        commandFeedback = null
+        input = ""
+        selectedSlashCommandName = null
+        model.clearDraft(runtimeId)
     }
     fun trackSubmission(commandId: String?, clearInputAfterSubmit: Boolean = false) {
         if (commandId == null) return
@@ -1752,7 +1773,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 Column {
                     ComposerContextRail(composerStatus(runtime))
                     PendingMessagesPanel(
-                        messages = conversation.queuedMessages.values.toList(),
+                        messages = state.queuePanelItems(runtimeId),
                         pendingCommands = state.pendingCommands.keys,
                         canSend = state.e2eReady && runtime != null,
                         onCancel = model::cancelQueuedMessage,
@@ -1766,7 +1787,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                 text = queuedMessageDeliveryText("followUp"),
                                 onClick = {
                                     showDeliveryChoices = false
-                                    trackSubmission(model.sendMessage(input, "followUp"))
+                                    submitMessage(model.sendMessage(input, "followUp"))
                                 },
                                 enabled = pendingMessageCommandId == null,
                                 filled = true,
@@ -1776,7 +1797,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                 text = queuedMessageDeliveryText("steer"),
                                 onClick = {
                                     showDeliveryChoices = false
-                                    trackSubmission(model.sendMessage(input, "steer"))
+                                    submitMessage(model.sendMessage(input, "steer"))
                                 },
                                 enabled = pendingMessageCommandId == null,
                                 filled = true,
@@ -1908,7 +1929,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                         } else if (runtime?.status == "running" && runtime.agentKind == "claude") {
                                             // Claude Code 只有「等当前回合结束后提交」，没有 Steer 可选。
                                             showDeliveryChoices = false
-                                            trackSubmission(model.sendMessage(input, "followUp"))
+                                            submitMessage(model.sendMessage(input, "followUp"))
                                         } else if (runtime?.status == "running") {
                                             showDeliveryChoices = true
                                         } else {
@@ -1920,7 +1941,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                                 model.detachUploads(attachedTaskIds)
                                                 updateAttachedTaskIds(emptySet())
                                             }
-                                            trackSubmission(commandId)
+                                            submitMessage(commandId)
                                         }
                                     }
                                 }
@@ -2029,6 +2050,17 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                         is ChatListItem.UserMessage -> UserMessageCard(
                             runtimeId = runtimeId,
                             message = item.message,
+                            pending = state.pendingSends[item.message.messageId]?.state,
+                            canResend = state.e2eReady && runtime != null,
+                            onPendingAction = { action ->
+                                when (action) {
+                                    PendingSendAction.Resend -> if (model.resendPendingSend(item.message.messageId) != null) actionHaptic()
+                                    PendingSendAction.Restore -> model.restorePendingSend(item.message.messageId)?.let { text ->
+                                        input = if (input.isBlank()) text else input + "\n" + text
+                                    }
+                                    PendingSendAction.Discard -> model.discardPendingSend(item.message.messageId)
+                                }
+                            },
                             downloads = state.downloads,
                             downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
                             downloadFile = { path -> model.downloadFile(path) },
@@ -3360,6 +3392,10 @@ internal fun UserMessageCard(
     downloadFile: (String) -> Unit,
     onRewind: (() -> Unit)? = null,
     rewindEnabled: Boolean = false,
+    /** ADR-0049：本地待确认发送的状态；权威行为 null。 */
+    pending: PendingSendState? = null,
+    canResend: Boolean = false,
+    onPendingAction: (PendingSendAction) -> Unit = {},
 ) {
     // 右对齐、按内容收窄的气泡，最宽 85%：位置已说明是谁发的，不再加「你」（与 iOS 一致）。
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -3377,12 +3413,47 @@ internal fun UserMessageCard(
                     )
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            if (pending != null) {
+                PendingSendStatus(pending, canResend, onPendingAction)
+            } else Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 CopyIconButton("复制消息", size = 28.dp) { message.content.mapNotNull { it.text }.joinToString("\n") }
                 if (onRewind != null) {
                     NeumorphIconButton(onClick = onRewind, icon = Icons.Rounded.SkipPrevious,
                         contentDescription = "Rewind", size = 28.dp, enabled = rewindEnabled)
                 }
+            }
+        }
+    }
+}
+
+internal enum class PendingSendAction { Resend, Restore, Discard }
+
+/** 用户气泡下方原本放复制 / 回退的位置，替换为发送状态与恢复操作，不在聊天里另起提示行。 */
+@Composable
+private fun PendingSendStatus(state: PendingSendState, canResend: Boolean, onAction: (PendingSendAction) -> Unit) {
+    Row(Modifier.testTag("pending-send-status"), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        val muted = MaterialTheme.colorScheme.onSurfaceVariant
+        when (state) {
+            PendingSendState.Sending, PendingSendState.Accepted -> {
+                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
+                Text("发送中", style = MaterialTheme.typography.labelSmall, color = muted)
+            }
+            PendingSendState.Unconfirmed -> {
+                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
+                Text("正在核对是否送达", style = MaterialTheme.typography.labelSmall, color = muted)
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Discard) }, icon = Icons.Rounded.Delete,
+                    contentDescription = "删除", size = 28.dp)
+            }
+            is PendingSendState.Failed -> {
+                Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
+                Text(state.reason, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Resend) }, icon = Icons.Rounded.Refresh,
+                    contentDescription = "重新发送", size = 28.dp, enabled = canResend)
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Restore) }, icon = Icons.Rounded.Edit,
+                    contentDescription = "放回输入框", size = 28.dp)
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Discard) }, icon = Icons.Rounded.Delete,
+                    contentDescription = "删除", size = 28.dp)
             }
         }
     }
@@ -3753,6 +3824,7 @@ internal fun queuedMessageDeliveryText(delivery: String): String = when (deliver
 }
 
 private fun queuedMessageStateText(state: String): String = when (state) {
+    "submitting" -> "提交中"
     "accepted" -> "已排队"
     "delivered" -> "已送入上下文"
     "cancelled" -> "已取消"

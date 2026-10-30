@@ -64,6 +64,10 @@ private final class PreviewTransport: OrbisTransport {
     private var viewportUpdates: Task<Void, Never>?
     private var viewportRows: Bool { ProcessInfo.processInfo.arguments.contains("--preview-viewport-rows") }
     private var sourceSequence = 1
+    /// Messages sent from the composer in this preview; source checkpoints keep them after a re-sync.
+    private var sentMessages: [[String: Any]] = []
+    /// `--preview-send=pi` answers after a delay with a different id; `fail` rejects the send (ADR-0049).
+    private var sendMode: String { ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-send=") }.map { String($0.dropFirst(15)) } ?? "codex" }
     private var slowSync: Bool { ProcessInfo.processInfo.arguments.contains("--preview-slow-sync") }
     private var modelName: String { slowSync ? "A very long model name that needs truncation" : "GPT-5.4" }
     private var enabledProviders: [String: Set<String>] = ["codex": ["official"], "pi": ["official"], "dsh": ["official"]]
@@ -231,6 +235,7 @@ private final class PreviewTransport: OrbisTransport {
         } else if let command = object["command"] as? [String: Any], let type = command["type"] as? String {
             let runtime = object["runtimeId"] as? String ?? "preview-codex"
             if type == "session.sync" {
+                let messages = self.messages + sentMessages
                 let entries: [[String: Any]] = messages.enumerated().map { index, message in
                     ["entryId": "node-\(index + 1)", "parentId": index == 0 ? NSNull() : "node-\(index)" as Any, "type": "message", "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": message]]
                 }
@@ -257,12 +262,38 @@ private final class PreviewTransport: OrbisTransport {
             } else if type == "user_message.cancel" {
                 event(["type": "message.queued", "queueId": command["messageId"]!, "text": "接着检查 iOS 的历史同步和文件传输。", "delivery": "followUp", "state": "cancelled"], runtimeId: runtime)
                 event(["type": "command.result", "commandId": object["commandId"]!, "ok": true], runtimeId: runtime)
-            } else if type == "user_message", let text = command["text"] as? String {
-                event(["type": "message.finished", "message": message(command["messageId"] as? String ?? UUID().uuidString, role: "user", text: text)], runtimeId: runtime)
+            } else if type == "user_message", let text = command["text"] as? String, let clientId = command["messageId"] as? String {
+                let commandId = object["commandId"]!
+                let mode = sendMode
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: mode == "codex" ? 0 : 400_000_000)
+                    if mode == "fail" {
+                        self.event(["type": "command.result", "commandId": commandId, "ok": false, "status": "failure", "error": "runtime_busy"], runtimeId: runtime)
+                        return
+                    }
+                    self.event(["type": "command.result", "commandId": commandId, "ok": true, "status": "success"], runtimeId: runtime)
+                    // Long enough for UI automation to observe the pending row before the Host commits it.
+                    if mode == "pi" { try? await Task.sleep(nanoseconds: 4_000_000_000) }
+                    self.commitSent(text: text, clientId: clientId, runtime: runtime)
+                }
             } else if type == "slash.execute" {
-                event(["type": "command.result", "commandId": object["commandId"]!, "ok": true], runtimeId: runtime)
-                if command["name"] as? String == "quit" {
-                    receive?(["type": "runtime.offline", "runtimeId": runtime], "ctl")
+                // `--preview-close=slow` confirms /quit after a delay; `fail` rejects it (ADR-0049 §5).
+                let close = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-close=") }.map { String($0.dropFirst(16)) }
+                guard command["name"] as? String == "quit", let close else {
+                    event(["type": "command.result", "commandId": object["commandId"]!, "ok": true], runtimeId: runtime)
+                    if command["name"] as? String == "quit" { receive?(["type": "runtime.offline", "runtimeId": runtime], "ctl") }
+                    return
+                }
+                let commandId = object["commandId"]!
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    if close == "fail" {
+                        self.event(["type": "command.result", "commandId": commandId, "ok": false, "status": "failure", "error": "进程仍在运行"], runtimeId: runtime)
+                        return
+                    }
+                    self.event(["type": "command.result", "commandId": commandId, "ok": true], runtimeId: runtime)
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    self.receive?(["type": "runtime.offline", "runtimeId": runtime], "ctl")
                 }
             }
         }
@@ -292,6 +323,21 @@ private final class PreviewTransport: OrbisTransport {
         case "management": return ["lifecycle": "running", "platform": "darwin", "nodeVersion": "v24"]
         default: return [:]
         }
+    }
+    /// The Host commits the prompt as a canonical entry whose id differs from the App id but declares it.
+    private func commitSent(text: String, clientId: String, runtime: String) {
+        let parent = "node-\(messages.count + sentMessages.count)"
+        let entryId = "node-\(messages.count + sentMessages.count + 1)"
+        var sent = message(entryId, role: "user", text: text); sent["clientMessageId"] = clientId
+        sentMessages.append(sent)
+        let base = sourceSequence
+        sourceSequence += 1
+        event(["type": "session.patch", "sessionId": "session-1", "baseSeq": base, "seq": sourceSequence,
+               "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true],
+               "head": ["leafId": entryId], "headCompleteness": "complete",
+               "entries": [["entryId": entryId, "parentId": parent, "type": "message", "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": sent]]],
+               "display": ["projectionVersion": 3, "entries": [["displayId": entryId, "entryId": entryId, "kind": "message", "message": sent]]],
+               "live": ["complete": true, "messages": [], "tools": []]], runtimeId: runtime)
     }
     private func message(_ id: String, role: String, text: String) -> [String: Any] {
         ["messageId": id, "role": role, "timestamp": 1793232000000, "content": [["type": "text", "text": text]]]

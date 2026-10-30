@@ -113,6 +113,18 @@ describe("显示投影：消息语义", () => {
     expect(projection.entries[2]).toMatchObject({ kind: "undisplayable", reason: "not_rendered" });
   });
 
+  it("用户消息的手机发送身份随显示行带出，其它角色和非法值不带（ADR-0049）", () => {
+    const entries = [
+      message("u1", null, { role: "user", content: "你好", clientMessageId: "app-1" }),
+      message("a1", "u1", { role: "assistant", content: "收到", clientMessageId: "app-2" }),
+      message("u2", "a1", { role: "user", content: "再问", clientMessageId: "" }),
+    ];
+    const projection = projectDisplayEntries(entries, "u2");
+    expect(projection.entries.map(row => row.message?.clientMessageId)).toEqual(["app-1", undefined, undefined]);
+    expect(projection.entries[0]?.message?.messageId).toBe("u1");
+    expect(DisplayEntrySchema.safeParse(projection.entries[0]).success).toBe(true);
+  });
+
   it("失败文本优先用 remoteFailure，缺失时回退 provider 文案且不重复追加", () => {
     const entries = [
       message("f1", null, { role: "assistant", stopReason: "error", errorMessage: "上游 500" }),

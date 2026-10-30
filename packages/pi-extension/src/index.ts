@@ -21,6 +21,7 @@ import {
   logPiExtensionRuntimeEvent,
 } from "./runtime-log.js";
 import {
+  PhoneSendClaims,
   PiMessageStream,
   stripInlineMedia,
   messageToRemote,
@@ -91,6 +92,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   let slashCommandAdapter: PiSlashCommandAdapter | undefined;
   let activeSessionToken: symbol | undefined;
   let messageStream = new PiMessageStream();
+  let phoneSends = new PhoneSendClaims();
   let sessionSource: RecoverableSessionSource | undefined;
   let toolProducer: ToolActivityProducer | undefined;
   let toolStore: ToolContentStore | undefined;
@@ -313,6 +315,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     // is replaced by /reload, while the old command may still log completion.
     const sessionLog = createPiExtensionRuntimeDiagnostic(ctx.cwd);
     messageStream = new PiMessageStream();
+    phoneSends = new PhoneSendClaims();
     /**
      * ADR-0035 §8：翻页复用同一份预处理（条目索引 + 分支路径 + 显示投影）。
      *
@@ -493,7 +496,12 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
         }
         // 空闲直通（bridge 只在有效空闲时才允许无 delivery 到这里），立即开新 turn。
         if (delivery === undefined) {
-          await pi.sendUserMessage(content);
+          if (messageId !== undefined) phoneSends.expect(messageId, content);
+          try { await pi.sendUserMessage(content); }
+          catch (error) {
+            if (messageId !== undefined) phoneSends.forget(messageId);
+            throw error;
+          }
           return;
         }
         // 忙时接管：不入 Pi 的队列，出队时用 queueId 调 deliverQueued 回执。
@@ -544,9 +552,11 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
         const next = queuedSends.shift();
         if (!next) break;
         sessionBridge.deliverQueued(next.messageId);
+        phoneSends.expect(next.messageId, next.content);
         try {
           await pi.sendUserMessage(next.content);
         } catch (error) {
+          phoneSends.forget(next.messageId);
           sessionBridge.failQueued(next.messageId, error instanceof Error ? error.message : "message_rejected");
           break;
         }
@@ -689,7 +699,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     const entry = [...ctx.sessionManager.getBranch()].reverse().find((candidate) =>
       candidate.type === "message" && candidate.message === event.message
     );
-    publishSessionEvent(messageStream.started(event.message, entry?.id), ctx);
+    publishSessionEvent(phoneSends.started(event.message, messageStream.started(event.message, entry?.id)), ctx);
   });
 
   pi.on("message_update", async (event) => {
@@ -704,7 +714,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   });
 
   pi.on("message_end", async (event, ctx) => {
-    publishSessionEvent(messageStream.finished(event.message), ctx);
+    publishSessionEvent(phoneSends.finished(messageStream.finished(event.message)), ctx);
   });
 
   pi.on("model_select", async () => {

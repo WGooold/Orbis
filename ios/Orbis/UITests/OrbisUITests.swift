@@ -157,6 +157,32 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(pi.exists)
         XCTAssertTrue(app.buttons["打开会话目录"].exists)
     }
+    /// ADR-0049 §5: the card leaves as soon as the close is sent and returns if the computer rejects it.
+    func testSwipeCloseHidesBeforeConfirmationAndRestoresOnRejection() {
+        let app = launch("home", arguments: ["--preview-close=slow"])
+        let codex = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(codex.waitForExistence(timeout: 8))
+        let start = codex.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -codex.frame.width * 0.6, dy: 0)))
+        // The preview confirms after 3 s and goes offline 1 s later; the card is already gone.
+        XCTAssertTrue(codex.waitForNonExistence(timeout: 1.5))
+        capture("home-close-optimistic", app: app)
+        XCTAssertFalse(codex.waitForExistence(timeout: 6))
+        app.terminate()
+
+        let rejected = launch("home", arguments: ["--preview-close=fail"])
+        let card = rejected.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(card.waitForExistence(timeout: 8))
+        let originalFrame = card.frame
+        let origin = card.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        origin.press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: -originalFrame.width * 0.6, dy: 0)))
+        XCTAssertTrue(card.waitForNonExistence(timeout: 1.5))
+        XCTAssertTrue(card.waitForExistence(timeout: 6))
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(card.frame.minX - originalFrame.minX) <= 1 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 3), .completed)
+        XCTAssertTrue(rejected.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "关闭会话未完成")).firstMatch.waitForExistence(timeout: 3))
+        capture("home-close-restored", app: rejected)
+    }
     func testSwipeRightFromLeftSideOpensDirectory() {
         let app = launch("home")
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))
@@ -235,6 +261,42 @@ final class OrbisUITests: XCTestCase {
         capture("history-preview", app: app)
         app.buttons["从这条回复后继续"].tap()
         XCTAssertTrue(app.buttons["历史与分支"].waitForExistence(timeout: 5))
+    }
+    /// ADR-0049: the bubble appears before the Host answers and is replaced, not duplicated, by the
+    /// canonical row that only declares the App id; a rejected send stays and can return to the composer.
+    func testOptimisticSendReconcilesAndRejectedSendRestores() {
+        let text = "乐观显示的这条消息"
+        let app = launch("chat", arguments: ["--preview-send=pi"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap(); composer.typeText(text)
+        app.buttons["发送消息"].firstMatch.tap()
+        let bubble = app.staticTexts[text]
+        XCTAssertTrue(bubble.waitForExistence(timeout: 1))
+        let sending = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-status-")).firstMatch
+        XCTAssertTrue(sending.waitForExistence(timeout: 1))
+        XCTAssertTrue(app.staticTexts["发送中"].exists)
+        XCTAssertEqual((composer.value as? String)?.contains(text), false)
+        capture("optimistic-send-pending", app: app)
+        let settled = NSPredicate(format: "exists == false")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: sending)], timeout: 8), .completed)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
+        // The remaining bubble is the canonical row, whose id is the Host entry id rather than the App id.
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "copy-message-node-")).firstMatch.exists)
+        capture("optimistic-send-settled", app: app)
+        app.terminate()
+
+        let rejected = launch("chat", arguments: ["--preview-send=fail"])
+        let input = rejected.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        input.tap(); input.typeText("会被拒绝的消息")
+        rejected.buttons["发送消息"].firstMatch.tap()
+        XCTAssertTrue(rejected.staticTexts["会话正在运行，请选择插入或完成后发送"].waitForExistence(timeout: 4))
+        capture("optimistic-send-rejected", app: rejected)
+        rejected.buttons["放回输入框"].firstMatch.tap()
+        let restored = NSPredicate(format: "value CONTAINS %@", "会被拒绝的消息")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: restored, object: input)], timeout: 4), .completed)
+        XCTAssertFalse(rejected.staticTexts["会话正在运行，请选择插入或完成后发送"].exists)
     }
     func testUserMessageCopyAndRewind() {
         let app = launch("chat")

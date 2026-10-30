@@ -139,6 +139,8 @@ data class ChatMessage(
     val toolName: String? = null,
     val isError: Boolean? = null,
     val toolSummary: ToolSummary? = null,
+    /** ADR-0049：由手机发送产生时，源端带回的原 messageId；只用于对账本地待确认发送。 */
+    val clientMessageId: String? = null,
 )
 
 @Serializable
@@ -239,6 +241,9 @@ data class RuntimeSlashCommand(
 data class RuntimeCapabilities(
     val commands: List<RuntimeSlashCommand> = emptyList(),
 )
+
+/** 一次首页关闭：命令写入后卡片立即隐藏；拒绝、超时或电脑仍保留会话时恢复。 */
+data class ClosingRuntime(val commandId: String, val requestedAt: Long, val confirmedAt: Long? = null)
 
 data class CommandResult(
     val ok: Boolean,
@@ -410,6 +415,12 @@ data class RemoteState(
     val lastSequence: Map<String, Long> = emptyMap(),
     val pendingCommands: Map<String, String> = emptyMap(),
     val commandResults: Map<String, CommandResult> = emptyMap(),
+    /** ADR-0049：本机已发出、尚未在源端落地的消息，按 App messageId 索引，按 Session 归属。 */
+    val pendingSends: Map<String, PendingSend> = emptyMap(),
+    /** 每个 Session 应用权威状态（快照或推进 source 的 patch）的次数，用于兜底核对。 */
+    val sessionRevisions: Map<String, Long> = emptyMap(),
+    /** ADR-0049 §5：首页已提交关闭、仍在等电脑确认退出的会话；首页不显示它们。 */
+    val closingRuntimes: Map<String, ClosingRuntime> = emptyMap(),
     val capabilities: Map<String, RuntimeCapabilities> = emptyMap(),
     /**
      * 这台电脑支持的 agent 种类（[device.ready] 的 `agents`）。
@@ -596,7 +607,7 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
 internal val RemoteState.homeRuntimesLoading: Boolean
     get() = (runtimes.isEmpty() && (connection in setOf(RelayConnection.CONNECTING, RelayConnection.RECONNECTING) ||
         connection == RelayConnection.ONLINE && !e2eReady)) ||
-        runtimes.values.any { runtime ->
+        runtimes.values.filter { it.runtimeId !in closingRuntimes }.any { runtime ->
         runtime.sessionId.isNullOrBlank() || runtime.agentKind.isNullOrBlank() ||
             runtime.cwd.isBlank() || !runtime.domainAvailability.keys.containsAll(listOf("identity", "execution", "interactions"))
     }
@@ -604,7 +615,7 @@ internal val RemoteState.homeRuntimesLoading: Boolean
 internal val RemoteState.homeRuntimesError: String?
     get() {
         if (!homeRuntimesLoading) return null
-        val sessionIds = runtimes.values.mapNotNull { it.sessionId }.toSet()
+        val sessionIds = runtimes.values.filter { it.runtimeId !in closingRuntimes }.mapNotNull { it.sessionId }.toSet()
         val snapshots = agentStateSnapshots.values.filter { snapshot ->
             snapshot.scope == "agent" && agentStateReads[snapshot.requestId]?.sessionId in sessionIds
         }
@@ -618,7 +629,7 @@ internal val RemoteState.homeRuntimes: List<RuntimeSummary>
         if (homeRuntimesLoading) return emptyList()
         // 首页优先按会话最近使用时间倒序；同一时间再按名称、runtimeId 稳定排序。
         val collator = java.text.Collator.getInstance(java.util.Locale.CHINA)
-        return runtimes.values.sortedWith(
+        return runtimes.values.filter { it.runtimeId !in closingRuntimes }.sortedWith(
             compareByDescending<RuntimeSummary> { sessions[it.sessionId]?.modifiedAt ?: 0L }
                 .thenBy(collator) { runtimeDisplayName(it) }
                 .thenBy { it.runtimeId },
@@ -1536,6 +1547,22 @@ internal fun List<ChatMessage>.represents(row: ChatMessage): Boolean = any { can
             )
 }
 
+/**
+ * ADR-0049 §4：一次被接受的快照，或推进 source 序号的 patch，就是一份新的权威状态。
+ * 兜底核对只在核对开始之后看到它才下结论。
+ */
+private fun RemoteState.markAuthoritative(previous: RemoteState, runtimeId: String?, type: String?, syncCommandId: String?): RemoteState {
+    if (runtimeId == null || pendingSends.isEmpty()) return this
+    val applied = when (type) {
+        "session.snapshot" -> syncCommandId != null && syncCommandId in previous.sessionSyncCommands && syncCommandId !in sessionSyncCommands
+        "session.patch" -> conversations[runtimeId]?.let { it.sourceSeq != previous.conversations[runtimeId]?.sourceSeq ||
+            it.sourceEpoch != previous.conversations[runtimeId]?.sourceEpoch } == true
+        else -> false
+    }
+    val sessionId = runtimes[runtimeId]?.sessionId ?: return this
+    return if (applied) copy(sessionRevisions = sessionRevisions + (sessionId to (sessionRevisions[sessionId] ?: 0L) + 1)) else this
+}
+
 private fun canAdvanceQueuedMessageState(current: String?, incoming: String): Boolean = when {
     current == null || current == incoming -> true
     current == "accepted" && incoming in setOf("delivered", "rejected", "cancelled", "not_cancelable") -> true
@@ -1574,6 +1601,9 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
         commandResults = (commandResults - interactionCommandIds) + interrupted.filterNot { it.isSessionSyncCommandId() }.associateWith {
             CommandResult(ok = false, status = "cancelled")
         },
+        pendingSends = pendingSends.connectionLost(),
+        // 断线时关闭结果未知；重连后的 device.ready 才说明哪些会话仍在。
+        closingRuntimes = emptyMap(),
         sessionSyncCommands = emptyMap(),
         sessionSyncFailures = emptyMap(), sessionSyncBusyStreaks = emptyMap(), sessionSyncFailureCooldowns = emptyMap(), sessionSyncBlockedTargets = emptySet(),
         sessionRangeFailures = emptyMap(),
@@ -1624,7 +1654,8 @@ class RelayReducer(
         }
         val completed = if (event?.string("type") in setOf("session.snapshot", "session.patch"))
             reduced.confirmSourceRead(input, commandId, response) else reduced
-        return completed.trackSessionReadDemands(input, changedTargets, setOfNotNull(commandId)).reconcileHistoryReads()
+        return completed.markAuthoritative(input, runtimeId, event?.string("type"), commandId)
+            .trackSessionReadDemands(input, changedTargets, setOfNotNull(commandId)).reconcileHistoryReads()
     }
 
     private fun materializeToolPayload(state: RemoteState, payload: String): String {
@@ -2055,6 +2086,8 @@ class RelayReducer(
                     commandResults = state.commandResults + interrupted.filterNot { it.isSessionSyncCommandId() }.associateWith {
                         CommandResult(ok = false, status = "cancelled")
                     },
+                    pendingSends = state.pendingSends.connectionLost(),
+                    closingRuntimes = emptyMap(),
                 )
             }
             "host.online" -> state // 重握手由 RelayClient 处理；状态等 device.ready 对齐
@@ -2072,6 +2105,8 @@ class RelayReducer(
                     selectedOfflineSessionId = state.selectedOfflineSessionId,
                     pendingCommands = state.pendingCommands.filterValues { it != runtimeId },
                     commandResults = state.commandResults + interrupted.filterNot { it.isSessionSyncCommandId() }.associateWith { CommandResult(ok = false, status = "cancelled") },
+                    pendingSends = state.pendingSends.runtimeLost(state.runtimes[runtimeId]?.sessionId ?: state.knownRuntimeSessions[runtimeId]),
+                    closingRuntimes = state.closingRuntimes - runtimeId,
                     capabilities = state.capabilities - runtimeId,
                     pendingDownloads = state.pendingDownloads.filterValues { it.runtimeId != runtimeId },
                     // 下载由 Host 服务（§9.4）：任务上的 runtimeId 只是「文件来自哪个会话」的来源标记，
@@ -2248,6 +2283,8 @@ class RelayReducer(
         var nextError = state.error
         var nextPendingCommands = state.pendingCommands
         var nextCommandResults = state.commandResults
+        var nextPendingSends = state.pendingSends
+        var nextClosingRuntimes = state.closingRuntimes
         var nextSessionGraphs = state.sessionGraphs
         var nextRuntimeSessionViews = state.runtimeSessionViews
         var nextSessionSyncCommands = state.sessionSyncCommands
@@ -3031,6 +3068,15 @@ class RelayReducer(
                 }
                 val succeeded = event["ok"]?.jsonPrimitive?.booleanOrNull == true
                 val status = event.string("status") ?: if (succeeded) "success" else "failure"
+                // ADR-0049：消息回执落在本地行上（含 pending），不触发全局错误横幅。
+                val pendingSend = commandId != null && state.pendingSends.values.any { it.commandId == commandId }
+                if (pendingSend) nextPendingSends = state.pendingSends.withCommandResult(requireNotNull(commandId),
+                    CommandResult(succeeded, status, error = event.string("error")), System.currentTimeMillis())
+                // 关闭被接受后继续隐藏到 Runtime 离线；拒绝立即恢复卡片。
+                val closing = state.closingRuntimes.entries.firstOrNull { it.value.commandId == commandId }
+                if (closing != null && status != "pending") nextClosingRuntimes = if (succeeded)
+                    state.closingRuntimes + (closing.key to closing.value.copy(confirmedAt = System.currentTimeMillis()))
+                    else state.closingRuntimes - closing.key
                 if (commandId?.isSessionSyncCommandId() == true && commandId !in state.sessionSyncCommands) {
                     return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
                 }
@@ -3105,8 +3151,9 @@ class RelayReducer(
                     }
                 }
                 val isInteractionResponse = conversation.interactions.values.any { it.responseCommandId == commandId }
-                if (!succeeded && !isInteractionResponse && status !in setOf("pending", "cancelled")) {
-                    nextError = commandErrorText(event.string("error"))
+                if (!succeeded && !isInteractionResponse && !pendingSend && status !in setOf("pending", "cancelled")) {
+                    nextError = if (closing != null) "关闭会话未完成：${event.string("error")?.takeIf(String::isNotBlank) ?: "请重试"}"
+                        else commandErrorText(event.string("error"))
                 }
             }
             "runtime.error" -> {
@@ -3148,6 +3195,8 @@ class RelayReducer(
             sessionReads = nextHistoryReads,
             sessionRangeFailures = nextRangeFailures,
             pendingDownloads = nextPendingDownloads,
+            pendingSends = nextPendingSends,
+            closingRuntimes = nextClosingRuntimes,
             error = nextError,
         )
     }

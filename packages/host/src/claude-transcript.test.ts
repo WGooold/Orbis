@@ -153,4 +153,30 @@ describe("ClaudeSessionHistory", () => {
     const snapshot = await history.sync({ type: "session.sync", sessionId: "new-session", syncId: "s", range: "preview" });
     expect(snapshot).toMatchObject({ entries: [], cursor: { leafId: null }, source: { ready: true } });
   });
+
+  it("claims only a later transcript row with the exact submitted text for a phone prompt (ADR-0049)", async () => {
+    const root = await tempConfig();
+    await mkdir(join(root, "projects", "-repo"), { recursive: true });
+    const path = join(root, "projects", "-repo", "session-2.jsonl");
+    await writeFile(path, line(user("u1", null, "继续")));
+    const patches: Extract<RuntimeEvent, { type: "session.patch" }>[] = [];
+    const history = new ClaudeSessionHistory("session-2", root, event => { if (event.type === "session.patch") patches.push(event); });
+    await history.refresh();
+
+    history.expectPrompt("app-1", "继续");
+    history.expectPrompt("app-2", "继续");
+    await appendFile(path, line(assistant("a1", "u1", [{ type: "text", text: "好" }])) +
+      line(user("u2", "a1", "本地输入")) + line(user("u3", "u2", [{ type: "text", text: "继续" }])) + line(user("u4", "u3", "继续")));
+    await history.refresh();
+
+    const snapshot = await history.sync({ type: "session.sync", sessionId: "session-2", syncId: "s", range: "preview" });
+    const ids = snapshot.entries.map(entry => (entry.data.message as { clientMessageId?: string }).clientMessageId);
+    // The row that existed before the prompt and the local row are never claimed.
+    expect(ids).toEqual([undefined, undefined, undefined, "app-1", "app-2"]);
+    expect(snapshot.display?.entries.map(row => row.message?.clientMessageId)).toEqual([undefined, undefined, undefined, "app-1", "app-2"]);
+    expect(patches.at(-1)?.display?.entries.find(row => row.entryId === "u3")?.message?.clientMessageId).toBe("app-1");
+
+    const again = await history.sync({ type: "session.sync", sessionId: "session-2", syncId: "s2", range: "preview" });
+    expect(again.entries.find(entry => entry.entryId === "u3")).toBe(snapshot.entries.find(entry => entry.entryId === "u3"));
+  });
 });

@@ -197,56 +197,86 @@ struct StoreTests {
         #expect(store.messages.first?.content[2].text == "Answer continues")
     }
 
-    @Test func sentMessagesAppearFromHostEventsWithoutDuplicateOptimisticRows() async throws {
+    @Test func sentMessagesShowImmediatelyAndReconcileByHostDeclaredIdentity() async throws {
         let (store, transport) = setup()
         await transport.ready([runtime("a")])
         transport.acceptsSends = false
         #expect(!store.sendMessage("keep this draft"))
         #expect(store.messages.isEmpty)
+        #expect(store.pendingSends.isEmpty)
         transport.acceptsSends = true
         #expect(!store.sendMessage("/unsupported"))
         #expect(store.errorMessage != nil)
         #expect(store.sendMessage("valid message"))
-        #expect(store.messages.isEmpty)
 
         let sent = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" })
         let command = try #require(sent["command"] as? [String: Any])
         let clientId = try #require(command["messageId"] as? String)
-        #expect(clientId.isEmpty == false)
+        // ADR-0049: the local row is visible before any Host event.
+        #expect(store.messages.map(\.messageId) == [clientId])
+        #expect(store.pendingSends.item(clientId)?.state == .sending)
+        await transport.event(["type": "command.result", "commandId": sent["commandId"]!, "ok": true, "status": "success"], sequence: 1)
+        #expect(store.pendingSends.item(clientId)?.state == .accepted)
+        #expect(store.errorMessage != nil, "the earlier slash error is not replaced by a message receipt")
 
-        // Pi and some other runtimes can assign a different streaming ID. The Host event is the
-        // authoritative row; do not leave the locally generated client ID beside it.
+        // Pi assigns a different streaming ID and declares the phone send with clientMessageId.
         await transport.event(["type": "message.started", "message": [
-            "messageId": "host-message-id", "role": "user", "timestamp": 100,
+            "messageId": "host-message-id", "role": "user", "timestamp": 100, "clientMessageId": clientId,
             "content": [["type": "text", "text": "valid message"]],
-        ]])
+        ]], sequence: 2)
         #expect(store.messages.map(\.messageId) == ["host-message-id"])
+        #expect(store.pendingSends.isEmpty)
         await transport.event(["type": "message.finished", "message": [
             "messageId": "host-message-id", "role": "user", "timestamp": 100,
             "content": [["type": "text", "text": "valid message"]],
-        ]], sequence: 2)
+        ]], sequence: 3)
         #expect(store.messages.map(\.text) == ["valid message"])
 
+        // Codex returns the App id as the live id.
         #expect(store.sendMessage("codex message"))
         let codexSend = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" })
         let codexCommand = try #require(codexSend["command"] as? [String: Any])
         let codexMessageId = try #require(codexCommand["messageId"] as? String)
+        #expect(store.messages.map(\.messageId) == ["host-message-id", codexMessageId])
         await transport.event(["type": "message.started", "message": [
-            "messageId": codexMessageId, "role": "user", "timestamp": 101,
-            "content": [["type": "text", "text": "codex message"]],
-        ]], sequence: 3)
-        await transport.event(["type": "message.finished", "message": [
             "messageId": codexMessageId, "role": "user", "timestamp": 101,
             "content": [["type": "text", "text": "codex message"]],
         ]], sequence: 4)
         #expect(store.messages.map(\.text) == ["valid message", "codex message"])
+        #expect(store.pendingSends.isEmpty)
 
-        // Identical text can be two real messages; identity is always the message ID.
+        // Identical text without a declared identity is a different message, never the local row.
+        #expect(store.sendMessage("valid message"))
+        let third = try #require((transport.sent.last { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" })?["command"] as? [String: Any])
+        let thirdId = try #require(third["messageId"] as? String)
         await transport.event(["type": "message.finished", "message": [
             "messageId": "another-real-message", "role": "user", "timestamp": 102,
             "content": [["type": "text", "text": "valid message"]],
         ]], sequence: 5)
-        #expect(store.messages.map(\.messageId) == ["host-message-id", codexMessageId, "another-real-message"])
+        #expect(store.messages.map(\.messageId) == ["host-message-id", codexMessageId, thirdId, "another-real-message"])
+    }
+
+    @Test func rejectedSendStaysVisibleAndCanBeRestoredOrResent() async throws {
+        let (store, transport) = setup()
+        await transport.ready([runtime("a")])
+        #expect(store.sendMessage("busy now"))
+        let sent = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" })
+        let id = try #require((sent["command"] as? [String: Any])?["messageId"] as? String)
+        await transport.event(["type": "command.result", "commandId": sent["commandId"]!, "ok": false, "status": "failure", "error": "runtime_busy"])
+        #expect(store.pendingSends.item(id)?.state == .failed("会话正在运行，请选择插入或完成后发送"))
+        #expect(store.errorMessage == nil, "the failure is shown on the row, not as a global banner")
+        #expect(store.messages.map(\.messageId) == [id])
+
+        #expect(store.resendPendingSend(id))
+        let resent = try #require((transport.sent.last { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" })?["command"] as? [String: Any])
+        let newId = try #require(resent["messageId"] as? String)
+        #expect(newId != id)
+        #expect(store.pendingSends.items.map(\.messageId) == [newId])
+
+        transport.state?(.connecting, nil)
+        #expect(store.pendingSends.item(newId)?.state == .unconfirmed)
+        #expect(store.restorePendingSend(newId) == "busy now")
+        #expect(store.pendingSends.isEmpty)
     }
 
     @Test func commandFailuresDoNotMarkTheSecureConnectionBroken() async {

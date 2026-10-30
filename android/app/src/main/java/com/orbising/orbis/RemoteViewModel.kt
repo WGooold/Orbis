@@ -393,6 +393,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun stopRuntime(): String? = active()?.stopRuntime()
     fun cancelQueuedMessage(queueId: String): String? = active()?.cancelQueuedMessage(queueId)
+    fun resendPendingSend(messageId: String): String? = active()?.resendPendingSend(messageId)
+    fun restorePendingSend(messageId: String): String? = active()?.restorePendingSend(messageId)
+    fun discardPendingSend(messageId: String) = active()?.discardPendingSend(messageId)
     fun openToolDetail(runtimeId: String, summary: ToolSummary,
         part: String = summary.contents.firstOrNull { it.availability != "absent" }?.part ?: "arguments",
     ) = active()?.openToolDetail(runtimeId, summary, part)

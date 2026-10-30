@@ -214,6 +214,10 @@ _Avoid_: Immediate queue, context append
 The stable remote identity for one requested steer or follow-up delivery, used to correlate terminal queue states and retries; it is not the agent's own message-entry ID.
 _Avoid_: Message ID
 
+**Pending send**:
+A client-local record of a message the phone wrote to the encrypted channel but has not yet seen in the source's transcript. It renders optimistically and is removed as soon as a source row declares the same identity (`messageId`, `clientMessageId` or a Host alias); it is never written to history caches, applied baselines or queue state, and it is never matched by text. See ADR-0049.
+_Avoid_: Optimistic delivery, local echo, outbox message as delivery fact
+
 **Runtime queue state**:
 The delivery fact reported by the computer side for a remote queue operation; the mobile client displays it but does not infer or execute it. The Host may maintain a shadow projection because Pi does not expose the queue contents through its extension API.
 _Avoid_: Mobile queue state, optimistic delivery, independent execution queue

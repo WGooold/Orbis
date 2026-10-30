@@ -246,6 +246,9 @@ function projectMessage(entry: RemoteSessionEntry): DisplayEntry[] {
     : blocks;
   const toolCallId = asString(message["toolCallId"]);
   const toolName = asString(message["toolName"]);
+  const rawClientMessageId = role === "user" ? asString(message["clientMessageId"]) : undefined;
+  const clientMessageId = rawClientMessageId !== undefined && rawClientMessageId.length > 0 && rawClientMessageId.length <= 256
+    ? rawClientMessageId : undefined;
   return [{
     displayId: entry.entryId,
     entryId: entry.entryId,
@@ -260,6 +263,8 @@ function projectMessage(entry: RemoteSessionEntry): DisplayEntry[] {
       ...(toolCallId === undefined ? {} : { toolCallId }),
       ...(toolName === undefined ? {} : { toolName }),
       ...(message["toolSummary"] === undefined ? {} : { toolSummary: message["toolSummary"] as ChatMessage["toolSummary"] }),
+      // ADR-0049 §2：只复制身份对应，不改变显示语义，因此不升级 projectionVersion。
+      ...(clientMessageId === undefined ? {} : { clientMessageId }),
       isError: failed,
     },
   }];

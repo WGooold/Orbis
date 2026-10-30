@@ -480,7 +480,7 @@ func contextUsagePercent(_ usage: RuntimeContextUsage?) -> Double? {
 }
 
 func queueStateTitle(_ state: String) -> String {
-    ["accepted": "已排队", "queued": "排队中", "sending": "正在发送", "delivered": "已送达", "applied": "已应用", "cancelled": "已撤回", "rejected": "已拒绝", "not_cancelable": "无法撤回", "failed": "发送失败", "expired": "已过期"][state] ?? state
+    ["accepted": "已排队", "queued": "排队中", "submitting": "提交中", "sending": "正在发送", "delivered": "已送达", "applied": "已应用", "cancelled": "已撤回", "rejected": "已拒绝", "not_cancelable": "无法撤回", "failed": "发送失败", "expired": "已过期"][state] ?? state
 }
 
 func interactionDraftKey(host: HostPairing?, sessionId: String?, request: InteractionRequest) -> String {
