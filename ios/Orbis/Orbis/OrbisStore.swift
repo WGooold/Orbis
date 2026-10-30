@@ -45,6 +45,31 @@ final class HostConnection: ObservableObject {
     @Published private(set) var submittingInteractions: Set<String> = []
     @Published private(set) var queuedMessages: [String: [QueuedMessage]] = [:]
     @Published private(set) var pendingQueueCancellations: Set<String> = []
+    var homeRuntimesLoading: Bool {
+        if runtimes.isEmpty { return connection == .connecting || connection == .online }
+        return runtimes.contains { runtime in
+            guard let session = runtime.sessionId, !session.isEmpty,
+                  let snapshot = agentState.snapshots[runtime.runtimeId], snapshot.sessionId == session,
+                  ["identity", "execution", "interactions"].allSatisfy({ snapshot.domains[$0] != nil && !snapshot.pending.contains($0) }),
+                  !(runtime.agentKind ?? sessionIndex[session]?.agentKind ?? "").isEmpty,
+                  !runtime.cwd.isEmpty else { return true }
+            return false
+        }
+    }
+    var homeRuntimes: [RuntimeSummary] {
+        homeRuntimesLoading ? [] : runtimes
+    }
+    var homeRuntimesError: String? {
+        guard homeRuntimesLoading else { return nil }
+        for runtime in runtimes {
+            guard let snapshot = agentState.snapshots[runtime.runtimeId], snapshot.sessionId == runtime.sessionId else { continue }
+            if let error = snapshot.error { return error }
+            if ["identity", "execution", "interactions"].contains(where: { snapshot.missing[$0] != nil }) {
+                return "会话信息未能完整读取，请重新加载"
+            }
+        }
+        return nil
+    }
     @Published private(set) var hasOlderHistory: [String: Bool] = [:]
     @Published private(set) var historyLoading: Set<String> = []
     @Published private(set) var historyErrors: [String: String] = [:]
@@ -54,6 +79,7 @@ final class HostConnection: ObservableObject {
     /// 仅供「原始事件」页查看；每收到一帧都会追加，不发布变更，免得每帧都让整棵视图树重绘。
     private(set) var connectionEvents: [String] = []
 
+    private var agentStateObservation: AnyCancellable?
     private let secure: SecureStorage
     private let transport: OrbisTransport
     private let deviceName: String
@@ -163,6 +189,7 @@ final class HostConnection: ObservableObject {
         transfers.send = { [weak self] in self?.transport.send($0) ?? false }
         hostState.send = { [weak self] in self?.transport.send($0) ?? false }
         agentState.send = { [weak self] in self?.transport.send($0) ?? false }
+        agentStateObservation = agentState.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         notifications.send = { [weak self] in self?.transport.send($0) ?? false }
         agentState.didProject = { [weak self] runtimeId, sessionId, domains in
             guard let self, let index = self.runtimes.firstIndex(where: { $0.runtimeId == runtimeId && $0.sessionId == sessionId }),
@@ -170,6 +197,7 @@ final class HostConnection: ObservableObject {
                   let projection = AgentProjection.make(runtime: self.runtimes[index], hostId: hostId, domains: domains,
                     commands: self.commands[runtimeId] ?? [], interactions: self.interactions[runtimeId] ?? [], queuedMessages: self.queuedMessages[runtimeId] ?? []) else { return false }
             self.runtimes[index] = projection.runtime
+            if domains["identity"]?.availability == "ready" { self.persistIdentity(projection.runtime) }
             self.commands[runtimeId] = projection.commands
             self.interactions[runtimeId] = projection.interactions
             self.queuedMessages[runtimeId] = projection.queuedMessages
@@ -1076,6 +1104,21 @@ final class HostConnection: ObservableObject {
     }
 
     private func sessionCacheKey(_ host: HostPairing) -> String { "orbis.sessionDirectory." + hostKeyPrefix(host) }
+
+    /// 身份领域到达就落盘，不依赖目录扫描或打开聊天记录。
+    private func persistIdentity(_ runtime: RuntimeSummary) {
+        guard let id = runtime.sessionId, !id.isEmpty, let kind = runtime.agentKind, !kind.isEmpty else { return }
+        var entry = sessionIndex[id] ?? SessionSummary(sessionId: id, cwd: runtime.cwd,
+            createdAt: 0, modifiedAt: 0, messageCount: 0)
+        entry.name = runtime.sessionName
+        if !runtime.cwd.isEmpty { entry.cwd = runtime.cwd }
+        entry.agentKind = kind
+        entry.hostname = runtime.hostname ?? entry.hostname
+        if entry == sessionIndex[id] { return }
+        if let index = sessions.firstIndex(where: { $0.sessionId == id }) { sessions[index] = entry }
+        else { sessions.append(entry) }
+        persistSessions()
+    }
 
     private func persistSessions() {
         if let host = selectedHost, let data = try? JSONEncoder().encode(sessions) { preferences?.set(data, forKey: sessionCacheKey(host)) }

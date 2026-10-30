@@ -18,7 +18,8 @@ class HomeSelectionInstrumentedTest {
         val pairing = HostPairing("host", "Test Host", "test-public", "test-root",
             relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
         var state by mutableStateOf(RemoteState(hostId = "host", e2eReady = true,
-            runtimes = listOf("one", "two", "three").associateWith { RuntimeSummary(it, it, "/repo", "idle", sessionId = it) }))
+            runtimes = listOf("one", "two", "three").associateWith { RuntimeSummary(it, it, "/repo", "idle", sessionId = it, agentKind = "pi",
+                domainAvailability = mapOf("identity" to "ready", "execution" to "ready", "interactions" to "ready")) }))
         val haptics = mutableListOf<HapticFeedbackType>()
         val opened = mutableListOf<String>()
         val closed = mutableListOf<Set<String>>()

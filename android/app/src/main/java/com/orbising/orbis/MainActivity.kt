@@ -550,7 +550,7 @@ internal fun RuntimeListScreen(
         // 按中文拼音排序，与 iOS 的 localizedStandardCompare 一致。
         val collator = java.text.Collator.getInstance(Locale.CHINA)
         hosts.filter { it.hostId == activeHostId }.flatMap { snapshot ->
-            snapshot.state.runtimes.values
+            snapshot.state.homeRuntimes
                 .sortedWith(compareBy(collator) { snapshot.state.runtimeDisplayName(it) })
                 .map { HostRuntimeRow(snapshot.hostId, snapshot.name, it, snapshot.state) }
         }
@@ -684,7 +684,11 @@ internal fun RuntimeListScreen(
                         ConnectionStatus(state.connection, state.e2eReady, state.path)
                     }
                 }
-                if (visibleRuntimes.isEmpty()) {
+                if (state.homeRuntimesLoading) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(state.homeRuntimesError ?: "正在加载会话…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else if (visibleRuntimes.isEmpty()) {
                     Column(
                         modifier = Modifier.fillMaxSize().padding(bottom = 48.dp),
                         verticalArrangement = Arrangement.Center,

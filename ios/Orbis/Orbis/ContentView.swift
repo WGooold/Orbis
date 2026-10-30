@@ -453,10 +453,13 @@ struct HomeView: View {
                 }
             }.frame(height: 48).padding(.horizontal, 20).padding(.bottom, 2)
             // Only the current computer's sessions: several paired computers never share one list (ADR-0030 修订).
-            if let host = currentHost, !host.runtimes.isEmpty {
+            if currentHost?.connection.homeRuntimesLoading == true {
+                Text(currentHost?.connection.homeRuntimesError ?? "正在加载会话…").font(.orbisBody()).foregroundStyle(OrbisPalette(scheme).secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let host = currentHost, !host.connection.homeRuntimes.isEmpty {
                 ScrollView {
                     LazyVStack(spacing: 16) {
-                        ForEach(host.runtimes.sorted { host.connection.displayName($0).localizedStandardCompare(host.connection.displayName($1)) == .orderedAscending }) { runtime in
+                        ForEach(host.connection.homeRuntimes.sorted { host.connection.displayName($0).localizedStandardCompare(host.connection.displayName($1)) == .orderedAscending }) { runtime in
                             runtimeCard(runtime, host: host)
                         }
                     }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 28)
@@ -473,7 +476,7 @@ struct HomeView: View {
                 resetCloseSwipes()
             }
             .onChange(of: selecting) { _, active in if active { resetCloseSwipes() } }
-            .onChange(of: currentHost?.runtimes.map(\.runtimeId) ?? []) { _, ids in
+            .onChange(of: currentHost?.connection.homeRuntimes.map(\.runtimeId) ?? []) { _, ids in
                 selectedRuntimeIds.formIntersection(ids)
             }
             .onDisappear { selectedRuntimeIds = []; resetCloseSwipes() }

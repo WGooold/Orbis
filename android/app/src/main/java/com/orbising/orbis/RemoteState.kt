@@ -592,6 +592,30 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
     )
 }
 
+/** 首页整批展示：身份、执行状态和待确认信息到齐前不绘制半成品卡片。 */
+internal val RemoteState.homeRuntimesLoading: Boolean
+    get() = (runtimes.isEmpty() && (connection in setOf(RelayConnection.CONNECTING, RelayConnection.RECONNECTING) ||
+        connection == RelayConnection.ONLINE && !e2eReady)) ||
+        runtimes.values.any { runtime ->
+        runtime.sessionId.isNullOrBlank() || runtime.agentKind.isNullOrBlank() ||
+            runtime.cwd.isBlank() || !runtime.domainAvailability.keys.containsAll(listOf("identity", "execution", "interactions"))
+    }
+
+internal val RemoteState.homeRuntimesError: String?
+    get() {
+        if (!homeRuntimesLoading) return null
+        val sessionIds = runtimes.values.mapNotNull { it.sessionId }.toSet()
+        val snapshots = agentStateSnapshots.values.filter { snapshot ->
+            snapshot.scope == "agent" && agentStateReads[snapshot.requestId]?.sessionId in sessionIds
+        }
+        return snapshots.firstNotNullOfOrNull { it.error } ?: snapshots.firstOrNull {
+            listOf("identity", "execution", "interactions").any(it.missing::containsKey)
+        }?.let { "会话信息未能完整读取，请重新加载" }
+    }
+
+internal val RemoteState.homeRuntimes: List<RuntimeSummary>
+    get() = if (homeRuntimesLoading) emptyList() else runtimes.values.toList()
+
 /** Any Runtime on this computer is waiting for an answer (shown on the computer switcher). */
 internal fun RemoteState.hasAnyPendingInteraction(): Boolean = runtimes.keys.any(::hasPendingInteraction)
 

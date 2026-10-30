@@ -522,6 +522,48 @@ struct StoreTests {
         #expect(!store.respond(try #require(store.interactions["a"]?.first), response: ["kind": "confirm", "value": true]))
     }
 
+    @Test func homeWaitsForCardFactsAndPersistsIdentityBeforeCatalogArrives() async throws {
+        let key = "orbis-home-test-" + UUID().uuidString
+        let preferences = try #require(UserDefaults(suiteName: key))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(key)
+        defer { preferences.removePersistentDomain(forName: key); try? FileManager.default.removeItem(at: root) }
+        let transport = TestTransport()
+        let store = OrbisStore(secure: MemorySecureStore(), transport: transport, autoConnect: false, preferences: preferences, transferRoot: root)
+        transport.drain = { [weak store] in await store?.waitForPendingEvents() }
+        store.connect(hostId: "host-1")
+        await transport.ready([runtime("a"), runtime("b")])
+        let host = try #require(store.hosts.first?.connection)
+        #expect(host.homeRuntimesLoading)
+        #expect(host.homeRuntimes.isEmpty)
+        func send(_ id: String, _ name: String, _ value: [String: Any]) async throws {
+            let request = try #require(transport.sent.last { $0["type"] as? String == "agent.state.request" && $0["runtimeId"] as? String == id })
+            await transport.emit(["type": "agent.state.snapshot", "scope": "agent", "requestId": request["requestId"]!,
+                "runtimeId": id, "sessionId": "session-" + id, "agentKind": "claude", "modelEpoch": "epoch",
+                "domains": [["domain": name, "modelEpoch": "epoch", "revision": 1, "availability": "ready",
+                    "completeness": "complete", "checkedAt": 100, "value": value,
+                    "source": ["producer": "host", "sourceId": "host-1", "sourceEpoch": "native", "sourceRevision": 1]]],
+                "missing": [], "truncated": false])
+        }
+        for id in ["a", "b"] {
+            try await send(id, "identity", ["runtimeId": id, "sessionId": "session-" + id, "name": "Agent",
+                "cwd": "/repo", "agentKind": "claude"])
+            try await send(id, "execution", ["phase": "running"])
+            #expect(host.homeRuntimes.isEmpty)
+            try await send(id, "interactions", [:])
+            if id == "a" { #expect(host.homeRuntimes.isEmpty) }
+        }
+        #expect(!host.homeRuntimesLoading)
+        #expect(host.homeRuntimes.count == 2)
+        #expect(host.homeRuntimes.allSatisfy { $0.agentKind == "claude" && $0.status == "running" })
+        let restored = OrbisStore(secure: MemorySecureStore(), transport: TestTransport(), autoConnect: false, preferences: preferences, transferRoot: root)
+        restored.connect(hostId: "host-1")
+        #expect(Set(restored.sessions.map(\.sessionId)) == ["session-a", "session-b"])
+        #expect(restored.sessions.allSatisfy { $0.cwd == "/repo" && $0.agentKind == "claude" })
+        await transport.emit(["type": "runtime.online", "runtime": runtime("a", session: "replacement")])
+        #expect(host.homeRuntimesLoading)
+        #expect(host.homeRuntimes.isEmpty)
+    }
+
     @Test func sessionDirectoryIsCachedPerHostUntilUnpaired() async throws {
         let key = "orbis-directory-test-" + UUID().uuidString
         let preferences = try #require(UserDefaults(suiteName: key))

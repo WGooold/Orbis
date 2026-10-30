@@ -181,12 +181,19 @@ private final class PreviewTransport: OrbisTransport {
             receive?(["type": "notification.snapshot", "protocolVersion": orbisProtocolVersion, "hostEpoch": "preview-notices", "runtimeId": runtime, "sessionId": "session-1", "revision": 2, "complete": true, "verification": "confirmed", "notifications": []], "ctl")
         } else if object["type"] as? String == "agent.state.request", object["scope"] as? String == "agent" {
             let runtime = object["runtimeId"] as? String ?? "preview-codex", session = object["sessionId"] as? String ?? "session-1"
-            let domains = ["execution", "model", "context"].map { name -> [String: Any] in
-                let value: [String: Any] = name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
-                return ["domain": name, "modelEpoch": "preview-model", "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,
+            let epoch = variant == 1 ? "preview-model-2" : "preview-model"
+            let kind = object["agentKind"] as? String ?? "codex"
+            let titles = ["preview-codex": "对齐移动端的使用体验", "preview-pi": "梳理项目中的页面结构",
+                          "preview-dsh": "检查服务端连接状态", "home-pi": "整理家庭照片脚本"]
+            let cwd = variant == 1 ? "/Users/home/scripts" : runtime == "preview-pi" ? "/Projects/website" : "/Projects/orbis"
+            let domains = ["identity", "interactions", "execution", "model", "context"].map { name -> [String: Any] in
+                let value: [String: Any] = name == "identity" ? ["runtimeId": runtime, "sessionId": session,
+                    "name": agentTitle(kind), "sessionName": titles[runtime] ?? "", "cwd": cwd, "agentKind": kind] :
+                    name == "interactions" ? [:] : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
+                return ["domain": name, "modelEpoch": epoch, "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,
                         "source": ["producer": "host", "sourceId": "preview-host", "sourceEpoch": "preview-source", "sourceRevision": 1], "checkedAt": 1793232000000, "value": value]
             }
-            receive?(["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "agent", "runtimeId": runtime, "sessionId": session, "agentKind": object["agentKind"] ?? "codex", "modelEpoch": "preview-model", "domains": domains, "missing": [], "truncated": false], "ctl")
+            receive?(["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "agent", "runtimeId": runtime, "sessionId": session, "agentKind": kind, "modelEpoch": epoch, "domains": domains, "missing": [], "truncated": false], "ctl")
         } else if object["type"] as? String == "agent.state.request" {
             let requested = object["domains"] as? [String] ?? HostState.domainNames
             let domains = requested.map { name -> [String: Any] in

@@ -31,7 +31,8 @@ class HomeNavigationInstrumentedTest {
             relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
         val state = RemoteState(hostId = "host", e2eReady = true,
             sessionListRequests = setOf("still-loading"), sessionSyncRequests = setOf("one", "two"),
-            runtimes = listOf("one", "two").associateWith { RuntimeSummary(it, it, "/repo", "idle", sessionId = it) })
+            runtimes = listOf("one", "two").associateWith { RuntimeSummary(it, it, "/repo", "idle", sessionId = it, agentKind = "pi",
+                domainAvailability = mapOf("identity" to "ready", "execution" to "ready", "interactions" to "ready")) })
         val selected = mutableStateOf<String?>(null)
         compose.setContent {
             OrbisTheme {

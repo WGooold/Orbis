@@ -107,7 +107,10 @@ internal fun RemoteState.applyAgentDomainProjection(
     } catch (failure: Exception) {
         return copy(error = "Host 模型领域格式无效：${failure.message ?: "未知字段"}")
     }
-    return copy(runtimes = runtimes + (id to runtime), conversations = conversations + (id to conversation),
+    val identity = if (domains["identity"]?.availability == "ready") runtime.catalogEntry() else null
+    val catalog = if (identity == null) sessions else sessions +
+        (identity.sessionId to mergeSessionCatalogEntry(sessions[identity.sessionId], identity))
+    return copy(runtimes = runtimes + (id to runtime), sessions = catalog, conversations = conversations + (id to conversation),
         capabilities = commands?.let { capabilities + (id to it) } ?: capabilities, pendingCommands = pending)
 }
 
