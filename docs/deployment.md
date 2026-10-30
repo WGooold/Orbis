@@ -14,7 +14,7 @@ If Cloudflare proxies HTTPS, configure Nginx's trusted Cloudflare address ranges
 
 Connections use LAN / Relay only, with a fixed LAN-first order (ADR-0050). The Relay requires TCP 443 through the reverse proxy; local discovery and direct connections follow the Host LAN configuration.
 
-Protocol v16 requires matching Relay, Host, runtime / bridge and mobile builds. Prepare the artifacts before the cutover, update Relay first, and then update the endpoints. Mixed versions reject connections with an upgrade message. Preserve pairing keys and persistent state; roll back matching versions together if needed. Production cutover and service retirement require a separate deployment record.
+Protocol v17 requires matching Relay, Host, runtime / bridge and mobile builds. Prepare the artifacts before the cutover, update Relay first, and then update the endpoints. Mixed versions reject connections with an upgrade message. Preserve pairing keys and persistent state; roll back matching versions together if needed. Production cutover and service retirement require a separate deployment record.
 
 ## GitHub Actions
 
@@ -31,7 +31,7 @@ Create a `production` environment and configure its secrets:
 
 The workflow also accepts the former `PI_REMOTE_*` names for these secrets. Relay runtime configuration prefers `ORBIS_*` and accepts existing `PI_REMOTE_*` values, so a naming upgrade does not require rewriting deployed credentials. The deployment script uses `orbis-relay` for new containers and can replace an existing `pi-remote-relay` container while preserving its original name during rollback.
 
-Push relevant changes to `main`. The check job runs on Windows; the deploy job archives `git archive HEAD`, uploads via pinned SSH, builds on the server and checks a candidate before switching traffic. Application deployments have no local shortcut.
+Push relevant changes to `main`. The full check job runs on Windows; a second job runs the Host path, shell, launcher and Git-hook compatibility tests on macOS. Both must pass before deployment. Host changes also trigger this workflow because its tests are part of the deployment gate. The deploy job archives `git archive HEAD`, uploads via pinned SSH, builds on the server and checks a candidate before switching traffic. Application deployments have no local shortcut.
 
 Confirm the successful Actions run, public health `commit`, and `/opt/orbis/shared/deployed-commit` match. A failed rollout restores the previous container. State schema downgrades may require a matching state backup; container rollback cannot undo incompatible data migrations.
 

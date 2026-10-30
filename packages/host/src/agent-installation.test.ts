@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activateManagedAgent, activeManagedEntry, agentEntries, agentPackages, compareAgentVersions,
@@ -196,7 +196,8 @@ describe("Orbis-managed agent location", () => {
   it("uses each platform's application data folder", async () => {
     const { agentInstallRoot } = await import("./agent-root.js");
     expect(agentInstallRoot({}, "darwin", "/Users/a")).toBe("/Users/a/Library/Application Support/Orbis/agents");
-    expect(agentInstallRoot({ LOCALAPPDATA: "C:\\Users\\a\\AppData\\Local" }, "win32", "C:\\Users\\a")).toBe(join("C:\\Users\\a\\AppData\\Local", "Orbis", "agents"));
+    expect(agentInstallRoot({ LOCALAPPDATA: "C:\\Users\\a\\AppData\\Local" }, "win32", "C:\\Users\\a")).toBe(win32.join("C:\\Users\\a\\AppData\\Local", "Orbis", "agents"));
+    expect(agentInstallRoot({}, "win32", "C:\\Users\\a")).toBe("C:\\Users\\a\\AppData\\Local\\Orbis\\agents");
     expect(agentInstallRoot({}, "linux", "/home/a")).toBe("/home/a/.local/share/Orbis/agents");
     expect(agentInstallRoot({ ORBIS_AGENT_INSTALL_ROOT: "/custom" }, "darwin", "/Users/a")).toBe("/custom");
   });

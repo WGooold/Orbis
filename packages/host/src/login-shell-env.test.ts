@@ -1,6 +1,6 @@
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { mergeLoginEnvironment, parseLoginEnvironment, readLoginShellEnvironment } from "./login-shell-env.js";
@@ -17,9 +17,9 @@ describe("login shell environment", () => {
   });
 
   it("puts the user's PATH first, keeps Host entries, and never overrides explicit values", () => {
-    const target: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin:/host/only", PI_CODING_AGENT_DIR: "/explicit" };
-    mergeLoginEnvironment(target, { PATH: "/Users/a/.nvm/bin:/usr/bin", PI_CODING_AGENT_DIR: "/from-shell", NVM_DIR: "/Users/a/.nvm", SECRET: "x" });
-    expect(target).toEqual({ PATH: "/Users/a/.nvm/bin:/usr/bin:/bin:/host/only", PI_CODING_AGENT_DIR: "/explicit", NVM_DIR: "/Users/a/.nvm" });
+    const target: NodeJS.ProcessEnv = { PATH: ["/usr/bin", "/bin", "/host/only"].join(delimiter), PI_CODING_AGENT_DIR: "/explicit" };
+    mergeLoginEnvironment(target, { PATH: ["/Users/a/.nvm/bin", "/usr/bin"].join(delimiter), PI_CODING_AGENT_DIR: "/from-shell", NVM_DIR: "/Users/a/.nvm", SECRET: "x" });
+    expect(target).toEqual({ PATH: ["/Users/a/.nvm/bin", "/usr/bin", "/bin", "/host/only"].join(delimiter), PI_CODING_AGENT_DIR: "/explicit", NVM_DIR: "/Users/a/.nvm" });
   });
 
   it.runIf(process.platform !== "win32")("reads PATH that only the user's zsh startup files define", async () => {

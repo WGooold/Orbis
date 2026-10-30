@@ -8,7 +8,8 @@ vi.mock("./agent-installation.js", async original => ({
   ...await original<typeof import("./agent-installation.js")>(), installAgentPackage: installation.run,
 }));
 const shim = vi.hoisted(() => ({ status: vi.fn(), install: vi.fn(), elevate: vi.fn() }));
-vi.mock("./codex-shim-install.js", () => ({
+vi.mock("./codex-shim-install.js", async original => ({
+  ...await original<typeof import("./codex-shim-install.js")>(),
   codexShimStatus: shim.status, installCodexShim: shim.install, ensureCodexShimWinsPath: shim.elevate,
 }));
 vi.mock("./dsh-web-service.js", async original => ({

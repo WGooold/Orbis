@@ -57,7 +57,7 @@ describe("Host turn file changes", () => {
     execFileSync("git", ["-C", workspace, "add", "tracked.txt"]);
     const hook = join(directory, "fsmonitor-hook"), marker = `${hook}.marker`;
     await writeFile(hook, '#!/bin/sh\nprintf "called\\n" > "$0.marker"\nprintf "token\\0"\n'); await chmod(hook, 0o700);
-    execFileSync("git", ["-C", workspace, "config", "core.fsmonitor", hook]);
+    execFileSync("git", ["-C", workspace, "config", "core.fsmonitor", `"${hook.replaceAll("\\", "/")}"`]);
     execFileSync("git", ["-C", workspace, "config", "core.untrackedCache", "true"]);
     execFileSync("git", ["-C", workspace, "update-index", "--fsmonitor"]);
     await rm(marker, { force: true });

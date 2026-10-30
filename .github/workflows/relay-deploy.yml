@@ -13,6 +13,8 @@ on:
       - scripts/build-relay-web.mjs
       - packages/relay/**
       - packages/protocol/**
+      - packages/host/**
+      - vitest.config.ts
       - deploy/**
       - .github/workflows/relay-deploy.yml
   workflow_dispatch:
@@ -68,9 +70,33 @@ jobs:
       - run: npx vitest run --maxWorkers=1 --testTimeout=30000
       - run: npm run build
 
+  check-macos:
+    name: macOS Host compatibility tests
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      # Run the native shell, executable-bit and application-bundle checks on macOS.
+      # Windows still runs the complete suite, including the portable assertions.
+      - run: |
+          npx vitest run \
+            packages/host/src/agent-installation.test.ts \
+            packages/host/src/codex-desktop-launcher.test.ts \
+            packages/host/src/codex-desktop-macos.test.ts \
+            packages/host/src/codex-desktop-wrapper.test.ts \
+            packages/host/src/desktop-installation.test.ts \
+            packages/host/src/login-shell-env.test.ts \
+            packages/host/src/turn-file-change-service.test.ts \
+            --maxWorkers=1 --testTimeout=30000
+
   deploy:
     name: 部署到服务器
-    needs: check
+    needs: [check, check-macos]
     runs-on: ubuntu-latest
     environment: production
     env:

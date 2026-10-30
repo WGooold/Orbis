@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { posix, win32 } from "node:path";
 
 /**
  * Orbis Host 自己安装的 Agent 放在哪：各平台存放应用数据的标准位置。
@@ -11,6 +11,7 @@ import { join } from "node:path";
 export function agentInstallRoot(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, home = homedir()): string {
   const explicit = env.ORBIS_AGENT_INSTALL_ROOT?.trim();
   if (explicit) return explicit;
+  const { join } = platform === "win32" ? win32 : posix;
   if (platform === "win32") return join(env.LOCALAPPDATA?.trim() || join(home, "AppData", "Local"), "Orbis", "agents");
   if (platform === "darwin") return join(home, "Library", "Application Support", "Orbis", "agents");
   return join(env.XDG_DATA_HOME?.trim() || join(home, ".local", "share"), "Orbis", "agents");

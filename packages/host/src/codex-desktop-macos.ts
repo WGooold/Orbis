@@ -16,7 +16,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join } from "node:path/posix";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);

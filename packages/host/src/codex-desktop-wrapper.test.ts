@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { requestsCodeModeHost, resolveRealCodex } from "./codex-desktop-wrapper.js";
@@ -44,12 +44,12 @@ describe("Codex desktop wrapper CLI selection", () => {
 describe("Codex desktop wrapper CLI selection on macOS", () => {
   it("uses the CLI bundled with the desktop app that launched the wrapper", async () => {
     const root = await mkdtemp(join(tmpdir(), "orbis-codex-mac-"));
-    const app = join(root, "Codex Beta.app");
-    const cli = join(app, "Contents", "Resources", "codex-cli", "bin", "codex");
+    const app = posix.join(root.split(sep).join("/"), "Codex Beta.app");
+    const cli = posix.join(app, "Contents", "Resources", "codex-cli", "bin", "codex");
     try {
       await mkdir(join(cli, ".."), { recursive: true });
       await writeFile(cli, "#!/bin/sh\n");
-      await expect(resolveRealCodex({}, { platform: "darwin", parentExecutable: async () => join(app, "Contents", "MacOS", "ChatGPT") }))
+      await expect(resolveRealCodex({}, { platform: "darwin", parentExecutable: async () => posix.join(app, "Contents", "MacOS", "ChatGPT") }))
         .resolves.toEqual({ command: cli, prefixArgs: [] });
       // 显式指定的真实 CLI 仍然优先。
       await expect(resolveRealCodex({ ORBIS_CODEX_REAL: cli }, { platform: "darwin", parentExecutable: async () => undefined }))

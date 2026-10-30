@@ -12,6 +12,11 @@ import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 
 const activation = vi.hoisted(() => ({ launch: vi.fn(), ensureEntry: vi.fn() }));
+const filesystem = vi.hoisted(() => ({ chmod: vi.fn() }));
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>();
+  return { ...actual, chmodSync: filesystem.chmod.mockImplementation(actual.chmodSync) };
+});
 vi.mock("./codex-desktop-app.js", () => ({ launchCodexDesktopApp: activation.launch }));
 vi.mock("./codex-shim-install.js", () => ({ ensureCodexDesktopEntry: activation.ensureEntry }));
 
@@ -161,12 +166,13 @@ describe("staged Codex wrapper runtime on macOS", () => {
     // 不复制 node：macOS 上运行中的文件照样能被替换，直接用运行 Host 的那个。
     expect(staged.node).toBe(process.execPath);
     expect(staged.script).toBe(join(root, "packages", "host", "dist", "codex-desktop-wrapper.js"));
-    expect((await stat(staged.launcher)).mode & 0o111).not.toBe(0);
+    expect(filesystem.chmod).toHaveBeenCalledWith(staged.launcher, 0o755);
     const before = (await stat(staged.launcher)).mtimeMs;
     stageCodexWrapper({ launcher: "", node: process.execPath, script }, root, undefined, "darwin");
     expect((await stat(staged.launcher)).mtimeMs).toBe(before);
 
     if (process.platform !== "win32") {
+      expect((await stat(staged.launcher)).mode & 0o111).not.toBe(0);
       await expect(run(staged.launcher, ["app-server", "--analytics-default-enabled", "it's"])).resolves
         .toMatchObject({ stdout: `${JSON.stringify(["app-server", "--analytics-default-enabled", "it's"])}\n` });
     }
