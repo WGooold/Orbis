@@ -578,6 +578,7 @@ export class DshAcpRuntime implements AgentBackend {
 }
 
 type DshImplementation = AgentBackend & {
+  onFileChangeEvent?: ((runtimeId: string, event: RuntimeEvent) => void) | undefined;
   start?: () => Promise<void>;
   setEventSink(sink: (event: RuntimeEvent, runtimeId: string) => void): void;
   stop(): Promise<void>;
@@ -600,6 +601,7 @@ export class DshRuntime implements AgentBackend {
   readonly kind = "dsh" as const;
   readonly #implementation: DshImplementation;
   get toolContents(): ToolContentReader | undefined { return this.#implementation.toolContents; }
+  set onFileChangeEvent(value: ((runtimeId: string, event: RuntimeEvent) => void) | undefined) { this.#implementation.onFileChangeEvent = value; }
   setToolContentStore(store: ToolContentStore, hostId: string): void { this.#implementation.setToolContentStore?.(store, hostId); }
   #metadataChange: (() => void) | undefined;
   #offline: ((reason: string, runtimes: RuntimeMetadata[]) => void) | undefined;

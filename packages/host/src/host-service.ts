@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { createProcessToolContentStore, type ToolContentStore } from "@orbis/runtime-bridge";
+import { TurnFileChangeService } from "./turn-file-change-service.js";
+import { TurnChangeCoordinator } from "./turn-change-coordinator.js";
 import { ToolContentService } from "./tool-content-service.js";
 import { PiToolContentReader } from "./pi-tool-content-reader.js";
 import { AgentToolInventory, type PreparedToolInventory } from "./agent-tool-inventory.js";
@@ -146,7 +148,8 @@ export function channelForDeviceMessage(message: {
   if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "diagnostics.page") return "msg";
   if (message.type !== "runtime.event") return "ctl";
   const eventType = message.event?.type ?? "";
-  if (eventType === "session.tool.content.page") return "bulk";
+  if (eventType === "session.tool.content.page" || eventType === "session.change.detail.page") return "bulk";
+  if (eventType === "session.changes.failed") return "ctl";
   if (eventType === "session.tool.read.failed") return "ctl";
   if (
     eventType.startsWith("session.") ||
@@ -245,6 +248,11 @@ export class HostService {
   readonly #links = new Map<string, DeviceLink>();
   readonly #sessionSync: SessionSyncTasks;
   readonly #toolContentService: ToolContentService;
+  readonly #fileChanges: TurnFileChangeService;
+  readonly #fileChangeTurns: TurnChangeCoordinator;
+  readonly #changeSubscribers = new Map<string, { runtimeId: string; agentId: string }>();
+  readonly #changesEpoch = randomUUID();
+  #changesRevision = 0;
   readonly #piToolContents: PiToolContentReader;
   readonly #toolInventory: AgentToolInventory;
   readonly #toolIngestion: ToolInventoryIngestion;
@@ -381,6 +389,7 @@ export class HostService {
     this.#toolInventory.closeRuntime(runtimeId);
     this.#toolIngestion.release(runtimeId);
     this.#toolContentService.releaseRuntime(runtimeId);
+    void this.#fileChangeTurns.release(runtimeId).catch(() => undefined);
     this.#piToolContents.releaseRuntime(runtimeId);
     const scope = this.#agentFacts.scopeOf(runtimeId);
     if (scope) this.#conversationState.offline(scope, this.#agentFacts.prepareOffline(runtimeId));
@@ -728,6 +737,10 @@ export class HostService {
     });
     this.#claudeModsBridge = new ClaudeModsBridge({
       hostId: () => this.#identity.hostId,
+      beforeFileChangeTurn: (runtimeId, turnId, signal) => this.#fileChangeTurns.begin(runtimeId, turnId, true, true, true, signal),
+      onFileChangeBoundaryLost: (runtimeId, turnId) => this.#fileChanges.markUnreliable(runtimeId, "capture-barrier-disconnected", turnId),
+      afterFileChangeTurn: (runtimeId, turnId, outcome) => this.#fileChangeTurns.finish(runtimeId, { turnId, outcome, force: true }),
+      onFileChangeAnchor: (runtimeId, turnId, entryId) => this.#fileChanges.observeAnchor(runtimeId, turnId, entryId),
       onRuntimeOnline: runtime => this.#registerClaudeRuntime(runtime),
       // A Hook can keep the runtime online for an interaction while the Mods poller reconnects.
       // Only remove the public runtime after both sources have gone offline.
@@ -804,6 +817,31 @@ export class HostService {
     this.#agentStateRegistry = agentStateRegistry;
     this.#conversationState = new AgentConversationState(agentStateRegistry);
     this.#toolInventory = new AgentToolInventory(agentStateRegistry);
+    const changeScope = (runtimeId: string) => { const scope = this.#agentFacts.scopeOf(runtimeId); return scope?.kind === "agent" ? scope.key : undefined; };
+    this.#fileChanges = new TurnFileChangeService({
+      directory: join(stateDir, "turn-file-changes"), scope: changeScope,
+      send: (deviceId, runtimeId, event) => {
+        const link = this.#links.get(deviceId); if (!link) return false;
+        const message = this.#runtimeEventMessage(runtimeId, event), payload = Buffer.from(JSON.stringify(message), "utf8");
+        return event.type === "session.change.detail.page"
+          ? link.sendToolContent(payload, outboundQueueSource(message, payload.byteLength))
+          : link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength));
+      },
+      publish: (runtimeId, summary) => {
+        this.#agentStateRegistry.commitValue({ kind: "agent", key: summary.agent }, "changes", {
+          source: { producer: "host", sourceId: "turn-file-changes", sourceEpoch: this.#changesEpoch, sourceRevision: ++this.#changesRevision },
+          availability: "ready", completeness: "complete",
+          value: { latestChangeSetId: summary.changeSetId, reviewTurnId: summary.reviewTurnId,
+            manifestVersion: summary.manifestVersion, state: summary.state },
+        });
+        for (const [deviceId, selected] of this.#changeSubscribers) {
+          if (selected.runtimeId === runtimeId && selected.agentId === agentKeyId(summary.agent))
+            this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, { type: "session.changes.updated", summary }));
+        }
+      },
+    });
+    this.#fileChangeTurns = new TurnChangeCoordinator(this.#fileChanges, changeScope,
+      runtimeId => this.#runtimesSnapshot().find(runtime => runtime.runtimeId === runtimeId));
     this.#toolIngestion = new ToolInventoryIngestion(this.#toolInventory);
     this.#agentStateSubscriptions = new AgentStateSubscriptions(agentStateRegistry, (deviceId, message) => this.#sendToDevice(deviceId, message));
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
@@ -816,6 +854,13 @@ export class HostService {
         message: `DSH Web ${event.event}`, detail: { ...(event.code === undefined ? {} : { code: event.code }),
           ...(event.reason === undefined ? {} : { reason: event.reason }),
           ...(event.maxFrameBytes === undefined ? {} : { maxFrameBytes: String(event.maxFrameBytes) }) } });
+      dsh.onFileChangeEvent = (runtimeId, event) => {
+        if (event.type === "turn.started") void this.#fileChangeTurns.started(runtimeId, event.turnId).catch(() => undefined);
+        else if (event.type === "turn.finished") void this.#fileChangeTurns.finish(runtimeId, {
+          turnId: event.turnId, reliable: false,
+          ...(event.persistedMessageId ? { anchorEntryId: event.persistedMessageId } : {}),
+        }).catch(() => undefined);
+      };
       dsh.setEventSink((event, runtimeId) => this.#publishRuntimeEvent(runtimeId, event));
       dsh.onCatalogChange = () => this.#invalidateCatalog();
       dsh.onArchiveChange = (sessionId, archived) => {
@@ -845,6 +890,8 @@ export class HostService {
   #attachCodexBackend(codex: CodexRuntime): void {
     if (this.#backends.includes(codex)) return;
     if (this.#toolContentStore) codex.setToolContentStore(this.#toolContentStore, this.#identity.hostId);
+    codex.beforeFileChangeTurn = runtimeId => this.#fileChangeTurns.begin(runtimeId).catch(() => undefined);
+    codex.fileChangeTurnFailed = runtimeId => this.#fileChangeTurns.finish(runtimeId, { outcome: "failed", force: true }).catch(() => undefined);
     codex.seedDesktopThreads(this.#desktopOwnedIds);
     codex.setEventSink((event, threadId) => {
       const runtimeId = threadId === undefined ? codex.runtimeId : codex.runtimeIdFor(threadId);
@@ -1256,6 +1303,7 @@ export class HostService {
     if (this.#options.lan !== false && this.#options.lanListen !== false) {
       await this.#startLan();
     }
+    await this.#fileChanges.initialize();
     this.#toolContentStore ??= await createProcessToolContentStore(join(this.#stateDir, "temporary-content"), "host");
     this.#toolDiagnosticTimer ??= setInterval(() => this.#flushToolDiagnostics(), 30_000);
     this.#toolDiagnosticTimer.unref();
@@ -1270,7 +1318,8 @@ export class HostService {
         onClaudeHook: (input, signal) => this.#claudeBridge.accept(input, signal),
         onClaudeModsHello: input => this.#claudeModsBridge.hello(input),
         onClaudeModsPoll: input => this.#claudeModsBridge.pollRequest(input),
-        onClaudeModsEvent: input => this.#claudeModsBridge.receiveRequest(input),
+        onClaudeModsEvent: (input, signal) => this.#claudeModsBridge.receiveRequestWithBoundaries(input, signal),
+        onFileChangeBoundary: (input, signal) => this.#acceptFileChangeBoundary(input, signal),
         onRuntimeOnline: (metadata) => {
           const displaced = this.#agentFacts.displacedRuntime(metadata.runtimeId, metadata);
           if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
@@ -1354,14 +1403,19 @@ export class HostService {
   }
 
   async stop(): Promise<void> {
-    clearInterval(this.#toolDiagnosticTimer); this.#toolDiagnosticTimer = undefined; this.#flushToolDiagnostics();
-    this.#toolContentService.close();
-    this.#toolIngestion.clear(); this.#toolInventory.dispose();
-    this.#piToolContents.close();
+    // Close publication gates before the first await: pending provider reads can
+    // settle while file-change captures and comparisons are being drained.
     this.#providerFactsClosing = true;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
     this.refreshHostFacts();
+    clearInterval(this.#toolDiagnosticTimer); this.#toolDiagnosticTimer = undefined; this.#flushToolDiagnostics();
+    this.#toolContentService.close();
+    await this.#fileChangeTurns.close();
+    await this.#fileChanges.close();
+    this.#changeSubscribers.clear();
+    this.#toolIngestion.clear(); this.#toolInventory.dispose();
+    this.#piToolContents.close();
     this.#notifications.close();
     if (this.#claudeModsSweep !== undefined) clearInterval(this.#claudeModsSweep);
     this.#claudeModsSweep = undefined;
@@ -1465,6 +1519,7 @@ export class HostService {
     const changed = revokeDeviceRecord(this.#store, deviceId);
     if (!changed) return false;
     this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
+    this.#fileChanges.releaseDevice(deviceId); this.#changeSubscribers.delete(deviceId);
     this.#downloads.releaseDevice(deviceId);
     this.#uploads.releaseDevice(deviceId, "artifact_transport_disconnected");
     // P2P 的失败计数是「按设备」记的：设备都撤销了就别让它的历史留在内存里，
@@ -1742,6 +1797,16 @@ export class HostService {
     message: Extract<DeviceE2ePayload, { type: "runtime.command" }>,
   ): void {
     const { runtimeId, commandId, command } = message;
+    if (command.type === "session.changes.list" || command.type === "session.changes.read"
+      || command.type === "session.change.detail.read" || command.type === "session.change.detail.cancel") {
+      if (command.type === "session.changes.list") {
+        const scope = this.#agentFacts.scopeOf(runtimeId);
+        if (scope?.kind === "agent" && command.runtimeId === runtimeId && agentKeyId(command.agent) === agentKeyId(scope.key))
+          this.#changeSubscribers.set(deviceId, { runtimeId, agentId: agentKeyId(scope.key) });
+      }
+      void this.#fileChanges.request(deviceId, runtimeId, command).catch(() => undefined);
+      return;
+    }
     if (command.type === "session.tools.open" || command.type === "session.tools.read") {
       const scope = this.#agentFacts.scopeOf(runtimeId);
       const agent = command.type === "session.tools.open" ? command.reference.agent : command.snapshot.agent;
@@ -2118,6 +2183,7 @@ export class HostService {
    */
   #handleSessionReady(deviceId: string, kind: PathKind, active: PathKind, change: PathChange): void {
     this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
+    this.#fileChanges.releaseDevice(deviceId); this.#changeSubscribers.delete(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#sessionSync.clearDevice(deviceId);
     this.#syncDeviceTransfers(deviceId);
@@ -2186,6 +2252,7 @@ export class HostService {
    */
   #handlePathChange(deviceId: string, change: ActivePathChange): void {
     this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
+    this.#fileChanges.releaseDevice(deviceId); this.#changeSubscribers.delete(deviceId);
     this.refreshHostFacts();
     this.#options.log?.(
       `设备 ${deviceId} 的路径 ${describePath(change.from)} → ${describePath(change.to)}`
@@ -2233,12 +2300,40 @@ export class HostService {
     }
   }
 
+  async #acceptFileChangeBoundary(input: unknown, signal?: AbortSignal): Promise<boolean> {
+    if (!input || typeof input !== "object") return false;
+    const value = input as Record<string, unknown>;
+    const validId = (id: unknown): id is string => typeof id === "string" && id.length > 0 && id.length <= 256;
+    if (!validId(value.runtimeId) || !validId(value.sessionId) || !validId(value.reviewTurnId)) return false;
+    const runtime = this.#loopback?.runtimes.find(runtime => runtime.runtimeId === value.runtimeId);
+    if (!runtime || runtime.sessionId !== value.sessionId) return false;
+    if (value.phase === "begin") {
+      await this.#fileChangeTurns.begin(value.runtimeId, value.reviewTurnId, true, true, true, signal);
+      return true;
+    }
+    if (value.phase !== "finish" || !Array.isArray(value.sourceTurnIds) || value.sourceTurnIds.length > 128
+      || !value.sourceTurnIds.every(validId) || value.anchorEntryId !== undefined && !validId(value.anchorEntryId)) return false;
+    if (!this.#fileChangeTurns.hasTurn(value.runtimeId, value.reviewTurnId))
+      await this.#fileChangeTurns.begin(value.runtimeId, value.reviewTurnId, true, false, false);
+    for (const turnId of value.sourceTurnIds) await this.#fileChangeTurns.started(value.runtimeId, turnId);
+    const outcome = value.outcome === "completed" || value.outcome === "failed" || value.outcome === "cancelled" ? value.outcome : "unknown";
+    const disconnected = (): void => this.#fileChanges.markUnreliable(value.runtimeId as string, "capture-barrier-disconnected", value.reviewTurnId as string);
+    signal?.addEventListener("abort", disconnected, { once: true });
+    try {
+      await this.#fileChangeTurns.finish(value.runtimeId, { turnId: value.reviewTurnId, outcome, force: true, reliable: !signal?.aborted,
+        ...(value.anchorEntryId ? { anchorEntryId: value.anchorEntryId as string } : {}) });
+      if (signal?.aborted) disconnected();
+    } finally { signal?.removeEventListener("abort", disconnected); }
+    return true;
+  }
+
   #runtimeEventMessage(runtimeId: string, event: RuntimeEvent): Extract<RelayToDeviceMessage, { type: "runtime.event" }> {
     return { type: "runtime.event", protocolVersion: PROTOCOL_VERSION, runtimeId,
       sequence: this.#nextEventSequence(runtimeId, channelForDeviceMessage({ type: "runtime.event", event })), event };
   }
 
   #publishRuntimeEvent(runtimeId: string, event: RuntimeEvent): void {
+    this.#fileChangeTurns.observe(runtimeId, event);
     if (event.type === "tool.activity") return;
     if (event.type === "session.tools.produced") {
       this.#countToolTraffic(runtimeId, "summaryJsonBytes", Buffer.byteLength(JSON.stringify(event.page), "utf8"));

@@ -21,7 +21,7 @@ import { localHostname } from "./sessions.js";
 import { LocalClaudeProcessControl, type ClaudeProcessControl, type ClaudeProcessIdentity } from "./claude-process.js";
 
 /** The bridge contract is deliberately independent of the TUI's internal API. */
-export const CLAUDE_BRIDGE_VERSION = "1";
+export const CLAUDE_BRIDGE_VERSION = "2";
 export const CLAUDE_MIN_VERSION = "2.1.287";
 export const CLAUDE_BRIDGE_CAPABILITIES = [
   "prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call",
@@ -127,6 +127,11 @@ export type ClaudeModsBridgeOptions = {
   onRuntimeOnline?: (runtime: RuntimeMetadata) => void;
   onRuntimeOffline?: (runtimeId: string, reason: string) => void;
   onEvent?: (runtimeId: string, event: RuntimeEvent) => void;
+  /** HTTP turn hooks await Host capture before native continuation. */
+  beforeFileChangeTurn?: (runtimeId: string, turnId: string, signal?: AbortSignal) => Promise<void>;
+  afterFileChangeTurn?: (runtimeId: string, turnId: string, outcome: "completed" | "cancelled" | "failed") => Promise<void>;
+  onFileChangeBoundaryLost?: (runtimeId: string, turnId: string) => void;
+  onFileChangeAnchor?: (runtimeId: string, turnId: string, entryId: string) => void;
   /** A hello the Host refused; the reason belongs in diagnostics, not only in the TUI. */
   onRejected?: (reason: string, hello: Partial<ClaudeModsHello>) => void;
   /** A native tool finished: any Hook asking about it was answered in the TUI. */
@@ -276,6 +281,30 @@ export class ClaudeModsBridge {
     return this.receiveEvent(input.runtimeId, input.generation, input.event);
   }
 
+  async receiveRequestWithBoundaries(input: unknown, signal?: AbortSignal): Promise<"accepted" | "invalid" | "stale" | "offline"> {
+    if (!isRecord(input) || !text(input.runtimeId, 128) || !text(input.generation, 128)) return "invalid";
+    const session = this.#sessions.get(input.runtimeId);
+    if (!session) return "offline";
+    if (session.generation !== input.generation) return "stale";
+    const event = parseNativeEvent(input.event);
+    if (!event) return "invalid";
+    if (event.type === "turn.start" && session.activeTurn?.turnId !== event.turnId && !session.completedTurns.has(event.turnId)) {
+      await this.#options.beforeFileChangeTurn?.(input.runtimeId, event.turnId, signal).catch(() => undefined);
+      if (this.#sessions.get(input.runtimeId) !== session) return "stale";
+    }
+    const accepted = this.receiveEvent(input.runtimeId, input.generation, input.event);
+    if (accepted === "accepted" && event.type === "turn.complete") {
+      const lost = (): void => this.#options.onFileChangeBoundaryLost?.(input.runtimeId as string, event.turnId);
+      signal?.addEventListener("abort", lost, { once: true });
+      try {
+        await this.#options.afterFileChangeTurn?.(input.runtimeId, event.turnId,
+          event.isAborted ? "cancelled" : event.reason === "error" ? "failed" : "completed").catch(() => undefined);
+        if (signal?.aborted) lost();
+      } finally { signal?.removeEventListener("abort", lost); }
+    }
+    return accepted;
+  }
+
   poll(runtimeId: string, generation: string): ClaudeModsPoll {
     const session = this.#sessions.get(runtimeId);
     if (session === undefined) return { ok: false, error: "bridge_offline" };
@@ -379,7 +408,13 @@ export class ClaudeModsBridge {
     if (!events.every(event => RuntimeEventSchema.safeParse(event).success)) return "invalid";
     for (const event of events) if (!session.history.observe(event)) this.#options.onEvent?.(runtimeId, event);
     if (parsed.type === "turn.complete") {
-      if (session.activeTurn?.turnId === parsed.turnId) void session.history.settleTurn(session.activeTurn.announced).catch(() => undefined);
+      if (session.activeTurn?.turnId === parsed.turnId) {
+        const announced = [...session.activeTurn.announced];
+        void session.history.settleTurn(announced).then(() => {
+          const anchor = session.history.turnAnchor(announced);
+          if (anchor) this.#options.onFileChangeAnchor?.(runtimeId, parsed.turnId, anchor);
+        }).catch(() => undefined);
+      }
       delete session.activeTurn;
       session.runningTools.clear();
       session.completedTurns.add(parsed.turnId);

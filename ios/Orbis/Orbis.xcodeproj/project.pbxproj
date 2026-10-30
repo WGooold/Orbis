@@ -46,6 +46,8 @@
 		A00100010000000000000035 /* SessionReadOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000035 /* SessionReadOperations.swift */; };
 		A00100010000000000000036 /* TransferIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000036 /* TransferIO.swift */; };
 		A00100010000000000000037 /* WebRTC-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000037; };
+		A00100010000000000000038 /* TurnFileChanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000038 /* TurnFileChanges.swift */; };
+		A00100010000000000000039 /* TurnFileChangesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000039 /* TurnFileChangesView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -90,6 +92,8 @@
 		A00110010000000000000035 /* SessionReadOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReadOperations.swift; sourceTree = "<group>"; };
 		A00110010000000000000036 /* TransferIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferIO.swift; sourceTree = "<group>"; };
 		A00110010000000000000037 /* WebRTC-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "THIRD-PARTY-NOTICES/WebRTC-LICENSE.txt"; sourceTree = SOURCE_ROOT; };
+		A00110010000000000000038 /* TurnFileChanges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnFileChanges.swift; sourceTree = "<group>"; };
+		A00110010000000000000039 /* TurnFileChangesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnFileChangesView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -133,6 +137,8 @@
 				A0011001000000000000002D /* HostState.swift */,
 				A00110010000000000000037 /* WebRTC-LICENSE.txt */,
 				A00110010000000000000036 /* TransferIO.swift */,
+				A00110010000000000000039 /* TurnFileChangesView.swift */,
+				A00110010000000000000038 /* TurnFileChanges.swift */,
 				A00110010000000000000035 /* SessionReadOperations.swift */,
 				A00110010000000000000034 /* SessionHistoryStorage.swift */,
 				A00110010000000000000033 /* P2PTransport.swift */,
@@ -275,6 +281,8 @@
 				A0010001000000000000002C /* ToolDetailView.swift in Sources */,
 				A0010001000000000000002D /* HostState.swift in Sources */,
 				A00100010000000000000036 /* TransferIO.swift in Sources */,
+				A00100010000000000000039 /* TurnFileChangesView.swift in Sources */,
+				A00100010000000000000038 /* TurnFileChanges.swift in Sources */,
 				A00100010000000000000035 /* SessionReadOperations.swift in Sources */,
 				A00100010000000000000034 /* SessionHistoryStorage.swift in Sources */,
 				A00100010000000000000033 /* P2PTransport.swift in Sources */,

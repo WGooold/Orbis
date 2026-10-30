@@ -407,6 +407,8 @@ data class RemoteState(
     val toolInventories: Map<String, ToolInventoryReplica> = emptyMap(),
     val pendingToolConversations: Map<String, List<PendingToolConversation>> = emptyMap(),
     val toolDetail: ToolDetailView? = null,
+    val turnChanges: Map<String, TurnChangesState> = emptyMap(),
+    val changeViewer: FileChangeViewer? = null,
     val lastSequence: Map<String, Long> = emptyMap(),
     val pendingCommands: Map<String, String> = emptyMap(),
     val commandResults: Map<String, CommandResult> = emptyMap(),
@@ -1557,6 +1559,8 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
     return copy(
         connection = RelayConnection.RECONNECTING,
         toolInventories = emptyMap(), pendingToolConversations = emptyMap(),
+        turnChanges = turnChanges.mapValues { (_, value) -> value.copy(request = null, manifests = value.manifests.mapValues { (_, manifest) -> manifest.copy(requestId = null) }) },
+        changeViewer = null,
         toolDetail = toolDetail?.copy(requestId = null, read = null, follow = false, error = "连接已断开，仅显示已缓存内容"),
         currentProviders = emptyMap(),
         // 断开即没有加密通道：这条信息比 connection 更贴近「能不能干活」。
@@ -1598,6 +1602,9 @@ class RelayReducer(
         committed: CommittedSessionBatch? = null,
         channel: String? = null,
     ): RemoteState {
+        runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()?.let { envelope ->
+            reduceTurnChanges(state, envelope)?.let { return it }
+        }
         reduceToolEnvelope(state, payload, committed, channel)?.let { return it }
         val event = runCatching { json.parseToJsonElement(payload).jsonObject["event"]?.jsonObject }.getOrNull()
         val syncId = event?.takeIf { it.string("type") == "session.snapshot" }?.string("syncId")
@@ -1610,7 +1617,9 @@ class RelayReducer(
         }.toSet()
         if (ownershipChanged.isNotEmpty()) reduced = reduced.copy(toolInventories = reduced.toolInventories - ownershipChanged,
             pendingToolConversations = reduced.pendingToolConversations - ownershipChanged,
-            toolDetail = reduced.toolDetail?.takeUnless { it.runtimeId in ownershipChanged })
+            toolDetail = reduced.toolDetail?.takeUnless { it.runtimeId in ownershipChanged },
+            turnChanges = reduced.turnChanges - ownershipChanged,
+            changeViewer = reduced.changeViewer?.takeUnless { it.runtimeId in ownershipChanged })
         val changedTargets = reduced.runtimes.keys.filterTo(mutableSetOf()) { key ->
             val old = input.runtimes[key]
             val next = reduced.runtimes[key]

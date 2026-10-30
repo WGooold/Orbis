@@ -8,6 +8,7 @@ import UIKit
 final class HostConnection: ObservableObject {
     let transfers: FileTransfers
     let toolContent = ToolContentReader()
+    let turnFileChanges = TurnFileChanges()
     let toolInventories = ToolInventories()
     let hostState = HostState()
     let agentState = AgentState()
@@ -238,6 +239,7 @@ final class HostConnection: ObservableObject {
         }
         hostState.didChangeProviders = { [weak self] in self?.refreshSessions() }
         transfers.sendBinary = { [weak self] in self?.transport.sendBinary($0) ?? false }
+        turnFileChanges.send = { [weak self] runtime, command in self?.sendCommand(runtimeId: runtime, command: command) ?? false }
         toolContent.send = { [weak self] runtime, command in self?.sendCommand(runtimeId: runtime, command: command) ?? false }
         toolInventories.send = { [weak self] runtime, command in self?.sendCommand(runtimeId: runtime, command: command) ?? false }
         toolInventories.didCover = { [weak self] runtime, _ in
@@ -341,7 +343,7 @@ final class HostConnection: ObservableObject {
         hostState.setConnection(nil, connected: false)
         agentState.setConnection(nil, connected: false)
         notifications.setConnection(nil, connected: false)
-        toolContent.close(); toolInventories.clear(); toolAcknowledgements = [:]; pendingAppliedBaselines = [:]
+        toolContent.close(); turnFileChanges.clear(); toolInventories.clear(); toolAcknowledgements = [:]; pendingAppliedBaselines = [:]
         interactions = [:]; queuedMessages = [:]; queueCommands = [:]; pendingQueueCancellations = []; submittingInteractions = []; interactionCommands = [:]; workingBranches = [:]; dismissPreview()
     }
 
@@ -356,7 +358,7 @@ final class HostConnection: ObservableObject {
         hostState.setConnection(selectedHost, connected: false)
         agentState.setConnection(selectedHost, connected: false)
         notifications.setConnection(selectedHost, connected: false)
-        toolContent.close(); toolInventories.clear()
+        toolContent.close(); turnFileChanges.clear(); toolInventories.clear()
         connection = .offline
     }
 
@@ -382,7 +384,7 @@ final class HostConnection: ObservableObject {
         notifications.setConnection(pairing, connected: false)
         currentProviders = [:]; sessionListRequest = nil; modelCatalogReceived = false; authenticatedModelEpoch = nil; connectionEvents = []
         transfers.setConnection(pairing, connected: false)
-        toolContent.close(); toolInventories.clear(); toolAcknowledgements = [:]; pendingAppliedBaselines = [:]
+        toolContent.close(); turnFileChanges.clear(); toolInventories.clear(); toolAcknowledgements = [:]; pendingAppliedBaselines = [:]
         runtimes = []; sessions = cachedSessions(pairing); messages = []; selectedRuntimeId = nil; selectedOfflineSession = nil
         cachedSessionIds = []; cachedIndexLoaded = false; cachedHistoryOptions = []; turnTimings = [:]; timingsBySession = [:]
         loadCachedIndex(pairing)
@@ -408,7 +410,7 @@ final class HostConnection: ObservableObject {
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)
             if state != .secured { self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false) }
             if state == .offline || state == .connecting {
-                self.toolContent.close()
+                self.toolContent.close(); self.turnFileChanges.disconnected()
                 self.activePath = nil
                 self.runtimeEventSequences = [:]
                 self.sourcePositions = [:]
@@ -422,7 +424,7 @@ final class HostConnection: ObservableObject {
 
     func selectRuntime(_ runtimeId: String) {
         guard runtimes.contains(where: { $0.runtimeId == runtimeId }) else { return }
-        if selectedRuntimeId != runtimeId { toolContent.close() }
+        if selectedRuntimeId != runtimeId { toolContent.close(); turnFileChanges.closeViewer() }
         selectedRuntimeId = runtimeId; selectedOfflineSession = nil; cachedHistoryOptions = []
         cancelForegroundReads(except: runtimeId)
         if let runtime = selectedRuntime { seedCachedHistory(runtime) }
@@ -725,7 +727,7 @@ final class HostConnection: ObservableObject {
     @discardableResult
     func openCachedSession(_ session: SessionSummary) -> Bool {
         guard let host = selectedHost else { return false }
-        toolContent.close(); dismissPreview()
+        toolContent.close(); turnFileChanges.clear(); dismissPreview()
         selectedOfflineSession = session; selectedRuntimeId = "cached:" + session.sessionId
         cancelForegroundReads(except: selectedRuntimeId)
         branchGenerations[selectedRuntimeId!, default: 0] += 1
@@ -1331,6 +1333,8 @@ final class HostConnection: ObservableObject {
             if sequence <= (runtimeEventSequences[key] ?? -1) { return }
             runtimeEventSequences[key] = sequence
         }
+        turnFileChanges.consume(event, runtimeId: runtimeId)
+        if type.hasPrefix("session.changes.") || type.hasPrefix("session.change.detail.") { return }
         toolContent.consume(event, runtimeId: runtimeId)
         toolInventories.consume(event, runtime: runtimeId)
         let modelOwnedDomain: String? = ["runtime.status": "execution", "runtime.capabilities": "capabilities", "interaction.requested": "interactions", "interaction.snapshot": "interactions", "interaction.resolved": "interactions", "interaction.cancelled": "interactions", "queue.snapshot": "delivery", "queue.updated": "delivery", "message.queued": "delivery", "delivery.snapshot": "delivery"][type]
@@ -1944,6 +1948,11 @@ final class HostConnection: ObservableObject {
         let streaming = (unfinishedLiveMessageIds[runtimeId] ?? []).intersection(next.filter { $0.role == "assistant" }.map(\.messageId))
         if streaming != streamingMessageIds { streamingMessageIds = streaming }
         if next != messages { messages = next }
+        if connection == .secured, let runtime = selectedRuntime, let session = runtime.sessionId,
+           let host = selectedHost, let kind = agentKind(runtime) {
+            turnFileChanges.observe(runtimeId: runtimeId, agent: ToolAgent(hostId: host.hostId, agentKind: kind, sessionId: session),
+                entryIds: Array(changeAnchors(for: Set(next.map(\.messageId)))), turnIds: Array(turnTimings.keys))
+        }
         updateSyncing()
         dispatchSyncDemands()
     }
@@ -1959,7 +1968,16 @@ final class HostConnection: ObservableObject {
         }
     }
 
+    func changeAnchors(for messageIds: Set<String>) -> Set<String> {
+        guard let runtimeId = selectedRuntimeId else { return messageIds }
+        var ids = messageIds
+        for (entry, display) in displayMessageIds[runtimeId] ?? [:] where messageIds.contains(display) { ids.insert(entry) }
+        for (live, entry) in messageAliases[runtimeId] ?? [:] where messageIds.contains(live) { ids.insert(entry) }
+        return ids
+    }
+
     private func invalidateConversation(_ runtimeId: String) {
+        if runtimeId == selectedRuntimeId { turnFileChanges.clear() }
         historyWriteLeases.removeValue(forKey: runtimeId)?.invalidate()
         branchGenerations[runtimeId, default: 0] += 1
         for read in sessionReads.operations.values where read.owner.historyKey == runtimeId && read.phase.active {

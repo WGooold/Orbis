@@ -50,7 +50,8 @@ export type HostLoopbackServerOptions = {
   /** Authenticated Claude Mods long-poll bridge; the TUI remains the execution owner. */
   onClaudeModsHello?: (input: unknown) => { ok: boolean; [key: string]: unknown };
   onClaudeModsPoll?: (input: unknown) => ClaudeModsPoll;
-  onClaudeModsEvent?: (input: unknown) => "accepted" | "invalid" | "stale" | "offline";
+  onClaudeModsEvent?: (input: unknown, signal?: AbortSignal) => "accepted" | "invalid" | "stale" | "offline" | Promise<"accepted" | "invalid" | "stale" | "offline">;
+  onFileChangeBoundary?: (input: unknown, signal?: AbortSignal) => Promise<boolean>;
 
   /** 本机 runtime 推上来的二进制帧（artifact 分片）。 */
   onRuntimeFrame?: (runtimeId: string, frame: Buffer) => void;
@@ -220,7 +221,7 @@ export class HostLoopbackServer {
   async #handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
     const claudeModsPath = path === "/v1/claude/mods/hello" || path === "/v1/claude/mods/poll" || path === "/v1/claude/mods/event";
-    if (path !== "/v1/codex/launch" && path !== "/v1/claude/hook" && !claudeModsPath) {
+    if (path !== "/v1/codex/launch" && path !== "/v1/claude/hook" && !claudeModsPath && path !== "/v1/changes/boundary") {
       response.writeHead(404).end();
       return;
     }
@@ -232,6 +233,18 @@ export class HostLoopbackServer {
       this.#writeJson(response, 401, { error: "unauthorized" });
       return;
     }
+    if (path === "/v1/changes/boundary") {
+      const controller = new AbortController();
+      const disconnected = (): void => { if (!response.writableEnded) controller.abort(); };
+      response.on("close", disconnected);
+      try {
+        const input = await readJsonRequest(request, 32 * 1024);
+        const accepted = await this.#options.onFileChangeBoundary?.(input, controller.signal) ?? false;
+        if (!controller.signal.aborted) this.#writeJson(response, accepted ? 200 : 409, { ok: accepted });
+      } catch { if (!controller.signal.aborted) this.#writeJson(response, 400, { ok: false }); }
+      finally { response.off("close", disconnected); }
+      return;
+    }
     if (claudeModsPath) {
       const callback = path.endsWith("/hello") ? this.#options.onClaudeModsHello
         : path.endsWith("/poll") ? this.#options.onClaudeModsPoll : this.#options.onClaudeModsEvent;
@@ -239,16 +252,19 @@ export class HostLoopbackServer {
         this.#writeJson(response, 503, { error: "claude_mods_unavailable" });
         return;
       }
+      const controller = new AbortController();
+      const disconnected = (): void => { if (!response.writableEnded) controller.abort(); };
+      response.on("close", disconnected);
       try {
         const input = await readJsonRequest(request, 256 * 1024);
-        const result = callback(input);
+        const result = await callback(input, controller.signal);
         const status = typeof result === "string" ? result === "accepted" ? 202 : result === "invalid" ? 400 : 409
           : "ok" in result && result.ok === false ? 409 : 200;
-        this.#writeJson(response, status, typeof result === "string" ? { result } : result);
+        if (!controller.signal.aborted) this.#writeJson(response, status, typeof result === "string" ? { result } : result);
       } catch (error) {
         const tooLarge = error instanceof Error && error.message === "request too large";
-        this.#writeJson(response, tooLarge ? 413 : 400, { error: tooLarge ? "request_too_large" : "invalid_json" });
-      }
+        if (!controller.signal.aborted) this.#writeJson(response, tooLarge ? 413 : 400, { error: tooLarge ? "request_too_large" : "invalid_json" });
+      } finally { response.off("close", disconnected); }
       return;
     }
     if (path === "/v1/claude/hook") {

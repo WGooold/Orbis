@@ -16,6 +16,47 @@ final class OrbisUITests: XCTestCase {
         screenshot.name = name; screenshot.lifetime = .keepAlways
         add(screenshot)
     }
+    func testTurnFileReviewLoadsOnlySelectedFilesAndRetainsCache() {
+        let app = launch("changes")
+        let open = app.buttons["turn-changes-open-preview-review"]
+        XCTAssertTrue(open.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["change-detail-requests"].label, "reads=0,0,0")
+        capture("turn-change-summary-light-narrow", app: app)
+        open.tap()
+        XCTAssertTrue(app.staticTexts["+CHANGE_FIRST"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts.matching(identifier: "change-detail-requests").allElementsBoundByIndex.last?.label, "reads=1,0,0")
+        capture("turn-change-detail-light-narrow", app: app)
+        let pager = app.otherElements["turn-change-pager"]
+        let origin = pager.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.6))
+        origin.press(forDuration: 0.1, thenDragTo: pager.coordinate(withNormalizedOffset: CGVector(dx: 0.54, dy: 0.6)), withVelocity: .slow, thenHoldForDuration: 0.4)
+        XCTAssertEqual(app.staticTexts["turn-change-page"].label, "1 / 3")
+        XCTAssertEqual(app.staticTexts.matching(identifier: "change-detail-requests").allElementsBoundByIndex.last?.label, "reads=1,0,0")
+        pager.swipeRight() // First-file boundary rebounds without a new request.
+        XCTAssertEqual(app.staticTexts["turn-change-page"].label, "1 / 3")
+        XCTAssertEqual(app.staticTexts.matching(identifier: "change-detail-requests").allElementsBoundByIndex.last?.label, "reads=1,0,0")
+        pager.swipeLeft()
+        XCTAssertTrue(app.staticTexts["+CHANGE_SECOND"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts.matching(identifier: "change-detail-requests").allElementsBoundByIndex.last?.label, "reads=1,1,0")
+        pager.swipeRight()
+        XCTAssertTrue(app.staticTexts["+CHANGE_FIRST"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts.matching(identifier: "change-detail-requests").allElementsBoundByIndex.last?.label, "reads=1,1,0")
+        app.buttons["下一个文件"].tap(); app.buttons["下一个文件"].tap()
+        XCTAssertTrue(app.staticTexts["二进制文件，仅显示变更信息。"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts.matching(identifier: "change-detail-requests").allElementsBoundByIndex.last?.label, "reads=1,1,0")
+        capture("turn-change-binary", app: app)
+    }
+    func testTurnFileReviewDarkAppearance() {
+        let app = launch("changes", dark: true, arguments: ["--preview-reduce-motion", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        let open = app.buttons["turn-changes-open-preview-review"]
+        XCTAssertTrue(open.waitForExistence(timeout: 10)); open.tap()
+        XCTAssertTrue(app.staticTexts["+CHANGE_FIRST"].waitForExistence(timeout: 5))
+        capture("turn-change-detail-dark-narrow-large-text", app: app)
+        app.buttons["下一个文件"].tap()
+        XCTAssertTrue(app.staticTexts["+CHANGE_SECOND"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["turn-change-page"].label, "2 / 3")
+        capture("turn-change-reduced-motion-settled", app: app)
+    }
+
     func testCachedOnlineChatEntryTiming() {
         let app = launch("entry", arguments: ["--measure-chat-entry", "--preview-entry-long-turn"])
         let card = app.buttons["home-runtime-preview-codex"]

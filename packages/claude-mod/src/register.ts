@@ -67,13 +67,13 @@ export const register: Register = on => {
   });
 
   on("turn.start", async ($, event, next) => {
-    const result = await next(event);
     if (event.agentId === undefined) {
       activeTurnId = event.turnId;
-      await emit($, { type: "turn.start", turnId: event.turnId, startedAt: await $.clock.now() });
+      // The authenticated HTTP acknowledgement is the capture barrier. Never replay next().
+      await emit($, { type: "turn.start", turnId: event.turnId, startedAt: await $.clock.now() }).catch(() => false);
     }
-    return result;
-  }).catch(($, event, next) => next(event));
+    return await next(event);
+  });
 
   on("turn.step", async function* ($, event, next) {
     const stream = next(event);
@@ -115,7 +115,7 @@ export const register: Register = on => {
       void reportState($, true);
     }
     return result;
-  }).catch(($, event, next) => next(event));
+  });
 
   on("tool.call", async ($, event, next) => {
     const toolName = event.tool;
@@ -198,7 +198,7 @@ async function connectOnce($: Api): Promise<Connection | undefined> {
     ...(Number.isSafeInteger(processId) && processId! > 1 ? { processId } : {}),
     ...(configDir === undefined || configDir.length === 0 ? {} : { configDir }),
     ...(launchId === undefined || launchId.length === 0 ? {} : { launchId }),
-    claudeVersion: version.version, bridgeVersion: "1",
+    claudeVersion: version.version, bridgeVersion: "2",
     capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call"],
   }, descriptor);
   if (!response.ok || response.body?.ok !== true) {

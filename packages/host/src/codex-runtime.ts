@@ -394,6 +394,9 @@ export class CodexRuntime implements AgentBackend {
    * 让手机主页面那些 Codex 卡片保持如实。在 #publishMetadataEvent 里触发。
    * 做成实例字段（而非 options）是因为 Host 在 create 之后才挂上它。
    */
+  /** Awaited at actual queue execution, before turn/start can write any files. */
+  beforeFileChangeTurn: ((runtimeId: string) => Promise<void>) | undefined;
+  fileChangeTurnFailed: ((runtimeId: string) => Promise<void>) | undefined;
   onMetadataChange: (() => void) | undefined;
   onArchiveChange: ((sessionId: string, archived: boolean) => void) | undefined;
   onDesktopThread: ((threadId: string) => void) | undefined;
@@ -2699,9 +2702,14 @@ export class CodexRuntime implements AgentBackend {
 
   async #startTurnWithInput(thread: ThreadState, input: unknown[], clientUserMessageId?: string): Promise<void> {
     thread.turnStartPending = true;
+    let captureStarted = false;
     try {
       await this.#runNativeMutation(thread, async () => {
         if (thread.turnInProgress) throw new Error("runtime_busy");
+        if (this.beforeFileChangeTurn) {
+          await this.beforeFileChangeTurn(this.runtimeIdFor(thread.id));
+          captureStarted = true;
+        }
         ++thread.reconcileGeneration;
         thread.turnInProgress = true;
         this.#publishMetadataEvent(thread);
@@ -2719,6 +2727,9 @@ export class CodexRuntime implements AgentBackend {
           ...(thread.effort === undefined ? {} : { effort: thread.effort }),
         });
       });
+    } catch (error) {
+      if (captureStarted && this.fileChangeTurnFailed) await this.fileChangeTurnFailed(this.runtimeIdFor(thread.id));
+      throw error;
     } finally {
       thread.turnStartPending = false;
     }
@@ -3386,11 +3397,17 @@ export class CodexRuntime implements AgentBackend {
           const durationMs = completed?.durationMs !== undefined
             ? Math.max(0, Math.round(completed.durationMs))
             : Math.max(0, Date.now() - thread.turnStartedAt);
+          const reviewAnchor = [...thread.entries].reverse().find(entry => thread.entryTurns.get(entry.entryId) === completedTurnId
+            && entryMessage(entry)?.role === "assistant")?.entryId;
           this.#emit(thread.id, {
             type: "turn.finished",
+            ...(completedTurn.status === "failed" ? { outcome: "failed" as const }
+              : completedTurn.status === "interrupted" ? { outcome: "cancelled" as const }
+              : completedTurn.status === "completed" ? { outcome: "completed" as const } : {}),
             turnId: thread.turnId,
             startedAt: thread.turnStartedAt,
             durationMs,
+            ...(reviewAnchor === undefined ? {} : { persistedMessageId: reviewAnchor }),
             ...(thread.persistedMessageMappings.length === 0
               ? {}
               : { persistedMessages: [...thread.persistedMessageMappings] }),

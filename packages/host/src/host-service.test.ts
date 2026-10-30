@@ -2862,6 +2862,66 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
     relay = undefined; host = undefined; device = undefined; stateDir = undefined;
   });
 
+  it("captures a turn at authenticated barriers and serves frozen diffs only after an encrypted detail request", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-review-e2e-"));
+    const workspace = join(stateDir, "workspace"), config = join(stateDir, "claude-config");
+    await mkdir(workspace); await mkdir(join(config, "projects", "-workspace"), { recursive: true });
+    await writeFile(join(workspace, "example.ts"), "preexisting dirty content\n");
+    const transcript = join(config, "projects", "-workspace", "review-session.jsonl");
+    const user = { type: "user", uuid: "user-1", cwd: workspace, timestamp: "2026-10-30T00:00:00.000Z", message: { role: "user", content: "change the file" } };
+    await writeFile(transcript, JSON.stringify(user) + "\n");
+    relay = await createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret", stateFile: join(stateDir, "relay-state.json") });
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false });
+    await host.start();
+    const opened = await host.openPairingWindow();
+    device = (await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Review fixture" })).device;
+    const psk = await device.pair(opened.payload);
+    await device.openChannel("relay", psk, opened.payload.hostId, opened.payload.hostId);
+    const received: Record<string, unknown>[] = [];
+    const until = async (predicate: (message: Record<string, unknown>) => boolean) => {
+      for (let i = 0; i < 200; i++) { const message = await device!.receiveMessage() as Record<string, unknown>;
+        received.push(message); if (predicate(message)) return message; }
+      throw new Error("Missing expected review event");
+    };
+    await until(message => message.type === "device.ready");
+    const descriptor = JSON.parse(await readFile(join(stateDir, "loopback.json"), "utf8")) as { url: string; token: string };
+    const post = async (path: string, body: unknown) => (await fetch(descriptor.url.replace(/^ws/u, "http") + path,
+      { method: "POST", headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" }, body: JSON.stringify(body) })).json() as Promise<Record<string, unknown>>;
+    const hello = await post("/v1/claude/mods/hello", { type: "hello", instanceId: "review-instance", sessionId: "review-session",
+      cwd: workspace, configDir: config, claudeVersion: "2.1.312", bridgeVersion: "2",
+      capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call"] });
+    const runtimeId = "claude:review-session", agent = { hostId: opened.payload.hostId, agentKind: "claude", sessionId: "review-session" };
+    await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata).runtimeId === runtimeId);
+    const emit = (event: unknown) => post("/v1/claude/mods/event", { runtimeId, generation: hello.generation, event });
+    const command = (requestId: string, body: unknown) => device!.sendPayload(Buffer.from(JSON.stringify({ type: "runtime.command",
+      protocolVersion: PROTOCOL_VERSION, runtimeId, commandId: requestId, command: body })));
+    command("list", { type: "session.changes.list", requestId: "list", runtimeId, agent, entryIds: [], turnIds: ["turn-review"], cursor: null });
+    await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.changes.summaries");
+    expect(await emit({ type: "turn.start", turnId: "turn-review", startedAt: Date.now() })).toEqual({ result: "accepted" });
+    await writeFile(join(workspace, "example.ts"), "this turn only\n");
+    const answer = { type: "assistant", uuid: "answer-1", parentUuid: "user-1", timestamp: "2026-10-30T00:00:01.000Z",
+      message: { role: "assistant", content: [{ type: "text", text: "done" }] } };
+    await writeFile(transcript, JSON.stringify(user) + "\n" + JSON.stringify(answer) + "\n");
+    await emit({ type: "session.append", uuid: "answer-1", door: "assistant" });
+    expect(await emit({ type: "turn.complete", turnId: "turn-review", durationMs: 10 })).toEqual({ result: "accepted" });
+    const ready = await until(message => { const event = message.event as RuntimeEvent | undefined;
+      return event?.type === "session.changes.updated" && event.summary.state === "ready" && event.summary.anchorEntryId === "answer-1"; });
+    const summary = (ready.event as Extract<RuntimeEvent, { type: "session.changes.updated" }>).summary;
+    expect(summary).toMatchObject({ fileCount: 1, additions: 1, deletions: 1, coverage: "complete", anchorEntryId: "answer-1" });
+    expect(JSON.stringify(ready)).not.toContain("this turn only");
+    expect(received.some(message => (message.event as RuntimeEvent | undefined)?.type === "session.change.detail.page")).toBe(false);
+    await writeFile(join(workspace, "example.ts"), "later edit must not leak into old turn\n");
+    const file = summary.preview[0]!;
+    command("detail", { type: "session.change.detail.read", requestId: "detail", runtimeId, agent,
+      changeSetId: summary.changeSetId, manifestVersion: summary.manifestVersion, fileId: file.fileId,
+      contentVersion: file.contentVersion, viewerId: "viewer", readId: null, cursor: null, maxBytes: 49152 });
+    const page = (await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.change.detail.page")).event as Extract<RuntimeEvent, { type: "session.change.detail.page" }>;
+    expect(page.text).toContain("-preexisting dirty content"); expect(page.text).toContain("+this turn only");
+    expect(page.text).not.toContain("later edit"); expect(page.eof).toBe(true);
+  });
+
   it("carries a Claude TUI's directory, slash menu, commands and tool activity over the encrypted device channel", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-claude-host-"));
     const config = join(stateDir, "claude-config");
@@ -2903,7 +2963,7 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
       return await response.json() as Record<string, unknown>;
     };
     const hello = await post("/v1/claude/mods/hello", { type: "hello", instanceId: "tui-1", sessionId: "live-session", cwd: stateDir,
-      claudeVersion: "2.1.312", bridgeVersion: "1", configDir: config,
+      claudeVersion: "2.1.312", bridgeVersion: "2", configDir: config,
       capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call"] });
     expect(hello).toMatchObject({ ok: true, runtimeId: "claude:live-session" });
     const generation = hello.generation as string;
@@ -2952,7 +3012,7 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
 
     // A refused bridge leaves a diagnostic instead of failing silently.
     expect(await post("/v1/claude/mods/hello", { type: "hello", instanceId: "old", sessionId: "old-session", cwd: stateDir,
-      claudeVersion: "2.1.100", bridgeVersion: "1", capabilities: [] })).toMatchObject({ ok: false, error: "claude_version_too_old:2.1.287" });
+      claudeVersion: "2.1.100", bridgeVersion: "2", capabilities: [] })).toMatchObject({ ok: false, error: "claude_version_too_old:2.1.287" });
     expect(host.readDiagnostics({ category: "backend.transport" }).records).toContainEqual(expect.objectContaining({ agentKind: "claude",
       message: "Claude Code bridge refused", detail: expect.objectContaining({ reason: "claude_version_too_old:2.1.287", claudeVersion: "2.1.100" }) }));
     expect(launches).toEqual([]);

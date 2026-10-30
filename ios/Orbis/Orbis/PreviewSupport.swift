@@ -239,6 +239,25 @@ private final class PreviewTransport: OrbisTransport {
                        "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true], "checkpoint": ["checkpointId": "preview-checkpoint", "head": ["leafId": "node-\(messages.count)"], "headCompleteness": "complete", "inventoryComplete": true],
                        "live": ["complete": true, "messages": [], "tools": []], "hasOlder": false, "complete": true, "rangeStatus": "complete", "display": ["projectionVersion": 3, "entries": display]], runtimeId: runtime)
                 if screen == "queue" { event(["type": "message.queued", "queueId": "preview-queue", "text": "接着检查 iOS 的历史同步和文件传输。", "delivery": "followUp", "state": "accepted"], runtimeId: runtime) }
+            } else if type == "session.changes.list" {
+                let rows = screen == "changes" ? [changeSummary] : []
+                event(["type": "session.changes.summaries", "requestId": command["requestId"]!, "runtimeId": runtime,
+                       "agent": command["agent"]!, "summaries": rows, "nextCursor": NSNull()], runtimeId: runtime)
+            } else if type == "session.changes.read", screen == "changes" {
+                event(["type": "session.changes.page", "requestId": command["requestId"]!, "runtimeId": runtime,
+                       "agent": command["agent"]!, "changeSetId": "preview-change-set", "manifestVersion": 1,
+                       "files": changeFiles, "totalCount": changeFiles.count, "nextCursor": NSNull()], runtimeId: runtime)
+            } else if type == "session.change.detail.read", screen == "changes" {
+                let file = command["fileId"] as? String ?? ""
+                TurnChangesPreviewProbe.shared.record(file)
+                let next = command["cursor"] as? String == "next"
+                let content = file == "change-1" ? (next ? "+CHANGE_FIRST_MORE\n" : "--- a/src/Feature.d.ts\n+++ b/src/Feature.d.ts\n@@ -1,2 +1,2 @@\n-old value\n+CHANGE_FIRST\n context\n") :
+                    "--- /dev/null\n+++ b/README.md\n@@ -0,0 +1 @@\n+CHANGE_SECOND\n"
+                event(["type": "session.change.detail.page", "requestId": command["requestId"]!, "runtimeId": runtime,
+                    "agent": command["agent"]!, "changeSetId": command["changeSetId"]!, "manifestVersion": command["manifestVersion"]!,
+                    "fileId": file, "contentVersion": command["contentVersion"]!, "viewerId": command["viewerId"]!,
+                    "readId": "preview-read-" + file, "text": content, "nextCursor": file == "change-1" && !next ? "next" as Any : NSNull(),
+                    "eof": file != "change-1" || next], runtimeId: runtime)
             } else if type == "session.tool.content.read" {
                 let text = "Reading project files...\nSources checked: 18\nNo errors found.\nValidation completed successfully.\n"
                 let offset = (command["offset"] as? NSNumber)?.intValue ?? 0
@@ -296,7 +315,22 @@ private final class PreviewTransport: OrbisTransport {
     private func message(_ id: String, role: String, text: String) -> [String: Any] {
         ["messageId": id, "role": role, "timestamp": 1793232000000, "content": [["type": "text", "text": text]]]
     }
+    private var changeFiles: [[String: Any]] {
+        [
+            ["fileId": "change-1", "path": "src/VeryLongUnicode模块👩🏽‍💻FileNameWithManySectionsAndPreservedCompoundExtension.d.ts", "changeKind": "modified", "fileKind": "text", "additions": 2, "deletions": 1, "beforeBytes": 20, "afterBytes": 36, "contentVersion": "version-1", "detail": "available"],
+            ["fileId": "change-2", "path": "README.md", "changeKind": "added", "fileKind": "text", "additions": 1, "deletions": 0, "beforeBytes": NSNull(), "afterBytes": 16, "contentVersion": "version-2", "detail": "available"],
+            ["fileId": "change-3", "path": "assets/logo.png", "changeKind": "deleted", "fileKind": "binary", "additions": NSNull(), "deletions": NSNull(), "beforeBytes": 4096, "afterBytes": NSNull(), "contentVersion": "version-3", "detail": "binary"]
+        ]
+    }
+    private var changeSummary: [String: Any] {
+        ["projectionVersion": 1, "agent": ["hostId": "preview-host", "agentKind": "codex", "sessionId": "session-1"],
+         "reviewTurnId": "preview-review", "sourceTurnIds": ["preview-native-turn"], "changeSetId": "preview-change-set", "manifestVersion": 1, "revision": 1,
+         "anchorEntryId": "node-2", "startedAt": 1793232000000, "finishedAt": 1793232001000, "state": "ready", "outcome": "completed",
+         "coverage": "partial", "scope": "git-visible-files", "attribution": "workspace-window", "reasons": ["external-writes-possible"], "fileCount": 3,
+         "addedFiles": 1, "modifiedFiles": 1, "deletedFiles": 1, "additions": NSNull(), "deletions": NSNull(), "preview": changeFiles]
+    }
     private var messages: [[String: Any]] {
+        if screen == "changes" { return [message("m1", role: "user", text: "查看这轮的文件变化"), message("m2", role: "assistant", text: "已完成本轮文件修改。") ] }
         if screen == "entry" {
             let longTurn = ProcessInfo.processInfo.arguments.contains("--preview-entry-long-turn")
             let history = (1...80).flatMap { index in
@@ -407,6 +441,22 @@ struct ChatEntryReport: View {
             Text(probe.report).accessibilityIdentifier("chat-entry-metrics")
             Text(String(probe.syncRequests)).accessibilityIdentifier("chat-entry-sync-count")
         }.font(.system(size: 12)).allowsHitTesting(false)
+    }
+}
+#endif
+
+#if DEBUG
+@MainActor
+final class TurnChangesPreviewProbe: ObservableObject {
+    static let shared = TurnChangesPreviewProbe()
+    @Published private(set) var counts: [String: Int] = [:]
+    func record(_ file: String) { counts[file, default: 0] += 1 }
+}
+struct TurnChangesRequestProbeView: View {
+    @ObservedObject private var probe = TurnChangesPreviewProbe.shared
+    var body: some View {
+        Text("reads=" + (1...3).map { String(probe.counts["change-\($0)"] ?? 0) }.joined(separator: ","))
+            .font(.orbisCaption(mono: true)).accessibilityIdentifier("change-detail-requests").allowsHitTesting(false)
     }
 }
 #endif

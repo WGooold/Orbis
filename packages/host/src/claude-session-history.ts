@@ -74,6 +74,13 @@ export class ClaudeSessionHistory {
   /** Consumes live events (messages, turns, tools); false means forward the event as is. */
   observe(event: RuntimeEvent): boolean { return this.source.observe(this.#tools.event(event)); }
 
+  turnAnchor(announced: readonly string[]): string | undefined {
+    const ids = new Set(announced);
+    return [...this.#projected()].reverse().find(entry => ids.has(entry.entryId)
+      && typeof entry.data.message === "object" && entry.data.message !== null
+      && (entry.data.message as { role?: string }).role === "assistant")?.entryId;
+  }
+
   hasEntry(uuid: string): boolean { return this.#reader?.projection.has(uuid) ?? false; }
 
   readTool(owner: string, request: ToolContentReadRequest, signal?: AbortSignal): Promise<ToolContentPage> {

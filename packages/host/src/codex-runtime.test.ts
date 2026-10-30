@@ -2791,3 +2791,31 @@ describe("CodexRuntime TUI 切换会话", () => {
     expect(h.historyReads).not.toHaveBeenCalledWith("thread/turns/list", expect.anything());
   });
 });
+
+
+describe("Codex Host-owned turn capture boundary", () => {
+  it("does not dispatch turn/start until capture completes, and captures queued work only when dispatched", async () => {
+    const h = makeHarness(); await activate(h);
+    let release!: () => void;
+    const before = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
+    h.runtime.beforeFileChangeTurn = before;
+    h.runtime.handleCommand({ type: "user_message", text: "first", messageId: "request-1" }, "send-1", "th-1");
+    await vi.waitFor(() => expect(before).toHaveBeenCalledOnce());
+    expect(h.requests.mock.calls.filter(call => call[0] === "turn/start")).toHaveLength(0);
+    release();
+    await vi.waitFor(() => expect(h.requests.mock.calls.filter(call => call[0] === "turn/start")).toHaveLength(1));
+    h.resolveNext({ turn: { id: "turn-1" } });
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "turn-1" } });
+    h.runtime.handleCommand({ type: "user_message", text: "next", delivery: "followUp", messageId: "request-2" }, "send-2", "th-1");
+    expect(before).toHaveBeenCalledOnce();
+    h.notify("item/completed", { threadId: "th-1", turnId: "turn-1", item: { type: "agentMessage", id: "canonical-answer", text: "done" } });
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "turn-1", status: "completed" } });
+    expect([...h.events].reverse().find(event => event.type === "turn.finished")).toMatchObject({ persistedMessageId: "canonical-answer", outcome: "completed" });
+    await vi.waitFor(() => expect(before).toHaveBeenCalledTimes(2));
+    expect(h.requests.mock.calls.filter(call => call[0] === "turn/start")).toHaveLength(1);
+    release();
+    await vi.waitFor(() => expect(h.requests.mock.calls.filter(call => call[0] === "turn/start")).toHaveLength(2));
+    h.resolveNext({ turn: { id: "turn-2" } });
+    h.server.onExit?.(0);
+  });
+});

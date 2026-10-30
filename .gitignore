@@ -21,6 +21,7 @@ android/.kotlin/
 
 # 本机 Agent 行为约束
 /AGENTS.md
+/CLAUDE.md
 
 # Local phone uploads
 .orbis-uploads/

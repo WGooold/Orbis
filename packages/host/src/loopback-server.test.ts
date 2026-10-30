@@ -28,6 +28,23 @@ describe("HostLoopbackServer 的发现文件", () => {
     dir = undefined;
   });
 
+  it("authenticates and awaits the file-change barrier acknowledgement", async () => {
+    dir = await mkdtemp(join(tmpdir(), "orbis-change-barrier-"));
+    let finish!: () => void;
+    const boundary = vi.fn(() => new Promise<boolean>(resolve => { finish = () => resolve(true); }));
+    server = new HostLoopbackServer({ stateDir: dir, hostId: "host-1", onFileChangeBoundary: boundary });
+    const descriptor = await server.start();
+    const url = descriptor.url.replace(/^ws:/u, "http:") + "/v1/changes/boundary";
+    const denied = await fetch(url, { method: "POST", body: "{}" });
+    expect(denied.status).toBe(401); expect(boundary).not.toHaveBeenCalled();
+    let replied = false;
+    const response = fetch(url, { method: "POST", headers: { authorization: `Bearer ${descriptor.token}` }, body: JSON.stringify({ phase: "begin" }) })
+      .then(value => { replied = true; return value; });
+    await vi.waitFor(() => expect(boundary).toHaveBeenCalledOnce());
+    expect(replied).toBe(false); finish();
+    expect(await (await response).json()).toEqual({ ok: true });
+  });
+
   it("用发现文件 token 认证终端 Codex 启动请求", async () => {
     dir = await mkdtemp(join(tmpdir(), "orbis-loopback-"));
     server = new HostLoopbackServer({

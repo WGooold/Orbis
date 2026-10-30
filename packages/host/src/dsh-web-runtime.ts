@@ -74,7 +74,7 @@ type WebSession = {
    * 不再重复拉同一页：后续条目由 live 事件按序应用，更旧的部分走 `history` 分页。
    */
   historyComplete?: boolean;
-  lastSeq: number; turnId?: string; turnStartedAt?: number;
+  lastSeq: number; turnId?: string; turnStartedAt?: number; fileChangeAnchor?: string;
   permissionProfile?: string; permissionSandbox?: string; permissionApproval?: string;
   permissionSeq: number; permissionSandboxSeq: number; permissionApprovalSeq: number; permissionGeneration: number;
   permissionBusy: boolean; permissionOptions: ReturnType<typeof dshPermissionOptions>;
@@ -225,6 +225,7 @@ export class DshWebRuntime implements AgentBackend {
   ): Promise<DshWebRuntime> {
     return new DshWebRuntime(await DshWebClient.connect(options), decoder, runtimeOptions);
   }
+  onFileChangeEvent: ((runtimeId: string, event: RuntimeEvent) => void) | undefined;
   setEventSink(sink: (event: RuntimeEvent, runtimeId: string) => void): void { this.#sink = sink; }
   start(): Promise<void> {
     const discovery = this.#discovery.start();
@@ -995,7 +996,9 @@ export class DshWebRuntime implements AgentBackend {
       }
       if (existing) this.#emit(session, { type: "message.started", message: existing });
     }
+    if (event.type === "assistant/message" && entry && session.turnId) session.fileChangeAnchor = entry.entryId;
     if (event.type === "turn/start") {
+      delete session.fileChangeAnchor;
       session.running = true;
       session.turnId = dshWebEntryId(session.id, event.seq);
       session.turnStartedAt = event.time;
@@ -1018,7 +1021,7 @@ export class DshWebRuntime implements AgentBackend {
       delete session.turnId;
       delete session.turnStartedAt;
       session.source.setAvailability(true, true);
-      this.#emit(session, { type: "turn.finished", turnId, startedAt, durationMs: Math.max(0, event.time - startedAt), ...(typeof data.turn === "number" ? { turnIndex: data.turn } : {}), ...(persistedMessages.length ? { persistedMessages } : {}) });
+      this.#emit(session, { type: "turn.finished", turnId, startedAt, durationMs: Math.max(0, event.time - startedAt), ...(session.fileChangeAnchor ? { persistedMessageId: session.fileChangeAnchor } : {}), ...(typeof data.turn === "number" ? { turnIndex: data.turn } : {}), ...(persistedMessages.length ? { persistedMessages } : {}) });
     }
     if (existing) this.#emit(session, { type: "message.finished", message: existing });
     this.#publishMetadata(session);
@@ -1448,6 +1451,7 @@ export class DshWebRuntime implements AgentBackend {
   }
   #emit(session: WebSession, event: RuntimeEvent): void {
     if (event.type !== "command.result" && this.#sessions.get(publicId(session.id)) !== session) return;
+    if (event.type === "turn.started" || event.type === "turn.finished") this.onFileChangeEvent?.(publicId(session.id), event);
     event = this.#toolProducer(session).event(event);
     if (!session.source.observe(event)) this.#sink(event, publicId(session.id));
   }

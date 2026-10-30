@@ -1,3 +1,5 @@
+import { TurnChangesListRequestSchema, TurnChangesReadRequestSchema, FileChangeDetailReadRequestSchema, FileChangeDetailCancelSchema, TurnChangesSummariesSchema, TurnChangesUpdatedSchema, TurnChangesPageSchema, FileChangeDetailPageSchema, TurnChangesFailedSchema } from "./turn-file-changes.js";
+export * from "./turn-file-changes.js";
 import { z } from "zod";
 export { orbisEnvironment } from "./product-environment.js";
 import {
@@ -25,7 +27,7 @@ export * from "./tool-inventory-source.js";
  * 所有入站校验都是 `!== PROTOCOL_VERSION` 直接拒绝，没有兼容旧版的旁路——升版就是断代，
  * 两端必须一起更新。
  */
-export const PROTOCOL_VERSION = 15 as const;
+export const PROTOCOL_VERSION = 16 as const;
 
 /**
  * `protocol.error` 的 code：连接的对面用的是另一版协议。
@@ -810,6 +812,7 @@ export type RuntimeCommandStatus = z.infer<typeof RuntimeCommandStatusSchema>;
  */
 
 export const RuntimeEventSchema = z.discriminatedUnion("type", [
+  TurnChangesSummariesSchema, TurnChangesUpdatedSchema, TurnChangesPageSchema, FileChangeDetailPageSchema, TurnChangesFailedSchema,
   z.strictObject({ type: z.literal("tool.activity"), summary: ToolSummarySchema }),
   ToolContentPageSchema, ToolReadFailureSchema, ToolInventoryPageSchema, ToolInventoryPatchSchema, ToolInventoryChangedSchema, ToolInventoryProducedSchema, ToolInventoryOpenedSchema,
   z.strictObject({ type: z.literal("delivery.snapshot"), items: z.array(AgentDeliveryItemSchema).max(256), complete: z.boolean().optional() }),
@@ -922,6 +925,7 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("turn.finished"),
+    outcome: z.enum(["completed", "failed", "cancelled", "unknown"]).optional(),
     turnId: z.string().min(1).max(256),
     startedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     durationMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -975,6 +979,7 @@ export type RuntimeEvent = z.infer<typeof RuntimeEventSchema>;
 const downloadOffset = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional();
 
 export const RuntimeCommandSchema = z.discriminatedUnion("type", [
+  TurnChangesListRequestSchema, TurnChangesReadRequestSchema, FileChangeDetailReadRequestSchema, FileChangeDetailCancelSchema,
   ToolContentReadRequestSchema, ToolContentCancelSchema, ToolInventoryReadRequestSchema, ToolInventoryOpenRequestSchema,
   z.strictObject({ type: z.literal("file.download"), path: z.string().min(1), offset: downloadOffset }),
   z.strictObject({ type: z.literal("artifact.download"), artifactId: z.string().uuid(), offset: downloadOffset }),

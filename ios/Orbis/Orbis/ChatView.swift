@@ -91,6 +91,7 @@ struct ChatView: View {
             if store.isViewingCachedSession { cachedComposer } else { composer }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent).environment(\.orbisAccent, accent)
             #if DEBUG
+            .overlay(alignment: .top) { if ProcessInfo.processInfo.arguments.contains("--preview-screen=changes") { TurnChangesRequestProbeView() } }
             .background { if ChatEntryProbe.enabled { ChatEntryDrawProbe().allowsHitTesting(false) } }
             #endif
             .fileImporter(isPresented: $filePickerOpen, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
@@ -172,6 +173,8 @@ struct ChatView: View {
                     ForEach(transcript.rows) { row in
                         ChatMessageRow(row: row, kind: kind, toolResults: transcript.toolResultsByRow[row.id] ?? [:],
                                        timings: transcript.timingsByRow[row.id] ?? [],
+                                       changes: store.turnFileChanges,
+                                       changeAnchors: store.changeAnchors(for: Set(row.messages.map(\.messageId))),
                                        streamingMessageIds: streamingMessageIds.intersection(row.messages.map(\.messageId)),
                                        rewindOption: row.isUser ? rewindOptions[row.id] : nil,
                                        rewindEnabled: store.canSend && runtime.status == "idle" && store.pendingActionIds.isEmpty) { option in
@@ -537,12 +540,14 @@ struct ChatMessageRow: View, Equatable {
     let kind: String?
     var toolResults: [String: ChatMessage] = [:]
     var timings: [SessionTurnTiming] = []
+    var changes: TurnFileChanges?
+    var changeAnchors: Set<String> = []
     var streamingMessageIds: Set<String> = []
     var rewindOption: RuntimeOption? = nil
     var rewindEnabled = false
     var onRewind: (RuntimeOption) -> Void = { _ in }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled
+        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.changeAnchors == rhs.changeAnchors && lhs.changes === rhs.changes && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled
     }
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -561,6 +566,9 @@ struct ChatMessageRow: View, Equatable {
                     }
                     ForEach(row.messages) { message in
                         MessageContentView(message: message, toolResults: toolResults, streaming: streamingMessageIds.contains(message.messageId))
+                    }
+                    if !row.isUser, let changes {
+                        TurnChangeCards(changes: changes, anchors: changeAnchors, turns: Set(timings.map(\.turnId)))
                     }
                     ForEach(timings, id: \.turnId) { timing in
                         TimelineView(.periodic(from: .now, by: 1)) { context in

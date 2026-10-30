@@ -14,7 +14,7 @@ function bridgeWith(options: ClaudeModsBridgeOptions = {}): ClaudeModsBridge {
 
 function hello(overrides: Record<string, unknown> = {}) {
   return { type: "hello", instanceId: "instance-1", sessionId: "session-1", cwd: "C:\\work", claudeVersion: "2.1.310",
-    bridgeVersion: "1", capabilities: CLAUDE_BRIDGE_CAPABILITIES, ...overrides };
+    bridgeVersion: "2", capabilities: CLAUDE_BRIDGE_CAPABILITIES, ...overrides };
 }
 
 function online(bridge: ClaudeModsBridge, input: unknown = hello()) {
@@ -24,6 +24,34 @@ function online(bridge: ClaudeModsBridge, input: unknown = hello()) {
 }
 
 describe("ClaudeModsBridge", () => {
+  it("awaits the pre-write snapshot before acknowledging a native start, and the end snapshot before completion", async () => {
+    let resume!: () => void;
+    const before = vi.fn(() => new Promise<void>(resolve => { resume = resolve; }));
+    const after = vi.fn(async () => {});
+    const bridge = bridgeWith({ beforeFileChangeTurn: before, afterFileChangeTurn: after });
+    const current = online(bridge);
+    let acknowledged = false;
+    const start = bridge.receiveRequestWithBoundaries({ ...current, event: { type: "turn.start", turnId: "review", startedAt: 1000 } })
+      .then(result => { acknowledged = true; return result; });
+    await vi.waitFor(() => expect(before).toHaveBeenCalledWith(current.runtimeId, "review", undefined));
+    expect(acknowledged).toBe(false);
+    resume(); expect(await start).toBe("accepted");
+    expect(await bridge.receiveRequestWithBoundaries({ ...current, event: { type: "turn.complete", turnId: "review", isAborted: true } })).toBe("accepted");
+    expect(after).toHaveBeenCalledWith(current.runtimeId, "review", "cancelled");
+    bridge.close();
+  });
+
+  it("capture failure does not replay or reject the native start", async () => {
+    const before = vi.fn(async () => { throw new Error("disk unavailable"); });
+    const bridge = bridgeWith({ beforeFileChangeTurn: before });
+    const current = online(bridge);
+    const request = { ...current, event: { type: "turn.start", turnId: "review" } };
+    expect(await bridge.receiveRequestWithBoundaries(request)).toBe("accepted");
+    expect(await bridge.receiveRequestWithBoundaries(request)).toBe("accepted");
+    expect(before).toHaveBeenCalledOnce();
+    bridge.close();
+  });
+
   it("advertises Host-owned quit only after process identity is verified and shares concurrent closes", async () => {
     let finish!: () => void;
     const stopped = new Promise<void>(resolve => { finish = resolve; });
@@ -60,7 +88,7 @@ describe("ClaudeModsBridge", () => {
     expect(bridge.hello(hello({ capabilities: ["prompt.submit"] }))).toEqual({ ok: false, error: "missing_capability:turn.abort" });
     expect(bridge.hello(hello({ capabilities: ["turn.abort", "prompt.submit", "session.append", "turn.start", "turn.complete", "tool.call"] })))
       .toEqual({ ok: false, error: "missing_capability:turn.step.delta" });
-    expect(bridge.hello(hello({ bridgeVersion: "2" }))).toEqual({ ok: false, error: "bridge_version_unsupported:1" });
+    expect(bridge.hello(hello({ bridgeVersion: "1" }))).toEqual({ ok: false, error: "bridge_version_unsupported:2" });
   });
 
   it("keeps commands bound to a generation and requires a native result before retiring them", () => {

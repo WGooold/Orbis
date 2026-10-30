@@ -18,7 +18,7 @@ struct ContentView: View {
         #if DEBUG
         let preview = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-screen=") }?.split(separator: "=").last.map(String.init)
         switch preview {
-        case "chat", "slash", "approval", "tool", "queue", "notices", "interactions", "truncated", "viewport": _pages = State(initialValue: [.chat])
+        case "chat", "slash", "approval", "tool", "queue", "notices", "interactions", "truncated", "viewport", "changes": _pages = State(initialValue: [.chat])
         case "status": _pages = State(initialValue: [.status])
         case "settings": _pages = State(initialValue: [.settings])
         case "providers": _pages = State(initialValue: [.settings, .providers])

@@ -35,7 +35,7 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /** 必须与 `packages/protocol/src/index.ts` 的 `PROTOCOL_VERSION` 同步升版（精确匹配，没有兼容旁路）。 */
-internal const val PROTOCOL_VERSION = 15
+internal const val PROTOCOL_VERSION = 16
 internal const val RELOAD_TRACE_TAG = "Orbis.ReloadTrace"
 private const val TRACE_LOG_LIMIT = 200
 /** 超过这个长度就不再整棵解析入站帧（见 `traceIncoming`）：大帧是 E2E 密文分片。 */

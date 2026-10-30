@@ -221,6 +221,14 @@ class MainActivity : ComponentActivity() {
                     LocalToolContentAvailable provides (state.connection == RelayConnection.ONLINE),
                 ) {
                     RemoteApp(state, hosts, pairingError, pairingInProgress, model)
+                    state.changeViewer?.let { viewer ->
+                        state.turnChanges[viewer.runtimeId]?.manifests?.get(viewer.summary.versionKey)?.let { manifest ->
+                            key(viewer.runtimeId, viewer.summary.versionKey) { FileChangeViewerSheet(viewer, manifest,
+                                onClose = { model.closeChangeViewer() }, onSelectFile = { model.selectChangeFile(it) },
+                                onReadDetail = { model.readChangeDetail() }, onReadManifest = { model.readChangeManifest(viewer.runtimeId, viewer.summary) },
+                                onPosition = { file, index, offset -> model.rememberChangePosition(file, index, offset) }) }
+                        }
+                    }
                     state.toolDetail?.let { detail -> ToolDetailDialog(detail, model) {
                         pendingToolExport = detail
                         model.closeToolDetail()
@@ -1259,6 +1267,15 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         LazyListState(firstVisibleItemIndex = chatItems.size + orphanTools.size,
             firstVisibleItemScrollOffset = if (chatItems.isEmpty()) 0 else Int.MAX_VALUE)
     }
+    LaunchedEffect(runtimeId, sessionId, listState, chatItems, turnIdsByMessageId, state.connection) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.map { it.key }.toSet() }.collect { visible ->
+            val entries = chatItems.filter { it.key in visible }.flatMap { item -> when (item) {
+                is ChatListItem.UserMessage -> listOf(item.message.messageId)
+                is ChatListItem.AssistantTurn -> item.messages.map { it.messageId }
+            } }
+            model.requestChangeSummaries(runtimeId, entries, entries.mapNotNull(turnIdsByMessageId::get))
+        }
+    }
     val sourceRead = state.sessionReadForWindow(runtimeId, SessionReadKind.SOURCE)
     val firstRead = state.sessionReadForWindow(runtimeId, SessionReadKind.FIRST_PAGE)
     val firstReadError = firstRead?.takeIf { it.phase == SessionReadPhase.FAILED &&
@@ -2050,6 +2067,22 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             downloads = state.downloads,
                             downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
                             downloadFile = { path -> model.downloadFile(path) },
+                            fileChanges = {
+                                val ids = item.messages.map { it.messageId }.toSet()
+                                val turns = ids.mapNotNull(turnIdsByMessageId::get).toSet()
+                                val changes = state.turnChanges[runtimeId]
+                                changes?.summaries?.values?.filter { summary ->
+                                    if (summary.anchorEntryId != null) summary.anchorEntryId in ids
+                                    else summary.reviewTurnId in turns || summary.sourceTurnIds.lastOrNull() in turns
+                                }?.sortedBy { it.startedAt }?.forEach { summary ->
+                                    key(summary.changeSetId) {
+                                        TurnChangeSummaryView(summary, changes.manifests[summary.versionKey] ?: ChangeManifest(summary),
+                                            state.connection == RelayConnection.ONLINE,
+                                            onReadManifest = { model.readChangeManifest(runtimeId, summary) },
+                                            onOpenFile = { model.openChangeViewer(runtimeId, summary, it) })
+                                    }
+                                }
+                            },
                         )
                     }
                 }
@@ -3322,6 +3355,7 @@ internal fun AssistantTurnCard(
     downloadFile: (String) -> Unit,
     streamingMessageIds: Set<String> = emptySet(),
     copyMessages: List<ChatMessage> = messages,
+    fileChanges: @Composable () -> Unit = {},
 ) {
     NeumorphSurface(Modifier.fillMaxWidth(), shadowScale = 0.55f, contentPadding = 16.dp) {
         Column(Modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -3353,6 +3387,7 @@ internal fun AssistantTurnCard(
                 }
             }
             turnTiming?.let { TurnDurationLabel(it, nowMs) }
+            fileChanges()
         }
     }
 }

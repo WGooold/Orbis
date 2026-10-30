@@ -176,6 +176,9 @@ internal class HostConnection(
     private val historyPageSize = 30
     private val previewPageSize = 30
     private val notificationSyncJobs = mutableMapOf<String, Job>()
+    private val sentChangeRequests = mutableSetOf<String>()
+    private val changeWindows = mutableMapOf<String, Pair<List<String>, List<String>>>()
+
 
     fun syncNotifications(runtimeId: String) {
         notificationSyncJobs.remove(runtimeId)?.cancel()
@@ -631,6 +634,7 @@ internal class HostConnection(
      */
     fun shutdown() {
         closeToolDetail()
+        closeChangeViewer()
         shouldConnect = false
         updateState { state -> state.sessionReads.values.filter { it.phase.active }.fold(state) { next, read ->
             next.finishHistoryRead(read.operationId, SessionReadPhase.CANCELLED)
@@ -690,6 +694,7 @@ internal class HostConnection(
     /** Runtime is the interaction window; its current session follows its metadata. */
     fun selectRuntime(runtimeId: String?) {
         closeToolDetail()
+        closeChangeViewer()
         runtimeId?.let { refreshAgentModel(it) }
         var runtime: RuntimeSummary? = null
         var conversation: RuntimeConversation? = null
@@ -815,6 +820,7 @@ internal class HostConnection(
     /** Opens only an already-cached Session graph as a read-only history view. */
     fun selectOfflineSession(sessionId: String?) {
         closeToolDetail()
+        closeChangeViewer()
         val current = mutableState.value
         // 用户（或恢复流程）已经选定了去处，别再被「恢复上次会话」拽走。
         restoreSettled = true
@@ -1227,11 +1233,116 @@ internal class HostConnection(
         }
     }
 
+
+    fun requestChangeSummaries(runtimeId: String, entryIds: List<String>, turnIds: List<String>) {
+        val state = mutableState.value
+        val runtime = state.runtimes[runtimeId] ?: return
+        val session = runtime.sessionId ?: return
+        if (state.connection != RelayConnection.ONLINE || state.selectedRuntimeId != runtimeId) return
+        val entries = entryIds.distinct().take(256)
+        val turns = turnIds.distinct().take(128)
+        if (entries.isEmpty() && turns.isEmpty()) return
+        val key = "$runtimeId:$session:${state.agentModelEpoch}"
+        val window = entries to turns
+        if (synchronized(changeWindows) { changeWindows[key] } == window && state.turnChanges[runtimeId]?.error == null) return
+        synchronized(changeWindows) { changeWindows[key] = window }
+        val request = ChangeSummaryRequest(UUID.randomUUID().toString(), ToolAgent(state.hostId ?: return, runtime.agentKind ?: return, session), entries, turns)
+        updateState { current -> current.copy(turnChanges = current.turnChanges + (runtimeId to
+            (current.turnChanges[runtimeId] ?: TurnChangesState()).copy(request = request, error = null))) }
+        flushChangeRequests()
+    }
+
+    fun readChangeManifest(runtimeId: String, summary: TurnChangeSummary) {
+        updateState { state ->
+            if (!matchesChangeScope(state, runtimeId, summary)) return@updateState state
+            val changes = state.turnChanges[runtimeId] ?: return@updateState state
+            val manifest = changes.manifests[summary.versionKey] ?: ChangeManifest(summary)
+            state.copy(turnChanges = state.turnChanges + (runtimeId to changes.copy(manifests = changes.manifests +
+                (summary.versionKey to manifest.request()))))
+        }
+        flushChangeRequests()
+    }
+
+    fun openChangeViewer(runtimeId: String, summary: TurnChangeSummary, file: FileChangeMetadata) {
+        closeChangeViewer()
+        val current = mutableState.value
+        if (!matchesChangeScope(current, runtimeId, summary)) return
+        val manifest = current.turnChanges[runtimeId]?.manifests?.get(summary.versionKey) ?: return
+        if (file !in manifest.files) return
+        updateState { it.copy(changeViewer = FileChangeViewer(runtimeId, summary, file.fileId).select(file)) }
+        readChangeManifest(runtimeId, summary)
+        flushChangeRequests()
+    }
+
+    fun selectChangeFile(fileId: String) {
+        val state = mutableState.value
+        val viewer = state.changeViewer ?: return
+        if (viewer.selectedFileId == fileId) return
+        val file = state.turnChanges[viewer.runtimeId]?.manifests?.get(viewer.summary.versionKey)?.files?.firstOrNull { it.fileId == fileId } ?: return
+        relay.sendToolCommand(viewer.runtimeId, viewer.cancelCommand())
+        updateState { current -> if (current.changeViewer != viewer) current else current.copy(changeViewer = viewer.select(file)) }
+        flushChangeRequests()
+    }
+
+    fun closeChangeViewer() {
+        val viewer = mutableState.value.changeViewer ?: return
+        updateState { it.copy(changeViewer = null) }
+    }
+
+    fun readChangeDetail() {
+        updateState { it.copy(changeViewer = it.changeViewer?.request()) }
+        flushChangeRequests()
+    }
+
+    fun rememberChangePosition(fileId: String, index: Int, offset: Int) {
+        updateState { state ->
+            val viewer = state.changeViewer ?: return@updateState state
+            val cache = viewer.cache[fileId] ?: return@updateState state
+            if (cache.scrollIndex == index && cache.scrollOffset == offset) return@updateState state
+            state.copy(changeViewer = viewer.copy(cache = viewer.cache + (fileId to cache.copy(scrollIndex = index.coerceAtLeast(0), scrollOffset = offset.coerceAtLeast(0)))))
+        }
+    }
+
+    private fun matchesChangeScope(state: RemoteState, runtimeId: String, summary: TurnChangeSummary): Boolean {
+        val runtime = state.runtimes[runtimeId] ?: return false
+        return summary.agent.hostId == state.hostId && summary.agent.sessionId == runtime.sessionId && summary.agent.agentKind == runtime.agentKind
+    }
+
+    private fun flushChangeRequests() {
+        val state = mutableState.value
+        if (state.connection != RelayConnection.ONLINE) return
+        val commands = state.turnChanges.flatMap { (runtime, changes) ->
+            listOfNotNull(changes.request?.command(runtime)?.let { runtime to it }) +
+                changes.manifests.values.mapNotNull { manifest -> manifest.command(runtime)?.let { runtime to it } }
+        } + listOfNotNull(state.changeViewer?.let { viewer -> viewer.command()?.let { viewer.runtimeId to it } })
+        val active = commands.mapNotNull { it.second["requestId"]?.jsonPrimitive?.contentOrNull }.toSet()
+        synchronized(sentChangeRequests) { sentChangeRequests.retainAll(active) }
+        commands.forEach { (runtime, command) ->
+            val id = command["requestId"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+            if (!synchronized(sentChangeRequests) { sentChangeRequests.add(id) }) return@forEach
+            val sent = relay.sendToolCommand(runtime, command) != null
+            scope.launch {
+                delay(if (sent) 30_000 else 500)
+                if (!synchronized(sentChangeRequests) { sentChangeRequests.remove(id) }) return@launch
+                updateState { current ->
+                    val changes = current.turnChanges[runtime]
+                    current.copy(changeViewer = current.changeViewer?.failed(id, "差异读取超时，可重试"),
+                        turnChanges = if (changes == null) current.turnChanges else current.turnChanges + (runtime to changes.copy(
+                            request = changes.request?.takeUnless { it.requestId == id },
+                            error = if (changes.request?.requestId == id) "文件概况读取超时" else changes.error,
+                            manifests = changes.manifests.mapValues { (_, manifest) -> if (manifest.requestId == id)
+                                manifest.copy(requestId = null, error = "文件清单读取超时，可重试") else manifest })))
+                }
+            }
+        }
+    }
+
     private val sentToolRequests = mutableMapOf<String, Long>()
     private var toolExportJob: Job? = null
 
     fun openToolDetail(runtimeId: String, summary: ToolSummary, part: String = summary.contents.firstOrNull { it.availability != "absent" }?.part ?: "arguments") {
         closeToolDetail()
+        closeChangeViewer()
         val current = mutableState.value
         val runtime = current.runtimes[runtimeId]
         if (current.hostId != summary.tool.agent.hostId || runtime?.sessionId != summary.tool.agent.sessionId || runtime?.agentKind != summary.tool.agent.agentKind) {
@@ -1309,6 +1420,7 @@ internal class HostConnection(
     }
 
     private fun flushToolRequests() {
+        flushChangeRequests()
         val state = mutableState.value
         if (state.connection != RelayConnection.ONLINE) return
         val commands = state.toolInventories.mapNotNull { (runtime, replica) -> replica.command(runtime)?.let { runtime to it } } +
@@ -2330,17 +2442,21 @@ internal class HostConnection(
      */
     private fun updateState(transform: (RemoteState) -> RemoteState) {
         var capturedName = false
+        var retiredViewer: FileChangeViewer? = null
         synchronized(stateWriterLock) {
             val current = mutableState.value
             var next = transform(current).openAcknowledgedSession().trackSessionReadDemands(current).reconcileHistoryReads(current)
             val named = next.cachePiSessionNames(current)
             capturedName = named !== next
             next = named
+            if (current.changeViewer != null && next.changeViewer == null) retiredViewer = current.changeViewer
+            if (current.connection != next.connection) synchronized(changeWindows) { changeWindows.clear() }
             if (next !== current) mutableState.value = next
         }
         // Local graph hydration also learns names; it need not receive another remote event
         // to persist them. Disk IO stays outside the state writer lock and the UI thread.
         if (capturedName) scheduleSessionCatalogSave()
+        retiredViewer?.let { relay.sendToolCommand(it.runtimeId, it.cancelCommand()) }
     }
 
     /**

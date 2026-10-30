@@ -1,3 +1,4 @@
+import { fileChangeBoundary } from "./file-change-boundary.js";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -82,6 +83,15 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   });
 
   let bridge: RuntimeBridge | undefined;
+  let fileReview: { id: string; sessionId: string; sourceTurnIds: string[]; anchorEntryId?: string;
+    outcome: "completed" | "failed" | "cancelled" | "unknown" } | undefined;
+  const finishFileReview = async (): Promise<void> => {
+    const review = fileReview; fileReview = undefined;
+    if (!review) return;
+    await fileChangeBoundary({ phase: "finish", runtimeId: processRuntimeId(), sessionId: review.sessionId,
+      reviewTurnId: review.id, sourceTurnIds: review.sourceTurnIds, outcome: review.outcome,
+      ...(review.anchorEntryId ? { anchorEntryId: review.anchorEntryId } : {}) });
+  };
   // 进程级：会话库列表的缓存（ADR-0035 §11）。listAll() 要扫完整库，不能每次连接都跑。
   const catalogCache = createSessionCatalogCache({
     load: async () => sessionCatalogFromInfos(await SessionManager.listAll()),
@@ -616,6 +626,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       sessionId: currentContext?.sessionManager.getSessionId(),
       targetSessionFile: event.targetSessionFile,
     }, currentContext?.cwd === undefined ? {} : { cwd: currentContext.cwd });
+    await finishFileReview();
     activeSessionToken = undefined;
     closeCurrentSession(event.reason === "quit");
     await toolDisposal;
@@ -626,11 +637,19 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     currentContext = undefined;
   });
 
+  pi.on("before_agent_start", async (_event, ctx) => {
+    await finishFileReview();
+    const review = { id: randomUUID(), sessionId: ctx.sessionManager.getSessionId(), sourceTurnIds: [], outcome: "unknown" as const };
+    fileReview = review;
+    await fileChangeBoundary({ phase: "begin", runtimeId: processRuntimeId(), sessionId: review.sessionId, reviewTurnId: review.id });
+  });
+
   pi.on("agent_start", async () => {
     publishRuntimeStatus("running");
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
+    await finishFileReview();
     stopLiveTurn(ctx);
     // Pi's turn_end is the authoritative completion event. Clear the local
     // correlation state here as a fallback for aborted turns with no end event.
@@ -649,6 +668,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
 
   pi.on("turn_start", async (event, ctx) => {
     const started = turnTiming.start(event.turnIndex, event.timestamp);
+    if (fileReview && fileReview.sourceTurnIds.length < 128) fileReview.sourceTurnIds.push(started.turnId);
     startLiveTurn(ctx, started.startedAt);
     publishSessionEvent(started, ctx);
   });
@@ -667,6 +687,14 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       )?.id ?? [...branch].reverse().find((candidate) =>
         candidate.type === "message" && candidate.message.role === "assistant"
       )?.id;
+    if (fileReview) {
+      const reviewAnchor = persistedMessages.find(mapping => mapping.messageId === messageId)?.entryId
+        ?? [...branch].reverse().find(candidate => candidate.type === "message" && candidate.message === event.message)?.id;
+      if (reviewAnchor) fileReview.anchorEntryId = reviewAnchor;
+      else delete fileReview.anchorEntryId;
+      const reason = (event.message as { stopReason?: string }).stopReason;
+      fileReview.outcome = reason === "aborted" ? "cancelled" : reason === "error" ? "failed" : "completed";
+    }
     const finished = turnTiming.finish(event.turnIndex, messageId, persistedMessageId, persistedMessages);
     if (finished) {
       stopLiveTurn(ctx);

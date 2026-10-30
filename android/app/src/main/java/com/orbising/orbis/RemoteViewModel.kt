@@ -152,6 +152,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun setActiveHost(hostId: String?) {
         active()?.closeToolDetail()
+        active()?.closeChangeViewer()
         val resolved = synchronized(lock) { hostId?.takeIf { connections.containsKey(it) } }
             ?: pairingOrder.value.firstOrNull()?.hostId
         activeHostId.value = resolved
@@ -389,6 +390,15 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun stopRuntime(): String? = active()?.stopRuntime()
     fun cancelQueuedMessage(queueId: String): String? = active()?.cancelQueuedMessage(queueId)
+    fun requestChangeSummaries(runtimeId: String, entries: List<String>, turns: List<String>) = active()?.requestChangeSummaries(runtimeId, entries, turns)
+    fun readChangeManifest(runtimeId: String, summary: TurnChangeSummary) = active()?.readChangeManifest(runtimeId, summary)
+    fun openChangeViewer(runtimeId: String, summary: TurnChangeSummary, file: FileChangeMetadata) = active()?.openChangeViewer(runtimeId, summary, file)
+    fun selectChangeFile(fileId: String) = active()?.selectChangeFile(fileId)
+    fun closeChangeViewer() = active()?.closeChangeViewer()
+    fun closeAllChangeViewers() { synchronized(lock) { connections.values.forEach { it.closeChangeViewer() } } }
+    fun readChangeDetail() = active()?.readChangeDetail()
+    fun rememberChangePosition(fileId: String, index: Int, offset: Int) = active()?.rememberChangePosition(fileId, index, offset)
+
     fun openToolDetail(runtimeId: String, summary: ToolSummary,
         part: String = summary.contents.firstOrNull { it.availability != "absent" }?.part ?: "arguments",
     ) = active()?.openToolDetail(runtimeId, summary, part)

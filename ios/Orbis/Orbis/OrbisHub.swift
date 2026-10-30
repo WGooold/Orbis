@@ -101,7 +101,7 @@ final class OrbisStore: ObservableObject {
 
     func selectHost(_ hostId: String) {
         guard connections[hostId] != nil else { return }
-        if selectedHostId != hostId { activeConnection.toolContent.close() }
+        if selectedHostId != hostId { activeConnection.toolContent.close(); activeConnection.turnFileChanges.closeViewer() }
         selectedHostId = hostId; pairingError = nil
         preferences?.set(hostId, forKey: "orbis.selectedHostId")
     }
@@ -158,6 +158,8 @@ final class OrbisStore: ObservableObject {
     // Read-only selected-Host projection keeps single-Host screens and command semantics intact.
     var transfers: FileTransfers { activeConnection.transfers }
     var toolContent: ToolContentReader { activeConnection.toolContent }
+    var turnFileChanges: TurnFileChanges { activeConnection.turnFileChanges }
+    func changeAnchors(for ids: Set<String>) -> Set<String> { activeConnection.changeAnchors(for: ids) }
     var toolInventories: ToolInventories { activeConnection.toolInventories }
     var hostState: HostState { activeConnection.hostState }
     var agentState: AgentState { activeConnection.agentState }
