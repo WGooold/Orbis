@@ -54,6 +54,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.ui.draw.alpha
@@ -91,6 +92,7 @@ import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Refresh
@@ -111,6 +113,9 @@ import com.orbising.orbis.NeumorphMenu as DropdownMenu
 import com.orbising.orbis.NeumorphMenuItem as DropdownMenuItem
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.pullToRefresh
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -156,6 +161,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -379,36 +385,42 @@ private fun RemoteApp(
                 onBack = { model.selectOfflineSession(null) },
             )
         }
-        state.selectedRuntimeId == null && allDownloadsOpen -> {
-            AllDownloadsScreen(
-                state = state,
-                onBack = { allDownloadsOpen = false },
-                onBrowse = model::browseSessions,
-                onBrowseInto = model::browseInto,
-                onBrowseUp = model::browseUp,
-                onDismissBrowse = model::dismissBrowse,
-                onDownload = { path -> model.downloadFile(path) },
-                onRetry = { taskId -> model.retryDownload(taskId) },
-                onCancel = model::cancelDownload,
-                onDelete = model::deleteDownloads,
-            )
-        }
-        state.selectedRuntimeId == null && statusOpen -> {
-            StatusScreen(
-                state = state,
-                model = model,
-                pairing = model.pairingStatus(),
-                onBack = { statusOpen = false },
-            )
-        }
-        else -> SwipeBackLayer(
-            onBack = { model.selectRuntime(null) },
-            underlay = runtimeList,
-            open = state.selectedRuntimeId != null,
-        ) {
-            AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?:
-                state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
-                ChatScreen(state, model)
+        else -> {
+            // 聊天、设置与首页下载页共用同一层：从右侧滑入，右滑露出首页并返回（M07 / M08 / M14）。
+            // 首页始终留在同一个组合位置，返回后立即可点。
+            val page = when {
+                state.selectedRuntimeId != null -> HomeOverlay.Chat
+                statusOpen -> HomeOverlay.Settings
+                allDownloadsOpen -> HomeOverlay.Downloads
+                else -> null
+            }
+            SwipeBackLayer(
+                onBack = {
+                    when (page) {
+                        HomeOverlay.Chat -> model.selectRuntime(null)
+                        HomeOverlay.Settings -> statusOpen = false
+                        HomeOverlay.Downloads -> allDownloadsOpen = false
+                        null -> Unit
+                    }
+                },
+                underlay = runtimeList,
+                open = page != null,
+                contentKey = page,
+            ) {
+                when (page) {
+                    HomeOverlay.Chat -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?:
+                        state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
+                        ChatScreen(state, model)
+                    }
+                    HomeOverlay.Settings -> StatusScreen(
+                        state = state,
+                        model = model,
+                        pairing = model.pairingStatus(),
+                        onBack = { statusOpen = false },
+                    )
+                    HomeOverlay.Downloads -> HostDownloadsScreen(state, model, onBack = { allDownloadsOpen = false })
+                    null -> Unit
+                }
             }
         }
     }
@@ -439,6 +451,26 @@ private fun RemoteApp(
             onDismiss = model::clearError,
         )
     }
+}
+
+/** Pages that slide in over the home list. */
+private enum class HomeOverlay { Chat, Settings, Downloads }
+
+/** The computer's downloads page; the home, chat and history entries all open this same page. */
+@Composable
+private fun HostDownloadsScreen(state: RemoteState, model: RemoteViewModel, onBack: () -> Unit) {
+    AllDownloadsScreen(
+        state = state,
+        onBack = onBack,
+        onBrowse = model::browseSessions,
+        onBrowseInto = model::browseInto,
+        onBrowseUp = model::browseUp,
+        onDismissBrowse = model::dismissBrowse,
+        onDownload = { path -> model.downloadFile(path) },
+        onRetry = { taskId -> model.retryDownload(taskId) },
+        onCancel = model::cancelDownload,
+        onDelete = model::deleteDownloads,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -547,7 +579,9 @@ internal fun RuntimeListScreen(
     onRequestProviders: () -> Unit,
     onRetryHome: () -> Unit = {},
 ) {
-    var moreMenuOpen by remember { mutableStateOf(false) }
+    val homeListState = rememberLazyListState()
+    val shownHomeKeys = remember { HomeListKeys() }
+    val pullRefreshState = rememberPullToRefreshState()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val activeHostId = state.hostId
@@ -650,30 +684,13 @@ internal fun RuntimeListScreen(
                                 enabled = true,
                                 onClick = onOpenDownloads,
                             )
-                            Box {
-                                NeumorphIconButton(
-                                    onClick = { moreMenuOpen = true },
-                                    icon = Icons.Rounded.MoreVert,
-                                    contentDescription = "更多操作",
-                                )
-                                DropdownMenu(expanded = moreMenuOpen, onDismissRequest = { moreMenuOpen = false }) {
-                                    DropdownMenuItem(
-                                        text = { Text("连接状态") },
-                                        leadingIcon = { Icon(Icons.Rounded.Info, contentDescription = null) },
-                                        onClick = { moreMenuOpen = false; onOpenStatus() },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("添加电脑") },
-                                        leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null) },
-                                        onClick = { moreMenuOpen = false; onAddHost() },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("取消配对当前电脑", color = MaterialTheme.colorScheme.error) },
-                                        leadingIcon = { Icon(Icons.Rounded.LinkOff, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                                        onClick = { moreMenuOpen = false; activeHostId?.let(onUnpairHost) },
-                                    )
-                                }
-                            }
+                            // 右上角只有下载与设置两个入口；添加 / 取消配对只在侧边栏底部的电脑菜单（ADR-0053 §4）。
+                            NeumorphIconButton(
+                                onClick = onOpenStatus,
+                                icon = Icons.Rounded.Settings,
+                                contentDescription = "设置",
+                                modifier = Modifier.testTag("home-settings"),
+                            )
                         }
                     },
                 )
@@ -689,8 +706,9 @@ internal fun RuntimeListScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     // The switcher takes the free width (its content stays at the start), so the chip sits flush right.
-                    HomeHostSwitcher(hosts, activeHostId, onSelectHost, onAddHost, Modifier.weight(1f))
-                    Box(Modifier.clip(CircleShape).clickable(onClick = onOpenStatus).testTag("home-connection-status")) {
+                    HomeHostSwitcher(hosts, activeHostId, onSelectHost, Modifier.weight(1f))
+                    // 胶囊只表达状态，不再是入口；读屏把它读成一段状态（ADR-0053 §4）。
+                    Box(Modifier.testTag("home-connection-status").semantics(mergeDescendants = true) { }) {
                         ConnectionStatus(state.connection, state.e2eReady, state.path, backgroundSync)
                     }
                     if (backgroundSync is HomeSyncStatus.Failed) {
@@ -704,8 +722,27 @@ internal fun RuntimeListScreen(
                         )
                     }
                 }
+                // V21：会话增删与重排不能把视口挤走。在发布新列表的同一次组合里决定位置，
+                // 让 LazyColumn 这一帧就按它测量，而不是先跟着首卡跳走再拉回来。
+                val homeKeys = visibleRuntimes.map { "${it.hostId}:${it.runtime.runtimeId}" }
+                val topSlop = with(LocalDensity.current) { 8.dp.roundToPx() }
+                if (shownHomeKeys.keys != homeKeys) {
+                    val previous = shownHomeKeys.keys
+                    shownHomeKeys.keys = homeKeys
+                    Snapshot.withoutReadObservation {
+                        homeViewportTarget(previous, homeKeys, homeListState.firstVisibleItemIndex,
+                            homeListState.firstVisibleItemScrollOffset, topSlop)
+                            ?.let { (index, offset) -> homeListState.requestScrollToItem(index, offset) }
+                    }
+                }
+                // M15：与 iOS 一样下拉刷新，逻辑同失败重试；进度仍由连接胶囊或列表空态表达，指示器松手即收起。
+                Box(
+                    Modifier.fillMaxWidth().weight(1f).testTag("home-pull-refresh")
+                        .pullToRefresh(isRefreshing = false, state = pullRefreshState, enabled = !selecting, onRefresh = onRetryHome),
+                ) {
                 LazyColumn(
-                    modifier = Modifier.fillMaxWidth().weight(1f).testTag("home-session-list"),
+                    modifier = Modifier.fillMaxSize().testTag("home-session-list"),
+                    state = homeListState,
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
                 ) {
@@ -890,6 +927,14 @@ internal fun RuntimeListScreen(
                             }
                         }
                     }
+                PullToRefreshDefaults.Indicator(
+                    state = pullRefreshState,
+                    isRefreshing = false,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                }
             }
         }
     }
@@ -922,6 +967,9 @@ private fun HomeFirstLoadStatus(sync: HomeSyncStatus, e2eReady: Boolean, onRetry
         }
     }
 }
+
+/** The card keys the home list last laid out, to place the viewport when they change. */
+private class HomeListKeys { var keys: List<String> = emptyList() }
 
 /** One home-screen card and the computer that serves it. */
 private data class HostRuntimeRow(
@@ -1421,6 +1469,12 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     // 历史与分支整页：顶栏入口和输入 /tree 进的是同一页。动作（跳分支）走 /tree 命令，
     // 节点 ID 只在页面内部流转，不会再被拼进输入框。
     var historyOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    // 历史页顶栏的下载入口：下载页滑入后返回历史页（ADR-0053 §5）。
+    var historyDownloadsOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    LaunchedEffect(historyOpen) { if (!historyOpen) historyDownloadsOpen = false }
+    // M16：聊天页与历史页各自的下载飞入层，文件飞向本页右上角的下载按钮。
+    val chatFlight = rememberDownloadFlight(runtimeId, sessionId)
+    val historyFlight = rememberDownloadFlight(runtimeId, sessionId)
     var historyAction by remember(runtimeId, sessionId) { mutableStateOf<HistoryTreeAction?>(null) }
     var historyActionCommandId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     var historyActionError by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
@@ -1624,6 +1678,10 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
 
     if (historyOpen) {
+        SwipeBackLayer(
+            onBack = { historyDownloadsOpen = false },
+            open = historyDownloadsOpen,
+            underlay = { DownloadFlightHost(historyFlight) {
         HistoryTreePage(
             state = state,
             runtimeId = runtimeId,
@@ -1634,6 +1692,9 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 historyOpen = false
                 historyActionError = null
             },
+            activeDownloadCount = activeDownloadCount,
+            onOpenDownloads = { historyDownloadsOpen = true },
+            downloadFlight = historyFlight,
             onContinueFrom = { node -> runHistoryAction(HistoryTreeAction.ContinueFrom(node.nodeId)) },
             onEditAndRestart = { node ->
                 runHistoryAction(
@@ -1643,27 +1704,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                     ),
                 )
             },
-            downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
-            downloadFile = { path -> model.downloadFile(path) },
+            downloadArtifact = { artifact -> if (model.downloadArtifact(artifact)) historyFlight.launch() },
+            downloadFile = { path -> if (model.downloadFile(path)) historyFlight.launch() },
         )
-        return
-    }
-
-    if (downloadManagerOpen) {
-        // 对话上方的下载页与主页面下载页是同一个页面（浏览文件 + 下载列表），
-        // 语义都是「和 Host 交互」——不再是「某个 runtime 的下载」。
-        AllDownloadsScreen(
-            state = state,
-            onBack = { downloadManagerOpen = false },
-            onBrowse = model::browseSessions,
-            onBrowseInto = model::browseInto,
-            onBrowseUp = model::browseUp,
-            onDismissBrowse = model::dismissBrowse,
-            onDownload = { path -> model.downloadFile(path) },
-            onRetry = { taskId -> model.retryDownload(taskId) },
-            onCancel = model::cancelDownload,
-            onDelete = model::deleteDownloads,
-        )
+            } },
+        ) { HostDownloadsScreen(state, model, onBack = { historyDownloadsOpen = false }) }
         return
     }
 
@@ -1759,6 +1804,12 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         pendingMessageText = ""
     }
 
+    // 对话上方的下载页与主页面下载页是同一个页面（浏览文件 + 下载列表），语义都是「和 Host 交互」。
+    // 它从右侧滑入，右滑露出并回到这个对话；对话保持原实例，阅读位置、草稿与展开状态不变（ADR-0053 §5）。
+    SwipeBackLayer(
+        onBack = { downloadManagerOpen = false },
+        open = downloadManagerOpen,
+        underlay = { DownloadFlightHost(chatFlight) {
     Scaffold(
         topBar = {
             Column {
@@ -1814,6 +1865,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                         // 下载由 Host 服务（§9.4），与「当前会话的 runtime 在不在」无关。
                         enabled = state.hostId != null,
                         onClick = { downloadManagerOpen = true },
+                        modifier = Modifier.testTag("chat-downloads").downloadFlightTarget(chatFlight),
                     )
                 },
             )
@@ -2115,8 +2167,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                 }
                             },
                             downloads = state.downloads,
-                            downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
-                            downloadFile = { path -> model.downloadFile(path) },
+                            downloadArtifact = { artifact -> if (model.downloadArtifact(artifact)) chatFlight.launch() },
+                            downloadFile = { path -> if (model.downloadFile(path)) chatFlight.launch() },
                             onRewind = rewindOptions[item.message.messageId]?.let { option ->
                                 { runHistoryAction(HistoryTreeAction.EditAndRestart(option.value, item.message.content.mapNotNull { it.text }.joinToString("\n"))) }
                             },
@@ -2134,8 +2186,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             toolActivities = conversation.tools,
                             toolResults = presentation.toolResults,
                             downloads = state.downloads,
-                            downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
-                            downloadFile = { path -> model.downloadFile(path) },
+                            downloadArtifact = { artifact -> if (model.downloadArtifact(artifact)) chatFlight.launch() },
+                            downloadFile = { path -> if (model.downloadFile(path)) chatFlight.launch() },
                             fileChanges = {
                                 val ids = item.messages.map { it.messageId }.toSet()
                                 val turns = ids.mapNotNull(turnIdsByMessageId::get).toSet()
@@ -2194,6 +2246,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         }
         }
     }
+        } },
+    ) { HostDownloadsScreen(state, model, onBack = { downloadManagerOpen = false }) }
 
 }
 
@@ -2404,12 +2458,13 @@ internal fun slashSourceText(source: String, isCodex: Boolean = false): String =
 }
 
 @Composable
-private fun DownloadStatusButton(
+internal fun DownloadStatusButton(
     activeCount: Int,
     enabled: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Box {
+    Box(modifier) {
         // S6：顶栏图标按钮是凸起圆钮。
         NeumorphIconButton(
             onClick = onClick,
@@ -2685,7 +2740,6 @@ private fun HomeHostSwitcher(
     hosts: List<HostSnapshot>,
     activeHostId: String?,
     onSelectHost: (String) -> Unit,
-    onAddHost: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val name = hosts.firstOrNull { it.hostId == activeHostId }?.name ?: "选择电脑"
@@ -2727,12 +2781,6 @@ private fun HomeHostSwitcher(
                     },
                 )
             }
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text("添加电脑") },
-                onClick = { expanded = false; onAddHost() },
-                leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
-            )
         }
     }
 }
@@ -2796,10 +2844,10 @@ private fun ConnectionStatus(
 
 }
 
-/** 连接状态页只显示当前连接、加密与配对的基本信息。 */
+/** 设置页（原连接状态页，ADR-0053 §4）：供应商在最上方，其后是当前连接与只读的配对信息。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun StatusScreen(
+internal fun StatusScreen(
     state: RemoteState,
     model: RemoteViewModel,
     pairing: PairingStatus,
@@ -2810,7 +2858,7 @@ private fun StatusScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("连接状态", fontWeight = FontWeight.SemiBold) },
+                title = { Text("设置", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
                     NeumorphIconButton(
                         onClick = onBack,
@@ -2830,8 +2878,10 @@ private fun StatusScreen(
                 .padding(horizontal = RemoteUi.PagePadding, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            statusAdvice(state, pairing)?.let { WarningCard(it) }
+            StatusSectionTitle("Agent 供应商")
+            AgentStatusProvidersCard(state, model::switchAgentProvider, model::querySubscription)
 
+            statusAdvice(state, pairing)?.let { WarningCard(it) }
             StatusSectionTitle("当前连接")
             StatusCard {
                 StatusRow(
@@ -2844,9 +2894,6 @@ private fun StatusScreen(
                 StatusRow("连接方式", connectionMethodText(state), connectionMethodTone(state))
                 StatusRow("端到端加密", if (state.e2eReady) "已启用" else "未建立", e2eTone(state))
             }
-
-            StatusSectionTitle("Agent 供应商")
-            AgentStatusProvidersCard(state, model::switchAgentProvider, model::querySubscription)
 
             StatusSectionTitle("配对信息")
             StatusCard {
@@ -2993,7 +3040,7 @@ internal fun AgentProvidersContent(
  */
 internal fun statusAdvice(state: RemoteState, pairing: PairingStatus): String? = when {
     pairing.hostId == null || !pairing.pskRootPresent ->
-        "配对不完整：请在主界面点「取消配对」，再扫电脑上的新二维码"
+        "配对不完整：请打开侧边栏，点底部的电脑取消配对，再扫电脑上的新二维码"
     state.e2eReady -> null
     state.connection == RelayConnection.ONLINE ->
         "正在等待电脑连接：请确认电脑上的 Orbis Host 已打开，APP 会自动重连"

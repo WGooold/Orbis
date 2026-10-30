@@ -198,7 +198,7 @@ final class OrbisUITests: XCTestCase {
         let app = launch("home", arguments: ["--preview-home-staged"])
         let preparing = app.staticTexts["正在加载会话…"]
         let syncing = app.staticTexts["正在同步"]
-        let pill = app.buttons["home-connection-pill"]
+        let pill = app.descendants(matching: .any)["home-connection-pill"].firstMatch
         let list = app.scrollViews["home-session-list"]
         let card = app.buttons["home-runtime-preview-codex"]
         XCTAssertTrue(preparing.waitForExistence(timeout: 3))
@@ -515,6 +515,113 @@ final class OrbisUITests: XCTestCase {
         XCTAssertFalse(composer.exists)
         capture("chat-swipe-home", app: app)
     }
+    // ADR-0053 §4 / S22: the header keeps only downloads and settings, the capsule only reports state,
+    // and computers are added or unpaired only from the drawer's computer menu.
+    func testSettingsPageOrderAndSingleHostMenu() {
+        let app = launch("home", arguments: ["--preview-hosts=2"])
+        let settings = app.buttons["home-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["home-downloads"].exists)
+        XCTAssertFalse(app.buttons["更多操作"].exists)
+        XCTAssertFalse(app.buttons["home-connection-pill"].exists)
+        let pill = app.descendants(matching: .any)["home-connection-pill"].firstMatch
+        XCTAssertTrue(pill.exists)
+        pill.tap()
+        XCTAssertFalse(app.descendants(matching: .any)["settings-page"].waitForExistence(timeout: 1.5))
+        let switcher = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "切换电脑")).firstMatch
+        XCTAssertTrue(switcher.waitForExistence(timeout: 3))
+        switcher.tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "工作电脑")).firstMatch.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["添加电脑"].exists)
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "取消配对")).firstMatch.exists)
+        capture("home-switcher-switch-only", app: app)
+        app.terminate()
+
+        for dark in [false, true] {
+            let page = launch("status", dark: dark, arguments: ["--preview-hosts=2"])
+            XCTAssertTrue(page.descendants(matching: .any)["settings-page"].waitForExistence(timeout: 8))
+            let providers = page.staticTexts["Agent 供应商"], connection = page.staticTexts["当前连接"], pairing = page.staticTexts["配对信息"]
+            XCTAssertTrue(providers.exists && connection.exists && pairing.exists)
+            XCTAssertLessThan(providers.frame.minY, connection.frame.minY)
+            XCTAssertLessThan(connection.frame.minY, pairing.frame.minY)
+            XCTAssertFalse(page.staticTexts["已配对电脑"].exists)
+            XCTAssertFalse(page.buttons["添加电脑"].exists)
+            capture("settings-order" + (dark ? "-dark" : "-light"), app: page)
+            page.terminate()
+        }
+
+        let drawer = launch("drawer", arguments: ["--preview-hosts=2"])
+        let computer = drawer.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "电脑，当前")).firstMatch
+        XCTAssertTrue(computer.waitForExistence(timeout: 8))
+        XCTAssertFalse(drawer.buttons["当前电脑操作"].exists)
+        computer.tap()
+        XCTAssertTrue(drawer.buttons["添加电脑"].waitForExistence(timeout: 3))
+        XCTAssertTrue(drawer.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "取消配对")).firstMatch.exists)
+        capture("drawer-computer-menu", app: drawer)
+    }
+
+    // ADR-0053 §5 / M14: settings and the home downloads page slide back to home like the chat.
+    func testSettingsAndDownloadsSwipeBack() {
+        let app = launch("home")
+        let directory = app.buttons["打开会话目录"]
+        XCTAssertTrue(app.buttons["home-settings"].waitForExistence(timeout: 8))
+        for (entry, page) in [("home-settings", "settings-page"), ("home-downloads", "")] {
+            app.buttons[entry].tap()
+            let opened = page.isEmpty ? app.staticTexts["下载"] : app.descendants(matching: .any)[page].firstMatch
+            XCTAssertTrue(opened.waitForExistence(timeout: 3))
+            XCTAssertTrue(directory.waitForNonExistence(timeout: 3))
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
+            // A short drag rebounds and stays on the page.
+            start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.6)),
+                        withVelocity: .slow, thenHoldForDuration: 0.3)
+            XCTAssertTrue(opened.exists)
+            // The rebounding page may still show the home preview beneath it, which takes no taps.
+            XCTAssertFalse(directory.exists && directory.isHittable)
+            // Past a third of the width it returns home, and home takes taps at once.
+            start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+                        withVelocity: .slow, thenHoldForDuration: 0.1)
+            XCTAssertTrue(directory.waitForExistence(timeout: 3))
+            XCTAssertTrue(app.buttons[entry].isHittable)
+            capture("swipe-back-from-" + entry, app: app)
+        }
+    }
+
+    // ADR-0053 §5: the chat's downloads page returns to that same chat, draft and all.
+    func testChatDownloadsReturnToSameChat() {
+        let app = launch("chat")
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap(); composer.typeText("下载前的草稿")
+        app.buttons["chat-downloads"].tap()
+        XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
+        XCTAssertFalse(composer.exists)
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
+        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+                    withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["打开会话目录"].exists)
+        XCTAssertTrue((composer.value as? String)?.contains("下载前的草稿") == true)
+        capture("chat-downloads-returned", app: app)
+    }
+
+    // ADR-0053 §5 / §7: the history page has the chat's download button and its page returns there.
+    func testHistoryDownloadsReturnToHistory() {
+        let app = launch("history")
+        let button = app.buttons["history-downloads"]
+        XCTAssertTrue(button.waitForExistence(timeout: 8))
+        let search = app.textFields["搜索历史与分支"]
+        XCTAssertTrue(search.exists)
+        button.tap()
+        XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
+        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+                    withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(button.waitForExistence(timeout: 3))
+        XCTAssertTrue(search.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].exists)
+        capture("history-downloads-returned", app: app)
+    }
+
     func testSlashPickerStaysAboveKeyboard() {
         let app = launch("slash")
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
@@ -779,6 +886,9 @@ final class OrbisUITests: XCTestCase {
         for dark in [false, true] {
             let app = launch("status", dark: dark)
             XCTAssertTrue(app.staticTexts["当前连接"].waitForExistence(timeout: 8))
+            // Providers now come first (ADR-0053 §4); the connection and pairing facts follow below them.
+            let page = app.descendants(matching: .any)["settings-page"].firstMatch
+            for _ in 0..<4 where !app.staticTexts["配对状态"].firstMatch.isHittable { page.swipeUp() }
             for label in ["已连接", "连接方式", "端到端加密", "电脑", "配对状态"] {
                 XCTAssertTrue(app.staticTexts[label].firstMatch.isHittable)
             }
@@ -808,8 +918,8 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(dialog.waitForExistence(timeout: 3))
         XCTAssertTrue(dialog.staticTexts["需要切换 provider"].exists)
         capture("provider-mismatch", app: drawer)
-        dialog.buttons["连接状态与供应商"].tap()
-        XCTAssertTrue(drawer.staticTexts["连接状态"].waitForExistence(timeout: 3))
+        dialog.buttons["设置"].tap()
+        XCTAssertTrue(drawer.descendants(matching: .any)["settings-page"].waitForExistence(timeout: 3))
         XCTAssertTrue(drawer.buttons["provider-switch-codex"].exists)
     }
     func testDrawerCardsKeepUniformGeometryForShortAndLongTitles() {
@@ -981,7 +1091,7 @@ final class OrbisUITests: XCTestCase {
             for screen in ["pairing", "home", "drawer", "chat", "status", "providers", "downloads", "approval"] {
                 let app = launch(screen, dark: dark)
                 XCTAssertTrue(app.wait(for: .runningForeground, timeout: 8))
-                let expected = screen == "pairing" ? "连接你的电脑" : screen == "status" ? "连接状态" : screen == "providers" ? "供应商" : screen == "downloads" ? "下载" : screen == "drawer" ? "会话目录" : screen == "approval" ? "允许执行验证命令" : "Codex"
+                let expected = screen == "pairing" ? "连接你的电脑" : screen == "status" ? "设置" : screen == "providers" ? "供应商" : screen == "downloads" ? "下载" : screen == "drawer" ? "会话目录" : screen == "approval" ? "允许执行验证命令" : "Codex"
                 XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", expected)).firstMatch.waitForExistence(timeout: 5))
                 capture(screen + (dark ? "-dark" : "-light"), app: app)
                 app.terminate()

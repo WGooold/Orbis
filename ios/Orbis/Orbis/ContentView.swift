@@ -12,6 +12,10 @@ struct ContentView: View {
     @State private var directoryState = SessionDirectoryState()
     @State private var newSessionOpen = false
     @State private var newSessionCwd: String?
+    /// What each pushed page reveals when swiped back, by stack index. A page pushed from home reveals
+    /// the live home; one pushed from another page reveals a still of it, because the real page stays
+    /// alive below in the stack and must not be built a second time (ADR-0053 §5).
+    @State private var underlays: [Int: UIView] = [:]
     @StateObject private var overlay = OrbisOverlay()
 
     init() {
@@ -45,20 +49,21 @@ struct ContentView: View {
                     switch page {
                     case .chat:
                         if let runtime = store.selectedRuntime {
-                            ChatView(runtime: runtime, onBack: back, onHistory: { pages.append(.history) }, onDownloads: { pages.append(.downloads) })
+                            ChatView(runtime: runtime, onBack: back, onHistory: { pages.append(.history) }, onDownloads: { push(.downloads) })
                                 .id(localSessionKey(host: store.selectedHost, runtime: runtime))
                         } else { OrbisEmptyState(symbol: "desktopcomputer", title: "会话已离线") }
                     case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
                     case .status: ConnectionStatusView(onBack: back)
                     case .providers: AgentProvidersView(onBack: back)
-                    case .history: HistoryBranchView(onBack: back)
+                    case .history: HistoryBranchView(onBack: back, onDownloads: { push(.downloads) })
                     case .downloads: DownloadsView(onBack: back)
                     }
                 }
                 .foregroundStyle(OrbisPalette(scheme).text)
                 .background(OrbisPalette(scheme).base.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
-                .modifier(SwipeBackModifier(enabled: page == .chat, onBack: back, underlay: { home }))
+                .modifier(SwipeBackModifier(enabled: [.chat, .status, .downloads].contains(page), onBack: back,
+                                            underlay: { underlay(below: page) }))
             }
         }
         .environmentObject(store.transfers)
@@ -87,7 +92,10 @@ struct ContentView: View {
             NewSessionView(presetCwd: newSessionCwd) { newSessionOpen = false }
                 .environmentObject(store).orbisSheet([.large])
         }
-        .onChange(of: pages) { _, _ in overlay.dismissMenu() }
+        .onChange(of: pages) { _, next in
+            overlay.dismissMenu()
+            underlays = underlays.filter { $0.key < next.count }
+        }
         .onChange(of: drawerOpen) { _, open in if !open { overlay.dismissMenu() } }
         .onChange(of: store.activationRevision) { _, _ in
             setDrawer(false); newSessionOpen = false
@@ -121,9 +129,8 @@ struct ContentView: View {
     }
 
     private var home: some View {
-        HomeView(onDirectory: { setDrawer(true) }, onStatus: { pages.append(.status) },
-                 onAddHost: { pages.append(.pairing) },
-                 onDownloads: { pages.append(.downloads) }, onUnpair: { confirmUnpair(store.selectedHost) },
+        HomeView(onDirectory: { setDrawer(true) }, onSettings: { pages.append(.status) },
+                 onDownloads: { pages.append(.downloads) },
                  onOpenRuntime: { hostId, runtime in
                      store.selectHost(hostId)
                      openRuntime(runtime)
@@ -147,6 +154,17 @@ struct ContentView: View {
     }
 
     private func back() { if !pages.isEmpty { pages.removeLast() } }
+    /// Pushes a page over the current one, keeping a still of the current page to reveal on swipe back.
+    private func push(_ page: AppPage) {
+        if !pages.isEmpty { underlays[pages.count] = currentScreenSnapshot() }
+        pages.append(page)
+    }
+    @ViewBuilder private func underlay(below page: AppPage) -> some View {
+        let index = pages.lastIndex(of: page) ?? 0
+        if index == 0 { home }
+        else if let snapshot = underlays[index] { SnapshotUnderlay(view: snapshot).ignoresSafeArea() }
+        else { OrbisPalette(scheme).base.ignoresSafeArea() }
+    }
     private func setDrawer(_ open: Bool) {
         withAnimation(reduceMotion ? nil : .orbisDrag) { drawerOpen = open }
     }
@@ -372,6 +390,31 @@ private struct SwipeBackModifier<Underlay: View>: ViewModifier {
     }
 }
 
+@MainActor private func currentScreenSnapshot() -> UIView? {
+    let window = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        .flatMap(\.windows).first { $0.isKeyWindow }
+    return window?.snapshotView(afterScreenUpdates: false)
+}
+
+/// A still of the page below, shown only while a pushed page is being swiped back.
+private struct SnapshotUnderlay: UIViewRepresentable {
+    let view: UIView
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.isUserInteractionEnabled = false
+        container.addSubview(view)
+        view.frame = container.bounds
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        return container
+    }
+    func updateUIView(_ container: UIView, context: Context) {
+        if view.superview !== container {
+            container.addSubview(view)
+            view.frame = container.bounds
+        }
+    }
+}
+
 private struct TransferErrorBanner: View {
     @ObservedObject var transfers: FileTransfers
     var body: some View {
@@ -399,10 +442,8 @@ struct HomeView: View {
     @State private var closeSwipeDirectionDecided = false
     @GestureState private var closeSwipeActive = false
     let onDirectory: () -> Void
-    let onStatus: () -> Void
-    let onAddHost: () -> Void
+    let onSettings: () -> Void
     let onDownloads: () -> Void
-    let onUnpair: () -> Void
     let onOpenRuntime: (String, RuntimeSummary) -> Void
 
     // Only gesture hit testing reads the moving origin. Updating it must not invalidate
@@ -441,20 +482,18 @@ struct HomeView: View {
                         .disabled(store.connection != .secured)
                 } else {
                     OrbisIconButton(symbol: "arrow.down.to.line", label: "下载", action: onDownloads)
-                    OrbisMenuIconButton(symbol: "ellipsis", label: "更多操作") {
-                        [OrbisMenuItem(title: "连接状态", symbol: "info.circle", action: onStatus),
-                         OrbisMenuItem(title: "添加电脑", symbol: "plus", action: onAddHost),
-                         .divider,
-                         OrbisMenuItem(title: "取消配对当前电脑", symbol: "link", destructive: true, action: onUnpair)]
-                    }
+                        .accessibilityIdentifier("home-downloads")
+                    OrbisIconButton(symbol: "gearshape", label: "设置", action: onSettings)
+                        .accessibilityIdentifier("home-settings")
                 }
             }
             // One fixed row: which computer this page shows, how it is connected and, once the
             // list is published, whether it is still syncing. Retry joins the row without moving the cards.
+            // The capsule only reports state; settings open from the gear (ADR-0053 §4).
             HStack(spacing: 10) {
                 hostSwitcher
                 Spacer(minLength: 8)
-                Button(action: onStatus) { ConnectionPill(sync: backgroundSync) }.buttonStyle(.plain)
+                ConnectionPill(sync: backgroundSync)
                     .accessibilityIdentifier("home-connection-pill")
                 if case .failed(let error) = backgroundSync {
                     OrbisIconButton(symbol: "arrow.clockwise", label: retryLabel, tint: OrbisPalette(scheme).error,
@@ -646,7 +685,7 @@ struct HomeView: View {
         let name = store.selectedHost?.hostName ?? "选择电脑"
         if store.pairings.count > 1 {
             OrbisMenuButton(accessibilityLabel: "切换电脑，当前 \(name)", padding: 0,
-                            items: { hostSwitchMenuItems(store, onAddHost: onAddHost) }) {
+                            items: { hostSwitchMenuItems(store) }) {
                 HStack(spacing: 8) {
                     Image(systemName: "desktopcomputer").foregroundStyle(p.accent)
                     Text(name).font(.orbisLabel(.semibold)).lineLimit(1)
@@ -760,12 +799,15 @@ struct ConnectionPill: View {
         }.font(.orbisCaption(.medium)).foregroundStyle(p.secondary).padding(.horizontal, 12).frame(minHeight: 36)
             .neuSurface(inset: true, radius: 18, intensity: 0.35, concentric: false)
             .animation(reduceMotion ? nil : .orbisFade, value: title)
+            // A status group, not a button: its texts stay readable one by one.
+            .accessibilityElement(children: .contain)
     }
 }
 
-/// Shared by the home row and the drawer footer: pick another paired computer, or add one.
+/// Shared by the home row and the drawer footer: pick another paired computer. Only the drawer's
+/// computer menu adds or unpairs computers (ADR-0053 §4), so it passes those actions.
 @MainActor
-func hostSwitchMenuItems(_ store: OrbisStore, onAddHost: @escaping () -> Void) -> [OrbisMenuItem] {
+func hostSwitchMenuItems(_ store: OrbisStore, onAddHost: (() -> Void)? = nil, onUnpair: ((HostPairing) -> Void)? = nil) -> [OrbisMenuItem] {
     var items: [OrbisMenuItem] = store.pairings.map { host in
         let snapshot = store.hosts.first { $0.hostId == host.hostId }
         let state = snapshot.map { "，" + connectionTitle($0.connectionState) } ?? ""
@@ -774,8 +816,13 @@ func hostSwitchMenuItems(_ store: OrbisStore, onAddHost: @escaping () -> Void) -
             if host.hostId != store.selectedHostId { store.connect(hostId: host.hostId) }
         }
     }
-    items.append(.divider)
-    items.append(OrbisMenuItem(title: "添加电脑", symbol: "plus", action: onAddHost))
+    if let onAddHost {
+        items.append(.divider)
+        items.append(OrbisMenuItem(title: "添加电脑", symbol: "plus", action: onAddHost))
+    }
+    if let onUnpair, let host = store.selectedHost {
+        items.append(OrbisMenuItem(title: "取消配对 \(host.hostName)", symbol: "link", destructive: true) { onUnpair(host) })
+    }
     return items
 }
 

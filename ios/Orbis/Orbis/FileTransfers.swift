@@ -255,12 +255,15 @@ final class FileTransfers: ObservableObject {
         pairing = host; self.connected = connected
     }
     /// Downloads belong to the Host, never to a session: the task records no session identity.
-    func download(path: String? = nil, artifact: RemoteArtifact? = nil) {
-        guard let pairing, connected, path?.isEmpty == false || artifact != nil else { error = "连接电脑后可下载文件。"; return }
+    /// Returns whether a download task was queued (download feedback depends on it, ADR-0053 §7).
+    @discardableResult
+    func download(path: String? = nil, artifact: RemoteArtifact? = nil) -> Bool {
+        guard let pairing, connected, path?.isEmpty == false || artifact != nil else { error = "连接电脑后可下载文件。"; return false }
         var task = FileTransfer(id: UUID().uuidString, hostKey: hostKey, hostId: pairing.hostId, runtimeId: pairing.hostId,
             sessionId: nil, direction: "download", name: artifact?.fileName ?? directoryTitle(path ?? "文件"), sourcePath: path, artifactId: artifact?.artifactId)
         task.size = artifact?.size ?? 0; task.sha256 = artifact?.sha256
         tasks.insert(task, at: 0); restart(task.id)
+        return true
     }
     func restart(_ id: String) {
         guard let index = tasks.firstIndex(where: { $0.id == id && $0.hostKey == hostKey }), connected,

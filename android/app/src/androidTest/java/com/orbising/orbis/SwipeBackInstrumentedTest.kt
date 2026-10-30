@@ -1,5 +1,16 @@
 package com.orbising.orbis
 
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.Button
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.swipeRight
+import org.junit.Rule
+import org.junit.Test
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,8 +29,6 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Rule
-import org.junit.Test
 
 class SwipeBackInstrumentedTest {
     @get:Rule val compose = createComposeRule()
@@ -165,5 +174,66 @@ class SwipeBackInstrumentedTest {
         }
         compose.mainClock.advanceTimeBy(1_500)
         compose.runOnIdle { assertEquals(1, backs) }
+    }
+}
+
+/** ADR-0053 §5 / M14: the same layer carries settings and downloads; a page over a page keeps it alive. */
+class SwipeBackPagesInstrumentedTest {
+    @get:Rule val compose = createComposeRule()
+
+    @Test fun switchingPagesOnTheLayerReplaysTheEntrance() {
+        val page = mutableStateOf<String?>(null)
+        compose.setContent {
+            OrbisTheme {
+                SwipeBackLayer(onBack = { page.value = null }, underlay = { Text("Home preview") }, open = page.value != null, contentKey = page.value) {
+                    Text("Page ${page.value}", Modifier.testTag("page"))
+                }
+            }
+        }
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { page.value = "settings" }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(32)
+        val entering = compose.onNodeWithTag("page", useUnmergedTree = true).fetchSemanticsNode().positionInRoot.x
+        assertTrue("page enters from the right", entering > 0f)
+        compose.mainClock.advanceTimeBy(1_000)
+        assertEquals(0f, compose.onNodeWithTag("page", useUnmergedTree = true).fetchSemanticsNode().positionInRoot.x, 1f)
+        compose.runOnIdle { page.value = "downloads" }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(32)
+        assertTrue("a different page replays the entrance",
+            compose.onNodeWithTag("page", useUnmergedTree = true).fetchSemanticsNode().positionInRoot.x > 0f)
+        compose.mainClock.autoAdvance = true
+    }
+
+    @Test fun swipingBackFromAPageOverAPageKeepsTheSourceState() {
+        val downloads = mutableStateOf(false)
+        var sourceBuilds = 0
+        var sourceDisposed = false
+        compose.setContent {
+            OrbisTheme {
+                SwipeBackLayer(onBack = { downloads.value = false }, open = downloads.value, underlay = {
+                    var draft by remember { mutableStateOf("") }
+                    DisposableEffect(Unit) { sourceBuilds++; onDispose { sourceDisposed = true } }
+                    Column {
+                        Text("Draft: $draft", Modifier.testTag("draft"))
+                        Button(onClick = { draft += "x" }, Modifier.testTag("type")) { Text("Type") }
+                    }
+                }) {
+                    Box(Modifier.fillMaxSize().testTag("downloads")) { Text("Downloads") }
+                }
+            }
+        }
+        compose.onNodeWithTag("type").performClick()
+        compose.onNodeWithTag("type").performClick()
+        compose.runOnIdle { downloads.value = true }
+        compose.onNodeWithTag("downloads").assertIsDisplayed()
+        compose.onNodeWithTag("downloads").performTouchInput {
+            swipeRight(startX = width * 0.15f, endX = width * 0.9f, durationMillis = 400)
+        }
+        compose.waitUntil(3_000) { !downloads.value }
+        compose.onNodeWithText("Draft: xx").assertIsDisplayed()
+        assertEquals(1, sourceBuilds)
+        assertTrue(!sourceDisposed)
     }
 }
