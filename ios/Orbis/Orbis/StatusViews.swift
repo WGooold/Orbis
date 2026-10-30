@@ -64,56 +64,19 @@ private struct AgentStatusProviderCard: View {
     private var quotaSnapshot: ProviderQuotaSnapshot? { host.subscriptionQuota(for: kind) }
     private var quota: SubscriptionQuota? { quotaSnapshot?.quota }
     private var loading: Bool { current?.id == host.quotaProviderId && host.quotaKind == kind && host.queryingQuota }
+    private var quotaAccessibilityValue: String {
+        if loading { return "正在查询配额" }
+        guard let quota else { return "" }
+        return quota.windows.map { window in
+            let remaining = window.remainingPercent.map { String(format: "%.0f%%", $0) } ?? "暂不可用"
+            return window.title + " " + remaining
+        }.joined(separator: "，")
+    }
     var body: some View {
         let palette = OrbisPalette(scheme)
         let expectedHost = host.hostKey
         ZStack(alignment: .topTrailing) {
-            Button {
-                if let current, let expectedHost { host.querySubscription(current, expectedHostKey: expectedHost) }
-            } label: {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 12) {
-                        if current?.subscriptionSupported == true {
-                            Color.clear.frame(width: 64, height: 56)
-                        } else {
-                            AgentEmblem(kind: kind, size: 32, recessed: false).accessibilityHidden(true)
-                        }
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(spacing: 6) {
-                                Text(agentTitle(kind)).font(.orbisLabel(.semibold)).foregroundStyle(palette.text)
-                                if current?.subscriptionSupported == true {
-                                    SubscriptionRefreshGlyph(loading: loading, pending: quota == nil, tint: palette.agent(kind), size: 16)
-                                }
-                            }
-                            HStack(spacing: 5) {
-                                Text(host.providerName(for: kind)).font(.orbisBody(.medium))
-                                    .foregroundStyle(palette.secondary).lineLimit(2)
-                                if current?.official == true {
-                                    Image(systemName: "checkmark.seal.fill").font(.orbisCaption(.semibold))
-                                        .foregroundStyle(palette.agent(kind)).accessibilityLabel("官方供应商")
-                                }
-                            }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                    }.padding(.trailing, 72).frame(minHeight: 48)
-                    if current?.subscriptionSupported == true {
-                        if let error = quotaSnapshot?.error {
-                            Text(error).font(.orbisCaption()).foregroundStyle(palette.error).fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    if host.providerKind == kind, let error = host.providerError {
-                        Text(error).font(.orbisCaption()).foregroundStyle(palette.error)
-                    }
-                    if host.providerKind == kind, let notice = host.providerNotice {
-                        Text(notice).font(.orbisCaption()).foregroundStyle(palette.secondary)
-                    }
-                }.padding(16).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }.buttonStyle(ProviderQuotaCardButtonStyle())
-                .disabled(current?.subscriptionSupported != true || !host.canChangeProvider(for: kind) || loading)
-                .accessibilityIdentifier("provider-quota-\(kind)")
-                .accessibilityHint(current?.subscriptionSupported == true ? "查询或刷新订阅剩余配额" : "")
-                .accessibilityValue(loading ? "正在查询配额" : quota?.windows.map { window in
-                    window.title + " " + (window.remainingPercent.map { String(format: "%.0f%%", $0) } ?? "暂不可用")
-                }.joined(separator: "，") ?? "")
+            quotaButton(palette: palette, expectedHost: expectedHost)
             if let current, current.subscriptionSupported {
                 HStack {
                     SubscriptionQuotaCoin(kind: kind, quota: quota, loading: loading,
@@ -146,6 +109,53 @@ private struct AgentStatusProviderCard: View {
             if !available { overlay.dismissMenu() }
         }
         .onDisappear { overlay.dismissMenu() }
+    }
+
+    private func quotaButton(palette: OrbisPalette, expectedHost: String?) -> some View {
+        Button {
+            if let current, let expectedHost { host.querySubscription(current, expectedHostKey: expectedHost) }
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    if current?.subscriptionSupported == true {
+                        Color.clear.frame(width: 64, height: 56)
+                    } else {
+                        AgentEmblem(kind: kind, size: 32, recessed: false).accessibilityHidden(true)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(agentTitle(kind)).font(.orbisLabel(.semibold)).foregroundStyle(palette.text)
+                            if current?.subscriptionSupported == true {
+                                SubscriptionRefreshGlyph(loading: loading, pending: quota == nil, tint: palette.agent(kind), size: 16)
+                            }
+                        }
+                        HStack(spacing: 5) {
+                            Text(host.providerName(for: kind)).font(.orbisBody(.medium))
+                                .foregroundStyle(palette.secondary).lineLimit(2)
+                            if current?.official == true {
+                                Image(systemName: "checkmark.seal.fill").font(.orbisCaption(.semibold))
+                                    .foregroundStyle(palette.agent(kind)).accessibilityLabel("官方供应商")
+                            }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }.padding(.trailing, 72).frame(minHeight: 48)
+                if current?.subscriptionSupported == true {
+                    if let error = quotaSnapshot?.error {
+                        Text(error).font(.orbisCaption()).foregroundStyle(palette.error).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if host.providerKind == kind, let error = host.providerError {
+                    Text(error).font(.orbisCaption()).foregroundStyle(palette.error)
+                }
+                if host.providerKind == kind, let notice = host.providerNotice {
+                    Text(notice).font(.orbisCaption()).foregroundStyle(palette.secondary)
+                }
+            }.padding(16).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }.buttonStyle(ProviderQuotaCardButtonStyle())
+            .disabled(current?.subscriptionSupported != true || !host.canChangeProvider(for: kind) || loading)
+            .accessibilityIdentifier("provider-quota-\(kind)")
+            .accessibilityHint(current?.subscriptionSupported == true ? "查询或刷新订阅剩余配额" : "")
+            .accessibilityValue(quotaAccessibilityValue)
     }
 }
 
