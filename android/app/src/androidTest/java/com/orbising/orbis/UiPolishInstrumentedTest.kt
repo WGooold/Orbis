@@ -27,15 +27,20 @@ class UiPolishInstrumentedTest {
 
     @Test fun revealKeepsEmojiAndCombiningCharactersTogether() {
         val text = "A👨‍👩‍👧‍👦e\u0301"
-        val clock = GlyphRevealClock()
-        clock.observe(text, 1_000)
-        assertEquals(3, clock.active(1_000).size)
-        assertEquals(listOf("A", "👨‍👩‍👧‍👦", "e\u0301"), clock.active(1_000).map { text.substring(it.first, it.second) })
-        clock.observe(text + "Z", 1_030)
-        assertEquals(4, clock.active(1_030).size)
-        assertTrue(clock.active(1_600).isEmpty())
-        clock.observe("replacement", 1_700)
-        assertTrue(clock.active(1_700).isEmpty())
+        assertEquals(listOf("A", "👨‍👩‍👧‍👦", "e\u0301"), graphemeRanges(text, 0).map { text.substring(it.first, it.second) }.toList())
+        // Starting inside a grapheme never splits it.
+        assertEquals(listOf("e\u0301"), graphemeRanges(text, 2).map { text.substring(it.first, it.second) }.toList())
+        val schedule = RevealSchedule()
+        schedule.observe(0, 1_000)
+        schedule.observe(text.length, 1_000)
+        val starts = graphemeRanges(text, 0).map { schedule.startTime(it.first)!! }.toList()
+        assertEquals(starts.sorted(), starts)
+        schedule.observe(text.length + 1, 1_030)
+        assertTrue(schedule.startTime(text.length)!! >= starts.last())
+        assertTrue(schedule.isAnimating(1_030))
+        assertTrue(!schedule.isAnimating(1_600))
+        schedule.observe("replacement".length, 1_700)
+        assertTrue(!schedule.isAnimating(1_700))
     }
 
     private fun exercise(dark: Boolean) {

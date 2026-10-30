@@ -35,6 +35,7 @@ import com.orbising.orbis.NeumorphTextField as OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.ui.platform.testTag
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -90,6 +91,9 @@ internal fun HistoryTreePage(
     onEditAndRestart: (HistoryNode) -> Unit,
     downloadArtifact: (RemoteArtifact) -> Unit,
     downloadFile: (String) -> Unit,
+    activeDownloadCount: Int = 0,
+    onOpenDownloads: (() -> Unit)? = null,
+    downloadFlight: DownloadFlight? = null,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -165,6 +169,14 @@ internal fun HistoryTreePage(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
+                    }
+                },
+                // 与聊天页同款的下载入口：历史里的文件下载有落点，下载页返回这里（ADR-0053 §5、§7）。
+                actions = {
+                    onOpenDownloads?.let { open ->
+                        DownloadStatusButton(activeCount = activeDownloadCount, enabled = state.hostId != null, onClick = open,
+                            modifier = Modifier.testTag("history-downloads")
+                                .then(downloadFlight?.let { Modifier.downloadFlightTarget(it) } ?: Modifier))
                     }
                 },
             )

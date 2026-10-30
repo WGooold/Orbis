@@ -4,11 +4,17 @@ struct HistoryBranchView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     let onBack: () -> Void
+    /// Same download entry as the chat header; the downloads page returns here (ADR-0053 §5, §7).
+    let onDownloads: () -> Void
     @State private var query = ""
     @State private var selected: RuntimeOption?
     @State private var showOtherBranches = false
     @State private var showDetails = false
     @State private var actionPending = false
+    @StateObject private var downloadFlight = DownloadFlight()
+    /// The downloads page covers this one and returns here: keep the preview and the scroll position.
+    @State private var openingDownloads = false
+    @State private var scrolledToCurrent = false
     @FocusState private var searchFocused: Bool
 
     private var options: [RuntimeOption] {
@@ -33,6 +39,8 @@ struct HistoryBranchView: View {
                     [OrbisMenuItem(title: "显示其他分支", symbol: "arrow.triangle.branch", checked: showOtherBranches) { showOtherBranches.toggle() },
                      OrbisMenuItem(title: "显示工具与细节", symbol: "wrench.and.screwdriver", checked: showDetails) { showDetails.toggle() }]
                 }
+                OrbisIconButton(symbol: "arrow.down.to.line", label: "下载") { openingDownloads = true; onDownloads() }
+                    .downloadFlightTarget(downloadFlight).accessibilityIdentifier("history-downloads")
             }
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass").foregroundStyle(OrbisPalette(scheme).secondary)
@@ -66,14 +74,20 @@ struct HistoryBranchView: View {
                             }
                         }.padding(.horizontal, 24).padding(.vertical, 10)
                     }.scrollDismissesKeyboard(.interactively)
-                        .onAppear { if let current = options.first(where: { $0.tree?.isCurrent == true }) { proxy.scrollTo(current.value, anchor: .center) } }
+                        .onAppear {
+                            guard !scrolledToCurrent else { return }
+                            scrolledToCurrent = true
+                            if let current = options.first(where: { $0.tree?.isCurrent == true }) { proxy.scrollTo(current.value, anchor: .center) }
+                        }
                 }
             }
             if let selected { preview(selected) }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
+            .downloadFlightHost(downloadFlight)
             .onChange(of: store.historyRevision) { _, _ in onBack() }
             .onChange(of: store.pendingActionIds) { _, ids in if ids.isEmpty { actionPending = false } }
-            .onDisappear { store.dismissPreview() }
+            .onAppear { openingDownloads = false }
+            .onDisappear { if !openingDownloads { store.dismissPreview() } }
     }
 
     private func node(_ option: RuntimeOption) -> some View {

@@ -32,29 +32,31 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * 聊天页右滑返回：在页面任意位置向右横拖，页面跟随手指；松手时按位移加上抛掷速度判断，
+ * 页面右滑返回（聊天页，以及 ADR-0053 §5 的设置页与下载页）：在页面任意位置向右横拖，页面跟随手指；松手时按位移加上抛掷速度判断，
  * 超过三分之一屏宽就滑到右侧，动画结束才返回，否则回弹。竖向滑动由消息列表消费。
  * [underlay] 固定在原位，起始轻微横向受压，随右滑逐步恢复原状并渐亮。
  * 首页始终保留在同一个组合位置，返回时直接恢复交互，不重新创建列表及其按压状态。
  * 手势挂在位移图层外侧，指针坐标不随页面平移而变化。
+ * 同一层上换成另一张页面时（[contentKey] 变化）重新播放入场。
  */
 @Composable
 internal fun SwipeBackLayer(
     onBack: () -> Unit,
     underlay: @Composable () -> Unit,
     open: Boolean = true,
+    contentKey: Any? = null,
     content: @Composable () -> Unit,
 ) {
     val currentOnBack by rememberUpdatedState(onBack)
-    val offset = remember(open) { Animatable(0f) }
+    val offset = remember(open, contentKey) { Animatable(0f) }
     val scope = rememberCoroutineScope()
     var width by remember { mutableIntStateOf(0) }
-    var dragOffset by remember(open) { mutableFloatStateOf(0f) }
-    var dragging by remember(open) { mutableStateOf(false) }
-    var entering by remember(open) { mutableStateOf(open) }
-    var entranceStarted by remember(open) { mutableStateOf(false) }
-    var returning by remember(open) { mutableStateOf(false) }
-    var settleJob by remember(open) { mutableStateOf<Job?>(null) }
+    var dragOffset by remember(open, contentKey) { mutableFloatStateOf(0f) }
+    var dragging by remember(open, contentKey) { mutableStateOf(false) }
+    var entering by remember(open, contentKey) { mutableStateOf(open) }
+    var entranceStarted by remember(open, contentKey) { mutableStateOf(false) }
+    var returning by remember(open, contentKey) { mutableStateOf(false) }
+    var settleJob by remember(open, contentKey) { mutableStateOf<Job?>(null) }
     val scrim = MaterialTheme.colorScheme.scrim
 
     fun position(): Float {
@@ -80,10 +82,10 @@ internal fun SwipeBackLayer(
             if (back) currentOnBack()
         }
     }
-    DisposableEffect(open) {
+    DisposableEffect(open, contentKey) {
         onDispose { settleJob?.cancel() }
     }
-    LaunchedEffect(open, width) {
+    LaunchedEffect(open, contentKey, width) {
         if (open && width > 0 && entering) {
             settleJob = launch {
                 if (!entranceStarted) offset.snapTo(width.toFloat())
@@ -99,7 +101,7 @@ internal fun SwipeBackLayer(
             .background(MaterialTheme.colorScheme.background)
             .clipToBounds()
             .onSizeChanged { width = it.width }
-            .pointerInput(open) {
+            .pointerInput(open, contentKey) {
                 if (!open) return@pointerInput
                 val velocity = VelocityTracker()
                 detectHorizontalDragGestures(

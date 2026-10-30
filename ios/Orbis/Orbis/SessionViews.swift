@@ -188,7 +188,7 @@ struct SessionDrawerView: View {
             }
         }
         items.append(.divider)
-        items.append(OrbisMenuItem(title: "连接状态与供应商", symbol: "slider.horizontal.3", action: onProviders))
+        items.append(OrbisMenuItem(title: "设置", symbol: "gearshape", action: onProviders))
         return items
     }
 
@@ -317,13 +317,15 @@ struct SessionDrawerView: View {
     private func showMismatch(_ problem: String) {
         overlay.showDialog("需要切换 provider", message: problem, actions: [
             OrbisDialogAction(title: "取消", role: .cancel),
-            OrbisDialogAction(title: "连接状态与供应商", action: onProviders)
+            OrbisDialogAction(title: "设置", action: onProviders)
         ])
     }
 
     private var hostSelector: some View {
         HStack(spacing: 10) {
-            OrbisMenuButton(accessibilityLabel: "切换电脑，当前 \(store.selectedHost?.hostName ?? "未选择")", items: { hostSwitchMenuItems(store, onAddHost: onAddHost) }) {
+            // The only place to add or unpair a computer (ADR-0053 §4).
+            OrbisMenuButton(accessibilityLabel: "电脑，当前 \(store.selectedHost?.hostName ?? "未选择")",
+                            items: { hostSwitchMenuItems(store, onAddHost: onAddHost, onUnpair: onUnpair) }) {
                 HStack(spacing: 10) {
                     Image(systemName: "desktopcomputer").foregroundStyle(OrbisPalette(scheme).accent)
                     VStack(alignment: .leading, spacing: 3) {
@@ -333,11 +335,6 @@ struct SessionDrawerView: View {
                     Spacer()
                     Image(systemName: "chevron.up.chevron.down").imageScale(.small).foregroundStyle(OrbisPalette(scheme).secondary)
                 }.padding(12).frame(minHeight: 58).contentShape(Rectangle())
-            }
-            if let host = store.selectedHost {
-                OrbisMenuIconButton(symbol: "ellipsis", label: "当前电脑操作") {
-                    [OrbisMenuItem(title: "取消配对 \(host.hostName)", symbol: "link", destructive: true) { onUnpair(host) }]
-                }
             }
         }.padding(.bottom, 18)
     }

@@ -496,3 +496,64 @@ func interactionDraftKey(host: HostPairing?, sessionId: String?, request: Intera
     ]
     return components.map { "\($0.utf8.count):\($0)" }.joined()
 }
+
+/// One reveal timeline for a streamed message (ADR-0051 M04, ADR-0053 §1). Characters start
+/// fading in strictly in rendered order: a new batch queues behind the tail that has not started
+/// yet, so the end of one batch and the start of the next never animate at once. When the queue
+/// would trail the stream by more than `maxDelay`, the spacing compresses (several adjacent
+/// characters may start in the same frame) but the order never changes. Each character fades
+/// from blur(6) to sharp over `duration`. Offsets are UTF-16 positions in the rendered text.
+struct RevealClock: Equatable {
+    struct Segment: Equatable {
+        let start: Int
+        let end: Int
+        let time: TimeInterval
+        let interval: TimeInterval
+        func startTime(_ offset: Int) -> TimeInterval { time + Double(offset - start) * interval }
+        var lastStart: TimeInterval { startTime(end - 1) }
+    }
+    static let duration: TimeInterval = 0.12
+    static let stagger: TimeInterval = 0.03
+    /// Everything known must have started revealing within this long of its arrival.
+    static let maxDelay: TimeInterval = 0.45
+    static let blur: CGFloat = 6
+
+    private(set) var known: Int
+    private(set) var segments: [Segment] = []
+    /// Everything before this offset has settled.
+    private(set) var settledBelow: Int
+
+    init(known: Int) {
+        self.known = known
+        settledBelow = known
+    }
+
+    var end: TimeInterval { segments.last.map { $0.lastStart + Self.duration } ?? 0 }
+
+    func isAnimating(at now: TimeInterval) -> Bool { !segments.isEmpty && now < end }
+
+    mutating func observe(length: Int, at now: TimeInterval) {
+        while let first = segments.first, first.lastStart + Self.duration <= now {
+            settledBelow = first.end
+            segments.removeFirst()
+        }
+        // Rewritten or shortened text settles at once; it never replays.
+        if length < known { self = RevealClock(known: length); return }
+        guard length > known else { return }
+        let count = length - known
+        let deadline = now + Self.maxDelay
+        let next = segments.last.map { $0.lastStart + $0.interval } ?? now
+        let first = min(max(next, now), deadline)
+        let interval = count == 1 ? Self.stagger : min(Self.stagger, max(0, (deadline - first) / Double(count - 1)))
+        segments.append(Segment(start: known, end: length, time: first, interval: interval))
+        known = length
+    }
+
+    /// 0 = not shown yet, 1 = settled. Characters past `known` stay hidden until observed.
+    func progress(_ offset: Int, at now: TimeInterval) -> Double {
+        if offset < settledBelow { return 1 }
+        if offset >= known { return 0 }
+        guard let segment = segments.last(where: { $0.start <= offset }) else { return 1 }
+        return min(max((now - segment.startTime(offset)) / Self.duration, 0), 1)
+    }
+}

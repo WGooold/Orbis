@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// The settings page (formerly the connection status page, ADR-0053 §4): providers first, then the
+/// current connection and read-only pairing facts. Computers are switched, added and unpaired from
+/// the home row and the drawer's computer menu, not here.
 struct ConnectionStatusView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
@@ -7,25 +10,16 @@ struct ConnectionStatusView: View {
     @EnvironmentObject private var host: HostState
     var body: some View {
         VStack(spacing: 0) {
-            OrbisPageHeader(title: "连接状态", back: onBack) {
+            OrbisPageHeader(title: "设置", back: onBack) {
                 // Always in the header, so a connection change never inserts or removes page content.
                 OrbisIconButton(symbol: "arrow.clockwise", label: "重新连接", action: store.reconnectSelectedHost)
                     .disabled(store.selectedHost == nil || store.connection == .connecting)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    if store.hosts.count > 1 {
-                        StatusSection(title: "已配对电脑") {
-                            ForEach(store.hosts) { computer in
-                                Button { store.connect(hostId: computer.hostId) } label: {
-                                    HStack {
-                                        Text(computer.name).font(.orbisBody(.semibold))
-                                        Spacer()
-                                        Text(connectionTitle(computer.connectionState)).font(.orbisCaption())
-                                        if computer.hostId == store.selectedHostId { Image(systemName: "checkmark") }
-                                    }.frame(minHeight: 44)
-                                }.buttonStyle(.plain)
-                            }
+                    StatusSection(title: "Agent 供应商") {
+                        ForEach(["pi", "codex", "claude", "dsh"], id: \.self) { kind in
+                            AgentStatusProviderCard(kind: kind)
                         }
                     }
                     StatusSection(title: "当前连接") {
@@ -36,18 +30,13 @@ struct ConnectionStatusView: View {
                         StatusRow(label: "端到端加密", value: store.connection == .secured ? "已启用" : "未建立",
                                   tone: store.connection == .secured ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
                     }
-                    StatusSection(title: "Agent 供应商") {
-                        ForEach(["pi", "codex", "claude", "dsh"], id: \.self) { kind in
-                            AgentStatusProviderCard(kind: kind)
-                        }
-                    }
                     StatusSection(title: "配对信息") {
                         StatusRow(label: "电脑", value: store.selectedHost?.hostName ?? "已配对的电脑")
                         StatusRow(label: "配对状态", value: store.selectedHost == nil ? "未配对" : "已配对",
                                   tone: store.selectedHost == nil ? OrbisPalette(scheme).error : OrbisPalette(scheme).success)
                     }
                 }.padding(.horizontal, 20).padding(.vertical, 16)
-            }
+            }.accessibilityIdentifier("settings-page")
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
             .onAppear { host.loadProviders("codex") }
 }

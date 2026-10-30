@@ -30,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,7 +87,11 @@ internal fun MarkdownText(markdown: String, downloadFile: (String) -> Unit) {
             }
         }
     }
-    MarkdownBlocks(blocks, listener)
+    // One reveal timeline for the whole body, so streamed blocks appear strictly in order (M04).
+    val cursor = rememberRevealCursor(LocalStreamingText.current && android.animation.ValueAnimator.areAnimatorsEnabled())
+    CompositionLocalProvider(LocalRevealCursor provides cursor, LocalRevealPath provides emptyList()) {
+        MarkdownBlocks(blocks, listener)
+    }
 }
 
 @Composable
@@ -95,8 +100,10 @@ private fun MarkdownBlocks(
     listener: LinkInteractionListener,
     spacing: Dp = 8.dp,
 ) {
+    val parent = LocalRevealPath.current
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(spacing)) {
-        nodes.forEach { node ->
+        nodes.forEachIndexed { index, node ->
+            CompositionLocalProvider(LocalRevealPath provides parent + index) {
             when (node) {
                 is Paragraph -> MarkdownParagraph(node, listener)
                 is Heading -> MarkdownParagraph(node, listener, style = when (node.level) {
@@ -126,6 +133,7 @@ private fun MarkdownBlocks(
                 is TableBlock -> MarkdownTable(node, listener)
                 is TaskListItemMarker -> Unit
                 else -> if (node.firstChild != null) MarkdownBlocks(markdownChildren(node), listener)
+            }
             }
         }
     }
@@ -189,6 +197,7 @@ private fun MarkdownImages(node: Node, listener: LinkInteractionListener) {
 @Composable
 private fun MarkdownList(list: ListBlock, listener: LinkInteractionListener) {
     val items = remember(list) { markdownChildren(list).filterIsInstance<ListItem>() }
+    val parent = LocalRevealPath.current
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(if (list.isTight) 3.dp else 8.dp)) {
         items.forEachIndexed { index, item ->
             val children = remember(item) { markdownChildren(item) }
@@ -207,7 +216,9 @@ private fun MarkdownList(list: ListBlock, listener: LinkInteractionListener) {
                     Text(marker, modifier = Modifier.widthIn(min = 20.dp), style = MaterialTheme.typography.bodyMedium)
                 }
                 Column(Modifier.weight(1f)) {
-                    MarkdownBlocks(children.filterNot { it is TaskListItemMarker }, listener, if (list.isTight) 3.dp else 8.dp)
+                    CompositionLocalProvider(LocalRevealPath provides parent + index) {
+                        MarkdownBlocks(children.filterNot { it is TaskListItemMarker }, listener, if (list.isTight) 3.dp else 8.dp)
+                    }
                 }
             }
         }
@@ -254,7 +265,9 @@ private fun MarkdownTable(table: TableBlock, listener: LinkInteractionListener) 
     val rows = remember(table) { markdownTableRows(table) }
     val columns = rows.firstOrNull()?.size ?: return
     if (columns == 0) return
+    // Tables appear whole, as on iOS; their cells do not join the reveal timeline.
     NeumorphSurface(Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed, shadowScale = 0.4f) {
+    CompositionLocalProvider(LocalRevealCursor provides null) {
     BoxWithConstraints(Modifier.fillMaxWidth().padding(6.dp)) {
         // Columns keep a shared width across rows. Wide tables scroll instead of being squeezed
         // into unreadable cells; long cell content wraps without truncation.
@@ -289,6 +302,7 @@ private fun MarkdownTable(table: TableBlock, listener: LinkInteractionListener) 
                 }
             }
         }
+    }
     }
     }
 }

@@ -183,6 +183,28 @@ internal fun SessionGraph.catchUpFrontier(targetLeafId: String?): String? {
     return frontier
 }
 
+/**
+ * True when [newLeafId] arrived before one of its parents: its loaded chain stops at a missing
+ * parent before touching the displayed path of [oldLeafId]. Projecting it now would replace the
+ * conversation with the lone new entry until the parent lands a few frames later — a visible
+ * flash while following a running tool (ADR-0053 §2, V20). Callers keep the current rows instead.
+ * A real branch switch reaches a shared ancestor and is not affected.
+ */
+internal fun SessionGraph.isWaitingForParent(oldLeafId: String?, newLeafId: String?): Boolean {
+    if (oldLeafId == null || newLeafId == null || oldLeafId == newLeafId || oldLeafId !in entries) return false
+    val shown = buildSet {
+        var current: String? = oldLeafId
+        while (current != null && add(current)) current = entries[current]?.parentId
+    }
+    var current: String? = newLeafId
+    val visited = mutableSetOf<String>()
+    while (current != null && visited.add(current)) {
+        if (current in shown) return false
+        current = (entries[current] ?: return true).parentId
+    }
+    return false
+}
+
 internal fun SessionGraph.isDescendant(leafId: String?, ancestorId: String?): Boolean {
     if (leafId == null || ancestorId == null) return false
     var current = leafId

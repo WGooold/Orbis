@@ -24,6 +24,29 @@ class SessionGraphTest {
     )
 
     @Test
+    fun `an entry that arrives before its parent waits instead of replacing the shown path`() {
+        // Observed with a real Pi tool run (ADR-0053 §2): the tool result arrived before the
+        // assistant entry that called it, and the chat briefly showed the result alone.
+        val shown = listOf(
+            entry("user", null),
+            entry("assistant", "user", role = "assistant"),
+            entry("result", "assistant", role = "toolResult"),
+        )
+        val early = SessionGraph("session-1", (shown + entry("second-result", "second-call", role = "toolResult"))
+            .associateBy(SessionGraphEntry::entryId))
+        assertTrue(early.isWaitingForParent("result", "second-result"))
+        // Once the parent lands the chain reconnects and projection proceeds.
+        val joined = early.copy(entries = early.entries + ("second-call" to entry("second-call", "result", role = "assistant")))
+        assertFalse(joined.isWaitingForParent("result", "second-result"))
+        // An ordinary append, a real branch switch and an unknown old view are never held back.
+        assertFalse(joined.isWaitingForParent("result", "second-call"))
+        val branched = joined.copy(entries = joined.entries + ("retry" to entry("retry", "user", role = "assistant")))
+        assertFalse(branched.isWaitingForParent("result", "retry"))
+        assertFalse(early.isWaitingForParent(null, "second-result"))
+        assertFalse(early.isWaitingForParent("missing-view", "second-result"))
+    }
+
+    @Test
     fun `projection follows the selected leaf and excludes sibling branches`() {
         val graph = fixtureGraph(
             sessionId = "session-1",

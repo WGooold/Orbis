@@ -89,3 +89,29 @@ internal fun RemoteState.failHomeRead(requestId: String, message: String): Remot
     return copy(agentStateRequests = agentStateRequests - requestId,
         agentStateSnapshots = agentStateSnapshots + (read.key to failed))
 }
+
+/**
+ * Where the home list should sit after its cards change (ADR-0053 §3, V21); null keeps the
+ * list's default, which holds the first visible card's screen position by key.
+ *
+ * - At the top the newest card stays visible instead of landing above the viewport.
+ * - When the first visible card itself moved up past cards that were above it (it just had
+ *   activity), following it would jump the viewport, so the pixel position is kept instead.
+ * - A removed anchor also keeps the pixel position; the next card fills the slot.
+ */
+internal fun homeViewportTarget(
+    previousKeys: List<String>,
+    keys: List<String>,
+    firstVisibleIndex: Int,
+    firstVisibleOffset: Int,
+    topSlop: Int,
+): Pair<Int, Int>? {
+    if (previousKeys.isEmpty() || keys.isEmpty() || previousKeys == keys) return null
+    if (firstVisibleIndex == 0 && firstVisibleOffset <= topSlop) return 0 to 0
+    val anchor = previousKeys.getOrNull(firstVisibleIndex) ?: return null
+    val keep = firstVisibleIndex.coerceAtMost(keys.lastIndex) to firstVisibleOffset
+    val position = keys.withIndex().associate { it.value to it.index }
+    val anchorIndex = position[anchor] ?: return keep
+    val movedUpPast = previousKeys.subList(0, firstVisibleIndex).any { key -> (position[key] ?: -1) > anchorIndex }
+    return if (movedUpPast) keep else null
+}

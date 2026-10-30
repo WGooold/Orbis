@@ -1102,3 +1102,146 @@ struct OrbisNotice: View {
             .neuSurface(inset: true, radius: OrbisRadius.control, intensity: 0.45, padding: 14)
     }
 }
+
+// MARK: - Download flight (ADR-0051 M16, ADR-0053 §7)
+
+/// Once a download is actually queued, a file icon flies from the tap along an upward arc to the
+/// page's download button, which then pops. Flights never take touches, change layout or move the
+/// reader, and they end with the page. The animation is not evidence that anything downloaded.
+@MainActor
+final class DownloadFlight: ObservableObject {
+    struct Flight: Identifiable {
+        let id = UUID()
+        let from: CGPoint
+        let to: CGPoint
+        let start: Date
+    }
+    static let duration: TimeInterval = 0.52
+    static let fade: TimeInterval = 0.08
+    static let maxFlights = 3
+
+    @Published private(set) var flights: [Flight] = []
+    @Published var pop: CGFloat = 1
+    @Published var highlighted = false
+    /// Global frames; the latest tap anywhere on the page is the one that started the download.
+    var target: CGRect = .zero
+    var page: CGRect = .zero
+    var lastTap: CGPoint?
+    var reduceMotion = false
+
+    /// Call after a download was queued.
+    func launch() {
+        // A button's action can run before the page's tap gesture reports where the finger was.
+        DispatchQueue.main.async { [weak self] in self?.fly() }
+    }
+
+    func cancel() {
+        flights = []
+        pop = 1
+        highlighted = false
+    }
+
+    private func fly() {
+        guard target != .zero else { return }
+        if reduceMotion {
+            withAnimation(.orbisFade) { highlighted = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
+                withAnimation(.orbisFade) { self?.highlighted = false }
+            }
+            return
+        }
+        guard flights.count < Self.maxFlights else { popTarget(); return }
+        let to = CGPoint(x: target.midX, y: target.midY)
+        let flight = Flight(from: lastTap ?? CGPoint(x: page.midX, y: page.midY), to: to, start: Date())
+        flights.append(flight)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.duration) { [weak self] in
+            guard let self, self.flights.contains(where: { $0.id == flight.id }) else { return }
+            self.flights.removeAll { $0.id == flight.id }
+            self.popTarget()
+        }
+    }
+
+    private func popTarget() {
+        withAnimation(.easeOut(duration: 0.09)) { pop = 1.12 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) { [weak self] in
+            withAnimation(.orbisPop) { self?.pop = 1 }
+        }
+    }
+}
+
+private struct DownloadFlightKey: EnvironmentKey {
+    static let defaultValue: DownloadFlight? = nil
+}
+
+extension EnvironmentValues {
+    /// The page's download flight; download entries launch it after queueing a task.
+    var downloadFlight: DownloadFlight? {
+        get { self[DownloadFlightKey.self] }
+        set { self[DownloadFlightKey.self] = newValue }
+    }
+}
+
+private struct DownloadFlightHost: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let flight: DownloadFlight
+    func body(content: Content) -> some View {
+        content.environment(\.downloadFlight, flight)
+            // Observe taps without taking them from buttons, links or scrolling.
+            .simultaneousGesture(SpatialTapGesture(coordinateSpace: .global).onEnded { flight.lastTap = $0.location })
+            .overlay { DownloadFlightLayer(flight: flight) }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { flight.page = $0 }
+            .onChange(of: reduceMotion, initial: true) { _, value in flight.reduceMotion = value }
+            .onDisappear { flight.cancel() }
+    }
+}
+
+private struct DownloadFlightTarget: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
+    @ObservedObject var flight: DownloadFlight
+    func body(content: Content) -> some View {
+        content.scaleEffect(flight.pop)
+            .background { Circle().fill(OrbisPalette(scheme).accent.opacity(flight.highlighted ? 0.22 : 0)) }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { flight.target = $0 }
+    }
+}
+
+private struct DownloadFlightLayer: View {
+    @Environment(\.colorScheme) private var scheme
+    @ObservedObject var flight: DownloadFlight
+    var body: some View {
+        GeometryReader { proxy in
+            let origin = proxy.frame(in: .global).origin
+            TimelineView(.animation(paused: flight.flights.isEmpty)) { context in
+                Canvas { graphics, _ in
+                    var icon = graphics.resolve(Image(systemName: "doc.fill"))
+                    icon.shading = .color(OrbisPalette(scheme).accent)
+                    let fadeFrom = 1 - DownloadFlight.fade / DownloadFlight.duration
+                    for item in flight.flights {
+                        let time = min(max(context.date.timeIntervalSince(item.start) / DownloadFlight.duration, 0), 1)
+                        let t = time * time * (3 - 2 * time)
+                        let from = CGPoint(x: item.from.x - origin.x, y: item.from.y - origin.y)
+                        let to = CGPoint(x: item.to.x - origin.x, y: item.to.y - origin.y)
+                        // Quadratic Bézier bending upward between the tap and the button; near the top
+                        // edge the bend shrinks so the icon never leaves the screen.
+                        let top = min(from.y, to.y)
+                        let control = CGPoint(x: (from.x + to.x) / 2, y: top - min(120, top / 2))
+                        let u = 1 - t
+                        let x = u * u * from.x + 2 * u * t * control.x + t * t * to.x
+                        let y = u * u * from.y + 2 * u * t * control.y + t * t * to.y
+                        let side = 28 + (16 - 28) * t
+                        graphics.opacity = time < fadeFrom ? 1 : max(0, (1 - time) / (1 - fadeFrom))
+                        graphics.draw(icon, in: CGRect(x: x - side / 2, y: y - side / 2, width: side, height: side))
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+
+extension View {
+    /// Hosts the page's download flights above it (ADR-0053 §7).
+    func downloadFlightHost(_ flight: DownloadFlight) -> some View { modifier(DownloadFlightHost(flight: flight)) }
+    /// The page's download button: where flights land and what pops when they arrive.
+    func downloadFlightTarget(_ flight: DownloadFlight) -> some View { modifier(DownloadFlightTarget(flight: flight)) }
+}

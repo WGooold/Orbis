@@ -535,7 +535,8 @@ internal class HostConnection(
     }
 
     /** L2：在指定目录新建会话（agentKind = pi | codex）。 */
-    fun createSession(agentKind: String, cwd: String, expectedHostId: String?): Boolean {
+    /** [spawnMode] overrides the default `tui`; the UI-02 capture harness asks for `headless`. */
+    fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean {
         if (!mutableState.value.canCreateSessionOn(expectedHostId)) {
             updateState { it.copy(error = "目标电脑已变更、未连接或正在创建会话，请返回目录重试") }
             return false
@@ -544,10 +545,10 @@ internal class HostConnection(
             put("type", "new")
             put("agentKind", agentKind)
             put("cwd", cwd)
-        })
+        }, spawnMode)
     }
 
-    private fun activateTarget(target: JsonObject): Boolean {
+    private fun activateTarget(target: JsonObject, spawnMode: String = "tui"): Boolean {
         restoreSettled = true
         val requestId = UUID.randomUUID().toString()
         return sendSessionPayload(
@@ -561,7 +562,7 @@ internal class HostConnection(
                 // SESSIONNAME），而从服务、计划任务或 IDE 内部启动的 Host 根本没有它，
                 // 结果是一律降级成无窗口——那样手机就永远要不到窗口了。电脑侧探不到
                 // 开窗入口时会报启动失败，不把明确的有头请求改成无头。
-                put("spawnMode", "tui")
+                put("spawnMode", spawnMode)
             },
             register = { it.copy(
                 sessionActivateRequests = it.sessionActivateRequests + requestId,
@@ -1601,14 +1602,14 @@ internal class HostConnection(
         }
     }
 
-    fun downloadArtifact(artifact: RemoteArtifact) {
+    /** Returns whether a download was queued (the caller's download feedback depends on it). */
+    fun downloadArtifact(artifact: RemoteArtifact): Boolean {
         val hostId = mutableState.value.hostId ?: run {
             updateState { it.copy(error = "还没有已配对的电脑，无法下载") }
-            return
+            return false
         }
         artifact.path?.let { path ->
-            startFileDownload(hostId, path, artifact.fileName)
-            return
+            return startFileDownload(hostId, path, artifact.fileName)
         }
         val taskId = artifactDownloadTaskId(hostId, artifact.artifactId)
         val task = mutableState.value.downloads[taskId] ?: ArtifactDownload(
@@ -1618,7 +1619,7 @@ internal class HostConnection(
             sourceArtifactId = artifact.artifactId,
             artifact = artifact,
         )
-        startDownload(task, hostId) { offset -> relay.downloadArtifact(hostId, artifact.artifactId, offset) }
+        return startDownload(task, hostId) { offset -> relay.downloadArtifact(hostId, artifact.artifactId, offset) }
     }
 
     /**
@@ -1627,14 +1628,14 @@ internal class HostConnection(
      * 命令一律发给 Host——能读这个文件的就是它；任务不记录是从哪个会话点开的。
      * 未配对 Host 时直接报错，而不是把请求丢给某个 runtime。
      */
-    fun downloadFile(path: String) {
-        if (path.isBlank()) return
+    fun downloadFile(path: String): Boolean {
+        if (path.isBlank()) return false
         val hostId = mutableState.value.hostId
         if (hostId == null) {
             updateState { it.copy(error = "还没有已配对的电脑，无法下载") }
-            return
+            return false
         }
-        startFileDownload(hostId, path.trim())
+        return startFileDownload(hostId, path.trim())
     }
 
     fun cancelDownload(taskId: String) {
@@ -1700,7 +1701,7 @@ internal class HostConnection(
         hostId: String,
         path: String,
         displayName: String = downloadDisplayName(path),
-    ) {
+    ): Boolean {
         val taskId = fileDownloadTaskId(hostId, path)
         val task = mutableState.value.downloads[taskId] ?: ArtifactDownload(
             taskId = taskId,
@@ -1709,11 +1710,12 @@ internal class HostConnection(
             displayName = displayName,
             sourcePath = path,
         )
-        startDownload(task, hostId) { offset -> relay.downloadFile(hostId, path, offset) }
+        return startDownload(task, hostId) { offset -> relay.downloadFile(hostId, path, offset) }
     }
 
-    private fun startDownload(task: ArtifactDownload, hostId: String, send: (Long) -> String?) {
-        if (task.commandId != null && task.status in setOf("queued", "downloading")) return
+    /** True once the request is on its way; false when it is already running or could not be sent. */
+    private fun startDownload(task: ArtifactDownload, hostId: String, send: (Long) -> String?): Boolean {
+        if (task.commandId != null && task.status in setOf("queued", "downloading")) return false
         val offset = artifactDownloadStore.resumeOffset(task)
         val queued = task.copy(
             hostId = hostId,
@@ -1731,7 +1733,7 @@ internal class HostConnection(
             val failed = queued.copy(status = "failed", error = "文件下载请求未发送：中继服务器当前离线")
             artifactDownloadStore.register(failed)
             updateState { it.copy(downloads = it.downloads + (task.taskId to failed), error = failed.error) }
-            return
+            return false
         }
         val requested = queued.copy(commandId = commandId)
         artifactDownloadStore.register(requested)
@@ -1741,6 +1743,7 @@ internal class HostConnection(
             pendingCommands = it.pendingCommands + (commandId to hostId),
             pendingDownloads = it.pendingDownloads + (commandId to PendingDownload(task.taskId, hostId, offset)),
         ) }
+        return true
     }
 
     fun respondConfirm(request: PendingInteraction, approved: Boolean): Boolean {

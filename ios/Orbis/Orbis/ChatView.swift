@@ -62,6 +62,7 @@ struct ChatView: View {
     @State private var filePickerOpen = false
     @State private var historyAnchor: String?
     @State private var topArmed = false
+    @StateObject private var downloadFlight = DownloadFlight()
     @FocusState private var composerFocused: Bool
 
     private var kind: String? { store.agentKind(runtime) }
@@ -90,6 +91,7 @@ struct ChatView: View {
             conversation.overlay(alignment: .top) { RuntimeNoticesView(runtimeId: runtime.runtimeId, supported: ["codex", "codexDesktop"].contains(runtime.agentKind)).padding(.horizontal, 16) }
             if store.isViewingCachedSession { cachedComposer } else { composer }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent).environment(\.orbisAccent, accent)
+            .downloadFlightHost(downloadFlight)
             #if DEBUG
             .overlay(alignment: .top) { if ProcessInfo.processInfo.arguments.contains("--preview-screen=changes") { TurnChangesRequestProbeView() } }
             .background { if ChatEntryProbe.enabled { ChatEntryDrawProbe().allowsHitTesting(false) } }
@@ -154,6 +156,7 @@ struct ChatView: View {
         } trailing: {
             OrbisIconButton(symbol: "clock.arrow.circlepath", label: "历史与分支", action: onHistory)
             OrbisIconButton(symbol: "arrow.down.to.line", label: "下载", action: onDownloads)
+                .downloadFlightTarget(downloadFlight).accessibilityIdentifier("chat-downloads")
         }
     }
 
@@ -658,6 +661,7 @@ private struct PendingSendStatus: View {
 private struct MessageContentView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var transfers: FileTransfers
+    @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
     @State private var fullOpen = false
     @State private var fullEntryId = ""
@@ -690,7 +694,7 @@ private struct MessageContentView: View {
                     }
                 case "artifact":
                     if let file = content.artifact {
-                        Button { transfers.download(artifact: file) } label: {
+                        Button { if transfers.download(artifact: file) { downloadFlight?.launch() } } label: {
                             HStack(spacing: 8) {
                                 Image(systemName: "arrow.down.doc")
                                 FileNameText(name: file.fileName)
@@ -837,49 +841,6 @@ struct ToolSummaryView: View {
 
 // MARK: - Markdown
 
-/// Streamed characters fade in from blur(6) to sharp over 120 ms, each starting 30 ms after
-/// the previous one. Offsets are UTF-16 positions in the message's rendered text.
-struct RevealClock: Equatable {
-    struct Mark: Equatable {
-        let offset: Int
-        let time: TimeInterval
-    }
-    static let duration: TimeInterval = 0.12
-    static let stagger: TimeInterval = 0.03
-    /// A large chunk compresses its stagger so the text never trails the stream by more than this.
-    static let maxDelay: TimeInterval = 0.45
-    static let blur: CGFloat = 6
-
-    private(set) var known: Int
-    private(set) var marks: [Mark] = []
-
-    init(known: Int) { self.known = known }
-
-    var end: TimeInterval { marks.last.map { $0.time + Self.maxDelay + Self.duration } ?? 0 }
-    /// Everything before this offset has settled.
-    var settledBelow: Int { marks.first?.offset ?? known }
-
-    func isAnimating(at now: TimeInterval) -> Bool { !marks.isEmpty && now < end }
-
-    mutating func observe(length: Int, at now: TimeInterval) {
-        marks.removeAll { now > $0.time + Self.maxDelay + Self.duration }
-        if length < known {
-            known = length
-            marks.removeAll { $0.offset >= length }
-        } else if length > known {
-            marks.append(Mark(offset: known, time: now))
-            known = length
-        }
-    }
-
-    /// 0 = not shown yet, 1 = settled. Characters past `known` wait for their arrival time.
-    func progress(_ offset: Int, at now: TimeInterval) -> Double {
-        if offset >= known { return 0 }
-        guard let mark = marks.last(where: { $0.offset <= offset }) else { return 1 }
-        let delay = min(Double(offset - mark.offset) * Self.stagger, Self.maxDelay)
-        return min(max((now - mark.time - delay) / Self.duration, 0), 1)
-    }
-}
 
 @available(iOS 18.0, *)
 private struct RevealRenderer: TextRenderer {
@@ -945,6 +906,7 @@ private struct MarkdownRow: Identifiable {
 struct MarkdownMessage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var transfers: FileTransfers
+    @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
     let text: String
     let streaming: Bool
@@ -961,8 +923,9 @@ struct MarkdownMessage: View {
         let rows = MarkdownCache.rows(text)
         let length = MarkdownCache.renderedLength(text)
         let revealEnabled = streaming && !reduceMotion
-        let animating = revealEnabled && settleTick >= 0 && clock.isAnimating(at: Date().timeIntervalSinceReferenceDate)
-        let visibleClock = revealEnabled ? clock : RevealClock(known: length)
+        // When the stream ends, characters already queued finish revealing instead of jumping in.
+        let animating = !reduceMotion && settleTick >= 0 && clock.isAnimating(at: Date().timeIntervalSinceReferenceDate)
+        let visibleClock = revealEnabled || animating ? clock : RevealClock(known: length)
         TimelineView(.animation(minimumInterval: nil, paused: !animating)) { context in
             let now = reduceMotion ? TimeInterval.greatestFiniteMagnitude : max(context.date.timeIntervalSinceReferenceDate, Date().timeIntervalSinceReferenceDate)
             VStack(alignment: .leading, spacing: 12) {
@@ -972,14 +935,15 @@ struct MarkdownMessage: View {
             .environment(\.openURL, OpenURLAction { url in
                 if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") { return .systemAction }
                 let path = url.isFileURL ? url.path : url.absoluteString.removingPercentEncoding ?? url.absoluteString
-                transfers.download(path: path)
+                if transfers.download(path: path) { downloadFlight?.launch() }
                 return .handled
             })
             .onChange(of: text) { previous, value in
                 if revealEnabled && value.hasPrefix(previous) { clock.observe(length: length, at: Date().timeIntervalSinceReferenceDate) }
                 else { clock = RevealClock(known: length) }
             }
-            .onChange(of: revealEnabled) { _, _ in clock = RevealClock(known: length) }
+            // Starting to stream takes the current text as the baseline; ending lets the queue drain.
+            .onChange(of: revealEnabled) { _, enabled in if enabled { clock = RevealClock(known: length) } }
             .task(id: clock.end) {
                 // Pause the timeline once the last character has settled.
                 let wait = clock.end - Date().timeIntervalSinceReferenceDate
