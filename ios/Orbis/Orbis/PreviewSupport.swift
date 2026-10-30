@@ -2,11 +2,18 @@
 import Foundation
 import SwiftUI
 
+@MainActor
+enum PreviewViewportUpdates {
+    static var schedule: (() -> Void)?
+}
+
 // Explicit launch arguments opt into isolated, in-memory fixtures for UI review.
 // They never read Keychain, connect to a real Host, or persist preview content.
 @MainActor
 func makePreviewStore(screen: String) -> OrbisStore {
     let transport = PreviewTransport(screen: screen)
+    PreviewViewportUpdates.schedule = screen == "viewport" && ProcessInfo.processInfo.arguments.contains("--preview-viewport-drag")
+        ? { [weak transport] in transport?.scheduleViewportBatch() } : nil
     // `--preview-hosts=2` pairs a second computer, to review how several computers are switched.
     let twoHosts = ProcessInfo.processInfo.arguments.contains("--preview-hosts=2")
     let store = OrbisStore(secure: PreviewStorage(empty: screen == "pairing", twoHosts: twoHosts), preferences: nil,
@@ -54,12 +61,14 @@ private final class PreviewTransport: OrbisTransport {
     private var archivedSessionIds: Set<String> = []
     private var providerRevision = 1
     private var viewportTail = 0
+    private var viewportUpdates: Task<Void, Never>?
+    private var viewportRows: Bool { ProcessInfo.processInfo.arguments.contains("--preview-viewport-rows") }
     private var sourceSequence = 1
     private var slowSync: Bool { ProcessInfo.processInfo.arguments.contains("--preview-slow-sync") }
     private var modelName: String { slowSync ? "A very long model name that needs truncation" : "GPT-5.4" }
     private var enabledProviders: [String: Set<String>] = ["codex": ["official"], "pi": ["official"], "dsh": ["official"]]
     func pair(qr: PairingQR, deviceName: String, identity: DeviceIdentity, completion: @escaping (Result<HostPairing, Error>) -> Void) { completion(.failure(PairingError.invalidQR)) }
-    func disconnect() {}
+    func disconnect() { viewportUpdates?.cancel(); viewportUpdates = nil }
     func connect(pairing: HostPairing, identity: DeviceIdentity, receive: @escaping ([String: Any], String?) -> Void, state: @escaping (ConnectionState, String?) -> Void) {
         self.receive = receive
         state(.secured, nil)
@@ -95,6 +104,38 @@ private final class PreviewTransport: OrbisTransport {
     func event(_ event: [String: Any], runtimeId: String = "preview-codex") {
         sequence += 1
         receive?(["type": "runtime.event", "runtimeId": runtimeId, "sequence": sequence, "event": event], "msg")
+    }
+    private func appendViewportContent() {
+        viewportTail += 1
+        let base = sourceSequence
+        sourceSequence += 1
+        // Replace the growing long reply and append real user/tool rows with stable identities.
+        let changed = Array(messages.enumerated().dropFirst())
+        let entries: [[String: Any]] = changed.map { index, message in
+            ["entryId": "node-\(index + 1)", "parentId": "node-\(index)", "type": "message",
+             "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": message]]
+        }
+        let display: [[String: Any]] = changed.map { index, message in
+            ["displayId": "node-\(index + 1)", "entryId": "node-\(index + 1)", "kind": "message", "message": message]
+        }
+        event(["type": "session.patch", "sessionId": "session-1", "baseSeq": base, "seq": sourceSequence,
+               "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true],
+               "head": ["leafId": "node-\(messages.count)"], "headCompleteness": "complete",
+               "entries": entries, "display": ["projectionVersion": 3, "entries": display],
+               "live": ["complete": true, "messages": [], "tools": []]])
+    }
+    func scheduleViewportBatch() {
+        viewportUpdates?.cancel()
+        viewportUpdates = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                for _ in 0..<6 {
+                    guard let self else { return }
+                    self.appendViewportContent()
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                }
+            } catch { }
+        }
     }
     func send(_ object: [String: Any]) -> Bool {
         if (object["command"] as? [String: Any])?["type"] as? String == "session.sync" {
@@ -178,17 +219,7 @@ private final class PreviewTransport: OrbisTransport {
         } else if object["type"] as? String == "runtime.git.request" {
             receive?(["type": "runtime.git", "requestId": object["requestId"]!, "runtimeId": object["runtimeId"]!, "sessionId": "session-1", "cwd": "/Projects/orbis", "branch": "main"], "ctl")
             if screen == "viewport" {
-                viewportTail += 1
-                let base = sourceSequence
-                sourceSequence += 1
-                let message = messages[1]
-                // Once a source checkpoint is installed, only contiguous source patches update it.
-                event(["type": "session.patch", "sessionId": "session-1", "baseSeq": base, "seq": sourceSequence,
-                       "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true],
-                       "head": ["leafId": "node-2"], "headCompleteness": "complete",
-                       "entries": [["entryId": "node-2", "parentId": "node-1", "type": "message", "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": message]]],
-                       "display": ["projectionVersion": 3, "entries": [["displayId": "node-2", "entryId": "node-2", "kind": "message", "message": message]]],
-                       "live": ["complete": true, "messages": [], "tools": []]])
+                appendViewportContent()
             }
         } else if let command = object["command"] as? [String: Any], let type = command["type"] as? String {
             let runtime = object["runtimeId"] as? String ?? "preview-codex"
@@ -281,8 +312,14 @@ private final class PreviewTransport: OrbisTransport {
         if screen == "viewport" {
             let paragraphs = (1...80).map { "阅读锚点 \($0)" }
             let tail = (0..<viewportTail).map { "新增尾部 \($0 + 1)" }
+            let appended: [[String: Any]] = viewportRows ? (0..<viewportTail).flatMap { index in
+                [message("viewport-user-\(index)", role: "user", text: "新增消息 \(index)"),
+                 ["messageId": "viewport-tool-\(index)", "role": "assistant", "timestamp": 1793232000001,
+                  "content": [["type": "tool_call", "toolCallId": "viewport-call-\(index)", "toolName": "ViewportTool",
+                               "arguments": ["command": "echo viewport"]]]]]
+            } : []
             return [message("viewport-user", role: "user", text: "检查长回复滚动"),
-                    message("viewport-assistant", role: "assistant", text: (paragraphs + tail).joined(separator: "\n\n"))]
+                    message("viewport-assistant", role: "assistant", text: (paragraphs + tail).joined(separator: "\n\n"))] + appended
         }
         if screen == "tool" {
             let longTranscript = ProcessInfo.processInfo.arguments.contains("--preview-long-transcript")

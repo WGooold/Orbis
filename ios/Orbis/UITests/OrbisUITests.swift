@@ -316,6 +316,49 @@ final class OrbisUITests: XCTestCase {
         capture("viewport-following", app: app)
     }
 
+    func testNewMessagesAndToolsPreserveTheMovingReadingAnchor() {
+        let app = launch("viewport", arguments: ["--preview-viewport-rows", "--preview-viewport-drag"])
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
+        let transcript = app.scrollViews.firstMatch
+        transcript.swipeDown()
+        transcript.swipeDown()
+        var readingAnchor: XCUIElement?
+        let viewport = transcript.frame
+        for _ in 0..<5 {
+            readingAnchor = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 "))
+                .allElementsBoundByIndex.first { $0.exists && $0.isHittable && $0.frame.minY > viewport.minY + 120 && $0.frame.maxY < viewport.maxY - 120 }
+            if readingAnchor != nil { break }
+            transcript.swipeDown()
+        }
+        guard let anchor = readingAnchor else { return XCTFail("No reading anchor inside the viewport") }
+        let refresh = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch
+        func drag(_ direction: Double) {
+            let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
+            let end = start.withOffset(CGVector(dx: 0, dy: direction * 70))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 3)
+        }
+        let calibrationStart = anchor.frame.minY
+        drag(1)
+        let manualDistance = anchor.frame.minY - calibrationStart
+        XCTAssertGreaterThan(manualDistance, 30, "The injected gesture must actually scroll before testing concurrent updates")
+        for direction in [-1.0, 1.0] {
+            let before = anchor.frame.minY
+            refresh.tap() // Six source patches arrive two seconds later, while the finger is held.
+            drag(direction)
+            XCTAssertEqual(anchor.frame.minY - before, direction * manualDistance, accuracy: 2,
+                           "Only finger movement may displace the reading anchor; appended rows must not")
+            let resting = anchor.frame.minY
+            refresh.tap()
+            // Wait for the delayed batch without sending another scroll gesture.
+            RunLoop.current.run(until: Date().addingTimeInterval(3))
+            XCTAssertEqual(anchor.frame.minY, resting, accuracy: 1)
+        }
+        XCTAssertTrue(app.buttons["跳到最新消息"].exists)
+        app.buttons["跳到最新消息"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "ViewportTool")).firstMatch.waitForExistence(timeout: 3))
+        capture("viewport-live-tools-and-manual-drag", app: app)
+    }
+
     func testApprovalOverlayKeepsComposerStableWhileSubmitting() {
         let app = launch("approval")
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch

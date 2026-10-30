@@ -1272,12 +1272,13 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val rangeError = state.sessionRangeFailures[sessionRangeFailureKey(runtimeId, "catchup")]
     // One reserved status slot: sync, paging and error updates never insert transcript rows.
     val chatHeaderCount = 1
+    val viewportMotion = remember(runtimeId, sessionId) { ChatViewportMotion() }
     // A catch-up can connect a large cached prefix in one projection. LazyColumn's nearby-key
     // lookup may then lose the old row. Capture its key before the new list is laid out.
     val previousItemKeys = remember(runtimeId, sessionId) { mutableSetOf<String>() }
-    val projectionAnchor = remember(listState, chatItemKeys, chatHeaderCount, orphanTools.size, displayReadPending) {
+    val projectionAnchor = remember(listState, chatItems, chatHeaderCount, orphanTools.size, displayReadPending, sourceRead?.operationId) {
         listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById || it.key in previousItemKeys }
-            ?.let { Triple(it.key as String, it.index, -it.offset) }
+            ?.let { ChatReadingAnchor(it.key as String, it.index, -it.offset, viewportMotion.generation) }
     }
     SideEffect {
         previousItemKeys.clear()
@@ -1291,6 +1292,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     var historyAnchorPending by remember(runtimeId, sessionId) { mutableStateOf(false) }
     var historyAnchorOperationId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     var historyAnchorOffset by remember(runtimeId, sessionId) { mutableStateOf(0) }
+    var historyAnchorGeneration by remember(runtimeId, sessionId) { mutableStateOf(0L) }
     var historyPagingFeedback by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     var initialPositioned by remember(runtimeId, sessionId) { mutableStateOf(false) }
@@ -1298,6 +1300,13 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     var following by remember(runtimeId, sessionId) { mutableStateOf(true) }
     var userScrolling by remember(runtimeId, sessionId) { mutableStateOf(false) }
     val dragging by listState.interactionSource.collectIsDraggedAsState()
+    LaunchedEffect(dragging) {
+        if (dragging) {
+            following = false
+            userScrolling = true
+            viewportMotion.moved()
+        }
+    }
     val distanceToBottom by remember(listState) {
         derivedStateOf {
             val layout = listState.layoutInfo
@@ -1312,7 +1321,14 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 if (source == NestedScrollSource.UserInput && available.y != 0f) {
                     following = false
                     userScrolling = true
+                    viewportMotion.moved()
                 }
+                return Offset.Zero
+            }
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                // Includes inertia. LazyColumn maintains the current key/offset inside its
+                // measure pass; asynchronous history/refresh jobs must not restore an older one.
+                if (consumed.y != 0f) viewportMotion.moved()
                 return Offset.Zero
             }
         }
@@ -1327,7 +1343,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                     }
                 } else if (!scrolling && count > chatHeaderCount) {
                     if (following && distance > 0.5f) listState.scrollToItem(count - 1, Int.MAX_VALUE)
-                    else if (distance < lineHeightPx) following = true
+                    // A layout change (including an empty recovery projection) is not a
+                    // request to follow. Only an actual user scroll ending near the tail is.
                 }
             }
     }
@@ -1392,6 +1409,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     var refreshAnchorIndex by remember(runtimeId, sessionId) { mutableStateOf<Int?>(null) }
     var refreshAnchorOffset by remember(runtimeId, sessionId) { mutableStateOf(0) }
     var refreshAnchorArmed by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    var refreshAnchorGeneration by remember(runtimeId, sessionId) { mutableStateOf(0L) }
     fun refreshConversation() {
         model.refreshRuntime(runtimeId)
         model.refreshWorkingBranch(runtimeId)
@@ -1443,6 +1461,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         historyAnchorIndex = index
         historyAnchorPending = true
         historyAnchorOffset = offset
+        historyAnchorGeneration = viewportMotion.generation
         historyAnchorOperationId = accepted.operationId
     }
     val pagingBlocked by rememberUpdatedState(
@@ -1460,7 +1479,9 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         val operation = historyAnchorOperationId?.let(state.historyReads::get)
         if (!historyAnchorPending || operation?.phase?.active == true) return@LaunchedEffect
         try {
-            if (operation?.phase in setOf(HistoryReadPhase.SUCCEEDED, HistoryReadPhase.END_REACHED)) {
+            if (operation?.phase in setOf(HistoryReadPhase.SUCCEEDED, HistoryReadPhase.END_REACHED) &&
+                historyAnchorGeneration == viewportMotion.generation && !userScrolling && !following &&
+                !listState.isScrollInProgress) {
                 val newIndex = historyAnchorMessageId?.let { chatItemIndexById[it] }
                     ?.let { it + chatHeaderCount } ?: historyAnchorIndex
                 if (newIndex != null && newIndex >= 0) listState.scrollToItem(newIndex, historyAnchorOffset)
@@ -1573,26 +1594,28 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         return
     }
 
-    LaunchedEffect(runtimeId, sessionId, displayReadPending, chatItemKeys, chatHeaderCount, orphanTools.size,
+    LaunchedEffect(runtimeId, sessionId, displayReadPending, chatItems, chatHeaderCount, orphanTools.size,
         sourceRead?.operationId, sourceRead?.phase) {
         if (refreshTasksPending && initialPositioned && !refreshAnchorArmed && !following) {
-            refreshStartAnchor?.let { (key, index, offset) ->
+            refreshStartAnchor?.takeIf { it.generation == viewportMotion.generation }?.let { (key, index, offset, generation) ->
                 refreshAnchorMessageId = key
                 refreshAnchorIndex = index
                 refreshAnchorOffset = offset
                 refreshAnchorOperationId = sourceRead?.operationId
                 refreshAnchorArmed = true
+                refreshAnchorGeneration = generation
             }
         }
         val anchorRead = refreshAnchorOperationId?.let(state.sessionReads::get)
         val refreshFinished = refreshAnchorArmed && anchorRead?.phase?.active != true
         if (chatItems.isEmpty()) {
             if (initialPositioned && !following && !refreshAnchorArmed) {
-                projectionAnchor?.let { (key, index, offset) ->
+                projectionAnchor?.let { (key, index, offset, generation) ->
                     refreshAnchorMessageId = key
                     refreshAnchorIndex = index
                     refreshAnchorOffset = offset
                     refreshAnchorArmed = true
+                    refreshAnchorGeneration = generation
                 }
             }
             return@LaunchedEffect
@@ -1603,6 +1626,10 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             layout.totalItemsCount == chatHeaderCount + chatItems.size + orphanTools.size &&
                 layout.visibleItemsInfo.any { it.key in chatItemIndexById }
         }.totalItemsCount
+        if (refreshAnchorArmed && (refreshAnchorGeneration != viewportMotion.generation || following)) {
+            refreshAnchorArmed = false
+            refreshAnchorOperationId = null
+        }
         if (refreshAnchorArmed) {
             // A refresh must not move the viewport. Restore the row that was visible before the
             // replacement projection, falling back to its old index when that row disappeared.
@@ -1611,7 +1638,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 ?.let { it + chatHeaderCount }
                 ?: refreshAnchorIndex
             try {
-                if (anchorIndex != null && anchorIndex >= 0) {
+                if (anchorIndex != null && anchorIndex >= 0 && !userScrolling && !listState.isScrollInProgress) {
                     listState.scrollToItem(anchorIndex.coerceAtMost(itemCount - 1), refreshAnchorOffset)
                 }
             } finally {
@@ -1626,10 +1653,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             return@LaunchedEffect
         }
         if (!following && !historyAnchorPending) {
-            projectionAnchor?.let { (key, _, offset) ->
+            projectionAnchor?.takeIf { it.generation == viewportMotion.generation }?.let { (key, _, offset) ->
                 chatItemIndexById[key]?.let { index ->
                     val first = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById }
-                    if (!listState.isScrollInProgress && first?.key != key) {
+                    if (!userScrolling && !listState.isScrollInProgress &&
+                        (first?.key != key || first?.offset != -offset)) {
                         listState.scrollToItem(chatHeaderCount + index, offset)
                     }
                 }

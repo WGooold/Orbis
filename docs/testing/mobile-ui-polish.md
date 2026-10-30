@@ -48,6 +48,14 @@ iOS 使用专用 `Orbis UI Polish` 模拟器；Android 使用独立创建的 `Or
 
 ## 复现
 
+### 阅读位置锁定回归
+
+- Android API 35：`ChatViewportInstrumentedTest` 8 项通过。新增用例在手指持续按住时逐帧插入消息、工具和流式段落，并双向拖动；另测惯性位移不被中断或加速、刷新完成不重放旧锚点，以及一行 / 三行阈值。
+- iOS 27.0：长回复阅读 / 恢复跟随、连续新消息和工具卡片下的双向拖动 / 静止锚定 / 回到底部共 2 项通过。18 及以上使用原生 `ScrollPosition` 的底边请求，避免长懒加载列表按旧行 ID 和估算高度定位到空白区域。iOS 17 兼容路径已编译，尚未在该系统上运行。
+- 本次结果位于 `.scratch/viewport-lock/android-isolated-ui.log` 和 `.scratch/viewport-lock/ios-native-position.xcresult`；Debug / AndroidTest 构建通过，Android `UiPolishTest` 2 项通过。测试使用隔离夹具，没有访问真实 Host 或用户手机。
+
+### 执行命令
+
 ```sh
 bash scripts/check-ios.sh
 xcodebuild -project ios/Orbis/Orbis.xcodeproj -scheme Orbis \
