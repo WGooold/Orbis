@@ -142,3 +142,15 @@ Android 客户端最终完整报告 `OK (9 tests)`，设备日志也确认 9 项
   `ui-final.log` 是修正测试暂停时钟后重入所需帧推进之前的失败记录，不作为最终结果。
 - 修复版 APK：`.artifacts/chat-entry-animation/orbis-0.1.52-slide-in-debug.apk`，
   SHA-256：`1c0cc23d7afad3f24728f3c8f9b408bcc525ed08eb32b72b78a8749f63da9197`。
+
+## 2026-10-30 基线归并：入场接管与首页身份
+
+[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) 的 M07、M08、V13 收录 `ed8da5d` 后已经落地的行为，
+补充并替代上方修订中的“入场期间禁用返回拖拽”和“入场结束后释放首页底层”两条描述：
+
+- Android 入场允许被右滑立即接管；按住时停止入场，继续移动时页面跟手，不以源端加载完成为前置条件。
+- 首页保留同一组合身份，聊天遮盖期间不逐帧重组；返回完成后立即恢复交互，不留下屏外透明聊天层挡住点击。
+- 取消返回保留弹簧回弹，确认返回使用 180ms 退场。位移、底层压缩和遮罩仍在绘制层更新，既有入场不删除。
+- 对应回归入口为 `SwipeBackInstrumentedTest`（含 `rightSwipeInterruptsEntranceBeforeLoadingFinishes`）
+  和 `HomeNavigationInstrumentedTest`。这是本次对既有实现 / 测试的盘点，不是本次重新运行设备测试；
+  上方旧耗时与首页释放结果不用于证明后续实现的性能或生命周期。

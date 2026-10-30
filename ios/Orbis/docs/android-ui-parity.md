@@ -2,6 +2,8 @@
 
 基准：当前仓库的 Android Compose 实现。记录日期：2026-10-29。
 
+2026-10-30：风格、动效与画面稳定性的统一冻结入口为 [ADR-0051](../../../docs/adr/0051-ui-style-motion-and-visual-stability-freeze.md)。本页保留分轮实现、差距与验收记录；其中旧连接优先级、别名操作和材质描述不覆盖当前基线，未验收项目也不因归并而转为通过。
+
 本轮两端共用的稳定性、材质与动效约束见 [ADR-0046](../../../docs/adr/0046-mobile-ui-stability-and-material.md)，逐项验收见 [移动端 UI 打磨](../../../docs/testing/mobile-ui-polish.md)。
 
 2026-10-29：继续完成核心能力的显示与操作入口。已接入多 Host、离线历史、队列撤回、通知核对、Agent 状态域、工具导出、交互草稿和完整路径下载。传输与持久化细节及尚未完成的真实环境验收见 [核心对齐记录](android-core-parity.md)。下表按本轮实现更新，文末保留此前验收记录。

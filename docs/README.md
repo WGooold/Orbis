@@ -6,6 +6,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 
 - [Claude Code 供应商与官方订阅配额](agents/claude-providers-and-subscription-quota.md)：Host、iOS 和 Android 的配置切换与 5 小时 / 周配额查询。
 - `docs/adr/`: accepted architecture decisions. ADRs preserve historical reasoning; a superseded ADR is marked in its header.
+- [ADR-0051](adr/0051-ui-style-motion-and-visual-stability-freeze.md)：UI 风格、动效与画面稳定性的统一冻结入口，登记移动端 50 项及品牌 / Host / Relay 10 项 feature；相关设计与修改前必读，演进时同步维护 ADR 和本机 `AGENTS.md` / `CLAUDE.md`。
 - [ADR-0050](adr/0050-fixed-lan-relay-routing.md): LAN / Relay only with fixed LAN-first routing; configurable priorities are removed. Implemented and locally verified in an independent worktree; release validation pending.
 - `docs/architecture/agent-state-acceptance.md`: living acceptance checklist for ADR-0032, mapping the 36 audited state modules to their model scope and migration status.
 - `docs/testing/isolated-host/README.md`: isolated Host test rig — its own process, state directory and local Relay, so Host/App verification never touches the Host the user is running. Read it before any on-machine pairing or display-projection regression run.
@@ -25,7 +26,7 @@ These documents describe a specific tool version or a past implementation review
 
 - `docs/codex-app-server-protocol.md`: codex-cli 0.154.0 app-server schema snapshot.
 - `docs/codex-vs-pi-feature-gap.md`: 2026-09-23 Pi/Codex capability comparison.
-- `docs/orbis-ui-design-spec.md`: historical UI design tokens and material guidance. The source design file and exported images are intentionally not part of the repository.
+- `docs/orbis-ui-design-spec.md`: historical UI design tokens and material guidance. Current UI rules are indexed by ADR-0051; historical alternatives do not override that baseline. The source design file and exported images are intentionally not part of the repository.
 - `docs/architecture/`: 2026-10-13 agent state and architecture audit snapshot supporting ADR-0032, including `agent-state-architecture.html`, `agent-state-audit.json`, preview images and the report validation record. It describes the tree before ADR-0032; if it conflicts with source code or the ADR, the source and ADR win.
 
 When a snapshot conflicts with source code, an accepted ADR, or the current product README, use the current source and update the snapshot's status or date instead of treating it as authoritative.
