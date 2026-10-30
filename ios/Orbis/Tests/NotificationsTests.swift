@@ -133,8 +133,11 @@ struct NotificationsTests {
     }
 
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(1)
-        while !condition() && Date() < deadline { try await Task.sleep(nanoseconds: 1_000_000) }
+        // The full core suite shares MainActor on CI. Allow for executor load;
+        // this checks eventual delivery and retry counts, not elapsed latency.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(10))
+        while !condition() && clock.now < deadline { try await Task.sleep(nanoseconds: 1_000_000) }
         try #require(condition(), "Timed out waiting for the bounded notification retry schedule")
     }
 }
