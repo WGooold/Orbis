@@ -454,6 +454,7 @@ export class ClaudeModsBridge {
     const permissions = claudePermissionManagement(facts.permissionMode);
     return {
       runtimeId: session.runtime.runtimeId, name: "Claude Code", cwd: session.runtime.cwd, status: session.runtime.status,
+      sessionGraphSync: true,
       ...(session.runtime.sessionId === undefined ? {} : { sessionId: session.runtime.sessionId }), hostname: localHostname(),
       ...(facts.title === undefined ? {} : { sessionName: facts.title }),
       ...(model === undefined ? {} : { model: { provider: "claude-code", id: model.slice(0, 256),

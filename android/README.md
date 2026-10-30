@@ -93,6 +93,12 @@ APP 启动时只加载并持久化轻量 Session Catalog；用户打开在线 Ru
 
 ## Session 历史读取验收
 
+Claude Code 的隔离模拟器回归使用 `scripts/claude-history-fixture.mjs`：先在仓库根目录运行
+`npm run typecheck`，再运行该脚本。将输出目录 `fixture.json` 的 `port` 作为 instrumentation
+参数 `claudeFixturePort`，执行 `ClaudeHistoryInstrumentedTest`。测试通过真实 Host、Relay、
+Mods HTTP 接口和加密连接验证已有历史、运行中回复、并行工具结果后的流式输出及重连恢复；
+原生记录使用合成数据，配对和缓存存入独立测试目录。
+
 已有配对和在线 Codex 的只读端到端验收，分别覆盖客户端/连接重建，以及真正的 App 进程重开和 UI 上滑。脚本、覆盖安装、设备占用、截止时间、脱敏证据与 `PASS / FAIL / INCONCLUSIVE` 的判定见 [历史读取验收说明](docs/history-reload-probe.md)。必须取得本次设备操作授权；不清缓存、不激活后端，也不重启 Host。
 
 ## 文件

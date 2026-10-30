@@ -2907,7 +2907,8 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
       capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call"] });
     expect(hello).toMatchObject({ ok: true, runtimeId: "claude:live-session" });
     const generation = hello.generation as string;
-    await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata).runtimeId === "claude:live-session", "runtime.online");
+    expect(await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata).runtimeId === "claude:live-session", "runtime.online"))
+      .toMatchObject({ runtime: { sessionGraphSync: true } });
     const event = (body: unknown) => post("/v1/claude/mods/event", { runtimeId: "claude:live-session", generation, event: body });
 
     expect(await event({ type: "session.state", state: { model: "claude-opus-5-5", modelName: "Opus 5.5", modelOptions: ["sonnet", "opus"],
@@ -2948,6 +2949,16 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
     const content = await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.tool.content.page", "tool content");
     expect(JSON.stringify(content.event)).toContain("ls -la");
     expect(host.readDiagnostics({ category: "recovery" }).records.filter(record => record.message.includes("Rejected conversation"))).toEqual([]);
+
+    // A Hook shares the Mods runtime: its waiting status must not erase history capability.
+    const hookReply = post("/v1/claude/hook", { hook_event_name: "PermissionRequest", session_id: "live-session",
+      cwd: stateDir, tool_name: "Bash", tool_input: { command: "fixture-only" } });
+    const waiting = await until(message => message.runtimeId === "claude:live-session" &&
+      (message.event as RuntimeEvent | undefined)?.type === "runtime.metadata" &&
+      (message.event as Extract<RuntimeEvent, { type: "runtime.metadata" }>).metadata.status === "waiting_local_interaction", "hook metadata");
+    await event({ type: "interactions.local" });
+    await hookReply;
+    expect(waiting).toMatchObject({ event: { metadata: { sessionGraphSync: true } } });
 
 
     // A refused bridge leaves a diagnostic instead of failing silently.

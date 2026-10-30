@@ -389,6 +389,9 @@ export class HostService {
   }
 
   #registerClaudeRuntime(runtime: RuntimeMetadata): void {
+    // Hooks and Mods share one public runtime. Keep Mods' history capability when a
+    // permission Hook contributes its waiting status, just as directory snapshots do.
+    runtime = this.#claudeBackend.directoryEntries().find(candidate => candidate.runtimeId === runtime.runtimeId) ?? runtime;
     const alreadyPublished = this.#claudePublishedRuntimes.has(runtime.runtimeId);
     const displaced = this.#agentFacts.displacedRuntime(runtime.runtimeId, runtime);
     if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
