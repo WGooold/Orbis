@@ -1,18 +1,19 @@
 # Orbis for iOS
 
-原生 SwiftUI 客户端，最低支持 iOS 17，适配 iPhone 和 iPad。协议与加密使用 Apple 系统框架；P2P DataChannel 使用精确锁定的 WebRTC 140.0.0 XCFramework，由 Xcode Swift Package 管理。源码与二进制依赖保留各自许可，见 [第三方声明](../../THIRD-PARTY-NOTICES.md) 和 [WebRTC 许可](THIRD-PARTY-NOTICES/WebRTC-LICENSE.txt)。
+原生 SwiftUI 客户端，最低支持 iOS 17，适配 iPhone 和 iPad。协议与加密使用 Apple 系统框架；传输使用 LAN / Relay WebSocket，固定局域网优先。源码与二进制依赖保留各自许可，见 [第三方声明](../../THIRD-PARTY-NOTICES.md)。
 
 当前界面按 Android 的新拟物主题和页面流程逐页对齐，包含：
 
 - 配对与扫码、会话卡片主页、可搜索筛选的目录抽屉、新建会话目录浏览。
 - 聊天、会话草稿持久化、Slash 菜单、历史节点预览与分支动作、权限面板和结构化交互。
 - 文件浏览下载、可续传任务及附件上传；任务 / 分片格式和完整性校验已有隔离测试。
-- 供应商配置与切换、连接优先级保存、基本连接状态、会话 provider 归属筛选。
+- 连接状态页按 Agent 显示当前供应商并支持切换，显示实际 LAN / Relay 连接状态、会话 provider 归属筛选。
 - 每轮文件变化元数据、文件名中间省略与扩展名保留，以及点击后按文件 / 分页读取的 unified diff；左右滑动落位后才读取目标文件，相邻页构造不预取详情。
 - 与 Android 同源的 Agent 标识、浅色 / 深色配色、凸起 / 凹陷材质和操作反馈。
-- 首页左滑会话卡片显露“关闭”，滑动达到卡片宽度的一半后触发一次触感反馈并以灰色提示“松手关闭”；长按会话进入多选，关闭在线会话保留历史，切换电脑或离开首页清空选择。
+- 首页会话列表保留原生上下拖动与惯性滚动，多选时仍可滚动；左滑关闭按起手卡片与方向锁定，滚动后继续命中对应卡片。左滑会话卡片显露“关闭”，滑动达到卡片宽度的一半后触发一次触感反馈并以灰色提示“松手关闭”；长按会话进入多选，关闭在线会话保留历史，切换电脑或离开首页清空选择。
+- 首页常驻会话列表，电脑行下方不设单独状态行。首版卡片发布前，加载与失败（含原因和“重新加载”按钮）显示在列表空态的位置；发布后，后台同步与失败并入电脑行的连接胶囊（“正在同步” / “同步失败”），失败时胶囊右侧出现重试图标。任何状态都不用全屏加载页替换或遮挡列表，也不推动卡片。收到当前电脑的会话目录及全部卡片的完整身份、执行状态和交互清单后一次呈现；只有确认目录为空才显示空态。刷新、重连、新会话及会话替换期间保留上一版完整卡片，未确认的卡片暂不可操作。磁盘中的历史目录不会作为冷启动在线卡片提前显示。
 - 会话目录长按条目进入多选，点按增减选择，顶部批量归档或恢复；搜索、筛选、切换电脑或关闭目录清空选择。单选未归档会话时，顶部保留“在电脑继续会话”入口。
-- 协议 v16、Keychain 身份、CryptoKit 端到端加密、Relay / LAN / P2P 三路径与 Host 选路、最近历史预览及更早历史分页。
+- 协议 v17、Keychain 身份、CryptoKit 端到端加密、LAN / Relay 两路径与 Host 固定选路、最近历史预览及更早历史分页。
 
 逐页完成项、与 Android 尚有的差距和验收范围见 [UI / UX 对齐记录](docs/android-ui-parity.md)。
 
@@ -54,38 +55,19 @@ swift test --package-path ios/Orbis --disable-xctest
 
 安装 Node.js 后，`check-ios.sh` 还会运行独立本地 WebSocket 夹具，验证真实 HTTP 配对、加密长消息双向分片、探针回声、Host 重启、Relay / LAN 回退及双 Host 并存。也可通过 `ORBIS_TEST_NODE=/absolute/path/to/node` 指定可执行文件；未找到 Node 时仅跳过这一项网络测试，CI 已配置 Node。
 
-构建后脚本还会检查 App 的动态库依赖能否通过包内运行时路径解析，防止 WebRTC 已链接、已嵌入但普通启动仍找不到库。可对真机或模拟器产物单独运行 `python3 scripts/check-ios-bundle.py /absolute/path/to/Orbis.app`；这项检查不使用 Xcode / UI 测试器注入的动态库路径。
-
-## 原生 P2P 互通测试
-
-普通 Swift 核心测试不下载或链接 WebRTC，使用可控 peer 验证 ICE 回调顺序、独立握手、重放防护、优先级、超时和断线宽限。原生互通测试还会启动本地 `node-datachannel` Host，验证真实 WebRTC 传输、加密文本与二进制分片、Relay 回退，以及两台 Host 的 peer 共存；不会连接生产 Relay 或读取真实配对。
-
-安装仓库 Node 依赖和完整 Xcode 后，可在仓库根目录运行：
-
-```sh
-xcodebuild -resolvePackageDependencies -project ios/Orbis/Orbis.xcodeproj \
-  -scheme Orbis -clonedSourcePackagesDirPath /tmp/orbis-webrtc-packages
-orbis_webrtc_frameworks=/tmp/orbis-webrtc-packages/artifacts/webrtc/WebRTC/WebRTC.xcframework/macos-x86_64_arm64
-ORBIS_TEST_NODE="$(command -v node)" \
-ORBIS_TEST_DATACHANNEL_MODULE="$(node --input-type=module -e 'console.log(import.meta.resolve("node-datachannel"))')" \
-  swift test --package-path ios/Orbis --scratch-path /tmp/orbis-native-p2p-tests --disable-xctest \
-  -Xswiftc -F -Xswiftc "$orbis_webrtc_frameworks" \
-  -Xlinker -F -Xlinker "$orbis_webrtc_frameworks" \
-  -Xlinker -rpath -Xlinker "$orbis_webrtc_frameworks" \
-  --filter 'P2PTransportTests|RelayTransportTests'
-```
-
-2026-10-29 本地验证：WebRTC 140.0.0 与 node-datachannel 0.33.4 的真实回环通过，包括两台 Host 同时使用 P2P 时关闭一台不影响另一台。此项覆盖本机 host candidate；蜂窝网络、跨 NAT 打洞和真实 Host / iOS 真机仍需现场验收。
+构建后脚本还会检查 App 的动态库依赖能否通过包内运行时路径解析，防止依赖已链接、已嵌入但普通启动仍找不到库。可对真机或模拟器产物单独运行 `python3 scripts/check-ios-bundle.py /absolute/path/to/Orbis.app`；这项检查不使用 Xcode / UI 测试器注入的动态库路径。
 
 ## 验收与范围
 
 在电脑端启动 Orbis Host，打开配对窗口；手机点“添加电脑”扫描二维码。模拟器可粘贴同一个二维码的 JSON 内容。正式 Relay 使用 `wss://`；本机调试允许私有局域网 / localhost 的 `ws://`。
 
+LAN 直连访问配对二维码或已认证 `host.lan` 提供的 Host 地址，使用 `ws://IP:端口/v1/lan`，并以独立 E2E 握手认证和加密消息。Host 网卡地址可能是校园网公网 IPv4，因此不能只允许私有网段。iOS 17+ 的 ATS 配置通过 `NSExceptionDomains` 的 `0.0.0.0/0` 和 `::/0` 允许 IP 字面量直连；`NSAllowsLocalNetworking` 保留本地名称访问。公网 Relay 仍由 `RelayURL` 强制要求 WSS，未启用全局 `NSAllowsArbitraryLoads`。Host 当前不提供 TLS，不能只把 LAN URL 改成 `wss://`。
+
 Relay 地址支持反向代理路径前缀，例如 `wss://example.com/relay`。配对 HTTP 请求与后续 WebSocket 连接均保留该前缀。旧测试版曾将这类地址误判为“二维码无效”；更新 App 后请在电脑端重新生成有效期内的配对二维码。
 
 真机验收应覆盖：相机授权与退出、配对、首次安全握手、runtime/session 目录、历史预览、双向聊天、切换 runtime、停止、恢复会话、断网重连、Host 重启后的重新握手，以及前后台切换。
 
-传输支持 Relay、LAN 和 WebRTC DataChannel P2P。Host 通过 `device.path` 决定当前路径；每条路径独立完成端到端握手并维护密钥、序号与分片重组。P2P 的请求与应答信令经过加密的 Relay；短暂 ICE 断开有 5 秒恢复窗口，协商或原生组件失败会保留其它可用路径。Orbis 只创建 DataChannel，不创建相机或麦克风轨道。会话条目与 Host 显示投影已按配对身份持久化，重新连接后先显示缓存，再核对源端状态；缓存本身不会冒充当前已应用基线。统一模型可恢复执行、模型、上下文、权限、命令、审批和队列；通知拥有独立版本与清单恢复。
+传输支持 LAN 和 Relay，Host 固定 LAN 优先、Relay 兜底，通过 `device.path` 宣布当前路径。每条路径独立完成端到端握手并维护密钥、序号与分片重组。设置页不提供连接优先级配置，旧排序不再读取或下发。会话条目与 Host 显示投影已按配对身份持久化，重新连接后先显示缓存，再核对源端状态；缓存本身不会冒充当前已应用基线。统一模型可恢复执行、模型、上下文、权限、命令、审批和队列；通知拥有独立版本与清单恢复。
 
 多台 Host 各自保持认证连接，选择电脑只切换交互目标。系统后台通知和 TestFlight / App Store 分发尚未实现；运行仍依赖前台连接。历史已使用后台 SQLite 增量事务和有界分页，支持完整 timing、固定目标 catchup 与离线分支；下载和上传磁盘工作由独立 worker 完成，持久进度在写盘同步后发布。真实 Host / 真机联调需单独验收，不能据此认定 Android 的全部功能已对齐。
 
@@ -97,7 +79,9 @@ Relay 地址支持反向代理路径前缀，例如 `wss://example.com/relay`。
 
 续读请求持有旧 `readId` 且返回 `expired` 时，保留已读内容与位置，在同 viewer / 文件版本 / cursor 下以 `readId: null` 重开一次；第二次失效直接显示过期，迟到的旧 viewer 响应不触发重开。每页发布前按最近访问顺序淘汰非选中文件，缓存的 UTF-8 正文总量严格不超过 8 MiB；单文件下一页超限时不追加、不推进游标，显示上限说明并保留已加载内容。此补丁的 13 项 `TurnFileChangesTests` 全部通过，包含真实 8 MiB 边界与跨文件淘汰，日志为 `.artifacts/turn-file-changes/ios-detail-recovery-cache-tests.log`。
 
-池内 iPhone SE（375pt、iOS 27.0）两项 UI 测试通过，覆盖明暗、XXXL 启动设置、预览减少动画路径、短拖取消、边界回弹、左右翻页按需读取、缓存命中和二进制说明；截图已复核。沿用固定文字 token，XXXL 设置不代表新增全局动态字体能力。结果保存在本机 `.artifacts/turn-file-changes/ios-review-ui-final2.xcresult`，包内动态库检查通过；后续摘要排序、租约恢复、缓存上限及上限状态隐藏重试按钮的补丁未重新构建设备包或重复 UI 测试。真实 Host / 真机、全后端执行边界和大项目网络压力仍需联调验收。
+池内 iPhone SE（375pt、iOS 27.0）两项 UI 测试通过，覆盖明暗、XXXL 启动设置、预览减少动画路径、短拖取消、边界回弹、左右翻页按需读取、缓存命中和二进制说明；截图已复核。沿用固定文字 token，XXXL 设置不代表新增全局动态字体能力。结果保存在本机 `.artifacts/turn-file-changes/ios-review-ui-final2.xcresult`，包内动态库检查通过；截至该轮验收，后续摘要排序、租约恢复、缓存上限及上限状态隐藏重试按钮的补丁尚未重新构建设备包或重复 UI 测试。真实 Host / 真机、全后端执行边界和大项目网络压力仍需联调验收。
+
+2026-10-30 合并 `main`（`ee6f7c8`）后统一协议 17，保留固定 LAN / Relay、首页完整快照及连接胶囊、乐观发送对账与供应商 / 配额显示。包含上述补丁的合并版本通过 213 项 Swift 核心测试（18 个 suite，含隔离本地 Relay / LAN 与加密文件传输）、Simulator Debug 编译和包内依赖检查；工程不再引用或打包 WebRTC。日志为 `.artifacts/turn-file-changes/ios-main-merge-core-tests-final.log`、`ios-main-merge-build.log` 与 `ios-main-merge-bundle-check.log`。此前已验收 App 及其哈希保留在同目录的 `ios-main-merge-rollback/Orbis.app` 与 `ios-main-merge-rollback-validation.json`；合并版本产物记录为 `ios-main-merge-validation.json`。本次没有操作模拟器设备或重复 UI 测试，不将既有截图视为合并版本的重新验收。
 
 ## 界面回归
 
@@ -109,4 +93,6 @@ xcodebuild -project ios/Orbis/Orbis.xcodeproj -scheme Orbis \
   -derivedDataPath ios/Orbis/build/DerivedData CODE_SIGN_IDENTITY=- test
 ```
 
-测试结果包保存各页面的浅色 / 深色截图。Debug 可用 `--preview-screen=pairing|home|drawer|new-session|chat|slash|history|approval|tool|downloads|status|settings|providers` 显式启动隔离预览；加 `--preview-dark` 查看深色。Release 不包含预览夹具。
+测试结果包保存各页面的浅色 / 深色截图。Debug 可用 `--preview-screen=pairing|home|drawer|new-session|chat|slash|history|approval|tool|downloads|status|providers` 显式启动隔离预览；加 `--preview-dark` 查看深色。Release 不包含预览夹具。
+
+连接状态页支持 Claude Code 切换，以及 Claude Code / Codex 当前官方订阅的 5 小时、周剩余配额查询。详见 [功能说明](../../docs/agents/claude-providers-and-subscription-quota.md)。

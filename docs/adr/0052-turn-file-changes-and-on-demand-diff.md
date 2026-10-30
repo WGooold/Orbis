@@ -170,7 +170,7 @@ Host 存储按真实工作区及采集 owner 协调，避免多个 Orbis 观察�
 
 ### §9 初版实现、接入与剩余验收
 
-本节记录本次工作树的实际行为，区别前文完整设计要求。实现位于 `codex/adr-turn-file-changes`，基于 `375078cbbd9d7b3299ade6b24867ec5e8b3c65f1`；代码尚未提交或部署。
+本节记录本次工作树的实际行为，区别前文完整设计要求。实现位于 `codex/adr-turn-file-changes`，基于 `375078cbbd9d7b3299ade6b24867ec5e8b3c65f1`；功能提交为 `cf7d635`，合并目标为主分支 `ee6f7c8`；未部署。合并保留主线的固定 LAN / Relay、首页和消息对账行为。主线已占用协议 16，故合并后的统一协议为 17。
 
 | 后端 | 已接入的轮次边界 | 当前覆盖结论 |
 | --- | --- | --- |
@@ -183,7 +183,7 @@ Host 的实现入口为 [coordinator](../../packages/host/src/turn-change-coordi
 
 当前没有“写工具执行前补录忽略 / 仓库外路径”。Git scope 表示跟踪及非忽略文件再扣除固定缓存目录；bounded-directory 表示本次 cwd 内的有界目录。范围外 shell 写入不覆盖，无法映射的远程文件不能用本机同名文件替代。所有结果目前统一 `attribution: workspace-window`，不声称修改由助手独占造成；已知同工作区并发会降级，但无法识别所有外部编辑。可靠 rename 证据尚未接入，所以移动文件显示删除 + 新增。
 
-协议已升为 **16**，Host、Pi extension、Claude mod 与 iOS / Android 应同时升级；Claude 插件包版本升为 **0.1.3**，确保缓存更新能交付 bridge 2；Relay 继续转发加密载荷。正式 strict schema 见 [turn-file-changes.ts](../../packages/protocol/src/turn-file-changes.ts)：`reviewTurnId/sourceTurnIds` 关联来源，`anchorEntryId` 关联真实消息，`changeSetId/manifestVersion/fileId/contentVersion` 固定内容，独立单调 `revision` 拒绝迟到摘要。`changes` Registry 域只持有轻量描述，当前窗口通过 `session.changes.list` 订阅及补齐概况；`read` 取清单，`detail.read/cancel` 为设备私有按需读取。无 canonical 锚点的记录留待关联，不猜最近助手气泡。
+协议已升为 **17**，Host、Pi extension、Claude mod 与 iOS / Android 应同时升级；Claude 插件包版本升为 **0.1.3**，确保缓存更新能交付 bridge 2；Relay 继续转发加密载荷。正式 strict schema 见 [turn-file-changes.ts](../../packages/protocol/src/turn-file-changes.ts)：`reviewTurnId/sourceTurnIds` 关联来源，`anchorEntryId` 关联真实消息，`changeSetId/manifestVersion/fileId/contentVersion` 固定内容，独立单调 `revision` 拒绝迟到摘要。`changes` Registry 域只持有轻量描述，当前窗口通过 `session.changes.list` 订阅及补齐概况；`read` 取清单，`detail.read/cancel` 为设备私有按需读取。无 canonical 锚点的记录留待关联，不猜最近助手气泡。
 
 持久化先于发布；重启后可读取已冻结记录，中途采集转为 unavailable。详情仅引用私有 blob 和比较索引，不重新扫描当前工作区。正文从不进入 summary、共享消息或其他设备的响应。真实加密 Host / Relay / 设备测试已验证：轮前已有脏内容作为起点、概况没有正文、点击前没有详情事件，以及后续磁盘再改不改变旧轮差异。
 

@@ -188,7 +188,7 @@ struct SessionDrawerView: View {
             }
         }
         items.append(.divider)
-        items.append(OrbisMenuItem(title: "供应商配置与切换", symbol: "slider.horizontal.3", action: onProviders))
+        items.append(OrbisMenuItem(title: "连接状态与供应商", symbol: "slider.horizontal.3", action: onProviders))
         return items
     }
 
@@ -281,10 +281,11 @@ struct SessionDrawerView: View {
                     if store.activatingSessionId == session.sessionId { ProgressView().controlSize(.small) }
                 }.frame(width: 24, height: 24)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(store.displayName(session)).font(.orbisBody()).lineLimit(2)
+                    // Reserve both title lines so short and wrapped titles keep the same card height.
+                    Text(store.displayName(session)).font(.orbisBody()).lineLimit(2, reservesSpace: true)
                     ZStack(alignment: .leading) {
                         HStack(spacing: 8) {
-                            if let runtime { RuntimeStatusLabel(status: runtime.status) }
+                            if let runtime { RuntimeStatusLabel(status: runtime.presentationStatus) }
                             else { Text("缓存历史").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
                             Text(sessionTimeTitle(session.modifiedAt))
                                 .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
@@ -316,7 +317,7 @@ struct SessionDrawerView: View {
     private func showMismatch(_ problem: String) {
         overlay.showDialog("需要切换 provider", message: problem, actions: [
             OrbisDialogAction(title: "取消", role: .cancel),
-            OrbisDialogAction(title: "供应商设置", action: onProviders)
+            OrbisDialogAction(title: "连接状态与供应商", action: onProviders)
         ])
     }
 

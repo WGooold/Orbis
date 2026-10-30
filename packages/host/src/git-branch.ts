@@ -5,7 +5,7 @@ import { PROTOCOL_VERSION } from "@orbis/protocol";
 
 const execFileAsync = promisify(execFile);
 
-/** Host-owned query carried inside E2E, like LAN discovery and path preferences. */
+/** Host-owned query carried inside E2E, like LAN discovery. */
 export type GitBranchRequest = {
   type: "runtime.git.request";
   protocolVersion: number;

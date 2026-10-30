@@ -688,6 +688,24 @@ describe("host end-to-end over relay", () => {
     expect(JSON.stringify(switched)).not.toContain("never-send-this");
     device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "missing", kind: "pi", id: "missing", enabled: true }));
     expect(await device.receiveMessage()).toMatchObject({ type: "provider.result", requestId: "missing", error: expect.any(String) });
+    const claude = (await providers.list("claude"))[0]!;
+    await providers.save("claude", "vendor", "Vendor", { env: { ANTHROPIC_BASE_URL: "https://vendor.test", ANTHROPIC_AUTH_TOKEN: "claude-secret-never-send" } }, true);
+    device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "claude-switch", kind: "claude", id: "vendor", enabled: true }));
+    const claudeResult = await device.receiveMessage();
+    expect(claudeResult).toMatchObject({ type: "provider.result", requestId: "claude-switch", kind: "claude" });
+    expect(JSON.stringify(claudeResult)).not.toContain("claude-secret-never-send");
+    await providers.switch("claude", claude.id);
+    const quota = { checkedAt: 100, windows: [{ name: "five_hour" as const, remainingPercent: 75, resetsAt: 200 }, { name: "seven_day" as const, remainingPercent: null, resetsAt: null }] };
+    const query = vi.spyOn(providers, "querySubscription").mockResolvedValue(quota);
+    device.sendData(JSON.stringify({ type: "provider.subscription", protocolVersion: PROTOCOL_VERSION, requestId: "quota", kind: "claude", id: claude.id }));
+    expect(await device.receiveMessage()).toMatchObject({ type: "provider.subscription.result", requestId: "quota", kind: "claude", id: claude.id, quota });
+    expect(query).toHaveBeenCalledWith("claude", claude.id);
+    query.mockRejectedValueOnce(new Error("secret-upstream-body"));
+    device.sendData(JSON.stringify({ type: "provider.subscription", protocolVersion: PROTOCOL_VERSION, requestId: "quota-failed", kind: "claude", id: claude.id }));
+    const failure = await device.receiveMessage();
+    expect(failure).toMatchObject({ type: "provider.subscription.result", requestId: "quota-failed", id: claude.id, error: expect.any(String) });
+    expect(JSON.stringify(failure)).not.toContain("secret-upstream-body");
+    query.mockRestore();
   });
 
   afterEach(async () => {
@@ -1586,6 +1604,17 @@ describe("host end-to-end over relay", () => {
     await new Promise((resolve) => setTimeout(resolve, 120));
     expect(host.activePathOf(device.deviceId)).toBe("lan");
 
+    // Obsolete controls reach only the generic unknown-payload callback, never the selector.
+    const obsoleteControls = [
+      { type: "device.pathPreference", preference: ["relay", "lan"] },
+      { type: "device.pathPreference", preference: ["unsupported", "relay", "lan"] },
+      { type: "transport.unsupported.request" }, { type: "transport.unsupported.answer", sdp: "obsolete" },
+    ].map(message => JSON.stringify({ ...message, protocolVersion: PROTOCOL_VERSION }));
+    for (const payload of obsoleteControls) device.sendData(payload);
+    await vi.waitFor(() => expect(receivedByHost).toEqual(obsoleteControls));
+    expect(host.activePathOf(device.deviceId)).toBe("lan");
+    receivedByHost.length = 0;
+
     device.sendData(JSON.stringify({ type: "host.lan.request", protocolVersion: PROTOCOL_VERSION }));
     await expect(device.receiveMessage()).resolves.toEqual({
       type: "host.lan",
@@ -1615,6 +1644,13 @@ describe("host end-to-end over relay", () => {
     // 回落之后业务照旧，不需要重新配对，也不需要重新握手。
     host.sendData(device.deviceId, Buffer.from("回到中继", "utf8"), "ctl");
     await expect(device.receiveData()).resolves.toBe("回到中继");
+
+    // LAN recovery restores the fixed priority without a preference message or re-pairing.
+    await device.openLanPath(`ws://127.0.0.1:${lanPort}/v1/lan`);
+    await device.openChannel("lan", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await expect(device.expectOn("lan")).resolves.toMatchObject({ type: "device.ready" });
+    await expect(device.expectOn("lan")).resolves.toMatchObject({ type: "device.path", path: "lan" });
+    expect(host.activePathOf(device.deviceId)).toBe("lan");
   });
 
   it("拒绝未配对设备的 LAN 连接", async () => {
@@ -2967,7 +3003,8 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
       capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call"] });
     expect(hello).toMatchObject({ ok: true, runtimeId: "claude:live-session" });
     const generation = hello.generation as string;
-    await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata).runtimeId === "claude:live-session", "runtime.online");
+    expect(await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata).runtimeId === "claude:live-session", "runtime.online"))
+      .toMatchObject({ runtime: { sessionGraphSync: true } });
     const event = (body: unknown) => post("/v1/claude/mods/event", { runtimeId: "claude:live-session", generation, event: body });
 
     expect(await event({ type: "session.state", state: { model: "claude-opus-5-5", modelName: "Opus 5.5", modelOptions: ["sonnet", "opus"],
@@ -3008,6 +3045,16 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
     const content = await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.tool.content.page", "tool content");
     expect(JSON.stringify(content.event)).toContain("ls -la");
     expect(host.readDiagnostics({ category: "recovery" }).records.filter(record => record.message.includes("Rejected conversation"))).toEqual([]);
+
+    // A Hook shares the Mods runtime: its waiting status must not erase history capability.
+    const hookReply = post("/v1/claude/hook", { hook_event_name: "PermissionRequest", session_id: "live-session",
+      cwd: stateDir, tool_name: "Bash", tool_input: { command: "fixture-only" } });
+    const waiting = await until(message => message.runtimeId === "claude:live-session" &&
+      (message.event as RuntimeEvent | undefined)?.type === "runtime.metadata" &&
+      (message.event as Extract<RuntimeEvent, { type: "runtime.metadata" }>).metadata.status === "waiting_local_interaction", "hook metadata");
+    await event({ type: "interactions.local" });
+    await hookReply;
+    expect(waiting).toMatchObject({ event: { metadata: { sessionGraphSync: true } } });
 
 
     // A refused bridge leaves a diagnostic instead of failing silently.

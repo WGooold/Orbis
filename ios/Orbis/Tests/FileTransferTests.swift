@@ -14,7 +14,7 @@ struct FileTransferTests {
     @Test func binaryHeaderMatchesNodeAndRejectsMalformedFrames() throws {
         let frame = ArtifactChunk(runtimeId: "h", transferId: "t", offset: 258, bytes: Data([9, 8]))
         let data = try frame.encoded()
-        #expect(data.prefix(24) == Data([0x50,0x49,0x52,0x33,15,1,0,1,0,1,0,0,0,0,0,0,0,0,1,2,0,0,0,2]))
+        #expect(data.prefix(24) == Data([0x50,0x49,0x52,0x33,17,1,0,1,0,1,0,0,0,0,0,0,0,0,1,2,0,0,0,2]))
         #expect(try ArtifactChunk.decode(data) == frame)
         var bad = data; bad[11] = 1
         #expect(throws: (any Error).self) { try ArtifactChunk.decode(bad) }

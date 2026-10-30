@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { defaultStunServers, loadHostConfig } from "./config.js";
+import { loadHostConfig } from "./config.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -34,15 +34,5 @@ describe("Orbis Host configuration", () => {
     expect(config.relayUrl).toBe("wss://orbis.example.test");
     expect(config.runtimeCredential).toBe("existing");
     expect(config.lanPort).toBe(42132);
-  });
-});
-
-describe("STUN routing", () => {
-  it("bypasses the HTTPS proxy only for the official Relay hostname", () => {
-    expect(defaultStunServers("wss://orbising.com/relay")).toEqual(["stun://45.58.185.226:3478"]);
-    expect(defaultStunServers("wss://relay.example.com/relay")).toEqual(["stun://relay.example.com:3478"]);
-    expect(defaultStunServers("wss://orbising.com.example.com")).toEqual(["stun://orbising.com.example.com:3478"]);
-    expect(defaultStunServers("ws://localhost:8787")).toEqual([]);
-    expect(defaultStunServers(undefined)).toEqual([]);
   });
 });

@@ -78,7 +78,7 @@ Relay 的带宽成本、延迟、并发与文件吞吐需要实际验证；不�
 
 ## 实施与验证记录
 
-2026-10-30，代码在独立 worktree 完成，实施基线为 `aa6dd8b`。原工作区同步本 ADR 和索引，实现保留在 worktree 供审阅，尚未合并或发布。
+2026-10-30，代码在独立 worktree 完成，实施基线为 `aa6dd8b`。已适配并合入 main 的当前供应商与首页实现；生产发布尚未执行。
 
 已完成：两路径协议与连接摘要、固定选路、设置及全部下游偏好逻辑删除、依赖及项目引用清理、配置与部署文档更新。三端统一协议 16。仓库文档、历史 ADR、审计报告和预览图统一使用 LAN / Relay；非法输入测试使用通用不支持路径与控制载荷。
 
@@ -99,6 +99,10 @@ Android lint 同时修复基线 `StreamingText.kt` 的字体常量组合：改�
 本机 Node 全量测试有 11 项 Windows 平台假设失败，涉及 `codex-shim.test.ts`、`desktop-terminal.test.ts`、`sessions.test.ts`、`spawner.test.ts` 和 `packages/pi-extension/src/runtime-log.test.ts`。
 上述 1377 项为排除这五个文件后的可移植套件，不代表 Windows 全量套件通过。日志、截图、lint 报告与包审计保存在 worktree 已忽略的本地构建产物目录。
 
-发布前仍需执行 Windows 全量测试、Windows / macOS 原生安装包和正式签名移动产物验证、Android 设置页仪器测试、真机覆盖升级与实际网络故障切换、Relay 容量验证及生产版本切换。
+2026-10-30 合并验收：在包含当前首页及状态变更的集成版本上，Node 可移植套件 140 个文件、1429 项通过、5 项跳过；Android 520 项单测通过、应用与仪器测试包构建及 lint 通过；iOS 200 项核心测试、17 个 suite、Simulator Debug 构建与运行时依赖检查通过。类型检查与 lint 通过。共享池内 iPhone SE 的 `testFixedRoutingAndStatusProviderSwitch` 通过，确认没有排序或空设置入口且供应商切换正常；最新供应商与配额界面保持。纳入最新首页与 Codex 生命周期提交后，最终协议、选路、DeviceLink、HostService 与 Codex 共 248 项定向回归再次通过，重建、类型检查及 lint 通过。结果保存在原 worktree 的 `.artifacts/merge-back/`。
+
+集成时供应商功能已移至连接状态页，故删除空设置页及其导航、预览入口，并按 ADR-0051 的 S18–S19 更新冻结基线至 r13；相关首页与 Codex 在途改动按原归属保留，不纳入本次功能提交。
+
+发布前仍需执行 Windows 全量测试、Windows / macOS 原生安装包和正式签名移动产物验证、Android 连接状态页仪器测试、真机覆盖升级与实际网络故障切换、Relay 容量验证及生产版本切换。
 
 生产 Host / Relay、真实会话与配对数据均未修改。代码实施和线上发布分别验收。

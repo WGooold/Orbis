@@ -39,6 +39,8 @@ data class AgentStateRead(
     val agentKind: String? = null,
     val subscribe: Boolean = true,
     val sentAt: Long = System.currentTimeMillis(),
+    /** A refresh can answer in several domain batches; old domains do not complete a new read. */
+    val pendingDomains: Set<String> = domains,
 )
 
 internal val AGENT_MODEL_DOMAINS = listOf(
@@ -167,7 +169,9 @@ internal fun RemoteState.withAgentStateSnapshot(
     if (projected.error?.startsWith("Host 模型领域格式无效：") == true && projected.error != base.error) {
         return cleared.rejectedSnapshot(key, scope, requestId, projected.error)
     }
-    return projected.storeSnapshot(key, AgentStateSnapshotView(
+    val settled = if (read?.subscribe == true) projected.copy(agentStateReads = projected.agentStateReads +
+        (requestId to read.copy(pendingDomains = read.pendingDomains - confirmed.keys - missing.keys))) else projected
+    return settled.storeSnapshot(key, AgentStateSnapshotView(
         key = key,
         scope = scope,
         requestId = requestId,

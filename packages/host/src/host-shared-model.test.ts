@@ -26,7 +26,7 @@ describe("Host shared model integration", () => {
       const before = host.readHostState();
       await host.refreshProviderFacts();
       host.recordDiagnostic({ scope: "host", agentKind: null, sessionId: null, category: "provider", severity: "warning", message: "closed" });
-      expect(publicState).toHaveBeenCalledTimes(3);
+      expect(publicState).toHaveBeenCalledTimes(4);
       expect(host.readHostState()).toEqual(before);
       expect(host.readHostDiagnostics()?.records).toBe(0);
     } finally { release(); await closing; await rm(stateDir, { recursive: true, force: true }); }

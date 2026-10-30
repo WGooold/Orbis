@@ -1,13 +1,13 @@
 # iOS / Android 核心数据与 Host 交互对齐
 
 日期：2026-10-29。以 Android 当前仓库实现为基准，对齐底层数据、协议、存储和 Host 交互；同步接通缺少的 SwiftUI 功能入口。
-参考 Android 同一提交的实现和现有 ADR，继续使用协议 v15，不增加 Host 私有分支。
+最初按 Android 同一提交及协议 v15 对齐。ADR-0050 将传输收敛为 LAN / Relay、固定 LAN 优先，并提升至协议 v16。
 
 ## 已实现范围
 
 | 范围 | iOS 行为 | 主要源码 |
 | --- | --- | --- |
-| 路径与认证 | Relay / LAN / 原生 WebRTC DataChannel 各自握手、密钥、序号、分片和回压；加密 Relay 信令、LAN 认证发现、Host 选路与独立重连/回退；旧配对请求不能影响新连接 | `WebSocketTransport.swift`、`P2PTransport.swift` |
+| 路径与认证 | LAN / Relay 各自握手、密钥、序号、分片和回压；LAN 认证发现、Host 固定 LAN 优先与独立重连/回退；旧配对请求不能影响新连接 | `WebSocketTransport.swift` |
 | 入站调度 | ctl / msg / bulk 独立有界队列，控制优先；会话或控制帧丢失触发可见会话恢复并限频，bulk 由范围重传补齐 | `WebSocketTransport.swift`、`OrbisStore.swift` |
 | 会话统一模型 | 相关请求/订阅、模型代次和逐领域版本；原子验证，独立合并；缺席/未知/部分清单区别处理；重连可重新投影 unchanged；认证 ready 可以更换 Host 模型代次 | `AgentState.swift`、`HostState.swift` |
 | 模型消费 | 执行、模型与思考级别、上下文、权限、Slash 能力、审批、steer / follow-up 队列；已受模型管理的字段不会被迟到旧事件覆盖；资源和引用保留领域 envelope | `AgentState.swift`、`OrbisStore.swift` |
@@ -33,14 +33,12 @@
 
 2026-10-29 执行 `bash scripts/check-ios.sh` 通过：172 项 Swift 核心测试、16 个 suite；源解析、plist / scheme / 工程检查及 iOS Simulator Debug 构建全部通过。日志：`/tmp/orbis-final-check-ios.log`。
 
-原生网络回环另外使用锁定的 WebRTC 140.0.0 与 node-datachannel 0.33.4；覆盖加密信令、HS1/2/3、文本/二进制分片、Relay 丢失恢复和双 Host peer 隔离。24 项原生传输回归全部通过（包含实际双 Host WebRTC 与 Relay，不是跳过的条件用例），日志：`/tmp/orbis-final-native-transport-tests.log`。可复现命令见 iOS README。
-
 专用 Orbis Core Parity 模拟器完整 UI 回归 13/13 通过（含浅深色截图）。已实际检查交互输入、普通/敏感草稿、队列撤回、通知关闭、工具导出保留正文、截断全文和 Desktop 原因；页面截图经过检查。结果包：`.scratch/ui-parity-complete-verified.xcresult`。
 
-2026-10-29 补充普通启动验证：修复 Debug / Release 缺少 `@executable_path/Frameworks` 导致 WebRTC 无法加载的问题。旧产物在脱离测试器直接启动时重现 DYLD 崩溃；修复后同一专用模拟器直接启动并显示界面，iPhoneOS Debug / Release 无签名构建及运行时依赖检查均通过。`check-ios.sh` 现包含包内动态库依赖检查，可检出旧产物；此前 UI 测试器提供的库搜索路径不能代替普通启动验证。
+2026-10-29 补充普通启动验证：修复 Debug / Release 缺少 `@executable_path/Frameworks` 导致动态库无法加载的问题。旧产物在脱离测试器直接启动时重现 DYLD 崩溃；修复后同一专用模拟器直接启动并显示界面，iPhoneOS Debug / Release 无签名构建及运行时依赖检查均通过。`check-ios.sh` 现包含包内动态库依赖检查，可检出旧产物；此前 UI 测试器提供的库搜索路径不能代替普通启动验证。
 
 ## 平台边界与现场验收
 
 - iOS 后台执行、系统通知和权限遵循系统生命周期；没有新增 APNs 或假设 Android 前台服务在 iOS 可直接复用。
-- 跨 NAT / 蜂窝网络打洞、真机前后台切换、长会话、弱网和存储压力仍需真实 Host / iPhone 现场验收。本地网络回环和模拟器测试不能替代这些结果。
+- 跨网络 Relay 连接、真机前后台切换、长会话、弱网和存储压力仍需真实 Host / iPhone 现场验收。本地网络回环和模拟器测试不能替代这些结果。
 - 实际 UI 表现的覆盖范围与剩余渲染差异见 `android-ui-parity.md`；本轮以功能和字段消费为目标，没有承诺像素一致或完整 CommonMark 渲染移植。

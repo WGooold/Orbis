@@ -2,13 +2,19 @@
  * 进程激活（spec §8.2 / §8.3 / §8.4）的单元验证。
  *
  * `buildSpawnPlan` 是纯函数，argv 在这里被逐字断言——「手机不能指定命令」这条边界
- * 的物理形态就是这些数组。真实 spawn 用 mock，不开真进程。
+ * 的物理形态就是这些数组。终端开窗用 mock，macOS 启动脚本用隔离子进程验证。
  */
-import type { ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const hostPlatform = vi.hoisted(() => ({ value: "win32" as NodeJS.Platform }));
+vi.mock("node:os", async importOriginal => ({
+  ...await importOriginal<typeof import("node:os")>(), platform: () => hostPlatform.value,
+}));
 
 import { buildSpawnPlan, hasDesktopSession, resolvePiCommand, SessionSpawner } from "./spawner.js";
 
@@ -18,7 +24,9 @@ const EXT = "/pi/ext/index.ts";
 const cleanups: (() => Promise<void>)[] = [];
 
 afterEach(async () => {
-  for (const cleanup of cleanups.splice(0)) await cleanup();
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  hostPlatform.value = "win32";
+  vi.restoreAllMocks();
 });
 
 async function tempDir(): Promise<string> {
@@ -81,7 +89,7 @@ describe("buildSpawnPlan", () => {
       cwd: "D:/proj",
       spawnMode: "auto",
       desktop: true,
-      posix: false,
+      platform: "win32",
     });
     expect(plan.kind).toBe("tui");
     expect(plan.command).toBe("wt.exe");
@@ -97,7 +105,7 @@ describe("buildSpawnPlan", () => {
       cwd: "D:/proj",
       spawnMode: "auto",
       desktop: false,
-      posix: false,
+      platform: "win32",
     });
     expect(plan.kind).toBe("headless");
     expect(plan.args).toContain("rpc");
@@ -115,7 +123,7 @@ describe("buildSpawnPlan", () => {
     expect(plan.kind).toBe("headless");
   });
 
-  it("POSIX 没有「开终端」的通用入口，auto 直接 headless", () => {
+  it("Linux 未配置终端入口时，auto 使用 headless", () => {
     const plan = buildSpawnPlan({
       pi: { command: "pi", prefixArgs: [] },
       extensionPath: EXT,
@@ -123,7 +131,7 @@ describe("buildSpawnPlan", () => {
       cwd: "/tmp/proj",
       spawnMode: "auto",
       desktop: true,
-      posix: true,
+      platform: "linux",
     });
     expect(plan.kind).toBe("headless");
     expect(plan.command).toBe("pi");
@@ -137,25 +145,23 @@ describe("buildSpawnPlan", () => {
       cwd: "D:/proj",
       spawnMode: "tui",
       desktop: false,
-      posix: false,
+      platform: "win32",
     });
     expect(plan.kind).toBe("tui");
     expect(plan.command).toBe("wt.exe");
   });
 
-  it("显式 tui 但本机没有开窗入口 → 降级 headless，不假装开过窗", () => {
-    const plan = buildSpawnPlan({
+  it("显式 tui 但本机没有开窗入口时报错", () => {
+    expect(() => buildSpawnPlan({
       pi: PI,
       extensionPath: EXT,
       target: { type: "resume", sessionId: "abc", sessionFile: "f.jsonl" },
       cwd: "D:/proj",
       spawnMode: "tui",
       desktop: true,
-      posix: false,
+      platform: "win32",
       terminal: false,
-    });
-    expect(plan.kind).toBe("headless");
-    expect(plan.args).toContain("rpc");
+    })).toThrow(/终端窗口/u);
   });
 
   it("tui 的命令行整体 base64 进 -EncodedCommand：wt 不再需要解析含空格的路径", () => {
@@ -166,7 +172,7 @@ describe("buildSpawnPlan", () => {
       cwd: "D:/my project",
       spawnMode: "tui",
       desktop: true,
-      posix: false,
+      platform: "win32",
       terminal: true,
     });
     expect(plan.args.slice(0, 3)).toEqual(["-d", "D:/my project", "powershell"]);
@@ -177,12 +183,48 @@ describe("buildSpawnPlan", () => {
     expect(script).toContain("--session-id");
     expect(script).not.toContain("rpc");
   });
+
+  it("macOS 的显式 tui 使用 Terminal，与 DISPLAY 和 SESSIONNAME 无关", () => {
+    const plan = buildSpawnPlan({
+      pi: PI, extensionPath: EXT, target: { type: "new", sessionId: "new-uuid" },
+      cwd: "/tmp/workspace", spawnMode: "tui", desktop: false, platform: "darwin", scriptFile: "/tmp/Pi launch.command",
+    });
+    expect(plan.kind).toBe("tui");
+    expect(plan.command).toBe("/usr/bin/open");
+    expect(plan.args).toEqual(["-a", "Terminal", "/tmp/Pi launch.command"]);
+    expect(plan.script).toContain("#!/bin/sh\ncd -- '/tmp/workspace' || exit 1");
+    expect(plan.script).toContain("exec /usr/bin/env 'node' '/pi/cli.js'");
+    expect(plan.script).not.toContain("--mode");
+  });
+
+  it("只有 auto 在没有开窗入口时允许使用 headless", () => {
+    const plan = buildSpawnPlan({
+      pi: PI, extensionPath: EXT, target: { type: "new", sessionId: "new-uuid" },
+      cwd: "/tmp/workspace", spawnMode: "auto", desktop: true, platform: "darwin", terminal: false,
+    });
+    expect(plan.kind).toBe("headless");
+    expect(plan.args).toContain("rpc");
+  });
+
+  it("不支持开窗的系统拒绝显式 tui", () => {
+    expect(() => buildSpawnPlan({
+      pi: PI, extensionPath: EXT, target: { type: "new", sessionId: "new-uuid" },
+      cwd: "/tmp/workspace", spawnMode: "tui", desktop: true, platform: "linux",
+    })).toThrow(/终端窗口/u);
+  });
 });
 
 describe("hasDesktopSession", () => {
   it("Windows：SESSIONNAME 存在即有桌面，SSH/服务里没有", () => {
     expect(hasDesktopSession({ SESSIONNAME: "Console" })).toBe(true);
     expect(hasDesktopSession({})).toBe(false);
+  });
+
+  it("macOS 本地 Host 不要求 DISPLAY，SSH 不自动开窗", () => {
+    hostPlatform.value = "darwin";
+    expect(hasDesktopSession({})).toBe(true);
+    expect(hasDesktopSession({ SSH_CONNECTION: "remote" })).toBe(false);
+    expect(hasDesktopSession({ SSH_TTY: "/dev/ttys1" })).toBe(false);
   });
 });
 
@@ -192,17 +234,11 @@ describe("resolvePiCommand", () => {
     const cliJs = await fakePiPrefix(root, "npm");
 
     const command = await resolvePiCommand({ APPDATA: root });
-    if (process.platform === "win32") {
-      expect(command.command).toBe(process.execPath);
-      expect(command.prefixArgs).toEqual([cliJs]);
-    } else {
-      // 非 Windows 上不走 .cmd 规避逻辑
-      expect(command.command).toBe("pi");
-    }
+    expect(command.command).toBe(process.execPath);
+    expect(command.prefixArgs).toEqual([cliJs]);
   });
 
   it("Windows：PATH 里更靠前的副本优先，与终端敲 `pi` 的解析一致", async () => {
-    if (process.platform !== "win32") return;
     // 模拟 nvm-windows 与 npm 全局前缀并存的机器：PATH 里 node 安装根排在前面。
     const nodeRoot = await tempDir();
     const appData = await tempDir();
@@ -219,7 +255,6 @@ describe("resolvePiCommand", () => {
 
   it("找不到入口时明确报错，不悄悄退回 shell", async () => {
     const root = await tempDir();
-    if (process.platform !== "win32") return;
     await expect(resolvePiCommand({ APPDATA: join(root, "empty") })).rejects.toThrow(/pi 的 JS 入口/u);
   });
 });
@@ -291,7 +326,7 @@ describe("SessionSpawner", () => {
     const spawner2 = new SessionSpawner({
       maxRunning: 1,
       spawnImpl: fake.impl as never,
-      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot, PATH: await fakeTerminalPath() },
     });
 
     await spawner2.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } });
@@ -316,7 +351,7 @@ describe("SessionSpawner", () => {
     const stateDir = join(dir, "rig-state");
     const spawner = new SessionSpawner({
       spawnImpl: fake.impl as never,
-      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot, PATH: await fakeTerminalPath() },
       stateDir,
     });
     await spawner.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } });
@@ -332,7 +367,7 @@ describe("SessionSpawner", () => {
     await writeFile(cliJs, "// fake", "utf8");
     const spawner = new SessionSpawner({
       spawnImpl: fake.impl as never,
-      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot, PATH: await fakeTerminalPath() },
     });
     const target = { type: "resume" as const, sessionId: "s-1", cwd: dir, sessionFile: join(dir, "s.jsonl") };
 
@@ -354,7 +389,7 @@ describe("SessionSpawner", () => {
     await writeFile(cliJs, "// fake", "utf8");
     const spawner = new SessionSpawner({
       spawnImpl: fake.impl as never,
-      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot, PATH: await fakeTerminalPath() },
     });
 
     const a = await spawner.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } });
@@ -373,7 +408,7 @@ describe("SessionSpawner", () => {
     await writeFile(cliJs, "// fake", "utf8");
     const spawner = new SessionSpawner({
       spawnImpl: fake.impl as never,
-      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot, PATH: await fakeTerminalPath() },
     });
     const target = { type: "resume" as const, sessionId: "s-1", cwd: dir, sessionFile: join(dir, "s.jsonl") };
 
@@ -476,5 +511,107 @@ describe("SessionSpawner", () => {
     // `"ignore"` 会让子进程的 stdin 立刻 EOF，pi 随后自己退出（exit 0）：
     // 进程被记成「拉起成功」却永远不会注册回来，手机上表现为「点了没反应」。
     expect((fake.options[0] as { stdio?: unknown }).stdio).toEqual(["pipe", "ignore", "pipe"]);
+  });
+
+  it("缺少终端时拒绝默认有头启动，不创建 RPC 进程", async () => {
+    const dir = await tempDir();
+    const cliRoot = await tempDir();
+    await fakePiPrefix(cliRoot, "npm");
+    const fake = fakeSpawn();
+    const spawner = new SessionSpawner({ spawnImpl: fake.impl as never, env: { APPDATA: cliRoot, PATH: "" } });
+    await expect(spawner.activate({ deviceId: "phone", target: { type: "new", agentKind: "pi", cwd: dir } }))
+      .rejects.toMatchObject({ code: "spawn_failed" });
+    expect(fake.impl).not.toHaveBeenCalled();
+    expect(spawner.running).toHaveLength(0);
+  });
+});
+
+describe.runIf(process.platform === "darwin")("macOS phone activation", () => {
+  it.each(["new", "resume"] as const)("%s opens the requested session with the Host routing and tracks Pi's PID", async type => {
+    hostPlatform.value = "darwin";
+    const root = await tempDir();
+    const cwd = join(root, "工作区's $HOME; project");
+    await mkdir(cwd);
+    const entry = join(root, "Pi tools's.js");
+    const capture = join(root, "capture.json");
+    await writeFile(entry, `
+      const fs = require("node:fs");
+      fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({
+        cwd: process.cwd(), args: process.argv.slice(2), pid: process.pid,
+        stateDir: process.env.ORBIS_STATE_DIR, legacyStateDir: process.env.PI_REMOTE_STATE_DIR,
+        configDir: process.env.PI_CODING_AGENT_DIR, path: process.env.PATH,
+        hostOnly: process.env.ORBIS_HOST_ONLY_TEST,
+      }));
+      setInterval(() => {}, 1000);
+    `);
+    const processes: ChildProcess[] = [];
+    const launcher = vi.fn((_command: string, args: readonly string[], options: SpawnOptions) => {
+      // Emulate Terminal executing the supplied script. This exercises real exec,
+      // quoting, argv, environment and PID handoff without automating the user's desktop.
+      const pi = spawn("/bin/sh", [args[2]!], { cwd: options.cwd, env: {}, stdio: "ignore" });
+      processes.push(pi);
+      cleanups.push(async () => {
+        if (pi.exitCode !== null || pi.signalCode !== null) return;
+        const exited = new Promise<void>(resolve => pi.once("exit", () => resolve()));
+        pi.kill();
+        await exited;
+      });
+      const child = Object.assign(new EventEmitter(), { pid: 999_999, stderr: null });
+      pi.once("spawn", () => child.emit("close", 0));
+      pi.once("error", error => child.emit("error", error));
+      return child;
+    });
+    const stateDir = join(root, "Host's state");
+    const configDir = join(root, "Pi config");
+    const extension = join(root, "extension's $HOME; index.js");
+    const spawner = new SessionSpawner({
+      spawnImpl: launcher as never, stateDir,
+      env: { ORBIS_PI_ENTRY: entry, ORBIS_EXTENSION_PATH: extension,
+        PI_CODING_AGENT_DIR: configDir, PATH: "/usr/bin:/bin", ORBIS_HOST_ONLY_TEST: "private" },
+    });
+    const target = type === "new"
+      ? { type: "new" as const, agentKind: "pi" as const, cwd }
+      : { type: "resume" as const, sessionId: "existing-session", cwd, sessionFile: join(root, "session's $HOME.jsonl") };
+    const input = { deviceId: "phone", target, spawnMode: "tui" as const };
+    const record = await spawner.activate(input);
+    const realCwd = await realpath(cwd);
+    expect(record.spawnMode).toBe("tui");
+    expect(record.pid).toBe(processes[0]!.pid);
+    expect(record.pid).not.toBe(999_999);
+    expect(launcher.mock.calls[0]![0]).toBe("/usr/bin/open");
+    expect(launcher.mock.calls[0]![2]).toMatchObject({ shell: false, timeout: 15_000 });
+    await vi.waitFor(async () => {
+      const captured = JSON.parse(await readFile(capture, "utf8"));
+      expect(captured).toMatchObject({ cwd: realCwd, pid: record.pid, stateDir, legacyStateDir: stateDir, configDir, path: "/usr/bin:/bin" });
+      expect(captured.hostOnly).toBeUndefined();
+      expect(captured.args).toEqual(type === "new"
+        ? ["--session-id", record.sessionId, "-e", extension]
+        : ["--session", target.type === "resume" ? target.sessionFile : "", "-e", extension]);
+    });
+    expect(spawner.running).toHaveLength(1);
+    if (type === "resume") {
+      expect(await spawner.activate(input)).toEqual(record);
+      expect(launcher).toHaveBeenCalledTimes(1);
+    }
+    const handshakeName = launcher.mock.calls[0]![1][2]!.match(/orbis-pi-terminal-[A-Za-z0-9]+/u)?.[0];
+    expect(handshakeName).toBeDefined();
+    await expect(stat(join(tmpdir(), handshakeName!))).rejects.toMatchObject({ code: "ENOENT" });
+    processes[0]!.kill();
+    await vi.waitFor(() => expect(spawner.running).toHaveLength(0));
+  });
+
+  it("a failed Terminal launch reports spawn_failed without a headless retry", async () => {
+    hostPlatform.value = "darwin";
+    const dir = await tempDir();
+    const launcher = vi.fn(() => {
+      const child = Object.assign(new EventEmitter(), { stderr: null });
+      queueMicrotask(() => child.emit("close", 1));
+      return child;
+    });
+    const spawner = new SessionSpawner({ spawnImpl: launcher as never, env: {} });
+    await expect(spawner.activate({ deviceId: "phone", target: { type: "new", agentKind: "pi", cwd: dir } }))
+      .rejects.toMatchObject({ code: "spawn_failed", message: expect.stringContaining("终端") });
+    expect(launcher).toHaveBeenCalledTimes(1);
+    expect(spawner.running).toHaveLength(0);
   });
 });

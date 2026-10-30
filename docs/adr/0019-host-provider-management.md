@@ -4,6 +4,8 @@ Date: 2026-09-24
 
 Status: accepted
 
+2026-10-30：供应商管理扩展至 Claude Code 原生 `settings.json`；配对设备和桌面 Host 可按当前官方配置查询 Claude/Codex 的 5 小时与周订阅配额。查询仅返回标准化百分比和重置时间，凭据仍由 Host 保管。见 [实现与使用说明](../agents/claude-providers-and-subscription-quota.md)。
+
 2026-10-13：[ADR-0032](0032-host-owned-agent-state-model.md) 将供应商服务纳入 Host 统一状态模型，并扩展手机可同步的非秘密用量、健康度、认证与路由摘要。配置/凭据权威、事务和手机操作权限边界继续有效；该扩展尚待实现。
 
 ## Context

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DSH_WEB_TREE_MAX_ENTRIES, dshWebEntries, dshWebEntryText, dshWebTreeOptions, type DshWebLogEvent } from "./dsh-web-history.js";
+import { DSH_WEB_TREE_MAX_ENTRIES, dshWebEntries, dshWebEntryText, dshWebMessage, dshWebTreeOptions, type DshWebLogEvent } from "./dsh-web-history.js";
 
 const event = (seq: number, type: string, data: unknown): DshWebLogEvent => ({ seq, time: 1_000 + seq, type, data });
 
@@ -59,5 +59,19 @@ describe("DSH Web history tree projection", () => {
 
   it("publishes nothing for an empty session", () => {
     expect(dshWebTreeOptions([])).toEqual([]);
+  });
+});
+
+describe("DSH Web phone send identity (ADR-0049)", () => {
+  it("projects the prompt rpcId as clientMessageId on the user message and its durable entry", () => {
+    const sent = event(1, "user/message", { source: { kind: "user", rpcId: "app-1" }, content: [{ type: "text", text: "hello" }] });
+    expect(dshWebMessage("s", sent, new Map())).toMatchObject({ messageId: "dsh:s:web:1", role: "user", clientMessageId: "app-1" });
+    expect(dshWebEntries("s", [sent])[0]?.data).toMatchObject({ message: { role: "user", clientMessageId: "app-1" } });
+  });
+
+  it("does not invent an identity for prompts without one or for other roles", () => {
+    expect(dshWebMessage("s", turn[1]!, new Map())?.clientMessageId).toBeUndefined();
+    const answer = event(4, "assistant/message", { message: { id: "a1", source: { rpcId: "app-2" }, content: [{ type: "text", text: "回答" }] } });
+    expect(dshWebMessage("s", answer, new Map())?.clientMessageId).toBeUndefined();
   });
 });

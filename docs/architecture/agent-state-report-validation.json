@@ -1,6 +1,6 @@
 {
   "modules": 36,
-  "sources": 158,
+  "sources": 157,
   "counts": {
     "partial": 18,
     "fit": 3,
@@ -20,5 +20,7 @@
   ],
   "pageErrors": [],
   "externalRequests": [],
-  "checks": "navigation, status/group/search filters, empty search, all state details, source excerpts, Escape close, offline operation, desktop/mobile overflow"
+  "checks": "navigation, status/group/search filters, empty search, all state details, source excerpts, Escape close, offline operation, desktop/mobile overflow",
+  "maintenanceDate": "2026-10-30",
+  "maintenance": "连接说明与内嵌审计数据同步至 ADR-0050；重新生成三张预览并复核导航、筛选、详情、源码、Escape 关闭、离线及横向溢出。"
 }

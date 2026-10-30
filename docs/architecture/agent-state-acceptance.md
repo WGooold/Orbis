@@ -83,7 +83,7 @@
 | 07 回合身份与计时 | AgentState.execution.turn | **已接入事实**：`execution.turn` 带 `turnId`/`startedAt`，结束后**保留已确认的 `durationMs`**（不再清成 null），App 只在 `durationMs == null` 时算「进行中」；快照的 `turnTimings` 另外落进投影（第 33/34 批）|
 | 08 工具调用与执行结果 | AgentState.live.tools；history 引用 | **已接入事实**：工具随 live 库存提交，结果提交与 live 移除同源；投影没画出来的已完成工具不会继续钉在底栏（第 33 批）|
 | 09 运行与等待状态 | AgentState.execution | **已接入事实，App 已消费**：状态 + 待回答交互共同决定 waiting；DSH 审批等待因此有了统一投影。运行状态只认这一格（原生 `runtime.status` 不再驱动），最后已知值按 availability 区分 |
-| 10 重试与上下文压缩 | AgentState.execution.retry / compaction | **部分接入**：`execution.activity` 事件已接成真实阶段——Pi 的 `session_compact`/`session_compact_failed`、Codex 的原生错误/重试与 `contextCompaction` 条目都会报 `idle`/`running`/`failed` 与所属回合；DSH 仍显式 `unavailable`（它不提供这类阶段）。模型/客户端都不按日志文字推断恢复 |
+| 10 重试与上下文压缩 | AgentState.execution.retry / compaction | **部分接入**：`execution.activity` 事件已接成真实阶段——Pi 的 `session_compact`/`session_compact_failed`、Codex 的原生错误/重试与 `contextCompaction` 条目都会报 `idle`/`running`/`failed` 与所属回合，压缩按条目 / 回合完成、中断、最终失败、模型恢复与完整历史核对清理，关闭 / 归档 / 后端停止使活动失效并隔离迟到回调（2026-10-30 生命周期回归记录位于 `.artifacts/compaction-lifecycle/`，真实 Host 更新尚未生效）；DSH 仍显式 `unavailable`（它不提供这类阶段）。模型/客户端都不按日志文字推断恢复 |
 | 11 交互请求与审批 | AgentState.interactions | **已接入事实**：`snapshot` 是完整清单，回答/取消按 id 显式删除；条目带类型、问题/选项、按钮文案、URL、长度/秘密等回答所需字段，App 直接从模型渲染（第 34 批）|
 | 12 消息队列与投递状态 | AgentState.delivery.queue | **已接入事实，有完整清单**：`delivery.snapshot` 给出当前待投递项与 `complete`（Pi 桥接在连接/重同步/sync 时重放，Codex 按 thread 队列发布）；不稳定就没有基线，App 以 `complete` 决定是否用缺席删除（第 33/34 批）|
 | 13 命令关联与执行回执 | HostState.operations；DeviceView | **已接入事实**：受理先记 accepted，后端结果覆盖同一条；回执按设备作用域、有界淘汰并按 id 显式删除。共享操作（会话激活/归档、供应商切换）另在 `HostState.operations.items` 发布状态，设备私有回执仍只对发起设备可见（第 33 批）|
@@ -107,7 +107,7 @@
 | 26 会话激活与电脑侧操作 | HostState.operations | **已接入事实**：`activationsPending`/`commandsPending` 与 `items` 里的激活/归档/供应商切换状态（accepted→running→succeeded/failed）一起发布，超窗口条目按显式淘汰移除并置 `truncated` |
 | 27 同步任务与背压 | HostState.operations | **已接入事实**：`sync` 子域发布记录数/待处理/活动/预留字节（来自 `SessionSyncTasks.aggregateStats()`），传输数另计；背压预算仍由任务队列自己执行，模型只发布摘要 |
 | 28 Host 身份、配对与设备 | HostState.identity / connections | **已接入事实**：`identity` 给 `hostId`/`hostName`/`protocolVersion`，`connections` 给已配对/已连接设备数与路径摘要；凭据、`pskRoot` 与设备记录本身不导出 |
-| 29 连接、路径、加密与序号 | **双侧**：HostState.connections 只发布摘要；App 仍持有 socket / path / handshake / e2eReady / 密钥 / 重放水位（AppLocalState.transport） | **摘要已接入**：`connections` 给出逐路径（lan/p2p/relay）挂接/活动设备数、relay 状态与序号通道数；本端握手判定与端到端可用仍只由 App 自己下结论 |
+| 29 连接、路径、加密与序号 | **双侧**：HostState.connections 只发布摘要；App 仍持有 socket / path / handshake / e2eReady / 密钥 / 重放水位（AppLocalState.transport） | **摘要已接入**：`connections` 给出逐路径（lan/relay，ADR-0050 固定 LAN 优先）挂接/活动设备数、relay 状态与序号通道数；本端握手判定与端到端可用仍只由 App 自己下结论 |
 | 30 安装、桌面与服务生命周期 | HostState.management | **已接入事实**：`lifecycle`（starting/running/stopping/stopped）由 HostService 自己发布，`platform`/`nodeVersion` 给运行环境；逐后端 `installed`/`version` 由桌面检测注入（没有检测来源时是 `null`，不猜） |
 
 模块 29 不是 Host 单方权威：Host 摘要不能代替本端握手判定，Relay 转发路径也不等于已确认的端到端可用。
@@ -389,7 +389,7 @@ issue #7 未交付部分：把 provider 接到真实 adapter（协议与来源�
 
 | 步骤 | 证据 |
 | --- | --- |
-| 重连 | ~out path=relay type=device.pathPreference~ → ~path.announced path=lan~（Host 侧：~路径 中继 → LAN 直连~） |
+| 重连 | 旧版偏好下发（ADR-0050 已删除）→ ~path.announced path=lan~（Host 侧：~路径 中继 → LAN 直连~） |
 | 重新握手 | ~e2e.hs.confirmed hostId=8509e449…~（同一 hostId，宿主进程换了，PID 8992 → 10096） |
 | 重建目录 | ~out path=lan type=session.list requestId=405d5124-…~；Host 侧同一 requestId：~收到 session.list（requestId=405d5124-…）~ |
 | **重新读模型** | ~out path=lan type=agent.state.request requestId=ca7a5dee-…~——换代次后 App 重新读，而不是继续拿旧代次的事实当已确认 |
@@ -711,7 +711,7 @@ ADR §9 把「文件传输的 Host 任务及设备相关结果」划到 `HostSta
 
 **矩阵第 2 项（Host 重建）——通过**
 
-rig Host 进程 21072 → 25624 后，App **在熄屏状态下**自动重连：`host.offline` → 新 `e2e.hs.confirmed` → 重新发 `device.pathPreference`、`session.list`、`agent.state.request`（新 requestId），没有拿旧代次继续当已确认事实（`item2-after-restart.log`、`item2-host-after-restart.log`）。
+rig Host 进程 21072 → 25624 后，App **在熄屏状态下**自动重连：`host.offline` → 新 `e2e.hs.confirmed` → 重新发 `session.list`、`agent.state.request`（新 requestId），没有拿旧代次继续当已确认事实（`item2-after-restart.log`、`item2-host-after-restart.log`）。
 
 **顺带发现的真缺陷（已修）**
 

@@ -60,7 +60,10 @@ final class AgentState: ObservableObject {
 
     func subscribe(runtime: RuntimeSummary, force: Bool = false) {
         guard connected, let session = runtime.sessionId, !session.isEmpty else { return }
-        if !force, reads.values.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == session && $0.agentKind == runtime.agentKind }) { return }
+        // A request without agentKind is already bound by runtime/session. Learning the kind
+        // from identity must not replace that live subscription and restart its pending reads.
+        if !force, reads.values.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == session &&
+            ($0.agentKind == nil || $0.agentKind == runtime.agentKind) }) { return }
         removeRead(runtime.runtimeId)
         var snapshot = snapshots[runtime.runtimeId].flatMap { $0.sessionId == session ? $0 : nil }
             ?? AgentSnapshot(runtimeId: runtime.runtimeId, sessionId: session)
@@ -171,7 +174,7 @@ struct AgentProjection {
         var result = AgentProjection(runtime: runtime, commands: commands, interactions: interactions, queuedMessages: queuedMessages)
         for (name, domain) in domains {
             guard domain.availability == "ready" else {
-                if name == "execution" { result.runtime.status = "unknown" }
+                if name == "execution" { result.runtime.status = "unknown"; result.runtime.compactionPhase = nil }
                 continue
             }
             let value = domain.value, complete = domain.completeness == "complete" || domain.projectionComplete == true
@@ -186,6 +189,7 @@ struct AgentProjection {
             case "execution":
                 guard let phase = value["phase"].string, ["idle", "running", "waiting_local_interaction"].contains(phase) else { return nil }
                 result.runtime.status = phase
+                result.runtime.compactionPhase = value["compaction"]["phase"].string
             case "model":
                 if value == .null { if complete { result.runtime.model = nil; result.runtime.thinkingLevel = nil } }
                 else {

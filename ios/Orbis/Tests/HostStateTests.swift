@@ -31,10 +31,81 @@ struct HostStateTests {
     private func providers(enabled: String = "official", kind: String = "codex", additive: Bool = false) -> [String: Any] {
         ["providers": [["agentKind": kind, "availability": "ready", "current": enabled, "modelProvider": "native-provider", "switching": false,
                         "profiles": ["official", "team"].map { id in ["id": id, "name": id, "enabled": id == enabled,
-                            "mode": additive ? "additive" : "exclusive", "globalDefault": additive && id == "official"] as [String: Any] }]]]
+                            "mode": additive ? "additive" : "exclusive", "globalDefault": additive && id == "official", "subscriptionSupported": !additive && id == "official"] as [String: Any] }]]]
     }
     private func installProviders(_ state: HostState, _ sent: Sent, kind: String = "codex", additive: Bool = false) {
         state.consume(snapshot(sent, domains: [domain("providers", value: providers(kind: kind, additive: additive))]))
+    }
+
+    @Test func subscriptionQuotaIsScopedToHostProviderAndRequest() throws {
+        let (state, sent) = setup()
+        state.loadProviders("claude")
+        installProviders(state, sent, kind: "claude")
+        let provider = try #require(state.providers.first)
+        #expect(provider.subscriptionSupported)
+        state.querySubscription(provider, expectedHostKey: "stale-host")
+        #expect(!state.queryingQuota)
+        state.querySubscription(provider, expectedHostKey: state.hostKey!)
+        let request = sent.last
+        #expect(request["type"] as? String == "provider.subscription")
+        #expect(request["id"] as? String == provider.id)
+        #expect(state.queryingQuota)
+        let payload: [String: Any] = ["checkedAt": 1000, "windows": [
+            ["name": "five_hour", "remainingPercent": 82.5, "resetsAt": 2000] as [String: Any],
+            ["name": "seven_day", "remainingPercent": NSNull(), "resetsAt": NSNull()] as [String: Any]]]
+        var reply: [String: Any] = ["type": "provider.subscription.result", "requestId": "stale", "kind": "claude", "id": provider.id, "quota": payload]
+        state.consume(reply)
+        #expect(state.quota == nil && state.queryingQuota)
+        reply["requestId"] = request["requestId"]
+        state.consume(reply)
+        #expect(state.quota?.windows.first?.remainingPercent == 82.5)
+        #expect(state.quota?.windows.last?.remainingPercent == nil)
+        #expect(!state.queryingQuota)
+        state.querySubscription(provider, expectedHostKey: state.hostKey!)
+        reply["requestId"] = sent.last["requestId"]
+        state.setConnection(pairing("host-b"), connected: true)
+        state.consume(reply)
+        #expect(state.quota == nil && !state.queryingQuota)
+    }
+
+    @Test func quotaFailureCanRetryAndProviderChangesClearResults() throws {
+        let (state, sent) = setup()
+        installProviders(state, sent)
+        let provider = try #require(state.providers.first)
+        state.querySubscription(provider, expectedHostKey: state.hostKey!)
+        state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": "codex", "id": provider.id, "error": "登录过期"])
+        #expect(state.quotaError == "登录过期")
+        #expect(state.canChangeProvider)
+        state.querySubscription(provider, expectedHostKey: state.hostKey!)
+        #expect(state.queryingQuota && state.quotaError == nil)
+        let request = sent.last
+        state.consume(["type": "provider.changed", "kind": "codex"])
+        state.consume(["type": "provider.subscription.result", "requestId": request["requestId"]!, "kind": "codex", "id": provider.id, "error": "stale error"])
+        #expect(!state.queryingQuota && state.quotaError == nil)
+        let malformed = Data("{\"checkedAt\":1,\"windows\":[{\"name\":\"five_hour\",\"remainingPercent\":101},{\"name\":\"seven_day\",\"remainingPercent\":null}]}".utf8)
+        #expect(try !JSONDecoder().decode(SubscriptionQuota.self, from: malformed).valid)
+    }
+
+    @Test func refreshingQuotaRetainsLastReadingAndOtherAgentCard() throws {
+        let (state, sent) = setup()
+        let rows = (providers(kind: "codex")["providers"] as! [[String: Any]]) +
+            (providers(kind: "claude")["providers"] as! [[String: Any]])
+        state.consume(snapshot(sent, domains: [domain("providers", value: ["providers": rows])]))
+        for kind in ["codex", "claude"] {
+            let provider = try #require(state.currentProvider(for: kind))
+            state.querySubscription(provider, expectedHostKey: state.hostKey!)
+            state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": kind, "id": provider.id,
+                "quota": ["checkedAt": 1000, "windows": [
+                    ["name": "five_hour", "remainingPercent": 80, "resetsAt": NSNull()],
+                    ["name": "seven_day", "remainingPercent": 40, "resetsAt": NSNull()]]]])
+        }
+        let codex = try #require(state.currentProvider(for: "codex"))
+        state.querySubscription(codex, expectedHostKey: state.hostKey!)
+        #expect(state.subscriptionQuota(for: "codex")?.quota?.windows.first?.remainingPercent == 80)
+        state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": "codex", "id": codex.id, "error": "超时"])
+        #expect(state.subscriptionQuota(for: "codex")?.error == "超时")
+        #expect(state.subscriptionQuota(for: "codex")?.quota?.windows.first?.remainingPercent == 80)
+        #expect(state.subscriptionQuota(for: "claude")?.quota?.windows.last?.remainingPercent == 40)
     }
 
     @Test func domainsMergeAcrossSplitResponsesAndRefreshRetainsSubscription() throws {
@@ -148,6 +219,62 @@ struct HostStateTests {
         #expect(!state.changingProvider)
         #expect(state.providerError?.contains("确认操作结果") == true)
         #expect(!state.canChangeProvider)
+    }
+
+    private func installRemovableProviders(_ state: HostState, _ sent: Sent) {
+        state.loadProviders("pi")
+        let profiles: [[String: Any]] = ["official", "team"].map {
+            ["id": $0, "name": $0, "enabled": true, "mode": "additive", "globalDefault": $0 == "official"]
+        }
+        state.consume(snapshot(sent, domains: [domain("providers", value: ["providers": [
+            ["agentKind": "pi", "availability": "ready", "switching": false, "profiles": profiles]
+        ]])]))
+    }
+
+    @Test func batchRemovalWaitsForEachMatchingReceiptAndKeepsCardsUntilRefresh() throws {
+        let (state, sent) = setup()
+        installRemovableProviders(state, sent)
+        let cards = state.providers
+        state.removeProviders(cards, expectedHostKey: try #require(state.hostKey))
+        let first = sent.last
+        #expect(first["id"] as? String == "official")
+        #expect(first["enabled"] as? Bool == false)
+        state.consume(["type": "provider.result", "requestId": "stale", "kind": "pi"])
+        state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "codex"])
+        #expect(sent.last["requestId"] as? String == first["requestId"] as? String)
+        state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi"])
+        let second = sent.last
+        #expect(second["id"] as? String == "team")
+        #expect(second["enabled"] as? Bool == false)
+        #expect(state.changingProvider)
+        #expect(state.providers == cards)
+        state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi"])
+        #expect(state.changingProvider)
+        state.consume(["type": "provider.result", "requestId": second["requestId"]!, "kind": "pi", "notice": "已更新"])
+        #expect(!state.changingProvider)
+        #expect(state.providerNotice == "已移除 2 个供应商。已更新")
+        #expect(sent.last["type"] as? String == "agent.state.request")
+        #expect(state.providers == cards)
+    }
+
+    @Test func batchRemovalStopsOnFailureDisconnectAndStaleSelection() throws {
+        for disconnect in [false, true] {
+            let (state, sent) = setup()
+            installRemovableProviders(state, sent)
+            state.removeProviders(state.providers, expectedHostKey: try #require(state.hostKey))
+            let first = sent.last
+            if disconnect { state.setConnection(pairing(), connected: false) }
+            else { state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi", "error": "busy"]) }
+            state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi"])
+            #expect(!state.changingProvider)
+            #expect(state.providerError?.contains("批量移除已停止") == true)
+            #expect(sent.values.filter { $0["type"] as? String == "provider.switch" }.count == 1)
+        }
+        let (state, sent) = setup()
+        state.loadProviders("pi"); installProviders(state, sent, kind: "pi", additive: true)
+        state.removeProviders(state.providers, expectedHostKey: try #require(state.hostKey))
+        #expect(!state.changingProvider) // The disabled provider cannot be removed.
+        #expect(sent.values.allSatisfy { $0["type"] as? String != "provider.switch" })
     }
 
     @Test func diagnosticPagesAreCorrelatedHostScopedAndExposeWindowGaps() throws {

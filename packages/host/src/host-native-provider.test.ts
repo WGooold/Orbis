@@ -35,7 +35,7 @@ describe("native Codex provider ownership in the Host model", () => {
       const rows = () => host.readHostProviders()!.providers;
       expect(rows().find(row => row.agentKind === "codex")).toMatchObject({ current: "managed-profile-uuid", modelProvider: "terminal" });
       expect(rows().find(row => row.agentKind === "codexDesktop")).toMatchObject({ current: null, modelProvider: "custom", profiles: null });
-      expect(profiles.publicState.mock.calls.map(([kind]) => kind)).toEqual(["pi", "codex", "dsh"]);
+      expect(profiles.publicState.mock.calls.map(([kind]) => kind)).toEqual(["pi", "codex", "dsh", "claude"]);
       desktop.backend.currentProvider.mockResolvedValue("other");
       await host.refreshProviderFacts();
       expect(rows().find(row => row.agentKind === "codexDesktop")?.modelProvider).toBe("other");

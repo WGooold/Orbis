@@ -2,23 +2,24 @@ import { PROTOCOL_VERSION, type AgentKind } from "@orbis/protocol";
 import type { ProviderSummary } from "./provider-manager.js";
 
 export type ProviderRequest = {
-  type: "provider.list" | "provider.switch"; protocolVersion: number;
+  type: "provider.list" | "provider.switch" | "provider.subscription"; protocolVersion: number;
   requestId: string; kind: AgentKind; id?: string; enabled?: boolean;
 };
 /** Only local saved identities cross the encrypted boundary; never config, paths or npm arguments. */
 export function parseProviderRequest(value: unknown): ProviderRequest | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const data = value as Record<string, unknown>;
-  if (data.type !== "provider.list" && data.type !== "provider.switch") return undefined;
-  if (data.protocolVersion !== PROTOCOL_VERSION || !["pi", "codex", "dsh"].includes(String(data.kind))) return undefined;
+  if (data.type !== "provider.list" && data.type !== "provider.switch" && data.type !== "provider.subscription") return undefined;
+  if (data.protocolVersion !== PROTOCOL_VERSION || !["pi", "codex", "dsh", "claude"].includes(String(data.kind))) return undefined;
   const valid = (id: unknown): id is string => typeof id === "string" && id.trim().length > 0 && id.length <= 128;
   if (!valid(data.requestId)) return undefined;
-  const keys = data.type === "provider.list" ? ["type", "protocolVersion", "requestId", "kind"] : ["type", "protocolVersion", "requestId", "kind", "id", "enabled"];
+  const keys = data.type === "provider.list" ? ["type", "protocolVersion", "requestId", "kind"] : data.type === "provider.subscription" ? ["type", "protocolVersion", "requestId", "kind", "id"] : ["type", "protocolVersion", "requestId", "kind", "id", "enabled"];
   if (Object.keys(data).some(key => !keys.includes(key))) return undefined;
   if (data.type === "provider.switch" && (!valid(data.id) || typeof data.enabled !== "boolean" || (data.kind !== "pi" && !data.enabled))) return undefined;
+  if (data.type === "provider.subscription" && (!valid(data.id) || !["claude", "codex"].includes(String(data.kind)))) return undefined;
   return data as ProviderRequest;
 }
 export function providerResult(request: ProviderRequest, providers: ProviderSummary[], hotSwitch = false): object {
-  return { type: "provider.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind, providers: providers.map(({ id, kind, name, enabled, mode, globalDefault }) => ({ id, kind, name, enabled, mode, globalDefault: globalDefault === true })),
+  return { type: "provider.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind, providers: providers.map(({ id, kind, name, enabled, mode, globalDefault, official, subscriptionSupported }) => ({ id, kind, name, enabled, mode, globalDefault: globalDefault === true, official: official === true, subscriptionSupported: subscriptionSupported === true })),
     notice: request.type === "provider.switch" ? (request.kind === "pi" ? "显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : hotSwitch ? "本地路由已切换，后续请求使用新供应商；进行中的请求继续完成。" : "供应商已切换；请重新打开会话。独立终端也需重启。") : "" };
 }

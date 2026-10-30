@@ -1,5 +1,7 @@
 # ADR-0030：手机端同时连接多台 Host
 
+选路遵循 [ADR-0050](0050-fixed-lan-relay-routing.md)：固定 LAN 优先、Relay 兜底。其他多 Host 决策继续有效。
+
 日期：2026-10-11
 
 关联：[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0028](0028-host-notification-lifecycle.md)。
@@ -54,7 +56,7 @@ APP 从第一个版本起就把"已配对电脑"当成单数：`CredentialStore`
 
 - 每台在线 Host 各自维持一条 WebSocket、一套 E2E 与拉取调度器，内存与电量的增量与"多开一个 APP"同阶。
 - 下载/上传文件（`download-tasks.json` 等）仍是单文件、共享实例，写入方带 `hostId` 区分；目录缓存按 Host 拆文件。
-- 传输路径偏好（lan/p2p/relay 顺序）仍是手机级设置，逐 Host 下发。
+- 传输固定 LAN 优先、Relay 兜底，手机不保存或下发排序设置。
 
 ## 未决
 

@@ -7,7 +7,8 @@ import org.junit.Test
 
 class AgentModelConsumerTest {
     private val reducer = RelayReducer()
-    private fun initial() = RemoteState(hostId = "host", agentModelEpoch = "epoch",
+    private fun initial() = RemoteState(hostId = "host", agentModelEpoch = "epoch", e2eReady = true,
+        connection = RelayConnection.ONLINE, homeDirectoryReceived = true,
         runtimes = mapOf("runtime" to RuntimeSummary("runtime", "Agent", "/repo", "idle", "session", agentKind = "pi")),
         agentStateRequests = setOf("read"), agentStateReads = mapOf("read" to AgentStateRead(
             "agent|pi|session", "agent", AGENT_MODEL_DOMAINS.toSet(), "runtime", "session", "pi")))
@@ -25,6 +26,34 @@ class AgentModelConsumerTest {
     private fun receive(state: RemoteState, domains: String) = reducer.reduce(state, snapshot(domains), channel = "ctl")
     private fun interaction(id: String = "question") = """{"requestId":"$id","extensionId":"extension","kind":"select",
         "title":"Choose","expiresAt":9007199254740991,"options":[{"value":"yes","label":"Yes"}]}"""
+
+    @Test fun `compaction activity drives presentation without changing execution phase`() {
+        var state = receive(initial(), domain("execution", """{"phase":"idle","compaction":{"phase":"running"}}"""))
+        var runtime = state.runtimes.getValue("runtime")
+        assertEquals("idle", runtime.status)
+        assertEquals("compacting", runtime.presentationStatus)
+        state = receive(state, domain("execution", """{"phase":"running","compaction":{"phase":"running"}}""", 2))
+        runtime = state.runtimes.getValue("runtime")
+        assertEquals("running", runtime.status)
+        assertEquals("compacting", runtime.presentationStatus)
+        assertEquals("compacting", RuntimeSummary("runtime", "Agent", "/repo", "idle", "session").carryingComposerStatus(runtime).presentationStatus)
+        assertNull(RuntimeSummary("runtime", "Agent", "/repo", "idle", "other").carryingComposerStatus(runtime).compactionPhase)
+        state = receive(state, domain("execution", """{"phase":"waiting_local_interaction","compaction":{"phase":"running"}}""", 3))
+        assertEquals("waiting_local_interaction", state.runtimes.getValue("runtime").presentationStatus)
+        state = receive(state, domain("execution", """{"phase":"running","compaction":{"phase":"idle"}}""", 4))
+        assertEquals("running", state.runtimes.getValue("runtime").presentationStatus)
+        state = receive(state, domain("execution", """{"phase":"idle","compaction":{"phase":"failed"}}""", 5))
+        assertEquals("failed", state.runtimes.getValue("runtime").compactionPhase)
+        assertEquals("idle", state.runtimes.getValue("runtime").presentationStatus)
+        state = receive(state, domain("execution", """{"phase":"running","compaction":{"phase":"running"}}""", 6))
+        state = receive(state, domain("execution", """{"phase":"idle","compaction":"unavailable"}""", 7))
+        assertNull(state.runtimes.getValue("runtime").compactionPhase)
+        assertEquals("idle", state.runtimes.getValue("runtime").presentationStatus)
+        state = receive(state, domain("execution", """{"phase":"running","compaction":{"phase":"running"}}""", 8))
+        state = receive(state, domain("execution", "null", 9, availability = "unknown"))
+        assertNull(state.runtimes.getValue("runtime").compactionPhase)
+        assertEquals("unknown", state.runtimes.getValue("runtime").presentationStatus)
+    }
 
     @Test fun `home waits for every card and identity updates the persistent catalog projection`() {
         val cached = SessionCatalogEntry("session", cwd = "/old", agentKind = "pi", archived = true,
@@ -44,11 +73,12 @@ class AgentModelConsumerTest {
         assertEquals("running", state.homeRuntimes.single().status)
         val next = RuntimeSummary("second", "Second", "/repo", "unknown", "other")
         val loading = state.copy(runtimes = state.runtimes + (next.runtimeId to next))
-        assertTrue(loading.homeRuntimes.isEmpty())
+        assertEquals(state.homeCards, loading.homeCards)
+        assertTrue(loading.homeRuntimesUpdating)
         assertTrue(next.carryingComposerStatus(state.runtimes.getValue("runtime")).domainAvailability.isEmpty())
         assertEquals(1, loading.copy(runtimes = state.runtimes).homeRuntimes.size)
         assertTrue(RemoteState(connection = RelayConnection.CONNECTING).homeRuntimesLoading)
-        assertFalse(RemoteState(connection = RelayConnection.OFFLINE).homeRuntimesLoading)
+        assertTrue(RemoteState(connection = RelayConnection.OFFLINE).homeRuntimesLoading)
         val failed = reducer.reduce(initial(), """{"type":"agent.state.snapshot","scope":"agent","requestId":"read",
             "runtimeId":"runtime","sessionId":"session","agentKind":"pi","error":"读取失败"}""", channel = "ctl")
         assertEquals("读取失败", failed.homeRuntimesError)

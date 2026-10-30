@@ -35,7 +35,7 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /** 必须与 `packages/protocol/src/index.ts` 的 `PROTOCOL_VERSION` 同步升版（精确匹配，没有兼容旁路）。 */
-internal const val PROTOCOL_VERSION = 16
+internal const val PROTOCOL_VERSION = 17
 internal const val RELOAD_TRACE_TAG = "Orbis.ReloadTrace"
 private const val TRACE_LOG_LIMIT = 200
 /** 超过这个长度就不再整棵解析入站帧（见 `traceIncoming`）：大帧是 E2E 密文分片。 */
@@ -164,10 +164,6 @@ class RelayClient(
     @Volatile
     private var e2e: E2eSession? = null
 
-    // ── P2P（M5）───────────────────────────────────────────────────────
-    private var appContext: Context? = null
-    private var p2p: P2pTransport? = null
-
     /** 当前生效的出站路径（Host 通过 device.path 单方面宣布，spec §6.2）。null = 未知，默认走 Relay。 */
     @Volatile
     var activePath: String? = null
@@ -198,14 +194,7 @@ class RelayClient(
     /** 加密通道此刻是否可用（HS 走完、可以收发 data 帧）。 */
     fun hasE2eChannel(): Boolean {
         val state = e2e ?: return false
-        return synchronized(state.lock) { state.channel != null } || lan?.isReady == true || p2p?.isReady == true
-    }
-
-    /** 最近一次 connect 的凭据：路径回落/重布时重建 P2P 需要。 */
-    private var lastDevice: DeviceCredential? = null
-
-    fun setApplicationContext(context: Context) {
-        appContext = context.applicationContext
+        return synchronized(state.lock) { state.channel != null } || lan?.isReady == true
     }
 
     suspend fun pair(relayUrl: String, code: String, deviceName: String): DeviceCredential = withContext(Dispatchers.IO) {
@@ -269,7 +258,6 @@ class RelayClient(
     ) {
         requireSupportedRelay(device.relayUrl)
         disconnect()
-        lastDevice = device
         val request = Request.Builder().url("${device.relayUrl.trimEnd('/')}/v1/device").build()
         trace(
             "socket.connect relay=${device.relayUrl} e2e=" +
@@ -287,7 +275,6 @@ class RelayClient(
                 connection.channel = null
                 connection.handshake = null
             }
-            closeP2p()
             if (activePath != "lan") activePath = null
             notifyE2eState(hasE2eChannel())
             if (lanEndpoints.isNotEmpty() && connection.options.pskRoot != null) {
@@ -343,8 +330,6 @@ class RelayClient(
                         trace("e2e.pair.request_sent hostId=${state.options.hostId}")
                     } else {
                         startHandshake(state)
-                        // 普通（已配对）连接才有 P2P 可言：请求 Host 出 offer。
-                        startP2pIfPossible(device, state)
                     }
                 } ?: trace("socket.open_no_e2e（没有 E2E 会话，不会发 PAIR/HS1）")
                 if (!hasE2eChannel()) onOpen()
@@ -424,86 +409,8 @@ class RelayClient(
         transport.start()
     }
 
-    // ── P2P 路径管理（M5）────────────────────────────────────────────────
-
-    private fun startP2pIfPossible(device: DeviceCredential, state: E2eSession) {
-        // 下面三处原本都是裸 `?: return`：任何一处成立，P2P 就永远不起来，而症状只是
-        // 「状态页一直显示中继」——Logcat 里一个字都没有。所以每一处都必须留下 trace。
-        val pskRoot = state.options.pskRoot
-        if (pskRoot == null) {
-            trace("p2p.disabled（缺少 pskRoot：这是配对材料问题，不是网络问题）")
-            return
-        }
-        val context = appContext
-        if (context == null) {
-            trace("p2p.disabled（appContext 未注入，设备侧无法构造 PeerConnectionFactory）")
-            return
-        }
-        val stunHost = relayStunHost(device.relayUrl)
-        if (stunHost.isNullOrBlank()) {
-            trace("p2p.disabled（relay 地址无主机名，内网部署）")
-            return
-        }
-        closeP2p()
-        // P2P 是「锦上添花」的路径，它的任何失败都必须止步于此，绝不能牵连中继连接。
-        //
-        // 这里原本没有 try/catch：构造 P2pTransport 一旦抛异常（例如 org.webrtc 建不出
-        // PeerConnection），异常会一路冲穿 OkHttp 的 onOpen 回调 → 中继 socket 被判失败 →
-        // 手机陷入「连上就断、断了再连」的死循环。结果是 P2P 一次都没成，中继也跟着陪葬，
-        // 而用户只看到「一直在转圈」。降级到中继的前提就是：P2P 出错时中继毫发无伤。
-        val transport = try {
-            P2pTransport(
-                context = context,
-                // org.webrtc 的 ICE 服务器串是 `stun:host:port`（单冒号）。
-                // 不要照抄 Host 侧的 `stun://host:port`——那是 libdatachannel 的写法，
-                // 换到 org.webrtc 上会解析失败，createPeerConnection 直接返回 null。
-                stunServers = listOf("stun:$stunHost:3478"),
-                hostId = state.options.hostId,
-                deviceId = device.deviceId,
-                pskRoot = pskRoot,
-                onSignalOut = { payload ->
-                    // 信令永远走 Relay（信令不能走路内的自己）。
-                    val session = e2e ?: return@P2pTransport
-                    sendRelayPayload(session, payload)
-                },
-                onPlaintext = { text, channel ->
-                    // Host 的控制消息（device.path / p2p.offer 等）一律走「当前生效路径」：
-                    // P2P 生效后它们就从这条 DC 上来，必须先过与中继完全相同的控制面
-                    // （中继侧对应 handleE2eEnvelope 的 "data" 分支：`if (handlePathControl(text)) return`），
-                    // 否则 reducer 会把 device.path 当成不支持的消息，报「请在电脑端检查协议版本」。
-                    if (!handlePathControl(text)) messageSink?.invoke(text, channel)
-                },
-                onBinPayload = { bytes -> binarySink?.invoke(bytes) },
-                onReady = { trace("p2p.path ready") },
-                onDown = { reason ->
-                    trace("p2p.path down reason=${reason ?: "<none>"}")
-                    if (e2e === state) {
-                        closeP2p()
-                        if (activePath == "p2p") activePath = null
-                        notifyE2eState(hasE2eChannel())
-                    }
-                },
-            )
-        } catch (error: Throwable) {
-            // 故意接 Throwable：这是可选子系统，连 NoClassDefFoundError 都不该掀翻中继。
-            trace("p2p.start failed=${error.message ?: error::class.simpleName}（已忽略，继续走中继）")
-            return
-        }
-        p2p = transport
-        sendRelayPayload(state, buildJsonObject {
-            put("type", "p2p.request")
-            put("protocolVersion", PROTOCOL_VERSION)
-        })
-        trace("p2p.request sent host=${state.options.hostId}")
-    }
-
-    private fun closeP2p() {
-        p2p?.close()
-        p2p = null
-    }
-
     /**
-     * 路径控制消息（spec §6.2）：device.path 路径宣布、p2p.offer 信令入站。
+     * 路径控制消息（spec §6.2）：device.path 路径宣布与 LAN 地址更新。
      * 返回 true 表示已消化，不进业务消息泵。
      */
     private fun handlePathControl(text: String): Boolean {
@@ -521,22 +428,12 @@ class RelayClient(
             }
             "device.path" -> {
                 val path = message["path"]?.jsonPrimitive?.contentOrNull ?: return true
+                if (path != "lan" && path != "relay") return true
+                if (message["protocolVersion"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() != PROTOCOL_VERSION) return true
                 val rttMs = message["rttMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
                 activePath = path
                 onPathChanged?.invoke(path, rttMs)
                 trace("path.announced path=$path rttMs=${rttMs ?: "<none>"}")
-                // Host 宣布 p2p 但我们的传输不在了（进程被回收后重连等）：重新请求一次 offer。
-                val state = e2e
-                if (path == "p2p" && p2p == null && state != null) {
-                    trace("path.p2p re-request offer")
-                    startP2pIfPossible(lastDevice ?: return true, state)
-                }
-                return true
-            }
-            "p2p.offer" -> {
-                val sdp = message["sdp"]?.jsonPrimitive?.contentOrNull
-                trace("p2p.offer received sdp=${sdp?.length ?: 0}B hasTransport=${p2p != null}")
-                if (sdp != null) p2p?.acceptOffer(sdp)
                 return true
             }
             else -> return false
@@ -630,14 +527,6 @@ class RelayClient(
         val channel = "bulk"
         val direct = lan
         if (activePath == "lan" && direct?.isReady == true) return direct.sendBinary(frame, channel)
-        val transport = p2p
-        trace("upload.chunk offset=$offset bytes=${data.size} path=$activePath p2pReady=${transport?.isReady == true}")
-        if (activePath == "p2p" && transport?.isReady == true) {
-            val sent = transport.sendBinary(frame, channel)
-            // 写被拒不静默：调度器会停在原地重试，但日志里必须看得到原因。
-            if (!sent) trace("upload.chunk_rejected offset=$offset bytes=${data.size}")
-            return sent
-        }
         return synchronized(state.lock) {
             val e2eChannel = state.channel ?: run {
                 trace("upload.chunk_rejected offset=$offset reason=no_relay_channel")
@@ -798,7 +687,6 @@ class RelayClient(
         lan = null
         lanEndpoints = emptyList()
         oldLan?.close()
-        closeP2p()
         activePath = null
         messageSink = null
         binarySink = null
@@ -1000,19 +888,12 @@ class RelayClient(
     /**
      * 设备级 E2E 载荷发送的统一入口，按 activePath 路由（spec §6.2）：
      * - Host 已宣布 LAN 且本端握手完成 → 走 LanTransport；
-     * - Host 已宣布 p2p 且本端 DC 握手完成 → 走 P2pTransport（自带握手期排队）；
      * - 否则走 Relay data 帧（握手未完成排队，完成后按序补发）。
      */
     private fun sendE2ePayload(state: E2eSession, payload: JsonObject, traceLabel: String): Boolean {
         val direct = lan
         if (activePath == "lan" && direct?.isReady == true) {
             return direct.sendPayload(payload)
-        }
-        val transport = p2p
-        if (activePath == "p2p" && transport?.isReady == true) {
-            val sent = transport.sendPayload(payload)
-            trace("out path=p2p $traceLabel sent=$sent")
-            return sent
         }
         val queued = synchronized(state.lock) { state.channel == null }
         return if (queued) {
@@ -1024,7 +905,7 @@ class RelayClient(
         }
     }
 
-    /** 把设备级 E2E 载荷发进 Relay 路径（P2P 信令专用：信令不能走路内的自己）。 */
+    /** 把设备级 E2E 载荷发进 Relay 路径（用于在 Relay 握手后请求 LAN 地址）。 */
     private fun sendRelayPayload(state: E2eSession, payload: JsonObject): Boolean {
         val queued = synchronized(state.lock) { state.channel == null }
         return if (queued) {
@@ -1040,7 +921,7 @@ class RelayClient(
         val state = e2e ?: return false
         val label = "type=${payload["type"]?.jsonPrimitive?.contentOrNull ?: "<missing>"} requestId=${payload["requestId"]?.jsonPrimitive?.contentOrNull ?: "<none>"}"
         val sent = sendE2ePayload(state, payload, label)
-        if (activePath != "p2p") trace("out path=$activePath $label sent=$sent")
+        trace("out path=$activePath $label sent=$sent")
         return sent
     }
 

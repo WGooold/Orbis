@@ -36,9 +36,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
     private var pairingContinuation: CheckedContinuation<Void, Error>?
     private var pairingGeneration = UUID()
     private var outbound: [(text: String, channel: String?, completion: ((Error?) -> Void)?)] = []
-    private var p2p: P2PTransport?
-    var p2pFactory: (([String]) throws -> P2PPeer?) = { try P2PTransport.makeNativePeer(stunServers: $0) }
-    private var hasDirectPath: Bool { lan?.isReady == true || p2p?.isReady == true }
+    private var hasDirectPath: Bool { lan?.isReady == true }
     private var lan: LANTransport?
     private var lanEndpoints: [LANEndpoint] = []
     private var activePath: String?
@@ -117,7 +115,6 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         deliveryGeneration = UUID()
         deliveryTask?.cancel(); deliveryTask = nil
         inbound.clear()
-        let oldP2P = p2p; p2p = nil; oldP2P?.close()
         let oldLAN = lan
         lan = nil; lanEndpoints = []; activePath = nil
         oldLAN?.close()
@@ -148,7 +145,6 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
     @discardableResult
     func send(_ object: [String: Any]) -> Bool {
         if activePath == "lan", let lan, lan.isReady { return lan.send(object) }
-        if activePath == "p2p", let p2p, p2p.isReady { return p2p.send(object) }
         return sendRelay(object)
     }
 
@@ -219,7 +215,6 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
     @discardableResult
     func sendBinary(_ data: Data) -> Bool {
         if activePath == "lan", let lan, lan.isReady { return lan.sendBinary(data) }
-        if activePath == "p2p", let p2p, p2p.isReady { return p2p.sendBinary(data) }
         guard socket != nil, let channel else { return false }
         do {
             guard outboundBytes + data.count * 2 + 4096 <= maxOutboundBytes else { return false }
@@ -350,7 +345,6 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
                         // Endpoint refresh is authenticated by the Host; relay
                         // lifecycle plaintext never controls direct dialing.
                         _ = self.sendRelay(["type": "host.lan.request", "protocolVersion": orbisProtocolVersion])
-                        self.startP2PIfPossible()
                     }
                 }
                 timeoutTask?.cancel(); timeoutTask = nil
@@ -371,36 +365,6 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         }
     }
 
-
-    private func startP2PIfPossible() {
-        guard p2p == nil, let pairing, channel != nil,
-              let stun = RelaySTUN.server(pairing.relay.relayUrl),
-              let root = try? Base64URL.decodeFixed(pairing.pskRoot, bytes: 32, label: "pskRoot") else { return }
-        do {
-            guard let peer = try p2pFactory([stun]) else { return }
-            let direct = P2PTransport(peer: peer, hostId: hostId, deviceId: fromId, root: root)
-            direct.signal = { [weak self, weak direct] message in
-                guard let self, let direct, self.p2p === direct else { return false }
-                return self.sendRelay(message) // SDP never travels over the Path it is building.
-            }
-            direct.receive = { [weak self, weak direct] bytes, channel, binary in
-                guard let self, let direct, self.p2p === direct else { return }
-                if binary { self.deliver(bytes, channel: channel, binary: true) }
-                else if channel != "ctl" { self.deliver(bytes, channel: channel) }
-                else if let message = try? E2ECrypto.jsonObject(bytes), !self.handlePathControl(message) { self.deliver(bytes, channel: channel) }
-            }
-            direct.state = { [weak self, weak direct] ready, _ in
-                guard let self, let direct, self.p2p === direct else { return }
-                if !ready {
-                    self.p2p = nil
-                    if self.activePath == "p2p" { self.activePath = nil }
-                }
-                self.stateHandler?(self.hasDirectPath || self.channel != nil ? .secured : .offline, nil)
-            }
-            p2p = direct; direct.start()
-            if !sendRelay(["type": "p2p.request", "protocolVersion": orbisProtocolVersion]) { p2p = nil; direct.close() }
-        } catch { /* Native initialization failure is isolated to this optional Path. */ }
-    }
 
     private func updateLANEndpoints(_ endpoints: [LANEndpoint]) {
         guard let pairing, let root = try? Base64URL.decodeFixed(pairing.pskRoot, bytes: 32, label: "pskRoot") else { return }
@@ -423,7 +387,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         direct.state = { [weak self, weak direct] ready in
             guard let self, let direct, self.lan === direct else { return }
             if !ready, self.activePath == "lan" { self.activePath = nil }
-            self.stateHandler?(ready || self.channel != nil || self.p2p?.isReady == true ? .secured : .offline, nil)
+            self.stateHandler?(ready || self.channel != nil ? .secured : .offline, nil)
         }
         lan = direct
         direct.start()
@@ -441,21 +405,11 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
             receiveHandler?(["type": "_transport.lan", "endpoints": lanEndpoints], "ctl")
             return true
         case "device.path":
-            guard let path = message["path"] as? String, ["lan", "p2p", "relay"].contains(path) else { return true }
+            guard message["protocolVersion"] as? Int == orbisProtocolVersion,
+                  let path = message["path"] as? String, ["lan", "relay"].contains(path) else { return true }
             activePath = path
-            if path == "p2p", p2p == nil { startP2PIfPossible() }
             receiveHandler?(message, "ctl")
             return true
-        case "p2p.offer":
-            if message["protocolVersion"] as? Int == orbisProtocolVersion, let sdp = message["sdp"] as? String { p2p?.acceptOffer(sdp) }
-            return true
-        case "protocol.error":
-            if let code = message["code"] as? String, ["p2p_unavailable", "p2p_cooling_down"].contains(code) {
-                let old = p2p; p2p = nil; old?.close()
-                if activePath == "p2p" { activePath = nil }
-                return true // Optional Path failures never tear down Relay/LAN.
-            }
-            return false
         default: return false
         }
     }
@@ -668,6 +622,8 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
             config.timeoutIntervalForRequest = 4
             session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
         }
+        // Host serves WS; the direct path authenticates and encrypts via E2E.
+        // Info.plist permits literal IPs, including public campus addresses.
         let task = session!.webSocketTask(with: urls[endpointIndex])
         task.maximumMessageSize = 2 * 1024 * 1024
         socket = task; handshake = DeviceHandshake(pskRoot: root)

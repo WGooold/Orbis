@@ -159,7 +159,6 @@ async function runHost(
       // 隔离测试台用：只列这个目录里的 Pi 会话，避免联调时把真实会话（以及它们的运行状态）拉进来。
       ...(sessionsRoot === undefined ? {} : { sessionsRoot }),
       ...(config.lanPort === undefined ? {} : { lanPort: config.lanPort }),
-      ...(config.stunServers.length > 0 ? { stunServers: config.stunServers } : {}),
       ...(codexRuntime === undefined ? {} : { codexRuntime, codexLaunch: (request: { cwd: string }) => codexRuntime!.prepareTerminalLaunch(request.cwd) }),
       ...(codexDesktopLifecycle === undefined ? {} : { ensureCodexDesktop: () => codexDesktopLifecycle!.ensureReady() }),
       ...(codexDesktopLifecycle === undefined ? {} : { codexDesktopLaunchable }),

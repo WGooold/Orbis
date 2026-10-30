@@ -12,6 +12,9 @@ struct HostSnapshot: Identifiable {
     var hostId: String { pairing.hostId }
     var name: String { pairing.hostName }
     var runtimes: [RuntimeSummary] { connection.runtimes }
+    /// ADR-0049 §5：首页卡片不含已提交关闭的会话。
+    var homeRuntimes: [RuntimeSummary] { connection.homeRuntimes }
+    var homeCards: [HomeRuntimeCard] { connection.homeCards }
     var sessions: [SessionSummary] { connection.sessions }
     var connectionState: ConnectionState { connection.connection }
 }
@@ -199,11 +202,11 @@ final class OrbisStore: ObservableObject {
     var submittingInteractions: Set<String> { activeConnection.submittingInteractions }
     var queuedMessages: [String: [QueuedMessage]] { activeConnection.queuedMessages }
     var pendingQueueCancellations: Set<String> { activeConnection.pendingQueueCancellations }
+    var pendingSends: PendingSendOutbox { activeConnection.pendingSends }
     var hasOlderHistory: [String: Bool] { activeConnection.hasOlderHistory }
     var historyLoading: Set<String> { activeConnection.historyLoading }
     var historyErrors: [String: String] { activeConnection.historyErrors }
     var historyPageRevision: Int { activeConnection.historyPageRevision }
-    var pathPreference: [String] { activeConnection.pathPreference }
     var currentProviders: [String: String] { activeConnection.currentProviders }
     var connectionEvents: [String] { activeConnection.connectionEvents }
     var selectedHost: HostPairing? { pairings.first { $0.hostId == selectedHostId } }
@@ -235,12 +238,11 @@ final class OrbisStore: ObservableObject {
     func updatePermission(settingId: String, value: String) { activeConnection.updatePermission(settingId: settingId, value: value) }
     func sendMessage(_ text: String, delivery: String? = nil, attachmentIds: Set<String> = []) -> Bool { activeConnection.sendMessage(text, delivery: delivery, attachmentIds: attachmentIds) }
     func cancelQueuedMessage(_ queueId: String) -> Bool { activeConnection.cancelQueuedMessage(queueId) }
+    @discardableResult func resendPendingSend(_ messageId: String) -> Bool { activeConnection.resendPendingSend(messageId) }
+    func restorePendingSend(_ messageId: String) -> String? { activeConnection.restorePendingSend(messageId) }
+    func discardPendingSend(_ messageId: String) { activeConnection.discardPendingSend(messageId) }
+    func queuePanelItems(_ runtimeId: String) -> [QueuedMessage] { activeConnection.queuePanelItems(runtimeId) }
     @discardableResult func stopRuntime() -> Bool { activeConnection.stopRuntime() }
-    func setPathPreference(_ order: [String]) {
-        preferences?.set(normalizedPathPreference(order), forKey: "orbis.pathPreference")
-        emptyConnection.setPathPreference(order)
-        for connection in connections.values { connection.setPathPreference(order) }
-    }
     func currentProvider(for kind: String) -> String? { activeConnection.currentProvider(for: kind) }
     func agentKind(_ runtime: RuntimeSummary) -> String? { activeConnection.agentKind(runtime) }
     func providerMismatch(_ session: SessionSummary) -> String? { activeConnection.providerMismatch(session) }

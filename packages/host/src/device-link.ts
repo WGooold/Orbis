@@ -87,8 +87,6 @@ export type DeviceLinkOptions = {
   device: DeviceRecord;
   /** 0 表示不探测（单路径场景没有可比较的对象）。 */
   probeIntervalMs?: number;
-  /** 该设备的路径优先级顺序（第 1 位最优先）。缺省 [lan, p2p, relay]。 */
-  pathPreference?: readonly PathKind[];
   /** 生效路径变了。HostService 据此给手机发 `device.path`（§6.2 / §14 B4）。 */
   onActivePathChange?: (change: ActivePathChange) => void;
   /**
@@ -253,9 +251,7 @@ export class DeviceLink {
     if (this.#pskRoot.length !== 32) {
       throw new E2eError("invalid_key_length", `设备 ${this.#deviceId} 的 pskRoot 不是 32 字节`);
     }
-    this.#selector = new PathSelector({
-      ...(options.pathPreference === undefined ? {} : { preference: options.pathPreference }),
-    });
+    this.#selector = new PathSelector();
     this.#bulkBucket = new BulkTokenBucket(options.bulkBytesPerSecond ?? 0);
     this.#reassembler = new EnvelopeReassembler({
       onRejected: (reason) => this.#options.onError?.(
@@ -278,19 +274,11 @@ export class DeviceLink {
   }
 
   /**
-   * 设备改了优先级顺序（§6.2）。生效路径可能因此换掉，Host 照常 announce——
-   * 手机侧把自己的出站路径也切过去。
-   */
-  setPathPreference(preference: readonly PathKind[]): void {
-    this.#announce(this.#selector.setPreference(preference));
-  }
-
-  /**
    * 一条路径的出站出口（重新）挂上。**幂等**：同一个 `kind` 重复调用只更新出口引用。
    *
    * ## 为什么必须幂等
    *
-   * LAN / P2P 的调用方是**每收到一帧**就调一次（`host-service` 的 `onEnvelope` 把随帧传下来的
+   * LAN 的调用方是**每收到一帧**就调一次（`host-service` 的 `onEnvelope` 把随帧传下来的
    * 出口原样转给这里）。如果这里顺手重建多路复用器，`stop()` 会清掉队列里已封好、还没写进
    * socket 的 `bulk` 帧——它们的发送序号在 `seal()` 时就消耗掉了，对端收到的是一个**永久**
    * 空洞（见 `outbound-mux.ts` 文件头），表现为「下载卡死，重连才好」。
@@ -321,8 +309,7 @@ export class DeviceLink {
       ...(this.#options.onQueueDiagnostic === undefined ? {} : {
         onQueueDiagnostic: (sample: OutboundQueueDiagnostic) => this.#options.onQueueDiagnostic?.(kind, sample),
       }),
-      // 出口不能在这里捕获：调用方会逐帧换一个新的 sink 对象（`p2p-manager` 每个消息都新建
-      // 一个），捕获构造时那一个会把帧写进一条已经作废的 socket。
+      // 出口不能在这里捕获：调用方可能在后续帧到来时替换 sink 对象，捕获构造时那一个会把帧写进一条已经作废的 socket。
       write: (envelope) => {
         const sink = this.#sinks.get(kind);
         if (sink === undefined) throw new Error("path_unavailable");

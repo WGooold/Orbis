@@ -6,6 +6,8 @@ Status: accepted
 
 关联：[ADR-0039](0039-content-change-signals.md)、[ADR-0041](0041-history-paging-edge-trigger.md)、[ADR-0042](0042-bounded-shadow-bitmaps.md)
 
+2026-10-30：本文的 17 项约束及后续 UI feature 已归入 [ADR-0051 冻结基线](0051-ui-style-motion-and-visual-stability-freeze.md)。相关设计与修改先查该索引；本文继续保留具体决策与历史验收证据。卡片旁操作中的旧别名 / 下载方案已被后续实现替换，当前适用范围按该基线 S14 / S20，不恢复已移除按钮。
+
 ## Context
 
 `ui-polish` 工作树原先只有未提交的 iOS 界面改动，没有本轮的 ADR；Android 尚未实现。

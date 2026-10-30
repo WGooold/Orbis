@@ -90,7 +90,7 @@ Android API 35：19 项设备用例全部通过（含 4 项聊天视口、1 项 
 单项确认继续使用覆盖面板；多步骤交互使用可切换的面板并保存各项草稿。通知覆盖在聊天视口上方，避免插入提示时移动阅读位置。
 主分支新增控件接入共用字号与输入聚焦组件，连接页复用顶栏的重连入口。
 
-- iOS：172 项核心测试通过，模拟器 Debug 构建和应用包 WebRTC 检查通过。
+- iOS：172 项核心测试通过，模拟器 Debug 构建和应用包运行时依赖检查通过。
 - Android：478 项单元测试全部通过，Debug 和 AndroidTest APK 构建通过。
 - iOS UI：整组 15 项中先通过 14 项；长回复夹具仍发送新版状态模型会忽略的旧生命周期事件，
   改成具有连续来源序号的 `session.patch` 后，长回复、审批、工具导出 / 交互草稿、完整内容四项定向回归全部通过。
@@ -119,7 +119,7 @@ Android API 35：19 项设备用例全部通过（含 4 项聊天视口、1 项 
 2026-10-29：两端将会话别名、目录新建 / 会话菜单、下载动作作为卡片同级操作。
 侧边圆面统一为 36pt / dp、图标 18pt / dp、触控区 48pt / dp，减轻阴影；
 利用触控区自身留白保持约 6pt / dp 的可见间距，不再额外叠加列表间距。
-供应商操作预留等宽槽，内容卡片的右边缘保持对齐。连接优先级使用连续文字行与小按钮，取消每行静态内容的凸起框。
+供应商操作预留等宽槽，内容卡片的右边缘保持对齐。当时的连接优先级使用连续文字行与小按钮；该设置及其逻辑已由 ADR-0050 删除。
 聊天复制、通知关闭等依附内容的操作继续就近布局。
 
 - Android：Debug 与 AndroidTest APK 构建通过；目录筛选与文件浏览 5 项设备用例通过，另复跑 1 项深色目录用例通过。
@@ -130,3 +130,14 @@ Android API 35：19 项设备用例全部通过（含 4 项聊天视口、1 项 
 - 首轮核心回归：Android 483 项、iOS 175 项通过。Android lint 被未修改的 `StreamingText.kt:96` 两处 `WrongConstant` 阻塞。
 
 日志、源码快照和截图保存在忽略目录 `.scratch/adjacent-actions/`；`refined-light.png` / `refined-dark.png` 为最终截图拼图。
+
+## 2026-10-30：侧边栏会话卡片统一两行
+
+- 基线：ADR-0051 的 r2 修订，修改 S19，关联 S08、S15、V18；feature 总数仍为 60。同步根目录两个本机指南及 iOS / Android 对齐记录。
+- 两端保留原有满宽卡片，标题统一预留两行；短标题不收缩，长标题最多两行并尾部省略。按文本自然高度布局，不锁死整卡高度；不改变材质、图标、状态、provider 和选择标记槽。
+- iOS：池内 `Orbis Adjacent Actions`（375pt、iOS 27.0）Debug 构建通过；`testDrawerCardsKeepUniformGeometryForShortAndLongTitles`、`testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions` 共 2 项通过。覆盖长短标题等宽等高、浅 / 深色、系统 XXXL 设置和多选 / 归档 / 恢复。现有正文 token 为固定字号，本轮没有新增 Dynamic Type 正文支持。
+- Android：池内 `Orbis_UI_Polish_35`（API 35）Debug / AndroidTest 构建通过；`SessionDrawerLayoutInstrumentedTest` 2 项通过，覆盖 360dp 窄宽度、浅 / 深色、1.0 / 1.5 字体缩放，以及长按多选前后几何。
+- 明暗及大字体设置截图已复核。iOS 旧多选用例的目标原位于视口边缘，XCTest 合成长按会自动滚动；改用显式两行预览夹具把两个目标排到目录前部，再严格比较选择前后 frame。此前失败结果保留，不把自动滚动误记为卡片高度变化。
+- 证据：`.scratch/sidebar-uniform/ios-layout-final.xcresult`、`ios-layout-final.log`、`android-layout.log`、`ios-final-screenshots/` 与 `android-screenshots/drawer-layout-*.png`；此前两次 iOS 结果和日志仍保留在同目录。构建产物来源与 SHA-256 记录在 `artifacts.json`，此前模拟器 App 保留在 `prior/`，未知状态不标作已验证。
+- 全程使用共享池内既有设备和固定构建缓存，按 owner 独占；Xcode 关闭并行克隆，Android 全部安装 / 测试明确指定 `emulator-5554`。未连接真实 Host、未安装到用户手机。设备归还后保留池内身份，未新建模拟器。
+- `git diff --check`、60 项稳定 ID / 本地引用存在性及两个本机指南一致性检查通过。真机、iOS 17 运行和全量 UI 回归未在本轮执行。

@@ -65,6 +65,7 @@ func deliveryTitle(_ delivery: String) -> String { delivery == "steer" ? "插入
 func runtimeStatusTitle(_ status: String) -> String {
     switch status {
     case "running": return "运行中"
+    case "compacting": return "压缩中"
     case "waiting", "waiting_interaction", "waiting_local_interaction": return "等待确认"
     case "error": return "异常"
     case "idle": return "空闲"
@@ -480,7 +481,7 @@ func contextUsagePercent(_ usage: RuntimeContextUsage?) -> Double? {
 }
 
 func queueStateTitle(_ state: String) -> String {
-    ["accepted": "已排队", "queued": "排队中", "sending": "正在发送", "delivered": "已送达", "applied": "已应用", "cancelled": "已撤回", "rejected": "已拒绝", "not_cancelable": "无法撤回", "failed": "发送失败", "expired": "已过期"][state] ?? state
+    ["accepted": "已排队", "queued": "排队中", "submitting": "提交中", "sending": "正在发送", "delivered": "已送达", "applied": "已应用", "cancelled": "已撤回", "rejected": "已拒绝", "not_cancelable": "无法撤回", "failed": "发送失败", "expired": "已过期"][state] ?? state
 }
 
 func interactionDraftKey(host: HostPairing?, sessionId: String?, request: InteractionRequest) -> String {

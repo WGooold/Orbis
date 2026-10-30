@@ -4,6 +4,7 @@ import {
   RecoverableSessionSource,
   SessionSyncPreparer,
   type AgentKey,
+  type RemoteSessionEntry,
   type RuntimeCommand,
   type RuntimeEvent,
   type ToolContentLocator,
@@ -11,6 +12,10 @@ import {
   type ToolContentReadRequest,
 } from "@orbis/protocol";
 import { ClaudeTranscriptReader, findClaudeTranscript, type ClaudeTranscriptFacts } from "./claude-transcript.js";
+
+/** Phone prompts waiting for their transcript row; older ones fall back to the device rule. */
+const MAX_PHONE_PROMPTS = 16;
+const PHONE_PROMPT_TTL_MS = 10 * 60_000;
 
 type SessionSyncRequest = Extract<RuntimeCommand, { type: "session.sync" }>;
 type SessionSnapshot = Extract<RuntimeEvent, { type: "session.snapshot" }>;
@@ -47,6 +52,11 @@ export class ClaudeSessionHistory {
   #queue: Promise<void> = Promise.resolve();
   #closed = false;
   #facts = "";
+  /** ADR-0049 §2: prompts Mods accepted from the phone, in submission order. */
+  readonly #prompts: { clientMessageId: string; text: string; after: number; at: number }[] = [];
+  /** Transcript uuid → phone messageId, once a prompt claimed its row. */
+  readonly #claims = new Map<string, string>();
+  readonly #annotated = new WeakMap<RemoteSessionEntry, RemoteSessionEntry>();
 
   constructor(sessionId: string, configDir: string, publish: (event: Published) => void,
     options: ClaudeSessionHistoryOptions = {}) {
@@ -82,6 +92,17 @@ export class ClaudeSessionHistory {
   }
 
   hasEntry(uuid: string): boolean { return this.#reader?.projection.has(uuid) ?? false; }
+
+  /**
+   * ADR-0049 §2: Mods submissions carry no native identity, so the Host remembers the exact
+   * text it submitted. Only a later user row with exactly that text can claim the phone id;
+   * a rewritten prompt stays unclaimed and the device falls back to source authority.
+   */
+  expectPrompt(clientMessageId: string, text: string, now = Date.now()): void {
+    if (this.#prompts.some(prompt => prompt.clientMessageId === clientMessageId)) return;
+    this.#prompts.push({ clientMessageId, text: text.trim(), after: this.#reader?.projection.entries.length ?? 0, at: now });
+    while (this.#prompts.length > MAX_PHONE_PROMPTS) this.#prompts.shift();
+  }
 
   readTool(owner: string, request: ToolContentReadRequest, signal?: AbortSignal): Promise<ToolContentPage> {
     if (this.#closed) return Promise.reject(new ToolContentReadError("content_unavailable"));
@@ -131,7 +152,37 @@ export class ClaudeSessionHistory {
   }
 
   #projected() {
-    return (this.#reader?.projection.entries ?? []).map((entry, order) => this.#tools.entry(entry, order));
+    return (this.#reader?.projection.entries ?? []).map((entry, order) => this.#withClientId(this.#tools.entry(entry, order)));
+  }
+
+  #withClientId(entry: RemoteSessionEntry): RemoteSessionEntry {
+    const clientMessageId = this.#claims.get(entry.entryId);
+    if (clientMessageId === undefined) return entry;
+    const cached = this.#annotated.get(entry);
+    if (cached !== undefined) return cached;
+    const message = entry.data.message as Record<string, unknown>;
+    const annotated = { ...entry, data: { ...entry.data, message: { ...message, clientMessageId } } };
+    this.#annotated.set(entry, annotated);
+    return annotated;
+  }
+
+  #claimPrompts(now = Date.now()): void {
+    while (this.#prompts.length > 0 && now - this.#prompts[0]!.at > PHONE_PROMPT_TTL_MS) this.#prompts.shift();
+    if (this.#prompts.length === 0) return;
+    const entries = this.#reader?.projection.entries ?? [];
+    const claimed = new Set(this.#claims.keys());
+    for (const prompt of [...this.#prompts]) {
+      const row = entries.slice(Math.min(prompt.after, entries.length)).find(entry => {
+        if (claimed.has(entry.entryId) || entry.type !== "message") return false;
+        const message = entry.data.message as { role?: unknown; content?: unknown } | undefined;
+        return message?.role === "user" && userText(message.content) === prompt.text;
+      });
+      if (row === undefined) continue;
+      claimed.add(row.entryId);
+      this.#claims.set(row.entryId, prompt.clientMessageId);
+      while (this.#claims.size > 256) this.#claims.delete(this.#claims.keys().next().value!);
+      this.#prompts.splice(this.#prompts.indexOf(prompt), 1);
+    }
   }
 
   async #refreshNow(): Promise<void> {
@@ -149,6 +200,7 @@ export class ClaudeSessionHistory {
       const reset = await this.#reader.read();
       if (this.#closed) return;
       if (reset) this.#preparer.invalidate();
+      this.#claimPrompts();
       const projection = this.#reader.projection;
       this.source.transaction(() => {
         this.source.reconcile(this.#projected(), projection.leafId);
@@ -187,4 +239,12 @@ export class ClaudeSessionHistory {
     }
     return undefined;
   }
+}
+
+function userText(content: unknown): string | undefined {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return undefined;
+  const texts = content.flatMap(block => block !== null && typeof block === "object" && (block as { type?: unknown }).type === "text" &&
+    typeof (block as { text?: unknown }).text === "string" ? [(block as { text: string }).text] : []);
+  return texts.length === content.length ? texts.join("\n").trim() : undefined;
 }

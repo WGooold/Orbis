@@ -92,11 +92,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
-    // P2P 打洞（M5）：WebRTC DataChannel。NAT 穿透由 ICE/STUN 内置，
-    // DataChannel 一条消息=一个 v2.frame，加密仍由我们的 Envelope E2E 负责。
-    // WebRTC：官方 org.webrtc:google-webrtc 只在已死的 JCenter 上，改用 getstream 维护的
-    // Maven Central fork（API 兼容，包名仍是 org.webrtc）。
-    implementation("io.getstream:stream-webrtc-android:1.3.8")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     // E2E 加密的 X25519：直接用 BC 的 RFC 7748 底层 API（不走 JCE provider，

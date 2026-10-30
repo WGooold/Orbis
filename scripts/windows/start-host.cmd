@@ -25,5 +25,5 @@ if "%APPDATA%"=="" set "APPDATA=%USERPROFILE%\AppData\Roaming"
 start "Orbis Host" /min cmd /c "node scripts\host-pair.mjs --codex >> data\host-pair.log 2>> data\host-pair.err.log"
 
 echo Started Orbis Host in a new minimized window.
-echo   - ready check: data\host-pair.log shows "started" / "P2P enabled" / "Codex backend ready"
+echo   - ready check: data\host-pair.log shows "started" / "Codex backend ready"
 echo   - stop: close that minimized window (taskkill /F /IM node.exe also kills Pi; use with care)

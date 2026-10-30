@@ -31,16 +31,12 @@ struct RelayTransportTests {
         #expect(host.hostId == qr.hostId)
         #expect(host.pskRoot.count == 43)
         let transport = RelayTransport()
-        // Optional native setup failures must leave the authenticated Relay usable.
-        var p2pAttempts = 0
-        transport.p2pFactory = { _ in p2pAttempts += 1; throw PairingError.unsupported }
         defer { transport.disconnect() }
         var received: [[String: Any]] = []
         var connection: ConnectionState = .offline
         transport.connect(pairing: host, identity: identity, receive: { message, _ in received.append(message) }, state: { state, _ in connection = state })
         try await waitUntil { connection == .secured && received.contains { $0["type"] as? String == "fixture.ping.echoed" } }
         #expect(received.contains { $0["type"] as? String == "fixture.large" && ($0["text"] as? String)?.count == 20_000 })
-        #expect(p2pAttempts >= 1)
         // Exercise outbound fragmentation too, not just inbound history.
         let text = String(repeating: "从 iOS 发出的加密消息", count: 2000)
         #expect(transport.send(["type": "fixture.echo", "text": text]))
@@ -100,70 +96,12 @@ struct RelayTransportTests {
         #expect(connection == .secured)
     }
 
-    #if canImport(WebRTC)
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["ORBIS_TEST_NODE"] != nil && ProcessInfo.processInfo.environment["ORBIS_TEST_DATACHANNEL_MODULE"] != nil,
-                   "Native loopback needs WebRTC linked and ORBIS_TEST_DATACHANNEL_MODULE pointing to node-datachannel's ESM entry."))
-    func nativeWebRTCDataChannelHostSignalingEncryptedTrafficAndPathFallback() async throws {
-        let node = try #require(ProcessInfo.processInfo.environment["ORBIS_TEST_NODE"])
-        let module = try #require(ProcessInfo.processInfo.environment["ORBIS_TEST_DATACHANNEL_MODULE"])
-        let fixture = try #require(Bundle.module.url(forResource: "relay", withExtension: "mjs", subdirectory: "Fixtures"))
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-ios-p2p-test-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let qrFile = folder.appendingPathComponent("qr.json")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: node)
-        process.arguments = [fixture.path, qrFile.path, "", "p2p", module]
-        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.standardError
-        try process.run()
-        defer { if process.isRunning { process.terminate() }; process.waitUntilExit() }
-        try await waitUntil { FileManager.default.fileExists(atPath: qrFile.path) }
-        let qr = try PairingQR.parse(String(contentsOf: qrFile, encoding: .utf8)), identity = DeviceIdentity.generate()
-        let pairingTransport = RelayTransport()
-        let host: HostPairing = try await withCheckedThrowingContinuation { continuation in
-            pairingTransport.pair(qr: qr, deviceName: "Native P2P loopback", identity: identity) { continuation.resume(with: $0) }
-        }
-        let transport = RelayTransport()
-        // Loopback needs only host candidates; no external DNS or STUN is used.
-        transport.p2pFactory = { _ in try P2PTransport.makeNativePeer(stunServers: []) }
-        defer { transport.disconnect() }
-        var received: [[String: Any]] = []
-        var connection: ConnectionState = .offline
-        transport.connect(pairing: host, identity: identity, receive: { message, _ in received.append(message) }, state: { state, _ in connection = state })
-        try await waitUntil { received.contains { $0["type"] as? String == "fixture.p2p.ready" } }
-        #expect(connection == .secured)
-        try await waitUntil { received.contains { $0["type"] as? String == "fixture.p2p.large" && ($0["text"] as? String)?.count == 52_000 } }
-        let text = String(repeating: "实际 P2P 加密消息", count: 2000)
-        #expect(transport.send(["type": "fixture.echo", "text": text]))
-        try await waitUntil { received.contains { $0["text"] as? String == text && $0["path"] as? String == "p2p" } }
-        #expect(transport.sendBinary(Data(repeating: 0x42, count: 200_000)))
-        try await waitUntil { received.contains { $0["type"] as? String == "fixture.p2p.binary" && $0["bytes"] as? Int == 200_000 } }
-        #expect(transport.send(["type": "fixture.close-relay"]))
-        try await waitUntil { received.contains { $0["type"] as? String == "fixture.relay.closed" } }
-        #expect(connection == .secured)
-        #expect(transport.send(["type": "fixture.echo", "text": "P2P survives Relay close"]))
-        try await waitUntil { received.contains { $0["text"] as? String == "P2P survives Relay close" && $0["path"] as? String == "p2p" } }
-        try await waitUntil { received.contains { ($0["fixtureGeneration"] as? Int ?? 0) >= 2 } }
-        #expect(transport.send(["type": "fixture.close-p2p"]))
-        try await waitUntil { received.contains { $0["type"] as? String == "fixture.p2p.closed" } }
-        #expect(transport.send(["type": "fixture.echo", "text": "Relay fallback after P2P"]))
-        try await waitUntil { received.contains { $0["text"] as? String == "Relay fallback after P2P" && $0["path"] as? String == "relay" } }
-        #expect(connection == .secured)
-    }
-    #endif
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["ORBIS_TEST_NODE"] != nil, "Two Host loopback needs Node.js."))
     func simultaneousHostsKeepAuthenticatedTrafficAndReconnectsIndependent() async throws {
-        try await runTwoHosts(useP2P: false)
+        try await runTwoHosts()
     }
 
-    #if canImport(WebRTC)
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["ORBIS_TEST_NODE"] != nil && ProcessInfo.processInfo.environment["ORBIS_TEST_DATACHANNEL_MODULE"] != nil,
-                   "Two native Host loopback needs WebRTC and node-datachannel."))
-    func simultaneousNativePeersKeepFactoryKeysAndPathClosuresIndependent() async throws {
-        try await runTwoHosts(useP2P: true)
-    }
-    #endif
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["ORBIS_TEST_NODE"] != nil, "Pairing lifecycle fixture needs Node.js."))
     func cancelledPairingCannotOpenSocketsOrCloseAReplacementConnection() async throws {
@@ -188,7 +126,6 @@ struct RelayTransportTests {
             initial.pair(qr: qr, deviceName: "initial", identity: identity) { continuation.resume(with: $0) }
         }
         let transport = RelayTransport()
-        transport.p2pFactory = { _ in nil }
         defer { transport.disconnect() }
         var failures = 0, successes = 0, echoes = 0
         var state: ConnectionState = .offline
@@ -215,7 +152,7 @@ struct RelayTransportTests {
         #expect(transport.send(["type": "fixture.echo", "text": "replacement survives"]))
     }
 
-    private func runTwoHosts(useP2P: Bool) async throws {
+    private func runTwoHosts() async throws {
         let node = try #require(ProcessInfo.processInfo.environment["ORBIS_TEST_NODE"])
         let fixture = try #require(Bundle.module.url(forResource: "relay", withExtension: "mjs", subdirectory: "Fixtures"))
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-two-hosts-\(UUID().uuidString)")
@@ -228,8 +165,7 @@ struct RelayTransportTests {
         for name in ["first", "second"] {
             let qrFile = folder.appendingPathComponent(name + ".json"), process = Process()
             process.executableURL = URL(fileURLWithPath: node)
-            var arguments = [fixture.path, qrFile.path, "", useP2P ? "p2p" : ""]
-            if useP2P { arguments.append(try #require(ProcessInfo.processInfo.environment["ORBIS_TEST_DATACHANNEL_MODULE"])) }
+            let arguments = [fixture.path, qrFile.path]
             process.arguments = arguments
             var environment = ProcessInfo.processInfo.environment
             environment["ORBIS_FIXTURE_HOST_ID"] = "host-" + name
@@ -245,15 +181,12 @@ struct RelayTransportTests {
         }
         #expect(hosts[0].hostId != hosts[1].hostId && hosts[0].pskRoot != hosts[1].pskRoot)
         let first = RelayTransport(), second = RelayTransport()
-        for transport in [first, second] {
-            transport.p2pFactory = { _ in useP2P ? try P2PTransport.makeNativePeer(stunServers: []) : nil }
-        }
         defer { first.disconnect(); second.disconnect() }
         var firstMessages: [[String: Any]] = [], secondMessages: [[String: Any]] = []
         var firstState: ConnectionState = .offline, secondState: ConnectionState = .offline
         first.connect(pairing: hosts[0], identity: identity, receive: { message, _ in firstMessages.append(message) }, state: { state, _ in firstState = state })
         second.connect(pairing: hosts[1], identity: identity, receive: { message, _ in secondMessages.append(message) }, state: { state, _ in secondState = state })
-        let readyType = useP2P ? "fixture.p2p.ready" : "fixture.ping.echoed"
+        let readyType = "fixture.ping.echoed"
         try await waitUntil { firstMessages.contains { $0["type"] as? String == readyType } && secondMessages.contains { $0["type"] as? String == readyType } }
         #expect(firstState == .secured && secondState == .secured)
         #expect(first.send(["type": "fixture.echo", "text": "only first"]))
@@ -261,16 +194,15 @@ struct RelayTransportTests {
         try await waitUntil { firstMessages.contains { $0["text"] as? String == "only first" } && secondMessages.contains { $0["text"] as? String == "only second" } }
         #expect(!firstMessages.contains { $0["text"] as? String == "only second" })
         #expect(!secondMessages.contains { $0["text"] as? String == "only first" })
-        #expect(first.send(["type": useP2P ? "fixture.close-p2p" : "fixture.close"]))
-        if useP2P { try await waitUntil { firstMessages.contains { $0["type"] as? String == "fixture.p2p.closed" } } }
-        else { try await waitUntil { firstState == .offline } }
+        #expect(first.send(["type": "fixture.close"]))
+        try await waitUntil { firstState == .offline }
         #expect(secondState == .secured)
         #expect(second.send(["type": "fixture.echo", "text": "second survives first path close"]))
-        try await waitUntil { secondMessages.contains { $0["text"] as? String == "second survives first path close" && $0["path"] as? String == (useP2P ? "p2p" : "relay") } }
-        if !useP2P { try await waitUntil { firstMessages.contains { $0["fixtureGeneration"] as? Int == 2 } } }
+        try await waitUntil { secondMessages.contains { $0["text"] as? String == "second survives first path close" && $0["path"] as? String == "relay" } }
+        try await waitUntil { firstMessages.contains { $0["fixtureGeneration"] as? Int == 2 } }
         first.disconnect()
         #expect(second.send(["type": "fixture.echo", "text": "second survives first disconnect"]))
-        try await waitUntil { secondMessages.contains { $0["text"] as? String == "second survives first disconnect" && $0["path"] as? String == (useP2P ? "p2p" : "relay") } }
+        try await waitUntil { secondMessages.contains { $0["text"] as? String == "second survives first disconnect" && $0["path"] as? String == "relay" } }
         #expect(secondState == .secured)
     }
 

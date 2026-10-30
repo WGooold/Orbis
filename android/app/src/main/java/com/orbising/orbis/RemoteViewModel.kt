@@ -185,7 +185,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             viewModelScope.launch(Dispatchers.IO) {
                 runCatching { SessionCatalogStore(getApplication(), id).clear() }
                 runCatching { stores.sessionGraph.clearDevice(credential) }
-                runCatching { RelayClient().apply { setApplicationContext(getApplication()) }.revoke(credential) }
+                runCatching { RelayClient().revoke(credential) }
             }
         }
         setActiveHost(activeHostId.value)
@@ -216,7 +216,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     pairingErrors.value = "配对二维码已过期，请在电脑上重新生成（配对窗口只有几分钟）"
                     return@launch
                 }
-                val relay = RelayClient().apply { setApplicationContext(getApplication()) }
+                val relay = RelayClient()
                 val paired = runCatching { relay.pair(relayUrl.trim(), code, Build.MODEL) }.getOrElse { error ->
                     pairingErrors.value = localizedError(error, "配对失败，请检查中继服务器地址、配对码和网络连接")
                     return@launch
@@ -279,10 +279,12 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     // user selects which one with the Host switcher.
 
     fun refreshSessions() = active()?.refreshSessions()
+    fun refreshHome() = active()?.refreshHome()
 
     fun refreshDiagnostics(cursor: String? = null) = active()?.refreshDiagnostics(cursor)
 
     fun refreshProviderFacts() = active()?.refreshProviderModel()
+    fun refreshHostModel(domains: List<String> = HOST_MODEL_DOMAINS, force: Boolean = false) = active()?.refreshHostModel(domains, force)
 
     /** 前台和定期核对按领域重读；聊天与通知仍保留各自事务和恢复水位。 */
     fun reconcileModels() {
@@ -329,9 +331,13 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         active()?.createSession(agentKind, cwd, expectedHostId) == true
 
     fun loadAgentProviders(kind: String) = active()?.loadAgentProviders(kind)
+    fun querySubscription(provider: AgentProvider, expectedHostId: String?) = active()?.querySubscription(provider, expectedHostId)
 
     fun switchAgentProvider(provider: AgentProvider, expectedHostId: String?) =
         active()?.switchAgentProvider(provider, expectedHostId)
+
+    fun removeAgentProviders(providers: List<AgentProvider>, expectedHostId: String?) =
+        active()?.removeAgentProviders(providers, expectedHostId)
 
     fun clearActivationNotice() = active()?.clearActivationNotice()
 
@@ -399,6 +405,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun readChangeDetail() = active()?.readChangeDetail()
     fun rememberChangePosition(fileId: String, index: Int, offset: Int) = active()?.rememberChangePosition(fileId, index, offset)
 
+    fun resendPendingSend(messageId: String): String? = active()?.resendPendingSend(messageId)
+    fun restorePendingSend(messageId: String): String? = active()?.restorePendingSend(messageId)
+    fun discardPendingSend(messageId: String) = active()?.discardPendingSend(messageId)
     fun openToolDetail(runtimeId: String, summary: ToolSummary,
         part: String = summary.contents.firstOrNull { it.availability != "absent" }?.part ?: "arguments",
     ) = active()?.openToolDetail(runtimeId, summary, part)
@@ -457,9 +466,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun removeUploads(taskIds: Set<String>) = active()?.removeUploads(taskIds)
 
-    fun pathPreference(): List<String> = stores.pathPreference.load()
 
-    fun setPathPreference(order: List<String>) = active()?.setPathPreference(order)
 
     private fun connectionFor(hostId: String): HostConnection? = synchronized(lock) { connections[hostId] }
 

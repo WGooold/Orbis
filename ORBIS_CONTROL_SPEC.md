@@ -223,7 +223,7 @@ Runtime B → leaf = branch-b-leaf
 4. Relay Server；
 5. Remote Interaction SDK。
 
-电脑上的 Host 通过出站长连接接入 Relay，注册身份为 `role = "host"`；Relay 只接受这一个网关角色，因此它手里没有任何 agent 连接，也没有可下发的明文会话内容。手机扫描 Host 打印的配对二维码完成配对（信任根是二维码里的 Host 公钥），之后与 Host 之间流动的是端到端加密的 Envelope：同一条信封可以走 LAN 直连、P2P 直打或被中继兜底，Host 决定当前走哪条并通知手机。
+电脑上的 Host 通过出站长连接接入 Relay，注册身份为 `role = "host"`；Relay 只接受这一个网关角色，因此它手里没有任何 agent 连接，也没有可下发的明文会话内容。手机扫描 Host 打印的配对二维码完成配对（信任根是二维码里的 Host 公钥），之后与 Host 之间流动的是端到端加密的 Envelope：同一条信封可以走 LAN 直连或 Relay 中继；Host 固定优先使用已握手的 LAN，不可用时回落 Relay，并通知手机。设置页不提供路径排序（ADR-0050）。
 
 Pi 扩展负责：
 
@@ -638,7 +638,8 @@ APP 的处理规则：
 - `headless`：不要窗口。
 - `auto`：交给 Host 判定。Windows 上只能看 `SESSIONNAME` 这类启发式信号，而从服务、计划任务、SSH 或 IDE 内部启动的 Host 都拿不到它——于是**一律**降级成无头。旧客户端根本不发 `spawnMode`，所以缺省值不能落在这一档上，否则「手机要不到窗口」就是必然。
 
-- **回执就是事实。** `session.activated.spawnMode` 是 Host 真正采用的那一档，手机据此显示（如「此会话无头（电脑上无窗口）」），不自己推断。请求了 `tui` 但本机没有开窗入口（PATH 上没有 `wt.exe`）时，Host 降级为 headless 并在回执里**说 headless**——绝不假装开过窗。
+- **回执就是事实。** `session.activated.spawnMode` 是 Host 真正采用的那一档，手机不自己推断。请求了 `tui`（含缺省值）但本机没有开窗入口或开窗失败时，Host 返回 `spawn_failed`，不改成无头启动。只有 `auto` 允许在没有桌面会话或受支持的终端入口时选择 headless。
+- **macOS 使用 Terminal。** Host 在私有目录生成一次性 `.command` 文件，逐项引用路径和参数，通过系统的 `open -a Terminal` 打开，保留新建或恢复会话参数、扩展和本 Host 的 loopback 目录。等待启动结果及 Pi 的 PID 握手后才回执；进程计数和重复恢复检查使用 Pi 的 PID，不使用短命的开窗进程 PID。握手成功或启动失败后清理本次临时文件。
 - **开窗命令走 PowerShell 的 `-EncodedCommand`。** Windows Terminal 会把命令行里的引号重新拼接，含空格的路径（cwd、会话文件、会话名）会被拆成多个 token，整条命令甚至会被当成一个可执行文件名（0x80070002，与 §12 里 Codex 开窗是同一个坑）。base64 的 UTF-16LE 是单个 token，`wt` 原样透传。
 - **无头进程的 stdin 必须保持打开。** Pi 的 rpc 模式把「stdin 读到 EOF」当作「输入结束」，会干净退出（exit 0）。Host 若按 `stdio: "ignore"` 拉起它，子进程的 stdin 立刻 EOF：进程被记成「拉起成功」，几秒后自己消失——电脑上没有窗口，手机上也**永远等不到这个会话**（`runtime.online` 不会来），而 stderr 同样被丢弃，连一行痕迹都不留。所以 stdin 用保持打开的管道，stderr 收进 Host 日志。
 
@@ -894,7 +895,7 @@ Queue ID 不能与 Session entry ID 混用。具体 queue 语义仍遵循 Pi 的
 - 下载在产生文件的 Pi 进程已经退出时仍然可用（由 Host 就地读盘服务）；Host 服务不了时如实回报失败，不转交给任何 runtime；
 - 文件上传的续传命中同一份 `.part`、持久前缀单调不减、Host 自查 sha256 之后才 `finished`、空洞/重复分片被当作隐式 NACK、`directory` 不存在时创建而不是静默换地方；
 - 附件路径以 `附件：<path>` 拼进正文交给 agent，且不做图片嗅探或 content parts；
-- 会话激活：L1 用会话记录里的 `cwd` 拉起、L2 用手机选定的 `cwd` 新建、`cwd` 已不存在时拒绝且**不换目录**；`browse` 的 `path` 为空时返回盘符、非空时返回子目录与父目录；请求 `tui` 但本机开不出窗口时，回执如实说 `headless`；
+- 会话激活：L1 用会话记录里的 `cwd` 拉起、L2 用手机选定的 `cwd` 新建、`cwd` 已不存在时拒绝且**不换目录**；`browse` 的 `path` 为空时返回盘符、非空时返回子目录与父目录；请求 `tui` 但本机开不出窗口时返回 `spawn_failed`，不创建无头进程；
 - 未认证设备、协议错误和 runtime 不可用时 fail closed。
 
 ---

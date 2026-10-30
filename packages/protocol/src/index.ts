@@ -13,6 +13,7 @@ import { ToolSummarySchema, ToolContentReadRequestSchema, ToolContentCancelSchem
   ToolInventoryPatchSchema, ToolInventoryChangedSchema, ToolInventoryProducedSchema, ToolInventoryReferenceSchema,
   ToolInventoryOpenRequestSchema, ToolInventoryOpenedSchema } from "./tool-activity.js";
 export * from "./notifications.js";
+export * from "./subscription-quota.js";
 export { RecoverableSessionSource } from "./session-source.js";
 export * from "./tool-activity.js";
 export * from "./tool-message-projection.js";
@@ -22,12 +23,14 @@ export * from "./tool-inventory-source.js";
 /**
  * 协议硬版本（ADR-0008 / ADR-0032 §7）。
  *
+ * 17：Host 轮次文件快照、元数据概况及按需差异读取（ADR-0052）。
+ * 16：Path 仅允许 LAN / Relay；固定 LAN 优先，删除路径偏好设置（ADR-0050）。
  * 13：客户端改为消费 Host 的显示投影（`session.snapshot` / `session.patch` 上的 `display`：
  * 窗口起点 `windowStart` + 渲染锚点 `anchor`），App 不再解释原生形状。版本号是**精确匹配**的：
  * 所有入站校验都是 `!== PROTOCOL_VERSION` 直接拒绝，没有兼容旧版的旁路——升版就是断代，
  * 两端必须一起更新。
  */
-export const PROTOCOL_VERSION = 16 as const;
+export const PROTOCOL_VERSION = 17 as const;
 
 /**
  * `protocol.error` 的 code：连接的对面用的是另一版协议。
@@ -452,7 +455,7 @@ export type V2Frame = z.infer<typeof V2FrameSchema>;
  * 这个枚举同时是**用户的可见事实**：手机聊天页顶部显示的就是它（§6.2「APP 侧显示当前走的是哪条路径」）。
  * 所以取值是稳定的对外契约，不是内部实现细节。
  */
-export const PathKindSchema = z.enum(["lan", "p2p", "relay"]);
+export const PathKindSchema = z.enum(["lan", "relay"]);
 export type PathKind = z.infer<typeof PathKindSchema>;
 
 // ─── 本机发现文件（Host ↔ Pi 扩展） ────────────────────────────────────────────
@@ -510,6 +513,11 @@ export const ChatMessageSchema = z.strictObject({
   toolName: z.string().optional(),
   isError: z.boolean().optional(),
   toolSummary: ToolSummarySchema.optional(),
+  /**
+   * ADR-0049 §2：这条用户消息由手机 `user_message` 产生时，后端在首次出现处带回原 `messageId`。
+   * 它只声明对应关系，不替代后端自己的 `messageId`；客户端据此精确对账本地待确认发送。
+   */
+  clientMessageId: z.string().min(1).max(256).optional(),
 });
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 
@@ -1167,22 +1175,6 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
   AgentStateRangeRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   // ── 诊断记录的分页读取（ADR-0032 模块 23）：快照只给目录，记录本身按游标一页页取。
   DiagnosticsRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
-  // ── P2P 信令（spec §6.1 / M5）。SDP 里已经烧好 ICE 候选（gather 完再发，非 trickle）：
-  // 信令只发生在建立连接时，不值得为省一两个包引入 candidate 增量消息。
-  // 手机请求 → Host 出 offer → 手机回 answer。全部走 E2E data 帧，Relay 零改动。
-  z.strictObject({ type: z.literal("p2p.request"), protocolVersion: z.literal(PROTOCOL_VERSION) }),
-  z.strictObject({
-    type: z.literal("p2p.offer"),
-    protocolVersion: z.literal(PROTOCOL_VERSION),
-    /** WebRTC session description（offer），ICE 候选已 gather 完毕。 */
-    sdp: z.string().min(1).max(16_384),
-  }),
-  z.strictObject({
-    type: z.literal("p2p.answer"),
-    protocolVersion: z.literal(PROTOCOL_VERSION),
-    /** WebRTC session description（answer），ICE 候选已 gather 完毕。 */
-    sdp: z.string().min(1).max(16_384),
-  }),
   // ── 接收方驱动的范围下载（ADR-0005）。设备发 read 索取一段，Host 只按范围应答：
   // 请求与响应都是 E2E 载荷（Relay 只按 hdr.to 路由，看不到 offset/长度），
   // 分片沿用既有 `bin` 帧。发送方不维护窗口/重传/进度，全部状态在设备侧。
@@ -1256,13 +1248,6 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
       * 与「打开了但接入失败」——那是这张状态卡唯一要回答的问题，所以必须由 Host 下发。
       */
      codexDesktop: CodexDesktopAttachSchema.nullable().optional(),
-  }),
-  // P2P 信令（M5）：Host→设备方向的 offer。与 DeviceE2ePayload 里的 request/answer 成对，
-  // SDP 里已烧好全部 ICE 候选（非 trickle）。
-  z.strictObject({
-    type: z.literal("p2p.offer"),
-    protocolVersion: z.literal(PROTOCOL_VERSION),
-    sdp: z.string().min(1).max(16_384),
   }),
   /**
    * 当前生效的传输路径（spec §6.2 / §14 B4）。

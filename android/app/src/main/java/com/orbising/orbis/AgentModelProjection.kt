@@ -30,7 +30,7 @@ internal fun RemoteState.applyAgentDomainProjection(
             runtime = runtime.copy(domainAvailability = runtime.domainAvailability + (name to domain.availability))
             // unknown/unavailable 保留最后已知值；availability 本身仍已登记在镜像内。
             if (domain.availability != "ready") {
-                if (name == "execution") runtime = runtime.copy(status = "unknown")
+                if (name == "execution") runtime = runtime.copy(status = "unknown", compactionPhase = null)
                 continue
             }
             val value = domain.value?.takeUnless { it is JsonNull }
@@ -46,7 +46,8 @@ internal fun RemoteState.applyAgentDomainProjection(
                 "execution" -> {
                     val phase = (value as? JsonObject)?.text("phase") ?: error("execution 缺少 phase")
                     require(phase in setOf("idle", "running", "waiting_local_interaction"))
-                    runtime = runtime.copy(status = phase)
+                    runtime = runtime.copy(status = phase,
+                        compactionPhase = ((value as? JsonObject)?.get("compaction") as? JsonObject)?.text("phase"))
                     conversation = conversation.copy(waitingLocalInteraction = phase == "waiting_local_interaction")
                 }
                 "model" -> runtime = if (value == null && domain.completeness == "complete") {
@@ -156,22 +157,36 @@ internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentSta
     domains["providers"]?.takeIf { it.availability == "ready" }?.value?.let { element ->
         val rows = ((element as? JsonObject)?.get("providers") as? JsonArray) ?: return@let
         val current = mutableMapOf<String, String>()
-        var providerState = state.agentProviders
+        val catalogs = mutableMapOf<String, List<AgentProvider>>()
+        val problems = mutableMapOf<String, String>()
         for (row in rows.filterIsInstance<JsonObject>()) {
             val kind = row.text("agentKind") ?: continue
-            // current 是 Host 供应商 profile id；会话归属只与原生 modelProvider 比较。
             row.text("modelProvider")?.takeIf(String::isNotBlank)?.let { current[kind] = it }
-            if (kind != providerState.kind) continue
-            val profiles = row["profiles"] as? JsonArray ?: continue
-            val providers = profiles.filterIsInstance<JsonObject>().mapNotNull { profile ->
-                val id = profile.text("id") ?: return@mapNotNull null
-                AgentProvider(id, kind, profile.text("name") ?: id, profile["enabled"]?.jsonPrimitive?.booleanOrNull == true,
-                    profile.text("mode") == "additive", profile["globalDefault"]?.jsonPrimitive?.booleanOrNull == true)
+            val profiles = row["profiles"] as? JsonArray
+            if (profiles == null || row.text("availability")?.let { it != "ready" } == true ||
+                row["profilesTruncated"]?.jsonPrimitive?.booleanOrNull == true) {
+                problems[kind] = "供应商清单尚未就绪，请刷新后重试"; continue
             }
-            providerState = providerState.copy(providers = providers,
-                loading = providerState.requestId != null, error = null)
+            val providers = profiles.filterIsInstance<JsonObject>().mapNotNull { profile ->
+                val id = profile.text("id")?.takeIf { it.isNotBlank() && it.length <= 128 } ?: return@mapNotNull null
+                AgentProvider(id, kind, profile.text("name") ?: id, profile["enabled"]?.jsonPrimitive?.booleanOrNull == true,
+                    profile.text("mode") == "additive", profile["globalDefault"]?.jsonPrimitive?.booleanOrNull == true,
+                    profile["subscriptionSupported"]?.jsonPrimitive?.booleanOrNull == true,
+                    profile["official"]?.jsonPrimitive?.booleanOrNull == true || profile["subscriptionSupported"]?.jsonPrimitive?.booleanOrNull == true)
+            }
+            if (providers.size != profiles.size || providers.size > 64 || providers.map { it.id }.toSet().size != providers.size) {
+                problems[kind] = "供应商清单格式无法识别，请刷新后重试"; continue
+            }
+            catalogs[kind] = providers
+            if (row["switching"]?.jsonPrimitive?.booleanOrNull == true) problems[kind] = "电脑正在切换供应商"
         }
-        state = state.copy(currentProviders = current, agentProviders = providerState)
+        var providerState = state.agentProviders
+        catalogs[providerState.kind]?.let { providers -> providerState = providerState.copy(providers = providers,
+            loading = providerState.requestId != null || providerState.pendingRemovals.isNotEmpty()) }
+        state = state.copy(currentProviders = current, providerCatalogs = catalogs, providerCatalogProblems = problems,
+            subscriptionQuotas = state.subscriptionQuotas.filter { (kind, snapshot) ->
+                catalogs[kind]?.any { it.enabled && it.id == snapshot.providerId && it.subscriptionSupported } == true
+            }, agentProviders = providerState)
     }
     return state
 }

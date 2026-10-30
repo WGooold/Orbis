@@ -2,9 +2,9 @@
 
 日期：2026-10-30。关联 [ADR-0052](../adr/0052-turn-file-changes-and-on-demand-diff.md)、[UI 基线 S21 / M13 / V19](../adr/0051-ui-style-motion-and-visual-stability-freeze.md)。
 
-工作树：`/Users/wgooold/Documents/orbis-turn-file-changes`；分支 `codex/adr-turn-file-changes`；基线 `375078cbbd9d7b3299ade6b24867ec5e8b3c65f1`。本次实现尚未提交或部署，未修改运行中的用户 Host。下文 `.artifacts/` 路径均相对此工作树，仅为本机保留的证据，不纳入 Git。
+工作树：`/Users/wgooold/Documents/orbis-turn-file-changes`；分支 `codex/adr-turn-file-changes`；初版基线 `375078cbbd9d7b3299ade6b24867ec5e8b3c65f1`，功能提交 `cf7d635`。后续合并纳入主线 `ee6f7c8`，保留固定 LAN / Relay、首页、消息对账与 Codex 生命周期更新。未部署或修改运行中的用户 Host。下文 `.artifacts/` 路径均相对此工作树，仅为本机保留的证据，不纳入 Git。
 
-## 已验证范围
+## 初版工作树已验证范围
 
 Host 核心测试覆盖净变化、既有脏文件、部分采集不伪造增删、非 Git、特殊内容、固定历史、断点读取、范围隔离、持久化与过期回收。协议使用 strict schema，元数据拒绝正文及超预算页面。coordinator 与 adapter 测试覆盖真实分派前基线、受控轮次归并、缺失起点、超时释放、下一轮提前开始及 canonical 锚点。
 
@@ -47,11 +47,28 @@ iOS UI 覆盖明暗、系统 XXXL 设置、强制减少动画路径、首尾边�
 
 基线定向结果：49 项中 38 通过、11 失败。环境为 macOS 27.2（26B123）darwin/arm64、Node 22.23.2、Vitest 4.1.11、Vite 8.2.2、TypeScript 5.9.3；复用本工作树依赖，未重新安装或编译基线。证据为 `.artifacts/turn-file-changes/host-base-selected-report.md`、`host-base-selected-comparison.json`、`host-base-selected-check.log` 及源码 SHA-256 清单。临时基线源码和夹具已在确认没有运行引用后清理，固定 Vite 缓存和验证日志保留。
 
+## 纳入主线后的合并验证
+
+2026-10-30，在功能提交 `cf7d635` 上整合主线 `ee6f7c8`，协议统一为 17。合并保留主线的两路径固定选路、首页加载 / 同步呈现、供应商及配额、乐观发送对账、Claude 历史与 Codex 压缩生命周期；没有恢复 P2P 或连接排序。ADR-0051 在 r13 基础上只追加 S21 / M13 / V19，更新为 r14 / 63 项，本机两个指南同步且保持忽略。
+
+| 范围 | 合并代码验证结果 | 本机证据 |
+| --- | --- | --- |
+| TypeScript | `npm run typecheck` 全量类型检查通过 | 本次工具执行 exit 0，无独立日志 |
+| Node 全量 | 149 文件，1,523 通过、7 失败、5 跳过；失败集合在目标主线源码中独立复现，本次合并无新增失败 | `.artifacts/turn-file-changes/main-merge-node-tests.log`、`main-merge-baseline-failures.log` |
+| TypeScript lint | 相对 main 的 26 个变更 TypeScript 文件全部通过 | `.artifacts/turn-file-changes/main-merge-lint.log` |
+| Android | 完整 534 项 JVM 通过；应用及 instrumentation Kotlin 源码编译通过，未重建 APK 或重跑设备 UI | `.artifacts/android-turn-file-changes/main-merge-validation.json` |
+| iOS | 完整 213 项核心测试 / 18 suites、generic Simulator Debug 构建及包依赖检查通过；未重复设备 UI | `.artifacts/turn-file-changes/ios-main-merge-validation.json` 及同前缀日志 |
+| 文档与规则 | 相对链接、63 项唯一 ID、原有 main 60 项规则保留、两个本机指南一致及忽略检查通过 | `.artifacts/turn-file-changes/merge-docs-check.json` |
+
+Node 剩余失败为 `codex-shim` 1 项、`desktop-terminal` 4 项、`sessions` 1 项、`runtime-log` 1 项，均为本机 macOS 下的既有 Windows 路径 / 平台预期。原先 `spawner` 的 4 项失败已随主线跨平台实现更新消失；不要再把初版 11 项失败数量用于合并版本。
+
+合并验证继续使用本工作树固定构建目录和独占 build lease，没有新建或使用模拟器。初版设备 UI 证据仍保留，但不能代表协议 17 合并版本已完成设备或真实后端验收。
+
 ## 交付与剩余边界
 
-Android 保留包为 `.artifacts/android-turn-file-changes/packages/app-debug.apk` 和测试 APK；iOS 模拟器 App 位于固定 DerivedData。各包哈希、来源和验证范围见对应 validation JSON。现存安装包不包含最后的租约恢复 / 缓存 / Android 文件名修复，最终源码只做了相应核心 / JVM 回归；不能把这些包当作最终源码的设备验收包。早先失败 / 重试的 iOS `.xcresult` 和诊断截图继续保留；不能仅凭后来的局部成功删除尚有诊断价值的记录。
+Android 保留包为 `.artifacts/android-turn-file-changes/packages/app-debug.apk` 和测试 APK；它们仍为初版协议 16，未包含最后租约恢复和文件名修复。iOS 固定 DerivedData 中的 App 已按协议 17 合并代码重建，原已通过 UI 验证的 App 保留在 `.artifacts/turn-file-changes/ios-main-merge-rollback/Orbis.app` 并核对原哈希。各包哈希、来源和验证范围见对应 validation JSON；合并版尚无设备 UI 验收，不能把旧包结果当作最终源码的设备结果。早先失败 / 重试的 iOS `.xcresult` 和诊断截图继续保留；不能仅凭后来的局部成功删除尚有诊断价值的记录。
 
-- 协议统一升级至 16，Claude bridge 升至 2；尚未安装到真实用户设备或发布 Host 包。
+- 合并后协议统一升级至 17（主线 16 已用于两路径断代），Claude bridge 升至 2、插件包 0.1.3；尚未安装到真实用户设备或发布 Host 包。
 - DSH Web 与未协调的电脑端启动明确为 partial；没有工具执行前的忽略 / 范围外路径补录。移动文件没有可靠来源证据时为删除 + 新增。
 - 快照只证明已声明工作区的时间窗净变化，无法排除所有用户 / 其他进程并发写入；不宣称所有文件都是助手修改。
 - 真实 Pi / Codex terminal / Desktop / Claude / DSH 模型轮次、真实手机网络、100 文件带宽 / 时延测量、多设备并发压力和完整无障碍操作尚未验收。

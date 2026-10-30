@@ -25,11 +25,6 @@ export type HostConfig = {
    * LAN 监听端口。缺省时用 `DEFAULT_LAN_PORT`（见 `lan-server.ts` 为什么要固定）。
    */
   lanPort: number | undefined;
-  /**
-   * P2P 打洞用的 STUN 服务器（spec §6.1 M5，如 "stun://stun.example.com:3478"）。
-   * 缺省从 relayUrl 的主机名推（同一个部署自带的 stun 端口），也可以显式覆盖。
-   */
-  stunServers: readonly string[];
 };
 
 export type LoadHostConfigOptions = {
@@ -52,10 +47,6 @@ export async function loadHostConfig(options: LoadHostConfigOptions): Promise<Ho
   const runtimeCredential = configuredCredential ?? stringField(agentConfig, "runtimeCredential");
   const adminToken = orbisEnvironment(env, "ADMIN_TOKEN") ?? stringField(hostConfig, "adminToken");
   const lanPort = numberField(orbisEnvironment(env, "LAN_PORT")) ?? numberField(hostConfig?.["lanPort"]);
-  const stunServers =
-    orbisEnvironment(env, "STUN_SERVERS")?.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0) ??
-    stringArrayField(hostConfig, "stunServers") ??
-    defaultStunServers(relayUrl);
 
   if (relayUrl === undefined) {
     throw new Error(
@@ -69,31 +60,7 @@ export async function loadHostConfig(options: LoadHostConfigOptions): Promise<Ho
   }
   assertRelayUrl(relayUrl);
 
-  return { relayUrl: relayUrl.replace(/\/$/, ""), runtimeCredential, adminToken, lanPort, stunServers };
-}
-
-/**
- * 默认 STUN：与 Relay 同主机的 3478 端口（部署侧随 relay 一起跑 stun 容器）。
- * 本地/内网 relay 没有公网地址，打洞没有意义，返回空表——P2P 自动不启用。
- */
-export function defaultStunServers(relayUrl: string | undefined): readonly string[] {
-  if (relayUrl === undefined) return [];
-  try {
-    const url = new URL(relayUrl);
-    if (url.protocol !== "wss:" && url.protocol !== "https:") return [];
-    // The official HTTPS hostname is proxied; STUN uses the UDP origin directly.
-    const host = url.hostname === "orbising.com" ? "45.58.185.226" : url.hostname;
-    return [`stun://${host}:3478`];
-  } catch {
-    return [];
-  }
-}
-
-function stringArrayField(source: Record<string, unknown> | undefined, key: string): readonly string[] | undefined {
-  const value = source?.[key];
-  if (!Array.isArray(value)) return undefined;
-  const entries = value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
-  return entries.length > 0 ? entries : undefined;
+  return { relayUrl: relayUrl.replace(/\/$/, ""), runtimeCredential, adminToken, lanPort };
 }
 
 /**

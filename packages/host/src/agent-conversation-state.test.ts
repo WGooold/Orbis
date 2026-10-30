@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RuntimeEventSchema, prepareSessionSync, selectPreparedSessionSync, type AgentExecutionState, type RemoteSessionEntry, type RuntimeEvent } from "@orbis/protocol";
+import { RuntimeEventSchema, displayBatchFor, prepareSessionSync, selectPreparedSessionSync, type AgentExecutionState, type RemoteSessionEntry, type RuntimeEvent } from "@orbis/protocol";
 import { AgentConversationState } from "./agent-conversation-state.js";
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
@@ -11,6 +11,32 @@ const snapshot = (epoch = "e", seq = 1): Extract<RuntimeEvent, { type: "session.
   live: { complete: true, turn: { turnId: "turn", startedAt: 1 }, messages: [{ finished: true, contentComplete: true, message: { messageId: "m", role: "assistant", content: [{ type: "text", text: "finished but not persisted" }], timestamp: 1 } }], tools: [] },
 });
 describe("Host conversation projection", () => {
+  it("accepts branch-filtered patch display and the next live update without allowing missing active rows", () => {
+    const model = new AgentConversationState(new AgentStateRegistry());
+    const row = (entryId: string, parentId: string | null): RemoteSessionEntry => ({ entryId, parentId,
+      type: "message", timestamp: "2026-10-30T00:00:00.000Z", data: { message: { role: "assistant", content: entryId } } });
+    const root = row("a", null);
+    const initial = snapshot(); initial.entries = [root];
+    initial.display = displayBatchFor([root], new Map([[root.entryId, root]]), root.entryId);
+    expect(model.accept(scope, initial)).toBe(true);
+    // Claude's parallel tool results point to their own call rows. Both are canonical,
+    // but only the second result lies on the current head's parent chain.
+    const entries = [row("call-1", "a"), row("call-2", "call-1"), row("result-1", "call-1"), row("result-2", "call-2")];
+    const all = new Map([root, ...entries].map(entry => [entry.entryId, entry]));
+    const display = displayBatchFor(entries, all, "result-2")!;
+    expect(display.entries.map(row => row.entryId)).toEqual(["call-1", "call-2", "result-2"]);
+    const patch: Extract<RuntimeEvent, { type: "session.patch" }> = {
+      type: "session.patch", sessionId: "s", source: { epoch: "e", seq: 2, ready: true }, baseSeq: 1, seq: 2,
+      checkpointId: "e:2", head: { leafId: "result-2" }, headCompleteness: "complete", live: initial.live!, entries, display,
+    };
+    expect(model.accept(scope, { ...patch, display: { ...display, entries: display.entries.filter(row => row.entryId !== "call-2") } })).toBe(false);
+    expect(model.accept(scope, patch)).toBe(true);
+    expect(model.accept(scope, { ...patch, source: { epoch: "e", seq: 3, ready: true }, baseSeq: 2, seq: 3,
+      entries: [], display: undefined, live: { ...initial.live!, messages: [] } })).toBe(true);
+    const recovered = model.recover(scope, { type: "session.sync", sessionId: "s", syncId: "reopen", range: "preview" });
+    expect(recovered?.entries.map(entry => entry.entryId)).toEqual(["a", "call-1", "call-2", "result-2"]);
+  });
+
   it("supports 256 current sessions with the default registry and rejects the 257th atomically", () => {
     const registry = new AgentStateRegistry();
     const model = new AgentConversationState(registry);

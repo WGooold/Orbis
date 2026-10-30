@@ -427,6 +427,63 @@ export function sessionGraphFromEntries(
 /** Upper bound on remembered persisted entry ids, so a long session cannot grow unbounded. */
 const MAX_REPORTED_ENTRY_IDS = 4_096;
 
+/** Upper bound on phone sends handed to Pi whose user message has not started yet. */
+const MAX_PENDING_PHONE_SENDS = 64;
+
+/**
+ * ADR-0049 §2：Pi 的用户消息没有手机身份，`message_start` 的 id 由本扩展另行分配。交给
+ * `pi.sendUserMessage` 前登记手机 messageId 与传入的内容；用户角色的 `message_start` 只认领
+ * 内容完全相同的最早一条登记，此后这条 live 消息的开始和结束都带 `clientMessageId`。
+ * 本地终端输入的消息没有登记，永远不会被认领。
+ */
+export class PhoneSendClaims {
+  readonly #pending: { clientMessageId: string; texts: string[] }[] = [];
+  /** live messageId → clientMessageId for messages that started but have not finished. */
+  readonly #claimed = new Map<string, string>();
+
+  expect(clientMessageId: string, content: readonly { type: "text"; text: string }[]): void {
+    this.forget(clientMessageId);
+    this.#pending.push({ clientMessageId, texts: content.map(part => part.text) });
+    while (this.#pending.length > MAX_PENDING_PHONE_SENDS) this.#pending.shift();
+  }
+
+  /** The send was rejected before Pi accepted it, so no user message will start for it. */
+  forget(clientMessageId: string): void {
+    const index = this.#pending.findIndex(item => item.clientMessageId === clientMessageId);
+    if (index >= 0) this.#pending.splice(index, 1);
+  }
+
+  started<E extends Extract<RuntimeEvent, { type: "message.started" }>>(native: unknown, event: E): E {
+    const texts = userTexts(native);
+    if (texts === undefined) return event;
+    const index = this.#pending.findIndex(item => item.texts.length === texts.length && item.texts.every((text, i) => text === texts[i]));
+    if (index < 0) return event;
+    const [claim] = this.#pending.splice(index, 1);
+    this.#claimed.set(event.message.messageId, claim!.clientMessageId);
+    while (this.#claimed.size > MAX_PENDING_PHONE_SENDS) this.#claimed.delete(this.#claimed.keys().next().value!);
+    return { ...event, message: { ...event.message, clientMessageId: claim!.clientMessageId } };
+  }
+
+  finished<E extends Extract<RuntimeEvent, { type: "message.finished" }>>(event: E): E {
+    const clientMessageId = this.#claimed.get(event.message.messageId);
+    if (clientMessageId === undefined) return event;
+    this.#claimed.delete(event.message.messageId);
+    return { ...event, message: { ...event.message, clientMessageId } };
+  }
+}
+
+function userTexts(raw: unknown): string[] | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const message = raw as PiMessage;
+  if (message.role !== "user") return undefined;
+  if (typeof message.content === "string") return [message.content];
+  if (!Array.isArray(message.content)) return undefined;
+  const parts = message.content as PiContent[];
+  // Image or other parts mean this is not a text-only phone send.
+  if (!parts.every(part => part?.type === "text" && typeof part.text === "string")) return undefined;
+  return parts.map(part => part.text as string);
+}
+
 export class PiMessageStream {
   readonly #createId: () => string;
   readonly #finishedMessageIds = new WeakMap<object, string>();

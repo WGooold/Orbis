@@ -27,8 +27,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       # The existing multi-megabyte encryption assertions can exceed 10s on hosted CPUs.
-      # Native WebRTC loopback tests can race with other workers on hosted Windows runners.
-      - run: npx vitest run --maxWorkers=1 --retry=1 --testTimeout=30000
+      - run: npx vitest run --maxWorkers=1 --testTimeout=30000
       - name: Build, package, and smoke-test native client
         shell: pwsh
         run: |

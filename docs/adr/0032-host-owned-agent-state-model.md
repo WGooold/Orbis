@@ -116,7 +116,7 @@ Codex 终端和桌面接入可能指向同一原生 Session，adapter 和 Host �
 | 07 回合与计时 | AgentState.execution.turn / timing | 回合身份、开始时间、已确认结束/耗时及对应消息；设备计算展示 elapsed 不改变事实 |
 | 08 工具 | AgentState.live.tools；history 引用 | 调用身份、所属回合/消息、输入、部分输出、结果、执行阶段与失败；结果提交与 live 移除一致 |
 | 09 运行与等待 | AgentState.execution | idle/running/waiting 等共同阶段、等待原因与请求引用、来源确认状态；DSH 审批等待必须接入 |
-| 10 重试与压缩 | AgentState.execution.retry / compaction | 是否支持、当前阶段、所属回合/操作、已知尝试/恢复/失败事实；不以日志文案或普通 idle 推断恢复 |
+| 10 重试与压缩 | AgentState.execution.retry / compaction | 是否支持、当前阶段、所属回合/操作、已知尝试/恢复/失败事实；不以日志文案或普通 idle 推断恢复；移动端在 compaction.phase=running 时于现有状态槽显示“压缩中”，等待确认优先，执行 phase 不变（ADR-0051 r6） |
 | 11 交互与审批 | AgentState.interactions | 完整可回答请求库存、类型/问题/选项、期限、阻塞性、状态及明确结束；回答提交反馈属于 DeviceView |
 | 12 消息队列 | AgentState.delivery.queue | 操作身份、steer/followUp、权威投递状态、取消能力和结果；队列执行仍由原生后端负责 |
 | 13 命令与操作回执 | HostState.operations / DeviceView | 已接受、执行、取消、成功、失败、结果未知及回执保留范围；共享操作与设备私有结果分开 |
@@ -192,6 +192,8 @@ App 同步非秘密用量、健康度、认证摘要和路由摘要。凭据、O
 Host 自有配置/身份沿用现有持久存储；历史页缓存可以淘汰重取；诊断记录在保留窗口内持久；命令回执按明确查询窗口保留。旧持久快照只能作为带来源的最后已知值，不能复活已结束交互、队列、运行态或旧权限。
 
 网络 Path 离线与原生会话结束分开。手机断线不停止 Agent，也不解除通知；backend 暂断标记来源未知；确认 Session/接入结束才按作用域终结模型。重新接入绑定新代次，旧回调不能写新实例。
+
+Codex 压缩活动绑定原生 turn 与 item 身份：条目完成、所属回合完成 / 中断 / 最终失败，以及同回合恢复模型输出都可解除 `running`；重试、普通 idle、并行工具输出与手机离开页面不代表压缩完成。完整原生历史核对需要独立修复执行活动，即使历史签名未变化；已结束 / 移除的回合退出压缩，读取失败或原生信息不足则标记 `unavailable`，不能把历史中的 `contextCompaction` 条目本身当作仍在压缩。关闭 / 归档 / 后端停止均先使活动失效，主动停止仍须发布全部原有 runtime 的下线；旧进程回调、旧回合及旧压缩条目的迟到事件不能覆盖当前活动。相关修复验证见 [ADR-0051 的压缩生命周期记录](0051-ui-style-motion-and-visual-stability-freeze.md#压缩状态生命周期修复2026-10-30r12)。
 
 审计 25–30 对应的 workspace、激活、同步任务、配对/设备、桌面与安装属于 HostState 领域服务；Host 发布可读取摘要、领域版本与作用域，不塞入 Agent 执行状态。文件传输的 Host 任务及设备相关结果挂 HostState/DeviceView。
 

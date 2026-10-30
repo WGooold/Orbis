@@ -76,7 +76,6 @@ internal class HostStores(application: Application) {
     val downloads = ArtifactDownloadStore(application)
     val uploads = ArtifactUploadStore(application)
     val lastSession = LastSessionStore(application)
-    val pathPreference = PathPreferenceStore(application)
     val notifier = InteractionNotifier(application)
 }
 
@@ -112,14 +111,7 @@ internal class HostConnection(
         private set
 
     val hostId: String get() = pairing.hostId
-    /**
-     * P2P 需要在设备侧构造 WebRTC 的 PeerConnectionFactory，而这要一个 Context。
-     *
-     * 漏掉这一行不会抛任何异常：`startP2pIfPossible` 的第一件事是 `appContext ?: return`，
-     * 于是它每次都静默退出，`p2p.request` 永远发不出去，状态页永远显示中继——
-     * 而且 Logcat 里连一行痕迹都没有。所以这里必须注入，不是可选项。
-     */
-    private val relay = RelayClient().apply { setApplicationContext(application) }
+    private val relay = RelayClient()
     private val reducer = RelayReducer()
     private val notifier = stores.notifier
     private val sessionCatalogStore = SessionCatalogStore(application, initial.hostId)
@@ -128,7 +120,6 @@ internal class HostConnection(
     private val artifactDownloadStore = stores.downloads
     private val artifactUploadStore = stores.uploads
     private val lastSessionStore = stores.lastSession
-    private val pathPreferenceStore = stores.pathPreference
     private val pullDownloads = PullDownloads(
         read = { transferId, requestId, offset, length ->
             relay.readArtifact(transferId, requestId, offset, length)
@@ -155,6 +146,8 @@ internal class HostConnection(
 
     private val device: DeviceCredential = initial.credential()
     private var reconnectJob: Job? = null
+    /** ADR-0049：接受后 Runtime 一直空闲时没有新事件，到期后自己再核对一次。 */
+    private var pendingSendCheckJob: Job? = null
     private var reconnectDelayMs = 500L
     @Volatile private var shouldConnect = true
 
@@ -327,6 +320,18 @@ internal class HostConnection(
             runtime.agentKind ?: current.sessions[sessionId]?.agentKind, force)
     }
 
+    fun refreshHome() {
+        val current = mutableState.value
+        if (!current.e2eReady || !current.homeDirectoryReceived || current.runtimes.values.any { it.sessionId.isNullOrBlank() }) {
+            updateState { it.markReconnecting() }
+            connect(device)
+            return
+        }
+        refreshSessions()
+        refreshHostModel(force = true)
+        current.runtimes.keys.forEach { refreshAgentModel(it, force = true) }
+    }
+
     private fun requestModel(
         modelScope: String,
         domains: List<String>,
@@ -365,8 +370,16 @@ internal class HostConnection(
                 }
             })
         })
-        if (!sent) updateState { it.copy(agentStateRequests = it.agentStateRequests - requestId,
-            agentStateReads = it.agentStateReads - requestId, error = "Model read could not use an authenticated channel") }
+        if (!sent) updateState { it.failHomeRead(requestId, "会话读取未能发送，请重试").copy(
+            agentStateRequests = it.agentStateRequests - requestId, error = "Model read could not use an authenticated channel") }
+        if (sent && modelScope == "agent") scope.launch {
+            delay(12_000)
+            updateState { state ->
+                if (state.agentStateReads[requestId]?.pendingDomains?.any { it in HOME_MODEL_DOMAINS } == true &&
+                    state.agentStateSnapshots.values.none { it.requestId == requestId && it.error != null })
+                    state.failHomeRead(requestId, "会话读取超时，请重试") else state
+            }
+        }
     }
 
     /** Continue a fixed catalog snapshot without mixing versions or pruning omitted pages. */
@@ -547,7 +560,7 @@ internal class HostConnection(
                 // 明确要「有头」。`auto` 会把判定交给电脑侧的启发式（Windows 上看
                 // SESSIONNAME），而从服务、计划任务或 IDE 内部启动的 Host 根本没有它，
                 // 结果是一律降级成无窗口——那样手机就永远要不到窗口了。电脑侧探不到
-                // 开窗入口时会在 session.activated 里如实回执 headless，不假装开过窗。
+                // 开窗入口时会报启动失败，不把明确的有头请求改成无头。
                 put("spawnMode", "tui")
             },
             register = { it.copy(
@@ -565,7 +578,8 @@ internal class HostConnection(
     }
 
     fun loadAgentProviders(kind: String) {
-        if (kind !in setOf("pi", "codex", "dsh")) return
+        if (kind !in setOf("pi", "codex", "dsh", "claude") || mutableState.value.agentProviders.requestId != null ||
+            mutableState.value.agentProviders.pendingRemovals.isNotEmpty()) return
         updateState { it.copy(agentProviders = AgentProvidersState(kind = kind, hostId = it.hostId,
             providers = it.agentProviders.providers.takeIf { _ -> it.agentProviders.kind == kind }.orEmpty(), loading = true)) }
         refreshProviderModel()
@@ -573,11 +587,55 @@ internal class HostConnection(
 
     fun switchAgentProvider(provider: AgentProvider, expectedHostId: String?) {
         val current = mutableState.value
-        if (expectedHostId == null || expectedHostId != current.hostId || current.agentProviders.hostId != expectedHostId || current.agentProviders.loading || provider !in current.agentProviders.providers) {
+        if (expectedHostId == null || expectedHostId != current.hostId || current.agentProviders.loading || provider !in current.providersForKind(provider.kind)) {
             updateState { it.copy(agentProviders = it.agentProviders.copy(error = "目标电脑或供应商列表已变化，请刷新后重试")) }
             return
         }
         requestAgentProviders(provider.kind, provider.id, !provider.enabled)
+    }
+
+    fun querySubscription(provider: AgentProvider, expectedHostId: String?) {
+        val current = mutableState.value
+        if (expectedHostId == null || current.hostId != expectedHostId ||
+            !current.canUseProviders(provider.kind) || provider !in current.providersForKind(provider.kind) ||
+            !provider.enabled || !provider.subscriptionSupported) return
+        val request = UUID.randomUUID().toString()
+        updateState { it.beginSubscriptionQuery(provider, request) }
+        val sent = relay.sendDeviceMessage(buildJsonObject {
+            put("type", "provider.subscription"); put("protocolVersion", PROTOCOL_VERSION)
+            put("requestId", request); put("kind", provider.kind); put("id", provider.id)
+        })
+        if (!sent) updateState { it.failSubscriptionQuery(request, "配额查询未发送，请重新连接") }
+        scope.launch {
+            delay(45_000)
+            updateState { state -> if (state.hostId == expectedHostId && state.agentProviders.quotaRequestId == request)
+                state.failSubscriptionQuery(request, "配额查询超时，请稍后重试") else state }
+        }
+    }
+
+    fun removeAgentProviders(providers: List<AgentProvider>, expectedHostId: String?) {
+        val current = mutableState.value
+        if (current.hostId != expectedHostId || !current.e2eReady || current.connection != RelayConnection.ONLINE ||
+            !current.agentProviders.canRemove(providers, expectedHostId)) {
+            updateState { it.copy(agentProviders = it.agentProviders.copy(error = "目标电脑或供应商列表已变化，请刷新后重试")) }
+            return
+        }
+        updateState { it.copy(agentProviders = it.agentProviders.copy(
+            pendingRemovals = providers, removalCount = providers.size, loading = true, error = null, notice = null)) }
+        sendNextProviderRemoval(expectedHostId)
+    }
+
+    private fun sendNextProviderRemoval(expectedHostId: String?) {
+        val current = mutableState.value
+        val catalog = current.agentProviders
+        if (catalog.requestId != null || catalog.pendingRemovals.isEmpty()) return
+        val provider = catalog.pendingRemovals.first()
+        if (expectedHostId != current.hostId || catalog.hostId != expectedHostId || !current.e2eReady ||
+            current.connection != RelayConnection.ONLINE || !provider.removable || provider !in catalog.providers) {
+            updateState { it.copy(agentProviders = it.agentProviders.stopOperation("目标电脑或供应商列表已变化，请刷新确认结果")) }
+            return
+        }
+        requestAgentProviders(provider.kind, provider.id, false)
     }
 
     private fun requestAgentProviders(kind: String, id: String?, enabled: Boolean) {
@@ -588,18 +646,20 @@ internal class HostConnection(
             return
         }
         val requestId = UUID.randomUUID().toString()
-        updateState { it.copy(agentProviders = AgentProvidersState(kind = kind, hostId = hostId, requestId = requestId, loading = true,
+        updateState { it.clearProviderQuota(kind).copy(agentProviders = it.agentProviders.copy(kind = kind, hostId = hostId, requestId = requestId,
+            quotaRequestId = null, quotaProviderId = null, quotaKind = null, quota = null, quotaError = null,
+            loading = true, error = null, notice = null,
             providers = if (it.agentProviders.kind == kind && it.agentProviders.hostId == hostId) it.agentProviders.providers else emptyList())) }
         val sent = relay.sendDeviceMessage(buildJsonObject {
             put("type", if (id == null) "provider.list" else "provider.switch")
             put("protocolVersion", PROTOCOL_VERSION); put("requestId", requestId); put("kind", kind)
             if (id != null) { put("id", id); put("enabled", enabled) }
         })
-        if (!sent) updateState { it.copy(agentProviders = it.agentProviders.copy(requestId = null, loading = false, error = "供应商操作未发送，请重新连接")) }
+        if (!sent) updateState { it.copy(agentProviders = it.agentProviders.stopOperation("供应商操作未发送，请重新连接")) }
         scope.launch {
             delay(90_000)
             updateState { state ->
-                if (state.agentProviders.requestId == requestId && state.hostId == hostId) state.copy(agentProviders = state.agentProviders.copy(requestId = null, loading = false, error = "操作超时，请刷新以确认实际状态")) else state
+                if (state.agentProviders.requestId == requestId && state.hostId == hostId) state.copy(agentProviders = state.agentProviders.stopOperation("操作超时，请刷新以确认实际状态")) else state
             }
         }
     }
@@ -1097,10 +1157,68 @@ internal class HostConnection(
             updateState { it.copy(error = "斜杠命令只能从当前会话提供的菜单中选择") }
             return null
         }
+        return sendUserMessage(runtimeId, trimmed, delivery, attachments)
+    }
+
+    /**
+     * ADR-0049：写入加密通道后立即显示本地行；源端带回同一身份时由权威行替换。
+     * 后端分配的 id 各不相同，对账只认 `messageId` / `clientMessageId`，不按正文猜。
+     */
+    private fun sendUserMessage(runtimeId: String, text: String, delivery: String?, attachments: List<String>): String? {
+        val sessionId = mutableState.value.runtimes[runtimeId]?.sessionId
+        if (sessionId == null) {
+            updateState { it.copy(error = "会话尚未就绪，请稍后重试") }
+            return null
+        }
         val messageId = UUID.randomUUID().toString()
-        val commandId = relay.sendUserMessage(runtimeId, trimmed, messageId, delivery, attachments)
+        val commandId = relay.sendUserMessage(runtimeId, text, messageId, delivery, attachments)
         trackCommand(commandId, runtimeId, "消息未发送：中继服务器当前离线")
+        if (commandId == null) return null
+        updateState { state ->
+            val anchor = state.conversations[runtimeId]?.messages?.lastOrNull()?.messageId
+            state.copy(pendingSends = state.pendingSends + (messageId to PendingSend(messageId, commandId, sessionId, text,
+                attachments, delivery, System.currentTimeMillis(), anchor)))
+        }
         return commandId
+    }
+
+    /** 失败行重新发送：用新的 messageId，空闲直发不会被各后端当成同一条消息去重。 */
+    fun resendPendingSend(messageId: String): String? {
+        val state = mutableState.value
+        val runtimeId = state.selectedRuntimeId ?: return null
+        val runtime = state.runtimes[runtimeId] ?: return null
+        val send = state.pendingSends[messageId]?.takeIf { it.sessionId == runtime.sessionId && it.state is PendingSendState.Failed } ?: return null
+        if (!state.e2eReady) return null
+        // 按当前状态选择投递方式：忙时直发会被拒绝，Claude 也不支持插入。
+        val delivery = when {
+            runtime.status == "idle" -> null
+            send.delivery == "steer" && runtime.agentKind != "claude" -> "steer"
+            else -> "followUp"
+        }
+        val commandId = sendUserMessage(runtimeId, send.text, delivery, send.attachments) ?: return null
+        updateState { it.copy(pendingSends = it.pendingSends - messageId) }
+        return commandId
+    }
+
+    /** 放回输入框：删除本地行并交回正文；附件路径已在电脑上，只能随正文说明。 */
+    fun restorePendingSend(messageId: String): String? {
+        var restored: PendingSend? = null
+        updateState { state ->
+            val send = state.pendingSends[messageId]?.takeIf { it.state is PendingSendState.Failed || it.state == PendingSendState.Unconfirmed }
+                ?: return@updateState state
+            restored = send
+            state.copy(pendingSends = state.pendingSends - messageId)
+        }
+        val send = restored ?: return null
+        return if (send.attachments.isEmpty()) send.text else send.text + "\n\n附件路径：\n" + send.attachments.joinToString("\n")
+    }
+
+    fun discardPendingSend(messageId: String) {
+        updateState { state ->
+            val send = state.pendingSends[messageId] ?: return@updateState state
+            if (send.state is PendingSendState.Failed || send.state == PendingSendState.Unconfirmed)
+                state.copy(pendingSends = state.pendingSends - messageId) else state
+        }
     }
 
     /**
@@ -1175,7 +1293,41 @@ internal class HostConnection(
             }
             val commandId = relay.executeSlashCommand(runtimeId, "quit", "")
             trackCommand(commandId, runtimeId, "关闭会话未发送：请连接电脑后重试。")
+            if (commandId != null) {
+                updateState { it.copy(closingRuntimes = it.closingRuntimes + (runtimeId to ClosingRuntime(commandId, System.currentTimeMillis()))) }
+                watchClosingRuntime(runtimeId, commandId)
+            }
             commandId != null
+        }
+    }
+
+    /**
+     * ADR-0049 §5：被接受后迟迟不离线，说明电脑上的会话还在；没有回执同样不能一直隐藏。
+     * 两种情况都恢复卡片，不能让首页长期少一张真实存在的会话。
+     */
+    private fun watchClosingRuntime(runtimeId: String, commandId: String) {
+        scope.launch {
+            while (true) {
+                delay(1_000)
+                val now = System.currentTimeMillis()
+                var finished = false
+                updateState { state ->
+                    val closing = state.closingRuntimes[runtimeId]
+                    if (closing?.commandId != commandId || runtimeId !in state.runtimes) {
+                        finished = true
+                        return@updateState if (closing?.commandId == commandId) state.copy(closingRuntimes = state.closingRuntimes - runtimeId) else state
+                    }
+                    val confirmed = closing.confirmedAt
+                    val error = when {
+                        confirmed != null && now - confirmed >= 15_000 -> "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。"
+                        confirmed == null && now - closing.requestedAt >= 60_000 -> "关闭会话尚未确认，请刷新查看电脑端状态。"
+                        else -> return@updateState state
+                    }
+                    finished = true
+                    state.copy(closingRuntimes = state.closingRuntimes - runtimeId, error = error)
+                }
+                if (finished) return@launch
+            }
         }
     }
 
@@ -1651,33 +1803,6 @@ internal class HostConnection(
         }
     }
 
-    /** 手机本地排的连接优先级（§6.2），顺序即优先级，第 1 位最优先。 */
-    fun pathPreference(): List<String> = pathPreferenceStore.load()
-
-    /**
-     * 用户改了连接优先级：先落盘，再立刻下发给 Host。此刻没连上也不报错——
-     * E2E 就绪时会重发一次（[sendPathPreference]），所以设置不会丢。
-     */
-    fun setPathPreference(order: List<String>) {
-        pathPreferenceStore.save(order)
-        sendPathPreference()
-    }
-
-    /**
-     * 把当前优先级下发给 Host。这是设备→Host 的 E2E 密文载荷，Relay 看不见也不认识它——
-     * 所以它不在共享协议 schema 里（见 Host 侧 path-preference.ts）。
-     */
-    private fun sendPathPreference() {
-        val preference = pathPreferenceStore.load()
-        relay.sendDeviceMessage(
-            buildJsonObject {
-                put("type", "device.pathPreference")
-                put("protocolVersion", PROTOCOL_VERSION)
-                put("preference", buildJsonArray { preference.forEach { add(it) } })
-            },
-        )
-    }
-
     private fun respond(request: PendingInteraction, send: (String) -> String?): Boolean {
         val runtimeId = mutableState.value.selectedRuntimeId ?: return false
         val current = mutableState.value
@@ -1841,7 +1966,7 @@ internal class HostConnection(
                                 }
                                 if (interactiveChannel != null && messageType == "provider.changed") {
                                     val kind = message["kind"]?.jsonPrimitive?.contentOrNull
-                                    if (kind == reduced.agentProviders.kind && !reduced.agentProviders.loading) scope.launch { loadAgentProviders(kind) }
+                                    if (kind == reduced.agentProviders.kind && !reduced.agentProviders.loading) scope.launch { refreshProviderModel() }
                                     if (kind in setOf("pi", "codex", "dsh")) scope.launch { refreshSessions() }
                                 }
                                 if (interactiveChannel != null && messageType == "provider.result" && message?.get("notice")?.jsonPrimitive?.contentOrNull?.isNotBlank() == true) scope.launch { refreshSessions() }
@@ -1875,6 +2000,17 @@ internal class HostConnection(
                                     )
                                 }
                                 next = mutableState.value
+                                if (interactiveChannel != null && messageType == "provider.result" &&
+                                    previous.agentProviders.requestId != null &&
+                                    previous.agentProviders.requestId == message?.get("requestId")?.jsonPrimitive?.contentOrNull &&
+                                    previous.agentProviders.kind == message["kind"]?.jsonPrimitive?.contentOrNull &&
+                                    next.agentProviders.requestId == null && next.agentProviders.error == null) {
+                                    val providerHost = previous.hostId
+                                    scope.launch {
+                                        if (mutableState.value.agentProviders.pendingRemovals.isNotEmpty()) sendNextProviderRemoval(providerHost)
+                                        else refreshProviderModel()
+                                    }
+                                }
                                 previous.sessionSyncCommands.forEach { (id, pending) ->
                                     if (id !in next.sessionSyncCommands && sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull in setOf("session.tools.page", "session.tools.patch")) {
                                         scope.launch(Dispatchers.IO) { relay.acknowledgeSessionSnapshot(pending.runtimeId, pending.syncId) }
@@ -1964,7 +2100,6 @@ internal class HostConnection(
                     if (currentGeneration != generation) return@launch
                     updateState { it.copy(path = path, pathRttMs = rttMs) }
                 }
-                sendPathPreference()
             }
         }
         // Transport callbacks share the reducer lock so a late snapshot cannot revert readiness.
@@ -1983,7 +2118,6 @@ internal class HostConnection(
                 }
                 if (ready) {
                     autoResumeDownloads()
-                    sendPathPreference()
                     // device.ready can be reduced before the handshake flips e2eReady (device order:
                     // device.ready, then e2e.hs.confirmed). That first path returns early because the
                     // model read needs an encrypted channel, so the committed-model read has to be
@@ -2441,6 +2575,8 @@ internal class HostConnection(
      * outside it and submits identity-bearing results for a fresh ownership check.
      */
     private fun updateState(transform: (RemoteState) -> RemoteState) {
+        var settlementSyncs: Set<String> = emptySet()
+        var recheck = false
         var capturedName = false
         var retiredViewer: FileChangeViewer? = null
         synchronized(stateWriterLock) {
@@ -2449,6 +2585,18 @@ internal class HostConnection(
             val named = next.cachePiSessionNames(current)
             capturedName = named !== next
             next = named
+            if ((!next.e2eReady || next.connection != RelayConnection.ONLINE) &&
+                (next.agentProviders.requestId != null || next.agentProviders.pendingRemovals.isNotEmpty())) {
+                next = next.copy(agentProviders = next.agentProviders.stopOperation("连接已断开，请刷新以确认操作结果"))
+            }
+            if ((!next.e2eReady || next.connection != RelayConnection.ONLINE) && next.agentProviders.quotaRequestId != null) {
+                next = next.copy(agentProviders = next.agentProviders.copy(quotaRequestId = null, quota = null, quotaError = "连接已断开，请重新查询配额"))
+            }
+            // ADR-0049：每次状态变化都用源端事实核对本地待确认发送。
+            val (reconciled, syncs) = next.reconcilePendingSends(System.currentTimeMillis())
+            next = reconciled.commitHomePresentation()
+            settlementSyncs = syncs
+            recheck = next.pendingSends.values.any { it.state == PendingSendState.Accepted && !it.sawBusy }
             if (current.changeViewer != null && next.changeViewer == null) retiredViewer = current.changeViewer
             if (current.connection != next.connection) synchronized(changeWindows) { changeWindows.clear() }
             if (next !== current) mutableState.value = next
@@ -2457,6 +2605,13 @@ internal class HostConnection(
         // to persist them. Disk IO stays outside the state writer lock and the UI thread.
         if (capturedName) scheduleSessionCatalogSave()
         retiredViewer?.let { relay.sendToolCommand(it.runtimeId, it.cancelCommand()) }
+        if (settlementSyncs.isNotEmpty()) scope.launch { settlementSyncs.forEach { refreshRuntime(it) } }
+        if (recheck && pendingSendCheckJob?.isActive != true) {
+            pendingSendCheckJob = scope.launch {
+                delay(PENDING_SEND_ACCEPTED_IDLE_GRACE_MS + 500)
+                updateState { it }
+            }
+        }
     }
 
     /**
