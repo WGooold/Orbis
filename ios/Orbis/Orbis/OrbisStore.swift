@@ -57,7 +57,15 @@ final class HostConnection: ObservableObject {
         }
     }
     var homeRuntimes: [RuntimeSummary] {
-        homeRuntimesLoading ? [] : runtimes
+        guard !homeRuntimesLoading else { return [] }
+        // 首页优先按会话最近使用时间倒序；同一时间再按名称、runtimeId 稳定排序。
+        return runtimes.sorted { lhs, rhs in
+            let left = lhs.sessionId.flatMap { sessionIndex[$0]?.modifiedAt } ?? 0
+            let right = rhs.sessionId.flatMap { sessionIndex[$0]?.modifiedAt } ?? 0
+            if left != right { return left > right }
+            let nameOrder = displayName(lhs).localizedStandardCompare(displayName(rhs))
+            return nameOrder == .orderedSame ? lhs.runtimeId < rhs.runtimeId : nameOrder == .orderedAscending
+        }
     }
     var homeRuntimesError: String? {
         guard homeRuntimesLoading else { return nil }

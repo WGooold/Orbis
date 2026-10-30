@@ -614,7 +614,16 @@ internal val RemoteState.homeRuntimesError: String?
     }
 
 internal val RemoteState.homeRuntimes: List<RuntimeSummary>
-    get() = if (homeRuntimesLoading) emptyList() else runtimes.values.toList()
+    get() {
+        if (homeRuntimesLoading) return emptyList()
+        // 首页优先按会话最近使用时间倒序；同一时间再按名称、runtimeId 稳定排序。
+        val collator = java.text.Collator.getInstance(java.util.Locale.CHINA)
+        return runtimes.values.sortedWith(
+            compareByDescending<RuntimeSummary> { sessions[it.sessionId]?.modifiedAt ?: 0L }
+                .thenBy(collator) { runtimeDisplayName(it) }
+                .thenBy { it.runtimeId },
+        )
+    }
 
 /** Any Runtime on this computer is waiting for an answer (shown on the computer switcher). */
 internal fun RemoteState.hasAnyPendingInteraction(): Boolean = runtimes.keys.any(::hasPendingInteraction)

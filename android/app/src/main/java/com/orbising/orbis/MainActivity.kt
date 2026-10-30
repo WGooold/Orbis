@@ -549,11 +549,8 @@ internal fun RuntimeListScreen(
     var selectedRuntimeIds by remember(activeHostId) { mutableStateOf(emptySet<String>()) }
     // 主页只列当前电脑的会话：多台电脑不混在一张列表里，切换入口就在下面的电脑行（ADR-0030 修订）。
     val visibleRuntimes = remember(hosts, activeHostId) {
-        // 按中文拼音排序，与 iOS 的 localizedStandardCompare 一致。
-        val collator = java.text.Collator.getInstance(Locale.CHINA)
         hosts.filter { it.hostId == activeHostId }.flatMap { snapshot ->
             snapshot.state.homeRuntimes
-                .sortedWith(compareBy(collator) { snapshot.state.runtimeDisplayName(it) })
                 .map { HostRuntimeRow(snapshot.hostId, snapshot.name, it, snapshot.state) }
         }
     }

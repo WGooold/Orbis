@@ -460,7 +460,7 @@ struct HomeView: View {
             } else if let host = currentHost, !host.connection.homeRuntimes.isEmpty {
                 ScrollView {
                     LazyVStack(spacing: 16) {
-                        ForEach(host.connection.homeRuntimes.sorted { host.connection.displayName($0).localizedStandardCompare(host.connection.displayName($1)) == .orderedAscending }) { runtime in
+                        ForEach(host.connection.homeRuntimes) { runtime in
                             runtimeCard(runtime, host: host)
                         }
                     }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 28)
