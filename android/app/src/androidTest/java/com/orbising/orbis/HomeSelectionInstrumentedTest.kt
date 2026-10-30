@@ -41,7 +41,10 @@ class HomeSelectionInstrumentedTest {
                 }
             }
         }
+        val originalBounds = compose.onNodeWithTag("home-runtime-one").fetchSemanticsNode().boundsInRoot
         compose.onNodeWithTag("home-runtime-one").performTouchInput { longClick() }
+        compose.waitForIdle()
+        assertEquals(originalBounds, compose.onNodeWithTag("home-runtime-one").fetchSemanticsNode().boundsInRoot)
         compose.onNodeWithText("已选择 1 项").assertIsDisplayed()
         compose.onNodeWithTag("home-runtime-two").performClick()
         compose.onNodeWithText("已选择 2 项").assertIsDisplayed()

@@ -13,7 +13,7 @@ struct DownloadsView: View {
     private var downloads: [FileTransfer] { transfers.currentTasks.filter { $0.direction == "download" } }
     var body: some View {
         VStack(spacing: 0) {
-            OrbisPageHeader(title: selected.isEmpty ? "下载" : "已选择 \(selected.count) 项", back: { if selected.isEmpty { onBack() } else { selected = [] } }) {
+            OrbisPageHeader(title: selected.isEmpty ? "下载" : "已选择 \(selected.count) 项", closes: !selected.isEmpty, backLabel: selected.isEmpty ? "返回" : "退出多选", back: { if selected.isEmpty { onBack() } else { selected = [] } }) {
                 if !selected.isEmpty {
                     OrbisIconButton(symbol: "trash", label: "删除所选下载", tint: OrbisPalette(scheme).error, action: confirmDelete)
                 }
@@ -37,9 +37,16 @@ struct DownloadsView: View {
                 }
             }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
+            .onChange(of: store.selectedHostId) { _, _ in selected = [] }
+            .onChange(of: downloads.map(\.id)) { _, ids in selected.formIntersection(ids) }
             .sheet(isPresented: $browserOpen, onDismiss: store.dismissBrowse) {
                 DownloadBrowserView { browserOpen = false }.orbisSheet([.large])
             }
+    }
+
+    private func beginSelection(_ id: String) {
+        if selected.isEmpty { OrbisHaptics.beginSelection() }
+        selected.insert(id)
     }
 
     private func confirmDelete() {
@@ -68,11 +75,12 @@ struct DownloadsView: View {
                 } label: { transferCardContent(task) }
             }
         }
-        .buttonStyle(NeuButtonStyle(selected: selected.contains(task.id), radius: OrbisRadius.card))
-        .highPriorityGesture(LongPressGesture().onEnded { _ in selected.insert(task.id) })
+        .buttonStyle(OrbisSelectionButtonStyle(selected: selected.contains(task.id), selecting: !selected.isEmpty))
+        .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(task.id) })
         .accessibilityIdentifier("download-card-\(task.id)")
         .accessibilityHint(selected.isEmpty ? "长按进入多选" : "轻点切换选择")
-        .accessibilityAction(named: "选择下载") { selected.insert(task.id) }
+        .accessibilityAddTraits(selected.contains(task.id) ? .isSelected : [])
+        .accessibilityAction(named: "选择下载") { beginSelection(task.id) }
     }
 
     private func transferCardContent(_ task: FileTransfer) -> some View {
@@ -89,7 +97,7 @@ struct DownloadsView: View {
         }()
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                Image(systemName: selected.isEmpty ? "doc" : selected.contains(task.id) ? "checkmark.square.fill" : "square")
+                Image(systemName: "doc")
                     .font(.system(size: 22)).foregroundStyle(p.accent)
                     .frame(width: 44, height: 44).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
@@ -97,6 +105,7 @@ struct DownloadsView: View {
                     Text(task.status == "cancelled" ? "已暂停" : task.error ?? transferStatusTitle(task.status))
                         .font(.orbisCaption()).foregroundStyle(failed ? p.error : p.secondary).lineLimit(2)
                 }.frame(maxWidth: .infinity, alignment: .leading)
+                OrbisSelectionIndicator(selected: selected.contains(task.id), selecting: !selected.isEmpty)
             }
             VStack(spacing: 8) {
                 ProgressView(value: min(Double(max(task.size, 1)), Double(task.received)), total: Double(max(task.size, 1)))
@@ -105,7 +114,7 @@ struct DownloadsView: View {
                 HStack(spacing: 8) {
                     Text("\(byteCount(task.received)) / \(byteCount(task.size))")
                     Spacer(minLength: 0)
-                    Text(actionHint)
+                    Text(actionHint).lineLimit(1)
                 }
                 .font(.orbisCaption()).foregroundStyle(p.secondary)
             }

@@ -54,6 +54,8 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -821,8 +823,9 @@ internal fun RuntimeListScreen(
                                             },
                                         shape = RoundedCornerShape(20.dp),
                                         shadowScale = 0.8f,
-                                        style = if (runtime.runtimeId in selectedIds || touchPressed || opening)
-                                            NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                                        style = if (!selecting && (touchPressed || opening)) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                                        selectionSelected = runtime.runtimeId in selectedIds,
+                                        selectionMode = selecting,
                                         onClick = {
                                             if (selecting) toggleSelection(runtime.runtimeId)
                                             else if (swipeOffset == 0f && !opening) opening = true
@@ -856,15 +859,9 @@ internal fun RuntimeListScreen(
                                                     } else RuntimeStatus(runtime.status)
                                                 }
                                             }
+                                            OrbisSelectionIndicator(runtime.runtimeId in selectedIds, selecting)
                                         }
                                     }
-                                }
-                                if (selecting) {
-                                    NeumorphCheckbox(
-                                        checked = runtime.runtimeId in selectedIds,
-                                        onCheckedChange = { toggleSelection(runtime.runtimeId) },
-                                        modifier = Modifier.semantics { contentDescription = "选择会话 ${state.runtimeDisplayName(runtime)}" },
-                                    )
                                 }
                             }
                         }
@@ -2351,11 +2348,14 @@ internal fun AllDownloadsScreen(
     onDelete: (Set<String>) -> Unit,
 ) {
     var filePickerOpen by rememberSaveable { mutableStateOf(false) }
-    var selectedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedTaskIds by remember(state.hostId) { mutableStateOf<Set<String>>(emptySet()) }
+    val selectionHaptic = LocalHapticFeedback.current
+    var pendingDeletion by remember(state.hostId) { mutableStateOf<Set<String>>(emptySet()) }
     val downloads = state.downloads.values.sortedByDescending(ArtifactDownload::createdAt)
     val visibleTaskIds = downloads.mapTo(mutableSetOf(), ArtifactDownload::taskId)
     val effectiveSelectedTaskIds = selectedTaskIds.intersect(visibleTaskIds)
     val selectionMode = effectiveSelectedTaskIds.isNotEmpty()
+    LaunchedEffect(visibleTaskIds) { selectedTaskIds = selectedTaskIds.intersect(visibleTaskIds) }
     BackHandler { if (selectionMode) selectedTaskIds = emptySet() else onBack() }
     Scaffold(
         topBar = {
@@ -2378,12 +2378,10 @@ internal fun AllDownloadsScreen(
                 actions = {
                     if (selectionMode) {
                         NeumorphIconButton(
-                            onClick = {
-                                onDelete(effectiveSelectedTaskIds)
-                                selectedTaskIds = emptySet()
-                            },
+                            onClick = { pendingDeletion = effectiveSelectedTaskIds },
                             icon = Icons.Rounded.Delete,
-                            contentDescription = "删除下载项",
+                            tint = MaterialTheme.colorScheme.error,
+                            contentDescription = "删除所选下载",
                             size = 40.dp,
                         )
                     }
@@ -2431,6 +2429,7 @@ internal fun AllDownloadsScreen(
                                 }
                             },
                             onLongClick = {
+                                if (!selectionMode) selectionHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 selectedTaskIds = selectedTaskIds + task.taskId
                             },
                         )
@@ -2438,6 +2437,22 @@ internal fun AllDownloadsScreen(
                 }
             }
         }
+    }
+    if (pendingDeletion.isNotEmpty()) {
+        val ids = pendingDeletion.intersect(visibleTaskIds)
+        AlertDialog(
+            onDismissRequest = { pendingDeletion = emptySet() },
+            title = { Text("删除下载记录与本机文件？") },
+            text = { Text("电脑上的原文件不受影响。") },
+            confirmButton = {
+                TextButton(enabled = ids.isNotEmpty(), onClick = {
+                    onDelete(ids)
+                    selectedTaskIds = selectedTaskIds - ids
+                    pendingDeletion = emptySet()
+                }) { Text("删除 ${ids.size} 项", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { pendingDeletion = emptySet() }) { Text("取消") } },
+        )
     }
     if (filePickerOpen) {
         DownloadFileSheet(
@@ -2470,7 +2485,7 @@ private fun DownloadTaskCard(
     val canRetry = !active && task.status != "completed" &&
         (task.sourcePath != null || task.sourceArtifactId != null)
     val actionHint = when {
-        selectionMode || (!active && !canRetry) -> null
+        !active && !canRetry -> null
         active -> "轻点暂停"
         !connected -> "连接电脑后继续"
         task.status == "failed" -> "轻点重试"
@@ -2483,7 +2498,8 @@ private fun DownloadTaskCard(
         else -> MaterialTheme.colorScheme.primary
     }
     NeumorphSurface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().testTag("download-card-${task.taskId}")
+            .semantics { this.selected = selected },
         onClick = {
             when {
                 selectionMode -> onClick()
@@ -2493,17 +2509,12 @@ private fun DownloadTaskCard(
         },
         onLongClick = onLongClick,
         shape = RemoteUi.CardShape,
-        style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+        selectionSelected = selected,
+        selectionMode = selectionMode,
         contentInset = 16.dp,
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (selectionMode) {
-                    NeumorphCheckbox(
-                        checked = selected,
-                        onCheckedChange = { onClick() },
-                    )
-                }
                 Icon(
                     when (task.status) {
                         "completed" -> Icons.Rounded.CheckCircle
@@ -2515,12 +2526,19 @@ private fun DownloadTaskCard(
                 )
                 Column(Modifier.weight(1f)) {
                     FileNameText(task.displayName, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        listOfNotNull(downloadStatusText(task), actionHint).joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = statusColor,
-                    )
+                    // Keep the normal caption's measured height while hiding its action hint.
+                    Box {
+                        Text(
+                            listOfNotNull(downloadStatusText(task), actionHint).joinToString(" · "),
+                            modifier = Modifier.alpha(if (selectionMode) 0f else 1f)
+                                .then(if (selectionMode) Modifier.clearAndSetSemantics {} else Modifier),
+                            style = MaterialTheme.typography.bodySmall, color = statusColor,
+                        )
+                        if (selectionMode) Text(downloadStatusText(task),
+                            style = MaterialTheme.typography.bodySmall, color = statusColor)
+                    }
                 }
+                OrbisSelectionIndicator(selected, selectionMode)
             }
             if (active || task.status in setOf("paused", "cancelled", "failed")) {
                 if (progress == null && active) LinearProgressIndicator(Modifier.fillMaxWidth())

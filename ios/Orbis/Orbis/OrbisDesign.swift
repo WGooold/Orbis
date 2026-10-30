@@ -2,7 +2,8 @@ import SwiftUI
 import UIKit
 
 // Shared with Android's OrbisTheme / Neumorph: one continuous base, raised
-// actions and cards, recessed inputs and selections. All distances are points.
+// actions and cards, recessed inputs and single-choice controls. Batch selection
+// adds a tint and outline without changing depth. All distances are points.
 struct OrbisPalette {
     let dark: Bool
     init(_ scheme: ColorScheme) { dark = scheme == .dark }
@@ -368,6 +369,56 @@ struct NeuButtonStyle: ButtonStyle {
             .neuSurface(inset: selected || configuration.isPressed, radius: radius, intensity: 0.6, padding: padding)
             .contentShape(RoundedRectangle(cornerRadius: radius))
             .opacity(enabled ? 1 : 0.4)
+    }
+}
+
+/// Batch selection is a color change, never a change to the card's depth or layout.
+struct OrbisSelectionButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisSurface) private var parent
+    let selected: Bool
+    let selecting: Bool
+    var radius: CGFloat = OrbisRadius.card
+    var padding: CGFloat = 0
+    var recessed = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: parent?.innerRadius ?? radius, style: .continuous)
+        let accent = OrbisPalette(scheme).accent
+        configuration.label
+            .neuSurface(inset: recessed || (!selecting && configuration.isPressed), radius: radius, intensity: 0.6, padding: padding)
+            .overlay {
+                shape.fill(accent.opacity(selected ? 0.07 : 0))
+                    .overlay { shape.strokeBorder(accent.opacity(selected ? 0.65 : 0), lineWidth: 1) }
+                    .animation(.orbisFade, value: selected)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(shape)
+            .opacity(enabled ? 1 : 0.4)
+    }
+}
+
+/// Keep the slot even outside selection mode, so labels and cards never reflow.
+struct OrbisSelectionIndicator: View {
+    @Environment(\.colorScheme) private var scheme
+    let selected: Bool
+    let selecting: Bool
+
+    var body: some View {
+        let p = OrbisPalette(scheme)
+        Circle().fill(selected ? p.accent : .clear)
+            .overlay { Circle().strokeBorder(selected ? p.accent : p.secondary.opacity(0.55), lineWidth: 1.5) }
+            .overlay {
+                Image(systemName: "checkmark").font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(p.dark ? Color(hex: 0x12307A) : .white).opacity(selected ? 1 : 0)
+            }
+            .frame(width: 22, height: 22)
+            .opacity(selecting ? 1 : 0)
+            .animation(.orbisFade, value: selected)
+            .animation(.orbisFade, value: selecting)
+            .allowsHitTesting(false).accessibilityHidden(true)
     }
 }
 
@@ -952,11 +1003,12 @@ struct OrbisPageHeader<Trailing: View>: View {
     let title: String
     /// Sheets close with ×; pushed pages go back with ←.
     var closes = false
+    var backLabel: String? = nil
     let back: () -> Void
     @ViewBuilder var trailing: Trailing
     var body: some View {
         OrbisHeader {
-            OrbisIconButton(symbol: closes ? "xmark" : "arrow.left", label: closes ? "关闭" : "返回", action: back)
+            OrbisIconButton(symbol: closes ? "xmark" : "arrow.left", label: backLabel ?? (closes ? "关闭" : "返回"), action: back)
         } title: {
             Text(title).font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
         } trailing: { trailing }

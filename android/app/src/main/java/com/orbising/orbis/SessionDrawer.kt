@@ -30,8 +30,6 @@ import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Unarchive
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Computer
@@ -70,6 +68,8 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.selected
@@ -359,7 +359,7 @@ internal fun SessionDrawer(
                 )
             }
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp).heightIn(min = RemoteUi.TouchTarget),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
@@ -736,6 +736,8 @@ private fun DrawerSessionRow(
         modifier = Modifier.fillMaxWidth().testTag("drawer-session-${row.sessionId}")
             .semantics(mergeDescendants = true) { this.selected = selected },
         style = NeumorphStyle.Pressed,
+        selectionSelected = selected,
+        selectionMode = selecting,
         shape = RemoteUi.ControlShape,
         shadowScale = 0.45f,
         onClick = {
@@ -751,32 +753,33 @@ private fun DrawerSessionRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            if (selecting) Icon(
-                if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
-                contentDescription = null,
-                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(22.dp),
-            )
             // 与 iOS 同一行结构：agent 图标、标题，下面是状态、时间与必要的标注；整行可点，不再另放箭头。
             AgentIcon(agentBrand(row.agentKind), modifier = Modifier.size(22.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(row.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val caption = MaterialTheme.typography.labelSmall
-                    val muted = MaterialTheme.colorScheme.onSurfaceVariant
-                    if (runtimeStatus != null) RuntimeStatusIndicator(runtimeStatus)
-                    else if (row.catalogEntry?.hasHistoryCache == true) Text("缓存历史", style = caption, color = muted)
-                    if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = caption, color = muted, maxLines = 1)
-                    if (row.agentKind == "codexDesktop") Text("桌面版", style = caption, color = agentBrand(row.agentKind).accent(), maxLines = 1)
-                    // 与 iOS 同一个提示色（橙），不是错误。
-                    val warning = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFFF2C26B) else Color(0xFF9A5B00)
-                    otherProvider?.let { Text(it, style = caption, color = warning, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                Box {
+                    Row(Modifier.alpha(if (selecting && archiveUnavailableReason != null) 0f else 1f)
+                        .then(if (selecting && archiveUnavailableReason != null) Modifier.clearAndSetSemantics {} else Modifier),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val caption = MaterialTheme.typography.labelSmall
+                        val muted = MaterialTheme.colorScheme.onSurfaceVariant
+                        if (runtimeStatus != null) RuntimeStatusIndicator(runtimeStatus)
+                        else if (row.catalogEntry?.hasHistoryCache == true) Text("缓存历史", style = caption, color = muted)
+                        if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = caption, color = muted, maxLines = 1)
+                        if (row.agentKind == "codexDesktop") Text("桌面版", style = caption, color = agentBrand(row.agentKind).accent(), maxLines = 1)
+                        // 与 iOS 同一个提示色（橙），不是错误。
+                        val warning = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFFF2C26B) else Color(0xFF9A5B00)
+                        otherProvider?.let { Text(it, style = caption, color = warning, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    }
+                    if (archiveUnavailableReason != null) Text(
+                        archiveUnavailableReason, style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.alpha(if (selecting) 1f else 0f)
+                            .then(if (!selecting) Modifier.clearAndSetSemantics {} else Modifier),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
                 }
-                if (selecting && archiveUnavailableReason != null) Text(
-                    archiveUnavailableReason, style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
+            OrbisSelectionIndicator(selected, selecting)
         }
     }
 }

@@ -4,7 +4,8 @@
  * 核心视觉：控件从同一块「软基色」底板上凸起（Raised），靠一对反向柔影（左上白光、右下暗影）
  * 塑形，而不是描边和海拔。
  *
- * 控件与独立内容面共用这套材质：操作凸起，输入/选中/嵌套内容凹陷。
+ * 控件与独立内容面共用这套材质：操作凸起，输入/单选/嵌套内容凹陷。
+ * 长按批量选择保留卡片材质，用淡主色底、细描边与固定槽位的圆形标记表达。
  * 连续画布、文字、状态点、树连接线和图片本体不单独加影，避免破坏阅读与信息编码。
  * 所有平面例外及位置记录在 android/docs/neumorphism-audit.md。
  *
@@ -39,6 +40,7 @@ import android.graphics.Canvas
 import android.os.Build
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -75,6 +77,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.geometry.CornerRadius
@@ -584,6 +588,8 @@ fun NeumorphSurface(
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
     contentPadding: Dp = 0.dp,
     contentInset: Dp = contentPadding,
+    selectionSelected: Boolean? = null,
+    selectionMode: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colors = rememberNeumorphColors()
@@ -591,7 +597,13 @@ fun NeumorphSurface(
     val resolvedShape = concentricShape(shape)
     val paints = rememberShadowPaints(colors, shadowScale)
     val pressed by interactionSource.collectIsPressedAsState()
-    val currentStyle = if (pressed && enabled) NeumorphStyle.Pressed else style
+    val currentStyle = if (pressed && enabled && !selectionMode) NeumorphStyle.Pressed else style
+    val selectionDecoration = if (selectionSelected != null) {
+        val progress by animateFloatAsState(if (selectionSelected) 1f else 0f, tween(160), label = "selection")
+        val accent = MaterialTheme.colorScheme.primary
+        Modifier.background(accent.copy(alpha = 0.07f * progress))
+            .border(1.dp, accent.copy(alpha = 0.65f * progress), resolvedShape)
+    } else Modifier
     val layer = parent?.let { nestedSurfaceLayer(it.layer, currentStyle == NeumorphStyle.Pressed) }
         ?: if (currentStyle == NeumorphStyle.Pressed) 0 else 1
     val bodyColor = if (parent != null) {
@@ -610,7 +622,7 @@ fun NeumorphSurface(
         propagateMinConstraints = true,
     ) {
         Box(
-            Modifier.clip(resolvedShape).background(bodyColor).then(
+            Modifier.clip(resolvedShape).background(bodyColor).then(selectionDecoration).then(
                 if (parent == null && currentStyle == NeumorphStyle.Pressed) {
                     Modifier.neumorphShadows(resolvedShape, currentStyle, colors, shadowScale, paints)
                 } else Modifier,
@@ -634,6 +646,24 @@ fun NeumorphSurface(
                 Box(Modifier.padding(contentPadding), propagateMinConstraints = true) { content() }
             }
         }
+    }
+}
+
+/** Always reserve this slot. The entire card toggles selection; the marker adds no second hit target. */
+@Composable
+internal fun OrbisSelectionIndicator(selected: Boolean, selecting: Boolean) {
+    val visibility by animateFloatAsState(if (selecting) 1f else 0f, tween(160), label = "selectionMarker")
+    val progress by animateFloatAsState(if (selected) 1f else 0f, tween(160), label = "selectionCheck")
+    val accent = MaterialTheme.colorScheme.primary
+    Box(
+        Modifier.size(22.dp).alpha(visibility)
+            .background(accent.copy(alpha = progress), CircleShape)
+            .border(1.5.dp, if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(Icons.Rounded.Check, contentDescription = null,
+            tint = MaterialTheme.colorScheme.onPrimary,
+            modifier = Modifier.size(14.dp).alpha(progress))
     }
 }
 

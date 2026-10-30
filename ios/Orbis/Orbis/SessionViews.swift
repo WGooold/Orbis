@@ -110,6 +110,8 @@ struct SessionDrawerView: View {
                         directoryGroup(directory)
                     }
                 }.padding(6).padding(.bottom, 16)
+                    // Rebuild search results so a sole row cannot retain its former group’s accessibility bounds.
+                    .id(state.query)
             }
             // As in the transcript, let the scroll view resolve shrinking content itself.
             .defaultScrollAnchor(.top)
@@ -272,11 +274,6 @@ struct SessionDrawerView: View {
             else { onOpenSession(session) }
         } label: {
             HStack(spacing: 8) {
-                if selecting {
-                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(selected ? OrbisPalette(scheme).accent : OrbisPalette(scheme).secondary)
-                        .accessibilityHidden(true)
-                }
                 // Activation swaps the emblem for a spinner in the same slot; the title never reflows.
                 ZStack {
                     AgentEmblem(kind: session.agentKind, size: 24, recessed: false)
@@ -285,24 +282,30 @@ struct SessionDrawerView: View {
                 }.frame(width: 24, height: 24)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(store.displayName(session)).font(.orbisBody()).lineLimit(2)
-                    HStack(spacing: 8) {
-                        if let runtime { RuntimeStatusLabel(status: runtime.status) }
-                        else { Text("缓存历史").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
-                        Text(sessionTimeTitle(session.modifiedAt))
-                            .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                        if session.agentKind == "codexDesktop" {
-                            Text("桌面版").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).agent(session.agentKind))
+                    ZStack(alignment: .leading) {
+                        HStack(spacing: 8) {
+                            if let runtime { RuntimeStatusLabel(status: runtime.status) }
+                            else { Text("缓存历史").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
+                            Text(sessionTimeTitle(session.modifiedAt))
+                                .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                            if session.agentKind == "codexDesktop" {
+                                Text("桌面版").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).agent(session.agentKind))
+                            }
+                            if let provider = sessionOtherProvider(session, current: store.currentProvider(for: session.agentKind ?? "")) {
+                                Text(provider).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).warning)
+                            }
+                        }.lineLimit(1)
+                            .opacity(selecting && archiveUnavailableReason(session) != nil ? 0 : 1)
+                            .accessibilityHidden(selecting && archiveUnavailableReason(session) != nil)
+                        if selecting, let reason = archiveUnavailableReason(session) {
+                            Text(reason).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
                         }
-                        if let provider = sessionOtherProvider(session, current: store.currentProvider(for: session.agentKind ?? "")) {
-                            Text(provider).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).warning)
-                        }
-                    }.lineLimit(1)
-                    if selecting, let reason = archiveUnavailableReason(session) {
-                        Text(reason).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
+                OrbisSelectionIndicator(selected: selected, selecting: selecting)
             }.padding(12).contentShape(Rectangle())
-        }.buttonStyle(NeuButtonStyle(selected: selecting ? selected : store.selectedRuntime?.sessionId == session.sessionId, radius: 16))
+        }.buttonStyle(OrbisSelectionButtonStyle(selected: selected, selecting: selecting, radius: 16,
+                                               recessed: store.selectedRuntime?.sessionId == session.sessionId))
             .disabled(store.activatingSessionId != nil && !selecting)
             .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(session.sessionId) })
             .accessibilityIdentifier("drawer-session-" + session.sessionId)

@@ -207,6 +207,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                             .background(OrbisPalette(scheme).base.ignoresSafeArea())
                             .offset(x: offset ?? 0)
                             .transition(.move(edge: .leading))
+                            .accessibilityElement(children: .contain)
                             .accessibilityAddTraits(.isModal)
                     }
                     // 紧贴屏幕左缘起手时，挂在内容上的同时手势会被系统边缘手势拦下，这里单独接住。
@@ -584,9 +585,10 @@ struct HomeView: View {
                                         .foregroundStyle(OrbisPalette(scheme).error)
                                 } else { RuntimeStatusLabel(status: runtime.status) }
                             }
-                        }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        OrbisSelectionIndicator(selected: selected, selecting: selecting)
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                }.buttonStyle(NeuButtonStyle(selected: selected, radius: OrbisRadius.card, padding: OrbisRadius.cardPadding + 4))
+                }.buttonStyle(OrbisSelectionButtonStyle(selected: selected, selecting: selecting, padding: OrbisRadius.cardPadding + 4))
                     .offset(x: -reveal)
                     .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(runtime.runtimeId) })
                     .accessibilityIdentifier("home-runtime-\(runtime.runtimeId)")
@@ -627,12 +629,6 @@ struct HomeView: View {
                         })
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { runtimeCardWidths[runtime.runtimeId] = $0 }
-            if selecting {
-                OrbisIconButton(symbol: selected ? "checkmark.circle.fill" : "circle", label: selected ? "取消选择会话" : "选择会话",
-                                tint: selected ? OrbisPalette(scheme).accent : nil, selected: selected, compact: true) {
-                    toggleSelection(runtime.runtimeId)
-                }
-            }
         }.accessibilityElement(children: .contain)
     }
 

@@ -115,8 +115,10 @@ final class OrbisUITests: XCTestCase {
         let pi = app.buttons["home-runtime-preview-pi"]
         let dsh = app.buttons["home-runtime-preview-dsh"]
         XCTAssertTrue(codex.waitForExistence(timeout: 8))
+        let selectionFrame = codex.frame
         codex.press(forDuration: 0.8)
         XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        XCTAssertEqual(codex.frame, selectionFrame, "长按选择不能移动或改变卡片大小")
         XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].firstMatch.exists)
         pi.tap()
         XCTAssertTrue(app.staticTexts["已选择 2 项"].waitForExistence(timeout: 3))
@@ -448,8 +450,10 @@ final class OrbisUITests: XCTestCase {
         let second = app.buttons["drawer-session-session-5"]
         XCTAssertTrue(first.waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["会话操作"].exists)
+        let selectionFrame = first.frame
         first.press(forDuration: 0.8)
         XCTAssertTrue(app.staticTexts["已选择 1 项"].exists)
+        XCTAssertEqual(first.frame, selectionFrame, "长按选择不能移动或改变卡片大小")
         second.tap()
         XCTAssertTrue(app.staticTexts["已选择 2 项"].exists)
         first.tap()
@@ -569,8 +573,11 @@ final class OrbisUITests: XCTestCase {
         capture("download-card-paused", app: app)
         card.tap()
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: active, object: card)], timeout: 3), .completed)
+        let selectionFrame = card.frame
         card.press(forDuration: 0.8)
         XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        XCTAssertEqual(card.frame, selectionFrame, "长按选择不能移动或改变卡片大小")
+        capture("download-card-selection", app: app)
         card.tap()
         XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
         XCTAssertTrue(active.evaluate(with: card), "选择和取消选择不能暂停下载")
