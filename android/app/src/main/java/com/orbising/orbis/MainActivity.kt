@@ -580,7 +580,6 @@ internal fun RuntimeListScreen(
     onRetryHome: () -> Unit = {},
 ) {
     val homeListState = rememberLazyListState()
-    val shownHomeKeys = remember { HomeListKeys() }
     val pullRefreshState = rememberPullToRefreshState()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -588,13 +587,14 @@ internal fun RuntimeListScreen(
     val haptic = LocalHapticFeedback.current
     var selectedRuntimeIds by remember(activeHostId) { mutableStateOf(emptySet<String>()) }
     // 主页只列当前电脑的会话：多台电脑不混在一张列表里，切换入口就在下面的电脑行（ADR-0030 修订）。
-    val visibleRuntimes = remember(hosts, activeHostId) {
+    val latestRuntimes = remember(hosts, activeHostId) {
         hosts.filter { it.hostId == activeHostId }.flatMap { snapshot ->
             // ADR-0049 §5：已提交关闭的会话先离开首页；电脑拒绝或超时时再回来。
             snapshot.state.homeCards
                 .map { HostRuntimeRow(snapshot.hostId, snapshot.name, it, snapshot.state) }
         }
     }
+    val visibleRuntimes = rememberViewportItems(latestRuntimes, homeListState, activeHostId)
     val visibleIds = visibleRuntimes.map { it.runtime.runtimeId }.toSet()
     val selectedIds = selectedRuntimeIds.intersect(visibleIds)
     val selecting = selectedIds.isNotEmpty()
@@ -725,16 +725,7 @@ internal fun RuntimeListScreen(
                 // V21：会话增删与重排不能把视口挤走。在发布新列表的同一次组合里决定位置，
                 // 让 LazyColumn 这一帧就按它测量，而不是先跟着首卡跳走再拉回来。
                 val homeKeys = visibleRuntimes.map { "${it.hostId}:${it.runtime.runtimeId}" }
-                val topSlop = with(LocalDensity.current) { 8.dp.roundToPx() }
-                if (shownHomeKeys.keys != homeKeys) {
-                    val previous = shownHomeKeys.keys
-                    shownHomeKeys.keys = homeKeys
-                    Snapshot.withoutReadObservation {
-                        homeViewportTarget(previous, homeKeys, homeListState.firstVisibleItemIndex,
-                            homeListState.firstVisibleItemScrollOffset, topSlop)
-                            ?.let { (index, offset) -> homeListState.requestScrollToItem(index, offset) }
-                    }
-                }
+                maintainListViewport(homeListState, homeKeys, activeHostId)
                 // M15：与 iOS 一样下拉刷新，逻辑同失败重试；进度仍由连接胶囊或列表空态表达，指示器松手即收起。
                 Box(
                     Modifier.fillMaxWidth().weight(1f).testTag("home-pull-refresh")
@@ -969,7 +960,6 @@ private fun HomeFirstLoadStatus(sync: HomeSyncStatus, e2eReady: Boolean, onRetry
 }
 
 /** The card keys the home list last laid out, to place the viewport when they change. */
-private class HomeListKeys { var keys: List<String> = emptyList() }
 
 /** One home-screen card and the computer that serves it. */
 private data class HostRuntimeRow(

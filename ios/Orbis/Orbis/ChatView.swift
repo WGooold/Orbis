@@ -43,7 +43,7 @@ struct ChatView: View {
     @EnvironmentObject private var transfers: FileTransfers
     @EnvironmentObject private var agent: AgentState
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     let runtime: RuntimeSummary
     let onBack: () -> Void
     let onHistory: () -> Void
@@ -438,7 +438,7 @@ private struct ChatScrollObserver: ViewModifier {
     let onDistance: (CGFloat) -> Void
     let onInteraction: (Bool) -> Void
     @State private var readingRow: String?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
@@ -468,7 +468,7 @@ private struct ChatNativeScrollPosition: ViewModifier {
     let onDistance: (CGFloat) -> Void
     let onInteraction: (Bool) -> Void
     @State private var position = ScrollPosition(idType: String.self)
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
@@ -904,10 +904,13 @@ private struct MarkdownRow: Identifiable {
 }
 
 struct MarkdownMessage: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @EnvironmentObject private var transfers: FileTransfers
     @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
+    #if DEBUG
+    @Environment(\.previewRevealTime) private var previewRevealTime
+    #endif
     let text: String
     let streaming: Bool
     @State private var clock: RevealClock
@@ -922,12 +925,22 @@ struct MarkdownMessage: View {
     var body: some View {
         let rows = MarkdownCache.rows(text)
         let length = MarkdownCache.renderedLength(text)
+        #if DEBUG
+        let referenceNow = previewRevealTime ?? Date().timeIntervalSinceReferenceDate
+        #else
+        let referenceNow = Date().timeIntervalSinceReferenceDate
+        #endif
         let revealEnabled = streaming && !reduceMotion
         // When the stream ends, characters already queued finish revealing instead of jumping in.
-        let animating = !reduceMotion && settleTick >= 0 && clock.isAnimating(at: Date().timeIntervalSinceReferenceDate)
+        let animating = !reduceMotion && settleTick >= 0 && clock.isAnimating(at: referenceNow)
         let visibleClock = revealEnabled || animating ? clock : RevealClock(known: length)
         TimelineView(.animation(minimumInterval: nil, paused: !animating)) { context in
-            let now = reduceMotion ? TimeInterval.greatestFiniteMagnitude : max(context.date.timeIntervalSinceReferenceDate, Date().timeIntervalSinceReferenceDate)
+            #if DEBUG
+            let renderTime = previewRevealTime ?? max(context.date.timeIntervalSinceReferenceDate, Date().timeIntervalSinceReferenceDate)
+            #else
+            let renderTime = max(context.date.timeIntervalSinceReferenceDate, Date().timeIntervalSinceReferenceDate)
+            #endif
+            let now = reduceMotion ? TimeInterval.greatestFiniteMagnitude : renderTime
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(rows) { row in rowView(row, clock: visibleClock, now: now) }
             }
@@ -939,7 +952,7 @@ struct MarkdownMessage: View {
                 return .handled
             })
             .onChange(of: text) { previous, value in
-                if revealEnabled && value.hasPrefix(previous) { clock.observe(length: length, at: Date().timeIntervalSinceReferenceDate) }
+                if revealEnabled && value.hasPrefix(previous) { clock.observe(length: length, at: referenceNow) }
                 else { clock = RevealClock(known: length) }
             }
             // Starting to stream takes the current text as the baseline; ending lets the queue drain.

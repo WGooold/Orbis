@@ -1,5 +1,20 @@
 import Foundation
 import Testing
+
+struct CatalogAnchorTests {
+    @Test func insertedRowsAndAnotherPromotedRowRetainTheAnchor() {
+        #expect(!catalogAnchorMoved(previous: ["a", "b", "c", "d"], current: ["new", "a", "b", "c", "d"], anchor: "c"))
+        #expect(!catalogAnchorMoved(previous: ["a", "b", "c", "d"], current: ["d", "a", "b", "c"], anchor: "c"))
+    }
+    @Test func aPromotedOrRemovedAnchorKeepsThePixelOffset() {
+        #expect(catalogAnchorMoved(previous: ["a", "b", "c", "d"], current: ["c", "a", "b", "d"], anchor: "c"))
+        #expect(catalogAnchorMoved(previous: ["a", "b", "c"], current: ["a", "b"], anchor: "c"))
+    }
+    @Test func anotherRowsDemotionDoesNotMoveTheReadingAnchor() {
+        #expect(!catalogAnchorMoved(previous: ["c", "a", "b"], current: ["a", "b", "c"], anchor: "b", updated: ["c"]))
+        #expect(catalogAnchorMoved(previous: ["a", "b", "c"], current: ["b", "a", "c"], anchor: "b", updated: ["b"]))
+    }
+}
 @testable import OrbisCore
 
 @Suite("Android presentation parity")

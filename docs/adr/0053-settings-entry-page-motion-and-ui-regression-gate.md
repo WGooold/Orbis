@@ -2,7 +2,7 @@
 
 日期：2026-10-30
 
-Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再跳转；保留排障入口；聊天 / 历史页内下载页滑入并返回原页；历史页加下载按钮；设置页去掉已配对电脑区。§8 回归门禁立即生效。2026-10-30 在分支 `ui-r15` 实施 §1、§4–§7 与 §3 的 Android 首页部分（ADR-0051 r16）；§2 与 §3 的其余部分尚未实施，进度见 [UI r15 ticket](../agents/ui-r15-tickets.md)）
+Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再跳转；保留排障入口；聊天 / 历史页内下载页滑入并返回原页；历史页加下载按钮；设置页去掉已配对电脑区。§8 回归门禁立即生效。2026-10-31 合入 main；r19 已补 Android Codex 真实输出捕获及两端 V21 目录用例定向验证。当前 iOS 全量、iOS / Claude 真实输出和手动门禁未完成，进度见 [UI r15 ticket](../agents/ui-r15-tickets.md)）
 
 关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)（基线 `2026-10-30/r15`）、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0048](0048-online-chat-entry-budget.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0050](0050-fixed-lan-relay-routing.md)；回归方案见 [移动端 UI 回归方案](../testing/ui-regression.md)。
 

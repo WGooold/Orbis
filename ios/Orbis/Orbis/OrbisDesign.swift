@@ -1,4 +1,15 @@
 import SwiftUI
+
+extension EnvironmentValues {
+    /// Preview fixtures exercise the same reduction branches as the system setting.
+    var orbisReduceMotion: Bool {
+        #if DEBUG
+        accessibilityReduceMotion || ProcessInfo.processInfo.arguments.contains("--preview-reduce-motion")
+        #else
+        accessibilityReduceMotion
+        #endif
+    }
+}
 import UIKit
 
 // Shared with Android's OrbisTheme / Neumorph: one continuous base, raised
@@ -231,7 +242,7 @@ struct OrbisLayerFill: View {
 /// `0fr → 1fr` technique). Mount only on first expansion (ADR-0047), then keep content
 /// identity and natural layout across subsequent toggles.
 struct OrbisCollapse<Content: View>: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     let expanded: Bool
     @ViewBuilder var content: () -> Content
     @State private var hasExpanded: Bool
@@ -755,7 +766,7 @@ private struct OrbisPanel: ViewModifier {
 private struct OrbisOverlayLayer: View {
     @Environment(\.colorScheme) private var scheme
     @ObservedObject var overlay: OrbisOverlay
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -1116,13 +1127,25 @@ final class DownloadFlight: ObservableObject {
         let to: CGPoint
         let start: Date
     }
+    #if DEBUG
+    /// UI tests slow the flight to capture its middle frame.
+    static let duration: TimeInterval = ProcessInfo.processInfo.arguments.contains("--preview-slow-flight") ? 4.16 : 0.52
+    #else
     static let duration: TimeInterval = 0.52
+    #endif
     static let fade: TimeInterval = 0.08
     static let maxFlights = 3
 
     @Published private(set) var flights: [Flight] = []
     @Published var pop: CGFloat = 1
     @Published var highlighted = false
+    #if DEBUG
+    private(set) var previewLastFlight: Flight?
+    private(set) var previewLaunchMode = "none"
+    var previewMetrics: String {
+        "count=\(flights.count);mode=\(previewLaunchMode);fromX=\(previewLastFlight?.from.x ?? -1);fromY=\(previewLastFlight?.from.y ?? -1);toX=\(previewLastFlight?.to.x ?? -1);toY=\(previewLastFlight?.to.y ?? -1)"
+    }
+    #endif
     /// Global frames; the latest tap anywhere on the page is the one that started the download.
     var target: CGRect = .zero
     var page: CGRect = .zero
@@ -1144,6 +1167,9 @@ final class DownloadFlight: ObservableObject {
     private func fly() {
         guard target != .zero else { return }
         if reduceMotion {
+            #if DEBUG
+            previewLaunchMode = "highlight"
+            #endif
             withAnimation(.orbisFade) { highlighted = true }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
                 withAnimation(.orbisFade) { self?.highlighted = false }
@@ -1153,6 +1179,10 @@ final class DownloadFlight: ObservableObject {
         guard flights.count < Self.maxFlights else { popTarget(); return }
         let to = CGPoint(x: target.midX, y: target.midY)
         let flight = Flight(from: lastTap ?? CGPoint(x: page.midX, y: page.midY), to: to, start: Date())
+        #if DEBUG
+        previewLastFlight = flight
+        previewLaunchMode = "flight"
+        #endif
         flights.append(flight)
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.duration) { [weak self] in
             guard let self, self.flights.contains(where: { $0.id == flight.id }) else { return }
@@ -1182,7 +1212,7 @@ extension EnvironmentValues {
 }
 
 private struct DownloadFlightHost: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     let flight: DownloadFlight
     func body(content: Content) -> some View {
         content.environment(\.downloadFlight, flight)
@@ -1197,16 +1227,22 @@ private struct DownloadFlightHost: ViewModifier {
 
 private struct DownloadFlightTarget: ViewModifier {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisAccent) private var pageAccent
     @ObservedObject var flight: DownloadFlight
     func body(content: Content) -> some View {
         content.scaleEffect(flight.pop)
-            .background { Circle().fill(OrbisPalette(scheme).accent.opacity(flight.highlighted ? 0.22 : 0)) }
+            .background { Circle().fill((pageAccent ?? OrbisPalette(scheme).accent).opacity(flight.highlighted ? 0.22 : 0)) }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { flight.target = $0 }
+            #if DEBUG
+            .accessibilityValue(ProcessInfo.processInfo.arguments.contains("--preview-flight-probe") ? flight.previewMetrics : "")
+            #endif
     }
 }
 
 private struct DownloadFlightLayer: View {
     @Environment(\.colorScheme) private var scheme
+    /// Chat pages follow the agent's accent (X02).
+    @Environment(\.orbisAccent) private var pageAccent
     @ObservedObject var flight: DownloadFlight
     var body: some View {
         GeometryReader { proxy in
@@ -1214,7 +1250,7 @@ private struct DownloadFlightLayer: View {
             TimelineView(.animation(paused: flight.flights.isEmpty)) { context in
                 Canvas { graphics, _ in
                     var icon = graphics.resolve(Image(systemName: "doc.fill"))
-                    icon.shading = .color(OrbisPalette(scheme).accent)
+                    icon.shading = .color(pageAccent ?? OrbisPalette(scheme).accent)
                     let fadeFrom = 1 - DownloadFlight.fade / DownloadFlight.duration
                     for item in flight.flights {
                         let time = min(max(context.date.timeIntervalSince(item.start) / DownloadFlight.duration, 0), 1)

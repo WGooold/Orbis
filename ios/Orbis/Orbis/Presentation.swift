@@ -1,4 +1,12 @@
 import Foundation
+
+/// A promoted or removed reading anchor keeps the pixel offset instead of dragging the reader.
+func catalogAnchorMoved(previous: [String], current: [String], anchor: String, updated: Set<String>? = nil) -> Bool {
+    guard let old = previous.firstIndex(of: anchor), let next = current.firstIndex(of: anchor) else { return true }
+    if let updated { return old != next && updated.contains(anchor) }
+    let positions = Dictionary(uniqueKeysWithValues: current.enumerated().map { ($0.element, $0.offset) })
+    return previous[..<old].contains { (positions[$0] ?? -1) > next }
+}
 import Combine
 
 struct SessionProviderOption: Identifiable {

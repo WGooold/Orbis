@@ -16,6 +16,8 @@ struct OrbisApp: App {
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--preview-screen=disclosure") {
                 DisclosurePerformancePreview()
+            } else if ProcessInfo.processInfo.arguments.contains("--preview-screen=reveal") {
+                StreamingRevealPreview().environmentObject(store)
             } else {
                 appContent
             }

@@ -43,7 +43,9 @@ class ToolContinuityCaptureInstrumentedTest {
         val code = payload["code"]!!.jsonPrimitive.content
         val hostId = payload["hostId"]!!.jsonPrimitive.content
         val agent = arguments.getString("agentKind") ?: "pi"
-        val prompt = arguments.getString("prompt")
+        val prompt = arguments.getString("promptBase64")?.let {
+            String(android.util.Base64.decode(it, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP))
+        } ?: arguments.getString("prompt")
             ?: "请用 shell 工具执行：for i in \$(seq 1 150); do echo line \$i; sleep 0.04; done ；完成后再执行：ls -la ；最后只回复 done"
         val seconds = arguments.getString("seconds")?.toLongOrNull() ?: 90L
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -53,6 +55,9 @@ class ToolContinuityCaptureInstrumentedTest {
         lateinit var model: RemoteViewModel
         val frames = StringBuilder()
         val list = LazyListState()
+        var sawRealToolActivity = false
+        var highestTranscriptCount = 0
+        var transcriptShrankDuringTurn = false
         var scenario: ActivityScenario<ComponentActivity>? = null
         try {
             instrumentation.runOnMainSync {
@@ -83,7 +88,20 @@ class ToolContinuityCaptureInstrumentedTest {
             val recorder = object : Choreographer.FrameCallback {
                 var recording = true
                 override fun doFrame(time: Long) {
-                    frames.append(frame(time, model.state.value, runtimeId, list)).append('\n')
+                    val snapshot = model.state.value
+                    val conversation = snapshot.conversations[runtimeId]
+                    val count = conversation?.messages?.size ?: 0
+                    val hasToolActivity = conversation?.tools?.isNotEmpty() == true || conversation?.messages.orEmpty().any { message ->
+                        message.content.any { it.type == "tool_call" && it.toolCallId != null }
+                    }
+                    if (snapshot.runtimes[runtimeId]?.status == "running" && hasToolActivity) {
+                        sawRealToolActivity = true
+                    }
+                    if (snapshot.runtimes[runtimeId]?.status == "running" && count < highestTranscriptCount) {
+                        transcriptShrankDuringTurn = true
+                    }
+                    highestTranscriptCount = maxOf(highestTranscriptCount, count)
+                    frames.append(frame(time, snapshot, runtimeId, list)).append('\n')
                     if (recording) Choreographer.getInstance().postFrameCallback(this)
                 }
             }
@@ -92,8 +110,25 @@ class ToolContinuityCaptureInstrumentedTest {
                 model.sendMessage(prompt)
             }
             val end = System.currentTimeMillis() + seconds * 1_000
-            while (System.currentTimeMillis() < end) Thread.sleep(500)
+            var screenshot = 0
+            val directory = File(base.getExternalFilesDir(null), "tool-capture").apply { mkdirs() }
+            while (System.currentTimeMillis() < end) {
+                Thread.sleep(500)
+                if (screenshot < 6 && System.currentTimeMillis() >= end - (seconds - screenshot * 5) * 1_000) {
+                    instrumentation.uiAutomation.takeScreenshot()?.let { bitmap ->
+                        File(directory, "capture-$agent-${screenshot++}.png").outputStream().use {
+                            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+                        }
+                    }
+                }
+            }
             instrumentation.runOnMainSync { recorder.recording = false }
+            if (arguments.getString("assertStable") == "true") {
+                check(sawRealToolActivity) { "The backend produced no real tool activity in captured frames" }
+                check(model.state.value.runtimes[runtimeId]?.status == "idle") { "The real backend did not finish the turn" }
+                check(highestTranscriptCount >= 2) { "The real backend produced no visible transcript" }
+                check(!transcriptShrankDuringTurn) { "The visible transcript was truncated during the tool turn" }
+            }
         } finally {
             val directory = File(base.getExternalFilesDir(null), "tool-capture").apply { mkdirs() }
             File(directory, "frames-$agent.ndjson").writeText(frames.toString())

@@ -1,6 +1,7 @@
 package com.orbising.orbis
 
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import org.junit.Assert.assertEquals
@@ -107,5 +108,18 @@ class HomeViewportInstrumentedTest {
         }
         compose.waitForIdle()
         assertEquals(1, refreshes)
+    }
+
+    @Test fun catalogChangesWaitForTheReadersDragToFinish() {
+        show()
+        val list = compose.onNodeWithTag("home-session-list")
+        list.performScrollToIndex(5)
+        list.performTouchInput { down(center); moveBy(Offset(0f, -50f)); advanceEventTime(50) }
+        val before = top("c06")
+        compose.runOnIdle { state.value = home(listOf("c05") + cards.filter { it != "c05" }) }
+        assertEquals("No repositioning while the pointer is held", before, top("c06"), 1f)
+        list.performTouchInput { moveBy(Offset(0f, -40f)); advanceEventTime(200); up() }
+        compose.waitForIdle()
+        org.junit.Assert.assertTrue("The native drag still consumes movement", top("c06") < before - 20f)
     }
 }

@@ -1,6 +1,6 @@
 # 移动端 UI 回归方案
 
-日期：2026-10-30。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-10-30/r15`；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-10-31。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-10-31/r19`；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 5 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -102,7 +102,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
 
-**iOS `OrbisUITests`（46 项）**
+**iOS `OrbisUITests`（56 项）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
@@ -114,12 +114,13 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 聊天视口 | `testLongTranscriptAppearsAndToolExpansionKeepsItsPositionWithoutDragging`、`testLongFinalReplyKeepsReadingPositionAndOnlyFollowsAfterJump`、`testNewMessagesAndToolsPreserveTheMovingReadingAnchor` | V01–V03、M03 |
 | 聊天内容 / 顶栏 | `testRefreshKeepsHeaderTextAndTruncationStable`、`testClosedDisclosureDefersWorkAcrossChatReentryAndRetainsState`、`testUserMessageCopyAndRewind`、`testToolDetailsLoadPagesAndClose`、`testTruncatedContentAndToolArguments`、`testHistoryPreviewAndNavigation` | S10–S11、S17、S20、M03、M05、V05、V14 |
 | 输入 / 审批 / 队列 | `testSlashPickerStaysAboveKeyboard`、`testOptimisticSendReconcilesAndRejectedSendRestores`、`testApprovalOverlayKeepsComposerStableWhileSubmitting`、`testQueueCancellationNotificationsAndRuntimeFacts`、`testToolExportAndInteractionDraftSwitching` | V06–V08、V10、V12、V17 |
-| 连接状态 / 供应商（r15 后为设置页） | `testCompactQuotaCardsAndTransparentSwitch`、`testFixedRoutingAndStatusProviderSwitch`、`testBasicConnectionStatusAndDirectoryProviderMismatch` | S18–S19、S22（待实施） |
+| 连接状态 / 供应商（r15 后为设置页） | `testCompactQuotaCardsAndTransparentSwitch`、`testFixedRoutingAndStatusProviderSwitch`、`testBasicConnectionStatusAndDirectoryProviderMismatch` | S18–S19、S22 |
 | 下载 | `testDownloadCardsPauseResumeAndSelectWithoutSideButtons` | S15、S20 |
 | 轮次文件审阅 | `testTurnFileReviewLoadsOnlySelectedFilesAndRetainsCache`、`testTurnFileReviewDarkAppearance` | S21、M13、V19 |
 | 全页面明暗 | `testPageScreenshotsInBothAppearances` | S01–S09、S16 |
 | r15 设置与入口 | `testSettingsPageOrderAndSingleHostMenu` | S18、S22 |
 | r15 页面转场 | `testSettingsAndDownloadsSwipeBack`、`testChatDownloadsReturnToSameChat`、`testHistoryDownloadsReturnToHistory` | M08、M14 |
+| r15 流式、首页 / 目录视口与飞入 | `testStreamingRevealAdvancesInOrderAcrossBlocks`、`testStreamingRevealWithReducedMotionShowsEveryBlockImmediately`、`testHomeTopShowsNewAndPromotedSessions`、`testHomeScrolledAnchorSurvivesInsertionAndReordering`、`testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates`、`testDrawerTopKeepsNewAndPromotedDirectoriesVisible`、`testDownloadFlightStartsAtTapAndEndsAtButton`、`testDownloadFlightWithReducedMotionHighlightsWithoutFlying`、`testHistoryDownloadButtonAndFlight` | M04、V21、M16 |
 
 **Android instrumentation（`androidTest`）**
 
@@ -130,12 +131,12 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 聊天视口 / 内容 | `ChatViewportInstrumentedTest`（8）、`DeferredDisclosureInstrumentedTest`（2）、`MarkdownInstrumentedTest`（1）、`ToolPanelInstrumentedTest`（3）、`ToolContentInstrumentedTest`（2）、`DisplayScenariosInstrumentedTest`（1）、`ClaudeHistoryInstrumentedTest`（1）、`LiveHistoryReloadInstrumentedTest`（1） | S11、S20、M03、V01–V04、V09、V14 |
 | 顶栏 / 输入 / 交互 | `ChatStatusLayoutInstrumentedTest`（2）、`ComposerSessionInfoInstrumentedTest`（3）、`InteractionWorkspaceInstrumentedTest`（5）、`QuestionnaireInstrumentedTest`（2）、`CodexPermissionsInstrumentedTest`（3）、`NotificationsInstrumentedTest`（2）、`DshInstrumentedTest`（2） | S12、S17、V05–V08、V12、V17 |
 | 目录 | `SessionDrawerLayoutInstrumentedTest`（2）、`SessionArchiveSelectionInstrumentedTest`（3）、`SessionProviderFilterInstrumentedTest`（3）、`SessionHostOwnershipInstrumentedTest`（3） | S15、S19、M06、M09、V17 |
-| 状态 / 供应商 | `SubscriptionQuotaInstrumentedTest`（1）、`ProviderSelectionInstrumentedTest`（1） | S19、S22（待实施） |
+| 状态 / 供应商 | `SubscriptionQuotaInstrumentedTest`（1）、`ProviderSelectionInstrumentedTest`（1） | S19、S22 |
 | 下载 / 文件 | `DownloadFileBrowserInstrumentedTest`（3）、`TurnFileChangesInstrumentedTest`（3） | S09、S15、S20–S21、M13、V19 |
 | 材质 / 字形 / 控件 | `UiPolishInstrumentedTest`（3）、`NeumorphInstrumentedTest`（1） | S01–S09、S12、M04、V15 |
 | 非 UI 但在同一设备套件 | `SessionGraphStoreInstrumentedTest`（32）、`SessionSyncSelectionInstrumentedTest`（6）、`SessionSyncSlowLinkInstrumentedTest`（2） | 缓存 / 同步正确性，全量时一并运行 |
 | 需要隔离 Host | `IsolatedHostPairingInstrumentedTest`（1）；`ToolContinuityCaptureInstrumentedTest`（1，无参数时自动跳过，传入配对载荷与 cwd 时做真实输出逐帧捕获） | 配对；V20 定位 |
-| r15 首页视口与下拉刷新 | `HomeViewportInstrumentedTest`（4） | M15、V21 |
+| r15 首页 / 目录视口与下拉刷新 | `HomeViewportInstrumentedTest`（5）、`SessionDrawerViewportInstrumentedTest`（3） | M15、V21 |
 | r15 设置与入口 | `SettingsEntryInstrumentedTest`（3） | S18、S22 |
 | r15 页面转场 | `SwipeBackPagesInstrumentedTest`（2，位于 `SwipeBackInstrumentedTest.kt`） | M14 |
 | r15 下载飞入 | `DownloadFlightInstrumentedTest`（1） | M16 |
@@ -220,21 +221,21 @@ adb -s "$SERIAL" shell am instrument -w -r \
 5. **只写设计时**，设计说明列出拟新增的自动用例（名称、断言、夹具）和手动步骤，评审通过后实施时落地。
 6. **不得删除、跳过或放宽既有用例**来让改动通过。基线规则被有意替代时，在 ADR-0051 修订记录中说明，并同步改写对应用例。
 
-### 5.1 r15 新增用例（r16 已落地的标注于下）
+### 5.1 r15 新增用例
 
-已落地：iOS `RevealClockTests`、`testSettingsPageOrderAndSingleHostMenu`、`testSettingsAndDownloadsSwipeBack`、`testChatDownloadsReturnToSameChat`、`testHistoryDownloadsReturnToHistory`；Android `RevealScheduleTest`、`HomeViewportAnchorTest`、`StreamingRevealInstrumentedTest`、`HomeViewportInstrumentedTest`（含下拉刷新）、`SettingsEntryInstrumentedTest`、`SwipeBackPagesInstrumentedTest`、`DownloadFlightInstrumentedTest`。尚未落地：UI-01 的 iOS UI 用例、UI-02 全部、UI-03 的 iOS 与目录用例、UI-06 的 iOS UI 用例。
+自动用例已落地。iOS 新增 `RevealClockTests`、`testStreamingRevealAdvancesInOrderAcrossBlocks`、`testStreamingRevealWithReducedMotionShowsEveryBlockImmediately`、首页与目录 V21 用例，以及下载飞入和减少动画用例；Android 新增 `RevealScheduleTest`、`HomeViewportAnchorTest`、`StreamingRevealInstrumentedTest`、`HomeViewportInstrumentedTest`（含下拉刷新）、`SessionDrawerViewportInstrumentedTest`、`SettingsEntryInstrumentedTest`、`SwipeBackPagesInstrumentedTest`、`DownloadFlightInstrumentedTest`。当前 56 项 iOS UI 全量未运行；Android API 35 全量 131 项中 4 项失败，失败集合与 127 项基线的 4 项相同。手动 C01–C18、R01–R16、外观矩阵与完整 L4 审阅仍待执行。
 
 | ticket | 平台 | 拟新增用例 | 断言要点 |
 | --- | --- | --- | --- |
 | UI-01 | 两端单元 | iOS `RevealClockTests`；Android `GlyphRevealClockTest` | 多批到达时开始时间单调；活动区间连续；积压压缩到 450ms 内；跨块共享游标；非前缀续写立即落定；结束时剩余积压在 450ms 内揭示完；Android 活动字素 ≤ 128 |
-| UI-01 | iOS UI / Android 设备 | `testStreamingRevealAdvancesInOrderAcrossBlocks`；`StreamingRevealInstrumentedTest` | 夹具分批推送多段文本，按帧采样已绘制字素位置，后段不得早于前段；减少动画时直接显示 |
-| UI-02 | Android 设备 / iOS UI | `ToolContinuityInstrumentedTest`；`testRunningToolKeepsIdentityWhileFollowing` | 用 UI-02 录制的真实事件序列回放：工具行 key 从首帧到完成不变、高度不出现大起大落、跟随时末尾到视口距离恒为 0、无空白帧 |
-| UI-03 | Android 设备 / 单元 | `HomeViewportInstrumentedTest`；`HomeViewportAnchorTest` | 顶部时插入 / 重排后首项索引为 0 且偏移为 0；滚动中首张完整卡片屏幕 y 不变（≤ 1dp）；锚卡被移走时像素偏移不变；拖动中不重新定位 |
-| UI-03 | iOS UI | `testHomeViewportStaysWhenSessionsReorder`；目录同类 | 同上 |
+| UI-01 | iOS UI / Android 设备 | `testStreamingRevealAdvancesInOrderAcrossBlocks`、`testStreamingRevealWithReducedMotionShowsEveryBlockImmediately`；`StreamingRevealInstrumentedTest` | 夹具分批推送多段文本，按帧采样已绘制字素位置，后段不得早于前段；减少动画时直接显示 |
+| UI-02 | Android 设备 / iOS UI | `ToolContinuityCaptureInstrumentedTest`；iOS 真实输出用例待补 | 隔离 Host 真实输出逐帧记录：捕获运行中工具活动、转录行数不回退、最终回合结束；审阅工具卡身份 / 高度、跟随位置与空白帧。iOS 与 Claude 真实输出仍待验证 |
+| UI-03 | Android 设备 / 单元 | `HomeViewportInstrumentedTest`；`SessionDrawerViewportInstrumentedTest`；`HomeViewportAnchorTest` | 顶部插入 / 重排后首项索引为 0 且偏移为 0；首页 / 目录滚动中首张完整卡片屏幕 y 不变（≤ 1dp）；锚卡被移走时像素偏移不变；拖动中不重新定位 |
+| UI-03 | iOS UI | `testHomeTopShowsNewAndPromotedSessions`、`testHomeScrolledAnchorSurvivesInsertionAndReordering`、`testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates`、`testDrawerTopKeepsNewAndPromotedDirectoriesVisible` | 同上；首页 / 目录定向用例已通过，iOS 全量与手动复核待完成 |
 | UI-04 | 两端 | `SettingsEntryInstrumentedTest`；`testSettingsPageOrderAndSingleHostMenu` | 右上角只有下载与齿轮设置；连接胶囊不可点击，读屏语义为状态，失败重试仍可用；设置页分区顺序，且没有已配对电脑区；排障入口文字为“设置”；除侧边栏电脑菜单外，全树中没有“添加电脑”“取消配对”节点 |
 | UI-04 | 两端 | `SwipeBackInstrumentedTest` 扩展；`testSettingsAndDownloadsSwipeBack`、`testChatDownloadsReturnToSameChat` | 设置 / 首页下载页入场、取消回弹、返回首页、返回后可点；从聊天和历史页进入的下载页滑入，右滑底层为来源页，返回来源页且锚点与草稿不变；二级页返回设置 |
-| UI-05 | Android 设备 | `HomePullRefreshInstrumentedTest` | 顶部下拉调用一次 `refreshHome`；非顶部 / 多选 / 左滑中不调用；指示器收起；卡片坐标不变 |
-| UI-06 | 两端 | `DownloadFlightInstrumentedTest`；`testDownloadFlightStartsAtTapAndEndsAtButton`、`testHistoryDownloadButtonAndFlight` | 聊天页与历史页：起飞位置接近点击点，终点为本页下载按钮中心（容差 4pt/dp）；任务未创建时不起飞；同时 ≤ 3 个；减少动画不飞；阅读锚点不变；飞行层不拦截点击；历史页下载按钮的规格与角标和聊天页一致 |
+| UI-05 | Android 设备 | `HomeViewportInstrumentedTest#pullingAtTheTopRefreshesOnceWithoutMovingTheCards` | 顶部下拉调用一次 `refreshHome`；非顶部 / 多选 / 左滑中不调用；指示器收起；卡片坐标不变 |
+| UI-06 | 两端 | `DownloadFlightInstrumentedTest`；`testDownloadFlightStartsAtTapAndEndsAtButton`、`testDownloadFlightWithReducedMotionHighlightsWithoutFlying`、`testHistoryDownloadButtonAndFlight` | 聊天页与历史页：起飞位置接近点击点，终点为本页下载按钮中心（容差 4pt/dp）；任务未创建时不起飞；同时 ≤ 3 个；减少动画不飞；阅读锚点不变；飞行层不拦截点击；历史页下载按钮的规格与角标和聊天页一致 |
 
 ## 6. 结果记录
 

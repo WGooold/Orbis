@@ -17,10 +17,130 @@ final class OrbisUITests: XCTestCase {
     }
     /// Lets a short state transition (the capsule's 0.16 s fade) settle before a screenshot.
     private func settle() { _ = XCTWaiter().wait(for: [XCTestExpectation(description: "settle")], timeout: 0.5) }
+    private func waitForY(_ element: XCUIElement, _ y: CGFloat, operation: String) {
+        let position = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            element.exists && abs(element.frame.minY - y) <= 1
+        }, object: element)
+        XCTAssertEqual(XCTWaiter().wait(for: [position], timeout: 5), .completed, operation)
+        XCTAssertEqual(element.frame.minY, y, accuracy: 1, operation)
+    }
     private func capture(_ name: String, app: XCUIApplication) {
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = name; screenshot.lifetime = .keepAlways
         add(screenshot)
+    }
+    private func inkPixels(_ element: XCUIElement) -> Int {
+        guard let image = element.screenshot().image.cgImage else { return -1 }
+        let width = image.width, height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(data: &pixels, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return -1 }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let background = Array(pixels.prefix(3))
+        return stride(from: 0, to: pixels.count, by: 4).filter { offset in
+            (0..<3).reduce(0) { $0 + abs(Int(pixels[offset + $1]) - Int(background[$1])) } > 90
+        }.count
+    }
+    private func flightMetrics(_ button: XCUIElement) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: (button.value as? String ?? "").split(separator: ";").compactMap { part in
+            let pair = part.split(separator: "=", maxSplits: 1).map(String.init)
+            return pair.count == 2 ? (pair[0], pair[1]) : nil
+        })
+    }
+
+    func testStreamingRevealAdvancesInOrderAcrossBlocks() {
+        let app = launch("reveal")
+        let next = app.buttons["reveal-next-frame"]
+        XCTAssertTrue(next.waitForExistence(timeout: 8))
+        next.tap(); next.tap(); next.tap()
+        for label in ["SECOND", "THIRD", "FOURTH"] {
+            let text = app.staticTexts[label]
+            XCTAssertTrue(text.exists)
+            XCTAssertEqual(inkPixels(text), 0, "\(label) painted before the preceding tail")
+        }
+        capture("streaming-one-cursor-before-second-block", app: app)
+        next.tap() // Finishing the stream must let the queued tail drain.
+        XCTAssertEqual(inkPixels(app.staticTexts["SECOND"]), 0)
+        next.tap()
+        for label in ["SECOND", "THIRD", "FOURTH"] { XCTAssertGreaterThan(inkPixels(app.staticTexts[label]), 10) }
+        capture("streaming-one-cursor-finished", app: app)
+    }
+
+    func testStreamingRevealWithReducedMotionShowsEveryBlockImmediately() {
+        let app = launch("reveal", arguments: ["--preview-reduce-motion"])
+        let next = app.buttons["reveal-next-frame"]
+        XCTAssertTrue(next.waitForExistence(timeout: 8))
+        next.tap(); next.tap()
+        for label in ["SECOND", "THIRD", "FOURTH"] { XCTAssertGreaterThan(inkPixels(app.staticTexts[label]), 10) }
+        capture("streaming-reduced-motion-direct", app: app)
+    }
+
+    func testHomeTopShowsNewAndPromotedSessions() {
+        let app = launch("home", arguments: ["--preview-home-long-list", "--preview-viewport-controls"])
+        let first = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(first.waitForExistence(timeout: 8))
+        let y = first.frame.minY
+        app.buttons["preview-list-insert"].tap()
+        let inserted = app.buttons["home-runtime-preview-new"]
+        XCTAssertTrue(inserted.waitForExistence(timeout: 8))
+        XCTAssertEqual(inserted.frame.minY, y, accuracy: 1)
+        app.buttons["preview-list-promote"].tap()
+        let promoted = app.buttons["home-runtime-preview-scroll-15"]
+        XCTAssertTrue(promoted.waitForExistence(timeout: 8))
+        XCTAssertEqual(promoted.frame.minY, y, accuracy: 1)
+        capture("home-top-after-insert-and-promote", app: app)
+    }
+
+    func testHomeScrolledAnchorSurvivesInsertionAndReordering() {
+        let app = launch("home", arguments: ["--preview-home-long-list", "--preview-viewport-controls"])
+        XCTAssertTrue(app.buttons["home-runtime-preview-codex"].waitForExistence(timeout: 8))
+        let list = app.scrollViews["home-session-list"]
+        list.swipeUp()
+        let cards = (4...14).map { app.buttons["home-runtime-preview-scroll-\($0)"] }
+        guard let anchor = cards.first(where: { $0.exists && $0.isHittable && $0.frame.minY >= list.frame.minY && $0.frame.maxY <= list.frame.maxY }) else {
+            return XCTFail("No complete reading anchor")
+        }
+        let y = anchor.frame.minY
+        for operation in ["insert", "promote", "remove"] {
+            app.buttons["preview-list-" + operation].tap()
+            settle()
+            XCTAssertEqual(anchor.frame.minY, y, accuracy: 1, operation)
+        }
+        capture("home-scrolled-anchor-after-updates", app: app)
+    }
+
+    func testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates() {
+        let app = launch("drawer", arguments: ["--preview-long-directory", "--preview-viewport-controls"])
+        let more = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "再显示")).firstMatch
+        XCTAssertTrue(more.waitForExistence(timeout: 8))
+        more.tap()
+        let list = app.scrollViews["drawer-session-list"]
+        list.swipeUp()
+        let cards = (4...25).map { app.buttons["drawer-session-session-\($0)"] }
+        capture("drawer-session-anchor-before-updates", app: app)
+        guard let anchor = cards.first(where: { $0.exists && $0.frame.minY >= list.frame.minY && $0.frame.maxY <= list.frame.maxY }) else {
+            return XCTFail("No complete directory session anchor: list=\(list.frame), cards=\(cards.filter(\.exists).map { $0.frame })")
+        }
+        let y = anchor.frame.minY
+        for operation in ["insert", "promote", "remove"] {
+            app.buttons["preview-list-" + operation].tap(); settle()
+            waitForY(anchor, y, operation: operation)
+        }
+        capture("drawer-session-anchor-after-updates", app: app)
+    }
+
+    func testDrawerTopKeepsNewAndPromotedDirectoriesVisible() {
+        let app = launch("drawer", arguments: ["--preview-long-directory", "--preview-many-directories", "--preview-viewport-controls"])
+        let first = app.buttons["drawer-directory-/Projects/test-1"]
+        XCTAssertTrue(first.waitForExistence(timeout: 8))
+        let y = first.frame.minY
+        app.buttons["preview-list-insert"].tap(); settle()
+        let added = app.buttons["drawer-directory-/Projects/new"]
+        XCTAssertTrue(added.waitForExistence(timeout: 8))
+        waitForY(added, y, operation: "insert directory")
+        app.buttons["preview-list-promote"].tap(); settle()
+        waitForY(app.buttons["drawer-directory-/Projects/test-15"], y, operation: "promote directory")
+        capture("drawer-top-after-directory-updates", app: app)
     }
     func testTurnFileReviewLoadsOnlySelectedFilesAndRetainsCache() {
         let app = launch("changes")
@@ -515,6 +635,82 @@ final class OrbisUITests: XCTestCase {
         XCTAssertFalse(composer.exists)
         capture("chat-swipe-home", app: app)
     }
+    // ADR-0053 §3 / V21: a session closing above the viewport does not move the cards being read.
+    func testHomeViewportStaysWhenSessionsChangeAboveIt() {
+        let app = launch("home", arguments: ["--preview-home-long-list", "--preview-home-remove-later"])
+        let list = app.scrollViews["home-session-list"]
+        let top = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(top.waitForExistence(timeout: 8))
+        list.swipeUp()
+        settle()
+        let candidates = (4...15).map { app.buttons["home-runtime-preview-scroll-\($0)"] }
+        guard let card = candidates.first(where: { $0.exists && $0.isHittable && $0.frame.minY > list.frame.minY + 40 }) else {
+            return XCTFail("no fully visible card after scrolling")
+        }
+        let before = card.frame
+        XCTAssertFalse(top.isHittable)
+        XCTAssertTrue(top.waitForNonExistence(timeout: 12))
+        settle()
+        XCTAssertEqual(card.frame.minY, before.minY, accuracy: 1)
+        capture("home-viewport-after-removal", app: app)
+    }
+
+    // ADR-0053 §7 / M16: a queued download flies from the tap toward the chat's download button.
+    func testDownloadFlightStartsAtTapAndEndsAtButton() {
+        let app = launch("chat", arguments: ["--preview-chat-artifact", "--preview-slow-flight", "--preview-flight-probe"])
+        let file = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch
+        XCTAssertTrue(file.waitForExistence(timeout: 8))
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        let composerFrame = composer.frame
+        let origin = file.frame
+        file.tap()
+        let target = app.buttons["chat-downloads"]
+        let metrics = flightMetrics(target)
+        XCTAssertEqual(metrics["mode"], "flight")
+        XCTAssertEqual(Double(metrics["fromX"] ?? "") ?? -1, Double(origin.midX), accuracy: 4)
+        XCTAssertEqual(Double(metrics["fromY"] ?? "") ?? -1, Double(origin.midY), accuracy: 4)
+        XCTAssertEqual(Double(metrics["toX"] ?? "") ?? -1, Double(target.frame.midX), accuracy: 4)
+        XCTAssertEqual(Double(metrics["toY"] ?? "") ?? -1, Double(target.frame.midY), accuracy: 4)
+        capture("download-flight-midway", app: app)
+        // The flight takes no taps and moves nothing beneath it.
+        XCTAssertEqual(composer.frame, composerFrame)
+        XCTAssertTrue(app.buttons["chat-downloads"].isHittable)
+        app.buttons["chat-downloads"].tap()
+        XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch.waitForExistence(timeout: 3))
+        capture("download-flight-task-listed", app: app)
+    }
+
+    func testDownloadFlightWithReducedMotionHighlightsWithoutFlying() {
+        let app = launch("chat", arguments: ["--preview-chat-artifact", "--preview-reduce-motion", "--preview-flight-probe"])
+        let file = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch
+        XCTAssertTrue(file.waitForExistence(timeout: 8)); file.tap()
+        let metrics = flightMetrics(app.buttons["chat-downloads"])
+        XCTAssertEqual(metrics["mode"], "highlight")
+        XCTAssertEqual(metrics["count"], "0")
+        capture("download-reduced-motion-no-flight", app: app)
+        app.buttons["chat-downloads"].tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch.waitForExistence(timeout: 3))
+    }
+
+    func testHistoryDownloadButtonAndFlight() {
+        let app = launch("history", arguments: ["--preview-chat-artifact", "--preview-history-artifact", "--preview-slow-flight", "--preview-flight-probe"])
+        let node = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "梳理页面和交互")).firstMatch
+        XCTAssertTrue(node.waitForExistence(timeout: 8)); node.tap()
+        let file = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch
+        XCTAssertTrue(file.waitForExistence(timeout: 5))
+        let origin = file.frame
+        file.tap()
+        let target = app.buttons["history-downloads"]
+        let metrics = flightMetrics(target)
+        XCTAssertEqual(metrics["mode"], "flight")
+        XCTAssertEqual(Double(metrics["fromX"] ?? "") ?? -1, Double(origin.midX), accuracy: 4)
+        XCTAssertEqual(Double(metrics["fromY"] ?? "") ?? -1, Double(origin.midY), accuracy: 4)
+        XCTAssertEqual(Double(metrics["toX"] ?? "") ?? -1, Double(target.frame.midX), accuracy: 4)
+        XCTAssertEqual(Double(metrics["toY"] ?? "") ?? -1, Double(target.frame.midY), accuracy: 4)
+        capture("history-download-flight-midway", app: app)
+    }
+
     // ADR-0053 §4 / S22: the header keeps only downloads and settings, the capsule only reports state,
     // and computers are added or unpaired only from the drawer's computer menu.
     func testSettingsPageOrderAndSingleHostMenu() {

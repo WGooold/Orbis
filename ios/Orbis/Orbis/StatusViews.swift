@@ -320,7 +320,7 @@ struct AgentProvidersView: View {
 /// One coin, two quota windows. Card refresh and coin flip remain separate actions.
 private struct SubscriptionQuotaCoin: View {
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var weekly = false
     @State private var angle: Double = 0
     @State private var demonstrated = false
@@ -497,7 +497,7 @@ private struct QuotaCoinTilt: AnimatableModifier {
 
 private struct SubscriptionQuotaRing: View {
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var progress: CGFloat = 0
     let name: String
     let window: SubscriptionQuota.Window?
@@ -559,7 +559,7 @@ private struct SubscriptionQuotaArc: Shape {
 }
 
 private struct SubscriptionRefreshGlyph: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var invitation = false
     let loading: Bool
     let pending: Bool
@@ -584,7 +584,7 @@ private struct SubscriptionRefreshGlyph: View {
 /// Transparent inline actions share the card's material and keep their full hit area.
 private struct ProviderInlineButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .opacity(enabled ? (configuration.isPressed ? 0.55 : 1) : 0.4)

@@ -16,7 +16,7 @@ private struct TurnChangeCard: View {
     @ObservedObject var changes: TurnFileChanges
     let summary: TurnChangeSummary
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var expanded = false
     @State private var showing = false
     var body: some View {
@@ -124,7 +124,7 @@ struct TurnFileReviewView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var navigation: Int = 0
     @State private var requestedFile: String?
     private var pageReduceMotion: Bool {

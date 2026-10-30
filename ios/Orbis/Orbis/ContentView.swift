@@ -6,7 +6,7 @@ struct ContentView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var pages: [AppPage] = []
     @State private var drawerOpen = false
     @State private var directoryState = SessionDirectoryState()
@@ -88,6 +88,18 @@ struct ContentView: View {
             }
         }
         .overlay(alignment: .bottom) { TransferErrorBanner(transfers: store.transfers) }
+        #if DEBUG
+        .overlay(alignment: .topTrailing) {
+            if ProcessInfo.processInfo.arguments.contains("--preview-viewport-controls") {
+                HStack(spacing: 2) {
+                    ForEach(["insert", "promote", "remove"], id: \.self) { operation in
+                        Button(operation) { PreviewViewportUpdates.changeList?(operation) }
+                            .accessibilityIdentifier("preview-list-" + operation)
+                    }
+                }.font(.system(size: 10)).padding(.top, 60)
+            }
+        }
+        #endif
         .sheet(isPresented: $newSessionOpen, onDismiss: store.dismissBrowse) {
             NewSessionView(presetCwd: newSessionCwd) { newSessionOpen = false }
                 .environmentObject(store).orbisSheet([.large])
@@ -187,7 +199,7 @@ struct ContentView: View {
 /// 拉出手势挂在页面内容上与之同时识别，并按第一段位移锁定方向，竖向滚动主页时不会带出抽屉。
 private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @Binding var isOpen: Bool
     let edgeSwipeEnabled: Bool
     @ViewBuilder let drawer: Drawer
@@ -306,7 +318,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
 /// 聊天页右滑返回。导航栏隐藏后系统侧滑返回失效，这里在页面上同时识别一个横向拖动：
 /// 首页固定在原位，起始轻微横向受压，随右滑逐步恢复原状并渐亮；吸附完成后再返回。
 private struct SwipeBackModifier<Underlay: View>: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
     let enabled: Bool
     let onBack: () -> Void
@@ -428,7 +440,7 @@ private struct TransferErrorBanner: View {
 }
 
 struct HomeView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     @State private var selectedRuntimeIds: Set<String> = []
@@ -778,7 +790,7 @@ struct HomeView: View {
 struct ConnectionPill: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     var sync: HomeSyncStatus = .idle
     var body: some View {
         let p = OrbisPalette(scheme)

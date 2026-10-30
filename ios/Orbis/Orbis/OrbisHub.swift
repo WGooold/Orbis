@@ -228,6 +228,9 @@ final class OrbisStore: ObservableObject {
     func loadOlderHistory() -> Bool { activeConnection.loadOlderHistory() }
     func activate(_ session: SessionSummary) { activeConnection.activate(session) }
     func createSession(agentKind: String, cwd: String) { activeConnection.createSession(agentKind: agentKind, cwd: cwd) }
+    #if DEBUG
+    func createCaptureSession(agentKind: String, cwd: String) { activeConnection.createCaptureSession(agentKind: agentKind, cwd: cwd) }
+    #endif
     func archive(_ session: SessionSummary, archived: Bool) { activeConnection.archive(session, archived: archived) }
     func browseDirectory(_ path: String? = nil) { activeConnection.browseDirectory(path) }
     func dismissBrowse() { activeConnection.dismissBrowse() }

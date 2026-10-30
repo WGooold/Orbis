@@ -231,7 +231,11 @@ internal fun SessionDrawer(
     }
     var query by rememberSaveable { mutableStateOf("") }
     val searchTerm = query.trim()
-    val sections = remember(filteredTree, searchTerm) {
+    // Reset only when browsing a different catalog, not when restoring this page from history.
+    val listState = rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, saver = LazyListState.Saver) {
+        LazyListState()
+    }
+    val incomingSections = remember(filteredTree, searchTerm) {
         filteredTree.map { host ->
             DrawerHostSection(
                 hostId = host.hostId,
@@ -247,6 +251,8 @@ internal fun SessionDrawer(
             )
         }.filter { it.directories.isNotEmpty() }
     }
+    val viewportIdentity = listOf(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived)
+    val sections = rememberViewportItems(incomingSections, listState, viewportIdentity)
     val directoryCount = sections.sumOf { it.directories.size }
     val sessionCount = sections.sumOf { section -> section.directories.sumOf { it.sessions.size } }
     var selectedSessionIds by remember(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, isOpen) {
@@ -268,10 +274,6 @@ internal fun SessionDrawer(
         )
     }
     var showAllSessions by rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, expandedKey) { mutableStateOf(false) }
-    // Reset only when browsing a different catalog, not when restoring this page from history.
-    val listState = rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, saver = LazyListState.Saver) {
-        LazyListState()
-    }
     val canCreate = state.canCreateSessionOn(activeHostId)
     val focusManager = LocalFocusManager.current
     val haptic = LocalHapticFeedback.current
@@ -404,9 +406,17 @@ internal fun SessionDrawer(
                     )
                 }
             }
+            val viewportKeys = sections.flatMap { section -> section.directories.flatMap { directory ->
+                val branchKey = section.hostId + '\u0000' + directory.cwd
+                val expanded = branchKey == expandedKey
+                val rows = if (expanded && (showAllSessions || searchTerm.isNotEmpty())) directory.sessions else directory.sessions.take(5)
+                listOf("directory:$branchKey") + rows.map { "session:${section.hostId}:${it.sessionId}" } +
+                    (if (directory.sessions.size > 5 && searchTerm.isEmpty()) listOf("more:$branchKey") else emptyList()) + listOf("gap:$branchKey")
+            } }
+            maintainListViewport(listState, viewportKeys, listOf(viewportIdentity, expandedKey, showAllSessions))
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxWidth().weight(1f),
+                modifier = Modifier.fillMaxWidth().weight(1f).testTag("drawer-session-list"),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 16.dp),
             ) {
                 if (sections.isEmpty()) {
@@ -636,7 +646,7 @@ private fun DrawerDirectoryHeader(
 ) {
     val accent = if (expanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
     val rotation by animateFloatAsState(if (expanded) 90f else 0f, label = "directory-disclosure")
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+    Row(Modifier.fillMaxWidth().testTag("drawer-directory-${directory.cwd}"), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(0.dp)) {
         NeumorphSurface(
             modifier = Modifier.weight(1f).semantics { stateDescription = if (expanded) "已展开" else "已收起" },

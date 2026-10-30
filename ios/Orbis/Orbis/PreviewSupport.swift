@@ -2,9 +2,42 @@
 import Foundation
 import SwiftUI
 
+private struct PreviewRevealTimeKey: EnvironmentKey {
+    static let defaultValue: TimeInterval? = nil
+}
+
+extension EnvironmentValues {
+    var previewRevealTime: TimeInterval? {
+        get { self[PreviewRevealTimeKey.self] }
+        set { self[PreviewRevealTimeKey.self] = newValue }
+    }
+}
+
+/// Drives the production renderer at exact instants, including across newly mounted blocks.
+struct StreamingRevealPreview: View {
+    @EnvironmentObject private var store: OrbisStore
+    @State private var stage = 0
+    private var text: String {
+        "BASE" + (stage >= 1 ? String(repeating: "A", count: 70) : "") +
+            (stage >= 2 ? "\n\nSECOND\n\n- THIRD\n\n```text\nFOURTH\n```" : "")
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            Button("下一帧 \(stage)") { stage = min(5, stage + 1) }
+                .accessibilityIdentifier("reveal-next-frame")
+            MarkdownMessage(text: text, streaming: stage < 4)
+                .environmentObject(store.transfers)
+                .environment(\.previewRevealTime, [0, 1, 1.05, 1.08, 1.2, 2][stage])
+            Spacer()
+        }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color.white).foregroundStyle(Color.black)
+    }
+}
+
 @MainActor
 enum PreviewViewportUpdates {
     static var schedule: (() -> Void)?
+    static var changeList: ((String) -> Void)?
 }
 
 // Explicit launch arguments opt into isolated, in-memory fixtures for UI review.
@@ -18,6 +51,10 @@ func makePreviewStore(screen: String) -> OrbisStore {
     let twoHosts = ProcessInfo.processInfo.arguments.contains("--preview-hosts=2")
     let store = OrbisStore(secure: PreviewStorage(empty: screen == "pairing", twoHosts: twoHosts), preferences: nil,
                            transportFactory: { pairing in pairing.hostId == "preview-host" ? transport : PreviewTransport(screen: screen, variant: 1) })
+    PreviewViewportUpdates.changeList = { [weak store, weak transport] operation in
+        transport?.changeList(operation)
+        store?.refresh()
+    }
     if screen == "slash" || screen == "approval" || screen == "interactions" {
         Task { @MainActor in
             for _ in 0..<10 where store.selectedRuntime == nil { await Task.yield() }
@@ -66,6 +103,17 @@ private final class PreviewTransport: OrbisTransport {
     private var sourceSequence = 1
     private var homeReplayScheduled = false
     private var homeReadFailed = false
+    private var listMutation = ""
+
+    func changeList(_ operation: String) {
+        listMutation = operation
+        if operation == "insert" && screen != "drawer" {
+            receive?(["type": "runtime.online", "runtime": ["runtimeId": "preview-new", "sessionId": "session-new",
+                "sessionName": "新插入的会话", "name": "Codex", "cwd": "/Projects/orbis", "status": "idle", "agentKind": "codex"]], "ctl")
+        } else if operation == "remove" && screen != "drawer" {
+            receive?(["type": "runtime.offline", "runtimeId": "preview-codex"], "ctl")
+        }
+    }
     /// Messages sent from the composer in this preview; source checkpoints keep them after a re-sync.
     private var sentMessages: [[String: Any]] = []
     /// `--preview-send=pi` answers after a delay with a different id; `fail` rejects the send (ADR-0049).
@@ -107,6 +155,13 @@ private final class PreviewTransport: OrbisTransport {
             receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": runtimes,
                      "agents": ["pi", "codex", "dsh"], "launchableAgents": ["pi", "codex", "dsh"]], "ctl")
             receive(["type": "device.path", "path": "relay", "rttMs": 42], "ctl")
+            // V21: the top session goes away while the reader is scrolled further down the list.
+            if ProcessInfo.processInfo.arguments.contains("--preview-home-remove-later") {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 7_000_000_000)
+                    self?.receive?(["type": "runtime.offline", "runtimeId": "preview-codex"], "ctl")
+                }
+            }
             self.event(["type": "runtime.capabilities", "capabilities": ["commands": [
                 ["name": "quit", "source": "builtin", "description": "关闭会话"],
                 ["name": "model", "source": "builtin", "description": "切换当前模型", "argument": ["kind": "select", "required": true, "options": [["value": "model-a", "label": "默认模型"]]]],
@@ -183,16 +238,21 @@ private final class PreviewTransport: OrbisTransport {
         }
         if object["type"] as? String == "session.list" {
             let names = ["对齐移动端的使用体验", "梳理项目中的页面结构", "检查服务端连接状态", "优化聊天滚动与输入体验", "整理测试结果", "添加扫码配对", "检查深色模式"]
-            let longDirectory = ProcessInfo.processInfo.arguments.contains("--preview-long-directory")
+            let longDirectory = ProcessInfo.processInfo.arguments.contains("--preview-long-directory") || ProcessInfo.processInfo.arguments.contains("--preview-home-long-list")
             let drawerLayout = ProcessInfo.processInfo.arguments.contains("--preview-drawer-layout")
-            let sessions: [[String: Any]] = (1...(longDirectory ? 25 : 7)).map { index -> [String: Any] in
+            let manyDirectories = ProcessInfo.processInfo.arguments.contains("--preview-many-directories")
+            var sessions: [[String: Any]] = (1...(longDirectory ? 25 : 7)).map { index -> [String: Any] in
                 let agent = index == 2 ? "pi" : index == 3 ? "dsh" : "codex"
                 let layoutTitle = index == 4 ? "这是一个需要换行并且超过两行后显示省略号的很长会话标题，用来检查侧边栏卡片是否始终等高" : "短标题"
                 let layoutRow = drawerLayout && (index == 4 || index == 5)
                 return ["sessionId": "session-\(index)", "name": layoutRow ? layoutTitle : index <= names.count ? names[index - 1] : "较早会话 \(index)",
-                 "cwd": index == 2 ? "/Projects/website" : "/Projects/orbis", "createdAt": 1793145600000, "modifiedAt": 1793232000000 - index * 100000 + (layoutRow ? 1000000 : 0),
+                 "cwd": manyDirectories ? "/Projects/test-\(index)" : index == 2 ? "/Projects/website" : "/Projects/orbis", "createdAt": 1793145600000, "modifiedAt": 1793232000000 - index * 100000 + (layoutRow ? 1000000 : 0) + (listMutation == "promote" && index == 15 ? 10000000 : 0),
                  "messageCount": 12, "agentKind": agent, "archived": archivedSessionIds.contains("session-\(index)"), "modelProvider": index == 4 ? "team" : "openai"]
             }
+            if listMutation == "insert" {
+                sessions.insert(["sessionId": "session-new", "name": "新插入的会话", "cwd": manyDirectories ? "/Projects/new" : "/Projects/orbis",
+                    "createdAt": 1793232000001, "modifiedAt": 1793232000001, "messageCount": 0, "agentKind": "codex"], at: 0)
+            } else if listMutation == "remove" { sessions.removeAll { $0["sessionId"] as? String == "session-1" } }
             receive?(["type": "session.list.result", "requestId": object["requestId"]!, "sessions": sessions,
                       "currentProviders": [["agentKind": "codex", "provider": "openai"], ["agentKind": "codexDesktop", "provider": "openai"]]], "ctl")
         } else if object["type"] as? String == "session.archive", let id = object["sessionId"] as? String,
@@ -350,7 +410,7 @@ private final class PreviewTransport: OrbisTransport {
                 event(page, runtimeId: runtime)
             } else if type == "session.entry.request" {
                 let index = command["entryId"] as? String == "node-1" ? 0 : 1
-                let full = screen == "truncated" ? message("truncated-message", role: "assistant", text: "完整返回内容：这条消息已按需从电脑取回。") : messages[index]
+                let full = screen == "truncated" ? message("truncated-message", role: "assistant", text: "完整返回内容：这条消息已按需从电脑取回。") : ProcessInfo.processInfo.arguments.contains("--preview-history-artifact") ? messages.last! : messages[index]
                 event(["type": "session.entry.result", "requestId": command["requestId"]!, "entryId": command["entryId"]!, "entry": ["data": ["message": full]]], runtimeId: runtime)
             } else if type == "user_message.cancel" {
                 event(["type": "message.queued", "queueId": command["messageId"]!, "text": "接着检查 iOS 的历史同步和文件传输。", "delivery": "followUp", "state": "cancelled"], runtimeId: runtime)
@@ -502,6 +562,10 @@ private final class PreviewTransport: OrbisTransport {
             ["type": "text", "text": "已经梳理了两端的页面结构。接下来按顺序处理：\n\n- 配对与扫码\n- 会话主页和目录\n- 聊天、历史与分支\n\n统一浅色、深色配色和控件的按压反馈。"]]],
          message("m3", role: "user", text: "聊天输入和滚动也要保持一致。"),
          message("m4", role: "assistant", text: "阅读旧消息时会保留当前位置，点击右下角按钮可以跳回最新消息。\n\n```swift\nlet followsLatest = isNearBottom\nif followsLatest {\n    scrollToLatest()\n}\n```\n\n**草稿按电脑和会话隔离**，返回目录后仍会保留。")]
+            // M16: a file the reply produced, to download from the chat.
+            + (ProcessInfo.processInfo.arguments.contains("--preview-chat-artifact") ? [["messageId": "m5", "role": "assistant", "timestamp": 1793232000002,
+                "content": [["type": "artifact", "artifact": ["artifactId": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "fileName": "report.pdf",
+                                                              "mimeType": "application/pdf", "size": 1024, "sha256": String(repeating: "a", count: 64)]]]]] : [])
     }
     private var treeOptions: [[String: Any]] {
         let labels = ["对齐 iOS 与 Android 的体验", "梳理页面和交互", "输入和滚动也要一致", "保留阅读位置与会话草稿"]

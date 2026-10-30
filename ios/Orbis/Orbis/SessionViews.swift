@@ -1,4 +1,127 @@
 import SwiftUI
+import UIKit
+
+/// Stores content coordinates, so native scrolling never republishes every card's geometry.
+@MainActor
+private final class DirectoryViewport: ObservableObject {
+    @Published private(set) var scrolling = false
+    var directories: [SessionDirectory]?
+    weak var scrollView: UIScrollView?
+    private var keys: [String] = []
+    private var identity = ""
+    private var frames: [String: CGRect] = [:]
+    private var activity: [String: Int64] = [:]
+    private enum Target { case offset(CGFloat), anchor(String, CGFloat) }
+    private var target: Target?
+    private var scheduled = false
+
+    func remember(_ directories: [SessionDirectory], identity: String) {
+        self.directories = directories
+        let next = directories.flatMap { directory in
+            ["directory:" + directory.path] + directory.sessions.map { "session:" + $0.sessionId }
+        }
+        var activity: [String: Int64] = [:]
+        for directory in directories {
+            activity["directory:" + directory.path] = directory.modifiedAt
+            for session in directory.sessions { activity["session:" + session.sessionId] = session.modifiedAt }
+        }
+        let updated = Set(activity.keys.filter { self.activity[$0] != nil && self.activity[$0] != activity[$0] })
+        defer { self.identity = identity; keys = next; self.activity = activity }
+        guard self.identity == identity, keys != next, !keys.isEmpty,
+              let scroll = scrollView, !scrolling else { target = nil; return }
+        let offset = scroll.contentOffset.y
+        let top = offset + scroll.adjustedContentInset.top
+        if top <= 8 { target = .offset(-scroll.adjustedContentInset.top) }
+        else if let anchor = keys.first(where: { key in
+            guard let frame = frames[key], frame.height > 0 else { return false }
+            return frame.minY >= top && frame.maxY <= offset + scroll.bounds.height - scroll.adjustedContentInset.bottom
+        }), let frame = frames[anchor] {
+            let moved = catalogAnchorMoved(previous: keys, current: next, anchor: anchor, updated: updated)
+            target = moved ? .offset(offset) : .anchor(anchor, frame.minY - offset)
+        } else { target = .offset(offset) }
+        scheduleRestore()
+    }
+
+    func record(_ key: String, frame: CGRect) {
+        frames[key] = frame
+        if target != nil { scheduleRestore() }
+    }
+
+    func interactionChanged(_ active: Bool) {
+        if scrolling != active { scrolling = active }
+    }
+
+    private func scheduleRestore() {
+        guard !scheduled else { return }
+        scheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.scheduled = false
+            guard let scroll = self.scrollView, !self.scrolling, let target = self.target else { return }
+            self.target = nil
+            let y: CGFloat
+            switch target {
+            case .offset(let value): y = value
+            case .anchor(let key, let relativeY): y = (self.frames[key]?.minY ?? scroll.contentOffset.y + relativeY) - relativeY
+            }
+            let minimum = -scroll.adjustedContentInset.top
+            let maximum = max(minimum, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
+            UIView.performWithoutAnimation {
+                scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: min(maximum, max(minimum, y))), animated: false)
+            }
+        }
+    }
+}
+
+/// Observes the existing native pan; never replaces its delegate or takes the gesture.
+private struct DirectoryViewportObserver: UIViewRepresentable {
+    let viewport: DirectoryViewport
+    func makeUIView(context: Context) -> Observer { Observer(viewport: viewport) }
+    func updateUIView(_ view: Observer, context: Context) { view.attach() }
+    static func dismantleUIView(_ view: Observer, coordinator: ()) { view.detach() }
+
+    final class Observer: UIView {
+        let viewport: DirectoryViewport
+        private weak var scroll: UIScrollView?
+        private var displayLink: CADisplayLink?
+        init(viewport: DirectoryViewport) { self.viewport = viewport; super.init(frame: .zero); isUserInteractionEnabled = false }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func didMoveToWindow() { super.didMoveToWindow(); attach() }
+        func attach() {
+            var parent = superview
+            while let view = parent {
+                if let found = view as? UIScrollView {
+                    if scroll !== found {
+                        detach(); scroll = found; viewport.scrollView = found
+                        found.panGestureRecognizer.addTarget(self, action: #selector(panChanged))
+                    }
+                    return
+                }
+                parent = view.superview
+            }
+        }
+        func detach() {
+            scroll?.panGestureRecognizer.removeTarget(self, action: #selector(panChanged))
+            displayLink?.invalidate(); displayLink = nil
+            scroll = nil
+        }
+        @objc private func panChanged() {
+            guard let scroll else { return }
+            if scroll.panGestureRecognizer.state == .began || scroll.panGestureRecognizer.state == .changed {
+                viewport.interactionChanged(true)
+            }
+            if displayLink == nil {
+                let link = CADisplayLink(target: self, selector: #selector(checkIdle))
+                displayLink = link; link.add(to: .main, forMode: .common)
+            }
+        }
+        @objc private func checkIdle() {
+            guard let scroll, !scroll.isTracking && !scroll.isDragging && !scroll.isDecelerating else { return }
+            displayLink?.invalidate(); displayLink = nil
+            viewport.interactionChanged(false)
+        }
+    }
+}
 
 struct SessionDirectoryState {
     var query = ""
@@ -20,6 +143,7 @@ struct SessionDrawerView: View {
     @Binding var state: SessionDirectoryState
     @FocusState private var searchFocused: Bool
     @State private var selectedSessionIds: Set<String> = []
+    @StateObject private var viewport = DirectoryViewport()
     let onClose: () -> Void
     let onOpenSession: (SessionSummary) -> Void
     let onNewSession: (String?) -> Void
@@ -43,7 +167,9 @@ struct SessionDrawerView: View {
     }
 
     var body: some View {
-        let directories = self.directories
+        let incoming = self.directories
+        let directories = viewport.scrolling ? viewport.directories ?? incoming : incoming
+        let _ = viewport.remember(directories, identity: "\(store.selectedHostId ?? "")|\(state.query)|\(state.kind ?? "")|\(state.archived)|\(state.providerKey)|\(state.expandedPath ?? "")|\(state.showAllSessions)")
         let selectedSessions = directories.flatMap(\.sessions).filter { selectedSessionIds.contains($0.sessionId) }
         VStack(spacing: 16) {
             HStack(spacing: 12) {
@@ -110,12 +236,15 @@ struct SessionDrawerView: View {
                         directoryGroup(directory)
                     }
                 }.padding(6).padding(.bottom, 16)
+                    .coordinateSpace(name: "directory-viewport-content")
+                    .background(DirectoryViewportObserver(viewport: viewport))
                     // Rebuild search results so a sole row cannot retain its former group’s accessibility bounds.
                     .id(state.query)
             }
             // As in the transcript, let the scroll view resolve shrinking content itself.
             .defaultScrollAnchor(.top)
             .scrollDismissesKeyboard(.interactively)
+            .accessibilityIdentifier("drawer-session-list")
             OrbisPalette(scheme).well.frame(height: 2).clipShape(Capsule()).accessibilityHidden(true)
             hostSelector
         }.padding(.horizontal, 18)
@@ -245,6 +374,10 @@ struct SessionDrawerView: View {
                     }.padding(12).frame(minHeight: 60).contentShape(Rectangle())
                 }.buttonStyle(NeuButtonStyle(selected: expanded))
                     .accessibilityLabel("\(expanded ? "收起" : "展开")目录 \(directory.path)，\(directory.sessions.count) 个会话")
+                    .accessibilityIdentifier("drawer-directory-" + directory.path)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("directory-viewport-content")) } action: {
+                        viewport.record("directory:" + directory.path, frame: $0)
+                    }
                 OrbisIconButton(symbol: "plus", label: "在此目录新建会话", compact: true) { onNewSession(directory.path) }
                     .disabled(store.connection != .secured || store.activatingSessionId != nil)
             }
@@ -252,6 +385,9 @@ struct SessionDrawerView: View {
                 VStack(spacing: 10) {
                     ForEach(visible) { session in
                         sessionRow(session).padding(.leading, 12)
+                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("directory-viewport-content")) } action: {
+                                viewport.record("session:" + session.sessionId, frame: $0)
+                            }
                     }
                     if hidden > 0 && !searching {
                         OrbisTextButton(title: state.showAllSessions ? "收起较早会话" : "再显示 \(hidden) 个会话",

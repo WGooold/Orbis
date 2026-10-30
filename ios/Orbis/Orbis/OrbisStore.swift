@@ -989,12 +989,18 @@ final class HostConnection: ObservableObject {
         guard !cwd.isEmpty else { return }
         activateTarget(["type": "new", "agentKind": agentKind, "cwd": cwd], sessionId: "new")
     }
+    #if DEBUG
+    func createCaptureSession(agentKind: String, cwd: String) {
+        guard !cwd.isEmpty else { return }
+        activateTarget(["type": "new", "agentKind": agentKind, "cwd": cwd], sessionId: "new", spawnMode: "headless")
+    }
+    #endif
 
-    private func activateTarget(_ target: [String: Any], sessionId: String) {
+    private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String = "tui") {
         guard connection == .secured, activationRequestId == nil else { return }
         let requestId = UUID().uuidString
         guard transport.send(["type": "session.activate", "protocolVersion": orbisProtocolVersion,
-                              "requestId": requestId, "target": target, "spawnMode": "tui"]) else {
+                              "requestId": requestId, "target": target, "spawnMode": spawnMode]) else {
             errorMessage = "端到端加密连接尚未就绪，请连接成功后重试。"; return
         }
         activationRequestId = requestId; pendingActivation = sessionId; activatingSessionId = sessionId
