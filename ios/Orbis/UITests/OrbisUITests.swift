@@ -95,6 +95,34 @@ final class OrbisUITests: XCTestCase {
             XCTAssertTrue(idlePixels == (try headerPixels()), "Header text changed after refresh \(cycle)")
         }
     }
+    func testCompactionStatusInHomeChatAndDrawer() {
+        for dark in [false, true] {
+            let app = launch("home", dark: dark, arguments: ["--preview-compacting", "--preview-slow-sync"])
+            let card = app.buttons["home-runtime-preview-codex"]
+            XCTAssertTrue(card.waitForExistence(timeout: 10))
+            XCTAssertTrue(card.staticTexts["压缩中"].exists)
+            capture("compaction-home-\(dark ? "dark" : "light")", app: app)
+            card.tap()
+            let title = app.descendants(matching: .any)["chat-title"].firstMatch
+            XCTAssertTrue(title.waitForExistence(timeout: 8))
+            XCTAssertTrue(title.label.contains("压缩中"))
+            let refresh = app.buttons["刷新"].firstMatch
+            let ready = NSPredicate(format: "enabled == true")
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: refresh)], timeout: 15), .completed)
+            let frame = title.frame
+            refresh.tap()
+            XCTAssertTrue(title.label.contains("压缩中"))
+            XCTAssertEqual(frame, title.frame)
+            capture("compaction-chat-\(dark ? "dark" : "light")", app: app)
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: refresh)], timeout: 15), .completed)
+            XCTAssertEqual(frame, title.frame)
+            app.buttons["返回"].firstMatch.tap()
+            app.buttons["打开会话目录"].tap()
+            XCTAssertTrue(app.staticTexts["压缩中"].firstMatch.waitForExistence(timeout: 5))
+            capture("compaction-drawer-\(dark ? "dark" : "light")", app: app)
+            app.terminate()
+        }
+    }
     func testHomeDirectorySearchAndNewSession() {
         let app = launch("home")
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))

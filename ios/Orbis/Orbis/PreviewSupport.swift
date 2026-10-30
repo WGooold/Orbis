@@ -69,6 +69,7 @@ private final class PreviewTransport: OrbisTransport {
     /// `--preview-send=pi` answers after a delay with a different id; `fail` rejects the send (ADR-0049).
     private var sendMode: String { ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-send=") }.map { String($0.dropFirst(15)) } ?? "codex" }
     private var slowSync: Bool { ProcessInfo.processInfo.arguments.contains("--preview-slow-sync") }
+    private var compacting: Bool { ProcessInfo.processInfo.arguments.contains("--preview-compacting") }
     private var modelName: String { slowSync ? "A very long model name that needs truncation" : "GPT-5.4" }
     private var enabledProviders: [String: Set<String>] = ["codex": ["official"], "pi": ["official"], "dsh": ["official"]]
     func pair(qr: PairingQR, deviceName: String, identity: DeviceIdentity, completion: @escaping (Result<HostPairing, Error>) -> Void) { completion(.failure(PairingError.invalidQR)) }
@@ -196,7 +197,7 @@ private final class PreviewTransport: OrbisTransport {
             let domains = ["identity", "interactions", "execution", "model", "context"].map { name -> [String: Any] in
                 let value: [String: Any] = name == "identity" ? ["runtimeId": runtime, "sessionId": session,
                     "name": agentTitle(kind), "sessionName": titles[runtime] ?? "", "cwd": cwd, "agentKind": kind] :
-                    name == "interactions" ? [:] : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
+                    name == "interactions" ? [:] : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": compacting && runtime == "preview-codex" ? ["phase": "running"] : "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
                 return ["domain": name, "modelEpoch": epoch, "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,
                         "source": ["producer": "host", "sourceId": "preview-host", "sourceEpoch": "preview-source", "sourceRevision": 1], "checkedAt": 1793232000000, "value": value]
             }

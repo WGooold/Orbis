@@ -1068,7 +1068,7 @@ struct RuntimeStatusLabel: View {
     private var color: Color {
         let p = OrbisPalette(scheme)
         switch status {
-        case "running": return p.accent
+        case "running", "compacting": return p.accent
         case "waiting", "waiting_interaction", "waiting_local_interaction": return p.warning
         case "error": return p.error
         default: return p.success

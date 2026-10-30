@@ -4,7 +4,7 @@
 
 Status: accepted（基线冻结；新增与变更按本文维护）
 
-基线版本：`2026-10-30/r2`。盘点参照：`main` 的 `3a5bbf5`、已有 accepted ADR 及下列实现入口。
+基线版本：`2026-10-30/r6`。盘点参照：`main` 的 `3a5bbf5`、已有 accepted ADR 及下列实现入口。
 
 ## Context
 
@@ -96,7 +96,7 @@ ADR-0046 原 17 项要求的映射：1→V01–V04；2→S02；3→S03；4→V05
 | V02 | 阅读锚点锁定 | 用户拖动即停跟随，惯性期间持续生效；保存消息身份与行内像素偏移，补页 / 刷新不重放用户移动前的位置。停稳后锁定新位置，锁的是内容坐标，不是禁止滚动。 | [D46] §1、[I2]、[A6] |
 | V03 | 更新不抢回底部 | 底部新增消息、工具、流式字形、发送、聚焦、刷新和同会话分支动作均不能强制追新；临时空投影 / 内容变短不能自动恢复跟随。前缀补入仅校正原锚点。 | [D46] §1、[I2]、[A6] |
 | V04 | 分页边沿与显式加载 | 进入顶部区域的边沿只取一页，离开后才重新武装；停在顶部、重组、释放锚点不连续续页。顶部保留更早历史 / 加载 / 失败重试入口，失败不自动重试。 | [ADR-0041][D41]、[I2]、[Android 分页][A14] |
-| V05 | 刷新顶栏固定槽 | 转圈复用行首状态图标槽，不追加在模型后；刷新前后状态、模型、思考级别的文字宽度及省略位置不变，状态单行。错误摘要留原槽，可打开详情 / 重试。 | [D46] §3、[I2]、[A6]、[顶栏测试][T2] |
+| V05 | 刷新顶栏固定槽 | 转圈复用行首状态图标槽，不追加在模型后；刷新前后状态、模型、思考级别的文字宽度及省略位置不变，状态单行。错误摘要留原槽，可打开详情 / 重试。聊天、首页与目录的状态槽在 Host `execution.compaction.phase=running` 且执行为 idle / running 时显示“压缩中”，沿用运行中强调色；等待确认优先。压缩 idle / failed / unavailable 或执行域不可用后退出该显示，不据此推断业务执行完成，不改发送 / 停止所用 phase。 | [D46] §3、[I2]、[A6]、[顶栏测试][T2] |
 | V06 | 通知与短反馈覆盖 | 通知为有底色、有关闭按钮的覆盖横幅，短操作反馈覆盖现有区域，不插入聊天消息行推动正文；来源未知 / 待核对仍明确显示。 | [D46] §3、[Polish]、[I2]、[A6] |
 | V07 | 审批面板与草稿 | 单项确认紧凑浮于输入区上方，多步骤在工作区切换并保留各项草稿；提交中不挤动 composer，不常驻无内容占位。解决、失败、截止和本地 / 远端竞答以真实状态处理。 | [Polish]、[Parity]、[iOS 交互][I5]、[Android 交互][A15] |
 | V08 | 键盘、安全区与正常布局 | Android 使用 adjustResize，键盘上移输入区而不把顶栏推出屏幕；Slash 菜单位于键盘之上。输入换行、用户展开和键盘改变视口是合理布局变化，不能靠固定聊天高度破坏适配。 | [Polish]、[I2]、[A6]、[Android Manifest][A16] |
@@ -166,6 +166,12 @@ ADR-0046 原 17 项要求的映射：1→V01–V04；2→S02；3→S03；4→V05
 - 涉及 S19、S08、S15、V18：iOS 标题采用 `lineLimit(2, reservesSpace: true)`，Android 采用 `minLines = 2 / maxLines = 2`，保持原有宽度、材质、状态槽与选择标记。
 - 定向入口：iOS `testDrawerCardsKeepUniformGeometryForShortAndLongTitles`；Android `SessionDrawerLayoutInstrumentedTest`。iOS 在池内 iPhone SE（375pt、iOS 27.0）上 2 项 UI 回归通过，覆盖明暗、系统 XXXL 设置、长短标题和多选 / 归档 / 恢复；Android 在池内 API 35 上 2 项回归通过，覆盖 360dp 可用宽度、明暗及 1.0 / 1.5 字体缩放。两端截图已复核，详见 [会话卡片验收记录][Polish]。iOS 沿用现有固定文字 token，XXXL 不等于新增正文动态字体支持。
 
+### 2026-10-30 / r6 压缩活动状态显示
+
+- 涉及 S17、S19、V05、V12、V17–V18：两端使用 Host 已有的 `execution.compaction.phase`，在聊天顶栏、首页与目录现有状态槽显示“压缩中”；等待确认优先，压缩完成、失败、不可用或执行域未知时按权威 phase 恢复。状态只参与显示，不替代执行 phase，不插入消息或改变阅读锚点。
+- 定向回归：Swift `AgentStateTests.compactionActivityDrivesPresentationWithoutChangingExecutionPhase`、Android `AgentModelConsumerTest` 的压缩状态用例；iOS `testCompactionStatusInHomeChatAndDrawer` 与 Android `ChatStatusLayoutInstrumentedTest.compactionUsesTheExistingStatusSlotInBothThemesAndLargeText`。两端 Debug / 测试包编译、96 项 Swift 核心与 25 项 Android 单测通过；池内 iPhone SE（375pt、iOS 27.0）的 1 项 UI 用例及 Android API 35 的 2 项 UI 用例通过。iOS 覆盖首页 / 聊天 / 目录的明暗显示与刷新稳定性，Android 覆盖明暗、220dp 状态行和 1.0 / 1.5 字体缩放；截图已复核。结果保留于 `.artifacts/compaction-status/compaction-ui.xcresult` 及同目录日志 / 截图；真实 Host / 真机未验收。
+
+
 ### 已知差异与未验收范围
 
 - iOS 17 的滚动兼容分支有编译记录，原打磨验收没有该系统的运行结果；17 不启用字形模糊渐显。
@@ -195,6 +201,8 @@ ADR-0046 原 17 项要求的映射：1→V01–V04；2→S02；3→S03；4→V05
 | --- | --- | --- |
 | 2026-10-30 / r1 | S01–S20、M01–M12、V01–V18、X01–X10 | 首次归并 60 项冻结规则；补充后续转场 / 按压 / 触觉 / 乐观操作，登记平台差异；同步两份本机指南与文档入口。仅文档一致性检查，未重跑设备测试。 |
 | 2026-10-30 / r2 | S19（关联 S08、S15、V18） | 会话标题统一预留两行，卡片等宽等高并保留现有字号策略；同步两端实现、定向几何回归和两个本机入口。iOS / Android 各 2 项设备回归通过，明暗 / 窄屏截图已复核。 |
+
+| 2026-10-30 / r6 | S17、S19、V05、V12、V17–V18 | 聊天顶栏、首页与目录复用状态槽显示 Host 确认的“压缩中”，保留等待确认优先级、执行语义与状态隔离；同步两端实现和本机入口。两端编译、96 项 Swift / 25 项 Android 单测、iOS 1 项 / Android 2 项设备 UI 用例通过，明暗 / 窄屏截图已复核；真实 Host / 真机未验收。未新增 feature，仍为 60 项。 |
 
 ## Consequences
 

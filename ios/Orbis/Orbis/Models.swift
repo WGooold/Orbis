@@ -96,7 +96,12 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
     var permissionManagement: PermissionManagement? = nil
     var sessionGraphSync: Bool? = nil
     var sessionLeafId: String? = nil
+    /// Host execution activity; kept separate from the phase used by send/stop logic.
+    var compactionPhase: String? = nil
     var id: String { runtimeId }
+    var presentationStatus: String {
+        compactionPhase == "running" && ["idle", "running"].contains(status) ? "compacting" : status
+    }
 }
 
 struct RuntimeModelInfo: Codable, Hashable {

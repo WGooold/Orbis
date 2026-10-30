@@ -30,7 +30,7 @@ internal fun RemoteState.applyAgentDomainProjection(
             runtime = runtime.copy(domainAvailability = runtime.domainAvailability + (name to domain.availability))
             // unknown/unavailable 保留最后已知值；availability 本身仍已登记在镜像内。
             if (domain.availability != "ready") {
-                if (name == "execution") runtime = runtime.copy(status = "unknown")
+                if (name == "execution") runtime = runtime.copy(status = "unknown", compactionPhase = null)
                 continue
             }
             val value = domain.value?.takeUnless { it is JsonNull }
@@ -46,7 +46,8 @@ internal fun RemoteState.applyAgentDomainProjection(
                 "execution" -> {
                     val phase = (value as? JsonObject)?.text("phase") ?: error("execution 缺少 phase")
                     require(phase in setOf("idle", "running", "waiting_local_interaction"))
-                    runtime = runtime.copy(status = phase)
+                    runtime = runtime.copy(status = phase,
+                        compactionPhase = ((value as? JsonObject)?.get("compaction") as? JsonObject)?.text("phase"))
                     conversation = conversation.copy(waitingLocalInteraction = phase == "waiting_local_interaction")
                 }
                 "model" -> runtime = if (value == null && domain.completeness == "complete") {

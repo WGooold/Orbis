@@ -131,7 +131,7 @@ struct ChatView: View {
                 }
                 HStack(spacing: 8) {
                     if store.connection == .secured {
-                        RuntimeStatusLabel(status: runtime.status, syncing: store.isSyncing)
+                        RuntimeStatusLabel(status: runtime.presentationStatus, syncing: store.isSyncing)
                             .fixedSize(horizontal: true, vertical: false)
                     } else {
                         HStack(spacing: 5) {
@@ -147,7 +147,7 @@ struct ChatView: View {
                 }
             }.contentShape(Rectangle()).onTapGesture { composerFocused = false; runtimeInfoOpen = true }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(agentTitle(kind))，\(store.displayName(runtime))，\(store.connection == .secured ? runtimeStatusTitle(runtime.status) : connectionTitle(store.connection))")
+                .accessibilityLabel("\(agentTitle(kind))，\(store.displayName(runtime))，\(store.connection == .secured ? runtimeStatusTitle(runtime.presentationStatus) : connectionTitle(store.connection))")
                 .accessibilityHint("查看会话信息").accessibilityIdentifier("chat-title")
                 .accessibilityAddTraits(.isButton)
         } trailing: {
@@ -1373,7 +1373,7 @@ private struct RuntimeInfoView: View {
                         StatusFact(label: "上下文", value: ready("context") ? contextText : "状态待核对")
                     }
                     StatusSection(title: "执行状态") {
-                        StatusFact(label: "当前状态", value: ready("execution") ? runtimeStatusTitle(runtime.status) : "状态待核对")
+                        StatusFact(label: "当前状态", value: ready("execution") ? runtimeStatusTitle(runtime.presentationStatus) : "状态待核对")
                         if ready("execution"), let execution = snapshot?.domains["execution"]?.value {
                             StatusFact(label: "重试", value: activity(execution["retry"]))
                             StatusFact(label: "上下文压缩", value: activity(execution["compaction"]))

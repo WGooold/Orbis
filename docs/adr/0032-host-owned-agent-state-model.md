@@ -116,7 +116,7 @@ Codex 终端和桌面接入可能指向同一原生 Session，adapter 和 Host �
 | 07 回合与计时 | AgentState.execution.turn / timing | 回合身份、开始时间、已确认结束/耗时及对应消息；设备计算展示 elapsed 不改变事实 |
 | 08 工具 | AgentState.live.tools；history 引用 | 调用身份、所属回合/消息、输入、部分输出、结果、执行阶段与失败；结果提交与 live 移除一致 |
 | 09 运行与等待 | AgentState.execution | idle/running/waiting 等共同阶段、等待原因与请求引用、来源确认状态；DSH 审批等待必须接入 |
-| 10 重试与压缩 | AgentState.execution.retry / compaction | 是否支持、当前阶段、所属回合/操作、已知尝试/恢复/失败事实；不以日志文案或普通 idle 推断恢复 |
+| 10 重试与压缩 | AgentState.execution.retry / compaction | 是否支持、当前阶段、所属回合/操作、已知尝试/恢复/失败事实；不以日志文案或普通 idle 推断恢复；移动端在 compaction.phase=running 时于现有状态槽显示“压缩中”，等待确认优先，执行 phase 不变（ADR-0051 r6） |
 | 11 交互与审批 | AgentState.interactions | 完整可回答请求库存、类型/问题/选项、期限、阻塞性、状态及明确结束；回答提交反馈属于 DeviceView |
 | 12 消息队列 | AgentState.delivery.queue | 操作身份、steer/followUp、权威投递状态、取消能力和结果；队列执行仍由原生后端负责 |
 | 13 命令与操作回执 | HostState.operations / DeviceView | 已接受、执行、取消、成功、失败、结果未知及回执保留范围；共享操作与设备私有结果分开 |

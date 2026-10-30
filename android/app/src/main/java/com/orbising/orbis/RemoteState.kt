@@ -94,7 +94,12 @@ data class RuntimeSummary(
     val agentKind: String? = null,
     /** 镜像可用性供界面区分最后已知值与当前已确认事实。 */
     val domainAvailability: Map<String, String> = emptyMap(),
+    /** Host execution activity; does not change the phase used by send/stop logic. */
+    val compactionPhase: String? = null,
 ) {
+    val presentationStatus: String
+        get() = if (compactionPhase == "running" && status in setOf("idle", "running")) "compacting" else status
+
     /**
      * 这条 Runtime 是不是 Codex 会话。codex 的对外 runtimeId 形如 `codex:<threadId>`
      * （旧版是固定 `codex`），Pi 是随机 UUID——前缀判定不会撞。
@@ -593,6 +598,7 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
     val sameSession = previous?.takeIf { it.sessionId == sessionId }
     return copy(
         status = sameSession?.status ?: "unknown",
+        compactionPhase = sameSession?.compactionPhase,
         model = sameSession?.model,
         thinkingLevel = sameSession?.thinkingLevel,
         contextUsage = sameSession?.contextUsage,

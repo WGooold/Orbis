@@ -65,6 +65,7 @@ func deliveryTitle(_ delivery: String) -> String { delivery == "steer" ? "插入
 func runtimeStatusTitle(_ status: String) -> String {
     switch status {
     case "running": return "运行中"
+    case "compacting": return "压缩中"
     case "waiting", "waiting_interaction", "waiting_local_interaction": return "等待确认"
     case "error": return "异常"
     case "idle": return "空闲"

@@ -458,7 +458,7 @@ internal fun SessionDrawer(
                                 DrawerBranch {
                                     DrawerSessionRow(
                                         row = row,
-                                        runtimeStatus = row.runtimeId?.let(state.runtimes::get)?.status,
+                                        runtimeStatus = row.runtimeId?.let(state.runtimes::get)?.presentationStatus,
                                         otherProvider = sessionOtherProvider(row, state.currentProviders[row.agentKind]),
                                         onOpenSession = {
                                             if (isActiveHost && state.codexProviderMismatch(row.sessionId) != null) {

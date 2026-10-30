@@ -587,7 +587,7 @@ struct HomeView: View {
                                 if pending {
                                     Label("待确认", systemImage: "exclamationmark.circle").font(.orbisCaption(.semibold))
                                         .foregroundStyle(OrbisPalette(scheme).error)
-                                } else { RuntimeStatusLabel(status: runtime.status) }
+                                } else { RuntimeStatusLabel(status: runtime.presentationStatus) }
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                         OrbisSelectionIndicator(selected: selected, selecting: selecting)

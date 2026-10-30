@@ -863,7 +863,7 @@ internal fun RuntimeListScreen(
                                                             Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
                                                             Text("待确认", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                                                         }
-                                                    } else RuntimeStatus(runtime.status)
+                                                    } else RuntimeStatus(runtime.presentationStatus)
                                                 }
                                             }
                                             OrbisSelectionIndicator(runtime.runtimeId in selectedIds, selecting)
@@ -1728,7 +1728,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             )
                         }
                         ChatRuntimeStatus(
-                            status = runtime?.status ?: "error",
+                            status = runtime?.presentationStatus ?: "error",
                             isChatSyncing = displayReadPending,
                             modelLabel = runtime?.model?.let(::modelLabel),
                             thinkingLevel = runtime?.thinkingLevel,
@@ -3377,7 +3377,7 @@ private fun RuntimeStatusDot(status: String) {
 @Composable
 private fun runtimeStatusColor(status: String): Color = when (status) {
     "idle" -> MaterialTheme.colorScheme.tertiary
-    "running" -> MaterialTheme.colorScheme.primary
+    "running", "compacting" -> MaterialTheme.colorScheme.primary
     "waiting_local_interaction" -> MaterialTheme.colorScheme.secondary
     else -> MaterialTheme.colorScheme.error
 }
@@ -4158,6 +4158,7 @@ internal fun InteractionPanel(
 private fun runtimeStatusText(status: String): String = when (status) {
     "idle" -> "空闲"
     "running" -> "运行中"
+    "compacting" -> "压缩中"
     "waiting_local_interaction" -> "等待电脑端交互"
     else -> "未知状态"
 }

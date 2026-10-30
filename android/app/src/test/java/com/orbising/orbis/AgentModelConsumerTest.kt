@@ -26,6 +26,34 @@ class AgentModelConsumerTest {
     private fun interaction(id: String = "question") = """{"requestId":"$id","extensionId":"extension","kind":"select",
         "title":"Choose","expiresAt":9007199254740991,"options":[{"value":"yes","label":"Yes"}]}"""
 
+    @Test fun `compaction activity drives presentation without changing execution phase`() {
+        var state = receive(initial(), domain("execution", """{"phase":"idle","compaction":{"phase":"running"}}"""))
+        var runtime = state.runtimes.getValue("runtime")
+        assertEquals("idle", runtime.status)
+        assertEquals("compacting", runtime.presentationStatus)
+        state = receive(state, domain("execution", """{"phase":"running","compaction":{"phase":"running"}}""", 2))
+        runtime = state.runtimes.getValue("runtime")
+        assertEquals("running", runtime.status)
+        assertEquals("compacting", runtime.presentationStatus)
+        assertEquals("compacting", RuntimeSummary("runtime", "Agent", "/repo", "idle", "session").carryingComposerStatus(runtime).presentationStatus)
+        assertNull(RuntimeSummary("runtime", "Agent", "/repo", "idle", "other").carryingComposerStatus(runtime).compactionPhase)
+        state = receive(state, domain("execution", """{"phase":"waiting_local_interaction","compaction":{"phase":"running"}}""", 3))
+        assertEquals("waiting_local_interaction", state.runtimes.getValue("runtime").presentationStatus)
+        state = receive(state, domain("execution", """{"phase":"running","compaction":{"phase":"idle"}}""", 4))
+        assertEquals("running", state.runtimes.getValue("runtime").presentationStatus)
+        state = receive(state, domain("execution", """{"phase":"idle","compaction":{"phase":"failed"}}""", 5))
+        assertEquals("failed", state.runtimes.getValue("runtime").compactionPhase)
+        assertEquals("idle", state.runtimes.getValue("runtime").presentationStatus)
+        state = receive(state, domain("execution", """{"phase":"running","compaction":{"phase":"running"}}""", 6))
+        state = receive(state, domain("execution", """{"phase":"idle","compaction":"unavailable"}""", 7))
+        assertNull(state.runtimes.getValue("runtime").compactionPhase)
+        assertEquals("idle", state.runtimes.getValue("runtime").presentationStatus)
+        state = receive(state, domain("execution", """{"phase":"running","compaction":{"phase":"running"}}""", 8))
+        state = receive(state, domain("execution", "null", 9, availability = "unknown"))
+        assertNull(state.runtimes.getValue("runtime").compactionPhase)
+        assertEquals("unknown", state.runtimes.getValue("runtime").presentationStatus)
+    }
+
     @Test fun `home waits for every card and identity updates the persistent catalog projection`() {
         val cached = SessionCatalogEntry("session", cwd = "/old", agentKind = "pi", archived = true,
             hasHistoryCache = true, messageCount = 12, modifiedAt = 100)

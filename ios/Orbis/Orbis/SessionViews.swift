@@ -285,7 +285,7 @@ struct SessionDrawerView: View {
                     Text(store.displayName(session)).font(.orbisBody()).lineLimit(2, reservesSpace: true)
                     ZStack(alignment: .leading) {
                         HStack(spacing: 8) {
-                            if let runtime { RuntimeStatusLabel(status: runtime.status) }
+                            if let runtime { RuntimeStatusLabel(status: runtime.presentationStatus) }
                             else { Text("缓存历史").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
                             Text(sessionTimeTitle(session.modifiedAt))
                                 .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
