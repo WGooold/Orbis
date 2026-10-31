@@ -1,6 +1,6 @@
 # 移动端 UI 回归方案
 
-日期：2026-10-31。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-10-31/r20`；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-10-31。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-10-31/r23`；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 5 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -136,7 +136,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 材质 / 字形 / 控件 | `UiPolishInstrumentedTest`（3）、`NeumorphInstrumentedTest`（1） | S01–S09、S12、M04、V15 |
 | 非 UI 但在同一设备套件 | `SessionGraphStoreInstrumentedTest`（32）、`SessionSyncSelectionInstrumentedTest`（6）、`SessionSyncSlowLinkInstrumentedTest`（2） | 缓存 / 同步正确性，全量时一并运行 |
 | 需要隔离 Host | `IsolatedHostPairingInstrumentedTest`（1）；`ToolContinuityCaptureInstrumentedTest`（1，无参数时自动跳过，传入配对载荷与 cwd 时做真实输出逐帧捕获） | 配对；V20 定位 |
-| r15 首页 / 目录视口与下拉刷新 | `HomeViewportInstrumentedTest`（5）、`SessionDrawerViewportInstrumentedTest`（3） | M15、V21 |
+| r15 首页 / 目录视口与下拉刷新 | `HomeViewportInstrumentedTest`（6，其中 M15 两项）、`SessionDrawerViewportInstrumentedTest`（3） | M15、V21 |
 | r15 设置与入口 | `SettingsEntryInstrumentedTest`（3） | S18、S22 |
 | r15 页面转场 | `SwipeBackPagesInstrumentedTest`（2，位于 `SwipeBackInstrumentedTest.kt`） | M14 |
 | r15 下载飞入 | `DownloadFlightInstrumentedTest`（1） | M16 |
@@ -160,7 +160,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | --- | --- | --- | --- |
 | C01 | 冷启动到首页 | 首帧不白屏；首版快照前，加载态占列表空态位置，没有半成品卡片；快照到后一次发布全部卡片 | S18、V18 |
 | C02 | 首页长列表滚到底再回顶；从卡片上起手竖拖 | 滚动顺畅；卡片等宽，标题两行等高；竖拖不误触左滑关闭或抽屉 | S19、M09–M11 |
-| C03 | 首页下拉刷新（Android 在 r15 实施后检查） | 只在顶部可拉；指示器在请求发出后收起；卡片与视口不跳；同步进度显示在胶囊 | M15、S18、V21 |
+| C03 | 首页下拉刷新 | 只在顶部触发；拖动时整张会话列表与手指同步下移，指示器跟随显示；松手触发一次刷新后列表和指示器回到原位，首卡与滚动锚点无跳动；进度 / 失败仍显示在胶囊或列表空态 | M15、S18、V21 |
 | C04 | 点卡片进入聊天，再右滑返回：先拖 1/4 后松手（取消），再拖过 1/3 | 从右侧滑入，首页底层压缩并加遮罩；取消时回弹；返回时跟手，回到首页后立即可点 | M07–M08、V13 |
 | C05 | 聊天中上滑阅读，等待新消息 / 流式到达，再点“回到最新” | 阅读位置不被抢；超过三行显示“回到最新”；点击后恢复跟随；流式文字按顺序逐字出现（r15 后） | V01–V04、M04 |
 | C06 | 聚焦输入框，输入多行，打开 Slash 菜单 | 输入框为凹槽并显示柔和双环；键盘上移输入区，顶栏不动；Slash 菜单在键盘上方 | S12、S17、V08 |
@@ -208,7 +208,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | R11 | 设置页与首页下载页：打开（滑入），拖 1/4 后松手，再拖过 1/3；入场动画中途右滑；减少动画 | 与聊天的 M07 / M08 一致：跟手、回弹、返回首页后立即可点；Android 入场可被接管；减少动画时直接切换 | M14 / UI-04 |
 | R12 | 聊天中上滑阅读并输入草稿，点顶栏下载；先拖 1/4 后松手，再分别用右滑、返回按钮、系统返回退出 | 下载页从右侧滑入；右滑时底层露出的是这个聊天，不是首页；返回后阅读位置、草稿、展开状态不变；首页下载入口仍返回首页 | M14 / UI-04 |
 | R13 | 设置页内进入供应商二级页再右滑 | 返回设置页，不直接回首页 | M14 / UI-04 |
-| R14 | Android 首页下拉刷新：顶部下拉、非顶部尝试、多选中、左滑中、断开连接时 | 只在顶部触发；多选和左滑中不触发；断开时触发重连；卡片与视口稳定 | M15 / UI-05 |
+| R14 | Android 首页下拉刷新：顶部下拉并保持拖动、松手；非顶部尝试、多选中、左滑关闭、右滑打开抽屉、断开连接时 | 顶部拖动时整张列表跟手下移，松手后列表与指示器回到原位且首卡 / 视口稳定；仅顶部触发刷新；多选 / 左滑关闭 / 右滑抽屉手势不误触刷新；断开时触发重连 | M15 / UI-05 |
 | R15 | 聊天中点击文件产物卡、Markdown 文件链接；连续点 4 次；未连接时点击；减少动画 | 图标从点击处沿弧线飞到右上角下载按钮，按钮轻弹，角标增加；同时最多 3 个飞行；未连接时不飞并提示；减少动画只高亮按钮；阅读位置不变 | M16 / UI-06 |
 | R16 | 打开“历史与分支”页：查看顶栏；点其中的文件下载；点顶栏下载按钮，再右滑返回 | 顶栏有与聊天同款的下载按钮，带角标；文件飞向这个按钮；下载页滑入，右滑露出并返回历史页，搜索词、筛选和滚动位置不变 | M14、M16 / UI-04、UI-06 |
 
@@ -220,6 +220,10 @@ adb -s "$SERIAL" shell am instrument -w -r \
 4. **两端对齐。** 规则适用两端时，两端都写用例，名称尽量对应。平台差异写入 ADR-0051 的平台差异。
 5. **只写设计时**，设计说明列出拟新增的自动用例（名称、断言、夹具）和手动步骤，评审通过后实施时落地。
 6. **不得删除、跳过或放宽既有用例**来让改动通过。基线规则被有意替代时，在 ADR-0051 修订记录中说明，并同步改写对应用例。
+
+M15 r22 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`assembleDebug`、`assembleDebugAndroidTest`）通过；请求发出后指示器短生命周期回弹的设备、L4 和手动 C03 / R14 / A1–A4 因 API 35 共享设备由其他任务独占而未运行，详见 `.artifacts/ui-regression/20261031-1240-m15-refresh-recovery/`。
+
+M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`assembleDebug`、`assembleDebugAndroidTest`）通过；列表位移与旋转指示器共用回位弹簧，设备、L4 和手动 C03 / R14 / A1–A4 因 API 35 共享设备由其他任务独占而未运行，详见 `.artifacts/ui-regression/20261031-1335-m15-smooth-release/`。
 
 ### 5.1 r15 新增用例
 
@@ -234,7 +238,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | UI-03 | iOS UI | `testHomeTopShowsNewAndPromotedSessions`、`testHomeScrolledAnchorSurvivesInsertionAndReordering`、`testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates`、`testDrawerTopKeepsNewAndPromotedDirectoriesVisible` | 同上；首页 / 目录定向用例已通过，iOS 全量与手动复核待完成 |
 | UI-04 | 两端 | `SettingsEntryInstrumentedTest`；`testSettingsPageOrderAndSingleHostMenu` | 右上角只有下载与齿轮设置；连接胶囊不可点击，读屏语义为状态，失败重试仍可用；设置页分区顺序，且没有已配对电脑区；排障入口文字为“设置”；除侧边栏电脑菜单外，全树中没有“添加电脑”“取消配对”节点 |
 | UI-04 | 两端 | `SwipeBackInstrumentedTest` 扩展；`testSettingsAndDownloadsSwipeBack`、`testChatDownloadsReturnToSameChat` | 设置 / 首页下载页入场、取消回弹、返回首页、返回后可点；从聊天和历史页进入的下载页滑入，右滑底层为来源页，返回来源页且锚点与草稿不变；二级页返回设置 |
-| UI-05 | Android 设备 | `HomeViewportInstrumentedTest#pullingAtTheTopRefreshesOnceWithoutMovingTheCards` | 顶部下拉调用一次 `refreshHome`；非顶部 / 多选 / 左滑中不调用；指示器收起；卡片坐标不变 |
+| UI-05 | Android 设备 | `HomeViewportInstrumentedTest#pullingAtTheTopMovesTheListAndRestoresItsPositionAfterRefresh`、`darkThemePullMovesAndRestoresTheWholeList` | 按住顶部下拉时首卡 y 至少下移 20px；松手后首卡回到原 y（容差 1dp）且只触发一次刷新；非顶部 / 多选不触发；复位后卡片仍可点；右滑仍打开目录、左滑仍关闭卡片；浅 / 深色保存拖动帧。A3 / A4 重跑定向用例确认位移与复位语义不变 |
 | UI-06 | 两端 | `DownloadFlightInstrumentedTest`；`testDownloadFlightStartsAtTapAndEndsAtButton`、`testDownloadFlightWithReducedMotionHighlightsWithoutFlying`、`testHistoryDownloadButtonAndFlight` | 聊天页与历史页：起飞位置接近点击点，终点为本页下载按钮中心（容差 4pt/dp）；任务未创建时不起飞；同时 ≤ 3 个；减少动画不飞；阅读锚点不变；飞行层不拦截点击；历史页下载按钮的规格与角标和聊天页一致 |
 
 ## 6. 结果记录

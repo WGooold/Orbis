@@ -92,6 +92,7 @@ class HomeViewportInstrumentedTest {
         show()
         val list = compose.onNodeWithTag("home-session-list")
         val before = top("c00")
+        val stateBeforeRefresh = state.value
         list.performTouchInput {
             val x = width / 2f
             down(Offset(x, top + 20f))
@@ -105,6 +106,9 @@ class HomeViewportInstrumentedTest {
         list.performTouchInput { up() }
         compose.waitForIdle()
         assertEquals(1, refreshes)
+        compose.runOnIdle {
+            assertEquals("The indicator reset does not wait for sync state", stateBeforeRefresh, state.value)
+        }
         assertEquals("The list returns to its original viewport", before, top("c00"), 1f)
         compose.onNodeWithTag("home-runtime-c00").performTouchInput { click() }
         compose.runOnIdle { assertEquals(listOf("c00"), opened) }

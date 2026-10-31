@@ -2,7 +2,7 @@
 
 这些条目追踪 [ADR-0053](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md) 与 [ADR-0051 r15](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) 的实施与验收。仓库规定 GitHub Issues 是 canonical tracker；本文件只保存本地状态和创建远程 Issue 前的草稿，不包含凭据、设备身份或未脱敏日志。
 
-## 实施状态（2026-10-31，已合入 `main`，ADR-0051 r19）
+## 实施状态（2026-10-31，已合入 `main`，ADR-0051 r23）
 
 | ticket | 状态 | 剩余 |
 | --- | --- | --- |
@@ -10,10 +10,12 @@
 | UI-02 | Android Pi r17 修复并复测；Codex 隔离真实输出 r19 捕获通过，帧内转录行数无回退 | iOS 与 Claude 真实输出；工具行 identity / 高度的完整帧审阅；非跟随手动场景 |
 | UI-03 | Android 首页 / 目录自动用例包含在当前全量中并通过；iOS 首页 / 目录定向用例通过 | 当前 iOS 全量；C01–C18、R05–R07 手动拖动 / 惯性验证 |
 | UI-04 | 两端已实现；Android 当前全量相关用例通过，iOS 已有定向设备结果 | C08–C13 / R08–R10 手动回归 |
-| UI-05 | Android 当前全量下拉刷新用例通过；iOS 已有 `.refreshable` 实现 | iOS 指示器收起时机对照与 C03 / R14 手动检查 |
+| UI-05 | r23 修订 Android 下拉旋转与回位曲线：列表位移、指示器进度和旋转共用高阻尼回位弹簧；列表位移与定向测试保留；L1 / L2 通过 | API 35 设备由其他任务独占，M15 设备用例、L3 / L4 与 A1–A4 手动复核未运行；iOS `.refreshable` 仍作原生行为参照 |
 | UI-06 | Android 当前全量通过；iOS 聊天、历史、减少动画 3 项定向设备用例通过 | 完整 L4 帧审阅与 R15–R16 手动检查；A4 减少动画视觉复核 |
 
 本轮证据见 `.artifacts/ui-regression/20261030-r15-completion/summary.md`。Android API 35 全量 131 项中 4 项失败，与 127 项 Android 基线的 4 个失败用例相同；当前 56 项 iOS UI 全量未运行，旧 46 项 iOS 基线的 7 项失败不能代替当前版本对比。Mac 处于锁定状态，用户选择暂不解锁，因此手动门禁未执行。
+
+M15 r21 证据见 `.artifacts/ui-regression/20261031-0315-m15-list-pull/`；r22 回弹修复证据见 `.artifacts/ui-regression/20261031-1240-m15-refresh-recovery/`；r23 旋转 / 曲线修复证据见 `.artifacts/ui-regression/20261031-1335-m15-smooth-release/`。r23 的 L1 / L2 构建通过；API 35 设备当时由其他任务独占，未安装测试包，L3 / L4 和手动回归未运行。实现没有据此标成设备验收通过。
 
 ## 交接须知（所有 ticket 通用）
 

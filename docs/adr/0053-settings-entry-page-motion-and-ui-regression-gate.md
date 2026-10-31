@@ -2,9 +2,9 @@
 
 日期：2026-10-30
 
-Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再跳转；保留排障入口；聊天 / 历史页内下载页滑入并返回原页；历史页加下载按钮；设置页去掉已配对电脑区。§8 回归门禁立即生效。2026-10-31 合入 main；r19 已补 Android Codex 真实输出捕获及两端 V21 目录用例定向验证。当前 iOS 全量、iOS / Claude 真实输出和手动门禁未完成，进度见 [UI r15 ticket](../agents/ui-r15-tickets.md)）
+Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再跳转；保留排障入口；聊天 / 历史页内下载页滑入并返回原页；历史页加下载按钮；设置页去掉已配对电脑区。§8 回归门禁立即生效。2026-10-31 合入 main；r19 已补 Android Codex 真实输出捕获及两端 V21 目录用例定向验证；r21 按反馈修订 M15，使 Android 会话列表随下拉位移；r22 修复请求发出后指示器停在阈值的问题；r23 统一列表与旋转指示器的柔和回位曲线，L1 / L2 通过，API 35 设备由其他任务独占，L3 / L4 与手动门禁未运行。当前 iOS 全量、iOS / Claude 真实输出和手动门禁未完成，进度见 [UI r15 ticket](../agents/ui-r15-tickets.md)）
 
-关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)（基线 `2026-10-30/r15`）、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0048](0048-online-chat-entry-budget.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0050](0050-fixed-lan-relay-routing.md)；回归方案见 [移动端 UI 回归方案](../testing/ui-regression.md)。
+关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)（基线 `2026-10-31/r23`）、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0048](0048-online-chat-entry-budget.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0050](0050-fixed-lan-relay-routing.md)；回归方案见 [移动端 UI 回归方案](../testing/ui-regression.md)。
 
 ## Context
 
@@ -60,7 +60,10 @@ Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再�
 ### 6. 首页下拉刷新（M15，UI-05）
 
 - iOS / Android 首页会话列表都支持下拉刷新：仅当列表在顶部时可以下拉；多选、左滑关闭和抽屉拖动期间不触发。触发后的逻辑与失败重试一致：已连接时刷新会话目录、Host 模型及全部 Runtime 模型，未就绪时重新连接（iOS `store.refresh()`，Android `refreshHome()`）。
-- 指示器只表示本次手势已触发，请求发出后收起；同步进度和失败仍由 S18 的连接胶囊或列表空态表达，不新增状态行。刷新期间保留上一版完整快照和视口位置（V18、V21）。Android 使用 Material3 下拉刷新组件，配色跟随主题，不覆盖首卡阴影。
+- 下拉过程中列表内容随手指向下位移；iOS 沿用原生 `.refreshable` 滚动行为。Android 保留 Material3 `pullToRefresh` 手势状态，将 `distanceFraction × PositionalThreshold`（默认 80dp）应用到 `LazyColumn` 图层位移，不改变列表测量尺寸或滚动锚点；松手后列表和指示器回到原位。多选、左滑关闭与右滑打开抽屉的手势继续各自生效。
+- 指示器只表示本次手势已触发，请求发出后收起；同步进度和失败仍由 S18 的连接胶囊或列表空态表达，不新增状态行。刷新期间保留上一版完整快照和视口位置（V18、V21）。Android 指示器继续使用 Material3 组件并配色跟随主题，不覆盖首卡阴影。
+- Android 的 `isRefreshing` 只作为请求交接信号短暂置真，下一帧切回空闲以启动 Material3 收起动画；不得绑定 Host 同步完成或右上角状态更新。该修复记录于 ADR-0051 r22。
+- Android 列表位移和指示器使用同一个 `HomePullRefreshState` 与回位弹簧；回位期间保持旋转，直到进度回到 0 后才隐藏，避免箭头停在阈值或与列表错拍。该修复记录于 ADR-0051 r23。
 
 ### 7. 下载飞入下载按钮（M16，UI-06）
 

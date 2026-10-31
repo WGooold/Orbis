@@ -114,8 +114,8 @@ import com.orbising.orbis.NeumorphMenuItem as DropdownMenuItem
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshState
 import androidx.compose.material3.pulltorefresh.pullToRefresh
-import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -562,6 +562,35 @@ private fun PairingScreen(
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
+private class HomePullRefreshState : PullToRefreshState {
+    private val distance = Animatable(0f)
+
+    override val distanceFraction: Float
+        get() = distance.value
+
+    override val isAnimating: Boolean
+        get() = distance.isRunning
+
+    override suspend fun animateToThreshold() {
+        distance.animateTo(
+            targetValue = 1f,
+            animationSpec = spring(dampingRatio = 0.9f, stiffness = 520f),
+        )
+    }
+
+    override suspend fun animateToHidden() {
+        distance.animateTo(
+            targetValue = 0f,
+            animationSpec = spring(dampingRatio = 0.9f, stiffness = 420f),
+        )
+    }
+
+    override suspend fun snapTo(targetValue: Float) {
+        distance.snapTo(targetValue)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun RuntimeListScreen(
     state: RemoteState,
@@ -581,7 +610,8 @@ internal fun RuntimeListScreen(
     onRetryHome: () -> Unit = {},
 ) {
     val homeListState = rememberLazyListState()
-    val pullRefreshState = rememberPullToRefreshState()
+    val pullRefreshState = remember { HomePullRefreshState() }
+    var pullRefreshing by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val activeHostId = state.hostId
@@ -730,7 +760,26 @@ internal fun RuntimeListScreen(
                 // M15：与 iOS 一样下拉刷新，逻辑同失败重试；进度仍由连接胶囊或列表空态表达，指示器松手即收起。
                 Box(
                     Modifier.fillMaxWidth().weight(1f).testTag("home-pull-refresh")
-                        .pullToRefresh(isRefreshing = false, state = pullRefreshState, enabled = !selecting, onRefresh = onRetryHome),
+                        .pullToRefresh(
+                            // The modifier owns the gesture; the indicator's refreshing state is
+                            // separate so it can keep spinning while our softer release spring runs.
+                            isRefreshing = false,
+                            state = pullRefreshState,
+                            enabled = !selecting,
+                            onRefresh = {
+                                if (!pullRefreshing) {
+                                    pullRefreshing = true
+                                    onRetryHome()
+                                    scope.launch {
+                                        try {
+                                            pullRefreshState.animateToHidden()
+                                        } finally {
+                                            pullRefreshing = false
+                                        }
+                                    }
+                                }
+                            },
+                        ),
                 ) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize()
@@ -927,7 +976,7 @@ internal fun RuntimeListScreen(
                     }
                 PullToRefreshDefaults.Indicator(
                     state = pullRefreshState,
-                    isRefreshing = false,
+                    isRefreshing = pullRefreshing,
                     modifier = Modifier.align(Alignment.TopCenter),
                     containerColor = MaterialTheme.colorScheme.surface,
                     color = MaterialTheme.colorScheme.primary,
