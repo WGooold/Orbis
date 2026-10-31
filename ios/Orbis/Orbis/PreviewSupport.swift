@@ -107,6 +107,13 @@ private final class PreviewTransport: OrbisTransport {
             receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": runtimes,
                      "agents": ["pi", "codex", "dsh"], "launchableAgents": ["pi", "codex", "dsh"]], "ctl")
             receive(["type": "device.path", "path": "relay", "rttMs": 42], "ctl")
+            // V21: the top session goes away while the reader is scrolled further down the list.
+            if ProcessInfo.processInfo.arguments.contains("--preview-home-remove-later") {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 7_000_000_000)
+                    self?.receive?(["type": "runtime.offline", "runtimeId": "preview-codex"], "ctl")
+                }
+            }
             self.event(["type": "runtime.capabilities", "capabilities": ["commands": [
                 ["name": "quit", "source": "builtin", "description": "关闭会话"],
                 ["name": "model", "source": "builtin", "description": "切换当前模型", "argument": ["kind": "select", "required": true, "options": [["value": "model-a", "label": "默认模型"]]]],
@@ -502,6 +509,10 @@ private final class PreviewTransport: OrbisTransport {
             ["type": "text", "text": "已经梳理了两端的页面结构。接下来按顺序处理：\n\n- 配对与扫码\n- 会话主页和目录\n- 聊天、历史与分支\n\n统一浅色、深色配色和控件的按压反馈。"]]],
          message("m3", role: "user", text: "聊天输入和滚动也要保持一致。"),
          message("m4", role: "assistant", text: "阅读旧消息时会保留当前位置，点击右下角按钮可以跳回最新消息。\n\n```swift\nlet followsLatest = isNearBottom\nif followsLatest {\n    scrollToLatest()\n}\n```\n\n**草稿按电脑和会话隔离**，返回目录后仍会保留。")]
+            // M16: a file the reply produced, to download from the chat.
+            + (ProcessInfo.processInfo.arguments.contains("--preview-chat-artifact") ? [["messageId": "m5", "role": "assistant", "timestamp": 1793232000002,
+                "content": [["type": "artifact", "artifact": ["artifactId": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "fileName": "report.pdf",
+                                                              "mimeType": "application/pdf", "size": 1024, "sha256": String(repeating: "a", count: 64)]]]]] : [])
     }
     private var treeOptions: [[String: Any]] {
         let labels = ["对齐 iOS 与 Android 的体验", "梳理页面和交互", "输入和滚动也要一致", "保留阅读位置与会话草稿"]

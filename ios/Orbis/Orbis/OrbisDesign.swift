@@ -1116,7 +1116,12 @@ final class DownloadFlight: ObservableObject {
         let to: CGPoint
         let start: Date
     }
+    #if DEBUG
+    /// UI tests slow the flight to capture its middle frame.
+    static let duration: TimeInterval = ProcessInfo.processInfo.arguments.contains("--preview-slow-flight") ? 4.16 : 0.52
+    #else
     static let duration: TimeInterval = 0.52
+    #endif
     static let fade: TimeInterval = 0.08
     static let maxFlights = 3
 
@@ -1197,16 +1202,19 @@ private struct DownloadFlightHost: ViewModifier {
 
 private struct DownloadFlightTarget: ViewModifier {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisAccent) private var pageAccent
     @ObservedObject var flight: DownloadFlight
     func body(content: Content) -> some View {
         content.scaleEffect(flight.pop)
-            .background { Circle().fill(OrbisPalette(scheme).accent.opacity(flight.highlighted ? 0.22 : 0)) }
+            .background { Circle().fill((pageAccent ?? OrbisPalette(scheme).accent).opacity(flight.highlighted ? 0.22 : 0)) }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { flight.target = $0 }
     }
 }
 
 private struct DownloadFlightLayer: View {
     @Environment(\.colorScheme) private var scheme
+    /// Chat pages follow the agent's accent (X02).
+    @Environment(\.orbisAccent) private var pageAccent
     @ObservedObject var flight: DownloadFlight
     var body: some View {
         GeometryReader { proxy in
@@ -1214,7 +1222,7 @@ private struct DownloadFlightLayer: View {
             TimelineView(.animation(paused: flight.flights.isEmpty)) { context in
                 Canvas { graphics, _ in
                     var icon = graphics.resolve(Image(systemName: "doc.fill"))
-                    icon.shading = .color(OrbisPalette(scheme).accent)
+                    icon.shading = .color(pageAccent ?? OrbisPalette(scheme).accent)
                     let fadeFrom = 1 - DownloadFlight.fade / DownloadFlight.duration
                     for item in flight.flights {
                         let time = min(max(context.date.timeIntervalSince(item.start) / DownloadFlight.duration, 0), 1)

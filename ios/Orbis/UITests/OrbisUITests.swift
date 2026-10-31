@@ -515,6 +515,44 @@ final class OrbisUITests: XCTestCase {
         XCTAssertFalse(composer.exists)
         capture("chat-swipe-home", app: app)
     }
+    // ADR-0053 §3 / V21: a session closing above the viewport does not move the cards being read.
+    func testHomeViewportStaysWhenSessionsChangeAboveIt() {
+        let app = launch("home", arguments: ["--preview-home-long-list", "--preview-home-remove-later"])
+        let list = app.scrollViews["home-session-list"]
+        let top = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(top.waitForExistence(timeout: 8))
+        list.swipeUp()
+        settle()
+        let candidates = (4...15).map { app.buttons["home-runtime-preview-scroll-\($0)"] }
+        guard let card = candidates.first(where: { $0.exists && $0.isHittable && $0.frame.minY > list.frame.minY + 40 }) else {
+            return XCTFail("no fully visible card after scrolling")
+        }
+        let before = card.frame
+        XCTAssertFalse(top.isHittable)
+        XCTAssertTrue(top.waitForNonExistence(timeout: 12))
+        settle()
+        XCTAssertEqual(card.frame.minY, before.minY, accuracy: 1)
+        capture("home-viewport-after-removal", app: app)
+    }
+
+    // ADR-0053 §7 / M16: a queued download flies from the tap toward the chat's download button.
+    func testDownloadFlightStartsAtTapAndEndsAtButton() {
+        let app = launch("chat", arguments: ["--preview-chat-artifact", "--preview-slow-flight"])
+        let file = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch
+        XCTAssertTrue(file.waitForExistence(timeout: 8))
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        let composerFrame = composer.frame
+        file.tap()
+        capture("download-flight-midway", app: app)
+        // The flight takes no taps and moves nothing beneath it.
+        XCTAssertEqual(composer.frame, composerFrame)
+        XCTAssertTrue(app.buttons["chat-downloads"].isHittable)
+        app.buttons["chat-downloads"].tap()
+        XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch.waitForExistence(timeout: 3))
+        capture("download-flight-task-listed", app: app)
+    }
+
     // ADR-0053 §4 / S22: the header keeps only downloads and settings, the capsule only reports state,
     // and computers are added or unpaired only from the drawer's computer menu.
     func testSettingsPageOrderAndSingleHostMenu() {

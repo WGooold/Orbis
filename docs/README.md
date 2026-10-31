@@ -6,7 +6,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 
 - [Claude Code 供应商与官方订阅配额](agents/claude-providers-and-subscription-quota.md)：Host、iOS 和 Android 的配置切换与 5 小时 / 周配额查询。
 - `docs/adr/`: accepted architecture decisions. ADRs preserve historical reasoning; a superseded ADR is marked in its header.
-- [ADR-0051](adr/0051-ui-style-motion-and-visual-stability-freeze.md)：UI 风格、动效与画面稳定性的统一冻结入口，基线 r16，登记移动端 59 项（其中 V20 待实施、V21 部分实施、M16 待 iOS 设备验收）及品牌 / Host / Relay 10 项 feature；相关设计与修改前必读，演进时同步维护 ADR 和本机 `AGENTS.md` / `CLAUDE.md`。
+- [ADR-0051](adr/0051-ui-style-motion-and-visual-stability-freeze.md)：UI 风格、动效与画面稳定性的统一冻结入口，基线 r18，登记移动端 59 项（其中 V20 与 V21 尚有待验证部分）及品牌 / Host / Relay 10 项 feature；相关设计与修改前必读，演进时同步维护 ADR 和本机 `AGENTS.md` / `CLAUDE.md`。
 - [ADR-0050](adr/0050-fixed-lan-relay-routing.md): LAN / Relay only with fixed LAN-first routing; configurable priorities are removed. Merged into main and locally verified; release validation pending.
 - [ADR-0052](adr/0052-turn-file-changes-and-on-demand-diff.md)：Host 保存轮次前后版本、先同步文件元数据，双端按需查看差异并带动画切换文件。
 - [ADR-0053](adr/0053-settings-entry-page-motion-and-ui-regression-gate.md)：r15 决策——打字机顺序揭示、运行中工具呈现连续、首页视口稳定、设置页与唯一配对入口、设置 / 下载页转场、下拉刷新、下载飞入（r16 已实施大部分，V20 与部分 V21 待实施），以及 UI 回归门禁；实施拆分见 [UI r15 ticket](agents/ui-r15-tickets.md)。

@@ -102,7 +102,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
 
-**iOS `OrbisUITests`（46 项）**
+**iOS `OrbisUITests`（48 项）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
@@ -120,6 +120,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 全页面明暗 | `testPageScreenshotsInBothAppearances` | S01–S09、S16 |
 | r15 设置与入口 | `testSettingsPageOrderAndSingleHostMenu` | S18、S22 |
 | r15 页面转场 | `testSettingsAndDownloadsSwipeBack`、`testChatDownloadsReturnToSameChat`、`testHistoryDownloadsReturnToHistory` | M08、M14 |
+| r15 视口与飞入 | `testHomeViewportStaysWhenSessionsChangeAboveIt`、`testDownloadFlightStartsAtTapAndEndsAtButton` | V21、M16 |
 
 **Android instrumentation（`androidTest`）**
 
