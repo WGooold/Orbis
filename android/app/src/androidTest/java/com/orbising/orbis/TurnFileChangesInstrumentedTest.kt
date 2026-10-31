@@ -34,7 +34,14 @@ class TurnFileChangesInstrumentedTest {
         } } }
         compose.waitForIdle()
         assertEquals(0, manifests); assertEquals(0, details)
-        compose.onNodeWithText("查看全部文件").performClick()
+        // Compact block: header, then one single-line row per preview file in order.
+        val header = compose.onNodeWithTag("turn-changes-open-turn").assertTextContains("5 个文件已更改", substring = true).fetchSemanticsNode().boundsInRoot
+        val rows = (1..4).map { compose.onNodeWithTag("change-file-file-$it").fetchSemanticsNode().boundsInRoot }
+        val density = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+        assertTrue(rows.first().top >= header.bottom)
+        rows.zipWithNext().forEach { (above, below) -> assertTrue(below.top >= above.bottom) }
+        rows.forEach { assertTrue("row ${it.height / density}dp", it.height / density <= 48f) }
+        compose.onNodeWithText("还有 1 个文件").performClick()
         compose.waitForIdle()
         assertEquals(1, manifests); assertEquals(0, details)
         compose.onNodeWithTag("change-file-file-1").performClick()
@@ -84,6 +91,29 @@ class TurnFileChangesInstrumentedTest {
         assertEquals(listOf("file-2", "file-1"), requested)
         assertEquals(position, viewer.value.current!!.scrollIndex)
         screenshot("viewer-light")
+    }
+
+    @Test fun diffScrollNeverClosesViewerButHeaderPullDoes() {
+        val viewer = FileChangeViewer("runtime", summary, files[0].fileId,
+            cache = mapOf(files[0].fileId to FileDiffCache(files[0], text = diff, loaded = true, eof = true)))
+        var closes = 0
+        compose.setContent { OrbisTheme {
+            FileChangeViewerSheet(viewer, ChangeManifest(summary, files, loaded = true), onClose = { closes++ }, {}, {}, {}, { _, _, _ -> })
+        } }
+        compose.waitForIdle()
+        val lines = compose.onNodeWithTag("file-diff-lines-file-1")
+        lines.performScrollToIndex(40)
+        // Fast pulls back past the diff's top, and a pull on the page's non-scrolling footer.
+        repeat(3) { lines.performTouchInput { swipeDown(startY = top + 10f, endY = bottom - 10f, durationMillis = 120) } }
+        compose.onNodeWithText("已读取全部差异").performTouchInput { swipeDown(startY = centerY, endY = centerY + 600f, durationMillis = 150) }
+        compose.waitForIdle()
+        assertEquals(0, closes)
+        lines.assertIsDisplayed()
+        screenshot("viewer-body-pull-stays-open")
+        // The header still owns the sheet's own drag-to-close.
+        compose.onNodeWithTag("file-change-header").performTouchInput { swipeDown(startY = centerY, endY = centerY + 900f, durationMillis = 200) }
+        compose.waitForIdle()
+        assertEquals(1, closes)
     }
 
     @Test fun darkViewerLargeTextKeepsFullFilenameAccessibility() {

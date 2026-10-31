@@ -75,12 +75,16 @@ struct DiffDisplayLine: Identifiable, Equatable {
     let oldLine: Int?
     let newLine: Int?
     let text: String
+    /// A later fragment of a bounded long line; it has no marker or line number of its own.
+    var continuation = false
 }
 
 /// Pages may end inside a hunk or a UTF-8 line. Keep the parser state across pages;
 /// split exceptionally long lines into bounded display fragments without losing bytes.
 struct UnifiedDiffParser {
     private(set) var lines: [DiffDisplayLine] = []
+    /// Widest line number seen so far; the viewer sizes its gutters from it.
+    private(set) var maxLineNumber = 0
     private var pending = ""
     private var oldLine: Int?
     private var newLine: Int?
@@ -101,7 +105,7 @@ struct UnifiedDiffParser {
     }
     private mutating func consume(_ value: String, continues: Bool = false) {
         if let kind = continuedKind {
-            lines.append(.init(id: lines.count, kind: kind, oldLine: nil, newLine: nil, text: value))
+            lines.append(.init(id: lines.count, kind: kind, oldLine: nil, newLine: nil, text: value, continuation: true))
             if !continues { continuedKind = nil }
             return
         }
@@ -122,6 +126,7 @@ struct UnifiedDiffParser {
         } else if value.hasPrefix("\\") { kind = .note }
         else { kind = .header }
         lines.append(.init(id: lines.count, kind: kind, oldLine: old, newLine: new, text: value))
+        maxLineNumber = max(maxLineNumber, old ?? 0, new ?? 0)
         if continues { continuedKind = kind }
     }
 }
@@ -407,6 +412,11 @@ func turnChangeFailureTitle(_ reason: String?) -> String {
     case "busy": return "电脑端正在处理，请稍后重试。"
     default: return "暂时无法读取此轮文件变化。"
     }
+}
+
+/// Fits the count column when a file has no text line counts.
+func turnChangeShortStatus(_ detail: String) -> String {
+    ["binary": "二进制", "too-large": "过大", "unsupported": "不支持", "not-captured": "未保存", "busy": "未统计"][detail] ?? "—"
 }
 
 func turnChangeKindTitle(_ kind: String) -> String {

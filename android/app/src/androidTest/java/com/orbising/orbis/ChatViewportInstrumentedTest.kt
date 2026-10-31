@@ -325,4 +325,38 @@ class ChatViewportInstrumentedTest {
         compose.onNodeWithText("thinking prefix plus suffix").assertIsDisplayed()
         compose.onNodeWithContentDescription("收起").assertIsDisplayed()
     }
+
+    @Test fun turnChangeSummaryFollowsTheWholeTurnWhenAnchoredInsideIt() {
+        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val owner = ViewModelStore()
+        val model = RemoteViewModel(app)
+        owner.put("changes", model)
+        // Five steps split into two virtual rows; the Host anchored the card on the first step.
+        val user = text("user", "user", "question")
+        val steps = (1..5).map { text("step-$it", "assistant", if (it == 5) "final answer" else "step $it") }
+        val summary = TurnChangeSummary(1, ToolAgent("host", "codex", "s"), "turn", "set", listOf("turn"), 1, "step-1", 1, 2,
+            "ready", "completed", "complete", "workspace-window", emptyList(), 1, 0, 1, 0, 2, 1,
+            listOf(FileChangeMetadata("file", "src/App.kt", changeKind = "modified", fileKind = "text", additions = 2, deletions = 1,
+                contentVersion = "v", detail = "available")), scope = "git-visible-files", revision = 1)
+        val graph = (listOf(user) + steps).zipWithNext().fold(listOf(canonical(user, null))) { entries, (parent, child) ->
+            entries + canonical(child, parent.messageId) }
+        val state = RemoteState(selectedRuntimeId = "r", runtimes = mapOf("r" to RuntimeSummary("r", "R", "/", "running", "s",
+            sessionGraphSync = true, sessionLeafId = "step-5")),
+            conversations = mapOf("r" to RuntimeConversation(messages = listOf(user) + steps, sourceEpoch = "epoch", sourceSeq = 1,
+                sourceHeadLeafId = "step-5", hasLiveSnapshot = true)),
+            sessionGraphs = mapOf("s" to fixtureGraph("s", graph)),
+            turnChanges = mapOf("r" to TurnChangesState(summaries = mapOf("set" to summary))))
+        try {
+            compose.setContent { OrbisTheme { ChatScreen(state, model) } }
+            compose.waitForIdle()
+            val card = compose.onNodeWithTag("turn-changes-open-turn").fetchSemanticsNode().boundsInRoot
+            val stepFour = compose.onNodeWithText("step 4").fetchSemanticsNode().boundsInRoot
+            val last = compose.onNodeWithText("final answer").fetchSemanticsNode().boundsInRoot
+            assertTrue("The final row starts after the first virtual row", last.top >= stepFour.bottom)
+            assertTrue("The card follows the turn's last row: card=$card last=$last", card.top >= last.bottom)
+        } finally {
+            compose.runOnIdle { owner.clear() }
+            app.dispose()
+        }
+    }
 }

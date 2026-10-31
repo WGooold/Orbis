@@ -3087,4 +3087,18 @@ describe("Codex Host-owned turn capture boundary", () => {
     h.resolveNext({ turn: { id: "turn-2" } });
     h.server.onExit?.(0);
   });
+
+  it("anchors the review card on the final agent message even while it waits behind an uncommitted item", async () => {
+    const h = makeHarness(); await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "turn-1" } });
+    h.notify("item/completed", { threadId: "th-1", turnId: "turn-1", item: { type: "agentMessage", id: "commentary", text: "checking" } });
+    h.notify("item/completed", { threadId: "th-1", turnId: "turn-1", item: { type: "reasoning", id: "rs-1", summary: ["plan"] } });
+    // A started item that never reports completion keeps every later completion out of entries.
+    h.notify("item/started", { threadId: "th-1", turnId: "turn-1", item: { type: "reasoning", id: "rs-stuck" } });
+    h.notify("item/completed", { threadId: "th-1", turnId: "turn-1", item: { type: "agentMessage", id: "final-answer", text: "done" } });
+    h.notify("item/completed", { threadId: "th-1", turnId: "turn-1", item: { type: "reasoning", id: "rs-2", summary: ["after"] } });
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "turn-1", status: "completed" } });
+    expect([...h.events].reverse().find(event => event.type === "turn.finished")).toMatchObject({ persistedMessageId: "final-answer" });
+    h.server.onExit?.(0);
+  });
 });

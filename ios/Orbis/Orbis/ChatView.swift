@@ -108,6 +108,7 @@ struct ChatView: View {
             .sheet(isPresented: $runtimeInfoOpen) {
                 RuntimeInfoView(runtime: runtime).orbisSheet([.large])
             }
+            .modifier(TurnFileReviewPresenter(changes: store.turnFileChanges))
             .onChange(of: draft.wrappedValue) { _, next in
                 if let selectedCommand, !(next == "/" + selectedCommand || next.hasPrefix("/" + selectedCommand + " ")) { self.selectedCommand = nil }
                 if next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { deliveryChoices = false }
@@ -160,6 +161,14 @@ struct ChatView: View {
         }
     }
 
+    /// A long turn is virtualized into small rows. Its review card belongs after the turn's last
+    /// row, whichever of the turn's messages the Host anchored it to.
+    private func turnEndChangeAnchors(_ row: ChatRow) -> Set<String> {
+        let turn = row.copyMessages ?? row.messages
+        guard !row.isUser, row.messages.last?.messageId == turn.last?.messageId else { return [] }
+        return store.changeAnchors(for: Set(turn.map(\.messageId)))
+    }
+
     private var conversation: some View {
         let kind = self.kind
         let transcript = store.chatTranscript
@@ -177,7 +186,7 @@ struct ChatView: View {
                         ChatMessageRow(row: row, kind: kind, toolResults: transcript.toolResultsByRow[row.id] ?? [:],
                                        timings: transcript.timingsByRow[row.id] ?? [],
                                        changes: store.turnFileChanges,
-                                       changeAnchors: store.changeAnchors(for: Set(row.messages.map(\.messageId))),
+                                       changeAnchors: turnEndChangeAnchors(row),
                                        streamingMessageIds: streamingMessageIds.intersection(row.messages.map(\.messageId)),
                                        rewindOption: row.isUser ? rewindOptions[row.id] : nil,
                                        rewindEnabled: store.canSend && runtime.status == "idle" && store.pendingActionIds.isEmpty,

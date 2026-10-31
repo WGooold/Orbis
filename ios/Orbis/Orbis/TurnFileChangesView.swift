@@ -12,68 +12,152 @@ struct TurnChangeCards: View {
     }
 }
 
+/// Turn-end file summary, styled like the transcript's tool disclosures: one recessed block whose
+/// header opens the viewer, one compact line per file, and a single caveat line when needed.
 private struct TurnChangeCard: View {
     @ObservedObject var changes: TurnFileChanges
     let summary: TurnChangeSummary
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var expanded = false
-    @State private var showing = false
     var body: some View {
         let p = OrbisPalette(scheme)
         let manifest = changes.manifest(summary)
-        let files = expanded ? manifest.files : Array(manifest.files.prefix(4))
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(summary.state == "finalizing" || summary.state == "collecting" ? "正在统计文件变化" : "本轮文件变化").font(.orbisLabel(.semibold))
-                Spacer(minLength: 4)
-                if let count = summary.fileCount { Text("\(count) 个文件").font(.orbisCaption()).foregroundStyle(p.secondary) }
-            }
-            if summary.state == "ready" {
-                HStack(spacing: 12) {
-                    if let count = summary.addedFiles { Text("新增 \(count)") }
-                    if let count = summary.modifiedFiles { Text("修改 \(count)") }
-                    if let count = summary.deletedFiles { Text("删除 \(count)") }
-                    Spacer(minLength: 0)
-                    ChangeLineCounts(additions: summary.additions, deletions: summary.deletions)
-                }.font(.orbisCaption()).foregroundStyle(p.secondary)
+        let ready = summary.state == "ready"
+        let count = summary.fileCount ?? manifest.files.count
+        let files = ready ? (expanded ? manifest.files : Array(manifest.files.prefix(4))) : []
+        VStack(alignment: .leading, spacing: 6) {
+            VStack(spacing: 0) {
+                header(p, ready: ready, count: count, opens: ready && !files.isEmpty)
                 ForEach(files) { file in
-                    Button { changes.open(summary, fileId: file.fileId); showing = true } label: {
-                        ChangeMetadataRow(file: file)
-                    }.buttonStyle(.plain).accessibilityIdentifier("turn-change-file-" + file.fileId)
+                    ChangeHairline()
+                    Button { changes.open(summary, fileId: file.fileId) } label: { ChangeFileLine(file: file) }
+                        .buttonStyle(.plain).accessibilityIdentifier("turn-change-file-" + file.fileId)
                 }
-                if (summary.fileCount ?? 0) > 4 {
+                if ready && count > 4 {
+                    ChangeHairline()
                     Button {
                         withAnimation(reduceMotion ? nil : .orbisCollapse) { expanded.toggle() }
                         if expanded && !manifest.started { changes.loadFiles(summary) }
                     } label: {
-                        Label(expanded ? "收起文件清单" : "显示全部文件", systemImage: expanded ? "chevron.up" : "chevron.down")
-                            .font(.orbisLabel()).frame(minHeight: 48)
+                        HStack(spacing: 6) {
+                            Text(expanded ? "收起" : "还有 \(count - 4) 个文件")
+                            Spacer(minLength: 0)
+                            if manifest.loading { ProgressView().controlSize(.mini) }
+                            Image(systemName: "chevron.down").imageScale(.small).rotationEffect(.degrees(expanded ? 180 : 0))
+                        }.font(.orbisCaption()).foregroundStyle(p.secondary).frame(minHeight: 36).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                 }
-                if expanded && !manifest.complete && (manifest.started || manifest.loading || manifest.error != nil) {
-                    OrbisTextButton(title: manifest.error == nil ? "更多文件" : "重新读取清单", symbol: "doc", loading: manifest.loading) { changes.loadFiles(summary) }
-                    if let error = manifest.error { Text(error).font(.orbisCaption()).foregroundStyle(p.error) }
+                if expanded && !manifest.complete && !manifest.loading && (manifest.started || manifest.error != nil) {
+                    ChangeHairline()
+                    Button { changes.loadFiles(summary) } label: {
+                        Text(manifest.error == nil ? "载入更多文件" : "重新读取文件清单")
+                            .font(.orbisCaption()).foregroundStyle(manifest.error == nil ? p.accent : p.error)
+                            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
                 }
-                if !files.isEmpty {
-                    OrbisActionButton(title: "查看详情", symbol: "doc.text.magnifyingglass") { changes.open(summary); showing = true }
-                        .accessibilityIdentifier("turn-changes-open-" + summary.reviewTurnId)
+            }.padding(.horizontal, 12).padding(.vertical, 2).neuSurface(inset: true, radius: 14, intensity: 0.35)
+            if let note = caveat {
+                Label(note, systemImage: summary.coverage == "complete" ? "info.circle" : "exclamationmark.triangle")
+                    .font(.orbisCaption()).foregroundStyle(summary.coverage == "complete" ? p.secondary : p.warning)
+                    .padding(.horizontal, 4).accessibilityIdentifier("turn-changes-partial")
+            }
+        }.padding(.top, 4)
+    }
+
+    @ViewBuilder private func header(_ p: OrbisPalette, ready: Bool, count: Int, opens: Bool) -> some View {
+        let pending = summary.state == "collecting" || summary.state == "finalizing"
+        let title = pending ? "正在统计文件变化" : summary.state == "unavailable" ? "本轮文件变化未记录"
+            : count == 0 ? (summary.coverage == "complete" ? "本轮没有文件变化" : "未发现文件变化") : "\(count) 个文件已更改"
+        let row = HStack(spacing: 8) {
+            Image(systemName: opens ? "doc.on.doc" : summary.state == "unavailable" ? "exclamationmark.circle" : "doc")
+            Text(title).fontWeight(.medium).foregroundStyle(opens ? p.text : p.secondary).lineLimit(1)
+            if pending { ProgressView().controlSize(.mini) }
+            Spacer(minLength: 6)
+            if opens {
+                ChangeLineCounts(additions: summary.additions, deletions: summary.deletions, status: nil)
+                Image(systemName: "chevron.right").imageScale(.small)
+            }
+        }.font(.orbisLabel()).foregroundStyle(p.secondary).frame(minHeight: 40).contentShape(Rectangle())
+        if opens {
+            Button { changes.open(summary) } label: { row }.buttonStyle(.plain)
+                .accessibilityLabel("查看详情，" + title).accessibilityIdentifier("turn-changes-open-" + summary.reviewTurnId)
+        } else {
+            row.accessibilityElement(children: .combine)
+        }
+    }
+
+    /// One line for what the counts cannot show: incomplete capture or concurrent edits.
+    private var caveat: String? {
+        var notes: [String] = []
+        if summary.coverage != "complete" && summary.state != "unavailable" { notes.append("仅记录部分范围") }
+        if summary.reasons.contains(where: { $0.contains("concurrent") }) { notes.append("含同期工作区修改，归属未确认") }
+        return notes.isEmpty ? nil : notes.joined(separator: "；")
+    }
+}
+
+private struct ChangeHairline: View {
+    @Environment(\.colorScheme) private var scheme
+    var body: some View { Rectangle().fill(OrbisPalette(scheme).secondary.opacity(0.14)).frame(height: 0.5) }
+}
+
+/// Git-style status letter; VoiceOver reads the Chinese kind.
+private struct ChangeKindLetter: View {
+    @Environment(\.colorScheme) private var scheme
+    let kind: String
+    var body: some View {
+        let p = OrbisPalette(scheme)
+        let (letter, tint): (String, Color) = switch kind {
+        case "added": ("A", p.success)
+        case "deleted": ("D", p.error)
+        case "modified": ("M", p.warning)
+        case "renamed": ("R", p.accent)
+        case "type-changed": ("T", p.warning)
+        default: ("?", p.secondary)
+        }
+        Text(letter).font(.orbisCaption(.bold, mono: true)).foregroundStyle(tint)
+            .frame(width: 18, height: 18).background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .accessibilityLabel(turnChangeKindTitle(kind))
+    }
+}
+
+/// Name first (middle-elided, extension kept), then the nearest directories, then counts.
+private struct ChangeFileLine: View {
+    @Environment(\.colorScheme) private var scheme
+    let file: TurnFileMetadata
+    var body: some View {
+        let p = OrbisPalette(scheme)
+        let directory = file.path == file.name ? "" : String(file.path.dropLast(file.name.count + 1))
+        let name = ReviewFileNameText(name: file.name, fullPath: file.path).font(.orbisLabel(mono: true)).foregroundStyle(p.text)
+        let nearest = directory.split(separator: "/").last.map { directory.contains("/") ? "…/" + $0 : String($0) } ?? ""
+        HStack(spacing: 8) {
+            ChangeKindLetter(kind: file.changeKind)
+            // The directory never squeezes the name: full, then nearest segment, then hidden.
+            ViewThatFits(in: .horizontal) {
+                ForEach(directory.isEmpty ? [] : directory == nearest ? [directory] : [directory, nearest], id: \.self) { shown in
+                    HStack(spacing: 8) { name; Text(shown).font(.orbisCaption(mono: true)).foregroundStyle(p.secondary).lineLimit(1).fixedSize() }
                 }
-                if summary.fileCount == 0 { Text("采集范围内没有净变化").font(.orbisCaption()).foregroundStyle(p.secondary) }
-            } else if summary.state == "unavailable" {
-                Text("此轮未取得可比较的前后版本。").font(.orbisCaption()).foregroundStyle(p.secondary)
+                name
             }
-            if summary.coverage != "complete" {
-                Text("仅记录部分范围，未完整捕获轮次边界或文件内容。")
-                    .font(.orbisCaption()).foregroundStyle(p.warning).accessibilityIdentifier("turn-changes-partial")
-            }
-            Text(turnChangeScopeTitle(summary.scope)).font(.orbisCaption()).foregroundStyle(p.secondary)
-            Text("工作区同期净变化，修改归属未确认").font(.orbisCaption()).foregroundStyle(p.secondary)
-        }.padding(.top, 8)
-            .sheet(isPresented: $showing, onDismiss: { changes.closeViewer() }) {
-                TurnFileReviewView(changes: changes).orbisSheet([.large])
-            }
-            .onChange(of: changes.opened == nil) { _, closed in if closed { showing = false } }
+            Spacer(minLength: 6)
+            ChangeLineCounts(additions: file.additions, deletions: file.deletions, status: turnChangeShortStatus(file.detail))
+        }.frame(minHeight: 36).contentShape(Rectangle())
+            .accessibilityElement(children: .combine)
+    }
+}
+
+/// The chat screen presents the viewer, not the lazily built transcript row that owns the card:
+/// a row recycled while the agent keeps writing must not take an open review with it.
+struct TurnFileReviewPresenter: ViewModifier {
+    @ObservedObject var changes: TurnFileChanges
+    @State private var showing = false
+    func body(content: Content) -> some View {
+        // The opened version stays until the sheet has left the screen, so closing slides the
+        // same file out instead of an empty placeholder.
+        content.sheet(isPresented: $showing, onDismiss: { changes.closeViewer() }) {
+            TurnFileReviewView(changes: changes)
+        }
+        .onChange(of: changes.opened != nil, initial: true) { _, open in showing = open }
     }
 }
 
@@ -81,12 +165,20 @@ private struct ChangeLineCounts: View {
     @Environment(\.colorScheme) private var scheme
     let additions: Int?
     let deletions: Int?
+    var status: String? = "—"
     var body: some View {
-        HStack(spacing: 6) {
-            Text(additions.map { "+\($0)" } ?? "+—").foregroundStyle(OrbisPalette(scheme).success)
-            Text(deletions.map { "−\($0)" } ?? "−—").foregroundStyle(OrbisPalette(scheme).error)
+        let p = OrbisPalette(scheme)
+        HStack(spacing: 5) {
+            if additions == nil && deletions == nil {
+                if let status { Text(status).foregroundStyle(p.secondary) }
+            } else {
+                if let additions, additions > 0 || (deletions ?? 0) == 0 { Text("+\(additions)").foregroundStyle(p.success) }
+                if let deletions, deletions > 0 { Text("−\(deletions)").foregroundStyle(p.error) }
+            }
         }.font(.orbisCaption(mono: true)).fixedSize()
-            .accessibilityLabel("新增 \(additions.map(String.init) ?? "未知") 行，删除 \(deletions.map(String.init) ?? "未知") 行")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(additions == nil && deletions == nil ? (status ?? "行数未知")
+                : "新增 \(additions.map(String.init) ?? "未知") 行，删除 \(deletions.map(String.init) ?? "未知") 行")
     }
 }
 
@@ -102,23 +194,9 @@ struct ReviewFileNameText: View {
     }
 }
 
-private struct ChangeMetadataRow: View {
-    @Environment(\.colorScheme) private var scheme
-    let file: TurnFileMetadata
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 8) {
-                Text(turnChangeKindTitle(file.changeKind)).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                ReviewFileNameText(name: file.name, fullPath: file.path).font(.orbisLabel(mono: true))
-                Spacer(minLength: 0)
-                ChangeLineCounts(additions: file.additions, deletions: file.deletions)
-            }
-            if file.path != file.name { Text(file.path).font(.orbisCaption(mono: true)).lineLimit(1).truncationMode(.middle).foregroundStyle(OrbisPalette(scheme).secondary) }
-        }.frame(maxWidth: .infinity, minHeight: 48, alignment: .leading).contentShape(Rectangle())
-            .accessibilityElement(children: .combine)
-    }
-}
-
+/// Only the header closes the card (pull down or ×). The sheet's own pull-to-close works just
+/// for drags that begin in the header, so a diff scrolled past its top only bounces inside its
+/// own well.
 struct TurnFileReviewView: View {
     @ObservedObject var changes: TurnFileChanges
     @Environment(\.dismiss) private var dismiss
@@ -135,46 +213,44 @@ struct TurnFileReviewView: View {
         #endif
     }
     var body: some View {
+        let p = OrbisPalette(scheme)
         let files = changes.viewerFiles
         let index = files.firstIndex { $0.fileId == changes.selectedFileId } ?? 0
-        VStack(spacing: 12) {
-            OrbisPageHeader(title: "本轮文件差异", closes: true, back: { dismiss() }) { EmptyView() }
-            if let file = changes.selectedFile {
-                VStack(alignment: .leading, spacing: 6) {
-                    ReviewFileNameText(name: file.name, fullPath: file.path).font(.orbisBody(.semibold, mono: true))
-                    Text(file.path).font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary).textSelection(.enabled)
-                    if let old = file.oldPath { Text("原路径：" + old).font(.orbisCaption(mono: true)).textSelection(.enabled) }
-                    HStack { Text(turnChangeKindTitle(file.changeKind)).font(.orbisCaption()); Spacer(); ChangeLineCounts(additions: file.additions, deletions: file.deletions) }
-                }.padding(.horizontal, 24)
-            }
-            if let summary = changes.opened { Text(turnChangeScopeTitle(summary.scope)).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).padding(.horizontal, 24) }
-            if changes.newerVersionAvailable { OrbisNotice(text: "本轮概况已更新，当前保持打开时的版本。").padding(.horizontal, 20) }
+        VStack(spacing: 8) {
+            header(p)
+            if changes.newerVersionAvailable { OrbisNotice(text: "本轮概况已更新，当前保持打开时的版本。").padding(.horizontal, 16) }
             if changes.suspended {
-                OrbisActionButton(title: "继续读取", symbol: "play") { changes.resume() }.padding(.horizontal, 20)
+                OrbisActionButton(title: "继续读取", symbol: "play") { changes.resume() }.padding(.horizontal, 16)
             }
             if !files.isEmpty {
                 SettledFilePager(changes: changes, files: files, requestedFile: requestedFile, navigation: navigation, reduceMotion: pageReduceMotion)
                     .accessibilityIdentifier("turn-change-pager")
             } else if let summary = changes.opened, let error = changes.manifest(summary).error {
-                OrbisNotice(text: error, error: true).padding(.horizontal, 20)
-                OrbisActionButton(title: "重新读取文件清单", symbol: "arrow.clockwise") { changes.loadFiles(summary) }.padding(.horizontal, 20)
+                OrbisNotice(text: error, error: true).padding(.horizontal, 16)
+                OrbisActionButton(title: "重新读取文件清单", symbol: "arrow.clockwise") { changes.loadFiles(summary) }.padding(.horizontal, 16)
                 Spacer()
             } else {
-                OrbisEmptyState(symbol: "doc", title: "正在读取文件清单")
+                OrbisEmptyState(symbol: "doc", title: "正在读取文件清单").frame(maxHeight: .infinity)
             }
             HStack {
-                OrbisIconButton(symbol: "chevron.left", label: "上一个文件", size: 48) { request(files[index - 1].fileId) }.disabled(index == 0)
+                OrbisIconButton(symbol: "chevron.left", label: "上一个文件", size: 44) { request(files[index - 1].fileId) }.disabled(index == 0)
                 Spacer()
                 Text(files.isEmpty ? "没有文件" : "\(index + 1) / \(changes.opened?.fileCount ?? files.count)")
-                    .font(.orbisLabel(mono: true)).accessibilityIdentifier("turn-change-page")
+                    .font(.orbisLabel(.semibold, mono: true)).foregroundStyle(p.secondary).accessibilityIdentifier("turn-change-page")
                 Spacer()
-                OrbisIconButton(symbol: "chevron.right", label: "下一个文件", size: 48) { request(files[index + 1].fileId) }.disabled(index + 1 >= files.count)
+                OrbisIconButton(symbol: "chevron.right", label: "下一个文件", size: 44) { request(files[index + 1].fileId) }.disabled(index + 1 >= files.count)
             }.padding(.horizontal, 20)
             if let summary = changes.opened, index + 1 >= files.count, !changes.manifest(summary).complete, (summary.fileCount ?? 0) > files.count {
                 OrbisTextButton(title: "载入更多文件", symbol: "doc", loading: changes.manifest(summary).loading) { changes.loadFiles(summary) }
-                    .padding(.bottom, 8)
             }
-        }.background(OrbisPalette(scheme).base.ignoresSafeArea()).foregroundStyle(OrbisPalette(scheme).text)
+        }.padding(.bottom, 4)
+            .foregroundStyle(p.text)
+            .environment(\.orbisSurface, nil)
+            .presentationDetents([.large])
+            .presentationDragIndicator(.hidden)
+            .presentationContentInteraction(.scrolls)
+            .presentationCornerRadius(OrbisRadius.sheet)
+            .presentationBackground(p.base)
             #if DEBUG
             .overlay(alignment: .bottom) {
                 if ProcessInfo.processInfo.arguments.contains("--preview-screen=changes") { TurnChangesRequestProbeView() }
@@ -184,7 +260,59 @@ struct TurnFileReviewView: View {
             .onChange(of: changes.opened == nil) { _, closed in if closed { dismiss() } }
             .onDisappear { changes.closeViewer() }
     }
+    private func header(_ p: OrbisPalette) -> some View {
+        VStack(spacing: 0) {
+            Capsule().fill(.clear).frame(width: 40, height: 6)
+                .neuSurface(inset: true, radius: 3, intensity: 0.35, concentric: false)
+                .padding(.top, 7).accessibilityHidden(true)
+            OrbisHeader {
+                OrbisIconButton(symbol: "xmark", label: "关闭", action: { dismiss() })
+            } title: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("本轮文件差异").font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
+                    if let summary = changes.opened {
+                        Text(turnChangeScopeTitle(summary.scope)).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                    }
+                }
+            } trailing: { EmptyView() }
+        }.background(SheetDismissZone())
+            .accessibilityElement(children: .contain).accessibilityIdentifier("turn-change-header")
+    }
     private func request(_ file: String) { requestedFile = file; navigation += 1 }
+}
+
+/// The header's footprint for the sheet's own pull-to-close. At every touch-down in the
+/// window, before the sheet's pan can start, the presented controller becomes modal unless the
+/// touch landed here. The observer never receives or claims the touch.
+private struct SheetDismissZone: UIViewRepresentable {
+    func makeUIView(context: Context) -> ZoneView { ZoneView() }
+    func updateUIView(_ view: ZoneView, context: Context) {}
+
+    final class ZoneView: UIView, UIGestureRecognizerDelegate {
+        private var observer: UIGestureRecognizer?
+        override init(frame: CGRect) { super.init(frame: frame); isUserInteractionEnabled = false }
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if let observer { observer.view?.removeGestureRecognizer(observer) }
+            observer = nil
+            guard let window else { return }
+            let observer = UIGestureRecognizer()
+            observer.delegate = self
+            window.addGestureRecognizer(observer)
+            self.observer = observer
+            presented?.isModalInPresentation = true
+        }
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            presented?.isModalInPresentation = !bounds.contains(touch.location(in: self))
+            return false
+        }
+        private var presented: UIViewController? {
+            var controller = sequence(first: self as UIResponder, next: \.next).first { $0 is UIViewController } as? UIViewController
+            while let parent = controller?.parent { controller = parent }
+            return controller
+        }
+    }
 }
 
 /// UIKit calls didFinishAnimating only after a swipe settles. Building its adjacent
@@ -253,53 +381,120 @@ private struct DiffFilePage: View {
     var body: some View {
         let detail = changes.detail(for: file)
         let selected = changes.selectedFileId == file.fileId
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(detail.lines) { line in DiffLineView(line: line).id(line.id) }
-                VStack(spacing: 10) {
-                    if let error = detail.error {
-                        OrbisNotice(text: error, error: file.detail == "available")
-                        if file.detail == "available" && !detail.limitReached { OrbisActionButton(title: "重新读取", symbol: "arrow.clockwise") { changes.loadNext() }.disabled(!selected || changes.suspended) }
-                    } else if detail.loading {
-                        ProgressView("读取差异…").font(.orbisLabel())
-                    } else if detail.eof {
-                        Text(detail.lines.isEmpty ? "此文件没有文本差异" : "已显示完整差异").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                    } else if selected {
-                        OrbisActionButton(title: "继续读取", symbol: "arrow.down") { changes.loadNext() }.disabled(changes.suspended)
-                    } else {
-                        Text("切换到此文件后读取差异").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                    }
-                }.padding(16).frame(maxWidth: .infinity, minHeight: 80)
-                    .onAppear {
-                        if selected && userScrolled && pageEdgeArmed && detail.nextCursor != nil && detail.error == nil {
-                            pageEdgeArmed = false; changes.loadNext()
+        // Monospaced caption digits are 7.2pt wide; gutters fit the widest number read so far.
+        let gutter = CGFloat(max(2, String(detail.parser.maxLineNumber).count)) * 7.5
+        VStack(alignment: .leading, spacing: 10) {
+            DiffFileHeader(file: file)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(detail.lines) { line in DiffLineView(line: line, gutter: gutter).id(line.id) }
+                    VStack(spacing: 10) {
+                        if let error = detail.error {
+                            OrbisNotice(text: error, error: file.detail == "available")
+                            if file.detail == "available" && !detail.limitReached { OrbisActionButton(title: "重新读取", symbol: "arrow.clockwise") { changes.loadNext() }.disabled(!selected || changes.suspended) }
+                        } else if detail.loading {
+                            ProgressView("读取差异…").font(.orbisLabel())
+                        } else if detail.eof {
+                            Text(detail.lines.isEmpty ? "此文件没有文本差异" : "已显示完整差异").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                        } else if selected {
+                            OrbisActionButton(title: "继续读取", symbol: "arrow.down") { changes.loadNext() }.disabled(changes.suspended)
+                        } else {
+                            Text("切换到此文件后读取差异").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                         }
-                    }.onDisappear { pageEdgeArmed = true }
-            }.scrollTargetLayout()
-                .background(DiffScrollObservation { userScrolled = true })
-        }.scrollPosition(id: $position, anchor: .top)
-            .onAppear { if !restored { position = detail.scrollLine; restored = true } }
-            .onChange(of: position) { _, value in if selected && restored { changes.rememberScroll(value, file: file) } }
-            .background(OrbisPalette(scheme).well)
-            .clipShape(RoundedRectangle(cornerRadius: OrbisRadius.control, style: .continuous))
-            .padding(.horizontal, 12)
+                    }.padding(16).frame(maxWidth: .infinity, minHeight: 80)
+                        .onAppear {
+                            if selected && userScrolled && pageEdgeArmed && detail.nextCursor != nil && detail.error == nil {
+                                pageEdgeArmed = false; changes.loadNext()
+                            }
+                        }.onDisappear { pageEdgeArmed = true }
+                }.scrollTargetLayout()
+                    .padding(.vertical, 6)
+                    .background(DiffScrollObservation { userScrolled = true })
+            }.scrollPosition(id: $position, anchor: .top)
+                .onAppear { if !restored { position = detail.scrollLine; restored = true } }
+                .onChange(of: position) { _, value in if selected && restored { changes.rememberScroll(value, file: file) } }
+                .background(OrbisPalette(scheme).well)
+                .clipShape(RoundedRectangle(cornerRadius: OrbisRadius.control, style: .continuous))
+                .accessibilityIdentifier("turn-change-diff")
+        }.padding(.horizontal, 16)
     }
 }
 
+/// Name, kind and counts slide with their page, so a settled swipe never relabels the
+/// previous file. Long-press copies the full path.
+private struct DiffFileHeader: View {
+    @Environment(\.colorScheme) private var scheme
+    let file: TurnFileMetadata
+    var body: some View {
+        let p = OrbisPalette(scheme)
+        let directory = file.path == file.name ? "" : String(file.path.dropLast(file.name.count))
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                ChangeKindBadge(kind: file.changeKind)
+                ReviewFileNameText(name: file.name, fullPath: file.path).font(.orbisBody(.semibold, mono: true))
+                Spacer(minLength: 4)
+                ChangeLineCounts(additions: file.additions, deletions: file.deletions, status: turnChangeShortStatus(file.detail))
+            }
+            if !directory.isEmpty {
+                Text(directory).font(.orbisCaption(mono: true)).foregroundStyle(p.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            if let old = file.oldPath {
+                Text("原路径：" + old).font(.orbisCaption(mono: true)).foregroundStyle(p.secondary).lineLimit(1).truncationMode(.middle)
+            }
+        }.padding(.horizontal, 4).padding(.top, 2)
+            .contentShape(Rectangle())
+            .contextMenu { Button { UIPasteboard.general.string = file.path } label: { Label("复制路径", systemImage: "doc.on.doc") } }
+    }
+}
+
+private struct ChangeKindBadge: View {
+    @Environment(\.colorScheme) private var scheme
+    let kind: String
+    var body: some View {
+        let p = OrbisPalette(scheme)
+        let tint = kind == "added" ? p.success : kind == "deleted" ? p.error : kind == "renamed" ? p.accent : kind == "unknown" ? p.secondary : p.warning
+        Text(turnChangeKindTitle(kind)).font(.orbisCaption(.semibold)).foregroundStyle(tint)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(tint.opacity(0.14), in: Capsule())
+    }
+}
+
+/// Git-style row: old / new numbers, a +/− marker column and the line body. Hunk and file
+/// headers span the row; continuation fragments of a long line carry neither number nor marker.
 private struct DiffLineView: View {
     @Environment(\.colorScheme) private var scheme
     let line: DiffDisplayLine
+    let gutter: CGFloat
     var body: some View {
         let p = OrbisPalette(scheme)
-        HStack(alignment: .top, spacing: 8) {
-            Text(line.oldLine.map(String.init) ?? "").frame(width: 42, alignment: .trailing).foregroundStyle(p.secondary)
-            Text(line.newLine.map(String.init) ?? "").frame(width: 42, alignment: .trailing).foregroundStyle(p.secondary)
-            Text(line.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }.font(.orbisCaption(mono: true)).padding(.horizontal, 8).padding(.vertical, 2)
-            .background(line.kind == .addition ? p.success.opacity(0.12) : line.kind == .deletion ? p.error.opacity(0.12) : line.kind == .header ? p.lift : Color.clear)
-            .foregroundStyle(line.kind == .addition ? p.success : line.kind == .deletion ? p.error : p.text)
+        let tint: Color? = line.kind == .addition ? p.success : line.kind == .deletion ? p.error : nil
+        let marked = !line.continuation && line.kind != .header && line.kind != .note
+        Group {
+            if line.kind == .header || line.kind == .note {
+                let hunk = line.text.hasPrefix("@@")
+                Text(line.text).foregroundStyle(hunk ? p.accent : p.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10).padding(.vertical, hunk ? 5 : 1)
+                    .background(hunk ? p.lift : Color.clear)
+                    .padding(.vertical, hunk ? 4 : 0)
+            } else {
+                HStack(alignment: .top, spacing: 0) {
+                    Text(line.oldLine.map(String.init) ?? "").frame(width: gutter, alignment: .trailing)
+                    Text(line.newLine.map(String.init) ?? "").frame(width: gutter, alignment: .trailing).padding(.leading, 6)
+                    Text(line.kind == .addition && marked ? "+" : line.kind == .deletion && marked ? "−" : "")
+                        .frame(width: 18).foregroundStyle(tint ?? p.secondary)
+                    Text(marked ? String(line.text.dropFirst()) : line.text).foregroundStyle(tint ?? p.text)
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }.foregroundStyle(p.secondary)
+                    .padding(.leading, 4).padding(.trailing, 10).padding(.vertical, 1.5)
+                    .background(tint?.opacity(0.12) ?? Color.clear)
+            }
+        }.font(.orbisCaption(mono: true))
             .accessibilityElement(children: .combine)
+            .accessibilityLabel(line.text)
+            .accessibilityValue([line.oldLine.map { "旧 \($0)" }, line.newLine.map { "新 \($0)" }].compactMap { $0 }.joined(separator: "，"))
     }
 }
 

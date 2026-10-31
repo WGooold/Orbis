@@ -75,3 +75,24 @@ Android 保留包为 `.artifacts/android-turn-file-changes/packages/app-debug.ap
 - 缓存是内存缓存。Android 关闭查看器、后台或断连会释放详情，文件间切换保留阅读位置；iOS 保留当前会话内已访问的有界内容。没有实现杀进程后的离线持久 diff。
 
 本记录区分代码实现、模拟后端集成、设备 UI fixture 和真实后端验收，不把其中一类的通过扩展到另一类。
+
+## 2026-10-31 r20：Codex 锚点、轮末位置、概况重做与查看器关闭策略
+
+产物目录：`.artifacts/ui-regression/20261031-0340-turn-diff-review/`（日志、`.xcresult`、两端截图、对照组日志）。
+
+- **问题证据。** 本机 Host 私有记录（`~/.orbis/turn-file-changes/records`）中多条 Codex Desktop 轮次的 `anchorEntryId` 为 `exec-*`、`call_*`、`rs_*`，对照同轮 rollout，最终 `final_answer` 在其后。旧逻辑在 `turn/completed` 时只查已提交 Entry，而最终正文可能仍在 `completedItems` 中排在未提交条目之后；App 又把卡片放在锚点所在的 4 条消息虚拟行之后，卡片因此落在回合中段。
+- **Host。** `codex-runtime.test.ts` 新增“最终正文排在未提交条目之后”用例：旧逻辑实测得到 `rs-1`，新逻辑得到 `final-answer`。Codex runtime / coordinator / service / diff / protocol 共 196 项通过。
+- **iOS。** Swift `TurnFileChangesTests` / `PresentationTests` 37 项通过（含续行标记与最大行号断言）。设备（池内 iPhone 17 / iOS 27，`19EC6DD0…`）：`testTurnFileReviewLoadsOnlySelectedFilesAndRetainsCache`（新增概况几何：标题行在回复之后、文件行单行 ≤44pt 且有序、二进制短状态）、`testTurnFileReviewDarkAppearance`、新增 `testTurnFileReviewOnlyHeaderPullCloses` 通过。对照组：去掉 `interactiveDismissDisabled` 后新用例在第二次正文快速下滑时因查看器被关闭而失败。全量 58 项 6 项失败（审批浮层、目录折叠 / 选择、长转录工具展开、页面截图、工具导出），把本次 5 个 iOS 文件恢复到 `HEAD` 重建后同 6 项以相同断言失败，失败集合与基线一致。
+- **Android。** API 37 AVD 因 Espresso 反射 `InputManager.getInstance` 不存在而所有设备用例无法运行，不作为结果；改用池内 `Orbis_UI_Polish_35`。`TurnFileChangesInstrumentedTest` 4 项通过（新增 `diffScrollNeverClosesViewerButHeaderPullDoes`，概况用例新增标题行 / 单行行高 ≤48dp / 顺序断言）。对照组：去掉正文的嵌套滚动与纵向拖动消费后，新用例 `onClose` 被调用 2 次而失败。全量 133 项 6 项失败：`CodexPermissions` 自由文本、`Dsh` 新建、`Questionnaire`、`SessionHostOwnership` 为回归方案登记的既有失败；`HomeViewport` 两项下拉用例属于并行进行中的 M15（r21）首页改动，不涉及本次文件，未在基线上复跑。JVM 单元测试通过。
+- **未完成（首轮）。** 手动回归 C01–C18、A1–A4 与 C14 新步骤未执行；真实 Codex Desktop / TUI 轮次在修复后的锚点尚未在真机端到端复核；已持久化的旧错锚记录不回写，依靠 App 按整轮末行放置显示在回合末尾。
+
+### r20 手动回归与修正（同日）
+
+清单与证据：同一产物目录下 `manual-checklist.md`、`manual/`（录屏、抽帧联系表、操作日志）。
+
+- **Android 基线复核。** 在干净的 `HEAD a4cac89` 工作树 APK 上跑全量 132 项，失败与本次 133 项完全相同（6 项）；首页两项下拉用例在基线上同样失败（列表松手后停在 620，期望 410），属已提交的 M15 改动本身，与本次无关（`android-baseline-full.log`）。
+- **轮末位置补自动用例。** 此前只断言单条回复后的位置，没有覆盖“长回合被拆成 4 条一行”的场景。iOS `changes` 预览改为 5 步回合、锚点在第一步，`testTurnFileReviewLoadsOnlySelectedFilesAndRetainsCache` 断言只有一张卡片且位于最终消息之后；Android 新增 `ChatViewportInstrumentedTest#turnChangeSummaryFollowsTheWholeTurnWhenAnchoredInsideIt`。对照组：恢复旧放置后，iOS 卡片顶 418 < 最终消息底 688、Android 1305 < 1837，均失败。
+- **手动回归发现的两处 iOS 问题（已修）。** ① 页面级 presenter 在 `dismiss()` 时立即清空，sheet 滑出期间显示“正在读取文件清单”，属本次引入的回退；改为 `onDismiss` 后清空。② `presentationBackground(.clear)` 在 iOS 27 上画成白色，自绘标题区位移时露出白底，且系统仍对标题区做橡皮筋拖动；改为每次按下时同步设定 `isModalInPresentation`，只有落在标题区才允许系统原生下拉关闭，并让正文滚动优先于 sheet 拖动。正文外非滚动区（底部翻页栏）只有系统小幅弹性回弹、不关闭，已写入 ADR 平台差异。对照组：去掉标题区判定后，正文快速下滑即关闭查看器，用例失败。
+- **C14 / A1–A4。** iOS iPhone 17 与 SE（375pt）三项轮次审阅用例通过，深色 + XXXL + 减少动画用例新增“正文快甩不关、标题区长拉关闭”；Android 关闭全部动画缩放后 5 项通过并已恢复设置。录屏逐帧确认：正文到顶只在差异区内回弹，卡片不动；标题区长拉原生跟手关闭，滑出时内容保持。
+- **核心冒烟。** 两端 C01–C18 由 UI 测试辅助实际执行并录屏抽帧查看，结果见清单；失败仅为基线既有项。Android 测试时钟快，除 C14 外手势中间帧证据有限，未记为逐帧验收。iOS C03、Android C15 未单独执行，C08 / C18 部分步骤受基线失败的预览 / 夹具限制。
+- **iOS 全量（修正后）。** 58 项 7 项失败：首轮的 6 项基线失败，外加首页 `testSwipeRightFromLeftSideOpensDirectory`（目录取消横拖后左滑关闭未生效）。该用例不经过查看器或聊天页；在干净 `HEAD a4cac89` 工作树构建、同一设备交替重跑，基线 9 次失败 4 次，本次构建 11 次失败 6 次，录屏显示失败时左滑手势未被卡片接收，属基线上的间歇失败（r15 基线 2026-10-30 也曾失败）。失败集合因此与同设备基线一致（`ios-ui-full-r20b.log`、`ab-*.log`、`ios-head-swipe-right-*.log`）。Android 主代码自全量后未改，只新增上面的位置用例（通过），未重跑全量。

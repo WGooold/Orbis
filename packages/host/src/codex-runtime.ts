@@ -3448,8 +3448,7 @@ export class CodexRuntime implements AgentBackend {
           const durationMs = completed?.durationMs !== undefined
             ? Math.max(0, Math.round(completed.durationMs))
             : Math.max(0, Date.now() - thread.turnStartedAt);
-          const reviewAnchor = [...thread.entries].reverse().find(entry => thread.entryTurns.get(entry.entryId) === completedTurnId
-            && entryMessage(entry)?.role === "assistant")?.entryId;
+          const reviewAnchor = this.#reviewAnchor(thread, completedTurnId);
           this.#emit(thread.id, {
             type: "turn.finished",
             ...(completedTurn.status === "failed" ? { outcome: "failed" as const }
@@ -3777,6 +3776,33 @@ export class CodexRuntime implements AgentBackend {
       thread.completedItems.delete(id);
       thread.committedItemCount++;
     }
+  }
+
+  /**
+   * The turn-end anchor is the turn's last agent message in native item order. Completions can
+   * still wait in completedItems behind an earlier item, so committed entries alone may end on a
+   * mid-turn reasoning or tool row. A turn without any agent message falls back to its last
+   * assistant-role row.
+   */
+  #reviewAnchor(thread: ThreadState, turnId: string | undefined): string | undefined {
+    if (turnId === undefined) return undefined;
+    let fallback: string | undefined;
+    for (let index = thread.itemOrder.length - 1; index >= 0; index--) {
+      const id = thread.itemOrder[index]!;
+      const waiting = thread.completedItems.get(id);
+      if ((waiting?.turnId ?? thread.entryTurns.get(id)) !== turnId) continue;
+      if (waiting !== undefined) {
+        if (waiting.item.type === "agentMessage") return id;
+        fallback ??= (toolCallMessage(waiting.item) ?? itemToMessage(waiting.item))?.role === "assistant" ? id : undefined;
+        continue;
+      }
+      const entry = thread.entries.find(candidate => candidate.entryId === id);
+      const message = entry === undefined ? undefined : entryMessage(entry);
+      if (message?.role !== "assistant") continue;
+      if (message.content.some(part => part.type === "text")) return id;
+      fallback ??= id;
+    }
+    return fallback;
   }
 
   #appendEntry(thread: ThreadState, item: Record<string, unknown>, turnId?: string): void {

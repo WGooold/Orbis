@@ -245,6 +245,7 @@ struct TurnFileChangesTests {
         #expect(parser.lines.first(where: { $0.kind == .addition })?.newLine == 5)
         #expect(parser.lines.last?.newLine == 10)
         #expect(parser.lines.filter { $0.kind == .note }.count == 1)
+        #expect(parser.maxLineNumber == 10)
     }
     @Test func parserBoundsLongLineFragmentsWithoutLosingText() {
         var parser = UnifiedDiffParser()
@@ -254,6 +255,9 @@ struct TurnFileChangesTests {
         parser.append("\n", eof: true)
         #expect(parser.lines.dropFirst().map(\.text).joined() == long)
         #expect(parser.lines.filter { $0.newLine == 1 }.count == 1)
+        // Only the first fragment carries the marker and number; the viewer must not strip later fragments.
+        #expect(parser.lines.dropFirst().first?.continuation == false)
+        #expect(parser.lines.dropFirst(2).allSatisfy { $0.continuation })
     }
     @Test func extensionPartsPreserveCompoundNamesAndUnicode() {
         #expect(reviewFileNameParts("very-long-module.d.ts").ext == ".d.ts")

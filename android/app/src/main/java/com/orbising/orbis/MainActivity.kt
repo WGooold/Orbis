@@ -2186,7 +2186,9 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             downloadArtifact = { artifact -> if (model.downloadArtifact(artifact)) chatFlight.launch() },
                             downloadFile = { path -> if (model.downloadFile(path)) chatFlight.launch() },
                             fileChanges = {
-                                val ids = item.messages.map { it.messageId }.toSet()
+                                // A long turn is virtualized into small rows; its review card follows the
+                                // turn's last row whichever of the turn's messages carries the anchor.
+                                val ids = if (item.messages.last() === item.copyMessages.last()) item.copyMessages.map { it.messageId }.toSet() else emptySet()
                                 val turns = ids.mapNotNull(turnIdsByMessageId::get).toSet()
                                 val changes = state.turnChanges[runtimeId]
                                 changes?.summaries?.values?.filter { summary ->

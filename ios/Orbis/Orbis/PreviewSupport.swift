@@ -390,7 +390,9 @@ private final class PreviewTransport: OrbisTransport {
                 let file = command["fileId"] as? String ?? ""
                 TurnChangesPreviewProbe.shared.record(file)
                 let next = command["cursor"] as? String == "next"
-                let content = file == "change-1" ? (next ? "+CHANGE_FIRST_MORE\n" : "--- a/src/Feature.d.ts\n+++ b/src/Feature.d.ts\n@@ -1,2 +1,2 @@\n-old value\n+CHANGE_FIRST\n context\n") :
+                // The first range is taller than the viewer, so pulls past the diff's top are exercised.
+                let body = (3...72).map { " context line \($0)\n" }.joined()
+                let content = file == "change-1" ? (next ? "+CHANGE_FIRST_MORE\n" : "--- a/src/Feature.d.ts\n+++ b/src/Feature.d.ts\n@@ -1,72 +1,72 @@\n-old value\n+CHANGE_FIRST\n context\n" + body) :
                     "--- /dev/null\n+++ b/README.md\n@@ -0,0 +1 @@\n+CHANGE_SECOND\n"
                 event(["type": "session.change.detail.page", "requestId": command["requestId"]!, "runtimeId": runtime,
                     "agent": command["agent"]!, "changeSetId": command["changeSetId"]!, "manifestVersion": command["manifestVersion"]!,
@@ -511,7 +513,13 @@ private final class PreviewTransport: OrbisTransport {
          "addedFiles": 1, "modifiedFiles": 1, "deletedFiles": 1, "additions": NSNull(), "deletions": NSNull(), "preview": changeFiles]
     }
     private var messages: [[String: Any]] {
-        if screen == "changes" { return [message("m1", role: "user", text: "查看这轮的文件变化"), message("m2", role: "assistant", text: "已完成本轮文件修改。") ] }
+        if screen == "changes" {
+            // Five steps make two virtual rows; the summary is anchored on the first step (node-2)
+            // and must still follow the turn's last row.
+            return [message("m1", role: "user", text: "查看这轮的文件变化"), message("m2", role: "assistant", text: "先检查改动范围。"),
+                    message("m3", role: "assistant", text: "正在更新组件。"), message("m4", role: "assistant", text: "正在运行测试。"),
+                    message("m5", role: "assistant", text: "测试通过。"), message("m6", role: "assistant", text: "已完成本轮文件修改。")]
+        }
         if screen == "entry" {
             let longTurn = ProcessInfo.processInfo.arguments.contains("--preview-entry-long-turn")
             let history = (1...80).flatMap { index in

@@ -147,6 +147,17 @@ final class OrbisUITests: XCTestCase {
         let open = app.buttons["turn-changes-open-preview-review"]
         XCTAssertTrue(open.waitForExistence(timeout: 10))
         XCTAssertEqual(app.staticTexts["change-detail-requests"].label, "reads=0,0,0")
+        // One compact block after the turn's last row, although the Host anchored it on the first of
+        // five steps: the header opens the viewer, then one single-line row per file.
+        XCTAssertTrue(open.label.contains("3 个文件已更改"))
+        XCTAssertEqual(app.buttons.matching(identifier: "turn-changes-open-preview-review").count, 1)
+        XCTAssertGreaterThanOrEqual(app.staticTexts["已完成本轮文件修改。"].frame.minY, app.staticTexts["测试通过。"].frame.maxY)
+        XCTAssertGreaterThanOrEqual(open.frame.minY, app.staticTexts["已完成本轮文件修改。"].frame.maxY)
+        let rows = ["change-1", "change-2", "change-3"].map { app.buttons["turn-change-file-" + $0].frame }
+        XCTAssertGreaterThanOrEqual(rows[0].minY, open.frame.maxY)
+        for (above, below) in zip(rows, rows.dropFirst()) { XCTAssertGreaterThanOrEqual(below.minY, above.maxY - 0.5) }
+        for row in rows { XCTAssertLessThanOrEqual(row.height, 44) }
+        XCTAssertTrue(app.staticTexts["二进制"].exists)
         capture("turn-change-summary-light-narrow", app: app)
         open.tap()
         XCTAssertTrue(app.staticTexts["+CHANGE_FIRST"].waitForExistence(timeout: 5))
@@ -171,6 +182,34 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts.matching(identifier: "change-detail-requests").allElementsBoundByIndex.last?.label, "reads=1,1,0")
         capture("turn-change-binary", app: app)
     }
+    func testTurnFileReviewOnlyHeaderPullCloses() {
+        let app = launch("changes")
+        let open = app.buttons["turn-changes-open-preview-review"]
+        XCTAssertTrue(open.waitForExistence(timeout: 10)); open.tap()
+        XCTAssertTrue(app.staticTexts["+CHANGE_FIRST"].waitForExistence(timeout: 5))
+        let pager = app.otherElements["turn-change-pager"]
+        // Reading back past the diff's top, repeatedly and fast, only bounces inside the diff.
+        pager.swipeUp(velocity: .fast)
+        for _ in 0..<3 { pager.swipeDown(velocity: .fast) }
+        // So does a long pull on the non-scrolling footer.
+        let footer = app.staticTexts["turn-change-page"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        footer.press(forDuration: 0.05, thenDragTo: footer.withOffset(CGVector(dx: 0, dy: 300)))
+        XCTAssertFalse(pager.waitForNonExistence(timeout: 1))
+        XCTAssertTrue(pager.exists)
+        XCTAssertTrue(app.staticTexts["+CHANGE_FIRST"].isHittable)
+        XCTAssertEqual(app.staticTexts["turn-change-page"].label, "1 / 3")
+        capture("turn-change-body-pull-stays-open", app: app)
+        let title = app.staticTexts["本轮文件差异"]
+        let grip = title.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        // A short header pull springs back.
+        grip.press(forDuration: 0.05, thenDragTo: grip.withOffset(CGVector(dx: 0, dy: 60)), withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertFalse(pager.waitForNonExistence(timeout: 1))
+        XCTAssertTrue(title.isHittable)
+        // A long header pull closes the card.
+        grip.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        XCTAssertTrue(pager.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(open.isHittable)
+    }
     func testTurnFileReviewDarkAppearance() {
         let app = launch("changes", dark: true, arguments: ["--preview-reduce-motion", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
         let open = app.buttons["turn-changes-open-preview-review"]
@@ -181,6 +220,14 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["+CHANGE_SECOND"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.staticTexts["turn-change-page"].label, "2 / 3")
         capture("turn-change-reduced-motion-settled", app: app)
+        // Large text and reduced motion keep the same close rules.
+        let pager = app.otherElements["turn-change-pager"]
+        pager.swipeDown(velocity: .fast)
+        XCTAssertFalse(pager.waitForNonExistence(timeout: 1))
+        let grip = app.staticTexts["本轮文件差异"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        grip.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        XCTAssertTrue(pager.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(open.isHittable)
     }
 
     func testCachedOnlineChatEntryTiming() {
