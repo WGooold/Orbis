@@ -193,6 +193,8 @@ Host 的实现入口为 [coordinator](../../packages/host/src/turn-change-coordi
 
 验证结果和日志见 [轮次文件审阅验证记录](../testing/turn-file-changes.md)。仍待完成真实各 backend / 真机网络端到端、100 文件带宽与时延测量、多设备并发实测、完整 VoiceOver / TalkBack 及异常文件系统压力验收。两端设备测试使用隔离 UI fixture；不能把这些测试或 HTTP 模拟后端等同于真实模型验收。
 
+**2026-11-01 Android 预览清单切换修复。** 用户报告 Pi 轮末直接点击 `.kt` / `.md` 文件闪退，先展开完整清单后打开则正常。设备对照在旧代码 `HorizontalPager` key 回调复现 `IndexOutOfBoundsException: Index 4 out of bounds for length 4`：首个完整清单到达后页数已更新，保留的 key 回调仍读取四项预览。页数、key、正文三处现统一读取同一份 `rememberUpdatedState` 当前清单，并防护过渡中的越界索引；文件 ID、落位读取、缓存与手势规则保持。新增 `piSummaryClickOpensLoadingFileThenDisplaysItsFirstDiffPage` 覆盖点击预览、入场期间清单扩充 / 首段差异到达、访问追加文件及关闭重开。550 项 JVM、5 项专项（含 A1–A4）通过。全量仍有基线失败及入场耗时波动，完整手动 / 真机门禁未通过；不得将专项通过扩展为整体验收，详见审阅验证记录。
+
 ## Alternatives and consequences
 
 - **各后端原生 diff 优先**：可能减少部分 Host 采集，但统计范围、字段、失效条件和 shell 覆盖各异；当前修订不采用，原生事件仅辅助轮次和路径识别。

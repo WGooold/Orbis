@@ -257,8 +257,8 @@ internal fun FileChangeViewerSheet(
     }
     val files = manifest.files
     if (files.isEmpty()) return
-    val pager = rememberPagerState(initialPage = files.indexOfFirst { it.fileId == viewer.selectedFileId }.coerceAtLeast(0)) { files.size }
     val currentFiles by rememberUpdatedState(files)
+    val pager = rememberPagerState(initialPage = files.indexOfFirst { it.fileId == viewer.selectedFileId }.coerceAtLeast(0)) { currentFiles.size }
     val scope = rememberCoroutineScope()
     // Pager composes neighboring placeholders; only this settled selection can issue detail reads.
     LaunchedEffect(pager, viewer.summary.versionKey) {
@@ -285,10 +285,13 @@ internal fun FileChangeViewerSheet(
                     }
                 }
             }
-            HorizontalPager(state = pager, key = { files[it].fileId }, beyondViewportPageCount = 0,
+            // Pager can remeasure after its count changes but before its retained key/content
+            // callbacks are replaced. All three must read the same current manifest, not a
+            // captured four-file preview that a first metadata page has already outgrown.
+            HorizontalPager(state = pager, key = { currentFiles.getOrNull(it)?.fileId ?: it }, beyondViewportPageCount = 0,
                 modifier = Modifier.fillMaxWidth().weight(1f).nestedScroll(DiffBodyOwnsVerticalScroll)
                     .draggable(rememberDraggableState {}, Orientation.Vertical).testTag("file-change-pager")) { index ->
-                val file = files[index]
+                val file = currentFiles.getOrNull(index) ?: return@HorizontalPager
                 FileDiffPage(file, viewer.cache[file.fileId], selected = !pager.isScrollInProgress &&
                     index == pager.settledPage && file.fileId == viewer.selectedFileId,
                     onRead = onReadDetail, onPosition = { line, offset -> onPosition(file.fileId, line, offset) })

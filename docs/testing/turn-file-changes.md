@@ -76,6 +76,32 @@ Android 保留包为 `.artifacts/android-turn-file-changes/packages/app-debug.ap
 
 本记录区分代码实现、模拟后端集成、设备 UI fixture 和真实后端验收，不把其中一类的通过扩展到另一类。
 
+## 2026-11-01：Android Pi 预览清单直接打开闪退
+
+本机证据目录：`.artifacts/ui-regression/20261101-pi-file-viewer/`。受影响 ID 为 S21 / M13 / V19；恢复既有稳定性，不调整视觉、动效、手势或按需读取规则。Android 共享池 `Orbis_UI_Polish_35` / API 35，显式 serial `127.0.0.1:5681`。先按用户明确授权让旧设置延迟验证通过自身收尾信号正常释放资源，再取得本任务 build lease 和设备锁；未抢占、未新建设备。
+
+- 用户复现条件：Pi 一轮结束后直接点击预览中的 `.kt` / `.md` 文件闪退；先展开完整文件清单后打开正常。
+- 旧代码设备对照：新增用例在四项预览更新为五项完整清单时稳定触发 `IndexOutOfBoundsException: Index 4 out of bounds for length 4`，栈定位 `TurnFileChangeViews.kt:288` 的 Pager key 回调 / `NearestRangeKeyIndexMap`（`baseline-reproduction.log`）。不是按文件扩展名分支，也不是 diff 文本解析异常。
+- 修复：Pager 页数、key 和内容回调统一读取当前清单；不再把保留回调绑定到旧的四项预览。过渡索引有边界保护。新增用例还覆盖入场期间首段 diff 到达、原选中文件保持、滚动、新追加第五项及关闭后重开 `.md` 文件。
+
+| 范围 | 实际结果 | 证据 |
+| --- | --- | --- |
+| L0 | 70 项唯一 ID，四类数量为 23 / 16 / 21 / 10，修改文档相对链接有效，两个本机入口内容一致 | `l0.json` |
+| L1 / L2 | 550 项 JVM 全过；Debug 与 AndroidTest APK 构建通过 | `fixed-unit-build.log`、`unit-summary.json`、`unit-results/` |
+| 旧代码负对照 | 新增复现用例 1 项失败，异常为旧预览索引越界 | `baseline-reproduction.log` |
+| 文件审阅专项 | 5 / 5 通过；负对照的同一用例通过 | `fixed-targeted.log` |
+| A1 浅色 / A2 深色 | 各 5 / 5 通过；A2 为初始设备深色，A1 显式切换浅色后恢复 | `manual-A1.log`、`fixed-targeted.log`、`night-original.json` |
+| A3 / A4 | 1.5 字体缩放及关闭三项系统动画，各 5 / 5 通过；既有大字体用例另覆盖 1.6。恢复原设置 | `manual-A3.log`、`manual-A4.log`、`matrix-original-settings.json` |
+| 同设备旧代码全量 | 138 项：124 通过、7 失败、7 个原有夹具条件未满足；新复现用例单独运行，不混入此父版本套件 | `baseline-full.log` |
+| 修复后录屏全量 | 139 项：123 通过、9 失败、7 个原有夹具条件未满足；比基线多聊天入场 500ms 预算和 HomeLoading teardown 超时，不能记为通过 | `fixed-full.log`、`manual-core.mp4` |
+| 修复后无录屏全量 | 139 项：124 通过、8 失败、7 个原有夹具条件未满足；HomeLoading teardown 超时未复现，聊天入场预算仍失败 | `fixed-full-quiet.log`、`quiet-run.json` |
+| 入场预算补充对照 | 新旧 APK 各两次单独运行均通过；保留两次全量失败，未把该波动伪记为已解决或已确认基线失败 | `entry-baseline-0/1.log`、`entry-fixed-0/1.log` |
+| L4 / 手动 | 已复核受影响查看器截图及 A1 / A3 / A4 录屏抽帧，C14 专项由 UI 测试辅助实际操作。C01–C18 完整双外观手动门禁未完成，见本机清单；180 秒核心录屏不覆盖全部全量时长，抽帧也不是完整 60fps 逐帧验收 | `manual-checklist.md`、`manual-A1/3/4.mp4`、`frames-A1/3/4/`、`screenshots/turn-file-changes/` |
+
+7 项同设备基线失败为：Codex 自由文本输入、DSH 创建会话、HomeNavigation 按下反馈 / 快点反馈、HomeSwipeClose 阴影、Questionnaire 输入，以及 SessionHostOwnership 的过期主机名显示。均不删除、不跳过、不放宽。7 项原有条件性未运行项需要独立 Host / fixture / 显式 live 授权，不能计为通过。
+
+产物保留 `fixed/` 的应用 / 测试 APK 与 SHA-256、`rollback/` 的此前可用包、`baseline/` 的旧代码对照包。修复验证对象是这些固定 APK；同一工作树的其他任务持续修改输入生命周期等文件，不能把本记录扩展为当前全部未提交改动的验收。没有安装到用户真机，没有生成正式升级包或完成真实 Pi 模型 / 网络端到端验收。完整 UI 门禁仍未通过；本次闪退的设备负对照与修复专项已确认。
+
 ## 2026-10-31 r20：Codex 锚点、轮末位置、概况重做与查看器关闭策略
 
 产物目录：`.artifacts/ui-regression/20261031-0340-turn-diff-review/`（日志、`.xcresult`、两端截图、对照组日志）。

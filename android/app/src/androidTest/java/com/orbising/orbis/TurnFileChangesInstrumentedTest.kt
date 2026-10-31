@@ -2,6 +2,7 @@ package com.orbising.orbis
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -47,6 +48,59 @@ class TurnFileChangesInstrumentedTest {
         compose.onNodeWithTag("change-file-file-1").performClick()
         assertEquals(1, details)
         screenshot("summary-light")
+    }
+
+    @Test fun piSummaryClickOpensLoadingFileThenDisplaysItsFirstDiffPage() {
+        val piFiles = files.mapIndexed { index, file -> file.copy(path =
+            if (index % 2 == 0) "src/File$index.kt" else "docs/file-$index.md") }
+        val piSummary = summary.copy(agent = summary.agent.copy(agentKind = "pi"), preview = piFiles.take(4))
+        val viewer = mutableStateOf<FileChangeViewer?>(null)
+        val manifest = mutableStateOf(ChangeManifest(piSummary).request())
+        compose.setContent { OrbisTheme {
+            Column {
+                TurnChangeSummaryView(piSummary, manifest.value, true, {}, { file ->
+                    viewer.value = FileChangeViewer("pi:runtime", piSummary, file.fileId).select(file)
+                })
+            }
+            viewer.value?.let { current ->
+                FileChangeViewerSheet(current, manifest.value, onClose = { viewer.value = null },
+                    onSelectFile = { id ->
+                        if (viewer.value?.selectedFileId != id) {
+                            viewer.value = viewer.value?.select(piFiles.first { it.fileId == id })
+                        }
+                    }, onReadDetail = {}, onReadManifest = {}, onPosition = { _, _, _ -> })
+            }
+        } }
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("change-file-file-3").performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.runOnIdle {
+            // The first manifest response replaces the four-file preview while the
+            // viewer is already open; expanding the summary before opening hides this path.
+            val pending = manifest.value
+            manifest.value = pending.page(ChangeManifestPage(pending.requestId!!, "pi:runtime",
+                piSummary.agent, piSummary.changeSetId, piSummary.manifestVersion, piFiles, 5, null))
+            val current = viewer.value!!
+            val file = current.current!!.file
+            viewer.value = current.page(FileChangeDetailPage(current.current!!.requestId!!,
+                current.runtimeId, piSummary.agent, piSummary.changeSetId, piSummary.manifestVersion,
+                file.fileId, file.contentVersion, current.viewerId, "pi-read", diff, null, true))
+        }
+        compose.mainClock.autoAdvance = true
+        compose.onNodeWithTag("file-change-viewer").assertIsDisplayed()
+        compose.onNodeWithTag("file-diff-lines-file-3").assertIsDisplayed()
+        compose.onNodeWithTag("file-change-page").assertTextEquals("3 / 5")
+        compose.onNodeWithTag("file-diff-lines-file-3").performScrollToIndex(60)
+        repeat(2) { compose.onNodeWithContentDescription("下一个文件").performClick() }
+        compose.onNodeWithTag("file-change-page").assertTextEquals("5 / 5")
+        compose.onNodeWithText("正在读取差异…").assertIsDisplayed()
+        compose.onNodeWithContentDescription("关闭文件差异").performClick()
+        compose.onNodeWithTag("file-change-viewer").assertDoesNotExist()
+        compose.onNodeWithTag("change-file-file-2").performClick()
+        compose.onNodeWithTag("file-change-page").assertTextEquals("2 / 5")
+        compose.onNodeWithText("正在读取差异…").assertIsDisplayed()
+        screenshot("pi-viewer-loading-after-reopen")
     }
 
     @Test fun swipingLoadsOnlySettledFileAndRestoresVisitedPosition() {
