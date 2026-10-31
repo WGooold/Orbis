@@ -1,8 +1,8 @@
 # 移动端 UI 回归方案
 
-日期：2026-10-31。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-10-31/r23`；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-10-31。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-10-31/r24`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
-本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 5 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
+本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 10 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
 ## 1. 门禁：什么时候必须跑
 
@@ -102,7 +102,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
 
-**iOS `OrbisUITests`（57 项）**
+**iOS `OrbisUITests`（61 项）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
@@ -112,6 +112,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 目录抽屉 | `testDrawerCardsKeepUniformGeometryForShortAndLongTitles`、`testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions`、`testDrawerSelectionClearsOnCancelSearchAndClose`、`testDrawerFollowsEdgeDragAndShowsOneDirectory`、`testDrawerCollapseShrinksContentWithoutAnotherDrag` | S15、S19、M06、M09、V17 |
 | 聊天入场 / 返回 | `testCachedOnlineChatEntryTiming`、`testChatSwipeBackReboundsThenReturnsHome`、`testDraftSurvivesBackNavigationAndSlashRequiresSelection` | M07–M08、V13、V17 |
 | 聊天视口 | `testLongTranscriptAppearsAndToolExpansionKeepsItsPositionWithoutDragging`、`testLongFinalReplyKeepsReadingPositionAndOnlyFollowsAfterJump`、`testNewMessagesAndToolsPreserveTheMovingReadingAnchor` | V01–V03、M03 |
+| Claude 模型回复身份 | `testClaudeNativeHandoffKeepsOneCopyAcrossConsecutiveTurns`（明暗，三阶段 canonical / live 交接；每段正文唯一） | V09、V17–V18 |
 | 聊天内容 / 顶栏 | `testRefreshKeepsHeaderTextAndTruncationStable`、`testClosedDisclosureDefersWorkAcrossChatReentryAndRetainsState`、`testUserMessageCopyAndRewind`、`testToolDetailsLoadPagesAndClose`、`testTruncatedContentAndToolArguments`、`testHistoryPreviewAndNavigation` | S10–S11、S17、S20、M03、M05、V05、V14 |
 | 输入 / 审批 / 队列 | `testSlashPickerStaysAboveKeyboard`、`testOptimisticSendReconcilesAndRejectedSendRestores`、`testApprovalOverlayKeepsComposerStableWhileSubmitting`、`testQueueCancellationNotificationsAndRuntimeFacts`、`testToolExportAndInteractionDraftSwitching` | V06–V08、V10、V12、V17 |
 | 连接状态 / 供应商（r15 后为设置页） | `testCompactQuotaCardsAndTransparentSwitch`、`testFixedRoutingAndStatusProviderSwitch`、`testBasicConnectionStatusAndDirectoryProviderMismatch` | S18–S19、S22 |
@@ -119,7 +120,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 轮次文件审阅 | `testTurnFileReviewLoadsOnlySelectedFilesAndRetainsCache`、`testTurnFileReviewDarkAppearance`、`testTurnFileReviewOnlyHeaderPullCloses` | S21、M13、V19 |
 | 全页面明暗 | `testPageScreenshotsInBothAppearances` | S01–S09、S16 |
 | r15 设置与入口 | `testSettingsPageOrderAndSingleHostMenu` | S18、S22 |
-| r15 页面转场 | `testSettingsAndDownloadsSwipeBack`、`testChatDownloadsReturnToSameChat`、`testHistoryDownloadsReturnToHistory` | M08、M14 |
+| r24 整页导航 | `testSettingsAndDownloadsSwipeBack`、`testChatDownloadsReturnToSameChat`、`testHistoryDownloadsReturnToHistory`、`testHistorySwipeBackReturnsToChat`、`testAddComputerPageReboundsAndSwipesBack`、`testNestedPagesSwipeBackOneLevelAtATime` | M07–M08、M14、V17–V18 |
 | r15 流式、首页 / 目录视口与飞入 | `testStreamingRevealAdvancesInOrderAcrossBlocks`、`testStreamingRevealWithReducedMotionShowsEveryBlockImmediately`、`testHomeTopShowsNewAndPromotedSessions`、`testHomeScrolledAnchorSurvivesInsertionAndReordering`、`testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates`、`testDrawerTopKeepsNewAndPromotedDirectoriesVisible`、`testDownloadFlightStartsAtTapAndEndsAtButton`、`testDownloadFlightWithReducedMotionHighlightsWithoutFlying`、`testHistoryDownloadButtonAndFlight` | M04、V21、M16 |
 
 **Android instrumentation（`androidTest`）**
@@ -138,11 +139,15 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 需要隔离 Host | `IsolatedHostPairingInstrumentedTest`（1）；`ToolContinuityCaptureInstrumentedTest`（1，无参数时自动跳过，传入配对载荷与 cwd 时做真实输出逐帧捕获） | 配对；V20 定位 |
 | r15 首页 / 目录视口与下拉刷新 | `HomeViewportInstrumentedTest`（6，其中 M15 两项）、`SessionDrawerViewportInstrumentedTest`（3） | M15、V21 |
 | r15 设置与入口 | `SettingsEntryInstrumentedTest`（3） | S18、S22 |
-| r15 页面转场 | `SwipeBackPagesInstrumentedTest`（2，位于 `SwipeBackInstrumentedTest.kt`） | M14 |
+| r24 整页导航 | `SwipeBackPagesInstrumentedTest`（2，位于 `SwipeBackInstrumentedTest.kt`）、`HistorySwipeBackInstrumentedTest`（1，真实历史 / 聊天 / 下载层级）、`PageNavigationInstrumentedTest`（3，添加电脑 / 离线历史 / 嵌套系统返回） | M07–M08、M14、V17–V18 |
 | r15 下载飞入 | `DownloadFlightInstrumentedTest`（1） | M16 |
 | r15 流式顺序 | `StreamingRevealInstrumentedTest`（1）；`UiPolishInstrumentedTest#revealKeepsEmojiAndCombiningCharactersTogether` 改用新时钟 | M04 |
 
 与 UI 相关的单元测试（L1 中必须通过）：iOS `RevealClockTests`、`HomeRuntimeLoadingTests`、`StoreTests`、`AgentStateTests`、`PendingSendTests`、`PresentationTests`、`TurnFileChangesTests`；Android `HomePresentationTest`、`ChatListItemReuseTest`、`HistoryPagingTest`、`MessagePresentationTest`、`StatusScreenTest`、`SubscriptionQuotaTest`、`UiPolishTest`、`PendingSendsTest`、`TurnFileChangesTest`、`RevealScheduleTest`、`HomeViewportAnchorTest`。
+
+Claude 运行中发送的适配器回归（V10、V12、V17）：`claude plugin test packages/claude-mod` 的 `reconnect.test.ts` 覆盖主回合期间不调用 `prompt.submit`、同批消息串行提交、停止与工具事件、子 Agent 完成、Host 轮末捕获屏障及重连代次隔离；设备端仍关联两端乐观发送用例。真实联动验收按 R17 执行，插件模拟通过不能替代设备 / 真实 TUI 验收。
+
+Claude 输出交接回归（V09、V17–V18）：Host `claude-transcript.test.ts` / `claude-mods-bridge.test.ts` 覆盖一对多 UUID 原子提交、逐 patch 无重复、跨轮清理、迟到事件与落盘超时；官方插件 `reconnect.test.ts` 覆盖主 / 子步骤归属和封口顺序。iOS `StoreTests.claudeStepHandoffPreservesIdenticalTextFromTheNextTurn` 保留合法同文的下一轮；Android `ClaudeHistoryInstrumentedTest` 使用 `scripts/claude-history-fixture.mjs` 的 bridge 3 数据，断言运行中交接、轮末和重连后各段正文只有一份。专项手动 R18。
 
 带 `assumeTrue(ValueAnimator.areAnimatorsEnabled())` 的设备用例（下载飞入、流式顺序）在系统关闭动画时跳过，A4 路径以手动检查为准。
 
@@ -207,10 +212,27 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | R10 | 打开侧边栏，点击底部电脑行 | 菜单中有切换电脑、添加电脑、取消配对当前电脑；取消配对仍需二次确认 | S22 / UI-04 |
 | R11 | 设置页与首页下载页：打开（滑入），拖 1/4 后松手，再拖过 1/3；入场动画中途右滑；减少动画 | 与聊天的 M07 / M08 一致：跟手、回弹、返回首页后立即可点；Android 入场可被接管；减少动画时直接切换 | M14 / UI-04 |
 | R12 | 聊天中上滑阅读并输入草稿，点顶栏下载；先拖 1/4 后松手，再分别用右滑、返回按钮、系统返回退出 | 下载页从右侧滑入；右滑时底层露出的是这个聊天，不是首页；返回后阅读位置、草稿、展开状态不变；首页下载入口仍返回首页 | M14 / UI-04 |
-| R13 | 设置页内进入供应商二级页再右滑 | 返回设置页，不直接回首页 | M14 / UI-04 |
+| R13 | 核查设置内供应商菜单与遗留二级页入口；若未来恢复为整页再右滑 | 当前供应商切换为菜单、不恢复遗留入口；未来整页通过共用容器返回设置页 | M14 / UI-04 |
 | R14 | Android 首页下拉刷新：顶部下拉并保持拖动、松手；非顶部尝试、多选中、左滑关闭、右滑打开抽屉、断开连接时 | 顶部拖动时整张列表跟手下移，松手后列表与指示器回到原位且首卡 / 视口稳定；仅顶部触发刷新；多选 / 左滑关闭 / 右滑抽屉手势不误触刷新；断开时触发重连 | M15 / UI-05 |
 | R15 | 聊天中点击文件产物卡、Markdown 文件链接；连续点 4 次；未连接时点击；减少动画 | 图标从点击处沿弧线飞到右上角下载按钮，按钮轻弹，角标增加；同时最多 3 个飞行；未连接时不飞并提示；减少动画只高亮按钮；阅读位置不变 | M16 / UI-06 |
 | R16 | 打开“历史与分支”页：查看顶栏；点其中的文件下载；点顶栏下载按钮，再右滑返回 | 顶栏有与聊天同款的下载按钮，带角标；文件飞向这个按钮；下载页滑入，右滑露出并返回历史页，搜索词、筛选和滚动位置不变 | M14、M16 / UI-04、UI-06 |
+
+历史返回专项（r24）：Android 548 项单元与 iOS 223 项 Swift 测试、两端构建及返回定向用例通过；Android 全量 135 项有 11 项失败（基线对照未完成），最终 iOS 全量与完整手动 / 外观门禁未完成。证据见 `.artifacts/ui-regression/20261031-history-swipe/summary.md`，不记为全量验收通过。
+
+| 编号 | 步骤 | 预期 | ID |
+| --- | --- | --- | --- |
+| R19 | 聊天中上滑阅读、输入草稿并展开工具后打开“历史与分支”；拖 1/4 松手，再拖过 1/3；重新打开历史，进下载后右滑或系统返回；明暗与减少动画重试 | 历史从右侧滑入；短拖回弹，拖动中露出原聊天，完成返回同一聊天且阅读位置、草稿、展开不变；可再次打开历史；历史内下载先返回历史，再右滑返回聊天；动画中断不残留遮罩 | M08、M14、V17 |
+| R20 | 侧边栏底部电脑菜单→添加电脑：短拖、长拖、取消按钮、Android 系统返回；重复进入；首次未配对引导及配对进行中重试 | 添加电脑复用整页入场、回弹、底层和返回；iOS 返回收起目录后的首页，Android 恢复原目录且立即可操作；首次引导无返回手势；安全配对遮罩不能被手势绕过 | M07–M08、M14、V18 |
+| R21 | 目录中离线会话→只读历史：短拖、越阈值、返回按钮、Android 系统返回；保留目录搜索和展开后重复进入 | 双端同款返回，Android 不再直接替换首页；来源实例、目录状态和阅读锚点不变，底层来源正确 | M08、M14、V17–V18 |
+| R22 | 聊天→历史（输入搜索并滚动）→下载；分别用手势、按钮、系统返回逐层退出；每层短拖、动画中重入、竖向滚动与页内横滚；明暗 / 窄屏 / 大字体 / 减少动画 | 每次只退一层，下载→历史→聊天→首页，不被后台来源抢走；草稿、搜索词、筛选、位置与展开不变，无残留遮罩；Sheet / 对话框、抽屉、差异横向切文件保留本身规则 | M07–M10、M13–M14、V17–V18 |
+
+### 4.7 Claude 运行中发送专项
+
+| 编号 | 步骤 | 预期 | ID |
+| --- | --- | --- | --- |
+| R17 | 隔离 Host / Claude TUI 中启动长回合，在 App 连发两条 follow-up；观察当前输出与工具；停止主回合；再分别测试正常结束、子 Agent 先结束和 Host 重连 | 当前回合继续同步，停止可达；子 Agent 结束不触发主回合 follow-up；主回合结束且 Host 轮末捕获完成后顺序提交，每条只执行一次；原生用户行消除待确认状态；旧代次消息不补发到新 Host。两端分别保留发送前、运行中、落地截图及事件顺序证据 | V10、V12、V17 |
+
+| R18 | 隔离 Claude 主回合含工具和多段正文，步骤落盘时保持运行；立即开始下一轮，重复相同短回复；延迟磁盘写入超过 3 秒；再重连。两端明暗录屏，抽查窄屏 / 减少动画 | 每个步骤的正文与 thinking 只出现一份；同文的不同轮都保留；旧轮清理与迟到结束不删下一轮；已声明但未落盘的正文保留，后续原子交接；工具卡与阅读锚点连续。需保存步骤 UUID / patch 顺序，不能以文本去重通过 | V09、V17–V18（关联 V02–V03、V20） |
 
 ## 5. 新增或修改 UI 时的用例编写要求
 
@@ -237,11 +259,13 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-03 | Android 设备 / 单元 | `HomeViewportInstrumentedTest`；`SessionDrawerViewportInstrumentedTest`；`HomeViewportAnchorTest` | 顶部插入 / 重排后首项索引为 0 且偏移为 0；首页 / 目录滚动中首张完整卡片屏幕 y 不变（≤ 1dp）；锚卡被移走时像素偏移不变；拖动中不重新定位 |
 | UI-03 | iOS UI | `testHomeTopShowsNewAndPromotedSessions`、`testHomeScrolledAnchorSurvivesInsertionAndReordering`、`testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates`、`testDrawerTopKeepsNewAndPromotedDirectoriesVisible` | 同上；首页 / 目录定向用例已通过，iOS 全量与手动复核待完成 |
 | UI-04 | 两端 | `SettingsEntryInstrumentedTest`；`testSettingsPageOrderAndSingleHostMenu` | 右上角只有下载与齿轮设置；连接胶囊不可点击，读屏语义为状态，失败重试仍可用；设置页分区顺序，且没有已配对电脑区；排障入口文字为“设置”；除侧边栏电脑菜单外，全树中没有“添加电脑”“取消配对”节点 |
-| UI-04 | 两端 | `SwipeBackInstrumentedTest` 扩展；`testSettingsAndDownloadsSwipeBack`、`testChatDownloadsReturnToSameChat` | 设置 / 首页下载页入场、取消回弹、返回首页、返回后可点；从聊天和历史页进入的下载页滑入，右滑底层为来源页，返回来源页且锚点与草稿不变；二级页返回设置 |
+| UI-04 | 两端 | `SwipeBackInstrumentedTest` 扩展；`testSettingsAndDownloadsSwipeBack`、`testChatDownloadsReturnToSameChat`、`testHistorySwipeBackReturnsToChat`；Android `HistorySwipeBackInstrumentedTest` | 历史页滑入、短拖回弹、右滑露出并返回原聊天，草稿与列表位置保留；历史内下载只退一层；设置 / 首页下载页入场、取消回弹、返回首页、返回后可点；从聊天和历史页进入的下载页滑入，右滑底层为来源页，返回来源页且锚点与草稿不变；二级页返回设置 |
 | UI-05 | Android 设备 | `HomeViewportInstrumentedTest#pullingAtTheTopMovesTheListAndRestoresItsPositionAfterRefresh`、`darkThemePullMovesAndRestoresTheWholeList` | 按住顶部下拉时首卡 y 至少下移 20px；松手后首卡回到原 y（容差 1dp）且只触发一次刷新；非顶部 / 多选不触发；复位后卡片仍可点；右滑仍打开目录、左滑仍关闭卡片；浅 / 深色保存拖动帧。A3 / A4 重跑定向用例确认位移与复位语义不变 |
 | UI-06 | 两端 | `DownloadFlightInstrumentedTest`；`testDownloadFlightStartsAtTapAndEndsAtButton`、`testDownloadFlightWithReducedMotionHighlightsWithoutFlying`、`testHistoryDownloadButtonAndFlight` | 聊天页与历史页：起飞位置接近点击点，终点为本页下载按钮中心（容差 4pt/dp）；任务未创建时不起飞；同时 ≤ 3 个；减少动画不飞；阅读锚点不变；飞行层不拦截点击；历史页下载按钮的规格与角标和聊天页一致 |
 
 ## 6. 结果记录
+
+2026-10-31 Claude 输出身份续跑：共享池上限按用户要求同步调整为合计 10 台，仍优先复用已有固定设备。两端 Claude 交接专项通过；iOS 全量 59 项 6 失败，Android 全量 135 项 5 失败 / 7 跳过；当前同设备基线复核与完整手动门禁未完成。证据与失败清单见 `.artifacts/ui-regression/20261031-claude-identity-resume/summary.md`，不能记为全量通过。
 
 每次回归在 `$RUN` 下保存：`ios-ui.xcresult`、`android-ui.log`、截图 / 录屏 / 帧目录、单元与构建日志、已填写的 `manual-checklist.md`，以及 `summary.md`。按本机指南保留，失败记录不得因后续成功而删除，除非同用例同配置已有成功结果覆盖。结论写入对应的 ADR 修订、专题测试记录或 ticket。
 

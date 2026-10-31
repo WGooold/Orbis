@@ -48,6 +48,29 @@ final class OrbisUITests: XCTestCase {
         })
     }
 
+    func testClaudeNativeHandoffKeepsOneCopyAcrossConsecutiveTurns() {
+        for dark in [false, true] {
+            let app = launch("chat", dark: dark, arguments: ["--preview-claude-identity", "--preview-reduce-motion"])
+            let reply = app.staticTexts["CLAUDE_IDENTITY_REPLY"]
+            XCTAssertTrue(reply.waitForExistence(timeout: 10))
+            XCTAssertEqual(app.staticTexts.matching(identifier: "CLAUDE_IDENTITY_REPLY").count, 1)
+            let refresh = app.buttons["刷新"].firstMatch
+            XCTAssertTrue(waitUntilEnabled(refresh, timeout: 10))
+            refresh.tap()
+            XCTAssertTrue(app.staticTexts["CLAUDE_IDENTITY_NEXT"].waitForExistence(timeout: 10))
+            XCTAssertEqual(app.staticTexts.matching(identifier: "CLAUDE_IDENTITY_REPLY").count, 1)
+            XCTAssertEqual(app.staticTexts.matching(identifier: "CLAUDE_IDENTITY_NEXT").count, 1)
+            capture("claude-step-handoff-next-turn-\(dark)", app: app)
+            XCTAssertTrue(waitUntilEnabled(refresh, timeout: 10))
+            refresh.tap()
+            settle()
+            XCTAssertEqual(app.staticTexts.matching(identifier: "CLAUDE_IDENTITY_REPLY").count, 1)
+            XCTAssertEqual(app.staticTexts.matching(identifier: "CLAUDE_IDENTITY_NEXT").count, 1)
+            capture("claude-step-handoff-persisted-\(dark)", app: app)
+            app.terminate()
+        }
+    }
+
     func testStreamingRevealAdvancesInOrderAcrossBlocks() {
         let app = launch("reveal")
         let next = app.buttons["reveal-next-frame"]
@@ -803,6 +826,66 @@ final class OrbisUITests: XCTestCase {
         capture("drawer-computer-menu", app: drawer)
     }
 
+    // M14: every full page participates, including adding a computer; sheets keep their own gestures.
+    func testAddComputerPageReboundsAndSwipesBack() {
+        for (dark, arguments) in [(false, [String]()), (true, ["--preview-reduce-motion"])] {
+            let app = launch("drawer", dark: dark, arguments: arguments)
+            let computer = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "电脑，当前")).firstMatch
+            XCTAssertTrue(computer.waitForExistence(timeout: 8))
+            computer.tap()
+            app.buttons["添加电脑"].tap()
+            let title = app.staticTexts["连接你的电脑"]
+            XCTAssertTrue(title.waitForExistence(timeout: 3))
+            settle()
+            let originalX = title.frame.minX
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
+            start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.30, dy: 0.6)),
+                        withVelocity: .slow, thenHoldForDuration: 0.3)
+            XCTAssertTrue(title.exists)
+            let returned = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                title.exists && abs(title.frame.minX - originalX) <= 1
+            }, object: title)
+            XCTAssertEqual(XCTWaiter().wait(for: [returned], timeout: 5), .completed)
+            XCTAssertEqual(title.frame.minX, originalX, accuracy: 1)
+            capture("pairing-short-drag-" + (dark ? "dark-reduced" : "light"), app: app)
+            start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+                        withVelocity: .slow, thenHoldForDuration: 0.1)
+            XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
+            XCTAssertFalse(app.buttons["取消添加电脑"].exists)
+            XCTAssertTrue(app.buttons["home-settings"].isHittable)
+            capture("pairing-returned-home-" + (dark ? "dark-reduced" : "light"), app: app)
+            app.terminate()
+        }
+    }
+
+    func testNestedPagesSwipeBackOneLevelAtATime() {
+        let app = launch("chat")
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap(); composer.typeText("nested page draft")
+        app.buttons["历史与分支"].tap()
+        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
+        let search = app.textFields["搜索历史与分支"]
+        search.tap(); search.typeText("保留")
+        app.buttons["history-downloads"].tap()
+        XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
+        func swipeBack() {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
+                .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+                       withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
+        swipeBack()
+        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
+        XCTAssertEqual(search.value as? String, "保留")
+        XCTAssertFalse(composer.exists)
+        capture("nested-downloads-return-history", app: app)
+        swipeBack()
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        XCTAssertTrue((composer.value as? String)?.contains("nested page draft") == true)
+        XCTAssertFalse(app.buttons["打开会话目录"].exists)
+        capture("nested-history-return-chat", app: app)
+    }
+
     // ADR-0053 §5 / M14: settings and the home downloads page slide back to home like the chat.
     func testSettingsAndDownloadsSwipeBack() {
         let app = launch("home")
@@ -863,6 +946,32 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(search.exists)
         XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].exists)
         capture("history-downloads-returned", app: app)
+    }
+
+    // M14: history and branch browsing is a page above the same chat, so a right swipe returns there.
+    func testHistorySwipeBackReturnsToChat() {
+        let app = launch("chat")
+        let historyButton = app.buttons["历史与分支"]
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(historyButton.waitForExistence(timeout: 8))
+        composer.tap(); composer.typeText("历史前的草稿")
+        historyButton.tap()
+        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
+        XCTAssertFalse(composer.exists)
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
+        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.30, dy: 0.6)),
+                    withVelocity: .slow, thenHoldForDuration: 0.3)
+        XCTAssertTrue(app.buttons["history-downloads"].exists)
+        capture("history-swipe-cancelled", app: app)
+        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+                    withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        XCTAssertTrue(historyButton.exists)
+        XCTAssertFalse(app.buttons["打开会话目录"].exists)
+        XCTAssertTrue((composer.value as? String)?.contains("历史前的草稿") == true)
+        capture("history-swipe-back-to-chat", app: app)
+        historyButton.tap()
+        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
     }
 
     func testSlashPickerStaysAboveKeyboard() {

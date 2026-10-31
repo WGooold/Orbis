@@ -11,8 +11,11 @@ function setup(on: On) {
     generation: "first-generation",
     rejection: "",
     pollError: "",
-    commands: [] as { commandId: string; command: { type: "user_message"; text: string } }[],
+    commands: [] as { commandId: string; command: { type: "user_message"; text: string } | { type: "stop" } }[],
     submits: 0,
+    denyPrompt: true,
+    completionDelay: 0,
+    aborts: [] as string[],
     requests: [] as { url: string; authorization: string | undefined; body: Record<string, unknown> }[],
     statuses: [] as (string | undefined)[],
   };
@@ -30,17 +33,21 @@ function setup(on: On) {
   on("command.list", () => ({ value: [] }));
   on("config.list", () => ({ value: [] }));
   on("settings.read", () => ({ value: {} }));
+  on("turn.start", (_$, event) => ({ turnId: event.turnId }));
+  on("turn.complete", (_$, event) => ({ text: event.answer }));
+  on("turn.abort", (_$, event) => { world.aborts.push(event.turnId); return { value: undefined }; });
+  on("tool.call", () => ({ result: "still working" }));
   on("prompt.submit", async () => {
     world.submits++;
     await clock.sleep(3000);
-    return { drop: "Test: no model is called" };
+    return world.denyPrompt ? { drop: "Test: no model is called" } : { text: "accepted by test" };
   });
   on("ui.status", (_$, event) => { world.statuses.push(event.text); return { value: undefined }; });
   on("fs.read", (_$, event) => {
     expect(event.path).toBe("/orbis-test/loopback.json");
     return world.descriptorPresent ? { value: JSON.stringify(world.descriptor) } : { deny: "Host discovery is absent" };
   });
-  on("http.fetch", (_$, event) => {
+  on("http.fetch", async (_$, event) => {
     const body = JSON.parse(event.init?.body ?? "{}") as Record<string, unknown>;
     world.requests.push({ url: event.url, authorization: event.init?.headers?.authorization, body });
     if (!world.reachable) return { deny: "Connection refused" };
@@ -53,6 +60,9 @@ function setup(on: On) {
     if (event.url.endsWith("/poll")) return world.pollError
       ? reply(world.pollError === "unauthorized" ? 401 : 409, { ok: false, error: world.pollError })
       : reply(200, { ok: true, commands: world.commands });
+    if ((body.event as { type?: string } | undefined)?.type === "turn.complete" && world.completionDelay > 0) {
+      await clock.sleep(world.completionDelay);
+    }
     return reply(202, { result: "accepted" });
   });
   return { clock, world, hellos: () => world.requests.filter(request => request.url.endsWith("/hello")) };
@@ -133,6 +143,138 @@ test("does not replay an in-flight prompt or send its old result to the restarte
   expect(world.submits).toBe(1);
   expect(world.requests.some(request => request.url.endsWith("/event")
     && (request.body.event as { commandId?: string }).commandId === "old-command")).toBe(false);
+});
+
+test("keeps follow-ups out of prompt.submit during a native turn while polling and stop continue", async ($, on) => {
+  const { clock, world } = setup(on);
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  await $.turn.start({ text: "original task", turnId: "running-turn" });
+  world.commands = [
+    { commandId: "follow-up", command: { type: "user_message", text: "next task" } },
+    { commandId: "stop", command: { type: "stop" } },
+  ];
+  await clock.advance(2250);
+  expect(world.submits).toBe(0);
+  expect(world.aborts).toEqual(["running-turn"]);
+  expect(world.requests.filter(request => request.url.endsWith("/poll")).length).toBeGreaterThanOrEqual(4);
+  expect(world.requests.some(request => (request.body.event as { type?: string; commandId?: string } | undefined)?.commandId === "follow-up")).toBe(false);
+  await $.tool.call({ tool: "Bash", command: "echo this command must not run" });
+  expect(world.requests.some(request => (request.body.event as { type?: string } | undefined)?.type === "tool.finished")).toBe(true);
+  await $.turn.complete({ turnId: "running-turn", answer: "", durationMs: 2250, reason: "aborted", isAborted: true });
+  world.commands = world.commands.filter(item => item.commandId !== "stop");
+  await clock.advance(750);
+  expect(world.submits).toBe(1);
+  await clock.advance(750);
+  expect(world.submits).toBe(1);
+});
+
+test("submits only one follow-up at a time when an idle poll contains several messages", async ($, on) => {
+  const { clock, world } = setup(on);
+  world.commands = [
+    { commandId: "first", command: { type: "user_message", text: "first" } },
+    { commandId: "second", command: { type: "user_message", text: "second" } },
+  ];
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  expect(world.submits).toBe(1);
+  await clock.advance(2250);
+  expect(world.submits).toBe(1);
+  world.commands = world.commands.filter(item => item.commandId !== "first");
+  await clock.advance(1500);
+  expect(world.submits).toBe(2);
+});
+
+test("keeps a follow-up deferred after a subagent ends, then reports its native submit result", async ($, on) => {
+  const { clock, world } = setup(on);
+  world.denyPrompt = false;
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  await $.turn.start({ text: "original task", turnId: "main-turn" });
+  world.commands = [{ commandId: "follow-up", command: { type: "user_message", text: "next task" } }];
+  await $.turn.start({ text: "child task", turnId: "child-turn", agentId: "child" });
+  await $.turn.complete({ turnId: "child-turn", agentId: "child", answer: "child done", durationMs: 0, reason: "answer", isAborted: false });
+  await clock.advance(750);
+  expect(world.submits).toBe(0);
+  await $.turn.complete({ turnId: "main-turn", answer: "done", durationMs: 750, reason: "answer", isAborted: false });
+  await clock.advance(750);
+  expect(world.submits).toBe(1);
+  world.commands = [];
+  await clock.advance(3000);
+  expect(world.requests.some(request => {
+    const event = request.body.event as { type?: string; commandId?: string; ok?: boolean; status?: string } | undefined;
+    return event?.type === "command.result" && event.commandId === "follow-up" && event.ok === true && event.status === "success";
+  })).toBe(true);
+});
+
+test("waits for the Host completion capture barrier before submitting the next prompt", async ($, on) => {
+  const { clock, world } = setup(on);
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  await $.turn.start({ text: "original task", turnId: "main-turn" });
+  world.commands = [{ commandId: "follow-up", command: { type: "user_message", text: "next task" } }];
+  world.completionDelay = 3000;
+  const completion = $.turn.complete({ turnId: "main-turn", answer: "done", durationMs: 0, reason: "answer", isAborted: false });
+  await clock.settle();
+  await clock.advance(2250);
+  expect(world.submits).toBe(0);
+  await clock.advance(1500);
+  await completion;
+  expect(world.submits).toBe(1);
+});
+
+test("does not submit a deferred follow-up after its Host generation is replaced", async ($, on) => {
+  const { clock, world } = setup(on);
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  await $.turn.start({ text: "original task", turnId: "running-turn" });
+  world.commands = [{ commandId: "old-follow-up", command: { type: "user_message", text: "old next task" } }];
+  await clock.advance(750);
+  expect(world.submits).toBe(0);
+  world.commands = [];
+  world.descriptor = { url: "ws://127.0.0.1:42002", token: "second-host-token-for-test" };
+  world.generation = "second-generation";
+  await clock.advance(750);
+  await $.turn.complete({ turnId: "running-turn", answer: "done", durationMs: 1500, reason: "answer", isAborted: false });
+  await clock.advance(750);
+  expect(world.submits).toBe(0);
+});
+
+test("reserves all native response UUIDs before storage and seals their step before the next request", async ($, on) => {
+  const { clock, world } = setup(on);
+  mock.session(on);
+  on("turn.step", async function* (_$, event) {
+    yield { kind: "text", index: 0, text: "same text" };
+    return { turnId: event.turnId, index: event.index, answer: "same text", toolUses: [], stopReason: "end_turn", usage: null };
+  });
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  await $.turn.start({ text: "task", turnId: "main" });
+  const runStep = async (index: number, agentId?: string) => {
+    const stream = $.turn.step({ turnId: "main", index, model: "test", messageCount: 1, ...(agentId ? { agentId } : {}) });
+    for await (const chunk of stream) { expect(chunk.kind).toBe("text"); }
+    await stream.result;
+  };
+  const append = (uuid: string, agentId?: string) => $.session.append({ uuid, door: "response",
+    origin: { kind: "model", model: "test" }, message: { type: "assistant", role: "assistant", content: [{ type: "text", text: "same text" }] },
+    ...(agentId ? { agentId } : {}) });
+  await runStep(0);
+  await append("first-uuid");
+  await runStep(0, "child");
+  await append("child-uuid", "child");
+  await append("second-uuid");
+  const events = () => world.requests.flatMap(request => request.body.event ? [request.body.event as Record<string, unknown>] : []);
+  expect(events().filter(event => event.type === "turn.step.row").map(event => event.uuid)).toEqual(["first-uuid", "second-uuid"]);
+  expect(events().filter(event => event.type === "turn.step.finished")).toHaveLength(0);
+  await runStep(1);
+  expect(events().find(event => event.type === "turn.step.finished")).toEqual({ type: "turn.step.finished", turnId: "main", stepIndex: 0, uuids: ["first-uuid", "second-uuid"] });
+  const seal = events().findIndex(event => event.type === "turn.step.finished");
+  const nextChunks = events().findIndex(event => event.type === "turn.step.chunks" && event.stepIndex === 1);
+  expect(seal).toBeLessThan(nextChunks);
+  await append("third-uuid");
+  await $.turn.complete({ turnId: "main", answer: "done", durationMs: 1, reason: "answer", isAborted: false });
+  expect(events().filter(event => event.type === "turn.step.finished").at(-1)).toEqual({ type: "turn.step.finished", turnId: "main", stepIndex: 1, uuids: ["third-uuid"] });
+  expect(events().findIndex(event => event.type === "turn.complete")).toBeGreaterThan(events().findIndex(event => event.type === "turn.step.finished" && event.stepIndex === 1));
 });
 
 for (const error of ["unauthorized", "stale_generation", "bridge_offline"]) {

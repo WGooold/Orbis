@@ -21,10 +21,10 @@ import { localHostname } from "./sessions.js";
 import { LocalClaudeProcessControl, type ClaudeProcessControl, type ClaudeProcessIdentity } from "./claude-process.js";
 
 /** The bridge contract is deliberately independent of the TUI's internal API. */
-export const CLAUDE_BRIDGE_VERSION = "2";
+export const CLAUDE_BRIDGE_VERSION = "3";
 export const CLAUDE_MIN_VERSION = "2.1.287";
 export const CLAUDE_BRIDGE_CAPABILITIES = [
-  "prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call",
+  "prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity",
 ] as const;
 export type ClaudeBridgeCapability = typeof CLAUDE_BRIDGE_CAPABILITIES[number];
 
@@ -67,6 +67,8 @@ export type ClaudeSessionState = {
 export type ClaudeModsNativeEvent =
   | { type: "prompt.submit"; text: string; origin: string; turnId?: string; wait?: boolean }
   | { type: "session.append"; uuid: string; door: string }
+  | { type: "turn.step.row"; turnId: string; stepIndex: number; uuid: string }
+  | { type: "turn.step.finished"; turnId: string; stepIndex: number; uuids: readonly string[] }
   | { type: "session.state"; state: ClaudeSessionState }
   | { type: "compaction"; phase: "running" | "idle" | "failed" }
   | { type: "interactions.local" }
@@ -110,6 +112,8 @@ type Session = {
     turnId: string;
     startedAt: number;
     messages: Map<string, { blocks: Map<number, { type: "text" | "thinking"; text: string }> }>;
+    messageIds: Set<string>;
+    completedSteps: Set<number>;
     /** Transcript rows announced by `session.append` during the turn. */
     announced: string[];
   };
@@ -351,6 +355,22 @@ export class ClaudeModsBridge {
       }
       return "accepted";
     }
+    if (parsed.type === "turn.step.row" || parsed.type === "turn.step.finished") {
+      if (session.activeTurn?.turnId !== parsed.turnId) return "accepted";
+      const messageId = `${parsed.turnId}:${parsed.stepIndex}`;
+      if (session.activeTurn.completedSteps.has(parsed.stepIndex)) return "accepted";
+      // Track tool-only and interrupted steps as well, so cleanup has exact turn ownership.
+      session.activeTurn.messageIds.add(messageId);
+      if (parsed.type === "turn.step.row") session.history.reserveStepRow(messageId, parsed.uuid);
+      else {
+        session.activeTurn.completedSteps.add(parsed.stepIndex);
+        const message = session.activeTurn.messages.get(messageId);
+        if (message !== undefined) session.history.observe(finishedMessage(messageId, message));
+        session.activeTurn.messages.delete(messageId);
+        void session.history.finishStep(messageId, parsed.uuids).catch(() => undefined);
+      }
+      return "accepted";
+    }
     if (parsed.type === "session.append") {
       session.activeTurn?.announced.push(parsed.uuid);
       void session.history.refresh().catch(() => undefined);
@@ -372,10 +392,13 @@ export class ClaudeModsBridge {
       return "accepted";
     }
     if (parsed.type === "turn.start") {
+      if (session.activeTurn?.turnId === parsed.turnId || session.completedTurns.has(parsed.turnId)) return "accepted";
       const startedAt = finiteTime(parsed.startedAt) ?? Date.now();
-      session.activeTurn = { turnId: parsed.turnId, startedAt, messages: new Map(), announced: [] };
+      session.activeTurn = { turnId: parsed.turnId, startedAt, messages: new Map(), messageIds: new Set(), completedSteps: new Set(), announced: [] };
       this.#status(runtimeId, "running");
     } else if (parsed.type === "turn.complete") {
+      // A completion from an older native turn cannot finish or clear the current one.
+      if (session.activeTurn?.turnId !== parsed.turnId) return "accepted";
       const stopCommandId = session.pendingStopId;
       delete session.pendingStopId;
       this.#status(runtimeId, "idle");
@@ -411,7 +434,8 @@ export class ClaudeModsBridge {
     if (parsed.type === "turn.complete") {
       if (session.activeTurn?.turnId === parsed.turnId) {
         const announced = [...session.activeTurn.announced];
-        void session.history.settleTurn(announced).then(() => {
+        const messageIds = [...session.activeTurn.messageIds];
+        void session.history.settleTurn(announced, messageIds).then(() => {
           const anchor = session.history.turnAnchor(announced);
           if (anchor) this.#options.onFileChangeAnchor?.(runtimeId, parsed.turnId, anchor);
         }).catch(() => undefined);
@@ -637,6 +661,14 @@ function parseNativeEvent(value: unknown): ClaudeModsNativeEvent | undefined {
   if (value.type === "prompt.submit" && text(value.text, 100_000) && text(value.origin, 128)) return { type: value.type, text: value.text, origin: value.origin, ...(text(value.turnId, 256) ? { turnId: value.turnId } : {}), ...(typeof value.wait === "boolean" ? { wait: value.wait } : {}) };
   // The row itself is read from the transcript; the event only announces its identity.
   if (value.type === "session.append" && text(value.uuid, 256) && text(value.door, 64)) return { type: value.type, uuid: value.uuid, door: value.door };
+  if ((value.type === "turn.step.row" || value.type === "turn.step.finished") && text(value.turnId, 256)) {
+    const stepIndex = integer(value.stepIndex);
+    if (stepIndex === undefined) return undefined;
+    if (value.type === "turn.step.row" && text(value.uuid, 256)) return { type: value.type, turnId: value.turnId, stepIndex, uuid: value.uuid };
+    if (value.type === "turn.step.finished" && Array.isArray(value.uuids) && value.uuids.length <= 4096 &&
+        value.uuids.every(uuid => text(uuid, 256))) return { type: value.type, turnId: value.turnId, stepIndex, uuids: value.uuids as string[] };
+    return undefined;
+  }
   if (value.type === "session.state") {
     const state = parseState(value.state);
     return state === undefined ? undefined : { type: value.type, state };
@@ -675,14 +707,17 @@ function normalizeNativeEvent(native: ClaudeModsNativeEvent, session: Session): 
     // would create duplicates. Transcript rows are handled before normalization.
     case "prompt.submit":
     case "session.append":
+    case "turn.step.row":
+    case "turn.step.finished":
     case "session.state":
     case "compaction":
     case "interactions.local": return [];
     case "turn.start": return [{ type: "turn.started", turnId: native.turnId, startedAt: native.startedAt ?? Date.now(), ...(native.turnIndex === undefined ? {} : { turnIndex: native.turnIndex }) }];
     case "turn.step.chunks": {
       const active = session.activeTurn;
-      if (active === undefined || active.turnId !== native.turnId) return [];
+      if (active === undefined || active.turnId !== native.turnId || active.completedSteps.has(native.stepIndex)) return [];
       const messageId = `${native.turnId}:${native.stepIndex}`;
+      active.messageIds.add(messageId);
       let message = active.messages.get(messageId);
       const events: RuntimeEvent[] = [];
       if (message === undefined) {
@@ -703,11 +738,7 @@ function normalizeNativeEvent(native: ClaudeModsNativeEvent, session: Session): 
       const active = session.activeTurn?.turnId === native.turnId ? session.activeTurn : undefined;
       const events: RuntimeEvent[] = [];
       // Streamed messages stay live until the transcript rows of this turn replace them.
-      for (const [messageId, live] of active?.messages ?? []) {
-        const content = [...live.blocks.entries()].sort(([a], [b]) => a - b)
-          .map(([, block]) => ({ type: block.type, text: block.text } satisfies RemoteContent));
-        events.push({ type: "message.finished", message: messageOf(messageId, "assistant", content) });
-      }
+      for (const [messageId, live] of active?.messages ?? []) events.push(finishedMessage(messageId, live));
       events.push({ type: "turn.finished", turnId: native.turnId, startedAt,
         durationMs: native.durationMs ?? Math.max(0, Date.now() - startedAt),
         ...(native.turnIndex === undefined ? {} : { turnIndex: native.turnIndex }) });
@@ -717,6 +748,12 @@ function normalizeNativeEvent(native: ClaudeModsNativeEvent, session: Session): 
     case "tool.finished": return [{ type: "tool.finished", toolCallId: native.toolCallId, toolName: native.toolName, result: native.result, isError: native.isError === true }];
     case "command.result": return [{ type: "command.result", commandId: native.commandId, ok: native.ok, ...(native.status === undefined ? {} : { status: native.status }), ...(native.error === undefined ? {} : { error: native.error }), ...(native.result === undefined ? {} : { result: native.result }) }];
   }
+}
+
+function finishedMessage(messageId: string, live: { blocks: Map<number, { type: "text" | "thinking"; text: string }> }): Extract<RuntimeEvent, { type: "message.finished" }> {
+  const content = [...live.blocks.entries()].sort(([a], [b]) => a - b)
+    .map(([, block]) => ({ type: block.type, text: block.text } satisfies RemoteContent));
+  return { type: "message.finished", message: messageOf(messageId, "assistant", content) };
 }
 
 function messageOf(messageId: string, role: ChatMessage["role"], content: readonly RemoteContent[]): ChatMessage {

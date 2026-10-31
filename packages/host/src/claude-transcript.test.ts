@@ -148,6 +148,95 @@ describe("ClaudeSessionHistory", () => {
     expect(patches.at(-1)).toMatchObject({ head: { leafId: "a1" }, live: { messages: [] } });
   });
 
+  it("hands every UUID of a native step to canonical history atomically before the turn ends", async () => {
+    const root = await tempConfig();
+    const path = join(root, "step.jsonl");
+    await writeFile(path, line(user("u", null, "hi")));
+    const patches: Extract<RuntimeEvent, { type: "session.patch" }>[] = [];
+    const history = new ClaudeSessionHistory("step", root, event => { if (event.type === "session.patch") patches.push(event); },
+      { locate: async () => path });
+    try {
+      await history.refresh();
+      history.observe({ type: "turn.started", turnId: "t", startedAt: 1 });
+      history.observe({ type: "message.started", message: { messageId: "t:0", role: "assistant", timestamp: 1,
+        content: [{ type: "thinking", text: "plan" }, { type: "text", text: "hello" }] } });
+      history.reserveStepRow("t:0", "thought");
+      history.reserveStepRow("t:0", "answer");
+      await appendFile(path, line(assistant("thought", "u", [{ type: "thinking", thinking: "plan" }])));
+      await history.refresh();
+      const gated = await history.sync({ type: "session.sync", sessionId: "step", syncId: "gated", range: "preview" });
+      expect(gated.entries.map(entry => entry.entryId)).toEqual(["u"]);
+      expect(gated.live?.messages).toHaveLength(1);
+      // The boundary may arrive before its last disk write; retain the whole streamed response.
+      await history.finishStep("t:0", ["thought", "answer"]);
+      expect(history.source.snapshot().live.messages).toHaveLength(1);
+      await appendFile(path, line(assistant("answer", "thought", [{ type: "text", text: "hello" }])));
+      await history.refresh();
+      const committed = patches.at(-1)!;
+      expect(committed.entries?.map(entry => entry.entryId)).toEqual(["thought", "answer"]);
+      expect(committed.live?.messages).toEqual([]);
+      expect(committed.live?.turn).toEqual({ turnId: "t", startedAt: 1 });
+      expect(patches.every(patch => !patch.display?.entries.some(row => row.entryId === "thought" || row.entryId === "answer") || patch.live?.messages.length === 0)).toBe(true);
+      // turn.complete reconstructs a finished message from its adapter cache; it must stay retired.
+      history.observe({ type: "message.finished", message: { messageId: "t:0", role: "assistant", timestamp: 1,
+        content: [{ type: "text", text: "hello" }] } });
+      history.observe({ type: "message.delta", messageId: "t:0", delta: "late" });
+      expect(history.source.snapshot().live.messages).toEqual([]);
+      const restored = await history.sync({ type: "session.sync", sessionId: "step", syncId: "restored", range: "preview" });
+      expect(restored.display?.entries.filter(row => row.message?.role === "assistant")).toHaveLength(2);
+      expect(restored.live?.messages).toEqual([]);
+    } finally { history.close(); }
+  });
+
+  it("cleans only the ended turn when the next turn starts during transcript settling", async () => {
+    const root = await tempConfig();
+    const path = join(root, "race.jsonl");
+    await writeFile(path, "");
+    const history = new ClaudeSessionHistory("race", root, () => {}, { locate: async () => path, settleTimeoutMs: 0 });
+    try {
+      await history.refresh();
+      const message = (messageId: string) => ({ messageId, role: "assistant" as const, timestamp: 1, content: [{ type: "text" as const, text: messageId }] });
+      history.observe({ type: "message.started", message: message("old:0") });
+      const settling = history.settleTurn(["not-yet-written"], ["old:0"]);
+      history.observe({ type: "turn.started", turnId: "next", startedAt: 2 });
+      history.observe({ type: "message.started", message: message("next:0") });
+      await settling;
+      expect(history.source.snapshot().live.messages.map(item => item.message.messageId)).toEqual(["next:0"]);
+      expect(history.source.snapshot().live.turn?.turnId).toBe("next");
+      history.observe({ type: "message.finished", message: message("old:0") });
+      expect(history.source.snapshot().live.messages.map(item => item.message.messageId)).toEqual(["next:0"]);
+    } finally { history.close(); }
+  });
+
+  it("retains a sealed step after the disk-settle deadline and commits it on a later refresh", async () => {
+    const root = await tempConfig();
+    const path = join(root, "late.jsonl");
+    await writeFile(path, "");
+    const history = new ClaudeSessionHistory("late", root, () => {}, { locate: async () => path, settleTimeoutMs: 0 });
+    try {
+      await history.refresh();
+      history.observe({ type: "message.started", message: { messageId: "t:0", role: "assistant", timestamp: 1,
+        content: [{ type: "text", text: "late answer" }] } });
+      history.reserveStepRow("t:0", "late-native");
+      await history.finishStep("t:0", ["late-native"]);
+      await history.settleTurn(["late-native"], ["t:0"]);
+      expect(history.source.snapshot().live.messages).toHaveLength(1);
+      await appendFile(path, line(assistant("late-native", null, [{ type: "text", text: "late answer" }])));
+      await history.refresh();
+      expect(history.source.snapshot().live.messages).toEqual([]);
+      expect(history.source.snapshot().checkpoint.head.leafId).toBe("late-native");
+    } finally { history.close(); }
+  });
+
+  it("retires a signature-only or denied step without a canonical display row", async () => {
+    const history = new ClaudeSessionHistory("empty", await tempConfig(), () => {}, { locate: async () => undefined });
+    history.observe({ type: "message.started", message: { messageId: "t:0", role: "assistant", timestamp: 1, content: [] } });
+    await history.finishStep("t:0", []);
+    // A newly created session with no file must still process the explicit empty boundary.
+    expect(history.source.snapshot().live.messages).toEqual([]);
+    history.close();
+  });
+
   it("treats a Session without a transcript yet as an empty ready history", async () => {
     const history = new ClaudeSessionHistory("new-session", await tempConfig(), () => undefined);
     const snapshot = await history.sync({ type: "session.sync", sessionId: "new-session", syncId: "s", range: "preview" });

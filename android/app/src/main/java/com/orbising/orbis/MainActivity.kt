@@ -276,7 +276,7 @@ private fun ToolDetailDialog(detail: ToolDetailView, model: RemoteViewModel, onE
 }
 
 @Composable
-private fun RemoteApp(
+internal fun RemoteApp(
     state: RemoteState,
     hosts: List<HostSnapshot>,
     pairingError: String?,
@@ -365,7 +365,7 @@ private fun RemoteApp(
         }
     }
     when {
-        !appearsPaired || addingHost -> PairingScreen(
+        !appearsPaired -> PairingScreen(
             error = pairingError ?: state.error,
             pairingInProgress = pairingInProgress,
             pair = { relayUrl, code, qrRaw ->
@@ -376,28 +376,22 @@ private fun RemoteApp(
                 { addingHost = false; model.clearPairingError() }
             } else null,
         )
-        state.selectedRuntimeId == null && state.selectedOfflineSessionId != null -> AgentTheme(
-            agentBrand(state.sessions[state.selectedOfflineSessionId]?.agentKind),
-        ) {
-            OfflineHistoryScreen(
-                state = state,
-                sessionId = state.selectedOfflineSessionId,
-                model = model,
-                onBack = { model.selectOfflineSession(null) },
-            )
-        }
         else -> {
-            // 聊天、设置与首页下载页共用同一层：从右侧滑入，右滑露出首页并返回（M07 / M08 / M14）。
+            // 所有首页下一级整页共用导航容器；根配对和 sheet 保持独立的呈现方式（M14）。
             // 首页始终留在同一个组合位置，返回后立即可点。
             val page = when {
+                addingHost -> HomeOverlay.Pairing
+                state.selectedRuntimeId == null && state.selectedOfflineSessionId != null -> HomeOverlay.OfflineHistory
                 state.selectedRuntimeId != null -> HomeOverlay.Chat
                 statusOpen -> HomeOverlay.Settings
                 allDownloadsOpen -> HomeOverlay.Downloads
                 else -> null
             }
-            SwipeBackLayer(
+            OrbisPageHost(
                 onBack = {
                     when (page) {
+                        HomeOverlay.Pairing -> { addingHost = false; model.clearPairingError() }
+                        HomeOverlay.OfflineHistory -> model.selectOfflineSession(null)
                         HomeOverlay.Chat -> model.selectRuntime(null)
                         HomeOverlay.Settings -> statusOpen = false
                         HomeOverlay.Downloads -> allDownloadsOpen = false
@@ -407,8 +401,18 @@ private fun RemoteApp(
                 underlay = runtimeList,
                 open = page != null,
                 contentKey = page,
+                canNavigateBack = page != HomeOverlay.Pairing || !pairingInProgress,
             ) {
                 when (page) {
+                    HomeOverlay.Pairing -> PairingScreen(
+                        error = pairingError ?: state.error, pairingInProgress = pairingInProgress,
+                        pair = { relayUrl, code, qrRaw -> model.pair(relayUrl, code, qrRaw) { addingHost = false } },
+                        clearError = { model.clearPairingError(); model.clearError() },
+                        onCancel = { addingHost = false; model.clearPairingError() },
+                    )
+                    HomeOverlay.OfflineHistory -> AgentTheme(agentBrand(state.sessions[state.selectedOfflineSessionId]?.agentKind)) {
+                        OfflineHistoryScreen(state, state.selectedOfflineSessionId, model, onBack = { model.selectOfflineSession(null) })
+                    }
                     HomeOverlay.Chat -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?:
                         state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
                         ChatScreen(state, model)
@@ -455,7 +459,7 @@ private fun RemoteApp(
 }
 
 /** Pages that slide in over the home list. */
-private enum class HomeOverlay { Chat, Settings, Downloads }
+private enum class HomeOverlay { Chat, Settings, Downloads, Pairing, OfflineHistory }
 
 /** The computer's downloads page; the home, chat and history entries all open this same page. */
 @Composable
@@ -633,7 +637,7 @@ internal fun RuntimeListScreen(
     fun toggleSelection(id: String) {
         selectedRuntimeIds = if (id in selectedIds) selectedIds - id else selectedIds + id
     }
-    BackHandler(enabled = selecting && drawerState.isClosed) { selectedRuntimeIds = emptySet() }
+    BackHandler(enabled = LocalPageActive.current && selecting && drawerState.isClosed) { selectedRuntimeIds = emptySet() }
     ModalNavigationDrawer(
         drawerState = drawerState,
         gesturesEnabled = !selecting,
@@ -1204,13 +1208,13 @@ private fun HistoryPagingHeader(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun OfflineHistoryScreen(
+internal fun OfflineHistoryScreen(
     state: RemoteState,
     sessionId: String?,
     model: RemoteViewModel,
     onBack: () -> Unit,
 ) {
-    BackHandler(onBack = onBack)
+    BackHandler(enabled = LocalPageActive.current, onBack = onBack)
     val graph = sessionId?.let(state.sessionGraphs::get)
     val projection = remember(graph) {
         graph?.let(::projectSessionGraph) ?: SessionProjectionResult(emptyList(), "本地没有可用的历史缓存")
@@ -1666,8 +1670,10 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             historyAnchorOperationId = null
         }
     }
-    BackHandler {
-        if (historyOpen) {
+    BackHandler(enabled = LocalPageActive.current) {
+        if (historyDownloadsOpen) {
+            historyDownloadsOpen = false
+        } else if (historyOpen) {
             historyOpen = false
             historyActionError = null
         } else if (downloadManagerOpen) downloadManagerOpen = false
@@ -1675,8 +1681,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
 
     // 历史页的跳转：成功后回到聊天页并停在新位置；编辑重发还要把原文放回输入框。
-    // 这个 effect 必须排在下面 `if (historyOpen) return` 之前——历史页打开时聊天页会提前返回，
-    // 排在后面的 effect 根本不会被组合，命令结果就永远没人消费。
+    // 历史与聊天保持组合，命令回执按当前 runtime 消费，成功后关闭历史层。
     LaunchedEffect(historyActionCommandId, state.commandResults) {
         val commandId = historyActionCommandId ?: return@LaunchedEffect
         val result = state.commandResults[commandId] ?: return@LaunchedEffect
@@ -1723,8 +1728,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         model.refreshWorkingBranch(runtimeId)
     }
 
-    if (historyOpen) {
-        SwipeBackLayer(
+    val historyPage: @Composable () -> Unit = {
+        OrbisPageHost(
             onBack = { historyDownloadsOpen = false },
             open = historyDownloadsOpen,
             underlay = { DownloadFlightHost(historyFlight) {
@@ -1755,7 +1760,6 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         )
             } },
         ) { HostDownloadsScreen(state, model, onBack = { historyDownloadsOpen = false }) }
-        return
     }
 
     LaunchedEffect(runtimeId, sessionId, displayReadPending, chatItems, chatHeaderCount, orphanTools.size,
@@ -1850,9 +1854,14 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         pendingMessageText = ""
     }
 
+    // 历史与分支和下载页一样盖在原聊天实例上，右滑时露出原聊天，保留列表、草稿与展开状态。
+    OrbisPageHost(
+        onBack = { historyOpen = false; historyActionError = null },
+        open = historyOpen,
+        underlay = {
     // 对话上方的下载页与主页面下载页是同一个页面（浏览文件 + 下载列表），语义都是「和 Host 交互」。
     // 它从右侧滑入，右滑露出并回到这个对话；对话保持原实例，阅读位置、草稿与展开状态不变（ADR-0053 §5）。
-    SwipeBackLayer(
+    OrbisPageHost(
         onBack = { downloadManagerOpen = false },
         open = downloadManagerOpen,
         underlay = { DownloadFlightHost(chatFlight) {
@@ -2296,6 +2305,9 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
         } },
     ) { HostDownloadsScreen(state, model, onBack = { downloadManagerOpen = false }) }
+        },
+        content = historyPage,
+    )
 
 }
 
@@ -2558,7 +2570,7 @@ internal fun AllDownloadsScreen(
     val effectiveSelectedTaskIds = selectedTaskIds.intersect(visibleTaskIds)
     val selectionMode = effectiveSelectedTaskIds.isNotEmpty()
     LaunchedEffect(visibleTaskIds) { selectedTaskIds = selectedTaskIds.intersect(visibleTaskIds) }
-    BackHandler { if (selectionMode) selectedTaskIds = emptySet() else onBack() }
+    BackHandler(enabled = LocalPageActive.current) { if (selectionMode) selectedTaskIds = emptySet() else onBack() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -2901,7 +2913,7 @@ internal fun StatusScreen(
     pairing: PairingStatus,
     onBack: () -> Unit,
 ) {
-    BackHandler(onBack = onBack)
+    BackHandler(enabled = LocalPageActive.current, onBack = onBack)
     LaunchedEffect(state.hostId, state.e2eReady) { if (state.e2eReady) model.refreshHostModel(listOf("providers"), force = true) }
     Scaffold(
         topBar = {
@@ -2988,7 +3000,7 @@ internal fun AgentProvidersContent(
         if (!connected || removable.isEmpty()) exitSelection()
         if (!connected) pending = null
     }
-    BackHandler { if (selecting) exitSelection() else onBack() }
+    BackHandler(enabled = LocalPageActive.current) { if (selecting) exitSelection() else onBack() }
     Scaffold(topBar = {
         TopAppBar(title = { Text(if (selecting) "已选择 ${selected.size} 项" else "供应商") }, navigationIcon = {
             NeumorphIconButton(onClick = { if (selecting) exitSelection() else onBack() },

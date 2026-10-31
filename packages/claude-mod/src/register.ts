@@ -22,6 +22,9 @@ const commands = new Map<string, CachedCommand>();
 let connection: Connection | undefined;
 let connecting: Promise<Connection | undefined> | undefined;
 let activeTurnId: string | undefined;
+// Main-loop response rows belong to the native step until its next request or turn completion.
+// A step can append several UUIDs; neither text equality nor row order identifies a message.
+let activeStep: { turnId: string; stepIndex: number; uuids: string[]; target: Connection | undefined } | undefined;
 let polling = false;
 let pollingTimer: ReturnType<Api["clock"]["every"]> | undefined;
 let polls = 0;
@@ -46,13 +49,32 @@ export const register: Register = on => {
     return { text: delivered ? "Orbis：待回答的请求已交回电脑。" : "Orbis：没有连上 Host，请直接在电脑上回答。" };
   });
 
-  // The Host reads the row from the native transcript; announcing its identity is enough.
   on("session.append", async ($, event, next) => {
+    const step = event.agentId === undefined && event.door === "response" && event.message.type === "assistant"
+      ? activeStep : undefined;
+    // Reserve before native storage: a sync triggered by another event must not publish the row
+    // while its streaming twin is still live. The UUID is pinned by the public append contract.
+    if (step?.target !== undefined) {
+      const reservation = { type: "turn.step.row", turnId: step.turnId, stepIndex: step.stepIndex, uuid: event.uuid } as const;
+      let reserved = await postEvent($, step.target, reservation);
+      if (!reserved && connection === step.target) {
+        // Reconnect before storage is announced; an unacknowledged reservation cannot safely
+        // share a generation with the canonical append. Keep old-step chunks on their target.
+        connection = undefined;
+        const replacement = await connect($);
+        if (replacement !== undefined) {
+          step.target = replacement;
+          reserved = await postEvent($, replacement, reservation);
+        }
+      }
+      if (!reserved) throw new Error("Orbis Host 未确认 Claude 步骤身份，已阻止无身份交接。");
+    }
     const stored = await next(event);
     if (!("message" in stored) || stored.message === undefined || stored.uuid === undefined) return stored;
+    if (step !== undefined) step.uuids.push(stored.uuid);
     await emit($, { type: "session.append", uuid: stored.uuid, door: event.door });
     return stored;
-  }).catch(($, event, next) => next(event));
+  });
 
   on("session.compact", async ($, event, next) => {
     await emit($, { type: "compaction", phase: "running" });
@@ -76,6 +98,11 @@ export const register: Register = on => {
   });
 
   on("turn.step", async function* ($, event, next) {
+    if (event.agentId === undefined) {
+      await finishStep($);
+      activeStep = { turnId: event.turnId, stepIndex: event.index, uuids: [], target: connection ?? await connect($) };
+    }
+    const step = event.agentId === undefined ? activeStep : undefined;
     const stream = next(event);
     let pending: { blockIndex: number; contentType: "text" | "thinking"; delta: string }[] = [];
     let pendingChars = 0;
@@ -84,7 +111,8 @@ export const register: Register = on => {
       const chunks = pending;
       pending = [];
       pendingChars = 0;
-      await emit($, { type: "turn.step.chunks", turnId: event.turnId, stepIndex: event.index, chunks });
+      if (step?.target !== undefined) await postEvent($, step.target,
+        { type: "turn.step.chunks", turnId: event.turnId, stepIndex: event.index, chunks });
     };
     for await (const chunk of stream) {
       if (event.agentId === undefined && (chunk.kind === "text" || chunk.kind === "thinking")) {
@@ -99,9 +127,9 @@ export const register: Register = on => {
   });
 
   on("turn.complete", async ($, event, next) => {
+    if (event.agentId === undefined && activeStep?.turnId === event.turnId) await finishStep($);
     const result = await next(event);
     if (event.agentId === undefined) {
-      if (activeTurnId === event.turnId) activeTurnId = undefined;
       const nativeEvent = { type: "turn.complete", turnId: event.turnId, durationMs: event.durationMs,
         answer: clipText(event.answer, 64_000), reason: event.reason, isAborted: event.isAborted } satisfies BridgeEvent;
       const stopCommandIds = [...commands].flatMap(([commandId, cached]) =>
@@ -111,6 +139,8 @@ export const register: Register = on => {
         if (delivered) commands.delete(commandId);
         else commands.set(commandId, { state: "result", event: nativeEvent });
       }
+      // Keep submissions deferred through the completion acknowledgement/capture barrier.
+      if (activeTurnId === event.turnId) activeTurnId = undefined;
       // Context fill and the model can change with every turn.
       void reportState($, true);
     }
@@ -198,8 +228,8 @@ async function connectOnce($: Api): Promise<Connection | undefined> {
     ...(Number.isSafeInteger(processId) && processId! > 1 ? { processId } : {}),
     ...(configDir === undefined || configDir.length === 0 ? {} : { configDir }),
     ...(launchId === undefined || launchId.length === 0 ? {} : { launchId }),
-    claudeVersion: version.version, bridgeVersion: "2",
-    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call"],
+    claudeVersion: version.version, bridgeVersion: "3",
+    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity"],
   }, descriptor);
   if (!response.ok || response.body?.ok !== true) {
     const error = response.body !== undefined && "error" in response.body ? response.body.error : undefined;
@@ -281,6 +311,12 @@ async function runCommand($: Api, target: Connection, commandId: string,
     return;
   }
   if (cached?.state === "running") return;
+  // prompt.submit waits for native idle. Leave the command on the Host until
+  // the next idle poll instead of starting an idle-waiting Mods call during
+  // native execution. Reserve one submission at a time so
+  // a batch cannot start several idle-waiting calls before turn.start arrives.
+  if (command.type === "user_message" && (activeTurnId !== undefined ||
+      [...commands.values()].some(item => item.state === "running" && item.commandType === "user_message"))) return;
   commands.set(commandId, command.type === "stop" && activeTurnId !== undefined
     ? { state: "running", commandType: "stop", turnId: activeTurnId }
     : { state: "running", commandType: command.type === "slash" ? "slash" : "user_message" });
@@ -341,6 +377,14 @@ async function finishCommand($: Api, target: Connection, commandId: string, even
   commands.set(commandId, { state: "result", event });
   trimCommands();
   await postEvent($, target, event);
+}
+
+async function finishStep($: Api): Promise<void> {
+  const step = activeStep;
+  activeStep = undefined;
+  if (step?.target === undefined) return;
+  await postEvent($, step.target, { type: "turn.step.finished", turnId: step.turnId,
+    stepIndex: step.stepIndex, uuids: step.uuids });
 }
 
 async function emit($: Api, event: BridgeEvent): Promise<boolean> {

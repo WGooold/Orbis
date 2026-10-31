@@ -264,7 +264,7 @@ internal fun SessionDrawer(
     val selectedSessions = visibleSessions.filter { it.sessionId in selectedIds }
     val selecting = selectedIds.isNotEmpty()
     LaunchedEffect(visibleIds) { selectedSessionIds = selectedSessionIds.intersect(visibleIds) }
-    BackHandler(enabled = isOpen && selecting) { selectedSessionIds = emptySet() }
+    BackHandler(enabled = LocalPageActive.current && isOpen && selecting) { selectedSessionIds = emptySet() }
     // Keep only one branch open. Searching reveals the first result without losing its parent.
     var expandedKey by rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider) {
         mutableStateOf(

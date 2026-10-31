@@ -37,7 +37,7 @@ M15 r21 证据见 `.artifacts/ui-regression/20261031-0315-m15-list-pull/`；r22 
 1. [ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md)：UI 冻结基线。先读 §1，再读本 ticket 涉及的 ID，以及标“r15 待实施”的行。
 2. [ADR-0053](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md)：本批需求的决策原文。ticket 与 ADR 冲突时以 ADR 为准，并在 ticket 中记录。
 3. [UI 回归方案](../testing/ui-regression.md)：完成前必须执行的门禁（§1）、命令（§3.1）、核心冒烟（§4.2）、r15 专项（§4.6）和新用例（§5.1）。
-4. 仓库根目录的 `AGENTS.md` / `CLAUDE.md`：本机开发指南，git 忽略，只存在于维护者那台 Mac 上。在该机器上工作时必须遵守其中的共享模拟器池（合计最多 5 台、独占锁、不新建设备）、固定构建目录与构建租约、产物保留规则。在其他机器上工作时，不受该机器设备池约束，但仍要满足回归方案的层级与证据要求。
+4. 仓库根目录的 `AGENTS.md` / `CLAUDE.md`：本机开发指南，git 忽略，只存在于维护者那台 Mac 上。在该机器上工作时必须遵守其中的共享模拟器池（合计最多 10 台、独占锁、不新建设备）、固定构建目录与构建租约、产物保留规则。在其他机器上工作时，不受该机器设备池约束，但仍要满足回归方案的层级与证据要求。
 
 ### 代码与夹具入口
 
@@ -254,6 +254,8 @@ Android 首页 `LazyColumn` 未显式传入状态，按首个可见项的 key �
 
 ## UI-04：设置页、唯一配对入口与设置 / 下载页转场
 
+2026-10-31 r25：转场范围按 [ADR-0054](../adr/0054-shared-full-page-navigation.md) 推广为所有下一级整页，覆盖添加电脑、Android 离线历史、聊天→历史→下载等任意深度；统一导航容器维护来源归属和状态，移除逐页手势白名单。根配对 / 模态 / 抽屉边界保留，遗留供应商页不恢复入口。下文 Actual behavior 为 r15 调查快照，不能覆盖当前决策。新增 `PageNavigationInstrumentedTest`、iOS 两项设备用例及 R20–R22，证据见 `.artifacts/ui-regression/20261031-page-navigation/summary.md`；全量与手动门禁按实际结果记录。
+
 **ID / 平台**：S22、M14（新增），S18、S19（修订）；iOS、Android。
 
 ### 4A 设置页结构
@@ -348,21 +350,21 @@ Android 首页 `LazyColumn` 未显式传入状态，按首个可见项的 key �
 
 **Actual behavior**
 
-Android 首页 `LazyColumn` 没有下拉刷新（`MainActivity.kt:707`）。iOS 为 `.refreshable { store.refresh() }`（`ContentView.swift:514`）。
+Android r16 已添加 Material3 下拉标识和刷新请求，但列表内容没有随手指向下位移；用户反馈 iOS 原生刷新会带动整个列表。iOS 为 `.refreshable { store.refresh() }`（`ContentView.swift:514`）。
 
 **建议实现**
 
-Compose BOM `2024.12.01` 带 material3 1.3.x，可用 `PullToRefreshBox` 包裹首页 `LazyColumn`。`isRefreshing` 只在手势触发到请求发出的这一刻为真，随后收起。指示器颜色用主题主色，置于首卡阴影之上且不裁切阴影。与 `detectHomeCloseDragGestures`、`immediatePressFeedback` 的手势顺序要验证：竖向下拉不能误触按压或左滑。
+保留现有 Material3 `pullToRefresh` 手势状态，在 `LazyColumn` 上按 `state.distanceFraction × PullToRefreshDefaults.PositionalThreshold`（默认 80dp）应用图层 y 位移，使列表与 iOS 一样随手指下移。图层位移不能改变列表测量尺寸或滚动锚点；请求发出后列表与指示器回到原位，刷新进度仍由现有连接胶囊 / 列表空态表达。验证时覆盖卡片竖拖、多选、左滑关闭、右滑打开抽屉和抽屉拖动，确保方向判定互不抢占。
 
 **Acceptance criteria**
 
-- 在顶部下拉，`refreshHome` 恰好调用一次；不在顶部、多选中、左滑中都不调用；断开时触发重连；指示器收起后卡片坐标不变。
+- 按住顶部下拉时首卡 y 随手指至少移动 20px；松手后回到原 y（容差 1dp），并且 `refreshHome` 恰好调用一次；不在顶部、多选中、左滑 / 右滑中都不触发刷新；卡片点击与抽屉 / 关闭手势保持工作；断开时触发重连。
 - 手动 R14 通过（A1、A2、A3、A4）；C02、C03、C09、C10 不回归。
 - 两端行为对照记录：iOS 的触发条件与指示器收起时机一致，或在 ADR-0051 中登记平台差异。
 
 **回归测试**
 
-新增 `HomePullRefreshInstrumentedTest`。需跑的既有用例：`HomeLoadingInstrumentedTest`、`HomeNavigationInstrumentedTest`、`HomeSwipeCloseInstrumentedTest`、`HomeSelectionInstrumentedTest`，以及全量。
+更新 `HomeViewportInstrumentedTest#pullingAtTheTopMovesTheListAndRestoresItsPositionAfterRefresh`，新增 `darkThemePullMovesAndRestoresTheWholeList`；保留测试对非顶部、多选、刷新调用次数的既有断言，并加拖动位移、松手复位、卡片点击和右滑抽屉 / 左滑关闭覆盖。需跑的既有用例：`HomeLoadingInstrumentedTest`、`HomeNavigationInstrumentedTest`、`HomeSwipeCloseInstrumentedTest`、`HomeSelectionInstrumentedTest`，以及全量。L1–L4 与手动 R14 未完成前，不标为已验收。
 
 **范围外**
 

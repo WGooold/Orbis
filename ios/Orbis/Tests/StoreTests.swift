@@ -333,6 +333,28 @@ struct StoreTests {
         #expect(store.streamingMessageIds.isEmpty)
     }
 
+    @Test func claudeStepHandoffPreservesIdenticalTextFromTheNextTurn() async throws {
+        let (store, transport) = setup()
+        await transport.ready([runtime("a")])
+        var initial = snapshot(try #require(transport.syncCommands.last), text: "History")
+        initial["live"] = ["complete": true, "messages": [["message": message("turn:0", text: "Same reply"), "finished": false]]]
+        await transport.event(initial)
+        #expect(store.messages.map(\.text) == ["History", "Same reply"])
+        await transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 1,
+            "source": ["epoch": "fixture", "seq": 2, "ready": true],
+            "display": ["entries": [["entryId": "native-1", "message": message("native-1", text: "Same reply")]]],
+            "live": ["complete": true, "messages": [["message": message("next:0", text: "Same reply"), "finished": false]]]], sequence: 2)
+        #expect(store.messages.map(\.text) == ["History", "Same reply", "Same reply"])
+        #expect(store.messages.filter { $0.text == "Same reply" }.count == 2)
+        #expect(store.streamingMessageIds == ["next:0"])
+        await transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 2,
+            "source": ["epoch": "fixture", "seq": 3, "ready": true],
+            "display": ["entries": [["entryId": "native-2", "message": message("native-2", text: "Same reply")]]],
+            "live": ["complete": true, "messages": []]], sequence: 3)
+        #expect(store.messages.map(\.text) == ["History", "Same reply", "Same reply"])
+        #expect(store.streamingMessageIds.isEmpty)
+    }
+
     @Test func authoritativeLiveInventoryReplacesTemporaryMessagesWhenPersisted() async throws {
         let (store, transport) = setup()
         await transport.ready([runtime("a")])

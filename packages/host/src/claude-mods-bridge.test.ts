@@ -1,3 +1,6 @@
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 
 import { RuntimeEventSchema, type RuntimeEvent } from "@orbis/protocol";
@@ -14,7 +17,7 @@ function bridgeWith(options: ClaudeModsBridgeOptions = {}): ClaudeModsBridge {
 
 function hello(overrides: Record<string, unknown> = {}) {
   return { type: "hello", instanceId: "instance-1", sessionId: "session-1", cwd: "C:\\work", claudeVersion: "2.1.310",
-    bridgeVersion: "2", capabilities: CLAUDE_BRIDGE_CAPABILITIES, ...overrides };
+    bridgeVersion: "3", capabilities: CLAUDE_BRIDGE_CAPABILITIES, ...overrides };
 }
 
 function online(bridge: ClaudeModsBridge, input: unknown = hello()) {
@@ -103,7 +106,7 @@ describe("ClaudeModsBridge", () => {
     expect(bridge.hello(hello({ capabilities: ["prompt.submit"] }))).toEqual({ ok: false, error: "missing_capability:turn.abort" });
     expect(bridge.hello(hello({ capabilities: ["turn.abort", "prompt.submit", "session.append", "turn.start", "turn.complete", "tool.call"] })))
       .toEqual({ ok: false, error: "missing_capability:turn.step.delta" });
-    expect(bridge.hello(hello({ bridgeVersion: "1" }))).toEqual({ ok: false, error: "bridge_version_unsupported:2" });
+    expect(bridge.hello(hello({ bridgeVersion: "2" }))).toEqual({ ok: false, error: "bridge_version_unsupported:3" });
   });
 
   it("keeps commands bound to a generation and requires a native result before retiring them", () => {
@@ -162,6 +165,47 @@ describe("ClaudeModsBridge", () => {
     expect(live?.turn).toMatchObject({ turnId: "turn-1", startedAt: 10 });
     expect(live?.messages).toMatchObject([{ message: { messageId: "turn-1:2", role: "assistant", content: [{ type: "text", text: "Hello world" }] } }]);
     expect(events.every(event => RuntimeEventSchema.safeParse(event).success)).toBe(true);
+  });
+
+  it("commits a step's UUIDs without live twins and ignores stale turn boundaries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-claude-identity-"));
+    const path = join(root, "session.jsonl");
+    const patches: Extract<RuntimeEvent, { type: "session.patch" }>[] = [];
+    const bridge = new ClaudeModsBridge({
+      onEvent: (_id, event) => { if (event.type === "session.patch") patches.push(event); },
+      createHistory: (id, config, publish) => new ClaudeSessionHistory(id, config, publish,
+        { locate: async () => path, settleTimeoutMs: 0 }),
+    });
+    try {
+      await writeFile(path, "");
+      const current = online(bridge);
+      const emit = (event: unknown) => expect(bridge.receiveEvent(current.runtimeId, current.generation, event)).toBe("accepted");
+      const sync = () => bridge.sync(current.runtimeId, { type: "session.sync", sessionId: "session-1", syncId: "s", range: "preview" });
+      emit({ type: "turn.start", turnId: "t", startedAt: 1 });
+      emit({ type: "turn.step.chunks", turnId: "t", stepIndex: 0, chunks: [{ blockIndex: 0, contentType: "text", delta: "same" }] });
+      emit({ type: "turn.step.row", turnId: "t", stepIndex: 0, uuid: "a" });
+      await appendFile(path, JSON.stringify({ type: "assistant", uuid: "a", parentUuid: null,
+        message: { role: "assistant", content: [{ type: "text", text: "same" }] } }) + "\n");
+      emit({ type: "session.append", uuid: "a", door: "response" });
+      expect((await sync())?.entries).toEqual([]);
+      emit({ type: "turn.step.finished", turnId: "t", stepIndex: 0, uuids: ["a"] });
+      const committed = await sync();
+      expect(committed?.entries.map(entry => entry.entryId)).toEqual(["a"]);
+      expect(committed?.live?.messages).toEqual([]);
+      emit({ type: "turn.step.chunks", turnId: "t", stepIndex: 0, chunks: [{ blockIndex: 0, contentType: "text", delta: "late" }] });
+      emit({ type: "turn.complete", turnId: "t" });
+      emit({ type: "turn.start", turnId: "next", startedAt: 2 });
+      // Duplicate starts preserve cached chunks; older completions must not end this turn.
+      emit({ type: "turn.step.chunks", turnId: "next", stepIndex: 0, chunks: [{ blockIndex: 0, contentType: "text", delta: "same" }] });
+      emit({ type: "turn.start", turnId: "next", startedAt: 999 });
+      emit({ type: "turn.complete", turnId: "older-unseen" });
+      const next = await sync();
+      expect(next?.live?.messages).toMatchObject([{ message: { messageId: "next:0", content: [{ type: "text", text: "same" }] } }]);
+      expect(next?.live?.turn).toMatchObject({ turnId: "next", startedAt: 2 });
+      expect(patches.every(patch => !patch.entries?.some(entry => entry.entryId === "a") ||
+        !patch.live?.messages.some(item => item.message.messageId === "t:0"))).toBe(true);
+      expect(bridge.statusOf(current.runtimeId)).toBe("running");
+    } finally { bridge.close(); await rm(root, { recursive: true, force: true }); }
   });
 
   it("answers session.sync only for the attached Session", async () => {

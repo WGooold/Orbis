@@ -127,6 +127,8 @@ ADR-0032、ADR-0033 §6；当前只完成在线目录条目和交互事件。
 
 ADR-0033 §3；Host backend、Mods bridge 单元测试和 v2.1.310 探针已覆盖提交、等待 idle 排队、主回合停止和原生完成确认；真实 Host/App 联动、工具/子任务/队列停止范围和命令重连恢复仍未验收。
 
+2026-10-31：插件 `0.1.4` 修正运行中 follow-up 的提交时机：消息保留在 Host 队列，主回合结束且轮末捕获确认后才调用 `prompt.submit`，尚未返回的提交至多一条。官方插件测试 13 项、相关 Host 59 项通过；前两个新增回归在修复前失败。未完成真实 TUI / App 联动和设备全量，不能认定“聊天卡住”已在真实环境验收。详见 [ADR-0033 §12](../adr/0033-claude-code-tui-mods-integration.md#12-运行中-follow-up-延后调用提交-api2026-10-31) 和 [R17](../testing/ui-regression.md#47-claude-运行中发送专项)。
+
 ## CC-06：历史、reload、reconnect 和 generation
 
 **Expected behavior**

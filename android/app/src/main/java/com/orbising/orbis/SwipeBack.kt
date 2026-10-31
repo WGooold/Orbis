@@ -1,5 +1,11 @@
 package com.orbising.orbis
 
+import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.OnBackPressedDispatcherOwner
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -31,8 +37,40 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
+/** Only the visible page may handle back or swipe; retained source pages stay passive. */
+internal val LocalPageActive = staticCompositionLocalOf { true }
+
+/** Shared full-page navigation boundary. Sheets and the root pairing screen live outside it. */
+@Composable
+internal fun OrbisPageHost(
+    onBack: () -> Unit,
+    underlay: @Composable () -> Unit,
+    open: Boolean = true,
+    contentKey: Any? = null,
+    canNavigateBack: Boolean = true,
+    content: @Composable () -> Unit,
+) {
+    val active = LocalPageActive.current
+    val dispatcherOwner = checkNotNull(LocalOnBackPressedDispatcherOwner.current)
+    val inactiveOwner = remember(dispatcherOwner) {
+        object : OnBackPressedDispatcherOwner {
+            override val lifecycle = dispatcherOwner.lifecycle
+            override val onBackPressedDispatcher = OnBackPressedDispatcher()
+        }
+    }
+    BackHandler(enabled = active && open) { if (canNavigateBack) onBack() }
+    SwipeBackLayer(onBack = onBack, open = open, contentKey = contentKey,
+        gestureEnabled = active && canNavigateBack,
+        underlay = {
+            // Material's retained drawer has its own BackHandler; isolate that callback too.
+            CompositionLocalProvider(LocalPageActive provides (active && !open),
+                LocalOnBackPressedDispatcherOwner provides if (active && !open) dispatcherOwner else inactiveOwner) { underlay() }
+        },
+        content = { CompositionLocalProvider(LocalPageActive provides active) { content() } })
+}
+
 /**
- * 页面右滑返回（聊天页，以及 ADR-0053 §5 的设置页与下载页）：在页面任意位置向右横拖，页面跟随手指；松手时按位移加上抛掷速度判断，
+ * 页面右滑返回（所有下一级整页，ADR-0053 §5）：在页面任意位置向右横拖，页面跟随手指；松手时按位移加上抛掷速度判断，
  * 超过三分之一屏宽就滑到右侧，动画结束才返回，否则回弹。竖向滑动由消息列表消费。
  * [underlay] 固定在原位，起始轻微横向受压，随右滑逐步恢复原状并渐亮。
  * 首页始终保留在同一个组合位置，返回时直接恢复交互，不重新创建列表及其按压状态。
@@ -45,6 +83,7 @@ internal fun SwipeBackLayer(
     underlay: @Composable () -> Unit,
     open: Boolean = true,
     contentKey: Any? = null,
+    gestureEnabled: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val currentOnBack by rememberUpdatedState(onBack)
@@ -101,8 +140,8 @@ internal fun SwipeBackLayer(
             .background(MaterialTheme.colorScheme.background)
             .clipToBounds()
             .onSizeChanged { width = it.width }
-            .pointerInput(open, contentKey) {
-                if (!open) return@pointerInput
+            .pointerInput(open, contentKey, gestureEnabled) {
+                if (!open || !gestureEnabled) return@pointerInput
                 val velocity = VelocityTracker()
                 detectHorizontalDragGestures(
                     onDragStart = {

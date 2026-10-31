@@ -114,7 +114,7 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 ### 7. 实施记录（2026-10-29）
 
 - **历史权威**：Host 直接读取原生 transcript（`<CLAUDE_CONFIG_DIR 或 ~/.claude>/projects/*/<sessionId>.jsonl`），按 `uuid` / `parentUuid` 投影为标准条目，经 `RecoverableSessionSource` + `SessionSyncPreparer` 回答 `session.sync`，与 DSH 后端同一路径。`isMeta`、侧链（子 Agent）、附件、系统行不进主路径，但仍参与父链解析；多块 `tool_result` 拆成独立条目；空 thinking（仅签名）不显示；压缩摘要投影为 `compaction`。bridge 的 `session.append` 只通告行身份，正文以磁盘行为准，不从文本推断身份。`$.session.messages()` 在 v2.1.312 的测试环境无法取得返回形状，未采用。
-- **实时内容**：`turn.step` 流式输出与工具事件进入会话源的 live 状态；回合结束后等待本回合通告的行全部落盘（上限 3 秒）再撤下流式副本，避免与 canonical 行重复。
+- **实时内容**：`turn.step` 流式输出与工具事件进入会话源的 live 状态。2026-10-31 修订：按 §13 的原生步骤归属建立 UUID 集合；原子交接发生在步骤边界，不再等整轮结束统一清空。结束轮次的兜底清理仅处理本轮消息，已报告但尚未落盘的步骤保留到后续核对。
 - **插件登记**：安装 Host 默认调用 Claude 自己的 `claude plugin marketplace add <插件目录>` 与 `claude plugin install orbis-host-session-link@orbis-host --scope user`；Windows 安装器直接登记，macOS 拖拽安装与便携包在首次打开 Host 时登记。插件目录同时是本地 marketplace，Claude 原地加载，应用更新后重新打开 Host 时重新指向，不依赖 Relay 激活。未安装 Claude Code 时跳过；安装后重开 Host 会重试。设置“让终端里运行的 Claude Code 连接 Orbis”默认开启，关闭时 `uninstall` 并移除 marketplace，更新保留显式关闭。Windows 卸载器也移除插件；macOS 删除应用前可先关闭此项。原登记命令在 v2.1.312 隔离配置下实测通过。
 - **客户端**：iOS / Android 新增 `claude` 身份（名称、配色、中性图形标记）、目录筛选；Claude 会话不提供附件入口，运行中发送直接按 follow-up 提交，不提供 Steer；新建会话列表不含 Claude（Host 的 `launchableAgents` 也排除它）。
 - **仍未验收**：见 §8 末尾。
@@ -156,6 +156,23 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 - 握手串行化；请求绑定握手时的端点，旧请求和旧命令结果不能覆盖新连接。新代次重新发送会话状态，拒绝握手的退避只约束对应的端点与 token。Host 未启动、发现文件暂缺或正在重连时，在 Claude 状态行给出提示。
 - 插件版本提升到 `0.1.1`。Claude 的重复 `plugin install` 不刷新已安装缓存，所以 Host 登记流程追加官方 `plugin update`，确保随 Host 更新的修复进入插件缓存；明确关闭仍保持关闭。已打开的旧版插件需要执行一次 `/reload-plugins` 或重启 Claude Code。
 - 回归覆盖 Host 换端口 / token、发现文件暂缺、临时 HTTP 故障、握手拒绝、认证失效、过期代次与未完成命令隔离。原版不能通过新增重启用例；修复版通过官方插件测试。另以同一插件模块和真实、认证的 loopback HTTP 服务验证连续两次 Host 重建，不调用模型。
+
+### 12. 运行中 follow-up 延后调用提交 API（2026-10-31）
+
+- 用户报告：Claude 正运行时在 App 再发消息，聊天停在该消息并持续显示“发送中”。代码核对发现插件立即调用等待 idle 的 `$.prompt.submit`，同批多条消息还会并发进入该 API。Host 本来就会立即返回 `pending`，增加同类回执不能解决这个调用时机问题。
+- 插件 `0.1.4` 将运行中的手机消息留在 Host 现有、有界且绑定 generation 的命令队列中；插件继续轮询、传递工具事件与处理停止。只在主回合结束、Host 完成轮末快照的 HTTP 确认之后，由下一次轮询提交。原生 `turn.start` 到达前也至多保留一个尚未返回的用户提交。子 Agent 完成不放行主回合的 follow-up；新 Host 不会收到旧代次留下的消息。
+- 原生提交结果仍决定最终成功 / 失败；不提前声称消息已经进入 Claude 上下文，不增加 Steer 或可撤回能力。用户可见发送 / 对账继续遵守 ADR-0049 和 ADR-0051 V10 / V12 / V17，基线规则与参数未变。
+- Claude Code `2.1.314` 官方 `plugin test` 共 13 项通过（新增 5 项），覆盖忙时不调用提交 API、串行提交、停止与工具事件、子 Agent、轮末捕获屏障和代次隔离。前两个新增场景在修复前失败。插件 validate、目标构建生成声明的类型检查、仓库 TypeScript 检查和修改文件 lint 通过；相关 Host 5 个测试文件共 59 项通过。
+- 证据目录：`.artifacts/ui-regression/20261031-claude-busy-send/`。以上是官方插件测试环境与 Host 单测，尚未复现 / 证明真实 TUI 的事件调度阻塞；真实模型、App 联动、两端设备全量与手动回归未验收。未重启或更新用户正在使用的 Host / Claude。
+
+### 13. 模型回复的步骤身份与原子历史交接（2026-10-31）
+
+- 修复流式 `${turnId}:${stepIndex}` 与原生 UUID 没有关联，导致同一正文同时存在于 live 与 canonical 的缺陷；同时修复轮末重放消息、旧轮异步清理误删新轮，以及迟到结束改变当前轮状态的问题。恢复 ADR-0051 V09 / V17 / V18，未新增 feature 或调整 UI 参数；工具呈现仍遵守 V20。
+- 插件 `0.1.5` / bridge `3` 增加 `turn.step.identity` 能力、`turn.step.row`（写入前预留 UUID）与 `turn.step.finished`（步骤完整 UUID 集合）。只归属主循环 `door=response` 的 assistant 行，子 Agent、用户、工具结果不混入。一个步骤可对应多条持久行，不按正文、时间或数组位置推断身份。已核对 Claude Code `2.1.314` 的生成声明：`session.append.uuid` 是 pinned 稳定身份；下一主步骤或主回合结束是前一步追加集合的确认边界。
+- 预留先于 `next(event)`，Host 暂缓发布该行及其后代，避免并发 sync 提前读到历史副本；在全部声明 UUID 落盘后，复用 `RecoverableSessionSource.reconcile` 的显式 mapping，在同一次事务中发布整组历史并撤下对应流式消息。多个步骤按顺序交接；空 / 签名隐藏的响应无需伪造可见行。步骤完成后释放适配器正文缓存，迟到 chunk 与轮末 `message.finished` 不得重建旧副本。
+- 结束清理在第一次 await 前捕获本轮消息身份，仅撤下该集合；已报告但磁盘迟到的步骤在 3 秒等待到期后继续保留 live，后续 refresh 再交接。重复 start 不清空缓存；旧 turn.complete 不结束新轮。UUID 预留确认丢失时重新握手核对，旧流式步骤仍绑定原 generation，不能向新 Host 补发。
+- Host 与插件必须配套更新；bridge 2 明确拒绝，不能把缺少身份事件的旧插件当成已修复。已打开的旧插件需要执行官方 `/reload-plugins`。本任务没有更新或重启用户正在运行的 Host / Claude。
+- 回归：`claude-transcript.test.ts`、`claude-mods-bridge.test.ts` 覆盖多 UUID、写入晚于边界、每帧无双份、跨轮清理、迟到 chunk / finish、重复 start 与旧 complete、超过等待期仍保留已声明步骤；官方插件测试覆盖主 / 子步骤隔离、下一请求和主回合结束的顺序。两端设备及手动验证、实际计数与限制见 `.artifacts/ui-regression/20261031-claude-output-identity/summary.md`；R18 对应真实联动检查，不把模拟通过扩大为设备验收。
 
 ## Alternatives not selected
 

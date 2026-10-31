@@ -4,7 +4,7 @@
 
 Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再跳转；保留排障入口；聊天 / 历史页内下载页滑入并返回原页；历史页加下载按钮；设置页去掉已配对电脑区。§8 回归门禁立即生效。2026-10-31 合入 main；r19 已补 Android Codex 真实输出捕获及两端 V21 目录用例定向验证；r21 按反馈修订 M15，使 Android 会话列表随下拉位移；r22 修复请求发出后指示器停在阈值的问题；r23 统一列表与旋转指示器的柔和回位曲线，L1 / L2 通过，API 35 设备由其他任务独占，L3 / L4 与手动门禁未运行。当前 iOS 全量、iOS / Claude 真实输出和手动门禁未完成，进度见 [UI r15 ticket](../agents/ui-r15-tickets.md)）
 
-关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)（基线 `2026-10-31/r23`）、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0048](0048-online-chat-entry-budget.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0050](0050-fixed-lan-relay-routing.md)；回归方案见 [移动端 UI 回归方案](../testing/ui-regression.md)。
+关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)（基线 `2026-10-31/r24`）、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0048](0048-online-chat-entry-budget.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0050](0050-fixed-lan-relay-routing.md)；回归方案见 [移动端 UI 回归方案](../testing/ui-regression.md)。
 
 ## Context
 
@@ -51,10 +51,12 @@ Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再�
 - 目录筛选菜单中的入口，以及 provider 不匹配对话框中的入口保留，文字改为“设置”，点击后进入设置页。这两处是排障路径，不算右上角的入口。
 - 添加电脑与取消配对只保留一个入口：点击侧边栏底部的电脑行，在弹出的菜单中切换电脑、添加电脑或取消配对当前电脑。iOS 目录底部单独的省略号菜单并入这一菜单；首页电脑切换菜单删除“添加电脑”；其他添加 / 取消配对入口全部删除。首次未配对时的引导配对页不算入口。引用旧入口的文案同步改写，例如“请在主界面点「取消配对」”和“请在连接状态页切换”。
 
-### 5. 设置页与下载页的转场（M14，UI-04）
+### 5. 设置、下载与历史页的转场（M14，UI-04）
 
 - 设置页与首页下载页复用聊天的转场：Android 按 M07 从右侧滑入，入场可被右滑接管；iOS 沿用原生 push 入场。两端在页面内右滑按 M08 跟手、预测、阈值和回弹返回首页；底层为首页，保持同一组合身份，返回后可立即点击。设置页内的二级页（供应商管理）返回设置页。
 - 聊天顶栏和历史页顶栏的下载按钮单独处理（历史页按钮见 §7）。它们打开的下载页同样从右侧滑入，在页面内右滑返回。返回目标是打开它的那个页面，不是首页；右滑时露出的底层也是这个页面。来源页面保持原实例，阅读锚点、跟随状态、草稿、展开状态和消息身份都不变；底层不能另建第二个聊天或历史页实例。首页、聊天、历史三个下载入口的返回目标互不串扰。
+- r24：从聊天打开“历史与分支”页也复用上述转场，页面内右滑露出并返回原聊天，短拖回弹，保留阅读位置、草稿、工具展开与消息身份。iOS 通过 `push` 保存聊天画面快照并启用同一返回层；Android 历史页覆盖在常驻聊天组合上；历史内下载先返回历史，再由历史右滑回聊天。自动用例及手动 R19 见回归方案，未完成设备门禁不记为验收通过。
+- r24：[ADR-0054](0054-shared-full-page-navigation.md) 将本节推广为所有下一级整页的默认规则，并取代逐页启用方式。新增页面通过共用导航容器继承效果；已配对后的添加电脑、Android 离线历史补齐同款返回，每次只退到直接来源。首次配对根页、Sheet / 对话框、目录抽屉及系统页面保持各自关闭方式。遗留供应商整页没有正常入口，本节原“设置页内的供应商管理二级页”仅规定未来整页恢复时的归属，不要求恢复旧入口。来源状态、平台差异与 R20–R22 见该 ADR 及回归方案；未完成门禁不记为验收通过。
 - 减少动画时直接切换。手势起手和方向判定与目录抽屉（M09）、首页左滑关闭（M10）以及页面内横向控件（代码块横滚、文件 Pager）互不抢占。
 
 ### 6. 首页下拉刷新（M15，UI-05）

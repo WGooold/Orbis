@@ -57,6 +57,10 @@ export class ClaudeSessionHistory {
   /** Transcript uuid → phone messageId, once a prompt claimed its row. */
   readonly #claims = new Map<string, string>();
   readonly #annotated = new WeakMap<RemoteSessionEntry, RemoteSessionEntry>();
+  /** One native step may persist several rows (thinking, text and tool calls). */
+  readonly #steps = new Map<string, { reserved: Set<string>; stored?: readonly string[] }>();
+  readonly #rowOwners = new Map<string, string>();
+  readonly #retiredMessages = new Set<string>();
 
   constructor(sessionId: string, configDir: string, publish: (event: Published) => void,
     options: ClaudeSessionHistoryOptions = {}) {
@@ -82,7 +86,34 @@ export class ClaudeSessionHistory {
   attachToolStore(store: ToolContentStore): void { this.#tools.attach(store); }
 
   /** Consumes live events (messages, turns, tools); false means forward the event as is. */
-  observe(event: RuntimeEvent): boolean { return this.source.observe(this.#tools.event(event)); }
+  observe(event: RuntimeEvent): boolean {
+    const id = event.type === "message.delta" ? event.messageId
+      : event.type === "message.started" || event.type === "message.finished" ? event.message.messageId : undefined;
+    // A late chunk or turn.complete must never resurrect an already committed step.
+    if (id !== undefined && this.#retiredMessages.has(id)) return true;
+    return this.source.observe(this.#tools.event(event));
+  }
+
+  /** Called before the native append continues, so even a concurrent sync cannot expose a twin. */
+  reserveStepRow(messageId: string, uuid: string): void {
+    if (this.#closed || this.#retiredMessages.has(messageId)) return;
+    let step = this.#steps.get(messageId);
+    if (step === undefined) { step = { reserved: new Set() }; this.#steps.set(messageId, step); }
+    const owner = this.#rowOwners.get(uuid);
+    if (owner !== undefined && owner !== messageId) return;
+    step.reserved.add(uuid);
+    this.#rowOwners.set(uuid, messageId);
+  }
+
+  /** Explicit native boundary: every stored response row belonging to this step is now known. */
+  async finishStep(messageId: string, uuids: readonly string[]): Promise<void> {
+    if (this.#closed || this.#retiredMessages.has(messageId)) return;
+    for (const uuid of uuids) this.reserveStepRow(messageId, uuid);
+    const step = this.#steps.get(messageId) ?? { reserved: new Set<string>() };
+    step.stored = [...uuids];
+    this.#steps.set(messageId, step);
+    await this.refresh();
+  }
 
   turnAnchor(announced: readonly string[]): string | undefined {
     const ids = new Set(announced);
@@ -120,7 +151,9 @@ export class ClaudeSessionHistory {
    * Waits until every row the bridge announced for the turn is on disk, then drops the
    * streamed copies. Unmatched streamed text is never kept next to its canonical twin.
    */
-  async settleTurn(announced: readonly string[]): Promise<void> {
+  async settleTurn(announced: readonly string[], messageIds: readonly string[] = this.source.snapshot().live.messages.map(item => item.message.messageId)): Promise<void> {
+    // Capture ownership before the first await. A newer turn can start while disk writes settle.
+    const owned = new Set(messageIds);
     const timeout = this.#options.settleTimeoutMs ?? 3_000;
     const interval = this.#options.settleIntervalMs ?? 100;
     const deadline = Date.now() + timeout;
@@ -130,18 +163,31 @@ export class ClaudeSessionHistory {
       await new Promise(resolve => setTimeout(resolve, interval));
     }
     if (this.#closed) return;
-    // Live tools leave on their own: reconcile drops the twin of every tool result on disk.
-    const live = this.source.snapshot().live;
-    if (live.messages.length > 0) this.source.replaceLive({ ...live, messages: [] });
+    this.source.transaction(() => {
+      this.#commitProjection();
+      for (const id of owned) {
+        // A reported commit whose bytes are late remains live until a later refresh can hand it
+        // over. Timing out is not proof that its native content was lost or can be discarded.
+        const step = this.#steps.get(id);
+        if (step?.stored !== undefined) owned.delete(id);
+        else this.#retire(id);
+      }
+      // Release only this turn's interrupted / unmapped steps, in the same canonical transaction.
+      this.#commitProjection();
+      const live = this.source.snapshot().live;
+      if (live.messages.some(item => owned.has(item.message.messageId))) {
+        this.source.replaceLive({ ...live, messages: live.messages.filter(item => !owned.has(item.message.messageId)) });
+      }
+    });
   }
 
   async sync(request: SessionSyncRequest): Promise<SessionSnapshot> {
     await this.refresh().catch(() => undefined);
     this.source.flushPending();
     this.source.replayToolInventory();
-    const projection = this.#reader?.projection;
+    const entries = this.#projected();
     return this.#preparer.select({
-      entries: this.#projected(), sessionId: this.#sessionId, leafId: projection?.leafId ?? null,
+      entries, sessionId: this.#sessionId, leafId: entries.at(-1)?.entryId ?? null,
       request, source: this.source.snapshot(),
     });
   }
@@ -152,7 +198,43 @@ export class ClaudeSessionHistory {
   }
 
   #projected() {
-    return (this.#reader?.projection.entries ?? []).map((entry, order) => this.#withClientId(this.#tools.entry(entry, order)));
+    const entries = this.#reader?.projection.entries ?? [];
+    // Keep the canonical path intact: descendants of a gated row wait with their parent.
+    const boundary = entries.findIndex(entry => this.#rowOwners.has(entry.entryId));
+    return (boundary < 0 ? entries : entries.slice(0, boundary))
+      .map((entry, order) => this.#withClientId(this.#tools.entry(entry, order)));
+  }
+
+  #retire(messageId: string): void {
+    const step = this.#steps.get(messageId);
+    for (const uuid of step?.reserved ?? []) if (this.#rowOwners.get(uuid) === messageId) this.#rowOwners.delete(uuid);
+    this.#steps.delete(messageId);
+    this.#retiredMessages.add(messageId);
+    while (this.#retiredMessages.size > 512) this.#retiredMessages.delete(this.#retiredMessages.values().next().value!);
+  }
+
+  #commitProjection(): void {
+    const mappings: { messageId: string; entryId: string }[] = [];
+    const retired = new Set<string>();
+    for (const [messageId, step] of this.#steps) {
+      // Commit in native step order: a later step cannot remove its overlay while an earlier
+      // missing row still gates its canonical ancestors.
+      if (step.stored === undefined || !step.stored.every(uuid => this.hasEntry(uuid))) break;
+      // An opaque step identity owns this whole set, never a match guessed from text or position.
+      // The last rendered row is the commit anchor; all rows are released in this transaction.
+      const ids = new Set(step.stored);
+      const anchor = [...(this.#reader?.projection.entries ?? [])].reverse().find(entry => ids.has(entry.entryId));
+      if (anchor !== undefined) mappings.push({ messageId, entryId: anchor.entryId });
+      retired.add(messageId);
+      this.#retire(messageId);
+    }
+    const entries = this.#projected();
+    this.source.reconcile(entries, entries.at(-1)?.entryId ?? null, mappings);
+    // Empty / signature-only native responses have no rendered commit anchor.
+    const live = this.source.snapshot().live;
+    if (live.messages.some(item => retired.has(item.message.messageId))) {
+      this.source.replaceLive({ ...live, messages: live.messages.filter(item => !retired.has(item.message.messageId)) });
+    }
   }
 
   #withClientId(entry: RemoteSessionEntry): RemoteSessionEntry {
@@ -192,7 +274,10 @@ export class ClaudeSessionHistory {
         const path = await (this.#options.locate ?? findClaudeTranscript)(this.#sessionId, this.#configDir);
         // A brand-new Session has no transcript until its first row; that is an empty history.
         if (path === undefined) {
-          this.source.setAvailability(true, true);
+          this.source.transaction(() => {
+            this.#commitProjection();
+            this.source.setAvailability(true, true);
+          });
           return;
         }
         this.#reader = new ClaudeTranscriptReader(path);
@@ -203,7 +288,7 @@ export class ClaudeSessionHistory {
       this.#claimPrompts();
       const projection = this.#reader.projection;
       this.source.transaction(() => {
-        this.source.reconcile(this.#projected(), projection.leafId);
+        this.#commitProjection();
         this.source.setAvailability(true, true);
       });
       const facts = JSON.stringify(projection.facts);

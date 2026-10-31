@@ -39,8 +39,8 @@ async function post(path, body) {
   return response.json();
 }
 const hello = await post("/v1/claude/mods/hello", { type: "hello", instanceId: "fixture-tui", sessionId,
-  cwd: stateDir, claudeVersion: "2.1.312", bridgeVersion: "1", configDir,
-  capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call"] });
+  cwd: stateDir, claudeVersion: "2.1.312", bridgeVersion: "3", configDir,
+  capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity"] });
 if (!hello.ok) throw new Error(`bridge_hello_${hello.error}`);
 async function event(value) {
   const result = await post("/v1/claude/mods/event", { runtimeId, generation: hello.generation, event: value });
@@ -63,21 +63,30 @@ const server = createServer((request, response) => {
       response.end(JSON.stringify({ ...pairing.payload, relayUrl: relay.url.replace("127.0.0.1", "10.0.2.2") }));
     } else if (path === "/advance" && request.method === "POST" && !advanced) {
       advanced = true;
+      await event({ type: "turn.step.row", turnId: "fixture-turn", stepIndex: 0, uuid: "streamed-0" });
       await appendFile(transcript, lines([
-        row("assistant", "call-1", "a1", [{ type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "fixture-a" } }]),
+        row("assistant", "streamed-0", "a1", [{ type: "text", text: "CLAUDE_ALREADY_STREAMING" }]),
+        row("assistant", "call-1", "streamed-0", [{ type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "fixture-a" } }]),
         row("assistant", "call-2", "call-1", [{ type: "tool_use", id: "tool-2", name: "Read", input: { file_path: "fixture-b" } }]),
         row("user", "result-1", "call-1", [{ type: "tool_result", tool_use_id: "tool-1", content: "first result" }]),
         row("user", "result-2", "call-2", [{ type: "tool_result", tool_use_id: "tool-2", content: "second result" }]),
         row("assistant", "parallel", "result-2", [{ type: "text", text: "CLAUDE_PARALLEL_HISTORY" }]),
       ]));
-      await event({ type: "session.append", uuid: "parallel", door: "main" });
+      await event({ type: "session.append", uuid: "parallel", door: "response" });
+      await event({ type: "turn.step.finished", turnId: "fixture-turn", stepIndex: 0, uuids: ["streamed-0"] });
       await event({ type: "turn.step.chunks", turnId: "fixture-turn", stepIndex: 1,
         chunks: [{ blockIndex: 0, contentType: "text", delta: "CLAUDE_STREAM_VISIBLE" }] });
       response.end("{}");
     } else if (path === "/finish" && request.method === "POST" && advanced && !finished) {
       finished = true;
-      await appendFile(transcript, lines([row("assistant", "final", "parallel", [{ type: "text", text: "CLAUDE_FINAL_VISIBLE" }])]));
-      await event({ type: "session.append", uuid: "final", door: "main" });
+      await event({ type: "turn.step.row", turnId: "fixture-turn", stepIndex: 1, uuid: "streamed-1" });
+      await appendFile(transcript, lines([
+        row("assistant", "streamed-1", "parallel", [{ type: "text", text: "CLAUDE_STREAM_VISIBLE" }]),
+        row("assistant", "final", "streamed-1", [{ type: "text", text: "CLAUDE_FINAL_VISIBLE" }]),
+      ]));
+      await event({ type: "session.append", uuid: "streamed-1", door: "response" });
+      await event({ type: "turn.step.finished", turnId: "fixture-turn", stepIndex: 1, uuids: ["streamed-1"] });
+      await event({ type: "session.append", uuid: "final", door: "response" });
       await event({ type: "turn.complete", turnId: "fixture-turn", answer: "CLAUDE_FINAL_VISIBLE" });
       response.end("{}");
     } else if (path === "/stats") {

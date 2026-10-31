@@ -7,26 +7,22 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.orbisReduceMotion) private var reduceMotion
-    @State private var pages: [AppPage] = []
+    @StateObject private var navigation = OrbisPageStack<AppPage>()
     @State private var drawerOpen = false
     @State private var directoryState = SessionDirectoryState()
     @State private var newSessionOpen = false
     @State private var newSessionCwd: String?
-    /// What each pushed page reveals when swiped back, by stack index. A page pushed from home reveals
-    /// the live home; one pushed from another page reveals a still of it, because the real page stays
-    /// alive below in the stack and must not be built a second time (ADR-0053 §5).
-    @State private var underlays: [Int: UIView] = [:]
     @StateObject private var overlay = OrbisOverlay()
 
     init() {
         #if DEBUG
         let preview = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-screen=") }?.split(separator: "=").last.map(String.init)
         switch preview {
-        case "chat", "slash", "approval", "tool", "queue", "notices", "interactions", "truncated", "viewport", "changes": _pages = State(initialValue: [.chat])
-        case "status": _pages = State(initialValue: [.status])
-        case "providers": _pages = State(initialValue: [.status, .providers])
-        case "downloads": _pages = State(initialValue: [.downloads])
-        case "history": _pages = State(initialValue: [.chat, .history])
+        case "chat", "slash", "approval", "tool", "queue", "notices", "interactions", "truncated", "viewport", "changes": _navigation = StateObject(wrappedValue: OrbisPageStack([.chat]))
+        case "status": _navigation = StateObject(wrappedValue: OrbisPageStack([.status]))
+        case "providers": _navigation = StateObject(wrappedValue: OrbisPageStack([.status, .providers]))
+        case "downloads": _navigation = StateObject(wrappedValue: OrbisPageStack([.downloads]))
+        case "history": _navigation = StateObject(wrappedValue: OrbisPageStack([.chat, .history]))
         case "drawer": _drawerOpen = State(initialValue: true)
         case "new-session": _newSessionOpen = State(initialValue: true)
         default: break
@@ -35,7 +31,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $pages) {
+        NavigationStack(path: $navigation.pages) {
             Group {
                 if store.pairings.isEmpty {
                     PairingEntryView(onCancel: nil, onCode: store.pair)
@@ -49,7 +45,7 @@ struct ContentView: View {
                     switch page {
                     case .chat:
                         if let runtime = store.selectedRuntime {
-                            ChatView(runtime: runtime, onBack: back, onHistory: { pages.append(.history) }, onDownloads: { push(.downloads) })
+                            ChatView(runtime: runtime, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) })
                                 .id(localSessionKey(host: store.selectedHost, runtime: runtime))
                         } else { OrbisEmptyState(symbol: "desktopcomputer", title: "会话已离线") }
                     case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
@@ -62,8 +58,8 @@ struct ContentView: View {
                 .foregroundStyle(OrbisPalette(scheme).text)
                 .background(OrbisPalette(scheme).base.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
-                .modifier(SwipeBackModifier(enabled: [.chat, .status, .downloads].contains(page), onBack: back,
-                                            underlay: { underlay(below: page) }))
+                .modifier(OrbisPageTransition(onBack: back,
+                                              underlay: { navigation.underlay(below: page) { home } }))
             }
         }
         .environmentObject(store.transfers)
@@ -75,7 +71,7 @@ struct ContentView: View {
         .foregroundStyle(OrbisPalette(scheme).text)
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .accessibilityHidden(drawerOpen)
-        .modifier(SessionDrawerModifier(isOpen: $drawerOpen, edgeSwipeEnabled: pages.isEmpty && !store.pairings.isEmpty && !store.isPairing) {
+        .modifier(SessionDrawerModifier(isOpen: $drawerOpen, edgeSwipeEnabled: navigation.pages.isEmpty && !store.pairings.isEmpty && !store.isPairing) {
             drawer
         })
         .overlay(alignment: .top) {
@@ -104,20 +100,17 @@ struct ContentView: View {
             NewSessionView(presetCwd: newSessionCwd) { newSessionOpen = false }
                 .environmentObject(store).orbisSheet([.large])
         }
-        .onChange(of: pages) { _, next in
-            overlay.dismissMenu()
-            underlays = underlays.filter { $0.key < next.count }
-        }
+        .onChange(of: navigation.pages) { _, _ in overlay.dismissMenu() }
         .onChange(of: drawerOpen) { _, open in if !open { overlay.dismissMenu() } }
         .onChange(of: store.activationRevision) { _, _ in
             setDrawer(false); newSessionOpen = false
-            if store.selectedRuntime != nil { pages = [.chat] }
+            if store.selectedRuntime != nil { navigation.replace(with: [.chat]) }
         }
         .onChange(of: store.selectedRuntimeId) { old, next in
-            if old != nil && next == nil && pages.contains(.chat) { pages = [] }
+            if old != nil && next == nil && navigation.pages.contains(.chat) { navigation.replace(with: []) }
         }
         .onChange(of: store.isPairing) { old, active in
-            if old && !active && store.errorMessage == nil && store.selectedHost != nil { pages = [] }
+            if old && !active && store.errorMessage == nil && store.selectedHost != nil { navigation.replace(with: []) }
         }
         .onChange(of: scenePhase) { old, new in
             if new != .active { store.toolContent.close() }
@@ -141,8 +134,8 @@ struct ContentView: View {
     }
 
     private var home: some View {
-        HomeView(onDirectory: { setDrawer(true) }, onSettings: { pages.append(.status) },
-                 onDownloads: { pages.append(.downloads) },
+        HomeView(onDirectory: { setDrawer(true) }, onSettings: { push(.status) },
+                 onDownloads: { push(.downloads) },
                  onOpenRuntime: { hostId, runtime in
                      store.selectHost(hostId)
                      openRuntime(runtime)
@@ -153,30 +146,20 @@ struct ContentView: View {
         SessionDrawerView(state: $directoryState, onClose: { setDrawer(false) },
                           onOpenSession: { session in
                               if let runtime = store.runtimes.first(where: { $0.sessionId == session.sessionId }) { openRuntime(runtime) }
-                              else if store.openCachedSession(session) { setDrawer(false); pages = [.chat] }
+                              else if store.openCachedSession(session) { setDrawer(false); navigation.replace(with: [.chat]) }
                               else {
                                   overlay.showDialog("本机尚无缓存", message: "连接电脑并打开会话后，可把历史保存在本机。", actions: [OrbisDialogAction(title: "返回", role: .cancel)] + (store.connection == .secured ? [OrbisDialogAction(title: "在电脑继续会话") { store.activate(session) }] : []))
                               }
                           },
                           onNewSession: { cwd in
                               newSessionCwd = cwd; setDrawer(false); newSessionOpen = true
-                          }, onAddHost: { setDrawer(false); pages.append(.pairing) },
-                          onProviders: { setDrawer(false); pages.append(.status) },
+                          }, onAddHost: { setDrawer(false); push(.pairing) },
+                          onProviders: { setDrawer(false); push(.status) },
                           onUnpair: { confirmUnpair($0) })
     }
 
-    private func back() { if !pages.isEmpty { pages.removeLast() } }
-    /// Pushes a page over the current one, keeping a still of the current page to reveal on swipe back.
-    private func push(_ page: AppPage) {
-        if !pages.isEmpty { underlays[pages.count] = currentScreenSnapshot() }
-        pages.append(page)
-    }
-    @ViewBuilder private func underlay(below page: AppPage) -> some View {
-        let index = pages.lastIndex(of: page) ?? 0
-        if index == 0 { home }
-        else if let snapshot = underlays[index] { SnapshotUnderlay(view: snapshot).ignoresSafeArea() }
-        else { OrbisPalette(scheme).base.ignoresSafeArea() }
-    }
+    private func back() { navigation.back() }
+    private func push(_ page: AppPage) { navigation.push(page) }
     private func setDrawer(_ open: Bool) {
         withAnimation(reduceMotion ? nil : .orbisDrag) { drawerOpen = open }
     }
@@ -185,12 +168,12 @@ struct ContentView: View {
         overlay.showDialog("取消配对这台电脑？", message: "此电脑在本机保存的配对和草稿将被移除。之后可以重新扫码连接。", actions: [
             OrbisDialogAction(title: "返回", role: .cancel),
             OrbisDialogAction(title: "取消配对 \(host.hostName)", role: .destructive) {
-                store.unpair(hostId: host.hostId); pages = []; setDrawer(false)
+                store.unpair(hostId: host.hostId); navigation.replace(with: []); setDrawer(false)
             }
         ])
     }
     private func openRuntime(_ runtime: RuntimeSummary) {
-        store.selectRuntime(runtime.runtimeId); setDrawer(false); pages = [.chat]
+        store.selectRuntime(runtime.runtimeId); setDrawer(false); navigation.replace(with: [.chat])
     }
 }
 
@@ -315,12 +298,41 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     }
 }
 
-/// 聊天页右滑返回。导航栏隐藏后系统侧滑返回失效，这里在页面上同时识别一个横向拖动：
-/// 首页固定在原位，起始轻微横向受压，随右滑逐步恢复原状并渐亮；吸附完成后再返回。
-private struct SwipeBackModifier<Underlay: View>: ViewModifier {
+/// Owns navigation and source previews together, so new routes cannot forget swipe-back setup.
+@MainActor
+final class OrbisPageStack<Page: Hashable>: ObservableObject {
+    @Published var pages: [Page] {
+        didSet { snapshots = snapshots.filter { $0.key < pages.count } }
+    }
+    private var snapshots: [Int: UIView] = [:]
+
+    init(_ pages: [Page] = []) { self.pages = pages }
+
+    func push(_ page: Page) {
+        if !pages.isEmpty { snapshots[pages.count] = currentScreenSnapshot() }
+        pages.append(page)
+    }
+
+    func back() { if !pages.isEmpty { pages.removeLast() } }
+
+    func replace(with pages: [Page]) {
+        snapshots.removeAll()
+        self.pages = pages
+    }
+
+    @ViewBuilder func underlay<Root: View>(below page: Page, @ViewBuilder root: () -> Root) -> some View {
+        let index = pages.lastIndex(of: page) ?? 0
+        if index == 0 { root() }
+        else if let snapshot = snapshots[index] { SnapshotUnderlay(view: snapshot).ignoresSafeArea() }
+        else { Color.clear }
+    }
+}
+
+/// Every pushed full page uses the same transition, independent of its route (M14).
+/// The source is a noninteractive preview; the actual source stays in the navigation stack.
+struct OrbisPageTransition<Underlay: View>: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
-    let enabled: Bool
     let onBack: () -> Void
     @ViewBuilder let underlay: () -> Underlay
     @State private var offset: CGFloat = 0
@@ -336,7 +348,7 @@ private struct SwipeBackModifier<Underlay: View>: ViewModifier {
 
     func body(content: Content) -> some View {
         ZStack {
-            if enabled && revealing {
+            if revealing {
                 underlay()
                     .overlay { OrbisPalette(scheme).scrim.opacity(0.34 * (1 - progress)).ignoresSafeArea() }
                     .scaleEffect(x: reduceMotion ? 1 : 1 - 0.025 * compression,
@@ -349,7 +361,7 @@ private struct SwipeBackModifier<Underlay: View>: ViewModifier {
         }
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
-        .simultaneousGesture(enabled ? gesture : nil)
+        .simultaneousGesture(gesture)
         .onChange(of: gestureActive) { _, active in
             // System interruptions may cancel a gesture without calling onEnded.
             if !active && horizontalDrag != nil && !returning {

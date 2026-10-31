@@ -87,12 +87,19 @@ class ClaudeHistoryInstrumentedTest {
             request("/advance", post = true)
             compose.waitUntil(30_000) { hasText("CLAUDE_PARALLEL_HISTORY") && hasText("CLAUDE_STREAM_VISIBLE") }
             compose.onNodeWithText("CLAUDE_STREAM_VISIBLE").assertIsDisplayed()
+            assertEquals(1, model.state.value.conversations[runtimeId]?.messages?.count { message ->
+                message.content.any { it.text == "CLAUDE_ALREADY_STREAMING" }
+            })
             assertNull(model.state.value.conversations[runtimeId]?.chatSyncError)
             screenshot("parallel-tools-and-stream")
 
             request("/finish", post = true)
             compose.waitUntil(30_000) {
                 hasText("CLAUDE_FINAL_VISIBLE") && model.state.value.conversations[runtimeId]?.streamingMessageIds?.isEmpty() == true
+            }
+            for (text in listOf("CLAUDE_ALREADY_STREAMING", "CLAUDE_STREAM_VISIBLE", "CLAUDE_FINAL_VISIBLE")) {
+                assertEquals("Each native step must hand off without a second copy", 1,
+                    model.state.value.conversations[runtimeId]?.messages?.count { message -> message.content.any { it.text == text } })
             }
             compose.runOnIdle { displayed.value = null; owner.clear(); owner = ViewModelStore() }
             start()
@@ -101,6 +108,9 @@ class ClaudeHistoryInstrumentedTest {
             compose.waitUntil(30_000) { hasText("CLAUDE_FINAL_VISIBLE") && model.state.value.sessionSyncCommands.isEmpty() }
             assertTrue(hasText("CLAUDE_HISTORY_VISIBLE"))
             assertTrue(hasText("CLAUDE_PARALLEL_HISTORY"))
+            assertEquals(1, model.state.value.conversations[runtimeId]?.messages?.count { message ->
+                message.content.any { it.text == "CLAUDE_STREAM_VISIBLE" }
+            })
             compose.onNodeWithText("CLAUDE_FINAL_VISIBLE").assertIsDisplayed()
             assertNull(model.state.value.conversations[runtimeId]?.chatSyncError)
             val stats = Json.parseToJsonElement(request("/stats")).jsonObject
