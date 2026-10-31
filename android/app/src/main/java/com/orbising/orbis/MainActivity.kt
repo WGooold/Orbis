@@ -1667,7 +1667,9 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         }
     }
     BackHandler {
-        if (historyOpen) {
+        if (historyDownloadsOpen) {
+            historyDownloadsOpen = false
+        } else if (historyOpen) {
             historyOpen = false
             historyActionError = null
         } else if (downloadManagerOpen) downloadManagerOpen = false
@@ -1675,8 +1677,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
 
     // 历史页的跳转：成功后回到聊天页并停在新位置；编辑重发还要把原文放回输入框。
-    // 这个 effect 必须排在下面 `if (historyOpen) return` 之前——历史页打开时聊天页会提前返回，
-    // 排在后面的 effect 根本不会被组合，命令结果就永远没人消费。
+    // 历史与聊天保持组合，命令回执按当前 runtime 消费，成功后关闭历史层。
     LaunchedEffect(historyActionCommandId, state.commandResults) {
         val commandId = historyActionCommandId ?: return@LaunchedEffect
         val result = state.commandResults[commandId] ?: return@LaunchedEffect
@@ -1723,7 +1724,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         model.refreshWorkingBranch(runtimeId)
     }
 
-    if (historyOpen) {
+    val historyPage: @Composable () -> Unit = {
         SwipeBackLayer(
             onBack = { historyDownloadsOpen = false },
             open = historyDownloadsOpen,
@@ -1755,7 +1756,6 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         )
             } },
         ) { HostDownloadsScreen(state, model, onBack = { historyDownloadsOpen = false }) }
-        return
     }
 
     LaunchedEffect(runtimeId, sessionId, displayReadPending, chatItems, chatHeaderCount, orphanTools.size,
@@ -1850,6 +1850,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         pendingMessageText = ""
     }
 
+    // 历史与分支和下载页一样盖在原聊天实例上，右滑时露出原聊天，保留列表、草稿与展开状态。
+    SwipeBackLayer(
+        onBack = { historyOpen = false; historyActionError = null },
+        open = historyOpen,
+        underlay = {
     // 对话上方的下载页与主页面下载页是同一个页面（浏览文件 + 下载列表），语义都是「和 Host 交互」。
     // 它从右侧滑入，右滑露出并回到这个对话；对话保持原实例，阅读位置、草稿与展开状态不变（ADR-0053 §5）。
     SwipeBackLayer(
@@ -2296,6 +2301,9 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
         } },
     ) { HostDownloadsScreen(state, model, onBack = { downloadManagerOpen = false }) }
+        },
+        content = historyPage,
+    )
 
 }
 

@@ -49,7 +49,7 @@ struct ContentView: View {
                     switch page {
                     case .chat:
                         if let runtime = store.selectedRuntime {
-                            ChatView(runtime: runtime, onBack: back, onHistory: { pages.append(.history) }, onDownloads: { push(.downloads) })
+                            ChatView(runtime: runtime, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) })
                                 .id(localSessionKey(host: store.selectedHost, runtime: runtime))
                         } else { OrbisEmptyState(symbol: "desktopcomputer", title: "会话已离线") }
                     case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
@@ -62,7 +62,7 @@ struct ContentView: View {
                 .foregroundStyle(OrbisPalette(scheme).text)
                 .background(OrbisPalette(scheme).base.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
-                .modifier(SwipeBackModifier(enabled: [.chat, .status, .downloads].contains(page), onBack: back,
+                .modifier(SwipeBackModifier(enabled: [.chat, .status, .history, .downloads].contains(page), onBack: back,
                                             underlay: { underlay(below: page) }))
             }
         }

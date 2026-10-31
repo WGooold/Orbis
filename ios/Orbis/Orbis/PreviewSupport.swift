@@ -104,6 +104,8 @@ private final class PreviewTransport: OrbisTransport {
     private var homeReplayScheduled = false
     private var homeReadFailed = false
     private var listMutation = ""
+    private var claudeIdentityStage = 0
+    private var claudeIdentity: Bool { ProcessInfo.processInfo.arguments.contains("--preview-claude-identity") }
 
     func changeList(_ operation: String) {
         listMutation = operation
@@ -145,6 +147,10 @@ private final class PreviewTransport: OrbisTransport {
                 ["runtimeId": "preview-pi", "sessionId": "session-2", "sessionName": "梳理项目中的页面结构", "name": "Pi", "cwd": "/Projects/website", "status": "running", "agentKind": "pi"],
                 ["runtimeId": "preview-dsh", "sessionId": "session-3", "sessionName": "检查服务端连接状态", "name": "DeepSeek", "cwd": "/Projects/orbis", "status": "idle", "agentKind": "dsh"]
             ]
+            if self.claudeIdentity {
+                runtimes[0]["agentKind"] = "claude"
+                runtimes[0]["name"] = "Claude Code"
+            }
             if ProcessInfo.processInfo.arguments.contains("--preview-home-long-list") {
                 runtimes += (4...15).map { index in
                     ["runtimeId": "preview-scroll-\(index)", "sessionId": "session-\(index)",
@@ -179,6 +185,31 @@ private final class PreviewTransport: OrbisTransport {
         sequence += 1
         receive?(["type": "runtime.event", "runtimeId": runtimeId, "sequence": sequence, "event": event], "msg")
     }
+    /// Replay the Host's complete inventories at controlled UI-test boundaries.
+    private func replyClaudeIdentity(_ command: [String: Any], runtime: String) {
+        let stage = min(claudeIdentityStage, 2)
+        claudeIdentityStage += 1
+        let user = message("identity-user", role: "user", text: "检查 Claude 消息交接")
+        let answer = message("identity-answer", role: "assistant", text: "CLAUDE_IDENTITY_REPLY")
+        let next = message("identity-next", role: "assistant", text: "CLAUDE_IDENTITY_NEXT")
+        let canonical = [user] + (stage > 0 ? [answer] : []) + (stage > 1 ? [next] : [])
+        let entries: [[String: Any]] = canonical.enumerated().map { index, item in
+            ["entryId": item["messageId"]!, "parentId": index == 0 ? NSNull() : canonical[index - 1]["messageId"]!,
+             "type": "message", "timestamp": "2026-10-31T00:00:00.000Z", "data": ["message": item]]
+        }
+        let display = canonical.map { ["displayId": $0["messageId"]!, "entryId": $0["messageId"]!, "kind": "message", "message": $0] as [String: Any] }
+        var streamed = stage == 0 ? answer : next
+        streamed["messageId"] = stage == 0 ? "native-turn:0" : "next-turn:0"
+        let live: [[String: Any]] = stage < 2 ? [["message": streamed, "finished": false, "contentComplete": true]] : []
+        let seq = claudeIdentityStage
+        event(["type": "session.snapshot", "sessionId": command["sessionId"]!, "syncId": command["syncId"]!,
+               "range": "preview", "mode": "replace", "selection": "snapshot", "cursor": ["leafId": canonical.last!["messageId"]!],
+               "entries": entries, "display": ["projectionVersion": 3, "entries": display],
+               "source": ["epoch": "claude-identity", "seq": seq, "ready": true],
+               "checkpoint": ["checkpointId": "identity-\(seq)", "head": ["leafId": canonical.last!["messageId"]!], "headCompleteness": "complete", "inventoryComplete": true],
+               "live": ["complete": true, "messages": live, "tools": []], "hasOlder": false, "complete": true, "rangeStatus": "complete"], runtimeId: runtime)
+    }
+
     private func appendViewportContent() {
         viewportTail += 1
         let base = sourceSequence
@@ -369,6 +400,10 @@ private final class PreviewTransport: OrbisTransport {
         } else if let command = object["command"] as? [String: Any], let type = command["type"] as? String {
             let runtime = object["runtimeId"] as? String ?? "preview-codex"
             if type == "session.sync" {
+                if claudeIdentity {
+                    replyClaudeIdentity(command, runtime: runtime)
+                    return
+                }
                 let messages = self.messages + sentMessages
                 let entries: [[String: Any]] = messages.enumerated().map { index, message in
                     ["entryId": "node-\(index + 1)", "parentId": index == 0 ? NSNull() : "node-\(index)" as Any, "type": "message", "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": message]]
