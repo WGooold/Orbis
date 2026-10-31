@@ -330,6 +330,8 @@ data class RuntimeConversation(
     val sourceSeq: Long = -1L,
     /** Canonical source head observed with the current checkpoint. */
     val sourceHeadLeafId: String? = null,
+    /** Last displayed branch while a newer source head is waiting for a missing parent. */
+    val retainedProjectionLeafId: String? = null,
     /** False means the current source epoch is being reconciled and its projection is unknown. */
     val sourceReady: Boolean = true,
     /** Epochs superseded by an accepted checkpoint; delayed responses from these epochs are stale. */
@@ -850,28 +852,32 @@ internal fun RemoteState.seedCachedSessionView(runtimeId: String, graph: Session
     if (runtime.sessionId != graph.sessionId) return this
     val conversation = conversations[runtimeId] ?: RuntimeConversation()
     if (conversation.sourceEpoch != null && !conversation.sourceReady && !cachedFirstPage) return this
+    // Cached canonical rows have no live inventory. A held branch must be handed off by a
+    // complete source checkpoint, or newly cached rows briefly duplicate the retained live rows.
+    if (conversation.retainedProjectionLeafId != null) return this
     val previousView = runtimeSessionViews[runtimeId]?.takeIf { it.sessionId == graph.sessionId }
+    val previousLeaf = conversation.retainedProjectionLeafId ?: previousView?.leafId
     val leaf = if (conversation.sourceEpoch != null && conversation.sourceReady &&
         (!cachedFirstPage || !conversation.forceSourceSnapshot)) conversation.sourceHeadLeafId
         else if (cachedFirstPage) listOfNotNull(previousView?.leafId, runtime.sessionLeafId,
             conversation.sourceHeadLeafId, graph.cursor.leafId).firstOrNull { it in graph.entries }
         else runtime.sessionLeafId
     if (leaf != null && !graph.entries.containsKey(leaf)) return this
-    if (conversation.hasLiveSnapshot && previousView != null && previousView.leafId == leaf &&
+    if (conversation.hasLiveSnapshot && previousView != null && previousLeaf == leaf &&
         !conversation.isChatSyncing
     ) return this
     val branchChanged = conversation.sourceEpoch == null && previousView != null && graph.isKnownBranchChange(previousView.leafId, leaf)
     val source = if (branchChanged) RuntimeConversation(revision = conversation.revision) else conversation
     val sameBranch = previousView != null &&
-        (previousView.leafId == leaf || graph.isDescendant(leaf, previousView.leafId))
+        (previousLeaf == leaf || graph.isDescendant(leaf, previousLeaf))
     // An entry that arrived before its parent cannot be placed yet; keep the shown rows (ADR-0053 §2).
     if (!branchChanged && !sameBranch && conversation.messages.isNotEmpty() &&
-        graph.isWaitingForParent(previousView?.leafId, leaf)) return this
+        graph.isWaitingForParent(previousLeaf, leaf)) return this
     val baseMessages = source.messages.filterNot { it.messageId in source.streamingMessageIds }
     val projection = (if (sameBranch) {
         mergeTemporaryOlderMessages(
             graph.projectLeafDeltaProjection(
-                previousView?.leafId, leaf, canonicalRowsForDeltaProjection(baseMessages, graph),
+                previousLeaf, leaf, canonicalRowsForDeltaProjection(baseMessages, graph),
             ),
             graph, baseMessages,
         )
@@ -889,6 +895,7 @@ internal fun RemoteState.seedCachedSessionView(runtimeId: String, graph: Session
         conversations = conversations + (runtimeId to source.applyProjection(projection, messages, keepLiveTiming = !branchChanged).copy(
             // Cached rows can render the old head, but cannot complete source recovery.
             hasLiveSnapshot = true, isChatSyncing = source.sourceEpoch != null && source.isChatSyncing, streamingMessageIds = overlay,
+            retainedProjectionLeafId = null,
             chatSyncError = if (cachedFirstPage) conversation.chatSyncError else projection.error,
             streamingSessionId = graph.sessionId.takeIf { overlay.isNotEmpty() }, revision = conversation.revision + 1,
         )),
@@ -1385,15 +1392,16 @@ private fun RuntimeConversation.applySourceLiveCheckpoint(
     source: SessionSourceEpoch,
     live: SessionLiveState,
     replaceInventory: Boolean = live.complete,
+    retainMissingMessages: Boolean = false,
 ): RuntimeConversation {
     val canonicalIds = messages.mapTo(mutableSetOf(), ChatMessage::messageId)
     val incomingById = live.messages.associateBy { it.message.messageId }
     val previousOverlayIds = streamingMessageIds
     val retained = messages.filter { message ->
-        message.messageId !in previousOverlayIds || !replaceInventory || message.messageId in incomingById
+        message.messageId !in previousOverlayIds || !replaceInventory || retainMissingMessages || message.messageId in incomingById
     }.toMutableList()
-    val overlayIds = if (replaceInventory) mutableSetOf() else previousOverlayIds.toMutableSet()
-    val finished = if (replaceInventory) mutableSetOf() else finishedMessageIds.toMutableSet()
+    val overlayIds = if (replaceInventory && !retainMissingMessages) mutableSetOf() else previousOverlayIds.toMutableSet()
+    val finished = if (replaceInventory && !retainMissingMessages) mutableSetOf() else finishedMessageIds.toMutableSet()
     for (item in live.messages) {
         val liveId = item.message.messageId
         val canonicalId = item.persistedEntryId
@@ -1462,22 +1470,27 @@ private fun RuntimeConversation.applyCompleteSourceState(
         else projectSessionGraph(graph.copy(cursor = head))
     // A proven forward append keeps older paged ancestors just like an unchanged head. A rewind
     // or another branch must still remove rows outside its authoritative path.
-    val sameBranch = sourceHeadLeafId == head.leafId || graph.isDescendant(head.leafId, sourceHeadLeafId)
-    val canonical = if (sourceEpoch == source.epoch && headAvailable && graph.isWaitingForParent(sourceHeadLeafId, head.leafId)) {
-        // The new head arrived before its parent: keep the shown rows until the chain reconnects
-        // instead of publishing the lone entry for a few frames (ADR-0053 §2).
-        SessionProjectionResult(messages.filterNot { it.messageId in streamingMessageIds }, turnTimings = turnTimings.values.toList())
+    val displayedLeaf = retainedProjectionLeafId ?: sourceHeadLeafId
+    val waitingForParent = sourceEpoch == source.epoch && headAvailable &&
+        graph.isWaitingForParent(displayedLeaf, head.leafId)
+    val sameBranch = displayedLeaf == head.leafId || graph.isDescendant(head.leafId, displayedLeaf)
+    val canonical = if (waitingForParent) {
+        // The source watermark still advances, but it is not the displayed branch. Keep both
+        // canonical and live rows until the calling entry can replace them atomically. Further
+        // status/tool updates must keep checking the same displayed anchor (ADR-0053 §2).
+        SessionProjectionResult(messages, turnTimings = turnTimings.values.toList())
     } else if (sourceEpoch == source.epoch && sameBranch && headAvailable) {
         mergeTemporaryOlderMessages(projection, graph, messages.filterNot { it.messageId in streamingMessageIds })
     } else projection
     return applyProjection(canonical, keepLiveTiming = false)
-        .copy(streamingMessageIds = emptySet(), finishedMessageIds = emptySet())
-        .applySourceLiveCheckpoint(source, live, replaceInventory = true)
+        .let { if (waitingForParent) it else it.copy(streamingMessageIds = emptySet(), finishedMessageIds = emptySet()) }
+        .applySourceLiveCheckpoint(source, live, replaceInventory = true, retainMissingMessages = waitingForParent)
         .copy(
             sourceHeadLeafId = head.leafId,
-            streamingSessionId = sessionId.takeIf { live.messages.isNotEmpty() },
+            retainedProjectionLeafId = displayedLeaf.takeIf { waitingForParent },
+            streamingSessionId = sessionId.takeIf { live.messages.isNotEmpty() || waitingForParent && streamingMessageIds.isNotEmpty() },
             hasLiveSnapshot = headAvailable,
-            isChatSyncing = !headAvailable,
+            isChatSyncing = !headAvailable || waitingForParent,
             chatSyncError = null,
             sourceRecoveryRetryAt = 0,
             systemNotice = null,
@@ -1509,7 +1522,8 @@ private fun RuntimeConversation.replaySourcePatches(sessionId: String, graph: Se
         current = current.applyCompleteSourceState(sessionId, patch.source, patch.head, patch.live, graph)
             .copy(sourcePatchBuffer = current.sourcePatchBuffer.filterKeys { it > patch.seq })
     }
-    return current.copy(isChatSyncing = !current.sourceReady || !current.hasLiveSnapshot || current.sourcePatchBuffer.isNotEmpty())
+    return current.copy(isChatSyncing = !current.sourceReady || !current.hasLiveSnapshot ||
+        current.retainedProjectionLeafId != null || current.sourcePatchBuffer.isNotEmpty())
 }
 
 /**
@@ -2386,6 +2400,7 @@ class RelayReducer(
                             sourceEpoch = patch.source.epoch,
                             sourceSeq = -1L,
                             sourceHeadLeafId = null,
+                            retainedProjectionLeafId = null,
                             sourceReady = false,
                             retiredSourceEpochs = conversation.sourceEpoch?.let {
                                 conversation.retiredSourceEpochs + it
@@ -2668,6 +2683,7 @@ class RelayReducer(
                     turnTimings = emptyMap(),
                     tools = emptyMap(),
                     sourceHeadLeafId = null,
+                    retainedProjectionLeafId = null,
                     retiredSourceEpochs = conversation.sourceEpoch?.let {
                         conversation.retiredSourceEpochs + it
                     } ?: conversation.retiredSourceEpochs,
@@ -2812,6 +2828,7 @@ class RelayReducer(
                         sourceEpoch = incomingSource?.epoch ?: conversation.sourceEpoch,
                         sourceSeq = incomingSource?.seq ?: conversation.sourceSeq,
                         sourceHeadLeafId = null,
+                        retainedProjectionLeafId = null,
                         sourceReady = false,
                         activeTurnId = null,
                         turnTimings = emptyMap(),
@@ -2836,16 +2853,23 @@ class RelayReducer(
                             revision = conversation.revision + 1)
                 } else if (!staleTarget && viewLeafId != null && canProject &&
                     (isCanonicalPage || sourceReadyCheckpoint)) {
-                    val oldLeaf = if (sourceEpochChanged) null else state.runtimeSessionViews[runtimeId]
-                        ?.takeIf { it.sessionId == snapshot.sessionId }?.leafId
+                    val oldLeaf = if (sourceEpochChanged) null else projectionConversation.retainedProjectionLeafId
+                        ?: state.runtimeSessionViews[runtimeId]?.takeIf { it.sessionId == snapshot.sessionId }?.leafId
                     val baseMessages = projectionConversation.messages.filterNot {
                         it.messageId in projectionConversation.streamingMessageIds
                     }
+                    val waitingForParent = graphForProjection.isWaitingForParent(oldLeaf, viewLeafId)
                     val projection = if (isCanonicalPage) {
                         // History entries are older than the existing boundary. Keep the current
                         // conversation even when the in-memory window lacks its older ancestors.
+                        // A canonical page cannot retire live rows. Extend the held branch even
+                        // when this page fills the gap; the next complete source checkpoint will
+                        // replace canonical and live rows together, without a duplicate frame.
                         val full = if (conversation.sourceEpoch != null || graphForProjection.hasCompleteEntryChain(viewLeafId)) {
-                            projectSessionGraph(graphForProjection.copy(cursor = SessionBranchCursor(viewLeafId)))
+                            projectSessionGraph(graphForProjection.copy(cursor = SessionBranchCursor(
+                                projectionConversation.retainedProjectionLeafId
+                                    ?: if (waitingForParent) oldLeaf else viewLeafId,
+                            )))
                         } else {
                             SessionProjectionResult(projectSessionEntries(
                                 snapshotForProjection.entries,
@@ -2862,7 +2886,7 @@ class RelayReducer(
                             snapshotForProjection.turnTimings.orEmpty())
                                 .associateBy(TurnTiming::turnId).values.toList(),
                         )
-                    } else if (graphForProjection.isWaitingForParent(oldLeaf, viewLeafId)) {
+                    } else if (waitingForParent) {
                         // The new entry arrived before its parent: keep the current rows until the
                         // chain reconnects rather than flashing a lone entry (ADR-0053 §2).
                         SessionProjectionResult(baseMessages, turnTimings = projectionConversation.turnTimings.values.toList())

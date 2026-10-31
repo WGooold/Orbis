@@ -19,6 +19,7 @@ internal fun RemoteState.afterSessionCacheRebuild(sessionId: String): RemoteStat
             hasLiveSnapshot = false,
             sourceReady = false,
             sourceHeadLeafId = null,
+            retainedProjectionLeafId = null,
             sourcePatchBuffer = emptyMap(),
             sourceRecoveryRetryAt = 0,
             activeTurnId = null,

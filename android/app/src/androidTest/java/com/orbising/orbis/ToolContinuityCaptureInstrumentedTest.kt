@@ -161,8 +161,14 @@ class ToolContinuityCaptureInstrumentedTest {
         val sessionId = state.runtimes[runtimeId]?.sessionId
         val graph = sessionId?.let(state.sessionGraphs::get)
         val view = state.runtimeSessionViews[runtimeId]
+        val parents = graph?.entries?.values.orEmpty().joinToString(",") {
+            "[\"${it.entryId}\",\"${it.parentId}\"]"
+        }
+        val history = state.sessionHistory[runtimeId]
         val projection = "\"leaf\":\"${view?.leafId}\",\"graphEntries\":${graph?.entries?.size ?: -1},\"cursor\":\"${graph?.cursor?.leafId}\"," +
             "\"epoch\":\"${conversation?.sourceEpoch}\",\"syncing\":${conversation?.isChatSyncing},\"live\":${conversation?.hasLiveSnapshot}," +
+            "\"sourceHead\":\"${conversation?.sourceHeadLeafId}\",\"sourceSeq\":${conversation?.sourceSeq},\"parents\":[$parents]," +
+            "\"hasOlder\":${history?.hasOlder},\"oldest\":\"${history?.oldestEntryId}\"," +
             "\"revision\":${conversation?.revision},\"count\":${conversation?.messages?.size ?: 0},"
         return "{\"t\":$time,$projection\"first\":${list.firstVisibleItemIndex},\"firstOffset\":${list.firstVisibleItemScrollOffset}," +
             "\"total\":${layout.totalItemsCount},\"viewportEnd\":${layout.viewportEndOffset},\"canForward\":${list.canScrollForward}," +

@@ -137,6 +137,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 材质 / 字形 / 控件 | `UiPolishInstrumentedTest`（3）、`NeumorphInstrumentedTest`（1） | S01–S09、S12、M04、V15 |
 | 非 UI 但在同一设备套件 | `SessionGraphStoreInstrumentedTest`（32）、`SessionSyncSelectionInstrumentedTest`（6）、`SessionSyncSlowLinkInstrumentedTest`（2） | 缓存 / 同步正确性，全量时一并运行 |
 | 需要隔离 Host | `IsolatedHostPairingInstrumentedTest`（1）；`ToolContinuityCaptureInstrumentedTest`（1，无参数时自动跳过，传入配对载荷与 cwd 时做真实输出逐帧捕获） | 配对；V20 定位 |
+| Pi 连续工具交接 | `ToolContinuityInstrumentedTest`（2，跟随与上滑阅读；连续同 head 更新后父节点补齐） | V20、V09、V01–V04、V18 |
 | r15 首页 / 目录视口与下拉刷新 | `HomeViewportInstrumentedTest`（6，其中 M15 两项）、`SessionDrawerViewportInstrumentedTest`（3） | M15、V21 |
 | r15 设置与入口 | `SettingsEntryInstrumentedTest`（3） | S18、S22–S23 |
 | r24 整页导航 | `SwipeBackPagesInstrumentedTest`（2，位于 `SwipeBackInstrumentedTest.kt`）、`HistorySwipeBackInstrumentedTest`（1，真实历史 / 聊天 / 下载层级）、`PageNavigationInstrumentedTest`（3，添加电脑 / 离线历史 / 嵌套系统返回） | M07–M08、M14、V17–V18 |
@@ -202,7 +203,7 @@ Claude 输出交接回归（V09、V17–V18）：Host `claude-transcript.test.ts
 | --- | --- | --- | --- |
 | R01 | 在隔离 Host 或回放夹具中，让助手流式输出多段长文本（含列表和代码块）；录屏 60fps | 文字从前到后逐字出现；任一帧只有游标前一小段连续字在渐显，不会出现前后两处同时渐显或整段突然出现；大批到达时呈快速连续推进，积压不超过 450ms | M04 / UI-01 |
 | R02 | 流式中途进入该会话；流式中出现新段落；正文被改写；减少动画 | 进入时已有文字直接显示；新段落从游标处继续；改写时立即落定，不重放；减少动画时直接显示 | M04 / UI-01 |
-| R03 | 跟随模式下，用真实输出触发长时间运行的工具（Pi bash、Codex 命令、Claude 工具），从开始录屏到结果到达 | 工具卡从出现到完成始终是同一张紧凑卡，原地更新状态；没有大块原文闪现后再收起；全程无跳动、空白帧或整屏闪烁 | V20 / UI-02 |
+| R03 | 跟随模式下，用真实输出触发长时间运行的工具（Pi bash、Codex 命令、Claude 工具），从开始录屏到结果到达；Pi 至少连续调用六次，回放结果先到 / 调用条目后到，并在缺口期间插入多个同 head 更新、下一条工具结果和恢复快照 | 工具卡从出现到完成始终是同一张紧凑卡，原地更新状态；已有正文与实时工具行均不能提前移除；列表不能缩成单条结果并露出更早消息入口，已加载的分页边界不回退；父节点补齐后只保留一份 canonical 内容；全程无跳动、空白帧或整屏闪烁 | V20、V09、V01–V04、V18 / UI-02 |
 | R04 | 非跟随状态（上滑阅读中）重复 R03 | 阅读锚点不动；不弹回底部 | V20、V02–V03 / UI-02 |
 | R05 | Android 首页停在顶部时，新建会话 / 让下方会话因活动排到第一 | 视口留在顶部，新的首卡可见，不被挤到视口上方 | V21 / UI-03 |
 | R06 | 首页向下滚动半屏后：其他会话排序变化；当前视口首卡自身被排到顶部；新增和关闭会话；拖动 / 惯性中发生变化 | 视口首张完整卡片的屏幕位置不变；该卡被移走时保持原像素偏移，不跟着跳；手势中不重新定位 | V21 / UI-03 |
@@ -256,7 +257,7 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | --- | --- | --- | --- |
 | UI-01 | 两端单元 | iOS `RevealClockTests`；Android `GlyphRevealClockTest` | 多批到达时开始时间单调；活动区间连续；积压压缩到 450ms 内；跨块共享游标；非前缀续写立即落定；结束时剩余积压在 450ms 内揭示完；Android 活动字素 ≤ 128 |
 | UI-01 | iOS UI / Android 设备 | `testStreamingRevealAdvancesInOrderAcrossBlocks`、`testStreamingRevealWithReducedMotionShowsEveryBlockImmediately`；`StreamingRevealInstrumentedTest` | 夹具分批推送多段文本，按帧采样已绘制字素位置，后段不得早于前段；减少动画时直接显示 |
-| UI-02 | Android 设备 / iOS UI | `ToolContinuityCaptureInstrumentedTest`；iOS 真实输出用例待补 | 隔离 Host 真实输出逐帧记录：捕获运行中工具活动、转录行数不回退、最终回合结束；审阅工具卡身份 / 高度、跟随位置与空白帧。iOS 与 Claude 真实输出仍待验证 |
+| UI-02 | Android 单元 / 设备 / iOS UI | `SessionToolContinuityTest`（11）；`ToolContinuityInstrumentedTest`（2）；`ToolContinuityCaptureInstrumentedTest`；iOS 真实输出用例待补 | 单元覆盖重复 head、后继结果、live 交接、缓存首屏、恢复快照 / catchup、父节点由历史或缓存补齐后的原子交接、真实回退、缓存重建及终态事实；设备验证跟随 / 阅读位置与分页边界。隔离真实输出逐帧记录源序号、head、父链、投影 key / 高度，捕获工具活动、转录不回退与最终回合结束。R03 / R04、A1–A4；iOS 与 Claude 真实输出仍待验证 |
 | UI-03 | Android 设备 / 单元 | `HomeViewportInstrumentedTest`；`SessionDrawerViewportInstrumentedTest`；`HomeViewportAnchorTest` | 顶部插入 / 重排后首项索引为 0 且偏移为 0；首页 / 目录滚动中首张完整卡片屏幕 y 不变（≤ 1dp）；锚卡被移走时像素偏移不变；拖动中不重新定位 |
 | UI-03 | iOS UI | `testHomeTopShowsNewAndPromotedSessions`、`testHomeScrolledAnchorSurvivesInsertionAndReordering`、`testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates`、`testDrawerTopKeepsNewAndPromotedDirectoriesVisible` | 同上；首页 / 目录定向用例已通过，iOS 全量与手动复核待完成 |
 | UI-04 | 两端 | `SettingsEntryInstrumentedTest`；`testSettingsPageOrderAndSingleHostMenu` | 右上角只有下载与齿轮设置；连接胶囊不可点击，读屏语义为状态，失败重试仍可用；设置页分区顺序，且没有已配对电脑区；排障入口文字为“设置”；除侧边栏电脑菜单外，全树中没有“添加电脑”“取消配对”节点 |
