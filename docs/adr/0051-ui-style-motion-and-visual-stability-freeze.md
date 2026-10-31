@@ -291,7 +291,7 @@ ADR-0046 原 17 项要求的映射：1→V01–V04；2→S02；3→S03；4→V05
 ### 2026-10-31 / r24 下一级整页统一导航扩展
 
 - 按用户确认的页面盘点实施 [D54]，扩展 M14 为所有下一级整页的默认规则，不新增 feature，69 项及已交付 67 项计数不变。补齐双端添加电脑及 Android 离线历史；根配对、模态、抽屉和系统页面保留各自边界，遗留供应商页不恢复入口。
-- iOS 路径与来源预览归入 `OrbisPageStack`，所有 destination 默认共用返回层；Android 页面统一经过 `OrbisPageHost`，后台来源停止处理返回和手势。新增两端设备用例及手动 R20–R22，回归及失败证据见 `.artifacts/ui-regression/20261031-page-navigation/summary.md`；未完成完整门禁，不记为验收通过。
+- iOS 路径与来源预览归入 `OrbisPageStack`，所有 destination 默认共用返回层；Android 页面统一经过 `OrbisPageHost`，后台来源停止处理返回和手势。新增两端设备用例及手动 R20–R22。Android 548 / iOS 223 项单元与双端构建通过；最终 Android 受影响组 11/11、iOS 导航 7/7 及目录手势 4/4 通过。Android 全量 138 项 11 失败，与导航修改前隔离对照的 135 项 11 失败集合相同；iOS 全量 61 项 11 失败，9 项在导航修改前复核复现，配对时序与目录手势重跑通过。对照保留其他工作区修改，不是干净父提交全量；完整手动 / 外观 / 窄屏门禁未完成，不记为验收通过。证据见 `.artifacts/ui-regression/20261031-page-navigation/summary.md`。
 
 ### 已知差异与未验收范围
 

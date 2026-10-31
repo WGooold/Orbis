@@ -254,7 +254,7 @@ Android 首页 `LazyColumn` 未显式传入状态，按首个可见项的 key �
 
 ## UI-04：设置页、唯一配对入口与设置 / 下载页转场
 
-2026-10-31 r25：转场范围按 [ADR-0054](../adr/0054-shared-full-page-navigation.md) 推广为所有下一级整页，覆盖添加电脑、Android 离线历史、聊天→历史→下载等任意深度；统一导航容器维护来源归属和状态，移除逐页手势白名单。根配对 / 模态 / 抽屉边界保留，遗留供应商页不恢复入口。下文 Actual behavior 为 r15 调查快照，不能覆盖当前决策。新增 `PageNavigationInstrumentedTest`、iOS 两项设备用例及 R20–R22，证据见 `.artifacts/ui-regression/20261031-page-navigation/summary.md`；全量与手动门禁按实际结果记录。
+2026-10-31 r24：转场范围按 [ADR-0054](../adr/0054-shared-full-page-navigation.md) 推广为所有下一级整页，覆盖添加电脑、Android 离线历史、聊天→历史→下载等任意深度；统一导航容器维护来源归属和状态，移除逐页手势白名单。根配对 / 模态 / 抽屉边界保留，遗留供应商页不恢复入口。下文 Actual behavior 为 r15 调查快照，不能覆盖当前决策。新增 `PageNavigationInstrumentedTest`、iOS 两项设备用例及 R20–R22，证据见 `.artifacts/ui-regression/20261031-page-navigation/summary.md`；全量与手动门禁按实际结果记录。
 
 **ID / 平台**：S22、M14（新增），S18、S19（修订）；iOS、Android。
 

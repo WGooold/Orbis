@@ -55,7 +55,9 @@ Status: accepted（用户确认页面盘点及范围后授权实施；完整设�
 
 - Android `PageNavigationInstrumentedTest`：真实添加电脑入口的拖动几何、取消复位与返回后目录可操作；离线历史同款返回；嵌套系统返回只弹出顶部一层。已有 `SwipeBackInstrumentedTest`、`SwipeBackPagesInstrumentedTest` 和 `HistorySwipeBackInstrumentedTest` 保留。
 - iOS `testAddComputerPageReboundsAndSwipesBack`：浅色正常动画、深色减少动画，短拖回弹，右滑返回后首页可操作。`testNestedPagesSwipeBackOneLevelAtATime`：聊天草稿、历史搜索词保留，下载→历史→聊天逐层返回。已有设置、聊天与下载返回用例保留。
-- 手动专项 R19、ID 映射及 C01–C18 / A1–A4 门禁见 [UI 回归方案](../testing/ui-regression.md)；本次页面盘点新增的自动用例已记录在 §3.3。验证记录位于 `.artifacts/ui-regression/20261031-page-navigation/summary.md`；未运行和失败项逐项记录，不以定向通过代替全量门禁。
+- 手动专项 R19–R22、ID 映射及 C01–C18 / A1–A4 门禁见 [UI 回归方案](../testing/ui-regression.md)；本次页面盘点新增的自动用例已记录在 §3.3。验证记录位于 `.artifacts/ui-regression/20261031-page-navigation/summary.md`；未运行和失败项逐项记录，不以定向通过代替全量门禁。
+
+本轮结果：Android 548 / iOS 223 项单元、双端构建通过；最终 Android 受影响组 11/11、iOS 导航 7/7 和目录手势 4/4 通过。Android 全量 138 项 11 失败，与导航修改前对照失败集合相同；iOS 全量 61 项 11 失败，9 项对照复现，配对等待与目录手势复跑通过。对照仅恢复导航代码并保留工作区其他修改；最终完整提交基线对照、手动冒烟、完整外观与窄屏门禁仍未完成，不能记为全部验收通过。
 
 ## Consequences
 
