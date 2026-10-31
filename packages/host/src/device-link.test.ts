@@ -123,6 +123,7 @@ function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLi
   const changes: { from: PathKind | undefined; to: PathKind | undefined }[] = [];
   /** 每一次「握手完成」通知，按路径记（同一条路上重新握手会出现两次）。 */
   const sessions: PathKind[] = [];
+  const rttUpdates: { kind: PathKind; rttMs: number }[] = [];
   const peers = new Map<PathKind, FakePeer>();
   const record = (change: { from: PathKind | undefined; to: PathKind | undefined }): void => {
     changes.push({ from: change.from, to: change.to });
@@ -138,6 +139,7 @@ function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLi
     // 生效路径的宣布有两个来源：握手完成（`onSessionReady`）与之后换路（`onActivePathChange`）。
     // 这个装置关心的是「宣布过哪些路径」，所以两条都记进来。
     onActivePathChange: record,
+    onActiveRttUpdated: (kind, rttMs) => rttUpdates.push({ kind, rttMs }),
     onSessionReady: (kind, _active, change) => {
       sessions.push(kind);
       if (change.changed) record(change);
@@ -199,7 +201,7 @@ function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLi
     }
   };
 
-  return { link, outbox, payloads, changes, sessions, attach, handshake, probeRoundTrip, peer, shift, messagesSent };
+  return { link, outbox, payloads, changes, sessions, rttUpdates, attach, handshake, probeRoundTrip, peer, shift, messagesSent };
 }
 
 describe("DeviceLink", () => {
@@ -496,21 +498,39 @@ describe("DeviceLink", () => {
     // 基准值只能来自它自己的回声：没有回声就永远是 undefined。生效路径是 lan（默认最高档）。
     expect(harnessed.link.active).toBe("lan");
     expect(harnessed.link.activeRttMs).toBeGreaterThanOrEqual(0);
+    expect(harnessed.rttUpdates).toEqual([{ kind: "lan", rttMs: harnessed.link.activeRttMs }]);
   });
 
-  it("只有一条路径时不发探针——没有可比较的对象，探了纯属浪费流量", async () => {
+  it("过期探针回声不覆盖延迟，关闭后不再发送探针", () => {
+    const h = harness({ pskRoot: randomKey() });
+    const now = vi.spyOn(performance, "now").mockReturnValue(100);
+    try {
+      h.handshake("relay"); h.link.probeNow();
+      const probe = h.shift("探针");
+      now.mockReturnValue(30_101);
+      h.link.handle("relay", h.peer("relay").echoPing(probe.envelope));
+      expect(h.link.activeRttMs).toBeUndefined();
+      expect(h.rttUpdates).toEqual([]);
+      h.link.close(); h.link.probeNow();
+      expect(h.outbox).toEqual([]);
+    } finally { now.mockRestore(); h.link.close(); }
+  });
+
+  it("单路径也定时采样并仅公告当前路径，断开后停止探测", async () => {
     const harnessed = harness({ pskRoot: randomKey(), probeIntervalMs: 10 });
-    harnessed.handshake("relay");
-
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(harnessed.outbox).toHaveLength(0);
-
-    harnessed.handshake("lan");
-    await vi.waitFor(() => {
-      expect(harnessed.outbox.length).toBeGreaterThan(0);
-    });
-    // 两条路都要探，而不是只探候选那条——当前路径的数值是比较的基准。
-    expect(new Set(harnessed.outbox.map((entry) => entry.kind))).toEqual(new Set(["lan", "relay"]));
+    try {
+      harnessed.handshake("relay");
+      await vi.waitFor(() => expect(harnessed.outbox.length).toBeGreaterThan(0));
+      for (const probe of harnessed.outbox.splice(0)) {
+        harnessed.link.handle(probe.kind, harnessed.peer(probe.kind).echoPing(probe.envelope));
+      }
+      expect(harnessed.rttUpdates.at(-1)).toEqual({ kind: "relay", rttMs: harnessed.link.activeRttMs });
+      expect(harnessed.changes).toHaveLength(1);
+      harnessed.link.detach("relay");
+      harnessed.outbox.length = 0;
+      await new Promise((resolve) => setTimeout(resolve, 35));
+      expect(harnessed.outbox).toHaveLength(0);
+    } finally { harnessed.link.close(); }
   });
 
   it("一条路径断开就立刻从候选里摘掉，会话也随之作废", () => {

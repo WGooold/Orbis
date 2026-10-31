@@ -69,6 +69,21 @@ private final class SingleCommitGate: @unchecked Sendable {
 
 @Suite("Native app state") @MainActor
 struct StoreTests {
+    @Test func pathAnnouncementsUpdateLatencyAndDisconnectClearsTheSample() async {
+        let (store, transport) = setup()
+        transport.state?(.secured, nil)
+        await transport.emit(["type": "device.path", "path": "lan", "rttMs": 8])
+        #expect(store.pathRTT == 8)
+        await transport.emit(["type": "device.path", "path": "relay", "rttMs": 42])
+        #expect(store.activePath == "relay")
+        #expect(store.pathRTT == 42)
+        await transport.emit(["type": "device.path", "path": "relay"])
+        #expect(store.pathRTT == nil)
+        await transport.emit(["type": "device.path", "path": "relay", "rttMs": 37])
+        transport.state?(.offline, nil)
+        #expect(store.pathRTT == nil)
+    }
+
     @Test func obsoletePathOrderIsNeverSentAfterAuthenticatedReady() async throws {
         let key = "orbis-settings-test-" + UUID().uuidString
         let preferences = try #require(UserDefaults(suiteName: key))

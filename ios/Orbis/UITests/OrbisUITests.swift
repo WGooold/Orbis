@@ -1241,7 +1241,7 @@ final class OrbisUITests: XCTestCase {
             // Providers now come first (ADR-0053 §4); the connection and pairing facts follow below them.
             let page = app.descendants(matching: .any)["settings-page"].firstMatch
             for _ in 0..<4 where !app.staticTexts["配对状态"].firstMatch.isHittable { page.swipeUp() }
-            for label in ["已连接", "连接方式", "端到端加密", "电脑", "配对状态"] {
+            for label in ["已连接", "连接方式", "连接延迟", "42 ms", "端到端加密", "电脑", "配对状态"] {
                 XCTAssertTrue(app.staticTexts[label].firstMatch.isHittable)
             }
             for label in ["电脑端诊断记录", "电脑端会话目录", "电脑端供应商", "统一状态模型", "电脑 Agent 服务", "本机 deviceId", "Host hostId", "Host 公钥指纹", "配对根密钥"] {
@@ -1252,6 +1252,15 @@ final class OrbisUITests: XCTestCase {
             XCTAssertTrue(app.buttons["provider-switch-codex"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.buttons["provider-switch-claude"].exists)
             app.terminate()
+
+            let noSample = launch("status", dark: dark, arguments: ["--preview-no-rtt"])
+            let noSamplePage = noSample.descendants(matching: .any)["settings-page"].firstMatch
+            XCTAssertTrue(noSamplePage.waitForExistence(timeout: 8))
+            for _ in 0..<4 where !noSample.staticTexts["连接延迟"].firstMatch.isHittable { noSamplePage.swipeUp() }
+            XCTAssertTrue(noSample.staticTexts["连接延迟"].firstMatch.isHittable)
+            XCTAssertTrue(noSample.staticTexts["暂不可用"].firstMatch.isHittable)
+            capture(dark ? "status-no-rtt-dark" : "status-no-rtt-light", app: noSample)
+            noSample.terminate()
         }
         let drawer = launch("drawer")
         let filter = drawer.buttons["筛选会话：全部"]

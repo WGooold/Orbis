@@ -2,9 +2,9 @@
 
 日期：2026-10-30
 
-Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再跳转；保留排障入口；聊天 / 历史页内下载页滑入并返回原页；历史页加下载按钮；设置页去掉已配对电脑区。§8 回归门禁立即生效。2026-10-31 合入 main；r19 已补 Android Codex 真实输出捕获及两端 V21 目录用例定向验证；r21 按反馈修订 M15，使 Android 会话列表随下拉位移；r22 修复请求发出后指示器停在阈值的问题；r23 统一列表与旋转指示器的柔和回位曲线，L1 / L2 通过，API 35 设备由其他任务独占，L3 / L4 与手动门禁未运行。当前 iOS 全量、iOS / Claude 真实输出和手动门禁未完成，进度见 [UI r15 ticket](../agents/ui-r15-tickets.md)）
+Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再跳转；保留排障入口；聊天 / 历史页内下载页滑入并返回原页；历史页加下载按钮；设置页去掉已配对电脑区。§8 回归门禁立即生效。2026-10-31 合入 main；r19 已补 Android Codex 真实输出捕获及两端 V21 目录用例定向验证；r21 按反馈修订 M15，使 Android 会话列表随下拉位移；r22 修复请求发出后指示器停在阈值的问题；r23 统一列表与旋转指示器的柔和回位曲线，L1 / L2 通过，API 35 设备由其他任务独占，L3 / L4 与手动门禁未运行。2026-11-01 新增设置页连接延迟显示（S23 / UI-07），两端单元 / 构建与设置专项通过，完整门禁未完成；证据见 `.artifacts/ui-regression/20261101-settings-latency/summary.md`。当前 iOS 全量、iOS / Claude 真实输出和手动门禁未完成，进度见 [UI r15 ticket](../agents/ui-r15-tickets.md)）
 
-关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)（基线 `2026-10-31/r24`）、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0048](0048-online-chat-entry-budget.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0050](0050-fixed-lan-relay-routing.md)；回归方案见 [移动端 UI 回归方案](../testing/ui-regression.md)。
+关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)（基线 `2026-11-01/r25`）、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0048](0048-online-chat-entry-budget.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0050](0050-fixed-lan-relay-routing.md)；回归方案见 [移动端 UI 回归方案](../testing/ui-regression.md)。
 
 ## Context
 
@@ -45,7 +45,7 @@ Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再�
 ### 4. 设置页与配对入口（S22，修订 S18 / S19，UI-04）
 
 - 旧设置页与连接优先级已按 ADR-0050 删除，不得恢复；本次只核对没有残留的入口、文案、状态、测试或深链。
-- 现有连接状态页改为“设置”页。分区自上而下：Agent 供应商（S19 的卡片、配额币和切换保持不变）→ 当前连接（连接状态、方式、加密；Android 的连接诊断提示卡位于此区上方）→ 配对信息（只读）。删除 iOS 现有的“已配对电脑”切换区，两端都不在设置页切换电脑；切换电脑只在首页电脑行和侧边栏底部电脑菜单中进行。顶栏保留重新连接图标。
+- 现有连接状态页改为“设置”页。分区自上而下：Agent 供应商（S19 的卡片、配额币和切换保持不变）→ 当前连接（连接状态、方式、延迟、加密；Android 的连接诊断提示卡位于此区上方）→ 配对信息（只读）。S23 / UI-07：延迟行始终显示 Host 最近公告的当前生效路径 RTT，四舍五入为整数毫秒；没有样本或未连接时显示“暂不可用”，不触发布局增删或选路变化。删除 iOS 现有的“已配对电脑”切换区，两端都不在设置页切换电脑；切换电脑只在首页电脑行和侧边栏底部电脑菜单中进行。顶栏保留重新连接图标。
 - 首页右上角只有两个图标按钮：下载、设置（齿轮）。删除“更多操作”菜单。点齿轮直接进入设置页。
 - 连接胶囊保留，继续按 S18 显示连接方式、加密以及“正在同步 / 同步失败”；失败时，胶囊旁的重试按钮仍然保留。但胶囊不再响应点击、不再进入设置页。它的辅助功能语义从按钮改为状态文本。
 - 目录筛选菜单中的入口，以及 provider 不匹配对话框中的入口保留，文字改为“设置”，点击后进入设置页。这两处是排障路径，不算右上角的入口。
@@ -87,4 +87,4 @@ Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再�
 
 ## Consequences
 
-已交付的 63 项规则保持不变。r15 新增和修订的规则有了稳定 ID、ticket 与验收用例，实施者不必再从聊天记录中推断需求。回归门禁提高了每次 UI 改动的验证成本：完整设备套件和外观矩阵需要占用共享池设备。这一成本用于换取“动效、视口、身份不被静默回归”的可检验证据。
+截至 r15 已交付的规则保持不变；r15 新增和修订的规则有了稳定 ID、ticket 与验收用例，实施者不必再从聊天记录中推断需求。r25 的 S23 / UI-07 将 Host RTT 显示加入设置页，具体数据和空值语义由 ADR-0050 与 ADR-0051 约束。回归门禁提高了每次 UI 改动的验证成本：完整设备套件和外观矩阵需要占用共享池设备。这一成本用于换取“动效、视口、身份不被静默回归”的可检验证据。

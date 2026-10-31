@@ -2952,6 +2952,7 @@ internal fun StatusScreen(
                     else relayConnectionTone(state.connection),
                 )
                 StatusRow("连接方式", connectionMethodText(state), connectionMethodTone(state))
+                StatusRow("连接延迟", connectionLatencyText(state), StatusTone.Neutral)
                 StatusRow("端到端加密", if (state.e2eReady) "已启用" else "未建立", e2eTone(state))
             }
 
@@ -3127,6 +3128,9 @@ internal fun connectionMethodTone(state: RemoteState): StatusTone = when (state.
     "lan" -> StatusTone.Good
     else -> StatusTone.Neutral
 }
+
+internal fun connectionLatencyText(state: RemoteState): String =
+    state.pathRttMs?.takeIf { state.e2eReady && it >= 0 }?.let { "$it ms" } ?: "暂不可用"
 
 internal fun connectionStatusText(state: RemoteState): String = when {
     state.e2eReady -> "已连接"

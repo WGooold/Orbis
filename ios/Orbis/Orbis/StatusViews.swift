@@ -27,6 +27,7 @@ struct ConnectionStatusView: View {
                                   tone: store.connection == .secured ? OrbisPalette(scheme).success : store.connection == .error ? OrbisPalette(scheme).error : OrbisPalette(scheme).warning)
                         StatusRow(label: "连接方式", value: pathTitle(store.activePath),
                                   tone: store.activePath == "lan" ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
+                        StatusRow(label: "连接延迟", value: connectionLatencyText(store.pathRTT, connected: store.connection == .secured), tone: OrbisPalette(scheme).secondary)
                         StatusRow(label: "端到端加密", value: store.connection == .secured ? "已启用" : "未建立",
                                   tone: store.connection == .secured ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
                     }

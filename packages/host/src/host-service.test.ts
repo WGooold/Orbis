@@ -49,6 +49,7 @@ import {
 import { createRelayServer, type RelayServer } from "@orbis/relay";
 
 import { HostService, channelForDeviceMessage } from "./host-service.js";
+import type { ActivePathChange } from "./device-link.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
@@ -963,6 +964,27 @@ describe("host end-to-end over relay", () => {
     await expect(device.receiveData()).resolves.toBe("回声");
   });
 
+  it("publishes recurring RTT samples over a single relay path without changing routes", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-rtt-"));
+    relay = await startRelay(stateDir);
+    const pathChanges: ActivePathChange[] = [];
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false, probeIntervalMs: 30,
+      onPathChange: (_deviceId, change) => pathChanges.push(change) });
+    await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    expect(await device.receiveMessage()).toMatchObject({ type: "device.ready" });
+    expect(await device.receiveMessage()).toMatchObject({ type: "device.path", path: "relay" });
+    for (let sample = 0; sample < 2; sample++) {
+      const announcement = await device.receiveMessage();
+      expect(announcement).toMatchObject({ type: "device.path", path: "relay", rttMs: expect.any(Number) });
+      expect(announcement.rttMs).toBeGreaterThanOrEqual(0);
+    }
+    expect(pathChanges).toHaveLength(1);
+    expect(host.activePathOf(device.deviceId)).toBe("relay");
+  });
+
   it("closes the pairing window once consumed and supports revoking the device", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
@@ -1564,8 +1586,8 @@ describe("host end-to-end over relay", () => {
       reconnect: false,
       // 端口交给系统分配：CI 上 42130 可能已被别的进程占着。
       lanPort: 0,
-      // 探测间隔调小，让「两条路都有基准」这件事在测试里是确定的。
-      probeIntervalMs: 30,
+      // 此用例按次序核对握手与换路帧；周期 RTT 公告由独立用例覆盖。
+      probeIntervalMs: 0,
       onData: (_deviceId, payload) => {
         receivedByHost.push(payload.toString("utf8"));
       },

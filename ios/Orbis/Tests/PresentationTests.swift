@@ -19,6 +19,15 @@ struct CatalogAnchorTests {
 
 @Suite("Android presentation parity")
 struct PresentationTests {
+    @Test func connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds() {
+        #expect(connectionLatencyText(42, connected: false) == "暂不可用")
+        for missing: Double? in [nil, -1, Double.infinity, Double.nan] {
+            #expect(connectionLatencyText(missing, connected: true) == "暂不可用")
+        }
+        #expect(connectionLatencyText(0, connected: true) == "0 ms")
+        #expect(connectionLatencyText(8.5, connected: true) == "9 ms")
+        #expect(connectionLatencyText(42.4, connected: true) == "42 ms")
+    }
     @Test func providerFilterUsesNativeIdentityAndKeepsUnknownSeparate() {
         var first = session("a"), other = session("b"), unknown = session("c")
         first.modelProvider = "native-a"; other.modelProvider = "native-b"; unknown.modelProvider = nil

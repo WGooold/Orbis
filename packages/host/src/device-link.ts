@@ -7,7 +7,7 @@
  *    而不是按设备存会话。
  * 2. **入站跟着来路回，出站跟着生效路径走。** 握手应答必须原路返回（对端只在等那条路），
  *    而主动推送（`device.ready` / `runtime.event`）走当前认定的最优路径。
- * 3. **探测只在真正需要选路时跑。** 只有一条路径可用时没有可比较的对象，探了纯属浪费流量。
+ * 3. **延迟采样与选路分离。** 可用路径每两秒采样，只有生效路径的 RTT 公告给设备；采样不换路。
  */
 import { E2eError, type DeviceRecord } from "@orbis/e2e";
 import {
@@ -75,6 +75,7 @@ type SyncDelivery = {
 export const PROBE_TAG_HOST = 0x48; // 'H'
 const PROBE_BYTES = 9;
 const DEFAULT_PROBE_INTERVAL_MS = 2_000;
+const PROBE_TIMEOUT_MS = 30_000;
 
 export type ActivePathChange = {
   from: PathKind | undefined;
@@ -85,10 +86,12 @@ export type ActivePathChange = {
 export type DeviceLinkOptions = {
   hostId: string;
   device: DeviceRecord;
-  /** 0 表示不探测（单路径场景没有可比较的对象）。 */
+  /** 0 表示不探测；默认每两秒采样可用路径的 RTT。 */
   probeIntervalMs?: number;
   /** 生效路径变了。HostService 据此给手机发 `device.path`（§6.2 / §14 B4）。 */
   onActivePathChange?: (change: ActivePathChange) => void;
+  /** 当前生效路径的新 RTT 样本。仅更新展示，不执行换路时的业务清理。 */
+  onActiveRttUpdated?: (kind: PathKind, rttMs: number) => void;
   /**
    * 一条路径上的握手**刚刚完成**——包括在**同一条**路上重新握手（手机重开就是这样：
    * 它连的还是那条中继，Host 这边压根不知道中间断过）。
@@ -417,7 +420,7 @@ export class DeviceLink {
       return true;
     }
     if (outcome.frame === "ping") {
-      this.#handleProbe(kind, outcome.payload, session);
+      this.#handleProbe(kind, outcome.payload);
       return true;
     }
     this.#options.onPayload?.(outcome.payload, outcome.frame === "bin" ? "bin" : "data");
@@ -567,7 +570,7 @@ export class DeviceLink {
   }
 
   #sendSealed(
-    frame: "data" | "bin",
+    frame: "data" | "bin" | "ping",
     payload: Uint8Array,
     kind = this.#selector.active,
     channel: EnvelopeChannel,
@@ -577,7 +580,7 @@ export class DeviceLink {
     const session = this.#sessions.get(kind);
     const mux = this.#muxes.get(kind);
     if (session === undefined || mux === undefined) return false;
-    const attribution = source ?? { type: frame === "bin" ? "artifact.binary" : "unattributed", payloadBytes: payload.byteLength };
+    const attribution = source ?? { type: frame === "bin" ? "artifact.binary" : frame === "ping" ? "transport.ping" : "unattributed", payloadBytes: payload.byteLength };
     const estimatedBytes = envelopeBytesForPayload(payload.byteLength);
     if (!mux.hasRoom(channel, estimatedBytes)) {
       this.#rejectQueueAdmission(kind, mux, channel, estimatedBytes, attribution);
@@ -664,30 +667,26 @@ export class DeviceLink {
    *
    * 判据是首字节而不是「这个 token 在不在待测表里」——见 `PROBE_TAG_HOST` 的注释。
    */
-  #handleProbe(kind: PathKind, payload: Buffer, session: HostDeviceSession): void {
+  #handleProbe(kind: PathKind, payload: Buffer): void {
     if (payload.length === PROBE_BYTES && payload[0] === PROBE_TAG_HOST) {
       const key = payload.subarray(1).toString("hex");
       const pending = this.#pending.get(key);
-      if (pending === undefined) return;
+      if (pending === undefined || pending.kind !== kind) return;
       this.#pending.delete(key);
-      this.#announce(this.#selector.observeRtt(kind, Date.now() - pending.sentAt));
+      const rttMs = Math.max(0, performance.now() - pending.sentAt);
+      if (rttMs > PROBE_TIMEOUT_MS) return;
+      this.#selector.observeRtt(kind, rttMs);
+      if (this.#selector.active === kind) this.#options.onActiveRttUpdated?.(kind, rttMs);
       return;
     }
     // 对端在探我：原样回一遍，它才算得出这条路自己的往返。
-    try {
-      this.#sinks.get(kind)?.(session.seal("ping", payload, "ctl"));
-    } catch (error) {
-      this.#options.onError?.(error);
-    }
+    this.#sendSealed("ping", payload, kind, "ctl");
   }
 
-  /**
-   * 探测只在有两条以上路径时开——一条路径时没有可比较的对象，
-   * 继续发探针只是在为没人看的数字付流量。
-   */
+  /** 单路径连接也采样，让设置页始终能显示手机与 Host 间的实际 RTT。 */
   #syncProbeTimer(): void {
     const interval = this.#options.probeIntervalMs ?? DEFAULT_PROBE_INTERVAL_MS;
-    const shouldProbe = !this.#closed && interval > 0 && this.#readyPaths().length >= 2;
+    const shouldProbe = !this.#closed && interval > 0 && this.#readyPaths().length > 0;
     if (!shouldProbe) {
       if (this.#probeTimer !== undefined) {
         clearInterval(this.#probeTimer);
@@ -703,30 +702,27 @@ export class DeviceLink {
   }
 
   #probe(): void {
-    // 每拍都探两条路：候选的路要拿证据，当前的路要更新比较基准——
-    // 只探候选那条会让基准永远停在第一次的数值上。
     this.#probeOnce();
   }
 
-  /** 对外暴露一次同步探测，测试用它把「等 3 拍」压缩成确定性的一步。 */
+  /** 对外暴露一次同步探测，供测试验证采样与公告。 */
   probeNow(): void {
     this.#probeOnce();
   }
 
   #probeOnce(): void {
+    if (this.#closed) return;
+    const now = performance.now();
+    for (const [key, pending] of this.#pending) {
+      if (now - pending.sentAt > PROBE_TIMEOUT_MS) this.#pending.delete(key);
+    }
     for (const kind of this.#readyPaths()) {
-      const session = this.#sessions.get(kind);
-      const sink = this.#sinks.get(kind);
-      if (session === undefined || sink === undefined) continue;
       const token = Buffer.alloc(8);
       token.writeBigUInt64BE(BigInt(this.#probeCounter++));
       const payload = Buffer.concat([Buffer.from([PROBE_TAG_HOST]), token]);
-      try {
-        sink(session.seal("ping", payload, "ctl"));
-        this.#pending.set(token.toString("hex"), { sentAt: Date.now(), kind });
-      } catch (error) {
-        this.#options.onError?.(error);
-      }
+      const key = token.toString("hex");
+      this.#pending.set(key, { sentAt: performance.now(), kind });
+      if (!this.#sendSealed("ping", payload, kind, "ctl")) this.#pending.delete(key);
     }
   }
 

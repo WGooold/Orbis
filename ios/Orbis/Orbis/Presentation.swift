@@ -1,5 +1,10 @@
 import Foundation
 
+func connectionLatencyText(_ rttMs: Double?, connected: Bool) -> String {
+    guard connected, let rttMs, rttMs.isFinite, rttMs >= 0 else { return "暂不可用" }
+    return String(format: "%.0f ms", locale: Locale(identifier: "en_US_POSIX"), rttMs.rounded())
+}
+
 /// A promoted or removed reading anchor keeps the pixel offset instead of dragging the reader.
 func catalogAnchorMoved(previous: [String], current: [String], anchor: String, updated: Set<String>? = nil) -> Bool {
     guard let old = previous.firstIndex(of: anchor), let next = current.firstIndex(of: anchor) else { return true }

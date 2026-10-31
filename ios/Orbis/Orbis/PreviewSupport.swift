@@ -160,7 +160,9 @@ private final class PreviewTransport: OrbisTransport {
             }
             receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": runtimes,
                      "agents": ["pi", "codex", "dsh"], "launchableAgents": ["pi", "codex", "dsh"]], "ctl")
-            receive(["type": "device.path", "path": "relay", "rttMs": 42], "ctl")
+            var path: [String: Any] = ["type": "device.path", "path": "relay"]
+            if !ProcessInfo.processInfo.arguments.contains("--preview-no-rtt") { path["rttMs"] = 42 }
+            receive(path, "ctl")
             // V21: the top session goes away while the reader is scrolled further down the list.
             if ProcessInfo.processInfo.arguments.contains("--preview-home-remove-later") {
                 Task { @MainActor [weak self] in

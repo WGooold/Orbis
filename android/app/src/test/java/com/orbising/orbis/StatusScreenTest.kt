@@ -47,4 +47,13 @@ class StatusScreenTest {
         assertEquals("已连接", connectionStatusText(state))
         assertEquals(null, statusAdvice(state, pairing()))
     }
+
+    @Test
+    fun `connection latency shows host RTT or an unavailable value`() {
+        assertEquals("暂不可用", connectionLatencyText(RemoteState(pathRttMs = 42L)))
+        assertEquals("暂不可用", connectionLatencyText(RemoteState(e2eReady = true)))
+        assertEquals("暂不可用", connectionLatencyText(RemoteState(e2eReady = true, pathRttMs = -1L)))
+        assertEquals("0 ms", connectionLatencyText(RemoteState(e2eReady = true, pathRttMs = 0L)))
+        assertEquals("42 ms", connectionLatencyText(RemoteState(e2eReady = true, pathRttMs = 42L)))
+    }
 }

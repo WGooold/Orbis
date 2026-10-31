@@ -481,6 +481,7 @@ final class HostConnection: ObservableObject {
             // 断线时关闭结果未知；重连后的 device.ready 才说明哪些会话仍在。
             if state != .secured { self.pendingSends.connectionLost(); self.closingRuntimes = [:] }
             self.connection = state
+            if state != .secured { self.pathRTT = nil }
             if state != .secured { self.homeDirectoryReceived = false }
             self.recordConnectionEvent("连接：\(state.rawValue)")
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)

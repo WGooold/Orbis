@@ -184,7 +184,7 @@ export type HostServiceOptions = {
   lanListen?: boolean;
   /** LAN 监听端口。默认 42130——二维码要能在一个短命进程里写死它（见 `lan-server.ts`）。 */
   lanPort?: number;
-  /** 两条路径的 RTT 探测间隔（毫秒）。0 表示不探。测试会调小它。 */
+  /** 可用路径的 RTT 探测间隔（毫秒）。默认两秒；0 表示不探。测试会调小它。 */
   probeIntervalMs?: number;
   /**
    * `bulk`（artifact 分片）的速率上限，字节/秒。`0`/缺省 = 不限速。
@@ -2461,6 +2461,11 @@ export class HostService {
       },
       onActivePathChange: (change) => {
         this.#handlePathChange(deviceId, change);
+      },
+      onActiveRttUpdated: (path, rttMs) => {
+        this.#sendToDevice(deviceId, {
+          type: "device.path", protocolVersion: PROTOCOL_VERSION, path, rttMs: Math.round(rttMs),
+        });
       },
       onSessionReady: (kind, active, change) => {
         this.#handleSessionReady(deviceId, kind, active, change);

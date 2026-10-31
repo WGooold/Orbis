@@ -3,6 +3,7 @@ package com.orbising.orbis
 import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
@@ -83,15 +84,28 @@ class SettingsEntryInstrumentedTest {
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
         owner.put("settings", model)
-        val state = RemoteState(hostId = "host", hostName = "Work", e2eReady = true, connection = RelayConnection.ONLINE)
+        val state = mutableStateOf(RemoteState(hostId = "host", hostName = "Work", e2eReady = true, connection = RelayConnection.ONLINE,
+            path = "lan", pathRttMs = 42L))
         try {
             compose.setContent {
-                OrbisTheme(darkTheme = dark) { StatusScreen(state = state, model = model, pairing = model.pairingStatus(), onBack = {}) }
+                OrbisTheme(darkTheme = dark) { StatusScreen(state = state.value, model = model, pairing = model.pairingStatus(), onBack = {}) }
             }
             compose.onNodeWithText("设置").assertIsDisplayed()
             capture(if (dark) "settings-dark" else "settings-light")
             val providers = compose.onNodeWithText("Agent 供应商").fetchSemanticsNode().boundsInRoot.top
             val connection = compose.onNodeWithText("当前连接").fetchSemanticsNode().boundsInRoot.top
+            compose.onNodeWithText("连接延迟").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("42 ms").assertIsDisplayed()
+            val latencyTop = compose.onNodeWithText("连接延迟").fetchSemanticsNode().boundsInRoot.top
+            capture(if (dark) "settings-latency-dark" else "settings-latency-light")
+            compose.runOnIdle { state.value = state.value.copy(path = "relay", pathRttMs = 137L) }
+            compose.onNodeWithText("137 ms").assertIsDisplayed()
+            assertEquals(latencyTop, compose.onNodeWithText("连接延迟").fetchSemanticsNode().boundsInRoot.top, 1f)
+            compose.runOnIdle { state.value = state.value.copy(pathRttMs = null) }
+            compose.onNodeWithText("暂不可用").assertIsDisplayed()
+            compose.runOnIdle { state.value = state.value.copy(e2eReady = false, pathRttMs = 137L) }
+            compose.onNodeWithText("暂不可用").assertIsDisplayed()
+            compose.runOnIdle { state.value = state.value.copy(e2eReady = true, pathRttMs = 42L) }
             compose.onNodeWithText("配对信息").performScrollTo()
             val pairing = compose.onNodeWithText("配对信息").fetchSemanticsNode().positionInRoot.y
             assertTrue(providers < connection)
