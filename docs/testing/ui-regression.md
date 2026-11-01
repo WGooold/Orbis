@@ -173,7 +173,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | Ticket / 场景 | 自动验证要求 | 手动 / feature |
 | --- | --- | --- |
 | MOT-01 | 两端 InteractionMotion 纯几何：触点最远角、路径分段、边界裁切、返回进度；生命周期清理 | 所有R33–R40、V18 |
-| MOT-02 / SC01–02 | 扩展 HomeSwipeCloseInstrumentedTest 与 iOS 首页关闭：中帧保留、完全滑出、拒绝恢复、一次提交 | C09、R33 / M10、V11、V21 |
+| MOT-02 / SC01–02 | 扩展 HomeSwipeCloseInstrumentedTest 与 iOS 首页关闭：中帧保留、完全滑出、拒绝恢复、一次提交；Android `thresholdCrossingsVibrateInBothDirectionsAndRepeatedlyBeforeClosingItsRuntime` 覆盖反复双向越阈值逐次触觉及同侧不重复 | C09、R33 / M10、V11、V21 |
 | MOT-03 / SC02–05 | 扩展首页 / 目录归档 / 下载 / 供应商选择；`InteractionMotionInstrumentedTest.selectionStartsAtTheTouchAndReversesWithoutMovingTheCard`；iOS现有多选用例及中帧审阅 | C10–C13、R34 / S15、M06 |
 | MOT-04 / SC06–10 | Android `InteractionMotionInstrumentedTest.menuChangesItsContainerBeforeSlidingToTheChildAndBack`、iOS `testComputerSubmenuReturnsWithinOneAnchoredPanel`：锚点、安全区、自然尺寸、两阶段、返回优先、菜单失效 | C11–C12、C18、R35 / M18 |
 | MOT-05 / SC11–13 | 更新原复制/Rewind入口并保留业务断言；新增长按、滚动/文本选择共存、栏失效 | C05、C15、R36 / S10、M19 |
@@ -203,7 +203,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | C06 | 聚焦输入框，输入多行，打开 Slash 菜单 | 输入框为凹槽并显示柔和双环；键盘上移输入区，顶栏不动；Slash 菜单在键盘上方 | S12、S17、V08 |
 | C07 | 展开 / 收起 thinking 与工具卡；打开工具详情 | 约 260ms 自然高度折叠；展开状态保留；详情可分页、可关闭 | M03、S20、V14 |
 | C08 | 触发审批 / 问卷，提交与取消 | 单项确认浮在输入区上方，提交时 composer 不位移；多步骤间草稿保留 | V07、M12 |
-| C09 | 首页卡片左滑：短滑后松手，再滑过半宽 | 短滑回弹；越过半宽时提示“松手关闭”并触觉一次；松手后退场；多选模式下不触发 | M10、M12、V11 |
+| C09 | 首页卡片左滑：短滑后松手，再滑过半宽 | 短滑回弹；越过半宽时提示“松手关闭”并触觉一次；退回“关闭”同样触觉一次，同手势反复跨阈值持续反馈，同侧移动和松手 / 回弹不追加；松手后退场；多选模式下不触发 | M10、M12、V11 |
 | C10 | 长按卡片进入多选，再点选和退出 | 进入多选时触觉一次；选中按r31从本次触点260ms扩散，取消160ms；卡片几何不变 | S15、M06、M12 |
 | C11 | 从左缘拖开目录，折叠 / 展开目录，搜索，归档 / 恢复 | 抽屉跟手吸附；折叠后高度立即收缩；一次只展开一个目录 | M09、S19、V17 |
 | C12 | 打开设置页（r15 前由“更多操作 › 连接状态”进入，r15 后点右上角齿轮）；检查当前连接事实行；点配额币；打开供应商切换 | 分区顺序正确；连接延迟以整数毫秒显示，无样本时为“暂不可用”；供应商卡片区（r15 后位于最上方）：44pt/dp 环、角标、左倾 24° 翻面；切换菜单透明无底色 | S19、S22–S23、M14 |
@@ -302,7 +302,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 
 | 编号 | 步骤 | 预期 | ID / ticket |
 | --- | --- | --- | --- |
-| R33 | 左滑跨阈值再退回、再次跨阈值松手；拒绝/断线/换电脑 | 红灰平滑、一次触觉；卡片完全滑出再收拢；恢复不串身份 | M10 / MOT-02 |
+| R33 | 左滑跨阈值再退回、再次跨阈值松手；拒绝/断线/换电脑 | 红灰平滑；每次进入 / 退出阈值各触觉一次，单手势至少反复三轮，同侧移动及松手 / 回弹不追加；卡片完全滑出再收拢；恢复不串身份 | M10 / MOT-02 |
 | R34 | 首页、目录、下载、供应商分别长按和触点不同时逐项选择；快速反选和退出 | 蓝底从各自触点展开；工具栏线段旋转/合拢/渐显；几何和确认取消保持 | S15、M06 / MOT-03 |
 | R35 | 所有菜单入口四角/窄屏展开；电脑二级进入返回；连续操作/系统返回/切电脑 | 从锚点翻开；容器先变形再侧向翻页；返回相反且只退一层 | M18 / MOT-04 |
 | R36 | 当前聊天、长文本、附件、历史预览和离线消息长按；复制、Rewind、滚动及文字选择 | 上方操作栏，常驻下方操作移除；pending恢复区仍在；不推动正文/绕过确认 | S10、M19 / MOT-05 |

@@ -10,7 +10,7 @@ import androidx.compose.ui.input.pointer.positionChange
 
 /** Claim only left-starting drags; right-starting drags remain available to the home drawer. */
 internal suspend fun PointerInputScope.detectHomeCloseDragGestures(
-    onDragStart: () -> Unit,
+    onDragStart: () -> Unit = {},
     onDragEnd: () -> Unit,
     onDragCancel: () -> Unit,
     onHorizontalDrag: (PointerInputChange, Float) -> Unit,

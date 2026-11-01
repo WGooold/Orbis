@@ -941,9 +941,7 @@ internal fun RuntimeListScreen(
                                             .immediatePressFeedback(!selecting && cardCurrent) { touchPressed = it }
                                             .pointerInput(selecting, runtime.runtimeId, cardWidth, cardCurrent) {
                                                 if (!selecting && cardCurrent) {
-                                                    var hapticSent = false
                                                     detectHomeCloseDragGestures(
-                                                        onDragStart = { hapticSent = false },
                                                         onDragEnd = {
                                                             val shouldClose = closeThreshold > 0f && swipeOffset >= closeThreshold
                                                             // 提交成功后卡片从松手位置继续向左离开，不先弹回再消失。
@@ -961,9 +959,8 @@ internal fun RuntimeListScreen(
                                                             val next = (swipeOffset - dragAmount).coerceIn(0f, cardWidth)
                                                             swipeOffset = next
                                                             val armed = closeThreshold > 0f && next >= closeThreshold
-                                                            if (armed && !closeArmed && !hapticSent) {
+                                                            if (armed != closeArmed) {
                                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                                hapticSent = true
                                                             }
                                                             closeArmed = armed
                                                             swipeScope.launch { swipeAnim.snapTo(next) }

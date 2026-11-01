@@ -475,7 +475,6 @@ struct HomeView: View {
     }
     @State private var exitingCards: [String: ExitingCard] = [:]
     @State private var armedCloseRuntimeIds: Set<String> = []
-    @State private var closeHapticRuntimeIds: Set<String> = []
     @State private var swipingRuntimeIds: Set<String> = []
     @State private var runtimeCardFrames: [String: CGRect] = [:]
     @State private var homeListGeometry = HomeListGeometry()
@@ -644,7 +643,6 @@ struct HomeView: View {
     private func resetCloseSwipes() {
         swipeTranslations = swipeTranslations.filter { exitingCards[$0.key] != nil }
         armedCloseRuntimeIds = []
-        closeHapticRuntimeIds = []
         swipingRuntimeIds = []
         closeSwipeRuntimeId = nil
         closeSwipeDirectionDecided = false
@@ -674,12 +672,12 @@ struct HomeView: View {
                 let threshold = width / 2
                 let horizontal = value.translation.width
                 swipingRuntimeIds.insert(id)
-                if threshold > 0, horizontal <= -threshold, !closeHapticRuntimeIds.contains(id) {
-                    closeHapticRuntimeIds.insert(id)
+                let armed = threshold > 0 && horizontal <= -threshold
+                if armed != armedCloseRuntimeIds.contains(id) {
                     OrbisHaptics.commit()
                 }
                 swipeTranslations[id] = min(0, max(-width, horizontal))
-                if threshold > 0, horizontal <= -threshold { armedCloseRuntimeIds.insert(id) }
+                if armed { armedCloseRuntimeIds.insert(id) }
                 else { armedCloseRuntimeIds.remove(id) }
             }
             .onEnded { value in
@@ -698,7 +696,6 @@ struct HomeView: View {
                     closing = !beginClose([id], host: host).isEmpty
                 }
                 if !closing { armedCloseRuntimeIds.remove(id) }
-                closeHapticRuntimeIds.remove(id)
                 if !closing {
                     withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.28, dampingFraction: 0.82)) {
                         swipeTranslations[id] = 0
