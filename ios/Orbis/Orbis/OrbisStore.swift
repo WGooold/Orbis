@@ -320,6 +320,8 @@ final class HostConnection: ObservableObject {
             for item in incoming { merged[item.sessionId] = item }
             self.sessions = merged.values.sorted { $0.modifiedAt > $1.modifiedAt }
             self.persistSessions()
+            // ADR-0049 §7.5：完整目录是归档的权威状态。
+            self.ledgerAuthority(OperationKinds.catalogDomain, read: nil, complete: true)
         }
         hostState.didChangeProviders = { [weak self] in self?.refreshSessions() }
         transfers.sendBinary = { [weak self] in self?.transport.sendBinary($0) ?? false }
@@ -1042,13 +1044,35 @@ final class HostConnection: ObservableObject {
         activationRequestId = nil; pendingActivation = nil; activatingSessionId = nil
     }
 
+    /// ADR-0049 §6.4 `archive`：卡片立即移到目标列表；回执、断线、期限与核对全部交给账本。
     func archive(_ session: SessionSummary, archived: Bool) {
         guard connection == .secured, let kind = session.agentKind else { return }
-        if !transport.send(["type": "session.archive", "protocolVersion": orbisProtocolVersion, "requestId": UUID().uuidString,
-                            "sessionId": session.sessionId, "agentKind": kind, "archived": archived]) {
-            errorMessage = "操作未送达，请连接后重试。"
+        let requestId = UUID().uuidString
+        let creation = ledger.create(opId: requestId, kind: OperationKinds.archive,
+                                     target: OperationKinds.archiveTarget(agentKind: kind, sessionId: session.sessionId),
+                                     policy: OperationKinds.archivePolicy, basis: ledgerBasis(OperationKinds.catalogDomain),
+                                     payload: .archive(sessionId: session.sessionId, agentKind: kind, archived: archived), written: false, now: Date())
+        guard creation == .created else { return }
+        guard transport.send(["type": "session.archive", "protocolVersion": orbisProtocolVersion, "requestId": requestId,
+                              "sessionId": session.sessionId, "agentKind": kind, "archived": archived]) else {
+            ledger.remove(requestId); handleLedger([])
+            errorMessage = "操作未送达，请连接后重试。"; return
+        }
+        handleLedger(ledger.written(requestId, now: Date()))
+    }
+
+    /// 目录叠加未结算的归档操作：卡片立即出现在目标列表（ADR-0049 §6.4）。
+    var visibleSessions: [SessionSummary] {
+        let overrides = OperationKinds.archiveOverrides(ledger)
+        guard !overrides.isEmpty else { return sessions }
+        return sessions.map { session in
+            guard let archived = overrides[session.sessionId] else { return session }
+            var copy = session; copy.archived = archived; return copy
         }
     }
+
+    /// 正在归档 / 恢复、尚未结算的会话：冲突入口在结算前禁用（L9）。
+    func isArchiving(_ sessionId: String) -> Bool { OperationKinds.archiveOverrides(ledger)[sessionId] != nil }
 
     func browseDirectory(_ path: String? = nil) {
         guard connection == .secured else {
@@ -1151,6 +1175,10 @@ final class HostConnection: ObservableObject {
             let ids = Set(runtimes.map(\.runtimeId))
             return { OperationKinds.evidence($0, runtimeIds: ids) }
         }
+        if domain == OperationKinds.catalogDomain {
+            let index = sessionIndex
+            return { OperationKinds.catalogEvidence($0, sessions: index) }
+        }
         let projections = notifications.projections
         return { op in
             guard case .dismiss(let runtimeId, _, _) = op.payload, OperationKinds.noticesDomain(runtimeId) == domain else { return .none }
@@ -1178,7 +1206,7 @@ final class HostConnection: ObservableObject {
 
     /// 领域当前的权威状态是否完整：部分结果不能作为反向证据（L2）。
     private func ledgerDomainComplete(_ domain: String) -> Bool {
-        if domain == OperationKinds.runtimesDomain { return true }
+        if domain == OperationKinds.runtimesDomain || domain == OperationKinds.catalogDomain { return true }
         if domain.hasPrefix("notifications:") {
             return notifications.projections[String(domain.dropFirst("notifications:".count))]?.complete == true
         }
@@ -1188,10 +1216,12 @@ final class HostConnection: ObservableObject {
     /// 账本事件的呈现：列表类被拒绝时提示原因后删除，界面随叠加回到权威状态；结果不明的发起核对读取。
     private func handleLedger(_ events: [AppLedger.Event]) {
         var verify = false
+        let archiveRejections = events.filter { if case .rejected(let op) = $0, case .archive = op.payload { return true }; return false }.count
         for event in events {
             switch event {
             case .rejected(let op):
-                if let text = OperationKinds.message(for: op) { errorMessage = text }
+                // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
+                if let text = OperationKinds.message(for: op) { errorMessage = archiveRejections > 1 ? "\(archiveRejections) 个会话" + text : text }
                 if OperationKinds.removesOnRejection(op) { ledger.remove(op.opId) }
             case .verify: verify = true
             case .landed, .unknown, .unconfirmed, .expired, .ready: break
@@ -1643,6 +1673,7 @@ final class HostConnection: ObservableObject {
                 let decoded: [SessionSummary] = values.compactMap(jsonDecode)
                 sessions = decoded.sorted { $0.modifiedAt > $1.modifiedAt }
                 persistSessions()
+                ledgerAuthority(OperationKinds.catalogDomain, read: nil, complete: true)
             }
             if let providers = message["currentProviders"] as? [[String: Any]] {
                 currentProviders = [:]
@@ -1677,13 +1708,18 @@ final class HostConnection: ObservableObject {
                 }
             }
             refreshSessions()
-        case "session.archive.changed": refreshSessions()
+        case "session.archive.changed":
+            // 同一 requestId 的变更通知即这次归档的成功回执（ADR-0049 §7.5）。
+            if let requestId = message["requestId"] as? String, ledger.operation(requestId) != nil {
+                handleLedger(ledger.receipt(requestId, connection: ledger.connection, .succeeded, now: Date()))
+            }
+            refreshSessions()
         case "protocol.error":
             let commandId = message["commandId"] as? String
             if commandId?.hasPrefix("session-sync-ack:") == true { return }
-            if let commandId, ledger.operation(commandId) != nil {
+            if let opId = commandId ?? message["requestId"] as? String, ledger.operation(opId) != nil {
                 let rejection = AppLedger.Rejection(message["code"] as? String ?? "failure", message["message"] as? String ?? "电脑端无法完成操作。")
-                handleLedger(ledger.receipt(commandId, connection: ledger.connection, .failed(rejection), now: Date())); return
+                handleLedger(ledger.receipt(opId, connection: ledger.connection, .failed(rejection), now: Date())); return
             }
             if let syncId = pendingSyncs.first(where: { $0.value.commandId == commandId })?.key {
                 let pending = pendingSyncs[syncId]

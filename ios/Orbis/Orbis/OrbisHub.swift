@@ -173,6 +173,9 @@ final class OrbisStore: ObservableObject {
     var turnTimings: [SessionTurnTiming] { activeConnection.turnTimings.values.sorted { $0.startedAt < $1.startedAt } }
     var runtimes: [RuntimeSummary] { activeConnection.runtimes }
     var sessions: [SessionSummary] { activeConnection.sessions }
+    /// 目录抽屉显示的会话：叠加未结算的归档操作（ADR-0049 §6.4）。
+    var visibleSessions: [SessionSummary] { activeConnection.visibleSessions }
+    func isArchiving(_ sessionId: String) -> Bool { activeConnection.isArchiving(sessionId) }
     var messages: [ChatMessage] { activeConnection.messages }
     var chatTranscript: ChatTranscript { activeConnection.chatTranscript }
     var streamingMessageIds: Set<String> { activeConnection.streamingMessageIds }

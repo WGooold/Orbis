@@ -518,8 +518,6 @@ data class RemoteState(
     /** Only explicit resume requests may navigate when their acknowledged Session comes online. */
     val sessionActivateTargets: Map<String, String> = emptyMap(),
     val activatedSessionToOpen: String? = null,
-    /** requestId -> sessionId; clear only on a result, failure, timeout, or reconnect. */
-    val sessionArchiveRequests: Map<String, String> = emptyMap(),
     /** 最近一次成功激活（进程已拉起），UI 用于 snackbar 提示；展示完可清除。 */
     val sessionActivation: SessionActivationInfo? = null,
     /** Offline history is a read-only view; online interaction is always selected by Runtime. */
@@ -676,10 +674,10 @@ private fun reduceSessionArchiveChanged(state: RemoteState, message: JsonObject)
     val entry = state.sessions[sessionId]
     if (entry?.agentKind != null && entry.agentKind != agentKind) return state
     val changed = entry?.archived != archived
-    return state.copy(
-        sessionArchiveRequests = state.sessionArchiveRequests - listOfNotNull(requestId),
-        sessionListEpoch = if (changed) state.sessionListEpoch + 1 else state.sessionListEpoch,
-    )
+    val next = state.copy(sessionListEpoch = if (changed) state.sessionListEpoch + 1 else state.sessionListEpoch)
+    // 同一 requestId 的变更通知即这次归档的成功回执（ADR-0049 §7.5）。
+    return if (requestId != null && state.ledger.operation(requestId) != null)
+        next.ledgerReceipt(requestId, LedgerReceipt.Succeeded, System.currentTimeMillis()) else next
 }
 
 /** session.browse.result（spec §8.1）：只认当前浏览会话的 requestId，避免旧响应覆盖新导航。 */
@@ -1152,6 +1150,8 @@ internal fun RemoteState.canCreateSessionOn(expectedHostId: String?): Boolean =
  */
 internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
     val host = state.sessionHost ?: return emptyList()
+    // ADR-0049 §6.4：未结算的归档叠加在目录上，卡片立即出现在目标列表。
+    val catalog = state.sessionsWithLedger()
     val runtimesBySession = state.runtimes.values
         .filter { it.sessionId != null }
         .sortedBy(state::runtimeDisplayName)
@@ -1161,7 +1161,7 @@ internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
         val runtime = runtimes.firstOrNull() ?: continue
         // An online Session merged into the catalog before its identity domain arrived has no
         // agentKind yet; the runtime's committed identity fills it (Claude has no catalog row then).
-        val session = (state.sessions[sessionId] ?: runtime.catalogEntry())
+        val session = (catalog[sessionId] ?: runtime.catalogEntry())
             ?.let { entry -> if (entry.agentKind == null && runtime.agentKind != null) entry.copy(agentKind = runtime.agentKind) else entry }
         rows[sessionId] = CachedSessionRow(
             sessionId = sessionId,
@@ -1175,7 +1175,7 @@ internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
             modifiedAt = session?.modifiedAt ?: 0L,
         )
     }
-    for (session in state.sessions.values) {
+    for (session in catalog.values) {
         if (rows.containsKey(session.sessionId)) continue
         rows[session.sessionId] = CachedSessionRow(
             sessionId = session.sessionId,
@@ -1932,7 +1932,6 @@ class RelayReducer(
                     codexDesktop = state.codexDesktop.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     sessionListRequests = emptySet(),
                     sessionListRequestEpochs = emptyMap(),
-                    sessionArchiveRequests = emptyMap(),
                     runtimeSessionViews = runtimeViews,
                     knownRuntimeSessions = state.knownRuntimeSessions + runtimes.mapValues { it.value.sessionId },
                     sessionHistory = state.sessionHistory
@@ -2187,6 +2186,10 @@ class RelayReducer(
                         message.string("message")?.takeIf(String::isNotBlank) ?: "电脑端无法完成操作。")), System.currentTimeMillis())
                 }
                 val requestId = message.string("requestId")
+                if (requestId != null && state.ledger.operation(requestId) != null) {
+                    return state.ledgerReceipt(requestId, LedgerReceipt.Failed(LedgerRejection(message.string("code") ?: "failure",
+                        message.string("message")?.takeIf(String::isNotBlank) ?: "请重试")), System.currentTimeMillis())
+                }
                 val syncError = protocolErrorText(message.string("code"), message.string("message"))
                 if (requestId != null && state.agentStateReads[requestId]?.scope == "agent") {
                     return state.failHomeRead(requestId, syncError)
@@ -2197,11 +2200,9 @@ class RelayReducer(
                 // 先按 requestId 归位进程激活类请求（spec §8：错误带回 requestId）。
                 val listCleared = requestId?.takeIf { it in state.sessionListRequests }
                 val activateCleared = requestId?.takeIf { it in state.sessionActivateRequests }
-                val archiveCleared = requestId?.takeIf { it in state.sessionArchiveRequests }
                 val browseCleared = requestId?.takeIf { state.sessionBrowse?.requestId == it }
-                if (listCleared != null || activateCleared != null || browseCleared != null || archiveCleared != null) {
+                if (listCleared != null || activateCleared != null || browseCleared != null) {
                     return state.copy(
-                        sessionArchiveRequests = state.sessionArchiveRequests - listOfNotNull(archiveCleared),
                         sessionListRequests = listCleared?.let { state.sessionListRequests - it } ?: state.sessionListRequests,
                         sessionListRequestEpochs = listCleared?.let { state.sessionListRequestEpochs - it } ?: state.sessionListRequestEpochs,
                         sessionActivateRequests = activateCleared?.let { state.sessionActivateRequests - it } ?: state.sessionActivateRequests,

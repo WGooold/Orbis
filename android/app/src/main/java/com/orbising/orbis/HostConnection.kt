@@ -456,35 +456,36 @@ internal class HostConnection(
     /** Reconcile provider summaries on demand while preserving the connection's other domains. */
     fun refreshProviderModel() = refreshHostModel(listOf("providers"), force = true)
 
+    /** ADR-0049 §6.4 `archive`：卡片立即移到目标列表；回执、断线、期限与核对全部交给账本（替代原 30 秒超时）。 */
     fun setSessionArchived(sessionId: String, archived: Boolean) {
         val state = mutableState.value
         val entry = state.sessions[sessionId] ?: return
         val agentKind = entry.agentKind ?: return
-        if (sessionId in state.sessionArchiveRequests.values) return
-        val requestId = UUID.randomUUID().toString()
-        sendSessionPayload(
-            requestId = requestId,
-            payload = buildJsonObject {
-                put("type", "session.archive")
-                put("protocolVersion", PROTOCOL_VERSION)
-                put("requestId", requestId)
-                put("agentKind", agentKind)
-                put("sessionId", sessionId)
-                put("archived", archived)
-            },
-            register = { it.copy(sessionArchiveRequests = it.sessionArchiveRequests + (requestId to sessionId)) },
-            rollback = { it.copy(sessionArchiveRequests = it.sessionArchiveRequests - requestId) },
-        )
-        scope.launch {
-            delay(30_000)
-            if (requestId in mutableState.value.sessionArchiveRequests) {
-                updateState { it.copy(
-                    sessionArchiveRequests = it.sessionArchiveRequests - requestId,
-                    error = "归档操作尚未确认，正在刷新会话状态",
-                ) }
-                if (mutableState.value.connection == RelayConnection.ONLINE) refreshSessions()
-            }
+        if (state.connection != RelayConnection.ONLINE || state.hostId.isNullOrBlank()) {
+            updateState { it.copy(error = "尚未连接到电脑，连接建立后才能操作会话") }
+            return
         }
+        val requestId = UUID.randomUUID().toString()
+        var created = false
+        updateState { current ->
+            val (next, creation) = current.createArchive(requestId, sessionId, agentKind, archived, System.currentTimeMillis())
+            created = creation is LedgerCreation.Created
+            if (created) next else current
+        }
+        if (!created) return
+        val sent = relay.sendDeviceMessage(buildJsonObject {
+            put("type", "session.archive")
+            put("protocolVersion", PROTOCOL_VERSION)
+            put("requestId", requestId)
+            put("agentKind", agentKind)
+            put("sessionId", sessionId)
+            put("archived", archived)
+        })
+        if (!sent) {
+            updateState { it.copy(ledger = it.ledger.remove(requestId), error = "当前连接没有端到端加密通道，会话操作未发送") }
+            return
+        }
+        updateState { it.ledgerWritten(requestId, System.currentTimeMillis()) }
     }
 
     /** 新建会话与下载共用的只读浏览。path 为空返回盘符 / 根。 */

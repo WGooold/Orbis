@@ -798,7 +798,7 @@ private fun DrawerSessionRow(
 private fun drawerArchiveUnavailableReason(row: CachedSessionRow, state: RemoteState): String? = when {
     !state.e2eReady -> "连接电脑后可操作"
     row.catalogEntry?.agentKind == null -> "尚未获取会话类型"
-    row.sessionId in state.sessionArchiveRequests.values -> "处理中…"
+    row.sessionId in state.archivingSessionIds -> "处理中…"
     row.isArchived || !row.isOnline -> null
     row.agentKind == "pi" -> "请先退出 Pi 会话"
     row.agentKind == "claude" -> "请先退出 Claude Code 会话"

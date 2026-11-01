@@ -143,7 +143,8 @@ internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentSta
                 cachedDisplayName = previous?.cachedDisplayName,
             )
         }
-        state = state.copy(sessions = merged)
+        // ADR-0049 §7.5：完整目录是归档的权威状态。
+        state = state.copy(sessions = merged).ledgerAuthority(OperationKinds.CATALOG_DOMAIN, null, true)
     }
     domains["backends"]?.takeIf { it.availability == "ready" }?.value?.let { element ->
         val value = element as? JsonObject ?: return@let

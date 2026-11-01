@@ -12,6 +12,8 @@ sealed interface LedgerPayload {
     data class Quit(val runtimeId: String) : LedgerPayload
     /** 关闭通知（只影响本设备，ADR-0028 §3）。 */
     data class Dismiss(val runtimeId: String, val hostEpoch: String, val notificationId: String) : LedgerPayload
+    /** 归档 / 取消归档（每张卡片一条）。 */
+    data class Archive(val sessionId: String, val agentKind: String, val archived: Boolean) : LedgerPayload
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -25,6 +27,9 @@ object OperationKinds {
     const val RUNTIMES_DOMAIN = "runtimes"
     const val QUIT = "quit"
     const val DISMISS = "dismiss"
+    const val ARCHIVE = "archive"
+    /** 会话目录（HostState.catalog / session.list）在账本里的领域名。 */
+    const val CATALOG_DOMAIN = "catalog"
     /** 某个 Runtime 的通知清单在账本里的领域名：每个 Runtime 的通知快照各自独立。 */
     fun noticesDomain(runtimeId: String) = "notifications:$runtimeId"
     /** 账本发起的核对读取（L5）使用的 requestId 前缀。 */
@@ -70,9 +75,36 @@ object OperationKinds {
         return if (projection.complete) LedgerEvidence.NOT_APPLIED else LedgerEvidence.NONE
     }
 
-    /** 被拒绝后是否直接删除：列表类（首页卡片、通知横幅）提示后回到原位；内容类保留失败状态等用户处理。 */
+    val archiveUnconfirmed = LedgerRejection("unconfirmed", "电脑上的会话目录仍是原状态")
+
+    /**
+     * `archive`：同一 requestId 的 `session.archive.changed` 或设备回执 success 即落地（Host 已完成原生归档）；
+     * 带同一 requestId 的 `protocol.error` 为拒绝；结果不明且核对后目录仍为原状态时恢复并提示。
+     */
+    val archivePolicy = LedgerPolicy(
+        successLands = true,
+        acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
+        whenUnresolved = LedgerTimeout.Reject(archiveUnconfirmed),
+        deviceReceipts = true,
+    )
+
+    fun archiveTarget(agentKind: String, sessionId: String) = "session:$agentKind:$sessionId"
+
+    /** 卡片应显示在哪个列表：未结算的归档操作的目标值叠加在目录上（L3）。 */
+    fun archiveOverrides(ledger: AppLedger): Map<String, Boolean> = ledger.operations
+        .filter { !it.phase.isSettled }
+        .mapNotNull { (it.payload as? LedgerPayload.Archive)?.let { archive -> archive.sessionId to archive.archived } }
+        .toMap()
+
+    /** 目录对 `archive` 说明了什么：归档状态已等于目标值即落地；其余交给回执与核对。 */
+    fun catalogEvidence(op: LedgerOperation<LedgerPayload>, sessions: Map<String, SessionCatalogEntry>): LedgerEvidence {
+        val payload = op.payload as? LedgerPayload.Archive ?: return LedgerEvidence.NONE
+        return if ((sessions[payload.sessionId]?.archived == true) == payload.archived) LedgerEvidence.LANDED else LedgerEvidence.NONE
+    }
+
+    /** 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片）提示后回到原位；内容类保留失败状态等用户处理。 */
     fun removesOnRejection(op: LedgerOperation<LedgerPayload>): Boolean = when (op.payload) {
-        is LedgerPayload.Quit, is LedgerPayload.Dismiss -> true
+        is LedgerPayload.Quit, is LedgerPayload.Dismiss, is LedgerPayload.Archive -> true
     }
 
     /** 首页要隐藏的卡片：未结算的 `quit` 一直保持叠加，包括结果不明期间（L4）。 */
@@ -86,7 +118,7 @@ object OperationKinds {
      */
     fun evidence(op: LedgerOperation<LedgerPayload>, runtimeIds: Set<String>): LedgerEvidence = when (val payload = op.payload) {
         is LedgerPayload.Quit -> if (payload.runtimeId in runtimeIds) LedgerEvidence.NONE else LedgerEvidence.LANDED
-        is LedgerPayload.Dismiss -> LedgerEvidence.NONE
+        is LedgerPayload.Dismiss, is LedgerPayload.Archive -> LedgerEvidence.NONE
     }
 
     /** `command.result` 的回执。`cancelled` / `unconfirmed` 是可能已执行的结果，交给账本按结果不明处理。 */
@@ -120,6 +152,8 @@ object OperationKinds {
             is LedgerPayload.Quit ->
                 if (rejection == quitStillRunning || rejection == quitUnconfirmed) rejection.reason else "关闭会话未完成：${rejection.reason}"
             is LedgerPayload.Dismiss -> null // 通知重新显示即说明关闭未生效，不另弹错误（ADR-0049 §6.6）。
+            is LedgerPayload.Archive -> (if ((op.payload as LedgerPayload.Archive).archived) "归档未完成：" else "恢复未完成：") +
+                rejection.reason.ifBlank { "请重试" }
         }
     }
 
@@ -146,9 +180,11 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
     var nextLedger = step.ledger
     var nextError = error
     var verify = ledgerVerifyWanted
+    val archiveRejections = step.events.count { it is LedgerEvent.Rejected && it.operation.payload is LedgerPayload.Archive }
     for (event in step.events) when (event) {
         is LedgerEvent.Rejected -> {
-            OperationKinds.message(event.operation)?.let { nextError = it }
+            // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
+            OperationKinds.message(event.operation)?.let { nextError = if (archiveRejections > 1) "$archiveRejections 个会话$it" else it }
             if (OperationKinds.removesOnRejection(event.operation)) nextLedger = nextLedger.remove(event.operation.opId)
         }
         is LedgerEvent.Verify -> verify = true
@@ -181,6 +217,10 @@ private fun RemoteState.ledgerEvidence(domain: String): (LedgerOperation<LedgerP
         val ids = runtimes.keys
         return { OperationKinds.evidence(it, ids) }
     }
+    if (domain == OperationKinds.CATALOG_DOMAIN) {
+        val catalog = sessions
+        return { OperationKinds.catalogEvidence(it, catalog) }
+    }
     val projections = notificationProjections
     return { op ->
         val payload = op.payload as? LedgerPayload.Dismiss
@@ -191,7 +231,7 @@ private fun RemoteState.ledgerEvidence(domain: String): (LedgerOperation<LedgerP
 
 /** 领域当前的权威状态是否完整：部分结果不能作为反向证据（L2）。 */
 private fun RemoteState.ledgerDomainComplete(domain: String): Boolean = when {
-    domain == OperationKinds.RUNTIMES_DOMAIN -> true
+    domain == OperationKinds.RUNTIMES_DOMAIN || domain == OperationKinds.CATALOG_DOMAIN -> true
     domain.startsWith("notifications:") -> notificationProjections[domain.removePrefix("notifications:")]?.complete == true
     else -> false
 }
@@ -270,3 +310,22 @@ internal fun RemoteState.createDismiss(opId: String, runtimeId: String, notifica
 
 /** 关闭写入后立即读取一次：它的回复因果晚于 Host 对关闭的处理（L2）。 */
 internal fun RemoteState.dismissWritten(opId: String, now: Long): RemoteState = ledgerWritten(opId, now).copy(ledgerVerifyWanted = true)
+
+/** 目录叠加未结算的归档操作：卡片立即出现在目标列表（ADR-0049 §6.4）。 */
+internal fun RemoteState.sessionsWithLedger(): Map<String, SessionCatalogEntry> {
+    val overrides = OperationKinds.archiveOverrides(ledger)
+    if (overrides.isEmpty()) return sessions
+    return sessions.mapValues { (id, entry) -> overrides[id]?.let { entry.copy(archived = it) } ?: entry }
+}
+
+/** 正在归档 / 恢复、尚未结算的会话：冲突入口在结算前禁用（L9）。 */
+internal val RemoteState.archivingSessionIds: Set<String> get() = OperationKinds.archiveOverrides(ledger).keys
+
+/** `archive` 先记入账本（尚未写入），opId 即请求的 requestId。同一会话的归档尚未结算时不重复创建（L9）。 */
+internal fun RemoteState.createArchive(requestId: String, sessionId: String, agentKind: String, archived: Boolean, now: Long):
+    Pair<RemoteState, LedgerCreation<LedgerPayload>> {
+    val (next, creation) = ledger.create(requestId, OperationKinds.ARCHIVE, OperationKinds.archiveTarget(agentKind, sessionId),
+        policy = OperationKinds.archivePolicy, basis = ledgerBasis(OperationKinds.CATALOG_DOMAIN),
+        payload = LedgerPayload.Archive(sessionId, agentKind, archived), written = false, now = now)
+    return copy(ledger = next) to creation
+}

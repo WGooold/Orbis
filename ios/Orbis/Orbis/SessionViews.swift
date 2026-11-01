@@ -160,9 +160,10 @@ struct SessionDrawerView: View {
     private var providerLabel: String { providerOptions.first { $0.key == effectiveProviderKey }?.label ?? "当前 provider" }
 
     private var directories: [SessionDirectory] {
-        let visible = hasProviderFilter ? store.sessions.filter {
+        let catalog = store.visibleSessions
+        let visible = hasProviderFilter ? catalog.filter {
             matchesSessionProvider($0, filter: effectiveProviderKey, current: store.currentProvider(for: state.kind ?? "codex"))
-        } : store.sessions
+        } : catalog
         return sessionDirectories(visible, query: state.query, kind: state.kind, archived: state.archived, title: store.displayName)
     }
 
@@ -281,6 +282,7 @@ struct SessionDrawerView: View {
     private func archiveUnavailableReason(_ session: SessionSummary) -> String? {
         guard store.connection == .secured else { return "连接电脑后可操作" }
         guard let kind = session.agentKind else { return "尚未获取会话类型" }
+        guard !store.isArchiving(session.sessionId) else { return "处理中…" }
         guard session.archived != true else { return nil }
         let runtimes = store.runtimes.filter { $0.sessionId == session.sessionId }
         guard !runtimes.isEmpty else { return nil }

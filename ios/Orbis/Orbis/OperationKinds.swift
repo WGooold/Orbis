@@ -6,6 +6,8 @@ enum LedgerPayload: Equatable {
     case quit(runtimeId: String)
     /// 关闭通知（只影响本设备，ADR-0028 §3）。
     case dismiss(runtimeId: String, hostEpoch: String, notificationId: String)
+    /// 归档 / 取消归档（每张卡片一条）。
+    case archive(sessionId: String, agentKind: String, archived: Bool)
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -17,6 +19,9 @@ enum OperationKinds {
     static let runtimesDomain = "runtimes"
     static let quit = "quit"
     static let dismiss = "dismiss"
+    static let archive = "archive"
+    /// 会话目录（HostState.catalog / session.list）在账本里的领域名。
+    static let catalogDomain = "catalog"
     /// 某个 Runtime 的通知清单在账本里的领域名：每个 Runtime 的通知快照各自独立。
     static func noticesDomain(_ runtimeId: String) -> String { "notifications:" + runtimeId }
     /// 账本发起的核对读取（L5）使用的 requestId 前缀。
@@ -67,10 +72,39 @@ enum OperationKinds {
         return projection.complete ? .notApplied : .none
     }
 
-    /// 被拒绝后是否直接删除：列表类（首页卡片、通知横幅）提示后回到原位；内容类保留失败状态等用户处理。
+    static let archiveUnconfirmed = AppLedger.Rejection("unconfirmed", "电脑上的会话目录仍是原状态")
+
+    /// `archive`：同一 requestId 的 `session.archive.changed` 或设备回执 success 即落地（Host 已完成原生归档）；
+    /// 带同一 requestId 的 `protocol.error` 为拒绝；结果不明且核对后目录仍为原状态时恢复并提示。
+    static let archivePolicy = AppLedger.Policy(
+        successLands: true,
+        acceptedBudget: AppLedger.receiptBudget,
+        afterSuccess: nil,
+        whenUnresolved: .reject(archiveUnconfirmed),
+        deviceReceipts: true,
+        appliesBeforeLaterReads: false
+    )
+
+    static func archiveTarget(agentKind: String, sessionId: String) -> String { "session:\(agentKind):\(sessionId)" }
+
+    /// 卡片应显示在哪个列表：未结算的归档操作的目标值叠加在目录上（L3）。
+    static func archiveOverrides(_ ledger: AppLedger) -> [String: Bool] {
+        Dictionary(ledger.operations.compactMap { op in
+            guard !op.phase.isSettled, case .archive(let sessionId, _, let archived) = op.payload else { return nil }
+            return (sessionId, archived)
+        }, uniquingKeysWith: { _, last in last })
+    }
+
+    /// 目录对 `archive` 说明了什么：归档状态已等于目标值即落地；其余交给回执与核对。
+    static func catalogEvidence(_ op: AppLedger.Operation, sessions: [String: SessionSummary]) -> AppLedger.Evidence {
+        guard case .archive(let sessionId, _, let archived) = op.payload else { return .none }
+        return (sessions[sessionId]?.archived == true) == archived ? .landed : .none
+    }
+
+    /// 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片）提示后回到原位；内容类保留失败状态等用户处理。
     static func removesOnRejection(_ op: AppLedger.Operation) -> Bool {
         switch op.payload {
-        case .quit, .dismiss: return true
+        case .quit, .dismiss, .archive: return true
         }
     }
 
@@ -87,7 +121,7 @@ enum OperationKinds {
     static func evidence(_ op: AppLedger.Operation, runtimeIds: Set<String>) -> AppLedger.Evidence {
         switch op.payload {
         case .quit(let runtimeId): return runtimeIds.contains(runtimeId) ? .none : .landed
-        case .dismiss: return .none
+        case .dismiss, .archive: return .none
         }
     }
 
@@ -124,6 +158,8 @@ enum OperationKinds {
             if rejection == quitStillRunning || rejection == quitUnconfirmed { return rejection.reason }
             return "关闭会话未完成：" + rejection.reason
         case .dismiss: return nil // 通知重新显示即说明关闭未生效，不另弹错误（ADR-0049 §6.6）。
+        case .archive(_, _, let archived):
+            return (archived ? "归档未完成：" : "恢复未完成：") + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
         }
     }
 
