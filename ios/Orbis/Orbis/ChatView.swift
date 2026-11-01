@@ -118,7 +118,9 @@ struct ChatView: View {
                                 OrbisActionButton(title: "重试", symbol: "arrow.clockwise") { store.retryLaunch() }.accessibilityIdentifier("launch-retry")
                                 OrbisActionButton(title: "返回") { onBack() }.accessibilityIdentifier("launch-back")
                             }
-                        }.padding(.horizontal, 16).accessibilityIdentifier("launch-notice")
+                        }.padding(.horizontal, 16)
+                            // 容器自身带标识；不加 .contain 时标识会下沉覆盖“重试”“返回”的标识。
+                            .accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
                 } else if hasRuntimeNotices {
                     RuntimeNoticesView(runtimeId: runtime.runtimeId, supported: ["codex", "codexDesktop"].contains(runtime.agentKind)).padding(.horizontal, 16)
                 } else {

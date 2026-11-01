@@ -84,6 +84,8 @@ struct LaunchLedgerTests {
         #expect(placeholder.runtimeId.hasPrefix("launch:"))
         #expect(placeholder.status == "starting")
         #expect(placeholder.name == "app")
+        // 顶栏标题走 displayName：不能退回到占位 id（“launch:…”）。
+        #expect(host.displayName(placeholder) == "app")
         host.saveDraft("启动时写的草稿", for: placeholder)
         try await fixture.transport.activated("new-1")
         await fixture.transport.online("new-1")

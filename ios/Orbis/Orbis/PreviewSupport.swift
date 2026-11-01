@@ -55,18 +55,17 @@ func makePreviewStore(screen: String) -> OrbisStore {
         transport?.changeList(operation)
         store?.refresh()
     }
-    if screen == "slash" || screen == "approval" || screen == "interactions" {
+    if screen == "slash" {
         Task { @MainActor in
             for _ in 0..<10 where store.selectedRuntime == nil { await Task.yield() }
-            if screen == "slash", let runtime = store.selectedRuntime { store.saveDraft("/", for: runtime) }
-            if screen == "interactions" {
-                for (id, title, kind) in [("draft-one", "填写验证说明", "input"), ("draft-two", "确认下一步", "confirm")] {
-                    transport.event(["type": "interaction.requested", "request": ["runtimeId": "preview-codex", "requestId": id, "extensionId": "preview", "kind": kind, "title": title, "placeholder": "输入验证说明", "expiresAt": Int64(Date().timeIntervalSince1970 * 1000) + 300000]])
-                }
-            }
-            if screen == "approval" {
-                transport.event(["type": "interaction.requested", "request": ["runtimeId": "preview-codex", "requestId": "preview-approval", "extensionId": "preview", "kind": "confirm", "title": "允许执行验证命令？", "description": "Agent 请求运行项目的测试，以检查本次修改。", "argumentSummary": "swift test --package-path ios/Orbis", "expiresAt": Int64(Date().timeIntervalSince1970 * 1000) + 300000]])
-            }
+            if let runtime = store.selectedRuntime { store.saveDraft("/", for: runtime) }
+        }
+    }
+    if screen == "chat", ProcessInfo.processInfo.arguments.contains("--preview-model-switch") {
+        // 夹具：聊天页稳定后切换模型；电脑端只回执、不改模型领域，选择保持“切换中”（ADR-0049 §6.7）。
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            store.executeSlash("model", args: "model-a")
         }
     }
     return store
@@ -295,6 +294,13 @@ private final class PreviewTransport: OrbisTransport {
             if archived { archivedSessionIds.insert(id) } else { archivedSessionIds.remove(id) }
             receive?(["type": "session.archive.changed", "requestId": object["requestId"]!,
                       "sessionId": id, "agentKind": object["agentKind"]!, "archived": archived], "ctl")
+        } else if object["type"] as? String == "session.activate", ProcessInfo.processInfo.arguments.contains("--preview-launch-fail") {
+            // 夹具：Host 明确拒绝启动（ADR-0049 §6.8 的失败原位路径）。默认不回复，停在“启动中”。
+            let requestId = object["requestId"]!
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                self?.receive?(["type": "protocol.error", "requestId": requestId, "code": "agent_unavailable", "message": "对应的 agent 后端未就绪"], "ctl")
+            }
         } else if object["type"] as? String == "notification.sync", let runtime = object["runtimeId"] as? String {
             let notices: [[String: Any]] = screen == "queue" || screen == "notices" ? [["notificationId": "preview-notice", "producerEpoch": "preview-producer", "code": "test_ready", "occurrenceId": "preview-occurrence", "scope": [:], "severity": "warning", "message": "模型服务等待恢复，电脑端会继续核对。", "lifecycle": "condition", "createdAt": 1793232000000, "updatedAt": 1793232000000, "verification": "unknown"]] : []
             receive?(["type": "notification.snapshot", "protocolVersion": orbisProtocolVersion, "hostEpoch": "preview-notices", "runtimeId": runtime, "sessionId": runtime == "preview-codex" ? "session-1" : runtime == "preview-pi" ? "session-2" : "session-3", "revision": 1, "complete": true, "verification": notices.isEmpty ? "confirmed" : "unknown", "notifications": notices], "ctl")
@@ -323,6 +329,21 @@ private final class PreviewTransport: OrbisTransport {
                     }
                 }
             }
+            // 交互由 agent.state 的 interactions 领域持有（持有后旧的 interaction.requested 事件被忽略），夹具请求须放在这里。
+            func previewInteractions(_ runtime: String) -> [String: Any] {
+                guard runtime == "preview-codex" else { return [:] }
+                let expires = Int64(Date().timeIntervalSince1970 * 1000) + 300000
+                var rows: [[String: Any]] = []
+                if screen == "approval" {
+                    rows.append(["runtimeId": runtime, "requestId": "preview-approval", "extensionId": "preview", "kind": "confirm", "title": "允许执行验证命令？", "description": "Agent 请求运行项目的测试，以检查本次修改。", "argumentSummary": "swift test --package-path ios/Orbis", "expiresAt": expires])
+                }
+                if screen == "interactions" {
+                    for (id, title, kind) in [("draft-one", "填写验证说明", "input"), ("draft-two", "确认下一步", "confirm")] {
+                        rows.append(["runtimeId": runtime, "requestId": id, "extensionId": "preview", "kind": kind, "title": title, "placeholder": "输入验证说明", "expiresAt": expires])
+                    }
+                }
+                return Dictionary(uniqueKeysWithValues: rows.map { ($0["requestId"] as! String, $0) })
+            }
             let epoch = variant == 1 ? "preview-model-2" : "preview-model"
             let kind = object["agentKind"] as? String ?? "codex"
             let titles = ["preview-codex": "对齐移动端的使用体验", "preview-pi": "梳理项目中的页面结构",
@@ -331,7 +352,7 @@ private final class PreviewTransport: OrbisTransport {
             let domains = ["identity", "interactions", "execution", "model", "context"].map { name -> [String: Any] in
                 let value: [String: Any] = name == "identity" ? ["runtimeId": runtime, "sessionId": session,
                     "name": agentTitle(kind), "sessionName": session == "replacement" ? "已完整切换的会话" : titles[runtime] ?? "滚动测试会话 \(session)", "cwd": cwd, "agentKind": kind] :
-                    name == "interactions" ? [:] : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": compacting && runtime == "preview-codex" ? ["phase": "running"] : "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
+                    name == "interactions" ? previewInteractions(runtime) : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": compacting && runtime == "preview-codex" ? ["phase": "running"] : "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
                 return ["domain": name, "modelEpoch": epoch, "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,
                         "source": ["producer": "host", "sourceId": "preview-host", "sourceEpoch": "preview-source", "sourceRevision": 1], "checkedAt": 1793232000000, "value": value]
             }
@@ -453,6 +474,14 @@ private final class PreviewTransport: OrbisTransport {
                 let index = command["entryId"] as? String == "node-1" ? 0 : 1
                 let full = screen == "truncated" ? message("truncated-message", role: "assistant", text: "完整返回内容：这条消息已按需从电脑取回。") : ProcessInfo.processInfo.arguments.contains("--preview-history-artifact") ? messages.last! : messages[index]
                 event(["type": "session.entry.result", "requestId": command["requestId"]!, "entryId": command["entryId"]!, "entry": ["data": ["message": full]]], runtimeId: runtime)
+            } else if type == "interaction.respond", ProcessInfo.processInfo.arguments.contains("--preview-respond-reject") {
+                // 夹具：Host 明确拒绝回答（ADR-0049 §6.5 的恢复路径）。默认不回复，停在处理中。
+                let commandId = object["commandId"]!
+                Task { @MainActor in
+                    // 3 秒：留出足够时间观察处理中的原位摘要（XCUITest 约 1 秒轮询一次）。
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    self.event(["type": "command.result", "commandId": commandId, "ok": false, "status": "failure", "error": "请求已被电脑端处理"], runtimeId: runtime)
+                }
             } else if type == "user_message.cancel" {
                 event(["type": "message.queued", "queueId": command["messageId"]!, "text": "接着检查 iOS 的历史同步和文件传输。", "delivery": "followUp", "state": "cancelled"], runtimeId: runtime)
                 event(["type": "command.result", "commandId": object["commandId"]!, "ok": true], runtimeId: runtime)

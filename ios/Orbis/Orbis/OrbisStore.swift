@@ -397,7 +397,8 @@ final class HostConnection: ObservableObject {
             let session = selectedOfflineSession
             return RuntimeSummary(runtimeId: session.map { "cached:" + $0.sessionId } ?? launch.placeholder, name: session?.name ?? launch.title,
                 cwd: session?.cwd ?? launch.cwd, status: launch.failure != nil ? "error" : launch.unconfirmed ? "launch_unconfirmed" : "starting",
-                sessionId: session?.sessionId ?? launch.resumed ?? launch.placeholder, sessionName: session?.name,
+                // 标题用启动目标的名称；sessionName 为空时 sessionTitle 会退回到占位 id。
+                sessionId: session?.sessionId ?? launch.resumed ?? launch.placeholder, sessionName: session?.name ?? launch.title,
                 hostname: session?.hostname, agentKind: session?.agentKind ?? launch.agentKind)
         }
         if let session = selectedOfflineSession {

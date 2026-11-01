@@ -387,6 +387,108 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["在这里新建 Pi 会话"].exists)
         capture("new-session", app: app)
     }
+
+    /// V12 r27 / ADR-0049 §6.7：选择模型后立即显示所选值并带“切换中”，确认前不声称已生效；顶栏不位移（V05）。
+    func testModelSwitchShowsTheChoiceWithItsMarkWithoutMovingTheHeader() {
+        let app = launch("chat", arguments: ["--preview-model-switch"])
+        let title = app.descendants(matching: .any)["chat-title"].firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 8))
+        let before = title.frame
+        // 夹具在聊天页出现约 3 秒后发起切换；电脑端只回执、不改模型，选择停在“切换中”。
+        RunLoop.current.run(until: Date().addingTimeInterval(4.5))
+        XCTAssertEqual(title.frame.minY, before.minY, accuracy: 1)
+        XCTAssertEqual(title.frame.height, before.height, accuracy: 1)
+        capture("model-switching-header", app: app)
+        // V10 r27 / §6.2：切换中发送的消息立即出现并清空输入，标明在等模型切换。
+        let text = "等模型切好再发"
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        composer.tap(); composer.typeText(text)
+        app.buttons["发送消息"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: 1))
+        XCTAssertTrue(app.staticTexts["等待模型切换"].waitForExistence(timeout: 1))
+        XCTAssertEqual((composer.value as? String)?.contains(text), false)
+        capture("model-switching-waiting-send", app: app)
+        title.tap()
+        let fact = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "默认模型（切换中）")).firstMatch
+        XCTAssertTrue(fact.waitForExistence(timeout: 3))
+        capture("model-switching-facts", app: app)
+    }
+
+    /// A1–A4（V07、V12、V22）：回答摘要、启动中与启动失败原位在浅 / 深色、XXXL、减少动画下语义一致，截图供 L4 审阅。
+    func testOptimisticStatesAcrossAppearances() {
+        let appearances: [(String, Bool, [String])] = [
+            ("light", false, []),
+            ("dark", true, []),
+            ("xxxl", false, ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]),
+            ("reduce-motion", false, ["--preview-reduce-motion"]),
+        ]
+        for (name, dark, options) in appearances {
+            let approval = launch("approval", dark: dark, arguments: options)
+            let allow = approval.buttons["允许"]
+            XCTAssertTrue(allow.waitForExistence(timeout: 8), name)
+            let composer = approval.descendants(matching: .any)["chat-composer"].firstMatch
+            let before = composer.frame
+            allow.tap()
+            let status = approval.descendants(matching: .any)["interaction-status"].firstMatch
+            XCTAssertTrue(status.waitForExistence(timeout: 2), name)
+            XCTAssertTrue(status.label.contains("已允许"), name)
+            XCTAssertEqual(composer.frame.minY, before.minY, accuracy: 1, name)
+            capture("optimistic-respond-" + name, app: approval)
+            approval.terminate()
+
+            let home = launch("home", dark: dark, arguments: ["--preview-launch-fail"] + options)
+            XCTAssertTrue(home.buttons["打开会话目录"].waitForExistence(timeout: 8), name)
+            home.buttons["打开会话目录"].tap()
+            XCTAssertTrue(home.staticTexts["会话目录"].waitForExistence(timeout: 3), name)
+            home.buttons["新会话"].tap()
+            let create = home.buttons["在这里新建 Pi 会话"]
+            XCTAssertTrue(create.waitForExistence(timeout: 3), name)
+            create.tap()
+            let starting = home.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动中")).firstMatch
+            XCTAssertTrue(starting.waitForExistence(timeout: 2), name)
+            capture("optimistic-launch-starting-" + name, app: home)
+            let failure = home.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动失败")).firstMatch
+            XCTAssertTrue(failure.waitForExistence(timeout: 5), name)
+            XCTAssertTrue(home.buttons["launch-retry"].isHittable, name)
+            XCTAssertTrue(home.buttons["launch-back"].isHittable, name)
+            capture("optimistic-launch-failed-" + name, app: home)
+            home.terminate()
+        }
+    }
+
+    /// V12 r27 / ADR-0049 §6.8：确认新建后立即进入聊天页并显示“启动中”，输入框可用；Host 拒绝时在原位说明，
+    /// “重试”用同一目标发起新请求，“返回”回到首页。
+    func testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace() {
+        let app = launch("home", arguments: ["--preview-launch-fail"])
+        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))
+        app.buttons["打开会话目录"].tap()
+        XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
+        app.buttons["新会话"].tap()
+        let create = app.buttons["在这里新建 Pi 会话"]
+        XCTAssertTrue(create.waitForExistence(timeout: 3))
+        create.tap()
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 2), "The chat page must open before the Host answers")
+        let starting = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动中")).firstMatch
+        XCTAssertTrue(starting.waitForExistence(timeout: 1))
+        let title = app.descendants(matching: .any)["chat-title"].firstMatch
+        XCTAssertTrue(title.label.contains("Projects"), title.label)
+        XCTAssertFalse(title.label.contains("launch:"), title.label)
+        capture("launch-starting", app: app)
+        // OrbisNotice 把图标和文字合成一个辅助功能元素，按任意类型查找。
+        let failure = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动失败：对应的 agent 后端未就绪")).firstMatch
+        XCTAssertTrue(failure.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["launch-retry"].isHittable)
+        XCTAssertTrue(app.buttons["launch-back"].isHittable)
+        capture("launch-failed", app: app)
+        app.buttons["launch-retry"].tap()
+        XCTAssertTrue(starting.waitForExistence(timeout: 1))
+        XCTAssertFalse(failure.exists, "Retrying starts a new request in place")
+        XCTAssertTrue(failure.waitForExistence(timeout: 5))
+        app.buttons["launch-back"].tap()
+        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
+        XCTAssertFalse(composer.exists)
+    }
     func testNewSessionOffersLaunchableDeepSeekBeforeBackendIsReady() {
         let appearances: [(String, Bool, [String])] = [
             ("light", false, []),
@@ -1301,7 +1403,33 @@ final class OrbisUITests: XCTestCase {
         allow.tap()
         XCTAssertEqual(before.minY, composer.frame.minY, accuracy: 1)
         XCTAssertEqual(before.height, composer.frame.height, accuracy: 1)
+        // V07 r27 / V22：写入后面板立即收起，原位以覆盖式短状态显示摘要（回执前带处理中标记）。
+        let status = app.descendants(matching: .any)["interaction-status"].firstMatch
+        XCTAssertTrue(status.waitForExistence(timeout: 2))
+        XCTAssertTrue(status.label.contains("已允许"), status.label)
+        XCTAssertFalse(app.staticTexts["允许执行验证命令？"].exists)
+        XCTAssertEqual(before.minY, composer.frame.minY, accuracy: 1)
         capture("approval-submitting", app: app)
+    }
+
+    /// V22：Host 明确拒绝回答时，面板在原位置恢复并就近说明，不留下“已允许”摘要。
+    func testApprovalRejectionBringsThePanelBackInPlace() {
+        let app = launch("approval", arguments: ["--preview-respond-reject"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        let allow = app.buttons["允许"]
+        XCTAssertTrue(allow.waitForExistence(timeout: 3))
+        let panelTop = allow.frame.minY
+        let before = composer.frame
+        allow.tap()
+        let status = app.descendants(matching: .any)["interaction-status"].firstMatch
+        XCTAssertTrue(status.waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["允许"].waitForExistence(timeout: 5), "A rejected answer must bring the request back")
+        XCTAssertEqual(app.buttons["允许"].frame.minY, panelTop, accuracy: 1)
+        XCTAssertFalse(status.exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "回答未提交")).firstMatch.waitForExistence(timeout: 2))
+        XCTAssertEqual(before.minY, composer.frame.minY, accuracy: 1)
+        capture("approval-rejected-restored", app: app)
     }
     func testCompactQuotaCardsAndTransparentSwitch() {
         for dark in [false, true] {
