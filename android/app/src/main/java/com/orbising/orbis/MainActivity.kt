@@ -4439,7 +4439,7 @@ private fun fullEntryText(entry: SessionGraphEntry): String {
 
 /** ADR-0049 §6.8：启动失败或未确认时在聊天页原位说明，提供“重试”“返回”，草稿保留。 */
 @Composable
-private fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -> Unit) {
+internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -> Unit) {
     NeumorphSurface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).testTag("launch-notice"),
         shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed,

@@ -83,11 +83,23 @@ class SessionArchiveSelectionInstrumentedTest {
         compose.onNodeWithText("等待任务完成后归档").assertIsDisplayed()
         compose.runOnIdle { state = state.copy(runtimes = emptyMap()) }
         compose.onNodeWithContentDescription("归档选中会话").assertIsEnabled()
-        // ADR-0049 §6.4：归档未结算时冲突入口禁用（L9）。
+        compose.runOnIdle { state = state.copy(e2eReady = false) }
+        compose.onNodeWithContentDescription("归档选中会话").assertIsNotEnabled()
+        compose.runOnIdle { state = state.copy(e2eReady = true) }
+        // ADR-0049 §6.4：归档写入后卡片立即离开当前列表、出现在已归档列表；未结算时那里的冲突入口（恢复）禁用（L9）。
         compose.runOnIdle { state = state.createArchive("request", "two", "codex", true, 0).first.ledgerWritten("request", 0) }
-        compose.onNodeWithContentDescription("归档选中会话").assertIsNotEnabled()
-        compose.runOnIdle { state = state.copy(ledger = state.ledger.remove("request"), e2eReady = false) }
-        compose.onNodeWithContentDescription("归档选中会话").assertIsNotEnabled()
+        compose.onNodeWithTag("drawer-session-two").assertDoesNotExist()
+        compose.onNodeWithText("已选择 1 项").assertIsDisplayed()
+        compose.onNodeWithContentDescription("退出多选").performClick()
+        compose.onNodeWithContentDescription("筛选会话：全部").performClick()
+        compose.onNodeWithText("查看已归档会话").performClick()
+        compose.onNodeWithTag("drawer-session-two").performTouchInput { longClick() }
+        compose.onNodeWithText("处理中…").assertIsDisplayed()
+        compose.onNodeWithContentDescription("恢复选中会话").assertIsNotEnabled()
+        // 明确拒绝：卡片回到原列表，已归档列表不再有它。
+        compose.runOnIdle { state = state.copy(ledger = state.ledger.remove("request")) }
+        compose.onNodeWithTag("drawer-session-two").assertDoesNotExist()
+        compose.onNodeWithText("没有已归档的会话").assertIsDisplayed()
         compose.runOnIdle { assertEquals(0, requests) }
     }
 
