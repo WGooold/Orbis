@@ -2065,8 +2065,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             state.capabilities[runtimeId]?.commands.orEmpty(),
                             selectedSlashCommandName,
                         ) && pendingMessageCommandId == null &&
-                            // 还没传完的附件不发：否则 agent 会拿到一个不存在的路径。
-                            attachedUploads.size == attachablePaths.size
+                            // ADR-0049 §6.2：附件还在上传也可以发送，消息先等上传完成；失败或取消的附件需要先处理。
+                            attachedUploads.none { it.status == "failed" || it.status == "cancelled" }
                     }
                     NeumorphSurface(
                         modifier = Modifier.padding(bottom = 4.dp).size(48.dp),
@@ -2097,11 +2097,12 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                             showDeliveryChoices = true
                                         } else {
                                             showDeliveryChoices = false
-                                            val commandId = model.sendMessage(input, attachments = attachablePaths)
-                                            // 附件已经交给 Pi，chip 就不该继续挂在输入框上；
-                                            // 任务本身仍在上传列表里可查进度/删记录。
+                                            val commandId = model.sendMessage(input, attachments = attachablePaths,
+                                                uploadTaskIds = attachedTaskIds.toList())
+                                            // 附件已经交给消息，chip 就不该继续挂在输入框上；仍在上传的继续上传，
+                                            // 写入通道后再从上传列表移走（ADR-0049 §6.2）。
                                             if (commandId != null) {
-                                                model.detachUploads(attachedTaskIds)
+                                                if (attachedUploads.all { it.status == "completed" }) model.detachUploads(attachedTaskIds)
                                                 updateAttachedTaskIds(emptySet())
                                             }
                                             submitMessage(commandId)
@@ -2220,8 +2221,13 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             onPendingAction = { action ->
                                 when (action) {
                                     PendingSendAction.Resend -> if (model.resendPendingSend(item.message.messageId) != null) actionHaptic()
-                                    PendingSendAction.Restore -> model.restorePendingSend(item.message.messageId)?.let { text ->
-                                        input = if (input.isBlank()) text else input + "\n" + text
+                                    PendingSendAction.Restore -> {
+                                        // 附件没传成：正文和附件都回到输入框（ADR-0049 §6.1）。
+                                        val uploads = model.uploadsOf(item.message.messageId)
+                                        model.restorePendingSend(item.message.messageId)?.let { text ->
+                                            input = if (input.isBlank()) text else input + "\n" + text
+                                            if (uploads.isNotEmpty()) updateAttachedTaskIds(attachedTaskIds + uploads)
+                                        }
                                     }
                                     PendingSendAction.Discard -> model.discardPendingSend(item.message.messageId)
                                     PendingSendAction.Check -> model.refreshRuntime(explicitRetry = true)
@@ -3548,6 +3554,11 @@ private fun PendingSendStatus(state: PendingSendState, canResend: Boolean, onAct
             PendingSendState.Sending, PendingSendState.Accepted -> {
                 CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
                 Text("发送中", style = MaterialTheme.typography.labelSmall, color = muted)
+            }
+            is PendingSendState.Waiting -> {
+                // ADR-0049 §6.2：标明在等什么（上传中的附件名、等待前一条）。
+                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
+                Text(state.label, style = MaterialTheme.typography.labelSmall, color = muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             PendingSendState.Queued -> {
                 Text("已排队", style = MaterialTheme.typography.labelSmall, color = muted)

@@ -48,6 +48,27 @@ class DraftStore(context: Context) {
         editor.apply()
     }
 
+    /** ADR-0049 §6.2 / V17：写入通道前另存的等待消息正文；写入或用户处理后删除。 */
+    fun saveWaiting(device: DeviceCredential, runtime: RuntimeSummary, messageId: String, text: String) {
+        preferences.edit().putString(waitingDraftKey(draftPreferenceKey(draftIdentity(device, runtime)), messageId), text).apply()
+    }
+
+    fun removeWaiting(messageId: String) {
+        val suffix = WAITING_SEPARATOR + messageId
+        val keys = preferences.all.keys.filter { it.startsWith(WAITING_PREFIX) && it.endsWith(suffix) }
+        if (keys.isNotEmpty()) preferences.edit().apply { keys.forEach(::remove) }.apply()
+    }
+
+    /** 进程退出时仍在等待的消息回到该会话的输入框，已有草稿则接在其后。 */
+    fun restoreWaiting(live: Set<String> = emptySet()) {
+        val (drafts, removed) = restoreWaitingDrafts(preferences.all, live)
+        if (removed.isEmpty()) return
+        preferences.edit().apply {
+            drafts.forEach { (key, value) -> putString(key, value) }
+            removed.forEach(::remove)
+        }.apply()
+    }
+
     fun clear(device: DeviceCredential, runtimeId: String, sessionId: String?) {
         preferences.edit().remove(
             draftPreferenceKey(DraftIdentity(device.relayUrl, device.deviceId, runtimeId, sessionId)),
@@ -60,4 +81,25 @@ class DraftStore(context: Context) {
             preferences.all.keys.filter { it.startsWith(prefix) }.forEach(::remove)
         }.apply()
     }
+}
+
+private const val WAITING_PREFIX = "waiting\u001f"
+private const val WAITING_SEPARATOR = "\u001f"
+
+internal fun waitingDraftKey(draftKey: String, messageId: String) = WAITING_PREFIX + draftKey + WAITING_SEPARATOR + messageId
+
+/** V17 副本的恢复：返回（要写入的草稿，要删除的副本键）。`live` 是当前进程里仍在等待、不该恢复的消息。 */
+internal fun restoreWaitingDrafts(all: Map<String, *>, live: Set<String>): Pair<Map<String, String>, Set<String>> {
+    val drafts = mutableMapOf<String, String>()
+    val removed = mutableSetOf<String>()
+    all.entries.filter { it.key.startsWith(WAITING_PREFIX) }
+        .groupBy { it.key.removePrefix(WAITING_PREFIX).substringBeforeLast(WAITING_SEPARATOR) }
+        .forEach { (draftKey, rows) ->
+            val restored = rows.filter { it.key.substringAfterLast(WAITING_SEPARATOR) !in live }
+            if (restored.isEmpty()) return@forEach
+            val existing = (all[draftKey] as? String)?.takeIf(String::isNotBlank)
+            drafts[draftKey] = (listOfNotNull(existing) + restored.mapNotNull { it.value as? String }.sorted()).joinToString("\n\n")
+            removed += restored.map { it.key }
+        }
+    return drafts to removed
 }

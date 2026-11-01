@@ -12,6 +12,8 @@ enum LedgerPayload: Equatable {
     case queueCancel(runtimeId: String, queueId: String)
     /// 回答审批 / 问卷、取消提问。`summary` 是原位短状态显示的摘要（自由文本与敏感输入只显示“已提交”）。
     case respond(runtimeId: String, requestId: String, summary: String)
+    /// 等待前置操作的消息（附件上传、同会话前一条）。写入通道后交给 ADR-0055 的 outbox 结算。
+    case send(runtimeId: String, sessionId: String, messageId: String)
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -30,6 +32,12 @@ enum OperationKinds {
     /// 某个 Runtime 的 Host 队列（delivery 领域）在账本里的领域名。
     static func queueDomain(_ runtimeId: String) -> String { "queue:" + runtimeId }
     static let respond = "respond"
+    static let send = "send"
+    /// `send` 在账本里只经历 `waiting`：前置完成、轮到它时写入通道并交给 outbox，账本随即删除记录。
+    static let sendPolicy = AppLedger.Policy(successLands: true, acceptedBudget: AppLedger.receiptBudget, afterSuccess: nil,
+                                             whenUnresolved: .unknown, deviceReceipts: true, appliesBeforeLaterReads: false)
+    static func sendGroup(_ sessionId: String) -> String { "session:" + sessionId }
+    static func uploadPrerequisite(_ uploadId: String) -> String { "upload:" + uploadId }
     /// 某个 Runtime 的交互清单（interactions 领域）在账本里的领域名。
     static func interactionsDomain(_ runtimeId: String) -> String { "interactions:" + runtimeId }
 
@@ -216,7 +224,7 @@ enum OperationKinds {
     /// 回执所属的 Runtime：Runtime 级命令的回执只认同一 Runtime 的事件（Host 按 runtimeId + commandId 归属）。
     static func runtimeId(of op: AppLedger.Operation) -> String? {
         switch op.payload {
-        case .quit(let runtimeId), .queueCancel(let runtimeId, _), .respond(let runtimeId, _, _): return runtimeId
+        case .quit(let runtimeId), .queueCancel(let runtimeId, _), .respond(let runtimeId, _, _), .send(let runtimeId, _, _): return runtimeId
         case .dismiss, .archive: return nil
         }
     }
@@ -224,7 +232,7 @@ enum OperationKinds {
     /// 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片、队列项）提示后回到原位；内容类保留失败状态等用户处理。
     static func removesOnRejection(_ op: AppLedger.Operation) -> Bool {
         switch op.payload {
-        case .quit, .dismiss, .archive, .queueCancel, .respond: return true
+        case .quit, .dismiss, .archive, .queueCancel, .respond, .send: return true
         }
     }
 
@@ -241,7 +249,7 @@ enum OperationKinds {
     static func evidence(_ op: AppLedger.Operation, runtimeIds: Set<String>) -> AppLedger.Evidence {
         switch op.payload {
         case .quit(let runtimeId): return runtimeIds.contains(runtimeId) ? .none : .landed
-        case .dismiss, .archive, .queueCancel, .respond: return .none
+        case .dismiss, .archive, .queueCancel, .respond, .send: return .none
         }
     }
 
@@ -287,6 +295,7 @@ enum OperationKinds {
             case "already_delivered": return "撤回未完成：" + queueAlreadyDelivered.reason
             default: return "撤回未完成：" + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
             }
+        case .send: return nil // 失败显示在气泡原位（outbox 的失败行）。
         case .respond:
             // 核对后请求仍在：静默恢复面板；明确失败时面板回到原位并说明原因，答案保留。
             switch rejection.code {

@@ -248,6 +248,8 @@ internal class HostConnection(
         )
         mutableState.value = restored.cachePiSessionNames()
         if (mutableState.value !== restored) scheduleSessionCatalogSave()
+        // V17：上次进程退出时仍在等待的消息回到输入框（ADR-0049 §6.2）。
+        draftStore.restoreWaiting()
         connect(device)
         // 掉线重连 / APP 重启后回到上次打开的会话（spec 第 16 行、§14 B7）。
         // 放在状态流上而不是消息处理里：恢复要在「Runtime 目录已就绪」之后才可能成功，
@@ -1172,16 +1174,73 @@ internal class HostConnection(
      * [attachments] 是**已经传完**的附件在电脑上的绝对路径。还没传完的留在 composer 上，
      * 不允许随消息发出——否则 agent 会拿到一个不存在的路径。
      */
-    fun sendMessage(text: String, delivery: String? = null, attachments: List<String> = emptyList()): String? {
+    fun sendMessage(text: String, delivery: String? = null, attachments: List<String> = emptyList(), uploadTaskIds: List<String> = emptyList()): String? {
         val runtimeId = mutableState.value.selectedRuntimeId ?: return null
         // 只剩附件没正文时也得发出：协议要求 text 非空，而用户确实想把这个文件交给 Pi。
-        val trimmed = text.trim().ifBlank { if (attachments.isEmpty()) "" else "已发送 ${attachments.size} 个附件" }
+        val attachmentCount = maxOf(attachments.size, uploadTaskIds.size)
+        val trimmed = text.trim().ifBlank { if (attachmentCount == 0) "" else "已发送 $attachmentCount 个附件" }
         if (trimmed.isBlank()) return null
         if (text.trim().startsWith("/")) {
             updateState { it.copy(error = "斜杠命令只能从当前会话提供的菜单中选择") }
             return null
         }
-        return sendUserMessage(runtimeId, trimmed, delivery, attachments)
+        // ADR-0049 §6.2：附件没传完或同会话还有等待中的前一条，就先在本机创建、排在后面，轮到时再写入通道。
+        val state = mutableState.value
+        val uploads = uploadTaskIds.mapNotNull { state.uploads[it] }
+        if (uploads.size != uploadTaskIds.size || uploads.any { it.status == "failed" || it.status == "cancelled" }) return null
+        val pending = uploads.filter { it.status != "completed" || it.remotePath == null }
+        val sessionId = state.runtimes[runtimeId]?.sessionId
+        if (sessionId != null && (pending.isNotEmpty() || state.ledger.blocks(OperationKinds.sendGroup(sessionId)))) {
+            return sendWhenReady(runtimeId, sessionId, trimmed, delivery, uploadTaskIds, pending)
+        }
+        return sendUserMessage(runtimeId, trimmed, delivery, attachments + uploads.mapNotNull(UploadTask::remotePath).filter { it !in attachments })
+    }
+
+    private fun sendWhenReady(runtimeId: String, sessionId: String, text: String, delivery: String?,
+                              uploadIds: List<String>, pending: List<UploadTask>): String? {
+        val messageId = UUID.randomUUID().toString()
+        val commandId = UUID.randomUUID().toString()
+        var created = false
+        updateState { state ->
+            val (next, creation) = state.createWaitingSend(commandId, messageId, runtimeId, sessionId, text, delivery, uploadIds, pending,
+                System.currentTimeMillis())
+            created = creation is LedgerCreation.Created
+            next
+        }
+        if (!created) {
+            updateState { it.copy(error = "待发送的消息过多，请稍后重试") }
+            return null
+        }
+        val pairedDevice = device
+        val runtime = mutableState.value.runtimes[runtimeId]
+        if (pairedDevice != null && runtime != null) draftStore.saveWaiting(pairedDevice, runtime, messageId, text)
+        flushReadySends()
+        return commandId
+    }
+
+    /** 轮到写入通道的等待消息依次写入；写入后账本记录交给 outbox（ADR-0049 §6.2）。 */
+    private fun flushReadySends() {
+        if (flushingSends) return
+        flushingSends = true
+        try {
+            while (true) {
+                val state = mutableState.value
+                if (!state.e2eReady) return
+                val (op, send, paths) = state.readySends().firstNotNullOfOrNull { op ->
+                    val payload = op.payload as LedgerPayload.Send
+                    val runtime = state.runtimes[payload.runtimeId]?.takeIf { it.sessionId == payload.sessionId } ?: return@firstNotNullOfOrNull null
+                    val send = state.pendingSends[payload.messageId] ?: return@firstNotNullOfOrNull null
+                    val paths = send.uploadIds.mapNotNull { id -> state.uploads[id]?.takeIf { it.status == "completed" }?.remotePath }
+                    if (paths.size != send.uploadIds.size || runtime.runtimeId != payload.runtimeId) null else Triple(op, send, paths)
+                } ?: return
+                val payload = op.payload as LedgerPayload.Send
+                if (relay.sendUserMessage(payload.runtimeId, send.text, send.messageId, send.delivery, paths, op.opId) == null) return
+                draftStore.removeWaiting(send.messageId)
+                updateState { it.waitingWritten(op.opId, send.messageId, payload.runtimeId, paths, System.currentTimeMillis()) }
+            }
+        } finally {
+            flushingSends = false
+        }
     }
 
     /**
@@ -1213,6 +1272,8 @@ internal class HostConnection(
         val runtime = state.runtimes[runtimeId] ?: return null
         val send = state.pendingSends[messageId]?.takeIf { it.sessionId == runtime.sessionId && it.state is PendingSendState.Failed } ?: return null
         if (!state.e2eReady) return null
+        // 附件没传成的失败：从原文件重新上传，作为一条新的等待消息（L6：新操作、新身份）。
+        if (send.uploadIds.isNotEmpty() && send.attachments.isEmpty()) return resendAfterUpload(runtimeId, send)
         // 按当前状态选择投递方式：忙时直发会被拒绝，Claude 也不支持插入。
         val delivery = when {
             runtime.status == "idle" -> null
@@ -1234,10 +1295,36 @@ internal class HostConnection(
             state.copy(pendingSends = state.pendingSends - messageId)
         }
         val send = restored ?: return null
+        draftStore.removeWaiting(messageId)
+        // 附件没传成：正文回到输入框，附件由调用方重新挂回输入框（uploadsOf）。
+        if (send.uploadIds.isNotEmpty() && send.attachments.isEmpty()) return send.text
         return if (send.attachments.isEmpty()) send.text else send.text + "\n\n附件路径：\n" + send.attachments.joinToString("\n")
     }
 
+    private fun resendAfterUpload(runtimeId: String, send: PendingSend): String? {
+        val sources = send.uploadIds.mapNotNull { mutableState.value.uploads[it] }
+        if (sources.size != send.uploadIds.size) return null
+        updateState { it.copy(pendingSends = it.pendingSends - send.messageId) }
+        draftStore.removeWaiting(send.messageId)
+        val requeued = mutableListOf<String>()
+        sources.forEach { task ->
+            if (task.status == "completed") requeued += task.taskId
+            else queueUpload(Uri.parse(task.sourceUri), runtimeId) { id ->
+                synchronized(requeued) {
+                    requeued += id
+                    if (requeued.size == sources.size) sendMessage(send.text, send.delivery, uploadTaskIds = requeued.toList())
+                }
+            }
+        }
+        if (requeued.size == sources.size) return sendMessage(send.text, send.delivery, uploadTaskIds = requeued.toList())
+        return send.commandId
+    }
+
+    /** 等待消息转失败后，放回输入框时要一起挂回的上传任务。 */
+    fun uploadsOf(messageId: String): List<String> = mutableState.value.pendingSends[messageId]?.uploadIds.orEmpty()
+
     fun discardPendingSend(messageId: String) {
+        draftStore.removeWaiting(messageId)
         updateState { state ->
             val send = state.pendingSends[messageId] ?: return@updateState state
             if (send.state is PendingSendState.Failed || send.state == PendingSendState.Unconfirmed)
@@ -1259,6 +1346,7 @@ internal class HostConnection(
      * 进程级生命周期：App 被杀后任务由持久层标记 paused，重新选文件即续传。
      */
     private val composerAttachments = mutableMapOf<String, MutableSet<String>>()
+    private var flushingSends = false
 
     fun attachedTaskIds(sessionKey: String): Set<String> =
         composerAttachments[sessionKey]?.toSet() ?: emptySet()
@@ -2161,6 +2249,7 @@ internal class HostConnection(
                     }
                 }
                 if (ready) {
+                    flushReadySends()
                     autoResumeDownloads()
                     // device.ready can be reduced before the handshake flips e2eReady (device order:
                     // device.ready, then e2e.hs.confirmed). That first path returns early because the
@@ -2908,8 +2997,14 @@ internal class HostConnection(
     private fun publishUpload(taskId: String, transform: (UploadTask) -> UploadTask) {
         updateState { current ->
             val task = current.uploads[taskId] ?: return@updateState current
-            current.copy(uploads = current.uploads + (taskId to transform(task)))
+            val next = transform(task)
+            val updated = current.copy(uploads = current.uploads + (taskId to next))
+            // ADR-0049 §6.2：上传结束时，等待它的消息写入或转失败。
+            if (next.status == task.status || next.status !in setOf("completed", "failed", "cancelled")) updated
+            else updated.ledgerUploadSettled(taskId, next.status == "completed" && next.remotePath != null,
+                "附件上传失败：${next.displayName}" + (next.error?.let { "（$it）" } ?: if (next.status == "cancelled") "（上传已取消）" else ""))
         }
+        flushReadySends()
     }
 
     private fun processArtifactPayload(payload: String) {

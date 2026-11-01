@@ -605,6 +605,7 @@ class RelayClient(
         delivery: String? = null,
         /** 已落地到电脑的绝对路径。空 = 与从前逐字段相同的消息。 */
         attachments: List<String> = emptyList(),
+        commandId: String = UUID.randomUUID().toString(),
     ): String? = sendCommand(runtimeId, buildJsonObject {
         put("type", "user_message")
         put("text", text)
@@ -613,7 +614,7 @@ class RelayClient(
         if (attachments.isNotEmpty()) {
             put("attachments", buildJsonArray { attachments.forEach { add(JsonPrimitive(it)) } })
         }
-    })
+    }, commandId)
 
     fun executeSlashCommand(runtimeId: String, name: String, args: String, commandId: String = UUID.randomUUID().toString()): String? =
         sendCommand(runtimeId, buildJsonObject {

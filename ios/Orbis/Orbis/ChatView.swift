@@ -96,7 +96,8 @@ struct ChatView: View {
         transfers.currentTasks.filter { $0.direction == "upload" && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.attached }
     }
     private var canSubmit: Bool {
-        guard store.canSend, !transfers.preparing, attachments.allSatisfy({ $0.status == "completed" }),
+        // ADR-0049 §6.2：附件还在上传也可以发送，消息先等上传完成；失败或取消的附件需要先处理。
+        guard store.canSend, !transfers.preparing, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }),
               !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
         if slash {
             guard let command, draft.wrappedValue.hasPrefix("/" + command.name), store.pendingActionIds.isEmpty else { return false }
@@ -526,7 +527,8 @@ struct ChatView: View {
         if accepted {
             OrbisHaptics.commit()
             if !slash {
-                transfers.detach(Set(attachments.map(\.id))); draft.wrappedValue = ""; selectedCommand = nil
+                // 交给消息的附件离开输入框，仍在上传的继续上传（不取消）。
+                transfers.release(Set(attachments.map(\.id))); draft.wrappedValue = ""; selectedCommand = nil
             }
             deliveryChoices = false
         }
@@ -760,6 +762,10 @@ private struct PendingSendStatus: View {
                 Text("已排队").font(.orbisCaption()).foregroundStyle(palette.secondary)
                 OrbisIconButton(symbol: "xmark", label: "撤回排队消息", size: 26) { onAction(.cancel) }
                     .disabled(!canResend).accessibilityIdentifier("pending-cancel-" + rowId)
+            case .waiting(let label):
+                // ADR-0049 §6.2：标明在等什么（上传中的附件名、等待前一条）。
+                ProgressView().controlSize(.mini).frame(width: 26, height: 26)
+                Text(label).font(.orbisCaption()).foregroundStyle(palette.secondary).lineLimit(2)
             case .unconfirmed:
                 Image(systemName: "questionmark.circle").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 26, height: 26)
                 Text("未确认是否送达").font(.orbisCaption()).foregroundStyle(palette.secondary)

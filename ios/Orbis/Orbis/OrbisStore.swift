@@ -87,6 +87,7 @@ final class HostConnection: ObservableObject {
     /// 账本发起、尚未回复的核对读取：requestId → 读取序号（L5）。
     private var ledgerReads: [String: Int] = [:]
     private var ledgerClock: Task<Void, Never>?
+    private var flushingSends = false
     /// 首页正在关闭的会话（含结果不明）：卡片保持隐藏。
     var closingRuntimeIds: Set<String> { OperationKinds.hiddenRuntimeIds(ledger) }
     /// 首页只发布完整快照：冷启动准备一次，后续重连/刷新在后台组装下一版。
@@ -323,6 +324,7 @@ final class HostConnection: ObservableObject {
         }
         hostState.didChangeProviders = { [weak self] in self?.refreshSessions() }
         transfers.sendBinary = { [weak self] in self?.transport.sendBinary($0) ?? false }
+        transfers.didSettleUpload = { [weak self] id, path, error in self?.uploadSettled(id, path: path, error: error) }
         turnFileChanges.send = { [weak self] runtime, command in self?.sendCommand(runtimeId: runtime, command: command) ?? false }
         toolContent.send = { [weak self] runtime, command in self?.sendCommand(runtimeId: runtime, command: command) ?? false }
         toolInventories.send = { [weak self] runtime, command in self?.sendCommand(runtimeId: runtime, command: command) ?? false }
@@ -470,6 +472,7 @@ final class HostConnection: ObservableObject {
         selectedHostId = pairing.hostId
         if pendingSendHostId != pairing.hostId { pendingSends.removeAll(); pendingSendHostId = pairing.hostId; sessionRevisions = [:] }
         else { pendingSends.connectionLost() }
+        restoreWaitingCopies()
         // 换电脑：旧电脑上的操作全部失效（L7）；同一台电脑重连：已写入的操作转结果不明（L4）。
         if ledgerHostId != pairing.hostId {
             ledgerConnectionOpen = false; ledgerReads = [:]
@@ -1173,6 +1176,7 @@ final class HostConnection: ObservableObject {
         ledgerConnectionOpen = true; ledgerFresh = []
         handleLedger(ledger.connected())
         ledgerVerify()
+        flushReadySends()
     }
 
     /// 连接断开：已写入的操作统一转结果不明，旧连接上的核对读取作废（L4）。
@@ -1264,21 +1268,27 @@ final class HostConnection: ObservableObject {
     /// 账本事件的呈现：列表类被拒绝时提示原因后删除，界面随叠加回到权威状态；结果不明的发起核对读取。
     private func handleLedger(_ events: [AppLedger.Event]) {
         var verify = false
+        var readySends = false
         let archiveRejections = events.filter { if case .rejected(let op) = $0, case .archive = op.payload { return true }; return false }.count
         for event in events {
             switch event {
             case .rejected(let op):
+                if case .send(_, _, let messageId) = op.payload, case .rejected(let rejection) = op.phase {
+                    pendingSends.failWaiting(messageId, reason: rejection.reason); publishMessages()
+                }
                 // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
                 if let text = OperationKinds.message(for: op) { errorMessage = archiveRejections > 1 ? "\(archiveRejections) 个会话" + text : text }
                 if OperationKinds.removesOnRejection(op) { ledger.remove(op.opId) }
             case .verify: verify = true
             case .landed(let op): showInteractionOutcome(op)
-            case .unknown, .unconfirmed, .expired, .ready: break
+            case .ready: readySends = true
+            case .unknown, .unconfirmed, .expired: break
             }
         }
         notifications.setHidden(OperationKinds.hiddenNotificationKeys(ledger))
         if verify { ledgerVerify() }
         scheduleLedgerClock()
+        if readySends { flushReadySends() }
     }
 
     /// 结果不明的操作主动读取一次设备私有回执（L5）；回复到达时连同权威状态一起核对。
@@ -1407,7 +1417,12 @@ final class HostConnection: ObservableObject {
             return false
         }
         let attachments = transfers.currentTasks.filter { attachmentIds.contains($0.id) && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.direction == "upload" }
-        guard attachments.count == attachmentIds.count, attachments.allSatisfy({ $0.status == "completed" && $0.remotePath != nil }) else { return false }
+        guard attachments.count == attachmentIds.count, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }) else { return false }
+        // ADR-0049 §6.2：附件没传完或同会话还有等待中的前一条，就先在本机创建、排在后面，轮到时再写入通道。
+        let uploaded = attachments.allSatisfy { $0.status == "completed" && $0.remotePath != nil }
+        if !uploaded || runtime.sessionId.map({ ledger.blocks(group: OperationKinds.sendGroup($0)) }) == true {
+            return sendWhenReady(body, delivery: delivery, uploads: attachments, runtime: runtime)
+        }
         return sendUserMessage(body, delivery: delivery, attachments: attachments.compactMap(\.remotePath), runtime: runtime)
     }
 
@@ -1430,11 +1445,112 @@ final class HostConnection: ObservableObject {
         return true
     }
 
+    // MARK: - ADR-0049 §6.2 等待前置操作的消息
+
+    private static let waitingCopiesKey = "orbis.waitingSendCopies"
+
+    /// 气泡立即出现、输入框清空；附件上传完成且同会话前一条已写入后，按创建顺序写入通道，再交给 outbox 结算。
+    private func sendWhenReady(_ body: String, delivery: String?, uploads: [FileTransfer], runtime: RuntimeSummary) -> Bool {
+        guard let sessionId = runtime.sessionId else { return false }
+        let id = UUID().uuidString, commandId = UUID().uuidString
+        let pending = uploads.filter { $0.status != "completed" || $0.remotePath == nil }
+        let creation = ledger.create(opId: commandId, kind: OperationKinds.send, target: "message:" + id, group: OperationKinds.sendGroup(sessionId),
+                                     conflicts: false, policy: OperationKinds.sendPolicy, basis: [:],
+                                     prerequisites: Set(pending.map { OperationKinds.uploadPrerequisite($0.id) }),
+                                     payload: .send(runtimeId: runtime.runtimeId, sessionId: sessionId, messageId: id), written: false, now: Date())
+        guard creation == .created else { errorMessage = "待发送的消息过多，请稍后重试。"; return false }
+        if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
+        let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
+        var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: [],
+                               delivery: delivery, createdAt: Date(), anchorMessageId: anchor)
+        send.state = .waiting(pending.isEmpty ? "等待前一条发送" : "上传中：" + pending.map(\.name).joined(separator: "、"))
+        send.uploadIds = uploads.map(\.id)
+        pendingSends.add(send)
+        saveWaitingCopy(id, text: body, runtime: runtime)
+        publishMessages()
+        flushReadySends()
+        return true
+    }
+
+    /// 轮到写入通道的等待消息（前置都已完成、同组没有更早的等待者）依次写入；写入后账本记录交给 outbox。
+    private func flushReadySends() {
+        guard !flushingSends, connection == .secured else { return }
+        flushingSends = true; defer { flushingSends = false }
+        var progressed = true
+        while progressed {
+            progressed = false
+            for op in ledger.ready() {
+                guard case .send(let runtimeId, let sessionId, let messageId) = op.payload,
+                      runtimes.contains(where: { $0.runtimeId == runtimeId && $0.sessionId == sessionId }),
+                      let send = pendingSends.item(messageId) else { continue }
+                let paths = send.uploadIds.compactMap { id in transfers.tasks.first { $0.id == id && $0.status == "completed" }?.remotePath }
+                guard paths.count == send.uploadIds.count else { continue }
+                var command: [String: Any] = ["type": "user_message", "text": send.text, "messageId": messageId]
+                if !paths.isEmpty { command["attachments"] = paths }
+                if let delivery = send.delivery { command["delivery"] = delivery }
+                guard sendCommand(runtimeId: runtimeId, commandId: op.opId, command: command) else { continue }
+                pendingSends.startWrite(messageId, attachments: paths)
+                removeWaitingCopy(messageId)
+                let events = ledger.written(op.opId, now: Date())
+                ledger.remove(op.opId)
+                handleLedger(events)
+                progressed = true
+                break
+            }
+        }
+        publishMessages()
+    }
+
+    private func uploadSettled(_ id: String, path: String?, error: String?) {
+        let name = transfers.tasks.first { $0.id == id }?.name ?? "附件"
+        handleLedger(ledger.prerequisite(OperationKinds.uploadPrerequisite(id), succeeded: path != nil,
+                                         reason: "附件上传失败：\(name)" + (error.map { "（\($0)）" } ?? "")))
+        flushReadySends()
+    }
+
+    /// V17：写入通道前另存一份正文；进程退出时仍在等待的消息，下次打开时回到该会话的输入框。
+    private func saveWaitingCopy(_ messageId: String, text: String, runtime: RuntimeSummary) {
+        var copies = preferences?.dictionary(forKey: Self.waitingCopiesKey) as? [String: [String: String]] ?? [:]
+        copies[localSessionKey(host: selectedHost, runtime: runtime), default: [:]][messageId] = text
+        preferences?.set(copies, forKey: Self.waitingCopiesKey)
+    }
+
+    private func removeWaitingCopy(_ messageId: String) {
+        guard var copies = preferences?.dictionary(forKey: Self.waitingCopiesKey) as? [String: [String: String]] else { return }
+        for key in copies.keys { copies[key]?[messageId] = nil; if copies[key]?.isEmpty == true { copies[key] = nil } }
+        preferences?.set(copies, forKey: Self.waitingCopiesKey)
+    }
+
+    /// 上次进程退出时还在等待的消息回到输入框，已有草稿则接在其后。
+    private func restoreWaitingCopies() {
+        guard let copies = preferences?.dictionary(forKey: Self.waitingCopiesKey) as? [String: [String: String]], !copies.isEmpty else { return }
+        drafts = preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? drafts
+        var kept: [String: [String: String]] = [:]
+        for (key, entries) in copies {
+            let live = entries.filter { pendingSends.item($0.key) != nil }
+            if !live.isEmpty { kept[key] = live }
+            let restored = entries.filter { pendingSends.item($0.key) == nil }.values.sorted()
+            guard !restored.isEmpty else { continue }
+            drafts[key] = ([drafts[key]].compactMap { $0 } + restored).joined(separator: "\n\n")
+        }
+        preferences?.set(drafts, forKey: "orbis.sessionDrafts")
+        preferences?.set(kept, forKey: Self.waitingCopiesKey)
+    }
+
     /// 失败行重新发送：用新的 messageId，空闲直发不会被各后端当成同一条消息去重。
     @discardableResult
     func resendPendingSend(_ messageId: String) -> Bool {
         guard canSend, let runtime = selectedRuntime, let send = pendingSends.item(messageId), send.sessionId == runtime.sessionId,
               case .failed = send.state else { return false }
+        // 附件没传成的失败：重新上传，作为一条新的等待消息（L6：新操作、新身份）。
+        if !send.uploadIds.isEmpty, send.attachments.isEmpty {
+            let uploads = transfers.tasks.filter { send.uploadIds.contains($0.id) }
+            guard uploads.count == send.uploadIds.count else { return false }
+            for upload in uploads where ["failed", "cancelled"].contains(upload.status) { transfers.restart(upload.id) }
+            pendingSends.remove(messageId); removeWaitingCopy(messageId)
+            let restarted = transfers.tasks.filter { send.uploadIds.contains($0.id) }
+            return sendWhenReady(send.text, delivery: send.delivery, uploads: restarted, runtime: runtime)
+        }
         // 按当前状态选择投递方式：忙时直发会被拒绝，Claude 也不支持插入。
         let delivery: String? = runtime.status == "idle" ? nil
             : send.delivery == "steer" && agentKind(runtime) != "claude" ? "steer" : "followUp"
@@ -1449,14 +1565,16 @@ final class HostConnection: ObservableObject {
     func restorePendingSend(_ messageId: String) -> String? {
         guard let send = pendingSends.item(messageId) else { return nil }
         switch send.state { case .failed, .unconfirmed: break; default: return nil }
-        pendingSends.remove(messageId); publishMessages()
+        pendingSends.remove(messageId); removeWaitingCopy(messageId); publishMessages()
+        // 附件没传成：正文和附件都回到输入框（ADR-0049 §6.1）。
+        if !send.uploadIds.isEmpty, send.attachments.isEmpty { transfers.reattach(Set(send.uploadIds)); return send.text }
         return send.attachments.isEmpty ? send.text : send.text + "\n\n附件路径：\n" + send.attachments.joined(separator: "\n")
     }
 
     func discardPendingSend(_ messageId: String) {
         guard let send = pendingSends.item(messageId) else { return }
         switch send.state { case .failed, .unconfirmed: break; default: return }
-        pendingSends.remove(messageId); publishMessages()
+        pendingSends.remove(messageId); removeWaitingCopy(messageId); publishMessages()
     }
 
     /// 队列面板：Host 队列项，加上带 `delivery` 且仍在提交中的本地行。
@@ -1680,6 +1798,7 @@ final class HostConnection: ObservableObject {
             // 新连接的首个 device.ready 是因果晚于旧连接上所有操作的完整在线列表（L2、L5）。
             ledgerOpenConnection()
             ledgerAuthority(OperationKinds.runtimesDomain, read: nil, complete: true)
+            flushReadySends()
             conversations = conversations.filter { id, _ in next.contains { $0.runtimeId == id } }
             runtimeEventSequences = [:]
             if selectedRuntime == nil { selectedRuntimeId = restoredRuntimeId() ?? runtimes.first?.runtimeId }

@@ -11,6 +11,8 @@ sealed interface PendingSendState {
     data class Failed(val reason: String) : PendingSendState
     /** 断线或 Runtime 离线时还没定论：命令可能已经送达，核对前不允许重新发送。 */
     data object Unconfirmed : PendingSendState
+    /** ADR-0049 §6.2：已在本机创建，等附件上传或同会话前一条，尚未写入通道。断线不改变它。 */
+    data class Waiting(val label: String) : PendingSendState
 }
 
 data class PendingSend(
@@ -32,6 +34,8 @@ data class PendingSend(
     val needsDeliveryEvidence: Boolean = false,
     val submissionConfirmed: Boolean = false,
     val queueOwned: Boolean = false,
+    /** ADR-0049 §6.2：交给这条消息的上传任务；写入通道时换成 Host 路径。 */
+    val uploadIds: List<String> = emptyList(),
 ) {
     /** 带 `delivery` 且尚未被接受时，它在队列面板里显示「提交中」。 */
     val showsInQueue: Boolean get() = delivery != null && state == PendingSendState.Sending && !queueOwned

@@ -373,7 +373,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         text: String,
         delivery: String? = null,
         attachments: List<String> = emptyList(),
-    ): String? = active()?.sendMessage(text, delivery, attachments)
+        uploadTaskIds: List<String> = emptyList(),
+    ): String? = active()?.sendMessage(text, delivery, attachments, uploadTaskIds)
+
+    fun uploadsOf(messageId: String): List<String> = active()?.uploadsOf(messageId).orEmpty()
 
     fun detachUploads(taskIds: Set<String>) = active()?.detachUploads(taskIds)
 

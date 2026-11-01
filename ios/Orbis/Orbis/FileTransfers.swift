@@ -138,7 +138,18 @@ struct FileTransfer: Codable, Identifiable, Equatable {
 
 @MainActor
 final class FileTransfers: ObservableObject {
-    @Published private(set) var tasks: [FileTransfer] = []
+    @Published private(set) var tasks: [FileTransfer] = [] {
+        didSet {
+            // ADR-0049 §6.2：上传结束（完成、失败或取消）时通知连接层，等待它的消息据此写入或转失败。
+            guard let didSettleUpload else { return }
+            for task in tasks where task.direction == "upload" && ["completed", "failed", "cancelled"].contains(task.status) {
+                guard let old = oldValue.first(where: { $0.id == task.id }), old.status != task.status else { continue }
+                didSettleUpload(task.id, task.status == "completed" ? task.remotePath : nil, task.status == "failed" ? task.error ?? "上传失败" : "上传已取消")
+            }
+        }
+    }
+    /// 上传结束：(任务, 完成时的 Host 路径, 失败原因)。
+    var didSettleUpload: ((String, String?, String?) -> Void)?
     @Published private(set) var preparing = false
     @Published var error: String?
     var send: ([String: Any]) -> Bool = { _ in false }
@@ -342,6 +353,17 @@ final class FileTransfers: ObservableObject {
         timeouts.removeValue(forKey: id)?.cancel(); tasks[index].status = "cancelled"; tasks[index].transferId = nil; tasks[index].requestId = nil; tasks[index].commandId = nil
         save()
     }
+    /// 已交给等待中的消息：离开输入框但不取消仍在上传的任务（ADR-0049 §6.2）。
+    func release(_ ids: Set<String>) {
+        for id in ids { if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index].attached = false } }
+        save()
+    }
+    /// 放回输入框：附件重新挂到输入框。
+    func reattach(_ ids: Set<String>) {
+        for id in ids { if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index].attached = true } }
+        save()
+    }
+
     func detach(_ ids: Set<String>) {
         for id in ids {
             if let task = tasks.first(where: { $0.id == id }), task.status != "completed" { cancel(id) }
@@ -543,7 +565,7 @@ final class FileTransfers: ObservableObject {
         guard !["completed", "cancelled", "paused"].contains(tasks[index].status) else { return }
         invalidateDisk(id)
         downloads[id] = nil
-        timeouts.removeValue(forKey: id)?.cancel(); tasks[index].status = "failed"; tasks[index].error = message; tasks[index].commandId = nil; tasks[index].requestId = nil
+        timeouts.removeValue(forKey: id)?.cancel(); tasks[index].error = message; tasks[index].status = "failed"; tasks[index].commandId = nil; tasks[index].requestId = nil
         save()
     }
     private func arm(_ id: String) {

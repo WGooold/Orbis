@@ -10,13 +10,15 @@ struct PendingSend: Equatable, Identifiable {
         case failed(String)
         /// 断线或 Runtime 离线时还没定论：命令可能已经送达，核对前不允许重新发送。
         case unconfirmed
+        /// ADR-0049 §6.2：已在本机创建，等附件上传或同会话前一条，尚未写入通道。断线不改变它。
+        case waiting(String)
     }
 
     let messageId: String
     let commandId: String
     let sessionId: String
     let text: String
-    let attachments: [String]
+    var attachments: [String]
     let delivery: String?
     let createdAt: Date
     /// 创建时最后一条权威消息；本地行插在它后面，助手流先到时顺序仍是「提问 → 回复」。
@@ -32,6 +34,8 @@ struct PendingSend: Equatable, Identifiable {
     var submissionConfirmed = false
     /// Retain the recoverable input while the Host queue owns its visible row.
     var queueOwned = false
+    /// ADR-0049 §6.2：等待中的附件上传任务；写入通道时换成 Host 路径。
+    var uploadIds: [String] = []
 
     var id: String { messageId }
     /// 带 `delivery` 且尚未被接受时，它在队列面板里显示「提交中」。
@@ -54,6 +58,17 @@ struct PendingSendOutbox: Equatable {
     }
     /// 聊天里的本地行已经代表这条消息，Host 队列里的同一项不再重复显示。
     func hidesQueueItem(_ queueId: String) -> Bool { items.contains { $0.messageId == queueId && !$0.showsInQueue && !$0.queueOwned } }
+
+    /// 等待中的消息写入通道：换成 Host 附件路径，进入发送中（ADR-0049 §6.2）。
+    mutating func startWrite(_ messageId: String, attachments: [String]) {
+        guard let index = items.firstIndex(where: { $0.messageId == messageId }), case .waiting = items[index].state else { return }
+        items[index].attachments = attachments; items[index].state = .sending
+    }
+    /// 等待中的前置操作失败：这条消息转失败，原因写明前置操作。
+    mutating func failWaiting(_ messageId: String, reason: String) {
+        guard let index = items.firstIndex(where: { $0.messageId == messageId }), case .waiting = items[index].state else { return }
+        items[index].state = .failed(reason)
+    }
 
     mutating func add(_ send: PendingSend) {
         items.removeAll { $0.messageId == send.messageId }
@@ -135,7 +150,7 @@ struct PendingSendOutbox: Equatable {
             switch item.state {
             case .accepted: eligible = item.submissionConfirmed && idle && (item.sawBusy || now.timeIntervalSince(item.acceptedAt ?? now) >= Self.acceptedIdleGrace)
             case .unconfirmed: eligible = idle
-            case .sending, .queued, .failed: eligible = false
+            case .sending, .queued, .failed, .waiting: eligible = false
             }
             guard eligible else { item.settleRevision = nil; return item }
             guard let started = item.settleRevision else {

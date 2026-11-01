@@ -18,6 +18,8 @@ sealed interface LedgerPayload {
     data class QueueCancel(val runtimeId: String, val queueId: String) : LedgerPayload
     /** 回答审批 / 问卷、取消提问。`summary` 是原位短状态显示的摘要（自由文本与敏感输入只显示“已提交”）。 */
     data class Respond(val runtimeId: String, val requestId: String, val summary: String) : LedgerPayload
+    /** 等待前置操作的消息（附件上传、同会话前一条）。写入通道后交给 ADR-0055 的 outbox 结算。 */
+    data class Send(val runtimeId: String, val sessionId: String, val messageId: String) : LedgerPayload
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -38,6 +40,11 @@ object OperationKinds {
     /** 某个 Runtime 的 Host 队列（delivery 领域）在账本里的领域名。 */
     fun queueDomain(runtimeId: String) = "queue:$runtimeId"
     const val RESPOND = "respond"
+    const val SEND = "send"
+    /** `send` 在账本里只经历 `waiting`：前置完成、轮到它时写入通道并交给 outbox，账本随即删除记录。 */
+    val sendPolicy = LedgerPolicy(successLands = true, acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS, deviceReceipts = true)
+    fun sendGroup(sessionId: String) = "session:$sessionId"
+    fun uploadPrerequisite(uploadId: String) = "upload:$uploadId"
     /** 某个 Runtime 的交互清单（interactions 领域）在账本里的领域名。 */
     fun interactionsDomain(runtimeId: String) = "interactions:$runtimeId"
 
@@ -211,12 +218,13 @@ object OperationKinds {
         is LedgerPayload.Quit -> payload.runtimeId
         is LedgerPayload.QueueCancel -> payload.runtimeId
         is LedgerPayload.Respond -> payload.runtimeId
+        is LedgerPayload.Send -> payload.runtimeId
         is LedgerPayload.Dismiss, is LedgerPayload.Archive -> null
     }
 
     /** 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片、队列项）提示后回到原位；内容类保留失败状态等用户处理。 */
     fun removesOnRejection(op: LedgerOperation<LedgerPayload>): Boolean = when (op.payload) {
-        is LedgerPayload.Quit, is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond -> true
+        is LedgerPayload.Quit, is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond, is LedgerPayload.Send -> true
     }
 
     /** 首页要隐藏的卡片：未结算的 `quit` 一直保持叠加，包括结果不明期间（L4）。 */
@@ -230,7 +238,7 @@ object OperationKinds {
      */
     fun evidence(op: LedgerOperation<LedgerPayload>, runtimeIds: Set<String>): LedgerEvidence = when (val payload = op.payload) {
         is LedgerPayload.Quit -> if (payload.runtimeId in runtimeIds) LedgerEvidence.NONE else LedgerEvidence.LANDED
-        is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond -> LedgerEvidence.NONE
+        is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond, is LedgerPayload.Send -> LedgerEvidence.NONE
     }
 
     /** `command.result` 的回执。`cancelled` / `unconfirmed` 是可能已执行的结果，交给账本按结果不明处理。 */
@@ -272,6 +280,7 @@ object OperationKinds {
                 "already_delivered" -> "撤回未完成：${queueAlreadyDelivered.reason}"
                 else -> "撤回未完成：${rejection.reason.ifBlank { "请重试" }}"
             }
+            is LedgerPayload.Send -> null // 失败显示在气泡原位（outbox 的失败行）。
             // 核对后请求仍在：静默恢复面板；明确失败时面板回到原位并说明原因，答案保留。
             is LedgerPayload.Respond -> when (rejection.code) {
                 "unresolved", "not_applied" -> null
@@ -304,9 +313,17 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
     var nextError = error
     var verify = ledgerVerifyWanted
     var outcomes = interactionOutcomes
+    var sends = pendingSends
     val archiveRejections = step.events.count { it is LedgerEvent.Rejected && it.operation.payload is LedgerPayload.Archive }
     for (event in step.events) when (event) {
         is LedgerEvent.Rejected -> {
+            // 等待中的消息：前置失败时这条转失败，原因写明前置操作（ADR-0049 §6.2）。
+            (event.operation.payload as? LedgerPayload.Send)?.let { send ->
+                val reason = (event.operation.phase as? LedgerPhase.Rejected)?.rejection?.reason.orEmpty()
+                sends[send.messageId]?.takeIf { it.state is PendingSendState.Waiting }?.let {
+                    sends = sends + (send.messageId to it.copy(state = PendingSendState.Failed(reason)))
+                }
+            }
             // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
             OperationKinds.message(event.operation)?.let { nextError = if (archiveRejections > 1) "$archiveRejections 个会话$it" else it }
             if (OperationKinds.removesOnRejection(event.operation)) nextLedger = nextLedger.remove(event.operation.opId)
@@ -319,7 +336,7 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
         }
         else -> Unit
     }
-    return copy(ledger = nextLedger, error = nextError, ledgerVerifyWanted = verify, interactionOutcomes = outcomes)
+    return copy(ledger = nextLedger, error = nextError, ledgerVerifyWanted = verify, interactionOutcomes = outcomes, pendingSends = sends)
 }
 
 private val LedgerPhase.awaitsVerification get() = this == LedgerPhase.Unknown || this == LedgerPhase.Unconfirmed
@@ -518,3 +535,39 @@ internal fun RemoteState.createRespond(commandId: String, runtimeId: String, req
 internal fun RemoteState.interactionStatus(runtimeId: String): Triple<String, Boolean, String?>? =
     OperationKinds.respondStatus(ledger, runtimeId)?.let { Triple(it.first, it.second, null) }
         ?: interactionOutcomes[runtimeId]?.let { Triple(it.text, false, it.id) }
+
+/**
+ * ADR-0049 §6.2：气泡立即出现，输入框清空；附件上传完成且同会话前一条已写入后，按创建顺序写入通道。
+ * opId 即写入时使用的 commandId。
+ */
+internal fun RemoteState.createWaitingSend(
+    commandId: String, messageId: String, runtimeId: String, sessionId: String, text: String, delivery: String?,
+    uploadIds: List<String>, pendingUploads: List<UploadTask>, now: Long,
+): Pair<RemoteState, LedgerCreation<LedgerPayload>> {
+    val (next, creation) = ledger.create(commandId, OperationKinds.SEND, "message:$messageId", group = OperationKinds.sendGroup(sessionId),
+        conflicts = false, policy = OperationKinds.sendPolicy, basis = emptyMap(),
+        prerequisites = pendingUploads.map { OperationKinds.uploadPrerequisite(it.taskId) }.toSet(),
+        payload = LedgerPayload.Send(runtimeId, sessionId, messageId), written = false, now = now)
+    if (creation !is LedgerCreation.Created) return this to creation
+    val label = if (pendingUploads.isEmpty()) "等待前一条发送" else "上传中：" + pendingUploads.joinToString("、") { it.displayName }
+    val anchor = conversations[runtimeId]?.messages?.lastOrNull()?.messageId
+    val send = PendingSend(messageId, commandId, sessionId, text, emptyList(), delivery, now, anchor,
+        state = PendingSendState.Waiting(label), uploadIds = uploadIds)
+    return copy(ledger = next, pendingSends = pendingSends + (messageId to send)) to creation
+}
+
+/** 轮到它的等待消息已写入通道：换成 Host 附件路径进入发送中，账本记录交给 outbox。 */
+internal fun RemoteState.waitingWritten(opId: String, messageId: String, runtimeId: String, paths: List<String>, now: Long): RemoteState {
+    val send = pendingSends[messageId]?.takeIf { it.state is PendingSendState.Waiting } ?: return this
+    val step = ledger.written(opId, now)
+    return copy(pendingSends = pendingSends + (messageId to send.copy(state = PendingSendState.Sending, attachments = paths)),
+        pendingCommands = pendingCommands + (opId to runtimeId), uploads = uploads - send.uploadIds.toSet())
+        .withLedgerStep(LedgerStep(step.ledger.remove(opId), step.events))
+}
+
+/** 上传结束（完成、失败或取消）：等待它的消息据此写入或转失败。 */
+internal fun RemoteState.ledgerUploadSettled(taskId: String, succeeded: Boolean, reason: String): RemoteState =
+    withLedgerStep(ledger.prerequisite(OperationKinds.uploadPrerequisite(taskId), succeeded, reason))
+
+/** 已经可以写入通道的等待消息（前置都已完成、同组没有更早的等待者）。 */
+internal fun RemoteState.readySends(): List<LedgerOperation<LedgerPayload>> = ledger.ready().filter { it.payload is LedgerPayload.Send }
