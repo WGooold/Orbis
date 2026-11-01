@@ -413,7 +413,7 @@ internal fun RemoteApp(
                     HomeOverlay.OfflineHistory -> AgentTheme(agentBrand(state.sessions[state.selectedOfflineSessionId]?.agentKind)) {
                         OfflineHistoryScreen(state, state.selectedOfflineSessionId, model, onBack = { model.selectOfflineSession(null) })
                     }
-                    HomeOverlay.Chat -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?:
+                    HomeOverlay.Chat -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?: state.launchPage?.agentKind ?:
                         state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
                         ChatScreen(state, model)
                     }
@@ -1366,6 +1366,9 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val runtimeId = state.selectedRuntimeId ?: return
     val actionHaptic = rememberActionHaptic()
     val runtime = state.runtimes[runtimeId]
+    // ADR-0049 §6.8：启动中的会话用占位身份进入聊天页，可以写草稿和发送，消息等会话上线后再提交。
+    val launch = state.launchPage
+    val launchOpen = launch != null && launch.failure == null
     val sessionId = runtime?.sessionId
     val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
     val rewindCommands = state.capabilities[runtimeId]?.commands.orEmpty()
@@ -1882,7 +1885,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             AgentIcon(LocalAgentBrand.current, Modifier.size(MetaLineLeadingSlot))
                             Text(LocalAgentBrand.current.title, style = MaterialTheme.typography.labelLarge, color = LocalAgentBrand.current.accent())
                             Text(
-                                state.sessionDisplayName(sessionId, runtime),
+                                launch?.title ?: state.sessionDisplayName(sessionId, runtime),
                                 modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
@@ -1891,7 +1894,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             )
                         }
                         ChatRuntimeStatus(
-                            status = runtime?.presentationStatus ?: "error",
+                            status = runtime?.presentationStatus ?: launch?.status ?: "error",
                             isChatSyncing = displayReadPending,
                             // ADR-0049 §6.7：切换中显示所选值加标记；同一槽位、同一省略规则（V05）。
                             modelLabel = state.configStatus(runtimeId, "model")?.let { "${it.first} · ${it.second}" }
@@ -2056,14 +2059,14 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                         },
                         modifier = Modifier.weight(1f),
                         placeholder = { Text("发给 ${LocalAgentBrand.current.title}，/ 命令", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        enabled = runtime != null,
+                        enabled = runtime != null || launchOpen,
                         minLines = 1,
                         maxLines = 5,
                     )
                     // 两侧按钮保持 48dp 触控区；输入框承担剩余宽度，多行输入时按钮贴底对齐。
                     val sendEnabled = when (composerMode) {
                         ComposerAction.Abort -> runtime != null
-                        ComposerAction.Send -> runtime != null && canSubmitInput(
+                        ComposerAction.Send -> (runtime != null || launchOpen) && canSubmitInput(
                             input,
                             state.capabilities[runtimeId]?.commands.orEmpty(),
                             selectedSlashCommandName,
@@ -2175,7 +2178,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             ) {
                 item(key = "chat-status") {
                     val errors = listOfNotNull(
-                        if (runtime == null) "会话已离线" else null,
+                        if (runtime == null && launch == null) "会话已离线" else null,
                         historyPagingFeedback, historyActionError, historyRead?.takeIf { it.phase == HistoryReadPhase.FAILED }?.error,
                         firstReadError, rangeError, state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError,
                         if (conversation.waitingLocalInteraction) "请在电脑端完成交互" else null,
@@ -2313,6 +2316,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             scope.launch { listState.animateScrollToItem(chatHeaderCount + index) }
                         }
                     })
+                }
+            }
+            launch?.takeIf { it.failure != null || it.unconfirmed }?.let { failed ->
+                Box(Modifier.align(Alignment.TopCenter)) {
+                    LaunchNotice(failed, onRetry = model::retryLaunch, onBack = { model.selectRuntime(null) })
                 }
             }
             state.visibleNotificationProjection(runtimeId)?.takeIf { it.sessionId == sessionId }?.let { projection ->
@@ -4287,6 +4295,8 @@ internal fun InteractionPanel(
 }
 
 private fun runtimeStatusText(status: String): String = when (status) {
+    "starting" -> "启动中"
+    "launch_unconfirmed" -> "启动未确认"
     "idle" -> "空闲"
     "running" -> "运行中"
     "compacting" -> "压缩中"
@@ -4420,6 +4430,25 @@ private fun fullEntryText(entry: SessionGraphEntry): String {
             "text", "thinking" -> obj["text"]?.jsonPrimitive?.contentOrNull ?: ""
             "tool_call" -> "[工具] " + (obj["toolName"]?.jsonPrimitive?.contentOrNull ?: "") + " " + (obj["arguments"]?.toString() ?: "")
             else -> block.toString()
+        }
+    }
+}
+
+/** ADR-0049 §6.8：启动失败或未确认时在聊天页原位说明，提供“重试”“返回”，草稿保留。 */
+@Composable
+private fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -> Unit) {
+    NeumorphSurface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).testTag("launch-notice"),
+        shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(launch.failure?.let { "启动失败：$it" } ?: "启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (launch.failure != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                NeumorphTextButton("重试", onClick = onRetry, icon = Icons.Rounded.Refresh, modifier = Modifier.testTag("launch-retry"))
+                NeumorphTextButton("返回", onClick = onBack, modifier = Modifier.testTag("launch-back"))
+            }
         }
     }
 }

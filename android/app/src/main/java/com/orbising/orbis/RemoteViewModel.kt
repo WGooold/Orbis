@@ -378,6 +378,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun uploadsOf(messageId: String): List<String> = active()?.uploadsOf(messageId).orEmpty()
 
+    fun retryLaunch() { active()?.retryLaunch() }
+
     fun detachUploads(taskIds: Set<String>) = active()?.detachUploads(taskIds)
 
     fun attachedTaskIds(sessionKey: String): Set<String> =

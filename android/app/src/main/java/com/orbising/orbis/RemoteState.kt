@@ -440,6 +440,12 @@ data class RemoteState(
     val interactionOutcomes: Map<String, InteractionOutcome> = emptyMap(),
     /** 切换中再次选择：目标 → (值, 名字)，前一次结束后只在它与确认值不同时再提交（ADR-0049 §6.7）。 */
     val configSelections: Map<String, Pair<String, String>> = emptyMap(),
+    /** ADR-0049 §6.8：正在启动的会话（立即进入的聊天页用它的占位身份）。 */
+    val launching: LaunchState? = null,
+    /** 启动期间消息的占位 Session → 确认后的 Session。 */
+    val launchSessions: Map<String, String> = emptyMap(),
+    /** 启动成功后要迁移的草稿：(占位 Runtime, 真实 Runtime)，由 [HostConnection] 写入草稿存储后清除。 */
+    val launchDraftMove: Pair<RuntimeSummary, RuntimeSummary>? = null,
     val capabilities: Map<String, RuntimeCapabilities> = emptyMap(),
     /**
      * 这台电脑支持的 agent 种类（[device.ready] 的 `agents`）。
@@ -712,6 +718,12 @@ private fun reduceSessionBrowseResult(state: RemoteState, message: JsonObject): 
 /** session.activated（spec §8）：只证明进程已拉起；会话真正上线由 runtime.online 对账。 */
 private fun reduceSessionActivated(state: RemoteState, message: JsonObject): RemoteState {
     val requestId = message["requestId"]?.jsonPrimitive?.contentOrNull
+    // ADR-0049 §6.8：启动中的会话即使已转为未确认，迟到的同一 requestId 仍可结算。
+    val launch = state.launching?.takeIf { it.requestId == requestId }
+    if (launch != null && requestId !in state.sessionActivateRequests) {
+        val acknowledged = message["sessionId"]?.jsonPrimitive?.contentOrNull ?: return state
+        return state.launchActivated(launch.requestId, acknowledged, System.currentTimeMillis())
+    }
     if (requestId != null && requestId !in state.sessionActivateRequests) return state
     val agentKind = message["agentKind"]?.jsonPrimitive?.contentOrNull ?: return state
     val target = requestId?.let(state.sessionActivateTargets::get)
@@ -719,14 +731,18 @@ private fun reduceSessionActivated(state: RemoteState, message: JsonObject): Rem
     return state.copy(
         sessionActivateRequests = requestId?.let { state.sessionActivateRequests - it } ?: state.sessionActivateRequests,
         sessionActivateTargets = requestId?.let { state.sessionActivateTargets - it } ?: state.sessionActivateTargets,
-        activatedSessionToOpen = target?.takeIf { it == acknowledged } ?: state.activatedSessionToOpen,
+        // 用户已离开启动页时不再把他带回这个会话。
+        activatedSessionToOpen = target?.takeIf { it == acknowledged && launch?.following != false } ?: state.activatedSessionToOpen,
         sessionActivation = SessionActivationInfo(
             requestId = requestId ?: "",
             agentKind = agentKind,
             sessionId = message["sessionId"]?.jsonPrimitive?.contentOrNull,
             spawnMode = message["spawnMode"]?.jsonPrimitive?.contentOrNull ?: "tui",
         ),
-    )
+    ).let { next ->
+        val acknowledged = message["sessionId"]?.jsonPrimitive?.contentOrNull
+        if (launch != null && acknowledged != null) next.launchActivated(launch.requestId, acknowledged, System.currentTimeMillis()) else next
+    }
 }
 
 /** A resume acknowledgement and runtime.online may arrive in either order. */

@@ -22,6 +22,8 @@ sealed interface LedgerPayload {
     data class Send(val runtimeId: String, val sessionId: String, val messageId: String) : LedgerPayload
     /** 模型 / 思考级别（条件乐观）。`setting` 为 `model` 或 `thinking`；`label` 是选择器里的名字。 */
     data class Config(val runtimeId: String, val setting: String, val value: String, val label: String) : LedgerPayload
+    /** 新建 / 恢复会话（即时反馈）：立即进入聊天页并显示“启动中”。`placeholder` 是启动期间聊天页的占位身份。 */
+    data class Launch(val requestId: String, val placeholder: String) : LedgerPayload
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -44,6 +46,19 @@ object OperationKinds {
     const val RESPOND = "respond"
     const val SEND = "send"
     const val CONFIG = "config"
+    const val LAUNCH = "launch"
+    /**
+     * `launch`：同一 requestId 的 `session.activated` 表示 Host 已受理并给出 Session，该 Session 的 Runtime 上线才落地；
+     * 失败在聊天页原位显示；超时后显示“启动未确认”，以随后的会话列表为准（ADR-0049 §6.8）。
+     */
+    val launchPolicy = LedgerPolicy(
+        successLands = false,
+        acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
+        afterSuccessMs = LEDGER_RECEIPT_BUDGET_MS,
+        afterSuccess = LedgerTimeout.Unknown,
+        whenUnresolved = LedgerTimeout.Unknown,
+        deviceReceipts = true,
+    )
     /** 某个 Runtime 的模型配置（model 领域或 runtime.metadata）在账本里的领域名。 */
     fun modelDomain(runtimeId: String) = "model:$runtimeId"
     fun isConfigSetting(name: String) = name == "model" || name == "thinking"
@@ -268,12 +283,12 @@ object OperationKinds {
         is LedgerPayload.Respond -> payload.runtimeId
         is LedgerPayload.Send -> payload.runtimeId
         is LedgerPayload.Config -> payload.runtimeId
-        is LedgerPayload.Dismiss, is LedgerPayload.Archive -> null
+        is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.Launch -> null
     }
 
     /** 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片、队列项）提示后回到原位；内容类保留失败状态等用户处理。 */
     fun removesOnRejection(op: LedgerOperation<LedgerPayload>): Boolean = when (op.payload) {
-        is LedgerPayload.Quit, is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond, is LedgerPayload.Send, is LedgerPayload.Config -> true
+        is LedgerPayload.Quit, is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond, is LedgerPayload.Send, is LedgerPayload.Config, is LedgerPayload.Launch -> true
     }
 
     /** 首页要隐藏的卡片：未结算的 `quit` 一直保持叠加，包括结果不明期间（L4）。 */
@@ -287,7 +302,7 @@ object OperationKinds {
      */
     fun evidence(op: LedgerOperation<LedgerPayload>, runtimeIds: Set<String>): LedgerEvidence = when (val payload = op.payload) {
         is LedgerPayload.Quit -> if (payload.runtimeId in runtimeIds) LedgerEvidence.NONE else LedgerEvidence.LANDED
-        is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond, is LedgerPayload.Send, is LedgerPayload.Config -> LedgerEvidence.NONE
+        is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond, is LedgerPayload.Send, is LedgerPayload.Config, is LedgerPayload.Launch -> LedgerEvidence.NONE
     }
 
     /** `command.result` 的回执。`cancelled` / `unconfirmed` 是可能已执行的结果，交给账本按结果不明处理。 */
@@ -330,6 +345,7 @@ object OperationKinds {
                 else -> "撤回未完成：${rejection.reason.ifBlank { "请重试" }}"
             }
             is LedgerPayload.Send -> null // 失败显示在气泡原位（outbox 的失败行）。
+            is LedgerPayload.Launch -> null // 失败在聊天页原位显示原因及“重试”“返回”。
             is LedgerPayload.Config -> "${configTitle((op.payload as LedgerPayload.Config).setting)}切换未完成：${rejection.reason.ifBlank { "请重试" }}"
             // 核对后请求仍在：静默恢复面板；明确失败时面板回到原位并说明原因，答案保留。
             is LedgerPayload.Respond -> when (rejection.code) {
@@ -364,6 +380,10 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
     var verify = ledgerVerifyWanted
     var outcomes = interactionOutcomes
     var sends = pendingSends
+    var launch = launching
+    var selected = selectedRuntimeId
+    var draftMove = launchDraftMove
+    var activateRequests = sessionActivateRequests
     val archiveRejections = step.events.count { it is LedgerEvent.Rejected && it.operation.payload is LedgerPayload.Archive }
     for (event in step.events) when (event) {
         is LedgerEvent.Rejected -> {
@@ -373,24 +393,46 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
                 sends[send.messageId]?.let { it to it.state }?.let { (row, state) ->
                     if (state !is PendingSendState.Waiting) return@let
                     // 配置切换失败：等它的消息一起转失败（“模型切换未完成，消息未发送”），可按当前配置重新发送。
-                    val reason = if (rejection?.code == "prerequisite" && state.label.startsWith("等待") && state.label.endsWith("切换"))
+                    val reason = if (rejection?.code == "prerequisite" && state.label.startsWith("等待") &&
+                        (state.label.endsWith("切换") || state.label.endsWith("启动")))
                         state.label.removePrefix("等待") + "未完成，消息未发送" else rejection?.reason.orEmpty()
                     sends = sends + (send.messageId to row.copy(state = PendingSendState.Failed(reason)))
                 }
+            }
+            // 启动失败：在聊天页原位显示原因及“重试”“返回”，草稿保留，不自动退回原页面。
+            (event.operation.payload as? LedgerPayload.Launch)?.let { payload ->
+                if (launch?.requestId == payload.requestId) {
+                    val reason = (event.operation.phase as? LedgerPhase.Rejected)?.rejection?.reason.orEmpty().ifBlank { "启动失败" }
+                    launch = launch?.copy(failure = reason)?.takeIf { it.following }
+                }
+                activateRequests = activateRequests - payload.requestId
             }
             // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
             OperationKinds.message(event.operation)?.let { nextError = if (archiveRejections > 1) "$archiveRejections 个会话$it" else it }
             if (OperationKinds.removesOnRejection(event.operation)) nextLedger = nextLedger.remove(event.operation.opId)
         }
         is LedgerEvent.Verify -> verify = true
-        is LedgerEvent.Landed -> (event.operation.payload as? LedgerPayload.Respond)?.let { respond ->
+        is LedgerEvent.Unconfirmed -> (event.operation.payload as? LedgerPayload.Launch)?.let { payload ->
+            if (launch?.requestId == payload.requestId) launch = launch?.copy(unconfirmed = true)
+            activateRequests = activateRequests - payload.requestId
+        }
+        is LedgerEvent.Landed -> (event.operation.payload as? LedgerPayload.Launch)?.let { payload ->
+            // 启动成功：草稿迁到真实会话（V17），用户仍在启动页时切过去；离开了就不拉回，会话照常出现在首页。
+            val current = launch?.takeIf { it.requestId == payload.requestId } ?: return@let
+            val real = runtimes.values.firstOrNull { it.sessionId == current.sessionId }
+            if (real != null) draftMove = current.runtime() to real
+            if (current.following && selected == current.placeholder && real != null) selected = real.runtimeId
+            else if (selected == current.placeholder) selected = null
+            launch = null
+        } ?: (event.operation.payload as? LedgerPayload.Respond)?.let { respond ->
             // 回答已结算：原位短暂显示结果（约 2.5 秒，V16）。只因请求已不在而结算的显示“已处理”，不声称是本机回答生效。
             outcomes = outcomes + (respond.runtimeId to InteractionOutcome(event.operation.opId,
                 if (event.operation.succeeded) respond.summary else "已处理"))
         }
         else -> Unit
     }
-    return copy(ledger = nextLedger, error = nextError, ledgerVerifyWanted = verify, interactionOutcomes = outcomes, pendingSends = sends)
+    return copy(ledger = nextLedger, error = nextError, ledgerVerifyWanted = verify, interactionOutcomes = outcomes, pendingSends = sends,
+        launching = launch, selectedRuntimeId = selected, launchDraftMove = draftMove, sessionActivateRequests = activateRequests)
 }
 
 private val LedgerPhase.awaitsVerification get() = this == LedgerPhase.Unknown || this == LedgerPhase.Unconfirmed
@@ -415,7 +457,15 @@ internal fun RemoteState.ledgerBasis(domain: String): Map<String, Int> = mapOf(d
 private fun RemoteState.ledgerEvidence(domain: String): (LedgerOperation<LedgerPayload>) -> LedgerEvidence {
     if (domain == OperationKinds.RUNTIMES_DOMAIN) {
         val ids = runtimes.keys
-        return { OperationKinds.evidence(it, ids) }
+        val sessions = runtimes.values.mapNotNullTo(mutableSetOf()) { it.sessionId }
+        val launch = launching
+        return { op ->
+            // `launch`：Host 给出的 Session 的 Runtime 已上线即落地。
+            val payload = op.payload as? LedgerPayload.Launch
+            if (payload == null) OperationKinds.evidence(op, ids)
+            else if (launch?.requestId == payload.requestId && launch.sessionId != null && launch.sessionId in sessions) LedgerEvidence.LANDED
+            else LedgerEvidence.NONE
+        }
     }
     if (domain == OperationKinds.CATALOG_DOMAIN) {
         val catalog = sessions
@@ -609,9 +659,10 @@ internal fun RemoteState.createWaitingSend(
         prerequisites = pendingUploads.map { OperationKinds.uploadPrerequisite(it.taskId) }.toSet() + configs.map { it.opId },
         payload = LedgerPayload.Send(runtimeId, sessionId, messageId), written = false, now = now)
     if (creation !is LedgerCreation.Created) return this to creation
-    val config = (configs.firstOrNull()?.payload as? LedgerPayload.Config)?.let { OperationKinds.configTitle(it.setting) }
+    val config = configs.firstNotNullOfOrNull { it.payload as? LedgerPayload.Config }?.let { OperationKinds.configTitle(it.setting) }
     val label = when {
         pendingUploads.isNotEmpty() -> "上传中：" + pendingUploads.joinToString("、") { it.displayName }
+        configs.any { it.payload is LedgerPayload.Launch } -> "等待会话启动"
         config != null -> "等待${config}切换"
         else -> "等待前一条发送"
     }
@@ -651,3 +702,57 @@ internal fun RemoteState.configStatus(runtimeId: String, setting: String): Pair<
     configSelections[OperationKinds.configTarget(runtimeId, setting)]?.let { it.second to "切换中" }
         ?: OperationKinds.configStatus(ledger, runtimeId, setting)
 
+
+/** ADR-0049 §6.8：正在启动的会话。启动期间聊天页用占位身份显示，草稿与消息先归属它，Session ID 确认后迁移。 */
+data class LaunchState(
+    val requestId: String,
+    val placeholder: String,
+    val target: Map<String, String>,
+    val title: String,
+    val cwd: String,
+    val agentKind: String?,
+    /** 恢复的已有会话；新建时为 null。启动期间聊天页、草稿与消息都用它（或占位身份）归属，保持稳定。 */
+    val resumed: String?,
+    /** Host 在 `session.activated` 中给出的 Session。 */
+    val sessionId: String? = resumed,
+    val failure: String? = null,
+    val unconfirmed: Boolean = false,
+    /** 用户仍停在这个启动页：成功后切到真实会话；离开后不再把用户拉回。 */
+    val following: Boolean = true,
+) {
+    val status: String get() = if (failure != null) "error" else if (unconfirmed) "launch_unconfirmed" else "starting"
+    /** 启动期间聊天页的占位 Runtime：草稿与消息归属它。 */
+    fun runtime() = RuntimeSummary(placeholder, title, cwd, status, resumed ?: placeholder, agentKind = agentKind)
+}
+
+/** 当前聊天页是不是启动中的会话。 */
+internal val RemoteState.launchPage: LaunchState? get() = launching?.takeIf { it.placeholder == selectedRuntimeId }
+
+/** `launch` 先记入账本（尚未写入），opId 即请求的 requestId；同时立即进入启动页。 */
+internal fun RemoteState.createLaunch(requestId: String, target: Map<String, String>, title: String, now: Long): Pair<RemoteState, LedgerCreation<LedgerPayload>> {
+    val placeholder = "launch:$requestId"
+    val (next, creation) = ledger.create(requestId, OperationKinds.LAUNCH, placeholder, policy = OperationKinds.launchPolicy,
+        basis = ledgerBasis(OperationKinds.RUNTIMES_DOMAIN), payload = LedgerPayload.Launch(requestId, placeholder), written = false, now = now)
+    if (creation !is LedgerCreation.Created) return this to creation
+    val resumed = target["sessionId"]?.takeIf { target["type"] == "resume" }
+    val launch = LaunchState(requestId, placeholder, target, title, target["cwd"] ?: resumed?.let { sessions[it]?.cwd }.orEmpty(),
+        target["agentKind"], resumed)
+    return copy(ledger = next, launching = launch, selectedRuntimeId = placeholder, selectedOfflineSessionId = null) to creation
+}
+
+/** 同一 requestId 的 session.activated：记下 Host 给出的 Session，占位 Session 下的消息转到真实会话。 */
+internal fun RemoteState.launchActivated(requestId: String, sessionId: String, now: Long): RemoteState {
+    val launch = launching?.takeIf { it.requestId == requestId } ?: return this
+    val provisional = launch.resumed ?: launch.placeholder
+    val rebound = pendingSends.mapValues { (_, send) -> if (send.sessionId == provisional) send.copy(sessionId = sessionId) else send }
+    return copy(launching = launch.copy(sessionId = sessionId), launchSessions = launchSessions + (provisional to sessionId), pendingSends = rebound)
+        .ledgerReceipt(requestId, LedgerReceipt.Succeeded, now)
+        .ledgerRuntimeList(read = null, complete = false)
+}
+
+/** 用户离开了启动页：启动继续，成功后不把用户拉回；失败或未确认的启动随之收起。 */
+internal fun RemoteState.stopFollowingLaunch(): RemoteState {
+    val launch = launching ?: return this
+    return copy(launching = if (launch.failure != null || launch.unconfirmed) null else launch.copy(following = false),
+        activatedSessionToOpen = null)
+}

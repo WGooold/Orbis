@@ -28,6 +28,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.add
@@ -576,7 +577,12 @@ internal class HostConnection(
     private fun activateTarget(target: JsonObject, spawnMode: String = "tui"): Boolean {
         restoreSettled = true
         val requestId = UUID.randomUUID().toString()
-        return sendSessionPayload(
+        // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”，草稿和消息先归属启动请求。
+        val fields = target.mapNotNull { (key, value) -> (value as? JsonPrimitive)?.contentOrNull?.let { key to it } }.toMap()
+        val resumed = fields["sessionId"]?.takeIf { fields["type"] == "resume" }
+        val title = resumed?.let { mutableState.value.sessionDisplayName(it) }
+            ?: fields["cwd"]?.trimEnd('/', '\\')?.substringAfterLast('/')?.substringAfterLast('\\')?.ifBlank { null } ?: "新会话"
+        val sent = sendSessionPayload(
             requestId = requestId,
             payload = buildJsonObject {
                 put("type", "session.activate")
@@ -595,12 +601,25 @@ internal class HostConnection(
                     target["sessionId"]?.jsonPrimitive?.contentOrNull?.let { id -> mapOf(requestId to id) } ?: emptyMap()
                 } else emptyMap(),
                 activatedSessionToOpen = null,
-            ) },
+            ).createLaunch(requestId, fields, title, System.currentTimeMillis()).first },
             rollback = { it.copy(
                 sessionActivateRequests = it.sessionActivateRequests - requestId,
                 sessionActivateTargets = it.sessionActivateTargets - requestId,
+                ledger = it.ledger.remove(requestId),
+                launching = it.launching?.takeIf { launch -> launch.requestId != requestId },
+                selectedRuntimeId = it.selectedRuntimeId.takeIf { id -> id != "launch:$requestId" },
             ) },
         )
+        if (sent) updateState { it.ledgerWritten(requestId, System.currentTimeMillis()) }
+        return sent
+    }
+
+    /** 启动失败或未确认后在聊天页原位重试：同一目标、新的请求（L6）。 */
+    fun retryLaunch() {
+        val launch = mutableState.value.launchPage ?: return
+        if (launch.failure == null && !launch.unconfirmed) return
+        updateState { it.copy(launching = null, sessionActivateRequests = it.sessionActivateRequests - launch.requestId) }
+        activateTarget(buildJsonObject { launch.target.forEach { (key, value) -> put(key, value) } })
     }
 
     fun loadAgentProviders(kind: String) {
@@ -786,6 +805,8 @@ internal class HostConnection(
         var conversation: RuntimeConversation? = null
         var graph: SessionGraph? = null
         var needsSessionRefresh = false
+        // ADR-0049 §6.8：离开启动页不取消启动，成功后也不把用户拉回。
+        if (runtimeId == null && mutableState.value.launchPage != null) updateState { it.stopFollowingLaunch() }
         updateState { latest ->
             val candidate = runtimeId?.let(latest.runtimes::get)
             val candidateConversation = runtimeId?.let(latest.conversations::get)
@@ -1152,15 +1173,20 @@ internal class HostConnection(
                 "本地 Session 读取失败：${error.message ?: "未知错误"}") } ?: started.state
         }
     }
+    /** 草稿归属的 Runtime：启动期间是占位 Runtime（ADR-0049 §6.8）。 */
+    private fun draftRuntime(runtimeId: String): RuntimeSummary? = mutableState.value.let { state ->
+        state.runtimes[runtimeId] ?: state.launching?.takeIf { it.placeholder == runtimeId }?.runtime()
+    }
+
     fun loadDraft(runtimeId: String): String {
         val pairedDevice = device ?: return ""
-        val runtime = mutableState.value.runtimes[runtimeId] ?: return ""
+        val runtime = draftRuntime(runtimeId) ?: return ""
         return draftStore.load(pairedDevice, runtime)
     }
 
     fun saveDraft(runtimeId: String, value: String) {
         val pairedDevice = device ?: return
-        val runtime = mutableState.value.runtimes[runtimeId] ?: return
+        val runtime = draftRuntime(runtimeId) ?: return
         draftStore.save(pairedDevice, runtime, value)
     }
 
@@ -1189,8 +1215,11 @@ internal class HostConnection(
         val uploads = uploadTaskIds.mapNotNull { state.uploads[it] }
         if (uploads.size != uploadTaskIds.size || uploads.any { it.status == "failed" || it.status == "cancelled" }) return null
         val pending = uploads.filter { it.status != "completed" || it.remotePath == null }
-        val sessionId = state.runtimes[runtimeId]?.sessionId
-        val configs = OperationKinds.activeConfigOps(state.ledger, runtimeId)
+        val launch = state.launchPage?.takeIf { it.failure == null }
+        val sessionId = state.runtimes[runtimeId]?.sessionId ?: launch?.let { it.resumed ?: it.placeholder }
+        // 启动中发送的消息等“会话启动”（ADR-0049 §6.8）。
+        val configs = OperationKinds.activeConfigOps(state.ledger, runtimeId) +
+            listOfNotNull(launch?.let { state.ledger.operation(it.requestId) }?.takeIf { !it.phase.isSettled })
         if (sessionId != null && (pending.isNotEmpty() || configs.isNotEmpty() || state.ledger.blocks(OperationKinds.sendGroup(sessionId)))) {
             return sendWhenReady(runtimeId, sessionId, trimmed, delivery, uploadTaskIds, pending, configs)
         }
@@ -1228,17 +1257,18 @@ internal class HostConnection(
             while (true) {
                 val state = mutableState.value
                 if (!state.e2eReady) return
-                val (op, send, paths) = state.readySends().firstNotNullOfOrNull { op ->
+                val (op, send, target) = state.readySends().firstNotNullOfOrNull { op ->
                     val payload = op.payload as LedgerPayload.Send
-                    val runtime = state.runtimes[payload.runtimeId]?.takeIf { it.sessionId == payload.sessionId } ?: return@firstNotNullOfOrNull null
+                    val session = state.launchSessions[payload.sessionId] ?: payload.sessionId
+                    val runtime = state.runtimes.values.firstOrNull { it.sessionId == session } ?: return@firstNotNullOfOrNull null
                     val send = state.pendingSends[payload.messageId] ?: return@firstNotNullOfOrNull null
                     val paths = send.uploadIds.mapNotNull { id -> state.uploads[id]?.takeIf { it.status == "completed" }?.remotePath }
-                    if (paths.size != send.uploadIds.size || runtime.runtimeId != payload.runtimeId) null else Triple(op, send, paths)
+                    if (paths.size != send.uploadIds.size) null else Triple(op, send, paths to runtime.runtimeId)
                 } ?: return
-                val payload = op.payload as LedgerPayload.Send
-                if (relay.sendUserMessage(payload.runtimeId, send.text, send.messageId, send.delivery, paths, op.opId) == null) return
+                val (paths, runtimeId) = target
+                if (relay.sendUserMessage(runtimeId, send.text, send.messageId, send.delivery, paths, op.opId) == null) return
                 draftStore.removeWaiting(send.messageId)
-                updateState { it.waitingWritten(op.opId, send.messageId, payload.runtimeId, paths, System.currentTimeMillis()) }
+                updateState { it.waitingWritten(op.opId, send.messageId, runtimeId, paths, System.currentTimeMillis()) }
             }
         } finally {
             flushingSends = false
@@ -2788,6 +2818,15 @@ internal class HostConnection(
             if (next !== current) mutableState.value = next
         }
         ledgerRead?.let(::sendLedgerVerify)
+        // ADR-0049 §6.8 / V17：启动成功后，启动页的草稿迁到真实会话。
+        mutableState.value.launchDraftMove?.let { (from, to) ->
+            device?.let { paired ->
+                val text = draftStore.load(paired, from)
+                if (text.isNotBlank() && draftStore.load(paired, to).isBlank()) draftStore.save(paired, to, text)
+                draftStore.save(paired, from, "")
+            }
+            updateState { it.copy(launchDraftMove = null) }
+        }
         if (mutableState.value.configSelections.isNotEmpty() && !resubmittingConfig) {
             resubmittingConfig = true
             try { resubmitConfigSelections() } finally { resubmittingConfig = false }
