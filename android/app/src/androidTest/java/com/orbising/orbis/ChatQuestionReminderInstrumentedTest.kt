@@ -75,7 +75,8 @@ class ChatQuestionReminderInstrumentedTest {
         reminder.performTouchInput { click() }
         compose.waitForIdle()
         reminder.assertDoesNotExist()
-        compose.onNodeWithText(question).assertIsDisplayed()
+        assertTrue("Tapping the reminder must bring the original source row into the viewport",
+            scroll.layoutInfo.visibleItemsInfo.any { it.key == "question" })
         compose.onNodeWithContentDescription("回到最新消息").assertIsDisplayed()
         capture("question-original-$dark")
         // The question can be offscreen below an older answer, too. It still names the latest question.
