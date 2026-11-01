@@ -63,7 +63,7 @@ describe("buildSpawnPlan", () => {
     });
     expect(plan.kind).toBe("headless");
     expect(plan.command).toBe("node");
-    expect(plan.args).toEqual(["/pi/cli.js", "--session", "D:/proj/.jsonl", "-e", EXT, "--mode", "rpc"]);
+    expect(plan.args).toEqual(["/pi/cli.js", "--session", "D:/proj/.jsonl", "--approve", "-e", EXT, "--mode", "rpc"]);
     expect(plan.cwd).toBe("D:/proj");
   });
 
@@ -78,7 +78,7 @@ describe("buildSpawnPlan", () => {
     });
     expect(plan.args).toContain("new-uuid");
     expect(plan.args).not.toContain("--name");
-    expect(plan.args).toEqual(["/pi/cli.js", "--session-id", "new-uuid", "-e", EXT, "--mode", "rpc"]);
+    expect(plan.args).toEqual(["/pi/cli.js", "--session-id", "new-uuid", "--approve", "-e", EXT, "--mode", "rpc"]);
   });
 
   it("auto + 桌面会话 → wt.exe 的 TUI，不带 --mode rpc", () => {
@@ -585,8 +585,8 @@ describe.runIf(process.platform === "darwin")("macOS phone activation", () => {
       expect(captured).toMatchObject({ cwd: realCwd, pid: record.pid, stateDir, legacyStateDir: stateDir, configDir, path: "/usr/bin:/bin" });
       expect(captured.hostOnly).toBeUndefined();
       expect(captured.args).toEqual(type === "new"
-        ? ["--session-id", record.sessionId, "-e", extension]
-        : ["--session", target.type === "resume" ? target.sessionFile : "", "-e", extension]);
+        ? ["--session-id", record.sessionId, "--approve", "-e", extension]
+        : ["--session", target.type === "resume" ? target.sessionFile : "", "--approve", "-e", extension]);
     });
     expect(spawner.running).toHaveLength(1);
     if (type === "resume") {

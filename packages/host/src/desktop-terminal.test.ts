@@ -21,6 +21,7 @@ describe("desktop terminal shortcuts", () => {
   beforeEach(async () => {
     workspace = await mkdtemp(join(tmpdir(), "orbis 工作区's "));
     vi.clearAllMocks();
+    vi.stubGlobal("process", { ...process, platform: "win32" });
     terminal.pi.mockResolvedValue({ command: "C:\\Orbis Tools\\node.exe", prefixArgs: ["C:\\My Projects\\pi.js"] });
     terminal.codex.mockResolvedValue({ command: "C:\\Orbis Tools\\node.exe", prefixArgs: ["C:\\User's tools\\codex.js"] });
     terminal.spawn.mockImplementation(() => {
@@ -30,7 +31,7 @@ describe("desktop terminal shortcuts", () => {
     });
   });
 
-  afterEach(async () => { await rm(workspace, { recursive: true, force: true }); });
+  afterEach(async () => { vi.unstubAllGlobals(); await rm(workspace, { recursive: true, force: true }); });
 
   function invocation(): { script: string; launcher: string; options: Record<string, unknown> } {
     const [program, args, options] = terminal.spawn.mock.calls[0] as [string, string[], Record<string, unknown>];
@@ -55,9 +56,10 @@ describe("desktop terminal shortcuts", () => {
       terminal.spawn.mockClear();
       await runtime.openAgent(kind, "tui", workspace);
       const { script, launcher, options } = invocation();
-      if (kind === "codex") expect(script).toBe("& 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js'");
+      if (kind === "codex") expect(script).toBe("& 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js' '-c' "
+        + `'${(`projects.${JSON.stringify(workspace)}.trust_level="trusted"`).replaceAll("'", "''")}'`);
       else {
-        expect(script).toContain("'C:\\My Projects\\pi.js' '-e'");
+        expect(script).toContain("'C:\\My Projects\\pi.js' '--approve' '-e'");
         expect(script.replaceAll("\\", "/")).toContain("/pi-extension/dist/index.js'");
       }
       expect(launcher).toContain("Start-Process -FilePath 'powershell.exe'");

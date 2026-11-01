@@ -164,7 +164,7 @@ export type ClaudeModsBridgeOptions = {
 export class ClaudeModsBridge {
   readonly #options: ClaudeModsBridgeOptions;
   readonly #sessions = new Map<string, Session>();
-  readonly #launches = new Map<string, { resolve: (runtime: RuntimeMetadata) => void; timer: ReturnType<typeof setTimeout> }>();
+  readonly #launches = new Map<string, { resolve: (runtime: RuntimeMetadata | undefined) => void; timer: ReturnType<typeof setTimeout> }>();
   #toolStore: ToolContentStore | undefined;
   readonly #processControl: ClaudeProcessControl;
 
@@ -203,6 +203,11 @@ export class ClaudeModsBridge {
   }
 
   /** Resolves with the runtime of the TUI that reports `launchId`, or undefined on timeout. */
+  cancelLaunch(launchId: string): void {
+    const pending = this.#launches.get(launchId);
+    if (pending) { clearTimeout(pending.timer); this.#launches.delete(launchId); pending.resolve(undefined); }
+  }
+
   waitForLaunch(launchId: string, timeoutMs: number): Promise<RuntimeMetadata | undefined> {
     return new Promise(resolve => {
       const timer = setTimeout(() => { this.#launches.delete(launchId); resolve(undefined); }, timeoutMs);
@@ -481,8 +486,7 @@ export class ClaudeModsBridge {
 
   close(): void {
     for (const [runtimeId, session] of this.#sessions) this.disconnect(runtimeId, session.generation, "host_shutdown");
-    for (const launch of this.#launches.values()) clearTimeout(launch.timer);
-    this.#launches.clear();
+    for (const launchId of [...this.#launches.keys()]) this.cancelLaunch(launchId);
   }
 
   /** Re-announces metadata and commands, e.g. after a device reconnects or syncs. */

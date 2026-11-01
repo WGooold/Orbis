@@ -24,6 +24,8 @@ import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
 import { updatePiIntegration } from "./pi-integration-install.js";
 import { findClaudeExecutable, updateClaudeIntegration } from "./claude-integration-install.js";
 import { TerminalClaudeLauncher } from "./claude-launcher.js";
+import { PI_WORKSPACE_APPROVAL_ARGS, codexWorkspaceApprovalArgs } from "./agent-startup.js";
+import { openMacAgentTerminal } from "./macos-agent-terminal.js";
 import { claudeConfigDir } from "./claude-transcript.js";
 import { adoptLoginShellEnvironment } from "./login-shell-env.js";
 import { agentInstallRoot } from "./agent-root.js";
@@ -930,7 +932,7 @@ export class DesktopRuntime {
     if (kind === "claude") {
       const workingDirectory = await terminalWorkspace(cwd);
       const launcher = new TerminalClaudeLauncher({ stateDir: this.#stateDir, configDir: claudeConfigDir(process.env.CLAUDE_CONFIG_DIR) });
-      await launcher.launch({ cwd: workingDirectory, launchId: randomUUID() });
+      await launcher.launch({ cwd: workingDirectory, launchId: randomUUID(), setup: mode === "setup" });
       return;
     }
     if (kind !== "pi" && kind !== "codex") throw new Error("未知 agent");
@@ -939,18 +941,11 @@ export class DesktopRuntime {
     const remote = kind === "codex" && mode === "tui" && this.#codexRuntime?.isReady()
       ? await this.#codexRuntime.prepareTerminalLaunch(workingDirectory) : undefined;
     const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-    const args = kind === "pi" ? [...cli.prefixArgs, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : remote ? [...remote.prefixArgs, "--remote", remote.endpoint] : cli.prefixArgs;
+    const args = kind === "pi" ? [...cli.prefixArgs, ...PI_WORKSPACE_APPROVAL_ARGS, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : remote ? [...remote.prefixArgs, "--remote", remote.endpoint] : [...cli.prefixArgs, ...codexWorkspaceApprovalArgs(workingDirectory)];
     const command = remote?.command ?? cli.command;
     if (process.platform === "darwin") {
-      // Pass shell text as an argument, never as interpolated AppleScript source.
-      const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
-      const shell = `cd -- ${shellQuote(workingDirectory)} && ${[command, ...args].map(shellQuote).join(" ")}`;
-      const appleScript = 'on run argv\ntell application "Terminal"\nactivate\ndo script (item 1 of argv)\nend tell\nend run';
-      const child = spawn("osascript", ["-e", appleScript, "--", shell], { stdio: "ignore", cwd: workingDirectory, timeout: 15_000 });
-      await new Promise<void>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开 macOS 终端，请检查自动化权限")));
-      });
+      await openMacAgentTerminal({ stateDir: this.#stateDir, cwd: workingDirectory, command, args,
+        env: { ...process.env, ORBIS_STATE_DIR: this.#stateDir } });
       return;
     }
     const script = `& ${[command, ...args].map(quote).join(" ")}`;

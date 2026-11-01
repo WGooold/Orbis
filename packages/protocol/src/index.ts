@@ -1238,14 +1238,13 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
      * 而 `null` 是“不知道”，手机后者不对能力做限制。
      */
      agents: z.array(AgentKindSchema).nullable(),
-     /** Agent kinds that can be launched on demand. Unlike `agents`, this can include an offline desktop GUI. */
+     /** Agent kinds that Host can start or attach on a session request. Unlike `agents`, these need not be ready yet. */
      launchableAgents: z.array(AgentKindSchema).nullable().optional(),
      /**
       * Codex 桌面版 app-server 的接入状态（ADR-0022）。
       *
-      * `null` = 这台 Host 没有跑这条后端（未启用 Codex、非 Windows，或客户端与 Host
-      * 版本不一致）；`launchableAgents` 只说明桌面版装没装，说不清「装了但没打开」
-      * 与「打开了但接入失败」——那是这张状态卡唯一要回答的问题，所以必须由 Host 下发。
+      * `null` = Host 或客户端尚不能报告这条后端状态（例如版本不一致）。`launchableAgents`
+      * 说明 Host 能否按需启动 / 接入；本分档继续区分未安装、未打开和打开但接入失败。
       */
      codexDesktop: CodexDesktopAttachSchema.nullable().optional(),
   }),

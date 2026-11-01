@@ -5,7 +5,8 @@ export * from "./tool-content-capture.js";
 export * from "./tool-read-wait.js";
 export * from "./tool-activity-producer.js";
 import {
-  NotificationSource,
+  NotificationSource, messageInputDecision, RuntimeInputUnconfirmedError,
+  type RuntimeInputState,
   type InteractionResponse,
   type RuntimeCommand,
   type RuntimeCapabilities,
@@ -74,6 +75,7 @@ export interface RuntimePort {
   syncSession?(request: RuntimeSessionSyncRequest): RuntimeSessionSync | Promise<RuntimeSessionSync>;
   sessionCatalog?(): SessionCatalogEntry[] | Promise<SessionCatalogEntry[]>;
   isIdle(): boolean;
+  inputState?(): RuntimeInputState;
   sendUserMessage(
     text: string,
     delivery?: "steer" | "followUp",
@@ -84,7 +86,7 @@ export interface RuntimePort {
   executeSlashCommand?(name: string, args: string): Promise<unknown>;
   recordSlashCommandCompletion?(completion: RuntimeSlashCommandCompletion): void;
   takeSlashCommandCompletions?(): RuntimeSlashCommandCompletion[];
-  abort(): void;
+  abort(): void | Promise<void>;
   capabilities?(): RuntimeCapabilities | Promise<RuntimeCapabilities>;
 }
 
@@ -392,13 +394,13 @@ export class RuntimeBridge {
   }
 
   async #handleCommand(commandId: string, runtimeId: string, command: RuntimeCommand): Promise<void> {
+    try {
     if (runtimeId !== this.#runtime.metadata().runtimeId) {
       this.#diagnostic?.("bridge.command.rejected", { commandId, runtimeId, commandType: command.type, reason: "runtime_mismatch" });
       this.#commandResult(commandId, false, "runtime_mismatch");
       return;
     }
 
-    try {
       if (command.type === "session.tool.content.cancel") {
         this.#toolReads.get(command.viewerId)?.abort();
         await this.#runtime.toolContents?.cancel(command.viewerId, command.readId); return;
@@ -616,7 +618,9 @@ export class RuntimeBridge {
         return;
       }
       if (command.type === "stop") {
-        this.#runtime.abort();
+        if (this.#runtime.isIdle()) { this.#commandResult(commandId, false, "没有可停止的回合", undefined, "not_cancelable"); return; }
+        const aborted = this.#runtime.abort();
+        if (aborted) { this.#commandResult(commandId, true, undefined, undefined, "pending"); await aborted; }
         this.#commandResult(commandId, true);
         return;
       }
@@ -638,7 +642,8 @@ export class RuntimeBridge {
       );
       this.#commandResult(commandId, accepted, accepted ? undefined : "interaction_not_available");
     } catch (error) {
-      this.#commandResult(commandId, false, error instanceof Error ? error.message : "command_failed");
+      this.#commandResult(commandId, false, error instanceof Error ? error.message : "command_failed", undefined,
+        error instanceof RuntimeInputUnconfirmedError ? "unconfirmed" : "failure");
     }
   }
 
@@ -662,13 +667,13 @@ export class RuntimeBridge {
       return result;
     }
 
-    const isIdle = this.#runtime.isIdle();
-    if (!isIdle && command.delivery === undefined) {
-      return { ok: false, error: "runtime_busy" };
-    }
-    // A stale mobile status can race with turn completion. Delivery modes only
-    // have queue semantics while Pi is actively running.
-    const delivery = isIdle ? undefined : command.delivery;
+    const state = this.#runtime.inputState?.() ?? { phase: this.#runtime.isIdle() ? "idle" as const : "running" as const,
+      compacting: this.#activity.compaction !== "unavailable" && this.#activity.compaction.phase === "running" };
+    const decision = messageInputDecision(state, command.delivery);
+    if (decision.action === "reject") return { ok: false, error: decision.error };
+    const delivery = decision.action === "queue" ? decision.delivery : undefined;
+    if (delivery !== undefined && [...this.#queuedMessages.values()].filter(item => item.state === "accepted" || item.state === "submitting").length >= 256)
+      return { ok: false, error: "queue_full" };
     const outgoing = command.text;
     const attachments = command.attachments;
     const queueId = command.messageId ?? randomUUID();

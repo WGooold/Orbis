@@ -4,7 +4,7 @@
 
 Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再跳转；保留排障入口；聊天 / 历史页内下载页滑入并返回原页；历史页加下载按钮；设置页去掉已配对电脑区。§8 回归门禁立即生效。2026-10-31 合入 main；r19 已补 Android Codex 真实输出捕获及两端 V21 目录用例定向验证；r21 按反馈修订 M15，使 Android 会话列表随下拉位移；r22 修复请求发出后指示器停在阈值的问题；r23 统一列表与旋转指示器的柔和回位曲线，L1 / L2 通过，API 35 设备由其他任务独占，L3 / L4 与手动门禁未运行。2026-11-01 新增设置页连接延迟显示（S23 / UI-07），两端单元 / 构建与设置专项通过，完整门禁未完成；证据见 `.artifacts/ui-regression/20261101-settings-latency/summary.md`。当前 iOS 全量、iOS / Claude 真实输出和手动门禁未完成，进度见 [UI r15 ticket](../agents/ui-r15-tickets.md)）
 
-关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)（基线 `2026-11-01/r25`）、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0048](0048-online-chat-entry-budget.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0050](0050-fixed-lan-relay-routing.md)；回归方案见 [移动端 UI 回归方案](../testing/ui-regression.md)。
+关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)（基线 `2026-11-01/r26`）、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0048](0048-online-chat-entry-budget.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0050](0050-fixed-lan-relay-routing.md)；回归方案见 [移动端 UI 回归方案](../testing/ui-regression.md)。
 
 ## Context
 

@@ -26,6 +26,8 @@ function harness() {
     });
     if (method === "thread/turns/list") return listTurns();
     if (method === "turn/start") return Promise.resolve({ turn: { id: "phone-turn" } });
+    if (method === "config/read") return Promise.resolve({ config: {} });
+    if (method === "config/batchWrite") return Promise.resolve({ status: "ok" });
     return Promise.resolve({ data: [] });
   });
   const server = { request, endpoint: "ws://127.0.0.1:9931", codexCommand: { command: "node.exe", prefixArgs: ["codex.js"] } } as unknown as CodexAppServer;
@@ -51,6 +53,16 @@ const user = (id: string, text: string) => ({ id, type: "userMessage", content: 
 const assistant = (id: string, text: string) => ({ id, type: "agentMessage", text });
 
 describe("terminal Codex session synchronization", () => {
+  it("rejects startup before creating a thread when native project authorization fails", async () => {
+    const h = harness();
+    h.request.mockImplementation((method: string) => method === "config/read" ? Promise.resolve({ config: {} })
+      : method === "config/batchWrite" ? Promise.resolve({ status: "okOverridden" }) : Promise.resolve({ data: [] }));
+    await expect(h.runtime.activate({ type: "new", cwd: h.snapshot.cwd })).rejects.toThrow("项目授权未生效");
+    expect(h.request.mock.calls.some(([method]) => method === "thread/start")).toBe(false);
+    expect(h.runtime.directoryEntries()).toEqual([]);
+    await expect(h.runtime.prepareTerminalLaunch(h.snapshot.cwd)).rejects.toThrow("项目授权未生效");
+  });
+
   it("accepts an empty subscribed terminal when turns/list rejects it before the first message", async () => {
     const h = harness();
     h.listTurns.mockRejectedValueOnce(new Error(

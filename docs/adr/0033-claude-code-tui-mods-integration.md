@@ -124,7 +124,7 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 依据目标构建（v2.1.312）加载插件后生成的类型声明，补齐 Pi/DSH 已有而 Claude 缺少的能力；每项只用公开接口，做不到的明确标为不可用。
 
 - **会话目录与归档**：Host 扫描 `<config>/projects/<project>/<sessionId>.jsonl`（子 Agent 记录在更深一层，不算会话），每个文件只读头 64 KiB、尾 32 KiB，取目录、首条用户消息与标题（`custom-title` 优先于 `ai-title`）；按大小与修改时间缓存。Claude 没有归档，Host 把已归档会话 ID 记在自己的 `claude-archive.json`，不移动、不改写记录；在线会话拒绝归档。
-- **从手机打开会话**：只能打开官方 TUI，不提供无界面执行（那等于 Agent SDK 后端，见“Alternatives not selected”）。macOS 用 Terminal.app 运行 Host 写入的一次性脚本，Windows 用 Windows Terminal，缺失时用控制台；其他系统报告不可用。脚本带 `ORBIS_CLAUDE_LAUNCH_ID`，插件在 hello 中回报，Host 据此确认打开的就是这个 TUI；60 秒未连上则如实报告（目录信任提示、版本）。用户未安装插件时只为这个 TUI 传 `--plugin-dir`，已安装时不传，避免同一进程跑两个 bridge。`launchableAgents` 只在能打开终端且找到 `claude` 时包含 Claude。
+- **从手机打开会话**：只能打开官方 TUI，不提供无界面执行（那等于 Agent SDK 后端，见“Alternatives not selected”）。macOS 用 Terminal.app 运行 Host 写入的一次性脚本，Windows 用 Windows Terminal，缺失时用控制台；其他系统报告不可用。脚本带 `ORBIS_CLAUDE_LAUNCH_ID`，插件在 hello 中回报，Host 据此确认打开的就是这个 TUI；60 秒未连上则如实报告（版本、策略或其他启动阻塞）；项目目录信任按 §14 在用户发起启动时处理。用户未安装插件时只为这个 TUI 传 `--plugin-dir`，已安装时不传，避免同一进程跑两个 bridge。`launchableAgents` 只在能打开终端且找到 `claude` 时包含 Claude。
 - **斜杠命令、模型、思考强度**：插件用 `$.command.list()` 上报命令；Host 隐藏会打开 TUI 面板、操作终端或账号、离开会话或计费的内置命令，其余（含技能与自定义命令）以可选参数提供给手机，经 `$.command.run` 执行，输出随回执返回。模型用 `/config` 的 `model` 行（`$.config.list()` 的选项、`$.config.set` 修改）；思考强度走 `/effort`。
 - **运行时元数据**：模型（`$.session.model()`，显示名取自 `/model` 的说明）、上下文用量（`$.session.usage()`）、思考强度（设置中的 `effortLevel`）、标题；权限模式读自记录里的 `permission-mode` 行，只读展示——`$.config` 的 `permissionMode` 是“新会话默认值”，不能改当前会话，Mods 也没有切换接口。
 - **工具卡片**：与 Pi/DSH 共用 ADR-0045 的工具摘要/库存/按需读取；正文从原生记录按 `tool_use_id` 读取。共享摘要函数补上 Claude 的 `Bash`、`file_path`、`Grep`/`Glob`。工具库存页必须带 `claude:<sessionId>` 作为 runtimeId（与会话 ID 不同）。
@@ -173,6 +173,20 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 - 结束清理在第一次 await 前捕获本轮消息身份，仅撤下该集合；已报告但磁盘迟到的步骤在 3 秒等待到期后继续保留 live，后续 refresh 再交接。重复 start 不清空缓存；旧 turn.complete 不结束新轮。UUID 预留确认丢失时重新握手核对，旧流式步骤仍绑定原 generation，不能向新 Host 补发。
 - Host 与插件必须配套更新；bridge 2 明确拒绝，不能把缺少身份事件的旧插件当成已修复。已打开的旧插件需要执行官方 `/reload-plugins`。本任务没有更新或重启用户正在运行的 Host / Claude。
 - 回归：`claude-transcript.test.ts`、`claude-mods-bridge.test.ts` 覆盖多 UUID、写入晚于边界、每帧无双份、跨轮清理、迟到 chunk / finish、重复 start 与旧 complete、超过等待期仍保留已声明步骤；官方插件测试覆盖主 / 子步骤隔离、下一请求和主回合结束的顺序。两端设备及手动验证、实际计数与限制见 `.artifacts/ui-regression/20261031-claude-output-identity/summary.md`；R18 对应真实联动检查，不把模拟通过扩大为设备验收。
+
+### 14. 从 App 启动时登记所选项目的信任（2026-11-01）
+
+- 用户要求从 App 拉起 Claude 后直接连接 Host，不再回电脑确认目录。两个真实 TUI 均停在 workspace trust 对话框，尚未执行插件 `session.start`；Host loopback 正常监听。将用户明确选择工作区并启动会话视为本次项目的授权，在启动 TUI 前登记目录级信任；不在目录扫描、安装插件或后台发现阶段授权。
+- 采用官方 [Permissions / workspace trust](https://code.claude.com/docs/en/permissions.md#what-runs-before-you-trust-a-folder) 公开的 `projects["<path>"].hasTrustDialogAccepted=true`；默认文件为 `~/.claude.json`，显式 `CLAUDE_CONFIG_DIR` 下为该目录的 `.claude.json`，位置依据 [Claude directory](https://code.claude.com/docs/en/claude-directory.md)。这是项目内容信任，不修改工具权限模式、工具 allowlist、MCP 审批或 Mods 策略，不传 `--dangerously-skip-permissions`，不模拟按键。
+- 路径先 realpath；仓库子目录使用 Git 根，linked worktree 使用主 checkout，嵌套仓库保留独立身份；清理继承的 `GIT_*`，Git 解析失败时停止启动。非仓库使用所选目录，不持久授权主目录或磁盘根目录。自定义配置目录同时传入一次性脚本，避免记录和 TUI 实际读取的配置不一致。
+- 只合并目标项目的信任字段，保留未知字段、账号、MCP 与其他项目；已信任时不重写。Orbis 并发写入串行化，原子替换前复读检测原生进程修改并有限重试；损坏 JSON、错误结构或占用时报错且不开终端。此检测不宣称对不遵循 Orbis 锁的外部写入提供跨进程 CAS。现有配置符号链接保留。
+- 关联 ADR-0051 V12、V17–V18：信任记录和终端启动均不冒充连接成功，仍等待真实 hello 才完成 App 的会话操作。未改手机画面、动画或状态投影。
+- 验证：Host 六个相关测试文件 57 项通过，修改文件 strict TypeScript 与 ESLint 通过。Claude Code 2.1.316 + 已安装 Host / 插件 0.1.3 的真实 Terminal.app 启动进入原生 composer；`6418ae26-073b-4296-8109-9fefe5bd7c0e` 经 Host 返回 `stale_generation` 确认已登记（故意提供无效代次，不消费命令或延长租约）。修改后的启动器另在新建嵌套 Git 仓库中真实开窗，直接进入 composer，测试会话 `aca5bc3f-f271-40dc-8eb5-6290478a772a` 同样经 Host 确认登记；测试会话随后结束。只使用这些结果验证项目授权与连接，不据此声称 bridge 3 输出身份已交付。
+- 证据：`.artifacts/ui-regression/20261101-claude-workspace-trust/`。Windows 真终端、双端 App L1–L4 / C01–C18 / A1–A4 尚未执行；未替换或重启当前 Host，通用启动器修改尚需随 Host 包交付。
+
+### 15. 跨 Agent 启动准备扩展（2026-11-01）
+
+[ADR-0056](0056-agent-startup-readiness-and-consent.md) 承接 §14，并扩展到 Pi / Codex / DeepSeek。Claude 增加具名项目 MCP 的本次临时授权（明确拒绝不覆盖）、登录状态预检、已识别插件 / 管理策略阻塞、启动失败取消等待及私有 settings 文件清理。目录信任函数本身仍只写 `hasTrustDialogAccepted`，不改变工具权限；MCP 的范围扩展由独立启动设置负责。桌面 setup 保留原生登录入口，手机账号授权 / OAuth / onboarding 的完整交互尚未实现。测试映射为 R29（目录信任；早期误用 R19）和 R30（跨 Agent）；实现文件、原生证据和未完成平台见 ADR-0056，不将源码完成写成安装包交付。
 
 ## Alternatives not selected
 

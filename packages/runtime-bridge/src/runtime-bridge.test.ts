@@ -795,4 +795,29 @@ describe("RuntimeBridge", () => {
       error: "interaction_not_available",
     }]);
   });
+  it("queues an ordinary idle-compaction input, preserves attachments and exposes a later delivery failure", async () => {
+    const transport = new FakeTransport(); const sendUserMessage = vi.fn();
+    const bridge = new RuntimeBridge(makeRuntime({ isIdle: () => true, sendUserMessage }), transport);
+    await bridge.start();
+    bridge.publish({ type: "execution.activity", retry: "unavailable", compaction: { phase: "running" } });
+    transport.commandHandler?.("send", "runtime-a", { type: "user_message", text: "after compact", messageId: "phone", attachments: ["/tmp/input.png"] });
+    await vi.waitFor(() => expect(sendUserMessage).toHaveBeenCalledWith("after compact", "followUp", "phone", ["/tmp/input.png"]));
+    await vi.waitFor(() => expect(transport.events).toContainEqual(expect.objectContaining({ type: "message.queued", queueId: "phone", state: "accepted" })));
+    bridge.failQueued("phone", "native submit failed");
+    expect(transport.events).toContainEqual(expect.objectContaining({ type: "message.queued", queueId: "phone", state: "rejected", error: "native submit failed" }));
+    expect(transport.events.some(event => event.type === "message.queued" && event.queueId === "phone" && event.state === "delivered")).toBe(false);
+    bridge.close();
+  });
+
+  it("handles asynchronous abort errors and idle stop without an unanswered command", async () => {
+    const transport = new FakeTransport(); let idle = true;
+    const bridge = new RuntimeBridge(makeRuntime({ isIdle: () => idle, abort: () => Promise.reject(new Error("abort denied")) }), transport);
+    await bridge.start();
+    transport.commandHandler?.("idle-stop", "runtime-a", { type: "stop" });
+    expect(transport.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "idle-stop", status: "not_cancelable" }));
+    idle = false; transport.commandHandler?.("stop", "runtime-a", { type: "stop" });
+    await vi.waitFor(() => expect(transport.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "stop", ok: false, error: "abort denied" })));
+    bridge.close();
+  });
+
 });

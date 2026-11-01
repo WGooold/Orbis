@@ -14,6 +14,9 @@ export default tseslint.config(
       // 不忽略的话本地 lint 会长期挂着几十个只有本机才看得见的错误，等于把这道门禁作废。
       ".scratch/**",
       ".artifacts/**",
+      // Local worktrees and Claude CLI-generated declarations are not repository sources.
+      ".claude/worktrees/**",
+      "packages/claude-mod/.claude-plugin/types/**",
       // Claude Code compatibility spike contains generated upstream declarations.
       "spikes/**",
     ],

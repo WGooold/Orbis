@@ -52,8 +52,9 @@ describe("Codex Windows shim", () => {
   });
 
   it("keeps a runtime path with spaces quoted and forwards original arguments", () => {
-    const script = renderCodexShim("C:\\Program Files\\Orbis Host\\runtime");
-    expect(script).toContain('set "ORBIS_CODEX_RUNTIME=C:\\Program Files\\Orbis Host\\runtime"');
+    const runtime = join(tmpdir(), "Program Files", "Orbis Host", "runtime");
+    const script = renderCodexShim(runtime);
+    expect(script).toContain(`set "ORBIS_CODEX_RUNTIME=${runtime}"`);
     expect(script).toContain('"%ORBIS_CODEX_RUNTIME%\\packages\\host\\dist\\codex-shim.js" %*');
   });
 });

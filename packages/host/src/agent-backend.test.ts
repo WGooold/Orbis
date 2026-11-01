@@ -301,7 +301,7 @@ describe("ClaudeBackend directory, archive and phone-opened TUIs", () => {
     });
     await expect(backend.activate({ type: "new", cwd: repo })).resolves.toEqual({ sessionId: "fresh", spawnMode: "tui" });
     await expect(backend.activate({ type: "new", cwd: join(root, "missing") })).rejects.toMatchObject({ code: "cwd_missing" });
-    await expect(backend.activate({ type: "new", cwd: root })).rejects.toMatchObject({ code: "spawn_failed", message: expect.stringContaining("目录信任") });
+    await expect(backend.activate({ type: "new", cwd: root })).rejects.toMatchObject({ code: "spawn_failed", message: expect.stringContaining("登录状态、Orbis 插件加载或管理策略") });
   });
 
   it("routes slash commands the TUI listed and passes attachments as paths", async () => {
