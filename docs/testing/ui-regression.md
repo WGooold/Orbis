@@ -1,6 +1,6 @@
 # 移动端 UI 回归方案
 
-日期：2026-11-01。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-01/r30`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-01。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-01/r31`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 10 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -157,7 +157,7 @@ Claude 输出交接回归（V09、V17–V18）：Host `claude-transcript.test.ts
 
 所有状态输入契约（[ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md)，V05、V09–V10、V12、V16–V18）：AIN-01–AIN-07 覆盖协议全集、状态准入、命令回执、各适配器与双端 outbox、专用服务。`runtime-command-lifecycle.test.ts`、`runtime-input-policy.test.ts` 及 Codex / Pi bridge / Claude / DSH 和两端 PendingSend 测试已补充；iOS 新增 `testUnconfirmedSendCanBeCheckedWithoutResending`、`testCompactionQueuedSendCanBeWithdrawn`，Store 单测覆盖 Slash 草稿在拒绝 / 未确认后保留、成功后清理；Android `OptimisticActionsInstrumentedTest`（3 项）验证排队撤回、未确认核对及不提供自动重发。实现与门禁结果分开记录，未完成全量前不记为通过。
 
-用户操作的乐观显示（[ADR-0049 §5–§7](../adr/0049-optimistic-send-and-source-reconciliation.md#5-操作分级只按体验判断2026-11-01取代原-5)，V07、V10–V12、V22；r27 待实施）：
+用户操作的乐观显示（[ADR-0049 §5–§7](../adr/0049-optimistic-send-and-source-reconciliation.md#5-操作分级只按体验判断2026-11-01取代原-5)，V07、V10–V12、V22；r27 已实施、验证中）：
 - 两端单元：扩展 `PendingSendTests` / `PendingSendsTest`，覆盖 `waiting` 的三种前置操作、同会话顺序、失败连带和草稿副本恢复，以及 prompt / skill Slash 的 App id 落地。另新增两端同构的乐观操作状态机测试，覆盖撤回、归档、回答、通知、模型切换和会话启动的落地、拒绝、60 秒无回执、断线、失效和同对象冲突。
 - Host / 协议：覆盖 `slash.execute` 的 App id，以及各后端为 Slash 产生的用户消息声明 `clientMessageId`。
 - 设备：扩展 iOS `testOptimisticSendReconcilesAndRejectedSendRestores`、`testQueueCancellationNotificationsAndRuntimeFacts`、`testApprovalOverlayKeepsComposerStableWhileSubmitting`、`testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions`，以及 Android `OptimisticActionsInstrumentedTest`、`InteractionWorkspaceInstrumentedTest`、`SessionArchiveSelectionInstrumentedTest`、`NotificationsInstrumentedTest`。断言结果在回执前呈现，拒绝后回到原位置（≤ 1pt/dp），阅读锚点与视口不动，正文只出现一次。
@@ -169,6 +169,16 @@ Claude 输出交接回归（V09、V17–V18）：Host `claude-transcript.test.ts
 | --- | --- | --- | --- |
 | OPT-00 账本核心 | iOS `OperationLedgerTests`、Android `OperationLedgerTest`（各 22 项，含 5 组固定种子随机序列；断线规则变异检验两端均失败） | 无（纯逻辑） | 2026-11-01 通过 |
 | OPT-01 `quit`（V11 r27） | iOS `QuitLedgerTests`（13 项）、Android `QuitLedgerTest`（12 项，Android 无 `shutdown` 一项，见 ADR-0049 §7.7）；Android `PendingSendsTest` 的关闭用例改为账本语义，断线一项按 V11 r27 改为保持隐藏 | iOS `testSwipeCloseHidesBeforeConfirmationAndRestoresOnRejection`、`testHomeLongPressSelectsAndClosesOnlyCheckedSessions`、`testHomeShortSwipeReboundsAndLongSwipeClosesOnlyThatRuntime`、`testSwipeRightFromLeftSideOpensDirectory`；Android `OptimisticActionsInstrumentedTest`（2）、`HomeSwipeCloseInstrumentedTest`、`HomeSelectionInstrumentedTest` | 2026-11-01 单元、构建与定向设备通过；R27 关闭断线项未执行；全量门禁归 OPT-10 |
+| OPT-H1 Host 设备回执 | `host-service.test.ts`（归档 / 启动的 success、failure 与原因码） | 无 | 2026-11-01 通过 |
+| OPT-02 `dismiss`（V22） | iOS `DismissLedgerTests`、Android `DismissLedgerTest`（各 8 项） | iOS `testQueueCancellationNotificationsAndRuntimeFacts`（关闭通知部分）；Android `OptimisticPresentationInstrumentedTest#aDismissedNoticeLeavesAtOnceAndTheOtherStays` | 单元通过；设备见 OPT-10 记录 |
+| OPT-03 `archive`（V22） | iOS `ArchiveLedgerTests`、Android `ArchiveLedgerTest`（各 9 项） | iOS `testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions`；Android `SessionArchiveSelectionInstrumentedTest`、`OptimisticPresentationInstrumentedTest#archivingMovesTheCardToTheArchiveAtOnce` | 单元通过；设备见 OPT-10 记录 |
+| OPT-04 `queueCancel`（V22） | iOS `QueueCancelLedgerTests`、Android `QueueCancelLedgerTest`（各 10 项）；iOS `StoreTests` 队列撤回用例改为账本语义 | iOS `testQueueCancellationNotificationsAndRuntimeFacts`（撤回后退场且不闪回） | 单元通过；设备见 OPT-10 记录 |
+| OPT-05 `respond`（V07、V22） | iOS `RespondLedgerTests`、Android `RespondLedgerTest`（各 9 项）；iOS `StoreTests` 交互用例改为账本语义 | iOS `testApprovalOverlayKeepsComposerStableWhileSubmitting`（收起与原位摘要）、`testApprovalRejectionBringsThePanelBackInPlace`（预览夹具 `--preview-respond-reject`）、`testOptimisticStatesAcrossAppearances`（A1–A4）；Android `OptimisticPresentationInstrumentedTest#answeringCollapsesThePanelIntoAnInPlaceSummaryAndARejectionBringsItBack`、`InteractionWorkspaceInstrumentedTest` | 单元通过；设备见 OPT-10 记录 |
+| OPT-06 `waiting`（V10） | iOS `WaitingSendTests`、Android `WaitingSendTest`（各 6 项） | iOS `testModelSwitchShowsTheChoiceWithItsMarkWithoutMovingTheHeader`（切换中发送：气泡立即出现、清空输入、标明“等待模型切换”）、`testOptimisticSendReconcilesAndRejectedSendRestores`；Android `OptimisticActionsInstrumentedTest` | 单元通过；附件上传中发送的设备路径归手动 R27 |
+| OPT-07 `config`（V12、V05） | iOS `ConfigLedgerTests`、Android `ConfigLedgerTest`（各 7 项）；iOS `StoreTests` Slash 用例改为账本语义 | iOS `testModelSwitchShowsTheChoiceWithItsMarkWithoutMovingTheHeader`（预览夹具 `--preview-model-switch`；顶栏不位移、会话信息显示“（切换中）”）、`testRefreshKeepsHeaderTextAndTruncationStable`；Android `OptimisticPresentationInstrumentedTest#switchingShowsTheChosenModelWithItsMarkInTheSameSlot`、`ChatStatusLayoutInstrumentedTest` | 单元通过；设备见 OPT-10 记录 |
+| OPT-08 `launch`（V12、V10） | iOS `LaunchLedgerTests`、Android `LaunchLedgerTest`（各 6 项）；iOS `StoreTests` 启动用例改为立即进入 | iOS `testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace`（预览夹具 `--preview-launch-fail`：立即进入、标题为目标名称、“启动中”、失败原位、重试、返回）、`testOptimisticStatesAcrossAppearances`（A1–A4）、`testHomeDirectorySearchAndNewSession`；Android `OptimisticPresentationInstrumentedTest#aFailedLaunchOffersRetryAndBackInPlace` | 单元通过；设备见 OPT-10 记录 |
+| OPT-09 prompt / skill Slash（V10） | iOS `SlashMessageTests`、Android `SlashMessageTest`（各 4 项）；Host `codex-runtime.test.ts`（skill 声明 `clientUserMessageId`） | 无新增（判定与结算由单元覆盖） | 单元通过 |
+| OPT-10 全量门禁 | iOS SwiftPM 331 项、Android JVM 664 项通过；Debug / AndroidTest APK 与 iOS `build-for-testing` 通过 | iOS 池内 iPhone 17 `OrbisUITests` 全量 67 项：59 通过、8 失败，main `e4df87a` 同设备重跑这 8 项同样失败；其中审批与交互草稿两项为预览夹具问题，修正后通过。Android 池内 `Orbis_UI_Polish_35` 151 项：138 通过、5 失败、8 项需隔离 Host 跳过；归档多选一项断言旧行为，改写后通过，其余 4 项 main 同设备同样失败 | 自动 L1–L3 失败集合不超出同设备基线；A1–A4：Android 夜间 / 字体 1.5 / 关闭动画专项通过，iOS 外观矩阵（含 iPhone SE）；L4 已查看两端相关截图；C01–C18、R26 / R27 人工逐项未执行，不记为通过。证据 `.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-10/` |
 
 带 `assumeTrue(ValueAnimator.areAnimatorsEnabled())` 的设备用例（下载飞入、流式顺序）在系统关闭动画时跳过，A4 路径以手动检查为准。
 
@@ -273,9 +283,9 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | --- | --- | --- | --- |
 | R25 | 两端分别连接隔离 Host，保留至少一张既有卡片，在 APP 新建 Codex 桌面版会话；回首页后再新建一条；下拉刷新；模拟一次模型读取失败后点胶囊重试；另以终端 Codex 作对照。全程保持 APP 和 E2E 连接，不重启；A1 / A2，A3 / A4 抽查 | 准备时保留旧完整卡片，identity / execution / interactions 齐备后一次发布新卡片并退出“正在同步”；正常新建不常驻“同步失败”；失败后的重试也能恢复，不依赖重新握手；桌面公共 ID 不进入 adapter 原生 thread 查找，无半成品卡片与位置跳变 | S18、V16–V18 |
 
-### 4.11 用户操作乐观显示专项（ADR-0049 §5–§7，r27 待实施）
+### 4.11 用户操作乐观显示专项（ADR-0049 §5–§7，r27 已实施、验证中）
 
-实施前不执行，也不能作为现有行为的回归依据。拒绝、无回执和断线使用预览注入或隔离 Host，不连接生产 Host。
+2026-11-01 实施完成（OPT-00–OPT-09、OPT-H1），R26 / R27 尚未逐项人工执行，不记为通过。拒绝、无回执和断线使用预览注入或隔离 Host，不连接生产 Host。
 
 | 编号 | 步骤 | 预期 | ID |
 | --- | --- | --- | --- |
@@ -333,6 +343,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 ## 6. 结果记录
 
 2026-11-01 最近提问提示（S24 / ADR-0057）：iOS 233 核心测试与 App / UI Test 构建、Android 568 JVM 测试和 APK 构建通过；Android 提醒专项 4 项通过，全量 146 项 4 失败均属于同设备基线 139 项 5 失败集合。iOS 新增定向用例发现刷新后锚点断言失败，完整设备 / 手动及 A1–A5 未完成，不记为验收通过。证据见 `.artifacts/ui-regression/20261101-question-reminder/summary.md`。
+
+2026-11-01 用户操作乐观显示（r31 / V07、V10–V12、V22，ADR-0049 OPT-00–OPT-10）：iOS SwiftPM 331 项、Android JVM 664 项、Host 相关用例与两端构建通过。iOS 池内 iPhone 17 全量 67 项 59 通过、8 失败，main `e4df87a` 同设备重跑 8 项同样失败；审批与交互草稿两项为预览夹具问题（`interactions` 领域被声明为空），修正夹具后通过，并新增审批拒绝、启动失败原位、模型切换中发送与 A1–A4 外观矩阵 4 项；截图审阅发现 iOS 启动页标题显示占位 id，已修正并加断言。Android 池内 `Orbis_UI_Polish_35`：151 项 138 通过、5 失败、8 项需隔离 Host 跳过；归档多选一项断言旧行为，改写后通过，其余 4 项（`CodexPermissions` 自由文本、`Dsh` 新建文案、`Questionnaire` 草稿、`SessionHostOwnership`）main 同设备同样失败；新增`OptimisticPresentationInstrumentedTest` 5 项通过。本机 adb 服务在运行中多次崩溃重启，改用私有端口与逐类 `am instrument`，输出中断的类按设备 logcat 的 `run finished` 核对后重跑。A1–A4：Android 夜间 / 字体 1.5 / 关闭动画下 `OptimisticPresentationInstrumentedTest` 各 5 项通过，设备设置用后恢复；iOS 外观矩阵在 iPhone 17 与 iPhone SE（375pt）运行。L4 已逐张查看相关截图，并用录屏抽帧核对启动失败原位。C01–C18、R26 / R27 人工逐项与真实 Host 未执行，不记为通过。证据：`.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-10/`。
 
 2026-11-01 App 按需启动 DeepSeek / Codex Desktop（r30 / S20、X03、V12、V16–V18）：Host / DesktopRuntime 61 项与生命周期 13 项通过，2 项 Windows 条件未运行；类型检查、lint、Android JVM 571 项 / 两包构建、Swift Core 237 项通过。iPhone 17 全量 67 项为 55 通过 / 12 失败；新增 DeepSeek 用例的原生辅助功能标签定位修正后，新建页整组 2 项通过，并覆盖明暗、XXXL、减少动画。110 张全量命名截图联系表与 5 张专项截图已查看，不能替代完整 L4 / 手动。Android 在两次设备尝试中分别发生 ADB 断开、ADB `libunwind` 崩溃，没有有效仪器结果。未重建父提交作受控基线；C01–C18、375pt、R32 真后端与 Windows 仍未验收。iOS 原开关机状态已恢复；Android 只进入浅色标准配置，所设值与保存原值相同，未进入深色 / 大字 / 减少动画。本轮设备进程已退出且租约已释放。R31 保留给最近提问提示，本专项使用 R32。证据、12 项完整失败和未跑清单见 `.artifacts/ui-regression/20261101-agent-on-demand/summary.md`，未部署。
 

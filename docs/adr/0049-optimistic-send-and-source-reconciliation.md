@@ -2,7 +2,7 @@
 
 日期：2026-10-30；2026-11-01 扩展范围（§5–§7）
 
-Status: accepted（§1–§4 的消息发送与首页关闭已实施，隔离模拟器回归通过，真机待复测；§5–§7 的范围扩展已决定：§7 账本核心与首页关闭迁移（OPT-00、OPT-01）已实现并通过单元与定向设备用例，其余种类待实施；UI 回归全量门禁完成前不记为交付）
+Status: accepted（§1–§4 的消息发送与首页关闭已实施，隔离模拟器回归通过，真机待复测；§5–§7 的范围扩展已决定：§7 账本与全部种类（OPT-00–OPT-09、OPT-H1）已实现，单元与两端设备全量通过（失败集合不超出同设备基线）；手动与 A1–A4 门禁未完成，不记为交付）
 
 关联：[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0028](0028-host-notification-lifecycle.md)、[ADR-0031](0031-host-permission-management.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0054](0054-shared-full-page-navigation.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)
 
@@ -199,9 +199,12 @@ Pi 的 live → entry 映射、Codex 的 `persistedEntryId` 等现有身份链�
 - `already_delivered`：不放回队列。在队列区就近提示“撤回未完成：消息已交给 Agent”，
   消息随权威记录出现在聊天中。
 - `not_cancelable` 或其他明确失败：队列项回到原位置并显示原因，可以再撤回。
+- 成功回执后队列项继续退场，直到 Host 队列体现结果（转为 `cancelled` 或不再列出）；15 秒仍未体现转结果不明核对，
+  避免回执先到、队列后到时闪回。
 - 断线或 60 秒无回执（§7）：队列项回到原位，标“撤回未确认”，核对前不能再次撤回。
-  重连后以 Host 队列为准：仍在队列则去掉标记、可再撤回；已在聊天中落地则按 `already_delivered` 提示；
-  其余情况保持“撤回未确认”并提供核对入口，不自动再次撤回。
+  重连后以 Host 队列为准：仍在队列则去掉标记、可再撤回；Host 队列报告已投递（`delivered`）时按 `already_delivered` 提示；
+  完整队列中已不再列出时以权威队列为准不再显示，消息若已投递会随权威记录出现在聊天中；不自动再次撤回。
+  （2026-11-01 实施修订：原文“其余情况保持撤回未确认并提供核对入口”在完整队列已不列出该项时没有可撤回的对象，改为以权威队列为准。）
 - 聊天中本地行对应的隐藏队列项（§3）撤回成功时，本地行直接删除（原规则）。
 
 #### 6.4 归档 / 取消归档
@@ -209,7 +212,8 @@ Pi 的 live → entry 映射、Codex 的 `persistedEntryId` 等现有身份链�
 - 请求写入后，卡片立即从当前列表退场，并出现在目标列表（归档区或正常列表）；
   多选批量相同，每张卡片单独核对。列表视口按 V21 保持。
 - Host 明确拒绝：卡片回到原列表的原位置，提示“归档未完成：原因”，批量时写明数量。
-- 成功回执后，以 `session.archive.changed` 或随后的目录读取确认；目录仍显示旧状态时，恢复并提示。
+- 成功回执（同一 requestId 的 `session.archive.changed` 或设备回执 `success`）后，卡片留在目标列表，直到目录体现目标值才结算，
+  避免目录刷新前闪回；15 秒仍未体现转结果不明核对，目录仍显示旧状态时恢复并提示。
 - 60 秒无回执：主动重新读取目录，按读取结果显示；结果出来前保持乐观位置。Android 现有的 30 秒超时改用此规则。
 - 断线：保持乐观位置，以重连后的首个权威目录核对。
 
@@ -338,11 +342,11 @@ Pi 的 live → entry 映射、Codex 的 `persistedEntryId` 等现有身份链�
 | --- | --- | --- | --- | --- | --- |
 | `send`（含 followUp / steer、prompt / skill Slash） | commandId / App id | 本地气泡；带 delivery 时为队列提交态 | 权威记录中有 App id 对应的消息（§2）；队列受理不算落地 | 回执失败；队列 `rejected` | 保持 `unconfirmed`，核对前不提供重发（§4、ADR-0055 P06 / P12） |
 | `quit` | commandId / runtimeId | 隐藏首页卡片 | 该 Runtime 不在新于 `basis` 的完整在线列表中，或收到 `runtime.offline` | 回执失败；成功后 15 秒仍在线 | 新连接的首个在线列表中仍在线 → `rejected`（“关闭会话未确认：会话仍在运行”） |
-| `archive` | requestId / sessionId | 卡片移到目标列表 | 新于 `basis` 的目录中归档状态等于目标值，或带同一 requestId 的 `session.archive.changed` | 带同一 requestId 的 `protocol.error` | 新连接的首个完整目录中仍为旧状态 → `rejected`（未确认） |
-| `queueCancel` | commandId / queueId | 隐藏队列项 | 回执或队列状态为 `cancelled` | `not_cancelable`；`already_delivered`（显示“已交给 Agent”）；其他失败 | 队列项仍在 → 恢复并标“撤回未确认”；消息已落地 → 按 `already_delivered` |
-| `respond` | commandId / 交互 requestId | 收起面板，原位显示摘要 | 回执成功，或新于 `basis` 的完整交互快照中该请求已不存在 | 回执失败且请求仍有效 | 请求仍在 → 恢复面板与答案；已不在 → 显示“已处理” |
+| `archive` | requestId / sessionId | 卡片移到目标列表 | 新于 `basis` 的目录中归档状态等于目标值（同一 requestId 的 `session.archive.changed` 或设备回执 `success` 只表示 Host 已完成，叠加保持到目录体现，15 秒未体现转结果不明） | 带同一 requestId 的 `protocol.error` 或设备回执失败 | 设备回执查不到且核对后目录仍为旧状态 → `rejected`（“归档未完成：电脑上的会话目录仍是原状态”） |
+| `queueCancel` | commandId / queueId | 隐藏队列项 | 队列状态为 `cancelled`；成功回执后队列不再列出该项 | `not_cancelable`；`already_delivered`（显示“已交给 Agent”，含 Host 队列报告 `delivered`）；其他失败 | 队列项仍在 → 静默恢复、可再撤回；完整队列已不列出 → 以权威队列为准不再显示 |
+| `respond` | commandId / 交互 requestId | 收起面板，原位显示摘要 | 交互清单中该请求已不存在（成功回执后显示摘要，否则显示“已处理”）；成功回执只表示受理，面板保持收起到请求移除，15 秒未移除转结果不明 | 回执失败且请求仍有效 | 请求仍在 → 恢复面板与答案；已不在 → 显示“已处理” |
 | `dismiss` | 无回执；身份为 notificationId + hostEpoch | 隐藏横幅 | `removedNotificationIds` 含该通知，或新于 `basis` 的本设备通知快照不含它 | 关闭之后发起的通知读取，其回复仍含它（L2） | 保持隐藏，以新连接的首份通知快照核对 |
-| `config`（模型、思考级别） | commandId / 设置名 | 所选值加“切换中” | model 域发布的确认值，新于 `basis`；与所选不同时显示确认值 | 回执失败 | 读取权威配置：与所选一致 → `landed`，否则 `rejected` |
+| `config`（模型、思考级别） | commandId / 设置名 | 所选值加“切换中” | model 域发布的确认值等于所选；成功回执后确认值不同（规范化 / 别名）也落地并显示确认值；15 秒未见转结果不明 | 回执失败 | 读取权威配置：与所选一致 → `landed`，否则 `rejected`（“未生效”） |
 | `launch`（新建 / 恢复） | requestId / 随后的 sessionId | 聊天页加“启动中” | 同一 requestId 的 `session.activated`，且该 Session 的 Runtime 上线 | 带同一 requestId 的错误 | 以随后的会话列表核对；仍无结果 → `unconfirmed`（“启动未确认”） |
 
 依赖关系：`send` 可以依赖 `config`、`launch` 或附件上传（§6.2 的 `waiting`）；前置被拒绝时，
@@ -361,31 +365,41 @@ Pi 的 live → entry 映射、Codex 的 `persistedEntryId` 等现有身份链�
 
 已知缺口。实施时补 Host；补齐前，对应种类只能靠读取权威状态核对：
 
-1. `session.archive`、`session.activate` 等 `DeviceE2ePayload` 请求没有写入 `DeviceView.operations`，
-   断线后只能靠目录或会话列表核对。应按 requestId 写入设备私有回执。
+1. ~~`session.archive`、`session.activate` 没有写入设备私有回执~~：OPT-H1 起 Host 按 requestId 写 accepted / success / failure（带原因码），
+   `runtimeId` 字段填 Host 身份（见 `AgentOperationItemSchema` 注释）。
 2. `device.ready` 的在线列表没有领域版本。账本把新连接的首个 `device.ready` 视为新于 `basis`；
    同一连接内只能依赖增量事件的顺序。
 3. ~~两端目前不读取设备作用域的 `operations` 领域~~：OPT-01 起两端在核对时一次性读取（`agent.state.request`，
    `scope: "device"`，`domains: ["operations"]`，不订阅）。读取失败也视为这次读取之后的回复：回执按查不到处理，
    仍以在线列表核对，不让操作停在结果不明。
-4. Host 写设备私有回执时把 `ok: true, status: "pending"` 的 `command.result` 记成 `success`
-   （`host-service.ts` 的 `settled` 映射），设备回执因此分不清“已受理”和“已成功”。`quit` 不受影响（成功也要等离线），
-   `send`（OPT-06）迁移前须在 OPT-H1 改为记 `pending`。
+4. ~~Host 把 `ok: true, status: "pending"` 记成设备回执 `success`~~：ADR-0055 的实现（main `74c4d01`）已改为记 `pending`，
+   并新增 `unconfirmed`；两端都把 `unconfirmed` / `cancelled` 视为结果不明。
 5. 在线列表没有读取请求。同一连接内核对 `quit` 时，以核对读取的回复为时点：同一有序通道上，回复到达时增量维护的在线列表
    已包含 Host 处理这次读取之前发出的全部上下线事件。LAN 与中继切换的瞬间可能乱序，结果只会是多一次
    “关闭会话未确认”提示（安全方向）：随后到达的离线事件仍会让卡片按权威列表消失。
+6. 通知快照没有请求身份，推送与关闭后读取的回复无法区分。`dismiss` 的反向证据只认关闭之后发起的核对读取（设备作用域
+   `operations`）的回复时刻：同一有序通道上，此时的通知清单已包含 Host 处理关闭之后发出的快照。核对读取只为本连接上
+   已刷新过的领域作证，不用上一条连接留下的旧清单下结论。
+7. Slash 产生的用户消息：协议 `slash.execute` 已有可选 `messageId`；Codex skill 已把它作为 `clientUserMessageId` 声明。
+   Claude 用户命令、DSH Web skill 与 Pi 暂不能声明，走 §4 的兼容兜底（成功受理且 idle 后删除本地行）。
 
 #### 7.7 与现有实现的关系
 
-- 现有的 `PendingSendOutbox` / `PendingSends.kt`、`closingRuntimes`、Android `sessionArchiveRequests`、
-  `pendingQueueCancellations`、`submittingInteractions` 和 `pendingActionIds` 都迁为账本中的种类；
-  迁移后删除各自的计时与断线代码。
+- `closingRuntimes`、Android `sessionArchiveRequests`、`pendingQueueCancellations`、`submittingInteractions`，以及模型 / 思考级别
+  原先经 `pendingActionIds` 的跟踪，都已迁为账本中的种类，并删除各自的计时与断线代码。
+- `send` 种类（2026-11-01 实施决定）：账本负责写入通道之前的 `waiting`（附件上传、配置切换、会话启动这三种前置，
+  以及同会话顺序）；写入通道后交给 ADR-0055 的 `PendingSendOutbox` / `PendingSends.kt` 结算（只按 Host 声明的身份、
+  断线转未确认、不自动重发、隐藏恢复副本）。两者在写入时交接：账本记录删除，outbox 行从 `waiting` 进入发送中。
+  不把 outbox 整体搬进账本，避免改动 ADR-0055 刚交付的对账语义。
 - ADR-0055 的本轮实现保留队列接管后的隐藏恢复副本、使用静态的“已排队 / 未确认”呈现，并去掉 pending 的
-  15 秒删除兜底；`send` 种类沿用这些语义。`send` 的迁移等 ADR-0055 的实施合入后再做，避免两边同时改 outbox。
+  15 秒删除兜底；写入通道后的 `send` 沿用这些语义（ADR-0055 已合入 main `74c4d01`，交接见上一条）。
 - 两端账本同构：类型、转移、不变量和测试用例一一对应。种类定义集中在 iOS `OperationKinds.swift`、Android `OperationKinds.kt`。
 - 平台差异：iOS 的 `HostConnection` 可以切换配对并有 `shutdown()`，两处都让账本全部失效（L7）；Android 的
   `HostConnection` 按配对创建、随配对销毁，账本随之消失，没有对应入口。Android 的 `device.ready` 可能先于握手确认到达，
   因此两端都在“加密通道可用”与“首个经认证的 `device.ready`”中先到的一个开启新的连接代次。
+- `launch` 的平台差异：iOS 恢复已有会话时，启动页沿用缓存会话的聊天页先显示缓存历史（V13）；Android 的缓存历史在独立的
+  离线历史页，启动页暂只显示“启动中”与空白正文，会话上线后再载入历史。两端的草稿、等待中的消息、失败原位提示与
+  “离开后不拉回”一致。Android 补齐缓存历史前，V13 的“恢复先显示缓存历史”在 Android 启动页不成立，记为待补。
 
 ## Verification
 
@@ -396,7 +410,7 @@ Pi 的 live → entry 映射、Codex 的 `persistedEntryId` 等现有身份链�
 - 相关核心测试、原生构建和隔离模拟器 UI 回归通过。不连接生产 Host，也不操作用户真机。
 - 当前工作区有其他未提交改动；只修改本决策涉及的代码。
 
-### 2026-11-01 扩展的验证（待实施）
+### 2026-11-01 扩展的验证（已实施，结果见文末 OPT-10）
 
 - **账本不变量测试**（两端用例一一对应）：L1–L11 各有专门用例；另用随机事件序列（回执乱序与重复、断线重连、
   旧版本快照、换电脑、期限到、前置失败）驱动账本，每一步断言：没有超过期限仍停在 `sent` / `accepted` 的操作；
@@ -430,7 +444,8 @@ Claude 只能通过 Host 自己提交的正文建立对应；正文被原生改�
 配置切换和会话启动之前。停止、权限和供应商等误判代价高的操作保持诚实的“处理中”。
 代价是：`slash.execute` 要携带 App id，各后端要为 Slash 产生的消息声明对应关系；两端要维护更多同构状态机；
 UI 回归要覆盖每个乐观操作的拒绝、无回执和断线路径。所有操作改走同一本账后，断线、期限、作用域和冲突只实现一次，
-新增操作只需定义种类；代价是现有的五套跟踪状态要迁移，`send` 的迁移须等 ADR-0055 的 outbox 改动合入。
+新增操作只需定义种类；代价是现有的五套跟踪状态要迁移。`send` 只把写入通道之前的等待放进账本，写入后仍由
+ADR-0055 的 outbox 结算（§7.7），因此发送存在一次交接，两端都要守住交接时的身份不变。
 
 ## 实施结果
 
@@ -552,3 +567,41 @@ ADR-0055 的本轮实现保留 Host 队列接管后的隐藏恢复副本，直�
   `HomeSelectionInstrumentedTest` 通过。证据：`.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-01/`。
 - **未完成**：手动 R27 的“关闭后断线再重连”一项未执行；UI 回归全量门禁（L1–L4、C01–C18、A1–A4）归 OPT-10；
   真实 Host 上的断线核对未验证。
+
+## 2026-11-01 其余种类实施（OPT-H1、OPT-02–OPT-10）
+
+分支 `feat/optimistic-actions`（基线 main `e4df87a`）。
+
+- **OPT-H1 Host 设备回执**：`session.archive` / `session.activate` 按 requestId 写设备私有回执（success / failure，
+  失败带 `agent_unsupported`、`session_not_found` 等原因码）；`host-service.test.ts` 覆盖成功与失败。
+- **OPT-02 `dismiss`**：关闭通知只在本设备隐藏，快照确认后结算；断线保持隐藏，新连接的首个快照核对（§7.6 缺口 6）。
+- **OPT-03 `archive`**：卡片立即移到目标列表；Host 回执成功后仍保持叠加到目录体现（`successLands = false`，15 秒后转核对），
+  避免目录刷新前闪回；批量归档逐张结算，拒绝在原列表原位恢复并合并为一条说明。
+- **OPT-04 `queueCancel`**：队列项立即退场；`already_delivered` 就近说明、消息随权威记录出现；`cancelled` 不再单独显示（§6.3 实施细化）；
+  运行时离线时按在线列表让撤回结束，不在每次重连时误判。
+- **OPT-05 `respond`**：面板立即收起，原位覆盖式摘要（自由文本 / 敏感输入只显示“已提交”），草稿保留到结算；拒绝恢复面板并说明；
+  请求已失效时显示事实。
+- **OPT-06 `waiting`**：附件上传中、模型 / 思考级别切换中、会话启动中发送，气泡立即出现并清空输入，状态行标明在等什么；
+  同会话按创建顺序写入；前置失败只影响依赖它的消息（可重试 / 放回 / 删除）；等待中的正文另存副本（V17）。写入后交给 outbox（§7.7）。
+- **OPT-07 `config`**：选择器与顶栏立即显示所选值并带“切换中”，Host 的模型领域发布确认值后去掉标记；失败回到确认值并连带等待中的消息。
+- **OPT-08 `launch`**：确认新建 / 恢复后立即进入聊天页显示“启动中”，可写草稿和发送等待消息；失败或未确认在原位提供“重试”“返回”；
+  用户离开后启动继续、成功不拉回；草稿和等待消息在上线后迁到真实会话。Android 启动页暂不显示缓存历史（§7.7）。
+- **OPT-09 Slash 消息**：`slash.execute` 带可选 `messageId`；Codex skill 把它声明为 `clientUserMessageId`，两端按消息乐观显示；
+  其他后端暂走 §4 兼容兜底（§7.6 缺口 7）。
+
+### 验证（OPT-10，2026-11-01）
+
+- 单元：iOS SwiftPM 331 项通过（含各种类 Ledger 测试）；Android JVM 664 项通过；Host `host-service`、`codex-runtime` 与 protocol 共 363 项通过，相关文件 lint 通过；全量 typecheck 仅有 main 既有的 `pi-extension` `inputState` 一处错误（本分支未改动这两个包）。
+- iOS 设备（池内 iPhone 17 `Orbis Layout Regression`，iOS 27.0，显式 UDID，`-parallel-testing-enabled NO`）：`OrbisUITests` 全量 67 项，
+  59 通过、8 失败。同设备在 main `e4df87a` 的构建上重跑这 8 项，全部同样失败，本分支未新增失败。其中
+  `testApprovalOverlayKeepsComposerStableWhileSubmitting`、`testToolExportAndInteractionDraftSwitching` 的失败原因是预览夹具：
+  夹具声明 `interactions` 领域为空，旧的 `interaction.requested` 事件被正确忽略。本分支改为把夹具请求放进该领域，并补充预览回执开关
+  （`--preview-respond-reject`、`--preview-launch-fail`、`--preview-model-switch`）及 4 项新用例（审批拒绝、启动立即进入与失败原位、模型切换中发送、A1–A4 外观矩阵）；结果见 UI 回归记录。
+- 人工截图审阅发现 iOS 启动页标题显示占位 id（`launch:…`）：合成的启动 Runtime 未带 `sessionName`，`sessionTitle` 退回到 sessionId。已修正为启动目标名称，并在 `LaunchLedgerTests` 与设备用例中断言。
+- Android 设备（池内 `Orbis_UI_Polish_35`，API 35，私有 adb 端口 + `am instrument` 逐类运行）：151 项，138 通过、5 失败、8 项因需隔离 Host
+  夹具跳过。`SessionArchiveSelectionInstrumentedTest#busyPendingAndDisconnectedSelectionsCannotBeArchived` 仍断言旧行为（归档未结算时
+  卡片留在原列表），已按 §6.4 改写为同等严格的新断言，重跑通过；其余 4 项在 main 构建上同设备同样失败。新增
+  `OptimisticPresentationInstrumentedTest` 5 项通过。
+- A1–A4：Android `OptimisticPresentationInstrumentedTest` 在夜间、字体 1.5、关闭动画下各 5 项通过（设备设置用后恢复）；iOS `testOptimisticStatesAcrossAppearances` 覆盖浅 / 深色、XXXL、减少动画，并在池内 iPhone SE（375pt）重跑。截图已逐张查看。
+- 未完成：手动 C01–C18、R26 / R27 的逐项人工操作与真实 Host 上的断线 / 回执核对未执行（本机隔离 Host 夹具仅有 Windows 脚本；本机没有可由代理操作的模拟器 GUI，人工路径以脚本化交互加截图 / 录屏逐帧审阅代替，不等同人工验收）。
+  不记为验收通过。证据：`.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-10/`。
