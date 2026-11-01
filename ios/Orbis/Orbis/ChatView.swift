@@ -513,17 +513,22 @@ struct ChatView: View {
             draft.wrappedValue = current.isEmpty ? text : draft.wrappedValue + "\n" + text
             composerFocused = true
         case .discard: store.discardPendingSend(messageId)
+        case .check: store.refresh()
+        case .cancel: _ = store.cancelQueuedMessage(messageId)
         }
     }
 
     private func submit(delivery: String? = nil) {
         guard canSubmit else { return }
         let accepted: Bool
-        if slash, let command { accepted = store.executeSlash(command.name, args: commandArguments(command)) }
+        if slash, let command { accepted = store.executeSlash(command.name, args: commandArguments(command), composerDraft: draft.wrappedValue) }
         else { accepted = store.sendMessage(draft.wrappedValue.isEmpty ? "请查看附件。" : draft.wrappedValue, delivery: delivery, attachmentIds: Set(attachments.map(\.id))) }
         if accepted {
             OrbisHaptics.commit()
-            transfers.detach(Set(attachments.map(\.id))); draft.wrappedValue = ""; selectedCommand = nil; deliveryChoices = false
+            if !slash {
+                transfers.detach(Set(attachments.map(\.id))); draft.wrappedValue = ""; selectedCommand = nil
+            }
+            deliveryChoices = false
         }
     }
 }
@@ -734,7 +739,7 @@ struct ChatMessageRow: View, Equatable {
     private var copyText: String { (row.copyMessages ?? row.messages).map(\.text).joined(separator: "\n\n") }
 }
 
-enum PendingSendAction { case resend, restore, discard }
+enum PendingSendAction { case resend, restore, discard, check, cancel }
 
 /// 用户气泡下方原本放复制 / 回退的位置，替换为发送状态与恢复操作，不在聊天里另起提示行。
 private struct PendingSendStatus: View {
@@ -750,9 +755,16 @@ private struct PendingSendStatus: View {
             case .sending, .accepted:
                 ProgressView().controlSize(.mini).frame(width: 26, height: 26)
                 Text("发送中").font(.orbisCaption()).foregroundStyle(palette.secondary)
+            case .queued:
+                Image(systemName: "clock").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 26, height: 26)
+                Text("已排队").font(.orbisCaption()).foregroundStyle(palette.secondary)
+                OrbisIconButton(symbol: "xmark", label: "撤回排队消息", size: 26) { onAction(.cancel) }
+                    .disabled(!canResend).accessibilityIdentifier("pending-cancel-" + rowId)
             case .unconfirmed:
-                ProgressView().controlSize(.mini).frame(width: 26, height: 26)
-                Text("正在核对是否送达").font(.orbisCaption()).foregroundStyle(palette.secondary)
+                Image(systemName: "questionmark.circle").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 26, height: 26)
+                Text("未确认是否送达").font(.orbisCaption()).foregroundStyle(palette.secondary)
+                OrbisIconButton(symbol: "arrow.clockwise", label: "核对送达状态", size: 26) { onAction(.check) }
+                    .accessibilityIdentifier("pending-check-" + rowId)
                 OrbisIconButton(symbol: "trash", label: "删除", size: 26) { onAction(.discard) }
                     .accessibilityIdentifier("pending-discard-" + rowId)
             case .failed(let reason):

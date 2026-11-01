@@ -2315,8 +2315,10 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         runtimeId: "dsh:dsh-thread", event: { sessionId: "dsh:dsh-thread", entries: [], syncId: "sync-dsh" },
       });
       sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "dsh:dsh-thread", commandId: "stop-dsh", command: { type: "stop" } });
-      await until(message => (message.event as { commandId?: string } | undefined)?.commandId === "stop-dsh");
-      expect(client.notify).toHaveBeenCalledWith("session/cancel", { sessionId: "dsh-thread" });
+      expect(await until(message => (message.event as { commandId?: string } | undefined)?.commandId === "stop-dsh")).toMatchObject({
+        event: { commandId: "stop-dsh", ok: false, status: "not_cancelable" },
+      });
+      expect(client.notify).not.toHaveBeenCalled();
     } finally { await runtime.stop(); }
   });
 
@@ -2561,7 +2563,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       commandId: "c1",
     });
 
-    // 认识的命令（stop）→ 不回错误；stop 在没有 turn 时是 no-op。
+    // ADR-0055: idle stop has a deterministic not_cancelable receipt.
     sendRequest(device, {
       type: "runtime.command",
       protocolVersion: PROTOCOL_VERSION,
@@ -2569,12 +2571,9 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       commandId: "c2",
       command: { type: "stop" },
     });
-    await expect(
-      Promise.race([
-        device.receiveMessage().then((message) => message.type),
-        new Promise((resolve) => setTimeout(() => resolve("silence"), 300)),
-      ]),
-    ).resolves.toBe("silence");
+    await expect(device.receiveMessage()).resolves.toMatchObject({
+      type: "runtime.event", event: { type: "command.result", commandId: "c2", ok: false, status: "not_cancelable" },
+    });
   });
 
   it("slash.execute：未声明的命令回 unsupported_command；已声明但无会话回 command.result 失败", async () => {
@@ -2623,6 +2622,17 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       type: "runtime.event",
       event: { type: "command.result", commandId: "c4", ok: false },
     });
+  });
+
+  it("rejects malformed and future inputs with their original command identity", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-invalid-input-"));
+    relay = await startRelayLocal(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start(); device = await readyDeviceLocal({ host, relay });
+    for (const [commandId, command] of [["future", { type: "future.input" }], ["invalid", { type: "user_message", text: "" }]] as const) {
+      sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "offline", commandId, command });
+      await expect(device.receiveMessage()).resolves.toMatchObject({ type: "protocol.error", code: "invalid_command", commandId });
+    }
   });
 
   it("session.list 合并 Codex 目录（catalog 失败时降级为纯 Pi 并不炸）", async () => {

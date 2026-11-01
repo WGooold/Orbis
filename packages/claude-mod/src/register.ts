@@ -22,6 +22,7 @@ const commands = new Map<string, CachedCommand>();
 let connection: Connection | undefined;
 let connecting: Promise<Connection | undefined> | undefined;
 let activeTurnId: string | undefined;
+const activeCompactions = new Set<symbol>();
 // Main-loop response rows belong to the native step until its next request or turn completion.
 // A step can append several UUIDs; neither text equality nor row order identifies a message.
 let activeStep: { turnId: string; stepIndex: number; uuids: string[]; target: Connection | undefined } | undefined;
@@ -77,15 +78,18 @@ export const register: Register = on => {
   });
 
   on("session.compact", async ($, event, next) => {
-    await emit($, { type: "compaction", phase: "running" });
+    const owner = Symbol("compaction");
+    activeCompactions.add(owner);
+    const target = connection ?? await connect($);
+    if (target) await postEvent($, target, { type: "compaction", phase: "running" });
     try {
       const result = await next(event);
-      await emit($, { type: "compaction", phase: "idle" });
+      if (target) await postEvent($, target, { type: "compaction", phase: "idle" });
       return result;
     } catch (error) {
-      await emit($, { type: "compaction", phase: "failed" });
+      if (target) await postEvent($, target, { type: "compaction", phase: "failed" });
       throw error;
-    }
+    } finally { activeCompactions.delete(owner); }
   });
 
   on("turn.start", async ($, event, next) => {
@@ -315,8 +319,14 @@ async function runCommand($: Api, target: Connection, commandId: string,
   // the next idle poll instead of starting an idle-waiting Mods call during
   // native execution. Reserve one submission at a time so
   // a batch cannot start several idle-waiting calls before turn.start arrives.
-  if (command.type === "user_message" && (activeTurnId !== undefined ||
-      [...commands.values()].some(item => item.state === "running" && item.commandType === "user_message"))) return;
+  if (command.type === "user_message" && (activeTurnId !== undefined || activeCompactions.size > 0 ||
+      [...commands.values()].some(item => item.state === "running" && item.commandType !== "stop"))) return;
+  if (command.type === "slash" && (activeTurnId !== undefined || activeCompactions.size > 0 ||
+      [...commands.values()].some(item => item.state === "running" && item.commandType !== "stop"))) {
+    await finishCommand($, target, commandId, { type: "command.result", commandId, ok: false,
+      status: "failure", error: "runtime_busy" });
+    return;
+  }
   commands.set(commandId, command.type === "stop" && activeTurnId !== undefined
     ? { state: "running", commandType: "stop", turnId: activeTurnId }
     : { state: "running", commandType: command.type === "slash" ? "slash" : "user_message" });
@@ -332,7 +342,7 @@ async function runCommand($: Api, target: Connection, commandId: string,
       });
     } catch (error) {
       await finishCommand($, target, commandId, { type: "command.result", commandId, ok: false,
-        status: "failure", error: errorText(error) });
+        status: "unconfirmed", error: errorText(error) });
     }
     return;
   }

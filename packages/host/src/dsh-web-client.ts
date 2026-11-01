@@ -62,6 +62,8 @@ export interface DshWebClientOptions {
   protocol?: DshWebProtocol;
 }
 
+export class DshWebUnconfirmedError extends Error {}
+
 export class DshWebRemoteError extends Error {
   constructor(readonly code: string, message: string, readonly details: JsonObject = {}) { super(message); this.name = "DshWebRemoteError"; }
 }
@@ -313,8 +315,8 @@ export class DshWebClient implements DshWebConnection {
       if (!parsed.result.ok) throw new DshWebRemoteError(parsed.result.error.code, safeMessage(parsed.result.error.message), parsed.result.error.details);
       return parsed.result.value as T;
     } catch (error) {
-      if (controller.signal.aborted) throw new Error(`DSH Web ${method} was interrupted or timed out; refresh before retrying a mutation`);
-      throw error;
+      if (error instanceof DshWebRemoteError) throw error;
+      throw new DshWebUnconfirmedError(controller.signal.aborted ? `DSH Web ${method} was interrupted or timed out; refresh before retrying a mutation` : error instanceof Error ? error.message : String(error));
     } finally { clearTimeout(timer); this.#requests.delete(controller); }
   }
 

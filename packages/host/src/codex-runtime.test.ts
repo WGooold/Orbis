@@ -12,7 +12,7 @@ import { SESSION_SYNC_PAGE_BYTES, type AgentExecutionState, type AgentSessionSum
 
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry } from "./agent-state-registry.js";
-import { CODEX_RUNTIME_ID, type CodexAppServer, type CodexServerRequest } from "./codex-daemon.js";
+import { CODEX_RUNTIME_ID, CodexRequestError, type CodexAppServer, type CodexServerRequest } from "./codex-daemon.js";
 import { CodexRuntime, codexHeadWindowLaunch } from "./codex-runtime.js";
 
 function makeHarness(options?: {
@@ -2397,7 +2397,8 @@ describe("CodexRuntime", () => {
     const endpoint = "ws://127.0.0.1:9996";
     const queue: Array<{ resolve: (v: unknown) => void }> = [];
     const server = {
-      request: (method: string) => method === "model/list"
+      request: (method: string) => method === "config/read" ? Promise.resolve({ config: {} })
+        : method === "config/batchWrite" ? Promise.resolve({ status: "ok" }) : method === "model/list"
         ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] })
         : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })),
       notify: vi.fn(),
@@ -2544,7 +2545,7 @@ describe("CodexRuntime", () => {
       "utf8",
     );
     const queue: Array<{ resolve: (v: unknown) => void }> = [];
-    const server = { request: (method: string) => method === "model/list" ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] }) : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })), notify: vi.fn(), endpoint: "ws://127.0.0.1:9999" } as unknown as CodexAppServer;
+    const server = { request: (method: string) => method === "config/read" ? Promise.resolve({ config: {} }) : method === "config/batchWrite" ? Promise.resolve({ status: "ok" }) : method === "model/list" ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] }) : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })), notify: vi.fn(), endpoint: "ws://127.0.0.1:9999" } as unknown as CodexAppServer;
     const opened: string[] = [];
     const runtime = new CodexRuntime({
       server,
@@ -2563,7 +2564,7 @@ describe("CodexRuntime", () => {
   it("新格式 thread（turns 带 items）正常开有头窗口", async () => {
     const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-openwin-"));
     const queue: Array<{ resolve: (v: unknown) => void }> = [];
-    const server = { request: (method: string) => method === "model/list" ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] }) : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })), notify: vi.fn(), endpoint: "ws://127.0.0.1:9998" } as unknown as CodexAppServer;
+    const server = { request: (method: string) => method === "config/read" ? Promise.resolve({ config: {} }) : method === "config/batchWrite" ? Promise.resolve({ status: "ok" }) : method === "model/list" ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] }) : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })), notify: vi.fn(), endpoint: "ws://127.0.0.1:9998" } as unknown as CodexAppServer;
     const opened: string[] = [];
     const runtime = new CodexRuntime({
       server,
@@ -2583,7 +2584,8 @@ describe("CodexRuntime", () => {
     const rolloutRoot = mkdtempSync(join(tmpdir(), "orbis-codex-closewin-"));
     const queue: Array<{ resolve: (v: unknown) => void }> = [];
     const unsubscribe = vi.fn(async () => ({}));
-    const server = { request: (method: string) => method === "model/list"
+    const server = { request: (method: string) => method === "config/read" ? Promise.resolve({ config: {} })
+      : method === "config/batchWrite" ? Promise.resolve({ status: "ok" }) : method === "model/list"
       ? Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] })
       : method === "thread/unsubscribe" ? unsubscribe() : method === "thread/turns/list" ? Promise.resolve({ data: [] }) : new Promise((res) => queue.push({ resolve: res })),
     notify: vi.fn(), endpoint: "ws://127.0.0.1:9997" } as unknown as CodexAppServer;
@@ -2652,11 +2654,11 @@ describe("CodexRuntime", () => {
         clientUserMessageId: "q1",
       }));
     });
-    expect(h.events).toContainEqual(expect.objectContaining({
-      type: "message.queued",
-      queueId: "q1",
-      state: "delivered",
-    }));
+    expect(h.events).not.toContainEqual(expect.objectContaining({ type: "message.queued", queueId: "q1", state: "delivered" }));
+    h.resolveNext({ turn: { id: "turn-2" } });
+    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({
+      type: "message.queued", queueId: "q1", state: "delivered",
+    })));
   });
 
   it("turn 进行中收到无 delivery 的消息：拒绝并回 command.result（runtime_busy）", async () => {
@@ -2844,6 +2846,8 @@ describe("CodexRuntime TUI 切换会话", () => {
     const nativeTurns = new Map<string, unknown[]>();
     const server = {
       request: (method: string, params?: { threadId?: string }): Promise<unknown> => {
+        if (method === "config/read") return Promise.resolve({ config: {} });
+        if (method === "config/batchWrite") return Promise.resolve({ status: "ok" });
         if (method === "model/list") {
           return Promise.resolve({ data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] });
         }
@@ -3099,6 +3103,166 @@ describe("Codex Host-owned turn capture boundary", () => {
     h.notify("item/completed", { threadId: "th-1", turnId: "turn-1", item: { type: "reasoning", id: "rs-2", summary: ["after"] } });
     h.notify("turn/completed", { threadId: "th-1", turn: { id: "turn-1", status: "completed" } });
     expect([...h.events].reverse().find(event => event.type === "turn.finished")).toMatchObject({ persistedMessageId: "final-answer" });
+    h.server.onExit?.(0);
+  });
+});
+
+
+describe("Codex all-state input lifecycle (AIN-04)", () => {
+  const queued = (h: ReturnType<typeof makeHarness>, id: string) => h.events.filter((event): event is Extract<RuntimeEvent, { type: "message.queued" }> => event.type === "message.queued" && event.queueId === id);
+  const startCalls = (h: ReturnType<typeof makeHarness>) => h.requests.mock.calls.filter(call => call[0] === "turn/start");
+  const compact = (h: ReturnType<typeof makeHarness>, withTurn = false) => {
+    if (withTurn) h.notify("turn/started", { threadId: "th-1", turn: { id: "compact-turn" } });
+    h.notify("item/started", { threadId: "th-1", turnId: "compact-turn", item: { id: "compact-item", type: "contextCompaction" } });
+  };
+  const completeCompact = (h: ReturnType<typeof makeHarness>) => h.notify("item/completed", {
+    threadId: "th-1", turnId: "compact-turn", item: { id: "compact-item", type: "contextCompaction" },
+  });
+
+  it.each([false, true])("defers standalone compaction input and preserves attachments (desktop=%s)", async desktop => {
+    const h = makeHarness({ desktop }); await activate(h); compact(h);
+    h.runtime.handleCommand({ type: "user_message", text: "with file", messageId: "phone", attachments: ["/tmp/input.png"] }, "send", "th-1");
+    expect(startCalls(h)).toHaveLength(0);
+    expect(queued(h, "phone").at(-1)).toMatchObject({ state: "accepted", delivery: "followUp" });
+    completeCompact(h);
+    await vi.waitFor(() => expect(startCalls(h)).toHaveLength(1));
+    expect(startCalls(h)[0]?.[1]).toMatchObject({ clientUserMessageId: "phone", input: [{ type: "text", text: "with file\n\n附件路径：\n/tmp/input.png" }] });
+    expect(queued(h, "phone").at(-1)?.state).toBe("accepted");
+    h.resolveNext({ turn: { id: "next" } });
+    await vi.waitFor(() => expect(queued(h, "phone").at(-1)?.state).toBe("delivered"));
+    h.server.onExit?.(0);
+  });
+
+  it.each(["idle-first", "compaction-first"])("drains without turn/completed, respecting both native conditions (%s)", async order => {
+    const h = makeHarness(); await activate(h); compact(h, true);
+    h.runtime.handleCommand({ type: "user_message", text: "later", messageId: "phone", delivery: "followUp" }, "send", "th-1");
+    const idle = () => h.notify("thread/status/changed", { threadId: "th-1", status: { type: "idle" } });
+    if (order === "idle-first") idle(); else completeCompact(h);
+    await Promise.resolve(); expect(startCalls(h)).toHaveLength(0);
+    if (order === "idle-first") completeCompact(h); else idle();
+    await vi.waitFor(() => expect(startCalls(h)).toHaveLength(1));
+    h.resolveNext({ turn: { id: "next" } }); h.server.onExit?.(0);
+  });
+
+  it("reserves one start through async capture and continues after a queued admission failure", async () => {
+    const h = makeHarness(); await activate(h);
+    let release!: () => void;
+    const before = vi.fn().mockRejectedValueOnce(new Error("capture failed")).mockImplementation(() => new Promise<void>(resolve => { release = resolve; }));
+    h.runtime.beforeFileChangeTurn = before;
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "active" } });
+    for (const id of ["one", "two", "three"]) h.runtime.handleCommand({ type: "user_message", text: id, messageId: id, delivery: "followUp" }, id, "th-1");
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "active", status: "completed" } });
+    await vi.waitFor(() => expect(before).toHaveBeenCalledTimes(2));
+    expect(queued(h, "one").at(-1)).toMatchObject({ state: "rejected", error: "capture failed" });
+    expect(startCalls(h)).toHaveLength(0);
+    expect(queued(h, "three").at(-1)?.state).toBe("accepted");
+    release(); await vi.waitFor(() => expect(startCalls(h)).toHaveLength(1));
+    h.resolveNext({ turn: { id: "two-turn" } });
+    await vi.waitFor(() => expect(queued(h, "two").at(-1)?.state).toBe("delivered"));
+    expect(before).toHaveBeenCalledTimes(2);
+    h.server.onExit?.(0);
+  });
+
+  it.each([false, true])("exposes native start failure/unknown and replays the queue outcome (unknown=%s)", async unknown => {
+    const h = makeHarness(); await activate(h); compact(h);
+    h.runtime.handleCommand({ type: "user_message", text: "later", messageId: "phone" }, "send", "th-1");
+    completeCompact(h); await vi.waitFor(() => expect(startCalls(h)).toHaveLength(1));
+    h.rejectNext(unknown ? new CodexRequestError("lost reply", "unconfirmed") : new Error("denied"));
+    await vi.waitFor(() => expect(queued(h, "phone").at(-1)?.state).toBe(unknown ? "unconfirmed" : "rejected"));
+    expect(queued(h, "phone").some(event => event.state === "delivered")).toBe(false);
+    if (unknown) {
+      await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalled());
+      h.resolveNext({ data: [{ id: "accepted", status: "completed", items: [{ id: "native-user", type: "userMessage", clientId: "phone", content: [{ type: "text", text: "later" }] }] }] });
+      await vi.waitFor(() => expect(queued(h, "phone").at(-1)?.state).toBe("delivered"));
+    }
+    h.runtime.handleCommand({ type: "session.sync", sessionId: "th-1", syncId: "recover", range: "preview" }, "sync", "th-1");
+    expect(h.events.filter(event => event.type === "delivery.snapshot").at(-1)?.items).toContainEqual(expect.objectContaining({ queueId: "phone", state: unknown ? "delivered" : "rejected" }));
+    expect(startCalls(h)).toHaveLength(1);
+    h.server.onExit?.(0);
+  });
+
+  it("uses positive native message evidence even when its turn/start reply is lost", async () => {
+    const h = makeHarness(); await activate(h);
+    h.runtime.beforeFileChangeTurn = vi.fn(async () => {});
+    const failed = vi.fn(async () => {}); h.runtime.fileChangeTurnFailed = failed;
+    h.runtime.handleCommand({ type: "user_message", text: "observed", messageId: "phone" }, "send", "th-1");
+    await vi.waitFor(() => expect(startCalls(h)).toHaveLength(1));
+    h.notify("item/started", { threadId: "th-1", turnId: "native-turn", item: { type: "userMessage", id: "native-user", clientId: "phone", content: [{ type: "text", text: "observed" }] } });
+    h.rejectNext(new CodexRequestError("lost reply", "unconfirmed"));
+    await vi.waitFor(() => expect(h.events.filter(event => event.type === "command.result" && event.commandId === "send").at(-1)).toMatchObject({ ok: true, status: "success" }));
+    expect(h.historyReads).not.toHaveBeenCalled();
+    expect(failed).not.toHaveBeenCalled();
+    h.runtime.handleCommand({ type: "user_message", text: "duplicate", messageId: "phone", delivery: "followUp" }, "duplicate", "th-1");
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "duplicate", status: "message_id_conflict" }));
+    h.server.onExit?.(0);
+  });
+
+  it("keeps stop pending until the same native turn confirms interruption and rejects idle stops", async () => {
+    const h = makeHarness(); await activate(h);
+    h.runtime.handleCommand({ type: "stop" }, "idle-stop", "th-1");
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "idle-stop", status: "not_cancelable" }));
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "active" } });
+    h.runtime.handleCommand({ type: "stop" }, "stop", "th-1");
+    h.resolveNext({}); await Promise.resolve();
+    expect(h.events.filter(event => event.type === "command.result" && event.commandId === "stop").at(-1)).toMatchObject({ status: "pending" });
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "active", status: "interrupted" } });
+    expect(h.events.filter(event => event.type === "command.result" && event.commandId === "stop").at(-1)).toMatchObject({ ok: true, status: "success" });
+    h.server.onExit?.(0);
+  });
+
+  it("targets all startup steers at one turn without interrupting the queued successor", async () => {
+    const h = makeHarness(); await activate(h);
+    h.runtime.handleCommand({ type: "user_message", text: "first", messageId: "first" }, "first", "th-1");
+    await vi.waitFor(() => expect(startCalls(h)).toHaveLength(1));
+    for (const id of ["steer-a", "steer-b"]) h.runtime.handleCommand({ type: "user_message", text: id, messageId: id, delivery: "steer" }, id, "th-1");
+    h.resolveNext({});
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "first-turn" } });
+    await vi.waitFor(() => expect(h.requests.mock.calls.filter(call => call[0] === "turn/interrupt")).toHaveLength(1));
+    h.resolveNext({});
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "first-turn", status: "interrupted" } });
+    await vi.waitFor(() => expect(startCalls(h)).toHaveLength(2));
+    h.resolveNext({});
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "next-turn" } });
+    await Promise.resolve();
+    expect(h.requests.mock.calls.filter(call => call[0] === "turn/interrupt")).toHaveLength(1);
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "first-turn", status: "interrupted" } });
+    await Promise.resolve();
+    expect(startCalls(h)).toHaveLength(2);
+    h.server.onExit?.(0);
+  });
+
+  it("queues steer behind an already requested stop without interrupting the same turn twice", async () => {
+    const h = makeHarness(); await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "active" } });
+    h.runtime.handleCommand({ type: "stop" }, "stop", "th-1");
+    h.runtime.handleCommand({ type: "user_message", text: "next", messageId: "next", delivery: "steer" }, "next", "th-1");
+    expect(h.requests.mock.calls.filter(call => call[0] === "turn/interrupt")).toHaveLength(1);
+    h.resolveNext({});
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "active", status: "interrupted" } });
+    await vi.waitFor(() => expect(startCalls(h)).toHaveLength(1));
+    h.resolveNext({});
+    h.server.onExit?.(0);
+  });
+
+  it("rejects configuration writes during compaction, keeps queries available, and allows cancellation", async () => {
+    const h = makeHarness(); await activate(h); compact(h);
+    for (const name of ["model", "thinking", "compact", "fork"]) h.runtime.handleCommand({ type: "slash.execute", name, args: "next" }, name, "th-1");
+    for (const name of ["model", "thinking", "compact", "fork"]) expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: name, ok: false, error: "runtime_busy" }));
+    h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "" }, "query", "th-1");
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "query", ok: true }));
+    h.runtime.handleCommand({ type: "user_message", text: "cancel me", messageId: "phone" }, "send", "th-1");
+    h.runtime.handleCommand({ type: "user_message.cancel", messageId: "phone" }, "cancel", "th-1");
+    completeCompact(h); await Promise.resolve();
+    expect(startCalls(h)).toHaveLength(0);
+    expect(queued(h, "phone").at(-1)?.state).toBe("cancelled");
+    h.server.onExit?.(0);
+  });
+
+  it("does not declare a failed quit successful or detach the only route to the session", async () => {
+    const h = makeHarness(); await activate(h);
+    h.runtime.handleCommand({ type: "slash.execute", name: "quit", args: "" }, "quit", "th-1");
+    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "quit", ok: false, status: "failure" })));
+    expect(h.runtime.activeThreadIds()).toEqual(["th-1"]);
     h.server.onExit?.(0);
   });
 });

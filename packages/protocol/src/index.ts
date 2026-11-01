@@ -30,7 +30,7 @@ export * from "./tool-inventory-source.js";
  * 所有入站校验都是 `!== PROTOCOL_VERSION` 直接拒绝，没有兼容旧版的旁路——升版就是断代，
  * 两端必须一起更新。
  */
-export const PROTOCOL_VERSION = 17 as const;
+export const PROTOCOL_VERSION = 18 as const;
 
 /**
  * `protocol.error` 的 code：连接的对面用的是另一版协议。
@@ -809,7 +809,7 @@ export const RuntimeCapabilitiesSchema = z.strictObject({
 });
 export type RuntimeCapabilities = z.infer<typeof RuntimeCapabilitiesSchema>;
 
-export const RuntimeCommandStatusSchema = z.enum(["pending", "success", "failure", "cancelled", "not_cancelable", "already_delivered", "message_id_conflict"]);
+export const RuntimeCommandStatusSchema = z.enum(["pending", "success", "failure", "cancelled", "not_cancelable", "already_delivered", "message_id_conflict", "unconfirmed"]);
 export type RuntimeCommandStatus = z.infer<typeof RuntimeCommandStatusSchema>;
 
 /**
@@ -838,7 +838,7 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
     queueId: z.string().min(1),
     text: z.string().min(1),
     delivery: z.enum(["steer", "followUp"]),
-    state: z.enum(["accepted", "delivered", "cancelled", "rejected", "not_cancelable"]),
+    state: z.enum(["accepted", "delivered", "cancelled", "rejected", "not_cancelable", "unconfirmed"]),
     error: z.string().optional(),
   }),
   z.strictObject({
@@ -1437,3 +1437,5 @@ export * from "./inline-media.js";
  * （Host 内的 Codex/DSH 与 Pi 扩展）用同一份实现，客户端据此停止解释原生形状。
  */
 export * from "./display-entries.js";
+
+export * from "./runtime-input-policy.js";

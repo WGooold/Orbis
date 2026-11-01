@@ -49,8 +49,9 @@ class PendingSendsTest {
         assertEquals(listOf("busy"), pending.queueRows("s1").map(PendingSend::messageId))
         assertEquals(listOf("idle"), pending.chatRows("s1").map(PendingSend::messageId))
         pending = pending.observe(status = "running", queue = listOf(QueuedMessage("busy", "t", "followUp"), QueuedMessage("idle", "t", "followUp"))).first
-        assertNull(pending["busy"])
-        assertEquals(PendingSendState.Accepted, pending["idle"]?.state)
+        assertEquals(true, pending["busy"]?.queueOwned)
+        assertEquals(listOf("idle"), pending.chatRows("s1").map(PendingSend::messageId))
+        assertEquals(PendingSendState.Queued, pending["idle"]?.state)
         assertTrue(pending.hidesQueueItem("idle"))
         pending = pending.observe(status = "running", queue = listOf(QueuedMessage("idle", "t", "followUp", "rejected"))).first
         assertEquals(PendingSendState.Failed("电脑端拒绝了这条消息"), pending["idle"]?.state)
@@ -95,14 +96,61 @@ class PendingSendsTest {
         assertTrue(checking.first.observe(revision = 2, at = PENDING_SEND_ACCEPTED_IDLE_GRACE_MS + 2).first.isEmpty())
     }
 
-    @Test fun `unconfirmed row waits for an idle source then becomes retryable`() {
+    @Test fun `disconnected row needs positive delivery evidence after an idle source read`() {
         val lost = outbox(send("lost")).connectionLost()
         assertTrue(lost.observe(connected = false).second.isEmpty())
         assertTrue(lost.observe(status = "running", revision = 1).second.isEmpty())
         val checking = lost.observe(revision = 1)
         assertEquals(setOf("s1"), checking.second)
         assertTrue(checking.first.observe(revision = 2, present = setOf("lost")).first.isEmpty())
-        assertEquals(PendingSendState.Failed("未能确认送达，可以重新发送"), checking.first.observe(revision = 2).first["lost"]?.state)
+        val checked = checking.first.observe(revision = 2).first
+        assertEquals(PendingSendState.Unconfirmed, checked["lost"]?.state)
+        assertEquals(PendingSendState.Failed("not submitted"), checked.withCommandResult("c-lost", CommandResult(false, "failure", error = "not submitted"), start)["lost"]?.state)
+    }
+
+    @Test fun `confirmed withdrawal removes the hidden recovery copy`() {
+        val queued = outbox(send("queued", delivery = "followUp")).observe(status = "running",
+            queue = listOf(QueuedMessage("queued", "text", "followUp"))).first
+        assertEquals(true, queued["queued"]?.queueOwned)
+        assertTrue(queued.observe(queue = listOf(QueuedMessage("queued", "text", "followUp", "cancelled"))).first.isEmpty())
+    }
+
+    @Test fun `a missing queue record does not prove non delivery`() {
+        val queued = outbox(send("queued", delivery = "followUp")).observe(status = "running",
+            queue = listOf(QueuedMessage("queued", "text", "followUp"))).first
+        val checking = queued.observe(revision = 1)
+        assertEquals(setOf("s1"), checking.second)
+        val checked = checking.first.observe(revision = 2).first
+        assertEquals(PendingSendState.Unconfirmed, checked["queued"]?.state)
+        assertEquals(listOf("queued"), checked.chatRows("s1").map(PendingSend::messageId))
+    }
+
+    @Test fun `native unknown needs delivery evidence even after a fresh idle snapshot`() {
+        val lost = outbox(send("lost")).withCommandResult("c-lost", CommandResult(false, "unconfirmed", error = "lost native reply"), start)
+        val checking = lost.observe(revision = 1)
+        assertEquals(setOf("s1"), checking.second)
+        val checked = checking.first.observe(revision = 2).first
+        assertEquals(PendingSendState.Unconfirmed, checked["lost"]?.state)
+        assertEquals(PendingSendState.Unconfirmed, checked.withCommandResult("c-lost", CommandResult(true, "pending"), start)["lost"]?.state)
+        assertTrue(checked.observe(revision = 3, present = setOf("lost")).first.isEmpty())
+    }
+
+    @Test fun `pending receipt cannot discard an idle compaction input`() {
+        val pending = outbox(send("queued")).withCommandResult("c-queued", CommandResult(true, "pending"), start)
+        val observed = pending.observe(revision = 1, at = 120_000)
+        assertTrue(observed.second.isEmpty())
+        assertEquals(PendingSendState.Accepted, observed.first["queued"]?.state)
+        val accepted = observed.first.withCommandResult("c-queued", CommandResult(true, "success"), start)
+        assertEquals(setOf("s1"), accepted.observe(revision = 2, at = 121_000).second)
+        assertTrue(accepted.observe(present = setOf("queued")).first.isEmpty())
+    }
+
+    @Test fun `delivered queue receipt cannot pin a pending row forever`() {
+        val pending = outbox(send("queued")).withCommandResult("c-queued", CommandResult(true, "success"), start)
+        val delivered = QueuedMessage("queued", "text", "followUp", "delivered")
+        val checking = pending.observe(queue = listOf(delivered), revision = 1, at = 20_000)
+        assertEquals(setOf("s1"), checking.second)
+        assertTrue(checking.first.observe(queue = listOf(delivered), revision = 2, at = 21_000).first.isEmpty())
     }
 
     @Test fun `sessions are isolated`() {

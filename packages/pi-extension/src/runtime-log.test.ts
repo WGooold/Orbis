@@ -80,7 +80,8 @@ describe("Pi extension runtime logging", () => {
   });
 
   it("resolves a relative override against the Pi working directory", () => {
-    expect(piExtensionRuntimeLogPath({ ORBIS_RUNTIME_LOG: "logs/runtime.log" }, "D:/workspace"))
-      .toBe("D:\\workspace\\logs\\runtime.log");
+    const workspace = join(tmpdir(), "orbis-workspace");
+    expect(piExtensionRuntimeLogPath({ ORBIS_RUNTIME_LOG: "logs/runtime.log" }, workspace))
+      .toBe(join(workspace, "logs", "runtime.log"));
   });
 });

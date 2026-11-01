@@ -96,6 +96,11 @@ type PendingRequest = {
 };
 
 export type CodexReadOptions = { signal?: AbortSignal; maxResponseBytes?: number };
+
+/** A lost RPC reply cannot prove whether a native mutation ran. */
+export class CodexRequestError extends Error {
+  constructor(message: string, readonly outcome: "rejected" | "unconfirmed") { super(message); }
+}
 // Measured transport bytes for object results; avoids serializing a large native result again.
 const responseSizes = new WeakMap<object, number>();
 export const codexResponseBytes = (response: unknown): number | undefined =>
@@ -300,9 +305,9 @@ export class CodexAppServer {
         if (pending.timer !== undefined) clearTimeout(pending.timer);
         pending.cleanup?.();
         if (pending.maxResponseBytes !== undefined && responseBytes > pending.maxResponseBytes) {
-          pending.reject(new Error("codex_response_too_large"));
+          pending.reject(new CodexRequestError("codex_response_too_large", "unconfirmed"));
         } else if (message.error !== undefined && message.error !== null) {
-          pending.reject(new Error(describeJsonRpcError(message.error)));
+          pending.reject(new CodexRequestError(describeJsonRpcError(message.error), "rejected"));
         } else {
           if (message.result !== null && typeof message.result === "object") responseSizes.set(message.result, responseBytes);
           pending.resolve(message.result);
@@ -329,12 +334,12 @@ export class CodexAppServer {
       const abort = () => {
         const pending = this.#pending.get(id);
         if (pending?.timer !== undefined) clearTimeout(pending.timer);
-        this.#pending.delete(id); cleanup(); reject(new Error("codex_request_cancelled"));
+        this.#pending.delete(id); cleanup(); reject(new CodexRequestError("codex_request_cancelled", "unconfirmed"));
       };
       const timer = timeoutMs > 0
         ? setTimeout(() => {
           this.#pending.delete(id); cleanup();
-          reject(new Error(`app-server 请求 ${method} 超时（${timeoutMs}ms）`));
+          reject(new CodexRequestError(`app-server 请求 ${method} 超时（${timeoutMs}ms）`, "unconfirmed"));
         }, timeoutMs)
         : undefined;
       this.#pending.set(id, { resolve, reject, timer, cleanup, ...(options.maxResponseBytes === undefined ? {} : { maxResponseBytes: options.maxResponseBytes }) });
@@ -390,7 +395,7 @@ export class CodexAppServer {
     for (const pending of this.#pending.values()) {
       if (pending.timer !== undefined) clearTimeout(pending.timer);
       pending.cleanup?.();
-      pending.reject(error);
+      pending.reject(new CodexRequestError(error.message, "unconfirmed"));
     }
     this.#pending.clear();
   }

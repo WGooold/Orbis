@@ -59,8 +59,9 @@ struct PendingSendTests {
         #expect(outbox.chatRows(sessionId: "s1").map(\.messageId) == ["idle"])
         // DSH Web queues even idle sends: the chat row stays and hides the duplicate queue row.
         reconcile(&outbox, status: "running", queue: [queued("busy"), queued("idle")])
-        #expect(outbox.item("busy") == nil)
-        #expect(outbox.item("idle")?.state == .accepted)
+        #expect(outbox.item("busy")?.queueOwned == true)
+        #expect(outbox.chatRows(sessionId: "s1").map(\.messageId) == ["idle"])
+        #expect(outbox.item("idle")?.state == .queued)
         #expect(outbox.hidesQueueItem("idle"))
         reconcile(&outbox, status: "running", queue: [queued("idle", state: "rejected")])
         #expect(outbox.item("idle")?.state == .failed("电脑端拒绝了这条消息"))
@@ -112,7 +113,7 @@ struct PendingSendTests {
         #expect(outbox.isEmpty)
     }
 
-    @Test func unconfirmedRowWaitsForAnIdleSourceThenBecomesRetryable() {
+    @Test func disconnectedRowNeedsPositiveDeliveryEvidenceAfterAnIdleSourceRead() {
         var outbox = PendingSendOutbox()
         outbox.add(send("lost"))
         outbox.connectionLost()
@@ -124,7 +125,57 @@ struct PendingSendTests {
         reconcile(&delivered, status: "idle", revision: 2, present: ["lost"])
         #expect(delivered.isEmpty)
         reconcile(&outbox, status: "idle", revision: 2)
-        #expect(outbox.item("lost")?.state == .failed("未能确认送达，可以重新发送"))
+        #expect(outbox.item("lost")?.state == .unconfirmed)
+        outbox.commandResult("c-lost", ok: false, status: "failure", error: "not submitted")
+        #expect(outbox.item("lost")?.state == .failed("not submitted"))
+    }
+
+    @Test func aConfirmedWithdrawalRemovesTheHiddenRecoveryCopy() {
+        var outbox = PendingSendOutbox(); outbox.add(send("queued", delivery: "followUp"))
+        reconcile(&outbox, status: "running", queue: [queued("queued")])
+        #expect(outbox.item("queued")?.queueOwned == true)
+        reconcile(&outbox, queue: [queued("queued", state: "cancelled")])
+        #expect(outbox.isEmpty)
+    }
+
+    @Test func aMissingQueueRecordDoesNotProveNonDelivery() {
+        var outbox = PendingSendOutbox(); outbox.add(send("queued", delivery: "followUp"))
+        reconcile(&outbox, status: "running", queue: [queued("queued")])
+        #expect(reconcile(&outbox, revision: 1))
+        reconcile(&outbox, revision: 2)
+        #expect(outbox.item("queued")?.state == .unconfirmed)
+        #expect(outbox.chatRows(sessionId: "s1").map(\.messageId) == ["queued"])
+    }
+
+    @Test func nativeUnknownCannotBecomeRetryableFromAnUnrelatedIdleSnapshot() {
+        var outbox = PendingSendOutbox(); outbox.add(send("lost"))
+        outbox.commandResult("c-lost", ok: false, status: "unconfirmed", error: "lost native reply", now: start)
+        #expect(reconcile(&outbox, revision: 1))
+        #expect(!reconcile(&outbox, revision: 2))
+        #expect(outbox.item("lost")?.state == .unconfirmed)
+        outbox.commandResult("c-lost", ok: true, status: "pending", error: nil)
+        #expect(outbox.item("lost")?.state == .unconfirmed)
+        reconcile(&outbox, revision: 3, present: ["lost"])
+        #expect(outbox.isEmpty)
+    }
+
+    @Test func pendingReceiptDoesNotDiscardInputWhileAnIdleCompactionIsStillRunning() {
+        var outbox = PendingSendOutbox(); outbox.add(send("queued"))
+        outbox.commandResult("c-queued", ok: true, status: "pending", error: nil, now: start)
+        #expect(!reconcile(&outbox, revision: 1, at: 120))
+        #expect(outbox.item("queued") != nil)
+        outbox.commandResult("c-queued", ok: true, status: "success", error: nil, now: start)
+        #expect(reconcile(&outbox, revision: 2, at: 121))
+        reconcile(&outbox, revision: 3, at: 122, present: ["queued"])
+        #expect(outbox.isEmpty)
+    }
+
+    @Test func aDeliveredQueueReceiptDoesNotPinTheOptimisticRowForever() {
+        var outbox = PendingSendOutbox(); outbox.add(send("queued"))
+        outbox.commandResult("c-queued", ok: true, status: "success", error: nil, now: start)
+        #expect(reconcile(&outbox, queue: [queued("queued", state: "delivered")], revision: 1, at: 20))
+        reconcile(&outbox, queue: [queued("queued", state: "delivered")], revision: 2, at: 21)
+        #expect(outbox.isEmpty)
     }
 
     @Test func sessionsAreIsolated() {

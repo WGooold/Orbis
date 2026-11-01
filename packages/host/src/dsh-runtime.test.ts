@@ -135,7 +135,8 @@ describe("DeepSeek Harness backend", () => {
     runtime.dispatchCommand("dsh:one", "prompt", { type: "user_message", text: "work" });
     await vi.waitFor(() => expect(rejectPrompt).toBeDefined());
     expect((await command({ type: "user_message", text: "interrupt", delivery: "steer" }, "steer")).ok).toBe(false);
-    await command({ type: "stop" }, "stop");
+    runtime.dispatchCommand("dsh:one", "stop", { type: "stop" });
+    expect(events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "command.result", commandId: "stop", status: "pending" }) }));
     expect(client.notify).toHaveBeenCalledWith("session/cancel", { sessionId: "one" });
     rejectPrompt!(new Error("test failure"));
     await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "command.result", commandId: "prompt", ok: false }) })));
@@ -147,9 +148,11 @@ describe("DeepSeek Harness backend", () => {
     vi.mocked(history.read).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
     const prompt: RuntimeCommand = { type: "user_message", text: "do not run", messageId: "cancelled-message" };
     runtime.dispatchCommand("dsh:one", "admission", prompt);
-    await command({ type: "stop" }, "early-stop");
+    runtime.dispatchCommand("dsh:one", "early-stop", { type: "stop" });
+    expect(events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "command.result", commandId: "early-stop", status: "pending" }) }));
     release!(log);
     await vi.waitFor(() => expect(events.some(item => item.event.type === "command.result" && item.event.commandId === "admission" && item.event.status === "cancelled")).toBe(true));
+    expect(events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "command.result", commandId: "early-stop", ok: true, status: "success" }) }));
     expect(vi.mocked(client.request).mock.calls.filter(args => args[0] === "session/prompt")).toHaveLength(0);
     expect((await command(prompt, "retry-cancelled")).status).toBe("cancelled");
     expect(events.filter(item => item.event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { turn: expect.objectContaining({ durationMs: expect.any(Number) }) } });

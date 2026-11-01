@@ -4,7 +4,7 @@ import { stat } from "node:fs/promises";
 import { ToolActivityProducer, ToolContentReadError, type NativeToolPart, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { isAbsolute } from "node:path";
 import {
-  NotificationSource,
+  NotificationSource, inputMutationError,
   RecoverableSessionSource,
   SessionSyncPreparer,
   type AgentDeliveryItem, type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
@@ -12,7 +12,7 @@ import {
   type ToolContentLocator,
 } from "@orbis/protocol";
 import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
-import { DshWebClient, type DshWebConnection, type DshWebEvent, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
+import { DshWebClient, DshWebUnconfirmedError, type DshWebConnection, type DshWebEvent, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
 import { dshErrorText, dshWebEntries, dshWebEntryId, dshWebEntryText, dshWebMessage, dshWebTreeOptions, type DshStreamDecoder, type DshWebLogEvent } from "./dsh-web-history.js";
 import { localHostname } from "./sessions.js";
 import { dshPermissionOptions, dshPermissions } from "./dsh-permissions.js";
@@ -82,7 +82,7 @@ type WebSession = {
   deliverySeq: number; deliveryGeneration: number;
   activity: Extract<RuntimeEvent, { type: "execution.activity" }>;
   activitySeq: number; compactionId?: string;
-  messages: Map<string, { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled"; entryId?: string }>;
+  messages: Map<string, { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled" | "unconfirmed"; entryId?: string }>;
   persistedMappings: Map<string, string>;
   retiredAttempts: Set<string>;
   streamIndexes: Map<string, number>;
@@ -475,11 +475,18 @@ export class DshWebRuntime implements AgentBackend {
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
     const session = this.#sessions.get(runtimeId); if (!this.#ready || !session) return "offline";
     if (!["user_message", "user_message.cancel", "stop", "session.sync", "slash.execute", "permissions.update", "interaction.respond"].includes(command.type)) return "unsupported";
-    void this.#command(session, commandId, command).catch(error => this.#emit(session, { type: "command.result", commandId, ok: false, status: "failure", error: dshErrorText(error) }));
+    void this.#command(session, commandId, command).catch(error => this.#emit(session, { type: "command.result", commandId, ok: false, status: error instanceof DshWebUnconfirmedError ? "unconfirmed" : "failure", error: dshErrorText(error) }));
     return "handled";
   }
   async #command(session: WebSession, commandId: string, command: RuntimeCommand): Promise<void> {
     if (session.closing) throw new Error("DSH Web 会话正在关闭");
+    if (command.type === "slash.execute" || command.type === "permissions.update") {
+      const query = command.type === "slash.execute" && (["name", "model", "thinking"].includes(command.name)
+        || !command.args.trim() && ["session", "skills", "tree"].includes(command.name));
+      const error = inputMutationError({ phase: session.running ? "running" : "idle", mutating: session.permissionBusy,
+        compacting: session.activity.compaction !== "unavailable" && session.activity.compaction.phase === "running" }, query ? "read" : command.type === "slash.execute" && command.name === "quit" ? "close" : "write");
+      if (error) throw new Error(error);
+    }
     // 只有命令可以带结果正文（`/tree` 的新分支会话 ID 与原文）；其余命令的结果只是回执。
     let result: unknown;
     switch (command.type) {
@@ -548,14 +555,14 @@ export class DshWebRuntime implements AgentBackend {
     const prior = command.messageId ? session.messages.get(command.messageId) : undefined;
     if (prior) {
       const conflict = prior.fingerprint !== fingerprint;
-      this.#emit(session, { type: "command.result", commandId, ok: !conflict && prior.status !== "failure",
+      this.#emit(session, { type: "command.result", commandId, ok: !conflict && prior.status !== "failure" && prior.status !== "unconfirmed",
         status: conflict ? "message_id_conflict" : prior.status });
       return;
     }
     const requestId = command.messageId ?? randomUUID();
     const content = [{ type: "text", text: command.text + (command.attachments?.length ? `\n\n附件路径：\n${command.attachments.join("\n")}` : "") }];
     const delivery = command.delivery ?? "followUp";
-    const receipt: { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled" } = { fingerprint, status: "pending" };
+    const receipt: { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled" | "unconfirmed"; entryId?: string } = { fingerprint, status: "pending" };
     session.messages.set(requestId, receipt);
     session.queue.set(requestId, { itemId: requestId, text: command.text, delivery });
     this.#emit(session, { type: "command.result", commandId, ok: true, status: "pending" });
@@ -564,9 +571,16 @@ export class DshWebRuntime implements AgentBackend {
       await this.#client.request("session/prompt", { request: { requestId, sessionId: session.id, mode, content } });
       receipt.status = "success"; session.running = true;
       this.#publishMetadata(session);
-      this.#emit(session, { type: "message.queued", queueId: requestId, text: command.text, delivery, state: "accepted" });
+      if (!receipt.entryId) this.#emit(session, { type: "message.queued", queueId: requestId, text: command.text, delivery, state: "accepted" });
       this.#emit(session, { type: "command.result", commandId, ok: true, status: "success" });
-    } catch (error) { receipt.status = "failure"; session.queue.delete(requestId); throw error; }
+    } catch (error) {
+      const unknown = error instanceof DshWebUnconfirmedError;
+      receipt.status = unknown ? "unconfirmed" : "failure";
+      if (!unknown) session.queue.delete(requestId);
+      this.#emit(session, { type: "message.queued", queueId: requestId, text: command.text, delivery,
+        state: unknown ? "unconfirmed" : "rejected", error: dshErrorText(error) });
+      throw error;
+    }
   }
 
   async #slash(session: WebSession, args: string, name: string): Promise<unknown> {
@@ -986,7 +1000,7 @@ export class DshWebRuntime implements AgentBackend {
       const requestId = typeof source.rpcId === "string" ? source.rpcId : undefined;
       if (requestId) {
         const prior = session.messages.get(requestId);
-        if (prior && entry?.entryId !== undefined) prior.entryId = entry.entryId;
+        if (prior && entry?.entryId !== undefined) { prior.entryId = entry.entryId; prior.status = "success"; }
         if (entry?.entryId) session.persistedMappings.set(requestId, entry.entryId);
         const queued = session.queue.get(requestId);
         if (queued) {
@@ -1285,11 +1299,13 @@ export class DshWebRuntime implements AgentBackend {
     }
     if (complete) {
       // In-flight calls have not been admitted yet; their receipts remain device operations.
-      const submitting = [...session.queue].filter(([id]) => session.messages.get(id)?.status === "pending");
+      const submitting = [...session.queue].filter(([id]) => ["pending", "unconfirmed"].includes(session.messages.get(id)?.status ?? ""));
       session.queue = new Map([...submitting, ...nativeQueue]);
     } else for (const [id, item] of nativeQueue) session.queue.set(id, item);
     session.deliverySeq = Number(seq);
-    this.#emit(session, { type: "delivery.snapshot", items, complete });
+    for (const [id, queued] of session.queue) if (session.messages.get(id)?.status === "unconfirmed" && !items.some(item => item.queueId === id))
+      items.push({ queueId: id, text: queued.text.slice(0, 4096), delivery: queued.delivery, state: "unconfirmed" });
+    this.#emit(session, { type: "delivery.snapshot", items: items.slice(0, 256), complete: complete && items.length <= 256 });
     return true;
   }
 

@@ -1,15 +1,21 @@
 package com.orbising.orbis
 
+import android.graphics.Bitmap
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -39,10 +45,42 @@ class OptimisticActionsInstrumentedTest {
         compose.onNodeWithContentDescription("删除").performClick()
         compose.runOnIdle { assertEquals(listOf(PendingSendAction.Resend, PendingSendAction.Restore, PendingSendAction.Discard), actions) }
 
+        compose.runOnIdle { pending.value = PendingSendState.Queued }
+        compose.onNodeWithText("已排队").assertIsDisplayed()
+        compose.onNodeWithText("发送中").assertDoesNotExist()
+        capture("agent-input-queued")
+        compose.onNodeWithContentDescription("撤回排队消息").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(PendingSendAction.Cancel, actions.last()) }
+
         // Once the source row replaces it, the ordinary message actions return.
         compose.runOnIdle { pending.value = null }
         compose.onNodeWithTag("pending-send-status").assertDoesNotExist()
         compose.onNodeWithContentDescription("复制消息").assertIsDisplayed()
+    }
+
+    @Test fun unconfirmedSendCanBeCheckedWithoutResending() {
+        val actions = mutableListOf<PendingSendAction>()
+        compose.setContent {
+            OrbisTheme {
+                UserMessageCard("runtime", ChatMessage("app-unknown", "user", listOf(RemoteContent("text", "需要核对的输入")), 1),
+                    downloads = emptyMap(), downloadArtifact = {}, downloadFile = {},
+                    pending = PendingSendState.Unconfirmed, canResend = true, onPendingAction = { actions += it })
+            }
+        }
+        compose.onNodeWithText("未确认是否送达").assertIsDisplayed()
+        compose.onNodeWithText("发送中").assertDoesNotExist()
+        compose.onNodeWithContentDescription("重新发送").assertDoesNotExist()
+        capture("agent-input-unconfirmed")
+        compose.onNodeWithContentDescription("核对送达状态").assertIsEnabled().performClick()
+        compose.onNodeWithText("需要核对的输入").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(listOf(PendingSendAction.Check), actions) }
+    }
+
+    private fun capture(name: String) {
+        compose.waitForIdle()
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = File(context.getExternalFilesDir(null), "$name.png")
+        file.outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
     @Test fun swipeCloseHidesTheCardImmediatelyAndARejectionBringsItBack() {

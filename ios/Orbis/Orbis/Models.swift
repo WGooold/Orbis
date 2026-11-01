@@ -1,6 +1,6 @@
 import Foundation
 
-let orbisProtocolVersion = 17
+let orbisProtocolVersion = 18
 
 struct PairingQR: Codable, Hashable {
     let v: Int

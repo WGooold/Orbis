@@ -29,7 +29,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, ToolInventorySource } from "@orbis/protocol";
-import { orbisEnvironment } from "@orbis/protocol";
+import { orbisEnvironment, messageInputDecision, canDispatchMessage, inputMutationError, type RuntimeInputState } from "@orbis/protocol";
 import { ToolContentCapture, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { CodexToolContentReader } from "./codex-tool-content-reader.js";
 import { codexToolContents, codexToolContentText, codexToolSummary } from "./codex-tool-projection.js";
@@ -64,7 +64,7 @@ import type {
   BackendActivation,
   CommandDispatch,
 } from "./agent-backend.js";
-import { CODEX_DESKTOP_RUNTIME_ID, CODEX_RUNTIME_ID, CodexAppServer, isDesktopAppServer, type CodexCommand, type CodexServerRequest } from "./codex-daemon.js";
+import { CODEX_DESKTOP_RUNTIME_ID, CODEX_RUNTIME_ID, CodexAppServer, CodexRequestError, isDesktopAppServer, type CodexCommand, type CodexServerRequest } from "./codex-daemon.js";
 import { describeError } from "./describe-error.js";
 import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
@@ -194,6 +194,7 @@ type QueuedTurn = {
   text: string;
   attachments?: readonly string[];
   delivery: "steer" | "followUp";
+  interruptOnNextTurn?: boolean;
 };
 
 /**
@@ -259,6 +260,15 @@ type ThreadState = {
   streamingMessageId: string | undefined;
   /** turn 进行中排队的后续消息（followUp 追加、steer 插队）。 */
   queue: QueuedTurn[];
+  queueResults: Map<string, Extract<RuntimeEvent, { type: "message.queued" }>>;
+  closing?: boolean;
+  sessionChanging?: boolean;
+  compactStartPending?: boolean;
+  compactStartTimer?: ReturnType<typeof setTimeout>;
+  stopping?: boolean;
+  pendingStops: Map<string, string>;
+  observedPhoneMessages: Set<string>;
+  steerInterruptTurnId?: string;
   /** 当前 turn 中 Runtime 已确认的 live id -> Codex entry id。 */
   persistedMessageMappings: PersistedMessageMapping[];
   /** 活跃 Codex tool 的名称，供没有 item payload 的 progress/output 通知复用。 */
@@ -561,6 +571,9 @@ export class CodexRuntime implements AgentBackend {
       }
       this.#approvals.clear();
       for (const thread of this.#threads.values()) {
+        clearTimeout(thread.compactStartTimer);
+        for (const item of thread.queue.splice(0)) this.#queueEvent(thread, { type: "message.queued", queueId: item.messageId,
+          text: item.text, delivery: item.delivery, state: "rejected", error: "Codex 已断开，消息尚未提交" });
         this.#setCompaction(thread, "unavailable");
         thread.asyncInputs.close("disconnected");
       }
@@ -685,6 +698,9 @@ export class CodexRuntime implements AgentBackend {
       turnStartedAt: undefined,
       streamingMessageId: undefined,
       queue: [],
+      queueResults: new Map(),
+      pendingStops: new Map(),
+      observedPhoneMessages: new Set(),
       persistedMessageMappings: [],
       toolNames: new Map(),
       model: overrides?.model,
@@ -1062,6 +1078,14 @@ export class CodexRuntime implements AgentBackend {
     this.#eventSink = sink;
   }
 
+  #inputState(thread: ThreadState): RuntimeInputState {
+    return { phase: this.#statusOf(thread), compacting: thread.compactStartPending || thread.activity.compaction !== "unavailable" && thread.activity.compaction.phase === "running",
+      starting: thread.turnStartPending, stopping: thread.stopping === true, closing: thread.closing === true,
+      mutating: this.#permissionUpdates.has(thread.id) || this.#desktopClientProtected.has(thread.id) || thread.sessionChanging === true,
+      reconciling: thread.nativeMutationPromise === undefined && (thread.reconcilePromise !== undefined || !thread.sourceReady),
+      offline: this.#threads.get(thread.id) !== thread, queueDepth: thread.queue.length };
+  }
+
   #statusOf(thread: ThreadState): RuntimeStatus {
     if (thread.waitingForApproval) return "waiting_local_interaction";
     for (const approval of this.#approvals.values()) {
@@ -1425,6 +1449,12 @@ export class CodexRuntime implements AgentBackend {
   #deactivateThread(threadId: string, reason: string, preserveApproval = false): void {
     const thread = this.#threads.get(threadId);
     if (thread === undefined) return;
+    thread.closing = true; clearTimeout(thread.compactStartTimer);
+    for (const item of thread.queue.splice(0)) this.#queueEvent(thread, { type: "message.queued", queueId: item.messageId,
+      text: item.text, delivery: item.delivery, state: "rejected", error: reason });
+    for (const item of thread.queueResults.values()) if (item.state === "accepted") this.#queueEvent(thread, { ...item, state: "unconfirmed", error: reason });
+    for (const id of thread.pendingStops.keys()) this.#commandResult(thread.id, id, false, reason, "unconfirmed");
+    thread.pendingStops.clear();
     this.#cancelSourcePublish(thread);
     this.#toolCapture?.invalidate(this.#publicSessionId(threadId));
     this.#toolInventories.delete(threadId); this.#captureEpochs.delete(threadId);
@@ -1678,6 +1708,17 @@ export class CodexRuntime implements AgentBackend {
     }
     this.#syncTurnNotification(thread);
     this.#reconcileCompaction(thread, turns);
+    for (const [id, target] of thread.pendingStops) {
+      const turn = turns.map(object).find(value => value.id === target);
+      if (turn && ["completed", "interrupted", "failed"].includes(String(turn.status))) {
+        thread.pendingStops.delete(id);
+        this.#commandResult(thread.id, id, turn.status === "interrupted", undefined, turn.status === "interrupted" ? "success" : "not_cancelable");
+      }
+    }
+    for (const turn of turns) for (const item of Array.isArray(object(turn).items) ? object(turn).items as unknown[] : []) {
+      const row = object(item);
+      if (row.type === "userMessage") this.#confirmQueuedMessage(thread, row.clientId);
+    }
     return true;
   }
 
@@ -1784,30 +1825,41 @@ export class CodexRuntime implements AgentBackend {
           this.#commandResult(threadId, commandId, false, "没有活跃的 Codex 会话，请重新激活");
           return true;
         }
-        if (thread.turnInProgress || thread.turnStartPending) {
-          return this.#enqueueWhileBusy(thread, command, commandId);
+        if (command.messageId && thread.observedPhoneMessages.has(command.messageId)) {
+          this.#commandResult(thread.id, commandId, false, "message_id_conflict", "message_id_conflict"); return true;
         }
+        const decision = messageInputDecision(this.#inputState(thread), command.delivery);
+        if (decision.action === "reject") {
+          this.#commandResult(thread.id, commandId, false, decision.error, "failure");
+          return true;
+        }
+        if (decision.action === "queue") return this.#enqueueWhileBusy(thread, { ...command, delivery: decision.delivery }, commandId);
         // 空闲：起一个新 turn。用户气泡不再由本地合成回显——app-server 持久化后发出的
         // item/started(UserMessage) 是唯一上屏事件，clientUserMessageId 把 App 的
         // messageId 钉到该 item 上（clientId 原样带回），与 Pi 的 message_start 单事件链同构。
         const messageId = command.messageId ?? `user-${Date.now()}`;
-        this.#commandResult(threadId, commandId, true);
-        void this.#startTurn(thread, command.text, command.attachments, command.messageId).catch((error) => {
+        this.#commandResult(thread.id, commandId, true, undefined, "pending");
+        void this.#startTurn(thread, command.text, command.attachments, command.messageId).then(() => {
+          this.#commandResult(thread.id, commandId, true, undefined, "success");
+        }).catch((error) => {
+          if (thread.observedPhoneMessages.has(messageId)) { this.#commandResult(thread.id, commandId, true, undefined, "success"); return; }
           this.#failTurnStart(thread, messageId, command.text, error);
-          this.#commandResult(threadId, commandId, false, describeError(error));
+          this.#commandResult(thread.id, commandId, false, describeError(error), error instanceof CodexRequestError && error.outcome === "unconfirmed" ? "unconfirmed" : "failure");
         });
         return true;
       }
       case "user_message.cancel": {
         // 只能撤回还没开跑的排队消息；已在跑的 turn 用 stop 打断（与 Pi 一致）。
-        if (thread === undefined) return true;
+        if (thread === undefined) {
+          this.#commandResult(threadId, commandId, false, "runtime_offline", "failure"); return true;
+        }
         const index = thread.queue.findIndex((item) => item.messageId === command.messageId);
         const removed = index < 0 ? undefined : thread.queue.splice(index, 1)[0];
         if (removed === undefined) {
           this.#commandResult(threadId, commandId, false, "消息已送达或不存在", "already_delivered");
           return true;
         }
-        this.#emit(thread.id, {
+        this.#queueEvent(thread, {
           type: "message.queued",
           queueId: removed.messageId,
           text: removed.text,
@@ -1818,9 +1870,20 @@ export class CodexRuntime implements AgentBackend {
         return true;
       }
       case "stop": {
-        if (thread?.turnId !== undefined) {
-          void this.#server.request("turn/interrupt", { threadId: thread.id, turnId: thread.turnId })
-            .catch((error) => this.#options.log?.(`turn/interrupt 失败：${describeError(error)}`));
+        if (thread?.turnId === undefined || !thread.turnInProgress) {
+          this.#commandResult(threadId, commandId, false, "没有可停止的回合", "not_cancelable");
+        } else if (thread.stopping) {
+          this.#commandResult(thread.id, commandId, false, "停止正在处理中", "not_cancelable");
+        } else {
+          thread.stopping = true;
+          const turnId = thread.turnId;
+          if (commandId) thread.pendingStops.set(commandId, turnId);
+          this.#commandResult(thread.id, commandId, true, undefined, "pending");
+          void this.#server.request("turn/interrupt", { threadId: thread.id, turnId }).catch(error => {
+            if (commandId && !thread.pendingStops.delete(commandId)) return;
+            this.#commandResult(thread.id, commandId, false, describeError(error), error instanceof CodexRequestError && error.outcome === "unconfirmed" ? "unconfirmed" : "failure");
+            if (thread.turnId === turnId) thread.stopping = false;
+          });
         }
         return true;
       }
@@ -1888,6 +1951,9 @@ export class CodexRuntime implements AgentBackend {
       this.#commandResult(thread.id, commandId, false, "runtime_busy");
       return true;
     }
+    if ([...thread.queueResults.values()].filter(item => item.state === "accepted" || item.state === "unconfirmed").length >= 256) {
+      this.#commandResult(thread.id, commandId, false, "queue_full", "failure"); return true;
+    }
     const messageId = command.messageId ?? `queued-${Date.now()}`;
     const queued: QueuedTurn = {
       messageId,
@@ -1898,40 +1964,79 @@ export class CodexRuntime implements AgentBackend {
     if (command.delivery === "steer") {
       // 先插队再打断：turn/completed 里的补跑（#drainQueue）会立刻把它送上。
       thread.queue.unshift(queued);
-      if (thread.turnId !== undefined) {
-        void this.#server.request("turn/interrupt", { threadId: thread.id, turnId: thread.turnId })
-          .catch((error) => this.#options.log?.(`turn/interrupt 失败：${describeError(error)}`));
-      }
+      if (thread.turnId !== undefined && thread.turnInProgress && !thread.stopping) this.#interruptQueuedSteer(thread, queued);
+      else if (thread.turnStartPending && thread.turnId === undefined) queued.interruptOnNextTurn = true;
     } else {
       thread.queue.push(queued);
     }
-    this.#emit(thread.id, {
+    this.#queueEvent(thread, {
       type: "message.queued",
       queueId: messageId,
       text: command.text,
       delivery: command.delivery,
       state: "accepted",
     });
-    this.#commandResult(thread.id, commandId, true);
+    this.#commandResult(thread.id, commandId, true, undefined, "success");
+    this.#scheduleQueue(thread);
     return true;
   }
 
-  /** turn 结束后补跑排队消息；startTurn 会重新抬起 turnInProgress，循环自然只跑一条。 */
+  #interruptQueuedSteer(thread: ThreadState, queued: QueuedTurn): void {
+    if (!thread.turnId || thread.stopping || thread.steerInterruptTurnId === thread.turnId) return;
+    thread.steerInterruptTurnId = thread.turnId;
+    void this.#server.request("turn/interrupt", { threadId: thread.id, turnId: thread.turnId }).catch(error => {
+      if (this.#threads.get(thread.id) !== thread) return;
+      const index = thread.queue.indexOf(queued);
+      if (index < 0) return;
+      const unknown = error instanceof CodexRequestError && error.outcome === "unconfirmed";
+      if (!unknown) { thread.queue.splice(index, 1); delete thread.steerInterruptTurnId; }
+      this.#queueEvent(thread, { type: "message.queued", queueId: queued.messageId, text: queued.text,
+        delivery: queued.delivery, state: unknown ? "accepted" : "rejected", error: describeError(error) });
+    });
+  }
+
+  /** All native idle/compaction/recovery boundaries share this one serialized dispatcher. */
   #drainQueue(thread: ThreadState): void {
-    while (!thread.turnInProgress && thread.queue.length > 0) {
-      const next = thread.queue.shift();
-      if (next === undefined) return;
-      this.#emit(thread.id, {
-        type: "message.queued",
-        queueId: next.messageId,
-        text: next.text,
-        delivery: next.delivery,
-        state: "delivered",
-      });
-      void this.#startTurn(thread, next.text, next.attachments, next.messageId).catch((error) => {
-        this.#failTurnStart(thread, next.messageId, next.text, error);
-      });
+    if (!canDispatchMessage(this.#inputState(thread))) return;
+    const next = thread.queue.shift();
+    if (!next) return;
+    void this.#startTurn(thread, next.text, next.attachments, next.messageId).then(() => {
+      if (this.#threads.get(thread.id) !== thread) return;
+      this.#queueEvent(thread, { type: "message.queued", queueId: next.messageId,
+        text: next.text, delivery: next.delivery, state: "delivered" });
+    }, error => {
+      if (this.#threads.get(thread.id) !== thread) return;
+      if (thread.queueResults.get(next.messageId)?.state === "delivered") return;
+      const unknown = error instanceof CodexRequestError && error.outcome === "unconfirmed";
+      this.#queueEvent(thread, { type: "message.queued", queueId: next.messageId, text: next.text,
+        delivery: next.delivery, state: unknown ? "unconfirmed" : "rejected", error: describeError(error) });
+      this.#failTurnStart(thread, next.messageId, next.text, error);
+    });
+  }
+
+  #scheduleQueue(thread: ThreadState): void { queueMicrotask(() => this.#drainQueue(thread)); }
+
+  #confirmQueuedMessage(thread: ThreadState, clientId: unknown): void {
+    if (typeof clientId !== "string") return;
+    thread.observedPhoneMessages.add(clientId);
+    if (thread.observedPhoneMessages.size > 2048) thread.observedPhoneMessages.delete(thread.observedPhoneMessages.values().next().value!);
+    const queued = thread.queueResults.get(clientId);
+    if (queued && ["accepted", "unconfirmed"].includes(queued.state)) {
+      const index = thread.queue.findIndex(item => item.messageId === clientId);
+      if (index >= 0) thread.queue.splice(index, 1);
+      this.#queueEvent(thread, { type: "message.queued", queueId: queued.queueId, text: queued.text, delivery: queued.delivery, state: "delivered" });
     }
+  }
+
+  #queueEvent(thread: ThreadState, event: Extract<RuntimeEvent, { type: "message.queued" }>): void {
+    thread.queueResults.set(event.queueId, event);
+    // Never evict an unresolved input. Terminal delivery receipts have a bounded replay window.
+    while (thread.queueResults.size > 256) {
+      const removable = [...thread.queueResults].find(([, value]) => value.state !== "accepted" && value.state !== "unconfirmed");
+      if (!removable) break;
+      thread.queueResults.delete(removable[0]);
+    }
+    this.#emit(thread.id, event);
   }
 
   /**
@@ -1960,6 +2065,15 @@ export class CodexRuntime implements AgentBackend {
     const dynamic = thread === undefined
       ? undefined
       : this.#integrationCatalog.get(thread.cwd)?.commands.find((command) => command.name === name);
+    if (dynamic === undefined && !CODEX_SLASH_COMMANDS.some(command => command.name === name)) return false;
+    if (thread !== undefined) {
+      const effect = name === "quit" ? "close" : arg.length === 0 && ["name", "tree", "model"].includes(name) ? "read" : "write";
+      const state = this.#inputState(thread);
+      // Existing tree writes already serialize behind native hydration. A failed source still rejects them.
+      if (name === "tree" && thread.historyError === undefined) state.reconciling = false;
+      const error = inputMutationError(state, effect) ?? (effect === "write" && name !== "tree" && thread.nativeMutationPromise !== undefined ? "runtime_busy" : undefined);
+      if (error) { this.#commandResult(thread.id, commandId, false, error, "failure"); return true; }
+    }
     if (dynamic !== undefined && thread !== undefined) {
       return this.#executeDynamicSlash(dynamic, arg, thread, threadId, commandId);
     }
@@ -2040,19 +2154,36 @@ export class CodexRuntime implements AgentBackend {
             : name === "new"
               ? { type: "new", cwd: thread?.cwd ?? process.cwd() }
               : { type: "resume", sessionId: thread?.id ?? "" };
+        if (thread) thread.sessionChanging = true;
         const activate = name === "fork"
           ? this.#forkThread(thread)
           : this.activate(target);
         void activate
           .then(() => this.#commandResult(threadId, commandId, true, undefined, "success"))
-          .catch((error) => this.#commandResult(threadId, commandId, false, describeError(error), "failure"));
+          .catch((error) => this.#commandResult(threadId, commandId, false, describeError(error), "failure"))
+          .finally(() => { if (thread) { thread.sessionChanging = false; this.#scheduleQueue(thread); } });
         return true;
       }
       case "compact": {
         if (thread === undefined) return this.#slashNoSession(threadId, commandId);
+        thread.compactStartPending = true;
+        thread.compactStartTimer = setTimeout(() => {
+          if (this.#threads.get(thread.id) !== thread || !thread.compactStartPending) return;
+          thread.compactStartPending = false;
+          for (const item of thread.queue.splice(0)) this.#queueEvent(thread, { type: "message.queued", queueId: item.messageId,
+            text: item.text, delivery: item.delivery, state: "rejected", error: "压缩状态未确认，消息尚未提交，请核对后重新发送" });
+          thread.sourceReady = false;
+          void this.#checkNativeSource(thread).catch(() => undefined);
+        }, 60_000);
+        thread.compactStartTimer.unref();
+        this.#commandResult(thread.id, commandId, true, undefined, "pending");
         void this.#server.request("thread/compact/start", { threadId: thread.id })
-          .then(() => this.#commandResult(threadId, commandId, true))
-          .catch((error) => this.#commandResult(threadId, commandId, false, describeError(error), "failure"));
+          .then(() => this.#commandResult(thread.id, commandId, true, undefined, "success"))
+          .catch((error) => {
+            const unknown = error instanceof CodexRequestError && error.outcome === "unconfirmed";
+            this.#commandResult(thread.id, commandId, false, describeError(error), unknown ? "unconfirmed" : "failure");
+            if (!unknown) { thread.compactStartPending = false; clearTimeout(thread.compactStartTimer); this.#scheduleQueue(thread); }
+          });
         return true;
       }
       case "tree": {
@@ -2094,11 +2225,11 @@ export class CodexRuntime implements AgentBackend {
       }
       case "quit": {
         if (thread === undefined) return this.#slashNoSession(threadId, commandId);
-        // 先回执再下线：command.result 是 APP 清除在途命令的依据，不能因为随后的
-        // runtime.offline 而丢失。
-        this.#commandResult(threadId, commandId, true, undefined, "success");
-        void this.#quitThread(thread).catch((error: unknown) => {
-          this.#options.log?.(`/quit 关闭 Codex TUI 失败：${describeError(error)}`);
+        thread.closing = true;
+        this.#commandResult(thread.id, commandId, true, undefined, "pending");
+        void this.#quitThread(thread, commandId).catch((error: unknown) => {
+          thread.closing = false;
+          this.#commandResult(thread.id, commandId, false, describeError(error), "failure");
         });
         return true;
       }
@@ -2111,7 +2242,7 @@ export class CodexRuntime implements AgentBackend {
     let timer: NodeJS.Timeout | undefined;
     let registered = false;
     try {
-      if (this.#statusOf(thread) !== "idle" || thread.queue.length > 0
+      if (inputMutationError(this.#inputState(thread)) !== undefined || thread.nativeMutationPromise !== undefined
         || [...this.#approvals.values()].some((request) => request.threadId === thread.id)) {
         throw new Error("请先完成当前任务和待处理交互，再调整会话权限");
       }
@@ -2247,7 +2378,7 @@ export class CodexRuntime implements AgentBackend {
       try {
         await this.#drainReconcileNotifications(thread);
       } finally {
-        if (thread.reconcilePromise === tracked) thread.reconcilePromise = undefined;
+        if (thread.reconcilePromise === tracked) { thread.reconcilePromise = undefined; this.#scheduleQueue(thread); }
       }
     });
     thread.reconcilePromise = tracked;
@@ -2616,27 +2747,20 @@ export class CodexRuntime implements AgentBackend {
    * 所以只能由 Host 结束进程。找不到进程也照常下线：用户要的是「回到离线」，
    * 而不是「因为查找失败还假装在线」。
    */
-  async #quitThread(thread: ThreadState): Promise<void> {
+  async #quitThread(thread: ThreadState, commandId?: string): Promise<void> {
     if (isDesktopAppServer(this.#server)) {
+      this.#commandResult(thread.id, commandId, true, undefined, "success");
       this.#desktopSuppressed.set(thread.id, thread.turnInProgress ? "active" : "idle");
       this.#deactivateThread(thread.id, "手机已退出 Codex 桌面会话视图", true);
       return;
     }
     const endpoint = this.#server.endpoint;
-    try {
-      if (endpoint === undefined) {
-        this.#options.log?.(`/quit：app-server 端点未知，跳过结束进程（thread=${thread.id}）`);
-        return;
-      }
-      // 杀进程按窗口 key（argv 快照）匹配：TUI 切过 thread 后 argv 里还是旧 id。
-      const windowKey = this.#windowKeyByThread.get(thread.id) ?? thread.id;
-      const killed = await this.#killTuiProcesses(windowKey, endpoint);
-      this.#options.log?.(
-        `/quit：${killed ? "已结束" : "未找到"} Codex TUI 进程（thread=${thread.id} endpoint=${endpoint}）`,
-      );
-    } finally {
-      this.#deactivateThread(thread.id, "Codex 会话已由手机 /quit 关闭");
-    }
+    if (endpoint === undefined) throw new Error("Codex 端点未知，无法确认关闭会话");
+    const windowKey = this.#windowKeyByThread.get(thread.id) ?? thread.id;
+    const killed = await this.#killTuiProcesses(windowKey, endpoint);
+    if (!killed) throw new Error("未找到可关闭的 Codex TUI 进程，请在电脑端核对");
+    this.#commandResult(thread.id, commandId, true, undefined, "success");
+    this.#deactivateThread(thread.id, "Codex 会话已由手机 /quit 关闭");
   }
 
   /**
@@ -2674,8 +2798,15 @@ export class CodexRuntime implements AgentBackend {
       type: "message.finished",
       message: { ...userMessage(messageId, text), isError: true },
     });
-    thread.turnInProgress = false;
+    if (this.#threads.get(thread.id) !== thread) return;
+    if (error instanceof CodexRequestError && error.outcome === "unconfirmed") {
+      thread.sourceReady = false;
+      void this.#checkNativeSource(thread).catch(() => undefined);
+    } else if (thread.turnId === undefined) {
+      thread.turnInProgress = false;
+    }
     this.#publishMetadataEvent(thread);
+    this.#scheduleQueue(thread);
   }
 
   /**
@@ -2729,13 +2860,16 @@ export class CodexRuntime implements AgentBackend {
   async #startTurnWithInput(thread: ThreadState, input: unknown[], clientUserMessageId?: string): Promise<void> {
     thread.turnStartPending = true;
     let captureStarted = false;
+    const priorTurnId = thread.turnId;
     try {
       await this.#runNativeMutation(thread, async () => {
-        if (thread.turnInProgress) throw new Error("runtime_busy");
+        const state = { ...this.#inputState(thread), starting: false, queueDepth: 0, reconciling: !thread.sourceReady || thread.reconcilePromise !== undefined };
+        if (!canDispatchMessage(state)) throw new Error("runtime_busy");
         if (this.beforeFileChangeTurn) {
           await this.beforeFileChangeTurn(this.runtimeIdFor(thread.id));
           captureStarted = true;
         }
+        if (this.#threads.get(thread.id) !== thread || !canDispatchMessage({ ...this.#inputState(thread), starting: false, queueDepth: 0, reconciling: !thread.sourceReady || thread.reconcilePromise !== undefined })) throw new Error("runtime_busy");
         ++thread.reconcileGeneration;
         thread.turnInProgress = true;
         this.#publishMetadataEvent(thread);
@@ -2755,9 +2889,12 @@ export class CodexRuntime implements AgentBackend {
       });
     } catch (error) {
       if (captureStarted && this.fileChangeTurnFailed) await this.fileChangeTurnFailed(this.runtimeIdFor(thread.id));
+      if (this.#threads.get(thread.id) === thread && thread.turnId === priorTurnId
+        && !(error instanceof CodexRequestError && error.outcome === "unconfirmed")) thread.turnInProgress = false;
       throw error;
     } finally {
       thread.turnStartPending = false;
+      this.#scheduleQueue(thread);
     }
     // turn/start 的响应只代表 turn 被接受；结束由 turn/completed 通知驱动。
   }
@@ -3227,10 +3364,14 @@ export class CodexRuntime implements AgentBackend {
         const status = object(record.status);
         thread.waitingForApproval = Array.isArray(status.activeFlags)
           && status.activeFlags.some((flag) => flag === "waitingOnApproval" || flag === "waitingOnUserInput");
-        if (status.type === "idle") thread.turnInProgress = false;
+        if (status.type === "idle") {
+          thread.turnInProgress = false; thread.stopping = false;
+          for (const id of thread.pendingStops.keys()) this.#commandResult(thread.id, id, false, "会话已空闲，但停止结果尚未确认", "unconfirmed");
+        }
         else if (status.type === "active") thread.turnInProgress = true;
         this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
+        this.#scheduleQueue(thread);
         if (thread.tuiAttachPending) void this.#attachTuiThread(thread);
         return;
       }
@@ -3244,6 +3385,7 @@ export class CodexRuntime implements AgentBackend {
             || typeof data.id === "string" && thread.settledCompactions.has(`item:${data.id}`)) return;
           if (typeof data.id === "string" && (thread.completedItems.has(data.id)
             || thread.itemOrder.indexOf(data.id) >= 0 && thread.itemOrder.indexOf(data.id) < thread.committedItemCount)) return;
+          thread.compactStartPending = false; clearTimeout(thread.compactStartTimer);
           thread.compactionOwner = {
             ...(typeof data.id === "string" ? { itemId: data.id } : {}),
             ...(typeof record.turnId === "string" ? { turnId: record.turnId } : {}),
@@ -3257,6 +3399,7 @@ export class CodexRuntime implements AgentBackend {
         if ((data.type === "fileChange" || data.type === "commandExecution") && typeof data.id === "string") {
           thread.approvalItems.set(data.id, data);
         }
+        if (data.type === "userMessage") this.#confirmQueuedMessage(thread, data.clientId);
         this.#noteItem(thread, data);
         data = this.#projectToolItem(thread, data, "started", typeof record.turnId === "string" ? record.turnId : undefined, true);
         const raw = toolCallMessage(data) ?? itemToMessage(data);
@@ -3356,6 +3499,7 @@ export class CodexRuntime implements AgentBackend {
         }
         // item 通知自带 turnId（`ItemCompletedNotification` 的 required 字段），条目归属由此确定。
         this.#completeItem(thread, data, typeof record.turnId === "string" ? record.turnId : undefined);
+        if (data.type === "userMessage") this.#confirmQueuedMessage(thread, data.clientId);
         this.#pruneCanonicalLive(thread);
         const raw = toolCallMessage(data) ?? itemToMessage(data);
         if (raw !== undefined) {
@@ -3426,6 +3570,11 @@ export class CodexRuntime implements AgentBackend {
           this.#touchSource(thread);
         }
         thread.turnInProgress = true;
+        const steers = thread.queue.filter(item => item.interruptOnNextTurn);
+        // All steers accepted during this startup target this same turn. Clear every
+        // marker before interrupting so a second input cannot cancel the next queued turn.
+        for (const steer of steers) delete steer.interruptOnNextTurn;
+        if (steers[0]) this.#interruptQueuedSteer(thread, steers[0]);
         this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
         return;
@@ -3434,6 +3583,11 @@ export class CodexRuntime implements AgentBackend {
         const completed = turnRecord(record.turn);
         const completedTurn = object(record.turn);
         const completedTurnId = completed?.id ?? thread.turnId;
+        for (const [id, target] of thread.pendingStops) if (target === completedTurnId) {
+          thread.pendingStops.delete(id);
+          const stopped = completedTurn.status === "interrupted";
+          this.#commandResult(thread.id, id, stopped, stopped ? undefined : "回合已结束，未确认由停止操作中断", stopped ? "success" : "not_cancelable");
+        }
         this.#settleCompactionTurn(thread, completedTurnId, completedTurn.status === "failed" ? "failed" : "idle");
         if (completedTurnId !== undefined) thread.asyncInputs.updateTurn(completedTurnId, completedTurn.status ?? "completed");
         if (completedTurn.status === "failed") this.#reportError(thread, completedTurn.error, false, completedTurnId);
@@ -3466,6 +3620,7 @@ export class CodexRuntime implements AgentBackend {
         thread.turnId = undefined;
         thread.turnStartedAt = undefined;
         thread.turnInProgress = false;
+        thread.stopping = false;
         thread.streamingMessageId = undefined;
         thread.persistedMessageMappings = [];
         this.#pruneCanonicalLive(thread);
@@ -3624,10 +3779,12 @@ export class CodexRuntime implements AgentBackend {
       this.#rememberCompactionSettlement(thread, `item:${thread.compactionOwner.itemId}`);
     }
     delete thread.compactionOwner;
+    if (phase !== "unavailable") { thread.compactStartPending = false; clearTimeout(thread.compactStartTimer); }
     const next = phase === "unavailable" ? phase : { phase, ...(turnId === undefined ? {} : { turnId: turnId.slice(0, 256) }) };
     if (isDeepStrictEqual(thread.activity.compaction, next)) return;
     thread.activity.compaction = next;
     this.#emit(thread.id, thread.activity);
+    this.#scheduleQueue(thread);
   }
 
   #settleCompactionTurn(thread: ThreadState, turnId: string | undefined, phase: "idle" | "failed"): void {
@@ -4035,9 +4192,8 @@ export class CodexRuntime implements AgentBackend {
   }
 
   #publishDelivery(thread: ThreadState): void {
-    this.#emit(thread.id, { type: "delivery.snapshot", complete: thread.queue.length <= 256,
-      items: thread.queue.slice(0, 256).map(item => ({ queueId: item.messageId, text: item.text,
-        delivery: item.delivery, state: "accepted" })) });
+    const items = [...thread.queueResults.values()].map(({ queueId, text, delivery, state, error }) => ({ queueId, text: text.slice(0, 4096), delivery, state, ...(error ? { error: error.slice(0, 4000) } : {}) }));
+    this.#emit(thread.id, { type: "delivery.snapshot", complete: items.length <= 256, items: items.slice(-256) });
   }
 
   syncNotifications(runtimeId: string): void {

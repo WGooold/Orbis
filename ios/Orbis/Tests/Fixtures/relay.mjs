@@ -4,7 +4,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 
-const version = 17;
+const version = 18;
 const relayBasePath = process.argv[3] ?? '';
 const relayPath = relayBasePath.replace(/\/+$/, '');
 const enableLan = process.argv[4] === 'lan';

@@ -69,6 +69,7 @@ import { buildAgentStateSnapshot, buildAgentStateSnapshotParts } from "./agent-s
 import { AgentStateSubscriptions } from "./agent-state-subscriptions.js";
 import { AgentConversationState } from "./agent-conversation-state.js";
 import { DeviceViewFacts } from "./device-view-facts.js";
+import { RuntimeCommandLifecycle } from "./runtime-command-lifecycle.js";
 import {
   DiagnosticJournal, type DiagnosticAppendInput, type DiagnosticPageRequest,
 } from "./diagnostic-journal.js";
@@ -376,6 +377,7 @@ export class HostService {
   }
 
   #markRuntimeOffline(runtimeId: string, reason: string): void {
+    this.#commandOwners.offline(runtimeId, reason);
     this.#toolInventory.closeRuntime(runtimeId);
     this.#toolIngestion.release(runtimeId);
     this.#toolContentService.releaseRuntime(runtimeId);
@@ -602,7 +604,9 @@ export class HostService {
     this.#agentFacts?.refreshNotifications(runtimeId);
     for (const deviceId of this.#links.keys()) this.#sendNotificationSnapshot(deviceId, runtimeId);
   });
-  readonly #commandOwners = new Map<string, { deviceId: string; requestId?: string; at: number; fingerprint: string; terminal?: boolean }>();
+  readonly #commandOwners = new RuntimeCommandLifecycle({
+    onUnconfirmed: (record, event) => this.#publishRuntimeEvent(record.runtimeId, event),
+  });
   readonly #interactionIds = new Map<string, Set<string>>();
   readonly #notificationChecks = new Map<string, number>();
   /** 同一台设备的离线回绝只报一次的时间戳（详见 `#shouldReportOfflineDevice`）。 */
@@ -1378,6 +1382,7 @@ export class HostService {
     this.#providerFactsClosing = true;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
+    this.#commandOwners.close();
     this.refreshHostFacts();
     clearInterval(this.#toolDiagnosticTimer); this.#toolDiagnosticTimer = undefined; this.#flushToolDiagnostics();
     this.#toolContentService.close();
@@ -1563,6 +1568,21 @@ export class HostService {
     }
     const message = parseDevicePayload(payload);
     if (message === undefined) {
+      // Authenticated malformed/future requests still need a correlated endpoint for their local wait.
+      try {
+        const raw: unknown = JSON.parse(payload.toString("utf8"));
+        if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+          const value = raw as Record<string, unknown>;
+          const commandId = typeof value.commandId === "string" && value.commandId.length > 0 && value.commandId.length <= 256 ? value.commandId : undefined;
+          const requestId = typeof value.requestId === "string" && value.requestId.length > 0 && value.requestId.length <= 128 ? value.requestId : undefined;
+          if (value.type === "runtime.command" && commandId) {
+            this.#sendToDevice(deviceId, { type: "protocol.error", code: "invalid_command", commandId, message: "输入格式无效或当前版本不支持" }); return;
+          }
+          if (typeof value.type === "string" && requestId) {
+            this.#sendToDevice(deviceId, { type: "protocol.error", code: "invalid_request", requestId, message: "请求格式无效或当前版本不支持" }); return;
+          }
+        }
+      } catch { /* Unstructured extension data keeps its existing explicit owner. */ }
       this.#options.onData?.(deviceId, payload);
       return;
     }
@@ -1669,7 +1689,7 @@ export class HostService {
       return;
     }
     const command = message.command;
-    if (this.#providerChanging && command.type !== "stop" && this.#backends.some(backend => backend.kind === this.#providerChanging && backend.ownsRuntime(message.runtimeId))) {
+    if (this.#providerChanging && ["user_message", "slash.execute", "permissions.update"].includes(command.type) && this.#backends.some(backend => backend.kind === this.#providerChanging && backend.ownsRuntime(message.runtimeId))) {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "provider_switching", commandId: message.commandId, message: "正在切换供应商，请稍后重新打开会话" });
       return;
     }
@@ -1785,7 +1805,9 @@ export class HostService {
     if (command.type === "session.entry.request") {
       const scope = this.#agentFacts.scopeOf(runtimeId);
       const entry = scope === undefined ? undefined : this.#conversationState.entry(scope, command.entryId);
-      const event: RuntimeEvent = entry === undefined
+      const event: RuntimeEvent = scope?.kind !== "agent" || scope.key.sessionId !== command.sessionId
+        ? { type: "session.entry.result", requestId: command.requestId, entryId: command.entryId, error: "session_mismatch" }
+        : entry === undefined
         ? { type: "session.entry.result", requestId: command.requestId, entryId: command.entryId, error: "entry_not_found" }
         : Buffer.byteLength(JSON.stringify(entry), "utf8") > SESSION_SYNC_MAX_BYTES
           ? { type: "session.entry.result", requestId: command.requestId, entryId: command.entryId, error: "session_entry_too_large" }
@@ -1793,48 +1815,42 @@ export class HostService {
       this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, event));
       return;
     }
-    for (const [key, owner] of this.#commandOwners) if (owner.at < Date.now() - 300_000) this.#commandOwners.delete(key);
-    if (this.#commandOwners.size >= 4096) {
-      this.#sendToDevice(deviceId, { type: "protocol.error", code: "host_busy", message: "Host 命令任务过多，请稍后重试", commandId });
+    const inputScope = this.#agentFacts.scopeOf(runtimeId);
+    const admission = this.#commandOwners.begin(deviceId, runtimeId, commandId, command,
+      inputScope?.kind === "agent" ? agentKeyId(inputScope.key) : runtimeId);
+    if (admission.kind === "reject") {
+      this.#sendToDevice(deviceId, { type: "protocol.error", code: admission.error, commandId,
+        message: admission.error === "host_busy" ? "Host 命令任务过多，请稍后重试" : admission.error === "message_id_conflict" ? "消息身份已由另一个命令使用，请核对原消息" : "命令身份与已有请求冲突" });
       return;
     }
-    const commandKey = JSON.stringify([runtimeId, commandId]); const fingerprint = JSON.stringify(command);
-    const priorOwner = this.#commandOwners.get(commandKey);
-    if (priorOwner !== undefined && (priorOwner.deviceId !== deviceId || priorOwner.fingerprint !== fingerprint)) {
-      this.#sendToDevice(deviceId, { type: "protocol.error", code: "command_id_conflict", message: "命令身份与已有请求冲突", commandId }); return;
+    if (admission.kind === "replay") {
+      this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, admission.record.receipt));
+      return;
     }
-    this.#commandOwners.set(commandKey, { ...priorOwner, deviceId, at: Date.now(), fingerprint,
-      ...(command.type === "interaction.respond" ? { requestId: command.requestId } : {}) });
     this.#deviceViewFacts.accepted(deviceId, {
       operationId: commandId,
       runtimeId,
       ...(command.type === "interaction.respond" ? { requestId: command.requestId } : {}),
     });
     this.refreshHostFacts();
-    for (const backend of this.#backends) {
-      if (!backend.isReady() || !backend.ownsRuntime(runtimeId)) continue;
-      const result = backend.dispatchCommand(runtimeId, commandId, command);
-      if (result === "handled") return;
-      this.#deviceViewFacts.settled(deviceId, {
-        operationId: commandId, runtimeId, state: "failure",
-        detail: result === "offline" ? "runtime_offline" : "unsupported_command",
-      });
-      this.#sendToDevice(deviceId, {
-        type: "protocol.error",
-        code: result === "offline" ? "runtime_offline" : "unsupported_command",
-        message: result === "offline"
-          ? `runtime ${runtimeId} 当前没有在本机运行`
-          : `${backend.kind} 后端不支持命令 ${command.type}`,
-        commandId,
-      });
-      return;
+    try {
+      for (const backend of this.#backends) {
+        if (!backend.isReady() || !backend.ownsRuntime(runtimeId)) continue;
+        const result = backend.dispatchCommand(runtimeId, commandId, command);
+        if (result === "handled") return;
+        const error = result === "offline" ? "runtime_offline" : "unsupported_command";
+        this.#commandOwners.receive(runtimeId, { type: "command.result", commandId, ok: false, status: "failure", error });
+        this.#deviceViewFacts.settled(deviceId, { operationId: commandId, runtimeId, state: "failure", detail: error });
+        this.#sendToDevice(deviceId, { type: "protocol.error", code: error, commandId,
+          message: result === "offline" ? `runtime ${runtimeId} 当前没有在本机运行` : `${backend.kind} 后端不支持命令 ${command.type}` });
+        return;
+      }
+      this.#commandOwners.receive(runtimeId, { type: "command.result", commandId, ok: false, status: "failure", error: "runtime_offline" });
+      this.#deviceViewFacts.settled(deviceId, { operationId: commandId, runtimeId, state: "failure", detail: "runtime_offline" });
+      this.#sendToDevice(deviceId, { type: "protocol.error", code: "runtime_offline", commandId, message: `runtime ${runtimeId} 当前没有在本机运行` });
+    } catch (error) {
+      this.#publishRuntimeEvent(runtimeId, { type: "command.result", commandId, ok: false, status: "unconfirmed", error: describeError(error) });
     }
-    this.#sendToDevice(deviceId, {
-      type: "protocol.error",
-      code: "runtime_offline",
-      message: `runtime ${runtimeId} 当前没有在本机运行`,
-      commandId,
-    });
   }
 
   /** `session.activated` 回执：激活结果统一从 `BackendActivation` 摊平成协议字段。 */
@@ -2320,19 +2336,18 @@ export class HostService {
       }
     }
     if (event.type === "command.result" || (event.type === "runtime.error" && event.commandId !== undefined)) {
-      const key = JSON.stringify([runtimeId, event.commandId]); const owner = this.#commandOwners.get(key);
+      const owner = this.#commandOwners.receive(runtimeId, event);
       if (owner !== undefined) {
         // Retain the bounded receipt for duplicate terminal replies and device ownership.
-        if (!owner.terminal && owner.requestId !== undefined && (event.type === "runtime.error" || !event.ok && event.status !== "pending")) {
+        if (owner.requestId !== undefined && (event.type === "runtime.error" || !event.ok && event.status !== "pending")) {
           this.#notifications.outcome(runtimeId, { code: "interaction.submit", occurrenceId: event.commandId!,
             scope: { requestId: owner.requestId, commandId: event.commandId! }, lifecycle: "outcome", severity: "error",
             message: event.type === "runtime.error" ? event.message : event.error ?? "回答未送达，请重新提交。" }, owner.deviceId);
         }
-        if (event.type === "runtime.error" || event.status !== "pending") owner.terminal = true;
         this.#deviceViewFacts.settled(owner.deviceId, {
           operationId: event.commandId!,
           runtimeId,
-          state: event.type === "runtime.error" ? "failure" : event.ok ? "success" : event.status ?? "failure",
+          state: event.type === "runtime.error" ? "failure" : event.status === "pending" ? "pending" : event.status === "unconfirmed" ? "unconfirmed" : event.ok ? "success" : event.status ?? "failure",
           ...(owner.requestId === undefined ? {} : { requestId: owner.requestId }),
           ...(event.type === "runtime.error" ? { detail: event.message }
             : event.error === undefined ? {} : { detail: event.error }),

@@ -31,6 +31,8 @@ export interface DshConnection {
   stop(): Promise<void>;
 }
 
+export class DshUnconfirmedError extends Error {}
+
 export class DshAcpClient implements DshConnection {
   onNotification: DshConnection["onNotification"];
   onRequest: DshConnection["onRequest"];
@@ -123,7 +125,7 @@ export class DshAcpClient implements DshConnection {
       const timer = timeoutMs > 0 ? setTimeout(() => {
         this.#pending.delete(id);
         try { this.notify("$/cancel_request", { requestId: id }); } catch { /* Already disconnected. */ }
-        reject(new Error(`DSH ${method} 超时`));
+        reject(new DshUnconfirmedError(`DSH ${method} 超时`));
         // A timed-out mutation may already have taken effect. Disconnecting tears
         // down all connection-owned agents, including unpublished late sessions.
         if (method !== "session/list") {
@@ -145,7 +147,7 @@ export class DshAcpClient implements DshConnection {
   #fail(reason: string): void {
     if (this.#closed) return;
     this.#closed = true;
-    for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(new Error(reason)); }
+    for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(new DshUnconfirmedError(reason)); }
     this.#pending.clear();
     this.onExit?.(reason);
   }

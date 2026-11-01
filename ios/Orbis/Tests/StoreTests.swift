@@ -505,6 +505,28 @@ struct StoreTests {
         #expect(store.errorMessage == "模型不可用")
     }
 
+    @Test func composerSlashRetainsArgumentsForFailureAndUnknownAndOnlyClearsTheSubmittedDraftOnSuccess() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(["type": "runtime.capabilities", "capabilities": ["commands": [
+            ["name": "skill", "source": "builtin", "argument": ["kind": "text", "required": true]]
+        ]]], sequence: 1, channel: "ctl")
+        let selected = try #require(store.selectedRuntime)
+        store.saveDraft("/skill preserve this", for: selected)
+        for (offset, status) in ["failure", "unconfirmed", "success"].enumerated() {
+            #expect(store.executeSlash("skill", args: "preserve this", composerDraft: store.draft(for: selected)))
+            #expect(store.draft(for: selected) == "/skill preserve this")
+            let id = try #require(transport.sent.last?["commandId"])
+            await transport.event(["type": "command.result", "commandId": id, "ok": status == "success", "status": status], sequence: offset + 2, channel: "ctl")
+            #expect(store.draft(for: selected) == (status == "success" ? "" : "/skill preserve this"))
+        }
+        store.saveDraft("/skill old", for: selected)
+        #expect(store.executeSlash("skill", args: "old", composerDraft: "/skill old"))
+        let id = try #require(transport.sent.last?["commandId"])
+        store.saveDraft("new draft", for: selected)
+        await transport.event(["type": "command.result", "commandId": id, "ok": true], sequence: 5, channel: "ctl")
+        #expect(store.draft(for: selected) == "new draft")
+    }
+
     @Test func messageRewindUsesCanonicalTargetAndRestoresDraftOnlyAfterSuccess() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
         transport.state?(.secured, nil)

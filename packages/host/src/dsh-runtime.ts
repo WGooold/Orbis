@@ -12,7 +12,7 @@ import {
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
 } from "@orbis/protocol";
 import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
-import { DshAcpClient, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
+import { DshAcpClient, DshUnconfirmedError, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
 import { dshEntries, openDshHistory, type DshHistory } from "./dsh-history.js";
 import { DshWebClient, type DshWebConnection, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
 import { DshWebRuntime, STREAM_COALESCE_MS } from "./dsh-web-runtime.js";
@@ -26,7 +26,7 @@ type Session = {
   source: RecoverableSessionSource;
   notifications: NotificationSource;
   id: string; cwd: string; createdAt: number; options: JsonObject[]; entries: RemoteSessionEntry[];
-  running: boolean; closing: boolean; cancelRequested: boolean; updates: Promise<void>; streamed: Map<string, ChatMessage>;
+  running: boolean; closing: boolean; cancelRequested: boolean; pendingStops: Set<string>; updates: Promise<void>; streamed: Map<string, ChatMessage>;
   tools: Map<string, { name: string; input: unknown }>; lastSeq: number; usage?: RuntimeMetadata["contextUsage"];
   /** 原生 seq → 已投影条目，避免每次 refresh 重建全部对象（ADR-0035 §1/§2）。 */
   entryCache: Map<number, RemoteSessionEntry>;
@@ -34,7 +34,7 @@ type Session = {
   preparer: SessionSyncPreparer;
   /** 在飞的整份日志读取（ADR-0035 §11）：并发 sync 共享同一次读，不排队重复读整份日志。 */
   refresh?: Promise<Awaited<ReturnType<DshHistory["read"]>>>;
-  messages: Map<string, { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled"; error?: string }>;
+  messages: Map<string, { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled" | "unconfirmed"; error?: string }>;
 };
 type Approval = { session: Session; request: DshRequest; interaction: InteractionRequest; timer: NodeJS.Timeout };
 const objects = (value: unknown): JsonObject[] => Array.isArray(value) ? value.map(record) : [];
@@ -240,7 +240,7 @@ export class DshAcpRuntime implements AgentBackend {
         }),
         id, cwd, createdAt: log.header.createdAt, options: objects(response.configOptions), entries: dshEntries(log, entryCache),
         entryCache, preparer: new SessionSyncPreparer(),
-        running: false, closing: false, cancelRequested: false, updates: Promise.resolve(), streamed: new Map(), tools: new Map(), messages: new Map(), lastSeq: log.events.at(-1)?.seq ?? -1,
+        running: false, closing: false, cancelRequested: false, pendingStops: new Set(), updates: Promise.resolve(), streamed: new Map(), tools: new Map(), messages: new Map(), lastSeq: log.events.at(-1)?.seq ?? -1,
       };
       this.#sessions.set(publicId(id), session);
       session.entries = session.entries.map((entry, order) => this.#toolProducer(session).entry(entry, order));
@@ -262,7 +262,7 @@ export class DshAcpRuntime implements AgentBackend {
     if (!this.#ready || !session) return "offline";
     if (!["user_message", "user_message.cancel", "stop", "session.sync", "slash.execute", "interaction.respond"].includes(command.type)) return "unsupported";
     void this.#command(session, commandId, command).catch(error => this.#emit(session, {
-      type: "command.result", commandId, ok: false, status: "failure", error: errorText(error),
+      type: "command.result", commandId, ok: false, status: error instanceof DshUnconfirmedError ? "unconfirmed" : "failure", error: errorText(error),
     }));
     return "handled";
   }
@@ -290,10 +290,17 @@ export class DshAcpRuntime implements AgentBackend {
       case "user_message.cancel":
         this.#emit(session, { type: "command.result", commandId, ok: false, status: "not_cancelable", error: "DSH 不支持撤回排队消息；请使用停止" }); return;
       case "stop":
+        if (!session.running) {
+          const waiting = [...this.#approvals.values()].some(item => item.session === session);
+          if (waiting) { this.#client.notify("session/cancel", { sessionId: session.id }); this.#cancelSessionApprovals(session, "cancelled"); }
+          this.#emit(session, { type: "command.result", commandId, ok: false, status: waiting ? "unconfirmed" : "not_cancelable" }); return;
+        }
         session.cancelRequested = true;
         this.#client.notify("session/cancel", { sessionId: session.id });
+        session.pendingStops.add(commandId);
+        this.#emit(session, { type: "command.result", commandId, ok: true, status: "pending" });
         this.#cancelSessionApprovals(session, "cancelled");
-        break;
+        return;
       case "interaction.respond": {
         const pending = this.#approvals.get(command.requestId);
         if (!pending || pending.session !== session || command.extensionId !== "dsh") throw new Error("审批已结束或不属于这个会话");
@@ -309,6 +316,7 @@ export class DshAcpRuntime implements AgentBackend {
         break;
       }
       case "slash.execute": {
+        if (command.name !== "quit" && session.running) throw new Error("runtime_busy");
         if (command.name === "quit") {
           session.closing = true;
           session.cancelRequested = true;
@@ -340,14 +348,14 @@ export class DshAcpRuntime implements AgentBackend {
     const previous = command.messageId ? session.messages.get(command.messageId) : undefined;
     if (previous) {
       const conflict = previous.fingerprint !== fingerprint;
-      this.#emit(session, { type: "command.result", commandId, ok: !conflict && previous.status !== "failure",
+      this.#emit(session, { type: "command.result", commandId, ok: !conflict && previous.status !== "failure" && previous.status !== "unconfirmed",
         status: conflict ? "message_id_conflict" : previous.status, ...(previous.error ? { error: previous.error } : {}) });
       return;
     }
     if (session.running || command.delivery !== undefined) throw new Error("DSH ACP 不支持插话或排队；请等本轮结束后发送");
     session.running = true;
     session.cancelRequested = false;
-    const receipt: { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled"; error?: string } = { fingerprint, status: "pending" };
+    const receipt: { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled" | "unconfirmed"; error?: string } = { fingerprint, status: "pending" };
     if (command.messageId) session.messages.set(command.messageId, receipt);
     const turnId = randomUUID();
     const startedAt = Date.now();
@@ -366,6 +374,7 @@ export class DshAcpRuntime implements AgentBackend {
       await this.#refresh(session);
       priorIds = new Set(session.entries.map(entry => entry.entryId));
       priorSeq = session.lastSeq;
+      if (this.#sessions.get(publicId(session.id)) !== session) throw new Error("session_not_found");
       if (session.cancelRequested || session.closing || !this.#ready) stopReason = "cancelled";
       else {
         const text = command.text + (command.attachments?.length ? `\n\n附件路径：\n${command.attachments.join("\n")}` : "");
@@ -406,7 +415,10 @@ export class DshAcpRuntime implements AgentBackend {
       this.#cancelSessionApprovals(session, "owner_closed");
       this.#publishMetadata(session);
     }
-    receipt.status = failure ? "failure" : stopReason === "cancelled" ? "cancelled" : "success";
+    receipt.status = failure instanceof DshUnconfirmedError ? "unconfirmed" : failure ? "failure" : stopReason === "cancelled" ? "cancelled" : "success";
+    for (const id of session.pendingStops) this.#emit(session, { type: "command.result", commandId: id,
+      ok: stopReason === "cancelled", status: failure instanceof DshUnconfirmedError ? "unconfirmed" : stopReason === "cancelled" ? "success" : "not_cancelable" });
+    session.pendingStops.clear();
     if (failure) receipt.error = errorText(failure);
     this.#emit(session, { type: "command.result", commandId, ok: !failure, status: receipt.status, ...(receipt.error ? { error: receipt.error } : {}) });
   }

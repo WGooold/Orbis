@@ -9,7 +9,7 @@ import {
   type InteractionCoordinator,
 } from "@orbis/interaction-sdk";
 import {
-  prepareSessionSync,
+  prepareSessionSync, inputMutationError, RuntimeInputUnconfirmedError,
   RecoverableSessionSource,
   selectPreparedSessionSync,
   type PreparedSessionSync,
@@ -151,6 +151,15 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   };
   let connectionState: RelayRuntimeConnectionState = "closed";
   let runtimeActivity: RuntimeActivity = "idle";
+  let compacting = false;
+  const stopWaiters = new Map<symbol, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  const settleStops = (owner: symbol | undefined, error?: Error): void => {
+    if (!owner) return;
+    const waiter = stopWaiters.get(owner);
+    if (!waiter) return;
+    stopWaiters.delete(owner); clearTimeout(waiter.timer);
+    if (error) waiter.reject(error); else waiter.resolve();
+  };
   let liveTurnTimer: ReturnType<typeof setInterval> | undefined;
   let liveTurnStartedAt: number | undefined;
   let turnTimingStore: PiTurnTimingStore | undefined;
@@ -276,6 +285,8 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     turnTiming.reset();
     turnTimingStore = undefined;
     drainQueuedSends = async () => {};
+    for (const owner of stopWaiters.keys()) settleStops(owner, new RuntimeInputUnconfirmedError("会话已切换，停止结果待核对"));
+    compacting = false;
   };
 
   // Keep this process-lifetime listener across session replacement. The broker itself is replaced per session.
@@ -397,6 +408,9 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       delivery: "steer" | "followUp";
     };
     const queuedSends: QueuedSend[] = [];
+    let submitting = false;
+    const ownsSession = (): boolean => bridge === sessionBridge;
+    const nativeIdle = (): boolean => ownsSession() && !compacting && !submitting && currentContext?.isIdle() === true;
     const runtimeId = processRuntimeId();
     slashCommandAdapter = new PiSlashCommandAdapter(pi, () => currentContext, {
       completionScopeId: runtimeId,
@@ -442,7 +456,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       (remoteEvent) => bridge?.publish(remoteEvent),
       (active) => publishRuntimeStatus(active ? "waiting" : (currentContext?.isIdle() ? "idle" : "running")),
     );
-    const sessionBridge = new RuntimeBridge({
+    const sessionBridge: RuntimeBridge = new RuntimeBridge({
       toolContents: producer,
       metadata: () => {
         const host = runtimeHostname();
@@ -496,7 +510,9 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       sessionCatalog: () => catalogCache.get(),
       // 有效忙 = Pi 在跑 || 扩展队列还有压着的消息。否则队列里还有 followUp 时，
       // 手机再来一条无 delivery 的消息会走空闲路径插队，顺序就乱了。
-      isIdle: () => (currentContext?.isIdle() ?? true) && queuedSends.length === 0,
+      isIdle: () => nativeIdle() && queuedSends.length === 0,
+      inputState: () => ({ phase: currentContext?.isIdle() === true ? "idle" : "running", compacting,
+        starting: submitting, queueDepth: queuedSends.length, offline: !ownsSession() }),
       sendUserMessage: async (text, delivery, messageId, attachments) => {
         // 附件作为独立的 text part 跟在用户正文后面：用户消息正文保持原样，
         // agent 仍能拿到每个文件的电脑端路径（路径由上传端保证唯一）。
@@ -506,12 +522,14 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
         }
         // 空闲直通（bridge 只在有效空闲时才允许无 delivery 到这里），立即开新 turn。
         if (delivery === undefined) {
+          if (!nativeIdle()) throw new Error("runtime_busy");
+          submitting = true;
           if (messageId !== undefined) phoneSends.expect(messageId, content);
           try { await pi.sendUserMessage(content); }
           catch (error) {
             if (messageId !== undefined) phoneSends.forget(messageId);
             throw error;
-          }
+          } finally { submitting = false; if (ownsSession()) void drainQueuedSends(); }
           return;
         }
         // 忙时接管：不入 Pi 的队列，出队时用 queueId 调 deliverQueued 回执。
@@ -536,11 +554,23 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
         queuedSends.splice(index, 1);
         return { ok: true as const };
       },
-      abort: () => currentContext?.abort(),
+      abort: () => new Promise<void>((resolve, reject) => {
+        if (!ownsSession() || !currentContext) { reject(new Error("runtime_offline")); return; }
+        if (stopWaiters.has(sessionToken)) { reject(new Error("停止正在处理中")); return; }
+        const timer = setTimeout(() => settleStops(sessionToken, new RuntimeInputUnconfirmedError("停止结果尚未确认，请核对会话")), 60_000);
+        timer.unref(); stopWaiters.set(sessionToken, { resolve, reject, timer });
+        try { currentContext.abort(); } catch (error) { settleStops(sessionToken, error instanceof Error ? error : new Error(String(error))); }
+      }),
       capabilities: async () => ({
         commands: await sessionSlashCommandAdapter.commands(),
       }),
-      executeSlashCommand: (name, args) => sessionSlashCommandAdapter.execute(name, args),
+      executeSlashCommand: (name, args) => {
+        const effect = name === "quit" ? "close" : !args.trim() && ["name", "tree", "model", "session", "stats"].includes(name) ? "read" : "write";
+        const error = inputMutationError({ phase: currentContext?.isIdle() === true ? "idle" : "running", compacting,
+          starting: submitting, queueDepth: queuedSends.length, offline: !ownsSession() }, effect);
+        if (error) return Promise.reject(new Error(error));
+        return sessionSlashCommandAdapter.execute(name, args);
+      },
       recordSlashCommandCompletion: (completion) => sessionSlashCommandAdapter.recordCompletion(completion),
       takeSlashCommandCompletions: () => sessionSlashCommandAdapter.takeCompletions(),
     }, transport, {
@@ -554,23 +584,24 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       },
     }, sessionLog);
     bridge = sessionBridge;
-    // 出队投递：先发 delivered 回执、再送进 Pi（与 codex #drainQueue 同序）——
-    // 手机先撤掉排队行，随后 message.started 的气泡自然上屏。循环条件里
-    // isIdle 会在第一次投递后变 false，天然一次只放行一条。
+    // Keep accepted until native submission succeeds; failure must still be able to reject it.
     drainQueuedSends = async () => {
-      while (queuedSends.length > 0 && (currentContext?.isIdle() ?? true)) {
-        const next = queuedSends.shift();
-        if (!next) break;
-        sessionBridge.deliverQueued(next.messageId);
-        phoneSends.expect(next.messageId, next.content);
-        try {
-          await pi.sendUserMessage(next.content);
-        } catch (error) {
-          phoneSends.forget(next.messageId);
-          sessionBridge.failQueued(next.messageId, error instanceof Error ? error.message : "message_rejected");
-          break;
+      if (!nativeIdle()) return;
+      submitting = true;
+      try {
+        while (queuedSends.length > 0 && ownsSession() && !compacting && currentContext?.isIdle() === true) {
+          const next = queuedSends.shift();
+          if (!next) break;
+          phoneSends.expect(next.messageId, next.content);
+          try {
+            await pi.sendUserMessage(next.content);
+            sessionBridge.deliverQueued(next.messageId);
+          } catch (error) {
+            phoneSends.forget(next.messageId);
+            sessionBridge.failQueued(next.messageId, error instanceof Error ? error.message : "message_rejected");
+          }
         }
-      }
+      } finally { submitting = false; }
     };
     turnTimingStore = new PiTurnTimingStore(
       ctx.sessionManager.getSessionFile(),
@@ -614,20 +645,32 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
 
   // Compaction rewrites the active branch, so the context percentage and tree are stale
   // until the next turn. Refresh them as soon as Pi reports the outcome.
+  pi.on("session_before_compact", async (_event, ctx) => {
+    compacting = true;
+    bridge?.publish({ type: "execution.activity", retry: "unavailable", compaction: { phase: "running" } });
+    bridge?.refreshMetadata();
+    publishRuntimeStatus(ctx.isIdle() ? "idle" : "running");
+  });
+
   pi.on("session_compact", async (_event, ctx) => {
+    compacting = false;
+    if (ctx.isIdle()) settleStops(activeSessionToken);
     bridge?.publish({ type: "execution.activity", retry: "unavailable", compaction: { phase: "idle" } });
     reconcileSource(ctx, true);
     bridge?.refreshMetadata();
     publishRuntimeStatus(currentContext?.isIdle() === false ? "running" : "idle");
     await bridge?.refreshCapabilities();
+    await drainQueuedSends();
   });
 
   pi.on("session_compact_failed", async (event) => {
+    compacting = false;
     bridge?.publish({ type: "execution.activity", retry: "unavailable", compaction: {
       phase: "failed", ...(event.errorMessage === undefined ? {} : { detail: event.errorMessage.slice(0, 512) }),
     } });
     bridge?.refreshMetadata();
     publishRuntimeStatus(currentContext?.isIdle() === false ? "running" : "idle");
+    await drainQueuedSends();
   });
 
   pi.on("session_shutdown", async (event) => {
@@ -660,6 +703,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
 
   pi.on("agent_settled", async (_event, ctx) => {
     await finishFileReview();
+    settleStops(activeSessionToken);
     stopLiveTurn(ctx);
     // Pi's turn_end is the authoritative completion event. Clear the local
     // correlation state here as a fallback for aborted turns with no end event.

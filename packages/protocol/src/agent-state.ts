@@ -170,7 +170,7 @@ export const AgentDeliveryItemSchema = z.strictObject({
   queueId: z.string().min(1).max(256),
   text: z.string().min(1).max(4_096),
   delivery: z.enum(["steer", "followUp"]),
-  state: z.enum(["accepted", "delivered", "cancelled", "rejected", "not_cancelable"]),
+  state: z.enum(["accepted", "delivered", "cancelled", "rejected", "not_cancelable", "unconfirmed"]),
   error: z.string().max(4_000).optional(),
 });
 export type AgentDeliveryItem = z.infer<typeof AgentDeliveryItemSchema>;
@@ -512,7 +512,7 @@ export type AgentStateSnapshot = z.infer<typeof AgentStateSnapshotSchema>;
 /** 设备操作回执状态（模块 13）。`accepted` 表示 Host 已受理、还没有任何后端结果。 */
 export const AgentOperationStateSchema = z.enum([
   "accepted", "pending", "success", "failure", "cancelled",
-  "not_cancelable", "already_delivered", "message_id_conflict",
+  "not_cancelable", "already_delivered", "message_id_conflict", "unconfirmed",
 ]);
 export type AgentOperationState = z.infer<typeof AgentOperationStateSchema>;
 

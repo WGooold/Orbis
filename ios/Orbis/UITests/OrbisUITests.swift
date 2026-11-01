@@ -1036,6 +1036,38 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: restored, object: input)], timeout: 4), .completed)
         XCTAssertFalse(rejected.staticTexts["会话正在运行，请选择插入或完成后发送"].exists)
     }
+    func testUnconfirmedSendCanBeCheckedWithoutResending() {
+        let app = launch("chat", arguments: ["--preview-send=unknown"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap(); composer.typeText("需要核对的输入")
+        app.buttons["发送消息"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["未确认是否送达"].waitForExistence(timeout: 4))
+        XCTAssertFalse(app.staticTexts["发送中"].exists)
+        XCTAssertFalse(app.buttons["重新发送"].exists)
+        let check = app.buttons["核对送达状态"].firstMatch
+        XCTAssertTrue(check.exists); check.tap()
+        XCTAssertTrue(app.staticTexts["未确认是否送达"].exists)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", "需要核对的输入")).count, 1)
+        capture("send-unconfirmed-with-check", app: app)
+    }
+
+    func testCompactionQueuedSendCanBeWithdrawn() {
+        let app = launch("chat", arguments: ["--preview-send=queue", "--preview-compacting"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap(); composer.typeText("等待压缩后发送")
+        app.buttons["发送消息"].firstMatch.tap()
+        let withdraw = app.buttons["撤回排队消息"].firstMatch
+        XCTAssertTrue(withdraw.waitForExistence(timeout: 4))
+        XCTAssertFalse(app.staticTexts["发送中"].exists)
+        capture("send-queued-during-compaction", app: app)
+        withdraw.tap()
+        let removed = NSPredicate(format: "exists == false")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: removed, object: app.staticTexts["等待压缩后发送"])], timeout: 4), .completed)
+        capture("send-queue-withdrawn", app: app)
+    }
+
     func testUserMessageCopyAndRewind() {
         let app = launch("chat")
         let copy = app.buttons["copy-message-m3"]

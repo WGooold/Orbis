@@ -234,7 +234,9 @@ final class OrbisStore: ObservableObject {
     func archive(_ session: SessionSummary, archived: Bool) { activeConnection.archive(session, archived: archived) }
     func browseDirectory(_ path: String? = nil) { activeConnection.browseDirectory(path) }
     func dismissBrowse() { activeConnection.dismissBrowse() }
-    func executeSlash(_ name: String, args: String = "") -> Bool { activeConnection.executeSlash(name, args: args) }
+    func executeSlash(_ name: String, args: String = "", composerDraft: String? = nil) -> Bool {
+        activeConnection.executeSlash(name, args: args, composerDraft: composerDraft)
+    }
     func closeRuntimes(hostId: String, runtimeIds: Set<String>) -> Set<String> {
         connections[hostId]?.closeRuntimes(runtimeIds) ?? []
     }

@@ -1599,20 +1599,15 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         selectedSlashCommandName = null
         model.clearDraft(runtimeId)
     }
-    fun trackSubmission(commandId: String?, clearInputAfterSubmit: Boolean = false) {
+    fun trackSubmission(commandId: String?) {
         if (commandId == null) return
         actionHaptic()
         val submittedText = input
         commandFeedback = null
         pendingMessageCommandId = commandId
         pendingMessageText = submittedText
-        if (clearInputAfterSubmit) {
-            // Slash commands are actions and may replace the session or reconnect the runtime;
-            // clear them once Relay accepts the request instead of waiting for the final result.
-            input = ""
-            selectedSlashCommandName = null
-            model.clearDraft(runtimeId)
-        }
+        // Keep command arguments recoverable until a definite success. A channel write
+        // cannot prove that a prompt/skill or configuration action completed.
     }
     LaunchedEffect(commandFeedback, commandFeedbackTransient) {
         if (commandFeedback != null && commandFeedbackTransient) { delay(2_500); commandFeedback = null }
@@ -2092,7 +2087,6 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                             showDeliveryChoices = false
                                             trackSubmission(
                                                 model.executeSlashCommand(selectedCommand.name, slash.second),
-                                                clearInputAfterSubmit = true,
                                             )
                                         } else if (runtime?.status == "running" && runtime.agentKind == "claude") {
                                             // Claude Code 只有「等当前回合结束后提交」，没有 Steer 可选。
@@ -2229,6 +2223,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                         input = if (input.isBlank()) text else input + "\n" + text
                                     }
                                     PendingSendAction.Discard -> model.discardPendingSend(item.message.messageId)
+                                    PendingSendAction.Check -> model.refreshRuntime(explicitRetry = true)
+                                    PendingSendAction.Cancel -> model.cancelQueuedMessage(item.message.messageId)
                                 }
                             },
                             downloads = state.downloads,
@@ -3538,7 +3534,7 @@ internal fun UserMessageCard(
     }
 }
 
-internal enum class PendingSendAction { Resend, Restore, Discard }
+internal enum class PendingSendAction { Resend, Restore, Discard, Check, Cancel }
 
 /** 用户气泡下方原本放复制 / 回退的位置，替换为发送状态与恢复操作，不在聊天里另起提示行。 */
 @Composable
@@ -3550,9 +3546,16 @@ private fun PendingSendStatus(state: PendingSendState, canResend: Boolean, onAct
                 CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
                 Text("发送中", style = MaterialTheme.typography.labelSmall, color = muted)
             }
+            PendingSendState.Queued -> {
+                Text("已排队", style = MaterialTheme.typography.labelSmall, color = muted)
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Cancel) }, icon = Icons.Rounded.Close,
+                    contentDescription = "撤回排队消息", size = 28.dp, enabled = canResend)
+            }
             PendingSendState.Unconfirmed -> {
-                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
-                Text("正在核对是否送达", style = MaterialTheme.typography.labelSmall, color = muted)
+                Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = muted, modifier = Modifier.size(14.dp))
+                Text("未确认是否送达", style = MaterialTheme.typography.labelSmall, color = muted)
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Check) }, icon = Icons.Rounded.Refresh,
+                    contentDescription = "核对送达状态", size = 28.dp, enabled = canResend)
                 NeumorphIconButton(onClick = { onAction(PendingSendAction.Discard) }, icon = Icons.Rounded.Delete,
                     contentDescription = "删除", size = 28.dp)
             }
@@ -3939,6 +3942,7 @@ internal fun queuedMessageDeliveryText(delivery: String): String = when (deliver
 
 private fun queuedMessageStateText(state: String): String = when (state) {
     "submitting" -> "提交中"
+    "unconfirmed" -> "未确认"
     "accepted" -> "已排队"
     "delivered" -> "已送入上下文"
     "cancelled" -> "已取消"

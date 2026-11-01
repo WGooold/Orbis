@@ -459,6 +459,15 @@ private final class PreviewTransport: OrbisTransport {
                 let mode = sendMode
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: mode == "codex" ? 0 : 400_000_000)
+                    if mode == "queue" {
+                        self.event(["type": "message.queued", "queueId": clientId, "text": text, "delivery": "followUp", "state": "accepted"], runtimeId: runtime)
+                        self.event(["type": "command.result", "commandId": commandId, "ok": true, "status": "success"], runtimeId: runtime)
+                        return
+                    }
+                    if mode == "unknown" {
+                        self.event(["type": "command.result", "commandId": commandId, "ok": false, "status": "unconfirmed", "error": "原生提交结果待核对"], runtimeId: runtime)
+                        return
+                    }
                     if mode == "fail" {
                         self.event(["type": "command.result", "commandId": commandId, "ok": false, "status": "failure", "error": "runtime_busy"], runtimeId: runtime)
                         return

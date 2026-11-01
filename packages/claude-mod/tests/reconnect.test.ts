@@ -291,3 +291,22 @@ for (const error of ["unauthorized", "stale_generation", "bridge_offline"]) {
     expect(world.requests.at(-1)?.body.generation).toBe("renewed-generation");
   });
 }
+
+test("defers a phone submission during standalone compaction and releases it on native completion", async ($, on) => {
+  const { clock, world } = setup(on);
+  on("session.compact", async (_$, event) => {
+    await clock.sleep(3000);
+    return { messages: event.messages };
+  });
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  const compacting = $.session.compact({ messages: [{ role: "user", text: "existing context", toolUses: [], toolResults: [] }] });
+  await clock.settle();
+  world.commands = [{ commandId: "during-compaction", command: { type: "user_message", text: "next task" } }];
+  await clock.advance(2250);
+  expect(world.submits).toBe(0);
+  expect(world.requests.some(request => (request.body.event as { type?: string; phase?: string } | undefined)?.phase === "running")).toBe(true);
+  await clock.advance(1500);
+  await compacting;
+  expect(world.submits).toBe(1);
+});

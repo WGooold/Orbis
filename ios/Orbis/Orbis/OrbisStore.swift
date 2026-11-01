@@ -201,6 +201,7 @@ final class HostConnection: ObservableObject {
     private var activationTimeout: Task<Void, Never>?
     private var activationRequestId: String?
     private var runtimeActions: [String: (runtimeId: String, name: String)] = [:]
+    private var composerActionDrafts: [String: (key: String, text: String)] = [:]
     private var actionTimeouts: [String: Task<Void, Never>] = [:]
     private var feedbackTimeout: Task<Void, Never>?
     private var previewTimeout: Task<Void, Never>?
@@ -468,7 +469,7 @@ final class HostConnection: ObservableObject {
         pendingActivation = nil; activePath = nil
         interactions = [:]; queuedMessages = [:]; queueCommands = [:]; pendingQueueCancellations = []; interactionCommands = [:]; submittingInteractions = []
         workingBranches = [:]; dismissPreview()
-        actionTimeouts.values.forEach { $0.cancel() }; actionTimeouts = [:]; runtimeActions = [:]; pendingActionIds = []; setActionFeedback(nil)
+        actionTimeouts.values.forEach { $0.cancel() }; actionTimeouts = [:]; runtimeActions = [:]; composerActionDrafts = [:]; pendingActionIds = []; setActionFeedback(nil)
         pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil
         dismissBrowse(); clearActivation()
         clearSyncs()
@@ -1046,11 +1047,13 @@ final class HostConnection: ObservableObject {
     func dismissBrowse() { browseTimeout?.cancel(); browseTimeout = nil; browse = nil }
 
     @discardableResult
-    func executeSlash(_ name: String, args: String = "") -> Bool {
+    func executeSlash(_ name: String, args: String = "", composerDraft: String? = nil) -> Bool {
         guard canSend, let runtime = selectedRuntime,
               let command = commands[runtime.runtimeId]?.first(where: { $0.name == name }),
               command.argument?.required != true || !args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        return performAction(runtimeId: runtime.runtimeId, name: name, command: ["type": "slash.execute", "name": name, "args": args])
+        guard let id = performActionId(runtimeId: runtime.runtimeId, name: name, command: ["type": "slash.execute", "name": name, "args": args]) else { return false }
+        if let composerDraft { composerActionDrafts[id] = (localSessionKey(host: selectedHost, runtime: runtime), composerDraft) }
+        return true
     }
 
     /// Close a home-list selection without changing the active conversation or its draft.
@@ -1130,6 +1133,13 @@ final class HostConnection: ObservableObject {
 
     private func finishAction(_ id: String, succeeded: Bool, message: String? = nil, result: [String: Any]? = nil) {
         guard let action = runtimeActions.removeValue(forKey: id) else { return }
+        if let submitted = composerActionDrafts.removeValue(forKey: id), succeeded {
+            drafts = preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? drafts
+            if drafts[submitted.key] == submitted.text {
+                drafts[submitted.key] = nil
+                preferences?.set(drafts, forKey: "orbis.sessionDrafts")
+            }
+        }
         defer { if action.name == "tree" { branchEditorNode = nil; branchEditorText = nil } }
         pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel(); updateSyncing()
         if action.name == "quit", closingRuntimes[action.runtimeId]?.commandId == id {
@@ -1561,7 +1571,8 @@ final class HostConnection: ObservableObject {
             if let pending = queueCommands[commandId], pending.runtimeId == runtimeId {
                 queueCommands[commandId] = nil; pendingQueueCancellations.remove(pending.queueId)
                 actionTimeouts.removeValue(forKey: commandId)?.cancel()
-                if event["ok"] as? Bool == false { errorMessage = event["error"] as? String ?? "消息撤回失败。" }
+                if event["ok"] as? Bool == true { pendingSends.remove(pending.queueId) }
+                else { errorMessage = event["error"] as? String ?? "消息撤回失败。" }
                 updateSyncing()
             }
             if runtimeActions[commandId]?.runtimeId == runtimeId { finishAction(commandId, succeeded: event["ok"] as? Bool == true, message: event["error"] as? String, result: event["result"] as? [String: Any]) }
@@ -2201,7 +2212,7 @@ final class HostConnection: ObservableObject {
         interactions[runtimeId] = nil; commands[runtimeId] = nil; workingBranches[runtimeId] = nil
         if entryPreview?.runtimeId == runtimeId { dismissPreview() }
         let actions = runtimeActions.filter { $0.value.runtimeId == runtimeId }.map(\.key)
-        for id in actions { runtimeActions[id] = nil; pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel() }
+        for id in actions { runtimeActions[id] = nil; composerActionDrafts[id] = nil; pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel() }
         conversations[runtimeId] = nil
         liveMessageIds[runtimeId] = nil; unfinishedLiveMessageIds[runtimeId] = nil; liveOrders[runtimeId] = nil; liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil
         displayMessageIds[runtimeId] = nil; messageAliases[runtimeId] = nil

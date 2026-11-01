@@ -7,6 +7,7 @@ package com.orbising.orbis
 sealed interface PendingSendState {
     data object Sending : PendingSendState
     data object Accepted : PendingSendState
+    data object Queued : PendingSendState
     data class Failed(val reason: String) : PendingSendState
     /** 断线或 Runtime 离线时还没定论：命令可能已经送达，核对前不允许重新发送。 */
     data object Unconfirmed : PendingSendState
@@ -28,31 +29,38 @@ data class PendingSend(
     val sawBusy: Boolean = false,
     /** 兜底核对开始时的权威状态版本；之后再应用一次权威状态才能下结论。 */
     val settleRevision: Long? = null,
+    val needsDeliveryEvidence: Boolean = false,
+    val submissionConfirmed: Boolean = false,
+    val queueOwned: Boolean = false,
 ) {
     /** 带 `delivery` 且尚未被接受时，它在队列面板里显示「提交中」。 */
-    val showsInQueue: Boolean get() = delivery != null && state == PendingSendState.Sending
+    val showsInQueue: Boolean get() = delivery != null && state == PendingSendState.Sending && !queueOwned
 }
 
 internal const val PENDING_SEND_ACCEPTED_IDLE_GRACE_MS = 15_000L
 
 internal fun Map<String, PendingSend>.chatRows(sessionId: String?): List<PendingSend> =
-    values.filter { it.sessionId == sessionId && !it.showsInQueue }.sortedBy(PendingSend::createdAt)
+    values.filter { it.sessionId == sessionId && !it.showsInQueue && !it.queueOwned }.sortedBy(PendingSend::createdAt)
 
 internal fun Map<String, PendingSend>.queueRows(sessionId: String?): List<PendingSend> =
     values.filter { it.sessionId == sessionId && it.showsInQueue }.sortedBy(PendingSend::createdAt)
 
 /** 聊天里的本地行已经代表这条消息，Host 队列里的同一项不再重复显示。 */
 internal fun Map<String, PendingSend>.hidesQueueItem(queueId: String): Boolean =
-    get(queueId)?.let { it.delivery == null && !it.showsInQueue } == true
+    get(queueId)?.let { !it.showsInQueue && !it.queueOwned } == true
 
 /** `cancelled` 由客户端在断线时合成，或表示回合被取消：都不能证明消息没有送达。 */
 internal fun Map<String, PendingSend>.withCommandResult(commandId: String, result: CommandResult, now: Long): Map<String, PendingSend> {
     val item = values.firstOrNull { it.commandId == commandId } ?: return this
     val next = when {
-        result.ok -> if (item.state == PendingSendState.Accepted) item
-            else item.copy(state = PendingSendState.Accepted, acceptedAt = now, sawBusy = false, settleRevision = null)
-        result.status == "cancelled" -> if (item.state == PendingSendState.Sending || item.state == PendingSendState.Accepted)
-            item.copy(state = PendingSendState.Unconfirmed, settleRevision = null) else item
+        result.status == "unconfirmed" -> item.copy(state = PendingSendState.Unconfirmed, needsDeliveryEvidence = true, queueOwned = false, settleRevision = null)
+        result.ok && result.status == "pending" && item.needsDeliveryEvidence -> item
+        result.ok -> item.copy(state = PendingSendState.Accepted, acceptedAt = item.acceptedAt ?: now,
+            sawBusy = if (item.state == PendingSendState.Accepted) item.sawBusy else false, settleRevision = null,
+            submissionConfirmed = item.submissionConfirmed || result.status != "pending",
+            needsDeliveryEvidence = if (result.status == "pending") item.needsDeliveryEvidence else false)
+        result.status == "cancelled" -> if (item.state == PendingSendState.Sending || item.state == PendingSendState.Accepted || item.state == PendingSendState.Queued)
+            item.copy(state = PendingSendState.Unconfirmed, needsDeliveryEvidence = true, queueOwned = false, settleRevision = null) else item
         else -> item.copy(state = PendingSendState.Failed(pendingSendFailureText(result.status, result.error)))
     }
     return if (next == item) this else this + (item.messageId to next)
@@ -60,13 +68,13 @@ internal fun Map<String, PendingSend>.withCommandResult(commandId: String, resul
 
 /** 传输断开：还没有回执的命令可能已经送达；已被 Host 接受的不受影响。 */
 internal fun Map<String, PendingSend>.connectionLost(): Map<String, PendingSend> = mapValues { (_, item) ->
-    if (item.state == PendingSendState.Sending) item.copy(state = PendingSendState.Unconfirmed, settleRevision = null) else item
+    if (item.state == PendingSendState.Sending) item.copy(state = PendingSendState.Unconfirmed, needsDeliveryEvidence = true, settleRevision = null) else item
 }
 
 /** Runtime 离线：即使 Host 已接受，消息也可能没有进入 agent。 */
 internal fun Map<String, PendingSend>.runtimeLost(sessionId: String?): Map<String, PendingSend> = mapValues { (_, item) ->
-    if (item.sessionId == sessionId && (item.state == PendingSendState.Sending || item.state == PendingSendState.Accepted))
-        item.copy(state = PendingSendState.Unconfirmed, settleRevision = null) else item
+    if (item.sessionId == sessionId && (item.state == PendingSendState.Sending || item.state == PendingSendState.Accepted || item.state == PendingSendState.Queued))
+        item.copy(state = PendingSendState.Unconfirmed, needsDeliveryEvidence = true, queueOwned = false, settleRevision = null) else item
 }
 
 /** One Session's view of source facts; `status` is null when no Runtime serves the Session. */
@@ -94,24 +102,29 @@ internal fun Map<String, PendingSend>.reconcile(
         val seen = observations.getValue(original.sessionId)
         if (seen.isMaterialized(original.messageId)) continue
         val host = seen.queue[original.messageId]
-        if (host != null) {
-            // 队列面板里的消息从此由 Host 队列项负责显示、撤回和交付。
-            if (original.delivery != null) continue
+        if (host != null && host.state != "delivered") {
+            if (host.state == "cancelled") continue
+            val retained = original.copy(queueOwned = original.delivery != null && host.state == "accepted")
             next[original.messageId] = when {
-                host.state == "cancelled" || host.state == "rejected" -> original.copy(settleRevision = null,
-                    state = PendingSendState.Failed(host.error ?: if (host.state == "cancelled") "消息已被撤回" else "电脑端拒绝了这条消息"))
-                original.state == PendingSendState.Sending || original.state == PendingSendState.Unconfirmed ->
-                    original.copy(state = PendingSendState.Accepted, acceptedAt = original.acceptedAt ?: now, settleRevision = null)
-                else -> original.copy(settleRevision = null)
+                host.state == "unconfirmed" -> retained.copy(state = PendingSendState.Unconfirmed, needsDeliveryEvidence = true, settleRevision = null)
+                host.state == "rejected" -> retained.copy(settleRevision = null,
+                    state = PendingSendState.Failed(host.error ?: "电脑端拒绝了这条消息"))
+                host.state == "accepted" || host.state == "not_cancelable" ->
+                    retained.copy(state = PendingSendState.Queued, acceptedAt = original.acceptedAt ?: now, settleRevision = null)
+                else -> retained.copy(settleRevision = null)
             }
             continue
         }
-        var item = original
+        var item = when {
+            host?.state == "delivered" -> original.copy(state = PendingSendState.Accepted, submissionConfirmed = true, queueOwned = false)
+            original.state == PendingSendState.Queued -> original.copy(state = PendingSendState.Unconfirmed, needsDeliveryEvidence = true, queueOwned = false)
+            else -> original.copy(queueOwned = false)
+        }
         val waiting = item.state == PendingSendState.Accepted || item.state == PendingSendState.Unconfirmed
         if (seen.status != null && seen.status != "idle" && waiting) item = item.copy(sawBusy = true)
         val idle = seen.connected && seen.status == "idle"
         val eligible = when (item.state) {
-            PendingSendState.Accepted -> idle && (item.sawBusy || now - (item.acceptedAt ?: now) >= PENDING_SEND_ACCEPTED_IDLE_GRACE_MS)
+            PendingSendState.Accepted -> item.submissionConfirmed && idle && (item.sawBusy || now - (item.acceptedAt ?: now) >= PENDING_SEND_ACCEPTED_IDLE_GRACE_MS)
             PendingSendState.Unconfirmed -> idle
             else -> false
         }
@@ -125,6 +138,7 @@ internal fun Map<String, PendingSend>.reconcile(
             seen.revision <= started -> next[item.messageId] = item
             // 源端为准：已接受但无法对应的行退场；未确认的行变为可重发的失败。
             item.state == PendingSendState.Accepted -> Unit
+            item.needsDeliveryEvidence -> next[item.messageId] = item
             else -> next[item.messageId] = item.copy(state = PendingSendState.Failed("未能确认送达，可以重新发送"), settleRevision = null)
         }
     }

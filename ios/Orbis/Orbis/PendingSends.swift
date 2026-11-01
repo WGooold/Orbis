@@ -6,6 +6,7 @@ struct PendingSend: Equatable, Identifiable {
     enum State: Equatable {
         case sending
         case accepted
+        case queued
         case failed(String)
         /// 断线或 Runtime 离线时还没定论：命令可能已经送达，核对前不允许重新发送。
         case unconfirmed
@@ -26,10 +27,15 @@ struct PendingSend: Equatable, Identifiable {
     var sawBusy = false
     /// 兜底核对开始时的权威状态版本；之后再应用一次权威状态才能下结论。
     var settleRevision: Int?
+    /// A native submission with a lost result requires positive delivery evidence before retry.
+    var needsDeliveryEvidence = false
+    var submissionConfirmed = false
+    /// Retain the recoverable input while the Host queue owns its visible row.
+    var queueOwned = false
 
     var id: String { messageId }
     /// 带 `delivery` 且尚未被接受时，它在队列面板里显示「提交中」。
-    var showsInQueue: Bool { delivery != nil && state == .sending }
+    var showsInQueue: Bool { delivery != nil && state == .sending && !queueOwned }
 }
 
 struct PendingSendOutbox: Equatable {
@@ -41,13 +47,13 @@ struct PendingSendOutbox: Equatable {
     func item(_ messageId: String?) -> PendingSend? { messageId.flatMap { id in items.first { $0.messageId == id } } }
     func owns(commandId: String) -> Bool { items.contains { $0.commandId == commandId } }
     func chatRows(sessionId: String?) -> [PendingSend] {
-        items.filter { $0.sessionId == sessionId && !$0.showsInQueue }.sorted { $0.createdAt < $1.createdAt }
+        items.filter { $0.sessionId == sessionId && !$0.showsInQueue && !$0.queueOwned }.sorted { $0.createdAt < $1.createdAt }
     }
     func queueRows(sessionId: String?) -> [PendingSend] {
         items.filter { $0.sessionId == sessionId && $0.showsInQueue }.sorted { $0.createdAt < $1.createdAt }
     }
     /// 聊天里的本地行已经代表这条消息，Host 队列里的同一项不再重复显示。
-    func hidesQueueItem(_ queueId: String) -> Bool { items.contains { $0.messageId == queueId && !$0.showsInQueue && $0.delivery == nil } }
+    func hidesQueueItem(_ queueId: String) -> Bool { items.contains { $0.messageId == queueId && !$0.showsInQueue && !$0.queueOwned } }
 
     mutating func add(_ send: PendingSend) {
         items.removeAll { $0.messageId == send.messageId }
@@ -67,10 +73,14 @@ struct PendingSendOutbox: Equatable {
     mutating func commandResult(_ commandId: String, ok: Bool, status: String?, error: String?, now: Date = Date()) -> Bool {
         guard let index = items.firstIndex(where: { $0.commandId == commandId }) else { return false }
         var item = items[index]
-        if ok {
+        if status == "unconfirmed" {
+            item.state = .unconfirmed; item.needsDeliveryEvidence = true; item.queueOwned = false; item.settleRevision = nil
+        } else if ok {
+            if item.needsDeliveryEvidence && status == "pending" { return true }
+            if status != "pending" { item.submissionConfirmed = true; item.needsDeliveryEvidence = false }
             if item.state != .accepted { item.state = .accepted; item.acceptedAt = now; item.sawBusy = false; item.settleRevision = nil }
         } else if status == "cancelled" {
-            if item.state == .sending || item.state == .accepted { item.state = .unconfirmed; item.settleRevision = nil }
+            if item.state == .sending || item.state == .accepted || item.state == .queued { item.state = .unconfirmed; item.needsDeliveryEvidence = true; item.queueOwned = false; item.settleRevision = nil }
         } else {
             item.state = .failed(pendingSendFailureText(status: status, error: error))
         }
@@ -81,14 +91,14 @@ struct PendingSendOutbox: Equatable {
     /// 传输断开：还没有回执的命令可能已经送达；已被 Host 接受的不受影响。
     mutating func connectionLost() {
         for index in items.indices where items[index].state == .sending {
-            items[index].state = .unconfirmed; items[index].settleRevision = nil
+            items[index].state = .unconfirmed; items[index].needsDeliveryEvidence = true; items[index].settleRevision = nil
         }
     }
 
     /// Runtime 离线：即使 Host 已接受，消息也可能没有进入 agent。
     mutating func runtimeLost(sessionId: String?) {
-        for index in items.indices where items[index].sessionId == sessionId && (items[index].state == .sending || items[index].state == .accepted) {
-            items[index].state = .unconfirmed; items[index].settleRevision = nil
+        for index in items.indices where items[index].sessionId == sessionId && (items[index].state == .sending || items[index].state == .accepted || items[index].state == .queued) {
+            items[index].state = .unconfirmed; items[index].needsDeliveryEvidence = true; items[index].queueOwned = false; items[index].settleRevision = nil
         }
     }
 
@@ -102,24 +112,30 @@ struct PendingSendOutbox: Equatable {
             guard original.sessionId == sessionId else { return original }
             var item = original
             if isMaterialized(item.messageId) { return nil }
-            if let host = queued[item.messageId] {
-                // 队列面板里的消息从此由 Host 队列项负责显示、撤回和交付。
-                if item.delivery != nil { return nil }
-                if host.state == "cancelled" || host.state == "rejected" {
-                    item.state = .failed(host.error ?? (host.state == "cancelled" ? "消息已被撤回" : "电脑端拒绝了这条消息"))
-                } else if item.state == .sending || item.state == .unconfirmed {
-                    item.state = .accepted; item.acceptedAt = item.acceptedAt ?? now
+            if let host = queued[item.messageId], host.state != "delivered" {
+                if host.state == "cancelled" { return nil }
+                // Host owns the visible queue row; keep a hidden recovery copy until actual materialization.
+                item.queueOwned = item.delivery != nil && host.state == "accepted"
+                if host.state == "unconfirmed" {
+                    item.state = .unconfirmed; item.needsDeliveryEvidence = true
+                } else if host.state == "rejected" {
+                    item.state = .failed(host.error ?? "电脑端拒绝了这条消息")
+                } else if host.state == "accepted" || host.state == "not_cancelable" {
+                    item.state = .queued; item.acceptedAt = item.acceptedAt ?? now
                 }
                 item.settleRevision = nil
                 return item
             }
+            item.queueOwned = false
+            if queued[item.messageId]?.state == "delivered" { item.submissionConfirmed = true; item.state = .accepted }
+            else if item.state == .queued { item.state = .unconfirmed; item.needsDeliveryEvidence = true }
             if let status, status != "idle", item.state == .accepted || item.state == .unconfirmed { item.sawBusy = true }
             let idle = connected && status == "idle"
             let eligible: Bool
             switch item.state {
-            case .accepted: eligible = idle && (item.sawBusy || now.timeIntervalSince(item.acceptedAt ?? now) >= Self.acceptedIdleGrace)
+            case .accepted: eligible = item.submissionConfirmed && idle && (item.sawBusy || now.timeIntervalSince(item.acceptedAt ?? now) >= Self.acceptedIdleGrace)
             case .unconfirmed: eligible = idle
-            case .sending, .failed: eligible = false
+            case .sending, .queued, .failed: eligible = false
             }
             guard eligible else { item.settleRevision = nil; return item }
             guard let started = item.settleRevision else {
@@ -129,6 +145,7 @@ struct PendingSendOutbox: Equatable {
             guard revision > started else { return item }
             // 源端为准：已接受但无法对应的行退场；未确认的行变为可重发的失败。
             if item.state == .accepted { return nil }
+            if item.needsDeliveryEvidence { return item }
             item.state = .failed("未能确认送达，可以重新发送"); item.settleRevision = nil
             return item
         }
