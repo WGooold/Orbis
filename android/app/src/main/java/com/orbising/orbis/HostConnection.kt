@@ -196,13 +196,24 @@ internal class HostConnection(
         job.start()
     }
 
+    /** ADR-0049 §6.6 `dismiss`：横幅立即隐藏，只影响本设备；写入后立即读取一次，作为因果晚于关闭的核对点。 */
     fun dismissNotification(runtimeId: String, notificationId: String) {
         val epoch = mutableState.value.notificationEpoch ?: return
-        relay.sendDeviceMessage(buildJsonObject {
+        val opId = UUID.randomUUID().toString()
+        var created = false
+        updateState { state ->
+            val (next, creation) = state.createDismiss(opId, runtimeId, notificationId, System.currentTimeMillis())
+            created = creation is LedgerCreation.Created
+            if (created) next else state
+        }
+        if (!created) return
+        val sent = relay.sendDeviceMessage(buildJsonObject {
             put("type", "notification.dismiss"); put("protocolVersion", PROTOCOL_VERSION)
             put("runtimeId", runtimeId); put("hostEpoch", epoch); put("notificationId", notificationId)
         })
+        if (!sent) { updateState { it.copy(ledger = it.ledger.remove(opId)) }; return }
         syncNotifications(runtimeId)
+        updateState { it.dismissWritten(opId, System.currentTimeMillis()) }
     }
 
     /** 握手看门狗超时：连上中继后多久还没等到加密通道就认定「电脑没在听」（spec §5）。 */

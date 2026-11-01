@@ -79,8 +79,10 @@ final class HostConnection: ObservableObject {
     private var ledgerHostId: String?
     /// 当前加密连接是否已计入账本的连接代次。
     private var ledgerConnectionOpen = false
-    /// 在线列表已应用的次数，作为账本 `runtimes` 领域的序号。
-    private var runtimeListSeq = 0
+    /// 各领域已应用权威状态的次数，作为账本的领域序号（basis）。
+    private var authoritySeq: [String: Int] = [:]
+    /// 本连接上已收到过权威状态的领域：核对读取只为它们作证，避免用上一条连接留下的旧状态下结论。
+    private var ledgerFresh: Set<String> = []
     /// 账本发起、尚未回复的核对读取：requestId → 读取序号（L5）。
     private var ledgerReads: [String: Int] = [:]
     private var ledgerClock: Task<Void, Never>?
@@ -1099,7 +1101,7 @@ final class HostConnection: ObservableObject {
     private func submitQuit(_ runtimeId: String) -> Bool {
         let commandId = UUID().uuidString
         let creation = ledger.create(opId: commandId, kind: OperationKinds.quit, target: OperationKinds.quitTarget(runtimeId),
-                                     policy: OperationKinds.quitPolicy, basis: [OperationKinds.runtimesDomain: runtimeListSeq],
+                                     policy: OperationKinds.quitPolicy, basis: ledgerBasis(OperationKinds.runtimesDomain),
                                      payload: .quit(runtimeId: runtimeId), written: false, now: Date())
         switch creation {
         case .created: break
@@ -1120,7 +1122,7 @@ final class HostConnection: ObservableObject {
     /// 加密连接已建立：账本进入新的连接代次，旧连接上仍未结算的操作重新核对（L4、L5）。
     private func ledgerOpenConnection() {
         guard !ledgerConnectionOpen else { return }
-        ledgerConnectionOpen = true
+        ledgerConnectionOpen = true; ledgerFresh = []
         handleLedger(ledger.connected())
         ledgerVerify()
     }
@@ -1128,21 +1130,39 @@ final class HostConnection: ObservableObject {
     /// 连接断开：已写入的操作统一转结果不明，旧连接上的核对读取作废（L4）。
     private func ledgerCloseConnection() {
         guard ledgerConnectionOpen else { return }
-        ledgerConnectionOpen = false; ledgerReads = [:]
+        ledgerConnectionOpen = false; ledgerReads = [:]; ledgerFresh = []
         handleLedger(ledger.connectionLost())
     }
 
-    /// 在线列表已应用。`read` 是核对读取的序号：同一有序通道上，读取回复到达时的在线列表已包含 Host 处理这次读取之前的全部变化。
-    private func ledgerRuntimeList(read: Int?, complete: Bool) {
-        runtimeListSeq += 1
-        guard !ledger.operations.isEmpty else { return }
-        let ids = Set(runtimes.map(\.runtimeId))
-        let stamp = AppLedger.Stamp(domain: OperationKinds.runtimesDomain, seq: runtimeListSeq, connection: ledger.connection, read: read, complete: complete)
-        handleLedger(ledger.authority(stamp) { OperationKinds.evidence($0, runtimeIds: ids) })
+    /// 某个领域的权威状态刚刚应用。`read` 是核对读取的序号；推送为 nil。
+    private func ledgerAuthority(_ domain: String, read: Int?, complete: Bool) {
+        let seq = (authoritySeq[domain] ?? 0) + 1
+        authoritySeq[domain] = seq
+        if read == nil { ledgerFresh.insert(domain) }
+        guard ledger.operations.contains(where: { $0.basis[domain] != nil }) else { return }
+        let stamp = AppLedger.Stamp(domain: domain, seq: seq, connection: ledger.connection, read: read, complete: complete)
+        let evidence = ledgerEvidence(domain)
+        handleLedger(ledger.authority(stamp, evidence: evidence))
     }
 
-    /// 核对读取的回复：先交设备私有回执，再以同一时刻的在线列表核对（L5）。读取失败（例如旧 Host 不认识设备作用域）
-    /// 也是这次读取之后的回复：回执按查不到处理，仍以在线列表核对，不让操作停在结果不明。
+    /// 各领域的证据：只在连接层这里读当前权威状态，种类规则在 `OperationKinds`。
+    private func ledgerEvidence(_ domain: String) -> (AppLedger.Operation) -> AppLedger.Evidence {
+        if domain == OperationKinds.runtimesDomain {
+            let ids = Set(runtimes.map(\.runtimeId))
+            return { OperationKinds.evidence($0, runtimeIds: ids) }
+        }
+        let projections = notifications.projections
+        return { op in
+            guard case .dismiss(let runtimeId, _, _) = op.payload, OperationKinds.noticesDomain(runtimeId) == domain else { return .none }
+            return OperationKinds.noticeEvidence(op, projection: projections[runtimeId])
+        }
+    }
+
+    /// 创建操作时记下它要读的领域已应用到哪里（L2 的 basis）。
+    private func ledgerBasis(_ domain: String) -> [String: Int] { [domain: authoritySeq[domain] ?? 0] }
+
+    /// 核对读取的回复：先交设备私有回执，再以同一时刻的权威状态核对（L5）。读取失败（例如旧 Host 不认识设备作用域）
+    /// 也是这次读取之后的回复：回执按查不到处理，仍以权威状态核对，不让操作停在结果不明。只核对本连接上已刷新过的领域。
     private func consumeLedgerRead(_ message: [String: Any], type: String, read: Int) {
         var receipts: [String: AppLedger.Receipt] = [:]
         if type == "agent.state.snapshot", message["scope"] as? String == "device", message["error"] == nil {
@@ -1150,30 +1170,47 @@ final class HostConnection: ObservableObject {
             receipts = OperationKinds.deviceReceipts(domain?["value"])
         }
         handleLedger(ledger.deviceReceipts(receipts, connection: ledger.connection, now: Date()))
-        ledgerRuntimeList(read: read, complete: true)
+        let domains = Set(ledger.operations.flatMap(\.basis.keys)).intersection(ledgerFresh)
+        for domain in domains.sorted() {
+            ledgerAuthority(domain, read: read, complete: ledgerDomainComplete(domain))
+        }
     }
 
-    /// 账本事件的呈现：被拒绝的操作提示原因后删除，界面随叠加回到权威状态；结果不明的发起核对读取。
+    /// 领域当前的权威状态是否完整：部分结果不能作为反向证据（L2）。
+    private func ledgerDomainComplete(_ domain: String) -> Bool {
+        if domain == OperationKinds.runtimesDomain { return true }
+        if domain.hasPrefix("notifications:") {
+            return notifications.projections[String(domain.dropFirst("notifications:".count))]?.complete == true
+        }
+        return false
+    }
+
+    /// 账本事件的呈现：列表类被拒绝时提示原因后删除，界面随叠加回到权威状态；结果不明的发起核对读取。
     private func handleLedger(_ events: [AppLedger.Event]) {
         var verify = false
         for event in events {
             switch event {
             case .rejected(let op):
                 if let text = OperationKinds.message(for: op) { errorMessage = text }
-                switch op.payload {
-                case .quit: ledger.remove(op.opId) // 列表类：提示后删除，卡片回到原位。
-                }
+                if OperationKinds.removesOnRejection(op) { ledger.remove(op.opId) }
             case .verify: verify = true
             case .landed, .unknown, .unconfirmed, .expired, .ready: break
             }
         }
+        notifications.setHidden(OperationKinds.hiddenNotificationKeys(ledger))
         if verify { ledgerVerify() }
         scheduleLedgerClock()
     }
 
-    /// 结果不明的操作主动读取一次设备私有回执（L5）；回复到达时连同在线列表一起核对。
+    /// 结果不明的操作主动读取一次设备私有回执（L5）；回复到达时连同权威状态一起核对。
     private func ledgerVerify() {
-        guard ledgerConnectionOpen, ledger.operations.contains(where: { $0.phase == .unknown || $0.phase == .unconfirmed }) else { return }
+        guard ledger.operations.contains(where: { $0.phase == .unknown || $0.phase == .unconfirmed }) else { return }
+        ledgerRead()
+    }
+
+    /// 发起一次读取。同一有序通道上，它的回复晚于此前写入的操作在 Host 上的处理结果（L2）。
+    private func ledgerRead() {
+        guard ledgerConnectionOpen else { return }
         let read = ledger.beginRead()
         let requestId = OperationKinds.verifyRequestPrefix + UUID().uuidString
         ledgerReads[requestId] = read
@@ -1195,6 +1232,23 @@ final class HostConnection: ObservableObject {
     /// 到期处理的唯一入口；测试用它推进时钟。
     func advanceLedgerClock(to now: Date) {
         handleLedger(ledger.tick(now: now))
+    }
+
+    /// ADR-0049 §6.6 `dismiss`：横幅立即隐藏，只影响本设备；写入后立即读取一次，作为因果晚于关闭的核对点。
+    func dismissNotification(runtimeId: String, notificationId: String) {
+        guard let epoch = notifications.hostEpoch else { return }
+        let opId = UUID().uuidString
+        let domain = OperationKinds.noticesDomain(runtimeId)
+        let creation = ledger.create(opId: opId, kind: OperationKinds.dismiss,
+                                     target: OperationKinds.dismissTarget(runtimeId: runtimeId, hostEpoch: epoch, notificationId: notificationId),
+                                     policy: OperationKinds.dismissPolicy, basis: ledgerBasis(domain),
+                                     payload: .dismiss(runtimeId: runtimeId, hostEpoch: epoch, notificationId: notificationId), written: false, now: Date())
+        guard creation == .created else { return }
+        guard notifications.dismiss(runtimeId: runtimeId, notificationId: notificationId) == epoch else {
+            ledger.remove(opId); handleLedger([]); return
+        }
+        handleLedger(ledger.written(opId, now: Date()))
+        ledgerRead()
     }
 
     func updatePermission(settingId: String, value: String) {
@@ -1483,7 +1537,16 @@ final class HostConnection: ObservableObject {
         if let requestId = message["requestId"] as? String, let read = ledgerReads.removeValue(forKey: requestId) {
             consumeLedgerRead(message, type: type, read: read); return
         }
-        if hostState.consume(message) || agentState.consume(message) || notifications.consume(message) { return }
+        let noticeRuntime = type == "notification.snapshot" ? message["runtimeId"] as? String : nil
+        let noticeReceipts = noticeRuntime.flatMap { notifications.receipts[$0] }
+        if notifications.consume(message) {
+            // 只有被接受的快照才是权威状态（校验失败的快照不推进回执计数）。
+            if let runtimeId = noticeRuntime, notifications.receipts[runtimeId] != noticeReceipts {
+                ledgerAuthority(OperationKinds.noticesDomain(runtimeId), read: nil, complete: notifications.projections[runtimeId]?.complete == true)
+            }
+            return
+        }
+        if hostState.consume(message) || agentState.consume(message) { return }
         switch type {
         case "_transport.lan":
             guard let endpoints = message["endpoints"] as? [LANEndpoint], let index = pairings.firstIndex(where: { $0.hostId == selectedHostId }) else { return }
@@ -1518,7 +1581,7 @@ final class HostConnection: ObservableObject {
             runtimes = next.map(reprojectRuntime)
             // 新连接的首个 device.ready 是因果晚于旧连接上所有操作的完整在线列表（L2、L5）。
             ledgerOpenConnection()
-            ledgerRuntimeList(read: nil, complete: true)
+            ledgerAuthority(OperationKinds.runtimesDomain, read: nil, complete: true)
             conversations = conversations.filter { id, _ in next.contains { $0.runtimeId == id } }
             runtimeEventSequences = [:]
             if selectedRuntime == nil { selectedRuntimeId = restoredRuntimeId() ?? runtimes.first?.runtimeId }
@@ -1533,6 +1596,11 @@ final class HostConnection: ObservableObject {
             launchableAgents = message["launchableAgents"] as? [String]
             codexDesktop = (message["codexDesktop"] as? [String: Any]).flatMap(jsonDecode).flatMap { $0.valid ? $0 : nil }
             notifications.ready(epoch: message["notificationEpoch"] as? String, runtimes: runtimes)
+            let noticeEpoch = notifications.hostEpoch
+            handleLedger(ledger.expire { op in
+                if case .dismiss(_, let epoch, _) = op.payload { return epoch != noticeEpoch }
+                return false
+            })
             for runtime in runtimes { agentState.subscribe(runtime: runtime) }
             publishMessages()
             if let selectedRuntime { seedCachedHistory(selectedRuntime); publishMessages(); agentState.subscribe(runtime: selectedRuntime); syncSession(selectedRuntime, force: hostRestarted || selectedLeafChanged) }
@@ -1544,7 +1612,7 @@ final class HostConnection: ObservableObject {
                     if runtimes[index].sessionId != runtime.sessionId { invalidateConversation(runtime.runtimeId) }
                     runtimes[index] = runtime
                 } else { runtimes.append(runtime) }
-                ledgerRuntimeList(read: nil, complete: false)
+                ledgerAuthority(OperationKinds.runtimesDomain, read: nil, complete: false)
                 if pendingActivation == runtime.sessionId {
                     if let session = runtime.sessionId, let text = pendingBranchDrafts.removeValue(forKey: offlineSessionKey(host: selectedHost, sessionId: session)) { saveDraft(text, for: runtime) }
                     clearActivation()
@@ -1559,7 +1627,7 @@ final class HostConnection: ObservableObject {
             if let id = message["runtimeId"] as? String {
                 pendingSends.runtimeLost(sessionId: runtimes.first { $0.runtimeId == id }?.sessionId)
                 runtimes.removeAll { $0.runtimeId == id }
-                ledgerRuntimeList(read: nil, complete: false)
+                ledgerAuthority(OperationKinds.runtimesDomain, read: nil, complete: false)
                 notifications.offline(runtimeId: id)
                 invalidateConversation(id)
                 if selectedRuntimeId == id { selectedRuntimeId = runtimes.first?.runtimeId }

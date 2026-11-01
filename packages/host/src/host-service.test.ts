@@ -2030,6 +2030,28 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
         type: "session.list.result", sessions: [{ sessionId: "11111111-2222-3333-4444-555555555555", archived }],
       });
     }
+
+    // ADR-0049 §7.6：归档请求按 requestId 写设备私有回执；失败带原因码。
+    sendRequest(device, {
+      type: "session.archive", protocolVersion: PROTOCOL_VERSION, requestId: "archive-unsupported",
+      agentKind: "dsh", sessionId: "missing", archived: true,
+    });
+    expect(await device.receiveMessage()).toMatchObject({ type: "protocol.error", requestId: "archive-unsupported" });
+    sendRequest(device, {
+      type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "activate-missing",
+      target: { type: "resume", sessionId: "99999999-2222-3333-4444-555555555555", agentKind: "pi" },
+    });
+    expect(await device.receiveMessage()).toMatchObject({ type: "protocol.error", requestId: "activate-missing" });
+    sendRequest(device, { type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "receipts",
+      scope: "device", domains: ["operations"] });
+    const snapshot = await device.receiveMessage();
+    expect(snapshot).toMatchObject({ type: "agent.state.snapshot", requestId: "receipts", scope: "device" });
+    const operations = (snapshot.domains as { domain: string; value: Record<string, { state: string; detail?: string; requestId?: string }> }[])
+      .find(domain => domain.domain === "operations")?.value;
+    expect(operations?.["archive-true"]).toMatchObject({ state: "success", requestId: "archive-true" });
+    expect(operations?.["archive-false"]).toMatchObject({ state: "success" });
+    expect(operations?.["archive-unsupported"]).toMatchObject({ state: "failure", detail: "agent_unsupported" });
+    expect(operations?.["activate-missing"]).toMatchObject({ state: "failure", detail: "session_not_found" });
   });
 
   it("session.list 短 TTL 内复用扫描结果（并发请求不各扫一遍）", async () => {

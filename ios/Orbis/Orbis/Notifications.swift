@@ -70,6 +70,8 @@ private struct RuntimeNoticeSnapshot: Decodable {
 @MainActor
 final class RuntimeNotifications: ObservableObject {
     @Published private(set) var projections: [String: RuntimeNoticeProjection] = [:]
+    /// ADR-0049 §6.6：本设备已关闭、尚未结算的通知（键为 runtimeId + NUL + notificationId），由连接层按账本更新。
+    @Published private(set) var hidden: Set<String> = []
     private(set) var receipts: [String: UInt64] = [:]
     var send: (([String: Any]) -> Bool)?
     private var hostKey: String?
@@ -175,11 +177,28 @@ final class RuntimeNotifications: ObservableObject {
         }
     }
 
-    func dismiss(runtimeId: String, notificationId: String) {
-        guard connected, let epoch, sessions[runtimeId] != nil, Self.validIdentifier(runtimeId), Self.validIdentifier(notificationId) else { return }
-        _ = send?(["type": "notification.dismiss", "protocolVersion": orbisProtocolVersion,
-            "runtimeId": runtimeId, "hostEpoch": epoch, "notificationId": notificationId])
+    var hostEpoch: String? { epoch }
+
+    func setHidden(_ keys: Set<String>) { if hidden != keys { hidden = keys } }
+
+    /// 界面看到的清单：权威清单减去本设备正在关闭的通知（账本叠加，L3）。
+    func visibleProjection(_ runtimeId: String) -> RuntimeNoticeProjection? {
+        guard let projection = projections[runtimeId] else { return nil }
+        guard !hidden.isEmpty else { return projection }
+        let items = projection.items.filter { !hidden.contains(runtimeId + "\u{0}" + $0.notificationId) }
+        guard items.count != projection.items.count else { return projection }
+        return RuntimeNoticeProjection(hostEpoch: projection.hostEpoch, revision: projection.revision, sessionId: projection.sessionId,
+                                       verification: projection.verification, items: items, complete: projection.complete)
+    }
+
+    /// 写入关闭并立即读取一次；返回关闭时的 Host 代次，未写入时为 nil。
+    @discardableResult
+    func dismiss(runtimeId: String, notificationId: String) -> String? {
+        guard connected, let epoch, sessions[runtimeId] != nil, Self.validIdentifier(runtimeId), Self.validIdentifier(notificationId),
+              send?(["type": "notification.dismiss", "protocolVersion": orbisProtocolVersion,
+                     "runtimeId": runtimeId, "hostEpoch": epoch, "notificationId": notificationId]) == true else { return nil }
         sync(runtimeId: runtimeId)
+        return epoch
     }
 
     private func cancelReads() {

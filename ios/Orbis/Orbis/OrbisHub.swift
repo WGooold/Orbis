@@ -243,6 +243,7 @@ final class OrbisStore: ObservableObject {
     func updatePermission(settingId: String, value: String) { activeConnection.updatePermission(settingId: settingId, value: value) }
     func sendMessage(_ text: String, delivery: String? = nil, attachmentIds: Set<String> = []) -> Bool { activeConnection.sendMessage(text, delivery: delivery, attachmentIds: attachmentIds) }
     func cancelQueuedMessage(_ queueId: String) -> Bool { activeConnection.cancelQueuedMessage(queueId) }
+    func dismissNotification(runtimeId: String, notificationId: String) { activeConnection.dismissNotification(runtimeId: runtimeId, notificationId: notificationId) }
     @discardableResult func resendPendingSend(_ messageId: String) -> Bool { activeConnection.resendPendingSend(messageId) }
     func restorePendingSend(_ messageId: String) -> String? { activeConnection.restorePendingSend(messageId) }
     func discardPendingSend(_ messageId: String) { activeConnection.discardPendingSend(messageId) }

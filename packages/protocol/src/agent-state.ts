@@ -539,6 +539,7 @@ export type AgentNotificationsState = z.infer<typeof AgentNotificationsStateSche
 /** 一条设备私有回执（DeviceView.operations）。共享操作本身归 HostState.operations。 */
 export const AgentOperationItemSchema = z.strictObject({
   operationId: z.string().min(1).max(256),
+  /** 命令所属的 Runtime；Host 级请求（`session.archive` / `session.activate`，ADR-0049 §7.6）填 Host 身份。 */
   runtimeId: z.string().min(1).max(256),
   requestId: z.string().min(1).max(256).optional(),
   state: AgentOperationStateSchema,

@@ -86,7 +86,7 @@ struct ChatView: View {
     }
     private var showQuestionReminder: Bool { hasPositioned && hasBrowsed && showJump && questionOutsideViewport }
     private var hasRuntimeNotices: Bool {
-        guard let projection = notifications.projections[runtime.runtimeId] else { return false }
+        guard let projection = notifications.visibleProjection(runtime.runtimeId) else { return false }
         return !projection.items.isEmpty || (["codex", "codexDesktop"].contains(runtime.agentKind) && !projection.complete)
     }
     private var draft: Binding<String> { Binding(get: { store.draft(for: runtime) }, set: { store.saveDraft($0, for: runtime) }) }
@@ -1418,7 +1418,7 @@ struct RuntimeNoticesView: View {
     /// 只有 Codex（含桌面版）会上报通知来源；其他运行时没有「待核对」可言，不显示核对提示。
     let supported: Bool
     var body: some View {
-        if let projection = notifications.projections[runtimeId], !projection.items.isEmpty || (supported && !projection.complete) {
+        if let projection = notifications.visibleProjection(runtimeId), !projection.items.isEmpty || (supported && !projection.complete) {
             let unverified = supported && (projection.verification == "unknown" || !projection.complete || store.connection != .secured)
             ScrollView {
                 VStack(spacing: 8) {
@@ -1428,7 +1428,7 @@ struct RuntimeNoticesView: View {
                     ForEach(Array(projection.items.enumerated()), id: \.element.id) { index, notice in
                         banner(text: notice.message, error: notice.severity != "info",
                                recheck: index == 0 && (unverified || (supported && notice.verification == "unknown")),
-                               close: { notifications.dismiss(runtimeId: runtimeId, notificationId: notice.notificationId) })
+                               close: { store.dismissNotification(runtimeId: runtimeId, notificationId: notice.notificationId) })
                     }
                 }.padding(.vertical, 6)
             }.frame(maxHeight: 180).scrollBounceBehavior(.basedOnSize).accessibilityIdentifier("runtime-notifications")

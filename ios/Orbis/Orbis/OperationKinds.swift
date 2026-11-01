@@ -4,6 +4,8 @@ import Foundation
 enum LedgerPayload: Equatable {
     /// 首页关闭会话（`/quit`）。
     case quit(runtimeId: String)
+    /// 关闭通知（只影响本设备，ADR-0028 §3）。
+    case dismiss(runtimeId: String, hostEpoch: String, notificationId: String)
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -14,6 +16,9 @@ enum OperationKinds {
     /// 在线列表（`device.ready` 与 `runtime.online` / `runtime.offline`）在账本里的领域名。
     static let runtimesDomain = "runtimes"
     static let quit = "quit"
+    static let dismiss = "dismiss"
+    /// 某个 Runtime 的通知清单在账本里的领域名：每个 Runtime 的通知快照各自独立。
+    static func noticesDomain(_ runtimeId: String) -> String { "notifications:" + runtimeId }
     /// 账本发起的核对读取（L5）使用的 requestId 前缀。
     static let verifyRequestPrefix = "ledger-verify:"
 
@@ -32,6 +37,43 @@ enum OperationKinds {
 
     static func quitTarget(_ runtimeId: String) -> String { "runtime:" + runtimeId }
 
+    /// `dismiss`：没有回执；Host 处理关闭时同步生效，之后发起的读取已能反映结果。权威清单仍含它就静默重新显示。
+    static let dismissPolicy = AppLedger.Policy(
+        successLands: false,
+        acceptedBudget: AppLedger.receiptBudget,
+        afterSuccess: nil,
+        whenUnresolved: .reject(.init("not_dismissed", "")),
+        deviceReceipts: false,
+        appliesBeforeLaterReads: true
+    )
+
+    static func dismissTarget(runtimeId: String, hostEpoch: String, notificationId: String) -> String {
+        "notification:\(runtimeId):\(hostEpoch):\(notificationId)"
+    }
+
+    /// 本设备已关闭、尚未结算的通知：横幅保持隐藏，包括结果不明期间（L4）。键为 `runtimeId` + NUL + `notificationId`。
+    static func hiddenNotificationKeys(_ ledger: AppLedger) -> Set<String> {
+        Set(ledger.operations.compactMap { op in
+            guard !op.phase.isSettled, case .dismiss(let runtimeId, _, let notificationId) = op.payload else { return nil }
+            return runtimeId + "\u{0}" + notificationId
+        })
+    }
+
+    /// 通知清单对 `dismiss` 说明了什么：清单里已没有它即落地；完整清单仍含它是反向证据（只在因果晚于关闭时采用，L2）。
+    static func noticeEvidence(_ op: AppLedger.Operation, projection: RuntimeNoticeProjection?) -> AppLedger.Evidence {
+        guard case .dismiss(_, let hostEpoch, let notificationId) = op.payload,
+              let projection, projection.hostEpoch == hostEpoch else { return .none }
+        guard projection.items.contains(where: { $0.notificationId == notificationId }) else { return .landed }
+        return projection.complete ? .notApplied : .none
+    }
+
+    /// 被拒绝后是否直接删除：列表类（首页卡片、通知横幅）提示后回到原位；内容类保留失败状态等用户处理。
+    static func removesOnRejection(_ op: AppLedger.Operation) -> Bool {
+        switch op.payload {
+        case .quit, .dismiss: return true
+        }
+    }
+
     /// 首页要隐藏的卡片：未结算的 `quit` 一直保持叠加，包括结果不明期间（L4）。
     static func hiddenRuntimeIds(_ ledger: AppLedger) -> Set<String> {
         Set(ledger.operations.compactMap { op in
@@ -45,6 +87,7 @@ enum OperationKinds {
     static func evidence(_ op: AppLedger.Operation, runtimeIds: Set<String>) -> AppLedger.Evidence {
         switch op.payload {
         case .quit(let runtimeId): return runtimeIds.contains(runtimeId) ? .none : .landed
+        case .dismiss: return .none
         }
     }
 
@@ -66,7 +109,7 @@ enum OperationKinds {
             switch state {
             case "accepted", "pending": receipts[id] = .accepted
             case "success": receipts[id] = .succeeded
-            case "cancelled": receipts[id] = .uncertain
+            case "cancelled", "unconfirmed": receipts[id] = .uncertain
             default: receipts[id] = .failed(.init(state, nonEmpty(item["detail"] as? String) ?? "请重试。"))
             }
         }
@@ -80,6 +123,7 @@ enum OperationKinds {
         case .quit:
             if rejection == quitStillRunning || rejection == quitUnconfirmed { return rejection.reason }
             return "关闭会话未完成：" + rejection.reason
+        case .dismiss: return nil // 通知重新显示即说明关闭未生效，不另弹错误（ADR-0049 §6.6）。
         }
     }
 

@@ -428,11 +428,13 @@ data class RemoteState(
     val ledger: AppLedger = OperationLedger(),
     /** 当前加密连接是否已计入账本的连接代次。 */
     val ledgerConnectionOpen: Boolean = false,
-    /** 在线列表已应用的次数，作为账本 `runtimes` 领域的序号。 */
-    val runtimeListSeq: Int = 0,
+    /** 各领域已应用权威状态的次数，作为账本的领域序号（basis）。 */
+    val authoritySeq: Map<String, Int> = emptyMap(),
+    /** 本连接上已收到过权威状态的领域：核对读取只为它们作证，避免用上一条连接留下的旧状态下结论。 */
+    val ledgerFresh: Set<String> = emptySet(),
     /** 账本发起、尚未回复的核对读取：requestId → 读取序号（L5）。 */
     val ledgerReads: Map<String, Int> = emptyMap(),
-    /** 有结果不明的操作等待核对读取；[HostConnection] 发出读取后清除。 */
+    /** 需要发起一次读取（结果不明的核对，或关闭通知后的核对点）；[HostConnection] 发出读取后清除。 */
     val ledgerVerifyWanted: Boolean = false,
     val capabilities: Map<String, RuntimeCapabilities> = emptyMap(),
     /**
@@ -1797,7 +1799,12 @@ class RelayReducer(
             return state.ledgerReadReply(requestId, message, System.currentTimeMillis())
         }
         return when (messageType) {
-            "notification.snapshot" -> if (channel != null) state.withNotificationSnapshot(message, json) else state
+            "notification.snapshot" -> if (channel != null) {
+                val runtimeId = message.string("runtimeId")
+                val next = state.withNotificationSnapshot(message, json)
+                // 只有被接受的快照才是权威状态（校验失败的快照不推进回执计数）。
+                if (runtimeId != null && next.notificationReceipts[runtimeId] != state.notificationReceipts[runtimeId]) next.ledgerNotices(runtimeId) else next
+            } else state
             "provider.result" -> if (channel != null) state.withProviderResult(message) else state
             "provider.subscription.result" -> if (channel != null) state.withSubscriptionResult(message) else state
             "provider.changed" -> if (channel != null) state.clearProviderQuota(message["kind"]?.jsonPrimitive?.contentOrNull) else state
@@ -1972,7 +1979,7 @@ class RelayReducer(
                         .toSet(),
                     error = null,
                 // 新连接的首个 device.ready 是因果晚于旧连接上所有操作的完整在线列表（L2、L5）。
-                ).ledgerOpenConnection().ledgerRuntimeList(read = null, complete = true)
+                ).ledgerOpenConnection().ledgerExpireStaleNotices().ledgerRuntimeList(read = null, complete = true)
             }
             "runtime.online" -> {
                 val runtime = message["runtime"]?.let {

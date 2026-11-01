@@ -2033,6 +2033,11 @@ export class HostService {
       : message.type === "session.archive" ? this.#beginSharedOperation("session.archive", message.agentKind, message.sessionId) : undefined;
     this.#settleSharedOperation(sharedOperationId, "running");
     let sharedOperationFailed = false;
+    let failureCode: string | undefined;
+    // ADR-0049 §7.6：归档 / 启动按 requestId 写设备私有回执，手机断线重连后能据此核对乐观显示。
+    // 它们是 Host 级请求，回执的 runtimeId 填 Host 身份（见 AgentOperationItemSchema）。
+    const receipted = message.type === "session.archive" || message.type === "session.activate";
+    if (receipted) this.#deviceViewFacts.accepted(deviceId, { operationId: requestId, runtimeId: this.#identity.hostId, requestId });
     if (message.type === "session.activate") { this.#activationsPending++; this.refreshHostFacts(); }
     this.#options.log?.(`[debug] 收到 ${message.type}（requestId=${requestId}）`);
     try {
@@ -2189,6 +2194,7 @@ export class HostService {
     } catch (error) {
       sharedOperationFailed = true;
       const code = error instanceof ActivationError || error instanceof SessionArchiveError ? error.code : "session_request_failed";
+      failureCode = code;
       this.#sendToDevice(deviceId, {
         type: "protocol.error",
         code,
@@ -2198,6 +2204,10 @@ export class HostService {
       this.#options.log?.(`设备 ${deviceId} 的会话请求失败（${message.type}）：${describeError(error)}`);
     } finally {
       this.#settleSharedOperation(sharedOperationId, sharedOperationFailed ? "failed" : "succeeded");
+      if (receipted) this.#deviceViewFacts.settled(deviceId, {
+        operationId: requestId, runtimeId: this.#identity.hostId, requestId,
+        state: sharedOperationFailed ? "failure" : "success", ...(failureCode === undefined ? {} : { detail: failureCode }),
+      });
       if (message.type === "session.activate") { this.#activationsPending--; this.refreshHostFacts(); }
     }
   }

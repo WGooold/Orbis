@@ -2274,7 +2274,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 items(orphanTools, key = ToolActivity::toolCallId) { tool -> ToolCard(tool) }
             }
             // 通知与待处理交互都浮在正文上：出现、消失都不移动阅读位置，也不推动输入框（与 iOS 一致）。
-            val notices = state.notificationProjections[runtimeId]?.takeIf { it.sessionId == sessionId }
+            val notices = state.visibleNotificationProjection(runtimeId)?.takeIf { it.sessionId == sessionId }
             val noticesSupported = runtime?.agentKind in setOf("codex", "codexDesktop")
             val hasNotices = notices != null && (notices.items.isNotEmpty() || (noticesSupported && !notices.complete))
             val questionGap = with(LocalDensity.current) { 8.dp.toPx() }
@@ -2306,7 +2306,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                     })
                 }
             }
-            state.notificationProjections[runtimeId]?.takeIf { it.sessionId == sessionId }?.let { projection ->
+            state.visibleNotificationProjection(runtimeId)?.takeIf { it.sessionId == sessionId }?.let { projection ->
                 Box(Modifier.align(Alignment.TopCenter)) {
                     RuntimeNotifications(projection, state.notificationEpoch,
                         supported = state.runtimes[runtimeId]?.agentKind in setOf("codex", "codexDesktop"),
