@@ -1,9 +1,9 @@
-# 用户操作乐观显示实施 ticket（ADR-0049 §5–§7，ADR-0051 r27）
+# 用户操作乐观显示实施 ticket（ADR-0049 §5–§7，ADR-0051 r27 决策 / r32 实施）
 
 这些条目追踪 [ADR-0049 §5–§7](../adr/0049-optimistic-send-and-source-reconciliation.md) 与 [ADR-0051 r27](../adr/0051-ui-style-motion-and-visual-stability-freeze.md)（V22，V07、V10–V12 修订）的实施与验收。
 仓库规定 GitHub Issues 是 canonical tracker；本文件只保存本地状态，尚未创建 issue。
 
-工作区：`.claude/worktrees/optimistic-actions`，分支 `feat/optimistic-actions`，基线 `main` `ec5b7af`。
+工作区：`.claude/worktrees/optimistic-actions`，分支 `feat/optimistic-actions`，起始基线 `main` `ec5b7af`；2026-11-02 合入 main `fdcd0fc`（交互动效、启动准备）。
 
 ## 实施状态
 
@@ -11,16 +11,16 @@
 | --- | --- | --- |
 | OPT-00 | 已实现，测试通过（两端各 22 项；变异检验两端均失败） | — |
 | OPT-H1 | 已实现，测试通过（host-service 47 项，含归档 / 启动的成功与失败回执） | — |
-| OPT-01 | 已实现；单元、构建与定向设备用例通过（2026-11-01） | 手动 R27 关闭断线项未执行；全量门禁归 OPT-10 |
+| OPT-01 | 已实现；单元、构建与定向设备用例通过（2026-11-01）；关闭后断线的设备用例（预览注入）2026-11-02 通过 | 真实 Host 上的断线核对未执行 |
 | OPT-02 | 已实现，单元测试通过（两端各 8 项） | 设备专项见 OPT-10 |
 | OPT-03 | 已实现，单元测试通过（两端各 9 项；成功回执后叠加保持到目录体现） | 设备专项见 OPT-10 |
 | OPT-04 | 已实现，单元测试通过（两端各 10 项；`cancelled` 不再显示） | §6.3 实施修订已写入 ADR；设备专项见 OPT-10 |
 | OPT-05 | 已实现，单元测试通过（两端各 9 项） | 设备专项见 OPT-10 |
-| OPT-06 | 已实现 `waiting`（附件、顺序、V17 副本），单元测试通过（两端各 6 项） | 结算仍由 ADR-0055 outbox 负责（ADR-0049 §7.7）；附件缩略图未做，状态行写明附件名 |
+| OPT-06 | 已实现 `waiting`（附件、顺序、V17 副本），单元测试通过（两端各 6 项）；2026-11-02 补齐气泡内附件缩略图 / 文件名 / 进度及两端设备用例 | 结算仍由 ADR-0055 outbox 负责（ADR-0049 §7.7，设计如此） |
 | OPT-07 | 已实现，单元测试通过（两端各 7 项） | 设备专项见 OPT-10 |
-| OPT-08 | 已实现，单元测试通过（两端各 6 项） | Android 启动页暂不显示缓存历史（ADR-0049 §7.7）；设备专项见 OPT-10 |
-| OPT-09 | 已实现：协议 `messageId`、Codex skill 声明、两端本地气泡（两端各 4 项） | Claude 用户命令、DSH Web skill、Pi 暂走 §4 兼容兜底 |
-| OPT-10 | 自动门禁完成：两端全量失败集合不超出同设备基线 | 人工 C01–C18、R26 / R27、A1–A4 与真实 Host 未执行，见文末“OPT-10 记录” |
+| OPT-08 | 已实现，单元测试通过（iOS 8 项、Android 7 项）；2026-11-02 补齐 Android 恢复时的缓存历史与启动页本地行，修正 iOS“Runtime 先于回复上线”时等待消息不写入，输入焦点交给上线后的会话 | — |
+| OPT-09 | 已实现：协议 `messageId`、Codex 与 DSH Web skill 声明（DSH 2026-11-02）、两端本地气泡（两端各 4 项） | Claude 用户命令、Pi prompt 模板无法不按正文对应，按 ADR 走 §4 兼容兜底 |
+| OPT-10 | 自动门禁完成（r32 复跑）：两端全量失败集合不超出同设备 main 基线；两端 A1–A4 专项通过 | 人工 C01–C18、R26 / R27 逐项与真实 Host 未执行，见文末“r32 收尾记录” |
 
 ## 交接须知（所有 ticket 通用）
 
@@ -192,4 +192,12 @@ ADR-0049 §6.1，V10。
   `SessionArchiveSelectionInstrumentedTest#busyPendingAndDisconnectedSelectionsCannotBeArchived` 改为在已归档列表断言冲突入口禁用。
 - 未完成：C01–C18、R26 / R27 人工逐项、A1–A4，真实 Host 上的断线 / 回执核对（本机隔离 Host 只有 Windows 脚本）；
   Android 恢复会话启动页的缓存历史（ADR-0049 §7.7）。不记为验收通过。
-- 合并：两份本机指南（`CLAUDE.md` / `AGENTS.md`）的基线版本在合入 main 时同步为 r31。
+- 合并：两份本机指南（`CLAUDE.md` / `AGENTS.md`）的基线版本在合入 main 时同步（合并后为 r32）。
+
+### r32 收尾记录（2026-11-02）
+
+- 合入 main `706a1bd`（交互动效，原 r31 顺延为 r32）与 `fdcd0fc`；首页关闭退场副本改按账本的关闭集合恢复，发送飞入沿用于重发。
+- 补齐：等待气泡附件缩略图 / 文件名 / 进度（两端）；Android 启动页本地行归属与恢复缓存历史；iOS 启动落地顺序；输入焦点交接；
+  启动状态色；DSH Web skill 身份。新增 iOS 4 项、Android 4 项设备用例与两端各 1 项启动顺序单测。
+- 结果：iOS 全量 79 项 74 通过，5 项失败与 main 同设备相同； Android 全量见 UI 回归方案 §6 r32 记录。证据 `.artifacts/ui-regression/2026-11-02-optimistic-merge/summary.md`。
+- 仍未完成：C01–C18、R26 / R27 人工逐项；60 秒无回执与撤回 / 回答 / 归档断线的设备路径（单元覆盖）；真实 Host；Claude / Pi 的 Slash 身份声明（ADR 允许兜底）。

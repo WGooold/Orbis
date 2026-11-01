@@ -3555,8 +3555,9 @@ private fun RuntimeStatusDot(status: String) {
 @Composable
 private fun runtimeStatusColor(status: String): Color = when (status) {
     "idle" -> MaterialTheme.colorScheme.tertiary
-    "running", "compacting" -> MaterialTheme.colorScheme.primary
-    "waiting_local_interaction" -> MaterialTheme.colorScheme.secondary
+    // ADR-0049 §6.8：启动中是进行中的状态，与运行中同色；启动未确认待核对，与等待同色，不显示为错误。
+    "running", "compacting", "starting" -> MaterialTheme.colorScheme.primary
+    "waiting_local_interaction", "launch_unconfirmed" -> MaterialTheme.colorScheme.secondary
     else -> MaterialTheme.colorScheme.error
 }
 

@@ -524,10 +524,10 @@ final class OrbisUITests: XCTestCase {
 
             // 上传中发送：气泡内的缩略图、文件名与进度在各外观下完整显示（V10 r27）。
             let chat = launch("chat", dark: dark, arguments: ["--preview-upload-waiting"] + options)
-            let composer = chat.descendants(matching: .any)["chat-composer"].firstMatch
-            XCTAssertTrue(composer.waitForExistence(timeout: 8), name)
+            let chatComposer = chat.descendants(matching: .any)["chat-composer"].firstMatch
+            XCTAssertTrue(chatComposer.waitForExistence(timeout: 8), name)
             XCTAssertTrue(chat.buttons["移除附件 截图.png"].waitForExistence(timeout: 5), name)
-            composer.tap(); composer.typeText("看图")
+            chatComposer.tap(); chatComposer.typeText("看图")
             let send = chat.buttons["发送消息"].firstMatch
             XCTAssertTrue(waitUntilEnabled(send, timeout: 2), name)
             send.tap()

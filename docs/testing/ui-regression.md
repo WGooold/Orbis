@@ -1,8 +1,10 @@
 # 移动端 UI 回归方案
 
+本轮用户操作乐观显示（r32 / ADR-0049 §5–§7）：两端操作账本与全部乐观种类已实施，等待气泡附件、Android 恢复缓存历史、启动落地顺序与输入焦点于 r32 收尾。iOS 全量 79 项 74 通过，5 项失败与同设备 main 构建相同；Android 全量 163 项的失败均与同设备 main 构建相同，或由设备动画设置导致并在恢复后通过。人工 C / R 与真实 Host 未执行。见 §6 r32 记录。
+
 本轮统一交互动效（r31 / ADR-0058）：32场景与MOT ticket先行，双端共用组件已接入。Android全量154项4失败/7外部夹具assumption，iOS全量69项8失败，均未超同设备同配置基线，但受影响既有失败仍阻塞验收。最终Android深色大字20项、实际减少动画19项、iOS SE小屏大字10项及iPad6项定向通过；截图与部分录屏已审阅，完整C/R/A门禁未完成。见 [交互动效验证记录](interaction-motion.md)。
 
-日期：2026-11-01。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-01/r31`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-02。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-02/r32`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 10 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -310,9 +312,9 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | --- | --- | --- | --- |
 | R25 | 两端分别连接隔离 Host，保留至少一张既有卡片，在 APP 新建 Codex 桌面版会话；回首页后再新建一条；下拉刷新；模拟一次模型读取失败后点胶囊重试；另以终端 Codex 作对照。全程保持 APP 和 E2E 连接，不重启；A1 / A2，A3 / A4 抽查 | 准备时保留旧完整卡片，identity / execution / interactions 齐备后一次发布新卡片并退出“正在同步”；正常新建不常驻“同步失败”；失败后的重试也能恢复，不依赖重新握手；桌面公共 ID 不进入 adapter 原生 thread 查找，无半成品卡片与位置跳变 | S18、V16–V18 |
 
-### 4.11 用户操作乐观显示专项（ADR-0049 §5–§7，r27 已实施、验证中）
+### 4.11 用户操作乐观显示专项（ADR-0049 §5–§7，r27 决策，r32 已实施、验证中）
 
-2026-11-01 实施完成（OPT-00–OPT-09、OPT-H1），R26 / R27 尚未逐项人工执行，不记为通过。拒绝、无回执和断线使用预览注入或隔离 Host，不连接生产 Host。
+2026-11-01 实施（OPT-00–OPT-09、OPT-H1），2026-11-02 收尾（r32）。R26 / R27 的成功、拒绝、上传失败、启动中发送与关闭后断线路径已由预览注入的设备用例脚本化执行并逐张审阅截图；60 秒无回执、撤回 / 回答 / 归档的断线与真实 Host 路径只有单元覆盖。人工逐项未执行，不记为通过。拒绝、无回执和断线使用预览注入或隔离 Host，不连接生产 Host。
 
 | 编号 | 步骤 | 预期 | ID |
 | --- | --- | --- | --- |
@@ -390,7 +392,9 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 
 2026-11-01 各 Agent 启动准备：源码已补项目授权、部分启动前检查和失败收尾；Pi 原生隔离 RPC 信任对照、Codex 原生配置服务、Claude composer / 项目 MCP smoke 有证据。Windows、DSH 真后端及双端完整 L1–L4 / 手动 / R29–R30 尚未验收；当前 Host 安装包未部署。最终 Host 检查结果、失败与未跑清单见 `.artifacts/ui-regression/20261101-agent-startup/summary.md`，不得称全部首次审批已解决。
 
-2026-11-01 用户操作乐观显示（r31 / V07、V10–V12、V22，ADR-0049 OPT-00–OPT-10）：iOS SwiftPM 331 项、Android JVM 664 项、Host 相关用例与两端构建通过。iOS 池内 iPhone 17 全量 67 项 59 通过、8 失败，main `e4df87a` 同设备重跑 8 项同样失败；审批与交互草稿两项为预览夹具问题（`interactions` 领域被声明为空），修正夹具后通过，并新增审批拒绝、启动失败原位、模型切换中发送与 A1–A4 外观矩阵 4 项；截图审阅发现 iOS 启动页标题显示占位 id，已修正并加断言。Android 池内 `Orbis_UI_Polish_35`：151 项 138 通过、5 失败、8 项需隔离 Host 跳过；归档多选一项断言旧行为，改写后通过，其余 4 项（`CodexPermissions` 自由文本、`Dsh` 新建文案、`Questionnaire` 草稿、`SessionHostOwnership`）main 同设备同样失败；新增`OptimisticPresentationInstrumentedTest` 5 项通过。本机 adb 服务在运行中多次崩溃重启，改用私有端口与逐类 `am instrument`，输出中断的类按设备 logcat 的 `run finished` 核对后重跑。A1–A4：Android 夜间 / 字体 1.5 / 关闭动画下 `OptimisticPresentationInstrumentedTest` 各 5 项通过，设备设置用后恢复；iOS 外观矩阵在 iPhone 17 与 iPhone SE（375pt）运行。L4 已逐张查看相关截图，并用录屏抽帧核对启动失败原位。C01–C18、R26 / R27 人工逐项与真实 Host 未执行，不记为通过。证据：`.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-10/`。
+2026-11-02 用户操作乐观显示收尾（r32，合入 main `706a1bd` 与 `fdcd0fc` 后）：iOS SwiftPM 335 项、Android JVM 667 项、Host / protocol / bridge / Pi 扩展 1554 项通过。新增 iOS 4 项设备用例（上传中发送、上传失败与顺序、启动中发送后上线及输入焦点、关闭后断线重连）、Android `LaunchPageInstrumentedTest` 3 项与上传气泡 1 项；定向首轮暴露并修正：iOS“Runtime 先于 session.activated 上线”时等待消息不写入、启动页输入焦点丢失，Android 启动页不显示启动中写的消息，两端启动状态色不一致（Android 显示为错误红）。iOS 池内 iPhone 17 全量 79 项：74 通过、5 失败（`testAddComputerPageReboundsAndSwipesBack`、`testDrawerCollapseShrinksContentWithoutAnotherDrag`、`testLongTranscriptAppearsAndToolExpansionKeepsItsPositionWithoutDragging` 与两项最近提问提示），main `fdcd0fc` 构建同设备重跑这 5 项同样失败；新增与既有乐观用例全部通过。首轮全量因 UI 测试编译错误实际执行的是旧产物，已作废并在修正后重跑。A3：池内 iPhone SE（375pt）外观矩阵与新增用例通过；XXXL 截图发现状态行的转圈随动态字体放大、溢出 26pt 槽位遮挡“上传中 / 发送中”文字，限定为小号后重跑通过。 Android 池内 `Orbis_UI_Polish_35` 全量 163 项：140 通过、13 失败；4 项（`CodexPermissions` 自由文本、`Dsh` 新建、`Questionnaire` 草稿、`SessionHostOwnership`）main 构建同设备同样失败；9 项（`InteractionMotion` 6、`SwipeBack` 3）因设备系统动画缩放为 0（中止的首轮全量使 `InteractionReducedMotion` 的恢复未执行），按 2026-11-01 记录恢复为 1 后 `SwipeBack` 3 / 3、`InteractionReducedMotion` 1 / 1、`InteractionMotion` 逐方法 7 / 7 通过，动画为 0 时被跳过的 `DownloadFlight`、`StreamingReveal` 重跑 2 / 2；整类运行时 `predictiveBack…` 截图得到 `DeadObjectException` 使仪器输出中断，main 构建同样如此。池内 API 37 设备与当前 Espresso 不兼容（`InputManager.getInstance`），池内只有一台兼容的 Android 设备。A2–A4：Android 乐观 / 启动页 9 项在夜间（切换后等待 20 秒）、字体 1.5、关闭动画下各 9 / 9，设备设置以只读启动核对已恢复；iOS 外观矩阵加入上传气泡。L4 已逐张查看新增截图。C01–C18、R26 / R27 人工逐项与真实 Host 未执行，不记为通过。证据：`.artifacts/ui-regression/2026-11-02-optimistic-merge/`。
+
+2026-11-01 用户操作乐观显示（分支原 r31，合并后为 r32 / V07、V10–V12、V22，ADR-0049 OPT-00–OPT-10）：iOS SwiftPM 331 项、Android JVM 664 项、Host 相关用例与两端构建通过。iOS 池内 iPhone 17 全量 67 项 59 通过、8 失败，main `e4df87a` 同设备重跑 8 项同样失败；审批与交互草稿两项为预览夹具问题（`interactions` 领域被声明为空），修正夹具后通过，并新增审批拒绝、启动失败原位、模型切换中发送与 A1–A4 外观矩阵 4 项；截图审阅发现 iOS 启动页标题显示占位 id，已修正并加断言。Android 池内 `Orbis_UI_Polish_35`：151 项 138 通过、5 失败、8 项需隔离 Host 跳过；归档多选一项断言旧行为，改写后通过，其余 4 项（`CodexPermissions` 自由文本、`Dsh` 新建文案、`Questionnaire` 草稿、`SessionHostOwnership`）main 同设备同样失败；新增`OptimisticPresentationInstrumentedTest` 5 项通过。本机 adb 服务在运行中多次崩溃重启，改用私有端口与逐类 `am instrument`，输出中断的类按设备 logcat 的 `run finished` 核对后重跑。A1–A4：Android 夜间 / 字体 1.5 / 关闭动画下 `OptimisticPresentationInstrumentedTest` 各 5 项通过，设备设置用后恢复；iOS 外观矩阵在 iPhone 17 与 iPhone SE（375pt）运行。L4 已逐张查看相关截图，并用录屏抽帧核对启动失败原位。C01–C18、R26 / R27 人工逐项与真实 Host 未执行，不记为通过。证据：`.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-10/`。
 
 2026-11-01 App 按需启动 DeepSeek / Codex Desktop（r30 / S20、X03、V12、V16–V18）：Host / DesktopRuntime 61 项与生命周期 13 项通过，2 项 Windows 条件未运行；类型检查、lint、Android JVM 571 项 / 两包构建、Swift Core 237 项通过。iPhone 17 全量 67 项为 55 通过 / 12 失败；新增 DeepSeek 用例的原生辅助功能标签定位修正后，新建页整组 2 项通过，并覆盖明暗、XXXL、减少动画。110 张全量命名截图联系表与 5 张专项截图已查看，不能替代完整 L4 / 手动。Android 在两次设备尝试中分别发生 ADB 断开、ADB `libunwind` 崩溃，没有有效仪器结果。未重建父提交作受控基线；C01–C18、375pt、R32 真后端与 Windows 仍未验收。iOS 原开关机状态已恢复；Android 只进入浅色标准配置，所设值与保存原值相同，未进入深色 / 大字 / 减少动画。本轮设备进程已退出且租约已释放。R31 保留给最近提问提示，本专项使用 R32。证据、12 项完整失败和未跑清单见 `.artifacts/ui-regression/20261101-agent-on-demand/summary.md`，未部署。
 

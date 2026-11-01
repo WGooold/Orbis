@@ -857,7 +857,7 @@ private struct PendingSendStatus: View {
         HStack(spacing: 2) {
             switch state {
             case .sending, .accepted:
-                ProgressView().controlSize(.mini).frame(width: 26, height: 26)
+                ProgressView().controlSize(.mini).dynamicTypeSize(...DynamicTypeSize.large).frame(width: 26, height: 26)
                 Text("发送中").font(.orbisCaption()).foregroundStyle(palette.secondary)
             case .queued:
                 OrbisActionSymbol(systemName: "clock").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 26, height: 26)
@@ -866,7 +866,7 @@ private struct PendingSendStatus: View {
                     .disabled(!canResend).accessibilityIdentifier("pending-cancel-" + rowId)
             case .waiting(let label):
                 // ADR-0049 §6.2：标明在等什么（上传中的附件名、等待前一条）。
-                ProgressView().controlSize(.mini).frame(width: 26, height: 26)
+                ProgressView().controlSize(.mini).dynamicTypeSize(...DynamicTypeSize.large).frame(width: 26, height: 26)
                 Text(label).font(.orbisCaption()).foregroundStyle(palette.secondary).lineLimit(2)
             case .unconfirmed:
                 OrbisActionSymbol(systemName: "questionmark.circle").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 26, height: 26)

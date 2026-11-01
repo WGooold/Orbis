@@ -1207,8 +1207,9 @@ struct RuntimeStatusLabel: View {
     private var color: Color {
         let p = OrbisPalette(scheme)
         switch status {
-        case "running", "compacting": return p.accent
-        case "waiting", "waiting_interaction", "waiting_local_interaction": return p.warning
+        // ADR-0049 §6.8：启动中是进行中的状态，与运行中同色；启动未确认待核对，与等待同色。
+        case "running", "compacting", "starting": return p.accent
+        case "waiting", "waiting_interaction", "waiting_local_interaction", "launch_unconfirmed": return p.warning
         case "error": return p.error
         default: return p.success
         }

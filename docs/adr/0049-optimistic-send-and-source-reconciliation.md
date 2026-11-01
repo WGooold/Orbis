@@ -2,7 +2,7 @@
 
 日期：2026-10-30；2026-11-01 扩展范围（§5–§7）
 
-Status: accepted（§1–§4 的消息发送与首页关闭已实施，隔离模拟器回归通过，真机待复测；§5–§7 的范围扩展已决定：§7 账本与全部种类（OPT-00–OPT-09、OPT-H1）已实现，单元与两端设备全量通过（失败集合不超出同设备基线）；手动与 A1–A4 门禁未完成，不记为交付）
+Status: accepted（§1–§4 的消息发送与首页关闭已实施，隔离模拟器回归通过，真机待复测；§5–§7 的范围扩展已决定，并于 ADR-0051 r32 实现：§7 账本与全部种类（OPT-00–OPT-09、OPT-H1）两端完成，单元通过，两端设备全量失败集合不超出同设备 main 基线，A1–A4 专项通过；人工 C01–C18、R26 / R27 逐项与真实 Host 未执行，不记为交付）
 
 关联：[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0028](0028-host-notification-lifecycle.md)、[ADR-0031](0031-host-permission-management.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0054](0054-shared-full-page-navigation.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)
 
@@ -615,6 +615,23 @@ ADR-0055 的本轮实现保留 Host 队列接管后的隐藏恢复副本，直�
 - A1–A4：Android `OptimisticPresentationInstrumentedTest` 在夜间、字体 1.5、关闭动画下各 5 项通过（设备设置用后恢复）；iOS `testOptimisticStatesAcrossAppearances` 覆盖浅 / 深色、XXXL、减少动画，并在池内 iPhone SE（375pt）重跑。截图已逐张查看。
 - 未完成：手动 C01–C18、R26 / R27 的逐项人工操作与真实 Host 上的断线 / 回执核对未执行（本机隔离 Host 夹具仅有 Windows 脚本；本机没有可由代理操作的模拟器 GUI，人工路径以脚本化交互加截图 / 录屏逐帧审阅代替，不等同人工验收）。
   不记为验收通过。证据：`.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-10/`。
+
+## 2026-11-02 收尾（ADR-0051 r32）
+
+分支 `feat/optimistic-actions` 合入 main `706a1bd`（共用交互动效，原 r31 顺延为 r32）与 `fdcd0fc`（启动准备、关闭触觉、diff 路径）后补齐：
+
+- **等待气泡的附件**（§6.1）：两端气泡内显示附件，图片为降采样缩略图，其他文件为图标；文件名按 S09 保留扩展名，下方为上传状态与进度。
+- **Android 启动页**（§7.7）：本地行与发送飞入按启动请求的会话归属，修正启动中写的消息不显示；恢复已有会话时先显示本机缓存历史。
+- **启动落地顺序**（§7.7）：真实 Host 先广播 Runtime 上线、再回复 `session.activated`。iOS 原先在这一顺序下先切页、清除启动状态，
+  账本无法判定启动落地，等它的消息不写入；改为先按启动请求的 Session 核对再切页，两端补充该顺序的单测。
+- **输入焦点**：会话上线时输入框焦点交给真实会话页，正在输入不被打断（iOS 显式交接，Android 同一输入框节点保持）。
+- **启动状态色**：“启动中”与运行中同色，“启动未确认”与等待同色。此前 iOS 落到空闲绿、Android 落到错误红，两端不一致且 Android 误示为错误。
+- **状态行转圈**：iOS 气泡下方“发送中 / 等待”的转圈不随动态字体放大，XXXL 下不再溢出 26pt 槽位遮挡文字（A3 截图审阅发现）。
+- **DSH Web skill 身份**（§7.6 缺口 7）：以 App id 作 `session/prompt` 的 requestId，原生用户消息据 rpcId 声明 `clientMessageId`。
+- **预览注入与设备用例**：iOS `--preview-upload-waiting[=fail]`、`--preview-launch-slow`、`--preview-close=drop`，分别覆盖上传中发送 / 上传失败与顺序、
+  启动中发送后上线、关闭后断线再重连（V11 r27）；Android `LaunchPageInstrumentedTest`（3）与 `OptimisticPresentationInstrumentedTest` 的上传气泡用例。
+
+验证见 UI 回归方案 §6 的 r32 记录与 `.artifacts/ui-regression/2026-11-02-optimistic-merge/summary.md`。
 
 ## r30 动效交接补充
 
