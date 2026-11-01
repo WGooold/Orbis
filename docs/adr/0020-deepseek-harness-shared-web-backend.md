@@ -6,6 +6,8 @@ Status: accepted; supersedes ADR-0018 for the default DSH backend.
 
 Update (2026-09-27): attaching every live Agent at startup scaled badly (dozens of Sessions meant dozens of follows and metadata broadcasts). Only working Agents now occupy an online card.
 
+Update (2026-11-01): DSH is no longer gated by eager Host startup. When an App session request names DeepSeek, Host reuses an attached ready runtime; otherwise it creates the authenticated Web service connection on demand, starting the local service only when the verified descriptor is absent. `--dsh` and the desktop prestart setting only control eager preparation. Host announces DSH in `launchableAgents` only when it can resolve the local CLI and configuration.
+
 ## Context
 
 The ACP backend could not share live execution with the DSH browser. Orbis now attaches both browser and mobile workflows to the same native Web service and Session.
@@ -13,6 +15,8 @@ The ACP backend could not share live execution with the DSH browser. Orbis now a
 ## Decision
 
 The Host authenticates to a loopback Web launch URL using its token. Without an explicit URL, it reuses a verified per-home descriptor or launches one persistent Web service under a cross-process lock. Host shutdown disconnects its transport, leaving that service and browser sessions running. A phone still requires an online Host.
+
+An App request to create or resume a DeepSeek Session ensures this runtime before activation. The activation waits for service authentication, Web handshake and the native Session operation; opening a browser window or starting a child process alone does not report success. An already attached ready runtime is used directly.
 
 The desktop Agent update flow is an explicit exception: after installing and verifying DSH, it restarts a running Orbis-owned Web service with the new CLI, keeping its home and port and publishing fresh authentication metadata. The update dialog explains the interruption before confirmation. Restart and service acquisition share the same cross-process lock; the authenticated descriptor PID must also own the listening socket before termination. External endpoints are left to their launcher, and unused services are not started by an installation. Failed or cancelled downloads do not restart the service. A failed restart or provider synchronization retains the verified installation and reports a separate warning. Ordinary Host shutdown and provider changes retain their existing non-terminating behavior.
 
@@ -28,4 +32,4 @@ Provider management retains the complete native home patch. Native DSH HMR appli
 
 ## Verification
 
-Unit tests cover transport validation, reconnect, streamed history, approval ownership, archive filtering, browser activity checks and provider reload failure. Discovery tests cover startup, late notifications, stale list responses, detach, archive changes and joining a streaming turn; an encrypted Host test verifies automatic announcement and bidirectional routing without app activation. `scripts/test-dsh-web.mjs` launches an isolated official DSH installation against a loopback mock model and checks native discovery (including browser restoration of a cold Session), cold-safe history reads, shared messages, archive changes, tools, queue cancellation, plus URL and API-key changes on the same running service. No user Host, browser service or paid model account is used.
+Unit tests cover transport validation, reconnect, streamed history, approval ownership, archive filtering, browser activity checks and provider reload failure. Discovery tests cover startup, late notifications, stale list responses, detach, archive changes and joining a streaming turn; encrypted Host tests cover automatic announcement, bidirectional routing without App activation, and App-triggered lazy DSH attachment before session activation. `scripts/test-dsh-web.mjs` launches an isolated official DSH installation against a loopback mock model and checks native discovery (including browser restoration of a cold Session), cold-safe history reads, shared messages, archive changes, tools, queue cancellation, plus URL and API-key changes on the same running service. No user Host, browser service or paid model account is used.

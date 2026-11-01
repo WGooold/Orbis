@@ -158,8 +158,10 @@ private final class PreviewTransport: OrbisTransport {
                      "status": "idle", "agentKind": "codex"]
                 }
             }
+            let launchableDshOnly = ProcessInfo.processInfo.arguments.contains("--preview-launchable-dsh")
             receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": runtimes,
-                     "agents": ["pi", "codex", "dsh"], "launchableAgents": ["pi", "codex", "dsh"]], "ctl")
+                     "agents": launchableDshOnly ? ["pi"] : ["pi", "codex", "dsh"],
+                     "launchableAgents": launchableDshOnly ? ["pi", "dsh"] : ["pi", "codex", "dsh"]], "ctl")
             var path: [String: Any] = ["type": "device.path", "path": "relay"]
             if !ProcessInfo.processInfo.arguments.contains("--preview-no-rtt") { path["rttMs"] = 42 }
             receive(path, "ctl")

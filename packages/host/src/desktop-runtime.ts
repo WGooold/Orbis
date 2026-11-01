@@ -12,8 +12,7 @@ import { HostService } from "./host-service.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
 import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
-import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper, stageCodexWrapper } from "./codex-desktop-launcher.js";
-import { ensureCodexDesktopEntry } from "./codex-shim-install.js";
+import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper } from "./codex-desktop-launcher.js";
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
@@ -460,44 +459,40 @@ export class DesktopRuntime {
           this.#codex = await CodexAppServer.create({ log: line => this.log(line), onExit: () => this.log("Codex 终端后端已断开，可暂停后重新启动 Host") });
           this.#codexRuntime = new CodexRuntime({ server: this.#codex, sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS, log: line => this.log(line), onEvent: () => {} });
         } catch (error) { this.log(`Codex 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
-        // 桌面版接入走 Orbis 包装器：它给桌面版自己的 app-server 多开一个本地 ws，
-        // 官方 `app-server proxy` 那条路在 Windows 上被上游关掉了，macOS 默认也不走（ADR-0022）。
-        const wrapper = resolveCodexWrapper();
-        const endpointPath = codexDesktopEndpointPath(this.#stateDir);
-        const staged = wrapper === undefined ? undefined : stageCodexWrapper(wrapper, undefined, endpointPath);
-        if (wrapper === undefined) this.log("未找到 Orbis 包装器（codex-launcher 或 codex-desktop-wrapper.js），本轮无法接入 Codex 桌面版");
-        // 桌面版接入的入口是用户级 CODEX_CLI_PATH（macOS 上是 launchd 会话环境）：这样用户从开始菜单／程序坞直接打开桌面版也会
-        // 走包装器，不依赖 Orbis 拉起，也不分先后。幂等，且不覆盖别人的值。
-        if (staged !== undefined) {
-          void ensureCodexDesktopEntry(staged.launcher).then(entry => {
-            if (entry.state === "enabled") this.log(`Codex 桌面版接入已启用（${staged.launcher}）：${entry.detail}`);
-            else this.log(`Codex 桌面版接入未启用：${entry.detail}`);
-          }).catch(error => this.log(`设置 Codex 桌面版接入失败：${error instanceof Error ? error.message : String(error)}`));
-        }
-        this.#codexDesktopLifecycle = new CodexDesktopLifecycle({
-          log: line => this.log(line),
-          onReady: runtime => this.#service?.attachCodexDesktopRuntime(runtime),
-          onOffline: runtime => this.#service?.detachCodexDesktopRuntime(runtime),
-          resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
-          desktopRefresh: { journalDirectory: join(this.#stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
-          launchApp: staged === undefined
-            ? () => launchCodexDesktopApp()
-            : async () => { if (!await launchCodexDesktopThroughWrapper(staged, endpointPath)) await launchCodexDesktopApp(); },
-          // 分档变了才回调（探测每 2s 一次，不能把它变成心跳）：一条给 Host 界面，
-          // 一条给已配对的手机，否则手机上只能靠 device.ready 的偶然重播。
-          onStatusChange: status => {
-            // 分档变化写进 Host 日志：诊断页的卡片只说现状，日志要能回答“什么时候为什么变的”。
-            this.log(`Codex 桌面版接入：${status.state} · ${status.reason}`);
-            this.#emit({ event: "codexDesktop", status });
-            this.#service?.announceCodexDesktopStatus();
-          },
-        });
       }
+
+      // Codex Desktop is independent of the optional terminal backend. The Host only opens
+      // it after an App session request; an already attached instance is reused by the lifecycle.
+      const wrapper = resolveCodexWrapper();
+      const endpointPath = codexDesktopEndpointPath(this.#stateDir);
+      if (wrapper === undefined) this.log("未找到 Orbis 包装器（codex-launcher 或 codex-desktop-wrapper.js），本轮无法接入 Codex 桌面版");
+      this.#codexDesktopLifecycle = new CodexDesktopLifecycle({
+        log: line => this.log(line),
+        onReady: runtime => this.#service?.attachCodexDesktopRuntime(runtime),
+        onOffline: runtime => this.#service?.detachCodexDesktopRuntime(runtime),
+        resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
+        desktopRefresh: { journalDirectory: join(this.#stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
+        launchApp: async () => {
+          if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath)) return;
+          await launchCodexDesktopApp();
+        },
+        // 分档变了才回调（探测每 2s 一次，不能把它变成心跳）：一条给 Host 界面，
+        // 一条给已配对的手机，否则手机上只能靠 device.ready 的偶然重播。
+        onStatusChange: status => {
+          this.log(`Codex 桌面版接入：${status.state} · ${status.reason}`);
+          this.#emit({ event: "codexDesktop", status });
+          this.#service?.announceCodexDesktopStatus();
+        },
+      });
+
       if (settings.dshEnabled) {
         try { this.#dshRuntime = await DshRuntime.create(await this.#providers.environment("dsh")); }
         catch (error) { this.log(`DeepSeek Harness 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
       }
-      const codexDesktopLaunchable = await this.#codexDesktopLifecycle?.isInstalled() ?? false;
+      let dshLaunchable = false;
+      try { await resolveDshCommand(await this.#providers.environment("dsh")); dshLaunchable = true; }
+      catch { /* DSH stays unavailable when its CLI or native provider configuration is missing. */ }
+      const codexDesktopLaunchable = await this.#codexDesktopLifecycle.isInstalled();
       const service = await HostService.create({
         providers: this.#providers,
         providerUsage: (kind, id) => this.#usage.get(kind, id),
@@ -508,10 +503,21 @@ export class DesktopRuntime {
         stateDir: this.#stateDir, relayUrl: settings.relayUrl, credential: settings.credential,
         ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }),
         ...(this.#codexRuntime === undefined ? {} : { codexRuntime: this.#codexRuntime, codexLaunch: (request: { cwd: string }) => this.#codexRuntime!.prepareTerminalLaunch(request.cwd) }),
-        ...(this.#codexDesktopLifecycle === undefined ? {} : { ensureCodexDesktop: () => this.#codexDesktopLifecycle!.ensureReady() }),
-        ...(this.#codexDesktopLifecycle === undefined ? {} : { codexDesktopLaunchable }),
-        ...(this.#codexDesktopLifecycle === undefined ? {} : { codexDesktopStatus: () => this.#codexDesktopLifecycle!.status }),
+        ensureCodexDesktop: () => this.#codexDesktopLifecycle!.ensureReady(),
+        codexDesktopLaunchable,
+        codexDesktopStatus: () => this.#codexDesktopLifecycle!.status,
         ...(this.#dshRuntime === undefined ? {} : { dshRuntime: this.#dshRuntime }),
+        ensureDshRuntime: async () => {
+          if (this.#dshRuntime?.isReady()) return this.#dshRuntime;
+          const runtime = await DshRuntime.create(await this.#providers.environment("dsh"));
+          if (this.#desired !== settings) {
+            await runtime.stop().catch(() => undefined);
+            throw new Error("Host 正在暂停，已取消 DeepSeek 启动");
+          }
+          this.#dshRuntime = runtime;
+          return runtime;
+        },
+        dshLaunchable,
         claude: {},
         log: line => this.log(line),
         // 只有“当前这次连接”的链路状态才会到界面：暂停或重启后被作废的尝试还在收尾巴，

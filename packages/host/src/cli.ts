@@ -25,9 +25,9 @@ import { loadHostConfig } from "./config.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
-import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper, stageCodexWrapper } from "./codex-desktop-launcher.js";
-import { ensureCodexDesktopEntry } from "./codex-shim-install.js";
+import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper } from "./codex-desktop-launcher.js";
 import { DshRuntime } from "./dsh-runtime.js";
+import { resolveDshCommand } from "./dsh-client.js";
 import { HostService } from "./host-service.js";
 import { ProviderManager } from "./provider-manager.js";
 import { describePath } from "./path.js";
@@ -41,8 +41,8 @@ const USAGE = `orbis —— 电脑侧的 Host 进程
 
 可选参数：
   --state-dir <路径>             覆盖状态目录（默认 ~/.orbis）
-  --codex                        host 子命令：启用 Codex 后端（需已全局安装 codex-cli）
-  --dsh                          host 子命令：启用 DeepSeek Harness 后端
+  --codex                        host 子命令：预启动 Codex 终端后端（需已全局安装 codex-cli）
+  --dsh                          host 子命令：预启动 DeepSeek Harness；App 启动会话时也可按需启动
   --sessions-root <路径>         host 子命令：只扫这个目录下的 Pi 会话（隔离测试台用它，
                                  免得把真实会话列进来；默认 ~/.pi/agent/sessions）
   --print-payload                pair 子命令：把配对载荷按一行 JSON 打到 stdout（不给二维码），
@@ -102,10 +102,9 @@ async function runHost(
     afterApply: async (kind, hotSwitch, liveEdit) => { if (!hotSwitch) await service?.reloadProviderConfiguration(kind, await providers.environment(kind), liveApply(kind, liveEdit)); },
   });
 
-  // Codex 后端按需启用；起不来（未安装/版本太旧）不是致命错误，降级为纯 Pi。
+  // Codex TUI 后端按需启用；Codex Desktop 独立提供给 App 按需打开。
   let codexServer: CodexAppServer | undefined;
   let codexRuntime: CodexRuntime | undefined;
-  let codexDesktopLifecycle: CodexDesktopLifecycle | undefined;
   if (codexEnabled) {
     try {
       codexServer = await CodexAppServer.create({
@@ -121,29 +120,29 @@ async function runHost(
     } catch (error) {
       console.error(`[codex] 后端未启用：${error instanceof Error ? error.message : String(error)}`);
     }
-    const wrapper = resolveCodexWrapper();
-    const endpointPath = codexDesktopEndpointPath(stateDir);
-    const staged = wrapper === undefined ? undefined : stageCodexWrapper(wrapper, undefined, endpointPath);
-    if (wrapper === undefined) console.error("[codex-desktop] 未找到 Orbis 包装器（codex-launcher 或 codex-desktop-wrapper.js），本轮无法接入");
-    if (staged !== undefined) {
-      void ensureCodexDesktopEntry(staged.launcher).then(entry => console.log(`[codex-desktop] ${entry.state}：${entry.detail}`))
-        .catch(error => console.error(`[codex-desktop] 设置接入入口失败：${error instanceof Error ? error.message : String(error)}`));
-    }
-    codexDesktopLifecycle = new CodexDesktopLifecycle({
-      log: line => console.log(`[codex-desktop] ${line}`),
-      onReady: runtime => service?.attachCodexDesktopRuntime(runtime),
-      onOffline: runtime => service?.detachCodexDesktopRuntime(runtime),
-      resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
-      desktopRefresh: { journalDirectory: join(stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
-      launchApp: staged === undefined
-        ? () => launchCodexDesktopApp()
-        : async () => { if (!await launchCodexDesktopThroughWrapper(staged, endpointPath)) await launchCodexDesktopApp(); },
-    });
   }
 
-  const codexDesktopLaunchable = await codexDesktopLifecycle?.isInstalled() ?? false;
+  const wrapper = resolveCodexWrapper();
+  const endpointPath = codexDesktopEndpointPath(stateDir);
+  if (wrapper === undefined) console.error("[codex-desktop] 未找到 Orbis 包装器（codex-launcher 或 codex-desktop-wrapper.js），本轮无法接入");
+  const codexDesktopLifecycle = new CodexDesktopLifecycle({
+    log: line => console.log(`[codex-desktop] ${line}`),
+    onReady: runtime => service?.attachCodexDesktopRuntime(runtime),
+    onOffline: runtime => service?.detachCodexDesktopRuntime(runtime),
+    resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
+    desktopRefresh: { journalDirectory: join(stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
+    launchApp: async () => {
+      if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath)) return;
+      await launchCodexDesktopApp();
+    },
+  });
+
+  const codexDesktopLaunchable = await codexDesktopLifecycle.isInstalled();
 
   let dshRuntime: DshRuntime | undefined;
+  let dshLaunchable = false;
+  try { await resolveDshCommand(await providers.environment("dsh")); dshLaunchable = true; }
+  catch { /* Keep DeepSeek unavailable when its CLI or native provider configuration is missing. */ }
   if (dshEnabled) {
     try { dshRuntime = await DshRuntime.create(await providers.environment("dsh")); }
     catch (error) { console.error(`[dsh] 后端未启用：${error instanceof Error ? error.message : String(error)}`); }
@@ -160,10 +159,16 @@ async function runHost(
       ...(sessionsRoot === undefined ? {} : { sessionsRoot }),
       ...(config.lanPort === undefined ? {} : { lanPort: config.lanPort }),
       ...(codexRuntime === undefined ? {} : { codexRuntime, codexLaunch: (request: { cwd: string }) => codexRuntime!.prepareTerminalLaunch(request.cwd) }),
-      ...(codexDesktopLifecycle === undefined ? {} : { ensureCodexDesktop: () => codexDesktopLifecycle!.ensureReady() }),
-      ...(codexDesktopLifecycle === undefined ? {} : { codexDesktopLaunchable }),
-      ...(codexDesktopLifecycle === undefined ? {} : { codexDesktopStatus: () => codexDesktopLifecycle!.status }),
+      ensureCodexDesktop: () => codexDesktopLifecycle.ensureReady(),
+      codexDesktopLaunchable,
+      codexDesktopStatus: () => codexDesktopLifecycle.status,
       ...(dshRuntime === undefined ? {} : { dshRuntime }),
+      ensureDshRuntime: async () => {
+        if (dshRuntime?.isReady()) return dshRuntime;
+        dshRuntime = await DshRuntime.create(await providers.environment("dsh"));
+        return dshRuntime;
+      },
+      dshLaunchable,
       claude: {},
       log: (line) => console.log(`[host] ${line}`),
       onStateChange: (state) => console.log(`[host] relay ${state}`),

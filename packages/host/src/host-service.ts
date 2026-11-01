@@ -216,6 +216,10 @@ export type HostServiceOptions = {
   /** 终端 shim 通过 loopback 请求官方 Codex TUI 接入 Host app-server。 */
   codexLaunch?: (request: CodexLaunchRequest) => Promise<CodexLaunchResult>;
   dshRuntime?: DshRuntime;
+  /** DeepSeek Harness 已安装时可按需启动；连接可用时直接复用，不重复创建。 */
+  ensureDshRuntime?: () => Promise<DshRuntime | undefined>;
+  /** DeepSeek Harness 已安装且 Host 可启动；与当前是否已连接分开公告。 */
+  dshLaunchable?: boolean;
   /**
    * Claude Code's transcript directory and phone-opened terminals (ADR-0033). Absent, Claude
    * Sessions appear only while an attached TUI reports in.
@@ -266,6 +270,8 @@ export class HostService {
    * 接口，不为单个后端写特判。
    */
   #backends: AgentBackend[];
+  #dshRuntime: DshRuntime | undefined;
+  #dshStarting: Promise<DshRuntime | undefined> | undefined;
   readonly #claudeBridge: ClaudeHookBridge;
   readonly #claudeModsBridge: ClaudeModsBridge;
   readonly #claudeBackend: ClaudeBackend;
@@ -843,42 +849,7 @@ export class HostService {
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
     }
-    if (options.dshRuntime !== undefined) {
-      const dsh = options.dshRuntime;
-      dsh.onDiagnostic = event => this.recordDiagnostic({ scope: "host", agentKind: "dsh", sessionId: null,
-        category: "backend.transport", severity: event.event === "reconnected" ? "info" : event.event === "failed" ? "error" : "warning",
-        message: `DSH Web ${event.event}`, detail: { ...(event.code === undefined ? {} : { code: event.code }),
-          ...(event.reason === undefined ? {} : { reason: event.reason }),
-          ...(event.maxFrameBytes === undefined ? {} : { maxFrameBytes: String(event.maxFrameBytes) }) } });
-      dsh.onFileChangeEvent = (runtimeId, event) => {
-        if (event.type === "turn.started") void this.#fileChangeTurns.started(runtimeId, event.turnId).catch(() => undefined);
-        else if (event.type === "turn.finished") void this.#fileChangeTurns.finish(runtimeId, {
-          turnId: event.turnId, reliable: false,
-          ...(event.persistedMessageId ? { anchorEntryId: event.persistedMessageId } : {}),
-        }).catch(() => undefined);
-      };
-      dsh.setEventSink((event, runtimeId) => this.#publishRuntimeEvent(runtimeId, event));
-      dsh.onCatalogChange = () => this.#invalidateCatalog();
-      dsh.onArchiveChange = (sessionId, archived) => {
-        this.#invalidateCatalog();
-        this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: "dsh", sessionId, archived });
-      };
-      dsh.onMetadataChange = () => {
-        for (const runtime of dsh.directoryEntries()) {
-          if (!this.#notifications.has(runtime.runtimeId) || this.#notifications.needsAttach(runtime.runtimeId)) this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
-          this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
-        }
-      };
-      dsh.onOffline = (reason, runtimes) => {
-        this.#invalidateCatalog();
-        for (const runtime of runtimes) {
-          this.#notifications.end(runtime.runtimeId);
-          this.#markRuntimeOffline(runtime.runtimeId, reason);
-          this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
-        }
-      };
-      backends.push(dsh);
-    }
+    if (options.dshRuntime !== undefined) this.#attachDshBackend(options.dshRuntime);
     this.refreshHostFacts();
   }
 
@@ -919,6 +890,78 @@ export class HostService {
     };
     if (codex.kind === "codexDesktop") codex.onDesktopThread = id => this.#recordDesktopThread(id);
     this.#backends.push(codex);
+  }
+
+  #attachDshBackend(dsh: DshRuntime): void {
+    if (this.#backends.includes(dsh)) return;
+    if (this.#toolContentStore) dsh.setToolContentStore(this.#toolContentStore, this.#identity.hostId);
+    dsh.onDiagnostic = event => this.recordDiagnostic({ scope: "host", agentKind: "dsh", sessionId: null,
+      category: "backend.transport", severity: event.event === "reconnected" ? "info" : event.event === "failed" ? "error" : "warning",
+      message: `DSH Web ${event.event}`, detail: { ...(event.code === undefined ? {} : { code: event.code }),
+        ...(event.reason === undefined ? {} : { reason: event.reason }),
+        ...(event.maxFrameBytes === undefined ? {} : { maxFrameBytes: String(event.maxFrameBytes) }) } });
+    dsh.onFileChangeEvent = (runtimeId, event) => {
+      if (event.type === "turn.started") void this.#fileChangeTurns.started(runtimeId, event.turnId).catch(() => undefined);
+      else if (event.type === "turn.finished") void this.#fileChangeTurns.finish(runtimeId, {
+        turnId: event.turnId, reliable: false,
+        ...(event.persistedMessageId ? { anchorEntryId: event.persistedMessageId } : {}),
+      }).catch(() => undefined);
+    };
+    dsh.setEventSink((event, runtimeId) => this.#publishRuntimeEvent(runtimeId, event));
+    dsh.onCatalogChange = () => this.#invalidateCatalog();
+    dsh.onArchiveChange = (sessionId, archived) => {
+      this.#invalidateCatalog();
+      this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: "dsh", sessionId, archived });
+    };
+    dsh.onMetadataChange = () => {
+      for (const runtime of dsh.directoryEntries()) {
+        if (!this.#notifications.has(runtime.runtimeId) || this.#notifications.needsAttach(runtime.runtimeId)) this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
+        this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+      }
+    };
+    dsh.onOffline = (reason, runtimes) => {
+      this.#invalidateCatalog();
+      for (const runtime of runtimes) {
+        this.#notifications.end(runtime.runtimeId);
+        this.#markRuntimeOffline(runtime.runtimeId, reason);
+        this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
+      }
+      this.#broadcastDeviceReady();
+    };
+    this.#backends.push(dsh);
+    this.#dshRuntime = dsh;
+  }
+
+  /** Attach a newly connected DeepSeek backend and publish the changed capability. */
+  async attachDshRuntime(runtime: DshRuntime): Promise<void> {
+    const existing = this.#backends.find(backend => backend.kind === "dsh");
+    if (existing === runtime) return;
+    if (existing !== undefined) {
+      const previous = existing as DshRuntime;
+      this.detachDshRuntime(previous);
+      await previous.stop().catch(error => this.#options.log?.(`关闭旧的 DeepSeek 接入失败：${describeError(error)}`));
+    }
+    this.#attachDshBackend(runtime);
+    try { await runtime.start(); }
+    catch (error) { this.#options.log?.(`DeepSeek 会话发现暂时失败，将自动重试：${describeError(error)}`); }
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
+  }
+
+  /** Detach only Orbis's DSH Web client; the user's shared Web service stays alive. */
+  detachDshRuntime(runtime: DshRuntime): void {
+    const index = this.#backends.indexOf(runtime);
+    if (index < 0 || runtime.kind !== "dsh") return;
+    runtime.onDiagnostic = undefined;
+    runtime.onFileChangeEvent = undefined;
+    runtime.onCatalogChange = undefined;
+    runtime.onArchiveChange = undefined;
+    runtime.onMetadataChange = undefined;
+    runtime.onOffline = undefined;
+    this.#backends.splice(index, 1);
+    if (this.#dshRuntime === runtime) this.#dshRuntime = undefined;
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
   }
 
   /** Attach a newly connected desktop proxy and immediately publish its capability. */
@@ -1010,7 +1053,7 @@ export class HostService {
           if (backend.kind === "codexDesktop" && backend.isReady()) (backend as CodexRuntime).assertProviderSwitchReady();
         }
       }
-      if (kind === "dsh") await this.#options.dshRuntime?.assertProviderSwitchReady();
+      if (kind === "dsh") await this.#dshRuntime?.assertProviderSwitchReady();
       if (kind === "claude" && [...new Set([...this.#claudeBridge.runtimeIds(), ...this.#claudeModsBridge.runtimeIds()])].some(id =>
         this.#claudeModsBridge.statusOf(id) === "running" || this.#claudeBridge.pendingRequests(id).length > 0)) {
         throw new ProviderError("Claude Code 正在工作或等待权限确认，请完成后再切换供应商");
@@ -1020,7 +1063,7 @@ export class HostService {
 
   async reloadProviderConfiguration(kind: AgentKind, env: NodeJS.ProcessEnv, live = false): Promise<void> {
     if (kind === "codex") await this.#options.codexRuntime?.reloadProviderConfiguration();
-    if (kind === "dsh") await this.#options.dshRuntime?.reloadProviderConfiguration(env, live);
+    if (kind === "dsh") await this.#dshRuntime?.reloadProviderConfiguration(env, live);
     this.#invalidateCatalog();
   }
 
@@ -1103,7 +1146,7 @@ export class HostService {
         const threadId = backend.activeThreadIds().find(id => backend.runtimeIdFor(id) === runtimeId);
         if (threadId !== undefined) backend.announce(threadId);
       }
-      if (this.#options.dshRuntime?.ownsRuntime(runtimeId)) this.#options.dshRuntime.announce();
+      if (this.#dshRuntime?.ownsRuntime(runtimeId)) this.#dshRuntime.announce();
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
     if (!this.#agentStateSubscriptions.register(deviceId, scope, request)) {
@@ -1183,8 +1226,8 @@ export class HostService {
   /**
    * 这台电脑支持的 agent 种类，随 `device.ready` 下发给手机（§8.4）。
    *
-   * Pi 恒有（spawner 起的就是它）；其它后端只在**真的就绪**时才算数——手机据此把
-   * 做不到的选项置灰，免得让人点了再吃一个 `agent_unsupported`。
+   * 这里只列**现在已经就绪**的后端。能由 Host 按需启动 / 接入的 Agent 另由
+   * `#launchableAgentsSnapshot` 公告，手机不把它们误画成已连接。
    */
   #agentsSnapshot(): AgentKind[] {
     return this.#backends.filter((backend) => backend.isReady()).map((backend) => backend.kind);
@@ -1194,7 +1237,22 @@ export class HostService {
     // Claude Code runs only in its official TUI: launchable where the Host can open a terminal.
     const agents = this.#agentsSnapshot().filter(kind => kind !== "claude" || this.#claudeLaunchable);
     if (this.#options.codexDesktopLaunchable === true && !agents.includes("codexDesktop")) agents.push("codexDesktop");
+    if (this.#options.dshLaunchable === true && !agents.includes("dsh")) agents.push("dsh");
     return agents;
+  }
+
+  async #ensureDshRuntime(): Promise<DshRuntime | undefined> {
+    const current = this.#backends.find(backend => backend.kind === "dsh" && backend.isReady());
+    if (current !== undefined) return current as DshRuntime;
+    if (!this.#options.ensureDshRuntime) return undefined;
+    if (this.#dshStarting) return this.#dshStarting;
+    const pending = (async () => {
+      const runtime = await this.#options.ensureDshRuntime?.();
+      if (runtime !== undefined) await this.attachDshRuntime(runtime);
+      return runtime;
+    })().finally(() => { if (this.#dshStarting === pending) this.#dshStarting = undefined; });
+    this.#dshStarting = pending;
+    return pending;
   }
 
   #codexDesktopSnapshot(): CodexDesktopAttach | null {
@@ -1370,7 +1428,7 @@ export class HostService {
       this.#options.log?.(`Codex 桌面后端已就绪（runtimeId=${this.#options.codexDesktopRuntime.runtimeId}）`);
     }
 
-    try { await this.#options.dshRuntime?.start(); }
+    try { await this.#dshRuntime?.start(); }
     catch (error) { this.#options.log?.(`DeepSeek Web 会话发现暂时失败，将自动重试：${describeError(error)}`); }
     await relay.start();
     this.#modelLifecycle = "running";
@@ -2062,11 +2120,19 @@ export class HostService {
       if (target.type === "new") {
         let backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
         if ((backend === undefined || !backend.isReady()) && target.agentKind === "codexDesktop") {
-          const runtime = await this.#options.ensureCodexDesktop?.();
-          if (runtime !== undefined) {
-            this.attachCodexDesktopRuntime(runtime);
-            backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
-          }
+          try {
+            const runtime = await this.#options.ensureCodexDesktop?.();
+            if (runtime !== undefined) {
+              this.attachCodexDesktopRuntime(runtime);
+              backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
+            }
+          } catch (error) { throw new ActivationError("agent_unsupported", `Codex 桌面版启动或接入失败：${describeError(error)}`); }
+        }
+        if ((backend === undefined || !backend.isReady()) && target.agentKind === "dsh") {
+          try {
+            await this.#ensureDshRuntime();
+            backend = this.#backends.find(candidate => candidate.kind === target.agentKind);
+          } catch (error) { throw new ActivationError("agent_unsupported", `DeepSeek Harness 启动或接入失败：${describeError(error)}`); }
         }
         if (backend === undefined) {
           throw new ActivationError(
@@ -2074,8 +2140,8 @@ export class HostService {
             target.agentKind === "codex"
               ? "Codex 后端未启用：请用 `orbis host --codex` 启动"
               : target.agentKind === "codexDesktop"
-                ? "Codex 桌面版未运行，已尝试启动但未就绪"
-              : target.agentKind === "dsh" ? "DeepSeek Harness 后端未启用：请用 `orbis host --dsh` 启动" : "未知的 agent 类型",
+                ? "Codex 桌面版未安装，或 Host 无法启动并接入它"
+              : target.agentKind === "dsh" ? "DeepSeek Harness 未安装，或 Host 无法启动并接入它" : "未知的 agent 类型",
           );
         }
         if (!backend.isReady()) {
@@ -2088,10 +2154,21 @@ export class HostService {
         this.#sendActivated(deviceId, requestId, backend.kind, activated);
         return;
       }
-      const resumeKind = target.agentKind ?? (target.sessionId.startsWith("codex-desktop:") ? "codexDesktop" : undefined);
+      const resumeKind = target.agentKind ?? (target.sessionId.startsWith("codex-desktop:") ? "codexDesktop"
+        : target.sessionId.startsWith("dsh:") ? "dsh" : undefined);
       if (resumeKind === "codexDesktop" && this.#backends.every(backend => backend.kind !== "codexDesktop" || !backend.isReady())) {
-        const runtime = await this.#options.ensureCodexDesktop?.();
-        if (runtime !== undefined) this.attachCodexDesktopRuntime(runtime);
+        try {
+          const runtime = await this.#options.ensureCodexDesktop?.();
+          if (runtime !== undefined) this.attachCodexDesktopRuntime(runtime);
+          if (!runtime?.isReady()) throw new Error("Codex 桌面版没有完成 app-server 握手");
+        } catch (error) { throw new ActivationError("agent_unsupported", `Codex 桌面版启动或接入失败：${describeError(error)}`); }
+      }
+      if (resumeKind === "dsh" && this.#backends.every(backend => backend.kind !== "dsh" || !backend.isReady())) {
+        try {
+          const runtime = await this.#ensureDshRuntime();
+          if (!runtime?.isReady()) throw new Error("DeepSeek Harness 没有完成 Web 握手");
+        }
+        catch (error) { throw new ActivationError("agent_unsupported", `DeepSeek Harness 启动或接入失败：${describeError(error)}`); }
       }
       for (const backend of this.#backends) {
         if (!backend.isReady()) continue;
@@ -2174,7 +2251,7 @@ export class HostService {
         for (const threadId of backend.activeThreadIds()) backend.announce(threadId);
       }
     }
-    this.#options.dshRuntime?.announce();
+    this.#dshRuntime?.announce();
     this.#claudeBackend.announce();
     // Pi 侧同理：扩展只在自己的 transport 重连时才重播 capabilities，而那和“手机刚重连”
     // 是两件事——手机侧被 `device.ready` / `runtime.online` 清掉词表后，只要扩展的 transport

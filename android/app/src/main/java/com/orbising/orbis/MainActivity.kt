@@ -1050,7 +1050,8 @@ internal fun NewSessionSheet(
     // 电脑端说得很清楚时不让人白点：做不到的 agent 直接置灰（未知=不限制，见 RemoteState）。
     val codexSupported = state.supportedAgents?.contains("codex") != false
     val codexDesktopSupported = state.launchableAgents?.contains("codexDesktop") == true
-    val dshSupported = state.supportedAgents?.contains("dsh") == true
+    // DSH may be launchable even while its backend is offline; Host will start or attach it on request.
+    val dshSupported = (state.launchableAgents ?: state.supportedAgents)?.contains("dsh") == true
     // Claude Code 只在电脑能打开终端窗口时可新建（Host 的 launchableAgents）。
     val claudeSupported = state.launchableAgents?.contains("claude") == true
     LaunchedEffect(codexSupported, codexDesktopSupported, dshSupported, claudeSupported) {

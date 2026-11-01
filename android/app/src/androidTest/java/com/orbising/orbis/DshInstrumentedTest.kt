@@ -12,11 +12,11 @@ import org.junit.Test
 class DshInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun selectsDeepSeekAndCreatesSessionInChosenDirectory() {
+    @Test fun selectsLaunchableDeepSeekBeforeBackendReadyAndCreatesSessionInChosenDirectory() {
         var created: Pair<String, String>? = null
         compose.setContent { OrbisTheme { NewSessionSheet(
             state = RemoteState(hostId = "paired-host", connection = RelayConnection.ONLINE, e2eReady = true,
-                supportedAgents = setOf("pi", "codex", "dsh")),
+                supportedAgents = setOf("pi", "codex"), launchableAgents = setOf("pi", "codex", "dsh")),
             presetCwd = "D:/orbis-deepseek-harness", onDismiss = {}, onBrowse = {}, onBrowseInto = {}, onBrowseUp = {},
             onCreate = { kind, cwd -> created = kind to cwd },
         ) } }

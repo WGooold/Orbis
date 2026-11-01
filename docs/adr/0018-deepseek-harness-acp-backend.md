@@ -20,7 +20,7 @@ Committed ACP output feeds the existing live-message and tool events. It is not 
 
 Cancellation is admitted before asynchronous history loading so a stop cannot race into a later prompt. A timed-out mutation closes the owned ACP connection after sending cancellation, containing late activation and uncertain state. The operator can restart the Host and resume persisted sessions. Explicit session close remains independent and flushes persistence before disposal; full shutdown closes sessions before stdin EOF.
 
-DSH is opt-in in the desktop settings or `host --dsh`. Android adds branding, discovery and filtering while retaining shared chat, tools, approvals and Session Tree ingestion. AgentKind gains `dsh`; no new transport, encrypted frame format or Relay business operation is introduced. Host and Android are updated together, and Protocol changes follow the existing CI deployment boundary.
+This legacy ACP adapter was originally opt-in through desktop settings or `host --dsh`. The current Web backend may be started on demand when the App requests a DeepSeek session; desktop settings and `host --dsh` only control eager prestart. Android retains shared chat, tools, approvals and Session Tree ingestion. AgentKind gains `dsh`; no new transport, encrypted frame format or Relay business operation is introduced. Host and Android are updated together, and Protocol changes follow the existing CI deployment boundary. See [ADR-0020](0020-deepseek-harness-shared-web-backend.md) and [ADR-0056](0056-agent-startup-readiness-and-consent.md#21-app-请求会话时按需启动后端).
 
 ## Verification
 

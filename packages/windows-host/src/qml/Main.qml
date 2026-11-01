@@ -908,8 +908,8 @@ ApplicationWindow {
                             Label { text: "电脑名称"; color: "#4b5d78" }
                             Field { id: nameField; Layout.fillWidth: true; maximumLength: 80 }
                             SoftSwitch { id: startupSwitch; text: Qt.platform.os === "osx" ? "登录 macOS 后自动启动" : "登录 Windows 后自动启动" }
-                            SoftSwitch { id: codexSwitch; text: "启动 Host 时启用 Codex" }
-                            SoftSwitch { id: dshSwitch; text: "启动 Host 时启用 DeepSeek Harness" }
+                            SoftSwitch { id: codexSwitch; text: "启动 Host 时预启动 Codex 终端后端" }
+                            SoftSwitch { id: dshSwitch; text: "启动 Host 时预启动 DeepSeek Harness" }
                             SoftSwitch { id: piIntegrationSwitch; visible: Qt.platform.os === "osx"; text: "让终端里运行的 Pi 连接 Orbis" }
                             Hint { visible: Qt.platform.os === "osx"; text: "会在 Pi 的 settings.json 里追加 Orbis 扩展，不影响你已有的扩展；已在运行的 Pi 需重启后才会连接。删除 Orbis Host 前请先关闭此项（终端命令 pi 也会一并移除）。"; Layout.fillWidth: true }
                             SoftSwitch { id: claudeIntegrationSwitch; text: "让终端里运行的 Claude Code 连接 Orbis" }

@@ -387,6 +387,28 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["在这里新建 Pi 会话"].exists)
         capture("new-session", app: app)
     }
+    func testNewSessionOffersLaunchableDeepSeekBeforeBackendIsReady() {
+        let appearances: [(String, Bool, [String])] = [
+            ("light", false, []),
+            ("dark", true, []),
+            ("xxxl", false, ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]),
+            ("reduce-motion", false, ["--preview-reduce-motion"]),
+        ]
+        for (name, dark, options) in appearances {
+            let app = launch("home", dark: dark, arguments: ["--preview-launchable-dsh"] + options)
+            XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8), name)
+            app.buttons["打开会话目录"].tap()
+            XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3), name)
+            app.buttons["新会话"].tap()
+            let deepSeek = app.buttons.matching(NSPredicate(format: "label == %@", "DeepSeek, DeepSeek")).firstMatch
+            XCTAssertTrue(deepSeek.waitForExistence(timeout: 3), name)
+            XCTAssertTrue(deepSeek.isEnabled, name)
+            deepSeek.tap()
+            XCTAssertTrue(app.buttons["在这里新建 DeepSeek 会话"].waitForExistence(timeout: 3), name)
+            capture("new-session-launchable-deepseek-\(name)", app: app)
+            app.terminate()
+        }
+    }
     func testHomeKeepsCardsAfterDirectoryReplay() {
         let app = launch("home", arguments: ["--preview-home-replay"])
         let card = app.buttons["home-runtime-preview-codex"]

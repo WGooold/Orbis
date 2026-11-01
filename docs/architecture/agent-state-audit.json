@@ -68,22 +68,34 @@
         "reason"
       ],
       "owner": "Host 聚合 readiness 与桌面生命周期",
-      "store": "backend 引用 + CodexDesktopLifecycle",
-      "sync": "device.ready；接入改变重新广播",
-      "verdict": "符合 Host 管理、App 跟随。3 个产品、4 个 kind：pi / codex / codexDesktop / dsh；CONTEXT 三值说明已落后于源码。",
+      "store": "backend 引用 + CodexDesktopLifecycle + 按需 DSH runtime ensure",
+      "sync": "device.ready；agents 表示已就绪，launchableAgents 表示可按需启动 / 接入；接入改变重新广播",
+      "verdict": "Host 区分当前就绪与可启动能力。App 请求 DeepSeek / Codex Desktop 会话时复用现有连接；未就绪才由 Host 启动或接入，等真实握手后再激活。Codex Desktop 不依赖 Codex 终端开关。",
       "target": "HostState.backends；AgentState.availability 引用后端事实",
       "refs": [
         {
           "path": "packages/protocol/src/index.ts",
-          "line": 205
+          "line": 250
         },
         {
           "path": "packages/protocol/src/index.ts",
-          "line": 215
+          "line": 1242
         },
         {
           "path": "packages/host/src/host-service.ts",
-          "line": 527
+          "line": 1232
+        },
+        {
+          "path": "packages/host/src/host-service.ts",
+          "line": 1244
+        },
+        {
+          "path": "android/app/src/main/java/com/orbising/orbis/MainActivity.kt",
+          "line": 1054
+        },
+        {
+          "path": "ios/Orbis/Orbis/SessionViews.swift",
+          "line": 496
         }
       ]
     },
@@ -2182,8 +2194,8 @@
     }
   ],
   "maintenance": {
-    "date": "2026-10-30",
-    "decision": "ADR-0050",
-    "scope": "连接说明统一为 LAN / Relay，移除失效路径设置的引用与源码摘录；其他内容保留原审计基线，不代表当前源码。源码摘录中已省略不再适用的行。"
+    "date": "2026-11-01",
+    "decision": "ADR-0056 / ADR-0022",
+    "scope": "更新 State 02：agents 表示当前就绪，launchableAgents 表示 Host 可按需启动 / 接入；App 请求 DeepSeek / Codex Desktop 会话时复用现有连接或等待 Host 启动后的真实握手。Codex Desktop 不再依赖 Codex 终端后端开关。其余状态与源码摘录保留原审计基线，不代表当前源码。"
   }
 }

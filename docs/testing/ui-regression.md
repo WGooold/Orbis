@@ -1,6 +1,6 @@
 # 移动端 UI 回归方案
 
-日期：2026-11-01。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-01/r29`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-01。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-01/r30`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 10 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -102,13 +102,13 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
 
-**iOS `OrbisUITests`（66 项）**
+**iOS `OrbisUITests`（67 项）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
 | 首页加载 / 同步 | `testHomePublishesCompleteSnapshotsWithoutReturningToLoading`、`testHomeRetriesFailedBackgroundRuntime`、`testHomeBackgroundSyncFailureStaysInConnectionPill`、`testHomeInlineStatusInDarkAndLargeText`、`testHomeKeepsCardsAfterDirectoryReplay` | S18、V16、V18 |
 | 首页手势 / 多选 / 关闭 | `testHomeVerticalDragsScrollFromCardsAndKeepSelection`、`testHomeLongListScrollsToEndInBothAppearances`、`testHomeLongPressSelectsAndClosesOnlyCheckedSessions`、`testHomeShortSwipeReboundsAndLongSwipeClosesOnlyThatRuntime`、`testSwipeCloseHidesBeforeConfirmationAndRestoresOnRejection`、`testSwipeRightFromLeftSideOpensDirectory` | S15、M06、M09–M12、V11 |
-| 首页与目录入口 | `testHomeDirectorySearchAndNewSession`、`testCompactionStatusInHomeChatAndDrawer` | S19–S20、V05 |
+| 首页与目录入口 | `testHomeDirectorySearchAndNewSession`、`testNewSessionOffersLaunchableDeepSeekBeforeBackendIsReady`、`testCompactionStatusInHomeChatAndDrawer` | S19–S20、V05 |
 | 目录抽屉 | `testDrawerCardsKeepUniformGeometryForShortAndLongTitles`、`testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions`、`testDrawerSelectionClearsOnCancelSearchAndClose`、`testDrawerFollowsEdgeDragAndShowsOneDirectory`、`testDrawerCollapseShrinksContentWithoutAnotherDrag` | S15、S19、M06、M09、V17 |
 | 聊天入场 / 返回 | `testCachedOnlineChatEntryTiming`、`testChatSwipeBackReboundsThenReturnsHome`、`testDraftSurvivesBackNavigationAndSlashRequiresSelection` | M07–M08、V13、V17 |
 | 聊天视口 | `testLongTranscriptAppearsAndToolExpansionKeepsItsPositionWithoutDragging`、`testLongFinalReplyKeepsReadingPositionAndOnlyFollowsAfterJump`、`testNewMessagesAndToolsPreserveTheMovingReadingAnchor` | V01–V03、M03 |
@@ -134,6 +134,7 @@ Codex 桌面新会话同步回归（S18、V16–V18）：Host `host-service.test
 | 聊天视口 / 内容 | `ChatViewportInstrumentedTest`（9）、`DeferredDisclosureInstrumentedTest`（2）、`MarkdownInstrumentedTest`（1）、`ToolPanelInstrumentedTest`（3）、`ToolContentInstrumentedTest`（2）、`DisplayScenariosInstrumentedTest`（1）、`ClaudeHistoryInstrumentedTest`（1）、`LiveHistoryReloadInstrumentedTest`（1） | S11、S20、M03、V01–V04、V09、V14 |
 | 顶栏 / 输入 / 交互 | `ChatStatusLayoutInstrumentedTest`（2）、`ComposerSessionInfoInstrumentedTest`（3）、`InteractionWorkspaceInstrumentedTest`（5）、`QuestionnaireInstrumentedTest`（2）、`CodexPermissionsInstrumentedTest`（3）、`NotificationsInstrumentedTest`（2）、`DshInstrumentedTest`（2） | S12、S17、V05–V08、V12、V17 |
 | 目录 | `SessionDrawerLayoutInstrumentedTest`（2）、`SessionArchiveSelectionInstrumentedTest`（3）、`SessionProviderFilterInstrumentedTest`（3）、`SessionHostOwnershipInstrumentedTest`（3） | S15、S19、M06、M09、V17 |
+| 新建会话 Agent 选择 | `DshInstrumentedTest#selectsLaunchableDeepSeekBeforeBackendReadyAndCreatesSessionInChosenDirectory` | S20、V12、V16–V18 |
 | 状态 / 供应商 | `SubscriptionQuotaInstrumentedTest`（1）、`ProviderSelectionInstrumentedTest`（1） | S19、S22 |
 | 下载 / 文件 | `DownloadFileBrowserInstrumentedTest`（3）、`TurnFileChangesInstrumentedTest`（6，含原生 Codex 来源提示及 Pi 预览清单点击、入场期间完整清单 / 首段 diff 到达和关闭重开）、`ChatViewportInstrumentedTest#turnChangeSummaryFollowsTheWholeTurnWhenAnchoredInsideIt` | S09、S15、S20–S21、M13、V19 |
 | 材质 / 字形 / 控件 | `UiPolishInstrumentedTest`（3）、`NeumorphInstrumentedTest`（1） | S01–S09、S12、M04、V15 |
@@ -149,6 +150,8 @@ Codex 桌面新会话同步回归（S18、V16–V18）：Host `host-service.test
 与 UI 相关的单元测试（L1 中必须通过）：iOS `RevealClockTests`、`HomeRuntimeLoadingTests`、`StoreTests`、`AgentStateTests`、`PendingSendTests`、`PresentationTests`、`TurnFileChangesTests`；Android `HomePresentationTest`、`ChatListItemReuseTest`、`HistoryPagingTest`、`MessagePresentationTest`、`StatusScreenTest`、`SubscriptionQuotaTest`、`UiPolishTest`、`PendingSendsTest`、`TurnFileChangesTest`、`RevealScheduleTest`、`HomeViewportAnchorTest`。
 
 Claude 运行中发送的适配器回归（V10、V12、V17）：`claude plugin test packages/claude-mod` 的 `reconnect.test.ts` 覆盖主回合期间不调用 `prompt.submit`、同批消息串行提交、停止与工具事件、子 Agent 完成、Host 轮末捕获屏障及重连代次隔离；设备端仍关联两端乐观发送用例。真实联动验收按 R17 执行，插件模拟通过不能替代设备 / 真实 TUI 验收。
+
+App 按需启动 DeepSeek / Codex Desktop（S20、V12、V16–V18；ADR-0056 §2.1）：Host `host-service.test.ts` 覆盖 DSH 与 Codex Desktop 在未预启动时，先按 `launchableAgents` 公告可选，再由会话请求挂载后端并成功激活；已接入两类 runtime 时直接调用会话 API，断言不调用启动回调。iOS / Android 用例验证仅出现在 `launchableAgents` 的 DeepSeek 仍可选。R32 需另做两端真 Host / 真 Agent 手动确认；Host 自动测试通过不代表设备或真实后端门禁通过。
 
 Claude 输出交接回归（V09、V17–V18）：Host `claude-transcript.test.ts` / `claude-mods-bridge.test.ts` 覆盖一对多 UUID 原子提交、逐 patch 无重复、跨轮清理、迟到事件与落盘超时；官方插件 `reconnect.test.ts` 覆盖主 / 子步骤归属和封口顺序。iOS `StoreTests.claudeStepHandoffPreservesIdenticalTextFromTheNextTurn` 保留合法同文的下一轮；Android `ClaudeHistoryInstrumentedTest` 使用 `scripts/claude-history-fixture.mjs` 的 bridge 3 数据，断言运行中交接、轮末和重连后各段正文只有一份。专项手动 R18。
 
@@ -262,6 +265,12 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | --- | --- | --- | --- |
 | R28 | 隔离 Codex terminal / Desktop 各执行一轮：原生 patch 连续修改同一文件，同时在外部修改另一文件；再分别拒绝、部分失败、取消文件工具，并回放空 diff；两端明暗 / 窄屏 / 大字 / 减少动画查看卡片、展开清单、打开 / 滑动详情及重启重读 | 卡片只展示原生 tracker 已记录的净变化，提示“仅记录 Codex 文件工具变更”，详情范围为“Codex 文件工具”；提议不算成功，未知或空 diff 失效不伪报零变化；外部工作区变化不从快照混入；未选中文件无详情请求，历史固定、版本 / 缓存 / 手势规则保持；不宣称 shell 全覆盖或逐行独占归属 | S21、M13、V19 |
 
+### 4.13 App 按需启动后端专项（ADR-0056 §2.1）
+
+| 编号 | 步骤 | 预期 | ID |
+| --- | --- | --- | --- |
+| R32 | 分别在 Windows / macOS Host 未带 `--dsh`、未预启动 DeepSeek，及未带 `--codex` 的场景配对 iOS / Android。测试 DeepSeek 服务已运行但 Host 未接入、服务未运行、已有 DSH runtime；Codex Desktop 已打开且已接入、未打开、未包装的既有实例；再分别新建与恢复会话，并快速连续提交两次请求 | 新建页将可启动的 DeepSeek / Codex Desktop 显示为可选，`agents` 未就绪时仍不假报在线。已接入的 runtime 直接复用；未接入时 Host 仅启动一次 / 连接现有 DSH 服务，等待真实握手后才创建或恢复；两个请求共用后端准备且不重复创建同一请求。未安装、坏配置、接入失败或超时有明确错误，不能留下 pending / 假成功。Host 设置项清楚标明只控制预启动。记录两端明暗截图、请求 / 握手顺序、进程与服务 PID、会话 ID 及失败回执；用 A1–A4 核对错误全文、重试、草稿和返回 | S20、X03、V12、V16–V18 |
+
 ### 最近提问提示专项（ADR-0057 / S24）
 
 | 编号 | 步骤 | 预期 | ID |
@@ -301,6 +310,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 ## 6. 结果记录
 
 2026-11-01 最近提问提示（S24 / ADR-0057）：iOS 233 核心测试与 App / UI Test 构建、Android 568 JVM 测试和 APK 构建通过；Android 提醒专项 4 项通过，全量 146 项 4 失败均属于同设备基线 139 项 5 失败集合。iOS 新增定向用例发现刷新后锚点断言失败，完整设备 / 手动及 A1–A5 未完成，不记为验收通过。证据见 `.artifacts/ui-regression/20261101-question-reminder/summary.md`。
+
+2026-11-01 App 按需启动 DeepSeek / Codex Desktop（r30 / S20、X03、V12、V16–V18）：Host / DesktopRuntime 61 项与生命周期 13 项通过，2 项 Windows 条件未运行；类型检查、lint、Android JVM 571 项 / 两包构建、Swift Core 237 项通过。iPhone 17 全量 67 项为 55 通过 / 12 失败；新增 DeepSeek 用例的原生辅助功能标签定位修正后，新建页整组 2 项通过，并覆盖明暗、XXXL、减少动画。110 张全量命名截图联系表与 5 张专项截图已查看，不能替代完整 L4 / 手动。Android 在两次设备尝试中分别发生 ADB 断开、ADB `libunwind` 崩溃，没有有效仪器结果。未重建父提交作受控基线；C01–C18、375pt、R32 真后端与 Windows 仍未验收。iOS 原开关机状态已恢复；Android 只进入浅色标准配置，所设值与保存原值相同，未进入深色 / 大字 / 减少动画。本轮设备进程已退出且租约已释放。R31 保留给最近提问提示，本专项使用 R32。证据、12 项完整失败和未跑清单见 `.artifacts/ui-regression/20261101-agent-on-demand/summary.md`，未部署。
 
 2026-11-01 Codex 桌面新会话同步：Host 公共 Session / 原生 thread ID 边界修复已用回放验证“修复前桌面失败、终端通过；修复后两者通过”，相关 Host 236 项全过。隔离 Node 全量失败集合与基线相同；Android 549 项、Swift 224 项与双端构建通过；iOS 首页同步专项 5 项通过，全量为 54 通过 / 7 失败，111 张命名全量截图及专项 16 张已查看。Android 设备回归因共享池兼容设备连续被其他任务独占而未运行；完整手动 C01–C18 / R25 未完成，不能记为全量验收。最终状态与失败见 `.artifacts/ui-regression/20261101-new-session-sync/summary.md`。
 

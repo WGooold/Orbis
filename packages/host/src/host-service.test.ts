@@ -2526,6 +2526,152 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     await desktop.stop();
   });
 
+  it("starts a launchable DeepSeek backend only when the App requests a session", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-lazy-start-"));
+    relay = await startRelayLocal(stateDir);
+    const client: DshConnection = {
+      onNotification: undefined, onRequest: undefined, onExit: undefined,
+      request: vi.fn(async method => method === "session/new" ? { sessionId: "dsh-lazy-thread", configOptions: [] } : { sessions: [] }),
+      notify: vi.fn(), stop: vi.fn(async () => {}),
+    };
+    const runtime = new DshRuntime(client, {
+      list: async () => [], read: async id => ({ header: { id, cwd: stateDir!, createdAt: 1 }, events: [] }), close: async () => {},
+    });
+    const ensureDshRuntime = vi.fn(async () => runtime);
+    try {
+      host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+        sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshLaunchable: true, ensureDshRuntime });
+      await host.start();
+      const connected = await readyDeviceCapturing({ host, relay }); device = connected.device;
+      expect(connected.ready).toMatchObject({ agents: ["pi"], launchableAgents: ["pi", "dsh"] });
+
+      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "dsh-lazy-new",
+        target: { type: "new", agentKind: "dsh", cwd: stateDir } });
+      let attachedReady: Record<string, unknown> | undefined;
+      const until = async (requestId: string) => {
+        for (let i = 0; i < 20; i++) {
+          const message = await device!.receiveMessage() as Record<string, unknown>;
+          if (message.type === "device.ready" && (message.agents as string[] | undefined)?.includes("dsh")) attachedReady = message;
+          if (message.requestId === requestId) return message;
+          if (message.type === "protocol.error") throw new Error(`Unexpected protocol error: ${JSON.stringify(message)}`);
+        }
+        throw new Error(`Expected response ${requestId} not received`);
+      };
+      expect(await until("dsh-lazy-new")).toMatchObject({ type: "session.activated", agentKind: "dsh", sessionId: "dsh:dsh-lazy-thread" });
+      expect(ensureDshRuntime).toHaveBeenCalledTimes(1);
+      expect(attachedReady).toMatchObject({ launchableAgents: ["pi", "dsh"] });
+    } finally { await runtime.stop(); }
+  });
+
+  it("controls already attached DeepSeek and Codex Desktop runtimes without launching another instance", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-attached-desktop-agents-"));
+    relay = await startRelayLocal(stateDir);
+    const dshRequest = vi.fn(async (method: string) => {
+      if (method === "session/list") return { sessions: [] };
+      if (method === "session/new") return { sessionId: "dsh-already-attached", configOptions: [] };
+      throw new Error(`unexpected DSH request: ${method}`);
+    });
+    const dshClient: DshConnection = {
+      onNotification: undefined, onRequest: undefined, onExit: undefined,
+      request: dshRequest, notify: vi.fn(), stop: vi.fn(async () => {}),
+    };
+    const dsh = new DshRuntime(dshClient, {
+      list: async () => [], read: async id => ({ header: { id, cwd: stateDir!, createdAt: 1 }, events: [] }), close: async () => {},
+    });
+    const desktopRequest = vi.fn(async (method: string) => {
+      if (method === "thread/loaded/list") return { data: [] };
+      if (method === "thread/start") return { thread: { id: "desktop-already-attached", cwd: stateDir, status: { type: "idle" }, turns: [] } };
+      if (method === "config/read") return { config: { projects: { [stateDir!]: { trust_level: "trusted" } } } };
+      if (["model/list", "thread/list", "thread/turns/list", "skills/list", "mcpServerStatus/list"].includes(method)) return { data: [] };
+      throw new Error(`unexpected Codex Desktop RPC: ${method}`);
+    });
+    const desktop = new CodexRuntime({
+      server: { mode: "desktop", request: desktopRequest, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
+      onEvent: () => {}, rolloutRoot: join(stateDir, "rollouts"),
+    });
+    const ensureDshRuntime = vi.fn(async () => { throw new Error("must reuse the attached DSH runtime"); });
+    const ensureCodexDesktop = vi.fn(async () => { throw new Error("must reuse the attached Codex Desktop runtime"); });
+    try {
+      host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+        sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
+        dshRuntime: dsh, codexDesktopRuntime: desktop, dshLaunchable: true, codexDesktopLaunchable: true,
+        ensureDshRuntime, ensureCodexDesktop });
+      await host.start();
+      const connected = await readyDeviceCapturing({ host, relay }); device = connected.device;
+      expect(connected.ready.agents).toEqual(expect.arrayContaining(["dsh", "codexDesktop"]));
+
+      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "attached-dsh-new",
+        target: { type: "new", agentKind: "dsh", cwd: stateDir } });
+      for (let i = 0; i < 30; i++) {
+        const message = await device.receiveMessage() as Record<string, unknown>;
+        if (message.requestId === "attached-dsh-new") {
+          expect(message).toMatchObject({ type: "session.activated", agentKind: "dsh", sessionId: "dsh:dsh-already-attached" });
+          break;
+        }
+        if (i === 29) throw new Error("Expected attached DeepSeek session activation not received");
+      }
+
+      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "attached-desktop-new",
+        target: { type: "new", agentKind: "codexDesktop", cwd: stateDir } });
+      for (let i = 0; i < 30; i++) {
+        const message = await device.receiveMessage() as Record<string, unknown>;
+        if (message.requestId === "attached-desktop-new") {
+          expect(message).toMatchObject({ type: "session.activated", agentKind: "codexDesktop", sessionId: "codex-desktop:desktop-already-attached" });
+          break;
+        }
+        if (i === 29) throw new Error("Expected attached Codex Desktop session activation not received");
+      }
+
+      expect(dshRequest).toHaveBeenCalledWith("session/new", expect.objectContaining({ cwd: stateDir }), expect.any(Number));
+      expect(desktopRequest).toHaveBeenCalledWith("thread/start", expect.objectContaining({ cwd: stateDir }));
+      expect(ensureDshRuntime).not.toHaveBeenCalled();
+      expect(ensureCodexDesktop).not.toHaveBeenCalled();
+    } finally {
+      await dsh.stop();
+      await desktop.stop();
+    }
+  });
+
+  it("opens a launchable Codex Desktop backend on demand without the terminal Codex backend", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-codex-desktop-lazy-start-"));
+    relay = await startRelayLocal(stateDir);
+    const thread = { id: "desktop-lazy", cwd: stateDir, status: { type: "idle" }, turns: [] };
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/loaded/list") return { data: [] };
+      if (method === "thread/start") return { thread };
+      if (method === "thread/read" || method === "thread/resume") return { thread };
+      if (["model/list", "thread/list", "thread/turns/list", "skills/list", "mcpServerStatus/list"].includes(method)) return { data: [] };
+      if (method === "config/read") return { config: {} };
+      throw new Error(`unexpected desktop RPC: ${method}`);
+    });
+    const desktop = new CodexRuntime({
+      server: { mode: "desktop", request, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
+      onEvent: () => {}, rolloutRoot: join(stateDir, "rollouts"),
+    });
+    const ensureCodexDesktop = vi.fn(async () => desktop);
+    try {
+      host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+        sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
+        codexDesktopLaunchable: true, ensureCodexDesktop });
+      await host.start();
+      const connected = await readyDeviceCapturing({ host, relay }); device = connected.device;
+      expect(connected.ready).toMatchObject({ agents: ["pi"], launchableAgents: ["pi", "codexDesktop"] });
+
+      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "desktop-lazy-new",
+        target: { type: "new", agentKind: "codexDesktop", cwd: stateDir } });
+      for (let i = 0; i < 30; i++) {
+        const message = await device.receiveMessage() as Record<string, unknown>;
+        if (message.requestId === "desktop-lazy-new") {
+          expect(message).toMatchObject({ type: "session.activated", agentKind: "codexDesktop", sessionId: "codex-desktop:desktop-lazy" });
+          break;
+        }
+        if (i === 29) throw new Error("Expected Codex Desktop session activation not received");
+      }
+      expect(ensureCodexDesktop).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith("thread/start", expect.objectContaining({ cwd: stateDir }));
+    } finally { await desktop.stop(); }
+  });
+
   it("runtime.command 按 runtimeId 路由给 Codex 后端；不支持的命令回 unsupported_command", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);

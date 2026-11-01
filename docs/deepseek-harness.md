@@ -24,16 +24,18 @@ npm install -g @deepseek-ai/dsh@0.1.7-rc.1
 Windows 桌面使用步骤：
 
 1. 在 Agent 页重新检测，确认出现 DeepSeek Harness。
-2. 暂停 Host，在设置中勾选「启动 Host 时启用 DeepSeek Harness」，保存后重新连接。
-3. Android 连接同一 Host 后，选择「新建会话 → DeepSeek」，选择电脑上的工作目录。
+2. 可选：在设置中勾选「启动 Host 时预启动 DeepSeek Harness」。不勾选时，App 发起 DeepSeek 新建 / 恢复请求后，Host 会按需启动或接入服务；已接入时直接复用。
+3. Android 连接同一 Host 后，选择「新建会话 → DeepSeek」，选择电脑上的工作目录。只有本机 DSH 已安装且 Host 能调用时，DeepSeek 才会作为可启动选项出现。
 4. 使用会话的 `/model` 菜单选择模型；当前模型声明推理档位时，再使用 `/thinking` 菜单切换档位。`/quit` 会先中断该会话正在运行的 turn，再关闭手机当前打开的会话连接并保留历史；浏览器在该会话里开始新一轮工作时会重新接入。需要隐藏会话时，在侧边栏会话菜单使用「归档」。
 
 CLI Host 在仓库构建后启动：
 
 ```powershell
 npm run build
+# 默认 Host 已支持在 App 请求时按需启动 DeepSeek；--dsh 用于启动时预热：
+node packages/host/dist/cli.js host
 node packages/host/dist/cli.js host --dsh
-# 同时启用 Codex：
+# --codex 只预启动 Codex 终端后端；Codex Desktop 独立按需接入：
 node packages/host/dist/cli.js host --codex --dsh
 ```
 
