@@ -237,6 +237,8 @@ final class OrbisStore: ObservableObject {
     var isLaunchPage: Bool { activeConnection.isLaunchPage }
     func retryLaunch() { activeConnection.retryLaunch() }
     func stopFollowingLaunch() { activeConnection.stopFollowingLaunch() }
+    func noteComposerFocus(_ focused: Bool) { activeConnection.noteComposerFocus(focused) }
+    func takeComposerFocus(_ runtimeId: String) -> Bool { activeConnection.takeComposerFocus(runtimeId) }
     func createSession(agentKind: String, cwd: String) { activeConnection.createSession(agentKind: agentKind, cwd: cwd) }
     #if DEBUG
     func createCaptureSession(agentKind: String, cwd: String) { activeConnection.createCaptureSession(agentKind: agentKind, cwd: cwd) }

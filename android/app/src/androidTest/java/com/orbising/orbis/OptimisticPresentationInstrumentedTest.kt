@@ -1,6 +1,7 @@
 package com.orbising.orbis
 
 import android.graphics.Bitmap
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -91,6 +92,35 @@ class OptimisticPresentationInstrumentedTest {
         // 明确拒绝：卡片回到原列表。
         compose.runOnIdle { state = state.copy(ledger = state.ledger.remove("request")) }
         compose.onNodeWithTag("drawer-session-two").assertIsDisplayed()
+    }
+
+    /** V10 r27 / ADR-0049 §6.1：附件还在上传时发出的消息，气泡内显示缩略图、文件名与进度，进度随上传推进。 */
+    @Test fun aMessageSentWhileUploadingShowsItsAttachmentsInTheBubble() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val image = File(context.cacheDir, "pending-thumbnail.png").apply {
+            outputStream().use { out ->
+                Bitmap.createBitmap(240, 160, Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF5C8CF2.toInt()) }
+                    .compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+        }
+        val png = UploadTask("up-image", "runtime", "host", Uri.fromFile(image).toString(), "截图.png", 1000, "a".repeat(64),
+            "/repo/.orbis-uploads", "image/png", status = "uploading", durableBytes = 300)
+        val pdf = UploadTask("up-pdf", "runtime", "host", Uri.fromFile(File(context.cacheDir, "missing.pdf")).toString(), "报告.pdf",
+            2000, "b".repeat(64), "/repo/.orbis-uploads", "application/pdf", status = "queued")
+        val message = ChatMessage("local", "user", listOf(RemoteContent("text", "看看这两个文件")), 1)
+        var uploads by mutableStateOf(listOf(png, pdf))
+        compose.setContent { OrbisTheme {
+            UserMessageCard("runtime", message, emptyMap(), {}, {}, pending = PendingSendState.Waiting("上传中：截图.png、报告.pdf"), uploads = uploads)
+        } }
+        compose.onNodeWithTag("pending-attachment-up-image").assertIsDisplayed()
+        compose.onNodeWithTag("pending-attachment-up-pdf").assertIsDisplayed()
+        compose.onNodeWithContentDescription("截图.png，发送中 30%").assertExists()
+        compose.onNodeWithText("上传中：截图.png、报告.pdf").assertIsDisplayed()
+        // 只有图片解码出缩略图；PDF 显示文件图标。
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("pending-attachment-thumbnail", useUnmergedTree = true).fetchSemanticsNodes().size == 1 }
+        capture("optimistic-upload-waiting-bubble")
+        compose.runOnIdle { uploads = listOf(png.copy(durableBytes = 900), pdf) }
+        compose.onNodeWithContentDescription("截图.png，发送中 90%").assertExists()
     }
 
     @Test fun aFailedLaunchOffersRetryAndBackInPlace() {

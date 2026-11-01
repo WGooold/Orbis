@@ -611,6 +611,12 @@ internal class HostConnection(
             ) },
         )
         if (sent) updateState { it.ledgerWritten(requestId, System.currentTimeMillis()) }
+        // V13 / ADR-0049 §6.8：恢复已有会话时，启动页先显示本地缓存的历史，会话上线后由真实会话接替。
+        val pairedDevice = device
+        if (sent && resumed != null && pairedDevice != null && mutableState.value.sessions[resumed]?.hasHistoryCache == true &&
+            mutableState.value.sessionGraphs[resumed] == null) {
+            scope.launch(Dispatchers.IO) { loadCachedSessionGraph(pairedDevice, resumed) }
+        }
         return sent
     }
 

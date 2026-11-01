@@ -73,6 +73,21 @@ class LaunchLedgerTest {
         assertEquals("new-1", state.launchSessions[ready.sessionId])
     }
 
+    /** 真实 Host 先广播 Runtime 上线，再回复同一 requestId 的 session.activated；等待中的消息同样要在上线后写入（iOS 同名用例）。 */
+    @Test fun aMessageSentWhileStartingIsSubmittedWhenTheRuntimeIsOnlineBeforeTheReply() {
+        var (state, id) = newSession(setup())
+        val launch = state.launchPage!!
+        state = state.createWaitingSend("send-1", "message-1", launch.placeholder, launch.placeholder, "你好", null,
+            emptyList(), emptyList(), System.currentTimeMillis(), listOfNotNull(state.ledger.operation(id))).first
+        state = online(state, "new-1")
+        assertTrue("the Runtime is not known to be this launch yet", state.readySends().isEmpty())
+        state = activated(state, id, "new-1")
+        assertEquals("new-1", state.pendingSends.values.single().sessionId)
+        val ready = state.readySends().single().payload as LedgerPayload.Send
+        assertEquals("new-1", state.launchSessions[ready.sessionId])
+        assertEquals("rt-new-1", state.selectedRuntimeId)
+    }
+
     @Test fun aFailureShowsInPlaceFailsWaitingMessagesAndCanRetry() {
         var (state, id) = newSession(setup())
         val launch = state.launchPage!!

@@ -544,7 +544,7 @@ export class DshWebRuntime implements AgentBackend {
           this.#detachSession(session, "DeepSeek Web 会话已关闭");
           return;
         }
-        result = await this.#slash(session, command.args, command.name); break;
+        result = await this.#slash(session, command.args, command.name, command.messageId); break;
       default: throw new Error("不支持的 DSH Web 命令");
     }
     this.#emit(session, { type: "command.result", commandId, ok: true, status: "success", ...(result === undefined ? {} : { result }) });
@@ -583,7 +583,7 @@ export class DshWebRuntime implements AgentBackend {
     }
   }
 
-  async #slash(session: WebSession, args: string, name: string): Promise<unknown> {
+  async #slash(session: WebSession, args: string, name: string, messageId?: string): Promise<unknown> {
     if (name === "tree") return await this.#tree(session, args.trim());
     if (name === "permission-preset") {
       if (session.running || session.permissionBusy || [...this.#approvals.values()].some(item => item.session === session)) throw new Error("请先完成当前任务和待处理审批，再调整权限");
@@ -618,7 +618,9 @@ export class DshWebRuntime implements AgentBackend {
     const skill = session.skills.find(item => item.name === name);
     if (skill) {
       const text = `/${name}${args.trim() ? ` ${args.trim()}` : ""}`;
-      const requestId = randomUUID();
+      // ADR-0049 §6.1：App 为产生对话的 skill 分配了身份时，用它作 DSH 的 requestId；
+      // 用户消息带回同一 rpcId 后与普通发送一样登记 persistedMessages，App 按身份替换本地气泡。
+      const requestId = messageId ?? randomUUID();
       await this.#client.request("session/prompt", { request: { requestId, sessionId: session.id, mode: "queue", content: [{ type: "text", text }] } });
       session.queue.set(requestId, { itemId: requestId, text, delivery: "followUp" });
       return;

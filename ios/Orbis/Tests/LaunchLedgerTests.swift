@@ -77,6 +77,25 @@ struct LaunchLedgerTests {
         #expect(host.ledger.operations.isEmpty)
     }
 
+    @Test func typingOnTheLaunchPageHandsTheComposerFocusToTheLandedSession() async throws {
+        let fixture = await setup(); let host = fixture.host
+        let session = SessionSummary(sessionId: "s1", name: "旧会话", cwd: "/repo/app", firstMessage: nil, createdAt: 1, modifiedAt: 1, messageCount: 3, agentKind: "codex", archived: false)
+        host.activate(session)
+        host.noteComposerFocus(true)
+        try await fixture.transport.activated("s1")
+        await fixture.transport.online("s1")
+        #expect(host.selectedRuntimeId == "rt-s1")
+        #expect(host.takeComposerFocus("rt-s1"))
+        #expect(!host.takeComposerFocus("rt-s1"), "the handoff is taken once")
+        // 不在启动页时的焦点变化不交接。
+        host.noteComposerFocus(true)
+        host.activate(SessionSummary(sessionId: "s2", name: "另一个", cwd: "/repo/app", firstMessage: nil, createdAt: 1, modifiedAt: 1, messageCount: 1, agentKind: "codex", archived: false))
+        host.noteComposerFocus(false)
+        try await fixture.transport.activated("s2")
+        await fixture.transport.online("s2")
+        #expect(!host.takeComposerFocus("rt-s2"))
+    }
+
     @Test func aNewSessionEntersAPlaceholderAndItsDraftMovesOnSuccess() async throws {
         let fixture = await setup(); let host = fixture.host
         host.createSession(agentKind: "codex", cwd: "/repo/app")
@@ -105,6 +124,21 @@ struct LaunchLedgerTests {
         let written = try #require(fixture.transport.userMessages.last)
         #expect(written["runtimeId"] as? String == "rt-new-1")
         #expect(host.pendingSends.items.first?.sessionId == "new-1")
+    }
+
+    /// 真实 Host 先广播 Runtime 上线，再回复同一 requestId 的 session.activated；等待中的消息同样要在上线后写入。
+    @Test func aMessageSentWhileStartingIsSubmittedWhenTheRuntimeIsOnlineBeforeTheReply() async throws {
+        let fixture = await setup(); let host = fixture.host
+        host.createSession(agentKind: "codex", cwd: "/repo/app")
+        #expect(host.sendMessage("你好"))
+        await fixture.transport.online("new-1")
+        #expect(fixture.transport.userMessages.isEmpty, "the Runtime is not known to be this launch yet")
+        try await fixture.transport.activated("new-1")
+        #expect(host.selectedRuntimeId == "rt-new-1")
+        let written = try #require(fixture.transport.userMessages.last)
+        #expect(written["runtimeId"] as? String == "rt-new-1")
+        #expect(host.pendingSends.items.first?.sessionId == "new-1")
+        #expect(host.ledger.operations.isEmpty)
     }
 
     @Test func aFailureShowsInPlaceFailsWaitingMessagesAndCanRetry() async throws {

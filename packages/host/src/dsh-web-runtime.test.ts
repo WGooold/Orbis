@@ -972,6 +972,37 @@ describe("DeepSeek Web runtime adapter", () => {
     expect(request).toHaveBeenCalledWith("session/prompt", expect.objectContaining({ request: expect.objectContaining({ requestId: "mobile-1", mode: "queue" }) }));
   });
 
+  it("pins an App message id on a skill so its user message is declared like a send", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-web-runtime-")); roots.push(cwd);
+    let follow: ((frame: unknown) => void) | undefined;
+    const requestMock = vi.fn(async (method: string) => method === "workspace/create" ? { workspace: { workspaceId: "workspace-skill" } }
+      : method === "session/create" ? { sessionId: "web-skill" } : method === "skills/list" ? { skills: [{ name: "review", description: "Review changes" }] } : {});
+    const request = requestMock as unknown as DshWebConnection["request"];
+    const client: DshWebConnection = {
+      onEvent: undefined, onExit: undefined, onReconnect: undefined,
+      request,
+      subscribe: vi.fn((_method, _args, onFrame) => { follow = onFrame; return () => { follow = undefined; }; }),
+      respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+    };
+    const runtime = new DshWebRuntime(client); runtimes.push(runtime);
+    const events: RuntimeEvent[] = [];
+    runtime.setEventSink((event) => { RuntimeEventSchema.parse(event); events.push(event); });
+    await runtime.activate({ type: "new", cwd });
+    follow!({ type: "snapshot", header: { createdAt: 1000, cwd }, cursor: -1, records: [], hasMore: false, projections: { asOfSeq: -1, values: {} }, assistantStream: { revision: 0 } });
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("skills/list", expect.anything()));
+    expect(runtime.dispatchCommand("dsh:web-skill", "skill", { type: "slash.execute", name: "review", args: "src", messageId: "app-skill-1" })).toBe("handled");
+    await vi.waitFor(() => expect(events.some(event => event.type === "command.result" && event.commandId === "skill" && event.ok)).toBe(true));
+    expect(request).toHaveBeenCalledWith("session/prompt", { request: expect.objectContaining({ requestId: "app-skill-1", content: [{ type: "text", text: "/review src" }] }) });
+    const event = (seq: number, type: string, data: unknown, time = 1100) => follow!({ type: "event", event: { seq, type, time, data } });
+    event(0, "turn/start", { turn: 1 });
+    event(1, "user/message", { id: "u1", role: "user", source: { kind: "user", rpcId: "app-skill-1" }, content: [{ type: "text", text: "Review the changes in src" }] });
+    event(2, "turn/end", { turn: 1, reason: { kind: "completed" } }, 1200);
+    // 展开后的用户消息以原生正文落地，并声明 App 身份；App 据此替换本地气泡，不按 `/review` 正文匹配。
+    const committed = events.flatMap(item => item.type === "session.patch" ? item.entries ?? [] : []);
+    expect(committed.find(entry => entry.entryId === "dsh:web-skill:web:1")?.data.message)
+      .toMatchObject({ role: "user", clientMessageId: "app-skill-1", content: [{ type: "text", text: "Review the changes in src" }] });
+  });
+
   it("rejects a reused message ID whose payload changed", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-web-runtime-")); roots.push(cwd);
     let follow: ((frame: unknown) => void) | undefined;

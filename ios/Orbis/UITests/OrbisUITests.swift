@@ -414,6 +414,74 @@ final class OrbisUITests: XCTestCase {
         capture("model-switching-facts", app: app)
     }
 
+    /// V10 r27 / ADR-0049 §6.1–§6.2：附件还在上传时发送，气泡立即出现并带着附件（缩略图、文件名、进度），
+    /// 输入框清空；上传完成后正文与附件一起提交，权威行替换本地行。
+    func testSendingWhileUploadingShowsTheAttachmentInTheBubbleAndSubmitsTogether() {
+        let app = launch("chat", arguments: ["--preview-upload-waiting"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        // 夹具在输入框挂上一个上传中的图片。
+        XCTAssertTrue(app.buttons["移除附件 截图.png"].waitForExistence(timeout: 5))
+        let text = "看看这张截图"
+        composer.tap(); composer.typeText(text)
+        let send = app.buttons["发送消息"].firstMatch
+        XCTAssertTrue(waitUntilEnabled(send, timeout: 2), "附件上传中也可以发送")
+        send.tap()
+        XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: 1))
+        // 气泡的标识会覆盖子元素的标识，附件按合并后的辅助功能标签查找（“文件名, 状态”）。
+        let chip = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "截图.png, ")).firstMatch
+        XCTAssertTrue(chip.waitForExistence(timeout: 1))
+        XCTAssertTrue(chip.label.contains("截图.png"), chip.label)
+        XCTAssertTrue(chip.label.contains("上传中"), chip.label)
+        XCTAssertFalse(app.buttons["移除附件 截图.png"].exists, "附件随消息离开输入框")
+        XCTAssertEqual((composer.value as? String)?.contains(text), false)
+        let waiting = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "上传中：截图.png")).firstMatch
+        XCTAssertTrue(waiting.exists)
+        capture("upload-waiting-bubble", app: app)
+        let progressed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "90%"), object: chip)
+        XCTAssertEqual(XCTWaiter().wait(for: [progressed], timeout: 5), .completed, "气泡内进度随上传推进")
+        capture("upload-waiting-progress", app: app)
+        let committed = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "orbis-uploads/aaaa/截图.png")).firstMatch
+        XCTAssertTrue(committed.waitForExistence(timeout: 6), "上传完成后正文与附件一起提交")
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: waiting)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 3), .completed)
+        // 权威行的正文带上了附件路径；本地行已被替换，这句话只出现一次。
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", text)).count, 1, "权威行替换本地行，只出现一次")
+        capture("upload-waiting-committed", app: app)
+    }
+
+    /// V10 r27 / ADR-0049 §6.2：上传失败只让所属消息转失败并写明附件，后面的纯文本按顺序继续提交；
+    /// “放回输入框”让正文与附件一起回到输入框。
+    func testFailedUploadFailsOnlyItsMessageAndRestoreReturnsTextAndAttachment() {
+        let app = launch("chat", arguments: ["--preview-upload-waiting=fail"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["移除附件 截图.png"].waitForExistence(timeout: 5))
+        let first = "带附件的消息", second = "后面这条纯文本"
+        let send = app.buttons["发送消息"].firstMatch
+        composer.tap(); composer.typeText(first)
+        XCTAssertTrue(waitUntilEnabled(send, timeout: 2)); send.tap()
+        XCTAssertTrue(app.staticTexts[first].waitForExistence(timeout: 1))
+        composer.typeText(second)
+        XCTAssertTrue(waitUntilEnabled(send, timeout: 2)); send.tap()
+        XCTAssertTrue(app.staticTexts[second].waitForExistence(timeout: 1))
+        XCTAssertTrue(app.staticTexts["等待前一条发送"].waitForExistence(timeout: 1), "后一条不越过前一条")
+        capture("upload-fail-ordered", app: app)
+        let failure = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "附件上传失败：截图.png")).firstMatch
+        XCTAssertTrue(failure.waitForExistence(timeout: 8))
+        let ordered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.staticTexts["等待前一条发送"])
+        XCTAssertEqual(XCTWaiter().wait(for: [ordered], timeout: 3), .completed, "附件失败只影响所属消息，后面的继续提交")
+        capture("upload-fail-only-its-message", app: app)
+        let restore = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-restore-")).firstMatch
+        XCTAssertTrue(restore.waitForExistence(timeout: 2))
+        restore.tap()
+        XCTAssertTrue(app.buttons["移除附件 截图.png"].waitForExistence(timeout: 2), "附件回到输入框")
+        XCTAssertEqual((composer.value as? String)?.contains(first), true, "正文回到输入框")
+        XCTAssertFalse(failure.exists)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", second)).count, 1)
+        capture("upload-fail-restored", app: app)
+    }
+
     /// A1–A4（V07、V12、V22）：回答摘要、启动中与启动失败原位在浅 / 深色、XXXL、减少动画下语义一致，截图供 L4 审阅。
     func testOptimisticStatesAcrossAppearances() {
         let appearances: [(String, Bool, [String])] = [
@@ -453,6 +521,21 @@ final class OrbisUITests: XCTestCase {
             XCTAssertTrue(home.buttons["launch-back"].isHittable, name)
             capture("optimistic-launch-failed-" + name, app: home)
             home.terminate()
+
+            // 上传中发送：气泡内的缩略图、文件名与进度在各外观下完整显示（V10 r27）。
+            let chat = launch("chat", dark: dark, arguments: ["--preview-upload-waiting"] + options)
+            let composer = chat.descendants(matching: .any)["chat-composer"].firstMatch
+            XCTAssertTrue(composer.waitForExistence(timeout: 8), name)
+            XCTAssertTrue(chat.buttons["移除附件 截图.png"].waitForExistence(timeout: 5), name)
+            composer.tap(); composer.typeText("看图")
+            let send = chat.buttons["发送消息"].firstMatch
+            XCTAssertTrue(waitUntilEnabled(send, timeout: 2), name)
+            send.tap()
+            let chip = chat.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "截图.png, ")).firstMatch
+            XCTAssertTrue(chip.waitForExistence(timeout: 2), name)
+            XCTAssertTrue(chip.frame.width > 0 && chip.frame.maxX <= chat.frame.maxX + 1, name)
+            capture("optimistic-upload-waiting-" + name, app: chat)
+            chat.terminate()
         }
     }
 
@@ -488,6 +571,49 @@ final class OrbisUITests: XCTestCase {
         app.buttons["launch-back"].tap()
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
         XCTAssertFalse(composer.exists)
+    }
+    /// V10 / V12 r27（ADR-0049 §6.2、§6.8）：启动中写的消息立即出现并标明“等待会话启动”，输入框清空；
+    /// 会话上线后切到真实会话，消息按 Host 身份落地且只出现一次。
+    func testSendingWhileTheSessionStartsWaitsAndSubmitsOnceItIsOnline() {
+        let app = launch("home", arguments: ["--preview-launch-slow"])
+        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))
+        app.buttons["打开会话目录"].tap()
+        XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
+        app.buttons["新会话"].tap()
+        let create = app.buttons["在这里新建 Pi 会话"]
+        XCTAssertTrue(create.waitForExistence(timeout: 3))
+        create.tap()
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 2))
+        let starting = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动中")).firstMatch
+        XCTAssertTrue(starting.waitForExistence(timeout: 1))
+        let text = "启动中就发出的消息"
+        composer.tap(); composer.typeText(text)
+        let send = app.buttons["发送消息"].firstMatch
+        XCTAssertTrue(waitUntilEnabled(send, timeout: 2), "启动中也可以发送")
+        send.tap()
+        XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: 1))
+        XCTAssertTrue(app.staticTexts["等待会话启动"].waitForExistence(timeout: 1))
+        XCTAssertEqual((composer.value as? String)?.contains(text), false)
+        capture("launch-waiting-send", app: app)
+        // 夹具在出现等待中的消息 3 秒后让会话上线；输入框保持焦点，上线后直接接着输入。
+        let online = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.staticTexts["等待会话启动"])
+        XCTAssertEqual(XCTWaiter().wait(for: [online], timeout: 8), .completed, "会话上线后写入通道")
+        let title = app.descendants(matching: .any)["chat-title"].firstMatch
+        let switched = XCTNSPredicateExpectation(predicate: NSPredicate(format: "NOT (label CONTAINS %@)", "启动中"), object: title)
+        XCTAssertEqual(XCTWaiter().wait(for: [switched], timeout: 3), .completed, title.label)
+        let field = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 2))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertEqual(field.value(forKey: "hasKeyboardFocus") as? Bool, true, "会话上线后输入框保持焦点")
+        field.typeText("继续输入")
+        XCTAssertEqual((field.value as? String)?.contains("继续输入"), true, "上线后不用重新点输入框就能继续输入")
+        let landed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 1"), object: app.staticTexts.matching(NSPredicate(format: "label == %@", text)))
+        XCTAssertEqual(XCTWaiter().wait(for: [landed], timeout: 3), .completed)
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"),
+                                                object: app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-status-")))
+        XCTAssertEqual(XCTWaiter().wait(for: [settled], timeout: 5), .completed, "权威行替换本地行")
+        capture("launch-waiting-landed", app: app)
     }
     func testNewSessionOffersLaunchableDeepSeekBeforeBackendIsReady() {
         let appearances: [(String, Bool, [String])] = [
@@ -782,6 +908,26 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 3), .completed)
         XCTAssertTrue(rejected.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "关闭会话未完成")).firstMatch.waitForExistence(timeout: 3))
         capture("home-close-restored", app: rejected)
+    }
+    /// V11 r27（ADR-0049 §7.4 L4）：关闭后断线，卡片在断线期间保持隐藏；重连后的首个在线列表里会话仍在，
+    /// 卡片回到原位置并提示“关闭会话未确认”，不自动再关闭。
+    func testCloseKeepsTheCardHiddenThroughADisconnectAndRestoresItWhenStillOnline() {
+        let app = launch("home", arguments: ["--preview-close=drop"])
+        let card = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(card.waitForExistence(timeout: 8))
+        let originalFrame = card.frame
+        let origin = card.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        origin.press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: -originalFrame.width * 0.6, dy: 0)))
+        XCTAssertTrue(card.waitForNonExistence(timeout: 1.5))
+        // 夹具 1 秒后断线、3 秒后重连：断线期间卡片不回来。
+        RunLoop.current.run(until: Date().addingTimeInterval(2.5))
+        XCTAssertFalse(card.exists, "断线时列表类操作保持呈现")
+        capture("home-close-disconnected", app: app)
+        XCTAssertTrue(card.waitForExistence(timeout: 6), "重连后的在线列表仍有该会话")
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(card.frame.minX - originalFrame.minX) <= 1 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 3), .completed)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "关闭会话未确认")).firstMatch.waitForExistence(timeout: 3))
+        capture("home-close-reconnected-restored", app: app)
     }
     func testSwipeRightFromLeftSideOpensDirectory() {
         let app = launch("home")

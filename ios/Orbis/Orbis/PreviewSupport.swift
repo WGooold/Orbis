@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import SwiftUI
+import UIKit
 
 private struct PreviewRevealTimeKey: EnvironmentKey {
     static let defaultValue: TimeInterval? = nil
@@ -61,6 +62,14 @@ func makePreviewStore(screen: String) -> OrbisStore {
             if let runtime = store.selectedRuntime { store.saveDraft("/", for: runtime) }
         }
     }
+    transport.launchGate = { [weak store] in
+        store?.pendingSends.items.contains { if case .waiting = $0.state { return true }; return false } == true
+    }
+    if screen == "chat", let mode = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--preview-upload-waiting") }) {
+        // 夹具（ADR-0049 §6.1–§6.2）：输入框挂一个正在上传的图片；带着它发出消息后推进进度，
+        // 再完成上传（`--preview-upload-waiting`）或失败（`--preview-upload-waiting=fail`）。
+        Task { @MainActor in await previewUploadWhileWaiting(store, failing: mode.hasSuffix("=fail")) }
+    }
     if screen == "chat", ProcessInfo.processInfo.arguments.contains("--preview-model-switch") {
         // 夹具：聊天页稳定后切换模型；电脑端只回执、不改模型领域，选择保持“切换中”（ADR-0049 §6.7）。
         Task { @MainActor in
@@ -69,6 +78,36 @@ func makePreviewStore(screen: String) -> OrbisStore {
         }
     }
     return store
+}
+
+@MainActor
+private func previewUploadWhileWaiting(_ store: OrbisStore, failing: Bool) async {
+    for _ in 0..<100 where store.selectedRuntime?.sessionId == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+    guard let runtime = store.selectedRuntime, let hostId = store.selectedHostId else { return }
+    let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("orbis-preview-upload.png")
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 120)).pngData { context in
+        UIColor(red: 0.36, green: 0.55, blue: 0.95, alpha: 1).setFill(); context.fill(CGRect(x: 0, y: 0, width: 120, height: 120))
+        UIColor(red: 0.98, green: 0.78, blue: 0.32, alpha: 1).setFill(); context.cgContext.fillEllipse(in: CGRect(x: 30, y: 30, width: 60, height: 60))
+    }
+    try? image.write(to: url)
+    let id = "preview-upload-1", size: Int64 = 4_200_000
+    store.transfers.previewBeginUpload(FileTransfer(id: id, hostKey: store.transfers.hostKey, hostId: hostId, runtimeId: runtime.runtimeId,
+        sessionId: runtime.sessionId, direction: "upload", name: "截图.png", size: size, received: size / 10, sha256: String(repeating: "a", count: 64),
+        localPath: url.path, remotePath: "/Projects/orbis/.orbis-uploads/aaaa", status: "uploading"))
+    // 等用户带着它发出消息，再推进；没有发出则一直停在上传中。
+    while !store.pendingSends.items.contains(where: { $0.uploadIds.contains(id) }) { try? await Task.sleep(nanoseconds: 200_000_000) }
+    for step in 1...3 {
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        store.transfers.previewProgress(id, received: size * Int64(step * 3) / 10)
+    }
+    // 失败路径要演示“后一条不越过前一条”：等用户再发一条纯文本（最多 60 秒）再让上传失败。
+    for _ in 0..<300 where failing && !store.pendingSends.items.contains(where: { $0.uploadIds.isEmpty }) {
+        try? await Task.sleep(nanoseconds: 200_000_000)
+    }
+    // 留足时间让审阅 / 自动化看到后一条排在前一条之后。
+    try? await Task.sleep(nanoseconds: failing ? 4_000_000_000 : 1_500_000_000)
+    if failing { store.transfers.previewFailUpload(id, message: "网络中断") }
+    else { store.transfers.previewFinishUpload(id, remotePath: "/Projects/orbis/.orbis-uploads/aaaa/截图.png") }
 }
 
 private final class PreviewStorage: SecureStorage {
@@ -117,6 +156,13 @@ private final class PreviewTransport: OrbisTransport {
     }
     /// Messages sent from the composer in this preview; source checkpoints keep them after a re-sync.
     private var sentMessages: [[String: Any]] = []
+    /// `--preview-launch-slow` 启动成功后上线的 Runtime → Session。
+    private var launchedSessions: [String: String] = [:]
+    /// `--preview-launch-slow`：启动页上已有等待中的消息时为 true。
+    var launchGate: (() -> Bool)?
+    /// `--preview-close=drop`：模拟断线与重连（同一配对、同一连接代次的回调）。
+    private var dropConnection: (() -> Void)?
+    private var reconnect: (() -> Void)?
     /// `--preview-send=pi` answers after a delay with a different id; `fail` rejects the send (ADR-0049).
     private var sendMode: String { ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-send=") }.map { String($0.dropFirst(15)) } ?? "codex" }
     private var slowSync: Bool { ProcessInfo.processInfo.arguments.contains("--preview-slow-sync") }
@@ -127,6 +173,8 @@ private final class PreviewTransport: OrbisTransport {
     func disconnect() { viewportUpdates?.cancel(); viewportUpdates = nil }
     func connect(pairing: HostPairing, identity: DeviceIdentity, receive: @escaping ([String: Any], String?) -> Void, state: @escaping (ConnectionState, String?) -> Void) {
         self.receive = receive
+        reconnect = { [weak self] in self?.connect(pairing: pairing, identity: identity, receive: receive, state: state) }
+        dropConnection = { state(.connecting, nil) }
         state(.secured, nil)
         Task { @MainActor in
             if ProcessInfo.processInfo.arguments.contains("--preview-home-staged") {
@@ -300,6 +348,22 @@ private final class PreviewTransport: OrbisTransport {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 self?.receive?(["type": "protocol.error", "requestId": requestId, "code": "agent_unavailable", "message": "对应的 agent 后端未就绪"], "ctl")
+            }
+        } else if object["type"] as? String == "session.activate", ProcessInfo.processInfo.arguments.contains("--preview-launch-slow") {
+            // 夹具：启动约 3 秒后成功（ADR-0049 §6.8 的成功路径）：Runtime 先上线，再回复同一 requestId 的 session.activated。
+            let requestId = object["requestId"]!
+            let target = object["target"] as? [String: Any] ?? [:]
+            let session = target["type"] as? String == "resume" ? target["sessionId"] as? String ?? "session-launched" : "session-launched"
+            let cwd = target["cwd"] as? String ?? "/Projects/orbis"
+            Task { @MainActor [weak self] in
+                // 等启动页上有一条等待会话启动的消息（最多 60 秒），再过 3 秒上线，演示启动中发送与输入焦点交接。
+                for _ in 0..<300 where self?.launchGate?() == false { try? await Task.sleep(nanoseconds: 200_000_000) }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard let self else { return }
+                self.launchedSessions["preview-launched"] = session
+                self.receive?(["type": "runtime.online", "runtime": ["runtimeId": "preview-launched", "sessionId": session,
+                    "sessionName": "刚启动的会话", "name": "Pi", "cwd": cwd, "status": "idle", "agentKind": "pi"]], "ctl")
+                self.receive?(["type": "session.activated", "requestId": requestId, "sessionId": session], "ctl")
             }
         } else if object["type"] as? String == "notification.sync", let runtime = object["runtimeId"] as? String {
             let notices: [[String: Any]] = screen == "queue" || screen == "notices" ? [["notificationId": "preview-notice", "producerEpoch": "preview-producer", "code": "test_ready", "occurrenceId": "preview-occurrence", "scope": [:], "severity": "warning", "message": "模型服务等待恢复，电脑端会继续核对。", "lifecycle": "condition", "createdAt": 1793232000000, "updatedAt": 1793232000000, "verification": "unknown"]] : []
@@ -485,8 +549,11 @@ private final class PreviewTransport: OrbisTransport {
             } else if type == "user_message.cancel" {
                 event(["type": "message.queued", "queueId": command["messageId"]!, "text": "接着检查 iOS 的历史同步和文件传输。", "delivery": "followUp", "state": "cancelled"], runtimeId: runtime)
                 event(["type": "command.result", "commandId": object["commandId"]!, "ok": true], runtimeId: runtime)
-            } else if type == "user_message", let text = command["text"] as? String, let clientId = command["messageId"] as? String {
+            } else if type == "user_message", let sentText = command["text"] as? String, let clientId = command["messageId"] as? String {
                 let commandId = object["commandId"]!
+                // 与各后端一样把附件路径写进用户消息，审阅时能看出正文与附件一起提交（ADR-0055 §5）。
+                let attachments = command["attachments"] as? [String] ?? []
+                let text = attachments.isEmpty ? sentText : sentText + "\n\n" + attachments.map { "附件：" + $0 }.joined(separator: "\n")
                 let mode = sendMode
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: mode == "codex" ? 0 : 400_000_000)
@@ -517,6 +584,16 @@ private final class PreviewTransport: OrbisTransport {
                     return
                 }
                 let commandId = object["commandId"]!
+                if close == "drop" {
+                    // 夹具（V11 r27）：关闭命令写入后断线、没有回执；3 秒后重连，新连接的权威在线列表里会话仍在。
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        self?.dropConnection?()
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        self?.reconnect?()
+                    }
+                    return
+                }
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     if close == "fail" {
@@ -565,7 +642,7 @@ private final class PreviewTransport: OrbisTransport {
         sentMessages.append(sent)
         let base = sourceSequence
         sourceSequence += 1
-        event(["type": "session.patch", "sessionId": "session-1", "baseSeq": base, "seq": sourceSequence,
+        event(["type": "session.patch", "sessionId": launchedSessions[runtime] ?? "session-1", "baseSeq": base, "seq": sourceSequence,
                "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true],
                "head": ["leafId": entryId], "headCompleteness": "complete",
                "entries": [["entryId": entryId, "parentId": parent, "type": "message", "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": sent]]],

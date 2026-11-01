@@ -585,3 +585,22 @@ final class FileTransfers: ObservableObject {
         }
     }
 }
+
+#if DEBUG
+extension FileTransfers {
+    /// 预览夹具（`--preview-upload-waiting`）：插入一个正在上传的附件，再推进进度、完成或失败。
+    /// 不连接电脑、不写传输元数据；只用于界面审阅与 UI 自动化。
+    func previewBeginUpload(_ task: FileTransfer) { tasks.insert(task, at: 0) }
+    func previewProgress(_ id: String, received: Int64) {
+        if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index].received = min(received, tasks[index].size) }
+    }
+    func previewFinishUpload(_ id: String, remotePath: String) {
+        guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }
+        tasks[index].remotePath = remotePath; tasks[index].received = tasks[index].size; tasks[index].status = "completed"
+    }
+    func previewFailUpload(_ id: String, message: String) {
+        guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }
+        tasks[index].error = message; tasks[index].status = "failed"
+    }
+}
+#endif

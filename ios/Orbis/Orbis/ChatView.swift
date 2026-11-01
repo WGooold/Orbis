@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import ImageIO
 
 /// Bottom edge of the transcript in the viewport, or nil while the lazy stack has released it.
 private struct ChatBottomPreference: PreferenceKey {
@@ -140,6 +141,9 @@ struct ChatView: View {
             .downloadFlightHost(downloadFlight)
             .messageSendFlightHost(sendFlight)
             .onChange(of: runtime.runtimeId) { _, _ in sendFlight.clear() }
+            // ADR-0049 §6.8：启动页上正在输入时会话上线，新页面接过输入框焦点，键盘不收起。
+            .onChange(of: composerFocused) { _, focused in store.noteComposerFocus(focused) }
+            .onAppear { if store.takeComposerFocus(runtime.runtimeId) { DispatchQueue.main.async { composerFocused = true } } }
             #if DEBUG
             .overlay(alignment: .top) { if ProcessInfo.processInfo.arguments.contains("--preview-screen=changes") { TurnChangesRequestProbeView() } }
             .background { if ChatEntryProbe.enabled { ChatEntryDrawProbe().allowsHitTesting(false) } }
@@ -286,6 +290,7 @@ struct ChatView: View {
                                        rewindOption: row.isUser ? rewindOptions[row.id] : nil,
                                        rewindEnabled: store.canSend && runtime.status == "idle" && store.pendingActionIds.isEmpty,
                                        pending: row.isUser ? store.pendingSends.item(row.messages.first?.messageId)?.state : nil,
+                                       uploads: row.isUser ? pendingUploads(row.messages.first?.messageId) : [],
                                        canResend: store.canSend, onRewind: { option in
                             if store.moveHistory(to: option, fallbackText: row.messages.first?.text) {
                                 composerFocused = false
@@ -561,6 +566,12 @@ struct ChatView: View {
             deliveryChoices = false
         }
     }
+    /// 本地待发送消息的附件，按发送时的顺序；上传任务已被清理的不显示。
+    private func pendingUploads(_ messageId: String?) -> [FileTransfer] {
+        guard let ids = store.pendingSends.item(messageId)?.uploadIds, !ids.isEmpty else { return [] }
+        let tasks = transfers.currentTasks
+        return ids.compactMap { id in tasks.first { $0.id == id } }
+    }
     private func beginSendFeedback(existing: Set<String>) {
         // No text/time/index heuristic: one synchronous accepted submit creates one new App identity.
         let created = store.pendingSends.items.filter { !existing.contains($0.messageId) && $0.sessionId == runtime.sessionId }
@@ -718,11 +729,13 @@ struct ChatMessageRow: View, Equatable {
     var rewindEnabled = false
     /// ADR-0049：本地待确认发送的状态；权威行为 nil。
     var pending: PendingSend.State? = nil
+    /// ADR-0049 §6.1：本地待发送消息带的附件（上传任务），气泡内显示缩略图 / 文件名与上传进度。
+    var uploads: [FileTransfer] = []
     var canResend = false
     var onRewind: (RuntimeOption) -> Void = { _ in }
     var onPending: (PendingSendAction) -> Void = { _ in }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.changeAnchors == rhs.changeAnchors && lhs.changes === rhs.changes && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending && lhs.canResend == rhs.canResend
+        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.changeAnchors == rhs.changeAnchors && lhs.changes === rhs.changes && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending && lhs.uploads == rhs.uploads && lhs.canResend == rhs.canResend
     }
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -742,6 +755,7 @@ struct ChatMessageRow: View, Equatable {
                     ForEach(row.messages) { message in
                         MessageContentView(message: message, toolResults: toolResults, streaming: streamingMessageIds.contains(message.messageId))
                     }
+                    if row.isUser && !uploads.isEmpty { PendingAttachments(tasks: uploads) }
                     if !row.isUser, let changes {
                         TurnChangeCards(changes: changes, anchors: changeAnchors, turns: Set(timings.map(\.turnId)))
                     }
@@ -773,6 +787,63 @@ struct ChatMessageRow: View, Equatable {
 }
 
 enum PendingSendAction { case resend, restore, discard, check, cancel }
+
+/// ADR-0049 §6.1：等待上传的消息在气泡内显示附件。图片显示缩略图，其他文件显示图标；文件名按 S09 保留扩展名，
+/// 下方是与输入框附件条相同的上传状态与进度。只读：重试 / 放回 / 删除在气泡下方的操作区。
+private struct PendingAttachments: View {
+    @Environment(\.colorScheme) private var scheme
+    let tasks: [FileTransfer]
+    var body: some View {
+        let p = OrbisPalette(scheme)
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(tasks) { task in
+                HStack(spacing: 10) {
+                    AttachmentThumbnail(task: task)
+                    VStack(alignment: .leading, spacing: 3) {
+                        FileNameText(name: task.name).font(.orbisCaption(.medium))
+                        Text(pendingAttachmentStatus(task)).font(.orbisCaption()).lineLimit(1)
+                            .foregroundStyle(task.error != nil || task.status == "failed" ? p.error : p.secondary)
+                    }
+                }.accessibilityElement(children: .combine).accessibilityIdentifier("pending-attachment-" + task.id)
+            }
+        }
+    }
+}
+
+func pendingAttachmentStatus(_ task: FileTransfer) -> String {
+    if let error = task.error { return error }
+    if task.status == "completed" { return "已上传" }
+    guard ["uploading", "verifying"].contains(task.status), task.size > 0 else { return transferStatusTitle(task.status) }
+    return transferStatusTitle(task.status) + " \(min(100, Int(task.received * 100 / max(1, task.size))))%"
+}
+
+/// 36pt 方形缩略图：本机暂存的图片按需降采样解码，其他文件或解码失败显示文件图标。
+private struct AttachmentThumbnail: View {
+    @Environment(\.colorScheme) private var scheme
+    let task: FileTransfer
+    @State private var image: UIImage?
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                OrbisActionSymbol(systemName: "doc").foregroundStyle(OrbisPalette(scheme).secondary)
+            }
+        }.frame(width: 36, height: 36).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .task(id: task.localPath) { image = await Self.thumbnail(task) }
+    }
+    static func thumbnail(_ task: FileTransfer) async -> UIImage? {
+        guard let path = task.localPath, let type = UTType(filenameExtension: (task.name as NSString).pathExtension),
+              type.conforms(to: .image) else { return nil }
+        return await Task.detached(priority: .utility) {
+            guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+                  let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 120] as CFDictionary) else { return nil }
+            return UIImage(cgImage: cgImage)
+        }.value
+    }
+}
 
 /// 用户气泡下方原本放复制 / 回退的位置，替换为发送状态与恢复操作，不在聊天里另起提示行。
 private struct PendingSendStatus: View {

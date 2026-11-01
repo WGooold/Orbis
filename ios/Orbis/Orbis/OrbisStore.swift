@@ -109,6 +109,9 @@ final class HostConnection: ObservableObject {
     @Published private(set) var launching: LaunchState?
     /// 启动期间消息的占位 Session → 确认后的 Session。
     private var launchSessions: [String: String] = [:]
+    /// 启动页输入框是否有焦点；会话上线切到真实会话页时把焦点交给新页面，正在输入不被打断（ADR-0049 §6.8）。
+    private var launchComposerFocused = false
+    private var composerFocusHandoff: String?
     /// 首页正在关闭的会话（含结果不明）：卡片保持隐藏。
     var closingRuntimeIds: Set<String> { OperationKinds.hiddenRuntimeIds(ledger) }
     /// 首页只发布完整快照：冷启动准备一次，后续重连/刷新在后台组装下一版。
@@ -413,6 +416,14 @@ final class HostConnection: ObservableObject {
         connection == .secured && selectedRuntime != nil && (selectedOfflineSession == nil || isLaunchPage) && launching?.failure == nil
     }
     /// 当前聊天页是启动中的会话（占位或缓存历史）。
+    /// 启动页上输入框焦点的变化；只在启动页记录，供会话上线时交接。
+    func noteComposerFocus(_ focused: Bool) { if isLaunchPage { launchComposerFocused = focused } }
+    /// 新会话页出现时取一次交接来的焦点。
+    func takeComposerFocus(_ runtimeId: String) -> Bool {
+        guard composerFocusHandoff == runtimeId else { return false }
+        composerFocusHandoff = nil
+        return true
+    }
     var isLaunchPage: Bool {
         guard let launch = launching else { return false }
         return selectedRuntimeId == launch.placeholder || (launch.resumed != nil && selectedOfflineSession?.sessionId == launch.resumed)
@@ -1146,6 +1157,8 @@ final class HostConnection: ObservableObject {
             saveDraft("", for: source)
         }
         let following = launch.following
+        if following && launchComposerFocused { composerFocusHandoff = runtime.runtimeId }
+        launchComposerFocused = false
         launching = nil
         if following { selectedOfflineSession = nil; selectedRuntimeId = runtime.runtimeId; activationRevision += 1 }
         else if selectedRuntimeId == launch.placeholder { selectedRuntimeId = nil }
@@ -2097,8 +2110,10 @@ final class HostConnection: ObservableObject {
                 handleLedger(ledger.receipt(requestId, connection: ledger.connection, .succeeded, now: Date()))
                 if let runtime = runtimes.first(where: { $0.sessionId == sessionId }) {
                     clearActivation()
-                    if launching != nil { launchLanded(runtime) } else { selectRuntime(runtime.runtimeId); activationRevision += 1 }
+                    // Runtime 先于回复上线（真实 Host 的顺序）：先让账本按 `launching` 的 Session 判定启动落地，
+                    // 放行等它的消息，再切到真实会话；顺序反过来时 `launching` 已清空，启动永远不落地。
                     ledgerAuthority(OperationKinds.runtimesDomain, read: nil, complete: false)
+                    if launching != nil { launchLanded(runtime) } else { selectRuntime(runtime.runtimeId); activationRevision += 1 }
                 }
             }
             refreshSessions()

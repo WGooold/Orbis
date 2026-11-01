@@ -1411,7 +1411,12 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val launch = state.launchPage
     val launchOpen = launch != null && launch.failure == null
     val sessionId = runtime?.sessionId
+    // 启动页还没有 Runtime：本地行与发送飞入按启动请求的会话归属（恢复时是原会话，新建时是占位身份）。
+    val pageSessionId = sessionId ?: launch?.let { it.resumed ?: it.placeholder }
     val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
+    // V13：恢复已有会话的启动页先显示本地缓存的历史（与 iOS 沿用缓存会话页一致），会话上线后由真实会话接替。
+    val launchCache = launch?.resumed?.let(state.sessionGraphs::get)
+    val launchHistory = remember(launchCache) { launchCache?.let(::projectSessionGraph)?.messages.orEmpty() }
     val rewindCommands = state.capabilities[runtimeId]?.commands.orEmpty()
     val rewindGraph = sessionId?.let(state.sessionGraphs::get)
     val rewindOptions = remember(rewindCommands, rewindGraph?.display) { userMessageRewindOptions(rewindCommands, rewindGraph) }
@@ -1435,8 +1440,9 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     // 用它当 key 等于每次都重建整段会话的呈现；这里改成"只有消息对象真的换了才重建"。
     val presentationCache = remember { PresentationCache() }
     // ADR-0049：本地待确认发送只在呈现时叠加，权威记录与缓存都不包含它们。
-    val pendingRows = state.pendingSends.chatRows(sessionId)
-    val visibleMessages = remember(conversation.messages, pendingRows) { mergePendingSends(conversation.messages, pendingRows) }
+    val pendingRows = state.pendingSends.chatRows(pageSessionId)
+    val baseMessages = if (conversation.messages.isEmpty() && launch != null) launchHistory else conversation.messages
+    val visibleMessages = remember(baseMessages, pendingRows) { mergePendingSends(baseMessages, pendingRows) }
     val presentation = presentationCache.presentation(visibleMessages)
     val chatItems = presentationCache.items(presentation.messages, turnIdsByMessageId)
     val latestQuestion = remember(conversation.messages) { latestChatQuestion(conversation.messages) }
@@ -1638,7 +1644,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
     /** ADR-0049：消息写入通道即显示本地行，输入框立即清空；结果落在那一行上，不再锁住发送键。 */
     fun animateSend(commandId: String?) {
-        commandId?.let(model::submittedSend)?.takeIf { it.sessionId == sessionId }?.let { sendFlight.launch(it, following) }
+        commandId?.let(model::submittedSend)?.takeIf { it.sessionId == pageSessionId }?.let { sendFlight.launch(it, following) }
     }
     fun submitMessage(commandId: String?) {
         if (commandId == null) return
@@ -2268,6 +2274,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             runtimeId = runtimeId,
                             message = item.message,
                             pending = state.pendingSends[item.message.messageId]?.state,
+                            uploads = state.pendingSends[item.message.messageId]?.uploadIds.orEmpty().mapNotNull(state.uploads::get),
                             canResend = state.e2eReady && runtime != null,
                             onPendingAction = { action ->
                                 when (action) {
@@ -3568,6 +3575,8 @@ internal fun UserMessageCard(
     rewindEnabled: Boolean = false,
     /** ADR-0049：本地待确认发送的状态；权威行为 null。 */
     pending: PendingSendState? = null,
+    /** ADR-0049 §6.1：本地待发送消息带的附件（上传任务），气泡内显示缩略图 / 文件名与上传进度。 */
+    uploads: List<UploadTask> = emptyList(),
     canResend: Boolean = false,
     onPendingAction: (PendingSendAction) -> Unit = {},
 ) {
@@ -3590,6 +3599,7 @@ internal fun UserMessageCard(
                         downloadArtifact = downloadArtifact,
                         downloadFile = downloadFile,
                     )
+                    if (uploads.isNotEmpty()) PendingAttachments(uploads)
                 }
             }
             }
@@ -4415,7 +4425,7 @@ private fun AttachmentChips(uploads: List<UploadTask>, onRemove: (String) -> Uni
 }
 
 /** 附件的进度文案。失败时优先说原因，因为那是用户唯一能采取行动的信息。 */
-private fun uploadProgressText(upload: UploadTask): String {
+internal fun uploadProgressText(upload: UploadTask): String {
     val total = upload.size
     val percent = if (total <= 0) 0 else ((upload.durableBytes * 100) / total).toInt().coerceIn(0, 100)
     return when (upload.status) {
