@@ -499,10 +499,11 @@ struct StoreTests {
         #expect(store.executeSlash("model", args: "m"))
         let sent = try #require(transport.sent.last)
         #expect((sent["command"] as? [String: Any])?["type"] as? String == "slash.execute")
-        #expect(store.pendingActionIds.count == 1)
+        // ADR-0049 §6.7：模型选择条件乐观，所选值带“切换中”；失败回到确认值并说明原因。
+        #expect(store.configStatus("a", setting: "model")?.mark == "切换中")
         await transport.event(["type": "command.result", "commandId": sent["commandId"]!, "ok": false, "error": "模型不可用"], sequence: 2, channel: "ctl")
-        #expect(store.pendingActionIds.isEmpty)
-        #expect(store.errorMessage == "模型不可用")
+        #expect(store.configStatus("a", setting: "model") == nil)
+        #expect(store.errorMessage == "模型切换未完成：模型不可用")
     }
 
     @Test func composerSlashRetainsArgumentsForFailureAndUnknownAndOnlyClearsTheSubmittedDraftOnSuccess() async throws {
@@ -575,11 +576,14 @@ struct StoreTests {
         #expect(store.activatingSessionId == "new")
         await transport.emit(["type": "session.activated", "requestId": request, "sessionId": "new-session", "agentKind": "codex", "spawnMode": "tui"])
         #expect(store.activatingSessionId == "new-session")
-        #expect(store.selectedRuntimeId == "a")
+        // ADR-0049 §6.8：立即进入启动中的聊天页（占位身份），上线后切到真实会话。
+        #expect(store.selectedRuntimeId?.hasPrefix("launch:") == true)
+        #expect(store.selectedRuntime?.status == "starting")
+        #expect(store.activationRevision == 1)
         await transport.emit(["type": "runtime.online", "runtime": runtime("new-runtime", session: "new-session")])
         #expect(store.selectedRuntimeId == "new-runtime")
         #expect(store.activatingSessionId == nil)
-        #expect(store.activationRevision == 1)
+        #expect(store.activationRevision == 2)
     }
 
     @Test func gitBranchResponsesCannotOverwriteAnotherSession() async throws {

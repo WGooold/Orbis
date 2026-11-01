@@ -83,6 +83,8 @@ func runtimeStatusTitle(_ status: String) -> String {
     case "error": return "异常"
     case "idle": return "空闲"
     case "unknown": return "状态待核对"
+    case "starting": return "启动中"
+    case "launch_unconfirmed": return "启动未确认"
     default: return status
     }
 }

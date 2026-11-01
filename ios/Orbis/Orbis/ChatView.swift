@@ -110,7 +110,16 @@ struct ChatView: View {
         VStack(spacing: 0) {
             header
             conversation.overlay(alignment: .top) {
-                if hasRuntimeNotices {
+                if let launch = store.launching, store.isLaunchPage, launch.failure != nil || launch.unconfirmed {
+                    // ADR-0049 §6.8：启动失败或未确认时在聊天页原位说明，提供“重试”“返回”，草稿保留。
+                        VStack(alignment: .leading, spacing: 8) {
+                            OrbisNotice(text: launch.failure.map { "启动失败：" + $0 } ?? "启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。", error: launch.failure != nil)
+                            HStack(spacing: 12) {
+                                OrbisActionButton(title: "重试", symbol: "arrow.clockwise") { store.retryLaunch() }.accessibilityIdentifier("launch-retry")
+                                OrbisActionButton(title: "返回") { onBack() }.accessibilityIdentifier("launch-back")
+                            }
+                        }.padding(.horizontal, 16).accessibilityIdentifier("launch-notice")
+                } else if hasRuntimeNotices {
                     RuntimeNoticesView(runtimeId: runtime.runtimeId, supported: ["codex", "codexDesktop"].contains(runtime.agentKind)).padding(.horizontal, 16)
                 } else {
                     ZStack {

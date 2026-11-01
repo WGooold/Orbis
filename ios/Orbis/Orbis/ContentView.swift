@@ -100,7 +100,11 @@ struct ContentView: View {
             NewSessionView(presetCwd: newSessionCwd) { newSessionOpen = false }
                 .environmentObject(store).orbisSheet([.large])
         }
-        .onChange(of: navigation.pages) { _, _ in overlay.dismissMenu() }
+        .onChange(of: navigation.pages) { _, pages in
+            overlay.dismissMenu()
+            // ADR-0049 §6.8：离开启动页不取消启动，成功后也不把用户拉回。
+            if !pages.contains(.chat) { store.stopFollowingLaunch() }
+        }
         .onChange(of: drawerOpen) { _, open in if !open { overlay.dismissMenu() } }
         .onChange(of: store.activationRevision) { _, _ in
             setDrawer(false); newSessionOpen = false

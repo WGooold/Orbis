@@ -59,6 +59,17 @@ struct PendingSendOutbox: Equatable {
     /// 聊天里的本地行已经代表这条消息，Host 队列里的同一项不再重复显示。
     func hidesQueueItem(_ queueId: String) -> Bool { items.contains { $0.messageId == queueId && !$0.showsInQueue && !$0.queueOwned } }
 
+    /// 启动中的会话确认了 Session ID：占位 Session 下的消息转到真实会话（ADR-0049 §6.8）。
+    mutating func rebind(sessionId placeholder: String, to sessionId: String) {
+        for index in items.indices where items[index].sessionId == placeholder {
+            let item = items[index]
+            var moved = PendingSend(messageId: item.messageId, commandId: item.commandId, sessionId: sessionId, text: item.text,
+                                    attachments: item.attachments, delivery: item.delivery, createdAt: item.createdAt, anchorMessageId: item.anchorMessageId)
+            moved.state = item.state; moved.uploadIds = item.uploadIds
+            items[index] = moved
+        }
+    }
+
     /// 等待中的消息写入通道：换成 Host 附件路径，进入发送中（ADR-0049 §6.2）。
     mutating func startWrite(_ messageId: String, attachments: [String]) {
         guard let index = items.firstIndex(where: { $0.messageId == messageId }), case .waiting = items[index].state else { return }

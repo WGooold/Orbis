@@ -16,6 +16,8 @@ enum LedgerPayload: Equatable {
     case send(runtimeId: String, sessionId: String, messageId: String)
     /// 模型 / 思考级别（条件乐观）。`setting` 为 `model` 或 `thinking`；`label` 是选择器里的名字。
     case config(runtimeId: String, setting: String, value: String, label: String)
+    /// 新建 / 恢复会话（即时反馈）：立即进入聊天页并显示“启动中”。`placeholder` 是启动期间聊天页的占位身份。
+    case launch(requestId: String, placeholder: String)
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -36,6 +38,17 @@ enum OperationKinds {
     static let respond = "respond"
     static let send = "send"
     static let config = "config"
+    static let launch = "launch"
+    /// `launch`：同一 requestId 的 `session.activated` 表示 Host 已受理并给出 Session，该 Session 的 Runtime 上线才落地；
+    /// 失败在聊天页原位显示；超时后显示“启动未确认”，以随后的会话列表为准（ADR-0049 §6.8）。
+    static let launchPolicy = AppLedger.Policy(
+        successLands: false,
+        acceptedBudget: AppLedger.receiptBudget,
+        afterSuccess: (AppLedger.receiptBudget, .unknown),
+        whenUnresolved: .unknown,
+        deviceReceipts: true,
+        appliesBeforeLaterReads: false
+    )
     /// 某个 Runtime 的模型配置（model 领域或 runtime.metadata）在账本里的领域名。
     static func modelDomain(_ runtimeId: String) -> String { "model:" + runtimeId }
     static func isConfigSetting(_ name: String) -> Bool { name == "model" || name == "thinking" }
@@ -276,14 +289,14 @@ enum OperationKinds {
     static func runtimeId(of op: AppLedger.Operation) -> String? {
         switch op.payload {
         case .quit(let runtimeId), .queueCancel(let runtimeId, _), .respond(let runtimeId, _, _), .send(let runtimeId, _, _), .config(let runtimeId, _, _, _): return runtimeId
-        case .dismiss, .archive: return nil
+        case .dismiss, .archive, .launch: return nil
         }
     }
 
     /// 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片、队列项）提示后回到原位；内容类保留失败状态等用户处理。
     static func removesOnRejection(_ op: AppLedger.Operation) -> Bool {
         switch op.payload {
-        case .quit, .dismiss, .archive, .queueCancel, .respond, .send, .config: return true
+        case .quit, .dismiss, .archive, .queueCancel, .respond, .send, .config, .launch: return true
         }
     }
 
@@ -300,7 +313,7 @@ enum OperationKinds {
     static func evidence(_ op: AppLedger.Operation, runtimeIds: Set<String>) -> AppLedger.Evidence {
         switch op.payload {
         case .quit(let runtimeId): return runtimeIds.contains(runtimeId) ? .none : .landed
-        case .dismiss, .archive, .queueCancel, .respond, .send, .config: return .none
+        case .dismiss, .archive, .queueCancel, .respond, .send, .config, .launch: return .none
         }
     }
 
@@ -347,6 +360,7 @@ enum OperationKinds {
             default: return "撤回未完成：" + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
             }
         case .send: return nil // 失败显示在气泡原位（outbox 的失败行）。
+        case .launch: return nil // 失败在聊天页原位显示原因及“重试”“返回”。
         case .config(_, let setting, _, _):
             return configTitle(setting) + "切换未完成：" + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
         case .respond:

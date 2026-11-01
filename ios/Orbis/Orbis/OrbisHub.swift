@@ -232,6 +232,10 @@ final class OrbisStore: ObservableObject {
     func refresh() { activeConnection.refresh() }
     func loadOlderHistory() -> Bool { activeConnection.loadOlderHistory() }
     func activate(_ session: SessionSummary) { activeConnection.activate(session) }
+    var launching: HostConnection.LaunchState? { activeConnection.launching }
+    var isLaunchPage: Bool { activeConnection.isLaunchPage }
+    func retryLaunch() { activeConnection.retryLaunch() }
+    func stopFollowingLaunch() { activeConnection.stopFollowingLaunch() }
     func createSession(agentKind: String, cwd: String) { activeConnection.createSession(agentKind: agentKind, cwd: cwd) }
     #if DEBUG
     func createCaptureSession(agentKind: String, cwd: String) { activeConnection.createCaptureSession(agentKind: agentKind, cwd: cwd) }

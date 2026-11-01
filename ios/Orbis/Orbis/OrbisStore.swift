@@ -88,6 +88,27 @@ final class HostConnection: ObservableObject {
     private var ledgerReads: [String: Int] = [:]
     private var ledgerClock: Task<Void, Never>?
     private var flushingSends = false
+
+    /// ADR-0049 §6.8：正在启动的会话。启动期间聊天页用占位身份显示，草稿与消息先归属它，Session ID 确认后迁移。
+    struct LaunchState: Equatable {
+        let requestId: String
+        let placeholder: String
+        let target: [String: String]
+        let title: String
+        let cwd: String
+        let agentKind: String?
+        /// 恢复的已有会话；新建时为 nil。启动期间聊天页、草稿与消息都用它（或占位身份）归属，保持稳定。
+        let resumed: String?
+        /// Host 在 `session.activated` 中给出的 Session。
+        var sessionId: String?
+        var failure: String?
+        var unconfirmed = false
+        /// 用户仍停在这个启动页：成功后切到真实会话；离开后不再把用户拉回，会话照常出现在首页。
+        var following = true
+    }
+    @Published private(set) var launching: LaunchState?
+    /// 启动期间消息的占位 Session → 确认后的 Session。
+    private var launchSessions: [String: String] = [:]
     /// 首页正在关闭的会话（含结果不明）：卡片保持隐藏。
     var closingRuntimeIds: Set<String> { OperationKinds.hiddenRuntimeIds(ledger) }
     /// 首页只发布完整快照：冷启动准备一次，后续重连/刷新在后台组装下一版。
@@ -372,6 +393,13 @@ final class HostConnection: ObservableObject {
 
     var selectedHost: HostPairing? { pairings.first { $0.hostId == selectedHostId } }
     var selectedRuntime: RuntimeSummary? {
+        if let launch = launching, selectedRuntimeId == launch.placeholder || launch.resumed != nil && selectedOfflineSession?.sessionId == launch.resumed {
+            let session = selectedOfflineSession
+            return RuntimeSummary(runtimeId: session.map { "cached:" + $0.sessionId } ?? launch.placeholder, name: session?.name ?? launch.title,
+                cwd: session?.cwd ?? launch.cwd, status: launch.failure != nil ? "error" : launch.unconfirmed ? "launch_unconfirmed" : "starting",
+                sessionId: session?.sessionId ?? launch.resumed ?? launch.placeholder, sessionName: session?.name,
+                hostname: session?.hostname, agentKind: session?.agentKind ?? launch.agentKind)
+        }
         if let session = selectedOfflineSession {
             return RuntimeSummary(runtimeId: "cached:" + session.sessionId, name: session.name ?? session.sessionId,
                 cwd: session.cwd, status: "offline", sessionId: session.sessionId, sessionName: session.name,
@@ -379,7 +407,15 @@ final class HostConnection: ObservableObject {
         }
         return runtimes.first { $0.runtimeId == selectedRuntimeId }
     }
-    var canSend: Bool { connection == .secured && selectedOfflineSession == nil && selectedRuntime != nil }
+    var canSend: Bool {
+        // ADR-0049 §6.8：启动中可以输入草稿和发送，消息等会话上线后再提交。
+        connection == .secured && selectedRuntime != nil && (selectedOfflineSession == nil || isLaunchPage) && launching?.failure == nil
+    }
+    /// 当前聊天页是启动中的会话（占位或缓存历史）。
+    var isLaunchPage: Bool {
+        guard let launch = launching else { return false }
+        return selectedRuntimeId == launch.placeholder || (launch.resumed != nil && selectedOfflineSession?.sessionId == launch.resumed)
+    }
 
     func displayName(_ runtime: RuntimeSummary) -> String {
         sessionTitle(runtime: runtime, session: runtime.sessionId.flatMap { sessionIndex[$0] },
@@ -1055,16 +1091,63 @@ final class HostConnection: ObservableObject {
     private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String = "tui") {
         guard connection == .secured, activationRequestId == nil else { return }
         let requestId = UUID().uuidString
+        let placeholder = "launch:" + requestId
+        let creation = ledger.create(opId: requestId, kind: OperationKinds.launch, target: placeholder, policy: OperationKinds.launchPolicy,
+                                     basis: ledgerBasis(OperationKinds.runtimesDomain),
+                                     payload: .launch(requestId: requestId, placeholder: placeholder), written: false, now: Date())
+        guard creation == .created else { return }
         guard transport.send(["type": "session.activate", "protocolVersion": orbisProtocolVersion,
                               "requestId": requestId, "target": target, "spawnMode": spawnMode]) else {
+            ledger.remove(requestId); handleLedger([])
             errorMessage = "端到端加密连接尚未就绪，请连接成功后重试。"; return
         }
         activationRequestId = requestId; pendingActivation = sessionId; activatingSessionId = sessionId
-        activationTimeout = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
-            guard let self, self.activationRequestId == requestId else { return }
-            self.clearActivation(); self.errorMessage = "会话尚未上线，请检查电脑端后刷新重试。"
+        handleLedger(ledger.written(requestId, now: Date()))
+        // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”；恢复已有会话时先显示缓存历史（V13）。
+        let resumed = target["type"] as? String == "resume" ? sessionId : nil
+        let cwd = target["cwd"] as? String ?? resumed.flatMap { sessionIndex[$0]?.cwd } ?? ""
+        let title = resumed.flatMap { id in sessionIndex[id].map { displayName($0) } }
+            ?? (cwd.split(separator: "/").last.map(String.init) ?? "新会话")
+        launching = LaunchState(requestId: requestId, placeholder: placeholder,
+                                target: target.compactMapValues { $0 as? String }, title: title, cwd: cwd,
+                                agentKind: target["agentKind"] as? String, resumed: resumed, sessionId: resumed)
+        if let resumed, let session = sessionIndex[resumed], openCachedSession(session) { return }
+        toolContent.close(); turnFileChanges.clear(); dismissPreview()
+        selectedOfflineSession = nil; selectedRuntimeId = placeholder; messages = []; cachedHistoryOptions = []
+        activationRevision += 1
+    }
+
+    /// 启动失败后在聊天页原位重试：同一目标、新的请求（L6）。
+    func retryLaunch() {
+        guard let launch = launching, launch.failure != nil || launch.unconfirmed else { return }
+        var target: [String: Any] = launch.target
+        if let kind = launch.agentKind { target["agentKind"] = kind }
+        launching = nil
+        activateTarget(target, sessionId: launch.resumed ?? "new")
+    }
+
+    /// 用户离开了启动页：启动继续，成功后不把用户拉回，会话照常出现在首页。
+    func stopFollowingLaunch() {
+        guard launching?.following == true else { return }
+        launching?.following = false
+        if launching?.failure != nil || launching?.unconfirmed == true { launching = nil }
+    }
+
+    /// 启动成功：草稿迁到真实会话（V17），用户仍在启动页时切过去。
+    private func launchLanded(_ runtime: RuntimeSummary) {
+        guard let launch = launching else { return }
+        let placeholderRuntime = RuntimeSummary(runtimeId: launch.placeholder, name: launch.title, cwd: launch.cwd, status: "starting",
+                                                sessionId: launch.resumed ?? launch.placeholder, agentKind: launch.agentKind)
+        let cachedRuntime = launch.resumed.flatMap { id in selectedOfflineSession?.sessionId == id ? selectedRuntime : nil }
+        for source in [placeholderRuntime, cachedRuntime].compactMap({ $0 }) {
+            let text = draft(for: source)
+            if !text.isEmpty, draft(for: runtime).isEmpty { saveDraft(text, for: runtime) }
+            saveDraft("", for: source)
         }
+        let following = launch.following
+        launching = nil
+        if following { selectedOfflineSession = nil; selectedRuntimeId = runtime.runtimeId; activationRevision += 1 }
+        else if selectedRuntimeId == launch.placeholder { selectedRuntimeId = nil }
     }
 
     private func clearActivation() {
@@ -1255,7 +1338,16 @@ final class HostConnection: ObservableObject {
     private func ledgerEvidence(_ domain: String) -> (AppLedger.Operation) -> AppLedger.Evidence {
         if domain == OperationKinds.runtimesDomain {
             let ids = Set(runtimes.map(\.runtimeId))
-            return { OperationKinds.evidence($0, runtimeIds: ids) }
+            let sessions = Set(runtimes.compactMap(\.sessionId))
+            let launch = launching
+            return { op in
+                // `launch`：Host 给出的 Session 的 Runtime 已上线即落地。
+                if case .launch(let requestId, _) = op.payload {
+                    guard launch?.requestId == requestId, let session = launch?.sessionId else { return .none }
+                    return sessions.contains(session) ? .landed : .none
+                }
+                return OperationKinds.evidence(op, runtimeIds: ids)
+            }
         }
         if domain == OperationKinds.catalogDomain {
             let index = sessionIndex
@@ -1327,17 +1419,25 @@ final class HostConnection: ObservableObject {
                     // 配置切换失败：等它的消息一起转失败（“模型切换未完成，消息未发送”），可按当前配置重新发送。
                     var reason = rejection.reason
                     if rejection.code == "prerequisite", case .waiting(let label) = pendingSends.item(messageId)?.state,
-                       label.hasPrefix("等待"), label.hasSuffix("切换") { reason = label.dropFirst(2) + "未完成，消息未发送" }
+                       label.hasPrefix("等待"), label.hasSuffix("切换") || label.hasSuffix("启动") { reason = label.dropFirst(2) + "未完成，消息未发送" }
                     pendingSends.failWaiting(messageId, reason: reason); publishMessages()
                 }
                 configSettled(op)
+                if case .launch(let requestId, _) = op.payload, launching?.requestId == requestId, case .rejected(let rejection) = op.phase {
+                    // 启动失败：在聊天页原位显示原因及“重试”“返回”，草稿保留，不自动退回原页面。
+                    launching?.failure = rejection.reason.isEmpty ? "启动失败" : rejection.reason
+                    activationRequestId = nil; pendingActivation = nil; activatingSessionId = nil
+                    if launching?.following == false { launching = nil }
+                }
                 // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
                 if let text = OperationKinds.message(for: op) { errorMessage = archiveRejections > 1 ? "\(archiveRejections) 个会话" + text : text }
                 if OperationKinds.removesOnRejection(op) { ledger.remove(op.opId) }
             case .verify: verify = true
             case .landed(let op): showInteractionOutcome(op); configSettled(op)
             case .ready: readySends = true
-            case .unknown, .unconfirmed, .expired: break
+            case .unconfirmed(let op):
+                if case .launch(let requestId, _) = op.payload, launching?.requestId == requestId { launching?.unconfirmed = true }
+            case .unknown, .expired: break
             }
         }
         notifications.setHidden(OperationKinds.hiddenNotificationKeys(ledger))
@@ -1475,7 +1575,9 @@ final class HostConnection: ObservableObject {
         guard attachments.count == attachmentIds.count, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }) else { return false }
         // ADR-0049 §6.2：附件没传完或同会话还有等待中的前一条，就先在本机创建、排在后面，轮到时再写入通道。
         let uploaded = attachments.allSatisfy { $0.status == "completed" && $0.remotePath != nil }
-        let configs = OperationKinds.activeConfigOps(ledger, runtimeId: runtime.runtimeId)
+        var configs = OperationKinds.activeConfigOps(ledger, runtimeId: runtime.runtimeId)
+        // 启动中发送的消息等“会话启动”（ADR-0049 §6.8）。
+        if isLaunchPage, let launch = launching, let op = ledger.operation(launch.requestId) { configs.append(op) }
         if !uploaded || !configs.isEmpty || runtime.sessionId.map({ ledger.blocks(group: OperationKinds.sendGroup($0)) }) == true {
             return sendWhenReady(body, delivery: delivery, uploads: attachments, runtime: runtime, configs: configs)
         }
@@ -1521,8 +1623,9 @@ final class HostConnection: ObservableObject {
         var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: [],
                                delivery: delivery, createdAt: Date(), anchorMessageId: anchor)
         let config: String? = configs.first.flatMap { if case .config(_, let setting, _, _) = $0.payload { return OperationKinds.configTitle(setting) }; return nil }
+        let launch = configs.contains { if case .launch = $0.payload { return true }; return false }
         send.state = .waiting(!pending.isEmpty ? "上传中：" + pending.map(\.name).joined(separator: "、")
-                              : config.map { "等待\($0)切换" } ?? "等待前一条发送")
+                              : launch ? "等待会话启动" : config.map { "等待\($0)切换" } ?? "等待前一条发送")
         send.uploadIds = uploads.map(\.id)
         pendingSends.add(send)
         saveWaitingCopy(id, text: body, runtime: runtime)
@@ -1539,8 +1642,9 @@ final class HostConnection: ObservableObject {
         while progressed {
             progressed = false
             for op in ledger.ready() {
-                guard case .send(let runtimeId, let sessionId, let messageId) = op.payload,
-                      runtimes.contains(where: { $0.runtimeId == runtimeId && $0.sessionId == sessionId }),
+                guard case .send(_, let provisional, let messageId) = op.payload else { continue }
+                let sessionId = launchSessions[provisional] ?? provisional
+                guard let runtimeId = runtimes.first(where: { $0.sessionId == sessionId })?.runtimeId,
                       let send = pendingSends.item(messageId) else { continue }
                 let paths = send.uploadIds.compactMap { id in transfers.tasks.first { $0.id == id && $0.status == "completed" }?.remotePath }
                 guard paths.count == send.uploadIds.count else { continue }
@@ -1892,8 +1996,7 @@ final class HostConnection: ObservableObject {
                 if pendingActivation == runtime.sessionId {
                     if let session = runtime.sessionId, let text = pendingBranchDrafts.removeValue(forKey: offlineSessionKey(host: selectedHost, sessionId: session)) { saveDraft(text, for: runtime) }
                     clearActivation()
-                    selectedRuntimeId = runtime.runtimeId
-                    activationRevision += 1
+                    if launching != nil { launchLanded(runtime) } else { selectedRuntimeId = runtime.runtimeId; activationRevision += 1 }
                 } else if selectedRuntimeId == nil { selectedRuntimeId = runtime.runtimeId }
                 publishMessages()
                 agentState.subscribe(runtime: runtime); notifications.online(runtime)
@@ -1947,10 +2050,20 @@ final class HostConnection: ObservableObject {
             browse?.entries = (message["entries"] as? [[String: Any]] ?? []).compactMap(jsonDecode)
             browse?.loading = false
         case "session.activated":
-            if message["requestId"] as? String == activationRequestId, let sessionId = message["sessionId"] as? String {
+            if let requestId = message["requestId"] as? String, requestId == activationRequestId || requestId == launching?.requestId,
+               let sessionId = message["sessionId"] as? String {
                 pendingActivation = sessionId; activatingSessionId = sessionId
+                // 同一 requestId 的 session.activated：Host 已给出 Session，等它的 Runtime 上线（ADR-0049 §7.5）。
+                if let launch = launching, launch.requestId == requestId {
+                    launching?.sessionId = sessionId
+                    launchSessions[launch.placeholder] = sessionId
+                    pendingSends.rebind(sessionId: launch.placeholder, to: sessionId)
+                }
+                handleLedger(ledger.receipt(requestId, connection: ledger.connection, .succeeded, now: Date()))
                 if let runtime = runtimes.first(where: { $0.sessionId == sessionId }) {
-                    clearActivation(); selectRuntime(runtime.runtimeId); activationRevision += 1
+                    clearActivation()
+                    if launching != nil { launchLanded(runtime) } else { selectRuntime(runtime.runtimeId); activationRevision += 1 }
+                    ledgerAuthority(OperationKinds.runtimesDomain, read: nil, complete: false)
                 }
             }
             refreshSessions()
