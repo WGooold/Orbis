@@ -1118,6 +1118,68 @@ final class OrbisUITests: XCTestCase {
         capture("viewport-following", app: app)
     }
 
+    func testQuestionReminderAppearsWhileReadingAndLocatesTheOriginalWithoutFollowing() {
+        for dark in [false, true] {
+            let app = launch("viewport", dark: dark, arguments: ["--preview-question-reminder"])
+            XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
+            let reminder = app.buttons["chat-question-reminder"]
+            XCTAssertFalse(reminder.exists, "Following a long reply must not show the question automatically")
+            let transcript = app.scrollViews.firstMatch
+            let viewport = transcript.frame
+            transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45)).press(forDuration: 0.05,
+                thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)), withVelocity: .slow, thenHoldForDuration: 0.3)
+            XCTAssertTrue(reminder.waitForExistence(timeout: 3), String(describing: app.buttons["chat-title"].value))
+            XCTAssertTrue(reminder.label.contains("帮我比较这两种实现"))
+            XCTAssertTrue(reminder.label.contains("👩🏽‍💻"), "Accessibility keeps the complete question")
+            XCTAssertGreaterThanOrEqual(reminder.frame.height, 48)
+            XCTAssertLessThan(reminder.frame.height, 110)
+            XCTAssertEqual(transcript.frame, viewport, "The reminder must not resize the transcript")
+            let anchor = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 "))
+                .allElementsBoundByIndex.first { $0.isHittable && $0.frame.minY > viewport.minY + 120 && $0.frame.maxY < viewport.maxY - 20 }
+            XCTAssertNotNil(anchor)
+            let before = anchor?.frame.minY
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch.tap()
+            settle()
+            if let anchor, let before { XCTAssertEqual(anchor.frame.minY, before, accuracy: 1) }
+            capture("question-reminder-reading-\(dark)", app: app)
+            reminder.tap()
+            XCTAssertTrue(reminder.waitForNonExistence(timeout: 5))
+            let original = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "帮我比较这两种实现")).firstMatch
+            XCTAssertTrue(original.isHittable)
+            XCTAssertTrue(app.buttons["跳到最新消息"].exists, "Locating the question leaves following disabled")
+            capture("question-reminder-original-\(dark)", app: app)
+            transcript.swipeUp()
+            XCTAssertTrue(reminder.waitForExistence(timeout: 3))
+            app.buttons["跳到最新消息"].tap()
+            XCTAssertTrue(reminder.waitForNonExistence(timeout: 5))
+            app.terminate()
+        }
+    }
+
+    func testQuestionReminderTracksNewSourceQuestionsWithoutMovingTheReader() {
+        let app = launch("viewport", arguments: ["--preview-viewport-rows", "--preview-reduce-motion"])
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
+        let transcript = app.scrollViews.firstMatch
+        let reminder = app.buttons["chat-question-reminder"]
+        for _ in 0..<8 where !reminder.exists {
+            transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45)).press(forDuration: 0.05,
+                thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)), withVelocity: .slow, thenHoldForDuration: 0.3)
+        }
+        XCTAssertTrue(reminder.waitForExistence(timeout: 3))
+        XCTAssertTrue(reminder.label.contains("新增消息 0"))
+        let anchor = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 "))
+            .allElementsBoundByIndex.first { $0.isHittable && $0.frame.minY > transcript.frame.minY + 120 && $0.frame.maxY < transcript.frame.maxY - 20 }
+        XCTAssertNotNil(anchor)
+        let before = anchor?.frame.minY
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch.tap()
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "新增消息 1"), object: reminder)
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 5), .completed)
+        if let anchor, let before { XCTAssertEqual(anchor.frame.minY, before, accuracy: 1) }
+        capture("question-reminder-new-source-reduced", app: app)
+        app.buttons["跳到最新消息"].tap()
+        XCTAssertTrue(reminder.waitForNonExistence(timeout: 5))
+    }
+
     func testNewMessagesAndToolsPreserveTheMovingReadingAnchor() {
         let app = launch("viewport", arguments: ["--preview-viewport-rows", "--preview-viewport-drag"])
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))

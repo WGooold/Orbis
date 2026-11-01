@@ -12,6 +12,13 @@ final class ChatScrollMetrics {
     var bottomDistance: CGFloat = 0
     var firstVisibleRow: String?
     var userScrolling = false
+    var rowFrames: [String: CGRect] = [:]
+    var viewportHeight: CGFloat = 0
+}
+
+private struct ChatQuestionJump: Equatable {
+    let rowID: String
+    let request = UUID()
 }
 
 private struct ChatRowsPreference: PreferenceKey {
@@ -42,6 +49,7 @@ struct ChatView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var transfers: FileTransfers
     @EnvironmentObject private var agent: AgentState
+    @EnvironmentObject private var notifications: RuntimeNotifications
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let runtime: RuntimeSummary
@@ -55,6 +63,10 @@ struct ChatView: View {
     @State private var metrics = ChatScrollMetrics()
     @State private var showJump = false
     @State private var hasPositioned = false
+    @State private var hasBrowsed = false
+    @State private var questionOutsideViewport = false
+    @State private var questionJumpRequest: ChatQuestionJump?
+    @State private var suppressQuestionPaging = false
     @State private var selectedCommand: String?
     @State private var deliveryChoices = false
     @State private var permissionsOpen = false
@@ -69,6 +81,14 @@ struct ChatView: View {
     /// Claude Code 只能等当前回合结束后提交（没有 Steer）；附件和其他后端一样以路径交给它。
     private var claudeComposer: Bool { kind == "claude" }
     private var accent: Color { OrbisPalette(scheme).agent(kind) }
+    private var latestQuestion: ChatQuestion? {
+        store.chatTranscript.latestQuestion(excluding: Set(store.pendingSends.items.map(\.messageId)))
+    }
+    private var showQuestionReminder: Bool { hasPositioned && hasBrowsed && showJump && questionOutsideViewport }
+    private var hasRuntimeNotices: Bool {
+        guard let projection = notifications.projections[runtime.runtimeId] else { return false }
+        return !projection.items.isEmpty || (["codex", "codexDesktop"].contains(runtime.agentKind) && !projection.complete)
+    }
     private var draft: Binding<String> { Binding(get: { store.draft(for: runtime) }, set: { store.saveDraft($0, for: runtime) }) }
     private var slash: Bool { draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
     private var command: SlashCommand? { (store.commands[runtime.runtimeId] ?? []).first { $0.name == selectedCommand } }
@@ -88,7 +108,18 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            conversation.overlay(alignment: .top) { RuntimeNoticesView(runtimeId: runtime.runtimeId, supported: ["codex", "codexDesktop"].contains(runtime.agentKind)).padding(.horizontal, 16) }
+            conversation.overlay(alignment: .top) {
+                if hasRuntimeNotices {
+                    RuntimeNoticesView(runtimeId: runtime.runtimeId, supported: ["codex", "codexDesktop"].contains(runtime.agentKind)).padding(.horizontal, 16)
+                } else {
+                    ZStack {
+                        if showQuestionReminder, let question = latestQuestion {
+                            questionReminder(question).padding(.horizontal, 16).padding(.top, 6)
+                                .transition(.opacity)
+                        }
+                    }.animation(reduceMotion ? nil : .orbisFade, value: showQuestionReminder)
+                }
+            }
             if store.isViewingCachedSession { cachedComposer } else { composer }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent).environment(\.orbisAccent, accent)
             .downloadFlightHost(downloadFlight)
@@ -121,6 +152,48 @@ struct ChatView: View {
                 }
             }
             .onChange(of: runtime.status) { _, status in if status != "running" { deliveryChoices = false } }
+            .onChange(of: latestQuestion) { _, _ in updateQuestionVisibility() }
+            .onChange(of: [store.selectedHostId ?? "", runtime.runtimeId, runtime.sessionId ?? ""]) { _, _ in
+                hasBrowsed = false; questionOutsideViewport = false; questionJumpRequest = nil
+                suppressQuestionPaging = false; metrics.rowFrames = [:]
+            }
+    }
+
+    private func questionReminder(_ question: ChatQuestion) -> some View {
+        let p = OrbisPalette(scheme)
+        return Button {
+            composerFocused = false
+            metrics.userScrolling = false
+            following = false
+            suppressQuestionPaging = true
+            questionJumpRequest = ChatQuestionJump(rowID: question.messageId)
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("最近提问").font(.orbisCaption(.medium)).foregroundStyle(p.secondary)
+                    Text(question.text).font(.orbisLabel()).foregroundStyle(p.text)
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "arrow.up.left").font(.orbisLabel(.medium)).foregroundStyle(accent)
+                    .accessibilityHidden(true)
+            }.padding(.horizontal, 14).padding(.vertical, 10).frame(minHeight: 48)
+        }.buttonStyle(NeuButtonStyle())
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("最近提问，\(question.text)")
+            .accessibilityHint("定位到原消息")
+            .accessibilityIdentifier("chat-question-reminder")
+            .accessibilityAddTraits(.isButton)
+    }
+
+    private func updateQuestionVisibility() {
+        let visibleFrames = metrics.rowFrames.values.contains { $0.maxY > 0 && $0.minY < metrics.viewportHeight }
+        let outside = latestQuestion.map { question in
+            guard visibleFrames else { return false }
+            guard let frame = metrics.rowFrames[question.messageId] else { return true }
+            // A small dead band keeps the reminder quiet at the viewport boundary.
+            return frame.maxY < -8 || frame.minY > metrics.viewportHeight + 8
+        } ?? false
+        if outside != questionOutsideViewport { questionOutsideViewport = outside }
     }
 
     private var header: some View {
@@ -200,6 +273,7 @@ struct ChatView: View {
                             .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: [row.id: geometry.frame(in: .named("chat-viewport"))]) })
                     }
                     LiveToolsView(runtime: runtime).id("chat-live-tools")
+                        .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: ["chat-live-tools": geometry.frame(in: .named("chat-viewport"))]) })
                     // Small tail: the last message sits close to the composer (LazyVStack spacing still applies).
                     Color.clear.frame(height: 4).id(ChatFollow.bottomID)
                         .background(GeometryReader { geo in Color.clear.preference(key: ChatBottomPreference.self, value: geo.frame(in: .named("chat-viewport")).maxY) })
@@ -216,16 +290,24 @@ struct ChatView: View {
                     }
             }.coordinateSpace(name: "chat-viewport").scrollDismissesKeyboard(.interactively)
                 .modifier(ChatScrollObserver(viewportHeight: viewport.size.height, following: following, jumpRequest: jumpRequest,
+                                             questionJumpRequest: questionJumpRequest,
                                              onDistance: bottomDistanceChanged,
                                              onInteraction: { userInteractionChanged($0) }))
                 .onPreferenceChange(ChatRowsPreference.self) { frames in
+                    metrics.rowFrames = frames
+                    metrics.viewportHeight = viewport.size.height
+                    updateQuestionVisibility()
                     metrics.firstVisibleRow = frames.filter { $0.value.maxY > 0 && $0.value.minY < viewport.size.height }.min { $0.value.minY < $1.value.minY }?.key
                     let first = transcript.firstMessageId
                     let atTop = first.flatMap { frames[$0] }.map { $0.minY >= -40 && $0.minY < viewport.size.height } ?? false
                     if !atTop && topArmed != hasPositioned { topArmed = hasPositioned }
-                    if atTop && topArmed && historyAnchor == nil && !store.isSyncing && !store.historyLoading.contains(runtime.runtimeId) && store.historyErrors[runtime.runtimeId] == nil {
+                    if atTop && topArmed && !suppressQuestionPaging && historyAnchor == nil && !store.isSyncing && !store.historyLoading.contains(runtime.runtimeId) && store.historyErrors[runtime.runtimeId] == nil {
                         topArmed = false; loadOlder()
                     }
+                }
+                .onChange(of: viewport.size.height) { _, height in
+                    metrics.viewportHeight = height
+                    updateQuestionVisibility()
                 }
                 .overlay(alignment: .bottomTrailing) {
                     if showJump && !transcript.rows.isEmpty {
@@ -245,9 +327,13 @@ struct ChatView: View {
                     }
                 }
                 .animation(reduceMotion ? nil : .orbisFade, value: showJump)
-                .onChange(of: following) { _, _ in updateJump() }
+                .onChange(of: following) { _, next in
+                    if next { hasBrowsed = false }
+                    updateJump()
+                }
                 .onChange(of: store.historyRevision) { _, _ in
-                    following = true; hasPositioned = false
+                    following = true; hasPositioned = false; hasBrowsed = false
+                    questionOutsideViewport = false; questionJumpRequest = nil; suppressQuestionPaging = false
                 }
                 .animation(reduceMotion ? nil : .orbisFade, value: store.actionFeedback)
                 .onChange(of: store.historyPageRevision) { _, _ in
@@ -305,6 +391,8 @@ struct ChatView: View {
     private func userInteractionChanged(_ active: Bool) {
         if active {
             metrics.userScrolling = true
+            hasBrowsed = true
+            suppressQuestionPaging = false
             following = false
         } else {
             guard metrics.userScrolling else { return }
@@ -319,6 +407,8 @@ struct ChatView: View {
     }
 
     private func jumpToLatest() {
+        hasBrowsed = false
+        suppressQuestionPaging = false
         following = true
         jumpRequest += 1
     }
@@ -444,6 +534,7 @@ private struct ChatScrollObserver: ViewModifier {
     let viewportHeight: CGFloat
     let following: Bool
     let jumpRequest: Int
+    let questionJumpRequest: ChatQuestionJump?
     let onDistance: (CGFloat) -> Void
     let onInteraction: (Bool) -> Void
     @State private var readingRow: String?
@@ -453,17 +544,23 @@ private struct ChatScrollObserver: ViewModifier {
         if #available(iOS 18.0, *) {
             content
                 .modifier(ChatNativeScrollPosition(following: following, jumpRequest: jumpRequest,
+                                                   questionJumpRequest: questionJumpRequest,
                                                    onDistance: onDistance, onInteraction: onInteraction))
         } else {
-            content
+            ScrollViewReader { proxy in content
                 .scrollPosition(id: $readingRow)
                 .defaultScrollAnchor(following ? .bottom : nil)
                 .onChange(of: jumpRequest) { _, _ in
                     withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { readingRow = ChatFollow.bottomID }
                 }
+                .onChange(of: questionJumpRequest) { _, request in
+                    guard let request else { return }
+                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { proxy.scrollTo(request.rowID, anchor: .top) }
+                }
                 .onPreferenceChange(ChatBottomPreference.self) { bottom in
                     onDistance(bottom.map { max(0, $0 - viewportHeight) } ?? .infinity)
                 }
+            }
         }
     }
 }
@@ -474,6 +571,7 @@ private struct ChatScrollObserver: ViewModifier {
 private struct ChatNativeScrollPosition: ViewModifier {
     let following: Bool
     let jumpRequest: Int
+    let questionJumpRequest: ChatQuestionJump?
     let onDistance: (CGFloat) -> Void
     let onInteraction: (Bool) -> Void
     @State private var position = ScrollPosition(idType: String.self)
@@ -486,6 +584,10 @@ private struct ChatNativeScrollPosition: ViewModifier {
             .defaultScrollAnchor(following ? .bottom : nil, for: .sizeChanges)
             .onChange(of: jumpRequest) { _, _ in
                 withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { position.scrollTo(edge: .bottom) }
+            }
+            .onChange(of: questionJumpRequest) { _, request in
+                guard let request else { return }
+                withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { position.scrollTo(id: request.rowID, anchor: .top) }
             }
             .onChange(of: following) { _, next in
                 if !next { position.isPositionedByUser = true }

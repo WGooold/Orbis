@@ -209,6 +209,24 @@ struct ChatRow: Identifiable {
     var isUser: Bool { messages[0].role == "user" }
 }
 
+/// A pointer into the existing transcript, never a new message or an inferred turn identity.
+struct ChatQuestion: Equatable {
+    let messageId: String
+    let text: String
+
+    init?(_ message: ChatMessage) {
+        guard message.role == "user", message.isError != true else { return nil }
+        let text = message.content.compactMap { block -> String? in
+            if block.type == "text", let text = block.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
+            if block.type == "artifact", let file = block.artifact { return "附件：\(file.fileName)" }
+            return nil
+        }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        self.messageId = message.messageId
+        self.text = text
+    }
+}
+
 func chatViewportRows(_ rows: [ChatRow], previous: [ChatRow] = []) -> [ChatRow] {
     let starts = Set(previous.filter { !$0.isUser }.map(\.id))
     return rows.flatMap { row in
@@ -285,11 +303,16 @@ func desktopAttachTitle(_ state: String?) -> String {
 struct ChatTranscript {
     let rows: [ChatRow]
     let firstMessageId: String?
+    let questions: [ChatQuestion]
     /// Only the tool results and timings that belong to each row, so an unchanged row compares equal.
     let toolResultsByRow: [String: [String: ChatMessage]]
     let timingsByRow: [String: [SessionTurnTiming]]
 
     static let empty = ChatTranscript(messages: [], turnTimings: [:])
+
+    func latestQuestion(excluding messageIds: Set<String>) -> ChatQuestion? {
+        questions.last { !messageIds.contains($0.messageId) }
+    }
 
     init(messages: [ChatMessage], turnTimings: [String: SessionTurnTiming], previousRows: [ChatRow] = []) {
         let presentation = chatPresentation(messages)
@@ -298,6 +321,7 @@ struct ChatTranscript {
         let timingsByMessage = Dictionary(grouping: timings.filter { $0.messageId != nil }, by: { $0.messageId! })
         rows = chatViewportRows(chatRows(presentation.messages, turnIdsByMessageId: turnIds), previous: previousRows)
         firstMessageId = presentation.messages.first?.messageId
+        questions = presentation.messages.compactMap(ChatQuestion.init)
         var results: [String: [String: ChatMessage]] = [:], rowTimings: [String: [SessionTurnTiming]] = [:]
         for row in rows {
             let calls = row.messages.flatMap { message in

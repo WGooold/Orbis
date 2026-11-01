@@ -578,6 +578,9 @@ private final class PreviewTransport: OrbisTransport {
         }
         if screen == "viewport" {
             let paragraphs = (1...80).map { "阅读锚点 \($0)" }
+            let question = ProcessInfo.processInfo.arguments.contains("--preview-question-reminder")
+                ? "帮我比较这两种实现的阅读体验，保留滚动位置、消息身份和现有动效。\n也请考虑长问题、附件、连续追问和 👩🏽‍💻 的显示。"
+                : "检查长回复滚动"
             let tail = (0..<viewportTail).map { "新增尾部 \($0 + 1)" }
             let appended: [[String: Any]] = viewportRows ? (0..<viewportTail).flatMap { index in
                 [message("viewport-user-\(index)", role: "user", text: "新增消息 \(index)"),
@@ -585,7 +588,7 @@ private final class PreviewTransport: OrbisTransport {
                   "content": [["type": "tool_call", "toolCallId": "viewport-call-\(index)", "toolName": "ViewportTool",
                                "arguments": ["command": "echo viewport"]]]]]
             } : []
-            return [message("viewport-user", role: "user", text: "检查长回复滚动"),
+            return [message("viewport-user", role: "user", text: question),
                     message("viewport-assistant", role: "assistant", text: (paragraphs + tail).joined(separator: "\n\n"))] + appended
         }
         if screen == "tool" {

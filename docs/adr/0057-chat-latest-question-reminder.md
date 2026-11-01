@@ -1,0 +1,28 @@
+# ADR-0057：上翻阅读时提醒最近提问
+
+日期：2026-11-01
+
+Status: accepted（交互已确定；代码与回归同步实施，完整设备门禁完成前不记为验收通过）
+
+关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) S24；S10、S13、S17、V01–V04、V06、V09、V17–V18；[ADR-0046](0046-mobile-ui-stability-and-material.md) §1、§3；[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)；[UI 回归方案](../testing/ui-regression.md)。
+
+## Context
+
+长回复中上翻查阅时，原提问经常已经离开屏幕。用户需要就近找回自己最近问了什么，同时保留阅读位置和完整消息。
+
+## Decision
+
+1. 聊天页顶栏下方以覆盖方式显示“最近提问”及最多两行原文预览。复用共用底板、16pt/dp 控件圆角、浅柔影、12pt/sp 标签和13pt/sp 正文；左右16pt/dp、顶部6pt/dp。整条可点，触控高度至少48pt/dp；正文自然断行、末尾省略，辅助功能保留完整原文和“定位到原消息”操作语义。没有倒计时或自动消失计时。
+2. 只有用户主动滚动进入阅读状态、已完成初次定位、离内容末尾超过三行，且最近提问完整离开视口8pt/dp以上时出现。初次打开、自动跟随、仅展开工具、输入聚焦及新内容到达都不能自行触发。原问题进入视口边缘8pt/dp以内、回到最新或恢复跟随时收起。短会话和没有可显示用户问题时隐藏。
+3. “最近”按当前 Host / Session / 分支的消息显示顺序选择最新已同步的 `user` 消息；更早页面补入不改变选择，读取旧轮次时标签仍明确为“最近提问”。不按问号识别问题，不拿助手、工具、草稿、队列、本地发送中、失败、未确认或尚未对账的 accepted 行替代源端消息。重复正文保留各自身份。附件消息显示文件名；仅有空白内容不创建提示。刷新期间源端临时为空则隐藏，恢复后重新推导。
+4. 提示是现有消息的引用，不写入消息列表、不改变行 key 或创建新消息。显隐只在覆盖层做160ms淡入淡出，系统减少/关闭动画时直接切换；通知横幅优先占用顶部，此时隐藏提示。提示显隐、文字变化、流式追加、补页及通知到达不能改变正文视口尺寸或阅读锚点。
+5. 点击按最新源端行的稳定身份定位原问题，保持非跟随状态；不会隐式回到回复末尾、触发提交、重试或加载更多历史。iOS复用原生滚动位置，Android复用现有 LazyList；定位期间抑制分页边沿，下一次主动滚动恢复原有分页规则，显式历史加载入口不变。再次离开问题后可以重新出现。不会重建消息、改写正文或重置展开状态。
+6. 切换电脑、会话或分支不复用旧提示；回到最新立即清除本次阅读提示。进入下载/历史等子页面继续按共用导航保留来源实例，返回时从原阅读状态推导显示。
+
+## Verification
+
+- iOS `ChatQuestionTests`、Android `ChatQuestionTest`：按消息顺序选择、同文不同身份、助手/工具排除、本地行排除、空内容、附件、Unicode、补页与分支替换。
+- iOS `testQuestionReminderAppearsWhileReadingAndLocatesTheOriginalWithoutFollowing`、`testQuestionReminderTracksNewSourceQuestionsWithoutMovingTheReader`；Android `ChatQuestionReminderInstrumentedTest` 四项：初始隐藏、上翻出现、原问题可见时隐藏、两行长文、明暗、点击定位保持非跟随、新源端问题/未确认发送、通知优先和电脑隔离。
+- 原有视口用例继续覆盖流式、补页、拖动与惯性更新、工具展开；不得放宽既有断言。两端 L1–L4 全量、C01–C18、R28 和 A1–A4，宽屏另做 A5。iOS 17 无池内设备时如实记为未运行。
+- 当前结果：iOS 233 项核心测试、iOS App / UI Test 构建通过；Android 568 项 JVM 测试、Debug / AndroidTest APK 构建通过。iPad 定向运行确认提示可以出现，但发现按钮辅助功能标识与第二条用例夹具问题；两处已修正，修正后设备用例尚未重跑。Android 设备用例、两端完整 UI / 手动门禁未运行，不能记为验收通过。
+- 本轮证据：`.artifacts/ui-regression/20261101-question-reminder/`，包含原始失败 `.xcresult`、日志、设备截图与构建结果。每层实际运行结果与未覆盖项应持续记录，不能以定向测试替代全部门禁。

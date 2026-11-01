@@ -1394,6 +1394,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val visibleMessages = remember(conversation.messages, pendingRows) { mergePendingSends(conversation.messages, pendingRows) }
     val presentation = presentationCache.presentation(visibleMessages)
     val chatItems = presentationCache.items(presentation.messages, turnIdsByMessageId)
+    val latestQuestion = remember(conversation.messages) { latestChatQuestion(conversation.messages) }
     val truncatedContent = remember(presentation.messages) {
         presentation.messages.firstNotNullOfOrNull { message ->
             message.content.firstOrNull { it.truncated }?.let { message.messageId to (it.originalBytes ?: 0L) }
@@ -1460,11 +1461,15 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     var initialPositioned by remember(runtimeId, sessionId) { mutableStateOf(false) }
     val lineHeightPx = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toPx() }
     var following by remember(runtimeId, sessionId) { mutableStateOf(true) }
+    var hasBrowsed by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
+    var suppressQuestionPaging by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
     var userScrolling by remember(runtimeId, sessionId) { mutableStateOf(false) }
     val dragging by listState.interactionSource.collectIsDraggedAsState()
-    LaunchedEffect(dragging) {
+    LaunchedEffect(dragging, state.hostId) {
         if (dragging) {
             following = false
+            hasBrowsed = true
+            suppressQuestionPaging = false
             userScrolling = true
             viewportMotion.moved()
         }
@@ -1477,11 +1482,13 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 (last?.offset ?: 0) + (last?.size ?: 0), layout.viewportEndOffset, layout.afterContentPadding)
         }
     }
-    val scrollIntent = remember(runtimeId, sessionId) {
+    val scrollIntent = remember(state.hostId, runtimeId, sessionId) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (source == NestedScrollSource.UserInput && available.y != 0f) {
                     following = false
+                    hasBrowsed = true
+                    suppressQuestionPaging = false
                     userScrolling = true
                     viewportMotion.moved()
                 }
@@ -1502,6 +1509,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                     if (!scrolling) {
                         userScrolling = false
                         following = distance < lineHeightPx
+                        if (following) hasBrowsed = false
                     }
                 } else if (!scrolling && count > chatHeaderCount) {
                     if (following && distance > 0.5f) listState.scrollToItem(count - 1, Int.MAX_VALUE)
@@ -1643,7 +1651,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     }
     val pagingBlocked by rememberUpdatedState(
         !initialPositioned || historyState?.hasOlder != true || historyRead?.phase?.active == true ||
-            historyRead?.phase == HistoryReadPhase.FAILED || historyAnchorPending
+            historyRead?.phase == HistoryReadPhase.FAILED || historyAnchorPending || suppressQuestionPaging
     )
     val currentLoadHistoryPage by rememberUpdatedState { loadHistoryPage() }
     // ADR-0041：只有「滚进顶部」的边沿才加载下一页。把 hasOlder/phase 放进 key 会让 effect 每完成
@@ -2143,6 +2151,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             val lastIndex = listState.layoutInfo.totalItemsCount - 1
                             if (lastIndex >= 0) {
                                 userScrolling = false
+                                hasBrowsed = false
+                                suppressQuestionPaging = false
                                 following = true
                                 listState.animateScrollToItem(lastIndex, Int.MAX_VALUE)
                             }
@@ -2267,6 +2277,38 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 items(orphanTools, key = ToolActivity::toolCallId) { tool -> ToolCard(tool) }
             }
             // 通知与待处理交互都浮在正文上：出现、消失都不移动阅读位置，也不推动输入框（与 iOS 一致）。
+            val notices = state.notificationProjections[runtimeId]?.takeIf { it.sessionId == sessionId }
+            val noticesSupported = runtime?.agentKind in setOf("codex", "codexDesktop")
+            val hasNotices = notices != null && (notices.items.isNotEmpty() || (noticesSupported && !notices.complete))
+            val questionGap = with(LocalDensity.current) { 8.dp.toPx() }
+            val questionOutsideViewport by remember(listState, latestQuestion, questionGap) {
+                derivedStateOf {
+                    val layout = listState.layoutInfo
+                    val row = layout.visibleItemsInfo.firstOrNull { it.key == latestQuestion?.messageId }
+                    latestQuestion != null && layout.visibleItemsInfo.isNotEmpty() &&
+                        (row == null || row.offset + row.size < layout.viewportStartOffset - questionGap ||
+                            row.offset > layout.viewportEndOffset + questionGap)
+                }
+            }
+            // An overlay leaves list measurements and reading anchors unchanged. Notices own this slot first.
+            if (!hasNotices && latestQuestion != null) {
+                AnimatedVisibility(
+                    visible = initialPositioned && hasBrowsed && !following && distanceToBottom > lineHeightPx * 3 && questionOutsideViewport,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = 16.dp, vertical = 6.dp),
+                    enter = fadeIn(tween(160)), exit = fadeOut(tween(160)),
+                ) {
+                    ChatQuestionReminder(latestQuestion, onClick = {
+                        val index = chatItems.indexOfFirst { it.key == latestQuestion.messageId }
+                        if (index >= 0) {
+                            userScrolling = false
+                            following = false
+                            suppressQuestionPaging = true
+                            viewportMotion.moved()
+                            scope.launch { listState.animateScrollToItem(chatHeaderCount + index) }
+                        }
+                    })
+                }
+            }
             state.notificationProjections[runtimeId]?.takeIf { it.sessionId == sessionId }?.let { projection ->
                 Box(Modifier.align(Alignment.TopCenter)) {
                     RuntimeNotifications(projection, state.notificationEpoch,
