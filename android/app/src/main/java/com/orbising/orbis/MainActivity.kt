@@ -126,7 +126,7 @@ import androidx.compose.material3.ModalNavigationDrawer
 import com.orbising.orbis.NeumorphTextField as OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Icon
+import com.orbising.orbis.OrbisActionIcon as Icon
 import androidx.compose.material3.Text
 import com.orbising.orbis.RemoteTopAppBar as TopAppBar
 import androidx.compose.material3.rememberDrawerState
@@ -142,6 +142,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
@@ -162,6 +163,8 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -629,7 +632,23 @@ internal fun RuntimeListScreen(
                 .map { HostRuntimeRow(snapshot.hostId, snapshot.name, it, snapshot.state) }
         }
     }
-    val visibleRuntimes = rememberViewportItems(latestRuntimes, homeListState, activeHostId)
+    var departing by remember(activeHostId) { mutableStateOf(emptyMap<String, DepartingHomeRow>()) }
+    fun submitClose(hostId: String, ids: Set<String>): Set<String> {
+        val submitted = onCloseRuntimes(hostId, ids)
+        departing = departing + latestRuntimes.mapIndexedNotNull { index, row ->
+            if (row.runtime.runtimeId in submitted) row.runtime.runtimeId to DepartingHomeRow(row, index) else null
+        }
+        return submitted
+    }
+    val presentedRuntimes = remember(latestRuntimes, departing) {
+        latestRuntimes.toMutableList().also { rows ->
+            departing.values.sortedBy { it.index }.forEach { exit ->
+                if (rows.none { it.runtime.runtimeId == exit.row.runtime.runtimeId }) rows.add(exit.index.coerceAtMost(rows.size), exit.row)
+            }
+        }
+    }
+    val latestHomeRows by rememberUpdatedState(latestRuntimes)
+    val visibleRuntimes = rememberViewportItems(presentedRuntimes, homeListState, activeHostId)
     val visibleIds = visibleRuntimes.map { it.runtime.runtimeId }.toSet()
     val selectedIds = selectedRuntimeIds.intersect(visibleIds)
     val selecting = selectedIds.isNotEmpty()
@@ -673,6 +692,7 @@ internal fun RuntimeListScreen(
                         NeumorphIconButton(
                             onClick = { if (selecting) selectedRuntimeIds = emptySet() else scope.launch { drawerState.open() } },
                             icon = if (selecting) Icons.Rounded.Close else Icons.Rounded.Menu,
+                            menuMorph = selecting,
                             contentDescription = if (selecting) "退出多选" else "打开会话目录",
                             size = 40.dp,
                         )
@@ -699,34 +719,36 @@ internal fun RuntimeListScreen(
                         }
                     },
                     actions = {
-                        if (selecting) {
-                            NeumorphTextButton(
-                                text = "关闭",
-                                onClick = {
-                                    activeHostId?.let { hostId ->
-                                        val currentIds = visibleRuntimes.filter { it.state.homeCardIsCurrent(it.card) }
-                                            .map { it.runtime.runtimeId }.toSet()
-                                        selectedRuntimeIds = selectedIds - onCloseRuntimes(hostId, selectedIds.intersect(currentIds))
-                                    }
-                                },
-                                enabled = state.e2eReady,
-                                danger = true,
-                                modifier = Modifier.semantics { contentDescription = "关闭选中会话" },
-                            )
-                        } else {
+                        SelectionToolbar(selecting = selecting, normal = { progress ->
                             DownloadStatusButton(
                                 activeCount = state.downloads.count { it.value.status in setOf("queued", "downloading") },
                                 enabled = true,
                                 onClick = onOpenDownloads,
+                                modifier = Modifier.graphicsLayer { translationX = 24.dp.toPx() * progress },
                             )
                             // 右上角只有下载与设置两个入口；添加 / 取消配对只在侧边栏底部的电脑菜单（ADR-0053 §4）。
                             NeumorphIconButton(
                                 onClick = onOpenStatus,
                                 icon = Icons.Rounded.Settings,
                                 contentDescription = "设置",
-                                modifier = Modifier.testTag("home-settings"),
+                                modifier = Modifier.testTag("home-settings").graphicsLayer { translationX = -24.dp.toPx() * progress },
                             )
-                        }
+
+                        }, selected = {
+                            NeumorphTextButton(
+                                text = "关闭",
+                                onClick = {
+                                    activeHostId?.let { hostId ->
+                                        val currentIds = visibleRuntimes.filter { it.state.homeCardIsCurrent(it.card) }
+                                            .map { it.runtime.runtimeId }.toSet()
+                                        selectedRuntimeIds = selectedIds - submitClose(hostId, selectedIds.intersect(currentIds))
+                                    }
+                                },
+                                enabled = state.e2eReady,
+                                danger = true,
+                                modifier = Modifier.semantics { contentDescription = "关闭选中会话" },
+                            )
+                        })
                     },
                 )
             },
@@ -816,7 +838,8 @@ internal fun RuntimeListScreen(
                             key = { "${it.hostId}:${it.runtime.runtimeId}" },
                         ) { row ->
                             val runtime = row.runtime
-                            val cardCurrent = row.state.homeCardIsCurrent(row.card)
+                            val departure = departing[runtime.runtimeId]
+                            val cardCurrent = departure == null && row.state.homeCardIsCurrent(row.card)
                             val currentCardIsCurrent by rememberUpdatedState(cardCurrent)
                             var cardWidth by remember(row.hostId, runtime.runtimeId) { mutableFloatStateOf(0f) }
                             val closeThreshold = cardWidth / 2f
@@ -827,6 +850,19 @@ internal fun RuntimeListScreen(
                             var touchPressed by remember { mutableStateOf(false) }
                             var opening by remember { mutableStateOf(false) }
                             val currentOpenRuntime by rememberUpdatedState(onOpenRuntime)
+                            LaunchedEffect(departure?.token, cardWidth) {
+                                if (departure != null && cardWidth > 0) {
+                                    swipeAnim.animateTo(cardWidth + 40f, tween(InteractionMotion.duration(InteractionMotion.Dismiss)))
+                                    if (departing[runtime.runtimeId]?.token == departure.token) {
+                                        departing = departing - runtime.runtimeId
+                                    }
+                                } else if (departure == null && swipeAnim.value > 0f) {
+                                    // Changing the departure key cancels the exit coroutine. Its
+                                    // successor owns recovery when a rejection kept the live row.
+                                    swipeOffset = 0f; closeArmed = false
+                                    swipeAnim.animateTo(0f, OrbisMotion.drag())
+                                }
+                            }
                             LaunchedEffect(opening, selecting) {
                                 if (opening) {
                                     if (!selecting && currentCardIsCurrent) {
@@ -840,7 +876,9 @@ internal fun RuntimeListScreen(
                                 }
                             }
                             Row(
-                                modifier = Modifier.fillMaxWidth().animateItem(),
+                                modifier = Modifier.fillMaxWidth().then(if (departure != null) Modifier.clearAndSetSemantics { } else Modifier).animateItem(
+                                    fadeOutSpec = tween(InteractionMotion.duration(InteractionMotion.State)),
+                                    placementSpec = tween(InteractionMotion.duration(InteractionMotion.State))),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(0.dp),
                             ) {
@@ -848,9 +886,12 @@ internal fun RuntimeListScreen(
                                 Box(Modifier.weight(1f).onSizeChanged { cardWidth = it.width.toFloat() }) {
                                     if (!selecting) {
                                         val armedColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                        val closeColor by androidx.compose.animation.animateColorAsState(
+                                            if (closeArmed || departure != null) armedColor else MaterialTheme.colorScheme.error,
+                                            tween(InteractionMotion.duration(InteractionMotion.State)), label = "close-threshold")
                                         Row(
                                             Modifier.matchParentSize().background(
-                                                if (closeArmed) armedColor else MaterialTheme.colorScheme.error,
+                                                closeColor,
                                                 RoundedCornerShape(20.dp),
                                             )
                                                 .padding(end = 20.dp),
@@ -879,11 +920,16 @@ internal fun RuntimeListScreen(
                                                     horizontalArrangement = Arrangement.Center,
                                                     verticalAlignment = Alignment.CenterVertically,
                                                 ) {
-                                                    Icon(if (closeArmed) Icons.Rounded.Check else Icons.Rounded.Close, contentDescription = null,
+                                                    androidx.compose.animation.Crossfade(targetState = closeArmed || departure != null,
+                                                        animationSpec = tween(InteractionMotion.duration(InteractionMotion.State)), label = "close-threshold") { armed ->
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Icon(if (armed) Icons.Rounded.Check else Icons.Rounded.Close, contentDescription = null,
                                                         tint = MaterialTheme.colorScheme.onError, modifier = Modifier.size(18.dp))
                                                     Spacer(Modifier.width(6.dp))
-                                                    Text(if (closeArmed) "松手关闭" else "关闭", color = MaterialTheme.colorScheme.onError,
+                                                    Text(if (armed) "松手关闭" else "关闭", color = MaterialTheme.colorScheme.onError,
                                                         style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -901,16 +947,10 @@ internal fun RuntimeListScreen(
                                                         onDragEnd = {
                                                             val shouldClose = closeThreshold > 0f && swipeOffset >= closeThreshold
                                                             // 提交成功后卡片从松手位置继续向左离开，不先弹回再消失。
-                                                            val closing = shouldClose && currentCardIsCurrent && onCloseRuntimes(row.hostId, setOf(runtime.runtimeId)).isNotEmpty()
-                                                            swipeOffset = 0f
-                                                            closeArmed = false
-                                                            swipeScope.launch {
-                                                                if (closing) {
-                                                                    swipeAnim.animateTo(cardWidth, tween(180))
-                                                                    // 正常情况下卡片随列表项淡出、协程随之取消；仍在列表里说明
-                                                                    // 关闭没有隐藏它，等淡出时长后回到原位。延迟属于动画，由帧时钟驱动。
-                                                                    swipeAnim.animateTo(0f, tween(240, delayMillis = 400))
-                                                                } else swipeAnim.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow))
+                                                            val closing = shouldClose && currentCardIsCurrent && submitClose(row.hostId, setOf(runtime.runtimeId)).isNotEmpty()
+                                                            if (!closing) {
+                                                                swipeOffset = 0f; closeArmed = false
+                                                                swipeScope.launch { swipeAnim.animateTo(0f, OrbisMotion.drag()) }
                                                             }
                                                         },
                                                         onDragCancel = {
@@ -1022,6 +1062,8 @@ private fun HomeFirstLoadStatus(sync: HomeSyncStatus, e2eReady: Boolean, onRetry
 /** The card keys the home list last laid out, to place the viewport when they change. */
 
 /** One home-screen card and the computer that serves it. */
+private data class DepartingHomeRow(val row: HostRuntimeRow, val index: Int, val token: String = java.util.UUID.randomUUID().toString())
+
 private data class HostRuntimeRow(
     val hostId: String,
     val hostName: String,
@@ -1214,7 +1256,6 @@ internal fun OfflineHistoryScreen(
     model: RemoteViewModel,
     onBack: () -> Unit,
 ) {
-    BackHandler(enabled = LocalPageActive.current, onBack = onBack)
     val graph = sessionId?.let(state.sessionGraphs::get)
     val projection = remember(graph) {
         graph?.let(::projectSessionGraph) ?: SessionProjectionResult(emptyList(), "本地没有可用的历史缓存")
@@ -1458,6 +1499,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     var historyAnchorGeneration by remember(runtimeId, sessionId) { mutableStateOf(0L) }
     var historyPagingFeedback by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val sendFlight = remember(state.hostId, runtimeId, sessionId) { MessageSendFlightState(scope) }
     var initialPositioned by remember(runtimeId, sessionId) { mutableStateOf(false) }
     val lineHeightPx = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toPx() }
     var following by remember(runtimeId, sessionId) { mutableStateOf(true) }
@@ -1591,8 +1633,12 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         model.refreshWorkingBranch(runtimeId)
     }
     /** ADR-0049：消息写入通道即显示本地行，输入框立即清空；结果落在那一行上，不再锁住发送键。 */
+    fun animateSend(commandId: String?) {
+        commandId?.let(model::submittedSend)?.takeIf { it.sessionId == sessionId }?.let { sendFlight.launch(it, following) }
+    }
     fun submitMessage(commandId: String?) {
         if (commandId == null) return
+        animateSend(commandId)
         actionHaptic()
         commandFeedback = null
         input = ""
@@ -1673,15 +1719,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             historyAnchorOperationId = null
         }
     }
-    BackHandler(enabled = LocalPageActive.current) {
-        if (historyDownloadsOpen) {
-            historyDownloadsOpen = false
-        } else if (historyOpen) {
-            historyOpen = false
-            historyActionError = null
-        } else if (downloadManagerOpen) downloadManagerOpen = false
-        else model.selectRuntime(null)
-    }
+
 
     // 历史页的跳转：成功后回到聊天页并停在新位置；编辑重发还要把原文放回输入框。
     // 历史与聊天保持组合，命令回执按当前 runtime 消费，成功后关闭历史层。
@@ -1719,6 +1757,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             return@LaunchedEffect
         }
         // 历史已经被改写（codex 是原地截断，Pi 是同会话内换 leaf）：让列表重新贴到新的当前位置，
+        sendFlight.clear()
         // 而不是停在旧锚点上；并立刻拉一次快照——后端广播的快照用自造 syncId，手机不采，
         // 不主动问这一下就还显示着已经不存在的那几轮。
         refreshAnchorArmed = false
@@ -1867,7 +1906,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     OrbisPageHost(
         onBack = { downloadManagerOpen = false },
         open = downloadManagerOpen,
-        underlay = { DownloadFlightHost(chatFlight) {
+        underlay = { DownloadFlightHost(chatFlight) { MessageSendFlightHost(sendFlight,
+            active = !historyOpen && !downloadManagerOpen && LocalPageActive.current) {
     Scaffold(
         topBar = {
             Column {
@@ -2050,7 +2090,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                 selectedSlashCommandName = null
                             }
                         },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).onGloballyPositioned { sendFlight.composer = it.boundsInWindow() },
                         placeholder = { Text("发给 ${LocalAgentBrand.current.title}，/ 命令", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         enabled = runtime != null,
                         minLines = 1,
@@ -2067,12 +2107,14 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             // 还没传完的附件不发：否则 agent 会拿到一个不存在的路径。
                             attachedUploads.size == attachablePaths.size
                     }
+                    var composerActivation by remember { mutableIntStateOf(0) }
                     NeumorphSurface(
                         modifier = Modifier.padding(bottom = 4.dp).size(48.dp),
                         shape = CircleShape,
                         shadowScale = 0.75f,
                         enabled = sendEnabled,
                         onClick = {
+                                composerActivation++
                                 when (composerMode) {
                                     ComposerAction.Abort -> {
                                         showDeliveryChoices = false
@@ -2115,19 +2157,19 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
 
                                 composerMode == ComposerAction.Abort ->
-                                    Icon(
+                                    OrbisMotionIcon(
                                         Icons.Rounded.StopCircle,
-                                        contentDescription = "打断当前任务",
+                                        description = "打断当前任务",
                                         tint = if (sendEnabled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
-                                        modifier = Modifier.size(22.dp),
+                                        size = 22.dp, activation = composerActivation,
                                     )
 
                                 else ->
-                                    Icon(
+                                    OrbisMotionIcon(
                                         Icons.Rounded.Send,
-                                        contentDescription = "发送",
+                                        description = "发送",
                                         tint = if (sendEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
-                                        modifier = Modifier.size(22.dp),
+                                        size = 22.dp, activation = composerActivation,
                                     )
                             }
                         }
@@ -2218,7 +2260,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             canResend = state.e2eReady && runtime != null,
                             onPendingAction = { action ->
                                 when (action) {
-                                    PendingSendAction.Resend -> if (model.resendPendingSend(item.message.messageId) != null) actionHaptic()
+                                    PendingSendAction.Resend -> model.resendPendingSend(item.message.messageId)?.let { animateSend(it); actionHaptic() }
                                     PendingSendAction.Restore -> model.restorePendingSend(item.message.messageId)?.let { text ->
                                         input = if (input.isBlank()) text else input + "\n" + text
                                     }
@@ -2287,14 +2329,12 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                 }
             }
             // An overlay leaves list measurements and reading anchors unchanged. Notices own this slot first.
-            if (!hasNotices && latestQuestion != null) {
-                AnimatedVisibility(
-                    visible = initialPositioned && hasBrowsed && !following && distanceToBottom > lineHeightPx * 3 && questionOutsideViewport,
-                    modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = 16.dp, vertical = 6.dp),
-                    enter = fadeIn(tween(160)), exit = fadeOut(tween(160)),
-                ) {
-                    ChatQuestionReminder(latestQuestion, onClick = {
-                        val index = chatItems.indexOfFirst { it.key == latestQuestion.messageId }
+            AnimatedChatQuestionReminder(
+                question = latestQuestion,
+                visible = !hasNotices && initialPositioned && hasBrowsed && !following && distanceToBottom > lineHeightPx * 3 && questionOutsideViewport,
+                modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = 16.dp, vertical = 6.dp),
+                onClick = { question ->
+                        val index = chatItems.indexOfFirst { it.key == question.messageId }
                         if (index >= 0) {
                             userScrolling = false
                             following = false
@@ -2302,9 +2342,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             viewportMotion.moved()
                             scope.launch { listState.animateScrollToItem(chatHeaderCount + index) }
                         }
-                    })
-                }
-            }
+                },
+            )
             state.notificationProjections[runtimeId]?.takeIf { it.sessionId == sessionId }?.let { projection ->
                 Box(Modifier.align(Alignment.TopCenter)) {
                     RuntimeNotifications(projection, state.notificationEpoch,
@@ -2341,7 +2380,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         }
         }
     }
-        } },
+        } } },
     ) { HostDownloadsScreen(state, model, onBack = { downloadManagerOpen = false }) }
         },
         content = historyPage,
@@ -2608,7 +2647,7 @@ internal fun AllDownloadsScreen(
     val effectiveSelectedTaskIds = selectedTaskIds.intersect(visibleTaskIds)
     val selectionMode = effectiveSelectedTaskIds.isNotEmpty()
     LaunchedEffect(visibleTaskIds) { selectedTaskIds = selectedTaskIds.intersect(visibleTaskIds) }
-    BackHandler(enabled = LocalPageActive.current) { if (selectionMode) selectedTaskIds = emptySet() else onBack() }
+    SelectionBackPriority(selectionMode) { selectedTaskIds = emptySet() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -2623,12 +2662,13 @@ internal fun AllDownloadsScreen(
                     NeumorphIconButton(
                         onClick = { if (selectionMode) selectedTaskIds = emptySet() else onBack() },
                         icon = if (selectionMode) Icons.Rounded.Close else Icons.Rounded.ArrowBack,
+                        backMorph = selectionMode,
                         contentDescription = if (selectionMode) "退出多选" else "返回",
                         size = 40.dp,
                     )
                 },
                 actions = {
-                    if (selectionMode) {
+                    SelectionToolbar(selecting = selectionMode, normal = { Spacer(Modifier.size(48.dp)) }, selected = {
                         NeumorphIconButton(
                             onClick = { pendingDeletion = effectiveSelectedTaskIds },
                             icon = Icons.Rounded.Delete,
@@ -2636,7 +2676,7 @@ internal fun AllDownloadsScreen(
                             contentDescription = "删除所选下载",
                             size = 40.dp,
                         )
-                    }
+                    })
                 },
             )
         },
@@ -2951,7 +2991,6 @@ internal fun StatusScreen(
     pairing: PairingStatus,
     onBack: () -> Unit,
 ) {
-    BackHandler(enabled = LocalPageActive.current, onBack = onBack)
     LaunchedEffect(state.hostId, state.e2eReady) { if (state.e2eReady) model.refreshHostModel(listOf("providers"), force = true) }
     Scaffold(
         topBar = {
@@ -3039,18 +3078,22 @@ internal fun AgentProvidersContent(
         if (!connected || removable.isEmpty()) exitSelection()
         if (!connected) pending = null
     }
-    BackHandler(enabled = LocalPageActive.current) { if (selecting) exitSelection() else onBack() }
+    SelectionBackPriority(selecting) { exitSelection() }
     Scaffold(topBar = {
         TopAppBar(title = { Text(if (selecting) "已选择 ${selected.size} 项" else "供应商") }, navigationIcon = {
             NeumorphIconButton(onClick = { if (selecting) exitSelection() else onBack() },
                 icon = if (selecting) Icons.Rounded.Close else Icons.Rounded.ArrowBack,
+                backMorph = selecting,
                 contentDescription = if (selecting) "退出多选" else "返回", size = 40.dp)
         }, actions = {
-            if (selecting) {
+            SelectionToolbar(selecting = selecting, normal = {
+                NeumorphIconButton(onClick = { exitSelection(); onLoad(catalog.kind) },
+                    icon = Icons.Rounded.Refresh, contentDescription = "刷新", enabled = connected && !catalog.loading)
+            }, selected = {
                 NeumorphIconButton(onClick = { pendingRemoval = catalog.providers.filter { it in selected } },
                     icon = Icons.Rounded.Delete, contentDescription = "移除所选供应商", size = 40.dp, tint = MaterialTheme.colorScheme.error,
                     enabled = available && selected.isNotEmpty())
-            } else TextButton(onClick = { exitSelection(); onLoad(catalog.kind) }, enabled = connected && !catalog.loading) { Text("刷新") }
+            })
         })
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -3509,7 +3552,12 @@ internal fun UserMessageCard(
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Spacer(Modifier.weight(0.15f))
         Column(Modifier.weight(0.85f, fill = false), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            NeumorphSurface(style = NeumorphStyle.Pressed, shadowScale = 0.55f, contentPadding = 14.dp) {
+            MessageActions(id = "$runtimeId:${message.messageId}",
+                text = message.content.mapNotNull { it.text }.joinToString("\n"), rewindEnabled = rewindEnabled,
+                onRewind = if (pending == null) onRewind else null) { openActions ->
+            NeumorphSurface(modifier = Modifier.messageSendFlightTarget(message.clientMessageId ?: message.messageId),
+                style = NeumorphStyle.Pressed, shadowScale = 0.55f, contentPadding = 14.dp,
+                onClick = {}, onLongClick = openActions) {
                 Column(Modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (message.isError == true) Text("发送异常", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                     MessageBlocks(
@@ -3521,14 +3569,9 @@ internal fun UserMessageCard(
                     )
                 }
             }
+            }
             if (pending != null) {
                 PendingSendStatus(pending, canResend, onPendingAction)
-            } else Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                CopyIconButton("复制消息", size = 28.dp) { message.content.mapNotNull { it.text }.joinToString("\n") }
-                if (onRewind != null) {
-                    NeumorphIconButton(onClick = onRewind, icon = Icons.Rounded.SkipPrevious,
-                        contentDescription = "Rewind", size = 28.dp, enabled = rewindEnabled)
-                }
             }
         }
     }
@@ -4047,9 +4090,10 @@ private fun NoticeBanner(text: String, isError: Boolean, recheck: Boolean, onRec
                     Text("通知状态待核对", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (recheck && onRecheck != null) {
-                    Row(Modifier.clip(CircleShape).clickable(onClick = onRecheck).padding(vertical = 2.dp),
+                    var glyphActivation by remember { mutableStateOf(0) }
+                    Row(Modifier.clip(CircleShape).clickable { glyphActivation++; onRecheck() }.padding(vertical = 2.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Rounded.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp).actionGlyphMotion(glyphActivation, "Refresh"))
                         Text("重新核对", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }

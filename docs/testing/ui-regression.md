@@ -1,5 +1,7 @@
 # 移动端 UI 回归方案
 
+本轮统一交互动效（r30 / ADR-0058）：32场景与MOT ticket先行，双端共用组件已接入。Android全量154项4失败/7外部夹具assumption，iOS全量69项8失败，均未超同设备同配置基线，但受影响既有失败仍阻塞验收。最终Android深色大字20项、实际减少动画19项、iOS SE小屏大字10项及iPad6项定向通过；截图与部分录屏已审阅，完整C/R/A门禁未完成。见 [交互动效验证记录](interaction-motion.md)。
+
 日期：2026-11-01。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-01/r30`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 10 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
@@ -102,7 +104,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
 
-**iOS `OrbisUITests`（63 项）**
+**iOS `OrbisUITests`（69 项，含 r30 新增 4 项）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
@@ -159,18 +161,18 @@ Claude 输出交接回归（V09、V17–V18）：Host `claude-transcript.test.ts
 S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionReminderAppearsWhileReadingAndLocatesTheOriginalWithoutFollowing`、`testQuestionReminderTracksNewSourceQuestionsWithoutMovingTheReader`；Android `ChatQuestionTest`、`ChatQuestionReminderInstrumentedTest`（4）。覆盖源消息身份、可见性、点击定位、阅读锚点、通知优先和 Host 隔离，配合既有视口用例及手动 R31，A1–A5；未验收不得计为交付。
 
 
-### 3.4 r30 共用交互动效映射（实施时回填实际用例名）
+### 3.4 r30 共用交互动效映射
 
-本节补充 §3.3，既有用例不删、不跳、不放宽。来源 [ADR-0058](../adr/0058-shared-interaction-motion.md)、[MOT ticket](../agents/interaction-motion-tickets.md)。以下新增名称为计划，不代表测试已存在或已通过。
+本节补充 §3.3，既有用例不删、不跳、不放宽。来源 [ADR-0058](../adr/0058-shared-interaction-motion.md)、[MOT ticket](../agents/interaction-motion-tickets.md)。实际落地用例及证据列于 [交互动效验证记录](interaction-motion.md)；存在不代表通过，缺项明确保留。
 
 | Ticket / 场景 | 自动验证要求 | 手动 / feature |
 | --- | --- | --- |
 | MOT-01 | 两端 InteractionMotion 纯几何：触点最远角、路径分段、边界裁切、返回进度；生命周期清理 | 所有R32–R39、V18 |
 | MOT-02 / SC01–02 | 扩展 HomeSwipeCloseInstrumentedTest 与 iOS 首页关闭：中帧保留、完全滑出、拒绝恢复、一次提交 | C09、R32 / M10、V11、V21 |
-| MOT-03 / SC02–05 | 扩展首页 / 目录归档 / 下载 / 供应商选择；新增 SelectionMotion 中帧触点、工具栏几何与逆向 | C10–C13、R33 / S15、M06 |
-| MOT-04 / SC06–10 | 新增 MenuMotion 双端：锚点、安全区、自然尺寸、两阶段、返回优先、菜单失效 | C11–C12、C18、R34 / M18 |
+| MOT-03 / SC02–05 | 扩展首页 / 目录归档 / 下载 / 供应商选择；`InteractionMotionInstrumentedTest.selectionStartsAtTheTouchAndReversesWithoutMovingTheCard`；iOS现有多选用例及中帧审阅 | C10–C13、R33 / S15、M06 |
+| MOT-04 / SC06–10 | Android `InteractionMotionInstrumentedTest.menuChangesItsContainerBeforeSlidingToTheChildAndBack`、iOS `testComputerSubmenuReturnsWithinOneAnchoredPanel`：锚点、安全区、自然尺寸、两阶段、返回优先、菜单失效 | C11–C12、C18、R34 / M18 |
 | MOT-05 / SC11–13 | 更新原复制/Rewind入口并保留业务断言；新增长按、滚动/文本选择共存、栏失效 | C05、C15、R35 / S10、M19 |
-| MOT-06 / SC14–16 | 扩展 PendingSend 和乐观发送设备用例；新增 SendFlight 路径 / id / 非跟随 / 出队不重播 | C05–C06、R36 / M17、V09–V10 |
+| MOT-06 / SC14–16 | 扩展 PendingSend 和乐观发送设备用例；`InteractionMotionTest` / `MotionGeometryTests`；Android `sendFlightUsesTheAcceptedIdentityAndNeverLandsQueuedOrReadingMessages`；iOS `testSendFlightMovesRightThenUpAndHandsOffTheSameMessage` / `testSendFlightWithReducedMotionKeepsTheMessageAndNoOverlay` | C05–C06、R36 / M17、V09–V10 |
 | MOT-07 / SC17–18 | 原 ChatQuestionReminder 及 iOS 两专项保留；新增中帧和退出内容 / 通知优先 | C05、R31、R37 / S24 |
 | MOT-08 / SC18–27 | 新增 ActionGlyph 有效点击 / 禁用 / 连点 / 图形反馈，保留下载飞行、复制、配额专项 | C06–C08、C12–C15、R38 / M20 |
 | MOT-09 / SC28–32 | 扩展 SwipeBack、PageNavigation、iOS嵌套返回；系统左右边缘取消和完成、菜单/IME/选择优先 | C04、R19–R22、R39 / M08、M14 |
@@ -197,7 +199,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | C07 | 展开 / 收起 thinking 与工具卡；打开工具详情 | 约 260ms 自然高度折叠；展开状态保留；详情可分页、可关闭 | M03、S20、V14 |
 | C08 | 触发审批 / 问卷，提交与取消 | 单项确认浮在输入区上方，提交时 composer 不位移；多步骤间草稿保留 | V07、M12 |
 | C09 | 首页卡片左滑：短滑后松手，再滑过半宽 | 短滑回弹；越过半宽时提示“松手关闭”并触觉一次；松手后退场；多选模式下不触发 | M10、M12、V11 |
-| C10 | 长按卡片进入多选，再点选和退出 | 进入多选时触觉一次；选中样式 160ms 淡入；卡片几何不变 | S15、M06、M12 |
+| C10 | 长按卡片进入多选，再点选和退出 | 进入多选时触觉一次；选中按r30从本次触点260ms扩散，取消160ms；卡片几何不变 | S15、M06、M12 |
 | C11 | 从左缘拖开目录，折叠 / 展开目录，搜索，归档 / 恢复 | 抽屉跟手吸附；折叠后高度立即收缩；一次只展开一个目录 | M09、S19、V17 |
 | C12 | 打开设置页（r15 前由“更多操作 › 连接状态”进入，r15 后点右上角齿轮）；检查当前连接事实行；点配额币；打开供应商切换 | 分区顺序正确；连接延迟以整数毫秒显示，无样本时为“暂不可用”；供应商卡片区（r15 后位于最上方）：44pt/dp 环、角标、左倾 24° 翻面；切换菜单透明无底色 | S19、S22–S23、M14 |
 | C13 | 打开首页下载页；整卡暂停 / 继续，长按多选 | 没有旁置按钮；长按多选；r15 后可从右侧滑入、右滑返回首页 | S20、S15、M14 |
@@ -276,7 +278,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 
 | 编号 | 步骤 | 预期 | ID |
 | --- | --- | --- | --- |
-| R31 | 打开含长回复的会话，先保持跟随，再上翻；滚到原提问与更早轮次；点击提示，再回到最新。加入连续同文提问、长多行/emoji/附件问题、本地发送失败/未确认、源端新问题、通知、补页及分支/电脑切换；重复明暗、窄屏大字、减少动画及宽屏 | 初始不显示；主动阅读离底部三行且原问题不可见后显示两行预览；原问题可见和回到最新收起。点击只定位原消息、保留非跟随，不自动分页。源端更新不带走锚点，不把本地待确认消息当已发送问题；通知优先、隔离无残留。浮层出现前后正文/输入区几何不变；160ms淡变，无尺寸动画，减少动画直切；辅助功能保留全文，触控至少48pt/dp | S24（关联 S10、S13、S17、V01–V04、V06、V09、V17–V18） |
+| R31 | 打开含长回复的会话，先保持跟随，再上翻；滚到原提问与更早轮次；点击提示，再回到最新。加入连续同文提问、长多行/emoji/附件问题、本地发送失败/未确认、源端新问题、通知、补页及分支/电脑切换；重复明暗、窄屏大字、减少动画及宽屏 | 初始不显示；主动阅读离底部三行且原问题不可见后显示两行预览；原问题可见和回到最新收起。点击只定位原消息、保留非跟随，不自动分页。源端更新不带走锚点，不把本地待确认消息当已发送问题；通知优先、隔离无残留。浮层出现前后正文/输入区几何不变；r30按220ms从右32/上12滑入、160ms逆向退出，无尺寸动画，减少动画直切；辅助功能保留全文，触控至少48pt/dp | S24（关联 S10、S13、S17、V01–V04、V06、V09、V17–V18） |
 
 
 ### r30 共用交互动效专项
@@ -290,7 +292,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | R36 | 文本、多行、附件、运行中排队、重试、连发、断线、上翻阅读中发送 | 先右后上；准确身份交接；不追新、不重播、不飞向不存在的行 | M17 / MOT-06 |
 | R37 | 上翻触发最近提问，原文进入视野/点击/通知覆盖/新问题/换会话 | 右上滑入、原路滑出；末帧前内容保留，阅读锚点不动 | S24 / MOT-07 |
 | R38 | 按SC19–SC27逐入口点击图标，重复点击、禁用、减少动画 | 下载箭头弹、设置和历史旋转，其他轻弹；48命中不变，无重复专属动画 | M20 / MOT-08 |
-| R39 | 所有整页左右边缘取消/完成/三层返回；菜单、IME、多选、Sheet和根页对照 | 压缩顶层露来源；返回优先级正确，无双重pop或丢草稿/锚点 | M08、M14 / MOT-09 |
+| R39 | Android整页左右边缘取消/完成/三层返回；菜单、IME、多选、Sheet和根页对照；iOS仅在保留可选增强时测双侧，否则验证原返回无回归 | 压缩顶层露来源；返回优先级正确，无双重pop或丢草稿/锚点；iOS不可为新增边缘行为牺牲文字选择/横滚/Sheet | M08、M14 / MOT-09 |
 
 每项 A1–A4，包含起始、1/3、2/3、末帧、反向与取消证据；共用组件接入不能免除调用方手动检查。C10 的160ms旧选中淡入在r30实施后改按触点260ms扩散、取消160ms验证，不删除其他断言。C15复制的用户消息入口改为长按操作栏，助手/代码保持原入口。
 

@@ -375,6 +375,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         attachments: List<String> = emptyList(),
     ): String? = active()?.sendMessage(text, delivery, attachments)
 
+    /** Exact receipt from the connection that accepted this command; never infer it from display text. */
+    fun submittedSend(commandId: String): PendingSend? =
+        active()?.state?.value?.pendingSends?.values?.firstOrNull { it.commandId == commandId }
+
     fun detachUploads(taskIds: Set<String>) = active()?.detachUploads(taskIds)
 
     fun attachedTaskIds(sessionKey: String): Set<String> =

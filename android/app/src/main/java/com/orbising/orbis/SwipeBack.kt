@@ -4,6 +4,13 @@ import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.OnBackPressedDispatcherOwner
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
+import androidx.activity.BackEventCompat
+import android.animation.ValueAnimator
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.collect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.animation.core.Animatable
@@ -13,6 +20,9 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -40,6 +50,28 @@ import kotlinx.coroutines.launch
 /** Only the visible page may handle back or swipe; retained source pages stay passive. */
 internal val LocalPageActive = staticCompositionLocalOf { true }
 
+internal class PageBackGate(val parent: PageBackGate?) {
+    var blockers by mutableStateOf(emptySet<Any>())
+    fun selection(owner: Any, active: Boolean) {
+        blockers = if (active) blockers + owner else blockers - owner
+        parent?.selection(owner, active)
+    }
+}
+internal val LocalPageBackGate = staticCompositionLocalOf<PageBackGate?> { null }
+
+/** A selection consumes system back itself and blocks the page's interior drag. */
+@Composable
+internal fun SelectionBackPriority(selecting: Boolean, onBack: () -> Unit) {
+    val gate = LocalPageBackGate.current
+    val active = LocalPageActive.current
+    val owner = remember { Any() }
+    DisposableEffect(gate, selecting, active) {
+        gate?.selection(owner, active && selecting)
+        onDispose { gate?.selection(owner, false) }
+    }
+    BackHandler(enabled = active && selecting, onBack = onBack)
+}
+
 /** Shared full-page navigation boundary. Sheets and the root pairing screen live outside it. */
 @Composable
 internal fun OrbisPageHost(
@@ -51,6 +83,8 @@ internal fun OrbisPageHost(
     content: @Composable () -> Unit,
 ) {
     val active = LocalPageActive.current
+    val parentGate = LocalPageBackGate.current
+    val gate = remember(contentKey, parentGate) { PageBackGate(parentGate) }
     val dispatcherOwner = checkNotNull(LocalOnBackPressedDispatcherOwner.current)
     val inactiveOwner = remember(dispatcherOwner) {
         object : OnBackPressedDispatcherOwner {
@@ -58,7 +92,7 @@ internal fun OrbisPageHost(
             override val onBackPressedDispatcher = OnBackPressedDispatcher()
         }
     }
-    BackHandler(enabled = active && open) { if (canNavigateBack) onBack() }
+    BackHandler(enabled = active && open && !canNavigateBack) { }
     SwipeBackLayer(onBack = onBack, open = open, contentKey = contentKey,
         gestureEnabled = active && canNavigateBack,
         underlay = {
@@ -66,7 +100,8 @@ internal fun OrbisPageHost(
             CompositionLocalProvider(LocalPageActive provides (active && !open),
                 LocalOnBackPressedDispatcherOwner provides if (active && !open) dispatcherOwner else inactiveOwner) { underlay() }
         },
-        content = { CompositionLocalProvider(LocalPageActive provides active) { content() } })
+        content = { CompositionLocalProvider(LocalPageActive provides active, LocalPageBackGate provides gate) { content() } },
+        dragEnabled = gate.blockers.isEmpty() && WindowInsets.ime.getBottom(LocalDensity.current) == 0)
 }
 
 /**
@@ -84,6 +119,7 @@ internal fun SwipeBackLayer(
     open: Boolean = true,
     contentKey: Any? = null,
     gestureEnabled: Boolean = true,
+    dragEnabled: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val currentOnBack by rememberUpdatedState(onBack)
@@ -96,6 +132,9 @@ internal fun SwipeBackLayer(
     var entranceStarted by remember(open, contentKey) { mutableStateOf(false) }
     var returning by remember(open, contentKey) { mutableStateOf(false) }
     var settleJob by remember(open, contentKey) { mutableStateOf<Job?>(null) }
+    val edgeProgress = remember(open, contentKey) { Animatable(0f) }
+    var edgeBack by remember(open, contentKey) { mutableStateOf(false) }
+    var edgeDirection by remember(open, contentKey) { mutableFloatStateOf(1f) }
     val scrim = MaterialTheme.colorScheme.scrim
 
     fun position(): Float {
@@ -104,7 +143,7 @@ internal fun SwipeBackLayer(
         val value = if (dragging) dragOffset else offset.value
         return if (dragging && value > width) width + (value - width) * 0.18f else value
     }
-    fun progress() = (position() / width.coerceAtLeast(1)).coerceIn(0f, 1f)
+    fun progress() = if (edgeBack) edgeProgress.value.coerceIn(0f, 1f) else (position() / width.coerceAtLeast(1)).coerceIn(0f, 1f)
     fun settle(back: Boolean, velocity: Float) {
         val released = position()
         returning = back
@@ -115,10 +154,36 @@ internal fun SwipeBackLayer(
                 if (back) width.toFloat() else 0f,
                 // Do not leave an invisible chat intercepting home taps while a spring's
                 // sub-pixel tail settles (or oscillates back in from beyond the screen).
-                if (back) tween(180) else OrbisMotion.swipeBack(),
+                if (!ValueAnimator.areAnimatorsEnabled()) tween(0) else if (back) tween(InteractionMotion.Dismiss) else OrbisMotion.swipeBack(),
                 initialVelocity = velocity.coerceIn(-width * 4f, width * 4f),
             )
             if (back) currentOnBack()
+        }
+    }
+    PredictiveBackHandler(enabled = open && gestureEnabled) { events ->
+        // Native gestures supply both edges and draw their own indicator. Key/three-button
+        // back supplies an empty flow and still uses the same single-commit lifecycle.
+        if (returning) { events.collect { }; return@PredictiveBackHandler }
+        settleJob?.cancel()
+        entering = false
+        dragging = false
+        edgeBack = true
+        try {
+            events.collect { event ->
+                edgeDirection = if (event.swipeEdge == BackEventCompat.EDGE_RIGHT) -1f else 1f
+                edgeProgress.snapTo(if (ValueAnimator.areAnimatorsEnabled()) event.progress.coerceIn(0f, 1f) else 0f)
+            }
+            returning = true
+            settleJob = scope.launch {
+                edgeProgress.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.Dismiss)))
+                currentOnBack()
+            }
+        } catch (_: CancellationException) {
+            settleJob = scope.launch {
+                edgeProgress.animateTo(0f, if (ValueAnimator.areAnimatorsEnabled()) OrbisMotion.swipeBack() else tween(0))
+                edgeBack = false
+                offset.snapTo(0f)
+            }
         }
     }
     DisposableEffect(open, contentKey) {
@@ -129,7 +194,7 @@ internal fun SwipeBackLayer(
             settleJob = launch {
                 if (!entranceStarted) offset.snapTo(width.toFloat())
                 entranceStarted = true
-                offset.animateTo(0f, OrbisMotion.swipeBack())
+                offset.animateTo(0f, if (ValueAnimator.areAnimatorsEnabled()) OrbisMotion.swipeBack() else tween(0))
                 entering = false
             }
         }
@@ -140,12 +205,12 @@ internal fun SwipeBackLayer(
             .background(MaterialTheme.colorScheme.background)
             .clipToBounds()
             .onSizeChanged { width = it.width }
-            .pointerInput(open, contentKey, gestureEnabled) {
-                if (!open || !gestureEnabled) return@pointerInput
+            .pointerInput(open, contentKey, gestureEnabled, dragEnabled) {
+                if (!open || !gestureEnabled || !dragEnabled) return@pointerInput
                 val velocity = VelocityTracker()
                 detectHorizontalDragGestures(
                     onDragStart = {
-                        if (!returning) {
+                        if (!returning && !edgeBack) {
                             val currentPosition = position().coerceAtLeast(0f)
                             settleJob?.cancel()
                             dragOffset = currentPosition
@@ -180,7 +245,7 @@ internal fun SwipeBackLayer(
                 scaleY = 1f + 0.008f * compression
             }
             .drawWithContent {
-                if (!open || entering || dragging || offset.isRunning || offset.value > 0f) {
+                if (!open || entering || dragging || edgeBack || offset.isRunning || offset.value > 0f) {
                     drawContent()
                     drawRect(scrim.copy(alpha = 0.34f * (1f - progress())))
                 }
@@ -190,7 +255,15 @@ internal fun SwipeBackLayer(
             if (open) Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { } })
         }
         if (open) Box(Modifier.fillMaxSize().graphicsLayer {
-            translationX = if (entering && !entranceStarted) size.width else position().coerceAtLeast(0f)
+            if (edgeBack) {
+                val p = edgeProgress.value.coerceIn(0f, 1f)
+                scaleX = 1f - 0.04f * p; scaleY = scaleX
+                translationX = edgeDirection * 24.dp.toPx() * p
+                shape = RoundedCornerShape((24 * p).dp)
+                clip = true
+                // On commit the compressed page leaves before the source becomes interactive.
+                alpha = if (returning) 1f - ((p - 0.8f) / 0.2f).coerceIn(0f, 1f) else 1f
+            } else translationX = if (entering && !entranceStarted) size.width else position().coerceAtLeast(0f)
         }) { content() }
     }
 }

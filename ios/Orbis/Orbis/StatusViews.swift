@@ -76,7 +76,7 @@ private struct AgentStatusProviderCard: View {
                     Spacer(minLength: 0)
                 }.padding(16)
             }
-            Button {
+            OrbisMotionButton {
                 let items = providers.map { provider in
                     OrbisMenuItem(title: provider.name, symbol: provider.official ? "checkmark.seal" : "server.rack",
                                   checked: provider.enabled, disabled: provider.enabled && !provider.additive) {
@@ -85,7 +85,7 @@ private struct AgentStatusProviderCard: View {
                 }
                 overlay.showMenu(items, from: switchAnchor.frame)
             } label: {
-                Label("切换", systemImage: "arrow.triangle.2.circlepath")
+                Label { Text("切换") } icon: { OrbisActionSymbol(systemName: "arrow.triangle.2.circlepath") }
                     .font(.orbisLabel(.semibold)).foregroundStyle(palette.secondary)
                     .frame(minWidth: 64, minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(ProviderInlineButtonStyle()).orbisAnchor(switchAnchor)
@@ -168,19 +168,19 @@ struct AgentProvidersView: View {
     var body: some View {
         VStack(spacing: 0) {
             OrbisHeader {
-                OrbisIconButton(symbol: selecting ? "xmark" : "arrow.left", label: selecting ? "退出多选" : "返回") {
+                OrbisIconButton(symbol: selecting ? "xmark" : "arrow.left", label: selecting ? "退出多选" : "返回", morphFrom: "arrow.left") {
                     if selecting { exitSelection() } else { onBack() }
                 }
             } title: {
                 Text(selecting ? "已选择 \(effectiveSelection.count) 项" : "供应商")
                     .font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
             } trailing: {
-                if selecting {
-                    OrbisIconButton(symbol: "trash", label: "移除所选供应商", tint: OrbisPalette(scheme).error, action: confirmRemoval)
-                        .disabled(!host.canChangeProvider || effectiveSelection.isEmpty)
-                } else {
+                OrbisSelectionToolbar(selecting: selecting) { _ in
                     OrbisIconButton(symbol: "arrow.clockwise", label: "刷新供应商") { exitSelection(); host.loadProviders(host.providerKind) }
                         .disabled(host.providersLoading || host.changingProvider || !host.connected)
+                } selected: {
+                    OrbisIconButton(symbol: "trash", label: "移除所选供应商", tint: OrbisPalette(scheme).error, action: confirmRemoval)
+                        .disabled(!host.canChangeProvider || effectiveSelection.isEmpty)
                 }
             }
             ScrollView {
@@ -188,7 +188,7 @@ struct AgentProvidersView: View {
                     Text(store.selectedHost?.hostName ?? "已配对的电脑").font(.orbisBody(.medium))
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                         ForEach(["pi", "codex", "claude", "dsh"], id: \.self) { kind in
-                            Button { exitSelection(); overlay.dismissDialog(); host.loadProviders(kind) } label: {
+                            OrbisMotionButton { exitSelection(); overlay.dismissDialog(); host.loadProviders(kind) } label: {
                                 HStack(spacing: 6) {
                                     AgentEmblem(kind: kind, size: 22, recessed: false)
                                     Text(agentTitle(kind)).font(.orbisLabel(.semibold))
@@ -217,6 +217,7 @@ struct AgentProvidersView: View {
             }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
             .onAppear { host.loadProviders(host.providerKind) }
+            .orbisBackPriority("provider-selection", active: selecting, action: exitSelection)
             .onChange(of: host.hostKey) { _, _ in exitSelection(); overlay.dismissDialog() }
             .onChange(of: host.providerKind) { _, _ in exitSelection(); overlay.dismissDialog() }
             .onChange(of: host.connected) { _, connected in
@@ -243,7 +244,7 @@ struct AgentProvidersView: View {
         let loading = ownQuota && host.queryingQuota
         let palette = OrbisPalette(scheme)
         return HStack(spacing: 0) {
-            Button {
+            OrbisMotionButton {
                 if selecting {
                     guard host.canChangeProvider, provider.removable else { return }
                     if !selected.insert(provider).inserted { selected.remove(provider) }
@@ -262,7 +263,7 @@ struct AgentProvidersView: View {
                                 .font(.orbisCaption()).foregroundStyle(provider.enabled ? palette.success : palette.secondary)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                         if hasQuota {
-                            Image(systemName: "arrow.clockwise").font(.orbisBody(.medium))
+                            OrbisActionSymbol(systemName: "arrow.clockwise").font(.orbisBody(.medium))
                                 .foregroundStyle(palette.secondary).accessibilityHidden(true)
                         } else {
                             OrbisSelectionIndicator(selected: effectiveSelection.contains(provider), selecting: selecting && provider.removable)
