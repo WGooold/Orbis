@@ -202,7 +202,8 @@ final class OrbisStore: ObservableObject {
     var entryPreview: EntryPreview? { activeConnection.entryPreview }
     var historyRevision: Int { activeConnection.historyRevision }
     var interactions: [String: [InteractionRequest]] { activeConnection.interactions }
-    var submittingInteractions: Set<String> { activeConnection.submittingInteractions }
+    func respondingRequestIds(_ runtimeId: String) -> Set<String> { activeConnection.respondingRequestIds(runtimeId) }
+    func interactionStatus(_ runtimeId: String) -> (text: String, pending: Bool)? { activeConnection.interactionStatus(runtimeId) }
     var queuedMessages: [String: [QueuedMessage]] { activeConnection.queuedMessages }
     func unconfirmedQueueCancellations(_ runtimeId: String) -> Set<String> { activeConnection.unconfirmedQueueCancellations(runtimeId) }
     var pendingSends: PendingSendOutbox { activeConnection.pendingSends }

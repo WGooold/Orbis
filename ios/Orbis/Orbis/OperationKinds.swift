@@ -10,6 +10,8 @@ enum LedgerPayload: Equatable {
     case archive(sessionId: String, agentKind: String, archived: Bool)
     /// 撤回排队消息。
     case queueCancel(runtimeId: String, queueId: String)
+    /// 回答审批 / 问卷、取消提问。`summary` 是原位短状态显示的摘要（自由文本与敏感输入只显示“已提交”）。
+    case respond(runtimeId: String, requestId: String, summary: String)
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -27,6 +29,66 @@ enum OperationKinds {
     static let queueCancel = "queueCancel"
     /// 某个 Runtime 的 Host 队列（delivery 领域）在账本里的领域名。
     static func queueDomain(_ runtimeId: String) -> String { "queue:" + runtimeId }
+    static let respond = "respond"
+    /// 某个 Runtime 的交互清单（interactions 领域）在账本里的领域名。
+    static func interactionsDomain(_ runtimeId: String) -> String { "interactions:" + runtimeId }
+
+    /// `respond`：成功回执后面板保持收起，直到交互清单不再含该请求（避免闪回），15 秒仍在就转结果不明核对。
+    /// 明确失败且请求仍有效时面板回到原位并保留答案；核对后请求仍在则静默恢复面板，已不在则显示“已处理”。
+    static let respondPolicy = AppLedger.Policy(
+        successLands: false,
+        acceptedBudget: AppLedger.receiptBudget,
+        afterSuccess: (15, .unknown),
+        whenUnresolved: .reject(.init("unresolved", "")),
+        deviceReceipts: true,
+        appliesBeforeLaterReads: false
+    )
+
+    static func respondTarget(runtimeId: String, requestId: String) -> String { "interaction:\(runtimeId):\(requestId)" }
+
+    /// 回答摘要：确认结果、选项名或“已提交”；自由文本与敏感输入不回显（ADR-0049 §6.5）。
+    static func respondSummary(_ request: InteractionRequest, response: [String: Any]) -> String {
+        let label: (String) -> String = { value in request.options?.first { $0.value == value }?.label ?? value }
+        switch response["kind"] as? String {
+        case "cancel": return "已取消"
+        case "confirm": return response["value"] as? Bool == true ? "已" + (request.confirmLabel ?? "允许") : "已" + (request.cancelLabel ?? "拒绝")
+        case "select":
+            guard request.secret != true, let value = response["value"] as? String else { return "已提交" }
+            return "已选择：" + label(value)
+        case "multi-select":
+            guard request.secret != true, let values = response["values"] as? [String], !values.isEmpty else { return "已提交" }
+            return "已选择：" + values.map(label).joined(separator: "、")
+        default: return "已提交"
+        }
+    }
+
+    /// 正在回答、尚未结算的请求：面板收起（L3），草稿保留。
+    static func respondingRequestIds(_ ledger: AppLedger, runtimeId: String) -> Set<String> {
+        Set(ledger.operations.compactMap { op in
+            guard !op.phase.isSettled, case .respond(let owner, let requestId, _) = op.payload, owner == runtimeId else { return nil }
+            return requestId
+        })
+    }
+
+    /// 原位短状态：确认前带处理中标记；结果不明显示“未确认”。
+    static func respondStatus(_ ledger: AppLedger, runtimeId: String) -> (text: String, pending: Bool)? {
+        for op in ledger.operations.reversed() {
+            guard case .respond(let owner, _, let summary) = op.payload, owner == runtimeId else { continue }
+            switch op.phase {
+            case .waiting, .sent, .accepted: return (summary, true)
+            case .unknown, .unconfirmed: return (summary + " · 未确认", false)
+            case .rejected: continue
+            }
+        }
+        return nil
+    }
+
+    /// 交互清单对 `respond` 说明了什么：请求已不在即落地；仍在、未被 Host 标为已提交且未见成功回执，是反向证据。
+    static func interactionEvidence(_ op: AppLedger.Operation, requests: [InteractionRequest]) -> AppLedger.Evidence {
+        guard case .respond(_, let requestId, _) = op.payload else { return .none }
+        guard let request = requests.first(where: { $0.requestId == requestId }) else { return .landed }
+        return request.submitted == true || op.succeeded ? .none : .notApplied
+    }
     /// 某个 Runtime 的通知清单在账本里的领域名：每个 Runtime 的通知快照各自独立。
     static func noticesDomain(_ runtimeId: String) -> String { "notifications:" + runtimeId }
     /// 账本发起的核对读取（L5）使用的 requestId 前缀。
@@ -154,7 +216,7 @@ enum OperationKinds {
     /// 回执所属的 Runtime：Runtime 级命令的回执只认同一 Runtime 的事件（Host 按 runtimeId + commandId 归属）。
     static func runtimeId(of op: AppLedger.Operation) -> String? {
         switch op.payload {
-        case .quit(let runtimeId), .queueCancel(let runtimeId, _): return runtimeId
+        case .quit(let runtimeId), .queueCancel(let runtimeId, _), .respond(let runtimeId, _, _): return runtimeId
         case .dismiss, .archive: return nil
         }
     }
@@ -162,7 +224,7 @@ enum OperationKinds {
     /// 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片、队列项）提示后回到原位；内容类保留失败状态等用户处理。
     static func removesOnRejection(_ op: AppLedger.Operation) -> Bool {
         switch op.payload {
-        case .quit, .dismiss, .archive, .queueCancel: return true
+        case .quit, .dismiss, .archive, .queueCancel, .respond: return true
         }
     }
 
@@ -179,7 +241,7 @@ enum OperationKinds {
     static func evidence(_ op: AppLedger.Operation, runtimeIds: Set<String>) -> AppLedger.Evidence {
         switch op.payload {
         case .quit(let runtimeId): return runtimeIds.contains(runtimeId) ? .none : .landed
-        case .dismiss, .archive, .queueCancel: return .none
+        case .dismiss, .archive, .queueCancel, .respond: return .none
         }
     }
 
@@ -224,6 +286,12 @@ enum OperationKinds {
             case "not_cancelled", "not_applied": return nil
             case "already_delivered": return "撤回未完成：" + queueAlreadyDelivered.reason
             default: return "撤回未完成：" + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
+            }
+        case .respond:
+            // 核对后请求仍在：静默恢复面板；明确失败时面板回到原位并说明原因，答案保留。
+            switch rejection.code {
+            case "unresolved", "not_applied": return nil
+            default: return "回答未提交：" + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
             }
         }
     }

@@ -16,6 +16,8 @@ sealed interface LedgerPayload {
     data class Archive(val sessionId: String, val agentKind: String, val archived: Boolean) : LedgerPayload
     /** 撤回排队消息。 */
     data class QueueCancel(val runtimeId: String, val queueId: String) : LedgerPayload
+    /** 回答审批 / 问卷、取消提问。`summary` 是原位短状态显示的摘要（自由文本与敏感输入只显示“已提交”）。 */
+    data class Respond(val runtimeId: String, val requestId: String, val summary: String) : LedgerPayload
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -35,6 +37,58 @@ object OperationKinds {
     const val QUEUE_CANCEL = "queueCancel"
     /** 某个 Runtime 的 Host 队列（delivery 领域）在账本里的领域名。 */
     fun queueDomain(runtimeId: String) = "queue:$runtimeId"
+    const val RESPOND = "respond"
+    /** 某个 Runtime 的交互清单（interactions 领域）在账本里的领域名。 */
+    fun interactionsDomain(runtimeId: String) = "interactions:$runtimeId"
+
+    /**
+     * `respond`：成功回执后面板保持收起，直到交互清单不再含该请求（避免闪回），15 秒仍在就转结果不明核对。
+     * 明确失败且请求仍有效时面板回到原位并保留答案；核对后请求仍在则静默恢复面板，已不在则显示“已处理”。
+     */
+    val respondPolicy = LedgerPolicy(
+        successLands = false,
+        acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
+        afterSuccessMs = 15_000,
+        afterSuccess = LedgerTimeout.Unknown,
+        whenUnresolved = LedgerTimeout.Reject(LedgerRejection("unresolved", "")),
+        deviceReceipts = true,
+    )
+
+    fun respondTarget(runtimeId: String, requestId: String) = "interaction:$runtimeId:$requestId"
+
+    /** 回答摘要：确认结果、选项名或“已提交”；自由文本与敏感输入不回显（ADR-0049 §6.5）。 */
+    fun confirmSummary(request: PendingInteraction, approved: Boolean) =
+        if (approved) "已${request.confirmLabel ?: "允许"}" else "已${request.cancelLabel ?: "拒绝"}"
+    fun valueSummary(request: PendingInteraction, value: String) =
+        if (request.kind != "select" || request.secret) "已提交" else "已选择：${request.options.firstOrNull { it.value == value }?.label ?: value}"
+    fun valuesSummary(request: PendingInteraction, values: List<String>) =
+        if (request.secret || values.isEmpty()) "已提交" else "已选择：" + values.joinToString("、") { value -> request.options.firstOrNull { it.value == value }?.label ?: value }
+
+    /** 正在回答、尚未结算的请求：面板收起（L3），草稿保留。 */
+    fun respondingRequestIds(ledger: AppLedger, runtimeId: String): Set<String> = ledger.operations
+        .filter { !it.phase.isSettled }
+        .mapNotNullTo(mutableSetOf()) { (it.payload as? LedgerPayload.Respond)?.takeIf { p -> p.runtimeId == runtimeId }?.requestId }
+
+    /** 原位短状态：确认前带处理中标记；结果不明显示“未确认”。 */
+    fun respondStatus(ledger: AppLedger, runtimeId: String): Pair<String, Boolean>? {
+        for (op in ledger.operations.asReversed()) {
+            val payload = op.payload as? LedgerPayload.Respond ?: continue
+            if (payload.runtimeId != runtimeId) continue
+            when (op.phase) {
+                LedgerPhase.Waiting, LedgerPhase.Sent, LedgerPhase.Accepted -> return payload.summary to true
+                LedgerPhase.Unknown, LedgerPhase.Unconfirmed -> return "${payload.summary} · 未确认" to false
+                is LedgerPhase.Rejected -> continue
+            }
+        }
+        return null
+    }
+
+    /** 交互清单对 `respond` 说明了什么：请求已不在即落地；仍在、未被 Host 标为已提交且未见成功回执，是反向证据。 */
+    fun interactionEvidence(op: LedgerOperation<LedgerPayload>, requests: Map<String, PendingInteraction>): LedgerEvidence {
+        val payload = op.payload as? LedgerPayload.Respond ?: return LedgerEvidence.NONE
+        val request = requests[payload.requestId] ?: return LedgerEvidence.LANDED
+        return if (request.submitted || op.succeeded) LedgerEvidence.NONE else LedgerEvidence.NOT_APPLIED
+    }
     /** 某个 Runtime 的通知清单在账本里的领域名：每个 Runtime 的通知快照各自独立。 */
     fun noticesDomain(runtimeId: String) = "notifications:$runtimeId"
     /** 账本发起的核对读取（L5）使用的 requestId 前缀。 */
@@ -156,12 +210,13 @@ object OperationKinds {
     fun runtimeId(op: LedgerOperation<LedgerPayload>): String? = when (val payload = op.payload) {
         is LedgerPayload.Quit -> payload.runtimeId
         is LedgerPayload.QueueCancel -> payload.runtimeId
+        is LedgerPayload.Respond -> payload.runtimeId
         is LedgerPayload.Dismiss, is LedgerPayload.Archive -> null
     }
 
     /** 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片、队列项）提示后回到原位；内容类保留失败状态等用户处理。 */
     fun removesOnRejection(op: LedgerOperation<LedgerPayload>): Boolean = when (op.payload) {
-        is LedgerPayload.Quit, is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel -> true
+        is LedgerPayload.Quit, is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond -> true
     }
 
     /** 首页要隐藏的卡片：未结算的 `quit` 一直保持叠加，包括结果不明期间（L4）。 */
@@ -175,7 +230,7 @@ object OperationKinds {
      */
     fun evidence(op: LedgerOperation<LedgerPayload>, runtimeIds: Set<String>): LedgerEvidence = when (val payload = op.payload) {
         is LedgerPayload.Quit -> if (payload.runtimeId in runtimeIds) LedgerEvidence.NONE else LedgerEvidence.LANDED
-        is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel -> LedgerEvidence.NONE
+        is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond -> LedgerEvidence.NONE
     }
 
     /** `command.result` 的回执。`cancelled` / `unconfirmed` 是可能已执行的结果，交给账本按结果不明处理。 */
@@ -217,6 +272,11 @@ object OperationKinds {
                 "already_delivered" -> "撤回未完成：${queueAlreadyDelivered.reason}"
                 else -> "撤回未完成：${rejection.reason.ifBlank { "请重试" }}"
             }
+            // 核对后请求仍在：静默恢复面板；明确失败时面板回到原位并说明原因，答案保留。
+            is LedgerPayload.Respond -> when (rejection.code) {
+                "unresolved", "not_applied" -> null
+                else -> "回答未提交：${rejection.reason.ifBlank { "请重试" }}"
+            }
         }
     }
 
@@ -243,6 +303,7 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
     var nextLedger = step.ledger
     var nextError = error
     var verify = ledgerVerifyWanted
+    var outcomes = interactionOutcomes
     val archiveRejections = step.events.count { it is LedgerEvent.Rejected && it.operation.payload is LedgerPayload.Archive }
     for (event in step.events) when (event) {
         is LedgerEvent.Rejected -> {
@@ -251,9 +312,14 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
             if (OperationKinds.removesOnRejection(event.operation)) nextLedger = nextLedger.remove(event.operation.opId)
         }
         is LedgerEvent.Verify -> verify = true
+        is LedgerEvent.Landed -> (event.operation.payload as? LedgerPayload.Respond)?.let { respond ->
+            // 回答已结算：原位短暂显示结果（约 2.5 秒，V16）。只因请求已不在而结算的显示“已处理”，不声称是本机回答生效。
+            outcomes = outcomes + (respond.runtimeId to InteractionOutcome(event.operation.opId,
+                if (event.operation.succeeded) respond.summary else "已处理"))
+        }
         else -> Unit
     }
-    return copy(ledger = nextLedger, error = nextError, ledgerVerifyWanted = verify)
+    return copy(ledger = nextLedger, error = nextError, ledgerVerifyWanted = verify, interactionOutcomes = outcomes)
 }
 
 private val LedgerPhase.awaitsVerification get() = this == LedgerPhase.Unknown || this == LedgerPhase.Unconfirmed
@@ -284,6 +350,11 @@ private fun RemoteState.ledgerEvidence(domain: String): (LedgerOperation<LedgerP
         val catalog = sessions
         return { OperationKinds.catalogEvidence(it, catalog) }
     }
+    if (domain.startsWith("interactions:")) {
+        val runtimeId = domain.removePrefix("interactions:")
+        val requests = conversations[runtimeId]?.interactions.orEmpty()
+        return { op -> if ((op.payload as? LedgerPayload.Respond)?.runtimeId == runtimeId) OperationKinds.interactionEvidence(op, requests) else LedgerEvidence.NONE }
+    }
     if (domain.startsWith("queue:")) {
         val runtimeId = domain.removePrefix("queue:")
         val queue = conversations[runtimeId]?.queuedMessages.orEmpty()
@@ -302,6 +373,7 @@ private fun RemoteState.ledgerDomainComplete(domain: String): Boolean = when {
     domain == OperationKinds.RUNTIMES_DOMAIN || domain == OperationKinds.CATALOG_DOMAIN -> true
     domain.startsWith("notifications:") -> notificationProjections[domain.removePrefix("notifications:")]?.complete == true
     domain.startsWith("queue:") -> runtimes[domain.removePrefix("queue:")]?.domainAvailability?.get("delivery") == "ready"
+    domain.startsWith("interactions:") -> runtimes[domain.removePrefix("interactions:")]?.domainAvailability?.get("interactions") == "ready"
     else -> false
 }
 
@@ -429,3 +501,20 @@ internal fun RemoteState.ledgerQueue(runtimeId: String, delivered: Set<String>, 
     }
     return next.ledgerAuthority(OperationKinds.queueDomain(runtimeId), null, complete)
 }
+
+/** 回答结算后在原位短暂显示的结果（V16）：`id` 区分每次结算，界面据此计时约 2.5 秒后隐藏。 */
+data class InteractionOutcome(val id: String, val text: String)
+
+/** `respond` 先记入账本（尚未写入），opId 即命令的 commandId。同一请求的回答尚未结算时不重复创建（L9）。 */
+internal fun RemoteState.createRespond(commandId: String, runtimeId: String, requestId: String, summary: String, now: Long):
+    Pair<RemoteState, LedgerCreation<LedgerPayload>> {
+    val (next, creation) = ledger.create(commandId, OperationKinds.RESPOND, OperationKinds.respondTarget(runtimeId, requestId),
+        policy = OperationKinds.respondPolicy, basis = ledgerBasis(OperationKinds.interactionsDomain(runtimeId)),
+        payload = LedgerPayload.Respond(runtimeId, requestId, summary), written = false, now = now)
+    return copy(ledger = next) to creation
+}
+
+/** 原位短状态：账本中未结算的回答，或刚结算的结果（文案, 是否处理中, 结果标识）。 */
+internal fun RemoteState.interactionStatus(runtimeId: String): Triple<String, Boolean, String?>? =
+    OperationKinds.respondStatus(ledger, runtimeId)?.let { Triple(it.first, it.second, null) }
+        ?: interactionOutcomes[runtimeId]?.let { Triple(it.text, false, it.id) }

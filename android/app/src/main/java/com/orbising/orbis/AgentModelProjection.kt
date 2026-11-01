@@ -27,6 +27,7 @@ internal fun RemoteState.applyAgentDomainProjection(
     var pending = pendingCommands
     // ADR-0049 §7.5：Host 队列是撤回的权威状态；记下这次是否完整、哪些项已投递。
     var queueStamp: Boolean? = null
+    var interactionsStamp: Boolean? = null
     var delivered: Set<String> = emptySet()
     try {
         for ((name, domain) in domains) {
@@ -87,6 +88,7 @@ internal fun RemoteState.applyAgentDomainProjection(
                             responseCommandId = previous?.responseCommandId, responseError = previous?.responseError)
                     }.toMap()
                     val next = if (domain.projectionComplete || domain.completeness == "complete") incoming else conversation.interactions + incoming
+                    interactionsStamp = domain.projectionComplete || domain.completeness == "complete"
                     val removed = conversation.interactions.keys - next.keys
                     pending = pending - removed.mapNotNull { conversation.interactions[it]?.responseCommandId }.toSet()
                     conversation = conversation.copy(interactions = next,
@@ -118,7 +120,9 @@ internal fun RemoteState.applyAgentDomainProjection(
         (identity.sessionId to mergeSessionCatalogEntry(sessions[identity.sessionId], identity))
     val projected = copy(runtimes = runtimes + (id to runtime), sessions = catalog, conversations = conversations + (id to conversation),
         capabilities = commands?.let { capabilities + (id to it) } ?: capabilities, pendingCommands = pending)
-    return queueStamp?.let { projected.ledgerQueue(id, delivered, it, System.currentTimeMillis()) } ?: projected
+    val queued = queueStamp?.let { projected.ledgerQueue(id, delivered, it, System.currentTimeMillis()) } ?: projected
+    // ADR-0049 §7.5：交互清单是回答的权威状态。
+    return interactionsStamp?.let { queued.ledgerAuthority(OperationKinds.interactionsDomain(id), null, it) } ?: queued
 }
 
 private fun collection(value: JsonElement?, domain: AgentStateDomainView): JsonObject? = when {

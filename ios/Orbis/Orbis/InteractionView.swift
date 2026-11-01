@@ -8,7 +8,10 @@ struct InteractionWorkspaceView: View {
     @State private var open = false
     @StateObject private var drafts = InteractionDraftCache(preferences: ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-screen=") }) ? nil : .standard)
     var body: some View {
-        let requests = store.interactions[runtimeId] ?? []
+        // ADR-0049 §6.5：正在回答的请求立即收起（草稿保留在缓存里），其他请求直接切到下一项。
+        let responding = store.respondingRequestIds(runtimeId)
+        let requests = (store.interactions[runtimeId] ?? []).filter { !responding.contains($0.requestId) }
+        let status = store.interactionStatus(runtimeId)
         let inline = requests.count == 1 && requests[0].kind == "confirm"
         // No reserved space: the panel floats above the composer over the transcript,
         // so neither an empty slot nor an arriving request moves the input field.
@@ -25,6 +28,17 @@ struct InteractionWorkspaceView: View {
                         Image(systemName: "chevron.up").font(.orbisCaption())
                     }.padding(14).frame(minHeight: 48)
                 }.buttonStyle(NeuButtonStyle(radius: 16)).padding(.horizontal, 16).padding(.bottom, 10).accessibilityIdentifier("interaction-open")
+            } else if let status {
+                // 原面板位置的覆盖式短状态（V06）：不插入消息行、不推动正文；确认前带轻量处理中标记（V16）。
+                HStack(spacing: 8) {
+                    if status.pending { ProgressView().controlSize(.small) }
+                    Text(status.text).font(.orbisLabel()).lineLimit(2)
+                    Spacer(minLength: 0)
+                }.padding(.horizontal, 14).frame(minHeight: 44)
+                    .neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.6, padding: 0)
+                    .padding(.horizontal, 16).padding(.bottom, 10)
+                    .accessibilityElement(children: .combine).accessibilityIdentifier("interaction-status")
+                    .transition(.opacity)
             }
         }
         .sheet(isPresented: $open) {
@@ -81,7 +95,7 @@ private struct InteractionRequestView: View {
     private var draftValue: InteractionDraftValue { InteractionDraftValue(input: input, choices: choices, answers: answers, other: other, notes: notes) }
     @FocusState private var focusedField: String?
 
-    private var pending: Bool { store.submittingInteractions.contains(request.requestId) || request.submitted == true }
+    private var pending: Bool { request.submitted == true }
     private var valid: Bool { request.acceptsResponse(draftValue.response(for: request)) }
 
     var body: some View {

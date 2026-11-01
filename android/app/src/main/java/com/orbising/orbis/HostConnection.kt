@@ -1783,29 +1783,31 @@ internal class HostConnection(
     }
 
     fun respondConfirm(request: PendingInteraction, approved: Boolean): Boolean {
-        return respond(request) { runtimeId ->
-            relay.respond(runtimeId, request, "confirm", booleanValue = approved)
+        return respond(request, OperationKinds.confirmSummary(request, approved)) { runtimeId, commandId ->
+            relay.respond(runtimeId, request, "confirm", booleanValue = approved, commandId = commandId)
         }
     }
 
     fun respondValue(request: PendingInteraction, value: String): Boolean {
-        return respond(request) { runtimeId ->
-            relay.respond(runtimeId, request, request.kind, stringValue = value)
+        return respond(request, OperationKinds.valueSummary(request, value)) { runtimeId, commandId ->
+            relay.respond(runtimeId, request, request.kind, stringValue = value, commandId = commandId)
         }
     }
 
     fun respondValues(request: PendingInteraction, values: List<String>): Boolean {
-        return respond(request) { runtimeId ->
-            relay.respond(runtimeId, request, "multi-select", stringValues = values)
+        return respond(request, OperationKinds.valuesSummary(request, values)) { runtimeId, commandId ->
+            relay.respond(runtimeId, request, "multi-select", stringValues = values, commandId = commandId)
         }
     }
 
     fun respondQuestionnaire(request: PendingInteraction, answers: List<QuestionnaireAnswer>?): Boolean {
-        return respond(request) { runtimeId -> relay.respondQuestionnaire(runtimeId, request, answers) }
+        return respond(request, if (answers == null) "已取消" else "已提交") { runtimeId, commandId ->
+            relay.respondQuestionnaire(runtimeId, request, answers, commandId)
+        }
     }
 
     fun cancelInteraction(request: PendingInteraction) {
-        respond(request) { runtimeId -> relay.respond(runtimeId, request, "cancel") }
+        respond(request, "已取消") { runtimeId, commandId -> relay.respond(runtimeId, request, "cancel", commandId = commandId) }
     }
 
     fun clearError() {
@@ -1842,7 +1844,8 @@ internal class HostConnection(
         }
     }
 
-    private fun respond(request: PendingInteraction, send: (String) -> String?): Boolean {
+    /** ADR-0049 §6.5 `respond`：面板立即收起，原位显示回答摘要；回执、断线、期限与核对全部交给账本。 */
+    private fun respond(request: PendingInteraction, summary: String, send: (String, String) -> String?): Boolean {
         val runtimeId = mutableState.value.selectedRuntimeId ?: return false
         val current = mutableState.value
         val conversation = current.conversations[runtimeId] ?: return false
@@ -1851,19 +1854,21 @@ internal class HostConnection(
             refreshAgentModel(runtimeId, force = true)
             return false
         }
-        if (!current.e2eReady || pending.submitted || isInteractionExpired(pending, System.currentTimeMillis()) || pending.responseCommandId in current.pendingCommands) return false
-        val commandId = send(runtimeId)
-        trackCommand(commandId, runtimeId, "交互响应未发送：当前离线，请连接后重试")
-        if (commandId != null) {
-            updateState { latest ->
-                val latestConversation = latest.conversations[runtimeId] ?: return@updateState latest
-                val latestRequest = latestConversation.interactions[request.requestId] ?: return@updateState latest
-                latest.copy(conversations = latest.conversations + (runtimeId to latestConversation.copy(
-                    interactions = latestConversation.interactions + (request.requestId to latestRequest.copy(responseCommandId = commandId, responseError = null)),
-                )))
-            }
+        if (!current.e2eReady || pending.submitted || isInteractionExpired(pending, System.currentTimeMillis())) return false
+        val commandId = UUID.randomUUID().toString()
+        var created = false
+        updateState { latest ->
+            val (next, creation) = latest.createRespond(commandId, runtimeId, request.requestId, summary, System.currentTimeMillis())
+            created = creation is LedgerCreation.Created
+            if (created) next else latest
         }
-        return commandId != null
+        if (!created) return false
+        if (send(runtimeId, commandId) == null) {
+            updateState { it.copy(ledger = it.ledger.remove(commandId), error = "交互响应未发送：当前离线，请连接后重试") }
+            return false
+        }
+        updateState { it.ledgerWritten(commandId, System.currentTimeMillis()) }
+        return true
     }
 
     private fun trackCommand(commandId: String?, runtimeId: String, offlineError: String) {

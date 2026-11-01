@@ -436,6 +436,8 @@ data class RemoteState(
     val ledgerReads: Map<String, Int> = emptyMap(),
     /** 需要发起一次读取（结果不明的核对，或关闭通知后的核对点）；[HostConnection] 发出读取后清除。 */
     val ledgerVerifyWanted: Boolean = false,
+    /** 回答结算后在原位短暂显示的结果：runtimeId → 结果（ADR-0049 §6.5）。 */
+    val interactionOutcomes: Map<String, InteractionOutcome> = emptyMap(),
     val capabilities: Map<String, RuntimeCapabilities> = emptyMap(),
     /**
      * 这台电脑支持的 agent 种类（[device.ready] 的 `agents`）。

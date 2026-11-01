@@ -63,7 +63,9 @@ final class HostConnection: ObservableObject {
     @Published private(set) var entryPreview: EntryPreview?
     @Published private(set) var historyRevision = 0
     @Published private(set) var interactions: [String: [InteractionRequest]] = [:]
-    @Published private(set) var submittingInteractions: Set<String> = []
+    /// 回答结算后在原位短暂显示的结果（约 2.5 秒，V16）：runtimeId → 结果。
+    @Published private(set) var interactionOutcomes: [String: InteractionOutcome] = [:]
+    struct InteractionOutcome: Equatable { let id: UUID; let text: String }
     @Published private(set) var queuedMessages: [String: [QueuedMessage]] = [:]
     /// ADR-0049：本机已发出、尚未在源端落地的消息。按 Session 归属，只属于 `pendingSendHostId`。
     @Published private(set) var pendingSends = PendingSendOutbox()
@@ -221,7 +223,6 @@ final class HostConnection: ObservableObject {
     private var previewTimeout: Task<Void, Never>?
     private var branchEditorNode: String?
     private var branchEditorText: String?
-    private var interactionCommands: [String: String] = [:]
     private var pendingBranchDrafts: [String: String] = [:]
     private var toolAcknowledgements: [String: (runtimeId: String, reference: ToolReference)] = [:]
     private var pendingAppliedBaselines: [String: SessionAppliedBaseline] = [:]
@@ -293,9 +294,7 @@ final class HostConnection: ObservableObject {
             self.interactions[runtimeId] = projection.interactions
             self.queuedMessages[runtimeId] = projection.queuedMessages
             if domains["delivery"] != nil { self.ledgerAuthority(OperationKinds.queueDomain(runtimeId), read: nil, complete: true) }
-            let active = Set(self.interactions.values.joined().map(\.requestId))
-            self.submittingInteractions.formIntersection(active)
-            self.interactionCommands = self.interactionCommands.filter { active.contains($0.value) }
+            if domains["interactions"] != nil { self.ledgerAuthority(OperationKinds.interactionsDomain(runtimeId), read: nil, complete: true) }
             self.updateSyncing()
             return true
         }
@@ -430,7 +429,7 @@ final class HostConnection: ObservableObject {
         agentState.setConnection(nil, connected: false)
         notifications.setConnection(nil, connected: false)
         toolContent.close(); turnFileChanges.clear(); toolInventories.clear(); toolAcknowledgements = [:]; pendingAppliedBaselines = [:]
-        interactions = [:]; queuedMessages = [:]; submittingInteractions = []; interactionCommands = [:]; workingBranches = [:]; dismissPreview()
+        interactions = [:]; queuedMessages = [:]; interactionOutcomes = [:]; workingBranches = [:]; dismissPreview()
         pendingSends.removeAll(); pendingSendHostId = nil; sessionRevisions = [:]
     }
 
@@ -491,7 +490,7 @@ final class HostConnection: ObservableObject {
         oldestEntries = [:]; sessionLeaves = [:]; hasOlderHistory = [:]; historyErrors = [:]; historyLoading = []
         sourcePositions = [:]; appliedBaselines = [:]; retiredEpochs = [:]; graphs = [:]; runtimeEventSequences = [:]
         pendingActivation = nil; activePath = nil
-        interactions = [:]; queuedMessages = [:]; interactionCommands = [:]; submittingInteractions = []
+        interactions = [:]; queuedMessages = [:]; interactionOutcomes = [:]
         workingBranches = [:]; dismissPreview()
         actionTimeouts.values.forEach { $0.cancel() }; actionTimeouts = [:]; runtimeActions = [:]; composerActionDrafts = [:]; pendingActionIds = []; setActionFeedback(nil)
         pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil
@@ -601,18 +600,44 @@ final class HostConnection: ObservableObject {
         return true
     }
 
+    /// ADR-0049 §6.5 `respond`：面板立即收起，原位显示回答摘要；回执、断线、期限与核对全部交给账本。
     @discardableResult
     func respond(_ request: InteractionRequest, response: [String: Any]) -> Bool {
-        guard connection == .secured, request.expiresAt > Int64(Date().timeIntervalSince1970 * 1000),
-              !submittingInteractions.contains(request.requestId), request.acceptsResponse(response),
+        guard connection == .secured, request.expiresAt > Int64(Date().timeIntervalSince1970 * 1000), request.acceptsResponse(response),
               interactions[request.runtimeId]?.contains(where: { $0 == request && $0.submitted != true }) == true else { return false }
         let id = UUID().uuidString
+        let creation = ledger.create(opId: id, kind: OperationKinds.respond,
+                                     target: OperationKinds.respondTarget(runtimeId: request.runtimeId, requestId: request.requestId),
+                                     policy: OperationKinds.respondPolicy, basis: ledgerBasis(OperationKinds.interactionsDomain(request.runtimeId)),
+                                     payload: .respond(runtimeId: request.runtimeId, requestId: request.requestId,
+                                                       summary: OperationKinds.respondSummary(request, response: response)),
+                                     written: false, now: Date())
+        guard creation == .created else { return false }
         guard sendCommand(runtimeId: request.runtimeId, commandId: id, command: ["type": "interaction.respond", "requestId": request.requestId,
                         "extensionId": request.extensionId, "response": response]) else {
+            ledger.remove(id); handleLedger([])
             errorMessage = "交互响应未送达，请连接后重试。"; return false
         }
-        interactionCommands[id] = request.requestId; submittingInteractions.insert(request.requestId)
+        handleLedger(ledger.written(id, now: Date()))
         return true
+    }
+
+    /// 正在回答、尚未结算的请求：面板收起，草稿保留。
+    func respondingRequestIds(_ runtimeId: String) -> Set<String> { OperationKinds.respondingRequestIds(ledger, runtimeId: runtimeId) }
+    /// 原位短状态：账本中未结算的回答，或刚结算的结果。
+    func interactionStatus(_ runtimeId: String) -> (text: String, pending: Bool)? {
+        OperationKinds.respondStatus(ledger, runtimeId: runtimeId) ?? interactionOutcomes[runtimeId].map { ($0.text, false) }
+    }
+
+    /// 回答已结算：在原位短暂显示结果，约 2.5 秒后消失（V16）。成功回执显示摘要；只因请求已不在而结算的显示“已处理”，不声称是本机回答生效。
+    private func showInteractionOutcome(_ op: AppLedger.Operation) {
+        guard case .respond(let runtimeId, _, let summary) = op.payload else { return }
+        let outcome = InteractionOutcome(id: UUID(), text: op.succeeded ? summary : "已处理")
+        interactionOutcomes[runtimeId] = outcome
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            if self?.interactionOutcomes[runtimeId]?.id == outcome.id { self?.interactionOutcomes[runtimeId] = nil }
+        }
     }
 
     func refresh() {
@@ -1186,6 +1211,14 @@ final class HostConnection: ObservableObject {
             let index = sessionIndex
             return { OperationKinds.catalogEvidence($0, sessions: index) }
         }
+        if domain.hasPrefix("interactions:") {
+            let runtimeId = String(domain.dropFirst("interactions:".count))
+            let requests = interactions[runtimeId] ?? []
+            return { op in
+                guard case .respond(let owner, _, _) = op.payload, owner == runtimeId else { return .none }
+                return OperationKinds.interactionEvidence(op, requests: requests)
+            }
+        }
         if domain.hasPrefix("queue:") {
             let runtimeId = String(domain.dropFirst("queue:".count))
             let queue = queuedMessages[runtimeId] ?? []
@@ -1221,7 +1254,7 @@ final class HostConnection: ObservableObject {
 
     /// 领域当前的权威状态是否完整：部分结果不能作为反向证据（L2）。
     private func ledgerDomainComplete(_ domain: String) -> Bool {
-        if domain == OperationKinds.runtimesDomain || domain == OperationKinds.catalogDomain || domain.hasPrefix("queue:") { return true }
+        if domain == OperationKinds.runtimesDomain || domain == OperationKinds.catalogDomain || domain.hasPrefix("queue:") || domain.hasPrefix("interactions:") { return true }
         if domain.hasPrefix("notifications:") {
             return notifications.projections[String(domain.dropFirst("notifications:".count))]?.complete == true
         }
@@ -1239,7 +1272,8 @@ final class HostConnection: ObservableObject {
                 if let text = OperationKinds.message(for: op) { errorMessage = archiveRejections > 1 ? "\(archiveRejections) 个会话" + text : text }
                 if OperationKinds.removesOnRejection(op) { ledger.remove(op.opId) }
             case .verify: verify = true
-            case .landed, .unknown, .unconfirmed, .expired, .ready: break
+            case .landed(let op): showInteractionOutcome(op)
+            case .unknown, .unconfirmed, .expired, .ready: break
             }
         }
         notifications.setHidden(OperationKinds.hiddenNotificationKeys(ledger))
@@ -1761,7 +1795,6 @@ final class HostConnection: ObservableObject {
                 if let pending, pending.range == "history" { historyErrors[pending.runtimeId] = message["message"] as? String ?? "历史读取失败，请重试。"; return }
             }
             if let commandId { finishAction(commandId, succeeded: false, message: message["message"] as? String) }
-            if let commandId, let request = interactionCommands.removeValue(forKey: commandId) { submittingInteractions.remove(request) }
             if let requestId = message["requestId"] as? String, requestId == activationRequestId { clearActivation() }
             if let requestId = message["requestId"] as? String, requestId == browse?.requestId {
                 browseTimeout?.cancel(); browse?.loading = false; browse?.error = message["message"] as? String
@@ -1825,27 +1858,22 @@ final class HostConnection: ObservableObject {
         }
         if type == "command.result", let commandId = event["commandId"] as? String, event["status"] as? String != "pending" {
             if runtimeActions[commandId]?.runtimeId == runtimeId { finishAction(commandId, succeeded: event["ok"] as? Bool == true, message: event["error"] as? String, result: event["result"] as? [String: Any]) }
-            if let request = interactionCommands[commandId], interactions[runtimeId]?.contains(where: { $0.requestId == request }) == true {
-                interactionCommands[commandId] = nil
-                if event["ok"] as? Bool != true { submittingInteractions.remove(request) }
-            }
         }
         if type == "interaction.requested", let raw = event["request"] as? [String: Any], let request: InteractionRequest = jsonDecode(raw), request.runtimeId == runtimeId {
             var current = interactions[runtimeId] ?? []
             current.removeAll { $0.requestId == request.requestId }; current.append(request)
-            interactions[runtimeId] = current; return
+            interactions[runtimeId] = current
+            ledgerAuthority(OperationKinds.interactionsDomain(runtimeId), read: nil, complete: false); return
         }
         if type == "interaction.snapshot" {
             let requests: [InteractionRequest] = (event["requests"] as? [[String: Any]] ?? []).compactMap(jsonDecode)
             interactions[runtimeId] = requests.filter { $0.runtimeId == runtimeId }
-            let active = Set(interactions.values.joined().map(\.requestId))
-            submittingInteractions = submittingInteractions.intersection(active)
+            ledgerAuthority(OperationKinds.interactionsDomain(runtimeId), read: nil, complete: true)
             return
         }
         if type == "interaction.resolved" || type == "interaction.cancelled", let requestId = event["requestId"] as? String {
             interactions[runtimeId]?.removeAll { $0.requestId == requestId }
-            submittingInteractions.remove(requestId)
-            interactionCommands = interactionCommands.filter { $0.value != requestId }
+            ledgerAuthority(OperationKinds.interactionsDomain(runtimeId), read: nil, complete: false)
             return
         }
         if type == "session.entry.result", event["requestId"] as? String == entryPreview?.requestId,

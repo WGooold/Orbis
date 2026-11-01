@@ -644,6 +644,7 @@ class RelayClient(
         booleanValue: Boolean? = null,
         stringValue: String? = null,
         stringValues: List<String>? = null,
+        commandId: String = UUID.randomUUID().toString(),
     ): String? = sendCommand(runtimeId, buildJsonObject {
         put("type", "interaction.respond")
         put("requestId", request.requestId)
@@ -656,9 +657,10 @@ class RelayClient(
                 else -> put("value", stringValue.orEmpty())
             }
         })
-    })
+    }, commandId)
 
-    fun respondQuestionnaire(runtimeId: String, request: PendingInteraction, answers: List<QuestionnaireAnswer>?): String? =
+    fun respondQuestionnaire(runtimeId: String, request: PendingInteraction, answers: List<QuestionnaireAnswer>?,
+                             commandId: String = UUID.randomUUID().toString()): String? =
         sendCommand(runtimeId, buildJsonObject {
             put("type", "interaction.respond")
             put("requestId", request.requestId)
@@ -676,7 +678,7 @@ class RelayClient(
                     }
                 })
             })
-        })
+        }, commandId)
 
     fun disconnect() {
         e2e = null

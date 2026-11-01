@@ -2331,6 +2331,8 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                             if (model.respondQuestionnaire(request, answers) == true && answers != null) actionHaptic()
                         },
                         onCancel = model::cancelInteraction,
+                        responding = OperationKinds.respondingRequestIds(state.ledger, runtimeId),
+                        status = state.interactionStatus(runtimeId),
                     )
                 }
             }

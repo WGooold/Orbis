@@ -3,6 +3,7 @@ package com.orbising.orbis
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -13,7 +14,9 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -64,7 +67,13 @@ internal fun InteractionWorkspace(
     respondValues: (PendingInteraction, List<String>) -> Unit,
     respondQuestionnaire: (PendingInteraction, List<QuestionnaireAnswer>?) -> Unit,
     onCancel: (PendingInteraction) -> Unit,
+    /** ADR-0049 §6.5：正在回答的请求立即收起（草稿保留），其他请求直接切到下一项。 */
+    responding: Set<String> = emptySet(),
+    /** 原位短状态：(文案, 是否处理中, 已结算结果的标识)。 */
+    status: Triple<String, Boolean, String?>? = null,
 ) {
+    val allIds = requests.map { it.requestId }.toSet()
+    @Suppress("NAME_SHADOWING") val requests = requests.filterNot { it.requestId in responding }
     val latestRequests by rememberUpdatedState(requests)
     val saver = remember {
         Saver<MutableMap<String, InteractionDraft>, String>(
@@ -90,10 +99,14 @@ internal fun InteractionWorkspace(
             open = true
         }
         seenIds = ids
-        drafts.keys.retainAll(ids.toSet())
         if (ids.isEmpty()) open = false
     }
-    val request = requests.find { it.requestId == selectedId } ?: requests.firstOrNull() ?: return
+    // 收起中的请求仍保留草稿：被拒绝后面板回到原位，答案还在。
+    LaunchedEffect(allIds) { drafts.keys.retainAll(allIds) }
+    val request = requests.find { it.requestId == selectedId } ?: requests.firstOrNull() ?: run {
+        InteractionStatus(status)
+        return
+    }
     if (inlineConfirm) {
         val draft = drafts.getOrPut(request.requestId) { InteractionDraft() }
         InteractionPanel(
@@ -133,6 +146,25 @@ internal fun InteractionWorkspace(
                 modifier = Modifier.weight(1f), connected = connected, error = message, draftState = draft,
                 onCancel = { onCancel(request) },
             )
+        }
+    }
+}
+
+/** 原面板位置的覆盖式短状态（V06）：不插入消息行、不推动正文；确认前带轻量处理中标记，结算后约 2.5 秒消失（V16）。 */
+@Composable
+private fun InteractionStatus(status: Triple<String, Boolean, String?>?) {
+    status ?: return
+    var hidden by remember(status.third) { mutableStateOf(false) }
+    if (status.third != null) LaunchedEffect(status.third) { delay(2_500); hidden = true }
+    if (hidden) return
+    NeumorphSurface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).testTag("interaction-status"),
+        shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed,
+    ) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (status.second) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Text(status.first, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
         }
     }
 }
