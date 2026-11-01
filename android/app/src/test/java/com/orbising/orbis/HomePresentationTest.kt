@@ -115,4 +115,29 @@ class HomePresentationTest {
         f.facts("a", setOf("interactions"), revision = 3)
         assertEquals(1, f.state.homeCards.size)
     }
+
+    @Test fun newDesktopCodexSessionCompletesSplitHomeReadsAndRetryWithoutRestarting() {
+        val f = HomeLoadingFixture(); f.complete("existing")
+        val before = f.state.homeCards
+        val id = "codex-desktop:new-thread"
+        f.receive("""{"type":"runtime.online","runtime":{"runtimeId":"$id","sessionId":"$id","name":"Agent","cwd":"","status":"unknown"}}""")
+        f.beginRead(id, agentKind = null)
+        assertEquals(before, f.state.homeCards)
+        assertEquals(HomeSyncStatus.Syncing, f.state.homeSyncStatus)
+        f.facts(id, setOf("execution"), agentKind = "codexDesktop")
+        assertEquals(before, f.state.homeCards)
+        f.facts(id, setOf("identity"), agentKind = "codexDesktop")
+        f.facts(id, setOf("interactions"), availability = "unknown", agentKind = "codexDesktop")
+        assertTrue(f.state.homeSyncStatus is HomeSyncStatus.Failed)
+        assertEquals(before, f.state.homeCards)
+        f.facts(id, setOf("interactions"), revision = 2, agentKind = "codexDesktop")
+        assertEquals(HomeSyncStatus.Idle, f.state.homeSyncStatus)
+        assertEquals(2, f.state.homeCards.size)
+        assertEquals("codexDesktop", f.state.homeCards.single { it.runtime.runtimeId == id }.runtime.agentKind)
+
+        f.beginRead(id, agentKind = "codexDesktop")
+        f.facts(id, revision = 2, agentKind = "codexDesktop")
+        assertEquals(HomeSyncStatus.Idle, f.state.homeSyncStatus)
+        assertEquals(2, f.state.homeCards.size)
+    }
 }

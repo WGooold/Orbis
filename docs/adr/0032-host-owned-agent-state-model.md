@@ -238,6 +238,12 @@ Codex 压缩活动绑定原生 turn 与 item 身份：条目完成、所属回�
 - 日志可以按页/游标恢复保留窗口，丢失/淘汰有明确缺口；日志、通知和聊天事实相互独立。
 - 对库存、页大小、发送/写入队列、缓存、日志与回执进行预算/压力验证；超限有明确不完整/失败结果，UI 和 Host 不被慢来源阻塞。
 
+## 2026-11-01 桌面 Codex 新会话的首次模型核对
+
+新建或发现在线会话后，首次 `agent.state.request` 与显式重试必须核对同一会话的当前库存，不能依赖设备重连才补齐。公共 Session / Runtime 身份与 adapter 内部原生 thread ID 不可混用：Codex 桌面版的公共 Session 带 `codex-desktop:` 命名空间，`CodexRuntime.announce` 接受原生 thread ID。Host 按 adapter 的 `runtimeIdFor` 映射已登记的原生 ID，再触发核对；不在 App 中解释前缀，也不将未知交互清单伪造成已确认的空清单。
+
+本次故障是模型读取把公共 Session ID 直接传给 `announce`，调用静默未命中，`interactions` 持续为 unknown；两端首页按完整快照契约报告同步失败。重新打开 App 会在握手恢复路径用原生 ID 重播，因而暂时恢复。修复覆盖首次读取与重试，iOS / Android 共用该 Host 路径。自动用例、手动 R25 与未完成门禁见 [UI 回归方案](../testing/ui-regression.md)，证据目录 `.artifacts/ui-regression/20261101-new-session-sync/`；设备 / 真实桌面 App 未验收不得记为通过。
+
 ## Consequences
 
 远端领域有一个 Host 管理入口，新增后端的工作集中在适配事实和能力，App 不再扩展原生业务分支。队列、交互、供应商与记录能与聊天和通知一样查询、核对和恢复。

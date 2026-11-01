@@ -16,30 +16,31 @@ internal class HomeLoadingFixture {
             put("runtimes", buildJsonArray { runtimes.forEach { add(Json.encodeToJsonElement(it)) } })
         }.toString())
     }
-    fun beginRead(id: String): String {
+    fun beginRead(id: String, agentKind: String? = "pi"): String {
         val runtime = state.runtimes.getValue(id)
         val request = "home-read-${++nextRead}"
-        val key = "agent|pi|${runtime.sessionId}"
+        val key = "agent|${agentKind.orEmpty()}|${runtime.sessionId}"
         val previous = state.agentStateReads.filterValues { it.runtimeId == id }.keys
         state = state.copy(agentStateRequests = state.agentStateRequests - previous + request,
             agentStateReads = state.agentStateReads - previous + (request to AgentStateRead(key, "agent", HOME_MODEL_DOMAINS,
-                id, runtime.sessionId, "pi")))
+                id, runtime.sessionId, agentKind)))
         return request
     }
     fun facts(id: String, names: Set<String> = HOME_MODEL_DOMAINS, title: String = "完整会话 $id",
               phase: String = "idle", revision: Int = 1, availability: String = "ready",
-              completeness: String = "complete", projectionComplete: Boolean = true) {
+              completeness: String = "complete", projectionComplete: Boolean = true, agentKind: String = "pi") {
         val read = state.agentStateReads.entries.first { it.value.runtimeId == id }
         val runtime = state.runtimes.getValue(id)
         val epoch = state.agentModelEpoch!!
         receive(buildJsonObject {
             put("type", "agent.state.snapshot"); put("scope", "agent"); put("requestId", read.key)
-            put("runtimeId", id); put("sessionId", runtime.sessionId); put("agentKind", "pi"); put("modelEpoch", epoch)
+            put("runtimeId", id); put("sessionId", runtime.sessionId); put("modelEpoch", epoch)
+            read.value.agentKind?.let { put("agentKind", it) }
             put("domains", buildJsonArray { names.forEach { name -> add(buildJsonObject {
                 put("domain", name); put("modelEpoch", epoch); put("revision", revision); put("checkedAt", 1)
                 put("availability", availability); put("completeness", completeness); put("projectionComplete", projectionComplete)
                 put("value", when (name) {
-                    "identity" -> Json.encodeToJsonElement(runtime.copy(name = "Pi", cwd = "/repo", sessionName = title, agentKind = "pi"))
+                    "identity" -> Json.encodeToJsonElement(runtime.copy(name = if (agentKind == "codexDesktop") "Codex" else "Pi", cwd = "/repo", sessionName = title, agentKind = agentKind))
                     "execution" -> buildJsonObject { put("phase", phase) }
                     else -> buildJsonObject { }
                 })

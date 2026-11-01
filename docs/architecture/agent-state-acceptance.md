@@ -738,6 +738,10 @@ rig Host 进程 21072 → 25624 后，App **在熄屏状态下**自动重连：`
 
 验证：`npm run check` = **111 文件 / 1135 测试全过**；`npm run lint` 通过。
 
+## 2026-11-01 桌面 Codex 首次模型读取补充
+
+模块 01 / 09 / 11 的身份与库存核对新增回归：Host 按在线 Runtime 映射原生 thread ID 后调用 `announce`，不把 `codex-desktop:` 公共 Session ID 当内部 Map 键。旧路径在桌面新建后留下 unknown 的 interactions，APP 首次读取与重试一直失败，握手恢复用原生 ID 才能补齐。`host-service.test.ts` 已构造保持同一加密连接的首次读取与重试，并以终端版对照；两端新增同名首页核心用例，实际结果与未完成的设备 / 手动 R25 门禁见 `.artifacts/ui-regression/20261101-new-session-sync/`。不据此改写第 40 批的真实环境验收结论。
+
 ## 回归要求
 
 改动 Registry 或 envelope 时必须保持：

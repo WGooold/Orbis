@@ -2749,6 +2749,65 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     }
   });
 
+  it.each(["codex", "codexDesktop"] as const)("new %s sessions complete homepage model reads and retries without reconnecting", async kind => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-desktop-new-home-"));
+    relay = await startRelayLocal(stateDir);
+    const thread = { id: "desktop-new", cwd: "D:/work/demo", status: { type: "idle" }, turns: [] };
+    let created = false;
+    const desktop = new CodexRuntime({
+      server: { mode: kind === "codexDesktop" ? "desktop" : "owned", request: vi.fn(async (method: string) => {
+        if (method === "thread/loaded/list") return { data: created ? [thread.id] : [] };
+        if (method === "thread/start") { created = true; return { thread }; }
+        if (method === "thread/read" || method === "thread/resume") return { thread };
+        if (method === "config/read") return { config: {} };
+        if (["model/list", "thread/list", "thread/turns/list", "skills/list", "mcpServerStatus/list"].includes(method)) return { data: [] };
+        throw new Error(`unexpected desktop RPC: ${method}`);
+      }), notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
+      onEvent: () => {}, rolloutRoot: join(stateDir, "rollouts"),
+    });
+    try {
+      host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+        stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
+        ...(kind === "codexDesktop" ? { codexDesktopRuntime: desktop } : { codexRuntime: desktop }) });
+      await host.start();
+      const connected = await readyDeviceCapturing({ host, relay });
+      device = connected.device;
+      expect(connected.ready).toMatchObject({ runtimes: [] });
+      const response = async (requestId: string): Promise<Record<string, unknown>> => {
+        for (let i = 0; i < 30; i += 1) {
+          const message = await device!.receiveMessage() as Record<string, unknown>;
+          if (message.requestId === requestId) return message;
+        }
+        throw new Error(`no response for ${requestId}`);
+      };
+      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "desktop-create",
+        target: { type: "new", agentKind: kind, cwd: thread.cwd } });
+      const sessionId = kind === "codexDesktop" ? "codex-desktop:desktop-new" : "desktop-new";
+      const runtimeId = desktop.runtimeIdFor(thread.id);
+      expect(await response("desktop-create")).toMatchObject({ type: "session.activated",
+        agentKind: kind, sessionId });
+      for (const requestId of ["desktop-first-read", "desktop-retry"]) {
+        sendRequest(device, { type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId,
+          scope: "agent", runtimeId, sessionId, ...(requestId === "desktop-retry" ? { agentKind: kind } : {}),
+          subscribe: true, domains: ["identity", "execution", "interactions"] });
+        const domains = new Map<string, Record<string, unknown>>();
+        while (domains.size < 3) {
+          const message = await response(requestId);
+          expect(message.error).toBeUndefined();
+          for (const domain of message.domains as Array<Record<string, unknown> & { domain: string }>) domains.set(domain.domain, domain);
+        }
+        for (const name of ["identity", "execution", "interactions"]) {
+          expect(domains.get(name)?.availability, `${kind} ${requestId} ${name}`).toBe("ready");
+          expect(domains.get(name)?.projectionComplete).toBe(true);
+        }
+        expect(domains.get("identity")?.value).toMatchObject({ runtimeId, sessionId, agentKind: kind });
+        expect(domains.get("interactions")?.value).toEqual({});
+      }
+    } finally {
+      await desktop.stop();
+    }
+  });
+
   it("Codex 空壳不进进程目录；会话激活后 runtime.online 如实重播 cwd", async () => {
     process.env.ORBIS_CODEX_HEAD = "0"; // 别在测试机上真开终端窗口
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));

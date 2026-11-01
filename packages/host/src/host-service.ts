@@ -1093,8 +1093,9 @@ export class HostService {
       // Recovery asks the source outside Registry's commit path; publications arrive through the same writer.
       this.#loopback?.sendResync(runtimeId, "model_reconcile");
       for (const backend of this.#backends) if (backend instanceof CodexRuntime && backend.ownsRuntime(runtimeId)) {
-        const entry = backend.directoryEntries?.().find(candidate => candidate.runtimeId === runtimeId);
-        if (entry?.sessionId) backend.announce(entry.sessionId);
+        // announce takes a native thread ID; desktop session IDs carry a public namespace.
+        const threadId = backend.activeThreadIds().find(id => backend.runtimeIdFor(id) === runtimeId);
+        if (threadId !== undefined) backend.announce(threadId);
       }
       if (this.#options.dshRuntime?.ownsRuntime(runtimeId)) this.#options.dshRuntime.announce();
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);

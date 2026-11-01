@@ -48,7 +48,7 @@ struct HomeRuntimeLoadingTests {
 
     private func loadFacts(_ transport: Transport, id: String = "a", names: [String] = AgentState.domainNames,
                            phase: String = "running", title: String? = nil, epoch: String = "epoch",
-                           revision: Int = 1, availability: String = "ready") async throws {
+                           revision: Int = 1, availability: String = "ready", agentKind: String = "claude") async throws {
         let request = try #require(transport.sent.last {
             $0["type"] as? String == "agent.state.request" && $0["runtimeId"] as? String == id
         })
@@ -57,7 +57,7 @@ struct HomeRuntimeLoadingTests {
             let value: Any
             switch name {
             case "identity": value = ["runtimeId": id, "sessionId": session, "name": "Claude Code",
-                "cwd": "/repo", "sessionName": title ?? "Verified " + id, "agentKind": "claude"]
+                "cwd": "/repo", "sessionName": title ?? "Verified " + id, "agentKind": agentKind]
             case "execution": value = ["phase": phase]
             case "interactions": value = [String: Any]()
             default: value = NSNull()
@@ -68,7 +68,7 @@ struct HomeRuntimeLoadingTests {
                 "source": ["producer": "host", "sourceId": "host-1", "sourceEpoch": "native", "sourceRevision": revision]]
         }
         await transport.emit(["type": "agent.state.snapshot", "scope": "agent", "requestId": request["requestId"]!,
-            "runtimeId": id, "sessionId": session, "agentKind": "claude", "modelEpoch": epoch,
+            "runtimeId": id, "sessionId": session, "agentKind": agentKind, "modelEpoch": epoch,
             "domains": domains, "missing": [], "truncated": false])
     }
 
@@ -254,5 +254,32 @@ struct HomeRuntimeLoadingTests {
         #expect(host.homeRuntimesError != nil)
         try await loadFacts(transport, names: ["execution"], revision: 2)
         #expect(host.homeCards.first?.runtime.status == "running")
+    }
+
+    @Test func newDesktopCodexSessionCompletesSplitHomeReadsAndRetryWithoutRestarting() async throws {
+        let (store, transport) = setup()
+        await transport.ready([runtime()])
+        try await loadFacts(transport)
+        let host = try #require(store.hosts.first?.connection)
+        let before = host.homePresentation
+        let id = "codex-desktop:new-thread"
+        await transport.emit(["type": "runtime.online", "runtime": runtime(id, session: id)])
+        #expect(host.homePresentation == before)
+        #expect(host.homeSyncStatus == .syncing)
+        try await loadFacts(transport, id: id, names: ["execution"], agentKind: "codexDesktop")
+        try await loadFacts(transport, id: id, names: ["identity"], agentKind: "codexDesktop")
+        try await loadFacts(transport, id: id, names: ["interactions"], availability: "unknown", agentKind: "codexDesktop")
+        #expect(host.homeRuntimesError != nil)
+        #expect(host.homePresentation == before)
+        try await loadFacts(transport, id: id, names: ["interactions"], revision: 2, agentKind: "codexDesktop")
+        #expect(host.homeSyncStatus == .idle)
+        #expect(host.homeCards.count == 2)
+        #expect(host.homeCards.first { $0.id == id }?.agentKind == "codexDesktop")
+
+        store.refresh()
+        try await loadFacts(transport)
+        try await loadFacts(transport, id: id, revision: 2, agentKind: "codexDesktop")
+        #expect(host.homeSyncStatus == .idle)
+        #expect(host.homeCards.count == 2)
     }
 }
