@@ -1,6 +1,6 @@
 # 移动端 UI 回归方案
 
-日期：2026-11-01。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-01/r25`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-01。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-01/r29`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 10 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -155,6 +155,9 @@ Claude 输出交接回归（V09、V17–V18）：Host `claude-transcript.test.ts
 所有状态输入契约（[ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md)，V05、V09–V10、V12、V16–V18）：AIN-01–AIN-07 覆盖协议全集、状态准入、命令回执、各适配器与双端 outbox、专用服务。`runtime-command-lifecycle.test.ts`、`runtime-input-policy.test.ts` 及 Codex / Pi bridge / Claude / DSH 和两端 PendingSend 测试已补充；iOS 新增 `testUnconfirmedSendCanBeCheckedWithoutResending`、`testCompactionQueuedSendCanBeWithdrawn`，Store 单测覆盖 Slash 草稿在拒绝 / 未确认后保留、成功后清理；Android `OptimisticActionsInstrumentedTest`（3 项）验证排队撤回、未确认核对及不提供自动重发。实现与门禁结果分开记录，未完成全量前不记为通过。
 带 `assumeTrue(ValueAnimator.areAnimatorsEnabled())` 的设备用例（下载飞入、流式顺序）在系统关闭动画时跳过，A4 路径以手动检查为准。
 
+
+S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionReminderAppearsWhileReadingAndLocatesTheOriginalWithoutFollowing`、`testQuestionReminderTracksNewSourceQuestionsWithoutMovingTheReader`；Android `ChatQuestionTest`、`ChatQuestionReminderInstrumentedTest`（4）。覆盖源消息身份、可见性、点击定位、阅读锚点、通知优先和 Host 隔离，配合既有视口用例及手动 R31，A1–A5；未验收不得计为交付。
+
 ## 4. 手动回归
 
 ### 4.1 执行方式与证据
@@ -251,6 +254,12 @@ Claude 输出交接回归（V09、V17–V18）：Host `claude-transcript.test.ts
 | --- | --- | --- | --- |
 | R25 | 两端分别连接隔离 Host，保留至少一张既有卡片，在 APP 新建 Codex 桌面版会话；回首页后再新建一条；下拉刷新；模拟一次模型读取失败后点胶囊重试；另以终端 Codex 作对照。全程保持 APP 和 E2E 连接，不重启；A1 / A2，A3 / A4 抽查 | 准备时保留旧完整卡片，identity / execution / interactions 齐备后一次发布新卡片并退出“正在同步”；正常新建不常驻“同步失败”；失败后的重试也能恢复，不依赖重新握手；桌面公共 ID 不进入 adapter 原生 thread 查找，无半成品卡片与位置跳变 | S18、V16–V18 |
 
+### 最近提问提示专项（ADR-0057 / S24）
+
+| 编号 | 步骤 | 预期 | ID |
+| --- | --- | --- | --- |
+| R31 | 打开含长回复的会话，先保持跟随，再上翻；滚到原提问与更早轮次；点击提示，再回到最新。加入连续同文提问、长多行/emoji/附件问题、本地发送失败/未确认、源端新问题、通知、补页及分支/电脑切换；重复明暗、窄屏大字、减少动画及宽屏 | 初始不显示；主动阅读离底部三行且原问题不可见后显示两行预览；原问题可见和回到最新收起。点击只定位原消息、保留非跟随，不自动分页。源端更新不带走锚点，不把本地待确认消息当已发送问题；通知优先、隔离无残留。浮层出现前后正文/输入区几何不变；160ms淡变，无尺寸动画，减少动画直切；辅助功能保留全文，触控至少48pt/dp | S24（关联 S10、S13、S17、V01–V04、V06、V09、V17–V18） |
+
 ## 5. 新增或修改 UI 时的用例编写要求
 
 1. **同一任务写用例。** 每个新增或修改的 feature ID 至少有：一个设备 UI 用例，断言该规则的具体数值或几何（坐标、尺寸、可见性、顺序、帧序），只断言“元素存在”不够；状态或逻辑另配单元测试；以及 §4 的手动清单条目。同时更新 §3.3 映射。
@@ -282,6 +291,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+2026-11-01 最近提问提示（S24 / ADR-0057）：iOS 233 核心测试与 App / UI Test 构建、Android 568 JVM 测试和 APK 构建通过；Android 提醒专项 4 项通过，全量 146 项 4 失败均属于同设备基线 139 项 5 失败集合。iOS 新增定向用例发现刷新后锚点断言失败，完整设备 / 手动及 A1–A5 未完成，不记为验收通过。证据见 `.artifacts/ui-regression/20261101-question-reminder/summary.md`。
 
 2026-11-01 Codex 桌面新会话同步：Host 公共 Session / 原生 thread ID 边界修复已用回放验证“修复前桌面失败、终端通过；修复后两者通过”，相关 Host 236 项全过。隔离 Node 全量失败集合与基线相同；Android 549 项、Swift 224 项与双端构建通过；iOS 首页同步专项 5 项通过，全量为 54 通过 / 7 失败，111 张命名全量截图及专项 16 张已查看。Android 设备回归因共享池兼容设备连续被其他任务独占而未运行；完整手动 C01–C18 / R25 未完成，不能记为全量验收。最终状态与失败见 `.artifacts/ui-regression/20261101-new-session-sync/summary.md`。
 
