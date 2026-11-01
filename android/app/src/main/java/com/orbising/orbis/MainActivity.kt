@@ -1938,7 +1938,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                     ComposerContextRail(composerStatus(runtime))
                     PendingMessagesPanel(
                         messages = state.queuePanelItems(runtimeId),
-                        pendingCommands = state.pendingCommands.keys,
+                        unconfirmed = OperationKinds.unconfirmedQueueIds(state.ledger, runtimeId),
                         canSend = state.e2eReady && runtime != null,
                         onCancel = model::cancelQueuedMessage,
                     )
@@ -3877,13 +3877,11 @@ private fun ToolCard(tool: ToolActivity) {
 @Composable
 private fun PendingMessagesPanel(
     messages: List<QueuedMessage>,
-    pendingCommands: Set<String>,
+    unconfirmed: Set<String>,
     canSend: Boolean,
     onCancel: (String) -> String?,
 ) {
     if (messages.isEmpty()) return
-    // queueId -> 撤回命令；命令仍在 pendingCommands 里时显示「撤回中…」。
-    var cancellations by remember { mutableStateOf(emptyMap<String, String>()) }
     // S6：附属物用真凹陷面（inset 面 + 内阴影）；半透明叠加的色随底板漂移，和其他凹陷面对不上。
     NeumorphSurface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding, vertical = 8.dp),
@@ -3902,10 +3900,8 @@ private fun PendingMessagesPanel(
                 contentPadding = PaddingValues(bottom = 6.dp),
             ) {
                 items(messages, key = { "queued:${it.queueId}" }) { message ->
-                    val cancelling = cancellations[message.queueId]?.let { it in pendingCommands } == true
-                    QueuedMessageRow(message, cancelling, canSend) {
-                        onCancel(message.queueId)?.let { cancellations = cancellations + (message.queueId to it) }
-                    }
+                    // ADR-0049 §6.3：撤回结果不明时回到原位并标“撤回未确认”，核对前不能再撤回。
+                    QueuedMessageRow(message, message.queueId in unconfirmed, canSend) { onCancel(message.queueId) }
                 }
             }
         }
@@ -3913,7 +3909,7 @@ private fun PendingMessagesPanel(
 }
 
 @Composable
-private fun QueuedMessageRow(message: QueuedMessage, cancelling: Boolean, canSend: Boolean, onCancel: () -> Unit) {
+private fun QueuedMessageRow(message: QueuedMessage, unconfirmed: Boolean, canSend: Boolean, onCancel: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -3929,8 +3925,8 @@ private fun QueuedMessageRow(message: QueuedMessage, cancelling: Boolean, canSen
         }
         // 只有还没送进上下文的消息能撤回；结果由队列事件回报（与 iOS 一致）。
         if (message.state == "accepted") {
-            NeumorphTextButton(if (cancelling) "撤回中…" else "撤回", onClick = onCancel, icon = Icons.Rounded.Close,
-                enabled = canSend && !cancelling)
+            NeumorphTextButton(if (unconfirmed) "撤回未确认" else "撤回", onClick = onCancel, icon = Icons.Rounded.Close,
+                enabled = canSend && !unconfirmed)
         }
     }
 }

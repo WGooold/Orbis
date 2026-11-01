@@ -197,7 +197,11 @@ internal fun RemoteState.reconcilePendingSends(now: Long): Pair<RemoteState, Set
 
 /** 队列面板：Host 队列项，加上带 `delivery` 且仍在提交中的本地行。 */
 internal fun RemoteState.queuePanelItems(runtimeId: String): List<QueuedMessage> {
-    val host = conversations[runtimeId]?.queuedMessages.orEmpty().values.filterNot { pendingSends.hidesQueueItem(it.queueId) }
+    // ADR-0049 §6.3：撤回已写入、等待回执的队列项先退场。
+    val cancelling = OperationKinds.cancellingQueueIds(ledger, runtimeId)
+    val host = conversations[runtimeId]?.queuedMessages.orEmpty().values
+        // `cancelled`：撤回已完成，不再显示（ADR-0049 §6.3）。
+        .filterNot { pendingSends.hidesQueueItem(it.queueId) || it.queueId in cancelling || it.state == "cancelled" }
     val local = pendingSends.queueRows(runtimes[runtimeId]?.sessionId)
         .filter { send -> host.none { it.queueId == send.messageId } }
         .map { QueuedMessage(it.messageId, it.text, it.delivery ?: "followUp", "submitting") }

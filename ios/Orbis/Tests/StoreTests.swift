@@ -964,13 +964,18 @@ struct StoreTests {
         #expect(!store.cancelQueuedMessage("queue-1"))
         let commandId = try #require(transport.sent.last?["commandId"] as? String)
         #expect((transport.sent.last?["command"] as? [String: Any])?["messageId"] as? String == "queue-1")
+        // ADR-0049 §6.3：回执只认同一 Runtime；成功回执后仍等 Host 队列体现结果，队列项不闪回。
         await transport.event(["type": "command.result", "commandId": commandId, "ok": true], runtimeId: "b", sequence: 2, channel: "ctl")
-        #expect(store.pendingQueueCancellations.contains("queue-1"))
+        #expect(store.activeConnection.ledger.operation(commandId)?.succeeded == false)
+        #expect(store.queuePanelItems("a").isEmpty)
         await transport.event(["type": "command.result", "commandId": commandId, "ok": true], sequence: 2, channel: "ctl")
-        #expect(store.pendingQueueCancellations.isEmpty)
+        #expect(store.activeConnection.ledger.operation(commandId)?.succeeded == true)
         #expect(store.queuedMessages["a"]?.first?.state == "accepted")
+        #expect(store.queuePanelItems("a").isEmpty)
         await transport.event(["type": "message.queued", "queueId": "queue-1", "text": "later", "delivery": "followUp", "state": "cancelled"], sequence: 3, channel: "ctl")
         #expect(store.queuedMessages["a"]?.first?.state == "cancelled")
+        #expect(store.activeConnection.ledger.operations.isEmpty)
+        #expect(store.queuePanelItems("a").isEmpty)
     }
 
     @Test func lastSessionSelectionSurvivesRuntimeRoutingChangesWithoutActivation() async throws {

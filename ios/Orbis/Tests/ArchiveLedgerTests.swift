@@ -80,14 +80,19 @@ struct ArchiveLedgerTests {
         await transport.ready()
     }
 
-    @Test func archiveMovesAtOnceAndLandsOnTheChangeNotice() async throws {
+    @Test func archiveMovesAtOnceAndLandsWhenTheCatalogShowsIt() async throws {
         let (host, transport, fixture) = try await setup(); defer { withExtendedLifetime(fixture) {} }
         host.archive(try session(host, "s1"), archived: true)
         #expect(archived(host, "s1"))
         #expect(host.isArchiving("s1"))
         let id = try #require(transport.archiveIds.last)
         await transport.emit(["type": "session.archive.changed", "requestId": id, "agentKind": "codex", "sessionId": "s1", "archived": true])
+        // 变更通知只说明 Host 已完成；目录刷新前卡片不闪回原列表。
+        #expect(host.ledger.operation(id)?.succeeded == true)
+        #expect(archived(host, "s1"))
+        try await transport.catalog(["s1": true, "s2": false])
         #expect(host.ledger.operations.isEmpty)
+        #expect(archived(host, "s1"))
         #expect(host.errorMessage == nil)
     }
 
@@ -131,6 +136,9 @@ struct ArchiveLedgerTests {
         host.reconnectSelectedHost()
         await transport.ready()
         try await transport.answerRead([id: "success"])
+        #expect(host.ledger.operation(id)?.succeeded == true)
+        #expect(host.isArchiving("s1"))
+        try await transport.catalog(["s1": true, "s2": false])
         #expect(host.ledger.operations.isEmpty)
         #expect(host.errorMessage == nil)
     }

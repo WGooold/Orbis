@@ -54,11 +54,15 @@ class ArchiveLedgerTest {
 
     private fun reconnect(state: RemoteState) = ready(state.markReconnecting()).copy(e2eReady = true).ledgerOpenConnection()
 
-    @Test fun archiveMovesAtOnceAndLandsOnTheChangeNotice() {
+    @Test fun archiveMovesAtOnceAndLandsWhenTheCatalogShowsIt() {
         var (state, id) = archive(setup(), "s1")
         assertTrue(archived(state, "s1"))
         assertEquals(setOf("s1"), state.archivingSessionIds)
         state = reducer.reduce(state, """{"type":"session.archive.changed","requestId":"$id","agentKind":"codex","sessionId":"s1","archived":true}""", channel = "ctl")
+        // 变更通知只说明 Host 已完成；目录刷新前卡片不闪回原列表。
+        assertTrue(state.ledger.operation(id)?.succeeded == true)
+        assertTrue(archived(state, "s1"))
+        state = catalog(state, "s1" to true, "s2" to false)
         assertTrue(state.ledger.operations.isEmpty())
         assertNull(state.error)
     }
@@ -93,6 +97,9 @@ class ArchiveLedgerTest {
         state = reconnect(state)
         val (reading, read) = read(state)
         state = answer(reading, read, mapOf(id to "success"))
+        assertTrue(state.ledger.operation(id)?.succeeded == true)
+        assertTrue(archived(state, "s1"))
+        state = catalog(state, "s1" to true, "s2" to false)
         assertTrue(state.ledger.operations.isEmpty())
         assertNull(state.error)
     }

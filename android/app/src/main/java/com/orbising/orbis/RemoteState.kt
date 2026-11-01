@@ -3110,7 +3110,7 @@ class RelayReducer(
                     return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
                 }
                 // 账本里的操作只由账本结算，并由种类给出带上下文的提示，通用失败分支不再覆盖它（L1）。
-                if (commandId != null && state.ledger.operation(commandId) != null) {
+                if (commandId != null && state.ledger.operation(commandId)?.let { OperationKinds.runtimeId(it) ?: runtimeId } == runtimeId) {
                     val receipt = OperationKinds.receipt(event["ok"]?.jsonPrimitive?.booleanOrNull == true, event.string("status"), event.string("error"))
                     return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
                         .ledgerReceipt(commandId, receipt, System.currentTimeMillis())
@@ -3203,7 +3203,7 @@ class RelayReducer(
                 val runtimeError = event.string("message")?.takeIf(String::isNotBlank)
                     ?: "运行实例发生错误"
                 val commandId = event.string("commandId")
-                if (commandId != null && state.ledger.operation(commandId) != null) {
+                if (commandId != null && state.ledger.operation(commandId)?.let { OperationKinds.runtimeId(it) ?: runtimeId } == runtimeId) {
                     return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
                         .ledgerReceipt(commandId, LedgerReceipt.Failed(LedgerRejection("runtime_error", runtimeError)), System.currentTimeMillis())
                 }

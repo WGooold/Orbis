@@ -1379,12 +1379,24 @@ internal class HostConnection(
     }
 
     /** Returns the command id while the withdrawal is pending, or null when it could not be sent. */
+    /** ADR-0049 §6.3 `queueCancel`：队列项立即退场；回执、断线、期限与核对全部交给账本。 */
     fun cancelQueuedMessage(queueId: String): String? {
         val state = mutableState.value
         val runtimeId = state.selectedRuntimeId ?: return null
         if (state.conversations[runtimeId]?.queuedMessages?.get(queueId)?.state != "accepted") return null
-        val commandId = relay.cancelQueuedMessage(runtimeId, queueId)
-        trackCommand(commandId, runtimeId, "撤回请求未发送：中继服务器当前离线")
+        val commandId = UUID.randomUUID().toString()
+        var created = false
+        updateState { current ->
+            val (next, creation) = current.createQueueCancel(commandId, runtimeId, queueId, System.currentTimeMillis())
+            created = creation is LedgerCreation.Created
+            if (created) next else current
+        }
+        if (!created) return null
+        if (relay.cancelQueuedMessage(runtimeId, queueId, commandId) == null) {
+            updateState { it.copy(ledger = it.ledger.remove(commandId), error = "撤回请求未发送：中继服务器当前离线") }
+            return null
+        }
+        updateState { it.ledgerWritten(commandId, System.currentTimeMillis()) }
         return commandId
     }
 

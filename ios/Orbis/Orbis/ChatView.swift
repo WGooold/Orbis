@@ -1398,8 +1398,10 @@ struct QueuedMessagesView: View {
                 Text(deliveryTitle(item.delivery) + "，" + queueStateTitle(item.state)).font(.orbisCaption(.semibold))
                 Spacer(minLength: 8)
                 if item.state == "accepted" {
-                    OrbisTextButton(title: store.pendingQueueCancellations.contains(item.queueId) ? "撤回中…" : "撤回", symbol: "xmark") { _ = store.cancelQueuedMessage(item.queueId) }
-                        .disabled(!store.canSend || store.pendingQueueCancellations.contains(item.queueId)).accessibilityIdentifier("queue-cancel-" + item.queueId)
+                    // ADR-0049 §6.3：撤回结果不明时回到原位并标“撤回未确认”，核对前不能再撤回。
+                    let unconfirmed = store.unconfirmedQueueCancellations(runtimeId).contains(item.queueId)
+                    OrbisTextButton(title: unconfirmed ? "撤回未确认" : "撤回", symbol: "xmark") { _ = store.cancelQueuedMessage(item.queueId) }
+                        .disabled(!store.canSend || unconfirmed).accessibilityIdentifier("queue-cancel-" + item.queueId)
                 }
             }
             Text(item.text).font(.orbisCaption()).lineLimit(3).textSelection(.enabled)

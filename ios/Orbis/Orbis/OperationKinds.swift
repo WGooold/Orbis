@@ -8,6 +8,8 @@ enum LedgerPayload: Equatable {
     case dismiss(runtimeId: String, hostEpoch: String, notificationId: String)
     /// 归档 / 取消归档（每张卡片一条）。
     case archive(sessionId: String, agentKind: String, archived: Bool)
+    /// 撤回排队消息。
+    case queueCancel(runtimeId: String, queueId: String)
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -22,6 +24,9 @@ enum OperationKinds {
     static let archive = "archive"
     /// 会话目录（HostState.catalog / session.list）在账本里的领域名。
     static let catalogDomain = "catalog"
+    static let queueCancel = "queueCancel"
+    /// 某个 Runtime 的 Host 队列（delivery 领域）在账本里的领域名。
+    static func queueDomain(_ runtimeId: String) -> String { "queue:" + runtimeId }
     /// 某个 Runtime 的通知清单在账本里的领域名：每个 Runtime 的通知快照各自独立。
     static func noticesDomain(_ runtimeId: String) -> String { "notifications:" + runtimeId }
     /// 账本发起的核对读取（L5）使用的 requestId 前缀。
@@ -74,12 +79,13 @@ enum OperationKinds {
 
     static let archiveUnconfirmed = AppLedger.Rejection("unconfirmed", "电脑上的会话目录仍是原状态")
 
-    /// `archive`：同一 requestId 的 `session.archive.changed` 或设备回执 success 即落地（Host 已完成原生归档）；
-    /// 带同一 requestId 的 `protocol.error` 为拒绝；结果不明且核对后目录仍为原状态时恢复并提示。
+    /// `archive`：同一 requestId 的 `session.archive.changed` 或设备回执 success 表示 Host 已完成原生归档；
+    /// 卡片留在目标列表直到目录体现结果（避免目录刷新前闪回），15 秒仍未体现就转结果不明核对。
+    /// 带同一 requestId 的 `protocol.error` 为拒绝；核对后目录仍为原状态时恢复并提示。
     static let archivePolicy = AppLedger.Policy(
-        successLands: true,
+        successLands: false,
         acceptedBudget: AppLedger.receiptBudget,
-        afterSuccess: nil,
+        afterSuccess: (15, .unknown),
         whenUnresolved: .reject(archiveUnconfirmed),
         deviceReceipts: true,
         appliesBeforeLaterReads: false
@@ -101,10 +107,62 @@ enum OperationKinds {
         return (sessions[sessionId]?.archived == true) == archived ? .landed : .none
     }
 
-    /// 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片）提示后回到原位；内容类保留失败状态等用户处理。
+    static let queueAlreadyDelivered = AppLedger.Rejection("already_delivered", "消息已交给 Agent")
+
+    /// `queueCancel`：成功回执（`cancelled`）或队列项转为 `cancelled` 即落地；`already_delivered`、`not_cancelable` 等为拒绝。
+    /// 结果不明且核对后：仍在队列就静默放回、可再撤回；已不在完整队列中就以权威队列为准不再显示（ADR-0049 §6.3）。
+    /// 成功回执后队列项保持退场，直到 Host 队列体现结果（避免闪回），15 秒仍未体现就转结果不明核对。
+    static let queueCancelPolicy = AppLedger.Policy(
+        successLands: false,
+        acceptedBudget: AppLedger.receiptBudget,
+        afterSuccess: (15, .unknown),
+        whenUnresolved: .reject(.init("not_cancelled", "")),
+        deviceReceipts: true,
+        appliesBeforeLaterReads: false
+    )
+
+    static func queueCancelTarget(runtimeId: String, queueId: String) -> String { "queue:\(runtimeId):\(queueId)" }
+
+    /// 撤回已写入、等待回执的队列项：先按既有移除呈现退场。
+    static func cancellingQueueIds(_ ledger: AppLedger, runtimeId: String) -> Set<String> {
+        Set(ledger.operations.compactMap { op in
+            guard op.phase == .sent || op.phase == .accepted, case .queueCancel(let owner, let queueId) = op.payload, owner == runtimeId else { return nil }
+            return queueId
+        })
+    }
+
+    /// 撤回结果不明：队列项回到原位并标“撤回未确认”，核对前不能再撤回。
+    static func unconfirmedQueueIds(_ ledger: AppLedger, runtimeId: String) -> Set<String> {
+        Set(ledger.operations.compactMap { op in
+            guard op.phase == .unknown || op.phase == .unconfirmed, case .queueCancel(let owner, let queueId) = op.payload, owner == runtimeId else { return nil }
+            return queueId
+        })
+    }
+
+    /// Host 队列对 `queueCancel` 说明了什么：已 `cancelled`，或成功回执后已不在队列中，即落地；
+    /// 未见成功回执而仍 `accepted` 是反向证据（只在因果晚于撤回时采用）。
+    static func queueEvidence(_ op: AppLedger.Operation, queue: [QueuedMessage]) -> AppLedger.Evidence {
+        guard case .queueCancel(_, let queueId) = op.payload else { return .none }
+        switch queue.first(where: { $0.queueId == queueId })?.state {
+        case "cancelled": return .landed
+        case "accepted": return op.succeeded ? .none : .notApplied
+        case nil: return op.succeeded ? .landed : .none
+        default: return .none
+        }
+    }
+
+    /// 回执所属的 Runtime：Runtime 级命令的回执只认同一 Runtime 的事件（Host 按 runtimeId + commandId 归属）。
+    static func runtimeId(of op: AppLedger.Operation) -> String? {
+        switch op.payload {
+        case .quit(let runtimeId), .queueCancel(let runtimeId, _): return runtimeId
+        case .dismiss, .archive: return nil
+        }
+    }
+
+    /// 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片、队列项）提示后回到原位；内容类保留失败状态等用户处理。
     static func removesOnRejection(_ op: AppLedger.Operation) -> Bool {
         switch op.payload {
-        case .quit, .dismiss, .archive: return true
+        case .quit, .dismiss, .archive, .queueCancel: return true
         }
     }
 
@@ -121,7 +179,7 @@ enum OperationKinds {
     static func evidence(_ op: AppLedger.Operation, runtimeIds: Set<String>) -> AppLedger.Evidence {
         switch op.payload {
         case .quit(let runtimeId): return runtimeIds.contains(runtimeId) ? .none : .landed
-        case .dismiss, .archive: return .none
+        case .dismiss, .archive, .queueCancel: return .none
         }
     }
 
@@ -160,6 +218,13 @@ enum OperationKinds {
         case .dismiss: return nil // 通知重新显示即说明关闭未生效，不另弹错误（ADR-0049 §6.6）。
         case .archive(_, _, let archived):
             return (archived ? "归档未完成：" : "恢复未完成：") + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
+        case .queueCancel:
+            // 队列里仍有它就静默放回；已投递时就近说明，消息随权威记录出现在聊天中。
+            switch rejection.code {
+            case "not_cancelled", "not_applied": return nil
+            case "already_delivered": return "撤回未完成：" + queueAlreadyDelivered.reason
+            default: return "撤回未完成：" + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
+            }
         }
     }
 

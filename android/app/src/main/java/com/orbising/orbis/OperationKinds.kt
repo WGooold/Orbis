@@ -14,6 +14,8 @@ sealed interface LedgerPayload {
     data class Dismiss(val runtimeId: String, val hostEpoch: String, val notificationId: String) : LedgerPayload
     /** 归档 / 取消归档（每张卡片一条）。 */
     data class Archive(val sessionId: String, val agentKind: String, val archived: Boolean) : LedgerPayload
+    /** 撤回排队消息。 */
+    data class QueueCancel(val runtimeId: String, val queueId: String) : LedgerPayload
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -30,6 +32,9 @@ object OperationKinds {
     const val ARCHIVE = "archive"
     /** 会话目录（HostState.catalog / session.list）在账本里的领域名。 */
     const val CATALOG_DOMAIN = "catalog"
+    const val QUEUE_CANCEL = "queueCancel"
+    /** 某个 Runtime 的 Host 队列（delivery 领域）在账本里的领域名。 */
+    fun queueDomain(runtimeId: String) = "queue:$runtimeId"
     /** 某个 Runtime 的通知清单在账本里的领域名：每个 Runtime 的通知快照各自独立。 */
     fun noticesDomain(runtimeId: String) = "notifications:$runtimeId"
     /** 账本发起的核对读取（L5）使用的 requestId 前缀。 */
@@ -78,12 +83,15 @@ object OperationKinds {
     val archiveUnconfirmed = LedgerRejection("unconfirmed", "电脑上的会话目录仍是原状态")
 
     /**
-     * `archive`：同一 requestId 的 `session.archive.changed` 或设备回执 success 即落地（Host 已完成原生归档）；
-     * 带同一 requestId 的 `protocol.error` 为拒绝；结果不明且核对后目录仍为原状态时恢复并提示。
+     * `archive`：同一 requestId 的 `session.archive.changed` 或设备回执 success 表示 Host 已完成原生归档；
+     * 卡片留在目标列表直到目录体现结果（避免目录刷新前闪回），15 秒仍未体现就转结果不明核对。
+     * 带同一 requestId 的 `protocol.error` 为拒绝；核对后目录仍为原状态时恢复并提示。
      */
     val archivePolicy = LedgerPolicy(
-        successLands = true,
+        successLands = false,
         acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
+        afterSuccessMs = 15_000,
+        afterSuccess = LedgerTimeout.Unknown,
         whenUnresolved = LedgerTimeout.Reject(archiveUnconfirmed),
         deviceReceipts = true,
     )
@@ -102,9 +110,58 @@ object OperationKinds {
         return if ((sessions[payload.sessionId]?.archived == true) == payload.archived) LedgerEvidence.LANDED else LedgerEvidence.NONE
     }
 
-    /** 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片）提示后回到原位；内容类保留失败状态等用户处理。 */
+    val queueAlreadyDelivered = LedgerRejection("already_delivered", "消息已交给 Agent")
+
+    /**
+     * `queueCancel`：成功回执（`cancelled`）或队列项转为 `cancelled` 即落地；`already_delivered`、`not_cancelable` 等为拒绝。
+     * 结果不明且核对后：仍在队列就静默放回、可再撤回；已不在完整队列中就以权威队列为准不再显示（ADR-0049 §6.3）。
+     */
+    val queueCancelPolicy = LedgerPolicy(
+        // 成功回执后队列项保持退场，直到 Host 队列体现结果（避免闪回），15 秒仍未体现就转结果不明核对。
+        successLands = false,
+        acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
+        afterSuccessMs = 15_000,
+        afterSuccess = LedgerTimeout.Unknown,
+        whenUnresolved = LedgerTimeout.Reject(LedgerRejection("not_cancelled", "")),
+        deviceReceipts = true,
+    )
+
+    fun queueCancelTarget(runtimeId: String, queueId: String) = "queue:$runtimeId:$queueId"
+
+    /** 撤回已写入、等待回执的队列项：先按既有移除呈现退场。 */
+    fun cancellingQueueIds(ledger: AppLedger, runtimeId: String): Set<String> = ledger.operations
+        .filter { it.phase == LedgerPhase.Sent || it.phase == LedgerPhase.Accepted }
+        .mapNotNullTo(mutableSetOf()) { (it.payload as? LedgerPayload.QueueCancel)?.takeIf { p -> p.runtimeId == runtimeId }?.queueId }
+
+    /** 撤回结果不明：队列项回到原位并标“撤回未确认”，核对前不能再撤回。 */
+    fun unconfirmedQueueIds(ledger: AppLedger, runtimeId: String): Set<String> = ledger.operations
+        .filter { it.phase == LedgerPhase.Unknown || it.phase == LedgerPhase.Unconfirmed }
+        .mapNotNullTo(mutableSetOf()) { (it.payload as? LedgerPayload.QueueCancel)?.takeIf { p -> p.runtimeId == runtimeId }?.queueId }
+
+    /**
+     * Host 队列对 `queueCancel` 说明了什么：已 `cancelled`，或成功回执后已不在队列中，即落地；
+     * 未见成功回执而仍 `accepted` 是反向证据（只在因果晚于撤回时采用）。
+     */
+    fun queueEvidence(op: LedgerOperation<LedgerPayload>, queue: Map<String, QueuedMessage>): LedgerEvidence {
+        val payload = op.payload as? LedgerPayload.QueueCancel ?: return LedgerEvidence.NONE
+        return when (queue[payload.queueId]?.state) {
+            "cancelled" -> LedgerEvidence.LANDED
+            "accepted" -> if (op.succeeded) LedgerEvidence.NONE else LedgerEvidence.NOT_APPLIED
+            null -> if (op.succeeded) LedgerEvidence.LANDED else LedgerEvidence.NONE
+            else -> LedgerEvidence.NONE
+        }
+    }
+
+    /** 回执所属的 Runtime：Runtime 级命令的回执只认同一 Runtime 的事件（Host 按 runtimeId + commandId 归属）。 */
+    fun runtimeId(op: LedgerOperation<LedgerPayload>): String? = when (val payload = op.payload) {
+        is LedgerPayload.Quit -> payload.runtimeId
+        is LedgerPayload.QueueCancel -> payload.runtimeId
+        is LedgerPayload.Dismiss, is LedgerPayload.Archive -> null
+    }
+
+    /** 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片、队列项）提示后回到原位；内容类保留失败状态等用户处理。 */
     fun removesOnRejection(op: LedgerOperation<LedgerPayload>): Boolean = when (op.payload) {
-        is LedgerPayload.Quit, is LedgerPayload.Dismiss, is LedgerPayload.Archive -> true
+        is LedgerPayload.Quit, is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel -> true
     }
 
     /** 首页要隐藏的卡片：未结算的 `quit` 一直保持叠加，包括结果不明期间（L4）。 */
@@ -118,7 +175,7 @@ object OperationKinds {
      */
     fun evidence(op: LedgerOperation<LedgerPayload>, runtimeIds: Set<String>): LedgerEvidence = when (val payload = op.payload) {
         is LedgerPayload.Quit -> if (payload.runtimeId in runtimeIds) LedgerEvidence.NONE else LedgerEvidence.LANDED
-        is LedgerPayload.Dismiss, is LedgerPayload.Archive -> LedgerEvidence.NONE
+        is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel -> LedgerEvidence.NONE
     }
 
     /** `command.result` 的回执。`cancelled` / `unconfirmed` 是可能已执行的结果，交给账本按结果不明处理。 */
@@ -154,6 +211,12 @@ object OperationKinds {
             is LedgerPayload.Dismiss -> null // 通知重新显示即说明关闭未生效，不另弹错误（ADR-0049 §6.6）。
             is LedgerPayload.Archive -> (if ((op.payload as LedgerPayload.Archive).archived) "归档未完成：" else "恢复未完成：") +
                 rejection.reason.ifBlank { "请重试" }
+            // 队列里仍有它就静默放回；已投递时就近说明，消息随权威记录出现在聊天中。
+            is LedgerPayload.QueueCancel -> when (rejection.code) {
+                "not_cancelled", "not_applied" -> null
+                "already_delivered" -> "撤回未完成：${queueAlreadyDelivered.reason}"
+                else -> "撤回未完成：${rejection.reason.ifBlank { "请重试" }}"
+            }
         }
     }
 
@@ -221,6 +284,11 @@ private fun RemoteState.ledgerEvidence(domain: String): (LedgerOperation<LedgerP
         val catalog = sessions
         return { OperationKinds.catalogEvidence(it, catalog) }
     }
+    if (domain.startsWith("queue:")) {
+        val runtimeId = domain.removePrefix("queue:")
+        val queue = conversations[runtimeId]?.queuedMessages.orEmpty()
+        return { op -> if ((op.payload as? LedgerPayload.QueueCancel)?.runtimeId == runtimeId) OperationKinds.queueEvidence(op, queue) else LedgerEvidence.NONE }
+    }
     val projections = notificationProjections
     return { op ->
         val payload = op.payload as? LedgerPayload.Dismiss
@@ -233,11 +301,19 @@ private fun RemoteState.ledgerEvidence(domain: String): (LedgerOperation<LedgerP
 private fun RemoteState.ledgerDomainComplete(domain: String): Boolean = when {
     domain == OperationKinds.RUNTIMES_DOMAIN || domain == OperationKinds.CATALOG_DOMAIN -> true
     domain.startsWith("notifications:") -> notificationProjections[domain.removePrefix("notifications:")]?.complete == true
+    domain.startsWith("queue:") -> runtimes[domain.removePrefix("queue:")]?.domainAvailability?.get("delivery") == "ready"
     else -> false
 }
 
 /** 某个领域的权威状态刚刚应用。`read` 是核对读取的序号；推送为 null。 */
 internal fun RemoteState.ledgerAuthority(domain: String, read: Int?, complete: Boolean): RemoteState {
+    // Runtime 已不在：它的队列随之消失，撤回失效（L7）。
+    val base = if (domain != OperationKinds.RUNTIMES_DOMAIN) this else
+        withLedgerStep(ledger.expire { op -> (op.payload as? LedgerPayload.QueueCancel)?.let { it.runtimeId !in runtimes } ?: false })
+    return base.stampAuthority(domain, read, complete)
+}
+
+private fun RemoteState.stampAuthority(domain: String, read: Int?, complete: Boolean): RemoteState {
     val seq = (authoritySeq[domain] ?: 0) + 1
     val stamped = copy(authoritySeq = authoritySeq + (domain to seq), ledgerFresh = if (read == null) ledgerFresh + domain else ledgerFresh)
     if (ledger.operations.none { domain in it.basis }) return stamped
@@ -328,4 +404,28 @@ internal fun RemoteState.createArchive(requestId: String, sessionId: String, age
         policy = OperationKinds.archivePolicy, basis = ledgerBasis(OperationKinds.CATALOG_DOMAIN),
         payload = LedgerPayload.Archive(sessionId, agentKind, archived), written = false, now = now)
     return copy(ledger = next) to creation
+}
+
+/** `queueCancel` 先记入账本（尚未写入），opId 即命令的 commandId。同一队列项的撤回尚未结算时不重复创建（L9）。 */
+internal fun RemoteState.createQueueCancel(commandId: String, runtimeId: String, queueId: String, now: Long):
+    Pair<RemoteState, LedgerCreation<LedgerPayload>> {
+    val (next, creation) = ledger.create(commandId, OperationKinds.QUEUE_CANCEL, OperationKinds.queueCancelTarget(runtimeId, queueId),
+        policy = OperationKinds.queueCancelPolicy, basis = ledgerBasis(OperationKinds.queueDomain(runtimeId)),
+        payload = LedgerPayload.QueueCancel(runtimeId, queueId), written = false, now = now)
+    return copy(ledger = next) to creation
+}
+
+/**
+ * Host 队列（delivery 领域）已应用：已投递的项若正在撤回，按 `already_delivered` 结算（Host 声明的同一身份），
+ * 再把队列作为权威状态交给账本。
+ */
+internal fun RemoteState.ledgerQueue(runtimeId: String, delivered: Set<String>, complete: Boolean, now: Long): RemoteState {
+    var next = this
+    for (op in ledger.operations) {
+        val payload = op.payload as? LedgerPayload.QueueCancel ?: continue
+        if (payload.runtimeId == runtimeId && payload.queueId in delivered && !op.phase.isSettled) {
+            next = next.withLedgerStep(next.ledger.receipt(op.opId, next.ledger.connection, LedgerReceipt.Failed(OperationKinds.queueAlreadyDelivered), now))
+        }
+    }
+    return next.ledgerAuthority(OperationKinds.queueDomain(runtimeId), null, complete)
 }

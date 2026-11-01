@@ -65,7 +65,6 @@ final class HostConnection: ObservableObject {
     @Published private(set) var interactions: [String: [InteractionRequest]] = [:]
     @Published private(set) var submittingInteractions: Set<String> = []
     @Published private(set) var queuedMessages: [String: [QueuedMessage]] = [:]
-    @Published private(set) var pendingQueueCancellations: Set<String> = []
     /// ADR-0049：本机已发出、尚未在源端落地的消息。按 Session 归属，只属于 `pendingSendHostId`。
     @Published private(set) var pendingSends = PendingSendOutbox()
     private var pendingSendHostId: String?
@@ -223,7 +222,6 @@ final class HostConnection: ObservableObject {
     private var branchEditorNode: String?
     private var branchEditorText: String?
     private var interactionCommands: [String: String] = [:]
-    private var queueCommands: [String: (runtimeId: String, queueId: String)] = [:]
     private var pendingBranchDrafts: [String: String] = [:]
     private var toolAcknowledgements: [String: (runtimeId: String, reference: ToolReference)] = [:]
     private var pendingAppliedBaselines: [String: SessionAppliedBaseline] = [:]
@@ -294,6 +292,7 @@ final class HostConnection: ObservableObject {
             self.commands[runtimeId] = projection.commands
             self.interactions[runtimeId] = projection.interactions
             self.queuedMessages[runtimeId] = projection.queuedMessages
+            if domains["delivery"] != nil { self.ledgerAuthority(OperationKinds.queueDomain(runtimeId), read: nil, complete: true) }
             let active = Set(self.interactions.values.joined().map(\.requestId))
             self.submittingInteractions.formIntersection(active)
             self.interactionCommands = self.interactionCommands.filter { active.contains($0.value) }
@@ -431,7 +430,7 @@ final class HostConnection: ObservableObject {
         agentState.setConnection(nil, connected: false)
         notifications.setConnection(nil, connected: false)
         toolContent.close(); turnFileChanges.clear(); toolInventories.clear(); toolAcknowledgements = [:]; pendingAppliedBaselines = [:]
-        interactions = [:]; queuedMessages = [:]; queueCommands = [:]; pendingQueueCancellations = []; submittingInteractions = []; interactionCommands = [:]; workingBranches = [:]; dismissPreview()
+        interactions = [:]; queuedMessages = [:]; submittingInteractions = []; interactionCommands = [:]; workingBranches = [:]; dismissPreview()
         pendingSends.removeAll(); pendingSendHostId = nil; sessionRevisions = [:]
     }
 
@@ -492,7 +491,7 @@ final class HostConnection: ObservableObject {
         oldestEntries = [:]; sessionLeaves = [:]; hasOlderHistory = [:]; historyErrors = [:]; historyLoading = []
         sourcePositions = [:]; appliedBaselines = [:]; retiredEpochs = [:]; graphs = [:]; runtimeEventSequences = [:]
         pendingActivation = nil; activePath = nil
-        interactions = [:]; queuedMessages = [:]; queueCommands = [:]; pendingQueueCancellations = []; interactionCommands = [:]; submittingInteractions = []
+        interactions = [:]; queuedMessages = [:]; interactionCommands = [:]; submittingInteractions = []
         workingBranches = [:]; dismissPreview()
         actionTimeouts.values.forEach { $0.cancel() }; actionTimeouts = [:]; runtimeActions = [:]; composerActionDrafts = [:]; pendingActionIds = []; setActionFeedback(nil)
         pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil
@@ -1160,6 +1159,14 @@ final class HostConnection: ObservableObject {
 
     /// 某个领域的权威状态刚刚应用。`read` 是核对读取的序号；推送为 nil。
     private func ledgerAuthority(_ domain: String, read: Int?, complete: Bool) {
+        if domain == OperationKinds.runtimesDomain {
+            // Runtime 已不在：它的队列随之消失，撤回失效（L7）。
+            let online = Set(runtimes.map(\.runtimeId))
+            handleLedger(ledger.expire { op in
+                if case .queueCancel(let owner, _) = op.payload { return !online.contains(owner) }
+                return false
+            })
+        }
         let seq = (authoritySeq[domain] ?? 0) + 1
         authoritySeq[domain] = seq
         if read == nil { ledgerFresh.insert(domain) }
@@ -1178,6 +1185,14 @@ final class HostConnection: ObservableObject {
         if domain == OperationKinds.catalogDomain {
             let index = sessionIndex
             return { OperationKinds.catalogEvidence($0, sessions: index) }
+        }
+        if domain.hasPrefix("queue:") {
+            let runtimeId = String(domain.dropFirst("queue:".count))
+            let queue = queuedMessages[runtimeId] ?? []
+            return { op in
+                guard case .queueCancel(let owner, _) = op.payload, owner == runtimeId else { return .none }
+                return OperationKinds.queueEvidence(op, queue: queue)
+            }
         }
         let projections = notifications.projections
         return { op in
@@ -1206,7 +1221,7 @@ final class HostConnection: ObservableObject {
 
     /// 领域当前的权威状态是否完整：部分结果不能作为反向证据（L2）。
     private func ledgerDomainComplete(_ domain: String) -> Bool {
-        if domain == OperationKinds.runtimesDomain || domain == OperationKinds.catalogDomain { return true }
+        if domain == OperationKinds.runtimesDomain || domain == OperationKinds.catalogDomain || domain.hasPrefix("queue:") { return true }
         if domain.hasPrefix("notifications:") {
             return notifications.projections[String(domain.dropFirst("notifications:".count))]?.complete == true
         }
@@ -1413,7 +1428,12 @@ final class HostConnection: ObservableObject {
     /// 队列面板：Host 队列项，加上带 `delivery` 且仍在提交中的本地行。
     func queuePanelItems(_ runtimeId: String) -> [QueuedMessage] {
         let sessionId = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId
-        let host = (queuedMessages[runtimeId] ?? []).filter { !pendingSends.hidesQueueItem($0.queueId) }
+        // ADR-0049 §6.3：撤回已写入、等待回执的队列项先退场。
+        let cancelling = OperationKinds.cancellingQueueIds(ledger, runtimeId: runtimeId)
+        // `cancelled`：撤回已完成，不再显示（ADR-0049 §6.3）。
+        let host = (queuedMessages[runtimeId] ?? []).filter {
+            !pendingSends.hidesQueueItem($0.queueId) && !cancelling.contains($0.queueId) && $0.state != "cancelled"
+        }
         let local = pendingSends.queueRows(sessionId: sessionId).filter { send in !host.contains { $0.queueId == send.messageId } }
             .map { QueuedMessage(queueId: $0.messageId, text: $0.text, delivery: $0.delivery ?? "followUp", state: "submitting", error: nil) }
         return host + local
@@ -1451,20 +1471,34 @@ final class HostConnection: ObservableObject {
         sessionRevisions[sessionId, default: 0] += 1
     }
 
+    /// ADR-0049 §6.3 `queueCancel`：队列项立即退场；回执、断线、期限与核对全部交给账本。
     @discardableResult
     func cancelQueuedMessage(_ queueId: String) -> Bool {
-        guard canSend, let runtime = selectedRuntime, !pendingQueueCancellations.contains(queueId),
+        guard canSend, let runtime = selectedRuntime,
               queuedMessages[runtime.runtimeId]?.contains(where: { $0.queueId == queueId && $0.state == "accepted" }) == true else { return false }
         let id = UUID().uuidString
-        guard sendCommand(runtimeId: runtime.runtimeId, commandId: id, command: ["type": "user_message.cancel", "messageId": queueId]) else { return false }
-        queueCommands[id] = (runtime.runtimeId, queueId); pendingQueueCancellations.insert(queueId)
-        actionTimeouts[id] = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
-            guard let self, let pending = self.queueCommands.removeValue(forKey: id) else { return }
-            self.pendingQueueCancellations.remove(pending.queueId)
-            self.errorMessage = "队列撤回尚未确认，请刷新查看电脑端状态。"
+        let creation = ledger.create(opId: id, kind: OperationKinds.queueCancel,
+                                     target: OperationKinds.queueCancelTarget(runtimeId: runtime.runtimeId, queueId: queueId),
+                                     policy: OperationKinds.queueCancelPolicy, basis: ledgerBasis(OperationKinds.queueDomain(runtime.runtimeId)),
+                                     payload: .queueCancel(runtimeId: runtime.runtimeId, queueId: queueId), written: false, now: Date())
+        guard creation == .created else { return false }
+        guard sendCommand(runtimeId: runtime.runtimeId, commandId: id, command: ["type": "user_message.cancel", "messageId": queueId]) else {
+            ledger.remove(id); handleLedger([]); return false
         }
+        handleLedger(ledger.written(id, now: Date()))
         return true
+    }
+
+    /// 撤回结果不明、回到原位的队列项（标“撤回未确认”，核对前不能再撤回）。
+    func unconfirmedQueueCancellations(_ runtimeId: String) -> Set<String> { OperationKinds.unconfirmedQueueIds(ledger, runtimeId: runtimeId) }
+
+    /// Host 队列已应用：已投递的项若正在撤回，按 `already_delivered` 结算（Host 声明的同一身份），再作为权威状态交给账本。
+    private func ledgerQueue(_ runtimeId: String, delivered: Set<String>, complete: Bool) {
+        for op in ledger.operations where !op.phase.isSettled {
+            guard case .queueCancel(let owner, let queueId) = op.payload, owner == runtimeId, delivered.contains(queueId) else { continue }
+            handleLedger(ledger.receipt(op.opId, connection: ledger.connection, .failed(OperationKinds.queueAlreadyDelivered), now: Date()))
+        }
+        ledgerAuthority(OperationKinds.queueDomain(runtimeId), read: nil, complete: complete)
     }
 
     @discardableResult
@@ -1760,14 +1794,16 @@ final class HostConnection: ObservableObject {
             var rows = queuedMessages[runtimeId] ?? []
             rows.removeAll { $0.queueId == item.queueId }
             if item.state != "delivered" { rows.append(item) }
-            queuedMessages[runtimeId] = rows; return
+            queuedMessages[runtimeId] = rows
+            ledgerQueue(runtimeId, delivered: item.state == "delivered" ? [item.queueId] : [], complete: false); return
         }
         if type == "delivery.snapshot", let rows = event["items"] as? [[String: Any]] {
             let items: [QueuedMessage] = rows.compactMap(jsonDecode)
             guard items.count == rows.count, Set(items.map(\.queueId)).count == items.count else { return }
             var merged = event["complete"] as? Bool == false ? (queuedMessages[runtimeId] ?? []) : []
             let ids = Set(items.map(\.queueId)); merged.removeAll { ids.contains($0.queueId) }
-            queuedMessages[runtimeId] = (merged + items).filter { $0.state != "delivered" }; return
+            queuedMessages[runtimeId] = (merged + items).filter { $0.state != "delivered" }
+            ledgerQueue(runtimeId, delivered: Set(items.filter { $0.state == "delivered" }.map(\.queueId)), complete: event["complete"] as? Bool != false); return
         }
         if type == "runtime.status", let status = event["status"] as? String,
            let index = runtimes.firstIndex(where: { $0.runtimeId == runtimeId }) { runtimes[index].status = status; updateSyncing(); return }
@@ -1780,20 +1816,14 @@ final class HostConnection: ObservableObject {
             publishMessages(); return
         }
         // 账本里的操作只由账本结算，并由种类给出带上下文的提示，通用失败分支不再覆盖它（L1）。
-        if type == "command.result" || type == "runtime.error", let commandId = event["commandId"] as? String, ledger.operation(commandId) != nil {
+        if type == "command.result" || type == "runtime.error", let commandId = event["commandId"] as? String, let op = ledger.operation(commandId),
+           OperationKinds.runtimeId(of: op).map({ $0 == runtimeId }) ?? true {
             let receipt = type == "runtime.error"
                 ? AppLedger.Receipt.failed(.init("runtime_error", event["message"] as? String ?? "电脑端无法完成操作。"))
                 : OperationKinds.receipt(ok: event["ok"] as? Bool == true, status: event["status"] as? String, error: event["error"] as? String)
             handleLedger(ledger.receipt(commandId, connection: ledger.connection, receipt, now: Date())); return
         }
         if type == "command.result", let commandId = event["commandId"] as? String, event["status"] as? String != "pending" {
-            if let pending = queueCommands[commandId], pending.runtimeId == runtimeId {
-                queueCommands[commandId] = nil; pendingQueueCancellations.remove(pending.queueId)
-                actionTimeouts.removeValue(forKey: commandId)?.cancel()
-                if event["ok"] as? Bool == true { pendingSends.remove(pending.queueId) }
-                else { errorMessage = event["error"] as? String ?? "消息撤回失败。" }
-                updateSyncing()
-            }
             if runtimeActions[commandId]?.runtimeId == runtimeId { finishAction(commandId, succeeded: event["ok"] as? Bool == true, message: event["error"] as? String, result: event["result"] as? [String: Any]) }
             if let request = interactionCommands[commandId], interactions[runtimeId]?.contains(where: { $0.requestId == request }) == true {
                 interactionCommands[commandId] = nil
@@ -2419,9 +2449,7 @@ final class HostConnection: ObservableObject {
         oldestEntries[runtimeId] = nil; sessionLeaves[runtimeId] = nil; hasOlderHistory[runtimeId] = nil; historyErrors[runtimeId] = nil; historyLoading.remove(runtimeId)
         toolInventories.clear(runtimeId)
         agentState.remove(runtimeId: runtimeId); queuedMessages[runtimeId] = nil
-        for (id, pending) in queueCommands where pending.runtimeId == runtimeId {
-            queueCommands[id] = nil; pendingQueueCancellations.remove(pending.queueId); actionTimeouts.removeValue(forKey: id)?.cancel()
-        }
+
         let toolAcks = toolAcknowledgements.filter { $0.value.runtimeId == runtimeId }.map(\.key)
         for id in toolAcks {
             toolAcknowledgements[id] = nil; pendingReadPages[id] = nil; pendingAppliedBaselines[id] = nil
@@ -2466,7 +2494,7 @@ final class HostConnection: ObservableObject {
     private func updateSyncing() {
         isSyncing = sessionReads.operations.values.contains { $0.owner.historyKey == selectedRuntimeId && $0.kind == .source && $0.phase.active }
         transfers.setInteractive(pendingSyncs.values.contains { !$0.exhausted } || !syncDemands.isEmpty ||
-            !runtimeActions.isEmpty || !queueCommands.isEmpty || runtimes.contains { $0.status == "running" })
+            !runtimeActions.isEmpty || ledger.operations.contains { $0.kind == OperationKinds.queueCancel } || runtimes.contains { $0.status == "running" })
     }
 
     private func armSyncTimeout(_ syncId: String, seconds: Double) {

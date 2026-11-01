@@ -25,6 +25,9 @@ internal fun RemoteState.applyAgentDomainProjection(
     var conversation = conversations[id] ?: RuntimeConversation()
     var commands = capabilities[id]
     var pending = pendingCommands
+    // ADR-0049 §7.5：Host 队列是撤回的权威状态；记下这次是否完整、哪些项已投递。
+    var queueStamp: Boolean? = null
+    var delivered: Set<String> = emptySet()
     try {
         for ((name, domain) in domains) {
             runtime = runtime.copy(domainAvailability = runtime.domainAvailability + (name to domain.availability))
@@ -100,6 +103,8 @@ internal fun RemoteState.applyAgentDomainProjection(
                         key to QueuedMessage(key, row.text("text") ?: error("队列项缺少正文"), delivery, state, row.text("error"))
                     }.toMap()
                     val inventory = if (domain.projectionComplete || domain.completeness == "complete") incoming else conversation.queuedMessages + incoming
+                    queueStamp = domain.projectionComplete || domain.completeness == "complete"
+                    delivered = incoming.filterValues { it.state == "delivered" }.keys
                     conversation = conversation.copy(queuedMessages = inventory.filterValues { it.state != "delivered" },
                         deliveredQueueIds = conversation.deliveredQueueIds + inventory.filterValues { it.state == "delivered" }.keys)
                 }
@@ -111,8 +116,9 @@ internal fun RemoteState.applyAgentDomainProjection(
     val identity = if (domains["identity"]?.availability == "ready") runtime.catalogEntry() else null
     val catalog = if (identity == null) sessions else sessions +
         (identity.sessionId to mergeSessionCatalogEntry(sessions[identity.sessionId], identity))
-    return copy(runtimes = runtimes + (id to runtime), sessions = catalog, conversations = conversations + (id to conversation),
+    val projected = copy(runtimes = runtimes + (id to runtime), sessions = catalog, conversations = conversations + (id to conversation),
         capabilities = commands?.let { capabilities + (id to it) } ?: capabilities, pendingCommands = pending)
+    return queueStamp?.let { projected.ledgerQueue(id, delivered, it, System.currentTimeMillis()) } ?: projected
 }
 
 private fun collection(value: JsonElement?, domain: AgentStateDomainView): JsonObject? = when {

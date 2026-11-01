@@ -1592,7 +1592,10 @@ final class OrbisUITests: XCTestCase {
         let app = launch("queue")
         let cancel = app.buttons["queue-cancel-preview-queue"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 8)); cancel.tap()
-        XCTAssertTrue(app.staticTexts["完成后发送，已撤回"].waitForExistence(timeout: 5))
+        // ADR-0049 §6.3：撤回后队列项立即退场；cancelled 不再显示，也不会闪回。
+        XCTAssertTrue(cancel.waitForNonExistence(timeout: 1.5))
+        XCTAssertFalse(app.staticTexts["完成后发送，已撤回"].waitForExistence(timeout: 2))
+        XCTAssertFalse(cancel.exists)
         XCTAssertTrue(app.staticTexts["通知状态待核对"].waitForExistence(timeout: 5))
         capture("queue-notification", app: app)
         app.buttons["关闭通知"].firstMatch.tap()
