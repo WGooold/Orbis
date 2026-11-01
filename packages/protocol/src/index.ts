@@ -1048,6 +1048,11 @@ export const RuntimeCommandSchema = z.discriminatedUnion("type", [
     type: z.literal("slash.execute"),
     name: RuntimeSlashCommandNameSchema,
     args: z.string().max(100_000),
+    /**
+     * ADR-0049 §6.1：来源为 prompt / skill 的命令会产生一条用户消息。App 为它分配身份并立即显示本地气泡；
+     * 后端在该用户消息首次出现时声明为 `clientMessageId`，暂时不能声明的走 §4 的兼容兜底。
+     */
+    messageId: z.string().min(1).max(256).optional(),
   }),
   z.strictObject({ type: z.literal("permissions.update"), settingId: z.string().min(1).max(256), value: z.string().max(4096) }),
   z.strictObject({ type: z.literal("stop") }),

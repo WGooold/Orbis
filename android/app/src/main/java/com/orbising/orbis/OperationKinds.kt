@@ -47,6 +47,10 @@ object OperationKinds {
     const val SEND = "send"
     const val CONFIG = "config"
     const val LAUNCH = "launch"
+
+    /** ADR-0049 §6.1：来源为 prompt / skill、会产生一条用户消息的命令，且当前可以执行（idle，ADR-0055 §5）。 */
+    fun slashProducesMessage(command: RuntimeSlashCommand, runtime: RuntimeSummary): Boolean =
+        command.source in setOf("prompt", "skill") && runtime.status == "idle" && runtime.sessionId != null
     /**
      * `launch`：同一 requestId 的 `session.activated` 表示 Host 已受理并给出 Session，该 Session 的 Runtime 上线才落地；
      * 失败在聊天页原位显示；超时后显示“启动未确认”，以随后的会话列表为准（ADR-0049 §6.8）。

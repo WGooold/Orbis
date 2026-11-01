@@ -36,6 +36,9 @@ data class PendingSend(
     val queueOwned: Boolean = false,
     /** ADR-0049 §6.2：交给这条消息的上传任务；写入通道时换成 Host 路径。 */
     val uploadIds: List<String> = emptyList(),
+    /** ADR-0049 §6.1：由 prompt / skill Slash 产生的消息；重新发送时再次执行这个命令。 */
+    val slashName: String? = null,
+    val slashArgs: String? = null,
 ) {
     /** 带 `delivery` 且尚未被接受时，它在队列面板里显示「提交中」。 */
     val showsInQueue: Boolean get() = delivery != null && state == PendingSendState.Sending && !queueOwned

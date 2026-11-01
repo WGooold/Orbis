@@ -535,11 +535,13 @@ struct ChatView: View {
     private func submit(delivery: String? = nil) {
         guard canSubmit else { return }
         let accepted: Bool
-        if slash, let command { accepted = store.executeSlash(command.name, args: commandArguments(command), composerDraft: draft.wrappedValue) }
+        // ADR-0049 §6.1：产生对话的 Slash 与消息一样，气泡立即出现、输入框清空。
+        let messageSlash = slash && command.map(store.producesMessage) == true
+        if slash, let command { accepted = store.executeSlash(command.name, args: commandArguments(command), composerDraft: messageSlash ? nil : draft.wrappedValue) }
         else { accepted = store.sendMessage(draft.wrappedValue.isEmpty ? "请查看附件。" : draft.wrappedValue, delivery: delivery, attachmentIds: Set(attachments.map(\.id))) }
         if accepted {
             OrbisHaptics.commit()
-            if !slash {
+            if !slash || messageSlash {
                 // 交给消息的附件离开输入框，仍在上传的继续上传（不取消）。
                 transfers.release(Set(attachments.map(\.id))); draft.wrappedValue = ""; selectedCommand = nil
             }

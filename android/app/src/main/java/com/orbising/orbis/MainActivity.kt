@@ -2092,7 +2092,10 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                         val slash = parseSlashInvocation(input)
                                         if (selectedCommand != null && slash?.first == selectedCommand.name) {
                                             showDeliveryChoices = false
-                                            trackSubmission(
+                                            // ADR-0049 §6.1：产生对话的 Slash 与消息一样，气泡立即出现、输入框清空。
+                                            if (model.producesMessage(selectedCommand, runtime)) {
+                                                submitMessage(model.executeSlashCommand(selectedCommand.name, slash.second))
+                                            } else trackSubmission(
                                                 model.executeSlashCommand(selectedCommand.name, slash.second),
                                             )
                                         } else if (runtime?.status == "running" && runtime.agentKind == "claude") {

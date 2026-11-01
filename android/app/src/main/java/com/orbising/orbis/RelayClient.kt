@@ -616,11 +616,14 @@ class RelayClient(
         }
     }, commandId)
 
-    fun executeSlashCommand(runtimeId: String, name: String, args: String, commandId: String = UUID.randomUUID().toString()): String? =
+    fun executeSlashCommand(runtimeId: String, name: String, args: String, commandId: String = UUID.randomUUID().toString(),
+                            messageId: String? = null): String? =
         sendCommand(runtimeId, buildJsonObject {
             put("type", "slash.execute")
             put("name", name)
             put("args", args)
+            // ADR-0049 §6.1：产生对话的命令携带 App id，后端据此声明 clientMessageId。
+            messageId?.let { put("messageId", it) }
         }, commandId)
 
     fun updatePermissions(runtimeId: String, settingId: String, value: String): String? = sendCommand(runtimeId, buildJsonObject {

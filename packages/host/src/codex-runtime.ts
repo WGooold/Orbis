@@ -1930,7 +1930,7 @@ export class CodexRuntime implements AgentBackend {
       case "slash.execute": {
         // §9.1：slash 只走这条车道。codex 把能兑现的子集映射到 app-server RPC，
         // 未声明的命令回失败（App 菜单来自 capabilities，正常不会发到这里）。
-        return this.#executeSlash(command.name, command.args, thread, threadId, commandId);
+        return this.#executeSlash(command.name, command.args, thread, threadId, commandId, command.messageId);
       }
       default:
         return false;
@@ -2062,6 +2062,7 @@ export class CodexRuntime implements AgentBackend {
     thread: ThreadState | undefined,
     threadId: string | undefined,
     commandId: string | undefined,
+    messageId?: string,
   ): boolean {
     const arg = args.trim();
     const dynamic = thread === undefined
@@ -2077,7 +2078,7 @@ export class CodexRuntime implements AgentBackend {
       if (error) { this.#commandResult(thread.id, commandId, false, error, "failure"); return true; }
     }
     if (dynamic !== undefined && thread !== undefined) {
-      return this.#executeDynamicSlash(dynamic, arg, thread, threadId, commandId);
+      return this.#executeDynamicSlash(dynamic, arg, thread, threadId, commandId, messageId);
     }
     if (!CODEX_SLASH_COMMANDS.some((command) => command.name === name)) return false;
     switch (name) {
@@ -2281,6 +2282,7 @@ export class CodexRuntime implements AgentBackend {
     thread: ThreadState,
     threadId: string | undefined,
     commandId: string | undefined,
+    appMessageId?: string,
   ): boolean {
     if (thread.turnInProgress) {
       this.#commandResult(threadId, commandId, false, "runtime_busy", "failure");
@@ -2292,7 +2294,8 @@ export class CodexRuntime implements AgentBackend {
         return true;
       }
       const text = arg.length > 0 ? `/${command.name} ${arg}` : `/${command.name}`;
-      const messageId = `slash-${Date.now()}`;
+      // ADR-0049 §6.1：App 带了身份就钉到这次 turn 的用户消息上，app-server 以 clientId 带回，由此声明 clientMessageId。
+      const messageId = appMessageId ?? `slash-${Date.now()}`;
       this.#commandResult(threadId, commandId, true);
       const input = [
         { type: "skill", name: command.name, path: command.skillPath },

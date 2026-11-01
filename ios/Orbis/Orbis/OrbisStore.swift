@@ -1211,12 +1211,40 @@ final class HostConnection: ObservableObject {
               let command = commands[runtime.runtimeId]?.first(where: { $0.name == name }),
               command.argument?.required != true || !args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         let value = args.trimmingCharacters(in: .whitespacesAndNewlines)
+        // ADR-0049 §6.1：产生对话的 Slash（prompt / skill）在 idle 时按消息乐观显示；其他情况维持处理中（ADR-0055 §5）。
+        if producesMessage(command, runtime: runtime) { return sendSlashMessage(runtime, name: name, args: value) }
         if OperationKinds.isConfigSetting(name), !value.isEmpty {
             let label = command.argument?.options?.first { $0.value == value }?.label ?? value
             return submitConfig(runtime, setting: name, value: value, label: label)
         }
         guard let id = performActionId(runtimeId: runtime.runtimeId, name: name, command: ["type": "slash.execute", "name": name, "args": args]) else { return false }
         if let composerDraft { composerActionDrafts[id] = (localSessionKey(host: selectedHost, runtime: runtime), composerDraft) }
+        return true
+    }
+
+    // MARK: - ADR-0049 §6.1 产生对话的 Slash
+
+    /// 来源为 prompt / skill、会产生一条用户消息的命令，且当前可以执行（idle）。
+    func producesMessage(_ command: SlashCommand, runtime: RuntimeSummary) -> Bool {
+        ["prompt", "skill"].contains(command.source) && runtime.status == "idle" && runtime.sessionId != nil
+    }
+
+    /// 立即显示本地用户气泡（正文为 `/name 参数`），`slash.execute` 携带 App id；后端声明 clientMessageId 后由权威行替换。
+    private func sendSlashMessage(_ runtime: RuntimeSummary, name: String, args: String) -> Bool {
+        guard let sessionId = runtime.sessionId else { return false }
+        let id = UUID().uuidString, commandId = UUID().uuidString
+        let text = args.isEmpty ? "/" + name : "/\(name) \(args)"
+        guard sendCommand(runtimeId: runtime.runtimeId, commandId: commandId,
+                          command: ["type": "slash.execute", "name": name, "args": args, "messageId": id]) else {
+            errorMessage = "命令未送达，请连接后重试。"; return false
+        }
+        if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
+        let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
+        var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: text, attachments: [],
+                               delivery: nil, createdAt: Date(), anchorMessageId: anchor)
+        send.slashName = name; send.slashArgs = args
+        pendingSends.add(send)
+        publishMessages()
         return true
     }
 
@@ -1705,6 +1733,12 @@ final class HostConnection: ObservableObject {
     func resendPendingSend(_ messageId: String) -> Bool {
         guard canSend, let runtime = selectedRuntime, let send = pendingSends.item(messageId), send.sessionId == runtime.sessionId,
               case .failed = send.state else { return false }
+        // Slash 产生的消息：再次执行同一命令，新的身份（L6）。
+        if let name = send.slashName {
+            pendingSends.remove(messageId); publishMessages()
+            guard executeSlash(name, args: send.slashArgs ?? "") else { pendingSends.add(send); publishMessages(); return false }
+            return true
+        }
         // 附件没传成的失败：重新上传，作为一条新的等待消息（L6：新操作、新身份）。
         if !send.uploadIds.isEmpty, send.attachments.isEmpty {
             let uploads = transfers.tasks.filter { send.uploadIds.contains($0.id) }

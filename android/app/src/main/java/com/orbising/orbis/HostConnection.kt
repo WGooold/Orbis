@@ -1304,6 +1304,12 @@ internal class HostConnection(
         val runtime = state.runtimes[runtimeId] ?: return null
         val send = state.pendingSends[messageId]?.takeIf { it.sessionId == runtime.sessionId && it.state is PendingSendState.Failed } ?: return null
         if (!state.e2eReady) return null
+        // Slash 产生的消息：再次执行同一命令，新的身份（L6）。
+        send.slashName?.let { name ->
+            updateState { it.copy(pendingSends = it.pendingSends - messageId) }
+            return executeSlashCommand(name, send.slashArgs.orEmpty())
+                ?: run { updateState { it.copy(pendingSends = it.pendingSends + (messageId to send)) }; null }
+        }
         // 附件没传成的失败：从原文件重新上传，作为一条新的等待消息（L6：新操作、新身份）。
         if (send.uploadIds.isNotEmpty() && send.attachments.isEmpty()) return resendAfterUpload(runtimeId, send)
         // 按当前状态选择投递方式：忙时直发会被拒绝，Claude 也不支持插入。
@@ -1416,6 +1422,9 @@ internal class HostConnection(
             updateState { it.copy(error = "命令 /$name 需要参数") }
             return null
         }
+        // ADR-0049 §6.1：产生对话的 Slash（prompt / skill）在 idle 时按消息乐观显示；其他情况维持处理中（ADR-0055 §5）。
+        val runtime = mutableState.value.runtimes[runtimeId]
+        if (runtime != null && producesMessage(command, runtime)) return sendSlashMessage(runtime, name, normalizedArgs)
         if (OperationKinds.isConfigSetting(name) && normalizedArgs.isNotBlank()) {
             val label = command.argument?.options?.firstOrNull { it.value == normalizedArgs }?.label ?: normalizedArgs
             return submitConfig(runtimeId, name, normalizedArgs, label)
@@ -1423,6 +1432,25 @@ internal class HostConnection(
         val commandId = relay.executeSlashCommand(runtimeId, name, normalizedArgs)
         Log.i(RELOAD_TRACE_TAG, "ui.slash.sent name=$name runtimeId=$runtimeId commandId=${commandId ?: "<not_sent>"}")
         trackCommand(commandId, runtimeId, "命令未发送：中继服务器当前离线")
+        return commandId
+    }
+
+    /** 来源为 prompt / skill、会产生一条用户消息的命令，且当前可以执行（idle）。 */
+    fun producesMessage(command: RuntimeSlashCommand, runtime: RuntimeSummary): Boolean = OperationKinds.slashProducesMessage(command, runtime)
+
+    /** 立即显示本地用户气泡（正文为 `/name 参数`），`slash.execute` 携带 App id；后端声明 clientMessageId 后由权威行替换。 */
+    private fun sendSlashMessage(runtime: RuntimeSummary, name: String, args: String): String? {
+        val sessionId = runtime.sessionId ?: return null
+        val messageId = UUID.randomUUID().toString()
+        val commandId = relay.executeSlashCommand(runtime.runtimeId, name, args, messageId = messageId)
+        trackCommand(commandId, runtime.runtimeId, "命令未发送：中继服务器当前离线")
+        if (commandId == null) return null
+        val text = if (args.isBlank()) "/$name" else "/$name $args"
+        updateState { state ->
+            val anchor = state.conversations[runtime.runtimeId]?.messages?.lastOrNull()?.messageId
+            state.copy(pendingSends = state.pendingSends + (messageId to PendingSend(messageId, commandId, sessionId, text,
+                emptyList(), null, System.currentTimeMillis(), anchor, slashName = name, slashArgs = args)))
+        }
         return commandId
     }
 

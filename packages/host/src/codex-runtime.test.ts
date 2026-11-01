@@ -1993,7 +1993,11 @@ describe("CodexRuntime", () => {
       });
     });
 
-    expect(h.runtime.handleCommand({ type: "slash.execute", name: "review", args: "changed files" }, "c-skill", "th-1")).toBe(true);
+    // ADR-0049 §6.1：App 带来的身份钉到 turn/start 的 clientUserMessageId，由 app-server 以 clientId 带回。
+    expect(h.runtime.handleCommand({ type: "slash.execute", name: "review", args: "changed files", messageId: "app-skill-1" }, "c-skill", "th-1")).toBe(true);
+    await vi.waitFor(() => {
+      expect(h.requests).toHaveBeenCalledWith("turn/start", expect.objectContaining({ clientUserMessageId: "app-skill-1" }));
+    });
     await vi.waitFor(() => {
       expect(h.requests).toHaveBeenCalledWith("turn/start", expect.objectContaining({
         threadId: "th-1",

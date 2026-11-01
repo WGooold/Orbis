@@ -36,6 +36,9 @@ struct PendingSend: Equatable, Identifiable {
     var queueOwned = false
     /// ADR-0049 §6.2：等待中的附件上传任务；写入通道时换成 Host 路径。
     var uploadIds: [String] = []
+    /// ADR-0049 §6.1：由 prompt / skill Slash 产生的消息；重新发送时再次执行这个命令。
+    var slashName: String?
+    var slashArgs: String?
 
     var id: String { messageId }
     /// 带 `delivery` 且尚未被接受时，它在队列面板里显示「提交中」。

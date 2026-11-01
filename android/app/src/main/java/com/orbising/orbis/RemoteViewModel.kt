@@ -380,6 +380,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun retryLaunch() { active()?.retryLaunch() }
 
+    fun producesMessage(command: RuntimeSlashCommand, runtime: RuntimeSummary?): Boolean =
+        runtime != null && active()?.producesMessage(command, runtime) == true
+
     fun detachUploads(taskIds: Set<String>) = active()?.detachUploads(taskIds)
 
     fun attachedTaskIds(sessionKey: String): Set<String> =

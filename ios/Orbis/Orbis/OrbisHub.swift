@@ -232,6 +232,7 @@ final class OrbisStore: ObservableObject {
     func refresh() { activeConnection.refresh() }
     func loadOlderHistory() -> Bool { activeConnection.loadOlderHistory() }
     func activate(_ session: SessionSummary) { activeConnection.activate(session) }
+    func producesMessage(_ command: SlashCommand) -> Bool { activeConnection.selectedRuntime.map { activeConnection.producesMessage(command, runtime: $0) } ?? false }
     var launching: HostConnection.LaunchState? { activeConnection.launching }
     var isLaunchPage: Bool { activeConnection.isLaunchPage }
     func retryLaunch() { activeConnection.retryLaunch() }
