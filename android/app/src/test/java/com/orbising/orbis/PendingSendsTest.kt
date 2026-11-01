@@ -224,22 +224,26 @@ class PendingSendsTest {
     }
 
     @Test fun `closing runtime hides until offline and returns when the computer rejects`() {
+        // ADR-0049 §7.5：关闭经操作账本结算，完整用例见 QuitLedgerTest。
         val runtime = RuntimeSummary("runtime-a", "Agent", "/repo", "idle", "session-1")
-        val base = RemoteState(e2eReady = true, connection = RelayConnection.ONLINE, runtimes = mapOf("runtime-a" to runtime),
-            pendingCommands = mapOf("quit-1" to "runtime-a"), closingRuntimes = mapOf("runtime-a" to ClosingRuntime("quit-1", start)))
+        val online = RemoteState(e2eReady = true, connection = RelayConnection.ONLINE, runtimes = mapOf("runtime-a" to runtime))
+            .ledgerOpenConnection()
+        val base = online.createQuit("quit-1", "runtime-a", start).first.ledgerWritten("quit-1", start)
         fun result(ok: Boolean) = """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"command.result","commandId":"quit-1","ok":$ok${if (ok) "" else ""","status":"failure","error":"进程仍在运行""""}}}
         """.trimIndent()
         val accepted = reducer.reduce(base, result(true))
-        assertTrue(accepted.closingRuntimes["runtime-a"]?.confirmedAt != null)
+        assertEquals(setOf("runtime-a"), accepted.closingRuntimeIds)
+        assertTrue(accepted.ledger.operation("quit-1")?.succeeded == true)
         assertNull(accepted.error)
         val offline = reducer.reduce(accepted, """{"type":"runtime.offline","runtimeId":"runtime-a"}""")
-        assertTrue(offline.closingRuntimes.isEmpty())
+        assertTrue(offline.closingRuntimeIds.isEmpty())
 
         val rejected = reducer.reduce(base, result(false))
-        assertTrue(rejected.closingRuntimes.isEmpty())
+        assertTrue(rejected.closingRuntimeIds.isEmpty())
         assertEquals("关闭会话未完成：进程仍在运行", rejected.error)
-        assertTrue(base.markReconnecting().closingRuntimes.isEmpty())
+        // ADR-0051 V11 r27：断线时关闭结果未知，卡片保持隐藏，等重连后核对（原规则是断线即恢复）。
+        assertEquals(setOf("runtime-a"), base.markReconnecting().closingRuntimeIds)
     }
 }

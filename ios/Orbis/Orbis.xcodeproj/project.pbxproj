@@ -44,6 +44,8 @@
 		A00100010000000000000035 /* SessionReadOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000035 /* SessionReadOperations.swift */; };
 		A00100010000000000000036 /* TransferIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000036 /* TransferIO.swift */; };
 		A00100010000000000000038 /* PendingSends.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000038 /* PendingSends.swift */; };
+		A0010001000000000000003B /* OperationLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000003B /* OperationLedger.swift */; };
+		A0010001000000000000003C /* OperationKinds.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000003C /* OperationKinds.swift */; };
 		A00100010000000000000039 /* TurnFileChanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000039 /* TurnFileChanges.swift */; };
 		A0010001000000000000003A /* TurnFileChangesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000003A /* TurnFileChangesView.swift */; };
 /* End PBXBuildFile section */
@@ -89,6 +91,8 @@
 		A00110010000000000000035 /* SessionReadOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReadOperations.swift; sourceTree = "<group>"; };
 		A00110010000000000000036 /* TransferIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferIO.swift; sourceTree = "<group>"; };
 		A00110010000000000000038 /* PendingSends.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingSends.swift; sourceTree = "<group>"; };
+		A0011001000000000000003B /* OperationLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OperationLedger.swift; sourceTree = "<group>"; };
+		A0011001000000000000003C /* OperationKinds.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OperationKinds.swift; sourceTree = "<group>"; };
 		A00110010000000000000039 /* TurnFileChanges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnFileChanges.swift; sourceTree = "<group>"; };
 		A0011001000000000000003A /* TurnFileChangesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnFileChangesView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -135,6 +139,8 @@
 				A00110010000000000000039 /* TurnFileChanges.swift */,
 				A0011001000000000000003A /* TurnFileChangesView.swift */,
 				A00110010000000000000038 /* PendingSends.swift */,
+				A0011001000000000000003B /* OperationLedger.swift */,
+				A0011001000000000000003C /* OperationKinds.swift */,
 				A00110010000000000000035 /* SessionReadOperations.swift */,
 				A00110010000000000000034 /* SessionHistoryStorage.swift */,
 				A00110010000000000000032 /* OrbisHub.swift */,
@@ -276,6 +282,8 @@
 				A00100010000000000000039 /* TurnFileChanges.swift in Sources */,
 				A0010001000000000000003A /* TurnFileChangesView.swift in Sources */,
 				A00100010000000000000038 /* PendingSends.swift in Sources */,
+				A0010001000000000000003B /* OperationLedger.swift in Sources */,
+				A0010001000000000000003C /* OperationKinds.swift in Sources */,
 				A00100010000000000000035 /* SessionReadOperations.swift in Sources */,
 				A00100010000000000000034 /* SessionHistoryStorage.swift in Sources */,
 				A00100010000000000000032 /* OrbisHub.swift in Sources */,

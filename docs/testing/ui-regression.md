@@ -147,7 +147,7 @@ Codex 桌面新会话同步回归（S18、V16–V18）：Host `host-service.test
 | r15 下载飞入 | `DownloadFlightInstrumentedTest`（1） | M16 |
 | r15 流式顺序 | `StreamingRevealInstrumentedTest`（1）；`UiPolishInstrumentedTest#revealKeepsEmojiAndCombiningCharactersTogether` 改用新时钟 | M04 |
 
-与 UI 相关的单元测试（L1 中必须通过）：iOS `RevealClockTests`、`HomeRuntimeLoadingTests`、`StoreTests`、`AgentStateTests`、`PendingSendTests`、`PresentationTests`、`TurnFileChangesTests`；Android `HomePresentationTest`、`ChatListItemReuseTest`、`HistoryPagingTest`、`MessagePresentationTest`、`StatusScreenTest`、`SubscriptionQuotaTest`、`UiPolishTest`、`PendingSendsTest`、`TurnFileChangesTest`、`RevealScheduleTest`、`HomeViewportAnchorTest`。
+与 UI 相关的单元测试（L1 中必须通过）：iOS `RevealClockTests`、`HomeRuntimeLoadingTests`、`StoreTests`、`AgentStateTests`、`PendingSendTests`、`PresentationTests`、`TurnFileChangesTests`、`OperationLedgerTests`、`QuitLedgerTests`；Android `HomePresentationTest`、`ChatListItemReuseTest`、`HistoryPagingTest`、`MessagePresentationTest`、`StatusScreenTest`、`SubscriptionQuotaTest`、`UiPolishTest`、`PendingSendsTest`、`TurnFileChangesTest`、`RevealScheduleTest`、`HomeViewportAnchorTest`、`OperationLedgerTest`、`QuitLedgerTest`。
 
 Claude 运行中发送的适配器回归（V10、V12、V17）：`claude plugin test packages/claude-mod` 的 `reconnect.test.ts` 覆盖主回合期间不调用 `prompt.submit`、同批消息串行提交、停止与工具事件、子 Agent 完成、Host 轮末捕获屏障及重连代次隔离；设备端仍关联两端乐观发送用例。真实联动验收按 R17 执行，插件模拟通过不能替代设备 / 真实 TUI 验收。
 
@@ -156,6 +156,20 @@ App 按需启动 DeepSeek / Codex Desktop（S20、V12、V16–V18；ADR-0056 §2
 Claude 输出交接回归（V09、V17–V18）：Host `claude-transcript.test.ts` / `claude-mods-bridge.test.ts` 覆盖一对多 UUID 原子提交、逐 patch 无重复、跨轮清理、迟到事件与落盘超时；官方插件 `reconnect.test.ts` 覆盖主 / 子步骤归属和封口顺序。iOS `StoreTests.claudeStepHandoffPreservesIdenticalTextFromTheNextTurn` 保留合法同文的下一轮；Android `ClaudeHistoryInstrumentedTest` 使用 `scripts/claude-history-fixture.mjs` 的 bridge 3 数据，断言运行中交接、轮末和重连后各段正文只有一份。专项手动 R18。
 
 所有状态输入契约（[ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md)，V05、V09–V10、V12、V16–V18）：AIN-01–AIN-07 覆盖协议全集、状态准入、命令回执、各适配器与双端 outbox、专用服务。`runtime-command-lifecycle.test.ts`、`runtime-input-policy.test.ts` 及 Codex / Pi bridge / Claude / DSH 和两端 PendingSend 测试已补充；iOS 新增 `testUnconfirmedSendCanBeCheckedWithoutResending`、`testCompactionQueuedSendCanBeWithdrawn`，Store 单测覆盖 Slash 草稿在拒绝 / 未确认后保留、成功后清理；Android `OptimisticActionsInstrumentedTest`（3 项）验证排队撤回、未确认核对及不提供自动重发。实现与门禁结果分开记录，未完成全量前不记为通过。
+
+用户操作的乐观显示（[ADR-0049 §5–§7](../adr/0049-optimistic-send-and-source-reconciliation.md#5-操作分级只按体验判断2026-11-01取代原-5)，V07、V10–V12、V22；r27 待实施）：
+- 两端单元：扩展 `PendingSendTests` / `PendingSendsTest`，覆盖 `waiting` 的三种前置操作、同会话顺序、失败连带和草稿副本恢复，以及 prompt / skill Slash 的 App id 落地。另新增两端同构的乐观操作状态机测试，覆盖撤回、归档、回答、通知、模型切换和会话启动的落地、拒绝、60 秒无回执、断线、失效和同对象冲突。
+- Host / 协议：覆盖 `slash.execute` 的 App id，以及各后端为 Slash 产生的用户消息声明 `clientMessageId`。
+- 设备：扩展 iOS `testOptimisticSendReconcilesAndRejectedSendRestores`、`testQueueCancellationNotificationsAndRuntimeFacts`、`testApprovalOverlayKeepsComposerStableWhileSubmitting`、`testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions`，以及 Android `OptimisticActionsInstrumentedTest`、`InteractionWorkspaceInstrumentedTest`、`SessionArchiveSelectionInstrumentedTest`、`NotificationsInstrumentedTest`。断言结果在回执前呈现，拒绝后回到原位置（≤ 1pt/dp），阅读锚点与视口不动，正文只出现一次。
+- 手动：R26、R27。
+
+设计已登记，实际用例名和通过结果随实施更新；扩展用例不得放宽现有断言。已实施部分：
+
+| ticket | 单元（两端同构） | 设备定向 | 状态 |
+| --- | --- | --- | --- |
+| OPT-00 账本核心 | iOS `OperationLedgerTests`、Android `OperationLedgerTest`（各 22 项，含 5 组固定种子随机序列；断线规则变异检验两端均失败） | 无（纯逻辑） | 2026-11-01 通过 |
+| OPT-01 `quit`（V11 r27） | iOS `QuitLedgerTests`（13 项）、Android `QuitLedgerTest`（12 项，Android 无 `shutdown` 一项，见 ADR-0049 §7.7）；Android `PendingSendsTest` 的关闭用例改为账本语义，断线一项按 V11 r27 改为保持隐藏 | iOS `testSwipeCloseHidesBeforeConfirmationAndRestoresOnRejection`、`testHomeLongPressSelectsAndClosesOnlyCheckedSessions`、`testHomeShortSwipeReboundsAndLongSwipeClosesOnlyThatRuntime`、`testSwipeRightFromLeftSideOpensDirectory`；Android `OptimisticActionsInstrumentedTest`（2）、`HomeSwipeCloseInstrumentedTest`、`HomeSelectionInstrumentedTest` | 2026-11-01 单元、构建与定向设备通过；R27 关闭断线项未执行；全量门禁归 OPT-10 |
+
 带 `assumeTrue(ValueAnimator.areAnimatorsEnabled())` 的设备用例（下载飞入、流式顺序）在系统关闭动画时跳过，A4 路径以手动检查为准。
 
 
@@ -258,6 +272,15 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | 编号 | 步骤 | 预期 | ID |
 | --- | --- | --- | --- |
 | R25 | 两端分别连接隔离 Host，保留至少一张既有卡片，在 APP 新建 Codex 桌面版会话；回首页后再新建一条；下拉刷新；模拟一次模型读取失败后点胶囊重试；另以终端 Codex 作对照。全程保持 APP 和 E2E 连接，不重启；A1 / A2，A3 / A4 抽查 | 准备时保留旧完整卡片，identity / execution / interactions 齐备后一次发布新卡片并退出“正在同步”；正常新建不常驻“同步失败”；失败后的重试也能恢复，不依赖重新握手；桌面公共 ID 不进入 adapter 原生 thread 查找，无半成品卡片与位置跳变 | S18、V16–V18 |
+
+### 4.11 用户操作乐观显示专项（ADR-0049 §5–§7，r27 待实施）
+
+实施前不执行，也不能作为现有行为的回归依据。拒绝、无回执和断线使用预览注入或隔离 Host，不连接生产 Host。
+
+| 编号 | 步骤 | 预期 | ID |
+| --- | --- | --- | --- |
+| R26 | 两端分别做以下操作，各自走成功、Host 拒绝、60 秒无回执、断线后重连四条路径：撤回排队消息，另加撤回时恰好投递；目录中单项与多选归档、取消归档；回答单项审批与多步骤问卷，另加电脑端先答、请求过期；关闭通知。上滑阅读时重复一次；明暗、窄屏、大字体、减少动画 | 点击后立即退场或移到目标列表；回答后面板收起，原位显示摘要，敏感输入只显示“已提交”。拒绝时在原位置恢复并说明原因，答案保留；撤回已投递时提示“已交给 Agent”，消息只在聊天出现一次；请求失效时显示事实。无回执转“未确认”并重新读取，不自动重试；断线时列表类保持呈现，重连后核对；通知只在本设备消失。阅读锚点与列表视口不动，无闪回 | V22、V07（关联 V02–V03、V06、V16–V17、V21） |
+| R27 | 两端：附件上传中点发送，再连发一条纯文本；上传失败、取消上传。执行 prompt / skill Slash。idle 时切换模型或思考级别，确认前发送；分别模拟确认、规范化、拒绝、无回执、连续两次选择。新建会话与恢复会话，启动中输入草稿并发送；分别模拟启动成功、失败、超时，以及启动中返回首页。首页左滑关闭后断线再重连。明暗、窄屏、大字体、减少动画 | 气泡立即出现，输入框清空，标明在等什么；同会话按创建顺序提交，后一条不越过前一条；附件失败只影响本条，可重试 / 放回 / 删除。配置确认前不以旧配置执行，失败时选择器回到确认值，等待中的消息转失败，可按当前配置发送。Slash 气泡由权威行替换且只出现一次。新建 / 恢复立即进入聊天页，显示“启动中”，失败原位显示原因，草稿保留。关闭断线期间卡片保持隐藏，重连后仍在线则恢复并提示 | V10–V12（关联 M07、M14、V05、V09、V13、V17） |
 
 ### 4.12 原生 Codex 文件审阅专项（ADR-0052 §9.1）
 

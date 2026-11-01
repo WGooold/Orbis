@@ -19,6 +19,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
@@ -250,6 +253,14 @@ internal class HostConnection(
                 ) {
                     maybeRestoreLastSession(current)
                 }
+            }
+        }
+        // ADR-0049 §7 L8：账本自己不计时；到最近的期限时交给账本处理。
+        scope.launch {
+            mutableState.map { it.ledger.nextDeadline }.distinctUntilChanged().collectLatest { deadline ->
+                if (deadline == null) return@collectLatest
+                delay((deadline - System.currentTimeMillis()).coerceAtLeast(0) + 10)
+                updateState { it.ledgerTick(System.currentTimeMillis()) }
             }
         }
         // 接收方驱动的下载调度（ADR-0005）：周期性 tick 负责超时重传与补窗。
@@ -1292,44 +1303,45 @@ internal class HostConnection(
                 updateState { it.copy(error = "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。") }
                 return@filterTo false
             }
-            val commandId = relay.executeSlashCommand(runtimeId, "quit", "")
-            trackCommand(commandId, runtimeId, "关闭会话未发送：请连接电脑后重试。")
-            if (commandId != null) {
-                updateState { it.copy(closingRuntimes = it.closingRuntimes + (runtimeId to ClosingRuntime(commandId, System.currentTimeMillis()))) }
-                watchClosingRuntime(runtimeId, commandId)
-            }
-            commandId != null
+            submitQuit(runtimeId)
         }
     }
 
-    /**
-     * ADR-0049 §5：被接受后迟迟不离线，说明电脑上的会话还在；没有回执同样不能一直隐藏。
-     * 两种情况都恢复卡片，不能让首页长期少一张真实存在的会话。
-     */
-    private fun watchClosingRuntime(runtimeId: String, commandId: String) {
-        scope.launch {
-            while (true) {
-                delay(1_000)
-                val now = System.currentTimeMillis()
-                var finished = false
-                updateState { state ->
-                    val closing = state.closingRuntimes[runtimeId]
-                    if (closing?.commandId != commandId || runtimeId !in state.runtimes) {
-                        finished = true
-                        return@updateState if (closing?.commandId == commandId) state.copy(closingRuntimes = state.closingRuntimes - runtimeId) else state
-                    }
-                    val confirmed = closing.confirmedAt
-                    val error = when {
-                        confirmed != null && now - confirmed >= 15_000 -> "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。"
-                        confirmed == null && now - closing.requestedAt >= 60_000 -> "关闭会话尚未确认，请刷新查看电脑端状态。"
-                        else -> return@updateState state
-                    }
-                    finished = true
-                    state.copy(closingRuntimes = state.closingRuntimes - runtimeId, error = error)
-                }
-                if (finished) return@launch
+    /** 账本的核对读取：本设备的私有回执（`DeviceView.operations`）。回复由 reducer 交回账本。 */
+    private fun sendLedgerVerify(requestId: String) {
+        val sent = relay.sendDeviceMessage(buildJsonObject {
+            put("type", "agent.state.request")
+            put("protocolVersion", PROTOCOL_VERSION)
+            put("requestId", requestId)
+            put("scope", "device")
+            put("domains", buildJsonArray { add("operations") })
+        })
+        if (!sent) updateState { it.copy(ledgerReads = it.ledgerReads - requestId) }
+    }
+
+    /** ADR-0049 §7.5 `quit`：先记入账本、再写入通道，卡片随账本叠加立即隐藏；结算全部交给账本。 */
+    private fun submitQuit(runtimeId: String): Boolean {
+        val commandId = UUID.randomUUID().toString()
+        var creation: LedgerCreation<LedgerPayload>? = null
+        updateState { state ->
+            val (next, created) = state.createQuit(commandId, runtimeId, System.currentTimeMillis())
+            creation = created
+            if (created is LedgerCreation.Created) next else state
+        }
+        when (creation) {
+            is LedgerCreation.Created -> Unit
+            is LedgerCreation.Conflict -> return true // 同一会话的关闭尚未结算，卡片已隐藏（L9）。
+            else -> {
+                updateState { it.copy(error = "关闭会话未发送：待确认的操作过多，请稍后重试。") }
+                return false
             }
         }
+        if (relay.executeSlashCommand(runtimeId, "quit", "", commandId) == null) {
+            updateState { it.copy(ledger = it.ledger.remove(commandId), error = "关闭会话未发送：请连接电脑后重试。") }
+            return false
+        }
+        updateState { it.ledgerWritten(commandId, System.currentTimeMillis()) }
+        return true
     }
 
     fun updatePermissions(settingId: String, value: String): String? {
@@ -2116,7 +2128,7 @@ internal class HostConnection(
                             e2eReady = ready,
                             connection = if (!ready && current.connection == RelayConnection.ONLINE) RelayConnection.RECONNECTING else current.connection,
                             error = if (ready && current.error == HANDSHAKE_STALLED_ERROR) null else current.error,
-                        )
+                        ).let { if (ready) it.ledgerOpenConnection() else it }
                     }
                 }
                 if (ready) {
@@ -2578,6 +2590,7 @@ internal class HostConnection(
      * outside it and submits identity-bearing results for a fresh ownership check.
      */
     private fun updateState(transform: (RemoteState) -> RemoteState) {
+        var ledgerRead: String? = null
         var settlementSyncs: Set<String> = emptySet()
         var recheck = false
         var capturedName = false
@@ -2602,8 +2615,15 @@ internal class HostConnection(
             recheck = next.pendingSends.values.any { it.state == PendingSendState.Accepted && !it.sawBusy }
             if (current.changeViewer != null && next.changeViewer == null) retiredViewer = current.changeViewer
             if (current.connection != next.connection) synchronized(changeWindows) { changeWindows.clear() }
+            // ADR-0049 §7 L5：结果不明的操作发起一次核对读取（只在加密通道可用时）；读取序号先登记，再发出。
+            if (next.ledgerVerifyWanted && next.ledgerConnectionOpen && next.e2eReady) {
+                val requestId = OperationKinds.VERIFY_REQUEST_PREFIX + UUID.randomUUID()
+                next = next.beginLedgerRead(requestId)
+                ledgerRead = requestId
+            }
             if (next !== current) mutableState.value = next
         }
+        ledgerRead?.let(::sendLedgerVerify)
         // Local graph hydration also learns names; it need not receive another remote event
         // to persist them. Disk IO stays outside the state writer lock and the UI thread.
         if (capturedName) scheduleSessionCatalogSave()

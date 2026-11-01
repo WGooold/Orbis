@@ -94,7 +94,9 @@ class OptimisticActionsInstrumentedTest {
                     onOpenRuntime = { _, _ -> },
                     // Mirrors HostConnection.closeRuntimes: the command is written, the Host has not answered.
                     onCloseRuntimes = { _, ids ->
-                        state.value = state.value.copy(closingRuntimes = ids.associateWith { ClosingRuntime("quit-$it", 0) })
+                        state.value = ids.fold(state.value) { current, id ->
+                            current.createQuit("quit-$id", id, 0).first.ledgerWritten("quit-$id", 0)
+                        }
                         ids
                     },
                     onOpenDownloads = {}, onUnpairHost = {},
@@ -109,8 +111,8 @@ class OptimisticActionsInstrumentedTest {
         compose.onNodeWithTag("home-runtime-one").assertDoesNotExist()
         compose.onNodeWithTag("home-runtime-two").assertIsDisplayed()
 
-        // The computer rejected /quit: the reducer drops the closing entry and the card returns in place.
-        compose.runOnIdle { state.value = state.value.copy(closingRuntimes = emptyMap()) }
+        // The computer rejected /quit: the ledger drops the operation and the card returns in place.
+        compose.runOnIdle { state.value = state.value.copy(ledger = state.value.ledger.remove("quit-one")) }
         compose.waitForIdle()
         compose.onNodeWithTag("home-runtime-one").assertIsDisplayed()
         val restored = compose.onNodeWithTag("home-runtime-one").fetchSemanticsNode().boundsInRoot

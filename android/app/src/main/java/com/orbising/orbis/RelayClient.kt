@@ -615,11 +615,12 @@ class RelayClient(
         }
     })
 
-    fun executeSlashCommand(runtimeId: String, name: String, args: String): String? = sendCommand(runtimeId, buildJsonObject {
-        put("type", "slash.execute")
-        put("name", name)
-        put("args", args)
-    })
+    fun executeSlashCommand(runtimeId: String, name: String, args: String, commandId: String = UUID.randomUUID().toString()): String? =
+        sendCommand(runtimeId, buildJsonObject {
+            put("type", "slash.execute")
+            put("name", name)
+            put("args", args)
+        }, commandId)
 
     fun updatePermissions(runtimeId: String, settingId: String, value: String): String? = sendCommand(runtimeId, buildJsonObject {
         put("type", "permissions.update")

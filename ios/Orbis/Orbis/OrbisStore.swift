@@ -72,9 +72,20 @@ final class HostConnection: ObservableObject {
     /// 每个 Session 应用权威状态（快照或完整 patch）的次数，用于兜底核对。
     private var sessionRevisions: [String: Int] = [:]
     private var pendingSendCheck: Task<Void, Never>?
-    /// ADR-0049 §5：首页关闭命令写入后立即隐藏卡片；失败、超时或电脑仍保留会话时恢复。
-    struct ClosingRuntime: Equatable { let commandId: String; var confirmedAt: Date? }
-    @Published private(set) var closingRuntimes: [String: ClosingRuntime] = [:]
+    /// ADR-0049 §7：本连接的操作账本。乐观操作的阶段、断线、期限、作用域和冲突只在账本里处理；
+    /// 界面 = 权威状态叠加账本，种类定义见 `OperationKinds`。只在当前进程内存中（L11）。
+    @Published private(set) var ledger = AppLedger()
+    /// 账本属于哪台电脑：换电脑时全部失效（L7）。
+    private var ledgerHostId: String?
+    /// 当前加密连接是否已计入账本的连接代次。
+    private var ledgerConnectionOpen = false
+    /// 在线列表已应用的次数，作为账本 `runtimes` 领域的序号。
+    private var runtimeListSeq = 0
+    /// 账本发起、尚未回复的核对读取：requestId → 读取序号（L5）。
+    private var ledgerReads: [String: Int] = [:]
+    private var ledgerClock: Task<Void, Never>?
+    /// 首页正在关闭的会话（含结果不明）：卡片保持隐藏。
+    var closingRuntimeIds: Set<String> { OperationKinds.hiddenRuntimeIds(ledger) }
     /// 首页只发布完整快照：冷启动准备一次，后续重连/刷新在后台组装下一版。
     /// 此快照只在当前配对的内存中保留，不把磁盘目录缓存当成本次在线会话。
     @Published private(set) var homePresentation: HomePresentation = .preparing
@@ -87,7 +98,8 @@ final class HostConnection: ObservableObject {
     }
     var homeCards: [HomeRuntimeCard] {
         guard case .ready(let cards) = homePresentation else { return [] }
-        return cards.filter { closingRuntimes[$0.id] == nil }
+        let closing = closingRuntimeIds
+        return cards.filter { !closing.contains($0.id) }
     }
     var homeRuntimes: [RuntimeSummary] { homeCards.map(\.runtime) }
 
@@ -130,7 +142,8 @@ final class HostConnection: ObservableObject {
     var homeRuntimesError: String? {
         guard homeRuntimesUpdating else { return nil }
         if connection == .offline || connection == .error { return "电脑未连接，请重新连接" }
-        for runtime in runtimes where closingRuntimes[runtime.runtimeId] == nil {
+        let closing = closingRuntimeIds
+        for runtime in runtimes where !closing.contains(runtime.runtimeId) {
             guard let session = runtime.sessionId, !session.isEmpty else {
                 return "会话身份尚未就绪，请重新加载"
             }
@@ -430,6 +443,9 @@ final class HostConnection: ObservableObject {
         agentState.setConnection(selectedHost, connected: false)
         notifications.setConnection(selectedHost, connected: false)
         toolContent.close(); turnFileChanges.clear(); toolInventories.clear()
+        // 账本只属于这一次运行中的连接（L7、L11）。
+        ledgerConnectionOpen = false; ledgerReads = [:]
+        handleLedger(ledger.expire { _ in true })
         connection = .offline
     }
 
@@ -452,6 +468,11 @@ final class HostConnection: ObservableObject {
         selectedHostId = pairing.hostId
         if pendingSendHostId != pairing.hostId { pendingSends.removeAll(); pendingSendHostId = pairing.hostId; sessionRevisions = [:] }
         else { pendingSends.connectionLost() }
+        // 换电脑：旧电脑上的操作全部失效（L7）；同一台电脑重连：已写入的操作转结果不明（L4）。
+        if ledgerHostId != pairing.hostId {
+            ledgerConnectionOpen = false; ledgerReads = [:]
+            handleLedger(ledger.expire { _ in true }); ledgerHostId = pairing.hostId
+        } else { ledgerCloseConnection() }
         connection = .connecting
         hostState.setConnection(pairing, connected: false)
         agentState.setConnection(pairing, connected: false)
@@ -479,8 +500,9 @@ final class HostConnection: ObservableObject {
         }, state: { [weak self] state, error in
             guard let self, self.connectionGeneration == generation else { return }
             self.setHistoryConnection(state == .secured)
-            // 断线时关闭结果未知；重连后的 device.ready 才说明哪些会话仍在。
-            if state != .secured { self.pendingSends.connectionLost(); self.closingRuntimes = [:] }
+            // 断线时已写入的操作结果未知，列表类保持叠加（L4）；新连接的首个 device.ready 再核对。
+            if state != .secured { self.pendingSends.connectionLost(); self.ledgerCloseConnection() }
+            else { self.ledgerOpenConnection() }
             self.connection = state
             if state != .secured { self.pathRTT = nil }
             if state != .secured { self.homeDirectoryReceived = false }
@@ -1068,12 +1090,111 @@ final class HostConnection: ObservableObject {
                 errorMessage = "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。"
                 continue
             }
-            if let commandId = performActionId(runtimeId: runtime.runtimeId, name: "quit", command: ["type": "slash.execute", "name": "quit", "args": ""]) {
-                closingRuntimes[runtime.runtimeId] = ClosingRuntime(commandId: commandId)
-                submitted.insert(runtime.runtimeId)
-            }
+            if submitQuit(runtime.runtimeId) { submitted.insert(runtime.runtimeId) }
         }
         return submitted
+    }
+
+    /// ADR-0049 §7.5 `quit`：先记入账本、再写入通道，卡片随账本叠加立即隐藏。
+    private func submitQuit(_ runtimeId: String) -> Bool {
+        let commandId = UUID().uuidString
+        let creation = ledger.create(opId: commandId, kind: OperationKinds.quit, target: OperationKinds.quitTarget(runtimeId),
+                                     policy: OperationKinds.quitPolicy, basis: [OperationKinds.runtimesDomain: runtimeListSeq],
+                                     payload: .quit(runtimeId: runtimeId), written: false, now: Date())
+        switch creation {
+        case .created: break
+        case .conflict: return true // 同一会话的关闭尚未结算，卡片已隐藏（L9）。
+        case .duplicate, .full:
+            errorMessage = "关闭会话未发送：待确认的操作过多，请稍后重试。"; return false
+        }
+        guard sendCommand(runtimeId: runtimeId, commandId: commandId, command: ["type": "slash.execute", "name": "quit", "args": ""]) else {
+            ledger.remove(commandId)
+            errorMessage = "关闭会话未发送：请连接电脑后重试。"; return false
+        }
+        handleLedger(ledger.written(commandId, now: Date()))
+        return true
+    }
+
+    // MARK: - ADR-0049 §7 操作账本的输入
+
+    /// 加密连接已建立：账本进入新的连接代次，旧连接上仍未结算的操作重新核对（L4、L5）。
+    private func ledgerOpenConnection() {
+        guard !ledgerConnectionOpen else { return }
+        ledgerConnectionOpen = true
+        handleLedger(ledger.connected())
+        ledgerVerify()
+    }
+
+    /// 连接断开：已写入的操作统一转结果不明，旧连接上的核对读取作废（L4）。
+    private func ledgerCloseConnection() {
+        guard ledgerConnectionOpen else { return }
+        ledgerConnectionOpen = false; ledgerReads = [:]
+        handleLedger(ledger.connectionLost())
+    }
+
+    /// 在线列表已应用。`read` 是核对读取的序号：同一有序通道上，读取回复到达时的在线列表已包含 Host 处理这次读取之前的全部变化。
+    private func ledgerRuntimeList(read: Int?, complete: Bool) {
+        runtimeListSeq += 1
+        guard !ledger.operations.isEmpty else { return }
+        let ids = Set(runtimes.map(\.runtimeId))
+        let stamp = AppLedger.Stamp(domain: OperationKinds.runtimesDomain, seq: runtimeListSeq, connection: ledger.connection, read: read, complete: complete)
+        handleLedger(ledger.authority(stamp) { OperationKinds.evidence($0, runtimeIds: ids) })
+    }
+
+    /// 核对读取的回复：先交设备私有回执，再以同一时刻的在线列表核对（L5）。读取失败（例如旧 Host 不认识设备作用域）
+    /// 也是这次读取之后的回复：回执按查不到处理，仍以在线列表核对，不让操作停在结果不明。
+    private func consumeLedgerRead(_ message: [String: Any], type: String, read: Int) {
+        var receipts: [String: AppLedger.Receipt] = [:]
+        if type == "agent.state.snapshot", message["scope"] as? String == "device", message["error"] == nil {
+            let domain = (message["domains"] as? [[String: Any]])?.first { $0["domain"] as? String == "operations" }
+            receipts = OperationKinds.deviceReceipts(domain?["value"])
+        }
+        handleLedger(ledger.deviceReceipts(receipts, connection: ledger.connection, now: Date()))
+        ledgerRuntimeList(read: read, complete: true)
+    }
+
+    /// 账本事件的呈现：被拒绝的操作提示原因后删除，界面随叠加回到权威状态；结果不明的发起核对读取。
+    private func handleLedger(_ events: [AppLedger.Event]) {
+        var verify = false
+        for event in events {
+            switch event {
+            case .rejected(let op):
+                if let text = OperationKinds.message(for: op) { errorMessage = text }
+                switch op.payload {
+                case .quit: ledger.remove(op.opId) // 列表类：提示后删除，卡片回到原位。
+                }
+            case .verify: verify = true
+            case .landed, .unknown, .unconfirmed, .expired, .ready: break
+            }
+        }
+        if verify { ledgerVerify() }
+        scheduleLedgerClock()
+    }
+
+    /// 结果不明的操作主动读取一次设备私有回执（L5）；回复到达时连同在线列表一起核对。
+    private func ledgerVerify() {
+        guard ledgerConnectionOpen, ledger.operations.contains(where: { $0.phase == .unknown || $0.phase == .unconfirmed }) else { return }
+        let read = ledger.beginRead()
+        let requestId = OperationKinds.verifyRequestPrefix + UUID().uuidString
+        ledgerReads[requestId] = read
+        if !transport.send(["type": "agent.state.request", "protocolVersion": orbisProtocolVersion, "requestId": requestId,
+                            "scope": "device", "domains": ["operations"]]) { ledgerReads[requestId] = nil }
+    }
+
+    /// 账本自己不计时：到最近的期限时交给账本处理（L8）。
+    private func scheduleLedgerClock() {
+        ledgerClock?.cancel(); ledgerClock = nil
+        guard let deadline = ledger.nextDeadline else { return }
+        ledgerClock = Task { [weak self] in
+            let delay = max(0, deadline.timeIntervalSinceNow) + 0.01
+            do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) } catch { return }
+            self?.advanceLedgerClock(to: Date())
+        }
+    }
+
+    /// 到期处理的唯一入口；测试用它推进时钟。
+    func advanceLedgerClock(to now: Date) {
+        handleLedger(ledger.tick(now: now))
     }
 
     func updatePermission(settingId: String, value: String) {
@@ -1101,25 +1222,6 @@ final class HostConnection: ObservableObject {
         return id
     }
 
-    /// 关闭被电脑接受后继续隐藏，直到 Runtime 离线；拒绝立即恢复卡片。接受后迟迟不离线，
-    /// 说明电脑上的会话还在，同样恢复，不能让首页长期少一张真实存在的卡片。
-    private func closeFinished(_ runtimeId: String, succeeded: Bool, message: String?) {
-        guard succeeded else {
-            closingRuntimes[runtimeId] = nil
-            errorMessage = "关闭会话未完成：" + (message ?? "请重试。"); return
-        }
-        guard runtimes.contains(where: { $0.runtimeId == runtimeId }) else { closingRuntimes[runtimeId] = nil; return }
-        closingRuntimes[runtimeId]?.confirmedAt = Date()
-        let commandId = closingRuntimes[runtimeId]?.commandId
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
-            guard let self, self.closingRuntimes[runtimeId]?.commandId == commandId,
-                  self.runtimes.contains(where: { $0.runtimeId == runtimeId }) else { return }
-            self.closingRuntimes[runtimeId] = nil
-            self.errorMessage = "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。"
-        }
-    }
-
     /// 操作完成提示只是短暂确认，不能长期停在聊天页上；新操作开始或断开时立即清掉。
     private func setActionFeedback(_ text: String?) {
         feedbackTimeout?.cancel(); feedbackTimeout = nil
@@ -1142,9 +1244,6 @@ final class HostConnection: ObservableObject {
         }
         defer { if action.name == "tree" { branchEditorNode = nil; branchEditorText = nil } }
         pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel(); updateSyncing()
-        if action.name == "quit", closingRuntimes[action.runtimeId]?.commandId == id {
-            closeFinished(action.runtimeId, succeeded: succeeded, message: message); return
-        }
         if succeeded {
             setActionFeedback("\(action.name) 已完成")
             if action.name == "tree", let runtime = runtimes.first(where: { $0.runtimeId == action.runtimeId }) {
@@ -1381,6 +1480,9 @@ final class HostConnection: ObservableObject {
         }
         transfers.consume(message)
         recordConnectionEvent("\(channel ?? "—") · \(type)")
+        if let requestId = message["requestId"] as? String, let read = ledgerReads.removeValue(forKey: requestId) {
+            consumeLedgerRead(message, type: type, read: read); return
+        }
         if hostState.consume(message) || agentState.consume(message) || notifications.consume(message) { return }
         switch type {
         case "_transport.lan":
@@ -1414,6 +1516,9 @@ final class HostConnection: ObservableObject {
                 invalidateConversation(runtime.runtimeId)
             }
             runtimes = next.map(reprojectRuntime)
+            // 新连接的首个 device.ready 是因果晚于旧连接上所有操作的完整在线列表（L2、L5）。
+            ledgerOpenConnection()
+            ledgerRuntimeList(read: nil, complete: true)
             conversations = conversations.filter { id, _ in next.contains { $0.runtimeId == id } }
             runtimeEventSequences = [:]
             if selectedRuntime == nil { selectedRuntimeId = restoredRuntimeId() ?? runtimes.first?.runtimeId }
@@ -1439,6 +1544,7 @@ final class HostConnection: ObservableObject {
                     if runtimes[index].sessionId != runtime.sessionId { invalidateConversation(runtime.runtimeId) }
                     runtimes[index] = runtime
                 } else { runtimes.append(runtime) }
+                ledgerRuntimeList(read: nil, complete: false)
                 if pendingActivation == runtime.sessionId {
                     if let session = runtime.sessionId, let text = pendingBranchDrafts.removeValue(forKey: offlineSessionKey(host: selectedHost, sessionId: session)) { saveDraft(text, for: runtime) }
                     clearActivation()
@@ -1452,8 +1558,8 @@ final class HostConnection: ObservableObject {
         case "runtime.offline":
             if let id = message["runtimeId"] as? String {
                 pendingSends.runtimeLost(sessionId: runtimes.first { $0.runtimeId == id }?.sessionId)
-                closingRuntimes[id] = nil
                 runtimes.removeAll { $0.runtimeId == id }
+                ledgerRuntimeList(read: nil, complete: false)
                 notifications.offline(runtimeId: id)
                 invalidateConversation(id)
                 if selectedRuntimeId == id { selectedRuntimeId = runtimes.first?.runtimeId }
@@ -1507,6 +1613,10 @@ final class HostConnection: ObservableObject {
         case "protocol.error":
             let commandId = message["commandId"] as? String
             if commandId?.hasPrefix("session-sync-ack:") == true { return }
+            if let commandId, ledger.operation(commandId) != nil {
+                let rejection = AppLedger.Rejection(message["code"] as? String ?? "failure", message["message"] as? String ?? "电脑端无法完成操作。")
+                handleLedger(ledger.receipt(commandId, connection: ledger.connection, .failed(rejection), now: Date())); return
+            }
             if let syncId = pendingSyncs.first(where: { $0.value.commandId == commandId })?.key {
                 let pending = pendingSyncs[syncId]
                 finishSync(syncId)
@@ -1565,8 +1675,13 @@ final class HostConnection: ObservableObject {
             pendingSends.commandResult(commandId, ok: event["ok"] as? Bool == true, status: event["status"] as? String, error: event["error"] as? String)
             publishMessages(); return
         }
-        // 首页关闭的回执由 closeFinished 给出带上下文的提示，通用失败分支不再覆盖它。
-        let closeResult = type == "command.result" && closingRuntimes.values.contains { $0.commandId == event["commandId"] as? String }
+        // 账本里的操作只由账本结算，并由种类给出带上下文的提示，通用失败分支不再覆盖它（L1）。
+        if type == "command.result" || type == "runtime.error", let commandId = event["commandId"] as? String, ledger.operation(commandId) != nil {
+            let receipt = type == "runtime.error"
+                ? AppLedger.Receipt.failed(.init("runtime_error", event["message"] as? String ?? "电脑端无法完成操作。"))
+                : OperationKinds.receipt(ok: event["ok"] as? Bool == true, status: event["status"] as? String, error: event["error"] as? String)
+            handleLedger(ledger.receipt(commandId, connection: ledger.connection, receipt, now: Date())); return
+        }
         if type == "command.result", let commandId = event["commandId"] as? String, event["status"] as? String != "pending" {
             if let pending = queueCommands[commandId], pending.runtimeId == runtimeId {
                 queueCommands[commandId] = nil; pendingQueueCancellations.remove(pending.queueId)
@@ -1629,7 +1744,7 @@ final class HostConnection: ObservableObject {
             }
             return
         }
-        if type == "runtime.error" || (type == "command.result" && event["ok"] as? Bool == false && !closeResult) {
+        if type == "runtime.error" || (type == "command.result" && event["ok"] as? Bool == false) {
             if let commandId = event["commandId"] as? String, let syncId = pendingSyncs.first(where: { $0.value.commandId == commandId && $0.value.runtimeId == runtimeId })?.key {
                 let pending = pendingSyncs[syncId]; finishSync(syncId, readPhase: .failed)
                 if pending?.range == "history" { historyErrors[runtimeId] = event["error"] as? String ?? event["message"] as? String ?? "历史读取失败，请重试。"; return }

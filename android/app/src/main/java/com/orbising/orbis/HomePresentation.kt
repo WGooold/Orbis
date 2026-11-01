@@ -38,7 +38,7 @@ internal val RemoteState.homeRuntimesLoading: Boolean get() = homeSnapshot == nu
 internal val RemoteState.homeRuntimesUpdating: Boolean
     get() = !e2eReady || !homeDirectoryReceived || !runtimes.values.all(::homeFactsComplete)
 internal val RemoteState.homeCards: List<HomeRuntimeCard>
-    get() = homeSnapshot.orEmpty().filter { it.runtime.runtimeId !in closingRuntimes }
+    get() = closingRuntimeIds.let { closing -> homeSnapshot.orEmpty().filter { it.runtime.runtimeId !in closing } }
 internal val RemoteState.homeRuntimes: List<RuntimeSummary> get() = homeCards.map { it.runtime }
 
 internal val RemoteState.homeRuntimesError: String?

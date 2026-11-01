@@ -239,9 +239,6 @@ data class RuntimeCapabilities(
     val commands: List<RuntimeSlashCommand> = emptyList(),
 )
 
-/** 一次首页关闭：命令写入后卡片立即隐藏；拒绝、超时或电脑仍保留会话时恢复。 */
-data class ClosingRuntime(val commandId: String, val requestedAt: Long, val confirmedAt: Long? = null)
-
 data class CommandResult(
     val ok: Boolean,
     val status: String = "success",
@@ -424,8 +421,19 @@ data class RemoteState(
     val pendingSends: Map<String, PendingSend> = emptyMap(),
     /** 每个 Session 应用权威状态（快照或推进 source 的 patch）的次数，用于兜底核对。 */
     val sessionRevisions: Map<String, Long> = emptyMap(),
-    /** ADR-0049 §5：首页已提交关闭、仍在等电脑确认退出的会话；首页不显示它们。 */
-    val closingRuntimes: Map<String, ClosingRuntime> = emptyMap(),
+    /**
+     * ADR-0049 §7：本连接的操作账本。乐观操作的阶段、断线、期限、作用域和冲突只在账本里处理；
+     * 界面 = 权威状态叠加账本，种类定义见 [OperationKinds]。只在当前进程内存中（L11）。
+     */
+    val ledger: AppLedger = OperationLedger(),
+    /** 当前加密连接是否已计入账本的连接代次。 */
+    val ledgerConnectionOpen: Boolean = false,
+    /** 在线列表已应用的次数，作为账本 `runtimes` 领域的序号。 */
+    val runtimeListSeq: Int = 0,
+    /** 账本发起、尚未回复的核对读取：requestId → 读取序号（L5）。 */
+    val ledgerReads: Map<String, Int> = emptyMap(),
+    /** 有结果不明的操作等待核对读取；[HostConnection] 发出读取后清除。 */
+    val ledgerVerifyWanted: Boolean = false,
     val capabilities: Map<String, RuntimeCapabilities> = emptyMap(),
     /**
      * 这台电脑支持的 agent 种类（[device.ready] 的 `agents`）。
@@ -1603,15 +1611,14 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
             CommandResult(ok = false, status = "cancelled")
         },
         pendingSends = pendingSends.connectionLost(),
-        // 断线时关闭结果未知；重连后的 device.ready 才说明哪些会话仍在。
-        closingRuntimes = emptyMap(),
         sessionSyncCommands = emptyMap(),
         sessionSyncFailures = emptyMap(), sessionSyncBusyStreaks = emptyMap(), sessionSyncFailureCooldowns = emptyMap(), sessionSyncBlockedTargets = emptySet(),
         sessionRangeFailures = emptyMap(),
         sessionSyncRequests = emptySet(),
         sessionHistory = sessionHistory.mapValues { (_, history) -> history.copy(loading = false, requestId = null) },
         error = error.takeIf { preserveError },
-    ).reconcileHistoryReads()
+    // 断线时已写入的操作结果未知，列表类保持叠加（L4）；新连接的首个 device.ready 再核对。
+    ).ledgerCloseConnection().reconcileHistoryReads()
 }
 
 class RelayReducer(
@@ -1784,6 +1791,10 @@ class RelayReducer(
         // 现象是界面永远停在「正在连接」+ 弹「不兼容的协议版本」，而链路其实是通的。
         if (protocolVersion != null && protocolVersion != PROTOCOL_VERSION) {
             return state.copy(error = PROTOCOL_VERSION_MISMATCH_ERROR, errorNeedsAction = true)
+        }
+        // ADR-0049 §7 L5：账本发起的核对读取只交回账本。
+        if (channel != null) message.string("requestId")?.takeIf { it in state.ledgerReads }?.let { requestId ->
+            return state.ledgerReadReply(requestId, message, System.currentTimeMillis())
         }
         return when (messageType) {
             "notification.snapshot" -> if (channel != null) state.withNotificationSnapshot(message, json) else state
@@ -1960,7 +1971,8 @@ class RelayReducer(
                         .map { it.runtimeId }
                         .toSet(),
                     error = null,
-                )
+                // 新连接的首个 device.ready 是因果晚于旧连接上所有操作的完整在线列表（L2、L5）。
+                ).ledgerOpenConnection().ledgerRuntimeList(read = null, complete = true)
             }
             "runtime.online" -> {
                 val runtime = message["runtime"]?.let {
@@ -2074,7 +2086,7 @@ class RelayReducer(
                     } else {
                         state.sessionSyncRequests - runtime.runtimeId
                     },
-                )
+                ).ledgerRuntimeList(read = null, complete = false)
             }
             "host.offline" -> {
                 // 电脑端 Host 进程没了（Relay 按 hostId 过滤后才转发到这）。加密通道随之失效，
@@ -2095,8 +2107,7 @@ class RelayReducer(
                         CommandResult(ok = false, status = "cancelled")
                     },
                     pendingSends = state.pendingSends.connectionLost(),
-                    closingRuntimes = emptyMap(),
-                )
+                ).ledgerCloseConnection()
             }
             "host.online" -> state // 重握手由 RelayClient 处理；状态等 device.ready 对齐
             "runtime.offline" -> {
@@ -2114,7 +2125,6 @@ class RelayReducer(
                     pendingCommands = state.pendingCommands.filterValues { it != runtimeId },
                     commandResults = state.commandResults + interrupted.filterNot { it.isSessionSyncCommandId() }.associateWith { CommandResult(ok = false, status = "cancelled") },
                     pendingSends = state.pendingSends.runtimeLost(state.runtimes[runtimeId]?.sessionId ?: state.knownRuntimeSessions[runtimeId]),
-                    closingRuntimes = state.closingRuntimes - runtimeId,
                     capabilities = state.capabilities - runtimeId,
                     pendingDownloads = state.pendingDownloads.filterValues { it.runtimeId != runtimeId },
                     // 下载由 Host 服务（§9.4）：任务上的 runtimeId 只是「文件来自哪个会话」的来源标记，
@@ -2137,7 +2147,7 @@ class RelayReducer(
                     sessionSyncCommands = state.sessionSyncCommands.filterValues { it.runtimeId != runtimeId },
                     sessionRangeFailures = state.sessionRangeFailures.filterKeys { !it.startsWith("$runtimeId\u0000") },
                     sessionSyncRequests = state.sessionSyncRequests - runtimeId,
-                )
+                ).ledgerRuntimeList(read = null, complete = false)
             }
             "runtime.event" -> reduceRuntimeEvent(state, message, committed, channel)
             "session.list.result" -> reduceSessionListResult(state, message)
@@ -2164,6 +2174,11 @@ class RelayReducer(
                 // Older Hosts route an already-ended download's cancellation to a runtime.
                 // Local pause/deletion is complete; only this misrouted cancellation is harmless.
                 if (commandId?.startsWith("artifact-cancel:") == true && message.string("code") == "runtime_offline") return state
+                // 账本里的操作只由账本结算，并由种类给出带上下文的提示（L1）。
+                if (commandId != null && state.ledger.operation(commandId) != null) {
+                    return state.ledgerReceipt(commandId, LedgerReceipt.Failed(LedgerRejection(message.string("code") ?: "failure",
+                        message.string("message")?.takeIf(String::isNotBlank) ?: "电脑端无法完成操作。")), System.currentTimeMillis())
+                }
                 val requestId = message.string("requestId")
                 val syncError = protocolErrorText(message.string("code"), message.string("message"))
                 if (requestId != null && state.agentStateReads[requestId]?.scope == "agent") {
@@ -2291,7 +2306,6 @@ class RelayReducer(
         var nextPendingCommands = state.pendingCommands
         var nextCommandResults = state.commandResults
         var nextPendingSends = state.pendingSends
-        var nextClosingRuntimes = state.closingRuntimes
         var nextSessionGraphs = state.sessionGraphs
         var nextRuntimeSessionViews = state.runtimeSessionViews
         var nextSessionSyncCommands = state.sessionSyncCommands
@@ -3087,17 +3101,18 @@ class RelayReducer(
                 if (commandId?.startsWith("session-sync-ack:") == true) {
                     return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
                 }
+                // 账本里的操作只由账本结算，并由种类给出带上下文的提示，通用失败分支不再覆盖它（L1）。
+                if (commandId != null && state.ledger.operation(commandId) != null) {
+                    val receipt = OperationKinds.receipt(event["ok"]?.jsonPrimitive?.booleanOrNull == true, event.string("status"), event.string("error"))
+                    return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
+                        .ledgerReceipt(commandId, receipt, System.currentTimeMillis())
+                }
                 val succeeded = event["ok"]?.jsonPrimitive?.booleanOrNull == true
                 val status = event.string("status") ?: if (succeeded) "success" else "failure"
                 // ADR-0049：消息回执落在本地行上（含 pending），不触发全局错误横幅。
                 val pendingSend = commandId != null && state.pendingSends.values.any { it.commandId == commandId }
                 if (pendingSend) nextPendingSends = state.pendingSends.withCommandResult(requireNotNull(commandId),
                     CommandResult(succeeded, status, error = event.string("error")), System.currentTimeMillis())
-                // 关闭被接受后继续隐藏到 Runtime 离线；拒绝立即恢复卡片。
-                val closing = state.closingRuntimes.entries.firstOrNull { it.value.commandId == commandId }
-                if (closing != null && status != "pending") nextClosingRuntimes = if (succeeded)
-                    state.closingRuntimes + (closing.key to closing.value.copy(confirmedAt = System.currentTimeMillis()))
-                    else state.closingRuntimes - closing.key
                 if (commandId?.isSessionSyncCommandId() == true && commandId !in state.sessionSyncCommands) {
                     return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
                 }
@@ -3173,14 +3188,17 @@ class RelayReducer(
                 }
                 val isInteractionResponse = conversation.interactions.values.any { it.responseCommandId == commandId }
                 if (!succeeded && !isInteractionResponse && !pendingSend && status !in setOf("pending", "cancelled")) {
-                    nextError = if (closing != null) "关闭会话未完成：${event.string("error")?.takeIf(String::isNotBlank) ?: "请重试"}"
-                        else commandErrorText(event.string("error"))
+                    nextError = commandErrorText(event.string("error"))
                 }
             }
             "runtime.error" -> {
                 val runtimeError = event.string("message")?.takeIf(String::isNotBlank)
                     ?: "运行实例发生错误"
                 val commandId = event.string("commandId")
+                if (commandId != null && state.ledger.operation(commandId) != null) {
+                    return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
+                        .ledgerReceipt(commandId, LedgerReceipt.Failed(LedgerRejection("runtime_error", runtimeError)), System.currentTimeMillis())
+                }
                 if (commandId?.isSessionSyncCommandId() == true && commandId !in state.sessionSyncCommands) {
                     return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
                 }
@@ -3217,7 +3235,6 @@ class RelayReducer(
             sessionRangeFailures = nextRangeFailures,
             pendingDownloads = nextPendingDownloads,
             pendingSends = nextPendingSends,
-            closingRuntimes = nextClosingRuntimes,
             error = nextError,
         )
     }
