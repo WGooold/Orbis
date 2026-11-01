@@ -1190,20 +1190,22 @@ internal class HostConnection(
         if (uploads.size != uploadTaskIds.size || uploads.any { it.status == "failed" || it.status == "cancelled" }) return null
         val pending = uploads.filter { it.status != "completed" || it.remotePath == null }
         val sessionId = state.runtimes[runtimeId]?.sessionId
-        if (sessionId != null && (pending.isNotEmpty() || state.ledger.blocks(OperationKinds.sendGroup(sessionId)))) {
-            return sendWhenReady(runtimeId, sessionId, trimmed, delivery, uploadTaskIds, pending)
+        val configs = OperationKinds.activeConfigOps(state.ledger, runtimeId)
+        if (sessionId != null && (pending.isNotEmpty() || configs.isNotEmpty() || state.ledger.blocks(OperationKinds.sendGroup(sessionId)))) {
+            return sendWhenReady(runtimeId, sessionId, trimmed, delivery, uploadTaskIds, pending, configs)
         }
         return sendUserMessage(runtimeId, trimmed, delivery, attachments + uploads.mapNotNull(UploadTask::remotePath).filter { it !in attachments })
     }
 
     private fun sendWhenReady(runtimeId: String, sessionId: String, text: String, delivery: String?,
-                              uploadIds: List<String>, pending: List<UploadTask>): String? {
+                              uploadIds: List<String>, pending: List<UploadTask>,
+                              configs: List<LedgerOperation<LedgerPayload>> = emptyList()): String? {
         val messageId = UUID.randomUUID().toString()
         val commandId = UUID.randomUUID().toString()
         var created = false
         updateState { state ->
             val (next, creation) = state.createWaitingSend(commandId, messageId, runtimeId, sessionId, text, delivery, uploadIds, pending,
-                System.currentTimeMillis())
+                System.currentTimeMillis(), configs)
             created = creation is LedgerCreation.Created
             next
         }
@@ -1347,6 +1349,7 @@ internal class HostConnection(
      */
     private val composerAttachments = mutableMapOf<String, MutableSet<String>>()
     private var flushingSends = false
+    private var resubmittingConfig = false
 
     fun attachedTaskIds(sessionKey: String): Set<String> =
         composerAttachments[sessionKey]?.toSet() ?: emptySet()
@@ -1383,10 +1386,53 @@ internal class HostConnection(
             updateState { it.copy(error = "命令 /$name 需要参数") }
             return null
         }
+        if (OperationKinds.isConfigSetting(name) && normalizedArgs.isNotBlank()) {
+            val label = command.argument?.options?.firstOrNull { it.value == normalizedArgs }?.label ?: normalizedArgs
+            return submitConfig(runtimeId, name, normalizedArgs, label)
+        }
         val commandId = relay.executeSlashCommand(runtimeId, name, normalizedArgs)
         Log.i(RELOAD_TRACE_TAG, "ui.slash.sent name=$name runtimeId=$runtimeId commandId=${commandId ?: "<not_sent>"}")
         trackCommand(commandId, runtimeId, "命令未发送：中继服务器当前离线")
         return commandId
+    }
+
+    /** ADR-0049 §6.7 `config`：选择器与顶栏立即显示所选值并标“切换中”；连续选择只提交最新一次。 */
+    private fun submitConfig(runtimeId: String, setting: String, value: String, label: String): String? {
+        val target = OperationKinds.configTarget(runtimeId, setting)
+        val state = mutableState.value
+        if (state.ledger.active(target) != null) {
+            updateState { it.copy(configSelections = it.configSelections + (target to (value to label))) }
+            return target
+        }
+        // 已经是确认值：不需要切换。
+        if (state.runtimes[runtimeId]?.let { OperationKinds.confirmedValue(it, setting) } == value) return target
+        val commandId = UUID.randomUUID().toString()
+        var created = false
+        updateState { current ->
+            val (next, creation) = current.createConfig(commandId, runtimeId, setting, value, label, System.currentTimeMillis())
+            created = creation is LedgerCreation.Created
+            if (created) next else current
+        }
+        if (!created) return null
+        if (relay.executeSlashCommand(runtimeId, setting, value, commandId) == null) {
+            updateState { it.copy(ledger = it.ledger.remove(commandId), error = "命令未发送：中继服务器当前离线") }
+            return null
+        }
+        updateState { it.ledgerWritten(commandId, System.currentTimeMillis()) }
+        return commandId
+    }
+
+    /** 前一次切换结束：最新一次选择与确认值不同就再提交。 */
+    private fun resubmitConfigSelections() {
+        val state = mutableState.value
+        val due = state.configSelections.filterKeys { state.ledger.active(it) == null }
+        if (due.isEmpty()) return
+        updateState { it.copy(configSelections = it.configSelections - due.keys) }
+        for ((target, selection) in due) {
+            val (runtimeId, setting) = target.removePrefix("config:").let { it.substringBeforeLast(":") to it.substringAfterLast(":") }
+            val runtime = mutableState.value.runtimes[runtimeId] ?: continue
+            if (OperationKinds.confirmedValue(runtime, setting) != selection.first) submitConfig(runtimeId, setting, selection.first, selection.second)
+        }
     }
 
     /** Home selections are routed explicitly, without opening a chat or changing its draft. */
@@ -2742,6 +2788,11 @@ internal class HostConnection(
             if (next !== current) mutableState.value = next
         }
         ledgerRead?.let(::sendLedgerVerify)
+        if (mutableState.value.configSelections.isNotEmpty() && !resubmittingConfig) {
+            resubmittingConfig = true
+            try { resubmitConfigSelections() } finally { resubmittingConfig = false }
+        }
+        if (mutableState.value.readySends().isNotEmpty()) flushReadySends()
         // Local graph hydration also learns names; it need not receive another remote event
         // to persist them. Disk IO stays outside the state writer lock and the UI thread.
         if (capturedName) scheduleSessionCatalogSave()

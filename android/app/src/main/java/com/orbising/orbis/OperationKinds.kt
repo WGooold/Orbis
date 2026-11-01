@@ -20,6 +20,8 @@ sealed interface LedgerPayload {
     data class Respond(val runtimeId: String, val requestId: String, val summary: String) : LedgerPayload
     /** 等待前置操作的消息（附件上传、同会话前一条）。写入通道后交给 ADR-0055 的 outbox 结算。 */
     data class Send(val runtimeId: String, val sessionId: String, val messageId: String) : LedgerPayload
+    /** 模型 / 思考级别（条件乐观）。`setting` 为 `model` 或 `thinking`；`label` 是选择器里的名字。 */
+    data class Config(val runtimeId: String, val setting: String, val value: String, val label: String) : LedgerPayload
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -41,6 +43,52 @@ object OperationKinds {
     fun queueDomain(runtimeId: String) = "queue:$runtimeId"
     const val RESPOND = "respond"
     const val SEND = "send"
+    const val CONFIG = "config"
+    /** 某个 Runtime 的模型配置（model 领域或 runtime.metadata）在账本里的领域名。 */
+    fun modelDomain(runtimeId: String) = "model:$runtimeId"
+    fun isConfigSetting(name: String) = name == "model" || name == "thinking"
+    fun configTitle(setting: String) = if (setting == "model") "模型" else "思考级别"
+    fun configTarget(runtimeId: String, setting: String) = "config:$runtimeId:$setting"
+
+    /**
+     * `config`：成功回执后仍等 model 领域发布确认值（确认值与所选不同时显示确认值），15 秒未见就转结果不明核对；
+     * 核对后与所选不一致按切换失败处理（ADR-0049 §6.7）。
+     */
+    val configPolicy = LedgerPolicy(
+        successLands = false,
+        acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
+        afterSuccessMs = 15_000,
+        afterSuccess = LedgerTimeout.Unknown,
+        whenUnresolved = LedgerTimeout.Reject(LedgerRejection("unconfirmed", "未生效")),
+        deviceReceipts = true,
+    )
+
+    fun confirmedValue(runtime: RuntimeSummary, setting: String): String? = if (setting == "model") runtime.model?.id else runtime.thinkingLevel
+
+    /** 模型配置对 `config` 说明了什么：确认值等于所选即落地；成功回执后确认值不同（规范化或别名）也落地，显示确认值。 */
+    fun configEvidence(op: LedgerOperation<LedgerPayload>, runtime: RuntimeSummary?): LedgerEvidence {
+        val payload = op.payload as? LedgerPayload.Config ?: return LedgerEvidence.NONE
+        val confirmed = runtime?.let { confirmedValue(it, payload.setting) } ?: return LedgerEvidence.NONE
+        return if (confirmed == payload.value || op.succeeded) LedgerEvidence.LANDED else LedgerEvidence.NONE
+    }
+
+    /** 未结算的配置切换：等它的消息排在它后面（§6.2）。 */
+    fun activeConfigOps(ledger: AppLedger, runtimeId: String): List<LedgerOperation<LedgerPayload>> =
+        ledger.operations.filter { !it.phase.isSettled && (it.payload as? LedgerPayload.Config)?.runtimeId == runtimeId }
+
+    /** 选择器与顶栏显示的值：所选值加“切换中”；结果不明加“未确认”（ADR-0049 §6.7）。 */
+    fun configStatus(ledger: AppLedger, runtimeId: String, setting: String): Pair<String, String>? {
+        for (op in ledger.operations.asReversed()) {
+            val payload = op.payload as? LedgerPayload.Config ?: continue
+            if (payload.runtimeId != runtimeId || payload.setting != setting) continue
+            when (op.phase) {
+                LedgerPhase.Waiting, LedgerPhase.Sent, LedgerPhase.Accepted -> return payload.label to "切换中"
+                LedgerPhase.Unknown, LedgerPhase.Unconfirmed -> return payload.label to "未确认"
+                is LedgerPhase.Rejected -> continue
+            }
+        }
+        return null
+    }
     /** `send` 在账本里只经历 `waiting`：前置完成、轮到它时写入通道并交给 outbox，账本随即删除记录。 */
     val sendPolicy = LedgerPolicy(successLands = true, acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS, deviceReceipts = true)
     fun sendGroup(sessionId: String) = "session:$sessionId"
@@ -219,12 +267,13 @@ object OperationKinds {
         is LedgerPayload.QueueCancel -> payload.runtimeId
         is LedgerPayload.Respond -> payload.runtimeId
         is LedgerPayload.Send -> payload.runtimeId
+        is LedgerPayload.Config -> payload.runtimeId
         is LedgerPayload.Dismiss, is LedgerPayload.Archive -> null
     }
 
     /** 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片、队列项）提示后回到原位；内容类保留失败状态等用户处理。 */
     fun removesOnRejection(op: LedgerOperation<LedgerPayload>): Boolean = when (op.payload) {
-        is LedgerPayload.Quit, is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond, is LedgerPayload.Send -> true
+        is LedgerPayload.Quit, is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond, is LedgerPayload.Send, is LedgerPayload.Config -> true
     }
 
     /** 首页要隐藏的卡片：未结算的 `quit` 一直保持叠加，包括结果不明期间（L4）。 */
@@ -238,7 +287,7 @@ object OperationKinds {
      */
     fun evidence(op: LedgerOperation<LedgerPayload>, runtimeIds: Set<String>): LedgerEvidence = when (val payload = op.payload) {
         is LedgerPayload.Quit -> if (payload.runtimeId in runtimeIds) LedgerEvidence.NONE else LedgerEvidence.LANDED
-        is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond, is LedgerPayload.Send -> LedgerEvidence.NONE
+        is LedgerPayload.Dismiss, is LedgerPayload.Archive, is LedgerPayload.QueueCancel, is LedgerPayload.Respond, is LedgerPayload.Send, is LedgerPayload.Config -> LedgerEvidence.NONE
     }
 
     /** `command.result` 的回执。`cancelled` / `unconfirmed` 是可能已执行的结果，交给账本按结果不明处理。 */
@@ -281,6 +330,7 @@ object OperationKinds {
                 else -> "撤回未完成：${rejection.reason.ifBlank { "请重试" }}"
             }
             is LedgerPayload.Send -> null // 失败显示在气泡原位（outbox 的失败行）。
+            is LedgerPayload.Config -> "${configTitle((op.payload as LedgerPayload.Config).setting)}切换未完成：${rejection.reason.ifBlank { "请重试" }}"
             // 核对后请求仍在：静默恢复面板；明确失败时面板回到原位并说明原因，答案保留。
             is LedgerPayload.Respond -> when (rejection.code) {
                 "unresolved", "not_applied" -> null
@@ -319,9 +369,13 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
         is LedgerEvent.Rejected -> {
             // 等待中的消息：前置失败时这条转失败，原因写明前置操作（ADR-0049 §6.2）。
             (event.operation.payload as? LedgerPayload.Send)?.let { send ->
-                val reason = (event.operation.phase as? LedgerPhase.Rejected)?.rejection?.reason.orEmpty()
-                sends[send.messageId]?.takeIf { it.state is PendingSendState.Waiting }?.let {
-                    sends = sends + (send.messageId to it.copy(state = PendingSendState.Failed(reason)))
+                val rejection = (event.operation.phase as? LedgerPhase.Rejected)?.rejection
+                sends[send.messageId]?.let { it to it.state }?.let { (row, state) ->
+                    if (state !is PendingSendState.Waiting) return@let
+                    // 配置切换失败：等它的消息一起转失败（“模型切换未完成，消息未发送”），可按当前配置重新发送。
+                    val reason = if (rejection?.code == "prerequisite" && state.label.startsWith("等待") && state.label.endsWith("切换"))
+                        state.label.removePrefix("等待") + "未完成，消息未发送" else rejection?.reason.orEmpty()
+                    sends = sends + (send.messageId to row.copy(state = PendingSendState.Failed(reason)))
                 }
             }
             // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
@@ -367,6 +421,10 @@ private fun RemoteState.ledgerEvidence(domain: String): (LedgerOperation<LedgerP
         val catalog = sessions
         return { OperationKinds.catalogEvidence(it, catalog) }
     }
+    if (domain.startsWith("model:")) {
+        val runtime = runtimes[domain.removePrefix("model:")]
+        return { OperationKinds.configEvidence(it, runtime) }
+    }
     if (domain.startsWith("interactions:")) {
         val runtimeId = domain.removePrefix("interactions:")
         val requests = conversations[runtimeId]?.interactions.orEmpty()
@@ -391,6 +449,7 @@ private fun RemoteState.ledgerDomainComplete(domain: String): Boolean = when {
     domain.startsWith("notifications:") -> notificationProjections[domain.removePrefix("notifications:")]?.complete == true
     domain.startsWith("queue:") -> runtimes[domain.removePrefix("queue:")]?.domainAvailability?.get("delivery") == "ready"
     domain.startsWith("interactions:") -> runtimes[domain.removePrefix("interactions:")]?.domainAvailability?.get("interactions") == "ready"
+    domain.startsWith("model:") -> true
     else -> false
 }
 
@@ -543,13 +602,19 @@ internal fun RemoteState.interactionStatus(runtimeId: String): Triple<String, Bo
 internal fun RemoteState.createWaitingSend(
     commandId: String, messageId: String, runtimeId: String, sessionId: String, text: String, delivery: String?,
     uploadIds: List<String>, pendingUploads: List<UploadTask>, now: Long,
+    configs: List<LedgerOperation<LedgerPayload>> = emptyList(),
 ): Pair<RemoteState, LedgerCreation<LedgerPayload>> {
     val (next, creation) = ledger.create(commandId, OperationKinds.SEND, "message:$messageId", group = OperationKinds.sendGroup(sessionId),
         conflicts = false, policy = OperationKinds.sendPolicy, basis = emptyMap(),
-        prerequisites = pendingUploads.map { OperationKinds.uploadPrerequisite(it.taskId) }.toSet(),
+        prerequisites = pendingUploads.map { OperationKinds.uploadPrerequisite(it.taskId) }.toSet() + configs.map { it.opId },
         payload = LedgerPayload.Send(runtimeId, sessionId, messageId), written = false, now = now)
     if (creation !is LedgerCreation.Created) return this to creation
-    val label = if (pendingUploads.isEmpty()) "等待前一条发送" else "上传中：" + pendingUploads.joinToString("、") { it.displayName }
+    val config = (configs.firstOrNull()?.payload as? LedgerPayload.Config)?.let { OperationKinds.configTitle(it.setting) }
+    val label = when {
+        pendingUploads.isNotEmpty() -> "上传中：" + pendingUploads.joinToString("、") { it.displayName }
+        config != null -> "等待${config}切换"
+        else -> "等待前一条发送"
+    }
     val anchor = conversations[runtimeId]?.messages?.lastOrNull()?.messageId
     val send = PendingSend(messageId, commandId, sessionId, text, emptyList(), delivery, now, anchor,
         state = PendingSendState.Waiting(label), uploadIds = uploadIds)
@@ -571,3 +636,18 @@ internal fun RemoteState.ledgerUploadSettled(taskId: String, succeeded: Boolean,
 
 /** 已经可以写入通道的等待消息（前置都已完成、同组没有更早的等待者）。 */
 internal fun RemoteState.readySends(): List<LedgerOperation<LedgerPayload>> = ledger.ready().filter { it.payload is LedgerPayload.Send }
+
+/** `config` 先记入账本（尚未写入），opId 即命令的 commandId。 */
+internal fun RemoteState.createConfig(commandId: String, runtimeId: String, setting: String, value: String, label: String, now: Long):
+    Pair<RemoteState, LedgerCreation<LedgerPayload>> {
+    val (next, creation) = ledger.create(commandId, OperationKinds.CONFIG, OperationKinds.configTarget(runtimeId, setting),
+        policy = OperationKinds.configPolicy, basis = ledgerBasis(OperationKinds.modelDomain(runtimeId)),
+        payload = LedgerPayload.Config(runtimeId, setting, value, label), written = false, now = now)
+    return copy(ledger = next) to creation
+}
+
+/** 顶栏与选择器显示的值：(名字, 标记)；没有进行中的切换时为 null，显示确认值。 */
+internal fun RemoteState.configStatus(runtimeId: String, setting: String): Pair<String, String>? =
+    configSelections[OperationKinds.configTarget(runtimeId, setting)]?.let { it.second to "切换中" }
+        ?: OperationKinds.configStatus(ledger, runtimeId, setting)
+

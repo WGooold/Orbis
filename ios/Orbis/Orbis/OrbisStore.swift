@@ -296,6 +296,7 @@ final class HostConnection: ObservableObject {
             self.queuedMessages[runtimeId] = projection.queuedMessages
             if domains["delivery"] != nil { self.ledgerAuthority(OperationKinds.queueDomain(runtimeId), read: nil, complete: true) }
             if domains["interactions"] != nil { self.ledgerAuthority(OperationKinds.interactionsDomain(runtimeId), read: nil, complete: true) }
+            if domains["model"] != nil { self.ledgerAuthority(OperationKinds.modelDomain(runtimeId), read: nil, complete: true) }
             self.updateSyncing()
             return true
         }
@@ -1126,9 +1127,54 @@ final class HostConnection: ObservableObject {
         guard canSend, let runtime = selectedRuntime,
               let command = commands[runtime.runtimeId]?.first(where: { $0.name == name }),
               command.argument?.required != true || !args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let value = args.trimmingCharacters(in: .whitespacesAndNewlines)
+        if OperationKinds.isConfigSetting(name), !value.isEmpty {
+            let label = command.argument?.options?.first { $0.value == value }?.label ?? value
+            return submitConfig(runtime, setting: name, value: value, label: label)
+        }
         guard let id = performActionId(runtimeId: runtime.runtimeId, name: name, command: ["type": "slash.execute", "name": name, "args": args]) else { return false }
         if let composerDraft { composerActionDrafts[id] = (localSessionKey(host: selectedHost, runtime: runtime), composerDraft) }
         return true
+    }
+
+    // MARK: - ADR-0049 §6.7 模型与思考级别（条件乐观）
+
+    /// 切换中再次选择：只记下最新一次，前一次结束后只在它与确认值不同时再提交。
+    private var configSelections: [String: (value: String, label: String)] = [:]
+
+    private func submitConfig(_ runtime: RuntimeSummary, setting: String, value: String, label: String) -> Bool {
+        let target = OperationKinds.configTarget(runtimeId: runtime.runtimeId, setting: setting)
+        if ledger.active(target: target) != nil {
+            configSelections[target] = (value, label); objectWillChange.send(); return true
+        }
+        // 已经是确认值：不需要切换。
+        if OperationKinds.confirmedValue(runtime, setting: setting) == value { return true }
+        let id = UUID().uuidString
+        let creation = ledger.create(opId: id, kind: OperationKinds.config, target: target, policy: OperationKinds.configPolicy,
+                                     basis: ledgerBasis(OperationKinds.modelDomain(runtime.runtimeId)),
+                                     payload: .config(runtimeId: runtime.runtimeId, setting: setting, value: value, label: label), written: false, now: Date())
+        guard creation == .created else { return false }
+        guard sendCommand(runtimeId: runtime.runtimeId, commandId: id, command: ["type": "slash.execute", "name": setting, "args": value]) else {
+            ledger.remove(id); handleLedger([])
+            errorMessage = "操作未送达，请连接后重试。"; return false
+        }
+        handleLedger(ledger.written(id, now: Date()))
+        return true
+    }
+
+    /// 前一次切换结束：最新一次选择与确认值不同就再提交。
+    private func configSettled(_ op: AppLedger.Operation) {
+        guard case .config(let runtimeId, let setting, _, _) = op.payload else { return }
+        let target = OperationKinds.configTarget(runtimeId: runtimeId, setting: setting)
+        guard let next = configSelections.removeValue(forKey: target), let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }),
+              OperationKinds.confirmedValue(runtime, setting: setting) != next.value else { return }
+        _ = submitConfig(runtime, setting: setting, value: next.value, label: next.label)
+    }
+
+    /// 顶栏与选择器显示的值：(名字, 标记)；没有进行中的切换时为 nil，显示确认值。
+    func configStatus(_ runtimeId: String, setting: String) -> (label: String, mark: String)? {
+        if let next = configSelections[OperationKinds.configTarget(runtimeId: runtimeId, setting: setting)] { return (next.label, "切换中") }
+        return OperationKinds.configStatus(ledger, runtimeId: runtimeId, setting: setting)
     }
 
     /// Close a home-list selection without changing the active conversation or its draft.
@@ -1215,6 +1261,10 @@ final class HostConnection: ObservableObject {
             let index = sessionIndex
             return { OperationKinds.catalogEvidence($0, sessions: index) }
         }
+        if domain.hasPrefix("model:") {
+            let runtime = runtimes.first { $0.runtimeId == String(domain.dropFirst("model:".count)) }
+            return { OperationKinds.configEvidence($0, runtime: runtime) }
+        }
         if domain.hasPrefix("interactions:") {
             let runtimeId = String(domain.dropFirst("interactions:".count))
             let requests = interactions[runtimeId] ?? []
@@ -1258,7 +1308,7 @@ final class HostConnection: ObservableObject {
 
     /// 领域当前的权威状态是否完整：部分结果不能作为反向证据（L2）。
     private func ledgerDomainComplete(_ domain: String) -> Bool {
-        if domain == OperationKinds.runtimesDomain || domain == OperationKinds.catalogDomain || domain.hasPrefix("queue:") || domain.hasPrefix("interactions:") { return true }
+        if domain == OperationKinds.runtimesDomain || domain == OperationKinds.catalogDomain || domain.hasPrefix("queue:") || domain.hasPrefix("interactions:") || domain.hasPrefix("model:") { return true }
         if domain.hasPrefix("notifications:") {
             return notifications.projections[String(domain.dropFirst("notifications:".count))]?.complete == true
         }
@@ -1274,13 +1324,18 @@ final class HostConnection: ObservableObject {
             switch event {
             case .rejected(let op):
                 if case .send(_, _, let messageId) = op.payload, case .rejected(let rejection) = op.phase {
-                    pendingSends.failWaiting(messageId, reason: rejection.reason); publishMessages()
+                    // 配置切换失败：等它的消息一起转失败（“模型切换未完成，消息未发送”），可按当前配置重新发送。
+                    var reason = rejection.reason
+                    if rejection.code == "prerequisite", case .waiting(let label) = pendingSends.item(messageId)?.state,
+                       label.hasPrefix("等待"), label.hasSuffix("切换") { reason = label.dropFirst(2) + "未完成，消息未发送" }
+                    pendingSends.failWaiting(messageId, reason: reason); publishMessages()
                 }
+                configSettled(op)
                 // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
                 if let text = OperationKinds.message(for: op) { errorMessage = archiveRejections > 1 ? "\(archiveRejections) 个会话" + text : text }
                 if OperationKinds.removesOnRejection(op) { ledger.remove(op.opId) }
             case .verify: verify = true
-            case .landed(let op): showInteractionOutcome(op)
+            case .landed(let op): showInteractionOutcome(op); configSettled(op)
             case .ready: readySends = true
             case .unknown, .unconfirmed, .expired: break
             }
@@ -1420,8 +1475,9 @@ final class HostConnection: ObservableObject {
         guard attachments.count == attachmentIds.count, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }) else { return false }
         // ADR-0049 §6.2：附件没传完或同会话还有等待中的前一条，就先在本机创建、排在后面，轮到时再写入通道。
         let uploaded = attachments.allSatisfy { $0.status == "completed" && $0.remotePath != nil }
-        if !uploaded || runtime.sessionId.map({ ledger.blocks(group: OperationKinds.sendGroup($0)) }) == true {
-            return sendWhenReady(body, delivery: delivery, uploads: attachments, runtime: runtime)
+        let configs = OperationKinds.activeConfigOps(ledger, runtimeId: runtime.runtimeId)
+        if !uploaded || !configs.isEmpty || runtime.sessionId.map({ ledger.blocks(group: OperationKinds.sendGroup($0)) }) == true {
+            return sendWhenReady(body, delivery: delivery, uploads: attachments, runtime: runtime, configs: configs)
         }
         return sendUserMessage(body, delivery: delivery, attachments: attachments.compactMap(\.remotePath), runtime: runtime)
     }
@@ -1450,20 +1506,23 @@ final class HostConnection: ObservableObject {
     private static let waitingCopiesKey = "orbis.waitingSendCopies"
 
     /// 气泡立即出现、输入框清空；附件上传完成且同会话前一条已写入后，按创建顺序写入通道，再交给 outbox 结算。
-    private func sendWhenReady(_ body: String, delivery: String?, uploads: [FileTransfer], runtime: RuntimeSummary) -> Bool {
+    private func sendWhenReady(_ body: String, delivery: String?, uploads: [FileTransfer], runtime: RuntimeSummary,
+                               configs: [AppLedger.Operation] = []) -> Bool {
         guard let sessionId = runtime.sessionId else { return false }
         let id = UUID().uuidString, commandId = UUID().uuidString
         let pending = uploads.filter { $0.status != "completed" || $0.remotePath == nil }
         let creation = ledger.create(opId: commandId, kind: OperationKinds.send, target: "message:" + id, group: OperationKinds.sendGroup(sessionId),
                                      conflicts: false, policy: OperationKinds.sendPolicy, basis: [:],
-                                     prerequisites: Set(pending.map { OperationKinds.uploadPrerequisite($0.id) }),
+                                     prerequisites: Set(pending.map { OperationKinds.uploadPrerequisite($0.id) } + configs.map(\.opId)),
                                      payload: .send(runtimeId: runtime.runtimeId, sessionId: sessionId, messageId: id), written: false, now: Date())
         guard creation == .created else { errorMessage = "待发送的消息过多，请稍后重试。"; return false }
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
         var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: [],
                                delivery: delivery, createdAt: Date(), anchorMessageId: anchor)
-        send.state = .waiting(pending.isEmpty ? "等待前一条发送" : "上传中：" + pending.map(\.name).joined(separator: "、"))
+        let config: String? = configs.first.flatMap { if case .config(_, let setting, _, _) = $0.payload { return OperationKinds.configTitle(setting) }; return nil }
+        send.state = .waiting(!pending.isEmpty ? "上传中：" + pending.map(\.name).joined(separator: "、")
+                              : config.map { "等待\($0)切换" } ?? "等待前一条发送")
         send.uploadIds = uploads.map(\.id)
         pendingSends.add(send)
         saveWaitingCopy(id, text: body, runtime: runtime)
@@ -2014,6 +2073,7 @@ final class HostConnection: ObservableObject {
             }
             let next = reprojectRuntime(mergeRuntime(previous, metadata: fields))
             runtimes[index] = next
+            if fields["model"] != nil || fields["thinkingLevel"] != nil { ledgerAuthority(OperationKinds.modelDomain(runtimeId), read: nil, complete: true) }
             if previous.sessionId != next.sessionId {
                 invalidateConversation(runtimeId)
                 notifications.online(next)

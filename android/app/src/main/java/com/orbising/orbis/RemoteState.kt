@@ -438,6 +438,8 @@ data class RemoteState(
     val ledgerVerifyWanted: Boolean = false,
     /** 回答结算后在原位短暂显示的结果：runtimeId → 结果（ADR-0049 §6.5）。 */
     val interactionOutcomes: Map<String, InteractionOutcome> = emptyMap(),
+    /** 切换中再次选择：目标 → (值, 名字)，前一次结束后只在它与确认值不同时再提交（ADR-0049 §6.7）。 */
+    val configSelections: Map<String, Pair<String, String>> = emptyMap(),
     val capabilities: Map<String, RuntimeCapabilities> = emptyMap(),
     /**
      * 这台电脑支持的 agent 种类（[device.ready] 的 `agents`）。

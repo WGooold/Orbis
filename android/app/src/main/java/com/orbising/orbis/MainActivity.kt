@@ -1893,8 +1893,11 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                         ChatRuntimeStatus(
                             status = runtime?.presentationStatus ?: "error",
                             isChatSyncing = displayReadPending,
-                            modelLabel = runtime?.model?.let(::modelLabel),
-                            thinkingLevel = runtime?.thinkingLevel,
+                            // ADR-0049 §6.7：切换中显示所选值加标记；同一槽位、同一省略规则（V05）。
+                            modelLabel = state.configStatus(runtimeId, "model")?.let { "${it.first} · ${it.second}" }
+                                ?: runtime?.model?.let(::modelLabel),
+                            thinkingLevel = state.configStatus(runtimeId, "thinking")?.let { "${it.first} · ${it.second}" }
+                                ?: runtime?.thinkingLevel,
                         )
                     }
                 },

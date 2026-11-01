@@ -121,8 +121,9 @@ internal fun RemoteState.applyAgentDomainProjection(
     val projected = copy(runtimes = runtimes + (id to runtime), sessions = catalog, conversations = conversations + (id to conversation),
         capabilities = commands?.let { capabilities + (id to it) } ?: capabilities, pendingCommands = pending)
     val queued = queueStamp?.let { projected.ledgerQueue(id, delivered, it, System.currentTimeMillis()) } ?: projected
-    // ADR-0049 §7.5：交互清单是回答的权威状态。
-    return interactionsStamp?.let { queued.ledgerAuthority(OperationKinds.interactionsDomain(id), null, it) } ?: queued
+    // ADR-0049 §7.5：交互清单是回答的权威状态；model 领域是模型 / 思考级别切换的权威状态。
+    val answered = interactionsStamp?.let { queued.ledgerAuthority(OperationKinds.interactionsDomain(id), null, it) } ?: queued
+    return if (domains["model"]?.availability == "ready") answered.ledgerAuthority(OperationKinds.modelDomain(id), null, true) else answered
 }
 
 private fun collection(value: JsonElement?, domain: AgentStateDomainView): JsonObject? = when {

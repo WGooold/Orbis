@@ -218,7 +218,11 @@ struct ChatView: View {
                             Text(connectionTitle(store.connection)).font(.orbisCaption()).lineLimit(1)
                         }.foregroundStyle(p.secondary).fixedSize(horizontal: true, vertical: false)
                     }
-                    if let model = runtime.model, domainReady("model") {
+                    // ADR-0049 §6.7：切换中显示所选值加标记；同一槽位、同一省略规则（V05）。
+                    if let pending = store.configStatus(runtime.runtimeId, setting: "model") {
+                        Text(pending.label + " · " + pending.mark).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("chat-model-switching")
+                    } else if let model = runtime.model, domainReady("model") {
                         Text(model.name ?? model.id).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -1483,9 +1487,11 @@ private struct RuntimeInfoView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     StatusSection(title: "模型与上下文") {
-                        StatusFact(label: "模型", value: ready("model") ? runtime.model?.name ?? runtime.model?.id ?? "未报告" : "状态待核对")
+                        StatusFact(label: "模型", value: store.configStatus(runtime.runtimeId, setting: "model").map { $0.label + "（" + $0.mark + "）" }
+                                   ?? (ready("model") ? runtime.model?.name ?? runtime.model?.id ?? "未报告" : "状态待核对"))
                         StatusFact(label: "供应商", value: ready("model") ? runtime.model?.provider ?? "未报告" : "状态待核对")
-                        StatusFact(label: "思考级别", value: ready("model") ? runtime.thinkingLevel ?? "来源未报告" : "状态待核对")
+                        StatusFact(label: "思考级别", value: store.configStatus(runtime.runtimeId, setting: "thinking").map { $0.label + "（" + $0.mark + "）" }
+                                   ?? (ready("model") ? runtime.thinkingLevel ?? "来源未报告" : "状态待核对"))
                         StatusFact(label: "上下文", value: ready("context") ? contextText : "状态待核对")
                     }
                     StatusSection(title: "执行状态") {
@@ -1504,7 +1510,7 @@ private struct RuntimeInfoView: View {
                     ForEach((store.commands[runtime.runtimeId] ?? []).filter { ["model", "thinking"].contains($0.name) && $0.argument?.options?.isEmpty == false }) { command in
                         StatusSection(title: command.description ?? command.name) {
                             ForEach(command.argument?.options ?? []) { option in
-                                OrbisActionButton(title: option.label) { _ = store.executeSlash(command.name, args: option.value) }.disabled(!store.canSend || !store.pendingActionIds.isEmpty)
+                                OrbisActionButton(title: option.label) { _ = store.executeSlash(command.name, args: option.value) }.disabled(!store.canSend)
                             }
                         }
                     }

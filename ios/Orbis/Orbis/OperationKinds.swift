@@ -14,6 +14,8 @@ enum LedgerPayload: Equatable {
     case respond(runtimeId: String, requestId: String, summary: String)
     /// 等待前置操作的消息（附件上传、同会话前一条）。写入通道后交给 ADR-0055 的 outbox 结算。
     case send(runtimeId: String, sessionId: String, messageId: String)
+    /// 模型 / 思考级别（条件乐观）。`setting` 为 `model` 或 `thinking`；`label` 是选择器里的名字。
+    case config(runtimeId: String, setting: String, value: String, label: String)
 }
 
 typealias AppLedger = OperationLedger<LedgerPayload>
@@ -33,6 +35,55 @@ enum OperationKinds {
     static func queueDomain(_ runtimeId: String) -> String { "queue:" + runtimeId }
     static let respond = "respond"
     static let send = "send"
+    static let config = "config"
+    /// 某个 Runtime 的模型配置（model 领域或 runtime.metadata）在账本里的领域名。
+    static func modelDomain(_ runtimeId: String) -> String { "model:" + runtimeId }
+    static func isConfigSetting(_ name: String) -> Bool { name == "model" || name == "thinking" }
+    static func configTitle(_ setting: String) -> String { setting == "model" ? "模型" : "思考级别" }
+    static func configTarget(runtimeId: String, setting: String) -> String { "config:\(runtimeId):\(setting)" }
+
+    /// `config`：成功回执后仍等 model 领域发布确认值（确认值与所选不同时显示确认值），15 秒未见就转结果不明核对；
+    /// 核对后与所选不一致按切换失败处理（ADR-0049 §6.7）。
+    static let configPolicy = AppLedger.Policy(
+        successLands: false,
+        acceptedBudget: AppLedger.receiptBudget,
+        afterSuccess: (15, .unknown),
+        whenUnresolved: .reject(.init("unconfirmed", "未生效")),
+        deviceReceipts: true,
+        appliesBeforeLaterReads: false
+    )
+
+    static func confirmedValue(_ runtime: RuntimeSummary, setting: String) -> String? {
+        setting == "model" ? runtime.model?.id : runtime.thinkingLevel
+    }
+
+    /// 模型配置对 `config` 说明了什么：确认值等于所选即落地；成功回执后确认值不同（规范化或别名）也落地，显示确认值。
+    static func configEvidence(_ op: AppLedger.Operation, runtime: RuntimeSummary?) -> AppLedger.Evidence {
+        guard case .config(_, let setting, let value, _) = op.payload, let runtime else { return .none }
+        if confirmedValue(runtime, setting: setting) == value { return .landed }
+        return op.succeeded && confirmedValue(runtime, setting: setting) != nil ? .landed : .none
+    }
+
+    /// 未结算的配置切换：等它的消息排在它后面（§6.2）。
+    static func activeConfigOps(_ ledger: AppLedger, runtimeId: String) -> [AppLedger.Operation] {
+        ledger.operations.filter { op in
+            guard !op.phase.isSettled, case .config(let owner, _, _, _) = op.payload else { return false }
+            return owner == runtimeId
+        }
+    }
+
+    /// 选择器与顶栏显示的值：所选值加“切换中”；结果不明加“未确认”（ADR-0049 §6.7）。
+    static func configStatus(_ ledger: AppLedger, runtimeId: String, setting: String) -> (label: String, mark: String)? {
+        for op in ledger.operations.reversed() {
+            guard case .config(let owner, let name, _, let label) = op.payload, owner == runtimeId, name == setting else { continue }
+            switch op.phase {
+            case .waiting, .sent, .accepted: return (label, "切换中")
+            case .unknown, .unconfirmed: return (label, "未确认")
+            case .rejected: continue
+            }
+        }
+        return nil
+    }
     /// `send` 在账本里只经历 `waiting`：前置完成、轮到它时写入通道并交给 outbox，账本随即删除记录。
     static let sendPolicy = AppLedger.Policy(successLands: true, acceptedBudget: AppLedger.receiptBudget, afterSuccess: nil,
                                              whenUnresolved: .unknown, deviceReceipts: true, appliesBeforeLaterReads: false)
@@ -224,7 +275,7 @@ enum OperationKinds {
     /// 回执所属的 Runtime：Runtime 级命令的回执只认同一 Runtime 的事件（Host 按 runtimeId + commandId 归属）。
     static func runtimeId(of op: AppLedger.Operation) -> String? {
         switch op.payload {
-        case .quit(let runtimeId), .queueCancel(let runtimeId, _), .respond(let runtimeId, _, _), .send(let runtimeId, _, _): return runtimeId
+        case .quit(let runtimeId), .queueCancel(let runtimeId, _), .respond(let runtimeId, _, _), .send(let runtimeId, _, _), .config(let runtimeId, _, _, _): return runtimeId
         case .dismiss, .archive: return nil
         }
     }
@@ -232,7 +283,7 @@ enum OperationKinds {
     /// 被拒绝后是否直接删除：列表类（首页卡片、通知横幅、目录卡片、队列项）提示后回到原位；内容类保留失败状态等用户处理。
     static func removesOnRejection(_ op: AppLedger.Operation) -> Bool {
         switch op.payload {
-        case .quit, .dismiss, .archive, .queueCancel, .respond, .send: return true
+        case .quit, .dismiss, .archive, .queueCancel, .respond, .send, .config: return true
         }
     }
 
@@ -249,7 +300,7 @@ enum OperationKinds {
     static func evidence(_ op: AppLedger.Operation, runtimeIds: Set<String>) -> AppLedger.Evidence {
         switch op.payload {
         case .quit(let runtimeId): return runtimeIds.contains(runtimeId) ? .none : .landed
-        case .dismiss, .archive, .queueCancel, .respond, .send: return .none
+        case .dismiss, .archive, .queueCancel, .respond, .send, .config: return .none
         }
     }
 
@@ -296,6 +347,8 @@ enum OperationKinds {
             default: return "撤回未完成：" + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
             }
         case .send: return nil // 失败显示在气泡原位（outbox 的失败行）。
+        case .config(_, let setting, _, _):
+            return configTitle(setting) + "切换未完成：" + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
         case .respond:
             // 核对后请求仍在：静默恢复面板；明确失败时面板回到原位并说明原因，答案保留。
             switch rejection.code {
