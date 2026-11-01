@@ -66,6 +66,7 @@ import type {
 } from "./agent-backend.js";
 import { CODEX_DESKTOP_RUNTIME_ID, CODEX_RUNTIME_ID, CodexAppServer, CodexRequestError, isDesktopAppServer, type CodexCommand, type CodexServerRequest } from "./codex-daemon.js";
 import { describeError } from "./describe-error.js";
+import { prepareCodexWorkspace, codexWorkspaceTrustKey } from "./agent-startup.js";
 import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
 import { CodexAsyncInputs, codexAsyncQuestionText, codexQuestionReplyText } from "./codex-async-input.js";
@@ -804,6 +805,7 @@ export class CodexRuntime implements AgentBackend {
     const endpoint = this.#server.endpoint;
     const command = this.#server.codexCommand;
     if (endpoint === undefined || command === undefined) throw new Error("Codex remote 端点不可用");
+    await prepareCodexWorkspace(this.#server, cwd);
     const key = `terminal:${randomUUID()}`;
     const timer = setTimeout(() => {
       const pending = this.#pendingTerminalLaunches.get(key);
@@ -1282,8 +1284,14 @@ export class CodexRuntime implements AgentBackend {
     const existing = target.type === "resume" ? this.#threads.get(target.sessionId) : undefined;
     if (existing?.reconcilePromise !== undefined) await this.#waitForReconcile(existing);
     const existingGeneration = existing === undefined ? undefined : ++existing.reconcileGeneration;
+    const needsTerminalTrust = !isDesktopAppServer(this.#server) && this.#server.endpoint !== undefined
+      && orbisEnvironment(process.env, "CODEX_HEAD") !== "0";
+    // Prepare before creating a new thread: a rejected config write must not leave
+    // an unpublished session behind. Resume discovers cwd from the native reply.
+    if (needsTerminalTrust && target.type === "new") await prepareCodexWorkspace(this.#server, target.cwd);
     const method = target.type === "resume" ? "thread/resume" : "thread/start";
-    const params = target.type === "resume" ? { threadId: target.sessionId } : { cwd: target.cwd };
+    const params = target.type === "resume" ? { threadId: target.sessionId }
+      : { cwd: target.cwd, config: { [codexWorkspaceTrustKey(target.cwd)]: "trusted" } };
     const result = (await this.#server.request(method, params)) as {
       thread?: Record<string, unknown>;
       model?: unknown;
@@ -1303,6 +1311,7 @@ export class CodexRuntime implements AgentBackend {
       await this.#waitForReconcile(existing);
       return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
     }
+    if (needsTerminalTrust && target.type === "resume") await prepareCodexWorkspace(this.#server, cwd);
     // Resuming an attached thread keeps its source sequence, pending interactions and queue.
     // Native replay announces a new epoch itself if the verified history was rewritten.
     const thread: ThreadState = existing ?? this.#newThreadState(id, cwd, {

@@ -1820,7 +1820,10 @@ export class HostService {
         if (scope?.kind === "agent" && command.runtimeId === runtimeId && agentKeyId(command.agent) === agentKeyId(scope.key))
           this.#changeSubscribers.set(deviceId, { runtimeId, agentId: agentKeyId(scope.key) });
       }
-      void this.#fileChanges.request(deviceId, runtimeId, command).catch(() => undefined);
+      void this.#fileChanges.request(deviceId, runtimeId, command).catch(() => {
+        if (command.type !== "session.change.detail.cancel") this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId,
+          { type: "session.changes.failed", requestId: command.requestId, runtimeId, reason: "unavailable" }));
+      });
       return;
     }
     if (command.type === "session.tools.open" || command.type === "session.tools.read") {

@@ -4,7 +4,7 @@
  * 核心契约：**cwd 的权威来源是会话文件首行**，目录名的有损编码只用于分组，绝不反解。
  */
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -118,7 +118,7 @@ describe("browseDirectory", () => {
     await writeFile(join(project, "file.txt"), "x", "utf8");
     await writeFile(join(root, "report 中文.txt"), "download me", "utf8");
 
-    const result = await browseDirectory(root, new Set([project.toUpperCase()]));
+    const result = await browseDirectory(root, new Set([platform() === "win32" ? project.toUpperCase() : project]));
     expect(result.path).toBe(root);
     expect(result.entries).toContainEqual({ name: "with-history", isDir: true, hasSessions: true });
     expect(result.entries).toContainEqual({ name: "empty", isDir: true, hasSessions: false });

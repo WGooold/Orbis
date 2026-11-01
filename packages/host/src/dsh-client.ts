@@ -105,7 +105,13 @@ export class DshAcpClient implements DshConnection {
         };
         const request: DshRequest = { method: frame.method, params: record(frame.params),
           respond: result => reply({ result }), reject: message => reply({ error: { code: -32601, message } }) };
-        if (this.onRequest) this.onRequest(request); else request.reject("Unsupported client method");
+        if (this.onRequest) this.onRequest(request);
+        else {
+          request.reject("Unsupported client method before session readiness");
+          if ([...this.#pending.values()].length > 0) {
+            this.#fail(`DeepSeek 启动需要尚不支持的原生交互（${frame.method.slice(0, 120)}），未自动批准`);
+          }
+        }
       } else this.onNotification?.(frame.method, record(frame.params));
       return;
     }

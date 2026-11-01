@@ -20,7 +20,7 @@ import kotlin.math.roundToInt
 class HomeSwipeCloseInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun shortSwipeReboundsAndEachGestureVibratesOnlyOnceBeforeClosingItsRuntime() {
+    @Test fun thresholdCrossingsVibrateInBothDirectionsAndRepeatedlyBeforeClosingItsRuntime() {
         val pairing = HostPairing("host", "Test Host", "test-public", "test-root",
             relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
         val state = RemoteState(hostId = "host", e2eReady = true,
@@ -77,14 +77,24 @@ class HomeSwipeCloseInstrumentedTest {
         compose.waitForIdle()
         compose.runOnIdle { assertTrue(opened.isEmpty()); assertTrue(closed.isEmpty()) }
 
-        // Cross, retreat and cross again during the same drag: one vibration, no close until release.
+        // Every transition into or out of the armed state vibrates, without closing before release.
         card.performTouchInput { down(Offset(width * 0.85f, center.y)); moveBy(Offset(-cardWidth * 0.6f, 0f)) }
         compose.onNodeWithText("松手关闭").assertIsDisplayed()
-        card.performTouchInput { moveBy(Offset(cardWidth * 0.3f, 0f)); moveBy(Offset(-cardWidth * 0.3f, 0f)) }
         compose.runOnIdle { assertEquals(1, haptics.size); assertTrue(closed.isEmpty()) }
+        repeat(3) { index ->
+            card.performTouchInput { moveBy(Offset(cardWidth * 0.3f, 0f)) }
+            compose.onNodeWithText("关闭").assertIsDisplayed()
+            compose.runOnIdle { assertEquals(2 + index * 2, haptics.size); assertTrue(closed.isEmpty()) }
+            card.performTouchInput { moveBy(Offset(-cardWidth * 0.3f, 0f)) }
+            compose.onNodeWithText("松手关闭").assertIsDisplayed()
+            compose.runOnIdle { assertEquals(3 + index * 2, haptics.size); assertTrue(closed.isEmpty()) }
+        }
+        // Staying on the armed side must not repeat the feedback.
+        card.performTouchInput { moveBy(Offset(-cardWidth * 0.02f, 0f)) }
+        compose.runOnIdle { assertEquals(7, haptics.size) }
         card.performTouchInput { moveBy(Offset(cardWidth * 0.3f, 0f)); up() }
         compose.waitForIdle()
-        compose.runOnIdle { assertTrue(closed.isEmpty()) }
+        compose.runOnIdle { assertEquals(8, haptics.size); assertTrue(closed.isEmpty()) }
 
         // A fresh gesture must vibrate again even if a submitted close keeps the card visible.
         repeat(2) {
@@ -92,7 +102,7 @@ class HomeSwipeCloseInstrumentedTest {
             compose.waitForIdle()
         }
         compose.runOnIdle {
-            assertEquals(3, haptics.size)
+            assertEquals(10, haptics.size)
             assertEquals(listOf("host" to setOf("one"), "host" to setOf("one")), closed)
             assertTrue(opened.isEmpty())
         }

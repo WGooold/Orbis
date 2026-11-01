@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isAbsolute, relative, win32 } from "node:path";
+import { posix, win32 } from "node:path";
 import { formatPatch, parsePatch } from "diff";
 import type { FileChangeMetadata } from "@orbis/protocol";
 
@@ -14,8 +14,8 @@ export const CODEX_TURN_DIFF_MAX_BYTES = 8 * 1024 * 1024;
 
 function displayPath(value: string, cwd: string): string {
   const bare = value.replace(/^[ab]\//u, "");
-  const windows = win32.isAbsolute(bare) && !isAbsolute(bare);
-  const path = windows ? win32 : { isAbsolute, relative };
+  const windows = win32.isAbsolute(bare) && !posix.isAbsolute(bare);
+  const path = windows ? win32 : posix;
   if (!path.isAbsolute(bare)) return bare;
   const inside = path.relative(cwd, bare);
   return inside && inside !== ".." && !inside.startsWith(windows ? "..\\" : "../") && !path.isAbsolute(inside)

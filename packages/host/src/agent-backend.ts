@@ -387,13 +387,14 @@ export class ClaudeBackend implements AgentBackend {
     try {
       await this.#options.launcher.launch({ ...request, launchId });
     } catch (error) {
+      this.#options.modsBridge.cancelLaunch(launchId);
       throw new ActivationError("spawn_failed", `无法在电脑上打开 Claude Code 终端：${error instanceof Error ? error.message : String(error)}`);
     }
     this.#options.log?.(`[activate] 已在电脑上打开 Claude Code 终端（${request.resume === undefined ? "新会话" : `恢复 ${request.resume}`}，cwd=${request.cwd}）`);
     const runtime = await connected;
     if (runtime === undefined) {
       throw new ActivationError("spawn_failed", `已在电脑上打开 Claude Code，但 ${Math.round(timeoutMs / 1000)} 秒内没有连上 Orbis。`
-        + "请在电脑上确认目录信任提示，并确认 Claude Code 为 2.1.287 或更新版本。");
+        + "目录授权已处理；请检查 Claude 登录状态、Orbis 插件加载或管理策略，并确认 Claude Code 为 2.1.287 或更新版本。");
     }
     return runtime;
   }

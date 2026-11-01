@@ -1,4 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Exercise Windows host defaults on every runner. Native evidence may still
+// contain POSIX paths, so its dialect must not depend on these defaults.
+vi.mock("node:path", async original => {
+  const actual = await original<typeof import("node:path")>();
+  return { ...actual, isAbsolute: actual.win32.isAbsolute, relative: actual.win32.relative };
+});
 import { CODEX_TURN_DIFF_MAX_BYTES, CodexTurnFileChanges } from "./codex-turn-file-changes.js";
 
 const diff = (path = "a.txt", before = "old", after = "new") =>

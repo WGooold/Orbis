@@ -295,6 +295,15 @@ describe("ClaudeModsBridge", () => {
     expect(bridge.activity(current.runtimeId)).toMatchObject({ compaction: { phase: "running" } });
   });
 
+  it("settles cancelled startup waits immediately and ignores late hello for completion", async () => {
+    const bridge = bridgeWith();
+    const waiting = bridge.waitForLaunch("cancelled", 60_000);
+    bridge.cancelLaunch("cancelled");
+    await expect(waiting).resolves.toBeUndefined();
+    online(bridge, hello({ sessionId: "late", launchId: "cancelled" }));
+    bridge.cancelLaunch("absent");
+  });
+
   it("matches a TUI the Host opened by its launch id", async () => {
     const bridge = bridgeWith();
     const waiting = bridge.waitForLaunch("launch-1", 1_000);

@@ -29,6 +29,18 @@ async function fixture() {
 }
 
 describe("DSH ACP transport", () => {
+  it("reports pre-session approval immediately instead of hanging initialization", async () => {
+    const script = `
+      const input = require("node:readline").createInterface({ input: process.stdin });
+      input.on("line", line => {
+        const frame = JSON.parse(line);
+        if (frame.method === "initialize") process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:"startup-approval",method:"workspace/approve",params:{}})+"\\n");
+      });
+    `;
+    await expect(DshAcpClient.create({ cli: { command: process.execPath, prefixArgs: ["-e", script, "--"] }, timeoutMs: 1000 }))
+      .rejects.toThrow("启动需要尚不支持的原生交互");
+  });
+
   it("decodes UTF-8 across stdout chunks and cancels timed-out reads without losing the connection", async () => {
     const client = await fixture();
     await expect(client.request("session/list", {}, 30)).rejects.toThrow("超时");

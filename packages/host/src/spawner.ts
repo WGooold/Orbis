@@ -19,6 +19,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { AgentKind, SpawnMode } from "@orbis/protocol";
 import { orbisEnvironment } from "@orbis/protocol";
+import { PI_WORKSPACE_APPROVAL_ARGS } from "./agent-startup.js";
 
 /** 激活失败的原因码，一对一映射到 `protocol.error` 的 `code`。 */
 export type ActivationErrorCode =
@@ -211,7 +212,9 @@ export function buildSpawnPlan(input: {
     // 优先取首条消息，Host 造的 `remote <时间>` 只会盖住更贴切的信息。
     piArgs.push("--session-id", input.target.sessionId);
   }
-  piArgs.push("-e", input.extensionPath);
+  // The user selected this workspace and requested this process (ADR-0056).
+  // Pi's public flag authorizes project resources for this process only.
+  piArgs.push(...PI_WORKSPACE_APPROVAL_ARGS, "-e", input.extensionPath);
 
   const hostPlatform = input.platform ?? platform();
   // 显式档优先：只有 `auto` 才依赖「有没有桌面会话」这条启发式。手机明确要窗口时

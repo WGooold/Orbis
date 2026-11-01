@@ -8,6 +8,8 @@
 
 ## 1. 门禁：什么时候必须跑
 
+2026-11-02 部署前路径回归：S21 / V19 的 Codex 原生绝对路径改用证据自身的 POSIX / Windows 方言，工作区内显示路径仍为 `/` 分隔；`codex-turn-file-changes.test.ts` 在所有 runner 上模拟 Windows 默认路径函数，覆盖既有的两项绝对路径断言。构建与部署验证记录位于 `.artifacts/delivery-20261102/`；本次未重跑设备 L3 / L4、C01–C18、R28 与 A1–A4，不能据此提升原生文件审阅或其他 UI feature 的验收状态。
+
 | 改动类型 | 自动回归 | 手动回归 | 平台 |
 | --- | --- | --- | --- |
 | 新增 / 修改 UI 功能、页面、组件；视觉、布局、动效、手势、触觉、文案变更 | L1–L4 全量 | 核心冒烟 §4.2 + 受影响 ID 专项 §4.4–§4.6 + 外观矩阵 §2.3 | 改了哪个平台跑哪个 |
@@ -125,8 +127,6 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | r24 整页导航 | `testSettingsAndDownloadsSwipeBack`、`testChatDownloadsReturnToSameChat`、`testHistoryDownloadsReturnToHistory`、`testHistorySwipeBackReturnsToChat`、`testAddComputerPageReboundsAndSwipesBack`、`testNestedPagesSwipeBackOneLevelAtATime` | M07–M08、M14、V17–V18 |
 | r15 流式、首页 / 目录视口与飞入 | `testStreamingRevealAdvancesInOrderAcrossBlocks`、`testStreamingRevealWithReducedMotionShowsEveryBlockImmediately`、`testHomeTopShowsNewAndPromotedSessions`、`testHomeScrolledAnchorSurvivesInsertionAndReordering`、`testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates`、`testDrawerTopKeepsNewAndPromotedDirectoriesVisible`、`testDownloadFlightStartsAtTapAndEndsAtButton`、`testDownloadFlightWithReducedMotionHighlightsWithoutFlying`、`testHistoryDownloadButtonAndFlight` | M04、V21、M16 |
 
-Codex 桌面新会话同步回归（S18、V16–V18）：Host `host-service.test.ts` 的 `new %s sessions complete homepage model reads and retries without reconnecting` 分别验证终端 / 桌面后端，在同一加密连接内创建后立即读取 identity、execution、interactions，并带 agentKind 重试，均须 ready 且交互库存为已确认的空集合。不能先重连或手工调用 announce 才断言通过。Android `HomePresentationTest.newDesktopCodexSessionCompletesSplitHomeReadsAndRetryWithoutRestarting` 与 iOS `HomeRuntimeLoadingTests.newDesktopCodexSessionCompletesSplitHomeReadsAndRetryWithoutRestarting` 覆盖分批接收、保留旧卡片、完成与重试退出同步态；设备映射仍为 `HomeLoadingInstrumentedTest` 与 iOS 首页加载 / 同步五项用例。专项手动 R25；Host 模拟通过不替代真实桌面 App / 设备门禁。
-
 **Android instrumentation（`androidTest`）**
 
 | 区域 | 测试类（用例数） | 主要 ID |
@@ -152,6 +152,10 @@ Codex 桌面新会话同步回归（S18、V16–V18）：Host `host-service.test
 与 UI 相关的单元测试（L1 中必须通过）：iOS `RevealClockTests`、`HomeRuntimeLoadingTests`、`StoreTests`、`AgentStateTests`、`PendingSendTests`、`PresentationTests`、`TurnFileChangesTests`、`OperationLedgerTests`、`QuitLedgerTests`；Android `HomePresentationTest`、`ChatListItemReuseTest`、`HistoryPagingTest`、`MessagePresentationTest`、`StatusScreenTest`、`SubscriptionQuotaTest`、`UiPolishTest`、`PendingSendsTest`、`TurnFileChangesTest`、`RevealScheduleTest`、`HomeViewportAnchorTest`、`OperationLedgerTest`、`QuitLedgerTest`。
 
 Claude 运行中发送的适配器回归（V10、V12、V17）：`claude plugin test packages/claude-mod` 的 `reconnect.test.ts` 覆盖主回合期间不调用 `prompt.submit`、同批消息串行提交、停止与工具事件、子 Agent 完成、Host 轮末捕获屏障及重连代次隔离；设备端仍关联两端乐观发送用例。真实联动验收按 R17 执行，插件模拟通过不能替代设备 / 真实 TUI 验收。
+
+Claude 首次启动项目授权回归（V12、V17–V18；ADR-0033 §14）：`claude-workspace-trust.test.ts` / `claude-launcher.test.ts` 覆盖先登记再开窗、既有配置保留、损坏配置拒绝、并发项目、默认 / 自定义配置、Git 子目录 / linked worktree / 嵌套仓库、符号链接和宽泛根拒绝。专项手动 R29（早期记录曾误用已占用的 R19；R19 保留给历史返回）；macOS TUI 握手通过不替代 Windows 或 App 设备门禁。
+
+跨 Agent 启动准备（ADR-0056，S16、V12、V16–V18）：`agent-startup.test.ts` / `spawner.test.ts` / `desktop-terminal.test.ts` / `macos-terminal.test.ts` 覆盖 Pi TUI/RPC、Codex 独立 / remote TUI 和终端开窗；`claude-startup.test.ts` / `claude-launcher.test.ts` 覆盖具名 MCP 临时授权、拒绝优先、插件 / 管理策略、登录失败与本地 setup；`claude-mods-bridge.test.ts` 验证启动失败取消等待；`codex-terminal-sync.test.ts` 验证配置失败不创建 thread；`dsh-client.test.ts` 验证 initialize 未支持交互明确失败。真实项目 / 账号 / 新建 / 恢复按 R30 两端覆盖，完整门禁未完成，不以 Host 测试代替。
 
 App 按需启动 DeepSeek / Codex Desktop（S20、V12、V16–V18；ADR-0056 §2.1）：Host `host-service.test.ts` 覆盖 DSH 与 Codex Desktop 在未预启动时，先按 `launchableAgents` 公告可选，再由会话请求挂载后端并成功激活；已接入两类 runtime 时直接调用会话 API，断言不调用启动回调。iOS / Android 用例验证仅出现在 `launchableAgents` 的 DeepSeek 仍可选。R32 需另做两端真 Host / 真 Agent 手动确认；Host 自动测试通过不代表设备或真实后端门禁通过。
 
@@ -184,8 +188,10 @@ Claude 输出交接回归（V09、V17–V18）：Host `claude-transcript.test.ts
 
 带 `assumeTrue(ValueAnimator.areAnimatorsEnabled())` 的设备用例（下载飞入、流式顺序）在系统关闭动画时跳过，A4 路径以手动检查为准。
 
+Codex 桌面新会话同步回归（S18、V16–V18）：Host `host-service.test.ts` 的 `new %s sessions complete homepage model reads and retries without reconnecting` 分别验证终端 / 桌面后端，在同一加密连接内创建后立即读取 identity、execution、interactions，并带 agentKind 重试，均须 ready 且交互库存为已确认的空集合。不能先重连或手工调用 announce 才断言通过。Android `HomePresentationTest.newDesktopCodexSessionCompletesSplitHomeReadsAndRetryWithoutRestarting` 与 iOS `HomeRuntimeLoadingTests.newDesktopCodexSessionCompletesSplitHomeReadsAndRetryWithoutRestarting` 覆盖分批接收、保留旧卡片、完成与重试退出同步态；设备映射仍为 `HomeLoadingInstrumentedTest` 与 iOS 首页加载 / 同步五项用例。专项手动 R25；Host 模拟通过不替代真实桌面 App / 设备门禁。
 
 原生 Codex 文件审阅（ADR-0052 §9.1，S21 / V19；M13 保持）：Host 新增 `codex-turn-file-changes.test.ts`、`codex-native-file-review.test.ts`，覆盖整轮 revision 替换、拒绝 / 未完成 / 失败部分落盘、空 diff 失效、旧轮 / 迟到事件、外部同时写入不混入、重启 / 过期与零正文概况。双端模型扩展 `TurnFileChangesTests` / `TurnFileChangesTest`；设备用例为 iOS `testNativeTurnFileReviewShowsSourceAndReadsOnlySelectedDetail`、Android `nativeSummaryShowsToolScopeWithoutReadingDetail`。同时保留并执行既有轮末位置、落位读取、预览扩容、关闭手势及缓存用例；两端 L1–L4、C01–C18、A1–A4 与 R28 均须记录实际结果，定向通过不替代全量门禁。
+
 
 S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionReminderAppearsWhileReadingAndLocatesTheOriginalWithoutFollowing`、`testQuestionReminderTracksNewSourceQuestionsWithoutMovingTheReader`；Android `ChatQuestionTest`、`ChatQuestionReminderInstrumentedTest`（4）。覆盖源消息身份、可见性、点击定位、阅读锚点、通知优先和 Host 隔离，配合既有视口用例及手动 R31，A1–A5；未验收不得计为交付。
 
@@ -197,7 +203,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | Ticket / 场景 | 自动验证要求 | 手动 / feature |
 | --- | --- | --- |
 | MOT-01 | 两端 InteractionMotion 纯几何：触点最远角、路径分段、边界裁切、返回进度；生命周期清理 | 所有R33–R40、V18 |
-| MOT-02 / SC01–02 | 扩展 HomeSwipeCloseInstrumentedTest 与 iOS 首页关闭：中帧保留、完全滑出、拒绝恢复、一次提交 | C09、R33 / M10、V11、V21 |
+| MOT-02 / SC01–02 | 扩展 HomeSwipeCloseInstrumentedTest 与 iOS 首页关闭：中帧保留、完全滑出、拒绝恢复、一次提交；Android `thresholdCrossingsVibrateInBothDirectionsAndRepeatedlyBeforeClosingItsRuntime` 覆盖反复双向越阈值逐次触觉及同侧不重复 | C09、R33 / M10、V11、V21 |
 | MOT-03 / SC02–05 | 扩展首页 / 目录归档 / 下载 / 供应商选择；`InteractionMotionInstrumentedTest.selectionStartsAtTheTouchAndReversesWithoutMovingTheCard`；iOS现有多选用例及中帧审阅 | C10–C13、R34 / S15、M06 |
 | MOT-04 / SC06–10 | Android `InteractionMotionInstrumentedTest.menuChangesItsContainerBeforeSlidingToTheChildAndBack`、iOS `testComputerSubmenuReturnsWithinOneAnchoredPanel`：锚点、安全区、自然尺寸、两阶段、返回优先、菜单失效 | C11–C12、C18、R35 / M18 |
 | MOT-05 / SC11–13 | 更新原复制/Rewind入口并保留业务断言；新增长按、滚动/文本选择共存、栏失效 | C05、C15、R36 / S10、M19 |
@@ -227,7 +233,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | C06 | 聚焦输入框，输入多行，打开 Slash 菜单 | 输入框为凹槽并显示柔和双环；键盘上移输入区，顶栏不动；Slash 菜单在键盘上方 | S12、S17、V08 |
 | C07 | 展开 / 收起 thinking 与工具卡；打开工具详情 | 约 260ms 自然高度折叠；展开状态保留；详情可分页、可关闭 | M03、S20、V14 |
 | C08 | 触发审批 / 问卷，提交与取消 | 单项确认浮在输入区上方，提交时 composer 不位移；多步骤间草稿保留 | V07、M12 |
-| C09 | 首页卡片左滑：短滑后松手，再滑过半宽 | 短滑回弹；越过半宽时提示“松手关闭”并触觉一次；松手后退场；多选模式下不触发 | M10、M12、V11 |
+| C09 | 首页卡片左滑：短滑后松手，再滑过半宽 | 短滑回弹；越过半宽时提示“松手关闭”并触觉一次；退回“关闭”同样触觉一次，同手势反复跨阈值持续反馈，同侧移动和松手 / 回弹不追加；松手后退场；多选模式下不触发 | M10、M12、V11 |
 | C10 | 长按卡片进入多选，再点选和退出 | 进入多选时触觉一次；选中按r31从本次触点260ms扩散，取消160ms；卡片几何不变 | S15、M06、M12 |
 | C11 | 从左缘拖开目录，折叠 / 展开目录，搜索，归档 / 恢复 | 抽屉跟手吸附；折叠后高度立即收缩；一次只展开一个目录 | M09、S19、V17 |
 | C12 | 打开设置页（r15 前由“更多操作 › 连接状态”进入，r15 后点右上角齿轮）；检查当前连接事实行；点配额币；打开供应商切换 | 分区顺序正确；连接延迟以整数毫秒显示，无样本时为“暂不可用”；供应商卡片区（r15 后位于最上方）：44pt/dp 环、角标、左倾 24° 翻面；切换菜单透明无底色 | S19、S22–S23、M14 |
@@ -283,12 +289,13 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | R22 | 聊天→历史（输入搜索并滚动）→下载；分别用手势、按钮、系统返回逐层退出；每层短拖、动画中重入、竖向滚动与页内横滚；明暗 / 窄屏 / 大字体 / 减少动画 | 每次只退一层，下载→历史→聊天→首页，不被后台来源抢走；草稿、搜索词、筛选、位置与展开不变，无残留遮罩；Sheet / 对话框、抽屉、差异横向切文件保留本身规则 | M07–M10、M13–M14、V17–V18 |
 | R23 | 设置页分别检查有 Host RTT 与无 RTT 样本状态；切换 LAN / Relay 公告，横屏或窄屏再检查 | 固定“连接延迟”行显示 Host 每两秒采样后公告的当前路径 RTT，整数毫秒；缺样本 / 未连接显示“暂不可用”；值变化不改变行顺序或其他状态，无空间跳动 | S23 / UI-07 |
 
-### 4.7 Claude 运行中发送专项
+### 4.7 Claude 启动与运行中发送专项
 
 | 编号 | 步骤 | 预期 | ID |
 | --- | --- | --- | --- |
 | R17 | 隔离 Host / Claude TUI 中启动长回合，在 App 连发两条 follow-up；观察当前输出与工具；停止主回合；再分别测试正常结束、子 Agent 先结束和 Host 重连 | 当前回合继续同步，停止可达；子 Agent 结束不触发主回合 follow-up；主回合结束且 Host 轮末捕获完成后顺序提交，每条只执行一次；原生用户行消除待确认状态；旧代次消息不补发到新 Host。两端分别保留发送前、运行中、落地截图及事件顺序证据 | V10、V12、V17 |
 
+| R29 | 两端 App 分别选择尚未信任的新项目打开 Claude，再从子目录 / linked worktree 恢复；重复自定义配置目录、配置损坏和写入占用场景。macOS / Windows 分别核对实际终端与 hello | 首次启动直接进入 TUI 并由匹配 launchId 的 hello 完成连接；只信任目标仓库，其他项目 / 工具权限 / MCP 配置不变；损坏或占用明确失败且不开窗，不能提前显示已连接。保存配置字段差异（不含凭据）、启动与握手证据 | V12、V17–V18 |
 | R18 | 隔离 Claude 主回合含工具和多段正文，步骤落盘时保持运行；立即开始下一轮，重复相同短回复；延迟磁盘写入超过 3 秒；再重连。两端明暗录屏，抽查窄屏 / 减少动画 | 每个步骤的正文与 thinking 只出现一份；同文的不同轮都保留；旧轮清理与迟到结束不删下一轮；已声明但未落盘的正文保留，后续原子交接；工具卡与阅读锚点连续。需保存步骤 UUID / patch 顺序，不能以文本去重通过 | V09、V17–V18（关联 V02–V03、V20） |
 
 ### 4.9 全状态用户输入专项（ADR-0055）
@@ -318,10 +325,11 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | --- | --- | --- | --- |
 | R28 | 隔离 Codex terminal / Desktop 各执行一轮：原生 patch 连续修改同一文件，同时在外部修改另一文件；再分别拒绝、部分失败、取消文件工具，并回放空 diff；两端明暗 / 窄屏 / 大字 / 减少动画查看卡片、展开清单、打开 / 滑动详情及重启重读 | 卡片只展示原生 tracker 已记录的净变化，提示“仅记录 Codex 文件工具变更”，详情范围为“Codex 文件工具”；提议不算成功，未知或空 diff 失效不伪报零变化；外部工作区变化不从快照混入；未选中文件无详情请求，历史固定、版本 / 缓存 / 手势规则保持；不宣称 shell 全覆盖或逐行独占归属 | S21、M13、V19 |
 
-### 4.13 App 按需启动后端专项（ADR-0056 §2.1）
+### 4.13 各 Agent 首次准备专项（ADR-0056）
 
 | 编号 | 步骤 | 预期 | ID |
 | --- | --- | --- | --- |
+| R30 | 两端分别启动 / 恢复 Pi TUI/RPC、Codex TUI/Desktop、Claude、DeepSeek ACP/Web；测试新项目、已有信任、自定义配置目录、显式禁用 / 管理拒绝、坏配置、账号缺失和原生无响应。Claude 添加具名项目 MCP 和明确拒绝项；桌面 setup 验证仍能登录。macOS / Windows 分别核对开窗；A1–A4 检查错误全文、重试、草稿和返回 | 所选项目资源在授权范围内加载；正常工具审批仍出现；不批准被明确拒绝的 MCP、不回答 OAuth / MFA；写入失败不创建新 thread 或留下等待；进程 / 窗口成功不提前显示连接成功，原生握手或明确失败才终结。完整账户初始化等未支持路径单独记缺口，不记为通过 | S16、V12、V16–V18 |
 | R32 | 分别在 Windows / macOS Host 未带 `--dsh`、未预启动 DeepSeek，及未带 `--codex` 的场景配对 iOS / Android。测试 DeepSeek 服务已运行但 Host 未接入、服务未运行、已有 DSH runtime；Codex Desktop 已打开且已接入、未打开、未包装的既有实例；再分别新建与恢复会话，并快速连续提交两次请求 | 新建页将可启动的 DeepSeek / Codex Desktop 显示为可选，`agents` 未就绪时仍不假报在线。已接入的 runtime 直接复用；未接入时 Host 仅启动一次 / 连接现有 DSH 服务，等待真实握手后才创建或恢复；两个请求共用后端准备且不重复创建同一请求。未安装、坏配置、接入失败或超时有明确错误，不能留下 pending / 假成功。Host 设置项清楚标明只控制预启动。记录两端明暗截图、请求 / 握手顺序、进程与服务 PID、会话 ID 及失败回执；用 A1–A4 核对错误全文、重试、草稿和返回 | S20、X03、V12、V16–V18 |
 
 ### 最近提问提示专项（ADR-0057 / S24）
@@ -335,7 +343,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 
 | 编号 | 步骤 | 预期 | ID / ticket |
 | --- | --- | --- | --- |
-| R33 | 左滑跨阈值再退回、再次跨阈值松手；拒绝/断线/换电脑 | 红灰平滑、一次触觉；卡片完全滑出再收拢；恢复不串身份 | M10 / MOT-02 |
+| R33 | 左滑跨阈值再退回、再次跨阈值松手；拒绝/断线/换电脑 | 红灰平滑；每次进入 / 退出阈值各触觉一次，单手势至少反复三轮，同侧移动及松手 / 回弹不追加；卡片完全滑出再收拢；恢复不串身份 | M10 / MOT-02 |
 | R34 | 首页、目录、下载、供应商分别长按和触点不同时逐项选择；快速反选和退出 | 蓝底从各自触点展开；工具栏线段旋转/合拢/渐显；几何和确认取消保持 | S15、M06 / MOT-03 |
 | R35 | 所有菜单入口四角/窄屏展开；电脑二级进入返回；连续操作/系统返回/切电脑 | 从锚点翻开；容器先变形再侧向翻页；返回相反且只退一层 | M18 / MOT-04 |
 | R36 | 当前聊天、长文本、附件、历史预览和离线消息长按；复制、Rewind、滚动及文字选择 | 上方操作栏，常驻下方操作移除；pending恢复区仍在；不推动正文/绕过确认 | S10、M19 / MOT-05 |
@@ -380,6 +388,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 
 2026-11-01 最近提问提示（S24 / ADR-0057）：iOS 233 核心测试与 App / UI Test 构建、Android 568 JVM 测试和 APK 构建通过；Android 提醒专项 4 项通过，全量 146 项 4 失败均属于同设备基线 139 项 5 失败集合。iOS 新增定向用例发现刷新后锚点断言失败，完整设备 / 手动及 A1–A5 未完成，不记为验收通过。证据见 `.artifacts/ui-regression/20261101-question-reminder/summary.md`。
 
+2026-11-01 各 Agent 启动准备：源码已补项目授权、部分启动前检查和失败收尾；Pi 原生隔离 RPC 信任对照、Codex 原生配置服务、Claude composer / 项目 MCP smoke 有证据。Windows、DSH 真后端及双端完整 L1–L4 / 手动 / R29–R30 尚未验收；当前 Host 安装包未部署。最终 Host 检查结果、失败与未跑清单见 `.artifacts/ui-regression/20261101-agent-startup/summary.md`，不得称全部首次审批已解决。
+
 2026-11-01 用户操作乐观显示（r31 / V07、V10–V12、V22，ADR-0049 OPT-00–OPT-10）：iOS SwiftPM 331 项、Android JVM 664 项、Host 相关用例与两端构建通过。iOS 池内 iPhone 17 全量 67 项 59 通过、8 失败，main `e4df87a` 同设备重跑 8 项同样失败；审批与交互草稿两项为预览夹具问题（`interactions` 领域被声明为空），修正夹具后通过，并新增审批拒绝、启动失败原位、模型切换中发送与 A1–A4 外观矩阵 4 项；截图审阅发现 iOS 启动页标题显示占位 id，已修正并加断言。Android 池内 `Orbis_UI_Polish_35`：151 项 138 通过、5 失败、8 项需隔离 Host 跳过；归档多选一项断言旧行为，改写后通过，其余 4 项（`CodexPermissions` 自由文本、`Dsh` 新建文案、`Questionnaire` 草稿、`SessionHostOwnership`）main 同设备同样失败；新增`OptimisticPresentationInstrumentedTest` 5 项通过。本机 adb 服务在运行中多次崩溃重启，改用私有端口与逐类 `am instrument`，输出中断的类按设备 logcat 的 `run finished` 核对后重跑。A1–A4：Android 夜间 / 字体 1.5 / 关闭动画下 `OptimisticPresentationInstrumentedTest` 各 5 项通过，设备设置用后恢复；iOS 外观矩阵在 iPhone 17 与 iPhone SE（375pt）运行。L4 已逐张查看相关截图，并用录屏抽帧核对启动失败原位。C01–C18、R26 / R27 人工逐项与真实 Host 未执行，不记为通过。证据：`.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-10/`。
 
 2026-11-01 App 按需启动 DeepSeek / Codex Desktop（r30 / S20、X03、V12、V16–V18）：Host / DesktopRuntime 61 项与生命周期 13 项通过，2 项 Windows 条件未运行；类型检查、lint、Android JVM 571 项 / 两包构建、Swift Core 237 项通过。iPhone 17 全量 67 项为 55 通过 / 12 失败；新增 DeepSeek 用例的原生辅助功能标签定位修正后，新建页整组 2 项通过，并覆盖明暗、XXXL、减少动画。110 张全量命名截图联系表与 5 张专项截图已查看，不能替代完整 L4 / 手动。Android 在两次设备尝试中分别发生 ADB 断开、ADB `libunwind` 崩溃，没有有效仪器结果。未重建父提交作受控基线；C01–C18、375pt、R32 真后端与 Windows 仍未验收。iOS 原开关机状态已恢复；Android 只进入浅色标准配置，所设值与保存原值相同，未进入深色 / 大字 / 减少动画。本轮设备进程已退出且租约已释放。R31 保留给最近提问提示，本专项使用 R32。证据、12 项完整失败和未跑清单见 `.artifacts/ui-regression/20261101-agent-on-demand/summary.md`，未部署。
@@ -389,6 +399,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 2026-11-01 设置延迟（S23 / UI-07）：两端单元 / 构建和设置页定向通过；Android API 35 全量 138 项的 7 失败与同设备 / 同配置基线一致，A3 / A4 各 3 项定向通过。iOS SE 全量 61 项 7 失败，基线为 6 失败；新增压缩状态等待失败，A3 组内复核（含设置 / 返回）4 项通过，首轮失败仍保留。Host 早期全量 1537 通过 / 5 跳过，后续并发输入生命周期改动期间复跑有 3 项失败；延迟专项通过。两端附件已审阅，独立手动 C01–C18 与完整外观门禁未完成，不记为完整验收通过。证据见 `.artifacts/ui-regression/20261101-settings-latency/summary.md`。
 
 2026-11-01 Codex 原生文件变更（S21 / V19，M13 保持）：协议 18 接入 Codex terminal / Desktop 同轮原生 diff 与文件工具来源；Host 不以工作区快照补齐未知变化。Node 限并发 1,645 / 1,650 通过、0 失败、5 项条件未运行；iOS Swift 230 项及 Debug 构建、Android JVM 565 项及 Debug / AndroidTest 构建通过，Android 文件审阅四种配置各 6 项通过。Android 全量 L3 为 129 通过 / 7 失败 / 7 条件未满足，失败名称匹配 10 月 31 日记录，本轮未重建父版本作受控对照。iPhone 17 / iPad Air 原生文件审阅专项各 4 / 4；iPhone 17 全量 L3 为 56 / 64、8 失败，其中 7 个名称与此前同设备记录相同，额外聊天入口计时失败单项重跑通过但仍保留为间歇失败。手动续跑在 iPad Air / SE 直接操作，并用 UI 测试辅助录屏后亲自核对：SE 明暗各 18 项均 16 过 / 2 失败，另补 9 / 9；Android 十组 132 次为 124 过 / 8 次失败，返回 / 归档补跑 14 / 14，设置入口单项重跑通过仍保留首轮超时。已查看 iOS 全量 117 张有效附件的命名联系表、SE 明暗 / 补跑及 Android A1–A4 概览；文件审阅主流程与 iPhone 标题关闭连续帧已核对，Android 关闭中间帧仍缺。审批 / 问卷、深色首页交互、电脑归属失败，以及冷启动、多行软键盘、第二电脑正常同步等缺口均记录到逐项清单；UI 用例数量不等于 C01–C18 通过数。保留 r28 应用与捕获的当前 iOS 测试驱动存在版本边界，不宣称共享工作树当前源码全通过。设备设置已恢复，本任务租约已释放。完整手动 / L4 和 R28 真实 Codex / Desktop 模型轮次仍未通过；未部署。详见 `.artifacts/ui-regression/20261101-native-codex-file-changes/` 下的 `report.json`、`manual-checklist.md` 和 `manual-resume/summary.json`，不得记为验收通过。
+
+2026-10-31 全量健康检查（`157dc2d`，r24，不修改产品源码）：Node 1536 通过 / 5 跳过，Swift 223 项与 Android JVM 548 项通过，两端构建通过；iOS 全量 61 项为 53 通过 / 8 失败；Android 标准动画与 1.0 字体配置全量 138 项为 124 通过 / 7 失败 / 7 跳过。另补跑原跳过的 5 项隔离夹具，3 通过 / 2 失败，剩余真实环境专项未运行。命名截图已审阅，完整手动清单及连续录屏门禁未完成，不记为全量验收通过。失败、配置差异与证据见 [本轮回归记录](ui-regression-2026-10-31-full-audit.md)。
 
 2026-10-31 Claude 输出身份续跑：共享池上限按用户要求同步调整为合计 10 台，仍优先复用已有固定设备。两端 Claude 交接专项通过；iOS 全量 59 项 6 失败，Android 全量 135 项 5 失败 / 7 跳过；当前同设备基线复核与完整手动门禁未完成。证据与失败清单见 `.artifacts/ui-regression/20261031-claude-identity-resume/summary.md`，不能记为全量通过。
 
