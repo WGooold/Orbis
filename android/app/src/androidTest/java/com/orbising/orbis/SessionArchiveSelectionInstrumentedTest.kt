@@ -83,9 +83,10 @@ class SessionArchiveSelectionInstrumentedTest {
         compose.onNodeWithText("等待任务完成后归档").assertIsDisplayed()
         compose.runOnIdle { state = state.copy(runtimes = emptyMap()) }
         compose.onNodeWithContentDescription("归档选中会话").assertIsEnabled()
-        compose.runOnIdle { state = state.copy(sessionArchiveRequests = mapOf("request" to "two")) }
+        // ADR-0049 §6.4：归档未结算时冲突入口禁用（L9）。
+        compose.runOnIdle { state = state.createArchive("request", "two", "codex", true, 0).first.ledgerWritten("request", 0) }
         compose.onNodeWithContentDescription("归档选中会话").assertIsNotEnabled()
-        compose.runOnIdle { state = state.copy(sessionArchiveRequests = emptyMap(), e2eReady = false) }
+        compose.runOnIdle { state = state.copy(ledger = state.ledger.remove("request"), e2eReady = false) }
         compose.onNodeWithContentDescription("归档选中会话").assertIsNotEnabled()
         compose.runOnIdle { assertEquals(0, requests) }
     }
