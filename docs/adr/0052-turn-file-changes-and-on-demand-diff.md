@@ -14,7 +14,7 @@ App 需要在每轮助手工作末尾显示文件增删改概况：先看到文�
 
 现有 ADR-0045 已将工具摘要与原文分离，但“某次工具的参数/结果”不等于“本轮各文件的最终变化”：同一文件可能经过多次 edit、write 或 shell 修改，也可能改完后恢复。不能让 App 下载全部工具内容、解析后端格式再自己汇总。
 
-当前方向是 **Host 统一保存本轮前后文件版本、计算元数据和提供按需 diff，App 实现类似 Git 审阅的显示效果**。各后端提供轮次生命周期和候选路径；现有原生 diff 能力保留为调研记录，不作为本功能的默认数据源。统一口径和保留周期由 Orbis 自己定义。
+当前方向是 **Host 保存有明确来源的轮次记录，App 按需查看 diff**。2026-11-01 用户授权先接入 Codex / Codex Desktop 的原生文件变更：这两条路径使用原生轮次 tracker 发布的聚合 diff；Pi / Claude / DSH 继续采用 Host 工作区前后快照。两种来源必须区分，原生来源失败不降级为工作区快照并继续声称原生归属。统一分页、持久化与保留策略仍由 Orbis 定义；当前修订及未完成验收见 §9.1。
 
 ### §1 后端能力核对
 
@@ -35,7 +35,7 @@ DSH 原生能力有三个已确认的限制。以下解释统一 Host 口径的�
 2. 默认最多列出 500 个文件，`total` 可以大于已列出的数量，原接口没有后续文件列表分页。Host 自有清单采用自己的预算与分页，不继承此原生上限。
 3. 摘要和比较随原生 Session 在服务进程中的生命周期存在；服务重启/Session disposal 后可能只剩日志事件。无 Git 时仅覆盖文件工具路径，Git 路径也会计入该时间窗的外部修改；不能宣称无限历史保留或严格 Agent 因果归属。
 
-当前修订选择“Host 自有轮次前后版本 + 同一差异引擎”。后端能力仍用于说明可否建立可靠执行边界、捕获哪些路径和确认工具归属；轮次摘要、覆盖范围与历史保留由 Host 统一声明。后文保留的 Codex 细节是调研档案，不再作为当前实现模板。
+初版选择“Host 自有轮次前后版本 + 同一差异引擎”。2026-11-01 的 §9.1 取代其中 Codex 两条路径的数据源；上表保留初版决策背景，不能据其“Host 快照”列推断 Codex 当前采集行为。
 
 ## Decision
 
@@ -50,9 +50,9 @@ DSH 原生能力有三个已确认的限制。以下解释统一 Host 口径的�
 
 ### §3 Host 统一采集、保存和计算
 
-增加 Host `TurnChangeCoordinator` 和 `TurnFileChangeService`。adapter 归一顶层轮次的开始、结束与显示锚点；Host 独立保存前后版本、识别净变化、计算元数据并提供详情。所有后端使用相同的比较算法、分页和保留策略。下文保留完整设计要求，已实现范围及路径补录等未完成部分以 §9 为准。
+Host `TurnChangeCoordinator` 和 `TurnFileChangeService` 统一轮次、显示锚点、分页和保留策略。非 Codex 后端独立保存前后版本、识别净变化并提供详情；Codex 两条路径采用 §9.1 的原生证据，不重新比较磁盘。下文的快照流程适用于非 Codex 后端及保留的旧快照记录；已实现范围及路径补录等未完成部分以 §9 为准。
 
-**前后版本是本功能的数据源。** 首版不接入 Codex 聚合 diff 或 DSH 原生 summary/diff 作为替代读路径；这些原生能力的差异不决定 App 行为。缺失起点时保留 partial/unavailable，不用原生 patch、当前文件或上轮终点补造一个完整的本轮基线。
+**快照来源以前后版本为准；原生来源以已接收的原生轮次 diff 为准。** 两者不互相补造基线。DSH 原生 summary/diff 仍未接入。快照缺失起点时保留 partial/unavailable，原生 diff 缺失或失效时显式 unavailable。
 
 Host 采集按以下流程工作：
 
@@ -195,9 +195,21 @@ Host 的实现入口为 [coordinator](../../packages/host/src/turn-change-coordi
 
 **2026-11-01 Android 预览清单切换修复。** 用户报告 Pi 轮末直接点击 `.kt` / `.md` 文件闪退，先展开完整清单后打开则正常。设备对照在旧代码 `HorizontalPager` key 回调复现 `IndexOutOfBoundsException: Index 4 out of bounds for length 4`：首个完整清单到达后页数已更新，保留的 key 回调仍读取四项预览。页数、key、正文三处现统一读取同一份 `rememberUpdatedState` 当前清单，并防护过渡中的越界索引；文件 ID、落位读取、缓存与手势规则保持。新增 `piSummaryClickOpensLoadingFileThenDisplaysItsFirstDiffPage` 覆盖点击预览、入场期间清单扩充 / 首段差异到达、访问追加文件及关闭重开。550 项 JVM、5 项专项（含 A1–A4）通过。全量仍有基线失败及入场耗时波动，完整手动 / 真机门禁未通过；不得将专项通过扩展为整体验收，详见审阅验证记录。
 
+### §9.1 2026-11-01：Codex / Codex Desktop 原生轮次记录（验证中）
+
+用户选择先实现两条 Codex 路径；本修订不扩展 Pi / Claude / DSH 的写入归属，也不迁移 SQL。此节取代初版 §9 表中 Codex 的起止快照数据源，其他后端与已冻结的旧快照记录保持原来源。
+
+- **来源与边界。** `CodexRuntime` 只在当前原生 turn 中转交 `turn/diff/updated`，以及 `fileChange` 开始 / 完成的身份与状态；不把 `changes.diff` 提议或 `patchUpdated` 当作实际落盘证据。`CodexTurnFileChanges` 接收整轮聚合正文的最新 revision，不累加各次工具行数；`TurnChangeCoordinator` 按原生 turn 串行归并，结束后冻结，不接受旧轮或封口后的通知。历史项原文不在本修订中回填。
+- **归属与完整性。** `attribution=native-tool`、`scope=native-file-tools`，coverage 固定为 partial 或 unavailable。固定提示“仅记录 Codex 文件工具变更”，详情范围为“Codex 文件工具”。这证明记录来自原生文件工具 tracker，不代表任意 shell / MCP / 子 Agent 写入都被覆盖，也不提供外部并发修改的逐行因果证明。原生零文本不等于整个工作区无修改。
+- **拒绝、失败与未知。** declined 提议不算实际修改；有实际 diff 的部分失败保留 diff 并注明 incomplete；未完成或已完成的文件工具没有可用聚合 diff 时标 unavailable。空字符串可能是净变化为零，也可能是上游 tracker 失效，清除旧 diff 并标 unavailable，不能保留旧正文或伪报零变化。纯改名、空文件等未出现在聚合文本中的事实不从提议补造，缺失时明确不可用。
+- **解析与资源。** 复用固定 `diff@9.0.0` 的 `parsePatch/formatPatch`，按原生 hunk 计数并分文件保存；A/D/R 与 binary 按已收到的 diff 头部声明，前后文件大小未知时为 null。聚合上限 8 MiB / 200,000 行、工具身份上限 20,000、并行原生记录上限 32；畸形 / 截断 / 重复路径或超限不可用。原生显示路径仅用于元数据与身份，不能授权任意源文件读取。
+- **持久化与读取。** 元数据仍原子保存为私有 JSON，已收到的单文件 diff 存入现有 SHA-256 blob 存储并参与配额 / GC。先持久化再发布；重启可读已冻结 diff，中途重启仍 unavailable。Codex 不再执行起止工作区扫描，也不靠当前文件恢复原生 diff。手机仅在选中文件后读取，概况 / 清单不含正文，保留现有身份、分页、取消、租约和回收规则。
+- **协议与旧记录。** 协议升为 18，Host / Relay / 扩展 / 两端须协调升级。新增来源组合受 strict schema 校验，仅允许 Codex 两个 agentKind，不允许 native-tool 与完整工作区 coverage 混用。旧 workspace-window 记录按原身份与保留期读取，不能改标为原生。
+- **验证。** 新增 `codex-turn-file-changes.test.ts`、`codex-native-file-review.test.ts`；扩展 service / protocol / 双端模型与设备用例。受影响 S21 / V19，M13 原有行为继续回归。续跑已在池内 iPad Air / SE 直接操作，并对双端 UI 辅助执行留存录屏、亲自查看截图与关键帧；文件审阅夹具主流程和 iPhone 关闭期间正文保持已核对。审批 / 问卷及部分 Android 首页 / 电脑归属仍有失败，其他手动子步骤、Android 关闭中间帧和 R28 真实模型全流程尚未完成。实际结果见 [验证记录](../testing/turn-file-changes.md) 与 `.artifacts/ui-regression/20261101-native-codex-file-changes/manual-checklist.md`；不宣称完整验收通过。
+
 ## Alternatives and consequences
 
-- **各后端原生 diff 优先**：可能减少部分 Host 采集，但统计范围、字段、失效条件和 shell 覆盖各异；当前修订不采用，原生事件仅辅助轮次和路径识别。
+- **所有后端无差别使用原生 diff**：统计范围、字段、失效条件和 shell 覆盖各异，不采用。§9.1 仅接入 Codex 两条路径，并显式标明文件工具范围。
 - **自行编写基础差异算法**：本项目需要掌握的是轮次采集、历史版本和按需服务；基础文本比较优先复用成熟库，避免额外维护算法边界。
 - **将全部 diff 随轮次同步**：手机不用再请求，但流量随完整变更体积增长，违背按需要求，也重新引入 ADR-0045 已处理的共享状态膨胀。
 - **App 下载工具结果后汇总**：重复后端语义、多次修改易重复计数，仍需传输全部原文；不采用。
@@ -236,7 +248,7 @@ Codex 还有另一套 `/diff` 工作区功能：`tui/src/get_git_diff.rs` 检查
 
 这里的净变化可用一个例子说明：文件首次受跟踪修改前为 A，同轮先改成 B 再改成 C，最终生成 A→C；如果又恢复为 A，则文本差异消失。已经在轮次之前存在于 A 中的未提交修改不会因为相对 Git HEAD 有差异而被再次统计。若本轮在首次受跟踪修改之前还有 shell 写入，则 A 已包含那次写入，其更早状态无法由该 tracker 反推。[S5]
 
-以上曾用于评估“接入原生聚合 diff”方案；当前修订选择 Host 自有前后版本，不采用这条原生正文读取链路。源码核对仍保留，用来解释已知原生能力和覆盖差异，不构成当前接口约束。
+以上最初用于评估原生方案；2026-11-01 §9.1 已采用这条原生轮次通知作为 Codex 的有限来源。上游实现核对仍只证明该固定版本，不自动证明用户当前 Desktop 二进制或全量写入覆盖。
 
 ### A.2 打开文件差异后的显示实现与 Desktop 比较范围
 

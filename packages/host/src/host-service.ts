@@ -888,6 +888,8 @@ export class HostService {
     if (this.#toolContentStore) codex.setToolContentStore(this.#toolContentStore, this.#identity.hostId);
     codex.beforeFileChangeTurn = runtimeId => this.#fileChangeTurns.begin(runtimeId).catch(() => undefined);
     codex.fileChangeTurnFailed = runtimeId => this.#fileChangeTurns.finish(runtimeId, { outcome: "failed", force: true }).catch(() => undefined);
+    codex.onFileChangeEvidence = (runtimeId, evidence) => { void this.#fileChangeTurns.observeNative(runtimeId, evidence).catch(() => undefined); };
+    codex.fileChangeTurnUnconfirmed = async runtimeId => { this.#fileChanges.markUnreliable(runtimeId, "turn-start-unconfirmed"); };
     codex.seedDesktopThreads(this.#desktopOwnedIds);
     codex.setEventSink((event, threadId) => {
       const runtimeId = threadId === undefined ? codex.runtimeId : codex.runtimeIdFor(threadId);

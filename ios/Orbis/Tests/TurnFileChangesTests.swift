@@ -26,6 +26,25 @@ struct TurnFileChangesTests {
     private func expired(_ request: [String: Any]) -> [String: Any] {
         ["type": "session.changes.failed", "requestId": request["requestId"]!, "runtimeId": "runtime", "reason": "expired"]
     }
+    @Test func nativeToolMetadataExplainsCoverageAndRequiresExplicitDetailReads() throws {
+        let changes = TurnFileChanges(); var sent: [[String: Any]] = []
+        changes.send = { _, value in sent.append(value); return true }
+        changes.observe(runtimeId: "runtime", agent: agent, entryIds: [], turnIds: [])
+        var raw = try object(summary())
+        raw["attribution"] = "native-tool"; raw["scope"] = "native-file-tools"; raw["coverage"] = "partial"
+        raw["reasons"] = ["native-file-tools-only"]
+        changes.consume(["type": "session.changes.updated", "summary": raw], runtimeId: "runtime")
+        let native = try #require(changes.summaries["set"])
+        #expect(turnChangeCoverageNote(native) == "仅记录 Codex 文件工具变更")
+        #expect(turnChangeScopeTitle(native.scope) == "范围：Codex 文件工具")
+        #expect(sent.isEmpty)
+        raw["coverage"] = "complete"; raw["revision"] = 2
+        changes.consume(["type": "session.changes.updated", "summary": raw], runtimeId: "runtime")
+        #expect(changes.summaries["set"] == native)
+        changes.open(native)
+        #expect(sent.last?["type"] as? String == "session.change.detail.read")
+        changes.clear()
+    }
     @Test func expiredLeaseReopensAtTheSameCursorWithoutLosingContentOrPosition() {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }

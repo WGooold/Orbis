@@ -410,6 +410,8 @@ export class CodexRuntime implements AgentBackend {
   /** Awaited at actual queue execution, before turn/start can write any files. */
   beforeFileChangeTurn: ((runtimeId: string) => Promise<void>) | undefined;
   fileChangeTurnFailed: ((runtimeId: string) => Promise<void>) | undefined;
+  onFileChangeEvidence: ((runtimeId: string, evidence: import("./codex-turn-file-changes.js").CodexFileChangeEvidence) => void) | undefined;
+  fileChangeTurnUnconfirmed: ((runtimeId: string) => Promise<void>) | undefined;
   onMetadataChange: (() => void) | undefined;
   onArchiveChange: ((sessionId: string, archived: boolean) => void) | undefined;
   onDesktopThread: ((threadId: string) => void) | undefined;
@@ -2888,9 +2890,14 @@ export class CodexRuntime implements AgentBackend {
         });
       });
     } catch (error) {
-      if (captureStarted && this.fileChangeTurnFailed) await this.fileChangeTurnFailed(this.runtimeIdFor(thread.id));
       if (this.#threads.get(thread.id) === thread && thread.turnId === priorTurnId
         && !(error instanceof CodexRequestError && error.outcome === "unconfirmed")) thread.turnInProgress = false;
+      const observed = clientUserMessageId !== undefined && thread.observedPhoneMessages.has(clientUserMessageId);
+      if (captureStarted && !observed) {
+        if (error instanceof CodexRequestError && error.outcome === "unconfirmed" || thread.turnId !== priorTurnId) {
+          await this.fileChangeTurnUnconfirmed?.(this.runtimeIdFor(thread.id));
+        } else await this.fileChangeTurnFailed?.(this.runtimeIdFor(thread.id));
+      }
       throw error;
     } finally {
       thread.turnStartPending = false;
@@ -3328,6 +3335,12 @@ export class CodexRuntime implements AgentBackend {
     ++thread.sourceBatchDepth;
     try {
     switch (method) {
+      case "turn/diff/updated": {
+        if (typeof record.turnId === "string" && record.turnId === thread.turnId && typeof record.diff === "string") {
+          this.onFileChangeEvidence?.(this.runtimeIdFor(thread.id), { type: "diff", turnId: record.turnId, diff: record.diff });
+        }
+        return;
+      }
       case "model/rerouted": {
         const from = String(record.fromModel ?? record.originalModel ?? "原模型");
         const to = String(record.toModel ?? record.model ?? "其他模型");
@@ -3398,6 +3411,9 @@ export class CodexRuntime implements AgentBackend {
         if (typeof record.turnId === "string") thread.asyncInputs.upsert(data, record.turnId);
         if ((data.type === "fileChange" || data.type === "commandExecution") && typeof data.id === "string") {
           thread.approvalItems.set(data.id, data);
+        }
+        if (data.type === "fileChange" && typeof data.id === "string" && typeof record.turnId === "string" && record.turnId === thread.turnId) {
+          this.onFileChangeEvidence?.(this.runtimeIdFor(thread.id), { type: "item", turnId: record.turnId, itemId: data.id, status: "inProgress" });
         }
         if (data.type === "userMessage") this.#confirmQueuedMessage(thread, data.clientId);
         this.#noteItem(thread, data);
@@ -3484,6 +3500,10 @@ export class CodexRuntime implements AgentBackend {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
         let data = item as Record<string, unknown>;
+        if (data.type === "fileChange" && typeof data.id === "string" && typeof record.turnId === "string" && record.turnId === thread.turnId) {
+          this.onFileChangeEvidence?.(this.runtimeIdFor(thread.id), { type: "item", turnId: record.turnId, itemId: data.id,
+            status: typeof data.status === "string" ? data.status : "unknown" });
+        }
         if (data.type === "contextCompaction") {
           const owner = thread.compactionOwner;
           if (owner === undefined || (owner.itemId === undefined || owner.itemId === data.id)

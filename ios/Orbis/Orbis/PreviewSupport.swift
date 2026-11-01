@@ -552,10 +552,11 @@ private final class PreviewTransport: OrbisTransport {
         ]
     }
     private var changeSummary: [String: Any] {
-        ["projectionVersion": 1, "agent": ["hostId": "preview-host", "agentKind": "codex", "sessionId": "session-1"],
+        let native = ProcessInfo.processInfo.arguments.contains("--preview-native-file-changes")
+        return ["projectionVersion": 1, "agent": ["hostId": "preview-host", "agentKind": "codex", "sessionId": "session-1"],
          "reviewTurnId": "preview-review", "sourceTurnIds": ["preview-native-turn"], "changeSetId": "preview-change-set", "manifestVersion": 1, "revision": 1,
          "anchorEntryId": "node-2", "startedAt": 1793232000000, "finishedAt": 1793232001000, "state": "ready", "outcome": "completed",
-         "coverage": "partial", "scope": "git-visible-files", "attribution": "workspace-window", "reasons": ["external-writes-possible"], "fileCount": 3,
+         "coverage": "partial", "scope": native ? "native-file-tools" : "git-visible-files", "attribution": native ? "native-tool" : "workspace-window", "reasons": native ? ["native-file-tools-only"] : ["external-writes-possible"], "fileCount": 3,
          "addedFiles": 1, "modifiedFiles": 1, "deletedFiles": 1, "additions": NSNull(), "deletions": NSNull(), "preview": changeFiles]
     }
     private var messages: [[String: Any]] {

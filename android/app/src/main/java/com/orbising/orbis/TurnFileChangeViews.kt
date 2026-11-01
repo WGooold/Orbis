@@ -61,6 +61,7 @@ internal fun ChangeFileName(name: String, modifier: Modifier = Modifier) {
 }
 
 internal fun changeScopeLabel(scope: String) = when (scope) {
+    "native-file-tools" -> "Codex 文件工具"
     "git-visible-files" -> "已跟踪及非忽略文件"
     "bounded-directory" -> "当前目录（已排除缓存）"
     else -> "记录范围未确认"
@@ -174,10 +175,7 @@ internal fun TurnChangeSummaryView(
         count == 0 -> if (summary.coverage == "complete") "本轮没有文件变化" else "未发现文件变化"
         else -> "$count 个文件已更改"
     }
-    val caveat = listOfNotNull(
-        "仅记录部分范围".takeIf { summary.coverage != "complete" && summary.state != "unavailable" },
-        "含同期工作区修改，归属未确认".takeIf { summary.reasons.any { it.contains("concurrent") } },
-    ).joinToString("；")
+    val caveat = turnChangeCoverageNote(summary)
     Column(Modifier.fillMaxWidth().testTag("turn-file-changes-${summary.reviewTurnId}"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         NeumorphSurface(Modifier.fillMaxWidth(), style = NeumorphStyle.Pressed, shape = RemoteUi.ControlShape, shadowScale = 0.5f) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {

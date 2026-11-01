@@ -18,6 +18,19 @@ class TurnFileChangesTest {
     private fun page(viewer: FileChangeViewer, text: String = "@@ -1 +1 @@\n-old\n+中😀\n", cursor: String? = null) = FileChangeDetailPage(
         viewer.current!!.requestId!!, "runtime", agent, "set", 1, "file", "content-file", viewer.viewerId, "read", text, cursor, cursor == null)
 
+    @Test fun `native tool scope explains limited coverage and never requests detail during metadata merge`() {
+        val native = summary().copy(attribution = "native-tool", scope = "native-file-tools", coverage = "partial", reasons = listOf("native-file-tools-only"))
+        val state = TurnChangesState().merge(listOf(native))
+        assertEquals(native, state.summaries["set"])
+        assertEquals("仅记录 Codex 文件工具变更", turnChangeCoverageNote(native))
+        assertNull(state.request)
+        assertNull(state.manifests["set:1"]!!.requestId)
+        listOf(native.copy(coverage = "complete"), native.copy(scope = "git-visible-files"),
+            native.copy(agent = agent.copy(agentKind = "pi"))).forEach {
+            assertTrue(TurnChangesState().merge(listOf(it)).summaries.isEmpty())
+        }
+    }
+
     @Test fun `metadata merge and opening file lists never request detail text`() {
         val state = TurnChangesState().merge(listOf(summary(count = 8)))
         val manifest = state.manifests.getValue("set:1").request()

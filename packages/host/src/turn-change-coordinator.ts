@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { AgentKey, RuntimeEvent, RuntimeMetadata } from "@orbis/protocol";
 import type { TurnFileChangeService } from "./turn-file-change-service.js";
+import type { CodexFileChangeEvidence } from "./codex-turn-file-changes.js";
+
+const source = (agent: AgentKey): { source?: "native-tool" } =>
+  agent.agentKind === "codex" || agent.agentKind === "codexDesktop" ? { source: "native-tool" } : {};
 
 /** Execution barriers belong to the adapter; this owner serializes captures, not agent work. */
 export class TurnChangeCoordinator {
@@ -53,7 +57,7 @@ export class TurnChangeCoordinator {
       const aborted = (): void => this.#service.markUnreliable(runtimeId, "capture-barrier-disconnected", id);
       controller.signal.addEventListener("abort", aborted, { once: true });
       try {
-        await this.#service.begin({ runtimeId, agent, cwd: runtime.cwd, reviewTurnId: id, reliable: reliable && !controller.signal.aborted, capture });
+        await this.#service.begin({ runtimeId, agent, cwd: runtime.cwd, reviewTurnId: id, reliable: reliable && !controller.signal.aborted, capture, ...source(agent) });
         if (controller.signal.aborted) aborted();
       } finally { controller.signal.removeEventListener("abort", aborted); }
     });
@@ -81,10 +85,16 @@ export class TurnChangeCoordinator {
         if (!agent || !runtime?.cwd) return;
         active = { id: turnId, nativeIds: new Set(), controlled: false };
         this.#active.set(runtimeId, active);
-        await this.#service.begin({ runtimeId, agent, cwd: runtime.cwd, reviewTurnId: turnId, reliable: false });
+        await this.#service.begin({ runtimeId, agent, cwd: runtime.cwd, reviewTurnId: turnId, reliable: false, ...source(agent) });
       }
       active.nativeIds.add(turnId);
       this.#service.observeTurn(runtimeId, turnId);
+    });
+  }
+
+  observeNative(runtimeId: string, evidence: CodexFileChangeEvidence): Promise<void> {
+    return this.#enqueue(runtimeId, async () => {
+      if (!this.#closed) await this.#service.observeNative(runtimeId, evidence);
     });
   }
 

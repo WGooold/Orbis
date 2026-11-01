@@ -25,7 +25,7 @@ export async function atomicJson(path: string, value: unknown): Promise<void> {
   finally { await rm(temporary, { force: true }); }
 }
 const blobWrites = new Map<string, Promise<boolean>>();
-function putBlob(directory: string, hash: string, bytes: Buffer, quota?: BlobStorageQuota): Promise<boolean> {
+export function putBlob(directory: string, hash: string, bytes: Buffer, quota?: BlobStorageQuota): Promise<boolean> {
   const path = blobPath(directory, hash), existing = blobWrites.get(path);
   if (existing) return existing;
   if (quota?.hashes.has(hash)) return Promise.resolve(true);

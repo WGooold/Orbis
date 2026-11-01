@@ -28,6 +28,20 @@ class TurnFileChangesInstrumentedTest {
         "entry", 1, 2, "ready", "completed", "complete", "workspace-window", emptyList(), 5, 4, 1, 0, 200, 3, files.take(4), scope = "git-visible-files", revision = 1)
     private val diff = "--- a/file\n+++ b/file\n@@ -1,150 +1,150 @@\n" + (1..150).joinToString("\n") { " line $it" } + "\n-old\n+new\n"
 
+    @Test fun nativeSummaryShowsToolScopeWithoutReadingDetail() {
+        var details = 0
+        val native = summary.copy(attribution = "native-tool", scope = "native-file-tools", coverage = "partial", reasons = listOf("native-file-tools-only"))
+        compose.setContent { OrbisTheme { Box(Modifier.width(320.dp)) {
+            TurnChangeSummaryView(native, ChangeManifest(native), true, {}, { details++ })
+        } } }
+        compose.onNodeWithText("仅记录 Codex 文件工具变更").assertIsDisplayed()
+        assertEquals("Codex 文件工具", changeScopeLabel(native.scope))
+        assertEquals(0, details)
+        screenshot("native-summary-tool-scope")
+        compose.onNodeWithTag("change-file-file-1").performClick()
+        assertEquals(1, details)
+    }
+
     @Test fun openingAndExpandingSummaryReadsOnlyMetadata() {
         var manifests = 0; var details = 0
         compose.setContent { OrbisTheme { Box(Modifier.width(320.dp)) {

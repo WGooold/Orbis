@@ -34,6 +34,54 @@ beforeEach(async () => {
 afterEach(async () => { vi.restoreAllMocks(); await service.close(); await rm(directory, { recursive: true, force: true }); });
 
 describe("Host turn file changes", () => {
+  it("stores only native tool evidence and never folds simultaneous workspace edits into Codex review", async () => {
+    const capture = vi.spyOn(snapshots, "captureWorkspace");
+    await writeFile(join(workspace, "external.txt"), "before\n");
+    await service.begin({ runtimeId, agent, cwd: workspace, reviewTurnId: "native", reliable: true, source: "native-tool" });
+    service.observeTurn(runtimeId, "native-source");
+    await writeFile(join(workspace, "external.txt"), "external change\n");
+    await service.observeNative(runtimeId, { type: "diff", turnId: "native-source",
+      diff: "--- a/own.txt\n+++ b/own.txt\n@@ -1 +1 @@\n-before\n+after\n" });
+    const summary = await finish();
+    expect(capture).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ state: "ready", scope: "native-file-tools", attribution: "native-tool", coverage: "partial", fileCount: 1,
+      preview: [{ path: "own.txt", additions: 1, deletions: 1 }] });
+    expect(JSON.stringify(summaries)).not.toContain("external change");
+    expect(JSON.stringify(summaries)).not.toContain("-before");
+    await service.close(); service = new TurnFileChangeService(options()); await service.initialize();
+    await service.request("phone", runtimeId, detail(summary));
+    expect(events.at(-1)).toMatchObject({ type: "session.change.detail.page", text: expect.stringContaining("-before\n+after\n") });
+  });
+  it("ignores stale native turns and freezes the last complete native revision", async () => {
+    await service.begin({ runtimeId, agent, cwd: workspace, reviewTurnId: "native", reliable: true, source: "native-tool" });
+    const update = (turnId: string, word: string) => service.observeNative(runtimeId, { type: "diff", turnId,
+      diff: `--- a/own.txt\n+++ b/own.txt\n@@ -1 +1 @@\n-before\n+${word}\n` });
+    await update("native", "middle"); await update("native", "final"); await update("other-turn", "wrong");
+    const summary = await finish(); await update("native", "late");
+    await service.request("phone", runtimeId, detail(summary));
+    expect(events.at(-1)).toMatchObject({ type: "session.change.detail.page", text: expect.stringContaining("+final\n") });
+    expect(JSON.stringify(events)).not.toContain("middle"); expect(JSON.stringify(events)).not.toContain("wrong"); expect(JSON.stringify(events)).not.toContain("late");
+  });
+  it("does not publish a previously valid native diff after tracker invalidation", async () => {
+    await service.begin({ runtimeId, agent, cwd: workspace, reviewTurnId: "native", reliable: true, source: "native-tool" });
+    await service.observeNative(runtimeId, { type: "diff", turnId: "native", diff: "--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n" });
+    await service.observeNative(runtimeId, { type: "diff", turnId: "native", diff: "" });
+    const summary = await finish();
+    expect(summary).toMatchObject({ state: "unavailable", coverage: "unavailable", fileCount: null, preview: [],
+      reasons: expect.arrayContaining(["native-diff-empty-or-invalidated"]) });
+  });
+  it("reclaims expired native diff blobs without losing retained summary facts", async () => {
+    await service.close(); service = new TurnFileChangeService({ ...options(), retentionMs: 60_000 });
+    await service.begin({ runtimeId, agent, cwd: workspace, reviewTurnId: "native", reliable: true, source: "native-tool" });
+    await service.observeNative(runtimeId, { type: "diff", turnId: "native", diff: "--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n" });
+    const summary = await finish();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    await begin("next"); await finish();
+    await service.request("phone", runtimeId, detail(summary));
+    expect(events.at(-1)).toMatchObject({ type: "session.changes.failed", reason: "expired" });
+    await service.request("phone", runtimeId, { type: "session.changes.list", runtimeId, agent, requestId: "facts", entryIds: ["entry-1"], turnIds: [] });
+    expect(events.at(-1)).toMatchObject({ summaries: expect.arrayContaining([expect.objectContaining({ attribution: "native-tool", fileCount: 1 })]) });
+  });
   it("compares real dirty baselines, net changes, deletions and new files without changing Git", async () => {
     execFileSync("git", ["init", "-q", workspace]);
     await writeFile(join(workspace, "dirty.txt"), "already dirty\n"); await writeFile(join(workspace, "deleted.txt"), "old\n");

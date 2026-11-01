@@ -165,6 +165,19 @@ final class OrbisUITests: XCTestCase {
         waitForY(app.buttons["drawer-directory-/Projects/test-15"], y, operation: "promote directory")
         capture("drawer-top-after-directory-updates", app: app)
     }
+    func testNativeTurnFileReviewShowsSourceAndReadsOnlySelectedDetail() {
+        let app = launch("changes", arguments: ["--preview-native-file-changes"])
+        let open = app.buttons["turn-changes-open-preview-review"]
+        XCTAssertTrue(open.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["仅记录 Codex 文件工具变更"].exists)
+        XCTAssertEqual(app.staticTexts["change-detail-requests"].label, "reads=0,0,0")
+        capture("native-turn-change-summary", app: app)
+        open.tap()
+        XCTAssertTrue(app.staticTexts["+CHANGE_FIRST"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["范围：Codex 文件工具"].exists)
+        XCTAssertEqual(app.staticTexts.matching(identifier: "change-detail-requests").allElementsBoundByIndex.last?.label, "reads=1,0,0")
+        capture("native-turn-change-detail", app: app)
+    }
     func testTurnFileReviewLoadsOnlySelectedFilesAndRetainsCache() {
         let app = launch("changes")
         let open = app.buttons["turn-changes-open-preview-review"]

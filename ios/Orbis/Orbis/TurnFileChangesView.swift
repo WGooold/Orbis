@@ -89,10 +89,7 @@ private struct TurnChangeCard: View {
 
     /// One line for what the counts cannot show: incomplete capture or concurrent edits.
     private var caveat: String? {
-        var notes: [String] = []
-        if summary.coverage != "complete" && summary.state != "unavailable" { notes.append("仅记录部分范围") }
-        if summary.reasons.contains(where: { $0.contains("concurrent") }) { notes.append("含同期工作区修改，归属未确认") }
-        return notes.isEmpty ? nil : notes.joined(separator: "；")
+        turnChangeCoverageNote(summary)
     }
 }
 

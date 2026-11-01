@@ -8,11 +8,12 @@ import {
   type TurnChangesRequest, type FileChangeDetailReadRequest,
 } from "@orbis/protocol";
 import { compareTurnText, renderTurnDiff, type TextComparison } from "./turn-file-change-diff.js";
-import { atomicJson, captureWorkspace, DEFAULT_CAPTURE_BUDGET, readCapturedText,
+import { CodexTurnFileChanges, type CodexFileChangeEvidence } from "./codex-turn-file-changes.js";
+import { atomicJson, captureWorkspace, DEFAULT_CAPTURE_BUDGET, putBlob, readCapturedText,
   type CaptureBudget, type CapturedFile, type WorkspaceSnapshot, type BlobStorageQuota } from "./turn-file-change-snapshot.js";
 
 type Failure = Extract<RuntimeEvent, { type: "session.changes.failed" }>["reason"];
-type Comparison = { metadata: FileChangeMetadata; before?: CapturedFile; after?: CapturedFile; index?: TextComparison };
+type Comparison = { metadata: FileChangeMetadata; before?: CapturedFile; after?: CapturedFile; index?: TextComparison; nativeDiff?: CapturedFile };
 type Record = { summary: TurnChangeSummary; runtimeId: string; cwd: string; before?: WorkspaceSnapshot; after?: WorkspaceSnapshot; files: Comparison[]; expired?: boolean };
 type Lease = { deviceId: string; runtimeId: string; viewerId: string; comparison: string; expires: number };
 type Options = {
@@ -24,7 +25,7 @@ type Options = {
   maxStorageBytes?: number;
   retentionMs?: number;
 };
-export type TurnChangeBegin = { runtimeId: string; agent: AgentKey; cwd: string; reviewTurnId: string; startedAt?: number; reliable: boolean; anchorEntryId?: string; capture?: boolean };
+export type TurnChangeBegin = { runtimeId: string; agent: AgentKey; cwd: string; reviewTurnId: string; startedAt?: number; reliable: boolean; anchorEntryId?: string; capture?: boolean; source?: "native-tool" };
 export type TurnChangeFinish = { reviewTurnId?: string; anchorEntryId?: string; outcome?: TurnChangeSummary["outcome"]; reliable?: boolean };
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
@@ -45,6 +46,7 @@ export class TurnFileChangeService {
   readonly #records = new Map<string, Record>();
   readonly #durable = new Map<string, TurnChangeSummary>();
   readonly #active = new Map<string, Record>();
+  readonly #native = new Map<string, CodexTurnFileChanges>();
   readonly #chains = new Map<string, Promise<void>>();
   readonly #writes = new Map<string, Promise<void>>();
   readonly #recordBytes = new Map<string, number>();
@@ -118,18 +120,22 @@ export class TurnFileChangeService {
       if (same) return;
       const previous = this.#active.get(input.runtimeId);
       if (previous) { previous.summary.reasons.push("overlapping-turn-boundary"); await this.#finish(previous, { reliable: false }); }
+      const native = input.source === "native-tool";
       const record: Record = { runtimeId: input.runtimeId, cwd: input.cwd, files: [], summary: {
         projectionVersion: CHANGE_PROJECTION_VERSION, agent: input.agent, reviewTurnId: input.reviewTurnId, sourceTurnIds: [],
         changeSetId: randomUUID(), manifestVersion: 1, revision: 0, anchorEntryId: input.anchorEntryId ?? null,
         startedAt: input.startedAt ?? Date.now(), finishedAt: null, state: "collecting", outcome: "unknown",
-        coverage: input.reliable ? "complete" : "partial", scope: "unknown", attribution: "workspace-window",
-        reasons: input.reliable ? [] : ["start-boundary-unconfirmed"],
+        coverage: native || !input.reliable ? "partial" : "complete", scope: native ? "native-file-tools" : "unknown", attribution: native ? "native-tool" : "workspace-window",
+        reasons: native ? ["native-file-tools-only", ...(input.reliable ? [] : ["native-start-not-observed"])] : input.reliable ? [] : ["start-boundary-unconfirmed"],
         fileCount: null, addedFiles: null, modifiedFiles: null, deletedFiles: null, additions: null, deletions: null, preview: [],
       } };
       this.#records.set(record.summary.changeSetId, record); this.#active.set(input.runtimeId, record);
       // Register protection before waiting: a collector already in flight finishes before capture writes.
       await this.#maintenance;
-      if (input.capture === false) {
+      if (native) {
+        if (this.#native.size >= 32) { record.summary.coverage = "unavailable"; record.summary.reasons.push("native-capture-concurrency-budget"); }
+        else this.#native.set(record.summary.changeSetId, new CodexTurnFileChanges());
+      } else if (input.capture === false) {
         record.summary.coverage = "unavailable"; record.summary.reasons = ["start-not-captured"];
       } else if ([...this.#records.values()].filter(value => value.summary.state === "collecting" || value.summary.state === "finalizing").length > 32) {
         record.summary.coverage = "unavailable"; record.summary.reasons.push("capture-concurrency-budget");
@@ -165,6 +171,14 @@ export class TurnFileChangeService {
       while (jsonBytes(record.summary) > 12 * 1024 && record.summary.sourceTurnIds.length) record.summary.sourceTurnIds.shift();
     }
   }
+  async observeNative(runtimeId: string, evidence: CodexFileChangeEvidence): Promise<void> {
+    await this.initialize();
+    await this.#serialize(runtimeId, async () => {
+      const record = this.#active.get(runtimeId);
+      if (!record || evidence.turnId !== record.summary.reviewTurnId && !record.summary.sourceTurnIds.includes(evidence.turnId)) return;
+      this.#native.get(record.summary.changeSetId)?.observe(evidence);
+    });
+  }
   observeAnchor(runtimeId: string, reviewTurnId: string, entryId: string): void {
     const record = [...this.#records.values()].find(record => record.runtimeId === runtimeId && (record.summary.reviewTurnId === reviewTurnId || record.summary.sourceTurnIds.includes(reviewTurnId)));
     if (!record || record.summary.anchorEntryId === entryId) return;
@@ -188,6 +202,14 @@ export class TurnFileChangeService {
     if (input.reliable === false) { record.summary.coverage = "partial"; record.summary.reasons.push("end-boundary-unconfirmed"); }
     await this.#persist(record, true);
     await this.#maintenance;
+    if (record.summary.attribution === "native-tool") {
+      const native = this.#native.get(record.summary.changeSetId);
+      this.#native.delete(record.summary.changeSetId);
+      try { await this.#finalizeNative(record, native); }
+      finally { if (this.#active.get(record.runtimeId) === record) this.#active.delete(record.runtimeId); }
+      await this.#prune();
+      return;
+    }
     if (record.before) record.after = await captureWorkspace(record.cwd, this.#options.directory, { ...DEFAULT_CAPTURE_BUDGET, ...this.#options.captureBudget }, this.#quota);
     this.#active.delete(record.runtimeId);
     if (!record.before || !record.after) {
@@ -204,6 +226,48 @@ export class TurnFileChangeService {
     }));
   }
   #track(work: Promise<void>): void { this.#work.add(work); void work.finally(() => this.#work.delete(work)).catch(() => undefined); }
+  async #finalizeNative(record: Record, native: CodexTurnFileChanges | undefined): Promise<void> {
+    try {
+      const result = native?.comparison(record.cwd);
+      record.summary.reasons = [...new Set([...record.summary.reasons, ...(result?.reasons ?? ["native-diff-not-observed"])])].slice(0, 32);
+      if (!result || result.unavailable) {
+        record.summary.state = "unavailable"; record.summary.coverage = "unavailable";
+      } else {
+        let manifestBytes = 0;
+        for (const file of result.files) {
+          const comparison: Comparison = { metadata: file.metadata };
+          manifestBytes += jsonBytes(file.metadata) + 512;
+          if (manifestBytes > 24 * 1024 * 1024) { record.summary.reasons.push("manifest-budget"); break; }
+          if (file.text !== undefined) {
+            const bytes = Buffer.from(file.text), hash = createHash("sha256").update(bytes).digest("hex");
+            if (await putBlob(this.#options.directory, hash, bytes, this.#quota)) {
+              comparison.nativeDiff = { kind: "file", bytes: bytes.length, mode: 0o600, hash, blob: hash };
+            } else { comparison.metadata.detail = "not-captured"; record.summary.reasons.push("content-storage-budget"); }
+          }
+          record.files.push(comparison);
+        }
+        this.#summarize(record);
+      }
+      await this.#persist(record, true);
+    } catch {
+      record.files = []; record.summary.state = "unavailable"; record.summary.coverage = "unavailable";
+      record.summary.reasons = [...new Set([...record.summary.reasons, "native-comparison-unavailable"])].slice(0, 32);
+      await this.#persist(record, true);
+    }
+  }
+  #summarize(record: Record): void {
+    const files = record.files.map(file => file.metadata);
+    record.summary.fileCount = files.length;
+    record.summary.addedFiles = files.filter(file => file.changeKind === "added").length;
+    record.summary.deletedFiles = files.filter(file => file.changeKind === "deleted").length;
+    record.summary.modifiedFiles = files.filter(file => file.changeKind === "modified" || file.changeKind === "type-changed" || file.changeKind === "renamed").length;
+    record.summary.additions = files.every(file => file.additions !== null) ? files.reduce((sum, file) => sum + file.additions!, 0) : null;
+    record.summary.deletions = files.every(file => file.deletions !== null) ? files.reduce((sum, file) => sum + file.deletions!, 0) : null;
+    record.summary.preview = files.slice(0, 4);
+    while (jsonBytes(record.summary) > 8 * 1024 && record.summary.preview.length) record.summary.preview.pop();
+    record.summary.reasons = [...new Set(record.summary.reasons)].slice(0, 32);
+    record.summary.state = "ready";
+  }
   async #finalize(record: Record): Promise<void> {
     if (this.#comparing >= 2) await new Promise<void>(resolve => this.#comparisonWaiters.push(resolve));
     this.#comparing++;
@@ -258,17 +322,7 @@ export class TurnFileChangeService {
         manifestBytes += fileBytes; record.files.push(file);
       }
       if (this.#closed) throw new Error("host-stopped-before-comparison");
-      const files = record.files.map(file => file.metadata);
-      record.summary.fileCount = files.length;
-      record.summary.addedFiles = files.filter(file => file.changeKind === "added").length;
-      record.summary.deletedFiles = files.filter(file => file.changeKind === "deleted").length;
-      record.summary.modifiedFiles = files.filter(file => file.changeKind === "modified" || file.changeKind === "type-changed" || file.changeKind === "renamed").length;
-      record.summary.additions = files.every(file => file.additions !== null) ? files.reduce((sum, file) => sum + file.additions!, 0) : null;
-      record.summary.deletions = files.every(file => file.deletions !== null) ? files.reduce((sum, file) => sum + file.deletions!, 0) : null;
-      record.summary.preview = files.slice(0, 4);
-      while (jsonBytes(record.summary) > 8 * 1024 && record.summary.preview.length) record.summary.preview.pop();
-      record.summary.reasons = [...new Set(record.summary.reasons)].slice(0, 32);
-      record.summary.state = "ready";
+      this.#summarize(record);
       // Only changed-file references remain after finalization; unchanged baseline blobs may be collected.
       delete record.before; delete record.after;
       await this.#persist(record, true);
@@ -332,7 +386,7 @@ export class TurnFileChangeService {
     const file = record.files.find(file => file.metadata.fileId === request.fileId);
     if (!file) throw error("not-captured");
     if (file.metadata.contentVersion !== request.contentVersion) throw error("version-mismatch");
-    if (file.metadata.detail !== "available" || !file.index) throw error(file.metadata.detail === "available" ? "unavailable" : file.metadata.detail);
+    if (file.metadata.detail !== "available" || !file.index && !file.nativeDiff) throw error(file.metadata.detail === "available" ? "unavailable" : file.metadata.detail);
     const now = Date.now();
     // A 30-second expiry releases retention protection, not the bounded identity binding.
     // Renewing the same owner may continue at its immutable cursor after a reading pause.
@@ -356,6 +410,15 @@ export class TurnFileChangeService {
     this.#requests.set(owner, { runtimeId, token }); this.#inFlight.set(token, { deviceId, owner, comparison: key });
     try {
       let bytes = this.#rendered.get(key);
+      if (!bytes && file.nativeDiff) {
+        const text = await readCapturedText(this.#options.directory, file.nativeDiff);
+        if (text === undefined) throw error("expired");
+        bytes = Buffer.from(text, "utf8");
+        while (this.#renderedBytes + bytes.length > 16 * 1024 * 1024 && this.#rendered.size) {
+          const first = this.#rendered.keys().next().value!; this.#renderedBytes -= this.#rendered.get(first)!.length; this.#rendered.delete(first);
+        }
+        if (bytes.length <= 16 * 1024 * 1024) { this.#rendered.set(key, bytes); this.#renderedBytes += bytes.length; }
+      }
       if (!bytes) {
         const [before, after] = await Promise.all([readCapturedText(this.#options.directory, file.before), readCapturedText(this.#options.directory, file.after)]);
         if (this.#requests.get(owner)?.token !== token || this.#closed) return;
@@ -363,7 +426,7 @@ export class TurnFileChangeService {
         // Another permitted reader may have completed this exact immutable comparison while we read.
         bytes = this.#rendered.get(key);
         if (!bytes) {
-          bytes = Buffer.from(renderTurnDiff(file.metadata.path, before, after, file.index, !!file.before, !!file.after), "utf8");
+          bytes = Buffer.from(renderTurnDiff(file.metadata.path, before, after, file.index!, !!file.before, !!file.after), "utf8");
           while (this.#renderedBytes + bytes.length > 16 * 1024 * 1024 && this.#rendered.size) {
             const first = this.#rendered.keys().next().value!; this.#renderedBytes -= this.#rendered.get(first)!.length; this.#rendered.delete(first);
           }
@@ -421,7 +484,7 @@ export class TurnFileChangeService {
     for (const read of this.#inFlight.values()) protectedIds.add((JSON.parse(read.comparison) as string[])[0]!);
     const records = [...this.#records.values()].sort((a, b) => a.summary.startedAt - b.summary.startedAt);
     const references = new Map<string, number>();
-    const hashes = (record: Record): Set<string> => new Set([...Object.values(record.before?.files ?? {}), ...Object.values(record.after?.files ?? {}), ...record.files.flatMap(file => [file.before, file.after].filter((value): value is CapturedFile => !!value))].flatMap(file => file.blob ? [file.blob] : []));
+    const hashes = (record: Record): Set<string> => new Set([...Object.values(record.before?.files ?? {}), ...Object.values(record.after?.files ?? {}), ...record.files.flatMap(file => [file.before, file.after, file.nativeDiff].filter((value): value is CapturedFile => !!value))].flatMap(file => file.blob ? [file.blob] : []));
     for (const record of records) for (const hash of hashes(record)) references.set(hash, (references.get(hash) ?? 0) + 1);
     let total = 0, metadataBytes = [...this.#recordBytes.values()].reduce((sum, bytes) => sum + bytes, 0);
     const sizes = new Map<string, number>();

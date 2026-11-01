@@ -354,7 +354,10 @@ final class TurnFileChanges: ObservableObject {
         summaries[summary.changeSetId] = summary
     }
     private func valid(_ summary: TurnChangeSummary) -> Bool {
-        summary.agent == agent && summary.projectionVersion == 1 && validToolId(summary.changeSetId) && validToolId(summary.reviewTurnId) && summary.manifestVersion >= 0 && summary.revision >= 0 && summary.preview.count <= 4 && summary.preview.allSatisfy(valid)
+        let native = summary.attribution == "native-tool"
+        return summary.agent == agent && summary.projectionVersion == 1 && validToolId(summary.changeSetId) && validToolId(summary.reviewTurnId) && summary.manifestVersion >= 0 && summary.revision >= 0 && summary.preview.count <= 4 && summary.preview.allSatisfy(valid)
+            && ["workspace-window", "native-tool"].contains(summary.attribution) && native == (summary.scope == "native-file-tools")
+            && (!native || ["codex", "codexDesktop"].contains(summary.agent.agentKind) && summary.coverage != "complete")
     }
     private func valid(_ file: TurnFileMetadata) -> Bool {
         validToolId(file.fileId) && validToolId(file.contentVersion) && !file.path.isEmpty && file.path.utf8.count <= 16_384 && (file.additions ?? 0) >= 0 && (file.deletions ?? 0) >= 0
@@ -436,8 +439,17 @@ func reviewFileNameParts(_ name: String) -> (stem: String, ext: String) {
 
 func turnChangeScopeTitle(_ scope: String) -> String {
     switch scope {
+    case "native-file-tools": return "范围：Codex 文件工具"
     case "git-visible-files": return "范围：已跟踪及非忽略文件"
     case "bounded-directory": return "范围：当前目录，已排除缓存"
     default: return "采集范围未确认"
     }
+}
+
+func turnChangeCoverageNote(_ summary: TurnChangeSummary) -> String? {
+    if summary.attribution == "native-tool" { return "仅记录 Codex 文件工具变更" }
+    var notes: [String] = []
+    if summary.coverage != "complete" && summary.state != "unavailable" { notes.append("仅记录部分范围") }
+    if summary.reasons.contains(where: { $0.contains("concurrent") }) { notes.append("含同期工作区修改，归属未确认") }
+    return notes.isEmpty ? nil : notes.joined(separator: "；")
 }

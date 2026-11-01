@@ -25,12 +25,14 @@ export const TurnChangeSummarySchema = z.strictObject({
   state: z.enum(["collecting", "finalizing", "ready", "unavailable"]),
   outcome: z.enum(["completed", "failed", "cancelled", "unknown"]),
   coverage: z.enum(["complete", "partial", "unavailable"]),
-  scope: z.enum(["git-visible-files", "bounded-directory", "unknown"]),
-  attribution: z.literal("workspace-window"), reasons: z.array(z.string().max(128)).max(32),
+  scope: z.enum(["git-visible-files", "bounded-directory", "native-file-tools", "unknown"]),
+  attribution: z.enum(["workspace-window", "native-tool"]), reasons: z.array(z.string().max(128)).max(32),
   fileCount: count.nullable(), addedFiles: count.nullable(), modifiedFiles: count.nullable(), deletedFiles: count.nullable(),
   additions: count.nullable(), deletions: count.nullable(),
   preview: z.array(FileChangeMetadataSchema).max(4),
-}).refine(value => new TextEncoder().encode(JSON.stringify(value)).length <= 12 * 1024, "change_summary_too_large");
+}).refine(value => new TextEncoder().encode(JSON.stringify(value)).length <= 12 * 1024, "change_summary_too_large")
+  .refine(value => (value.attribution === "native-tool") === (value.scope === "native-file-tools") &&
+    (value.attribution !== "native-tool" || ["codex", "codexDesktop"].includes(value.agent.agentKind) && value.coverage !== "complete"), "invalid_change_source");
 export type TurnChangeSummary = z.infer<typeof TurnChangeSummarySchema>;
 const scope = { requestId: id, runtimeId: id, agent: AgentKeySchema };
 const version = { changeSetId: id, manifestVersion: count };

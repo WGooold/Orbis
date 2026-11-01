@@ -122,3 +122,30 @@ Android 保留包为 `.artifacts/android-turn-file-changes/packages/app-debug.ap
 - **C14 / A1–A4。** iOS iPhone 17 与 SE（375pt）三项轮次审阅用例通过，深色 + XXXL + 减少动画用例新增“正文快甩不关、标题区长拉关闭”；Android 关闭全部动画缩放后 5 项通过并已恢复设置。录屏逐帧确认：正文到顶只在差异区内回弹，卡片不动；标题区长拉原生跟手关闭，滑出时内容保持。
 - **核心冒烟。** 两端 C01–C18 由 UI 测试辅助实际执行并录屏抽帧查看，结果见清单；失败仅为基线既有项。Android 测试时钟快，除 C14 外手势中间帧证据有限，未记为逐帧验收。iOS C03、Android C15 未单独执行，C08 / C18 部分步骤受基线失败的预览 / 夹具限制。
 - **iOS 全量（修正后）。** 58 项 7 项失败：首轮的 6 项基线失败，外加首页 `testSwipeRightFromLeftSideOpensDirectory`（目录取消横拖后左滑关闭未生效）。该用例不经过查看器或聊天页；在干净 `HEAD a4cac89` 工作树构建、同一设备交替重跑，基线 9 次失败 4 次，本次构建 11 次失败 6 次，录屏显示失败时左滑手势未被卡片接收，属基线上的间歇失败（r15 基线 2026-10-30 也曾失败）。失败集合因此与同设备基线一致（`ios-ui-full-r20b.log`、`ab-*.log`、`ios-head-swipe-right-*.log`）。Android 主代码自全量后未改，只新增上面的位置用例（通过），未重跑全量。
+
+
+## 2026-11-01 r28：Codex / Codex Desktop 原生文件变更（验证中）
+
+用户选择先接入两条 Codex 路径。规则见 ADR-0052 §9.1；S21 / V19 更新来源说明，M13 保持。当前实现收集同一原生 turn 的聚合 diff 与文件工具状态，不再扫描这两条路径的工作区；失败不回退为 workspace-window，Pi / Claude / DSH 和旧已冻结快照记录保留原来源。
+
+本机证据目录：`.artifacts/ui-regression/20261101-native-codex-file-changes/`。保留任务开始时的完整源码基线、已有构建包及 SHA-256 清单，未清理其他任务的源码、设备或交付物。未部署真实 Host / 物理真机，不把模拟 app-server 的集成结果当作真实 Codex 模型验收。
+
+| 范围 | 本次实际结果 | 证据 |
+| --- | --- | --- |
+| L0 | r28 初次检查为 71 个唯一 ID，23 / 16 / 22 / 10；续跑时共享文档已到 r29，72 个 ID，24 / 16 / 22 / 10，相对链接与双本机入口一致性再次通过；历史结果保留 | `l0.json`、`manual-resume/l0.json` |
+| Host / 协议 | 原生 tracker 与两种 runtime 的集成、冻结持久化、范围隔离、拒绝 / 未完成 / 空 diff、过期回收等已通过；最终限并发 Node 383 suites、1,645 / 1,650 通过、0 失败、5 项条件未运行。较早普通并发运行有 1 项 Codex Desktop GUI reload timing 失败；当前及捕获基线的对应文件各 22 项定向重跑通过，仍保留首次失败 | `host-targeted.log`、`node-final-limited.json`、`desktop-refresh-baseline-source.json` |
+| TypeScript / lint | 全量 typecheck、修改 TypeScript lint 通过 | `typecheck-final.log`、`eslint-final.log` |
+| iOS L1 / L2 | 230 项 Swift 测试、Simulator Debug 构建及 App 本地依赖检查通过；包括原生范围提示、元数据零详情请求及显式打开读取 | `ios-l1-l2.log`、`ios-l1-l2-result.json` |
+| iOS 首次失败 | 6 个 issue：relay 夹具与二进制帧断言仍写死协议 17；随协议 18 更新，帧断言改为引用协议常量后，完整重跑通过；保留首次日志 | `initial-ios-l1-l2.log` |
+| iOS 原生文件审阅设备专项 | iPhone 17 与 iPad Air 各 4 / 4 通过：来源提示 / 零预读、所选文件按需读取与缓存、关闭手势、深色大字与减少动画 | `ios-device-review-results.json`、对应 `.xcresult` |
+| iOS L3 全量 | iPhone 17 / iOS 27.0：64 项，56 通过、8 失败。7 个失败名称与此前同设备全量 61 项 / 7 失败完全相同；新增的聊天入口计时项在单项重跑与此前全量均通过，按间歇性未归类，不记为新功能回归已确认 | `ios-iphone17-full-ui-result.json`、`ios-baseline-failure-comparison.json`、`ios-iphone17-chat-entry-timing-recheck.log` |
+| Android L1 / L2 | 565 项 JVM 单元全过，Debug / AndroidTest APK 构建通过 | `android-l1-l2.log`、`android-l1-l2-result.json` |
+| Android 文件审阅专项 | A1 浅色、A2 深色、A3 1.5 字体、A4 关闭三项系统动画各 6 / 6，共 24 项通过；原生提示、零预读、选择 / 缓存、预览扩容和正文关闭规则均保留 | `android-target-light.log`、`android-target-dark.log`、`android-target-large.log`、`android-target-reduced.log` |
+| Android 环境重试 | 默认及早期私有 ADB 服务断连，首轮未完整执行，未计为通过；使用任务私有 5101 端口、关闭 libusb 并限制 USB 枚举后专项通过 | `adb-default-failure/`、`android-native-isolated.log` |
+| Android L3 全量 | 143 项：129 通过、7 失败、7 项条件未满足；失败名称与 2026-10-31 同设备 / 标准配置记录相符，但本轮没有重建父版本做受控对照 | `android-full-summary.json`、`android-baseline-failure-comparison.json` |
+| 手动续跑 / UI 辅助执行 | 池内 iPad Air / SE 直接操作并录屏；SE 浅色与深色各 18 项均为 16 通过 / 2 失败，另补 9 / 9。Android 十组 132 次为 124 通过 / 8 次失败，返回 / 归档明暗补跑各 7 / 7；设置入口单项重跑通过，首次超时仍保留。执行次数不等于 C01–C18 通过项数 | `manual-resume/summary.json`、对应 `.log` / `.mp4` / `.xcresult`、`manual-checklist.md` |
+| L4 / 文件审阅视觉核对 | 已查看 iPhone 17 全量附件 117 张有效 PNG 的命名联系表、SE 明暗及补跑截图、Android A1–A4 和返回 / 归档录屏概览。来源提示、按需读取、文件切换、二进制与缓存主流程已核对；iPhone 连续帧确认正文到顶不关、标题短拉回弹与长拉滑出时内容保持。Android 关闭中间帧证据仍不足，混有历史截图的 pull 目录不作为本轮全量覆盖证明 | `manual-resume/visual-review.json`、`ios/header-pull-60fps/`、`android/header-body-pull-60fps/`（两者均位于 `manual-resume/`） |
+| 提交前隔离复核 | 以父提交 `8e259bb` 加本次选定改动构建独立候选；7 个测试文件共 280 项通过，修改 TS lint 及 Host / 协议 / Relay 构建类型检查通过。全仓及测试类型检查在候选与干净父版本均报同一 Pi `RuntimePort.inputState` 接口错误，保留为基线未解决；不混入其他任务的 bridge 修复。提交候选 iOS UI 用例实数为 66，已同步表头 | `commit/node-precommit.json`、`host-service-precommit.json`、`typecheck-precommit-isolated.log`、`typecheck-parent.log`、`typecheck-tests-precommit.log`、`typecheck-tests-parent.log` |
+| 完整门禁 / 真实后端 | 审批 / 问卷、Android 深色首页反馈 / 左滑、电脑归属仍有失败；冷启动首帧、多行软键盘、正常第二电脑同步 / 红点等子步骤未覆盖完整。C01–C18 / L4 整体未通过；R28 真实 Codex terminal / Desktop 连续修改、并发、拒绝 / 部分失败 / 取消和重启轮次未运行。未部署用户 Host、Relay、扩展或物理手机 | `report.json`、`manual-checklist.md` |
+
+iOS 构建和 Swift 使用固定目录及独占 build lease。等待他人租约释放后，按共享 registry / device lock 使用池内 iPhone 17、iPad Air，续跑再取得空闲 SE 和 Android；没有新建或抢占设备。Android 仅启动池内已登记的 API 35 AVD，使用登记的 serial `127.0.0.1:5681`、独占 device lease、独立 ADB 服务和本任务 fixture。续跑沿用保留的 r28 App / APK，iOS 使用从当时共享构建捕获的测试驱动，不能声称共享工作树当前全部源码已验证。明暗、字号、动画设置已恢复；本任务设备已退出并核对 owner 释放，未触碰后来由其他任务使用的 iPhone 17。清理记录见 `manual-resume/cleanup.json`。完整手动与真实 Codex / Desktop 模型门禁未完成前不记为验收通过。最终数字、包哈希与所有未完成项见本目录 `report.json` 和 `packages-manifest.json`。

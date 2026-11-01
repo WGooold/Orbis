@@ -89,6 +89,9 @@ data class TurnChangesState(
         values.forEach { summary ->
             val old = next.summaries[summary.changeSetId]
             if (summary.projectionVersion != 1 || summary.manifestVersion < 0 || summary.revision < 0 || summary.preview.size > 4 ||
+                summary.attribution !in setOf("workspace-window", "native-tool") ||
+                (summary.attribution == "native-tool") != (summary.scope == "native-file-tools") ||
+                summary.attribution == "native-tool" && (summary.agent.agentKind !in setOf("codex", "codexDesktop") || summary.coverage == "complete") ||
                 summary.preview.any { !validChangeFile(it) } || summary.preview.map { it.fileId }.distinct().size != summary.preview.size ||
                 summary.fileCount != null && summary.fileCount < summary.preview.size || old != null && (old.manifestVersion > summary.manifestVersion || old.revision >= summary.revision)) return@forEach
             val previousManifest = next.manifests[summary.versionKey]
@@ -102,6 +105,14 @@ data class TurnChangesState(
         }
         return next
     }
+}
+
+internal fun turnChangeCoverageNote(summary: TurnChangeSummary): String {
+    if (summary.attribution == "native-tool") return "仅记录 Codex 文件工具变更"
+    return listOfNotNull(
+        "仅记录部分范围".takeIf { summary.coverage != "complete" && summary.state != "unavailable" },
+        "含同期工作区修改，归属未确认".takeIf { summary.reasons.any { it.contains("concurrent") } },
+    ).joinToString("；")
 }
 
 data class FileDiffCache(
