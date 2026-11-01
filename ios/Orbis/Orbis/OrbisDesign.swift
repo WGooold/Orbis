@@ -390,18 +390,17 @@ struct OrbisSelectionButtonStyle: ButtonStyle {
     var radius: CGFloat = OrbisRadius.card
     var padding: CGFloat = 0
     var recessed = false
+    @State private var touchOrigin: CGPoint?
 
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: parent?.innerRadius ?? radius, style: .continuous)
         let accent = OrbisPalette(scheme).accent
         configuration.label
             .neuSurface(inset: recessed || (!selecting && configuration.isPressed), radius: radius, intensity: 0.6, padding: padding)
+            .background(OrbisTouchOrigin { touchOrigin = $0 })
             .overlay {
-                shape.fill(accent.opacity(selected ? 0.07 : 0))
-                    .overlay { shape.strokeBorder(accent.opacity(selected ? 0.65 : 0), lineWidth: 1) }
-                    .animation(.orbisFade, value: selected)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                OrbisSelectionFill(selected: selected, origin: touchOrigin,
+                                   radius: parent?.innerRadius ?? radius, color: accent)
             }
             .contentShape(shape)
             .opacity(enabled ? 1 : 0.4)
@@ -411,6 +410,7 @@ struct OrbisSelectionButtonStyle: ButtonStyle {
 /// Keep the slot even outside selection mode, so labels and cards never reflow.
 struct OrbisSelectionIndicator: View {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduced
     let selected: Bool
     let selecting: Bool
 
@@ -424,8 +424,8 @@ struct OrbisSelectionIndicator: View {
             }
             .frame(width: 22, height: 22)
             .opacity(selecting ? 1 : 0)
-            .animation(.orbisFade, value: selected)
-            .animation(.orbisFade, value: selecting)
+            .animation(reduced ? nil : InteractionMotion.state, value: selected)
+            .animation(reduced ? nil : InteractionMotion.state, value: selecting)
             .allowsHitTesting(false).accessibilityHidden(true)
     }
 }
@@ -441,11 +441,13 @@ struct OrbisIconButton: View {
     /// Side actions: 36pt disc, 48pt target. Adjacent rows need no extra spacing
     /// because the target already leaves 6pt between the disc and the card.
     var compact = false
+    var morphFrom: String? = nil
+    @State private var activation = 0
     let action: () -> Void
     var body: some View {
         let diameter: CGFloat = compact ? 36 : size
-        Button(action: action) {
-            Image(systemName: symbol).font(.system(size: compact ? 18 : size * 0.55, weight: .medium))
+        Button { activation += 1; action() } label: {
+            OrbisMotionGlyph(symbol: symbol, size: compact ? 18 : size * 0.55, activation: activation, morphFrom: morphFrom)
                 .foregroundStyle(tint ?? OrbisPalette(scheme).secondary)
                 .frame(width: diameter, height: diameter)
         }
@@ -477,13 +479,14 @@ struct OrbisTextButton: View {
     var fill = false
     /// Swaps the icon for a spinner in the same slot, so the button keeps its size.
     var loading = false
+    @State private var activation = 0
     let action: () -> Void
     var body: some View {
-        Button(action: action) {
+        Button { activation += 1; action() } label: {
             HStack(spacing: 6) {
                 if let symbol {
                     ZStack {
-                        Image(systemName: symbol).fontWeight(.semibold).opacity(loading ? 0 : 1)
+                        OrbisMotionGlyph(symbol: symbol, size: 16, activation: activation).opacity(loading ? 0 : 1)
                         if loading { ProgressView().controlSize(.mini) }
                     }
                 }
@@ -498,6 +501,7 @@ struct OrbisTextButton: View {
 /// Raised when off, recessed with the accent check when on (Android `NeumorphCheckbox`).
 struct OrbisCheckbox: View {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduced
     let checked: Bool
     let label: String
     let action: () -> Void
@@ -506,7 +510,7 @@ struct OrbisCheckbox: View {
             Image(systemName: "checkmark").font(.system(size: 12, weight: .bold))
                 .foregroundStyle(OrbisPalette(scheme).accent)
                 .scaleEffect(checked ? 1 : 0.5).opacity(checked ? 1 : 0)
-                .animation(.orbisPop, value: checked)
+                .animation(reduced ? nil : .orbisPop, value: checked)
                 .frame(width: 26, height: 26)
                 .neuSurface(inset: checked, radius: 8, intensity: 0.42, concentric: false)
                 .frame(width: 44, height: 44).contentShape(Rectangle())
@@ -518,6 +522,7 @@ struct OrbisCheckbox: View {
 /// Recessed track with a raised knob; the track picks up the accent when on.
 struct NeuToggleStyle: ToggleStyle {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         let p = OrbisPalette(scheme)
@@ -533,7 +538,7 @@ struct NeuToggleStyle: ToggleStyle {
                         .padding(4)
                 }.frame(width: 52, height: 30)
                     .neuSurface(inset: true, radius: 15, intensity: 0.5, concentric: false)
-                    .animation(.orbisPop, value: on)
+                    .animation(reduced ? nil : .orbisPop, value: on)
             }.frame(minHeight: 48).contentShape(Rectangle())
         }.buttonStyle(.plain).opacity(enabled ? 1 : 0.4)
             .accessibilityAddTraits(.isToggle).accessibilityValue(on ? "开" : "关")
@@ -543,6 +548,7 @@ struct NeuToggleStyle: ToggleStyle {
 /// Copy action whose check mark pops in and hides itself after 2.5 seconds.
 struct OrbisCopyButton: View {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduced
     let label: String
     var size: CGFloat = 28
     let text: () -> String
@@ -551,15 +557,15 @@ struct OrbisCopyButton: View {
 
     var body: some View {
         let p = OrbisPalette(scheme)
-        Button(action: copy) {
+        OrbisMotionButton(action: copy) {
             ZStack {
-                Image(systemName: "doc.on.doc").foregroundStyle(p.secondary)
+                OrbisActionSymbol(systemName: "doc.on.doc").foregroundStyle(p.secondary)
                     .opacity(copied ? 0 : 1).scaleEffect(copied ? 0.6 : 1)
-                Image(systemName: "checkmark").fontWeight(.bold).foregroundStyle(p.success)
+                OrbisActionSymbol(systemName: "checkmark").fontWeight(.bold).foregroundStyle(p.success)
                     .opacity(copied ? 1 : 0).scaleEffect(copied ? 1 : 0.5)
             }.font(.system(size: size * 0.5, weight: .medium))
                 .frame(width: size, height: size)
-                .animation(.orbisPop, value: copied)
+                .animation(reduced ? nil : .orbisPop, value: copied)
         }
         .buttonStyle(NeuIconButtonStyle(selected: false, size: size))
         .accessibilityLabel(copied ? "已复制" : label)
@@ -616,6 +622,9 @@ struct OrbisMenuItem: Identifiable {
     var destructive = false
     var disabled = false
     var isDivider = false
+    var children: [OrbisMenuItem] = []
+    var keepsOpen = false
+    var identifier: String? = nil
     var action: () -> Void = {}
 
     static var divider: OrbisMenuItem { OrbisMenuItem(title: "", isDivider: true) }
@@ -636,8 +645,10 @@ struct OrbisDialogAction: Identifiable {
 final class OrbisOverlay: ObservableObject {
     struct MenuRequest: Identifiable {
         let id = UUID()
-        let anchor: CGRect
-        let items: [OrbisMenuItem]
+        var anchor: CGRect
+        var items: [OrbisMenuItem]
+        var horizontal = false
+        var owner: String? = nil
     }
     struct DialogRequest: Identifiable {
         let id = UUID()
@@ -650,19 +661,24 @@ final class OrbisOverlay: ObservableObject {
     var isPresenting: Bool { menu != nil || dialog != nil }
 
     /// `anchor` is in global coordinates.
-    func showMenu(_ items: [OrbisMenuItem], from anchor: CGRect) {
+    func showMenu(_ items: [OrbisMenuItem], from anchor: CGRect, horizontal: Bool = false, owner: String? = nil) {
         guard dialog == nil, items.contains(where: { !$0.isDivider }) else { return }
-        menu = MenuRequest(anchor: anchor, items: items)
+        menu = MenuRequest(anchor: anchor, items: items, horizontal: horizontal, owner: owner)
     }
     func showDialog(_ title: String, message: String? = nil, actions: [OrbisDialogAction]) {
         menu = nil
         dialog = DialogRequest(title: title, message: message, actions: actions.isEmpty ? [OrbisDialogAction(title: "知道了", role: .cancel)] : actions)
     }
     func dismissMenu() { menu = nil }
+    func dismissMenu(owner: String) { if menu?.owner == owner { menu = nil } }
+    func moveMenu(owner: String, to frame: CGRect) {
+        guard menu?.owner == owner, menu?.anchor != frame else { return }
+        menu?.anchor = frame
+    }
     func dismissDialog() { dialog = nil }
 
     fileprivate func select(_ item: OrbisMenuItem) {
-        menu = nil
+        if !item.keepsOpen { menu = nil }
         item.action()
     }
     fileprivate func perform(_ action: OrbisDialogAction) {
@@ -712,7 +728,7 @@ struct OrbisMenuButton<Label: View>: View {
     let items: () -> [OrbisMenuItem]
     @ViewBuilder let label: Label
     var body: some View {
-        Button { overlay.showMenu(items(), from: anchor.frame) } label: { label }
+        OrbisMotionButton { overlay.showMenu(items(), from: anchor.frame) } label: { label }
             .buttonStyle(NeuButtonStyle(selected: selected, padding: padding))
             .orbisAnchor(anchor)
             .accessibilityLabel(accessibilityLabel)
@@ -730,11 +746,12 @@ struct OrbisMenuIconButton: View {
     var selected = false
     var size: CGFloat = 40
     var compact = false
+    @State private var activation = 0
     let items: () -> [OrbisMenuItem]
     var body: some View {
         let diameter: CGFloat = compact ? 36 : size
-        Button { overlay.showMenu(items(), from: anchor.frame) } label: {
-            Image(systemName: symbol).font(.system(size: compact ? 18 : size * 0.55, weight: .medium))
+        Button { activation += 1; overlay.showMenu(items(), from: anchor.frame) } label: {
+            OrbisMotionGlyph(symbol: symbol, size: compact ? 18 : size * 0.55, activation: activation)
                 .foregroundStyle(tint ?? OrbisPalette(scheme).secondary)
                 .frame(width: diameter, height: diameter)
         }
@@ -792,7 +809,11 @@ private struct OrbisOverlayLayer: View {
                         OrbisMenuPanel(request: menu, anchor: anchor, bounds: bounds,
                                        onSelect: overlay.select, onDismiss: overlay.dismissMenu)
                             .id(menu.id)
-                            .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: menuTransitionAnchor(anchor, in: bounds))))
+                            .transition(reduceMotion ? .identity : .asymmetric(
+                                insertion: .modifier(active: OrbisPanelEntrance(progress: 0, anchor: menuTransitionAnchor(anchor, in: bounds)),
+                                                     identity: OrbisPanelEntrance(progress: 1, anchor: menuTransitionAnchor(anchor, in: bounds))).combined(with: .opacity).animation(InteractionMotion.panel),
+                                removal: .modifier(active: OrbisPanelEntrance(progress: 0, anchor: menuTransitionAnchor(anchor, in: bounds)),
+                                                   identity: OrbisPanelEntrance(progress: 1, anchor: menuTransitionAnchor(anchor, in: bounds))).combined(with: .opacity).animation(InteractionMotion.exit)))
                     }
                     if let dialog = overlay.dialog {
                         OrbisDialogPanel(request: dialog, onAction: overlay.perform, onCancel: overlay.cancelDialog)
@@ -805,7 +826,7 @@ private struct OrbisOverlayLayer: View {
             }
         }
         .ignoresSafeArea(.keyboard)
-        .animation(reduceMotion ? nil : .orbisFade, value: overlay.menu?.id)
+        .animation(reduceMotion ? nil : InteractionMotion.panel, value: overlay.menu?.id)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: overlay.dialog?.id)
         .allowsHitTesting(overlay.isPresenting)
     }
@@ -822,58 +843,147 @@ private struct OrbisOverlayLayer: View {
     }
 }
 
+private struct OrbisPanelEntrance: AnimatableModifier {
+    var progress: CGFloat
+    let anchor: UnitPoint
+    var animatableData: CGFloat { get { progress } set { progress = newValue } }
+    func body(content: Content) -> some View {
+        content.scaleEffect(0.86 + 0.14 * progress, anchor: anchor)
+            .rotation3DEffect(.degrees(Double((anchor.y - 0.5) * 12 * (1 - progress))), axis: (x: 1, y: 0, z: 0), anchor: anchor)
+            .offset(x: (anchor.x - 0.5) * 24 * (1 - progress), y: (anchor.y - 0.5) * 16 * (1 - progress))
+    }
+}
+
 private struct OrbisMenuPanel: View {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     let request: OrbisOverlay.MenuRequest
-    /// Anchor rect and the safe area that may hold the menu, both in the layer's local coordinates.
     let anchor: CGRect
     let bounds: CGRect
     let onSelect: (OrbisMenuItem) -> Void
     let onDismiss: () -> Void
-
-    private var width: CGFloat { min(280, max(200, bounds.width - 32)) }
+    private struct Page: Identifiable {
+        let id: UUID
+        let title: String?
+        let items: [OrbisMenuItem]
+    }
+    @State private var history: [Page] = []
+    @State private var displayed: Page?
+    @State private var destination: Page?
+    @State private var height: CGFloat?
+    @State private var direction: CGFloat = 1
+    @State private var generation = UUID()
+    @State private var scrollPositions: [UUID: UUID] = [:]
+    @State private var focusedItems: [UUID: UUID] = [:]
+    @AccessibilityFocusState private var focusedItem: UUID?
+    private var root: Page { Page(id: request.id, title: nil, items: request.items) }
+    private var current: Page { displayed ?? root }
+    private var width: CGFloat { min(280, max(120, bounds.width - 32)) }
+    private var maxHeight: CGFloat { max(96, bounds.height - 32) }
 
     var body: some View {
-        ViewThatFits(in: .vertical) {
-            list
-            ScrollView { list }.frame(maxHeight: max(160, bounds.height - 32))
+        ZStack(alignment: .top) {
+            ScrollView {
+                list(current).fixedSize(horizontal: false, vertical: true).scrollTargetLayout()
+            }
+            .scrollPosition(id: Binding(get: { scrollPositions[current.id] }, set: { scrollPositions[current.id] = $0 }))
+            .defaultScrollAnchor(.top)
+            .disabled(destination != nil)
+            .id(current.id)
+            .transition(reduceMotion ? .identity : .asymmetric(
+                insertion: .offset(x: direction * width).combined(with: .opacity),
+                removal: .offset(x: -direction * width / 3).combined(with: .opacity)))
         }
-        .frame(width: width - OrbisRadius.menuPadding * 2)
+        .frame(width: width - OrbisRadius.menuPadding * 2, height: min(maxHeight, height ?? 48), alignment: .top)
+        .clipped()
+        .overlay(alignment: .top) {
+            // Only menu rows are measured offscreen, never message/tool content.
+            list(destination ?? current, measuring: true).fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { proxy in
+                    Color.clear.onAppear { settleHeight(proxy.size.height) }
+                        .onChange(of: proxy.size.height) { _, measured in settleHeight(measured) }
+                })
+                .id((destination ?? current).id)
+                .hidden().allowsHitTesting(false).accessibilityHidden(true)
+        }
         .modifier(OrbisPanel(radius: OrbisRadius.menu, padding: OrbisRadius.menuPadding))
         .alignmentGuide(.leading) { d in -x(for: d.width) }
         .alignmentGuide(.top) { d in -y(for: d.height) }
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(.isModal)
-        .accessibilityAction(.escape, onDismiss)
+        .accessibilityAction(.escape, back)
+        .onDisappear { generation = UUID() }
     }
 
-    private var list: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(request.items) { item in
-                if item.isDivider {
-                    // A lightness step, not a drawn line, separates the groups.
-                    OrbisPalette(scheme).well.frame(height: 2).clipShape(Capsule())
-                        .padding(.horizontal, 14).padding(.vertical, 4).accessibilityHidden(true)
-                } else {
+    @ViewBuilder private func list(_ page: Page, measuring: Bool = false) -> some View {
+        if request.horizontal {
+            HStack(spacing: 4) {
+                ForEach(page.items) { item in
                     OrbisMenuRow(item: item) { onSelect(item) }
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                if let title = page.title {
+                    OrbisMenuRow(item: OrbisMenuItem(title: title, symbol: "chevron.left"), action: back)
+                }
+                ForEach(page.items) { item in
+                    if item.isDivider {
+                        OrbisPalette(scheme).well.frame(height: 2).clipShape(Capsule())
+                            .padding(.horizontal, 14).padding(.vertical, 4).accessibilityHidden(true)
+                    } else {
+                        let row = OrbisMenuRow(item: item) {
+                            if item.children.isEmpty { onSelect(item) }
+                            else {
+                                focusedItems[current.id] = item.id
+                                history.append(current)
+                                navigate(Page(id: item.id, title: item.title, items: item.children), forward: true)
+                            }
+                        }
+                        if measuring { row }
+                        else { row.id(item.id).accessibilityFocused($focusedItem, equals: item.id) }
+                    }
                 }
             }
         }
     }
-
-    /// Align with the anchor's near edge, never closer than 16pt to the safe-area edge.
+    private func navigate(_ page: Page, forward: Bool) {
+        generation = UUID()
+        direction = forward ? 1 : -1
+        destination = page
+        // Equal-height pages still need the second stage; geometry callbacks only fire on size change.
+        if reduceMotion { displayed = page; destination = nil }
+    }
+    private func settleHeight(_ measured: CGFloat) {
+        let target = min(maxHeight, measured)
+        guard let next = destination else { height = target; return }
+        let token = generation
+        withAnimation(reduceMotion ? nil : InteractionMotion.state, completionCriteria: .logicallyComplete) {
+            height = target
+        } completion: {
+            guard generation == token else { return }
+            withAnimation(reduceMotion ? nil : InteractionMotion.panel) { displayed = next; destination = nil }
+            focusedItem = focusedItems[next.id] ?? next.items.first(where: { !$0.isDivider && !$0.disabled })?.id
+        }
+    }
+    private func back() {
+        guard let previous = history.popLast() else { onDismiss(); return }
+        navigate(previous, forward: false)
+    }
     private func x(for width: CGFloat) -> CGFloat {
         let preferred = anchor.midX > bounds.midX ? anchor.maxX - width : anchor.minX
         let low = bounds.minX + 16, high = max(low, bounds.maxX - 16 - width)
         return min(max(low, preferred), high)
     }
-
-    /// Below the anchor when it fits, otherwise above, otherwise as close as the screen allows.
     private func y(for height: CGFloat) -> CGFloat {
         let low = bounds.minY + 8, high = max(low, bounds.maxY - 8 - height)
-        let below = anchor.maxY + 8
+        // The native selection menu keeps its own row immediately above the text.
+        // Place message actions one row further out so both sets of operations remain usable.
+        let selectionClearance: CGFloat = request.horizontal ? 64 : 0
+        let above = anchor.minY - 8 - selectionClearance - height
+        if request.horizontal && above >= low { return above }
+        let below = anchor.maxY + 8 + selectionClearance
         if below <= high { return below }
-        let above = anchor.minY - 8 - height
         if above >= low { return above }
         return min(max(low, anchor.midY - height / 2), high)
     }
@@ -883,22 +993,38 @@ private struct OrbisMenuRow: View {
     @Environment(\.colorScheme) private var scheme
     let item: OrbisMenuItem
     let action: () -> Void
+    @State private var copied = false
+    @State private var activation = 0
+    @State private var reset: Task<Void, Never>?
     var body: some View {
         let p = OrbisPalette(scheme)
-        Button(action: action) {
+        Button {
+            activation += 1
+            action()
+            if item.keepsOpen {
+                copied = true; reset?.cancel()
+                reset = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    if !Task.isCancelled { copied = false }
+                }
+            }
+        } label: {
             HStack(spacing: 12) {
                 if let symbol = item.symbol {
-                    Image(systemName: symbol).frame(width: 20)
+                    OrbisMotionGlyph(symbol: copied ? "checkmark" : symbol, size: 20, activation: activation)
                 }
-                Text(item.title).lineLimit(2)
+                Text(copied ? "已复制" : item.title).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if item.checked { Image(systemName: "checkmark").fontWeight(.bold) }
+                if !item.children.isEmpty { Image(systemName: "chevron.right") }
+                else if item.checked { Image(systemName: "checkmark").fontWeight(.bold) }
             }.font(.orbisBody(.medium))
                 .foregroundStyle(item.destructive ? p.error : item.checked ? p.accent : p.text)
                 .padding(.horizontal, 14).frame(minHeight: 48).contentShape(Rectangle())
         }.buttonStyle(MenuRowStyle(selected: item.checked))
             .disabled(item.disabled)
-            .accessibilityLabel(item.title)
+            .accessibilityLabel(copied ? "已复制" : item.title)
+            .accessibilityIdentifier(item.identifier ?? "")
+            .onDisappear { reset?.cancel() }
             .accessibilityAddTraits(item.checked ? .isSelected : [])
     }
 }
@@ -981,11 +1107,12 @@ struct OrbisActionButton: View {
     let title: String
     var symbol: String? = nil
     var tint: Color? = nil
+    @State private var activation = 0
     let action: () -> Void
     var body: some View {
-        Button(action: action) {
+        Button { activation += 1; action() } label: {
             HStack(spacing: 8) {
-                if let symbol { Image(systemName: symbol) }
+                if let symbol { OrbisMotionGlyph(symbol: symbol, size: 17, activation: activation) }
                 Text(title)
             }.font(.orbisBody(.semibold))
                 .foregroundStyle(tint ?? pageAccent ?? OrbisPalette(scheme).accent)
@@ -1016,7 +1143,7 @@ struct OrbisPageHeader<Trailing: View>: View {
     @ViewBuilder var trailing: Trailing
     var body: some View {
         OrbisHeader {
-            OrbisIconButton(symbol: closes ? "xmark" : "arrow.left", label: backLabel ?? (closes ? "关闭" : "返回"), action: back)
+            OrbisIconButton(symbol: closes ? "xmark" : "arrow.left", label: backLabel ?? (closes ? "关闭" : "返回"), morphFrom: "arrow.left", action: back)
         } title: {
             Text(title).font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
         } trailing: { trailing }
@@ -1039,6 +1166,7 @@ struct AgentEmblem: View {
         Image(agentAsset(kind)).renderingMode(kind == "pi" || kind == "claude" || kind == nil ? .original : .template)
             .resizable().scaledToFit().foregroundStyle(OrbisPalette(scheme).agent(kind))
             .frame(width: size * (recessed ? 0.56 : 0.9), height: size * (recessed ? 0.56 : 0.9))
+            .modifier(OrbisActionPulse())
     }
 }
 

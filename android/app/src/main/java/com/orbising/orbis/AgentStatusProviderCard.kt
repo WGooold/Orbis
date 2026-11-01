@@ -17,7 +17,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Dns
-import androidx.compose.material3.Icon
+import com.orbising.orbis.OrbisActionIcon as Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -106,15 +106,16 @@ internal fun AgentStatusProviderCard(
                     }
                 }
                 Box {
+                    var glyphActivation by remember { mutableStateOf(0) }
                     val interactions = remember { MutableInteractionSource() }
                     val pressed by interactions.collectIsPressedAsState()
                     Row(Modifier.testTag("provider-switch-$kind")
                         .heightIn(min = 48.dp).widthIn(min = 64.dp)
                         .alpha(if (!available) 0.4f else if (pressed) 0.55f else 1f)
-                        .clickable(interactionSource = interactions, indication = null, enabled = available, role = Role.Button) { menuOpen = true }
+                        .clickable(interactionSource = interactions, indication = null, enabled = available, role = Role.Button) { glyphActivation++; menuOpen = true }
                         .semantics { contentDescription = "切换 ${agentBrand(kind).title} 供应商" },
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally)) {
-                        Icon(Icons.Rounded.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Rounded.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp).actionGlyphMotion(glyphActivation), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("切换", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     NeumorphMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {

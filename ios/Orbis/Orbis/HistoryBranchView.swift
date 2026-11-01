@@ -43,7 +43,7 @@ struct HistoryBranchView: View {
                     .downloadFlightTarget(downloadFlight).accessibilityIdentifier("history-downloads")
             }
             HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").foregroundStyle(OrbisPalette(scheme).secondary)
+                OrbisActionSymbol(systemName: "magnifyingglass").foregroundStyle(OrbisPalette(scheme).secondary)
                 TextField("搜索历史与分支", text: $query).autocorrectionDisabled().font(.orbisBody()).textInputAutocapitalization(.never)
                     .focused($searchFocused)
                 OrbisIconButton(symbol: "xmark", label: "清除搜索", size: 28) { query = "" }
@@ -91,7 +91,7 @@ struct HistoryBranchView: View {
     }
 
     private func node(_ option: RuntimeOption) -> some View {
-        Button { selected = option; store.previewEntry(option.value) } label: {
+        OrbisMotionButton { selected = option; store.previewEntry(option.value) } label: {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 8) {
                     Text(role(option)).fontWeight(.semibold)

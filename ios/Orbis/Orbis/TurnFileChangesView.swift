@@ -31,12 +31,12 @@ private struct TurnChangeCard: View {
                 header(p, ready: ready, count: count, opens: ready && !files.isEmpty)
                 ForEach(files) { file in
                     ChangeHairline()
-                    Button { changes.open(summary, fileId: file.fileId) } label: { ChangeFileLine(file: file) }
+                    OrbisMotionButton { changes.open(summary, fileId: file.fileId) } label: { ChangeFileLine(file: file) }
                         .buttonStyle(.plain).accessibilityIdentifier("turn-change-file-" + file.fileId)
                 }
                 if ready && count > 4 {
                     ChangeHairline()
-                    Button {
+                    OrbisMotionButton {
                         withAnimation(reduceMotion ? nil : .orbisCollapse) { expanded.toggle() }
                         if expanded && !manifest.started { changes.loadFiles(summary) }
                     } label: {
@@ -44,13 +44,13 @@ private struct TurnChangeCard: View {
                             Text(expanded ? "收起" : "还有 \(count - 4) 个文件")
                             Spacer(minLength: 0)
                             if manifest.loading { ProgressView().controlSize(.mini) }
-                            Image(systemName: "chevron.down").imageScale(.small).rotationEffect(.degrees(expanded ? 180 : 0))
+                            OrbisActionSymbol(systemName: "chevron.down").imageScale(.small).rotationEffect(.degrees(expanded ? 180 : 0))
                         }.font(.orbisCaption()).foregroundStyle(p.secondary).frame(minHeight: 36).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                 }
                 if expanded && !manifest.complete && !manifest.loading && (manifest.started || manifest.error != nil) {
                     ChangeHairline()
-                    Button { changes.loadFiles(summary) } label: {
+                    OrbisMotionButton { changes.loadFiles(summary) } label: {
                         Text(manifest.error == nil ? "载入更多文件" : "重新读取文件清单")
                             .font(.orbisCaption()).foregroundStyle(manifest.error == nil ? p.accent : p.error)
                             .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading).contentShape(Rectangle())
@@ -70,17 +70,17 @@ private struct TurnChangeCard: View {
         let title = pending ? "正在统计文件变化" : summary.state == "unavailable" ? "本轮文件变化未记录"
             : count == 0 ? (summary.coverage == "complete" ? "本轮没有文件变化" : "未发现文件变化") : "\(count) 个文件已更改"
         let row = HStack(spacing: 8) {
-            Image(systemName: opens ? "doc.on.doc" : summary.state == "unavailable" ? "exclamationmark.circle" : "doc")
+            OrbisActionSymbol(systemName: opens ? "doc.on.doc" : summary.state == "unavailable" ? "exclamationmark.circle" : "doc")
             Text(title).fontWeight(.medium).foregroundStyle(opens ? p.text : p.secondary).lineLimit(1)
             if pending { ProgressView().controlSize(.mini) }
             Spacer(minLength: 6)
             if opens {
                 ChangeLineCounts(additions: summary.additions, deletions: summary.deletions, status: nil)
-                Image(systemName: "chevron.right").imageScale(.small)
+                OrbisActionSymbol(systemName: "chevron.right").imageScale(.small)
             }
         }.font(.orbisLabel()).foregroundStyle(p.secondary).frame(minHeight: 40).contentShape(Rectangle())
         if opens {
-            Button { changes.open(summary) } label: { row }.buttonStyle(.plain)
+            OrbisMotionButton { changes.open(summary) } label: { row }.buttonStyle(.plain)
                 .accessibilityLabel("查看详情，" + title).accessibilityIdentifier("turn-changes-open-" + summary.reviewTurnId)
         } else {
             row.accessibilityElement(children: .combine)
@@ -440,7 +440,7 @@ private struct DiffFileHeader: View {
             }
         }.padding(.horizontal, 4).padding(.top, 2)
             .contentShape(Rectangle())
-            .contextMenu { Button { UIPasteboard.general.string = file.path } label: { Label("复制路径", systemImage: "doc.on.doc") } }
+            .contextMenu { OrbisMotionButton { UIPasteboard.general.string = file.path } label: { Label("复制路径", systemImage: "doc.on.doc") } }
     }
 }
 

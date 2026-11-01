@@ -47,7 +47,8 @@ internal fun ToolSummaryDisclosure(summary: ToolSummary, canRead: Boolean, onRea
         "cancelled" -> "已取消"
         else -> if (summary.isError == true) "执行失败" else "已完成"
     }
-    val rotation by animateFloatAsState(if (expanded) 180f else 0f, tween(260), label = "tool-disclosure")
+    val rotation by animateFloatAsState(if (expanded) 180f else 0f, tween(InteractionMotion.duration(InteractionMotion.Selection)), label = "tool-disclosure")
+    var glyphActivation by remember { mutableStateOf(0) }
     NeumorphSurface(
         modifier = Modifier.fillMaxWidth(), style = NeumorphStyle.Pressed,
         shape = RoundedCornerShape(14.dp), shadowScale = 0.35f, contentInset = 12.dp,
@@ -56,14 +57,14 @@ internal fun ToolSummaryDisclosure(summary: ToolSummary, canRead: Boolean, onRea
             Row(
                 Modifier.fillMaxWidth()
                     .semantics { contentDescription = "${if (expanded) "收起" else "展开"}${summary.toolName}，$phase" }
-                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, role = Role.Button) { expanded = !expanded }
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, role = Role.Button) { glyphActivation++; expanded = !expanded }
                     .heightIn(min = RemoteUi.TouchTarget),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Icon(
                     if (summary.isError == true) Icons.Rounded.ErrorOutline else Icons.Rounded.Build,
-                    contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(17.dp),
+                    contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(17.dp).actionGlyphMotion(glyphActivation),
                 )
                 Text(summary.toolName, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)

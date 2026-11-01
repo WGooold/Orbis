@@ -8,9 +8,22 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.NorthWest
-import androidx.compose.material3.Icon
+import com.orbising.orbis.OrbisActionIcon as Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideIn
+import androidx.compose.animation.slideOut
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
@@ -51,6 +64,25 @@ internal fun ChatQuestionReminder(question: ChatQuestion, onClick: () -> Unit, m
             }
             Icon(Icons.Rounded.NorthWest, contentDescription = "定位到原消息",
                 modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+/** Keep the last rendered question for the exit frames; only the live question is actionable. */
+@Composable
+internal fun AnimatedChatQuestionReminder(
+    question: ChatQuestion?, visible: Boolean, modifier: Modifier = Modifier,
+    onClick: (ChatQuestion) -> Unit,
+) {
+    var displayed by remember { mutableStateOf(question) }
+    LaunchedEffect(question) { if (question != null) displayed = question }
+    val offset = with(LocalDensity.current) { IntOffset(32.dp.roundToPx(), -12.dp.roundToPx()) }
+    AnimatedVisibility(visible = visible && question != null, modifier = modifier,
+        enter = slideIn(tween(InteractionMotion.duration(InteractionMotion.Panel))) { offset } + fadeIn(tween(InteractionMotion.duration(InteractionMotion.Panel))),
+        exit = slideOut(tween(InteractionMotion.duration(InteractionMotion.Exit))) { offset } + fadeOut(tween(InteractionMotion.duration(InteractionMotion.Exit))),
+    ) {
+        displayed?.let { shown ->
+            ChatQuestionReminder(shown, onClick = { if (visible) question?.let(onClick) })
         }
     }
 }

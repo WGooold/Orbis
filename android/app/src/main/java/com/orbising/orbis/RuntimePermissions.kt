@@ -9,7 +9,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
-import androidx.compose.material3.Icon
+import com.orbising.orbis.OrbisActionIcon as Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -115,18 +115,19 @@ internal fun RuntimePermissionsStatus(
         else -> Icons.Rounded.HelpOutline
     }
     val tint = if (permissionManagement?.tone == "problem") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+    var glyphActivation by remember { mutableStateOf(0) }
     Row(
         modifier = modifier.clip(RoundedCornerShape(12.dp))
-            .clickable(role = Role.Button, onClickLabel = "查看权限与审批设置") { expanded = true }
+            .clickable(role = Role.Button, onClickLabel = "查看权限与审批设置") { glyphActivation++; expanded = true }
             .semantics { contentDescription = "当前会话权限"; stateDescription = label }
             .heightIn(min = 32.dp).padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = tint)
+        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp).actionGlyphMotion(glyphActivation), tint = tint)
         Text(label, modifier = Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelMedium,
             color = tint, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Icon(Icons.Rounded.ChevronRight, contentDescription = null, modifier = Modifier.size(14.dp), tint = tint)
+        Icon(Icons.Rounded.ChevronRight, contentDescription = null, modifier = Modifier.size(14.dp).actionGlyphMotion(glyphActivation), tint = tint)
     }
     if (expanded) SessionControlDialog("当前会话权限", onClose = { expanded = false }) {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {

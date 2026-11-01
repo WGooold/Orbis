@@ -163,6 +163,8 @@ internal fun TurnChangeSummaryView(
     onReadManifest: () -> Unit, onOpenFile: (FileChangeMetadata) -> Unit,
 ) {
     var expanded by rememberSaveable(summary.changeSetId) { mutableStateOf(false) }
+    var openActivation by remember { mutableStateOf(0) }
+    var expandActivation by remember { mutableStateOf(0) }
     val ready = summary.state == "ready"
     val count = summary.fileCount?.toInt() ?: manifest.files.size
     val files = if (!ready) emptyList() else if (expanded) manifest.files else manifest.files.take(4)
@@ -180,12 +182,12 @@ internal fun TurnChangeSummaryView(
         NeumorphSurface(Modifier.fillMaxWidth(), style = NeumorphStyle.Pressed, shape = RemoteUi.ControlShape, shadowScale = 0.5f) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp)
-                    .then(if (opens) Modifier.clickable(enabled = canRead) { onOpenFile(files.first()) }
+                    .then(if (opens) Modifier.clickable(enabled = canRead) { openActivation++; onOpenFile(files.first()) }
                         .semantics { contentDescription = "查看详情，$title" } else Modifier)
                     .testTag("turn-changes-open-${summary.reviewTurnId}"),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(if (summary.state == "unavailable") Icons.Rounded.ErrorOutline else Icons.Rounded.Description,
-                        contentDescription = null, tint = muted, modifier = Modifier.size(17.dp))
+                        contentDescription = null, tint = muted, modifier = Modifier.size(17.dp).actionGlyphMotion(openActivation))
                     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium,
                             color = if (opens) MaterialTheme.colorScheme.onSurface else muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -193,13 +195,14 @@ internal fun TurnChangeSummaryView(
                     }
                     if (opens) {
                         ChangeCounts(summary.additions, summary.deletions, status = null)
-                        Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = muted, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = muted, modifier = Modifier.size(18.dp).actionGlyphMotion(openActivation))
                     }
                 }
                 files.forEach { file -> ChangeHairline(); ChangeFileRow(file, canRead) { onOpenFile(file) } }
                 if (ready && count > 4) {
                     ChangeHairline()
                     Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).clickable(enabled = canRead) {
+                        expandActivation++
                         expanded = !expanded
                         if (expanded && !manifest.loaded) onReadManifest()
                     }, verticalAlignment = Alignment.CenterVertically) {
@@ -207,7 +210,7 @@ internal fun TurnChangeSummaryView(
                             style = MaterialTheme.typography.bodySmall, color = muted)
                         if (manifest.requestId != null) CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
                         Icon(if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, contentDescription = null,
-                            tint = muted, modifier = Modifier.size(18.dp))
+                            tint = muted, modifier = Modifier.size(18.dp).actionGlyphMotion(expandActivation))
                     }
                 }
                 if (expanded && manifest.requestId == null && (manifest.loaded && !manifest.complete || manifest.error != null)) {
