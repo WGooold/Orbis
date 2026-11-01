@@ -14,7 +14,9 @@ struct DownloadsView: View {
     var body: some View {
         VStack(spacing: 0) {
             OrbisPageHeader(title: selected.isEmpty ? "下载" : "已选择 \(selected.count) 项", closes: !selected.isEmpty, backLabel: selected.isEmpty ? "返回" : "退出多选", back: { if selected.isEmpty { onBack() } else { selected = [] } }) {
-                if !selected.isEmpty {
+                OrbisSelectionToolbar(selecting: !selected.isEmpty) { _ in
+                    Color.clear.frame(width: 48, height: 48)
+                } selected: {
                     OrbisIconButton(symbol: "trash", label: "删除所选下载", tint: OrbisPalette(scheme).error, action: confirmDelete)
                 }
             }
@@ -37,6 +39,7 @@ struct DownloadsView: View {
                 }
             }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
+            .orbisBackPriority("download-selection", active: !selected.isEmpty) { selected = [] }
             .onChange(of: store.selectedHostId) { _, _ in selected = [] }
             .onChange(of: downloads.map(\.id)) { _, ids in selected.formIntersection(ids) }
             .sheet(isPresented: $browserOpen, onDismiss: store.dismissBrowse) {
@@ -63,7 +66,7 @@ struct DownloadsView: View {
             if selected.isEmpty, task.status == "completed", let path = task.localPath {
                 ShareLink(item: URL(fileURLWithPath: path)) { transferCardContent(task) }
             } else {
-                Button {
+                OrbisMotionButton {
                     if !selected.isEmpty {
                         if !selected.insert(task.id).inserted { selected.remove(task.id) }
                     } else if ["queued", "downloading", "verifying"].contains(task.status) {
@@ -97,7 +100,7 @@ struct DownloadsView: View {
         }()
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                Image(systemName: "doc")
+                OrbisActionSymbol(systemName: "doc")
                     .font(.system(size: 22)).foregroundStyle(p.accent)
                     .frame(width: 44, height: 44).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
@@ -148,18 +151,18 @@ private struct DownloadBrowserView: View {
                         OrbisActionButton(title: "重新读取", symbol: "arrow.clockwise") { store.browseDirectory(store.browse?.path) }
                     } else if store.browse?.loading == false {
                         ForEach((store.browse?.entries ?? []).sorted { ($0.isDir ? 0 : 1, $0.name) < ($1.isDir ? 0 : 1, $1.name) }) { entry in
-                            Button {
+                            OrbisMotionButton {
                                 if entry.isDir { selected = nil; store.browseDirectory(remoteBrowsePath(parent: store.browse?.path, name: entry.name)) }
                                 else { selected = entry }
                             } label: {
                                 HStack(spacing: 10) {
-                                    Image(systemName: entry.isDir ? "folder" : "doc").foregroundStyle(OrbisPalette(scheme).accent)
+                                    OrbisActionSymbol(systemName: entry.isDir ? "folder" : "doc").foregroundStyle(OrbisPalette(scheme).accent)
                                     Group {
                                         if entry.isDir { Text(entry.name).lineLimit(1) } else { FileNameText(name: entry.name) }
                                     }.font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
                                     // Files reserve the check slot, so selecting one never shifts its name.
-                                    if entry.isDir { Image(systemName: "chevron.right").imageScale(.small) }
-                                    else { Image(systemName: "checkmark.circle.fill").opacity(selected?.id == entry.id ? 1 : 0) }
+                                    if entry.isDir { OrbisActionSymbol(systemName: "chevron.right").imageScale(.small) }
+                                    else { OrbisActionSymbol(systemName: "checkmark.circle.fill").opacity(selected?.id == entry.id ? 1 : 0) }
                                 }.padding(14).frame(minHeight: 52)
                             }.buttonStyle(NeuButtonStyle(selected: selected?.id == entry.id))
                         }
@@ -191,7 +194,7 @@ struct AttachmentStrip: View {
                 HStack(spacing: 12) {
                     ForEach(tasks) { task in
                         HStack(spacing: 10) {
-                            Image(systemName: "doc")
+                            OrbisActionSymbol(systemName: "doc")
                             VStack(alignment: .leading, spacing: 3) {
                                 FileNameText(name: task.name).font(.orbisCaption(.medium))
                                 HStack(spacing: 6) {

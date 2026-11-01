@@ -29,7 +29,7 @@ import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
+import com.orbising.orbis.OrbisActionIcon as Icon
 import androidx.compose.material3.MaterialTheme
 import com.orbising.orbis.NeumorphTextField as OutlinedTextField
 import androidx.compose.material3.Scaffold

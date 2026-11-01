@@ -14,6 +14,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.longClick
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -52,9 +53,11 @@ class OptimisticActionsInstrumentedTest {
         compose.onNodeWithContentDescription("撤回排队消息").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(PendingSendAction.Cancel, actions.last()) }
 
-        // Once the source row replaces it, the ordinary message actions return.
+        // Once the source row replaces it, long-press exposes ordinary message actions.
         compose.runOnIdle { pending.value = null }
         compose.onNodeWithTag("pending-send-status").assertDoesNotExist()
+        compose.onNodeWithContentDescription("复制消息").assertDoesNotExist()
+        compose.onNodeWithText("乐观发送").performTouchInput { longClick() }
         compose.onNodeWithContentDescription("复制消息").assertIsDisplayed()
     }
 

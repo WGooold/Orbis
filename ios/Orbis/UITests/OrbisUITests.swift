@@ -1049,6 +1049,59 @@ final class OrbisUITests: XCTestCase {
         }
     }
 
+    // The optional two-edge enhancement is deferred. A right-edge inward drag must
+    // not invent Android navigation; the existing rightward page gesture remains.
+    func testOptionalEdgeBackKeepsExistingIOSNavigation() {
+        for reduced in [false, true] {
+            let app = launch("home", arguments: reduced ? ["--preview-reduce-motion"] : [])
+            let entry = app.buttons["home-settings"]
+            XCTAssertTrue(entry.waitForExistence(timeout: 8)); entry.tap()
+            let page = app.descendants(matching: .any)["settings-page"].firstMatch
+            XCTAssertTrue(page.waitForExistence(timeout: 3))
+            let before = page.frame
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.6))
+                .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.6)),
+                       withVelocity: .slow, thenHoldForDuration: 0.1)
+            XCTAssertTrue(page.exists)
+            XCTAssertEqual(page.frame, before)
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
+            start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.28, dy: 0.6)),
+                        withVelocity: .slow, thenHoldForDuration: 0.3)
+            XCTAssertTrue(page.exists)
+            waitForY(page, before.minY, operation: "取消返回必须恢复原页")
+            XCTAssertEqual(page.frame.width, before.width, accuracy: 1)
+            capture("motion-ios-existing-return", app: app)
+            start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+                        withVelocity: .slow, thenHoldForDuration: 0.1)
+            XCTAssertTrue(entry.waitForExistence(timeout: 3))
+            XCTAssertTrue(entry.isHittable)
+            XCTAssertFalse(page.exists)
+            app.terminate()
+        }
+    }
+
+    func testComputerSubmenuReturnsWithinOneAnchoredPanel() {
+        let app = launch("drawer", arguments: ["--preview-hosts=2"])
+        let computer = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "电脑，当前")).firstMatch
+        XCTAssertTrue(computer.waitForExistence(timeout: 8)); computer.tap()
+        let add = app.buttons["添加电脑"]
+        XCTAssertTrue(add.waitForExistence(timeout: 3))
+        XCTAssertTrue(add.isHittable)
+        let anchor = computer.frame
+        app.buttons["切换电脑"].tap()
+        let target = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "工作电脑")).firstMatch
+        XCTAssertTrue(target.waitForExistence(timeout: 3))
+        XCTAssertTrue(target.isHittable)
+        XCTAssertFalse(add.exists)
+        XCTAssertEqual(computer.frame, anchor)
+        capture("motion-menu-child", app: app)
+        app.buttons["切换电脑"].tap()
+        XCTAssertTrue(add.waitForExistence(timeout: 3))
+        XCTAssertTrue(add.isHittable)
+        XCTAssertEqual(computer.frame, anchor)
+        capture("motion-menu-parent", app: app)
+    }
+
     // ADR-0053 §5: the chat's downloads page returns to that same chat, draft and all.
     func testChatDownloadsReturnToSameChat() {
         let app = launch("chat")
@@ -1139,6 +1192,62 @@ final class OrbisUITests: XCTestCase {
     }
     /// ADR-0049: the bubble appears before the Host answers and is replaced, not duplicated, by the
     /// canonical row that only declares the App id; a rejected send stays and can return to the composer.
+    func testSendFlightMovesRightThenUpAndHandsOffTheSameMessage() {
+        let text = "逐帧检查发送动效"
+        for progress in [0.25, 0.65, 1.0] {
+            let app = launch("chat", arguments: ["--preview-send=pi", "--preview-send-probe", "--preview-send-progress=\(progress)"])
+            let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+            XCTAssertTrue(composer.waitForExistence(timeout: 8))
+            composer.tap(); composer.typeText(text)
+            // XCTest may insert CJK through a hardware input session. Re-tap to show
+            // the software keyboard before capturing the actual submission geometry.
+            composer.tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+            let submittedFrom = composer.frame
+            capture("send-before-submit", app: app)
+            app.buttons["发送消息"].firstMatch.tap()
+            let probe = app.descendants(matching: .any)["send-flight-probe"].firstMatch
+            let ready = NSPredicate(format: "value CONTAINS %@", "lands=true")
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: probe)], timeout: 4), .completed)
+            let metrics = flightMetrics(probe)
+            let metricsAttachment = XCTAttachment(string: String(describing: metrics))
+            metricsAttachment.name = "send-geometry"; metricsAttachment.lifetime = .keepAlways; add(metricsAttachment)
+            func number(_ key: String) -> Double { Double(metrics[key] ?? "") ?? -1 }
+            XCTAssertEqual(metrics["count"], "1")
+            XCTAssertEqual(number("p"), progress, accuracy: 0.001)
+            XCTAssertEqual(number("fromY"), submittedFrom.midY, accuracy: 20,
+                           "Flight starts at the visible composer, including with the keyboard open")
+            if progress == 0.25 {
+                XCTAssertGreaterThanOrEqual(number("x"), number("fromX") + 23.99)
+                XCTAssertEqual(number("y"), number("fromY"), accuracy: 1)
+            } else {
+                XCTAssertLessThan(number("y"), number("fromY"))
+            }
+            if progress == 1 {
+                XCTAssertEqual(number("x"), number("toX"), accuracy: 1)
+                XCTAssertEqual(number("y"), number("toY"), accuracy: 1)
+            }
+            capture("send-phase-\(progress)", app: app)
+            let semantics = XCTAttachment(string: app.debugDescription)
+            semantics.name = "send-phase-semantics-\(progress)"; semantics.lifetime = .keepAlways
+            add(semantics)
+            XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
+            app.terminate()
+        }
+    }
+
+    func testSendFlightWithReducedMotionKeepsTheMessageAndNoOverlay() {
+        let app = launch("chat", arguments: ["--preview-send=pi", "--preview-send-probe", "--preview-send-progress=0.65", "--preview-reduce-motion"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap(); composer.typeText("减少动画发送")
+        app.buttons["发送消息"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["减少动画发送"].waitForExistence(timeout: 3))
+        let probe = app.descendants(matching: .any)["send-flight-probe"].firstMatch
+        XCTAssertEqual(flightMetrics(probe)["count"], "0")
+        capture("send-reduced-motion", app: app)
+    }
+
     func testOptimisticSendReconcilesAndRejectedSendRestores() {
         let text = "乐观显示的这条消息"
         let app = launch("chat", arguments: ["--preview-send=pi"])
@@ -1157,7 +1266,9 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: sending)], timeout: 8), .completed)
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
         // The remaining bubble is the canonical row, whose id is the Host entry id rather than the App id.
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "copy-message-node-")).firstMatch.exists)
+        bubble.press(forDuration: 0.6)
+        capture("optimistic-source-actions", app: app)
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "copy-message-node-")).firstMatch.waitForExistence(timeout: 3))
         capture("optimistic-send-settled", app: app)
         app.terminate()
 
@@ -1207,9 +1318,16 @@ final class OrbisUITests: XCTestCase {
 
     func testUserMessageCopyAndRewind() {
         let app = launch("chat")
+        let message = app.descendants(matching: .any)["user-message-m3"].firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 8))
+        if !message.isHittable { app.swipeDown() }
+        let before = message.frame
+        XCTAssertFalse(app.buttons["copy-message-m3"].exists)
+        message.press(forDuration: 0.6)
         let copy = app.buttons["copy-message-m3"]
-        XCTAssertTrue(copy.waitForExistence(timeout: 8))
-        if !copy.isHittable { app.swipeDown() }
+        XCTAssertTrue(copy.waitForExistence(timeout: 3))
+        XCTAssertEqual(message.frame.minY, before.minY, accuracy: 1)
+        XCTAssertLessThanOrEqual(copy.frame.maxY, message.frame.minY)
         copy.tap()
         XCTAssertEqual(copy.label, "已复制")
         let rewind = app.buttons["rewind-message-m3"]

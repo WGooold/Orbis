@@ -4,6 +4,7 @@ import AVFoundation
 struct PairingEntryView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduced
     @State private var code = ""
     @State private var scannerOpen = false
     @State private var manualOpen = false
@@ -34,13 +35,13 @@ struct PairingEntryView: View {
                             Text("手动输入").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).fixedSize()
                             OrbisPalette(scheme).well.frame(height: 2).clipShape(Capsule())
                         }.padding(.vertical, 22)
-                        Button { manualOpen.toggle() } label: {
+                        OrbisMotionButton { manualOpen.toggle() } label: {
                             HStack {
-                                Image(systemName: "doc.on.clipboard")
+                                OrbisActionSymbol(systemName: "doc.on.clipboard")
                                 Text("粘贴配对二维码内容").fontWeight(.medium)
                                 Spacer()
                                 Image(systemName: "chevron.down").imageScale(.small)
-                                    .rotationEffect(.degrees(manualOpen ? 180 : 0)).animation(.orbisCollapse, value: manualOpen)
+                                    .rotationEffect(.degrees(manualOpen ? 180 : 0)).animation(reduced ? nil : .orbisCollapse, value: manualOpen)
                             }.font(.orbisBody()).padding(16).frame(minHeight: 52)
                         }.buttonStyle(NeuButtonStyle(selected: manualOpen))
                         OrbisCollapse(expanded: manualOpen) {

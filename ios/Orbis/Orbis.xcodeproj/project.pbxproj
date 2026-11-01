@@ -48,6 +48,8 @@
 		A0010001000000000000003C /* OperationKinds.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000003C /* OperationKinds.swift */; };
 		A00100010000000000000039 /* TurnFileChanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000039 /* TurnFileChanges.swift */; };
 		A0010001000000000000003A /* TurnFileChangesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000003A /* TurnFileChangesView.swift */; };
+		C05800010000000000000001 /* MotionGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05810010000000000000001 /* MotionGeometry.swift */; };
+		C05800010000000000000002 /* InteractionMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05810010000000000000002 /* InteractionMotion.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -95,6 +97,8 @@
 		A0011001000000000000003C /* OperationKinds.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OperationKinds.swift; sourceTree = "<group>"; };
 		A00110010000000000000039 /* TurnFileChanges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnFileChanges.swift; sourceTree = "<group>"; };
 		A0011001000000000000003A /* TurnFileChangesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnFileChangesView.swift; sourceTree = "<group>"; };
+		C05810010000000000000001 /* MotionGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionGeometry.swift; sourceTree = "<group>"; };
+		C05810010000000000000002 /* InteractionMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionMotion.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -160,6 +164,8 @@
 				A00110010000000000000023 /* ChatView.swift */,
 				A00110010000000000000022 /* SessionViews.swift */,
 				A00110010000000000000021 /* Presentation.swift */,
+				C05810010000000000000001 /* MotionGeometry.swift */,
+				C05810010000000000000002 /* InteractionMotion.swift */,
 				A00110010000000000000020 /* OrbisDesign.swift */,
 			);
 			path = Orbis;
@@ -302,6 +308,8 @@
 				A00100010000000000000023 /* ChatView.swift in Sources */,
 				A00100010000000000000022 /* SessionViews.swift in Sources */,
 				A00100010000000000000021 /* Presentation.swift in Sources */,
+				C05800010000000000000001 /* MotionGeometry.swift in Sources */,
+				C05800010000000000000002 /* InteractionMotion.swift in Sources */,
 				A00100010000000000000020 /* OrbisDesign.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

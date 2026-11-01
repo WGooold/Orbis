@@ -605,3 +605,7 @@ ADR-0055 的本轮实现保留 Host 队列接管后的隐藏恢复副本，直�
 - A1–A4：Android `OptimisticPresentationInstrumentedTest` 在夜间、字体 1.5、关闭动画下各 5 项通过（设备设置用后恢复）；iOS `testOptimisticStatesAcrossAppearances` 覆盖浅 / 深色、XXXL、减少动画，并在池内 iPhone SE（375pt）重跑。截图已逐张查看。
 - 未完成：手动 C01–C18、R26 / R27 的逐项人工操作与真实 Host 上的断线 / 回执核对未执行（本机隔离 Host 夹具仅有 Windows 脚本；本机没有可由代理操作的模拟器 GUI，人工路径以脚本化交互加截图 / 录屏逐帧审阅代替，不等同人工验收）。
   不记为验收通过。证据：`.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-10/`。
+
+## r30 动效交接补充
+
+呈现层关闭退场与发送飞入遵守 [ADR-0058](0058-shared-interaction-motion.md) §3：不延迟网络提交，按 Host / Runtime / clientMessageId 绑定展示副本；动画不代表成功，不重试未知结果，不改变阅读锚点。本文 §5–§7 同步原工作区已有 r27 决策，仍待实施，不因本次动效任务记为交付。（2026-11-02 合并：§5–§7 已在 ADR-0051 r32 实施，见上文实施记录；首页关闭的退场副本与账本隐藏共存，见 §7.7。）

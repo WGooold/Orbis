@@ -383,6 +383,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun producesMessage(command: RuntimeSlashCommand, runtime: RuntimeSummary?): Boolean =
         runtime != null && active()?.producesMessage(command, runtime) == true
 
+    /** Exact receipt from the connection that accepted this command; never infer it from display text. */
+    fun submittedSend(commandId: String): PendingSend? =
+        active()?.state?.value?.pendingSends?.values?.firstOrNull { it.commandId == commandId }
+
     fun detachUploads(taskIds: Set<String>) = active()?.detachUploads(taskIds)
 
     fun attachedTaskIds(sessionKey: String): Set<String> =

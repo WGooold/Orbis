@@ -19,13 +19,13 @@ struct InteractionWorkspaceView: View {
             if inline, let request = requests.first {
                 requestView(request, inSheet: false).padding(.horizontal, 16).padding(.bottom, 10).fixedSize(horizontal: false, vertical: true)
             } else if !requests.isEmpty {
-                Button { open = true } label: {
+                OrbisMotionButton { open = true } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.bubble")
+                        OrbisActionSymbol(systemName: "exclamationmark.bubble")
                         Text(requests.count == 1 ? requests[0].title : "\(requests.count) 项交互待确认").font(.orbisLabel(.semibold)).lineLimit(2)
                         Spacer()
                         Text("打开").font(.orbisCaption())
-                        Image(systemName: "chevron.up").font(.orbisCaption())
+                        OrbisActionSymbol(systemName: "chevron.up").font(.orbisCaption())
                     }.padding(14).frame(minHeight: 48)
                 }.buttonStyle(NeuButtonStyle(radius: 16)).padding(.horizontal, 16).padding(.bottom, 10).accessibilityIdentifier("interaction-open")
             } else if let status {
@@ -48,7 +48,7 @@ struct InteractionWorkspaceView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
                             ForEach(requests) { request in
-                                Button { selectedId = request.requestId } label: {
+                                OrbisMotionButton { selectedId = request.requestId } label: {
                                     Text(request.title).font(.orbisCaption()).lineLimit(1).padding(.horizontal, 14).frame(minHeight: 44)
                                 }.buttonStyle(NeuButtonStyle(selected: (selectedId ?? requests.first?.requestId) == request.requestId, radius: 12))
                             }
@@ -103,9 +103,9 @@ private struct InteractionRequestView: View {
             let expired = Int64(context.date.timeIntervalSince1970 * 1000) >= request.expiresAt
             let p = OrbisPalette(scheme)
             VStack(alignment: .leading, spacing: 0) {
-                Button { if request.kind != "confirm" { expanded.toggle() } } label: {
+                OrbisMotionButton { if request.kind != "confirm" { expanded.toggle() } } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.bubble").foregroundStyle(pageAccent ?? p.accent)
+                        OrbisActionSymbol(systemName: "exclamationmark.bubble").foregroundStyle(pageAccent ?? p.accent)
                         Text(request.title).font(.orbisBody(.semibold)).lineLimit(2)
                         Spacer(minLength: 0)
                         // One fixed status slot: submitting swaps the label for a spinner without reflowing the title.
@@ -114,7 +114,7 @@ private struct InteractionRequestView: View {
                             if pending { ProgressView().controlSize(.small) }
                         }.accessibilityLabel(pending ? "已提交，等待电脑端确认" : expired ? "已过期" : "待确认")
                         if request.kind != "confirm" {
-                            Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(p.secondary)
+                            OrbisActionSymbol(systemName: "chevron.down").imageScale(.small).foregroundStyle(p.secondary)
                                 .rotationEffect(.degrees(expanded ? 180 : 0)).animation(.orbisCollapse, value: expanded)
                                 .frame(width: 24)
                         }
@@ -217,9 +217,9 @@ private struct InteractionRequestView: View {
         Binding(get: { values.wrappedValue[key] ?? "" }, set: { values.wrappedValue[key] = $0 })
     }
     private func optionButton(_ option: RuntimeOption, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        OrbisMotionButton(action: action) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                OrbisActionSymbol(systemName: selected ? "checkmark.circle.fill" : "circle")
                     .orbisIconBaseline(OrbisTextSize.body)
                     .scaleEffect(selected ? 1 : 0.92).animation(.orbisPop, value: selected)
                 VStack(alignment: .leading, spacing: 4) {

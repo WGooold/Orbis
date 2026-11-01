@@ -41,7 +41,7 @@ import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.HistoryEdu
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
+import com.orbising.orbis.OrbisActionIcon as Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import com.orbising.orbis.NeumorphTextField as OutlinedTextField
@@ -125,8 +125,10 @@ private fun DrawerAgentFilterMenu(
                 MaterialTheme.colorScheme.primary
             },
         )
-        NeumorphMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            if (showProviders) {
+        NeumorphMenu(expanded = expanded, onDismissRequest = { expanded = false },
+            page = if (showProviders) listOf("providers") else emptyList(),
+            onBack = { showProviders = false }) { renderedPage ->
+            if (renderedPage.isNotEmpty()) {
                 NeumorphMenuItem(
                     text = { Text("${selected.label}，provider") },
                     leadingIcon = { Icon(Icons.Rounded.ArrowBack, contentDescription = "返回会话筛选", modifier = Modifier.size(18.dp)) },
@@ -365,7 +367,20 @@ internal fun SessionDrawer(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                if (selecting) {
+                SelectionToolbar(selecting = selecting, normal = {
+
+                    Text(
+                        if (searchTerm.isNotEmpty()) "搜索结果" else if (showArchived) "已归档" else "工作目录",
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.semantics { heading() },
+                    )
+                    Text(
+                        "$directoryCount 个目录，$sessionCount 个会话",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }, selected = {
+
                     NeumorphIconButton(
                         onClick = { selectedSessionIds = emptySet() },
                         icon = Icons.Rounded.Close,
@@ -393,18 +408,7 @@ internal fun SessionDrawer(
                         enabled = selectedSessions.all { drawerArchiveUnavailableReason(it, state) == null },
                         tint = MaterialTheme.colorScheme.primary,
                     )
-                } else {
-                    Text(
-                        if (searchTerm.isNotEmpty()) "搜索结果" else if (showArchived) "已归档" else "工作目录",
-                        style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.semantics { heading() },
-                    )
-                    Text(
-                        "$directoryCount 个目录，$sessionCount 个会话",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                })
             }
             val viewportKeys = sections.flatMap { section -> section.directories.flatMap { directory ->
                 val branchKey = section.hostId + '\u0000' + directory.cwd
@@ -549,6 +553,8 @@ private fun DrawerHostSwitcher(
     onAddHost: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var computers by remember { mutableStateOf(false) }
+    LaunchedEffect(activeHostId, hosts.map { it.hostId }) { expanded = false; computers = false }
     val active = hosts.firstOrNull { it.hostId == activeHostId }
     Box(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 12.dp, bottom = 4.dp),
@@ -558,7 +564,7 @@ private fun DrawerHostSwitcher(
             style = NeumorphStyle.Raised,
             shape = RemoteUi.ControlShape,
             shadowScale = 0.8f,
-            onClick = { expanded = true },
+            onClick = { computers = false; expanded = true },
         ) {
             Row(
                 Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(horizontal = 16.dp, vertical = 6.dp),
@@ -598,7 +604,11 @@ private fun DrawerHostSwitcher(
                 )
             }
         }
-        NeumorphMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        NeumorphMenu(expanded = expanded, onDismissRequest = { expanded = false },
+            page = if (computers) listOf("computers") else emptyList(), onBack = { computers = false }) { renderedPage ->
+            if (renderedPage.isNotEmpty()) {
+            NeumorphMenuItem(text = { Text("返回电脑菜单") }, onClick = { computers = false },
+                leadingIcon = { Icon(Icons.Rounded.ArrowBack, contentDescription = null) })
             hosts.forEach { host ->
                 NeumorphMenuItem(
                     text = { Text(host.name) },
@@ -619,7 +629,9 @@ private fun DrawerHostSwitcher(
                     },
                 )
             }
-            HorizontalDivider()
+            } else {
+            NeumorphMenuItem(text = { Text("切换电脑") }, onClick = { computers = true },
+                leadingIcon = { Icon(Icons.Rounded.Computer, contentDescription = null) })
             NeumorphMenuItem(
                 text = { Text("添加电脑") },
                 onClick = { expanded = false; onAddHost() },
@@ -631,6 +643,7 @@ private fun DrawerHostSwitcher(
                     onClick = { expanded = false; onUnpairHost(host.hostId) },
                     leadingIcon = { Icon(Icons.Rounded.Close, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error) },
                 )
+            }
             }
         }
     }

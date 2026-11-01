@@ -69,25 +69,16 @@ internal fun RemoteTopAppBar(
     )
 }
 
-/** Menus retain Material's anchoring, keyboard focus and outside-tap dismissal. */
+/** Shared anchored menu; children render the provided path, including the departing page. */
 @Composable
-internal fun NeumorphMenu(expanded: Boolean, onDismissRequest: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
-    CompositionLocalProvider(LocalOrbisSurface provides null) {
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = onDismissRequest,
-            modifier = Modifier.neumorphRaised(RemoteUi.CardShape),
-            shape = RemoteUi.CardShape,
-            containerColor = MaterialTheme.colorScheme.surface,
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp,
-        ) {
-            CompositionLocalProvider(LocalOrbisSurface provides OrbisSurfaceContext(1, 1, 16.dp)) {
-                Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), content = content)
-            }
-        }
-    }
-}
+internal fun NeumorphMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    page: List<String> = emptyList(),
+    onBack: (() -> Unit)? = null,
+    preferAbove: Boolean = false,
+    content: @Composable ColumnScope.(List<String>) -> Unit,
+) = MotionMenu(expanded, onDismissRequest, page, onBack, preferAbove, content)
 
 @Composable
 internal fun NeumorphMenuItem(
