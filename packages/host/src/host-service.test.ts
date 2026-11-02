@@ -793,6 +793,44 @@ describe("host end-to-end over relay", () => {
     } finally { second.device.close(); }
   });
 
+  it.each([
+    { terminal: { type: "interaction.resolved", requestId: "answer", source: "remote" }, message: undefined },
+    { terminal: { type: "interaction.resolved", requestId: "answer", source: "local" }, message: "交互已在电脑端完成" },
+    { terminal: { type: "interaction.cancelled", requestId: "answer", reason: "timeout" }, message: "交互已超时" },
+    { terminal: { type: "interaction.cancelled", requestId: "answer", reason: "cancelled" }, message: "交互已取消" },
+  ] as const)("keeps only the appropriate interaction feedback for $terminal", async ({ terminal, message }) => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-interaction-notices-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await device.receiveMessage(); await device.receiveMessage();
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-answer", name: "answer", cwd: "/work", status: "idle", sessionId: "s" } });
+    await runtime.next(); await device.receiveMessage();
+    runtime.publish(1, { type: "interaction.requested", request: { runtimeId: "pi-answer", requestId: "answer",
+      extensionId: "ask", kind: "confirm", title: "Continue?", expiresAt: Date.now() + 60_000 } });
+    expect(await device.receiveMessage()).toMatchObject({ type: "runtime.event", event: { type: "interaction.requested" } });
+    for (const sequence of [2, 3]) {
+      runtime.publish(sequence, terminal);
+      // Inspect every frame before the terminal event: a duplicate banner must never flash.
+      for (;;) {
+        const frame = await device.receiveMessage(true);
+        if (frame.type === "notification.snapshot" && message === undefined) expect(frame.notifications).toEqual([]);
+        if (frame.type === "runtime.event") { expect(frame.event).toEqual(terminal); break; }
+      }
+      device.sendData(JSON.stringify({ type: "notification.sync", protocolVersion: PROTOCOL_VERSION, runtimeId: "pi-answer" }));
+      for (;;) {
+        const frame = await device.receiveMessage(true);
+        if (frame.type !== "notification.snapshot") continue;
+        if (message === undefined) expect(frame.notifications).toEqual([]);
+        else expect(frame.notifications).toEqual([expect.objectContaining({ code: "interaction.result", message,
+          scope: { requestId: "answer" }, severity: terminal.type === "interaction.cancelled" && terminal.reason === "timeout" ? "warning" : "info" })]);
+        break;
+      }
+    }
+  });
+
   it("targets sync snapshots and acknowledgements to their requesting device over real encrypted relay sockets", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-sync-"));
     relay = await startRelay(stateDir);

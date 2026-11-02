@@ -2419,11 +2419,14 @@ export class HostService {
     if (event.type === "interaction.snapshot") this.#interactionIds.set(runtimeId, new Set(event.requests.map(item => item.requestId)));
     if (event.type === "interaction.resolved" || event.type === "interaction.cancelled") {
       this.#recordAgentDiagnostic(runtimeId, "interaction", event.type === "interaction.resolved" ? "Interaction resolved" : "Interaction cancelled");
-      if (this.#interactionIds.get(runtimeId)?.delete(event.requestId)) {
+      const wasPending = this.#interactionIds.get(runtimeId)?.delete(event.requestId);
+      // App responses already have an in-place ledger summary (ADR-0049 §6.5).
+      // Consume the terminal identity even when no additional banner is needed.
+      if (wasPending && !(event.type === "interaction.resolved" && event.source === "remote")) {
         const failed = event.type === "interaction.cancelled" && event.reason === "timeout";
         this.#notifications.outcome(runtimeId, { code: "interaction.result", occurrenceId: event.requestId,
           scope: { requestId: event.requestId }, lifecycle: "outcome", severity: failed ? "warning" : "info",
-          message: event.type === "interaction.resolved" ? (event.source === "local" ? "交互已在电脑端完成" : "交互已完成")
+          message: event.type === "interaction.resolved" ? "交互已在电脑端完成"
             : event.reason === "timeout" ? "交互已超时" : "交互已取消" });
       }
     }

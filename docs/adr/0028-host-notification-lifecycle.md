@@ -155,7 +155,7 @@ APP 对同一 Host 代次、同一归属只接受较新的完整集合，首次�
 | Codex `configWarning` | `codex.config`；本次配置加载 warning outcome，30 秒 | 已实现；无原生问题解除查询，不承诺配置已修复或跨重启恢复该结果 |
 | Codex revert 后桌面 / TUI 刷新待恢复、需手动处理、失败 | `codex.refresh`；有协调器 operation 时持有 condition，complete 精确解除；无法建立 operation 时用 30 秒结果 | 已实现；桌面 hydration 解除只影响刷新、仍保留 sandbox 的测试通过；TUI / 手动完成原生验收待进行 |
 | Codex“交互未受理” | `codex.interaction.rejected`；原生 server request ID，30 秒 outcome | 已实现；审批生命周期测试通过 |
-| 交互已完成、电脑端完成、取消、超时 | `interaction.result`；Host 观察标准 SDK 请求终态，完成 / 取消 8 秒、超时 30 秒，重复终态不续期 | 已实现；Host 去重 / 过期及 APP 请求终态单测通过；重连请求快照不重播历史结果 |
+| 电脑端完成、取消、超时 | `interaction.result`；Host 观察标准 SDK 请求终态，电脑端完成 / 取消 8 秒、超时 30 秒，重复终态不续期。App 完成（`source=remote`）按 ADR-0049 §6.5 仅保留原位摘要，不生成共享完成横幅；仍消费请求终态身份并转发事件 | Host 加密链路回归覆盖远端成功无横幅、本地完成 / 取消 / 超时各一条、重复终态与重取；双端设备门禁待验收 |
 | 交互回答提交失败 / 结果未知 | `interaction.submit`；request + command，发起设备定向；未知提交继续由请求状态核对 | 已实现；设备隔离单测通过；APP 保留请求行 responseError，移除重复全局弹窗 |
 | APP 交互渲染 / 恢复失败 | 本地 request 错误 map；同 request 验证成功 / 结束清除，完整请求快照替换 | 已实现；无关请求不能误清本地错误的 Android 单测通过 |
 | Pi transport 错误 | `pi.transport`；连接恢复时解除并重播来源库存；源连接离线标记未知 | 已实现；连接基线重播验证通过；真实 Pi 断连验收待进行 |

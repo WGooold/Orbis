@@ -14,6 +14,8 @@ Status: accepted（基线冻结；新增与变更按本文维护）
 
 2026-11-02 iOS 同步拒收修复（V05–V06、V16–V18，验证中）：已完整提交的新 source 替代迟到旧 preview 时保持当前消息与读取终态；本地具体拒收原因保留，不被 Host 的 `session_sync_device_rejected` 回声覆盖。Host 已提交事务不被重复请求、冲突回执或迟到发送回调改为失败。沿用既有显示 / 恢复规则，不增加 feature 或调整视觉参数；事务规则见 [ADR-0037](0037-session-sync-transaction-contract.md)。Host 91 项、iOS 核心 338 项通过；iPad 全量 79 项有 9 失败，其中 8 项在父提交同设备复核也失败，额外聊天入场计时复测仍有失败。完整 L4 / 手动与真实隔离 Host 联动未完成，保持未验收；回归、证据与未覆盖项见 [Regression] 的 R43 与 §6。
 
+交互回答重复提示修复（V06–V07、V16、V22，验证中）：按 [D49] §6.5 保留 App 原位回答摘要；Host 对 `interaction.resolved.source=remote` 不再生成额外“交互已完成”共享横幅，其他设备仍通过交互清单更新请求。电脑端完成、取消、超时与提交失败保留。恢复原位反馈规则，不新增 ID 或变更动效参数；Host 76 项测试及 TypeScript 检查通过，双端设备 / 手动门禁未跑，记录见 [Regression]。
+
 ## Context
 
 2026-11-02 Codex 终端来源与开窗修复（S20、V12、V17–V18、X03，验证中）：已复现 Host 继承 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` 污染 App 新建终端会话的来源；只在独立终端子进程边界清除覆盖值，用户所选后端、历史与桌面包装器保持。macOS 用原生 Terminal 打开同一 app-server 的远程 TUI，启动失败明确返回并清理新建空闲订阅；窗口检测 / 关闭覆盖 macOS，不再把 `wt.exe` 失败记录为已开窗。沿用既有 ID、看门狗生命周期与真实结果规则，不变更视觉 / 动效参数。规则见 [ADR-0021](0021-codex-terminal-host-attachment.md)、[ADR-0022](0022-codex-desktop-daemon-attachment.md)；验证与未跑项见 [Regression] R56。未部署用户 Host，未完成门禁不记验收通过。

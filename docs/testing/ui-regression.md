@@ -108,6 +108,8 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 ### 3.3 全量用例与 feature 映射
 
+回答重复提示（V06–V07、V16、V22）：`host-service.test.ts` 的 `keeps only the appropriate interaction feedback` 四组加密 Relay 用例覆盖 App 成功无顶部横幅、电脑端完成 / 取消 / 超时各一条，以及重复终态、事件转发与通知重取；配合 `notification-store.test.ts`、`runtime-command-lifecycle.test.ts`。双端沿用 OPT-05 设备用例，真实隔离 Host 按 R26 检查顶部与底部不得重复显示成功提示。
+
 2026-11-02 Codex 终端来源与开窗专项（R56；S20、V12、V17–V18、X03）：Host `codex-terminal-environment.test.ts` 与真实隔离 CLI 对照覆盖继承 Desktop 来源覆盖值导致的新建误标；只在终端子进程清除覆盖值。`codex-session-ownership.test.ts`、`codex-terminal-macos.test.ts`、`macos-terminal.test.ts`、既有 `codex-runtime.test.ts` / `codex-terminal-sync.test.ts` 覆盖 App 终端路由不被历史来源改派、精确 CLI / endpoint、真实 TTY 启动确认、失败回执 / 空闲订阅释放、已有会话保留、等待窗口与 native TUI 检测和 PID 复核关闭。设备消费既有启动失败路径：iOS `testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace`、Android `OptimisticPresentationInstrumentedTest#aFailedLaunchOffersRetryAndBackInPlace`。完整 L1–L4、C01–C18 / A1–A4 与真实隔离 TUI 仍须独立记录，夹具不得算作真实窗口验收。
 
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
@@ -347,7 +349,7 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 
 | 编号 | 步骤 | 预期 | ID |
 | --- | --- | --- | --- |
-| R26 | 两端分别做以下操作，各自走成功、Host 拒绝、60 秒无回执、断线后重连四条路径：撤回排队消息，另加撤回时恰好投递；目录中单项与多选归档、取消归档；回答单项审批与多步骤问卷，另加电脑端先答、请求过期；关闭通知。上滑阅读时重复一次；明暗、窄屏、大字体、减少动画 | 点击后立即退场或移到目标列表；回答后面板收起，原位显示摘要，敏感输入只显示“已提交”。拒绝时在原位置恢复并说明原因，答案保留；撤回已投递时提示“已交给 Agent”，消息只在聊天出现一次；请求失效时显示事实。无回执转“未确认”并重新读取，不自动重试；断线时列表类保持呈现，重连后核对；通知只在本设备消失。阅读锚点与列表视口不动，无闪回 | V22、V07（关联 V02–V03、V06、V16–V17、V21） |
+| R26 | 两端分别做以下操作，各自走成功、Host 拒绝、60 秒无回执、断线后重连四条路径：撤回排队消息，另加撤回时恰好投递；目录中单项与多选归档、取消归档；回答单项审批与多步骤问卷，另加电脑端先答、请求过期；关闭通知。上滑阅读时重复一次；明暗、窄屏、大字体、减少动画 | 点击后立即退场或移到目标列表；回答后面板收起，原位显示摘要，敏感输入只显示“已提交”；App 回答成功后顶部不得再出现“交互已完成”，另一设备的请求同步移除；电脑端完成、取消、超时与提交失败仍显示对应事实。拒绝时在原位置恢复并说明原因，答案保留；撤回已投递时提示“已交给 Agent”，消息只在聊天出现一次；请求失效时显示事实。无回执转“未确认”并重新读取，不自动重试；断线时列表类保持呈现，重连后核对；通知只在本设备消失。阅读锚点与列表视口不动，无闪回 | V22、V07（关联 V02–V03、V06、V16–V17、V21） |
 | R27 | 两端：附件上传中点发送，再连发一条纯文本；上传失败、取消上传。执行 prompt / skill Slash。idle 时切换模型或思考级别，确认前发送；分别模拟确认、规范化、拒绝、无回执、连续两次选择。新建会话与恢复会话，启动中输入草稿并发送；分别模拟启动成功、失败、超时，以及启动中返回首页。首页左滑关闭后断线再重连。明暗、窄屏、大字体、减少动画 | 气泡立即出现，输入框清空，标明在等什么；同会话按创建顺序提交，后一条不越过前一条；附件失败只影响本条，可重试 / 放回 / 删除。配置确认前不以旧配置执行，失败时选择器回到确认值，等待中的消息转失败，可按当前配置发送。Slash 气泡由权威行替换且只出现一次。新建 / 恢复立即进入聊天页，显示“启动中”，失败原位显示原因，草稿保留。关闭断线期间卡片保持隐藏，重连后仍在线则恢复并提示 | V10–V12（关联 M07、M14、V05、V09、V13、V17） |
 
 ### 4.12 原生 Codex 文件审阅专项（ADR-0052 §9.1）
@@ -434,6 +436,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+回答重复提示修复：Host 加密 Relay / 通知存储 / 命令生命周期共 76 项通过，`tsc -p tsconfig.tests.json --noEmit` 通过。证据 `.artifacts/ui-regression/interaction-feedback-dedup/`。本次仅修改 Host 通知生成入口，未构建或部署运行中 Host；双端 L1–L4、C01–C18、R26 与 A1–A4 未执行，当前移动端工作树含并行未提交变更，未建立本修复的隔离设备基线，不记完整门禁或设备验收通过。
 
 2026-11-02 iOS 同步拒收（V05–V06、V16–V18，ADR-0037 / R43）：Host 已 applied 事务不重派、首个有效 ACK 终态与响应资格修复；iOS 已完整提交的新 source 替代旧 preview，本地具体原因不被通用拒收回声覆盖。修复前 Host 两项核心回放与 iOS 三项新增用例均失败；最终 Host 相关 91 项、iOS Swift 338 项 / 32 suites、TypeScript / 修改文件 lint、App / UI Test 构建与 L0 通过。隔离候选及父提交 `765b0a3` 使用池内同一 iPad Air M4 / iOS 27 / Debug、显式 UDID 与关闭并行，42 个 App / UI Test Swift 输入仅 OrbisStore 不同。候选全量 79 项：70 通过 / 9 失败；父提交仅复核这 9 项：8 项同样失败，额外聊天入场计时父提交通过，候选重复 3 次仍 1 失败 / 2 通过，差异来源未定，不能声称失败集合未扩大。同步状态 / 错误 / 恢复与聊天刷新相关既有 UI 用例通过。导出 172 张附件并亲自查看相关 7 张；完整 L4、C01–C18、R43 真实隔离 Host / App 联动、A1–A4 与 375pt 窄屏尚未完成，不记为完整 UI 验收通过。全量 / 基线断言失败返回 65，外层重复关闭已 Shutdown 设备导致清理返回 1；确认本任务进程退出与 owner 后释放残留设备锁，计时复测正常清理，最终设备 Shutdown、设备 / 构建锁均已释放。未部署运行中的 Host 或用户真机，现场通用错误码尚不足以归因每次拒收。证据及未覆盖范围见 [修复验证记录](../../.artifacts/ui-regression/20261102-session-sync-rejected/summary.md)。
 
