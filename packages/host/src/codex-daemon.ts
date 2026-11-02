@@ -19,7 +19,7 @@
  * - 就绪判定：app-server 就绪后 stderr 打 banner 并提供 `healthz` HTTP 端点，
  *   轮询到 200 才连 WebSocket，避免连接被拒。
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
 import { platform } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -27,6 +27,7 @@ import WebSocket from "ws";
 
 import { resolveNodePackageCli } from "./spawner.js";
 import { readCodexSelection } from "./codex-selection.js";
+import { codexTerminalEnvironment } from "./codex-terminal-environment.js";
 
 export const CODEX_RUNTIME_ID = "codex";
 export const CODEX_DESKTOP_RUNTIME_ID = "codex-desktop";
@@ -77,7 +78,7 @@ export type CodexAppServerOptions = {
   /** 测试注入 endpoint 文案；只影响 `endpoint` 的返回值。 */
   endpointOverride?: string;
   /** 直接注入子进程（测试/特殊场景）；缺省按 `resolveCodexCommand` spawn 真进程。 */
-  spawnImpl?: (command: string, args: readonly string[]) => ChildProcess;
+  spawnImpl?: (command: string, args: readonly string[], options?: SpawnOptions) => ChildProcess;
   /** 禁用 AppServer 的实验性 API 之外的默认值；当前只传 clientInfo。 */
   clientName?: string;
   requestTimeoutMs?: number;
@@ -163,9 +164,10 @@ export class CodexAppServer {
         server.#codexCommand = { command, prefixArgs: [...prefixArgs] };
         const port = await freePort();
         server.#endpoint = `ws://127.0.0.1:${port}`;
-        const spawnFn = options.spawnImpl ?? ((cmd: string, args: readonly string[]) =>
-          spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true }));
-        const child = spawnFn(command, [...prefixArgs, "app-server", "--listen", server.#endpoint]);
+        const spawnFn = options.spawnImpl ?? ((cmd: string, args: readonly string[], settings?: SpawnOptions) => spawn(cmd, args, settings ?? {}));
+        const child = spawnFn(command, [...prefixArgs, "app-server", "--listen", server.#endpoint], {
+          stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: codexTerminalEnvironment(),
+        });
         server.#child = child;
         server.#attachChildLogging(child);
         // codex 不在 PATH（ENOENT）或一启动就退出：立刻失败，别空等 healthz 超时。

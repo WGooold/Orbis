@@ -2803,6 +2803,7 @@ describe("codexHeadWindowLaunch", () => {
   });
 
   it("先等 rollout 落盘再 attach 到本 app-server 的 thread", () => {
+    expect(script).toContain("$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null");
     expect(script).toContain("Get-ChildItem");
     expect(script).toContain(`'*${sessionId}*'`);
     expect(script).toContain(`codex resume '${sessionId}' --remote 'ws://127.0.0.1:58322'`);

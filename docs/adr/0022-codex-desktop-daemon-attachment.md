@@ -22,6 +22,23 @@ Phone `/quit` detaches only its desktop online view. It does not close a desktop
 
 ## Consequences
 
+2026-11-02 source-environment repair: a terminal app-server inherited
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` from Host and incorrectly
+labelled App-created terminal threads as Desktop. The terminal spawn boundary
+clears this override; the Desktop wrapper and GUI keep their own environment.
+The isolated native reproduction is recorded with R56.
+
+2026-11-02 ownership clarification: a rollout's historical `originator` (including
+`Codex Desktop`) or `source=vscode` does not prove its current backend ownership.
+App terminal selection, observed native attachment and the current writer are
+separate facts. Do not automatically migrate an App `codex` activation to
+`codexDesktop` from those historical fields. A thread loaded in the independent
+terminal app-server can legitimately produce the Desktop message that it is open
+in another application. Its missing terminal window is a launcher / lifecycle
+defect covered by [ADR-0021](0021-codex-terminal-host-attachment.md), not sufficient
+evidence to reassign a live thread. No automatic takeover, lock deletion or
+interruption of running user work is introduced.
+
 Desktop integration requires a compatible installed Codex CLI and a running, reachable desktop daemon. If the desktop connection fails, desktop sessions are unavailable while terminal sessions continue independently. If the connection drops after startup, Host reports attached desktop Sessions offline and re-attaches on its next poll once the desktop side answers again; no Host restart is needed. Host owns no desktop process and cannot repair or restart it. The polling interval adds small metadata traffic even while no desktop thread is active. The same watch publishes one attach state — `unsupported`, `notInstalled`, `closed`, `attached` or `error` — with a user-facing reason on `device.ready`, so the Windows Host diagnostics page and the phone connection status page can say why desktop sessions are or are not available instead of only showing them missing. A failed attach is a reported state, not a silent one.
 
 ## Decision (replaced 2026-10-05): attach through the Orbis wrapper

@@ -56,7 +56,7 @@ describe("desktop terminal shortcuts", () => {
       terminal.spawn.mockClear();
       await runtime.openAgent(kind, "tui", workspace);
       const { script, launcher, options } = invocation();
-      if (kind === "codex") expect(script).toBe("& 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js' '-c' "
+      if (kind === "codex") expect(script).toBe("$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null; & 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js' '-c' "
         + `'${(`projects.${JSON.stringify(workspace)}.trust_level="trusted"`).replaceAll("'", "''")}'`);
       else {
         expect(script).toContain("'C:\\My Projects\\pi.js' '--approve' '-e'");
@@ -73,7 +73,7 @@ describe("desktop terminal shortcuts", () => {
   it("keeps the separate Codex account setup action", async () => {
     await new DesktopRuntime(() => {}).openAgent("codex");
     const { script, options } = invocation();
-    expect(script).toBe("& 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js' 'login'");
+    expect(script).toBe("$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null; & 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js' 'login'");
     expect(options.cwd).toBe(homedir());
   });
 

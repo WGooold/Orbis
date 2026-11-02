@@ -16,6 +16,8 @@ Status: accepted（基线冻结；新增与变更按本文维护）
 
 ## Context
 
+2026-11-02 Codex 终端来源与开窗修复（S20、V12、V17–V18、X03，验证中）：已复现 Host 继承 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` 污染 App 新建终端会话的来源；只在独立终端子进程边界清除覆盖值，用户所选后端、历史与桌面包装器保持。macOS 用原生 Terminal 打开同一 app-server 的远程 TUI，启动失败明确返回并清理新建空闲订阅；窗口检测 / 关闭覆盖 macOS，不再把 `wt.exe` 失败记录为已开窗。沿用既有 ID、看门狗生命周期与真实结果规则，不变更视觉 / 动效参数。规则见 [ADR-0021](0021-codex-terminal-host-attachment.md)、[ADR-0022](0022-codex-desktop-daemon-attachment.md)；验证与未跑项见 [Regression] R56。未部署用户 Host，未完成门禁不记验收通过。
+
 2026-11-02 Claude 首页同步修复（S18 / V16 / V18，验证中）：Host 首次重播即提供完整交互清单（含空清单），首页不再等待历史同步才解除 unknown；待审批项仍保留真实身份与等待状态。恢复既有基线，不增加 feature、不改变视觉 / 动效参数。规则见 [ADR-0033 §16](0033-claude-code-tui-mods-integration.md#16-首页交互基线不等待历史同步2026-11-02)，测试与未验收项见 [Regression]。
 
 UI 约束分散在 ADR-0042、0046–0049、移动端验收、历史设计稿、覆盖审计和后续代码中。

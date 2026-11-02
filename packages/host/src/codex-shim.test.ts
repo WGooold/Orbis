@@ -32,6 +32,7 @@ describe("Codex Windows shim", () => {
     expect((await resolveCodexCommand()).prefixArgs).toEqual([entry]);
     vi.stubEnv("ORBIS_CODEX_ENTRY", join(root, "stale.js"));
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Host offline")));
+    vi.stubEnv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "Codex Desktop");
     childProcess.spawn.mockImplementation(() => {
       const child = new EventEmitter();
       queueMicrotask(() => child.emit("exit", 0, null));
@@ -40,6 +41,7 @@ describe("Codex Windows shim", () => {
     await runCodexShim(["login"]);
     await runCodexShim([]);
     expect(childProcess.spawn).toHaveBeenCalledTimes(2);
+    for (const call of childProcess.spawn.mock.calls) expect(call[2].env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE).toBeUndefined();
     for (const args of [[entry, "login"], [entry]]) {
       expect(childProcess.spawn.mock.calls.shift()?.slice(0, 2)).toEqual([process.execPath, args]);
     }

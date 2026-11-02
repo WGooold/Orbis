@@ -77,6 +77,7 @@ import { CodexClientRefreshCoordinator, FileCodexRefreshJournal, type CodexRefre
 import { CodexDesktopRefreshDriver, desktopHistoryRevision, type CodexDesktopRefreshOptions } from "./codex-desktop-refresh.js";
 import { ActivationError } from "./spawner.js";
 import { CodexNotificationBuffer, type CodexBufferedNotification } from "./codex-notification-buffer.js";
+import { openMacCodexTerminal, listMacCodexTuis, closeMacCodexTuis } from "./codex-terminal-macos.js";
 
 /** 审批窗口。手机在 expiresAt 前不响应就按 decline 处理，防止 turn 挂死。 */
 const APPROVAL_TTL_MS = 5 * 60 * 1_000;
@@ -151,14 +152,14 @@ export type CodexRuntimeOptions = {
   onEvent: (event: RuntimeEvent, threadId: string | undefined) => void;
   /**
    * 激活后在电脑上开有头终端窗口（官方 TUI attach 到本 app-server，双同步）。
-   * 缺省实现是 wt + `codex resume <id> --remote <endpoint>`；测试注入 no-op。
+   * Windows 使用 wt，macOS 使用原生 Terminal；测试可注入 no-op。
    */
-  openHeadWindow?: (input: { sessionId: string; cwd: string; endpoint: string; codexCommand?: CodexCommand }) => void;
+  openHeadWindow?: (input: { sessionId: string; cwd: string; endpoint: string; codexCommand?: CodexCommand }) => void | Promise<void>;
   /** rollout 根目录（缺省 `~/.codex/sessions`）；测试注入临时目录。 */
   rolloutRoot?: string;
   /**
-   * 有头窗口看门狗的进程轮询注入（测试用）。生产缺省走 PowerShell 的
-   * `Get-CimInstance Win32_Process` 按 `--remote <endpoint>` 过滤 codex/node 进程。
+   * 有头窗口看门狗的进程轮询注入（测试用）。Windows 使用 PowerShell，
+   * macOS 使用 ps；按原生 TUI / 等待脚本及 `--remote <endpoint>` 核对。
    */
   pollTuiProcesses?: (endpoint: string) => Promise<Set<string>>;
   /**
@@ -1342,7 +1343,15 @@ export class CodexRuntime implements AgentBackend {
     this.#publishMetadataEvent(thread);
     if (existing !== undefined) this.#touchSource(thread);
     // 历史由设备的有界 session.sync 请求加载，metadata 不附带无人请求的整图。
-    this.#openHeadWindow(id, cwd);
+    try { await this.#openHeadWindow(id, cwd); }
+    catch (error) {
+      // A failed local window must not leave a new idle subscription holding the writer lock.
+      // Existing/running work keeps its native lifecycle and is never interrupted by this cleanup.
+      if (existing === undefined && thread.queue.length === 0 && canDispatchMessage(this.#inputState(thread))) {
+        this.#deactivateThread(id, "Codex 终端窗口启动失败");
+      }
+      throw error;
+    }
     this.#options.log?.(`Codex 会话已激活：${id}（cwd=${cwd}）`);
     return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
   }
@@ -1353,18 +1362,22 @@ export class CodexRuntime implements AgentBackend {
    * 所以窗口先开、内嵌等待循环轮询 rollout，一落盘立即自动 attach。
    * endpoint 未知（测试桩 / app-server 未就绪）时静默跳过；`ORBIS_CODEX_HEAD=0` 关掉。
    */
-  #openHeadWindow(sessionId: string, cwd: string): void {
+  async #openHeadWindow(sessionId: string, cwd: string): Promise<void> {
     // 桌面版那条后端自己就是「有头」：Codex 桌面版 GUI 就是它的窗口。再开一个终端 TUI
     // 会在用户那里凭空多出一个客户端，而且存活检测靠轮询 `--remote <端点>` 的 TUI 进程
     // ——GUI 永远不会出现在那份名单里，窗口“消失”后还会把会话误标成离线。
     if (isDesktopAppServer(this.#server)) return;
+    if (orbisEnvironment(process.env, "CODEX_HEAD") === "0") return;
     const endpoint = this.#server.endpoint;
     if (endpoint === undefined) return;
     const opener = this.#options.openHeadWindow ?? defaultOpenHeadWindow;
     const codexCommand = this.#server.codexCommand;
-    opener({ sessionId, cwd, endpoint, ...(codexCommand === undefined ? {} : { codexCommand }) });
+    try { await opener({ sessionId, cwd, endpoint, ...(codexCommand === undefined ? {} : { codexCommand }) }); }
+    catch (error) {
+      throw new ActivationError("spawn_failed", `无法打开 Codex 终端窗口：${describeError(error)}`);
+    }
     this.#options.log?.(
-      `Codex 有头窗口已打开（等 rollout 后 remote attach）：sessionId=${sessionId} cwd=${cwd} endpoint=${endpoint}`,
+      `Codex 终端启动请求已受理（等待 TUI attach）：sessionId=${sessionId} cwd=${cwd} endpoint=${endpoint}`,
     );
     // 看门狗只跟「生产开窗」：endpoint 未定义（测试桩 / app-server 未就绪）或
     // 显式关掉 HEAD 时不启。wt.exe 一启动就把窗口交给常驻 WindowsTerminal 进程后
@@ -1419,13 +1432,14 @@ export class CodexRuntime implements AgentBackend {
         if (thread?.tuiAttachPending) void this.#attachTuiThread(thread);
         continue;
       }
-      if (!this.#headWindowSeen.has(key)) continue; // TUI 还没被 powershell 拉起来，先放过
+      if (!this.#headWindowSeen.has(key)) continue; // Native terminal startup has not been observed yet.
       this.#deactivateThread(id, "Codex TUI 窗口已关闭");
     }
   }
 
   async #pollTuiProcesses(endpoint: string): Promise<Set<string>> {
     if (this.#options.pollTuiProcesses !== undefined) return this.#options.pollTuiProcesses(endpoint);
+    if (process.platform === "darwin") return new Set((await listMacCodexTuis(endpoint)).map(item => item.sessionId ?? REMOTE_TUI_PROCESS));
     return new Promise((resolve) => {
       // endpoint 是我们自己 freePort 出来的值，不存在注入面。-like 通配。
       const script =
@@ -2744,7 +2758,7 @@ export class CodexRuntime implements AgentBackend {
     forked.sourceReady = forked.historyError === undefined;
     this.#publishMetadataEvent(forked);
 
-    this.#openHeadWindow(id, cwd);
+    await this.#openHeadWindow(id, cwd);
     return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
   }
 
@@ -2793,6 +2807,7 @@ export class CodexRuntime implements AgentBackend {
     if (this.#options.killTuiProcesses !== undefined) {
       return this.#options.killTuiProcesses({ sessionId, endpoint });
     }
+    if (process.platform === "darwin") return closeMacCodexTuis(sessionId, endpoint);
     return new Promise((resolve) => {
       const encoded = Buffer.from(codexTuiKillScript(sessionId, endpoint), "utf16le").toString("base64");
       const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
@@ -4758,6 +4773,7 @@ export function codexHeadWindowLaunch(input: {
     ? "codex"
     : `& ${[input.codexCommand.command, ...input.codexCommand.prefixArgs].map(quote).join(" ")}`;
   const script = [
+    "$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null;",
     `if (${input.codexCommand === undefined ? "-not (Get-Command codex -ErrorAction SilentlyContinue)" : "$false"}) {`,
     `Write-Host '找不到 codex 命令（PATH 里没有），无法 attach 本会话。' -ForegroundColor Red;`,
     `Read-Host '按回车关闭窗口';`,
@@ -4784,21 +4800,22 @@ export function codexHeadWindowLaunch(input: {
   };
 }
 
-/** 缺省开窗实现：wt 里跑 {@link codexHeadWindowLaunch} 那条命令。 */
-function defaultOpenHeadWindow(input: { sessionId: string; cwd: string; endpoint: string }): void {
+/** Native platform window; the terminal always joins this same app-server. */
+async function defaultOpenHeadWindow(input: { sessionId: string; cwd: string; endpoint: string; codexCommand?: CodexCommand }): Promise<void> {
   if (orbisEnvironment(process.env, "CODEX_HEAD") === "0") return;
+  if (process.platform === "darwin") return openMacCodexTerminal(input);
+  if (process.platform !== "win32") throw new Error("当前平台不支持打开 Codex 终端窗口");
   const launch = codexHeadWindowLaunch(input);
-  try {
+  await new Promise<void>((resolve, reject) => {
     const child = spawn(launch.command, launch.args, {
       detached: true,
       stdio: "ignore",
       windowsHide: false,
     });
-    child.on("error", () => {});
+    child.once("error", reject);
+    child.once("exit", code => code === 0 ? resolve() : reject(new Error(`Windows Terminal 启动失败（${code ?? "signal"}）`)));
     child.unref();
-  } catch {
-    // 开窗失败只影响本机可见性，不该回滚已经成功的激活。
-  }
+  });
 }
 
 /**

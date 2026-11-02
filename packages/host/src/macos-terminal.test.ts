@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +21,7 @@ vi.mock("./claude-startup.js", async importOriginal => ({
   ...await importOriginal<typeof import("./claude-startup.js")>(), checkClaudeAuthentication: vi.fn(async () => undefined),
 }));
 import { DesktopRuntime, shouldAutoEnableCodexTerminal } from "./desktop-runtime.js";
+import { openMacAgentTerminal } from "./macos-agent-terminal.js";
 
 describe("macOS terminal launch", () => {
   let workspace: string;
@@ -38,7 +39,7 @@ describe("macOS terminal launch", () => {
       return child;
     });
   });
-  afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); await rm(workspace, { recursive: true, force: true }); });
+  afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await rm(workspace, { recursive: true, force: true }); });
 
   it("opens native Claude Code in the selected workspace with the Orbis plugin", async () => {
     const state = join(workspace, "state");
@@ -75,6 +76,7 @@ describe("macOS terminal launch", () => {
     expect(args.slice(0, 2)).toEqual(["-a", "Terminal"]);
     const script = await readFile(args[2]!, "utf8");
     expect(script).toContain(`cd -- '${workspace.replaceAll("'", "'\\''")}' || exit 1`);
+    expect(script).toContain("exec /usr/bin/env '-u' 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE'");
     expect(script).toContain("'/Orbis Tools/node' '/User'\\''s tools/$HOME;codex.js' '-c' "
       + `'${(`projects.${JSON.stringify(workspace)}.trust_level="trusted"`).replaceAll("'", "'\\''")}'`);
     expect(script).toContain('rm -f -- "$0"');
@@ -99,5 +101,24 @@ describe("macOS terminal launch", () => {
     await expect(new DesktopRuntime(() => {}, join(workspace, "state")).openAgent("codex", "tui", workspace)).rejects.toThrow("Terminal 是否可用");
     expect(await readdir(join(workspace, "state", "tmp"))).toEqual([]);
     expect(shouldAutoEnableCodexTerminal({ platform: "darwin", hostRunning: true, installed: true, compatible: true, state: "disabled", needsElevation: false })).toBe(false);
+  });
+
+  it("confirms actual terminal script startup separately from the open process receipt", async () => {
+    terminal.spawn.mockImplementation((_command: string, args: string[]) => {
+      const child = new EventEmitter();
+      queueMicrotask(async () => { await writeFile(`${args[2]!}.started`, ""); child.emit("exit", 0); });
+      return child;
+    });
+    await openMacAgentTerminal({ stateDir: workspace, cwd: workspace, command: "/bin/echo", args: ["ok"], env: {}, confirmStart: true });
+    const files = await readdir(join(workspace, "tmp"));
+    expect(files.filter(name => name.endsWith(".started"))).toEqual([]);
+    expect(await readFile(join(workspace, "tmp", files[0]!), "utf8")).toContain("[ -t 0 ] || exit 1");
+  });
+
+  it("does not call open success a terminal start when the script never executes", async () => {
+    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(10_001);
+    await expect(openMacAgentTerminal({ stateDir: workspace, cwd: workspace, command: "/bin/echo", args: ["ok"], env: {}, confirmStart: true }))
+      .rejects.toThrow("Terminal 未确认启动");
+    expect(await readdir(join(workspace, "tmp"))).toEqual([]);
   });
 });

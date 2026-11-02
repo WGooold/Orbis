@@ -6,6 +6,7 @@ import { orbisEnvironment } from "@orbis/protocol";
 
 import { resolveCodexCommand, type CodexCommand } from "./codex-daemon.js";
 import { readCodexSelection } from "./codex-selection.js";
+import { codexTerminalEnvironment } from "./codex-terminal-environment.js";
 
 type LoopbackDescriptor = { url?: unknown; token?: unknown };
 type LaunchResult = { endpoint?: unknown; command?: unknown; prefixArgs?: unknown };
@@ -53,6 +54,7 @@ async function spawnCodex(input: { command: CodexCommand | { command: string; pr
     cwd: input.cwd,
     stdio: "inherit",
     windowsHide: false,
+    env: codexTerminalEnvironment(),
   });
   return await new Promise<number>((resolve, reject) => {
     child.once("error", reject);

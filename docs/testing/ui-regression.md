@@ -108,6 +108,8 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 ### 3.3 全量用例与 feature 映射
 
+2026-11-02 Codex 终端来源与开窗专项（R56；S20、V12、V17–V18、X03）：Host `codex-terminal-environment.test.ts` 与真实隔离 CLI 对照覆盖继承 Desktop 来源覆盖值导致的新建误标；只在终端子进程清除覆盖值。`codex-session-ownership.test.ts`、`codex-terminal-macos.test.ts`、`macos-terminal.test.ts`、既有 `codex-runtime.test.ts` / `codex-terminal-sync.test.ts` 覆盖 App 终端路由不被历史来源改派、精确 CLI / endpoint、真实 TTY 启动确认、失败回执 / 空闲订阅释放、已有会话保留、等待窗口与 native TUI 检测和 PID 复核关闭。设备消费既有启动失败路径：iOS `testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace`、Android `OptimisticPresentationInstrumentedTest#aFailedLaunchOffersRetryAndBackInPlace`。完整 L1–L4、C01–C18 / A1–A4 与真实隔离 TUI 仍须独立记录，夹具不得算作真实窗口验收。
+
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
 
 **iOS `OrbisUITests`（合并后 83 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项；历史运行计数按证据保留）**
@@ -498,5 +500,6 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | R53 | 消息长按替换页顶状态栏 / MOT-19 | ADR-0058 SC41 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M19、S10、S17 |
 | R54 | 单行提醒和最后上翻意图 / MOT-20 | ADR-0058 SC42 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | S24、V01–V03 |
 | R55 | 同步期间有效卡片可交互 / MOT-21 | ADR-0058 SC43 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | S18、V13、V18 |
+| R56 | 从 App 新建 / 恢复 Codex 终端会话，重复打开已连接会话；模拟 Terminal 不可用 / 只接受 open 但脚本未执行；首轮落盘前退出；终端运行后关闭 / 重开；分别对照 Codex Desktop 选择与历史 `originator=Codex Desktop` | 用户所选后端保持；同一 backend / thread / endpoint 与手机对应且电脑有真实终端；失败显示全文并提供重试 / 返回，不报已开窗，不遗留新增空闲写锁；已有或运行中的任务不被失败打断。等待 shell 与 TUI 都能被看门狗识别，关闭前复核进程身份并确认退出，不处理桌面 / app-server；A1–A4 下草稿、失败页与导航保持。只用隔离 Host / Codex home，不改用户现场会话 | S20、V12、V17–V18、X03 |
 
 §3.3 增补映射：MOT-11→InteractionMotion / PageNavigation 设备中帧；MOT-12/13/15/16→共用按压 / 文字 / 多选设备用例；MOT-14→目录筛选与视口；MOT-17→Qt 材质 / 页面帧；MOT-18→LaunchLedger 与新建交接；MOT-19→用户消息复制 / Rewind 与顶栏；MOT-20→ChatQuestion / 提醒滚动方向；MOT-21→HomePresentation / HomeRuntimeLoading / 首页刷新点击。具体自动用例与每轮结果见 [r35 验证记录](interaction-motion.md#2026-11-02--r35-交互细化)。双端已执行全量，受影响失败继续修复 / 复核；完整 C / R / A 尚未完成，历史失败保留。

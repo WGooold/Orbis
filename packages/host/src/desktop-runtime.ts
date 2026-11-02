@@ -945,10 +945,10 @@ export class DesktopRuntime {
     const command = remote?.command ?? cli.command;
     if (process.platform === "darwin") {
       await openMacAgentTerminal({ stateDir: this.#stateDir, cwd: workingDirectory, command, args,
-        env: { ...process.env, ORBIS_STATE_DIR: this.#stateDir } });
+        env: { ...process.env, ORBIS_STATE_DIR: this.#stateDir }, ...(kind === "codex" ? { unsetEnv: ["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] } : {}) });
       return;
     }
-    const script = `& ${[command, ...args].map(quote).join(" ")}`;
+    const script = `${kind === "codex" ? "$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null; " : ""}& ${[command, ...args].map(quote).join(" ")}`;
     // A detached Node child with ignored stdio has no usable console on some
     // Windows hosts. Let Windows create the visible terminal with its own input.
     const encoded = Buffer.from(script, "utf16le").toString("base64");
