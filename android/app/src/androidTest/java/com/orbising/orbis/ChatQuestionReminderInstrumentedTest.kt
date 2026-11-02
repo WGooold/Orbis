@@ -127,6 +127,23 @@ class ChatQuestionReminderInstrumentedTest {
         capture("question-host-cleared")
     }
 
+
+    @Test fun lastUserDirectionControlsTheSingleLineReminder() = withChat { _, scroll, scope ->
+        val reminder = compose.onNodeWithTag("chat-question-reminder")
+        val before = reminder.fetchSemanticsNode().boundsInRoot
+        assertTrue(before.height < compose.onNodeWithTag("chat-transcript").fetchSemanticsNode().boundsInRoot.height / 3)
+        compose.onNodeWithTag("chat-transcript").performTouchInput { swipeUp() }
+        compose.waitForIdle()
+        reminder.assertDoesNotExist()
+        // Programmatic positioning must not manufacture an earlier-reading intention.
+        compose.runOnIdle { scope.launch { scroll.scrollToItem(4, 350) } }
+        compose.waitForIdle()
+        reminder.assertDoesNotExist()
+        compose.onNodeWithTag("chat-transcript").performTouchInput { swipeDown() }
+        compose.waitForIdle()
+        reminder.assertIsDisplayed()
+    }
+
     private fun capture(name: String) {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val directory = File(context.getExternalFilesDir(null), "question-reminder").apply { mkdirs() }

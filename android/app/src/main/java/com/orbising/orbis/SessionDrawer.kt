@@ -286,8 +286,8 @@ internal fun SessionDrawer(
         val reason = if (hostId == activeHostId) snapshot?.state?.codexProviderMismatch(sessionId) else null
         if (reason != null) NeumorphDialog(
             onDismissRequest = { blockedSession = null },
-            title = { Text("需要切换 provider") },
-            text = { Text(reason) },
+            title = { MotionText("需要切换 provider") },
+            text = { MotionText(reason) },
             confirmButton = { NeumorphTextButton("知道了", { blockedSession = null }) },
             dismissButton = if (snapshot?.state?.sessions?.get(sessionId)?.hasHistoryCache == true) {
                 { NeumorphTextButton("查看只读历史", { blockedSession = null; onOpenHistory(hostId, sessionId) }) }
@@ -317,7 +317,7 @@ internal fun SessionDrawer(
                         value = query,
                         onValueChange = { query = it },
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("搜索目录或会话", style = MaterialTheme.typography.bodyMedium) },
+                        placeholder = { MotionText("搜索目录或会话", style = MaterialTheme.typography.bodyMedium) },
                         leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
                         trailingIcon = if (query.isNotEmpty()) {
                         {
@@ -355,7 +355,7 @@ internal fun SessionDrawer(
                     )
                 }
             if (agentFilter.hasProviderFilter) {
-                Text(
+                MotionText(
                     "${agentFilter.label}，$providerLabel",
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelMedium,
@@ -369,12 +369,12 @@ internal fun SessionDrawer(
             ) {
                 SelectionToolbar(selecting = selecting, normal = {
 
-                    Text(
+                    MotionText(
                         if (searchTerm.isNotEmpty()) "搜索结果" else if (showArchived) "已归档" else "工作目录",
                         style = MaterialTheme.typography.labelLarge,
                         modifier = Modifier.semantics { heading() },
                     )
-                    Text(
+                    MotionText(
                         "$directoryCount 个目录，$sessionCount 个会话",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -386,7 +386,7 @@ internal fun SessionDrawer(
                         icon = Icons.Rounded.Close,
                         contentDescription = "退出多选",
                     )
-                    Text("已选择 ${selectedIds.size} 项", style = MaterialTheme.typography.labelLarge,
+                    MotionText("已选择 ${selectedIds.size} 项", style = MaterialTheme.typography.labelLarge,
                         modifier = Modifier.weight(1f))
                     selectedSessions.singleOrNull()?.takeIf { !it.isOnline && it.catalogEntry?.hasHistoryCache == true }?.let { row ->
                         NeumorphIconButton(
@@ -454,7 +454,7 @@ internal fun SessionDrawer(
                         val branchKey = section.hostId + '\u0000' + directory.cwd
                         val expanded = branchKey == expandedKey
                         item(key = "directory:$branchKey") {
-                            DrawerDirectoryHeader(
+                            Box(collectionMotion()) { DrawerDirectoryHeader(
                                 directory = directory,
                                 expanded = expanded,
                                 createEnabled = isActiveHost && canCreate && directory.cwd.isNotBlank(),
@@ -462,13 +462,13 @@ internal fun SessionDrawer(
                             ) {
                                 expandedKey = if (expanded) null else branchKey
                                 focusManager.clearFocus()
-                            }
+                            } }
                         }
                         val visibleSessions = if (expanded && (showAllSessions || searchTerm.isNotEmpty())) {
                             directory.sessions
                         } else directory.sessions.take(5)
                         items(visibleSessions, key = { "session:${section.hostId}:${it.sessionId}" }) { row ->
-                            OrbisCollapse(expanded = expanded) {
+                            Box(collectionMotion()) { OrbisCollapse(expanded = expanded) {
                                 DrawerBranch {
                                     DrawerSessionRow(
                                         row = row,
@@ -486,16 +486,17 @@ internal fun SessionDrawer(
                                         selected = row.sessionId in selectedIds,
                                         archiveUnavailableReason = drawerArchiveUnavailableReason(row, state),
                                         onToggleSelection = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                             selectedSessionIds = if (row.sessionId in selectedIds) selectedIds - row.sessionId else selectedIds + row.sessionId
                                         },
                                         onBeginSelection = {
-                                            if (!selecting) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            if (row.sessionId !in selectedIds) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                             focusManager.clearFocus()
                                             selectedSessionIds = selectedIds + row.sessionId
                                         },
                                     )
                                 }
-                            }
+                            } }
                         }
                         if (directory.sessions.size > 5 && searchTerm.isEmpty()) {
                             item(key = "more:$branchKey") {

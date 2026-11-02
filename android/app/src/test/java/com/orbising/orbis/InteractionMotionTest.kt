@@ -33,4 +33,16 @@ class InteractionMotionTest {
         assertEquals(Offset(source.x + 24f, source.y), InteractionMotion.sendPoint(source, leftTarget, 0.25f))
         assertEquals(leftTarget, InteractionMotion.sendPoint(source, leftTarget, 1f))
     }
+    @Test fun edgeBackAlwaysLeavesBothSidesVisibleAndMirrorsOnlyItsBias() {
+        for (width in listOf(320f, 393f, 800f)) for (p in listOf(0f, 0.2f, 0.65f, 1f)) {
+            val inset = width * InteractionMotion.EdgeShrink * p / 2
+            val left = InteractionMotion.edgeShift(width, p, 1f, 8f)
+            val right = InteractionMotion.edgeShift(width, p, -1f, 8f)
+            assertEquals(left, -right, 0.001f)
+            assertTrue(left >= 0f)
+            assertTrue(inset - left >= 8f * p - 0.001f)
+            assertTrue(inset + right >= 8f * p - 0.001f)
+        }
+    }
+
 }

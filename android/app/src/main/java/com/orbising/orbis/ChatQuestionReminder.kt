@@ -57,10 +57,10 @@ internal fun ChatQuestionReminder(question: ChatQuestion, onClick: () -> Unit, m
         onClick = onClick,
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("最近提问", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(question.text, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(question.text, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Icon(Icons.Rounded.NorthWest, contentDescription = "定位到原消息",
                 modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)

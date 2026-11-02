@@ -356,7 +356,10 @@ struct DisclosurePerformancePreview: View {
 enum OrbisHaptics {
     private static let impact = UIImpactFeedbackGenerator(style: .medium)
 
-    static func beginSelection() { commit() }
+    private static let selection = UISelectionFeedbackGenerator()
+    static func beginSelection() { selectionChanged() }
+    static func selectionChanged() { selection.selectionChanged(); selection.prepare() }
+    static func press() { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
 
     static func commit() {
         impact.impactOccurred()
@@ -374,6 +377,7 @@ struct NeuButtonStyle: ButtonStyle {
     }
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
             .neuSurface(inset: selected || configuration.isPressed, radius: radius, intensity: 0.6, padding: padding)
             .contentShape(RoundedRectangle(cornerRadius: radius))
             .opacity(enabled ? 1 : 0.4)
@@ -396,6 +400,7 @@ struct OrbisSelectionButtonStyle: ButtonStyle {
         let shape = RoundedRectangle(cornerRadius: parent?.innerRadius ?? radius, style: .continuous)
         let accent = OrbisPalette(scheme).accent
         configuration.label
+            .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
             .neuSurface(inset: recessed || (!selecting && configuration.isPressed), radius: radius, intensity: 0.6, padding: padding)
             .background(OrbisTouchOrigin { touchOrigin = $0 })
             .overlay {
@@ -463,6 +468,7 @@ struct NeuIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let target = compact ? 48 : max(44, size + 8)
         return configuration.label
+            .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
             .neuSurface(inset: selected || configuration.isPressed, radius: size / 2,
                         intensity: compact ? 0.32 : size < 36 ? 0.4 : 0.5, concentric: false)
             .frame(width: target, height: target).contentShape(Rectangle()).opacity(enabled ? 1 : 0.4)
@@ -490,7 +496,7 @@ struct OrbisTextButton: View {
                         if loading { ProgressView().controlSize(.mini) }
                     }
                 }
-                Text(title).lineLimit(1)
+                OrbisMotionText(title).lineLimit(1)
             }.font(.orbisLabel(.semibold))
                 .foregroundStyle(tint ?? pageAccent ?? OrbisPalette(scheme).accent)
                 .padding(.horizontal, 14).frame(maxWidth: fill ? .infinity : nil, minHeight: 40)
@@ -1038,6 +1044,7 @@ private struct MenuRowStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let p = OrbisPalette(scheme)
         configuration.label
+            .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
             .background {
                 RoundedRectangle(cornerRadius: parent?.innerRadius ?? OrbisRadius.control, style: .continuous)
                     .fill(selected || configuration.isPressed ? p.well : .clear)
@@ -1113,7 +1120,7 @@ struct OrbisActionButton: View {
         Button { activation += 1; action() } label: {
             HStack(spacing: 8) {
                 if let symbol { OrbisMotionGlyph(symbol: symbol, size: 17, activation: activation) }
-                Text(title)
+                OrbisMotionText(title)
             }.font(.orbisBody(.semibold))
                 .foregroundStyle(tint ?? pageAccent ?? OrbisPalette(scheme).accent)
                 .frame(maxWidth: .infinity, minHeight: 52).padding(.horizontal, 12)
@@ -1122,10 +1129,14 @@ struct OrbisActionButton: View {
 }
 
 struct OrbisHeader<Leading: View, Title: View, Trailing: View>: View {
+    @Environment(\.orbisMessageActions) private var actions
     @ViewBuilder var leading: Leading
     @ViewBuilder var title: Title
     @ViewBuilder var trailing: Trailing
     var body: some View {
+        if let actions { OrbisMessageActionHeader(actions: actions) { normal } } else { normal }
+    }
+    private var normal: some View {
         HStack(spacing: 12) {
             leading
             title.frame(maxWidth: .infinity, alignment: .leading)
@@ -1145,7 +1156,7 @@ struct OrbisPageHeader<Trailing: View>: View {
         OrbisHeader {
             OrbisIconButton(symbol: closes ? "xmark" : "arrow.left", label: backLabel ?? (closes ? "关闭" : "返回"), morphFrom: "arrow.left", action: back)
         } title: {
-            Text(title).font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
+            OrbisMotionText(title).font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
         } trailing: { trailing }
     }
 }
@@ -1201,7 +1212,7 @@ struct RuntimeStatusLabel: View {
                 .overlay {
                     if syncing { ProgressView().controlSize(.mini).accessibilityLabel("正在刷新") }
                 }
-            Text(runtimeStatusTitle(status)).font(.orbisCaption()).lineLimit(1)
+            OrbisMotionText(runtimeStatusTitle(status)).font(.orbisCaption()).lineLimit(1)
         }.foregroundStyle(OrbisPalette(scheme).secondary)
     }
     private var color: Color {
@@ -1236,7 +1247,7 @@ struct OrbisNotice: View {
         HStack(alignment: .firstTextBaseline, spacing: 9) {
             Image(systemName: error ? "exclamationmark.circle" : "info.circle")
                 .orbisIconBaseline(OrbisTextSize.label)
-            Text(text).frame(maxWidth: .infinity, alignment: .leading)
+            OrbisMotionText(text).frame(maxWidth: .infinity, alignment: .leading)
         }.font(.orbisLabel())
             .foregroundStyle(error ? OrbisPalette(scheme).error : OrbisPalette(scheme).secondary)
             .neuSurface(inset: true, radius: OrbisRadius.control, intensity: 0.45, padding: 14)

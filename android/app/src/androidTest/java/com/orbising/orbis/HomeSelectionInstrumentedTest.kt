@@ -52,7 +52,8 @@ class HomeSelectionInstrumentedTest {
         compose.onNodeWithText("已选择 1 项").assertIsDisplayed()
         compose.runOnIdle {
             assertTrue(opened.isEmpty())
-            assertEquals(listOf(HapticFeedbackType.LongPress), haptics)
+            assertEquals("Initial selection, selection and deselection each produce one light haptic",
+                List(3) { HapticFeedbackType.TextHandleMove }, haptics)
         }
         compose.onNodeWithTag("home-runtime-two").performClick()
         compose.onNodeWithContentDescription("关闭选中会话").performClick()
@@ -63,5 +64,6 @@ class HomeSelectionInstrumentedTest {
         compose.onNodeWithTag("home-runtime-three").performTouchInput { longClick() }
         compose.onNodeWithContentDescription("退出多选").performClick()
         compose.onNodeWithContentDescription("打开会话目录").assertIsDisplayed()
+        compose.runOnIdle { assertEquals("Leaving selection mode must not add item haptics", 5, haptics.size) }
     }
 }

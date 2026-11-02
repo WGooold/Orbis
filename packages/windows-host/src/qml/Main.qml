@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import Orbis.Host
 import "ProviderFlow.js" as ProviderFlow
+import "Motion.js" as Motion
 
 ApplicationWindow {
     id: window
@@ -13,6 +14,7 @@ ApplicationWindow {
     color: "#E6EBF4"
     font.family: "Microsoft YaHei UI"
     font.pixelSize: 14
+    readonly property bool motionEnabled: typeof orbisMotionEnabled === "undefined" || orbisMotionEnabled
     property int page: 0
     property var pageNames: ["概览", "设备", "Agent", "设置", "诊断"]
     property string revokeId: ""
@@ -250,7 +252,7 @@ ApplicationWindow {
         background: NeuSurface { margin: 0; cornerRadius: 6; inset: true; surface: "#DDE3EF"; focused: parent.activeFocus }
         onTextEdited: if (marksProviderDirty && providerDialog.visible && !window.loadingProviderDraft) window.providerFormDirty = true
     }
-    component Heading: Label { font.pixelSize: 20; font.weight: Font.DemiBold; color: "#172a49" }
+    component Heading: MotionText { font.pixelSize: 20; font.weight: Font.DemiBold; color: "#172a49" }
     function formatBytes(value) {
         if (!(value > 0)) return "0 MB"
         var mb = value / 1048576
@@ -294,7 +296,7 @@ ApplicationWindow {
             }
         }
     }
-    component Hint: Label { color: "#73819a"; wrapMode: Text.WordWrap; lineHeight: 1.4; font.pixelSize: 13 }
+    component Hint: MotionText { color: "#73819a"; wrapMode: Text.WordWrap; lineHeight: 1.4; font.pixelSize: 13 }
     component EngravedWordmark: Item {
         id: wordmark
         property alias text: face.text
@@ -546,6 +548,13 @@ ApplicationWindow {
                 Repeater {
                     model: window.pageNames
                     delegate: Button {
+                        id: pageButton
+                        objectName: "page-button-" + index
+                        property real selectionProgress: window.page === index || down ? 1 : 0
+                        Behavior on selectionProgress { enabled: window.motionEnabled; NumberAnimation { duration: Motion.stateDuration; easing.type: Easing.OutCubic } }
+                        Accessible.role: Accessible.PageTab
+                        Accessible.name: modelData
+                        Accessible.selected: window.page === index
                         required property string modelData
                         required property int index
                         Layout.fillWidth: true; implicitHeight: 48
@@ -556,7 +565,10 @@ ApplicationWindow {
                             Label { text: modelData; color: window.page === index ? "#2459D3" : "#50617b"; font.weight: window.page === index ? Font.DemiBold : Font.Normal; Layout.fillWidth: true }
                             Rectangle { Layout.preferredWidth: 7; Layout.preferredHeight: 7; radius: 4; color: "#bd6320"; visible: window.pageHasUpdate(index) }
                         }
-                        background: NeuSurface { anchors.fill: parent; anchors.margins: -12; margin: 12; cornerRadius: 6; inset: window.page === index || parent.down; visible: window.page === index || parent.hovered || parent.activeFocus; focused: parent.activeFocus }
+                        background: Item {
+                            NeuSurface { anchors.fill: parent; anchors.margins: -12; margin: 12; cornerRadius: 6; inset: false; opacity: (pageButton.hovered || pageButton.activeFocus ? 1 : 0) * (1 - pageButton.selectionProgress); focused: pageButton.activeFocus }
+                            NeuSurface { anchors.fill: parent; anchors.margins: -12; margin: 12; cornerRadius: 6; inset: true; opacity: pageButton.selectionProgress; focused: pageButton.activeFocus }
+                        }
                     }
                 }
                 Item { Layout.fillHeight: true }
@@ -585,7 +597,7 @@ ApplicationWindow {
                     Rectangle {
                         implicitWidth: statusLabel.implicitWidth + 26; implicitHeight: 30; radius: 6
                         color: host.state === "connected" ? "#e1f4ee" : "#e7ecf4"
-                        Label { id: statusLabel; anchors.centerIn: parent; text: stateText(); color: host.state === "connected" ? "#278868" : "#677992"; font.pixelSize: 12 }
+                        MotionText { id: statusLabel; anchors.centerIn: parent; text: stateText(); color: host.state === "connected" ? "#278868" : "#677992"; font.pixelSize: 12 }
                     }
                 }
             }
@@ -595,7 +607,7 @@ ApplicationWindow {
                 implicitHeight: messageLabel.implicitHeight + 24; radius: 6; color: "#e8effd"
                 RowLayout {
                     anchors.fill: parent; anchors.margins: 12
-                    Label { id: messageLabel; text: host.message; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#365485"; font.pixelSize: 13 }
+                    MotionText { id: messageLabel; text: host.message; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#365485"; font.pixelSize: 13 }
                     SoftToolButton { text: "×"; onClicked: host.clearMessage(); implicitWidth: 30; implicitHeight: 28; Accessible.name: "关闭提示" }
                 }
             }
@@ -721,15 +733,16 @@ ApplicationWindow {
                         RowLayout {
                             Layout.fillWidth: true; spacing: 16
                             Repeater {
-                                model: [{label: "已配对设备", value: String(host.devices.length), detail: ""}, {label: "在线会话", value: String(host.runtimeCount), detail: "由这台电脑上的 Host 提供"}, {label: "Agent 接入", value: String(host.agents.filter(a => a.installed).length + (host.claudeInstalled ? 1 : 0)), detail: "Pi / Codex / Claude Code / DeepSeek"}]
+                                model: ["已配对设备", "在线会话", "Agent 接入"]
                                 delegate: Card {
-                                    required property var modelData
+                                    required property string modelData
+                                    required property int index
                                     Layout.fillWidth: true; Layout.preferredWidth: 1
                                     ColumnLayout {
                                         anchors.fill: parent; spacing: 10
-                                        Hint { text: modelData.label }
-                                        Label { text: modelData.value; color: "#203857"; font.pixelSize: 33; font.weight: Font.DemiBold }
-                                        Hint { text: modelData.detail; Layout.fillWidth: true; font.pixelSize: 11 }
+                                        Hint { text: modelData }
+                                        MotionText { objectName: "home-metric-" + index; roll: true; font.pixelSize: 33; font.weight: Font.DemiBold; color: "#203857"; text: String(index === 0 ? host.devices.length : index === 1 ? host.runtimeCount : host.agents.filter(a => a.installed).length + (host.claudeInstalled ? 1 : 0)); Layout.fillWidth: true }
+                                        Hint { text: index === 0 ? "" : index === 1 ? "由这台电脑上的 Host 提供" : "Pi / Codex / Claude Code / DeepSeek"; Layout.fillWidth: true; font.pixelSize: 11 }
                                     }
                                 }
                             }

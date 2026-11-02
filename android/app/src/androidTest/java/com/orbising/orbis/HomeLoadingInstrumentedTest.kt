@@ -94,6 +94,11 @@ class HomeLoadingInstrumentedTest {
             compose.onNodeWithTag("home-runtime-a").assertIsDisplayed()
             assertEquals(cardBounds, compose.onNodeWithTag("home-runtime-a").fetchSemanticsNode().boundsInRoot)
             capture(dark, fontScale, "updating")
+            // A directory refresh may clear readiness while the published identity remains valid.
+            compose.runOnIdle { state.value = fixture.state.copy(homeDirectoryReceived = false) }
+            compose.onNodeWithTag("home-runtime-a").onChild().assertIsEnabled()
+            compose.onNodeWithTag("home-runtime-a").performTouchInput { click() }
+            compose.runOnIdle { assertEquals(1, opened.size); opened.clear(); state.value = fixture.state }
             compose.runOnIdle {
                 fixture.facts("a", revision = 2)
                 val request = fixture.state.agentStateReads.entries.first { it.value.runtimeId == "b" }.key

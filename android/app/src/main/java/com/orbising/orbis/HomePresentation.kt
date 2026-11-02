@@ -79,7 +79,9 @@ internal fun RemoteState.commitHomePresentation(): RemoteState {
 }
 
 internal fun RemoteState.homeCardIsCurrent(card: HomeRuntimeCard): Boolean =
-    e2eReady && homeDirectoryReceived && runtimes[card.runtime.runtimeId]?.sessionId == card.runtime.sessionId
+    e2eReady && !card.runtime.sessionId.isNullOrBlank() && runtimes[card.runtime.runtimeId]?.let { current ->
+        current.sessionId == card.runtime.sessionId && current.agentKind == card.runtime.agentKind
+    } == true
 
 internal fun RemoteState.failHomeRead(requestId: String, message: String): RemoteState {
     val read = agentStateReads[requestId]?.takeIf { it.scope == "agent" } ?: return this

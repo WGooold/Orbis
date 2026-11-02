@@ -137,6 +137,7 @@ struct SessionDirectoryState {
 }
 
 struct SessionDrawerView: View {
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var host: HostState
     @Environment(\.colorScheme) private var scheme
@@ -174,7 +175,7 @@ struct SessionDrawerView: View {
         let selectedSessions = directories.flatMap(\.sessions).filter { selectedSessionIds.contains($0.sessionId) }
         VStack(spacing: 16) {
             HStack(spacing: 12) {
-                Text(selecting ? "已选择 \(selectedSessions.count) 项" : "会话目录").font(.orbisTitle()).accessibilityAddTraits(.isHeader)
+                OrbisMotionText(selecting ? "已选择 \(selectedSessions.count) 项" : "会话目录").font(.orbisTitle()).accessibilityAddTraits(.isHeader)
                 Spacer()
                 OrbisIconButton(symbol: "xmark", label: selecting ? "退出多选" : "关闭会话目录") {
                     if selecting { selectedSessionIds = [] } else { onClose() }
@@ -218,12 +219,12 @@ struct SessionDrawerView: View {
             }.padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).orbisField(focused: searchFocused)
             // One fixed row carries the title, the active filter and the counts; filtering never inserts a row.
             HStack(spacing: 8) {
-                Text(searching ? "搜索结果" : state.archived ? "已归档" : "工作目录")
+                OrbisMotionText(searching ? "搜索结果" : state.archived ? "已归档" : "工作目录")
                     .font(.orbisLabel(.semibold)).accessibilityAddTraits(.isHeader)
                 if let kind = state.kind {
-                    Text(filterTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).accent).lineLimit(1)
+                    OrbisMotionText(filterTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).accent).lineLimit(1)
                     if hasProviderFilter {
-                        Text(providerLabel).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).accent).lineLimit(1)
+                        OrbisMotionText(providerLabel).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).accent).lineLimit(1)
                     }
                 }
                 Spacer(minLength: 4)
@@ -239,13 +240,12 @@ struct SessionDrawerView: View {
                             .padding(.top, 40)
                     }
                     ForEach(directories) { directory in
-                        directoryGroup(directory)
+                        directoryGroup(directory).transition(.opacity.combined(with: .offset(y: 4)))
                     }
                 }.padding(6).padding(.bottom, 16)
                     .coordinateSpace(name: "directory-viewport-content")
                     .background(DirectoryViewportObserver(viewport: viewport))
-                    // Rebuild search results so a sole row cannot retain its former group’s accessibility bounds.
-                    .id(state.query)
+                    .animation(reduceMotion ? nil : InteractionMotion.panel, value: "\(state.kind ?? "")|\(state.archived)|\(state.providerKey)|\(state.query)")
             }
             // As in the transcript, let the scroll view resolve shrinking content itself.
             .defaultScrollAnchor(.top)
@@ -274,12 +274,13 @@ struct SessionDrawerView: View {
     private var selecting: Bool { !selectedSessionIds.isEmpty }
 
     private func beginSelection(_ id: String) {
-        if !selecting { OrbisHaptics.beginSelection() }
+        if !selectedSessionIds.contains(id) { OrbisHaptics.beginSelection() }
         searchFocused = false
         selectedSessionIds.insert(id)
     }
 
     private func toggleSelection(_ id: String) {
+        OrbisHaptics.selectionChanged()
         if selectedSessionIds.contains(id) { selectedSessionIds.remove(id) }
         else { selectedSessionIds.insert(id) }
     }
@@ -392,6 +393,10 @@ struct SessionDrawerView: View {
                 VStack(spacing: 10) {
                     ForEach(visible) { session in
                         sessionRow(session).padding(.leading, 12)
+                            // Rebind only the leaf after search changes; keep group/list identity for motion.
+                            // SwiftUI otherwise retains obsolete hit bounds after a collapsed group is searched.
+                            .id(session.sessionId + "|" + state.query)
+                            .transition(.opacity.combined(with: .offset(y: 4)))
                             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("directory-viewport-content")) } action: {
                                 viewport.record("session:" + session.sessionId, frame: $0)
                             }
@@ -497,6 +502,7 @@ struct NewSessionView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     let presetCwd: String?
+    var onCreated: ((HostConnection.LaunchState) -> Void)? = nil
     let onDismiss: () -> Void
     @State private var kind = "pi"
 
@@ -538,7 +544,10 @@ struct NewSessionView: View {
             OrbisActionButton(title: "在这里新建 \(agentTitle(kind)) 会话", symbol: "plus", tint: OrbisPalette(scheme).agent(kind)) {
                 if let cwd = presetCwd ?? store.browse?.path {
                     store.createSession(agentKind: kind, cwd: cwd)
-                    if store.activatingSessionId != nil { OrbisHaptics.commit(); onDismiss() }
+                    if store.activatingSessionId != nil {
+                        if let launch = store.launching { onCreated?(launch) }
+                        OrbisHaptics.commit(); onDismiss()
+                    }
                 }
             }.disabled(!canCreate).padding(.horizontal, 24).padding(.bottom, 24)
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())

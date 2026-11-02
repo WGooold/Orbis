@@ -645,6 +645,11 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(card.exists)
         XCTAssertTrue(app.buttons["home-runtime-preview-pi"].exists)
         XCTAssertFalse(app.staticTexts["正在加载会话…"].exists)
+        XCTAssertTrue(card.isEnabled)
+        card.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 3))
+        app.buttons["返回"].firstMatch.tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 3))
         capture("home-after-directory-replay", app: app)
     }
     func testHomePublishesCompleteSnapshotsWithoutReturningToLoading() {
@@ -1472,10 +1477,17 @@ final class OrbisUITests: XCTestCase {
         message.press(forDuration: 0.6)
         let copy = app.buttons["copy-message-m3"]
         XCTAssertTrue(copy.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["message-action-header"].firstMatch.exists)
+        XCTAssertFalse(app.buttons["历史与分支"].exists)
         XCTAssertEqual(message.frame.minY, before.minY, accuracy: 1)
         XCTAssertLessThanOrEqual(copy.frame.maxY, message.frame.minY)
         copy.tap()
         XCTAssertEqual(copy.label, "已复制")
+        app.buttons["退出消息操作"].tap()
+        XCTAssertFalse(copy.exists)
+        XCTAssertTrue(app.buttons["历史与分支"].exists)
+        message.press(forDuration: 0.6)
+        XCTAssertTrue(copy.waitForExistence(timeout: 3))
         let rewind = app.buttons["rewind-message-m3"]
         XCTAssertTrue(rewind.isEnabled)
         capture("user-message-actions", app: app)
@@ -1582,6 +1594,9 @@ final class OrbisUITests: XCTestCase {
             XCTAssertTrue(app.buttons["跳到最新消息"].exists, "Locating the question leaves following disabled")
             capture("question-reminder-original-\(dark)", app: app)
             transcript.swipeUp()
+            XCTAssertTrue(reminder.waitForNonExistence(timeout: 3), "Scrolling toward newer content clears the earlier-reading intent")
+            transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45)).press(forDuration: 0.05,
+                thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.6)), withVelocity: .slow, thenHoldForDuration: 0.2)
             XCTAssertTrue(reminder.waitForExistence(timeout: 3))
             app.buttons["跳到最新消息"].tap()
             XCTAssertTrue(reminder.waitForNonExistence(timeout: 5))

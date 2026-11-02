@@ -307,6 +307,7 @@ internal fun RemoteApp(
     // 若拿 cwd != null 当可见性判据，面板永远不会出现（抽屉收回、什么也没发生）。
     var newSessionOpen by rememberSaveable { mutableStateOf(false) }
     var newSessionCwd by rememberSaveable { mutableStateOf<String?>(null) }
+    var launchIntro by remember(state.hostId) { mutableStateOf<LaunchState?>(null) }
     var newSessionHostId by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(state.hostId) {
         if (newSessionOpen && state.hostId != newSessionHostId) {
@@ -315,30 +316,43 @@ internal fun RemoteApp(
             model.dismissBrowse()
         }
     }
+    fun cancelLaunchIntro() {
+        if (launchIntro == null) return
+        launchIntro = null
+        // Stop navigation ownership, not the already-dispatched launch request.
+        model.selectRuntime(null)
+    }
     // Keep the directory page's drawer, filters, expansion and scroll position across navigation.
     val runtimeListStateHolder = rememberSaveableStateHolder()
     // 会话列表既是默认页，也是聊天页右滑返回时露出的底层页面，因此抽成一处复用。
     val runtimeList: @Composable () -> Unit = {
         runtimeListStateHolder.SaveableStateProvider("runtime-list") {
             RuntimeListScreen(
+                launchIntro = launchIntro,
+                onLaunchPresented = { requestId -> if (launchIntro?.requestId == requestId) launchIntro = null },
+                onDirectoryOpened = { cancelLaunchIntro() },
                 state = state,
                 hosts = hosts,
                 onOpenRuntime = { hostId, runtimeId ->
+                    cancelLaunchIntro()
                     allDownloadsOpen = false
                     model.openRuntime(hostId, runtimeId)
                 },
                 onCloseRuntimes = model::closeRuntimesOn,
-                onOpenDownloads = { allDownloadsOpen = true },
+                onOpenDownloads = { cancelLaunchIntro(); allDownloadsOpen = true },
                 onUnpairHost = { hostId -> model.unpair(hostId) },
                 onOpenSession = { hostId, sessionId ->
+                    cancelLaunchIntro()
                     allDownloadsOpen = false
                     model.openSession(hostId, sessionId)
                 },
                 onOpenHistory = { hostId, sessionId ->
+                    cancelLaunchIntro()
                     allDownloadsOpen = false
                     model.openOfflineSession(hostId, sessionId)
                 },
                 onNewSession = { hostId, cwd ->
+                    cancelLaunchIntro()
                     model.selectHost(hostId)
                     newSessionHostId = hostId
                     newSessionCwd = cwd
@@ -347,10 +361,10 @@ internal fun RemoteApp(
                 onSetArchived = { hostId, sessionId, archived ->
                     model.setSessionArchivedOn(hostId, sessionId, archived)
                 },
-                onSelectHost = model::selectHost,
-                onAddHost = { addingHost = true },
+                onSelectHost = { hostId -> cancelLaunchIntro(); model.selectHost(hostId) },
+                onAddHost = { cancelLaunchIntro(); addingHost = true },
                 onRequestProviders = model::refreshProviderFacts,
-                onOpenStatus = { statusOpen = true },
+                onOpenStatus = { cancelLaunchIntro(); statusOpen = true },
                 onRetryHome = model::refreshHome,
             )
         }
@@ -383,6 +397,7 @@ internal fun RemoteApp(
             // 所有首页下一级整页共用导航容器；根配对和 sheet 保持独立的呈现方式（M14）。
             // 首页始终留在同一个组合位置，返回后立即可点。
             val page = when {
+                launchIntro != null -> null
                 addingHost -> HomeOverlay.Pairing
                 state.selectedRuntimeId == null && state.selectedOfflineSessionId != null -> HomeOverlay.OfflineHistory
                 state.selectedRuntimeId != null -> HomeOverlay.Chat
@@ -444,7 +459,10 @@ internal fun RemoteApp(
                 newSessionOpen = false
                 newSessionCwd = null
                 model.dismissBrowse()
-                if (model.createSession(agentKind, cwd, newSessionHostId) == true) actionHaptic()
+                if (model.createSession(agentKind, cwd, newSessionHostId)) {
+                    launchIntro = model.currentLaunchPresentation()
+                    actionHaptic()
+                }
             },
         )
     }
@@ -615,11 +633,23 @@ internal fun RuntimeListScreen(
     onOpenStatus: () -> Unit,
     onRequestProviders: () -> Unit,
     onRetryHome: () -> Unit = {},
+    launchIntro: LaunchState? = null,
+    onLaunchPresented: (String) -> Unit = {},
+    onDirectoryOpened: () -> Unit = {},
 ) {
     val homeListState = rememberLazyListState()
+    LaunchedEffect(launchIntro?.requestId) {
+        if (launchIntro != null) {
+            androidx.compose.runtime.withFrameNanos { }
+            homeListState.scrollToItem((homeListState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+        }
+    }
     val pullRefreshState = remember { HomePullRefreshState() }
     var pullRefreshing by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
+    LaunchedEffect(drawerState.targetValue) {
+        if (drawerState.targetValue == DrawerValue.Open) onDirectoryOpened()
+    }
     val scope = rememberCoroutineScope()
     val activeHostId = state.hostId
     val haptic = LocalHapticFeedback.current
@@ -654,6 +684,7 @@ internal fun RuntimeListScreen(
     val selecting = selectedIds.isNotEmpty()
     LaunchedEffect(visibleIds) { selectedRuntimeIds = selectedRuntimeIds.intersect(visibleIds) }
     fun toggleSelection(id: String) {
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         selectedRuntimeIds = if (id in selectedIds) selectedIds - id else selectedIds + id
     }
     BackHandler(enabled = LocalPageActive.current && selecting && drawerState.isClosed) { selectedRuntimeIds = emptySet() }
@@ -699,7 +730,7 @@ internal fun RuntimeListScreen(
                     },
                     title = {
                         if (selecting) {
-                            Text("已选择 ${selectedIds.size} 项", style = MaterialTheme.typography.titleLarge)
+                            MotionText("已选择 ${selectedIds.size} 项", style = MaterialTheme.typography.titleLarge)
                         } else Column {
                             OrbisWordmark()
                             Text(
@@ -822,7 +853,7 @@ internal fun RuntimeListScreen(
                     // 首版完整快照发布前列表为空：加载与失败占据空态的位置，而不是压在卡片上方。
                     if (state.homeRuntimesLoading) {
                         item(key = "status") { HomeFirstLoadStatus(state.homeSyncStatus, state.e2eReady, onRetryHome) }
-                    } else if (visibleRuntimes.isEmpty()) {
+                    } else if (visibleRuntimes.isEmpty() && launchIntro == null) {
                         item(key = "empty") {
                             Column(Modifier.fillMaxWidth().heightIn(min = 180.dp).testTag("home-session-empty"),
                                 verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -980,7 +1011,7 @@ internal fun RuntimeListScreen(
                                             else if (swipeOffset == 0f && !opening) opening = true
                                         },
                                         onLongClick = {
-                                            if (!selecting) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            if (runtime.runtimeId !in selectedIds) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                             swipeOffset = 0f; closeArmed = false
                                             swipeScope.launch { swipeAnim.snapTo(0f) }
                                             selectedRuntimeIds = selectedIds + runtime.runtimeId
@@ -994,7 +1025,7 @@ internal fun RuntimeListScreen(
                                         ) {
                                             AgentEmblem(agentBrand(runtime.agentKind), 44.dp)
                                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                Text(row.card.title, style = MaterialTheme.typography.titleMedium,
+                                                MotionText(row.card.title, style = MaterialTheme.typography.titleMedium,
                                                     fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                                 Text(runtime.cwd, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1013,6 +1044,9 @@ internal fun RuntimeListScreen(
                                     }
                                 }
                             }
+                        }
+                        launchIntro?.let { intro ->
+                            item(key = "new-session-" + intro.requestId) { NewSessionMotionCard(intro) { onLaunchPresented(intro.requestId) } }
                         }
                     }
                 PullToRefreshDefaults.Indicator(
@@ -1320,7 +1354,7 @@ internal fun OfflineHistoryScreen(
     }
     Scaffold(
         topBar = {
-            TopAppBar(
+            MessageActionHeader { TopAppBar(
                 navigationIcon = {
                     NeumorphIconButton(
                         onClick = onBack,
@@ -1340,7 +1374,7 @@ internal fun OfflineHistoryScreen(
                         AgentLabel(LocalAgentBrand.current, suffix = "只读历史")
                     }
                 },
-            )
+            ) }
         },
     ) { padding ->
         val chatItems = remember(presentation, turnIdsByMessageId) {
@@ -1511,6 +1545,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     val lineHeightPx = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toPx() }
     var following by remember(runtimeId, sessionId) { mutableStateOf(true) }
     var hasBrowsed by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
+    var lastScrollTowardEarlier by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
     var suppressQuestionPaging by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
     var userScrolling by remember(runtimeId, sessionId) { mutableStateOf(false) }
     val dragging by listState.interactionSource.collectIsDraggedAsState()
@@ -1535,6 +1570,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                    lastScrollTowardEarlier = available.y > 0f
                     following = false
                     hasBrowsed = true
                     suppressQuestionPaging = false
@@ -1918,7 +1954,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
     Scaffold(
         topBar = {
             Column {
-            TopAppBar(
+            MessageActionHeader { TopAppBar(
                 title = {
                     Column {
                         Row(
@@ -1976,7 +2012,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                         modifier = Modifier.testTag("chat-downloads").downloadFlightTarget(chatFlight),
                     )
                 },
-            )
+            ) }
             }
         },
         bottomBar = {
@@ -2351,7 +2387,7 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
             // An overlay leaves list measurements and reading anchors unchanged. Notices own this slot first.
             AnimatedChatQuestionReminder(
                 question = latestQuestion,
-                visible = !hasNotices && initialPositioned && hasBrowsed && !following && distanceToBottom > lineHeightPx * 3 && questionOutsideViewport,
+                visible = !hasNotices && initialPositioned && hasBrowsed && lastScrollTowardEarlier && !following && distanceToBottom > lineHeightPx * 3 && questionOutsideViewport,
                 modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = 16.dp, vertical = 6.dp),
                 onClick = { question ->
                         val index = chatItems.indexOfFirst { it.key == question.messageId }
@@ -2741,6 +2777,7 @@ internal fun AllDownloadsScreen(
                             selected = task.taskId in effectiveSelectedTaskIds,
                             selectionMode = selectionMode,
                             onClick = {
+                                selectionHaptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 selectedTaskIds = if (task.taskId in selectedTaskIds) {
                                     selectedTaskIds - task.taskId
                                 } else {
@@ -2748,7 +2785,7 @@ internal fun AllDownloadsScreen(
                                 }
                             },
                             onLongClick = {
-                                if (!selectionMode) selectionHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                if (task.taskId !in selectedTaskIds) selectionHaptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 selectedTaskIds = selectedTaskIds + task.taskId
                             },
                         )
@@ -2999,7 +3036,7 @@ private fun ConnectionStatus(
                 Box(Modifier.size(8.dp).clip(CircleShape).background(color))
             }
         }
-        Text(label, color = color, style = MaterialTheme.typography.labelMedium)
+        MotionText(label, color = color, style = MaterialTheme.typography.labelMedium)
         if (secured) {
             // 同步失败不影响加密：锁保持已加密的颜色，不把失败画成通道不安全。
             Icon(Icons.Rounded.Lock, contentDescription = "端到端加密", tint = securedColor, modifier = Modifier.size(13.dp))
@@ -3097,8 +3134,10 @@ internal fun AgentProvidersContent(
     val haptic = LocalHapticFeedback.current
     fun exitSelection() { selecting = false; selectedProviders = emptySet(); pendingRemoval = null }
     fun toggle(provider: AgentProvider) {
-        if (available && provider.removable) selectedProviders =
-            if (provider in selected) selected - provider else selected + provider
+        if (available && provider.removable) {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            selectedProviders = if (provider in selected) selected - provider else selected + provider
+        }
     }
     LaunchedEffect(connected, removable) {
         selectedProviders = selected
@@ -3107,7 +3146,7 @@ internal fun AgentProvidersContent(
     }
     SelectionBackPriority(selecting) { exitSelection() }
     Scaffold(topBar = {
-        TopAppBar(title = { Text(if (selecting) "已选择 ${selected.size} 项" else "供应商") }, navigationIcon = {
+        TopAppBar(title = { MotionText(if (selecting) "已选择 ${selected.size} 项" else "供应商") }, navigationIcon = {
             NeumorphIconButton(onClick = { if (selecting) exitSelection() else onBack() },
                 icon = if (selecting) Icons.Rounded.Close else Icons.Rounded.ArrowBack,
                 backMorph = selecting,
@@ -3147,7 +3186,7 @@ internal fun AgentProvidersContent(
                         onClick = { if (selecting) toggle(provider) },
                         onLongClick = {
                             if (available && provider.removable) {
-                                if (!selecting) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                if (provider !in selected) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 selecting = true; selectedProviders = selected + provider
                             }
                         }) {
@@ -3470,7 +3509,7 @@ internal fun ChatRuntimeStatus(
                 RuntimeStatusDot(status)
             }
         }
-        Text(
+        MotionText(
             runtimeStatusText(status),
             color = runtimeStatusColor(status),
             style = MaterialTheme.typography.labelSmall,
@@ -3478,7 +3517,7 @@ internal fun ChatRuntimeStatus(
             overflow = TextOverflow.Ellipsis,
         )
         modelLabel?.takeIf(String::isNotBlank)?.let { label ->
-            Text(
+            MotionText(
                 "$label",
                 // fill = false：短标签只占自身宽度，不撑满剩余空间把内容推到行尾。
                 modifier = Modifier.weight(1f, fill = false).widthIn(max = 132.dp),
@@ -3490,7 +3529,7 @@ internal fun ChatRuntimeStatus(
             )
         }
         thinkingLevel?.takeIf(String::isNotBlank)?.let { level ->
-            Text(
+            MotionText(
                 "$level",
                 modifier = Modifier.widthIn(max = 96.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -3519,7 +3558,7 @@ private fun RuntimeStatus(
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
         RuntimeStatusIndicator(status)
         modelLabel?.takeIf(String::isNotBlank)?.let { label ->
-            Text(
+            MotionText(
                 "$label",
                 modifier = Modifier.weight(1f, fill = false),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -3543,7 +3582,7 @@ private fun RuntimeStatus(
 internal fun RuntimeStatusIndicator(status: String) {
     Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
         RuntimeStatusDot(status)
-        Text(runtimeStatusText(status), color = runtimeStatusColor(status), style = MaterialTheme.typography.labelSmall)
+        MotionText(runtimeStatusText(status), color = runtimeStatusColor(status), style = MaterialTheme.typography.labelSmall)
     }
 }
 

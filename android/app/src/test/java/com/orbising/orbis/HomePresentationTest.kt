@@ -140,4 +140,17 @@ class HomePresentationTest {
         assertEquals(HomeSyncStatus.Idle, f.state.homeSyncStatus)
         assertEquals(2, f.state.homeCards.size)
     }
+    @Test fun retainedCardsRemainInteractiveDuringReadsButRejectReplacementAndDisconnect() {
+        val f = HomeLoadingFixture(); f.complete("a", "b")
+        val card = f.state.homeCards.first { it.runtime.runtimeId == "a" }
+        f.state = f.state.copy(homeDirectoryReceived = false)
+        f.beginRead("a")
+        assertEquals(HomeSyncStatus.Syncing, f.state.homeSyncStatus)
+        assertTrue(f.state.homeCardIsCurrent(card))
+        assertFalse(f.state.copy(e2eReady = false).homeCardIsCurrent(card))
+        assertFalse(f.state.copy(runtimes = f.state.runtimes - "a").homeCardIsCurrent(card))
+        val replacement = f.state.runtimes.getValue("a").copy(sessionId = "replacement")
+        assertFalse(f.state.copy(runtimes = f.state.runtimes + ("a" to replacement)).homeCardIsCurrent(card))
+    }
+
 }

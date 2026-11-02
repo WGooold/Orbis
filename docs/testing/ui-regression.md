@@ -215,6 +215,22 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | MOT-09 / SC28–32 | 扩展 SwipeBack、PageNavigation、iOS嵌套返回；系统左右边缘取消和完成、菜单/IME/选择优先 | C04、R19–R22、R40 / M08、M14 |
 | MOT-10 | 32组场景调用方逐项审计；最终双端全量L1–L4与同设备基线比较 | C01–C18、A1–A4，宽屏A5 |
 
+r33 增补（同属 §3.3 的自动映射；完整结果见 [r33 验证记录](interaction-motion.md#2026-11-02--r33-交互细化)）：
+
+| Ticket / 场景 | 实际自动验证入口 | 手动 / feature |
+| --- | --- | --- |
+| MOT-11 / SC33 | Android `InteractionMotionTest`、`predictiveBackOnBothEdgesCancelsOrCommitsOnlyOnePage`；iOS `testOptionalEdgeBackKeepsExistingIOSNavigation` | R41 / M08、M14 |
+| MOT-12 / SC34 | `discreteLabelsKeepOnlyTheLiveAccessibilityValueDuringTheirFade`、`ChatStatusLayoutInstrumentedTest`、iOS 状态外观矩阵、Qt `MotionTextTest` | R42 / M21、V05、V16 |
+| MOT-13 / SC35、MOT-15 / SC37 | `physicalPressShowsFeedbackBeforeDispatchAndCancellationDoesNotClick`、`iconActivationChangesTheGlyphWithoutChangingItsHitTarget`；双端共用组件和导航来源中帧 | R43、R45 / M20、M12、V13 |
+| MOT-14 / SC36 | `SessionDrawerViewportInstrumentedTest`、`SessionProviderFilterInstrumentedTest`、iOS `testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates` 及搜索 / 归档既有用例 | R44 / M22、V21 |
+| MOT-16 / SC38 | `HomeSelectionInstrumentedTest` 逐项触觉次数、目录 / 下载选择；iOS 首页 / 目录 / 下载多选 | R46 / M06、M12 |
+| MOT-17 / SC39 | Qt `MotionTextTest`、`--smoke-motion` 普通 / 减少动画的真实窗口中帧 | R47 / X03、X05 |
+| MOT-18 / SC40 | `newSessionCardRisesBeforeHandingOffExactlyOnce`、LaunchLedger、双端启动失败 / 重试 / 启动中输入；iOS 新卡录屏 | R48 / M23、V12、V17 |
+| MOT-19 / SC41 | `nativeTextLongPressReplacesThePageHeaderWithoutMovingTheBubble`；iOS `testUserMessageCopyAndRewind`、`testOptimisticSendReconcilesAndRejectedSendRestores` | R49 / M19、S10、S17 |
+| MOT-20 / SC42 | `ChatQuestionReminderInstrumentedTest`、iOS 两项最近提问专项（保留锚点断言） | R50 / S24、V01–V03 |
+| MOT-21 / SC43 | `HomePresentationTest`、`HomeRuntimeLoadingTests`、`HomeLoadingInstrumentedTest`、iOS `testHomeKeepsCardsAfterDirectoryReplay` | R51 / S18、V13、V18 |
+
+
 ## 4. 手动回归
 
 ### 4.1 执行方式与证据
@@ -236,12 +252,12 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | C07 | 展开 / 收起 thinking 与工具卡；打开工具详情 | 约 260ms 自然高度折叠；展开状态保留；详情可分页、可关闭 | M03、S20、V14 |
 | C08 | 触发审批 / 问卷，提交与取消 | 单项确认浮在输入区上方，提交时 composer 不位移；多步骤间草稿保留 | V07、M12 |
 | C09 | 首页卡片左滑：短滑后松手，再滑过半宽 | 短滑回弹；越过半宽时提示“松手关闭”并触觉一次；退回“关闭”同样触觉一次，同手势反复跨阈值持续反馈，同侧移动和松手 / 回弹不追加；松手后退场；多选模式下不触发 | M10、M12、V11 |
-| C10 | 长按卡片进入多选，再点选和退出 | 进入多选时触觉一次；选中按r31从本次触点260ms扩散，取消160ms；卡片几何不变 | S15、M06、M12 |
+| C10 | 长按卡片进入多选，再点选和退出 | 每次有效选中或取消触觉一次，首次长按不重复；选中按r31从本次触点260ms扩散，取消160ms；卡片几何不变 | S15、M06、M12 |
 | C11 | 从左缘拖开目录，折叠 / 展开目录，搜索，归档 / 恢复 | 抽屉跟手吸附；折叠后高度立即收缩；一次只展开一个目录 | M09、S19、V17 |
 | C12 | 打开设置页（r15 前由“更多操作 › 连接状态”进入，r15 后点右上角齿轮）；检查当前连接事实行；点配额币；打开供应商切换 | 分区顺序正确；连接延迟以整数毫秒显示，无样本时为“暂不可用”；供应商卡片区（r15 后位于最上方）：44pt/dp 环、角标、左倾 24° 翻面；切换菜单透明无底色 | S19、S22–S23、M14 |
 | C13 | 打开首页下载页；整卡暂停 / 继续，长按多选 | 没有旁置按钮；长按多选；r15 后可从右侧滑入、右滑返回首页 | S20、S15、M14 |
 | C14 | 在 Codex 长回合（多次工具调用，消息超过 4 条）结束后查看轮次文件概况；Pi 一轮改动超过 4 个文件时，先直接点击预览中的 `.kt` / `.md` 文件，再展开完整清单后打开作对照；查看器入场期间注入完整清单与首段 diff；关闭重开并左右切换文件；正文滚到中段后快速向下甩回顶部并继续下拉 / 快甩；再从标题区短拉、长拉 | 概况卡在整轮最后一行之后，不在回合中段；概况是单个内凹块，标题行可点开查看器，每个文件一行、状态字母颜色正确，长文件名不被目录挤压，未知行数显示短状态而非“+— −—”；预览升级为完整清单时不崩溃、不改选中文件，直接打开与先展开清单具有相同查看语义；跟手、落位、首尾回弹；只请求已落位文件的详情；正文到顶只在差异区内回弹，卡片不移动不关闭；标题区短拉回弹、长拉或快甩关闭，滑出过程中仍显示当前文件、不变成空白或加载态 | S21、M13、V19 |
-| C15 | 复制消息 / 代码 | 原位对勾，2.5 秒后恢复；重复复制重置计时 | M05、V16 |
+| C15 | 用户消息长按切换页顶栏后复制；助手 / 代码沿用原入口 | 原位对勾，2.5 秒后恢复；重复复制重置计时 | M05、V16 |
 | C16 | 切换明暗后重看 C01、C04、C12 | 明暗四层底板；单层材质外框；柔影方向正确，没有纯黑硬边 | S01–S04 |
 | C17 | 断开再恢复电脑连接（隔离夹具或预览注入） | 胶囊依次表达连接中 / 同步中 / 同步失败；失败时胶囊旁出现 48 命中的重试；卡片不移位 | S18、V16、V18 |
 | C18 | 两台电脑间切换（iOS `--preview-hosts=2`，Android 夹具） | 首页与目录只显示当前电脑；其他电脑待确认时显示红点；旧卡片不能操作新会话 | S18、V17 |
@@ -348,7 +364,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | R33 | 左滑跨阈值再退回、再次跨阈值松手；拒绝/断线/换电脑 | 红灰平滑；每次进入 / 退出阈值各触觉一次，单手势至少反复三轮，同侧移动及松手 / 回弹不追加；卡片完全滑出再收拢；恢复不串身份 | M10 / MOT-02 |
 | R34 | 首页、目录、下载、供应商分别长按和触点不同时逐项选择；快速反选和退出 | 蓝底从各自触点展开；工具栏线段旋转/合拢/渐显；几何和确认取消保持 | S15、M06 / MOT-03 |
 | R35 | 所有菜单入口四角/窄屏展开；电脑二级进入返回；连续操作/系统返回/切电脑 | 从锚点翻开；容器先变形再侧向翻页；返回相反且只退一层 | M18 / MOT-04 |
-| R36 | 当前聊天、长文本、附件、历史预览和离线消息长按；复制、Rewind、滚动及文字选择 | 上方操作栏，常驻下方操作移除；pending恢复区仍在；不推动正文/绕过确认 | S10、M19 / MOT-05 |
+| R36 | 当前聊天、长文本、附件、历史预览和离线消息长按；复制、Rewind、滚动及文字选择 | r33 应用页顶栏切换为操作栏，常驻下方操作移除；pending恢复区仍在；不推动正文/绕过确认 | S10、M19 / MOT-05 |
 | R37 | 文本、多行、附件、运行中排队、重试、连发、断线、上翻阅读中发送 | 先右后上；准确身份交接；不追新、不重播、不飞向不存在的行 | M17 / MOT-06 |
 | R38 | 上翻触发最近提问，原文进入视野/点击/通知覆盖/新问题/换会话 | 右上滑入、原路滑出；末帧前内容保留，阅读锚点不动 | S24 / MOT-07 |
 | R39 | 按SC19–SC27逐入口点击图标，重复点击、禁用、减少动画 | 下载箭头弹、设置和历史旋转，其他轻弹；48命中不变，无重复专属动画 | M20 / MOT-08 |
@@ -428,7 +444,7 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 
 模拟器夹具不替代真机触觉体感、多真实 Host、真实后端和网络、真实订阅账号，也不覆盖 VoiceOver / TalkBack 全流程。这些项目以对应专题的真实环境验收为准，并在结果中单列为未验收。
 
-## r33 交互动效补充（设计已登记，待实施）
+## r33 交互动效补充（已接入，验证中）
 
 | 编号 | 专项 / ticket | 验收 | ID |
 | --- | --- | --- | --- |
@@ -444,4 +460,4 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | R50 | 单行提醒和最后上翻意图 / MOT-20 | ADR-0058 SC42 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | S24、V01–V03 |
 | R51 | 同步期间有效卡片可交互 / MOT-21 | ADR-0058 SC43 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | S18、V13、V18 |
 
-§3.3 增补映射：MOT-11→InteractionMotion / PageNavigation 设备中帧；MOT-12/13/15/16→共用按压 / 文字 / 多选设备用例；MOT-14→目录筛选与视口；MOT-17→Qt 材质 / 页面帧；MOT-18→LaunchLedger 与新建交接；MOT-19→用户消息复制 / Rewind 与顶栏；MOT-20→ChatQuestion / 提醒滚动方向；MOT-21→HomePresentation / HomeRuntimeLoading / 首页刷新点击。具体用例随实施补齐。完整 L1–L4 / C / R / A 未运行；历史失败保留。
+§3.3 增补映射：MOT-11→InteractionMotion / PageNavigation 设备中帧；MOT-12/13/15/16→共用按压 / 文字 / 多选设备用例；MOT-14→目录筛选与视口；MOT-17→Qt 材质 / 页面帧；MOT-18→LaunchLedger 与新建交接；MOT-19→用户消息复制 / Rewind 与顶栏；MOT-20→ChatQuestion / 提醒滚动方向；MOT-21→HomePresentation / HomeRuntimeLoading / 首页刷新点击。具体自动用例与每轮结果见 [r33 验证记录](interaction-motion.md#2026-11-02--r33-交互细化)。双端已执行全量，受影响失败继续修复 / 复核；完整 C / R / A 尚未完成，历史失败保留。

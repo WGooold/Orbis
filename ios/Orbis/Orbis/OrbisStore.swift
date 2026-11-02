@@ -163,8 +163,8 @@ final class HostConnection: ObservableObject {
     }
 
     func homeCardIsCurrent(_ card: HomeRuntimeCard) -> Bool {
-        connection == .secured && homeDirectoryReceived && runtimes.contains {
-            $0.runtimeId == card.id && $0.sessionId == card.runtime.sessionId
+        connection == .secured && card.runtime.sessionId != nil && runtimes.contains {
+            $0.runtimeId == card.id && $0.sessionId == card.runtime.sessionId && $0.agentKind == card.runtime.agentKind
         }
     }
     var homeRuntimesError: String? {

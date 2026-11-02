@@ -85,6 +85,8 @@ internal fun OrbisPageHost(
     val active = LocalPageActive.current
     val parentGate = LocalPageBackGate.current
     val gate = remember(contentKey, parentGate) { PageBackGate(parentGate) }
+    val messageActions = remember(contentKey) { MessageActionState() }
+    LaunchedEffect(active, open) { if (!active || !open) messageActions.dismiss() }
     val dispatcherOwner = checkNotNull(LocalOnBackPressedDispatcherOwner.current)
     val inactiveOwner = remember(dispatcherOwner) {
         object : OnBackPressedDispatcherOwner {
@@ -100,7 +102,7 @@ internal fun OrbisPageHost(
             CompositionLocalProvider(LocalPageActive provides (active && !open),
                 LocalOnBackPressedDispatcherOwner provides if (active && !open) dispatcherOwner else inactiveOwner) { underlay() }
         },
-        content = { CompositionLocalProvider(LocalPageActive provides active, LocalPageBackGate provides gate) { content() } },
+        content = { CompositionLocalProvider(LocalPageActive provides active, LocalPageBackGate provides gate, LocalMessageActionState provides messageActions) { content() } },
         dragEnabled = gate.blockers.isEmpty() && WindowInsets.ime.getBottom(LocalDensity.current) == 0)
 }
 
@@ -133,6 +135,7 @@ internal fun SwipeBackLayer(
     var returning by remember(open, contentKey) { mutableStateOf(false) }
     var settleJob by remember(open, contentKey) { mutableStateOf<Job?>(null) }
     val edgeProgress = remember(open, contentKey) { Animatable(0f) }
+    val edgeExit = remember(open, contentKey) { Animatable(0f) }
     var edgeBack by remember(open, contentKey) { mutableStateOf(false) }
     var edgeDirection by remember(open, contentKey) { mutableFloatStateOf(1f) }
     val scrim = MaterialTheme.colorScheme.scrim
@@ -175,7 +178,8 @@ internal fun SwipeBackLayer(
             }
             returning = true
             settleJob = scope.launch {
-                edgeProgress.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.Dismiss)))
+                edgeExit.snapTo(0f)
+                edgeExit.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.Dismiss)))
                 currentOnBack()
             }
         } catch (_: CancellationException) {
@@ -247,7 +251,8 @@ internal fun SwipeBackLayer(
             .drawWithContent {
                 if (!open || entering || dragging || edgeBack || offset.isRunning || offset.value > 0f) {
                     drawContent()
-                    drawRect(scrim.copy(alpha = 0.34f * (1f - progress())))
+                    val shade = if (edgeBack) (0.34f - 0.16f * edgeProgress.value) * (1f - edgeExit.value) else 0.34f * (1f - progress())
+                    drawRect(scrim.copy(alpha = shade.coerceIn(0f, 0.34f)))
                 }
             }) {
             underlay()
@@ -257,12 +262,13 @@ internal fun SwipeBackLayer(
         if (open) Box(Modifier.fillMaxSize().graphicsLayer {
             if (edgeBack) {
                 val p = edgeProgress.value.coerceIn(0f, 1f)
-                scaleX = 1f - 0.04f * p; scaleY = scaleX
-                translationX = edgeDirection * 24.dp.toPx() * p
+                scaleX = 1f - InteractionMotion.EdgeShrink * p; scaleY = scaleX
+                val shift = InteractionMotion.edgeShift(size.width, p, edgeDirection, 8.dp.toPx())
+                translationX = shift + (size.width - shift) * edgeExit.value
                 shape = RoundedCornerShape((24 * p).dp)
                 clip = true
                 // On commit the compressed page leaves before the source becomes interactive.
-                alpha = if (returning) 1f - ((p - 0.8f) / 0.2f).coerceIn(0f, 1f) else 1f
+                alpha = 1f
             } else translationX = if (entering && !entranceStarted) size.width else position().coerceAtLeast(0f)
         }) { content() }
     }

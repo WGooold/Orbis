@@ -48,7 +48,7 @@ struct DownloadsView: View {
     }
 
     private func beginSelection(_ id: String) {
-        if selected.isEmpty { OrbisHaptics.beginSelection() }
+        if !selected.contains(id) { OrbisHaptics.beginSelection() }
         selected.insert(id)
     }
 
@@ -68,6 +68,7 @@ struct DownloadsView: View {
             } else {
                 OrbisMotionButton {
                     if !selected.isEmpty {
+                        OrbisHaptics.selectionChanged()
                         if !selected.insert(task.id).inserted { selected.remove(task.id) }
                     } else if ["queued", "downloading", "verifying"].contains(task.status) {
                         // Cancellation preserves the partial file and prevents automatic resumption.

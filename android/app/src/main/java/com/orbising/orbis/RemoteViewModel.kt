@@ -327,6 +327,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun activateSession(sessionId: String) = active()?.activateSession(sessionId)
 
+    internal fun currentLaunchPresentation(): LaunchState? = active()?.state?.value?.launching
+
     fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean =
         active()?.createSession(agentKind, cwd, expectedHostId, spawnMode) == true
 

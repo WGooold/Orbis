@@ -66,14 +66,18 @@ class InteractionMotionInstrumentedTest {
         assertEquals(before[before.width / 2, before.height / 2], restored[restored.width / 2, restored.height / 2])
     }
 
-    @Test fun nativeTextLongPressOpensTheSameMessageActionsAboveTheBubble() {
+    @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+    @Test fun nativeTextLongPressReplacesThePageHeaderWithoutMovingTheBubble() {
         var rewinds = 0
         compose.setContent { OrbisTheme {
+            val actions = remember { MessageActionState() }
+            CompositionLocalProvider(LocalMessageActionState provides actions) {
             Column(Modifier.fillMaxSize().padding(20.dp)) {
-                Spacer(Modifier.height(250.dp))
+                MessageActionHeader { androidx.compose.material3.TopAppBar(title = { Text("原状态栏") }) }
+                Spacer(Modifier.height(186.dp))
                 UserMessageCard("r", ChatMessage("user", "user", listOf(RemoteContent("text", "长按这段文字查看操作")), 1),
                     emptyMap(), {}, {}, onRewind = { rewinds++ }, rewindEnabled = true)
-            }
+            } }
         } }
         val text = compose.onNodeWithText("长按这段文字查看操作")
         val before = text.fetchSemanticsNode().boundsInRoot
@@ -81,6 +85,8 @@ class InteractionMotionInstrumentedTest {
         text.performTouchInput { longClick() }
         val copy = compose.onNodeWithContentDescription("复制消息")
         copy.assertIsDisplayed()
+        compose.onNodeWithTag("message-action-header").assertIsDisplayed()
+        compose.onNodeWithText("原状态栏").assertDoesNotExist()
         assertEquals(before, text.fetchSemanticsNode().boundsInRoot)
         assertTrue(copy.fetchSemanticsNode().boundsInRoot.bottom < before.top)
         capture("motion-message-toolbar")
@@ -134,6 +140,51 @@ class InteractionMotionInstrumentedTest {
         capture("motion-glyph-settled")
     }
 
+    @Test fun physicalPressShowsFeedbackBeforeDispatchAndCancellationDoesNotClick() {
+        var count = 0
+        compose.mainClock.autoAdvance = false
+        compose.setContent { OrbisTheme {
+            Box(Modifier.padding(30.dp)) { NeumorphIconButton({ count++ }, Icons.Rounded.Settings, "按压齿轮", Modifier.testTag("press-gear")) }
+        } }
+        compose.mainClock.advanceTimeBy(700)
+        val gear = compose.onNodeWithTag("press-gear")
+        val bounds = gear.fetchSemanticsNode().boundsInRoot
+        val resting = gear.captureToImage().asAndroidBitmap()
+        gear.performTouchInput { down(center) }
+        compose.mainClock.advanceTimeBy(80)
+        assertFalse(resting.sameAs(gear.captureToImage().asAndroidBitmap()))
+        compose.runOnIdle { assertEquals("Down must not dispatch the action", 0, count) }
+        gear.performTouchInput { cancel() }
+        compose.mainClock.advanceTimeBy(700)
+        compose.runOnIdle { assertEquals(0, count) }
+        assertEquals(bounds, gear.fetchSemanticsNode().boundsInRoot)
+        gear.performTouchInput { click() }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(64)
+        compose.runOnIdle { assertEquals("Dispatch must not wait for the rotation", 1, count) }
+        assertFalse(resting.sameAs(gear.captureToImage().asAndroidBitmap()))
+        capture("motion-fast-press-feedback")
+        compose.mainClock.advanceTimeBy(700)
+        assertEquals(bounds, gear.fetchSemanticsNode().boundsInRoot)
+    }
+
+    @Test fun discreteLabelsKeepOnlyTheLiveAccessibilityValueDuringTheirFade() {
+        var label by mutableStateOf("正在同步")
+        compose.mainClock.autoAdvance = false
+        compose.setContent { OrbisTheme { MotionText(label, Modifier.testTag("status-slot").width(180.dp)) } }
+        compose.mainClock.advanceTimeBy(300)
+        val slot = compose.onNodeWithTag("status-slot")
+        val before = slot.fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle { label = "同步完成" }
+        compose.mainClock.advanceTimeBy(64)
+        compose.onNodeWithText("同步完成").assertExists()
+        compose.onNodeWithText("正在同步").assertDoesNotExist()
+        assertEquals(before, slot.fetchSemanticsNode().boundsInRoot)
+        capture("motion-discrete-label-middle")
+        compose.mainClock.advanceTimeBy(240)
+        compose.onNodeWithText("同步完成").assertExists()
+    }
+
     @Test fun predictiveBackOnBothEdgesCancelsOrCommitsOnlyOnePage() {
         lateinit var dispatcher: OnBackPressedDispatcher
         var open by mutableStateOf(true)
@@ -154,6 +205,8 @@ class InteractionMotionInstrumentedTest {
         compose.mainClock.advanceTimeByFrame()
         val middle = compose.onNodeWithTag("page").fetchSemanticsNode().boundsInRoot
         assertTrue(middle.width < before.width && middle.height < before.height)
+        assertTrue(middle.left > before.left && middle.right < before.right)
+        assertTrue(middle.center.x < before.center.x)
         capture("motion-edge-right-cancel")
         compose.runOnIdle { dispatcher.dispatchOnBackCancelled() }
         compose.mainClock.advanceTimeBy(1500)
@@ -162,8 +215,15 @@ class InteractionMotionInstrumentedTest {
         compose.mainClock.advanceTimeByFrame()
         compose.runOnIdle { dispatcher.dispatchOnBackProgressed(event(0.65f, BackEventCompat.EDGE_LEFT)) }
         compose.mainClock.advanceTimeByFrame()
+        val left = compose.onNodeWithTag("page").fetchSemanticsNode().boundsInRoot
+        assertTrue(left.center.x > before.center.x && left.right < before.right && left.left > before.left)
         capture("motion-edge-left-commit")
         compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.mainClock.advanceTimeBy(80)
+        val exiting = compose.onNodeWithTag("page").fetchSemanticsNode().boundsInRoot
+        assertTrue(exiting.left > left.left)
+        compose.runOnIdle { assertEquals(0, backs) }
+        capture("motion-edge-commit-slide")
         compose.mainClock.advanceTimeBy(400)
         compose.onNodeWithText("真实来源").assertIsDisplayed()
         compose.runOnIdle { assertEquals(1, backs) }
@@ -261,6 +321,27 @@ class InteractionMotionInstrumentedTest {
         compose.mainClock.advanceTimeByFrame()
         compose.runOnIdle { assertTrue(flight.flights.isEmpty()) }
         assertEquals(bounds, compose.onNodeWithTag("landing").fetchSemanticsNode().boundsInRoot)
+    }
+
+
+    @Test fun newSessionCardRisesBeforeHandingOffExactlyOnce() {
+        var completed = 0
+        compose.mainClock.autoAdvance = false
+        val launch = LaunchState("request", "launch:request", mapOf("type" to "new"), "新项目", "/repo", "pi", null)
+        compose.setContent { OrbisTheme {
+            Box(Modifier.fillMaxSize().padding(24.dp)) { NewSessionMotionCard(launch) { completed++ } }
+        } }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(112)
+        val middle = compose.onNodeWithTag("new-session-card").fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle { assertEquals(0, completed) }
+        capture("motion-new-session-middle")
+        compose.mainClock.advanceTimeBy(300)
+        val end = compose.onNodeWithTag("new-session-card").fetchSemanticsNode().boundsInRoot
+        assertTrue(middle.top > end.top)
+        compose.runOnIdle { assertEquals(1, completed) }
+        compose.mainClock.advanceTimeBy(500)
+        compose.runOnIdle { assertEquals(1, completed) }
     }
 
     private fun capture(name: String) {

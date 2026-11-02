@@ -600,6 +600,7 @@ fun NeumorphSurface(
     val colors = rememberNeumorphColors()
     var glyphActivation by remember { mutableIntStateOf(0) }
     val inheritedActivation = LocalGlyphActivation.current
+    val inheritedPressed = LocalGlyphPressed.current
     val parent = LocalOrbisSurface.current
     val resolvedShape = concentricShape(shape)
     val paints = rememberShadowPaints(colors, shadowScale)
@@ -654,6 +655,7 @@ fun NeumorphSurface(
             CompositionLocalProvider(
                 LocalContentColor provides MaterialTheme.colorScheme.onSurface,
                 LocalGlyphActivation provides if (onClick != null) glyphActivation else inheritedActivation,
+                LocalGlyphPressed provides if (onClick != null) (pressed && active) else inheritedPressed,
                 LocalOrbisSurface provides OrbisSurfaceContext(layer, (parent?.depth ?: 0) + 1,
                     corner?.let { (it - contentInset).coerceAtLeast(0.dp) }),
             ) {
@@ -741,7 +743,7 @@ fun NeumorphIconButton(
                         if (active) it else it.copy(alpha = 0.38f)
                     },
                     size = if (compact) 18.dp else RemoteUi.IconSize,
-                    activation = activation, menuMorph = menuMorph, backMorph = backMorph,
+                    activation = activation, menuMorph = menuMorph, backMorph = backMorph, pressed = pressed && active,
                 )
             }
         }

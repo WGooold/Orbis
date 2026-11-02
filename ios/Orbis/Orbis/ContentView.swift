@@ -12,6 +12,8 @@ struct ContentView: View {
     @State private var directoryState = SessionDirectoryState()
     @State private var newSessionOpen = false
     @State private var newSessionCwd: String?
+    @State private var launchIntro: HostConnection.LaunchState?
+    @State private var launchIntroReady = false
     @StateObject private var overlay = OrbisOverlay()
 
     init() {
@@ -55,6 +57,7 @@ struct ContentView: View {
                     case .downloads: DownloadsView(onBack: back)
                     }
                 }
+                .modifier(OrbisMessageActionScope())
                 .foregroundStyle(OrbisPalette(scheme).text)
                 .background(OrbisPalette(scheme).base.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
@@ -96,21 +99,24 @@ struct ContentView: View {
             }
         }
         #endif
-        .sheet(isPresented: $newSessionOpen, onDismiss: store.dismissBrowse) {
-            NewSessionView(presetCwd: newSessionCwd) { newSessionOpen = false }
+        .sheet(isPresented: $newSessionOpen, onDismiss: { store.dismissBrowse(); launchIntroReady = launchIntro != nil }) {
+            NewSessionView(presetCwd: newSessionCwd, onCreated: { launch in
+                launchIntro = launch; launchIntroReady = false
+                navigation.replace(with: [])
+            }) { newSessionOpen = false }
                 .environmentObject(store).orbisSheet([.large])
         }
-        .onChange(of: store.selectedHostId) { _, _ in overlay.dismissMenu() }
+        .onChange(of: store.selectedHostId) { _, _ in overlay.dismissMenu(); launchIntro = nil; launchIntroReady = false }
         .onChange(of: store.pairings) { _, _ in overlay.dismissMenu() }
         .onChange(of: navigation.pages) { _, pages in
             overlay.dismissMenu()
             // ADR-0049 §6.8：离开启动页不取消启动，成功后也不把用户拉回。
-            if !pages.contains(.chat) { store.stopFollowingLaunch() }
+            if !pages.contains(.chat) && launchIntro == nil { store.stopFollowingLaunch() }
         }
-        .onChange(of: drawerOpen) { _, open in if !open { overlay.dismissMenu() } }
+        .onChange(of: drawerOpen) { _, open in if open { cancelLaunchIntro() } else { overlay.dismissMenu() } }
         .onChange(of: store.activationRevision) { _, _ in
             setDrawer(false); newSessionOpen = false
-            if store.selectedRuntime != nil { navigation.replace(with: [.chat]) }
+            if store.selectedRuntime != nil && launchIntro == nil { navigation.replace(with: [.chat]) }
         }
         .onChange(of: store.selectedRuntimeId) { old, next in
             if old != nil && next == nil && navigation.pages.contains(.chat) { navigation.replace(with: []) }
@@ -140,7 +146,11 @@ struct ContentView: View {
     }
 
     private var home: some View {
-        HomeView(onDirectory: { setDrawer(true) }, onSettings: { push(.status) },
+        HomeView(launchIntro: launchIntroReady ? launchIntro : nil, onLaunchPresented: { requestId in
+            guard launchIntro?.requestId == requestId, !drawerOpen, !newSessionOpen, navigation.pages.isEmpty else { return }
+            launchIntro = nil; launchIntroReady = false
+            if store.selectedRuntime != nil { navigation.replace(with: [.chat]) }
+        }, onDirectory: { setDrawer(true) }, onSettings: { push(.status) },
                  onDownloads: { push(.downloads) },
                  onOpenRuntime: { hostId, runtime in
                      store.selectHost(hostId)
@@ -165,8 +175,14 @@ struct ContentView: View {
     }
 
     private func back() { navigation.back() }
-    private func push(_ page: AppPage) { navigation.push(page) }
+    private func cancelLaunchIntro() {
+        guard launchIntro != nil else { return }
+        launchIntro = nil; launchIntroReady = false
+        store.stopFollowingLaunch()
+    }
+    private func push(_ page: AppPage) { cancelLaunchIntro(); navigation.push(page) }
     private func setDrawer(_ open: Bool) {
+        if open { cancelLaunchIntro() }
         withAnimation(reduceMotion ? nil : .orbisDrag) { drawerOpen = open }
     }
     private func confirmUnpair(_ host: HostPairing?) {
@@ -179,6 +195,7 @@ struct ContentView: View {
         ])
     }
     private func openRuntime(_ runtime: RuntimeSummary) {
+        cancelLaunchIntro()
         store.selectRuntime(runtime.runtimeId); setDrawer(false); navigation.replace(with: [.chat])
     }
 }
@@ -467,6 +484,8 @@ private struct TransferErrorBanner: View {
 }
 
 struct HomeView: View {
+    var launchIntro: HostConnection.LaunchState? = nil
+    var onLaunchPresented: (String) -> Void = { _ in }
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
@@ -505,7 +524,7 @@ struct HomeView: View {
                 }
             } title: {
                 if selecting {
-                    Text("已选择 \(selectedRuntimeIds.count) 项").font(.orbisTitle())
+                    OrbisMotionText("已选择 \(selectedRuntimeIds.count) 项").font(.orbisTitle())
                 } else {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Orbis").font(.orbisTitle())
@@ -578,7 +597,7 @@ struct HomeView: View {
 
     private var homeSessionList: some View {
         // Only the current computer's sessions: several paired computers never share one list (ADR-0030 修订).
-        ScrollView {
+        ScrollViewReader { proxy in ScrollView {
             LazyVStack(spacing: 16) {
                 if let host = currentHost {
                     ForEach(presentedCards(host)) { card in
@@ -588,9 +607,13 @@ struct HomeView: View {
                             .allowsHitTesting(exitingCards[card.id] == nil)
                             .accessibilityHidden(exitingCards[card.id] != nil)
                     }
+                    if let launchIntro {
+                        OrbisNewSessionCard(title: launchIntro.title, kind: launchIntro.agentKind, requestId: launchIntro.requestId, onPresented: { onLaunchPresented(launchIntro.requestId) })
+                            .id("new-session-" + launchIntro.requestId)
+                    }
                     if host.connection.homeRuntimesLoading {
                         firstLoadStatus(host.connection.homeSyncStatus)
-                    } else if presentedCards(host).isEmpty {
+                    } else if presentedCards(host).isEmpty && launchIntro == nil {
                         OrbisEmptyState(symbol: "desktopcomputer", title: "暂无在线会话")
                             .frame(minHeight: 180).accessibilityIdentifier("home-session-empty")
                         OrbisActionButton(title: "查看会话目录", symbol: "folder", action: onDirectory)
@@ -607,6 +630,10 @@ struct HomeView: View {
             .simultaneousGesture(closeSwipeGesture)
             .refreshable { store.refresh() }
             .accessibilityIdentifier("home-session-list")
+            .onChange(of: launchIntro?.requestId) { _, id in
+                if let id { proxy.scrollTo("new-session-" + id, anchor: .bottom) }
+            }
+        }
     }
 
     private var currentHost: HostSnapshot? { store.hosts.first { $0.hostId == store.selectedHostId } }
@@ -709,12 +736,13 @@ struct HomeView: View {
     }
 
     private func toggleSelection(_ id: String) {
+        OrbisHaptics.selectionChanged()
         if selectedRuntimeIds.contains(id) { selectedRuntimeIds.remove(id) }
         else { selectedRuntimeIds.insert(id) }
     }
 
     private func beginSelection(_ id: String) {
-        if !selecting { OrbisHaptics.beginSelection() }
+        if !selectedRuntimeIds.contains(id) { OrbisHaptics.beginSelection() }
         selectedRuntimeIds.insert(id)
     }
 
@@ -820,7 +848,7 @@ struct HomeView: View {
                     HStack(spacing: 12) {
                         AgentEmblem(kind: kind)
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(card.title).font(.orbisBody(.semibold)).lineLimit(1)
+                            OrbisMotionText(card.title).font(.orbisBody(.semibold)).lineLimit(1)
                             Text(runtime.cwd)
                                 .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
                             HStack(spacing: 10) {
@@ -870,7 +898,7 @@ struct ConnectionPill: View {
                 if busy { ProgressView().controlSize(.mini).tint(tone).scaleEffect(0.8) }
                 else { Circle().fill(tone).frame(width: 7, height: 7) }
             }.frame(width: 12, height: 12)
-            Text(title).foregroundStyle(secured && failed ? p.error : p.secondary)
+            OrbisMotionText(title).foregroundStyle(secured && failed ? p.error : p.secondary)
             if secured { Image(systemName: "lock.shield").accessibilityLabel("端到端加密") }
         }.font(.orbisCaption(.medium)).foregroundStyle(p.secondary).padding(.horizontal, 12).frame(minHeight: 36)
             .neuSurface(inset: true, radius: 18, intensity: 0.35, concentric: false)

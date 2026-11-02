@@ -38,35 +38,86 @@ struct OrbisMotionButton<Label: View>: View {
 
 struct OrbisActionSymbol: View {
     @Environment(\.orbisGlyphActivation) private var activation
-    @Environment(\.orbisReduceMotion) private var reduced
     let systemName: String
-    @State private var rotation: Double = 0
-    private var rotates: Bool { ["gearshape", "clock.arrow.circlepath", "arrow.clockwise", "arrow.triangle.2.circlepath", "point.3.connected.trianglepath.dotted"].contains(systemName) }
     var body: some View {
-        Image(systemName: systemName)
-            .phaseAnimator([1.0, 0.88, 1.0], trigger: activation) { view, phase in
-                view.scaleEffect(reduced || activation == 0 || rotates ? 1 : phase)
-            } animation: { phase in .easeOut(duration: phase == 1 ? 0.13 : 0.09) }
-            .rotationEffect(.degrees(rotation))
-            .onChange(of: activation) { _, _ in
-                if rotates && !reduced { withAnimation(InteractionMotion.selection) { rotation += 90 } }
+        Image(systemName: systemName).modifier(OrbisPressedGlyph(role: systemName, activation: activation))
+    }
+}
+
+private struct OrbisGlyphPressedKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    var orbisGlyphPressed: Bool {
+        get { self[OrbisGlyphPressedKey.self] }
+        set { self[OrbisGlyphPressedKey.self] = newValue }
+    }
+}
+
+/// A short tap finishes its visual press while the action runs immediately. Re-press takes over.
+struct OrbisPressedGlyph: ViewModifier {
+    @Environment(\.orbisGlyphPressed) private var pressed
+    @Environment(\.orbisReduceMotion) private var reduced
+    let role: String
+    let activation: Int
+    @State private var progress: Double = 0
+    @State private var began: Date?
+    @State private var pointerActivation = false
+    private var rotates: Bool { InteractionMotion.rotates(role) }
+    private var downloads: Bool { role == "arrow.down.to.line" }
+    func body(content: Content) -> some View {
+        content.rotationEffect(.degrees(rotates ? progress * 360 : 0))
+            .scaleEffect(rotates || downloads ? 1 : 1 - progress * 0.12)
+            .offset(y: downloads ? progress * 4 : 0)
+            .task(id: pressed) {
+                if pressed {
+                    began = Date(); pointerActivation = true
+                    if rotates { OrbisHaptics.press() }
+                    withAnimation(reduced ? nil : .easeOut(duration: rotates ? 0.26 : 0.09)) { progress = reduced ? 0 : 1 }
+                } else if let began {
+                    let remaining = max(0, (rotates ? 0.26 : 0.09) - Date().timeIntervalSince(began))
+                    if !reduced { try? await Task.sleep(for: .seconds(remaining)) }
+                    guard !Task.isCancelled else { return }
+                    withAnimation(reduced ? nil : downloads ? .orbisPop : .easeOut(duration: rotates ? 0.26 : 0.13)) { progress = 0 }
+                    self.began = nil; pointerActivation = false
+                }
             }
+            .task(id: activation) {
+                guard activation > 0 else { return }
+                if pointerActivation { pointerActivation = false; return }
+                // Keyboard / VoiceOver activation has no physical press phase.
+                withAnimation(reduced ? nil : InteractionMotion.state) { progress = reduced ? 0 : 1 }
+                if !reduced { try? await Task.sleep(for: .seconds(rotates ? 0.26 : 0.09)) }
+                guard !Task.isCancelled else { return }
+                withAnimation(reduced ? nil : downloads ? .orbisPop : InteractionMotion.selection) { progress = 0 }
+            }
+            .onDisappear { progress = 0; began = nil; pointerActivation = false }
+    }
+}
+
+/// Geometry-stable discrete labels; streaming text and editable text keep their own rendering.
+struct OrbisMotionText: View {
+    @Environment(\.orbisReduceMotion) private var reduced
+    @State private var appeared = false
+    let value: String
+    init(_ value: String) { self.value = value }
+    var body: some View {
+        Text(value).contentTransition(.opacity)
+            .opacity(reduced || appeared ? 1 : 0)
+            .task { withAnimation(reduced ? nil : InteractionMotion.state) { appeared = true } }
+            .animation(reduced ? nil : InteractionMotion.state, value: value)
     }
 }
 
 /// Asset icons in action rows use the same activation source as SF Symbols.
 struct OrbisActionPulse: ViewModifier {
     @Environment(\.orbisGlyphActivation) private var activation
-    @Environment(\.orbisReduceMotion) private var reduced
     func body(content: Content) -> some View {
-        content.phaseAnimator([1.0, 0.88, 1.0], trigger: activation) { view, phase in
-            view.scaleEffect(reduced || activation == 0 ? 1 : phase)
-        } animation: { phase in .easeOut(duration: phase == 1 ? 0.13 : 0.09) }
+        content.modifier(OrbisPressedGlyph(role: "asset", activation: activation))
     }
 }
 
 /// All business callers use these semantic tokens (ADR-0058), including reduced motion.
 enum InteractionMotion {
+    static func rotates(_ role: String) -> Bool { ["gearshape", "clock.arrow.circlepath", "arrow.clockwise", "arrow.triangle.2.circlepath", "point.3.connected.trianglepath.dotted"].contains(role) }
     static let selection = Animation.easeOut(duration: 0.26)
     static let state = Animation.easeOut(duration: 0.16)
     static let panel = Animation.easeOut(duration: 0.22)
@@ -159,8 +210,6 @@ struct OrbisMotionGlyph: View {
     let size: CGFloat
     var activation = 0
     var morphFrom: String? = nil
-    @State private var rotation: Double = 0
-    private var rotates: Bool { ["gearshape", "clock.arrow.circlepath", "arrow.clockwise", "point.3.connected.trianglepath.dotted"].contains(symbol) }
 
     var body: some View {
         Group {
@@ -180,23 +229,15 @@ struct OrbisMotionGlyph: View {
                         p.move(to: CGPoint(x: size / 2, y: size * 0.12)); p.addLine(to: CGPoint(x: size / 2, y: size * 0.65))
                         p.move(to: CGPoint(x: size * 0.28, y: size * 0.45)); p.addLine(to: CGPoint(x: size / 2, y: size * 0.67)); p.addLine(to: CGPoint(x: size * 0.72, y: size * 0.45))
                     }.stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                        .phaseAnimator([0.0, 1.0, 0.0], trigger: activation) { view, phase in
-                            view.offset(y: reduceMotion || activation == 0 ? 0 : phase * 4)
-                        } animation: { phase in phase == 1 ? .easeOut(duration: 0.09) : .orbisPop }
+                        .modifier(OrbisPressedGlyph(role: symbol, activation: activation))
                 }
             } else {
                 Image(systemName: symbol).font(.system(size: size, weight: .medium))
-                    .rotationEffect(.degrees(rotation))
                     .contentTransition(.opacity)
                     .animation(reduceMotion ? nil : InteractionMotion.state, value: symbol)
-                    .phaseAnimator([1.0, 0.88, 1.0], trigger: activation) { view, phase in
-                        view.scaleEffect(reduceMotion || activation == 0 || rotates ? 1 : phase)
-                    } animation: { phase in .easeOut(duration: phase == 1 ? 0.13 : 0.09) }
+                    .modifier(OrbisPressedGlyph(role: symbol, activation: activation))
             }
         }.frame(width: size, height: size)
-            .onChange(of: activation) { _, _ in
-                if rotates && !reduceMotion { withAnimation(InteractionMotion.selection) { rotation += 90 } }
-            }
             .accessibilityHidden(true)
     }
 }
@@ -242,8 +283,9 @@ private struct MenuCloseLines: Shape {
     }
 }
 
-/// Message actions are an anchored overlay, so opening them never changes the reading layout.
+/// Page-scoped actions replace the stable header slot without changing the transcript layout.
 struct OrbisMessageActions: ViewModifier {
+    @Environment(\.orbisMessageActions) private var toolbar
     @EnvironmentObject private var overlay: OrbisOverlay
     let enabled: Bool
     let id: String
@@ -256,31 +298,114 @@ struct OrbisMessageActions: ViewModifier {
     func body(content: Content) -> some View {
         if enabled {
         content.orbisAnchor(anchor)
-            .background(OrbisMenuScrollObserver { overlay.dismissMenu(owner: owner) })
+            .background(OrbisMenuScrollObserver { dismiss() })
             .accessibilityIdentifier("user-message-" + id)
-            .simultaneousGesture(enabled ? LongPressGesture().onEnded { _ in show() } : nil)
+            // Native selection can cancel a passive window observer as it dismisses the keyboard.
+            // Keep the row's simultaneous recognizer for that first hold; the observer also
+            // handles another hold when native text selection already owns the hit target.
+            .simultaneousGesture(LongPressGesture().onEnded { _ in show() })
+            .background(OrbisLongPressObserver(onPress: show))
             .accessibilityAction(named: "消息操作") { if enabled { show() } }
-            .onChange(of: rewindEnabled) { _, _ in overlay.dismissMenu(owner: owner) }
-            .onChange(of: id) { old, _ in overlay.dismissMenu(owner: "message-" + old) }
+            .onChange(of: rewindEnabled) { _, _ in dismiss() }
+            .onChange(of: text) { _, new in
+                guard toolbar?.selection?.id == id else { return }
+                toolbar?.selection = .init(id: id, text: new, rewindEnabled: rewindEnabled, rewind: rewind)
+            }
+            .onChange(of: id) { old, _ in overlay.dismissMenu(owner: "message-" + old); toolbar?.dismiss(id: old) }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { new in
                 // Keyboard and safe-area changes move the anchor without invalidating its owner.
                 // Only a real scroll pan dismisses the menu; text selection remains native.
                 anchor.frame = new
                 overlay.moveMenu(owner: owner, to: new)
             }
-            .onDisappear { overlay.dismissMenu(owner: owner) }
+            .onDisappear { dismiss() }
         } else {
             // Assistant/tool rows retain their own identifiers, links and controls.
             content
         }
     }
+    private func dismiss() {
+        overlay.dismissMenu(owner: owner); toolbar?.dismiss(id: id)
+    }
     private func show() {
-        guard enabled, !anchor.frame.isEmpty else { return }
+        guard enabled else { return }
+        if let toolbar {
+            guard toolbar.selection?.id != id else { return }
+            OrbisHaptics.selectionChanged()
+            toolbar.selection = .init(id: id, text: text, rewindEnabled: rewindEnabled, rewind: rewind)
+            return
+        }
+        guard !anchor.frame.isEmpty else { return }
         var items = [OrbisMenuItem(title: "复制消息", symbol: "doc.on.doc", keepsOpen: true, identifier: "copy-message-" + id) { UIPasteboard.general.string = text }]
         if let rewind {
             items.append(OrbisMenuItem(title: "Rewind", symbol: "backward.end", disabled: !rewindEnabled, identifier: "rewind-message-" + id, action: rewind))
         }
         overlay.showMenu(items, from: anchor.frame, horizontal: true, owner: owner)
+    }
+}
+
+/// Observes a held touch without winning against native text selection or scroll gestures.
+/// Native selection may already own the second hold, so a SwiftUI LongPressGesture is insufficient.
+private struct OrbisLongPressObserver: UIViewRepresentable {
+    let onPress: () -> Void
+    func makeUIView(context: Context) -> Probe { Probe(onPress: onPress) }
+    func updateUIView(_ view: Probe, context: Context) { view.onPress = onPress }
+    static func dismantleUIView(_ view: Probe, coordinator: ()) { view.detach() }
+    final class Probe: UIView {
+        var onPress: () -> Void
+        private var observer: HoldObserver?
+        init(onPress: @escaping () -> Void) {
+            self.onPress = onPress
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false; isAccessibilityElement = false
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func didMoveToWindow() {
+            super.didMoveToWindow(); detach()
+            guard let window else { return }
+            let recognizer = HoldObserver(probe: self)
+            window.addGestureRecognizer(recognizer); observer = recognizer
+        }
+        func detach() { observer?.invalidate(); if let observer { observer.view?.removeGestureRecognizer(observer) }; observer = nil }
+        func contains(_ touch: UITouch) -> Bool {
+            guard window != nil, bounds.contains(touch.location(in: self)) else { return false }
+            var parent: UIView? = self
+            while let view = parent {
+                if view.isHidden || view.alpha < 0.01 { return false }
+                if view.clipsToBounds && !view.bounds.contains(touch.location(in: view)) { return false }
+                parent = view.superview
+            }
+            return true
+        }
+    }
+    private final class HoldObserver: UIGestureRecognizer {
+        weak var probe: Probe?
+        private var start = CGPoint.zero
+        private var pending: DispatchWorkItem?
+        init(probe: Probe) {
+            self.probe = probe; super.init(target: nil, action: nil)
+            cancelsTouchesInView = false; delaysTouchesBegan = false; delaysTouchesEnded = false
+        }
+        func invalidate() { pending?.cancel(); pending = nil }
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+            guard touches.count == 1, let touch = touches.first, probe?.contains(touch) == true else { state = .failed; return }
+            start = touch.location(in: view)
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.state == .possible else { return }
+                self.probe?.onPress(); self.state = .failed; self.pending = nil
+            }
+            pending = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        }
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+            guard let touch = touches.first else { return }
+            let point = touch.location(in: view)
+            if hypot(point.x - start.x, point.y - start.y) > 10 { invalidate(); state = .failed }
+        }
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { invalidate(); state = .failed }
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { invalidate(); state = .failed }
+        override func reset() { invalidate(); super.reset() }
+        override func canPrevent(_ other: UIGestureRecognizer) -> Bool { false }
+        override func canBePrevented(by other: UIGestureRecognizer) -> Bool { false }
     }
 }
 
@@ -535,5 +660,129 @@ private struct TrackedSendTarget<Content: View>: View {
             .onAppear { flight.targets[id] = anchor }
             .onChange(of: id) { old, new in flight.targets[old] = nil; flight.targets[new] = anchor }
             .onDisappear { flight.targets[id] = nil }
+    }
+}
+
+
+/// Native pan direction, independent of layout, inertia, programmatic jumps and new output.
+struct OrbisScrollDirectionObserver: UIViewRepresentable {
+    let onDirection: (Bool) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(onDirection) }
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(); view.isUserInteractionEnabled = false
+        DispatchQueue.main.async { context.coordinator.attach(view) }
+        return view
+    }
+    func updateUIView(_ view: UIView, context: Context) {
+        context.coordinator.changed = onDirection
+        DispatchQueue.main.async { context.coordinator.attach(view) }
+    }
+    static func dismantleUIView(_ view: UIView, coordinator: Coordinator) { coordinator.detach() }
+    final class Coordinator: NSObject {
+        var changed: (Bool) -> Void
+        weak var scroll: UIScrollView?
+        var lastY: CGFloat = 0
+        init(_ changed: @escaping (Bool) -> Void) { self.changed = changed }
+        func attach(_ view: UIView) {
+            guard scroll == nil else { return }
+            var ancestor = view.superview
+            while let candidate = ancestor {
+                if let found = candidate as? UIScrollView {
+                    scroll = found; found.panGestureRecognizer.addTarget(self, action: #selector(pan)); return
+                }
+                ancestor = candidate.superview
+            }
+        }
+        @objc func pan(_ pan: UIPanGestureRecognizer) {
+            let y = pan.translation(in: pan.view).y
+            if pan.state == .began { lastY = 0 }
+            if pan.state == .began || pan.state == .changed {
+                let delta = y - lastY
+                if abs(delta) > 0.5 { changed(delta > 0); lastY = y }
+            }
+        }
+        func detach() { scroll?.panGestureRecognizer.removeTarget(self, action: #selector(pan)); scroll = nil }
+    }
+}
+
+
+@MainActor
+final class OrbisMessageActionState: ObservableObject {
+    struct Selection {
+        let id: String
+        let text: String
+        let rewindEnabled: Bool
+        let rewind: (() -> Void)?
+    }
+    @Published var selection: Selection?
+    func dismiss(id: String? = nil) { if id == nil || selection?.id == id { selection = nil } }
+}
+private struct OrbisMessageActionKey: EnvironmentKey { static let defaultValue: OrbisMessageActionState? = nil }
+extension EnvironmentValues {
+    var orbisMessageActions: OrbisMessageActionState? {
+        get { self[OrbisMessageActionKey.self] }
+        set { self[OrbisMessageActionKey.self] = newValue }
+    }
+}
+struct OrbisMessageActionScope: ViewModifier {
+    @StateObject private var actions = OrbisMessageActionState()
+    func body(content: Content) -> some View {
+        content.environment(\.orbisMessageActions, actions)
+            .orbisBackPriority("message-actions", active: actions.selection != nil) { actions.dismiss() }
+            .onDisappear { actions.dismiss() }
+    }
+}
+struct OrbisMessageActionHeader<Normal: View>: View {
+    @ObservedObject var actions: OrbisMessageActionState
+    @Environment(\.orbisReduceMotion) private var reduced
+    @ViewBuilder var normal: Normal
+    var body: some View {
+        ZStack {
+            normal.hidden().allowsHitTesting(false).accessibilityHidden(true)
+            if actions.selection == nil { normal.transition(.opacity) }
+            if let selected = actions.selection {
+                HStack(spacing: 12) {
+                    OrbisIconButton(symbol: "xmark", label: "退出消息操作") { actions.dismiss() }
+                    OrbisMotionText("消息操作").font(.orbisBody(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
+                    OrbisCopyButton(label: "复制消息") { actions.selection?.text ?? "" }
+                        .accessibilityIdentifier("copy-message-" + selected.id)
+                    if let rewind = selected.rewind {
+                        OrbisIconButton(symbol: "backward.end", label: "Rewind") {
+                            guard actions.selection?.id == selected.id, selected.rewindEnabled else { return }
+                            actions.dismiss(); rewind()
+                        }.disabled(!selected.rewindEnabled).accessibilityIdentifier("rewind-message-" + selected.id)
+                    }
+                }.padding(.horizontal, 16).padding(.vertical, 10)
+                    .accessibilityElement(children: .contain).accessibilityIdentifier("message-action-header")
+                    .transition(.opacity.combined(with: .offset(y: -4)))
+            }
+        }.animation(reduced ? nil : InteractionMotion.state, value: actions.selection?.id)
+    }
+}
+
+
+struct OrbisNewSessionCard: View {
+    @Environment(\.orbisReduceMotion) private var reduced
+    let title: String
+    let kind: String?
+    let requestId: String
+    let onPresented: () -> Void
+    @State private var entered = false
+    var body: some View {
+        HStack(spacing: 14) {
+            AgentEmblem(kind: kind)
+            VStack(alignment: .leading, spacing: 8) {
+                OrbisMotionText(title).font(.orbisBody(.semibold)).lineLimit(2)
+                RuntimeStatusLabel(status: "starting")
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }.neuSurface(radius: OrbisRadius.card, padding: OrbisRadius.cardPadding + 4)
+            .offset(y: reduced || entered ? 0 : 32).opacity(reduced || entered ? 1 : 0)
+            .accessibilityIdentifier("new-session-card")
+            .task(id: requestId) {
+                withAnimation(reduced ? nil : InteractionMotion.panel) { entered = true }
+                if !reduced { try? await Task.sleep(for: .milliseconds(220)) }
+                guard !Task.isCancelled else { return }
+                onPresented()
+            }
     }
 }

@@ -148,7 +148,7 @@ internal fun HistoryTreePage(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            MessageActionHeader { TopAppBar(
                 navigationIcon = {
                     NeumorphIconButton(
                         onClick = onBack,
@@ -179,7 +179,7 @@ internal fun HistoryTreePage(
                                 .then(downloadFlight?.let { Modifier.downloadFlightTarget(it) } ?: Modifier))
                     }
                 },
-            )
+            ) }
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).imePadding()) {

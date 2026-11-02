@@ -128,6 +128,7 @@ struct HomeRuntimeLoadingTests {
         #expect(host.homeRuntimes.count == 2)
         #expect(host.homeRuntimesUpdating)
         #expect(host.homeSyncStatus == .syncing)
+        #expect(host.homeCards.allSatisfy(host.homeCardIsCurrent), "Background reads must not disable verified cards")
         let retried = transport.sent.dropFirst(before).filter { $0["type"] as? String == "agent.state.request" && $0["scope"] as? String == "agent" }
         #expect(Set(retried.compactMap { $0["runtimeId"] as? String }) == ["a", "b"])
         let request = try #require(retried.first)

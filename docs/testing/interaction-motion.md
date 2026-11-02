@@ -117,3 +117,63 @@ iOS早期全量 `ios-full-1` 的新增失败定位后已修复：消息修饰器
 在隔离工作树将动效提交 `1d7795e` 与主线 `e4df87a` 合并。主线原生文件审阅与 DeepSeek / Codex Desktop 按需启动行为保留；代码自动合并，人工复核交叠的页面 / UI 用例。为避免编号冲突，动效改登记 r31 / R33–R40，旧证据 r30 / R32–R39 按此对应；主线启动仍为 r30 / R32。合并后 iOS UI 用例共 71 项，既有 69 项运行记录不改写。
 
 集成检查：Swift 239 项通过；Android 573 项 JVM 测试、App / AndroidTest 构建通过；iOS App / UITest 构建通过；76 项 feature、32 场景、10 张 MOT ticket 与引用检查通过。Android 首次以不可执行的 wrapper 启动、第二次用 JDK 25 均未运行测试；改以 `sh gradlew` 和已安装 JDK 21 后通过，首轮日志保留。证据见 `.artifacts/merge-back/20261101-main/`。本次没有重跑设备全量 / 人工验收，原失败与 MOT-10 未完成状态保留。
+
+## 2026-11-02 — r33 交互细化
+
+工作树 `codex/interaction-motion-refinement`，基点 `8ab14b6`；先行设计提交 `f415a2c`。本轮覆盖用户的 11 项补充，对应 SC33–SC43 / MOT-11–21 / R41–R51，feature 总数 79，已交付计数仍为 67。代码接入与设备验收分开记录；完整手动门禁尚未完成。
+
+证据根 `.artifacts/ui-regression/20261102-motion-refinement/`；同基点核对位于独立 `interaction-motion-r32-baseline/orbis` 工作树的同名证据目录。只复用共享池 API 35、iPhone SE 3、iPhone 17；每轮均取得设备锁和固定构建目录租约，结束恢复设备设置。池内 iPad 初期被其他任务占用，释放后补跑本轮宽屏专项；不能将旧轮 iPad 结果计作本轮验收。
+
+### 场景、代码与自动验证映射
+
+| 专项 | 接入与验证入口 | 证据和边界 |
+| --- | --- | --- |
+| R41 / SC33 | Android `SwipeBackLayer` / `InteractionMotion.edgeShift`；`InteractionMotionTest`、`predictiveBackOnBothEdgesCancelsOrCommitsOnlyOnePage` | 缩小至 0.92、双侧至少 8dp 缝隙、真实底页遮罩、右向离屏中帧与单次返回已验证；系统箭头与 IME / 弹层组合仍待真实手势检查。iOS 保留原右滑，不交付新增双边缘手势 |
+| R42 / SC34 | 双端 `MotionText`；连接 / 会话状态、卡片标题、筛选与选择计数；Android `discreteLabelsKeepOnlyTheLiveAccessibilityValueDuringTheirFade`；Qt `MotionTextTest` | 160ms 淡变与首次出现；Android 只暴露当前文本及其布局语义。输入中 / 流式正文 / 秒表保留专用行为，不套离散文本动画 |
+| R43 / SC35 | 双端共用按下 / 松开驱动；Android `physicalPressShowsFeedbackBeforeDispatchAndCancellationDoesNotClick` | 短按补足视觉峰值，业务请求立即发出；组件中帧通过，不据此宣称所有快速嵌套导航来源的完整周期均已人工验收 |
+| R44 / SC36 | Android `collectionMotion`、iOS `SessionDrawerView` 筛选事务；既有 provider filter / directory viewport 用例 | Android 稳定 key 的增删 / 位移动效同时覆盖目录更新，保留原视口补偿；iOS 保留列表与分组身份，仅搜索变化更新叶子 hit bounds；SE 目录更新专项复测通过，折叠 / 搜索选择既有失败仍保留 |
+| R45 / SC37 | `OrbisPressedGlyph` / `rememberGlyphProgress` 的旋转角色 | 按下 360°、松开反向回到原位；按下轻触觉，系统减少动画关闭旋转；真机触觉 / 静音体感未验收，不添加强制音效 |
+| R46 / SC38 | 首页 / 目录 / 下载 / 遗留供应商选择入口 | 每次选中 / 取消一次触觉；Android `HomeSelectionInstrumentedTest` 改为新需求的逐项次数断言，保留仅关闭所选等业务断言；无变化的重复长按不叠加 |
+| R47 / SC39 | Host `Motion.js` / `MotionText.qml` / 稳定侧栏槽 | 数字 220ms 上下滚动、凹凸表面交叉过渡；Qt 5 项测试、macOS 普通 / 减少动画实际窗口 smoke 与中帧通过；Windows 未构建 / 未运行 |
+| R48 / SC40 | 双端按 requestId 的新建卡片与导航交接 | Android `newSessionCardRisesBeforeHandingOffExactlyOnce`；iOS 新建失败 / 重试和启动中输入用例；iOS 实际录屏确认底部追加后进聊天。换电脑 / 打开其他页面取消跟随，不撤销已受理请求 |
+| R49 / SC41 | Android 页级 `MessageActionState`，iOS `OrbisMessageActionScope` | 原顶栏固定槽替换为复制 / Rewind；隐藏组不可点击与不可访问；保留原生选区、pending 状态及 Rewind 确认。发送落地长按回归已修复并在 iPad、SE 复测通过，见下方 |
+| R50 / SC42 | 双端 `ChatQuestionReminder` 和真实用户滚动方向 | 单行省略；距底部超过三行且最后操作朝历史方向，沿用源问题不可见等原条件；Android 新增向最新反向滚动隐藏用例通过；iOS 既有提醒锚点失败未放宽 |
+| R51 / SC43 | 双端 `homeCardIsCurrent` | 后台同步不禁用仍有当前身份的有效卡；保持加密连接与 runtime / session / Agent 匹配。Android 单元和实际点击、iOS 核心和实际点击进聊天通过 |
+
+### 执行结果
+
+| 检查 | 实际结果 | 证据文件 |
+| --- | --- | --- |
+| Android L1 / L2 | 669 JVM 用例通过；App / AndroidTest 构建通过 | `android-build*.log`；最终包 `motion-packages/manifest-build11.json` |
+| Swift L1 | 335 项通过 | `swift-tests-final.log` |
+| iOS L2 | build11 通过，临时诊断代码已移除；App-local 运行库依赖检查通过 | `ios-build11.log`；包 `motion-packages/Orbis-simulator-debug-build11.zip` |
+| Host Qt | 5/5 通过，最终 macOS 普通 / 减少动画 smoke 均 exit 0 | `host-final-checks.log`、`host-final-checks2.log`、`host-motion5*`、`host-motion-reduced3*` |
+| Node | 类型检查通过；完整测试 1649 通过、2 失败、5 skip；两个 launcher 失败在同基点复现 | `host-baseline-launcher.log` 及本轮 Node 日志 |
+| Android 全量 | 168 项：156 通过、5 失败、7 外部夹具 assumption | `android-full-2.log` |
+| Android 同基点核对 | 14 项中相同 5 项失败 | 基线 `baseline-android-failures2.log` |
+| Android A2 + A3 | 深色、font_scale=1.5，28 项中 1 项视口失败，同设备同配置基线也失败 | `android-dark-large2.log`；基线 `baseline-android-dark.log` |
+| Android A4 | 实际三项系统动画缩放为 0，19/19；运行后恢复设置 | `android-reduced.log` |
+| Android 最终专项 | build11：动效 / 首页加载点击 / 选择 / 状态布局 / 目录视口 18/18 | `android-final-header-home.log` |
+| iOS SE 全量 | build8：79 项中 8 项失败，71 项通过；保留失败附件 | `ios-full-se-1.xcresult` |
+| iOS 同基点核对 | 同 SE 的 8 项中 6 项失败；目录更新和发送落地长按通过 | 基线 `baseline-se-failures2.xcresult` |
+| iOS 静态消息 / 同步点击 | 复制→退出→再次长按→Rewind，以及同步时实际点击打开聊天，2/2 | `message-se-4.xcresult` |
+| iOS 目录更新复测 | 同 SE，目录更新保持锚点通过；发送落地长按仍失败 | `message-debug-se.xcresult` |
+| iOS 较大屏长按 | iPhone 17，发送落地长按及拒绝恢复 1/1 | `message-debug-iphone.xcresult` |
+| iOS iPad 宽屏 | 首轮 5 项 4 通过 / 1 长按失败；修复后长按 / 再次长按 / 两项阅读锚点 4/4 | `ipad-targeted-1.xcresult`、`ipad-final-1.xcresult` |
+| iOS 最终 SE 专项 | build11：13/13；消息两种长按、同步点击、目录更新 / 归档、首页 / 下载多选、菜单、新建 / 启动中输入、原返回及明暗 / XXXL / 减少动画矩阵 | `se-final-1.xcresult`；45 张附件及 `se-final-1-review-01`–`06` |
+
+Android 5 项全量失败为：`ChatEntryInstrumentedTest.cachedLongConversationEntryAndReentry` 的 500ms 预算、`CodexPermissionsInstrumentedTest` 自由输入 RequestFocus、`DshInstrumentedTest` 创建按钮未显示、`QuestionnaireInstrumentedTest` RequestFocus、`SessionHostOwnershipInstrumentedTest` 电脑切换断言。深色大字额外失败为 `SessionDrawerViewportInstrumentedTest.sessionsWithinTheExpandedDirectoryRetainTheirReadingAnchor`，未找到“再显示 11 个会话”。均以本次同基点同设备复现记录为依据，不能用历史名单替代实跑。
+
+iOS SE 同基点复现的 6 项为：添加电脑返回、目录折叠、搜索后清除选择、长对话工具展开、两项最近提问提醒。原阅读锚点和可触达性断言保持；仍影响对应 feature 验收。目录更新第一次超时后专项通过。发送落地长按是本轮新增回归，不能列为基线失败。iPad 日志复现：被动窗口观察器收到 down 后，原生选区 / 键盘切换使其未执行回调。保留行内 simultaneous long press，并由不拦截手势的窗口观察器补足已选中文字上的再次长按；同消息选择去重，避免双触觉。build11 在 iPad 复测两条长按和两条阅读稳定用例通过，SE 发送落地长按也通过；首轮失败证据保留。
+
+早期 Android `android-full-1` 的文本布局语义失败已通过共用 MotionText 转发 GetTextLayoutResult 修复；haptic 次数按新需求更新。ADB 37 在 instrumentation 启动前崩溃，换已有 ADB 36 后运行；`android-dark-large` 曾传入不存在的类而产生初始化失败，正确类名的第二轮另存。Node launcher 两项失败分别为 10 秒超时、PATH 已安装 CLI 使“缺少 CLI”预期退出码不同。首轮错误、复测和基线都保留。
+
+### 画面证据和未完成门禁
+
+已审阅 iOS 最终 SE 专项 45 张 PNG，以及全量 173 张 PNG（`ios-image-index.json`、`ios-review-00`–`10`），以及 Android 全量本轮更新图片中的 133 张（`android-review-index.json`、`android-review-00`–`08`，不重复计算未改配额翻面帧）。Android 按截图运行前后 mtime / size 清单排除设备旧文件；组件根画面与 display 图联合判断，系统剪贴板预览不是 App 新浮层。
+
+Android 动效证据包含双侧边缘压缩 / 右向退出、选中触点扩散、一级形变后子菜单进入、顶栏消息动作、离散文字中帧、新建卡片中帧与快速按压。iOS `targeted-ios-1.mp4` 的 113.5s 首页三卡、113.75s 末尾新卡、115s 聊天页面，抽帧 `new-card-sequence/` 与 `new-card-middle/`。Host `host-motion5*` / `host-motion-reduced3*` 记录数字中帧、侧栏切页与减少动画终态。iPad 首轮及修复后 19 张 PNG 已审阅（`ipad-targeted-1-contact.jpg`、`ipad-final-1-contact.jpg`）：消息页顶操作与原生选区共存，宽屏菜单和启动失败状态可见。这些证据不等于全入口流畅度或完整 C / R / A 通过。
+
+MOT-11–21 保持“已接入，验证中”。完整 C01–C18、R41–R51 的四外观逐入口人工检查、快速导航来源完整按压周期、iOS 17、iPad A5 全入口、Windows Host、真实隔离 Host、真机触觉 / 系统音效 / VoiceOver / TalkBack 尚未验收。不得删除或放宽现有失败用例，也不得把排队、仅构建或单个专项通过记作完整验收。
+
+L0 编号与引用：79 个 feature、43 组场景、21 张 MOT ticket、158 个相对路径 / 锚点检查通过，本机 AGENTS / CLAUDE 一致。源码检查、最终包 / 同基点回退包哈希、源文件清单与手动未验收项分别保存在证据根的 `source-checks-final.json`、`motion-packages/delivery-manifest.json`、`source-manifest.json`、`manual-checklist.md`。本任务设备 / 构建租约已释放；未合并或推送本轮 r33。

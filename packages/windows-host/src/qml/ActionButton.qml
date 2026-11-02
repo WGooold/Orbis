@@ -11,7 +11,8 @@ Button {
     font.pixelSize: 14
     font.weight: primary ? Font.DemiBold : Font.Normal
     hoverEnabled: true
-    contentItem: Text {
+    contentItem: MotionText {
+        Accessible.ignored: true
         text: button.text
         font: button.font
         horizontalAlignment: Text.AlignHCenter

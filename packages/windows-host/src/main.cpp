@@ -13,6 +13,8 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
+#include <QQmlProperty>
+#include "MotionPreferences.h"
 #include <QQuickWindow>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -63,6 +65,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"host-state-dir", "Isolated Host identity directory", "path"});
     parser.addOption({"tray", "Start in the system tray"});
     parser.addOption({"smoke-test", "Render the window and exit after checking the Host bridge"});
+    parser.addOption({"smoke-motion", "Check intermediate sidebar and metric motion in the isolated smoke window"});
     parser.addOption({"smoke-compact", "Run the smoke test at the minimum window size"});
     parser.addOption({"screenshot", "Save the smoke-test window image", "path"});
     parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
@@ -98,6 +101,17 @@ int main(int argc, char *argv[]) {
     HostController controller(QDir(runtimeRoot).absolutePath(), dataDir, hostStateDir, credentialDir, !parser.isSet("smoke-test"));
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("host", &controller);
+    auto motionEnabled = [] { return systemMotionEnabled() && !qEnvironmentVariableIsSet("ORBIS_REDUCE_MOTION"); };
+    bool previousMotionEnabled = motionEnabled();
+    engine.rootContext()->setContextProperty("orbisMotionEnabled", previousMotionEnabled);
+    QTimer motionPreferences;
+    QObject::connect(&motionPreferences, &QTimer::timeout, &engine, [&] {
+        const bool enabled = motionEnabled();
+        if (enabled == previousMotionEnabled) return;
+        previousMotionEnabled = enabled;
+        engine.rootContext()->setContextProperty("orbisMotionEnabled", enabled);
+    });
+    motionPreferences.start(1000);
     engine.rootContext()->setContextProperty("trayAvailable", QSystemTrayIcon::isSystemTrayAvailable());
     engine.loadFromModule("Orbis.Host", "Main");
     if (engine.rootObjects().isEmpty()) return 3;
@@ -152,6 +166,23 @@ int main(int argc, char *argv[]) {
             if (report.open(QIODevice::WriteOnly)) report.write(QJsonDocument(QJsonObject{{"bridgeReady", controller.bridgeReady()}, {"windowVisible", window->isVisible()}, {"screenshotSaved", imageOk}, {"message", controller.message()}, {"claudeInstalled", controller.claudeInstalled()}, {"agents", QJsonArray::fromVariantList(controller.agents())}}).toJson());
             if (!controller.bridgeReady() || !imageOk) { app.exit(5); return; }
 #ifdef ORBIS_SMOKE_INTERACTION
+            if (parser.isSet("smoke-motion")) {
+                auto *metric = findVisualItem(window->contentItem(), "home-metric-0");
+                if (!metric) { app.exit(47); return; }
+                QQmlProperty::write(metric, "text", "12");
+                QTimer::singleShot(80, &app, [&, metric] {
+                    const auto p = metric->property("progress").toDouble();
+                    const bool enabled = window->property("motionEnabled").toBool();
+                    if (metric->property("shown").toString() != "12" || (enabled ? !(p > 0 && p < 1) : p != 1)) { qWarning() << "metric motion" << p << metric->property("shown") << enabled; if (parser.isSet("screenshot")) window->grabWindow().save(parser.value("screenshot") + ".metric-failed.png"); app.exit(48); return; }
+                    if (parser.isSet("screenshot")) window->grabWindow().save(parser.value("screenshot") + ".metric-middle.png");
+                    QQmlProperty::write(metric, "text", "3");
+                    if (metric->property("direction").toInt() != -1) app.exit(49);
+                });
+                QTimer::singleShot(500, &app, [&, metric] {
+                    if (metric->property("shown").toString() != "3" || metric->property("progress").toDouble() != 1) { qWarning() << "metric settled" << metric->property("shown") << metric->property("progress"); app.exit(50); return; }
+                    if (parser.isSet("screenshot")) window->grabWindow().save(parser.value("screenshot") + ".metric-settled.png");
+                });
+            }
             QList<QRectF> launchBounds;
             for (const auto &name : {"overviewOpenPiTui", "overviewOpenCodexTui", "overviewOpenClaudeTui", "overviewOpenCodexDesktop", "overviewOpenDsh"}) {
                 auto *button = findVisualItem(window->contentItem(), name);
@@ -167,8 +198,18 @@ int main(int argc, char *argv[]) {
             controller.clearMessage();
             // Exercise every native page with the actual controller; no fixture is shown in the product UI.
             for (int page = 1; page <= 4; ++page) {
-                QTimer::singleShot(page * 350, &app, [&, page] {
+                QTimer::singleShot(page * 350 + (parser.isSet("smoke-motion") ? 400 : 0), &app, [&, page] {
                     QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, page));
+#ifdef ORBIS_SMOKE_INTERACTION
+                    if (parser.isSet("smoke-motion")) QTimer::singleShot(65, &app, [&, page] {
+                        auto *button = findVisualItem(window->contentItem(), QString("page-button-%1").arg(page));
+                        if (!button) { app.exit(51); return; }
+                        const auto p = button->property("selectionProgress").toDouble();
+                        const bool enabled = window->property("motionEnabled").toBool();
+                        if (enabled ? !(p > 0 && p < 1) : p != 1) { qWarning() << "sidebar motion" << page << p << enabled << window->property("page"); app.exit(52); return; }
+                        if (parser.isSet("screenshot")) window->grabWindow().save(parser.value("screenshot") + QString(".page-%1-middle.png").arg(page));
+                    });
+#endif
                     if (parser.isSet("screenshot")) QTimer::singleShot(150, &app, [&, page] {
                         const auto path = parser.value("screenshot") + QString(".page-%1.png").arg(page);
                         if (!window->grabWindow().save(path)) app.exit(7);
@@ -432,7 +473,7 @@ int main(int argc, char *argv[]) {
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-batch.png")) app.exit(7);
                     app.exit(0);
                 });
-            } else QTimer::singleShot(1800, &app, [&] { app.exit(0); });
+            } else QTimer::singleShot(parser.isSet("smoke-motion") ? 2300 : 1800, &app, [&] { app.exit(0); });
         });
     }
     return app.exec();

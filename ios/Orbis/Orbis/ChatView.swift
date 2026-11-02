@@ -67,6 +67,7 @@ struct ChatView: View {
     @State private var hasPositioned = false
     @State private var hasBrowsed = false
     @State private var questionOutsideViewport = false
+    @State private var lastScrollTowardEarlier = false
     @State private var questionJumpRequest: ChatQuestionJump?
     @State private var suppressQuestionPaging = false
     @State private var selectedCommand: String?
@@ -86,7 +87,7 @@ struct ChatView: View {
     private var latestQuestion: ChatQuestion? {
         store.chatTranscript.latestQuestion(excluding: Set(store.pendingSends.items.map(\.messageId)))
     }
-    private var showQuestionReminder: Bool { hasPositioned && hasBrowsed && showJump && questionOutsideViewport }
+    private var showQuestionReminder: Bool { hasPositioned && hasBrowsed && lastScrollTowardEarlier && showJump && questionOutsideViewport }
     private var hasRuntimeNotices: Bool {
         guard let projection = notifications.visibleProjection(runtime.runtimeId) else { return false }
         return !projection.items.isEmpty || (["codex", "codexDesktop"].contains(runtime.agentKind) && !projection.complete)
@@ -176,7 +177,7 @@ struct ChatView: View {
             .onChange(of: latestQuestion) { _, _ in updateQuestionVisibility() }
             .onChange(of: [store.selectedHostId ?? "", runtime.runtimeId, runtime.sessionId ?? ""]) { _, _ in
                 sendFlight.clear()
-                hasBrowsed = false; questionOutsideViewport = false; questionJumpRequest = nil
+                hasBrowsed = false; lastScrollTowardEarlier = false; questionOutsideViewport = false; questionJumpRequest = nil
                 suppressQuestionPaging = false; metrics.rowFrames = [:]
             }
     }
@@ -191,10 +192,11 @@ struct ChatView: View {
             questionJumpRequest = ChatQuestionJump(rowID: question.messageId)
         } label: {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
                     Text("最近提问").font(.orbisCaption(.medium)).foregroundStyle(p.secondary)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                     Text(question.text).font(.orbisLabel()).foregroundStyle(p.text)
-                        .lineLimit(2).multilineTextAlignment(.leading)
+                        .lineLimit(1).multilineTextAlignment(.leading)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 OrbisActionSymbol(systemName: "arrow.up.left").font(.orbisLabel(.medium)).foregroundStyle(accent)
                     .accessibilityHidden(true)
@@ -226,7 +228,7 @@ struct ChatView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     AgentEmblem(kind: kind, size: 18, recessed: false)
-                    Text(store.displayName(runtime)).font(.orbisBody(.semibold)).lineLimit(1)
+                    OrbisMotionText(store.displayName(runtime)).font(.orbisBody(.semibold)).lineLimit(1)
                 }
                 HStack(spacing: 8) {
                     if store.connection == .secured {
@@ -236,15 +238,15 @@ struct ChatView: View {
                         HStack(spacing: 5) {
                             Circle().fill(store.connection == .error ? p.error : p.warning)
                                 .frame(width: 7, height: 7).frame(width: 14, height: 14)
-                            Text(connectionTitle(store.connection)).font(.orbisCaption()).lineLimit(1)
+                            OrbisMotionText(connectionTitle(store.connection)).font(.orbisCaption()).lineLimit(1)
                         }.foregroundStyle(p.secondary).fixedSize(horizontal: true, vertical: false)
                     }
                     // ADR-0049 §6.7：切换中显示所选值加标记；同一槽位、同一省略规则（V05）。
                     if let pending = store.configStatus(runtime.runtimeId, setting: "model") {
-                        Text(pending.label + " · " + pending.mark).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                        OrbisMotionText(pending.label + " · " + pending.mark).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("chat-model-switching")
                     } else if let model = runtime.model, domainReady("model") {
-                        Text(model.name ?? model.id).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                        OrbisMotionText(model.name ?? model.id).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -312,10 +314,12 @@ struct ChatView: View {
                         metrics.userScrolling = false
                         following = false
                     }
+                    .background(OrbisScrollDirectionObserver { earlier in lastScrollTowardEarlier = earlier })
                     .background {
                         if #unavailable(iOS 18.0) { LegacyScrollInteraction(onInteraction: userInteractionChanged) }
                     }
             }.coordinateSpace(name: "chat-viewport").scrollDismissesKeyboard(.interactively)
+
                 .modifier(ChatScrollObserver(viewportHeight: viewport.size.height, following: following, jumpRequest: jumpRequest,
                                              questionJumpRequest: questionJumpRequest,
                                              onDistance: bottomDistanceChanged,

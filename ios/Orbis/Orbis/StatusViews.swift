@@ -172,7 +172,7 @@ struct AgentProvidersView: View {
                     if selecting { exitSelection() } else { onBack() }
                 }
             } title: {
-                Text(selecting ? "已选择 \(effectiveSelection.count) 项" : "供应商")
+                OrbisMotionText(selecting ? "已选择 \(effectiveSelection.count) 项" : "供应商")
                     .font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
             } trailing: {
                 OrbisSelectionToolbar(selecting: selecting) { _ in
@@ -233,7 +233,7 @@ struct AgentProvidersView: View {
 
     private func select(_ provider: AgentProvider) {
         guard host.canChangeProvider, provider.removable else { return }
-        if !selecting { OrbisHaptics.beginSelection() }
+        if !selected.contains(provider) { OrbisHaptics.beginSelection() }
         selecting = true; selected.insert(provider)
     }
 
@@ -247,6 +247,7 @@ struct AgentProvidersView: View {
             OrbisMotionButton {
                 if selecting {
                     guard host.canChangeProvider, provider.removable else { return }
+                    OrbisHaptics.selectionChanged()
                     if !selected.insert(provider).inserted { selected.remove(provider) }
                 } else if hasQuota, let key = host.hostKey {
                     host.querySubscription(provider, expectedHostKey: key)
