@@ -43,6 +43,12 @@ struct SessionHistoryCommit {
     let epochChanged: Bool
 }
 
+struct SessionHistoryWork: Equatable {
+    var pageReads = 0
+    var coverageChecks = 0
+    var committedPageHits = 0
+}
+
 struct SessionHistorySummary: Equatable {
     let sessionId: String
     let epoch: String?
@@ -102,14 +108,15 @@ actor SessionHistoryWorker {
         let opened = try SessionHistoryDatabase(root: root)
         database = opened; return opened
     }
-    func ingest(host: HostPairing, sessionId: String, event: Data, activate: Bool, generation: UUID,
+    func workCounters() throws -> SessionHistoryWork { try db().work }
+    func ingest(host: HostPairing, sessionId: String, event: Data, wrapped: Bool = false, activate: Bool, generation: UUID,
                 lease: SessionHistoryWriteLease? = nil, expectedEpoch: String? = nil, limit: Int = 256) throws -> SessionHistoryCommit {
         let key = hostKeyPrefix(host)
         try fence.check(key, generation: generation)
         try lease?.check()
         let database = try db()
         try database.migrateLegacy(host: host, sessionId: sessionId)
-        return try database.ingest(key: key, sessionId: sessionId, event: event, activate: activate,
+        return try database.ingest(key: key, sessionId: sessionId, event: event, wrapped: wrapped, activate: activate,
             expectedEpoch: expectedEpoch, limit: limit, beforeCommit: {
                 self.beforeCommit?()
                 try self.fence.perform(key, generation: generation) {
@@ -168,6 +175,22 @@ private struct SessionHistoryMetadata {
 }
 private final class SessionHistoryDatabase {
     private let root: URL
+    private(set) var work = SessionHistoryWork()
+    /// Only one bounded page is retained across all Hosts/Sessions. sourceSeq is deliberately
+    /// absent: pure live patches still commit it, without invalidating unchanged canonical rows.
+    private struct PageKey: Equatable {
+        let host: String
+        let session: String
+        let epoch: String?
+        let leaf: String?
+        let window: String?
+        let displayVersion: Int?
+        let limit: Int
+    }
+    private var committedPage: (key: PageKey, page: SessionHistoryPage)?
+    private var excludedCache: (host: String, session: String, epoch: String?, window: String,
+                               candidates: Set<String>, excluded: Set<String>)?
+    private func invalidateReadCaches() { committedPage = nil; excludedCache = nil }
     private var connection: OpaquePointer?
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     init(root: URL) throws {
@@ -299,13 +322,19 @@ private final class SessionHistoryDatabase {
             checked.formUnion(visiting)
         }
     }
-    func ingest(key: String, sessionId: String, event: Data, activate: Bool, expectedEpoch: String?, limit: Int,
+    func ingest(key: String, sessionId: String, event: Data, wrapped: Bool, activate: Bool, expectedEpoch: String?, limit: Int,
                 beforeCommit: () throws -> Void) throws -> SessionHistoryCommit {
-        guard !sessionId.isEmpty, sessionId.utf16.count <= 256, event.count <= 16 * 1024 * 1024,
-              let object = try JSONSerialization.jsonObject(with: event) as? [String: Any],
+        guard !sessionId.isEmpty, sessionId.utf16.count <= 256,
+              let decoded = try JSONSerialization.jsonObject(with: event) as? [String: Any],
+              !wrapped || decoded["type"] as? String == "runtime.event",
+              let object = wrapped ? decoded["event"] as? [String: Any] : decoded,
               let source = object["source"] as? [String: Any], let epoch = source["epoch"] as? String,
               !epoch.isEmpty, epoch.utf16.count <= 256, source["ready"] as? Bool == true,
               let seq = sessionInteger(source["seq"]) else { throw SessionHistoryError.invalid("历史来源或范围无效") }
+        // The historical cap applies to the event, not its transport wrapper. Check the
+        // original rule on this worker so a large but valid envelope is not rejected.
+        let eventBytes = wrapped ? try JSONSerialization.data(withJSONObject: object).count : event.count
+        guard eventBytes <= 16 * 1024 * 1024 else { throw SessionHistoryError.invalid("历史来源或范围无效") }
         // Parse only this bounded packet. Cached parents are checked against SQLite below.
         let incoming = try CachedSessionGraph(sessionId: sessionId).merging(object, activate: activate)
         let timings = try (object["turnTimings"] as? [[String: Any]] ?? []).map { raw -> SessionTurnTiming in
@@ -320,6 +349,9 @@ private final class SessionHistoryDatabase {
             let retired = try query("SELECT 1 FROM retired_epochs WHERE host=? AND session=? AND epoch=? LIMIT 1", [.text(key), .text(sessionId), .text(epoch)]) { _ in true }
             guard retired.isEmpty else { throw SessionHistoryError.invalid("历史来源已被替换") }
             let changedEpoch = previous?.epoch != nil && previous?.epoch != epoch
+            if changedEpoch || !incoming.entries.isEmpty || !incoming.display.isEmpty || !timings.isEmpty {
+                invalidateReadCaches()
+            }
             if activate {
                 let live = object["live"] as? [String: Any]
                 guard live?["complete"] as? Bool == true else { throw SessionHistoryError.invalid("当前会话清单尚未完整") }
@@ -356,7 +388,16 @@ private final class SessionHistoryDatabase {
             }
             meta.epoch = epoch; meta.modifiedAt = Int64(Date().timeIntervalSince1970 * 1000)
             try saveMetadata(meta, key: key, sessionId: sessionId)
-            let page = try page(key: key, sessionId: sessionId, leafId: meta.leaf, before: nil, after: nil, limit: min(500, max(1, limit)))
+            let pageLimit = min(500, max(1, limit))
+            let pageKey = PageKey(host: key, session: sessionId, epoch: meta.epoch, leaf: meta.leaf,
+                window: meta.window, displayVersion: meta.displayVersion, limit: pageLimit)
+            let page: SessionHistoryPage
+            let cacheHit = committedPage?.key == pageKey
+            if let cached = committedPage, cacheHit {
+                page = cached.page; work.committedPageHits += 1
+            } else {
+                page = try self.page(key: key, sessionId: sessionId, leafId: meta.leaf, before: nil, after: nil, limit: pageLimit)
+            }
             var graph = page.graph, committed: [CachedSessionGraph.Entry] = [], committedDisplay: [String: CachedSessionGraph.Display] = [:]
             let receivedOrder = (object["entries"] as? [[String: Any]] ?? []).compactMap { $0["entryId"] as? String }
             var emitted: Set<String> = []
@@ -372,9 +413,10 @@ private final class SessionHistoryDatabase {
             }
             let committedTimings = try timings.compactMap { value in try timing(key: key, session: sessionId, id: value.turnId)?.0 }
             try beforeCommit()
+            committedPage = (pageKey, page)
             return SessionHistoryCommit(graph: graph, page: page, committedEntries: committed, committedDisplay: committedDisplay,
                 turnTimings: committedTimings, epochChanged: changedEpoch)
-        } catch { try? execute("ROLLBACK"); throw error }
+        } catch { invalidateReadCaches(); try? execute("ROLLBACK"); throw error }
     }
     private func timing(key: String, session: String, id: String) throws -> (SessionTurnTiming, Int64)? {
         try query("SELECT body,seq FROM timings WHERE host=? AND session=? AND id=?", [.text(key), .text(session), .text(id)]) {
@@ -382,6 +424,7 @@ private final class SessionHistoryDatabase {
         }.first
     }
     func page(key: String, sessionId: String, leafId: String?, before: String?, after: String?, limit: Int) throws -> SessionHistoryPage {
+        work.pageReads += 1
         let meta = try metadata(key: key, sessionId: sessionId)
         let leaf = leafId ?? meta?.leaf
         var graph = CachedSessionGraph(sessionId: sessionId, epoch: meta?.epoch, leafId: leaf)
@@ -444,6 +487,7 @@ private final class SessionHistoryDatabase {
         return try result(rows.reversed(), status, next != nil, status == .complete && reachedAfter)
     }
     private func coverage(key: String, session: String, leaf: String, window: String?) throws -> (Bool, SessionCatchupGap?) {
+        work.coverageChecks += 1
         // Recursive sets live inside SQLite's bounded page cache/temp file, not an app-sized
         // graph. UNION terminates even a corrupt cycle and missing parents stay observable.
         // Every recursive step is written `<recursive set> CROSS JOIN entries` so SQLite keeps
@@ -490,14 +534,18 @@ private final class SessionHistoryDatabase {
     }
 
     func excludedDisplayEntries(key: String, session: String, entryIds: [String]) throws -> Set<String> {
-        guard let window = try metadata(key: key, sessionId: session)?.window else { return [] }
+        let meta = try metadata(key: key, sessionId: session)
+        guard let window = meta?.window else { return [] }
+        let candidateIds = Set(entryIds)
+        if let cached = excludedCache, cached.host == key, cached.session == session,
+           cached.epoch == meta?.epoch, cached.window == window, cached.candidates == candidateIds { return cached.excluded }
         // Candidate IDs are already bounded by the caller's loaded window. A temporary table
         // avoids SQLite variable limits and traversing a long ancestor chain once per chunk;
         // only matching candidate IDs cross the database boundary.
         try execute("CREATE TEMP TABLE IF NOT EXISTS display_filter_candidates(id TEXT NOT NULL PRIMARY KEY)")
         try execute("DELETE FROM temp.display_filter_candidates")
         defer { try? execute("DELETE FROM temp.display_filter_candidates") }
-        let candidates = Array(Set(entryIds))
+        let candidates = Array(candidateIds)
         for start in stride(from: 0, to: candidates.count, by: 256) {
             let batch = candidates[start..<min(start + 256, candidates.count)]
             let values = Array(repeating: "(?)", count: batch.count).joined(separator: ",")
@@ -509,7 +557,9 @@ private final class SessionHistoryDatabase {
                 UNION SELECT e.id,e.parent FROM excluded x CROSS JOIN entries e ON e.host=? AND e.session=? AND e.id=x.parent
             ) SELECT x.id FROM excluded x JOIN temp.display_filter_candidates c ON c.id=x.id
             """
-        return Set(try query(sql, [.text(key), .text(session), .text(key), .text(session), .text(window), .text(key), .text(session)]) { text($0, 0)! })
+        let excluded = Set(try query(sql, [.text(key), .text(session), .text(key), .text(session), .text(window), .text(key), .text(session)]) { text($0, 0)! })
+        excludedCache = (key, session, meta?.epoch, window, candidateIds, excluded)
+        return excluded
     }
 
     func summaries(key: String) throws -> [SessionHistorySummary] {
@@ -527,6 +577,7 @@ private final class SessionHistoryDatabase {
         }
     }
     func remove(key: String) throws {
+        invalidateReadCaches()
         try execute("BEGIN IMMEDIATE")
         do {
             for table in ["entries", "display", "timings", "sessions", "retired_epochs"] { try execute("DELETE FROM \(table) WHERE host=?", [.text(key)]) }
@@ -548,6 +599,7 @@ private final class SessionHistoryDatabase {
         guard FileManager.default.fileExists(atPath: file.path) else { return }
         let graph = try JSONDecoder().decode(CachedSessionGraph.self, from: Data(contentsOf: file))
         guard graph.sessionId == sessionId, graph.displayVersion == 3 else { return }
+        invalidateReadCaches()
         try execute("BEGIN IMMEDIATE")
         do {
             for (id, entry) in graph.entries { try storeEntry(entry, seq: graph.entryVersions[id] ?? 0, key: key, session: sessionId) }

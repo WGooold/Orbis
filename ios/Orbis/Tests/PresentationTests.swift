@@ -306,6 +306,32 @@ struct PresentationTests {
         #expect(prefixed.rows.flatMap(\.messages) == [text(-2), text(-1)] + messages)
     }
 
+    @Test func projectionBatchMatchesSequentialReplacementRemovalAndReinsertion() {
+        func message(_ id: Int, _ text: String) -> ChatMessage {
+            ChatMessage(messageId: "m\(id)", role: "assistant", content: [ChatContent(type: "text", text: text, toolName: nil, artifact: nil)], timestamp: 0, isError: nil)
+        }
+        var expected = (0..<3000).map { message($0, "old") }
+        var batch = ChatMessageBatch(expected)
+        for id in [2000, 4, 2999, 0, 3050, 17] {
+            let next = message(id, "changed")
+            if let index = expected.firstIndex(where: { $0.messageId == next.messageId }) { expected[index] = next }
+            else { expected.append(next) }
+            batch.upsert(next)
+        }
+        for id in [4, 3050, 2000] {
+            expected.removeAll { $0.messageId == "m\(id)" }; batch.remove("m\(id)")
+            let next = message(id, "reinserted")
+            expected.append(next); batch.upsert(next)
+        }
+        #expect(batch.messages == expected)
+        // Duplicate inputs retain the previous first-slot replacement/all-slot removal semantics.
+        var duplicates = ChatMessageBatch([message(1, "a"), message(1, "b")])
+        duplicates.upsert(message(1, "c"))
+        #expect(duplicates.messages == [message(1, "c"), message(1, "b")])
+        duplicates.remove("m1")
+        #expect(duplicates.messages.isEmpty)
+    }
+
     @Test func base64URLDecodesBytewiseAndRejectsMalformedInput() throws {
         let data = Data((0..<255).map(UInt8.init))
         #expect(try Base64URL.decode(Base64URL.encode(data)) == data)

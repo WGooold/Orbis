@@ -8,7 +8,7 @@
 
 日期：2026-11-03。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-03/r39`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
-本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 10 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
+本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 12 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
 ## 1. 门禁：什么时候必须跑
 
@@ -31,16 +31,20 @@
 
 设备身份以 `~/.orbis/simulator-pool/pool.json` 为准，使用前按本机指南取得 `registry.lock` 和设备锁。本文不记录 UDID 或 serial。
 
+本机 Android 一律经 [共用模拟器入口](android-emulator.md) 的 `run --task "任务名称" -- <命令>` 借用设备；工具路径为 `~/.orbis/tools/ui-regression/android-emulator.py`。下文原始 `adb` 安装 / 测试命令在该入口的子命令内执行，使用其注入的 `adb` / serial；不再从旧任务复制启动脚本或手动配 ADB 端口。入口负责独占锁、连接配置和清理，不代替测试门禁。
+
 | 用途 | 池内设备（名称） | 说明 |
 | --- | --- | --- |
 | iOS 主力 / 窄屏 | `Orbis Adjacent Actions`（iPhone SE 3rd gen，375pt，iOS 27.0） | 默认跑全量 UI 套件和窄屏 / XXXL 检查 |
 | iOS 标准宽度 | `Orbis Layout Regression`（iPhone 17，iOS 27.0） | 手动冒烟与截图抽查；登记时为 Booted，借用前先核实归属 |
 | iOS 宽屏抽查 | iPad Air 11-inch (M4)，iOS 27.0 | 改动影响宽屏布局时抽查 |
-| Android 主力 | `Orbis_UI_Polish_35`（API 35） | 全量 instrumentation；可无窗口启动 |
+| iOS 扩容标准 / 窄屏 | `Orbis iOS Standard 2`（iPhone 17）、`Orbis iOS Compact 2`（iPhone SE 3），iOS 27.0 | 2026-11-03 用户授权新增；[数据在外接盘](ios-simulator-storage.md)，借用前核对挂载 / 链接并取得各自独占锁 |
+| Android 主力池 | `Orbis_UI_Polish_35`、`Orbis_UI_Regression_35_2`–`Orbis_UI_Regression_35_6`（共 6 台 API 35） | 全量 instrumentation；入口自动借用空闲设备，可无窗口启动；基线 / 候选在同一会话执行或用 `--device` 固定同一台 |
 | Android 补充 | `Medium_Phone_API_37.0` | 预览镜像不支持本仓库的 Espresso 输入注入，只用于手动和截图，结果不能替代 API 35 自动回归 |
 
 - 池中没有所需系统时，报告配置缺口，不扩容。iOS 17 兼容分支目前没有可运行设备，只能记为“未运行”。
-- Android 无窗口启动：`emulator -avd Orbis_UI_Polish_35 -port <port> -no-window -gpu swiftshader_indirect -no-snapshot-save -no-audio`。本机 adb 服务可能反复重启：安装后用 `adb -s <serial> shell dumpsys package com.orbising.orbis | grep lastUpdateTime` 核对确实装上了新包。枚举 USB 真机时 adb 服务曾崩溃，这时可以用仅本任务使用的私有 adb 端口，不接触真机。
+- Android 无窗口启动由共用入口完成，内部使用注册 AVD、固定端口、`-no-window -gpu swiftshader_indirect -no-snapshot -no-audio`；不要在子命令外重复启动 emulator / ADB。安装后在入口内用 `adb shell dumpsys package com.orbising.orbis` 核对 `lastUpdateTime`，确认确实装上了本任务包。私有 ADB 端口及不连接 USB 真机的配置由入口统一管理。
+- ADB 断连诊断：先区分 ADB 服务退出与 emulator 退出，保留各自 PID、退出码和日志，不把 `device not found` 直接记成模拟器崩溃。2026-11-03 R57 重试发现本机 ADB 37.0.1 多份 `SIGABRT` 报告指向 `adbmdns_bridge` 的服务名解析；测试专用服务可设 `ADB_MDNS=0`，用 `adb -L tcp:<任务端口> --one-device __orbis_no_usb__ server nodaemon` 启动并保存前台日志。客户端 `-P`、`ANDROID_ADB_SERVER_PORT` 与 `ADB_SERVER_SOCKET=tcp:localhost:<任务端口>` 必须一致，模拟器继承同一环境；随后显式连接池内 serial。先验证连续 shell 和安装，再跑全量。只结束本任务创建的服务，不执行全局 `kill-server` 或接管其他端口；恢复成功仍须记录基点 / 候选测试结果。
 
 ### 2.2 构建目录
 
@@ -218,6 +222,12 @@ Codex 桌面新会话同步回归（S18、V16–V18）：Host `host-service.test
 
 S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionReminderAppearsWhileReadingAndLocatesTheOriginalWithoutFollowing`、`testQuestionReminderTracksNewSourceQuestionsWithoutMovingTheReader`；Android `ChatQuestionTest`、`ChatQuestionReminderInstrumentedTest`（4）。覆盖源消息身份、可见性、点击定位、阅读锚点、通知优先和 Host 隔离，配合既有视口用例及手动 R31，A1–A5；未验收不得计为交付。
 
+
+### R57：弱网中继与长会话性能（ADR-0060，实施 / 验证中）
+
+设计及执行规则见 [ADR-0060](../adr/0060-mobile-relay-history-performance.md)。关联 S08、S10–S11、M03–M05、M07–M08、V01–V05、V09–V10、V13–V20；不新增 feature 或放宽既有用例。§3.3 增补映射：PERF-01→`InboundTransportTests` / `RelayTransportTests`；PERF-02→`SessionHistoryTests` / `StoreTests`；PERF-03→`PresentationTests` / 聊天阅读锚点设备用例；PERF-04→`ChatListItemReuseTest` / `ChatViewportInstrumentedTest`；PERF-05→`RelayReducerTest` / 工具清单与历史同步单测；PERF-06→隔离中继限速回放及两端设备响应采样。
+
+手动专项：短 / 长历史各在普通和限速中继下进入、上翻一页、停在旧消息时接收新回复、展开 / 复制、回到最新、发送并对账、工具完成交接、断线重连、切会话 / Host 与分支；按 A1–A4 核对相同内容、身份、锚点、动画与恢复结果。记录 UI 响应、峰值内存、入站 / 消费速率、队列年龄及重同步次数；不得记录正文 / 密钥。仍执行双端 L0–L4、C01–C18 和受影响专项，失败集合与同设备同配置基线对比。双端同设备全量对照已完成，受影响失败及补验结果见 §6；完整手动门禁、实时弱网采样与真机卡死仍未验收。证据目录 `.artifacts/ui-regression/20261102-relay-history-performance/` 和 `.artifacts/ui-regression/20261103-relay-history-acceptance/`，不记验收通过。
 
 ### R58：宣传片配额硬币原生移植（S19 / ADR-0058 / MOT-22，验证中）
 
@@ -474,6 +484,12 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 2026-11-03 Claude 长会话恢复同步（V09–V10、V16–V18 / R18）：对运行中 Host 的加密 LAN 探针确认旧 preview 的 `seq=0` 停滞及最新 head 拒收；257 / 1,055 条历史复现，255 / 256 条对照正常。修复前新增 4 项回归失败，修复后相关 Node 65 项、TypeScript / lint、Android JVM 681 项 / 两包构建、Swift Core 351 项通过。Node 全量 1,694 项为 1,685 通过 / 4 失败 / 5 条件未运行，失败整文件复测后仍有 2 项 Codex launcher 失败，未宣称全量通过。共享 Android API 35 同设备 / 同 APK：旧 Host 在追加后不再更新的断言失败，候选首次连接夹具超时、第二次在安装时模拟器退出（-6），失败证据保留。用户要求第三次重试后，候选长历史 / 后续回复 / 重建 ViewModel 与连接后的重开专项 1 / 1 通过，旧协议仍在追加后超时；模块哈希前后一致，三张关键截图已审阅，设备正常恢复设置并释放租约。完整双端 L3–L4、C01–C18、R18 人工、A1–A4 和用户真机消息画面未完成。用户授权后修复 `633edc3` 已安装；前两次交接回退，第三次确认 Claude 原进程 / 原生日志前缀 / 配对保持、最新 preview 的 seq=2、安卓中继重连通过，保留旧包。随后用户报告新建 Claude 卡在启动中，不能把旧历史探针恢复记为全部功能恢复或 UI 验收通过。设备故障、锁清理、包哈希和未跑范围见 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。
 
 回答重复提示修复：Host 加密 Relay / 通知存储 / 命令生命周期共 76 项通过，`tsc -p tsconfig.tests.json --noEmit` 通过。证据 `.artifacts/ui-regression/interaction-feedback-dedup/`。本次仅修改 Host 通知生成入口，未构建或部署运行中 Host；双端 L1–L4、C01–C18、R26 与 A1–A4 未执行，当前移动端工作树含并行未提交变更，未建立本修复的隔离设备基线，不记完整门禁或设备验收通过。
+
+2026-11-02 R57 弱网中继与长会话性能（ADR-0060，实施 / 验证中）：iOS Swift 345 项、Android JVM 基点 669 / 候选 671 项与双端 Debug 构建通过。3000 条历史、20 次 live-only 提交的候选额外页读 / 覆盖检查均为 0；基点 / 候选本机单样本约 291 / 11 ms，不当作帧率结论。iPhone 17 / iOS 27 同设备基点与最终候选全量各 83 项，均 77 通过、同 6 项失败；没有新增失败，但长聊天展开和最近提问锚点仍是受影响失败，完整门禁未通过。Android 池内设备在安装 / 首项测试前多次失去 ADB / 模拟器，无法形成全量对照；L4 只查看 5 张 iOS 相关截图，C01–C18、R57 弱网、A1–A4 和真机卡死复现未完成。失败与未跑项目、包哈希及设备锁清理见 `.artifacts/ui-regression/20261102-relay-history-performance/summary.md`、`manual-checklist.md`；不得记为完整 UI 验收通过。
+
+2026-11-03 R57 Android 重试：按 §2.1 统一 ADB 端口并禁用本任务 mDNS 后，API 35 基点 / 候选各完成 170 项，均 159 通过、同 4 失败、同 7 项外部夹具 assumption；没有新增失败，旧设备对照阻塞已解除。工具连续性原用例各两轮复跑均 2 / 2 通过，四轮最终截图一致，首轮旧帧差异证据保留。完整 L4、C01–C18、R57 弱网、A1–A4、真机及外部夹具仍未验收；详见 `.artifacts/ui-regression/20261102-relay-history-performance/android-recovery.md`。
+
+2026-11-03 R57 补充验收（原保存包）：同一 iPhone 17 原测试驱动相关 11 项，基点 7 过 / 4 失败，候选 8 过 / 3 失败；候选长聊天工具展开、两项最近提问仍失败。Android 同一 API 35 的 Pi / Codex 400 条限速历史两版均未通过：预存数据无 source epoch，完整拉取后请求数为 15，原断言为 7，缓存重开段未到达；候选 Pi 首轮另有 90 秒超时，关闭旁路采样的同设备复测两版都完成历史并停在 15 / 7 断言，仍保留首轮。压缩 / 失败 / 产物投影两版各 1 / 1；四后端工具详情受 fixture 清单重放错误阻塞，已无设备独立复现。已审阅本轮 iOS 13 / 14 张命名 PNG 和 Android 有效完成画面；首轮候选 Pi 旧图片排除，Pi 复测与 Codex 两版有效 PNG 分别字节一致。原断言、超时和网络条件未放宽；本轮未改 App 源码或部署。完整 L4、C01–C18、A1–A4、实时弱网 / 队列年龄与 iOS 真机现场未完成，维持未验收；证据 `.artifacts/ui-regression/20261103-relay-history-acceptance/summary.md`。
 
 2026-11-02 iOS 同步拒收（V05–V06、V16–V18，ADR-0037 / R43）：Host 已 applied 事务不重派、首个有效 ACK 终态与响应资格修复；iOS 已完整提交的新 source 替代旧 preview，本地具体原因不被通用拒收回声覆盖。修复前 Host 两项核心回放与 iOS 三项新增用例均失败；最终 Host 相关 91 项、iOS Swift 338 项 / 32 suites、TypeScript / 修改文件 lint、App / UI Test 构建与 L0 通过。隔离候选及父提交 `765b0a3` 使用池内同一 iPad Air M4 / iOS 27 / Debug、显式 UDID 与关闭并行，42 个 App / UI Test Swift 输入仅 OrbisStore 不同。候选全量 79 项：70 通过 / 9 失败；父提交仅复核这 9 项：8 项同样失败，额外聊天入场计时父提交通过，候选重复 3 次仍 1 失败 / 2 通过，差异来源未定，不能声称失败集合未扩大。同步状态 / 错误 / 恢复与聊天刷新相关既有 UI 用例通过。导出 172 张附件并亲自查看相关 7 张；完整 L4、C01–C18、R43 真实隔离 Host / App 联动、A1–A4 与 375pt 窄屏尚未完成，不记为完整 UI 验收通过。全量 / 基线断言失败返回 65，外层重复关闭已 Shutdown 设备导致清理返回 1；确认本任务进程退出与 owner 后释放残留设备锁，计时复测正常清理，最终设备 Shutdown、设备 / 构建锁均已释放。未部署运行中的 Host 或用户真机，现场通用错误码尚不足以归因每次拒收。证据及未覆盖范围见 [修复验证记录](../../.artifacts/ui-regression/20261102-session-sync-rejected/summary.md)。
 

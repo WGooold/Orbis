@@ -93,11 +93,11 @@ internal fun buildChatListItems(
     var assistantMessages = mutableListOf<ChatMessage>()
     var turnBoundaryPending = false
     val reusableUsers = previous.filterIsInstance<ChatListItem.UserMessage>().associateBy { it.message.messageId }
-    val reusableTurns = previous.filterIsInstance<ChatListItem.AssistantTurn>()
+    val reusableTurns = previous.filterIsInstance<ChatListItem.AssistantTurn>().groupBy { it.key }
 
     fun flushAssistantMessages() {
         if (assistantMessages.isNotEmpty()) {
-            val reused = reusableTurns.firstOrNull { turn ->
+            val reused = reusableTurns[assistantMessages.first().messageId]?.firstOrNull { turn ->
                 turn.messages.size == assistantMessages.size &&
                     turn.messages.indices.all { turn.messages[it] === assistantMessages[it] }
             }

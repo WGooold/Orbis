@@ -81,6 +81,76 @@ struct SessionHistoryTests {
         if let patchBase { event["type"] = "session.patch"; event["baseSeq"] = patchBase; event["seq"] = seq; event["head"] = cursor; event["headCompleteness"] = "complete" }
         return try JSONSerialization.data(withJSONObject: event)
     }
+    @Test func liveOnlyCommitsReuseHistoryButCorrectionsAndRollbackInvalidateIt() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = SessionHistoryWorker(root: root), pairing = host(), generation = UUID()
+        worker.setGeneration(generation, host: pairing)
+        for page in 0..<6 {
+            _ = try await worker.ingest(host: pairing, sessionId: "s", event: packet(Array((page * 500 + 1)...((page + 1) * 500)),
+                seq: page + 1, patchBase: page == 0 ? nil : page), activate: true, generation: generation)
+        }
+        let before = try await worker.workCounters()
+        let started = ContinuousClock.now
+        for seq in 7...26 {
+            let committed = try await worker.ingest(host: pairing, sessionId: "s", event: packet([], seq: seq, leaf: "e3000", patchBase: seq - 1),
+                activate: true, generation: generation)
+            #expect(committed.page.targetCovered && committed.page.entries.count == 256)
+            #expect(committed.page.messages.last?.messageId == "m3000")
+        }
+        let after = try await worker.workCounters()
+        print("PERF-02 3000 entries / 20 live commits: \(started.duration(to: .now)), pageReads=\(after.pageReads - before.pageReads), coverageChecks=\(after.coverageChecks - before.coverageChecks), hits=\(after.committedPageHits - before.committedPageHits)")
+        #expect(after.pageReads == before.pageReads && after.coverageChecks == before.coverageChecks)
+        #expect(after.committedPageHits == before.committedPageHits + 20)
+        var correction = try #require(JSONSerialization.jsonObject(with: packet([], seq: 27, leaf: "e3000", patchBase: 26)) as? [String: Any])
+        correction["display"] = ["projectionVersion": 3, "entries": [["entryId": "e2990", "message": message("corrected")]]]
+        let corrected = try await worker.ingest(host: pairing, sessionId: "s", event: JSONSerialization.data(withJSONObject: correction), activate: true, generation: generation)
+        #expect(corrected.page.messages.contains { $0.messageId == "corrected" })
+        let correctedWork = try await worker.workCounters()
+        #expect(correctedWork.pageReads == after.pageReads + 1)
+        // An invalid source version cannot be hidden by the cached page.
+        await #expect(throws: (any Error).self) {
+            try await worker.ingest(host: pairing, sessionId: "s", event: packet([], seq: 29, leaf: "e3000", patchBase: 28), activate: true, generation: generation)
+        }
+        _ = try await worker.ingest(host: pairing, sessionId: "s", event: packet([], seq: 28, leaf: "e3000", patchBase: 27), activate: true, generation: generation)
+        #expect(try await worker.workCounters().pageReads == correctedWork.pageReads + 1)
+        // A branch-only change has no new rows but must change the page.
+        let branch = try await worker.ingest(host: pairing, sessionId: "s", event: packet([], seq: 29, leaf: "e2900", patchBase: 28), activate: true, generation: generation)
+        #expect(branch.page.entries.last?.entryId == "e2900")
+        // Removal and reimport under the same identity may not resurrect a page cached in memory.
+        try await worker.remove(host: pairing)
+        worker.setGeneration(generation, host: pairing)
+        let empty = try await worker.ingest(host: pairing, sessionId: "s", event: packet([], seq: 1), activate: true, generation: generation)
+        #expect(empty.page.entries.isEmpty)
+    }
+
+    @Test func wrappedWireEventAndChangingTimingWindowOrHostNeverReuseStalePages() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = SessionHistoryWorker(root: root), pairing = host(), generation = UUID()
+        worker.setGeneration(generation, host: pairing)
+        let raw = try JSONSerialization.jsonObject(with: packet(Array(1...30)))
+        // The wire wrapper may exceed the old event-only limit without making the event invalid.
+        let wrapped = try JSONSerialization.data(withJSONObject: ["type": "runtime.event", "runtimeId": "r",
+            "padding": String(repeating: " ", count: 16 * 1024 * 1024), "event": raw])
+        #expect(wrapped.count > 16 * 1024 * 1024)
+        _ = try await worker.ingest(host: pairing, sessionId: "s", event: wrapped, wrapped: true, activate: true, generation: generation)
+        var update = try #require(JSONSerialization.jsonObject(with: packet([], seq: 2, leaf: "e30", patchBase: 1)) as? [String: Any])
+        update["turnTimings"] = [["turnId": "turn", "startedAt": 1, "durationMs": 42, "messageId": "m30"]]
+        let timed = try await worker.ingest(host: pairing, sessionId: "s", event: JSONSerialization.data(withJSONObject: update), activate: true, generation: generation)
+        #expect(timed.page.turnTimings.first?.durationMs == 42)
+        update = try #require(JSONSerialization.jsonObject(with: packet([], seq: 3, leaf: "e30", patchBase: 2)) as? [String: Any])
+        update["display"] = ["projectionVersion": 3, "entries": [], "windowStart": "e20"]
+        let compacted = try await worker.ingest(host: pairing, sessionId: "s", event: JSONSerialization.data(withJSONObject: update), activate: true, generation: generation)
+        #expect(compacted.page.messages.first?.messageId == "m20")
+        let other = host("other")
+        worker.setGeneration(generation, host: other)
+        let otherPage = try await worker.ingest(host: other, sessionId: "s", event: packet([1]), activate: true, generation: generation)
+        #expect(otherPage.page.messages.map(\.messageId) == ["m1"])
+        let epoch = try await worker.ingest(host: pairing, sessionId: "s", event: packet([1], epoch: "replacement"), activate: true, generation: generation)
+        #expect(epoch.epochChanged && epoch.page.messages.map(\.messageId) == ["m1"])
+    }
+
     @Test func sqliteIncrementalPagesStayBoundedAndLateRowsCannotOverwriteNewerFacts() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

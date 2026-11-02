@@ -220,7 +220,7 @@ final class HostConnection: ObservableObject {
     }
     private var timingsBySession: [String: [String: SessionTurnTiming]] = [:]
     private var cachedIndexLoaded = false
-    private var pendingEvents: [(message: [String: Any], channel: String?, bytes: Int)] = []
+    private var pendingEvents: [(message: [String: Any], channel: String?, bytes: Int, payload: Data?)] = []
     private var pendingEventBytes = 0
     private var eventTask: Task<Void, Never>?
     private var backgroundTasks: [UUID: Task<Void, Never>] = [:]
@@ -1050,7 +1050,8 @@ final class HostConnection: ObservableObject {
     }
 
     private func enqueueRuntimeEvent(_ message: [String: Any], channel: String?) {
-        let cost = (try? JSONSerialization.data(withJSONObject: message).count) ?? 0
+        let payload = transport.receivedPayload
+        let cost = payload?.count ?? (try? JSONSerialization.data(withJSONObject: message).count) ?? 0
         var dropped = false
         while !pendingEvents.isEmpty && (pendingEvents.count >= 256 || pendingEventBytes + cost > 4 * 1024 * 1024) {
             let index = pendingEvents.firstIndex { $0.channel != "ctl" } ?? 0
@@ -1059,7 +1060,7 @@ final class HostConnection: ObservableObject {
                let runtimeId = old.message["runtimeId"] as? String { rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史读取队列繁忙，正在重新同步。") }
         }
         if dropped, let selectedRuntime { syncSession(selectedRuntime, force: true) }
-        pendingEvents.append((message, channel, cost)); pendingEventBytes += cost
+        pendingEvents.append((message, channel, cost, payload)); pendingEventBytes += cost
         guard eventTask == nil else { return }
         let generation = historyGeneration
         eventTask = Task { [weak self] in
@@ -1067,9 +1068,10 @@ final class HostConnection: ObservableObject {
             while !Task.isCancelled, generation == self.historyGeneration, !self.pendingEvents.isEmpty {
                 let index = self.pendingEvents.firstIndex { $0.channel == "ctl" } ?? 0
                 let event = self.pendingEvents.remove(at: index); self.pendingEventBytes -= event.bytes
-                await self.consumeEvent(event.message, channel: event.channel)
+                await self.consumeEvent(event.message, channel: event.channel, rawEnvelope: event.payload)
                 guard generation == self.historyGeneration else { break }
                 self.dispatchSyncDemands()
+                await Task.yield()
             }
             if generation == self.historyGeneration { self.eventTask = nil }
         }
@@ -2151,7 +2153,7 @@ final class HostConnection: ObservableObject {
         }
     }
 
-    private func consumeEvent(_ envelope: [String: Any], channel: String?) async {
+    private func consumeEvent(_ envelope: [String: Any], channel: String?, rawEnvelope: Data?) async {
         guard let runtimeId = envelope["runtimeId"] as? String, runtimes.contains(where: { $0.runtimeId == runtimeId }),
               let event = envelope["event"] as? [String: Any], let type = event["type"] as? String else { return }
         let changesHome = ["runtime.metadata", "runtime.status", "interaction.requested", "interaction.snapshot",
@@ -2276,7 +2278,7 @@ final class HostConnection: ObservableObject {
             return
         }
         if type == "session.snapshot" {
-            await applySnapshot(event, runtimeId: runtimeId)
+            await applySnapshot(event, runtimeId: runtimeId, rawEnvelope: rawEnvelope)
         } else if type == "session.patch" {
             // A complete contiguous source transaction commits before its projection is visible.
             if let source = event["source"] as? [String: Any], let epoch = source["epoch"] as? String,
@@ -2285,7 +2287,7 @@ final class HostConnection: ObservableObject {
                event["headCompleteness"] as? String == "complete", (event["live"] as? [String: Any])?["complete"] as? Bool == true,
                let current = sourcePositions[runtimeId], current.epoch == epoch, current.seq == base,
                event["sessionId"] as? String == runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId {
-                guard let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }), validToolDependency(event, runtime: runtime), await commitHistory(event, runtime: runtime, activate: true) != nil else {
+                guard let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }), validToolDependency(event, runtime: runtime), await commitHistory(event, runtime: runtime, activate: true, rawEnvelope: rawEnvelope) != nil else {
                     if let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }) { syncSession(runtime, force: true) }
                     return
                 }
@@ -2329,7 +2331,7 @@ final class HostConnection: ObservableObject {
         publishMessages()
     }
 
-    private func applySnapshot(_ event: [String: Any], runtimeId: String) async {
+    private func applySnapshot(_ event: [String: Any], runtimeId: String, rawEnvelope: Data?) async {
         let generation = historyGeneration
         guard let syncId = event["syncId"] as? String else { return }
         let pending = pendingSyncs[syncId]
@@ -2463,7 +2465,7 @@ final class HostConnection: ObservableObject {
                 rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史条目与请求边界不连续，请重试。")
                 return
             }
-            guard await commitHistory(event, runtime: runtime, activate: false) != nil else {
+            guard await commitHistory(event, runtime: runtime, activate: false, rawEnvelope: rawEnvelope) != nil else {
                 rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史记录无法保存，请重试。")
                 return
             }
@@ -2487,7 +2489,7 @@ final class HostConnection: ObservableObject {
                   let operation = syncReads[syncId], let target = sessionReads.operations[operation]?.targetLeafId else {
                 rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史补齐范围已经失效。"); return
             }
-            guard await commitHistory(event, runtime: runtime, activate: false) != nil else {
+            guard await commitHistory(event, runtime: runtime, activate: false, rawEnvelope: rawEnvelope) != nil else {
                 rejectSnapshot(syncId, runtimeId: runtimeId, message: "补齐历史无法保存，请重试。"); return
             }
             guard generation == historyGeneration, let host = selectedHost,
@@ -2499,7 +2501,7 @@ final class HostConnection: ObservableObject {
             if sessionReads.operations[operation]?.phase == .succeeded { beginCatchup(runtime) }
             return
         }
-        guard let committed = await commitHistory(event, runtime: runtime, activate: true) else {
+        guard let committed = await commitHistory(event, runtime: runtime, activate: true, rawEnvelope: rawEnvelope) else {
             rejectSnapshot(syncId, runtimeId: runtimeId, message: "会话历史无法保存，请重试。")
             return
         }
@@ -2569,15 +2571,15 @@ final class HostConnection: ObservableObject {
         if range == "history" { historyErrors[runtimeId] = message } else { errorMessage = message }
     }
 
-    private func commitHistory(_ event: [String: Any], runtime: RuntimeSummary, activate: Bool) async -> SessionHistoryCommit? {
+    private func commitHistory(_ event: [String: Any], runtime: RuntimeSummary, activate: Bool, rawEnvelope: Data?) async -> SessionHistoryCommit? {
         guard let host = selectedHost, let sessionId = runtime.sessionId,
-              let data = try? JSONSerialization.data(withJSONObject: event) else { return nil }
+              let data = rawEnvelope ?? (try? JSONSerialization.data(withJSONObject: event)) else { return nil }
         let generation = historyGeneration
         let branchGeneration = branchGenerations[runtime.runtimeId] ?? 0
         let lease = historyWriteLeases[runtime.runtimeId] ?? SessionHistoryWriteLease()
         historyWriteLeases[runtime.runtimeId] = lease
         do {
-            let committed = try await historyWorker.ingest(host: host, sessionId: sessionId, event: data,
+            let committed = try await historyWorker.ingest(host: host, sessionId: sessionId, event: data, wrapped: rawEnvelope != nil,
                 activate: activate, generation: generation, lease: lease, expectedEpoch: activate ? nil : sourcePositions[runtime.runtimeId]?.epoch, limit: 256)
             let incomingIds = ((event["display"] as? [String: Any])?["entries"] as? [[String: Any]] ?? []).compactMap { $0["entryId"] as? String }
             let displayedIds = Array(displayMessageIds[runtime.runtimeId]?.keys ?? Dictionary<String, String>().keys)
@@ -2680,9 +2682,10 @@ final class HostConnection: ObservableObject {
             liveMessageIds[runtimeId] = []; unfinishedLiveMessageIds[runtimeId] = []; liveOrders[runtimeId] = [:]
         }
         if let display = event["display"] as? [String: Any], let entries = display["entries"] as? [[String: Any]] {
+            var batch = ChatMessageBatch(conversations[runtimeId] ?? [])
+            let sessionId = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId
             for row in entries {
                 let entryId = row["entryId"] as? String
-                let sessionId = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId
                 if let entryId, row["anchor"] as? String != "head", sessionId.flatMap({ excludedDisplayEntries[$0] })?.contains(entryId) == true { continue }
                 let committed = sessionId.flatMap { session in (entryId ?? row["displayId"] as? String).flatMap { graphs[session]?.display[$0] } }
                 let message: ChatMessage?
@@ -2690,11 +2693,12 @@ final class HostConnection: ObservableObject {
                 else if let object = row["message"] as? [String: Any] { message = jsonDecode(object) }
                 else { message = nil }
                 if let entryId {
-                    if let old = displayMessageIds[runtimeId]?[entryId], old != message?.messageId { conversations[runtimeId]?.removeAll { $0.messageId == old } }
+                    if let old = displayMessageIds[runtimeId]?[entryId], old != message?.messageId { batch.remove(old) }
                     displayMessageIds[runtimeId, default: [:]][entryId] = message?.messageId
                 }
-                if let message { upsert(message, runtimeId: runtimeId) }
+                if let message { batch.upsert(message) }
             }
+            conversations[runtimeId] = batch.messages
             if let boundary = display["windowStart"] as? String, let boundaryMessage = displayMessageIds[runtimeId]?[boundary],
                let index = conversations[runtimeId]?.firstIndex(where: { $0.messageId == boundaryMessage }), index > 0 {
                 conversations[runtimeId]?.removeFirst(index)
@@ -2705,19 +2709,21 @@ final class HostConnection: ObservableObject {
             }
         }
         if let live, let entries = live["messages"] as? [[String: Any]] {
+            var batch = ChatMessageBatch(conversations[runtimeId] ?? [])
             for row in entries {
                 if let object = row["message"] as? [String: Any], let message: ChatMessage = jsonDecode(object) {
                     if let entryId = row["persistedEntryId"] as? String { addAlias(message.messageId, entryId: entryId, runtimeId: runtimeId) }
                     if isRetiredAlias(message.messageId, runtimeId: runtimeId) {
-                        conversations[runtimeId]?.removeAll { $0.messageId == message.messageId }
+                        batch.remove(message.messageId)
                         continue
                     }
                     liveMessageIds[runtimeId, default: []].insert(message.messageId)
                     if row["finished"] as? Bool == false { unfinishedLiveMessageIds[runtimeId, default: []].insert(message.messageId) }
                     if let order = integer(row["order"]) { liveOrders[runtimeId, default: [:]][message.messageId] = order }
-                    upsert(message, runtimeId: runtimeId)
+                    batch.upsert(message)
                 }
             }
+            conversations[runtimeId] = batch.messages
         }
         if let sessionId = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId,
            let graph = graphs[sessionId], let boundary = graph.windowStart {
@@ -2761,10 +2767,9 @@ final class HostConnection: ObservableObject {
     }
 
     private func upsert(_ message: ChatMessage, runtimeId: String) {
-        var values = conversations[runtimeId] ?? []
-        if let index = values.firstIndex(where: { $0.messageId == message.messageId }) { values[index] = message }
-        else { values.append(message) }
-        conversations[runtimeId] = values
+        if let index = conversations[runtimeId]?.firstIndex(where: { $0.messageId == message.messageId }) {
+            if conversations[runtimeId]?[index] != message { conversations[runtimeId]?[index] = message }
+        } else { conversations[runtimeId, default: []].append(message) }
     }
 
     private func applyDelta(_ event: [String: Any], runtimeId: String) {
@@ -2881,7 +2886,8 @@ final class HostConnection: ObservableObject {
     }
 
     private func updateSyncing() {
-        isSyncing = sessionReads.operations.values.contains { $0.owner.historyKey == selectedRuntimeId && $0.kind == .source && $0.phase.active }
+        let syncing = sessionReads.operations.values.contains { $0.owner.historyKey == selectedRuntimeId && $0.kind == .source && $0.phase.active }
+        if syncing != isSyncing { isSyncing = syncing }
         transfers.setInteractive(pendingSyncs.values.contains { !$0.exhausted } || !syncDemands.isEmpty ||
             !runtimeActions.isEmpty || ledger.operations.contains { $0.kind == OperationKinds.queueCancel } || runtimes.contains { $0.status == "running" })
     }

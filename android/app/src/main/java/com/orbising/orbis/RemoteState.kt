@@ -1658,15 +1658,23 @@ class RelayReducer(
         committed: CommittedSessionBatch? = null,
         channel: String? = null,
     ): RemoteState {
-        runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull()?.let { envelope ->
-            reduceTurnChanges(state, envelope)?.let { return it }
-        }
-        reduceToolEnvelope(state, payload, committed, channel)?.let { return it }
-        val event = runCatching { json.parseToJsonElement(payload).jsonObject["event"]?.jsonObject }.getOrNull()
+        return reduce(state, payload, json.parseToJsonElement(payload).jsonObject, committed, channel)
+    }
+
+    internal fun reduce(
+        state: RemoteState,
+        payload: String,
+        envelope: JsonObject,
+        committed: CommittedSessionBatch? = null,
+        channel: String? = null,
+    ): RemoteState {
+        reduceTurnChanges(state, envelope)?.let { return it }
+        reduceToolEnvelope(state, payload, envelope, committed, channel)?.let { return it }
+        val event = runCatching { envelope["event"]?.jsonObject }.getOrNull()
         val syncId = event?.takeIf { it.string("type") == "session.snapshot" }?.string("syncId")
         val commandId = syncId?.let { id -> state.sessionSyncCommands.entries.firstOrNull { it.value.syncId == id }?.key }
         val input = commandId?.let(state::recoverLateHistoryRead) ?: state
-        var reduced = reducePayload(input, materializeToolPayload(input, payload), committed, channel)
+        var reduced = reducePayload(input, materializeToolPayload(input, envelope), committed, channel)
         val ownershipChanged = input.runtimes.keys.filter { runtime ->
             input.runtimes[runtime]?.sessionId != reduced.runtimes[runtime]?.sessionId ||
                 input.runtimes[runtime]?.agentKind != reduced.runtimes[runtime]?.agentKind
@@ -1681,7 +1689,7 @@ class RelayReducer(
             val next = reduced.runtimes[key]
             old?.sessionId != next?.sessionId || old?.sessionLeafId != next?.sessionLeafId
         }
-        val runtimeId = runCatching { json.parseToJsonElement(payload).jsonObject.string("runtimeId") }.getOrNull()
+        val runtimeId = envelope.string("runtimeId")
         if (event?.string("type") == "session.patch" && runtimeId != null && runtimeId in reduced.sessionSyncRequests &&
             reduced.conversations[runtimeId]?.sourcePatchBuffer != input.conversations[runtimeId]?.sourcePatchBuffer) changedTargets += runtimeId
         val response = event?.takeIf { it.string("type") == "session.snapshot" }?.let {
@@ -1693,14 +1701,13 @@ class RelayReducer(
             .trackSessionReadDemands(input, changedTargets, setOfNotNull(commandId)).reconcileHistoryReads().commitHomePresentation()
     }
 
-    private fun materializeToolPayload(state: RemoteState, payload: String): String {
-        val envelope = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull() ?: return payload
-        val event = envelope["event"] as? JsonObject ?: return payload
-        if (event.string("type") !in setOf("session.snapshot", "session.patch")) return payload
-        val runtimeId = envelope.string("runtimeId") ?: return payload
-        val live = event["live"]?.let { runCatching { json.decodeFromJsonElement<SessionLiveState>(it) }.getOrNull() } ?: return payload
-        val ref = live.toolInventory ?: return payload
-        val replica = state.toolInventories[runtimeId]?.takeIf { it.covers(ref) } ?: return payload
+    private fun materializeToolPayload(state: RemoteState, envelope: JsonObject): JsonObject {
+        val event = envelope["event"] as? JsonObject ?: return envelope
+        if (event.string("type") !in setOf("session.snapshot", "session.patch")) return envelope
+        val runtimeId = envelope.string("runtimeId") ?: return envelope
+        val live = event["live"]?.let { runCatching { json.decodeFromJsonElement<SessionLiveState>(it) }.getOrNull() } ?: return envelope
+        val ref = live.toolInventory ?: return envelope
+        val replica = state.toolInventories[runtimeId]?.takeIf { it.covers(ref) } ?: return envelope
         val represented = live.messages.flatMap { it.message.content }.mapNotNull { it.toolCallId }.toSet()
         val tools = replica.tools.map { summary -> SessionLiveTool(summary.tool.toolCallId, summary.toolName,
             if (summary.phase in setOf("finished", "cancelled")) "finished" else summary.phase, summary = summary, isError = summary.isError) }
@@ -1710,12 +1717,11 @@ class RelayReducer(
                 live.turn?.startedAt ?: 0), summary.phase in setOf("finished", "cancelled"), true, order = summary.order)
         }
         val projected = live.copy(messages = (live.messages + synthetic).sortedBy { it.order ?: Long.MAX_VALUE }, tools = tools)
-        return JsonObject(envelope + ("event" to JsonObject(event + ("live" to json.encodeToJsonElement(projected))))).toString()
+        return JsonObject(envelope + ("event" to JsonObject(event + ("live" to json.encodeToJsonElement(projected)))))
     }
 
     /** ADR-0045 §5：工具依赖完整验证前，保留旧聊天基线；详情从不参与 applied。 */
-    private fun reduceToolEnvelope(state: RemoteState, payload: String, committed: CommittedSessionBatch?, channel: String?): RemoteState? {
-        val envelope = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull() ?: return null
+    private fun reduceToolEnvelope(state: RemoteState, payload: String, envelope: JsonObject, committed: CommittedSessionBatch?, channel: String?): RemoteState? {
         if (envelope.string("type") != "runtime.event") return null
         val runtimeId = envelope.string("runtimeId") ?: return null
         val event = envelope["event"]?.jsonObject ?: return null
@@ -1791,11 +1797,10 @@ class RelayReducer(
 
     private fun reducePayload(
         state: RemoteState,
-        payload: String,
+        message: JsonObject,
         committed: CommittedSessionBatch?,
         channel: String?,
     ): RemoteState {
-        val message = json.parseToJsonElement(payload).jsonObject
         val messageType = message.string("type")
         if (messageType !in setOf(
                 "device.ready", "runtime.online", "runtime.offline", "runtime.event", "runtime.git", "notification.snapshot",

@@ -249,6 +249,30 @@ struct ChatPresentation {
     let toolResults: [String: ChatMessage]
 }
 
+/// A projection applies many replacements as one batch. Tombstones preserve the original
+/// remove-then-append ordering without copying/scanning the complete transcript per row.
+struct ChatMessageBatch {
+    private var slots: [ChatMessage?]
+    private var positions: [String: [Int]]
+    init(_ messages: [ChatMessage]) {
+        slots = messages.map(Optional.some)
+        positions = [:]
+        for (index, message) in messages.enumerated() { positions[message.messageId, default: []].append(index) }
+    }
+    mutating func upsert(_ message: ChatMessage) {
+        if let index = positions[message.messageId]?.first {
+            if slots[index] != message { slots[index] = message }
+        } else {
+            positions[message.messageId] = [slots.count]
+            slots.append(message)
+        }
+    }
+    mutating func remove(_ id: String) {
+        for index in positions.removeValue(forKey: id) ?? [] { slots[index] = nil }
+    }
+    var messages: [ChatMessage] { slots.compactMap { $0 } }
+}
+
 /// Tool results belong to their call, and a persisted replacement keeps the
 /// first message's position while replacing its content.
 func chatPresentation(_ messages: [ChatMessage]) -> ChatPresentation {
@@ -353,6 +377,7 @@ func chatRows(_ messages: [ChatMessage], turnIdsByMessageId: [String: String] = 
 /// 宿主在运行中的回合里不会下发只含工具调用的 live 消息，而是放进工具清单（与 Android materializeToolPayload 一致）。
 /// 这里把还没出现在消息里的工具还原成助手消息，并和 live 消息按 order 排序，使工具卡片落在对应的回复气泡里。
 func materializeLiveTools(_ messages: [ChatMessage], tools: [ToolSummary], liveOrders: [String: Int64]) -> [ChatMessage] {
+    guard !tools.isEmpty else { return messages }
     let represented = Set(messages.flatMap { message in
         message.content.flatMap { [$0.toolCallId, $0.summary?.tool?.toolCallId].compactMap { $0 } } + [message.toolSummary?.tool?.toolCallId].compactMap { $0 }
     })

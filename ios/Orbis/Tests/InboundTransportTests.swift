@@ -4,6 +4,31 @@ import Testing
 
 @Suite("Transport priority and bounded delivery")
 struct InboundTransportTests {
+    @Test @MainActor func decoderDoesNotOccupyMainActorAndRetainsAuthenticatedBytes() async throws {
+        let gate = DispatchSemaphore(value: 0)
+        let decoder = InboundFrameDecoder(beforeDecode: {
+            #expect(!Thread.isMainThread)
+            Task { @MainActor in gate.signal() }
+            #expect(gate.wait(timeout: .now() + 3) == .success)
+        })
+        let keys = SessionKeys(hostToDevice: Data(repeating: 1, count: 32), deviceToHost: Data(repeating: 2, count: 32))
+        let host = E2EChannel(keys: SessionKeys(hostToDevice: keys.deviceToHost, deviceToHost: keys.hostToDevice))
+        let payload = try JSONSerialization.data(withJSONObject: ["type": "runtime.event", "text": String(repeating: "长历史", count: 30_000)])
+        let envelope = try host.seal(room: "h", from: "h", to: "d", channel: "msg", payload: payload)
+        var result: InboundFrameDecoder.Decoded?
+        for piece in EnvelopePieces.fragment(envelope) {
+            let data = try JSONEncoder().encode(V2Frame(type: "v2.frame", protocolVersion: orbisProtocolVersion, envelope: piece))
+            result = try await decoder.decode(.data(data), hostId: "h", deviceId: "d", keys: keys, relay: true)
+        }
+        guard case .authenticated(let header, let bytes, let message) = result else { Issue.record("Missing decoded frame"); return }
+        #expect(header.ch == "msg" && bytes == payload && message?["type"] as? String == "runtime.event")
+        let repeated = try JSONEncoder().encode(V2Frame(type: "v2.frame", protocolVersion: orbisProtocolVersion, envelope: envelope))
+        #expect(try await decoder.decode(.data(repeated), hostId: "h", deviceId: "d", keys: keys, relay: true) == nil)
+        // Each replacement decoder starts a new receive high-water mark; old work cannot poison it.
+        let replacement = InboundFrameDecoder()
+        #expect(try await replacement.decode(.data(repeated), hostId: "h", deviceId: "other", keys: keys, relay: true) == nil)
+        #expect(try await replacement.decode(.data(repeated), hostId: "h", deviceId: "d", keys: keys, relay: true) != nil)
+    }
     private func frame(_ text: String, _ channel: String?, binary: Bool = false) -> InboundFrameLanes.Frame {
         .init(payload: Data(text.utf8), channel: channel, binary: binary)
     }

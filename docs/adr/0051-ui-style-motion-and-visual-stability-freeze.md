@@ -6,6 +6,10 @@ Status: accepted（基线冻结；新增与变更按本文维护）
 
 基线版本：`2026-11-03/r39`。盘点参照：`main` 的 `3a5bbf5`、已有 accepted ADR 及下列实现入口；r15 决策见 [ADR-0053][D53]，回归门禁与方案见 [UI 回归方案][Regression]。
 
+2026-11-02 弱网中继 / 长会话性能：按 [ADR-0060](0060-mobile-relay-history-performance.md) 先登记再实施，关联 S08、S10–S11、M03–M05、M07–M08、V01–V05、V09–V10、V13–V20。仅优化入站处理、历史复用与聊天派生计算，原 UI / 交互参数和协议语义保持；不增加 feature，不计入已交付。实现与双端设备门禁分别记录，专项为 [UI 回归方案][Regression] R57。
+
+2026-11-03 R57 原保存包补验仍未通过：iOS 相关 11 项候选 8 过 / 3 失败（均在同设备基点失败集合内），Android 限速历史仍有缓存代次 / 请求数断言及一次候选超时，工具详情夹具另有重放错误。证据、复测及未覆盖范围见 ADR-0060 实施记录和 `.artifacts/ui-regression/20261103-relay-history-acceptance/summary.md`；不改变冻结参数或已交付计数。
+
 2026-11-02 部署验证补充：S21 / V19 的 Codex 原生显示路径修复 Windows Host 默认路径方言泄漏，保持已有 `/` 分隔契约；未新增 feature 或调整基线参数。专题规则与回归见 [ADR-0052 §9.1][D52]、[UI 回归方案][Regression] 及 `.artifacts/delivery-20261102/`；设备、手动与真实后端未重跑，既有未验收状态保持。
 
 2026-11-02 DSH 队列来源修复：V09–V10 / V12 / V17 的来源身份规则保持；Host 将原生 inbox 中显式非用户来源（权限变化、子代理汇报 / 完成、插件与自动目标上下文）排除出 App 用户队列与发送对账。原生上下文继续供 Agent 消费；完整内部消息清单可确认用户队列为空，未知显式来源同样不冒充用户输入。未增加 feature / 修改基线参数；规则见 [ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[D31]、[D55]，验证与未跑项见 [Regression]。

@@ -5,6 +5,25 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatListItemReuseTest {
+    @Test
+    fun `long transcript preserves distant rows and revises non tail dependencies`() {
+        val messages = (0 until 3000).flatMap { i -> listOf(message("u$i", "user", "question"), message("a$i", "assistant", "answer")) }
+        val first = buildChatListItems(messages)
+        val corrected = messages.toMutableList().apply { this[35] = message("a17", "assistant", "corrected") }
+        val second = buildChatListItems(corrected, previous = first)
+        for (index in second.indices) {
+            if (index != 35) assertSame(first[index], second[index])
+        }
+        assertTrue((second[35] as ChatListItem.AssistantTurn).messages.single() === corrected[35])
+        val assistants = listOf(message("a", "assistant", "one"), message("t", "tool", "result"), message("b", "assistant", "two"))
+        val separated = buildChatListItems(assistants, mapOf("a" to "turn-1"))
+        assertTrue(separated.size == 2)
+        val unchanged = buildChatListItems(assistants, mapOf("a" to "turn-1"), separated)
+        assertSame(separated[0], unchanged[0]); assertSame(separated[1], unchanged[1])
+        val merged = buildChatListItems(assistants, previous = separated)
+        assertTrue(merged.size == 1 && (merged.single() as ChatListItem.AssistantTurn).messages == assistants)
+    }
+
     private fun message(id: String, role: String, text: String) =
         ChatMessage(id, role, listOf(RemoteContent(type = "text", text = text)), 1)
 

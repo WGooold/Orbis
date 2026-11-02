@@ -2,6 +2,8 @@ import Foundation
 
 @MainActor
 protocol OrbisTransport: AnyObject {
+    /// Valid only during receive; the authenticated wire bytes avoid re-encoding large events.
+    var receivedPayload: Data? { get }
     func pair(qr: PairingQR, deviceName: String, identity: DeviceIdentity, completion: @escaping (Result<HostPairing, Error>) -> Void)
     func connect(pairing: HostPairing, identity: DeviceIdentity, receive: @escaping ([String: Any], String?) -> Void, state: @escaping (ConnectionState, String?) -> Void)
     func disconnect()
@@ -10,7 +12,60 @@ protocol OrbisTransport: AnyObject {
 }
 
 extension OrbisTransport {
+    var receivedPayload: Data? { nil }
     @discardableResult func sendBinary(_ data: Data) -> Bool { false }
+}
+
+/// One instance per path/handshake generation. No mutable cipher or reassembly state crosses
+/// actors; the outbound channel retains its own send sequence on MainActor. JSONSerialization's
+/// immutable containers are transferred once and never mutated by this worker after return.
+actor InboundFrameDecoder {
+    enum Decoded: @unchecked Sendable {
+        case control([String: Any])
+        case handshake(Envelope)
+        case authenticated(RoutingHeader, Data, [String: Any]?)
+    }
+    private let pieces = EnvelopeReassembler()
+    private var channel: E2EChannel?
+    private let beforeDecode: (@Sendable () -> Void)?
+    init(beforeDecode: (@Sendable () -> Void)? = nil) { self.beforeDecode = beforeDecode }
+
+    func decode(_ message: URLSessionWebSocketTask.Message, hostId: String, deviceId: String,
+                keys: SessionKeys?, relay: Bool) throws -> Decoded? {
+        beforeDecode?()
+        let data: Data
+        switch message {
+        case .string(let text): data = Data(text.utf8)
+        case .data(let bytes): data = bytes
+        @unknown default: return nil
+        }
+        guard let frame = try? JSONDecoder().decode(V2Frame.self, from: data) else {
+            if relay {
+                guard let object = try? E2ECrypto.jsonObject(data), object["type"] as? String != "v2.frame" else { return nil }
+                return .control(object)
+            }
+            throw PairingError.invalidQR
+        }
+        guard frame.type == "v2.frame", frame.protocolVersion == orbisProtocolVersion, frame.envelope.v == 2,
+              frame.envelope.hdr.room == hostId, frame.envelope.hdr.from == hostId, frame.envelope.hdr.to == deviceId else {
+            if relay { return nil }
+            throw PairingError.invalidQR
+        }
+        guard let envelope = pieces.accept(frame.envelope) else { return nil }
+        if ["pair", "hs"].contains(envelope.hdr.k) { return .handshake(envelope) }
+        if channel == nil, let keys { channel = E2EChannel(keys: keys) }
+        guard let channel else {
+            if relay { return nil }
+            throw PairingError.handshake("局域网握手尚未完成")
+        }
+        guard let payload = try channel.open(envelope) else { return nil }
+        var object: [String: Any]?
+        if envelope.hdr.k == "data" {
+            if relay && envelope.hdr.ch == "ctl" { object = try E2ECrypto.jsonObject(payload) }
+            else { object = try? E2ECrypto.jsonObject(payload) }
+        }
+        return .authenticated(envelope.hdr, payload, object)
+    }
 }
 
 /// All connection state is confined to the main actor. URLSession callbacks
@@ -25,7 +80,8 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
     private var pairingSession: DevicePairingSession?
     private var handshake: DeviceHandshake?
     private var channel: E2EChannel?
-    private let pieces = EnvelopeReassembler()
+    private var decoder = InboundFrameDecoder()
+    private(set) var receivedPayload: Data?
     private var receiveHandler: (([String: Any], String?) -> Void)?
     private var stateHandler: ((ConnectionState, String?) -> Void)?
     private var fromId = ""
@@ -134,7 +190,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
     private func resetChannel() {
         channel = nil
         handshake = nil
-        pieces.clear()
+        decoder = InboundFrameDecoder()
         outbound.removeAll()
         outboundBytes = 0
         // An in-flight send finishes before the new handshake queue is drained.
@@ -283,47 +339,46 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         task.receive { [weak self, weak task] result in
             Task { @MainActor in
                 guard let self, let task, self.socket === task else { return }
-                switch result {
-                case .failure(let error): self.socketClosed(task, error: error)
-                case .success(let message):
-                    switch message {
-                    case .string(let text): self.handle(text)
-                    case .data(let data): if let text = String(data: data, encoding: .utf8) { self.handle(text) }
-                    @unknown default: break
-                    }
+                let decoder = self.decoder
+                do {
+                    let message = try result.get()
+                    let decoded = try await decoder.decode(message, hostId: self.hostId, deviceId: self.fromId,
+                        keys: self.channel?.keys, relay: true)
+                    // A timeout, disconnect or a replacement handshake can win while decoding.
+                    guard self.socket === task, self.decoder === decoder else { return }
+                    if let decoded { try self.handle(decoded) }
                     if self.socket === task { self.receive(from: task) }
+                } catch {
+                    if self.socket === task, self.decoder === decoder { self.socketClosed(task, error: error) }
                 }
             }
         }
     }
 
-    private func handle(_ text: String) {
-        guard let data = text.data(using: .utf8), let outer = try? E2ECrypto.jsonObject(data), let type = outer["type"] as? String else { return }
-        if type == "host.online", outer["hostId"] as? String == hostId, pairing != nil {
-            do { try beginHandshake() } catch { if let socket { socketClosed(socket, error: error) } }
-            return
-        }
-        if type == "host.offline", outer["hostId"] as? String == hostId {
-            timeoutTask?.cancel(); timeoutTask = nil
-            resetChannel()
-            stateHandler?(hasDirectPath ? .secured : .offline, nil)
-            return
-        }
-        if type == "protocol.error" {
-            receiveHandler?(outer, nil)
-            if let pending = pairingContinuation {
-                pairingContinuation = nil
-                pending.resume(throwing: PairingError.relay(outer["message"] as? String ?? "配对认证失败"))
-                disconnect()
+    private func handle(_ decoded: InboundFrameDecoder.Decoded) throws {
+        switch decoded {
+        case .control(let outer):
+            guard let type = outer["type"] as? String else { return }
+            if type == "host.online", outer["hostId"] as? String == hostId, pairing != nil {
+                try beginHandshake()
+                return
             }
-            return
-        }
-        // Relay's plaintext device.ready is an authentication receipt, not Host state.
-        guard type == "v2.frame", let frame = try? JSONDecoder().decode(V2Frame.self, from: data),
-              frame.protocolVersion == orbisProtocolVersion, frame.envelope.v == 2,
-              frame.envelope.hdr.room == hostId, frame.envelope.hdr.from == hostId, frame.envelope.hdr.to == fromId,
-              let envelope = pieces.accept(frame.envelope) else { return }
-        do {
+            if type == "host.offline", outer["hostId"] as? String == hostId {
+                timeoutTask?.cancel(); timeoutTask = nil
+                resetChannel()
+                stateHandler?(hasDirectPath ? .secured : .offline, nil)
+                return
+            }
+            if type == "protocol.error" {
+                receiveHandler?(outer, nil)
+                if let pending = pairingContinuation {
+                    pairingContinuation = nil
+                    pending.resume(throwing: PairingError.relay(outer["message"] as? String ?? "配对认证失败"))
+                    disconnect()
+                }
+                return
+            }
+        case .handshake(let envelope):
             if envelope.hdr.k == "pair" {
                 guard envelope.hdr.n == 0, let pairingSession else { return }
                 try pairingSession.verifyAccept(E2ECrypto.jsonObject(Base64URL.decode(envelope.ct, label: "pair.ct")), expectedHostId: hostId)
@@ -348,20 +403,18 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
                     }
                 }
                 timeoutTask?.cancel(); timeoutTask = nil
-            } else if let channel, let plain = try channel.open(envelope) {
-                switch envelope.hdr.k {
-                case "ping":
-                    try enqueue(channel.seal(kind: "ping", room: hostId, from: fromId, to: hostId, channel: "ctl", payload: plain))
-                case "data":
-                    if envelope.hdr.ch == "ctl" {
-                        if !handlePathControl(try E2ECrypto.jsonObject(plain)) { deliver(plain, channel: envelope.hdr.ch) }
-                    } else { deliver(plain, channel: envelope.hdr.ch) }
-                case "bin": deliver(plain, channel: envelope.hdr.ch, binary: true)
-                default: break
-                }
             }
-        } catch {
-            if let socket { socketClosed(socket, error: error) }
+        case .authenticated(let header, let payload, let message):
+            guard let channel else { return }
+            switch header.k {
+            case "ping":
+                try enqueue(channel.seal(kind: "ping", room: hostId, from: fromId, to: hostId, channel: "ctl", payload: payload))
+            case "data":
+                guard let message else { return }
+                if header.ch != "ctl" || !handlePathControl(message) { deliver(payload, channel: header.ch, message: message) }
+            case "bin": deliver(payload, channel: header.ch, binary: true)
+            default: break
+            }
         }
     }
 
@@ -378,11 +431,10 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         if activePath == "lan" { activePath = nil }
         guard !valid.isEmpty else { return }
         let direct = LANTransport(endpoints: valid, hostId: hostId, deviceId: fromId, root: root)
-        direct.receive = { [weak self, weak direct] data, channel, binary in
+        direct.receive = { [weak self, weak direct] data, channel, binary, message in
             guard let self, let direct, self.lan === direct else { return }
             if binary { self.deliver(data, channel: channel, binary: true) }
-            else if channel != "ctl" { self.deliver(data, channel: channel) }
-            else if let message = try? E2ECrypto.jsonObject(data), !self.handlePathControl(message) { self.deliver(data, channel: channel) }
+            else if let message, channel != "ctl" || !self.handlePathControl(message) { self.deliver(data, channel: channel, message: message) }
         }
         direct.state = { [weak self, weak direct] ready in
             guard let self, let direct, self.lan === direct else { return }
@@ -414,8 +466,8 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         }
     }
 
-    private func deliver(_ payload: Data, channel: String?, binary: Bool = false) {
-        inbound.offer(.init(payload: payload, channel: channel, binary: binary))
+    private func deliver(_ payload: Data, channel: String?, binary: Bool = false, message: [String: Any]? = nil) {
+        inbound.offer(.init(payload: payload, channel: channel, binary: binary, message: message))
         guard deliveryTask == nil else { return }
         let generation = deliveryGeneration
         deliveryTask = Task { [weak self] in
@@ -428,8 +480,10 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
                     self.receiveHandler?(["type": "_transport.overflow", "controlFrames": overflow.control, "sessionFrames": overflow.session], "ctl")
                 }
                 guard let frame = self.inbound.take() else { self.deliveryTask = nil; return }
+                self.receivedPayload = frame.payload
                 if frame.binary { self.receiveHandler?(["type": "_artifact.chunk", "data": frame.payload], frame.channel) }
-                else if let message = try? E2ECrypto.jsonObject(frame.payload) { self.receiveHandler?(message, frame.channel) }
+                else if let message = frame.message { self.receiveHandler?(message, frame.channel) }
+                self.receivedPayload = nil
                 await Task.yield()
             }
         }
@@ -499,7 +553,15 @@ enum RelayURL {
 /// Main actor confinement makes admission/accounting atomic with consumption.
 final class InboundFrameLanes {
     struct Limits { let frames: Int; let payload: Int }
-    struct Frame: Equatable { let payload: Data; let channel: String?; var binary = false }
+    struct Frame: Equatable {
+        let payload: Data
+        let channel: String?
+        var binary = false
+        var message: [String: Any]? = nil
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.payload == rhs.payload && lhs.channel == rhs.channel && lhs.binary == rhs.binary
+        }
+    }
     private struct Lane {
         var frames: [Frame] = []
         var bytes = 0
@@ -555,7 +617,7 @@ final class InboundFrameLanes {
 /// only plaintext it sends is HS1/HS3; Relay credentials never reach a LAN URL.
 @MainActor
 final class LANTransport: NSObject, URLSessionWebSocketDelegate {
-    var receive: ((Data, String?, Bool) -> Void)?
+    var receive: ((Data, String?, Bool, [String: Any]?) -> Void)?
     var state: ((Bool) -> Void)?
     var isReady: Bool { channel != nil }
     private let urls: [URL]
@@ -566,7 +628,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
     private var socket: URLSessionWebSocketTask?
     private var channel: E2EChannel?
     private var handshake: DeviceHandshake?
-    private let pieces = EnvelopeReassembler()
+    private var decoder = InboundFrameDecoder()
     private var retry: Task<Void, Never>?
     private var timeout: Task<Void, Never>?
     private var heartbeat: Task<Void, Never>?
@@ -601,7 +663,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
         timeout?.cancel(); timeout = nil
         heartbeat?.cancel(); heartbeat = nil
         let old = socket; socket = nil
-        channel = nil; handshake = nil; queue = []; queuedBytes = 0; sending = false; pieces.clear()
+        channel = nil; handshake = nil; queue = []; queuedBytes = 0; sending = false; decoder = InboundFrameDecoder()
         old?.cancel(with: .goingAway, reason: nil)
         session?.invalidateAndCancel(); session = nil
     }
@@ -677,27 +739,24 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
         task.receive { [weak self, weak task] result in
             Task { @MainActor in
                 guard let self, let task, self.socket === task else { return }
+                let decoder = self.decoder
                 do {
                     let message = try result.get()
-                    let data: Data
-                    switch message {
-                    case .string(let text): data = Data(text.utf8)
-                    case .data(let bytes): data = bytes
-                    @unknown default: self.read(task); return
-                    }
-                    let frame = try JSONDecoder().decode(V2Frame.self, from: data)
-                    guard frame.type == "v2.frame", frame.protocolVersion == orbisProtocolVersion,
-                          frame.envelope.v == 2, frame.envelope.hdr.room == self.hostId,
-                          frame.envelope.hdr.from == self.hostId, frame.envelope.hdr.to == self.deviceId else { throw PairingError.invalidQR }
-                    if let envelope = self.pieces.accept(frame.envelope) { try self.handle(envelope) }
+                    let decoded = try await decoder.decode(message, hostId: self.hostId, deviceId: self.deviceId,
+                        keys: self.channel?.keys, relay: false)
+                    guard self.socket === task, self.decoder === decoder else { return }
+                    if let decoded { try self.handle(decoded) }
                     if self.socket === task { self.read(task) }
-                } catch { self.fail(task) }
+                } catch {
+                    if self.socket === task, self.decoder === decoder { self.fail(task) }
+                }
             }
         }
     }
-    private func handle(_ envelope: Envelope) throws {
-        if envelope.hdr.k == "hs" {
-            guard envelope.hdr.n == 0, channel == nil, let handshake else { throw PairingError.handshake("局域网握手状态无效") }
+    private func handle(_ decoded: InboundFrameDecoder.Decoded) throws {
+        switch decoded {
+        case .handshake(let envelope):
+            guard envelope.hdr.k == "hs", envelope.hdr.n == 0, channel == nil, let handshake else { throw PairingError.handshake("局域网握手状态无效") }
             let reply = try handshake.accept(E2ECrypto.jsonObject(Base64URL.decode(envelope.ct)))
             guard let keys = handshake.keys else { throw PairingError.handshake("局域网密钥未建立") }
             try sendHandshake(reply)
@@ -706,15 +765,15 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
             endpointIndex = 0
             state?(true)
             armHeartbeat()
-        } else {
+        case .authenticated(let header, let bytes, let message):
             guard let channel else { throw PairingError.handshake("局域网握手尚未完成") }
-            guard let bytes = try channel.open(envelope) else { return }
-            switch envelope.hdr.k {
+            switch header.k {
             case "ping": try enqueue(channel.seal(kind: "ping", room: hostId, from: deviceId, to: hostId, channel: "ctl", payload: bytes))
-            case "data": receive?(bytes, envelope.hdr.ch, false)
-            case "bin": receive?(bytes, envelope.hdr.ch, true)
+            case "data": receive?(bytes, header.ch, false, message)
+            case "bin": receive?(bytes, header.ch, true, nil)
             default: break
             }
+        case .control: throw PairingError.invalidQR
         }
     }
     private func armHeartbeat() {
@@ -732,7 +791,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
     private func fail(_ task: URLSessionWebSocketTask) {
         guard socket === task, !closed else { return }
         let wasReady = isReady
-        socket = nil; channel = nil; handshake = nil; pieces.clear()
+        socket = nil; channel = nil; handshake = nil; decoder = InboundFrameDecoder()
         queue = []; queuedBytes = 0; sending = false
         timeout?.cancel(); timeout = nil
         heartbeat?.cancel(); heartbeat = nil

@@ -22,6 +22,24 @@ class RelayReducerTest {
         runtimes = mapOf(runtime to RuntimeSummary(runtime, "Agent", "/repo", "idle", session, agentKind = "pi")))
 
     @Test
+    fun `already parsed transport envelope follows the same reducer path`() {
+        val packets = listOf(
+            """{"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{"type":"runtime.status","status":"running"}}""",
+            """{"type":"runtime.event","runtimeId":"runtime-a","sequence":2,"event":{"type":"message.start","messageId":"live","role":"assistant"}}""",
+            """{"type":"runtime.event","runtimeId":"runtime-a","sequence":3,"event":{"type":"message.delta","messageId":"live","delta":"partial"}}""",
+            """{"type":"runtime.event","runtimeId":"runtime-a","sequence":4,"event":{"type":"message.end","messageId":"live"}}""",
+        )
+        val rawReducer = RelayReducer()
+        var wire = modelState()
+        var parsed = modelState()
+        for (packet in packets) {
+            wire = rawReducer.reduce(wire, packet, channel = "msg")
+            parsed = rawReducer.reduce(parsed, packet, Json.parseToJsonElement(packet).jsonObject, channel = "msg")
+            assertEquals(wire, parsed)
+        }
+    }
+
+    @Test
     fun `working branch ignores stale responses across refresh session and directory changes`() {
         val runtime = RuntimeSummary("runtime-a", "A", "/repo", "idle", "session-1")
         val initial = RemoteState(

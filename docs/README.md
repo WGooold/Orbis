@@ -15,6 +15,8 @@ This directory is organized by authority and maintenance horizon. The root `READ
 - [ADR-0058](adr/0058-shared-interaction-motion.md)：统一八类交互动效、32组代码场景及新增交互必须复用的组件规则；[MOT ticket](agents/interaction-motion-tickets.md) 先设计再实施，设备未验收不得记为交付。
 - `docs/architecture/agent-state-acceptance.md`: living acceptance checklist for ADR-0032, mapping the 36 audited state modules to their model scope and migration status.
 - `docs/testing/isolated-host/README.md`: isolated Host test rig — its own process, state directory and local Relay, so Host/App verification never touches the Host the user is running. Read it before any on-machine pairing or display-projection regression run.
+- [本机 Android 模拟器入口](testing/android-emulator.md)：所有 agent / 工作树共用的设备借用、隔离 ADB、诊断与退出清理。
+- [本机 iOS 模拟器外接存储](testing/ios-simulator-storage.md)：12 台共享池、新增 iOS 设备、外接数据目录及借用前检查。
 - [UI 回归方案](testing/ui-regression.md)：任何 UI 功能、设计或影响显示的改动完成前必须执行的自动 / 手动模拟器回归、全量用例与 feature 映射、新用例编写要求和证据格式。
 - `docs/testing/mobile-ui-polish.md`: mobile UI constraints and isolated iOS / Android regression evidence for ADR-0046.
 - `docs/deployment.md`: production Relay deployment and release checks.

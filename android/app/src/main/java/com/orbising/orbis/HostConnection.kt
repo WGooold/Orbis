@@ -2181,7 +2181,8 @@ internal class HostConnection(
                             } else null
                         } else null
                         val artifactResult = runCatching { processArtifactPayload(payload) }
-                        runCatching { reducer.reduce(previous, payload, committedBatch, channel = interactiveChannel) }
+                        runCatching { incomingMessage?.let { reducer.reduce(previous, payload, it, committedBatch, channel = interactiveChannel) }
+                            ?: reducer.reduce(previous, payload, committedBatch, channel = interactiveChannel) }
                             .onFailure { error ->
                                 // reducer 抛异常过去是**静默吞掉**的：界面会永远停在「正在连接」，
                                 // 而现场没有任何线索。宁可吵也不能哑。
@@ -2235,7 +2236,8 @@ internal class HostConnection(
                                     .forEach(artifactDownloadStore::register)
                                 updateState { latest ->
                                     val rebased = if (latest === previous) next
-                                        else reducer.reduce(latest, payload, committedBatch, channel = interactiveChannel)
+                                        else incomingMessage?.let { reducer.reduce(latest, payload, it, committedBatch, channel = interactiveChannel) }
+                                            ?: reducer.reduce(latest, payload, committedBatch, channel = interactiveChannel)
                                     if (artifactFailure == null) rebased else rebased.copy(
                                         downloads = rebased.downloads.mapValues { (taskId, task) -> persistedDownloads[taskId] ?: task },
                                         error = "文件下载失败：${artifactFailure.message ?: "无法保存文件"}",
