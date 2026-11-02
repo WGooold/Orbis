@@ -1803,9 +1803,34 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(before.minY, composer.frame.minY, accuracy: 1)
         capture("approval-rejected-restored", app: app)
     }
+    func testQuotaCoinReducedMotionKeepsBothReadingsAndTheTouchTarget() {
+        let app = launch("status", dark: true, arguments: ["--preview-reduce-motion",
+            "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        let coin = app.buttons["quota-coin-codex"]
+        XCTAssertTrue(coin.waitForExistence(timeout: 8))
+        let before = coin.frame
+        coin.tap()
+        let loaded = NSPredicate(format: "value CONTAINS %@", "82%")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: loaded, object: coin)], timeout: 8), .completed)
+        settle()
+        XCTAssertTrue((coin.value as? String)?.contains("5 小时配额") == true)
+        coin.tap()
+        XCTAssertTrue((coin.value as? String)?.contains("周配额，剩余 35%") == true)
+        XCTAssertEqual(coin.frame, before)
+        capture("quota-reduced-dark-large-weekly", app: app)
+        app.buttons["provider-quota-codex"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(waitUntilEnabled(coin, timeout: 8))
+        XCTAssertTrue((coin.value as? String)?.contains("周配额，剩余 35%") == true)
+        coin.tap()
+        XCTAssertTrue((coin.value as? String)?.contains("5 小时配额，剩余 82%") == true)
+        XCTAssertEqual(coin.frame, before)
+        capture("quota-reduced-dark-large-five-hour", app: app)
+        app.terminate()
+    }
+
     func testCompactQuotaCardsAndTransparentSwitch() {
-        for dark in [false, true] {
-            let app = launch("status", dark: dark)
+        for (dark, style) in [(false, "classic"), (true, "classic"), (false, "insetFocus"), (true, "insetFocus")] {
+            let app = launch("status", dark: dark, arguments: ["-orbis.visualStyle", style])
             let codex = app.buttons["provider-quota-codex"]
             XCTAssertTrue(codex.waitForExistence(timeout: 8))
             let drag = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
@@ -1819,7 +1844,7 @@ final class OrbisUITests: XCTestCase {
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: loaded, object: codex)], timeout: 8), .completed)
             XCTAssertEqual(codex.frame.height, before.height, accuracy: 1)
             RunLoop.current.run(until: Date().addingTimeInterval(3))
-            XCTAssertTrue((coin.value as? String)?.contains("5 小时配额") == true)
+            XCTAssertTrue((coin.value as? String)?.contains("5 小时配额") == true, "After first demonstration: \(String(describing: coin.value))")
             coin.tap()
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "35%"), object: coin)], timeout: 4), .completed)
             XCTAssertTrue((coin.value as? String)?.contains("周配额") == true)
@@ -1837,7 +1862,7 @@ final class OrbisUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(3))
             app.buttons["quota-coin-claude"].tap()
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "18%"), object: app.buttons["quota-coin-claude"])], timeout: 4), .completed)
-            capture(dark ? "compact-quota-dark" : "compact-quota-light", app: app)
+            capture("compact-quota-\(style)-" + (dark ? "dark" : "light"), app: app)
             app.buttons["provider-switch-codex"].tap()
             let team = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "团队供应商")).firstMatch
             XCTAssertTrue(team.waitForExistence(timeout: 3))

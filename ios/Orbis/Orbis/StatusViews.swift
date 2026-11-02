@@ -356,7 +356,8 @@ private struct SubscriptionQuotaCoin: View {
     @State private var angle: Double = 0
     @State private var demonstrated = false
     @State private var flipTask: Task<Void, Never>?
-    @State private var progress: CGFloat = 0
+    @State private var fiveHourProgress: CGFloat = 0
+    @State private var weeklyProgress: CGFloat = 0
     let kind: String
     let quota: SubscriptionQuota?
     let loading: Bool
@@ -394,7 +395,7 @@ private struct SubscriptionQuotaCoin: View {
             .onChange(of: loading) { _, value in if value { cancelFlip() } }
             .onChange(of: reduceMotion) { _, _ in cancelFlip() }
             .onChange(of: quota?.checkedAt) { _, _ in demonstrate() }
-            .task(id: "\(loading)-\(weekly)-\(remaining ?? -1)") { updateProgress() }
+            .task(id: "\(loading)-\(reduceMotion)-\(quota?.windows.map { $0.remainingPercent ?? -1 } ?? [])") { updateProgress() }
     }
     private var coinFace: some View {
         let palette = OrbisPalette(scheme)
@@ -411,7 +412,7 @@ private struct SubscriptionQuotaCoin: View {
                                 .rotationEffect(.degrees(reduceMotion ? -90 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1 * 360))
                         }
                     } else {
-                        SubscriptionQuotaArc(progress: progress)
+                        SubscriptionQuotaArc(progress: weekly ? weeklyProgress : fiveHourProgress)
                             .stroke(LinearGradient(colors: [color.opacity(0.4), color], startPoint: .topLeading, endPoint: .bottomTrailing),
                                     style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                     }
@@ -425,7 +426,7 @@ private struct SubscriptionQuotaCoin: View {
                     Text(remaining.map { String(format: "%.0f%%", $0) } ?? "—")
                         .foregroundStyle(remaining == nil ? palette.secondary : color).monospacedDigit()
                 }.font(.orbisCaption(.medium)).frame(maxWidth: .infinity, alignment: .trailing)
-                    .opacity(1 - 0.55 * abs(sin(angle * .pi / 180)))
+                    .modifier(QuotaCoinLabelFade(phase: angle))
             }.frame(width: 64, height: 56)
                 .contentShape(Rectangle())
     }
@@ -437,10 +438,14 @@ private struct SubscriptionQuotaCoin: View {
     }
     private func updateProgress() {
         guard !loading else { return }
-        let fraction = (remaining ?? 0.0) / 100.0
-        let target = CGFloat(min(max(fraction, 0.0), 1.0))
+        func fraction(_ name: String) -> CGFloat {
+            CGFloat(min(1, max(0, (quota?.windows.first { $0.name == name }?.remainingPercent ?? 0) / 100)))
+        }
         let animation: Animation? = reduceMotion ? nil : .easeOut(duration: 0.7)
-        withAnimation(animation) { progress = target }
+        withAnimation(animation) {
+            fiveHourProgress = fraction("five_hour")
+            weeklyProgress = fraction("seven_day")
+        }
     }
     private func demonstrate() {
         guard !demonstrated, !loading, quota?.windows.filter({ $0.remainingPercent != nil }).count == 2 else { return }
@@ -457,72 +462,91 @@ private struct SubscriptionQuotaCoin: View {
     }
     private func cancelFlip() {
         flipTask?.cancel(); flipTask = nil
-        angle = 0
+        var transaction = Transaction(); transaction.disablesAnimations = true
+        withTransaction(transaction) { angle = 0 }
     }
     @MainActor private func flip() async {
         guard !Task.isCancelled else { return }
         guard !reduceMotion else { weekly.toggle(); return }
-        withAnimation(.timingCurve(0.42, 0, 0.75, 0.45, duration: 0.22)) { angle = 90 }
+        // A linear phase clock lets the native renderer reproduce the film's exact eases.
+        withAnimation(.linear(duration: QuotaCoinGeometry.outgoingDuration)) { angle = 90 }
         do { try await Task.sleep(for: .milliseconds(220)) } catch { return }
         guard !Task.isCancelled else { return }
         var transaction = Transaction(); transaction.disablesAnimations = true
         withTransaction(transaction) { weekly.toggle() }
-        withAnimation(.timingCurve(0.16, 0.75, 0.25, 1, duration: 0.34)) { angle = 180 }
+        withAnimation(.linear(duration: QuotaCoinGeometry.incomingDuration)) { angle = 180 }
         do { try await Task.sleep(for: .milliseconds(340)) } catch { return }
         guard !Task.isCancelled else { return }
         withTransaction(transaction) { angle = 0 }
     }
 }
 
-/// The medallion turns about its own diagonal axis; labels and hit geometry stay still.
-/// Interpolating the angle here also updates extrusion and light on every rendered frame.
+/// Only the coin transforms. Its corner labels and hit geometry stay still.
+/// The body is a closed cylinder, including at the exact side-on frame.
 private struct QuotaCoinTilt: AnimatableModifier {
-    var angle: Double
+    var angle: Double // linear phase, eased once by QuotaCoinGeometry
     let palette: OrbisPalette
     let tint: Color
     var animatableData: Double { get { angle } set { angle = newValue } }
-    private var lift: Double { abs(sin(angle * .pi / 180)) }
-    private var faceAngle: Double { angle > 90 ? angle - 180 : angle }
-    private var axis: (x: CGFloat, y: CGFloat, z: CGFloat) { (-0.4067, 0.9135, 0) }
+    private var turn: Double { QuotaCoinGeometry.angle(phase: angle) }
+    private var lift: Double { abs(sin(turn * .pi / 180)) }
+    private var highlight: Color { palette.dark ? palette.text : palette.light }
+
     func body(content: Content) -> some View {
         ZStack {
-            Ellipse().fill(RadialGradient(colors: [palette.scrim.opacity(0.22), .clear],
+            Ellipse().fill(RadialGradient(colors: [palette.scrim.opacity(0.28), .clear],
                                          center: .center, startRadius: 0, endRadius: 18))
-                .frame(width: 36, height: 10).offset(x: 2, y: 22)
-                .opacity(lift).scaleEffect(x: 1 - 0.15 * lift, y: 1)
-            ZStack {
-                // At 90° the faces become lines; this solid rim preserves physical thickness.
-                Capsule().fill(LinearGradient(colors: [tint.opacity(0.85), palette.shadow],
-                                               startPoint: .leading, endPoint: .trailing))
-                    .frame(width: 3.2 * lift, height: 41)
-                    .rotationEffect(.degrees(24)).offset(x: 1.1 * lift, y: 0.49 * lift)
-                    .opacity(lift * lift * lift)
-                // Three bounded layers form the visible edge even at the side-on angle.
-                ForEach((1...3).reversed(), id: \.self) { layer in
-                    Circle().fill(LinearGradient(colors: [tint.opacity(0.6), palette.shadow],
-                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 41, height: 41)
-                        .rotation3DEffect(.degrees(faceAngle), axis: axis, perspective: 0.36)
-                        .offset(x: CGFloat(layer) * 0.9 * lift, y: CGFloat(layer) * 0.4 * lift)
+                .frame(width: 36, height: 8).offset(y: 24)
+                .opacity(lift * (1 - 0.5 * lift)).scaleEffect(x: 1 - 0.65 * lift, y: 1)
+            Canvas { context, _ in
+                guard lift > 0.0001 else { return }
+                for band in QuotaCoinGeometry.bands(angle: turn) {
+                    var path = Path()
+                    path.addLines(band.points); path.closeSubpath()
+                    let colors = [0xF3D3C3, 0xC97A55, 0x8A4426].map { hex in
+                        Color(red: min(1, Double((hex >> 16) & 255) / 255 * band.brightness),
+                              green: min(1, Double((hex >> 8) & 255) / 255 * band.brightness),
+                              blue: min(1, Double(hex & 255) / 255 * band.brightness))
+                    }
+                    context.fill(path, with: .linearGradient(Gradient(colors: colors),
+                        startPoint: .zero, endPoint: CGPoint(x: 44, y: 44)))
+                }
+            }.accessibilityHidden(true)
+            content
+                .background(Circle().fill(RadialGradient(colors: [palette.top, palette.base, palette.well],
+                    center: UnitPoint(x: 0.34, y: 0.28), startRadius: 0, endRadius: 32)))
+                .overlay {
+                    Circle().strokeBorder(LinearGradient(colors: [highlight.opacity(0.9), .clear, tint.opacity(0.25)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)
+                    Circle().fill(LinearGradient(stops: [
+                        .init(color: .clear, location: 0.30),
+                        .init(color: highlight.opacity(0.55), location: 0.46),
+                        .init(color: .clear, location: 0.60)],
+                        startPoint: UnitPoint(x: -1.4 + turn / 180 * 2.8, y: 0),
+                        endPoint: UnitPoint(x: -0.4 + turn / 180 * 2.8, y: 1)))
                         .opacity(lift)
                 }
-                content
-                    .background(Circle().fill(LinearGradient(colors: [palette.top, palette.base, palette.well],
-                                                              startPoint: .topLeading, endPoint: .bottomTrailing)).padding(3))
-                    .overlay {
-                        Circle().stroke(LinearGradient(colors: [palette.light.opacity(0.65), .clear, tint.opacity(0.12)],
-                                                       startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7).padding(3)
-                        Circle().fill(LinearGradient(stops: [.init(color: .clear, location: 0.2),
-                                                            .init(color: (palette.dark ? palette.text : palette.light).opacity(0.48), location: 0.48),
-                                                            .init(color: .clear, location: 0.7)],
-                                                     startPoint: UnitPoint(x: -0.8 + lift, y: 0),
-                                                     endPoint: UnitPoint(x: 0.4 + lift, y: 1)))
-                            .padding(3).opacity(lift)
-                    }
-                    .rotation3DEffect(.degrees(faceAngle), axis: axis, perspective: 0.36)
-            }.rotationEffect(.degrees(4 * lift)).scaleEffect(1 + 0.035 * lift)
-                .offset(x: -lift, y: -2 * lift)
+                .projectionEffect(faceTransform)
+                // The cylindrical edge owns the seam; never rasterize a singular face.
+                .opacity(QuotaCoinGeometry.faceVisible(angle: turn) ? 1 : 0)
         }.frame(width: 44, height: 44)
+    }
+
+    private var faceTransform: ProjectionTransform {
+        let m = QuotaCoinGeometry.faceProjection(angle: turn)
+        var result = ProjectionTransform()
+        result.m11 = m[0]; result.m21 = m[1]; result.m31 = m[2]
+        result.m12 = m[3]; result.m22 = m[4]; result.m32 = m[5]
+        result.m13 = m[6]; result.m23 = m[7]; result.m33 = m[8]
+        return result
+    }
+}
+
+private struct QuotaCoinLabelFade: AnimatableModifier {
+    var phase: Double
+    var animatableData: Double { get { phase } set { phase = newValue } }
+    func body(content: Content) -> some View {
+        content.opacity(1 - 0.55 * abs(sin(QuotaCoinGeometry.angle(phase: phase) * .pi / 180)))
     }
 }
 

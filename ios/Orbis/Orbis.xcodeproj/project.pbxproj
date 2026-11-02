@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C03700010000000000000001 /* QuotaCoinGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03710010000000000000001 /* QuotaCoinGeometry.swift */; };
 		A00100010000000000000001 /* OrbisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000001 /* OrbisApp.swift */; };
 		A00100010000000000000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000002 /* Models.swift */; };
 		A00100010000000000000003 /* Base64URL.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000003 /* Base64URL.swift */; };
@@ -54,6 +55,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		C03710010000000000000001 /* QuotaCoinGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaCoinGeometry.swift; sourceTree = "<group>"; };
 		A00110010000000000000001 /* OrbisApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbisApp.swift; sourceTree = "<group>"; };
 		A00110010000000000000002 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		A00110010000000000000003 /* Base64URL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Base64URL.swift; sourceTree = "<group>"; };
@@ -167,6 +169,7 @@
 				A00110010000000000000022 /* SessionViews.swift */,
 				A00110010000000000000021 /* Presentation.swift */,
 				C05810010000000000000001 /* MotionGeometry.swift */,
+				C03710010000000000000001 /* QuotaCoinGeometry.swift */,
 				C05810010000000000000002 /* InteractionMotion.swift */,
 				C03310010000000000000001 /* HomePullRefresh.swift */,
 				A00110010000000000000020 /* OrbisDesign.swift */,
@@ -312,6 +315,7 @@
 				A00100010000000000000022 /* SessionViews.swift in Sources */,
 				A00100010000000000000021 /* Presentation.swift in Sources */,
 				C05800010000000000000001 /* MotionGeometry.swift in Sources */,
+				C03700010000000000000001 /* QuotaCoinGeometry.swift in Sources */,
 				C05800010000000000000002 /* InteractionMotion.swift in Sources */,
 				C03300010000000000000001 /* HomePullRefresh.swift in Sources */,
 				A00100010000000000000020 /* OrbisDesign.swift in Sources */,

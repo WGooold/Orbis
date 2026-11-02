@@ -44,6 +44,7 @@ Status: accepted（用户已授权；先盘点、定规则及 ticket，再实施
 | MessageActions | 复用 AnchoredPanel，220 / 160ms | 消息可见区域上缘；空间不足时安全区内侧移 / 下置 | 触摸外部、滚动、身份失效关闭；Rewind 仍二次确认 |
 | SendFlight | 总 280ms，前 70ms 向右至少24pt/dp或移至消息列并收窄至目标宽度，后 210ms 上移；末 60ms 交接 | 提交时 composer 矩形 → 已布局本地行矩形 | 快速发送按 id 独立；同页最多 3 个；离开 / 失效立即取消 |
 | ActionGlyph | 通用 1 → 0.88 → 1，220ms；箭头下移 4pt/dp 后弹回；齿轮 / 历史旋转 90°，260ms | 只动图形，圆面与 48pt/dp 命中槽不动 | 每次有效激活触发；禁用不动；连续点击接管当前值 |
+| QuotaCoin（S19 / r37，验证中） | 220ms cubic-in 到90°，340ms quartic-out 到180°；44pt/dp 币面、24°左倾轴、13段闭合铜边，约8.43pt/dp厚、174.17pt/dp透视 | 原64×56pt/dp命中槽内实体投影，角标原位淡化；正反面独立读数 | 点击接管；刷新、离页、Host / provider 变化取消；减少动画直接换面，不演示 |
 | DirectionalNotice | 220ms，从右 32pt/dp、上 12pt/dp 到原位，伴随淡入；160ms 逆向退出 | 顶部覆盖区 | 保留离场内容至末帧；通知优先，不移动列表 |
 | EdgeBack | 跟随系统 / 边缘进度，当前页 1 → 0.96，圆角 0 → 24；向内位移上限 24pt/dp | 当前页 → 真实直接来源 | 取消复用 M08 260 / 24 弹簧；完成复用 180ms 退场 |
 
@@ -115,7 +116,7 @@ Android 接系统 predictive back 的左右边缘进度和取消事件，让系�
 | SC24 | 目录新建、Git 分支刷新、文件夹上一级、文件浏览刷新 / 下载 | `SessionViews、ChatView、DownloadBrowserView` | `ComposerSessionInfo、RemoteFileBrowser、DirectoryPickerDialog` | 图标文字按钮也覆盖 |
 | SC25 | 文件差异前后文件、关闭、展开；工具 / thinking 折叠箭头 | `TurnFileChangesView、CompactDisclosure` | `TurnFileChangeViews、CompactDisclosure` | ActionGlyph；M03 / M13 保留 |
 | SC26 | 通知 / 错误关闭、问卷 / 审批选项、配对取消 | `OrbisNotice、InteractionView、PairingScannerView` | `NoticeBanner、QuestionnaireDialog、InteractionPanel、PairingScreen` | ActionGlyph；不改变授权和成功判定 |
-| SC27 | 配额币切换 / 刷新 | `SubscriptionQuotaCoin` | `SubscriptionQuotaView` | 既有专属翻面，明确排除重复动画 |
+| SC27 | 配额币切换 / 刷新 | `SubscriptionQuotaCoin` | `SubscriptionQuotaView` | QuotaCoin / MOT-22；r37 原生实体厚边、独立双面读数，排除重复动画 |
 | SC28 | 首页 / 目录 → 在线聊天 / 离线历史 / 设置 | `OrbisPageStack、OrbisPageTransition` | `OrbisPageHost、SwipeBackLayer` | EdgeBack / MOT-09 |
 | SC29 | 首页 / 聊天 / 历史 → 下载；聊天 → 历史 → 下载逐层返回 | 同上 | 同上 | 同上；保存来源实例 |
 | SC30 | 已配对后的添加电脑 | 同上、`PairingScannerView` | 同上、`PairingScreen` | 同上；安全配对阻断保持 |
@@ -186,3 +187,13 @@ MOT-01–MOT-10 全部有具体实现入口、依赖和验收条件。正常 / �
 Qt `Motion.js` / `MotionText.qml` 共用 160ms 淡变、220ms 数字滚动，侧栏在稳定按钮槽中交叉过渡凸起 / 凹陷。系统减少动画使用 macOS NSWorkspace / Windows 客户区动画偏好，运行时更新；无自制强制音效。
 
 Android 669 项 JVM、双端构建及 Qt 5 项测试已通过；Android 全量 168 项 5 失败 / 7 外部夹具 assumption，5 失败在同设备 `8ab14b6` 基线复现。详细外观、iOS、画面与未完成门禁以 [r35 验证记录](../testing/interaction-motion.md#2026-11-02--r35-交互细化) 为准。MOT-11–21 均保持验证中；按压来源在快速嵌套导航时的全周期、真机触觉 / 静音、系统边缘箭头组合仍需人工验收，不能据组件中帧测试宣称全部入口已经验收。
+
+## 2026-11-03 / r37：宣传片配额硬币原生移植（验证中）
+
+用户指定现有设置页订阅额度硬币参照 `../video/claude` 中的效果；源片为 HTML/CSS 三维投影。双端实现同构 `QuotaCoinGeometry`，将圆柱厚边投影为闭合切片，按远近绘制并只展示朝向相机的币面。13段铜色边渐层参考 `#F3D3C3 / #C97A55 / #8A4426`，正面继续使用当前明暗 / 经典 / 雾蓝 token；没有新的白色卡片。侧面不能退化为零宽平面、镜像图标或透明闪帧。每次翻转只扫光一次，接触影宽度随角度收窄到35%，币面中心不额外摆动或抬升。
+
+同一线性 phase 在两端映射到 cubic-in / quartic-out，各段分别220 / 340ms；不能在动画与几何中重复缓动。每个窗口独立保存700ms读数插值，翻面不把旧窗口的圆弧继续变成新窗口的值。角标仍原位淡至45%，命中区64×56保持，业务查询、首次双面演示、手动接管、刷新失败保留旧值与辅助功能说明沿用S19。减少动画跳过三维、扫光与演示，直接切换本地周期。专属动效不叠加 ActionGlyph 的缩放 / 旋转 / 触觉。
+
+验证对应 MOT-22 / SC27、S02 / S19 / M11 / V18；两端几何单测、配额设备整类、L1–L4全量、C01–C18、R58与A1–A4必须分别记录。实现接入不代表设备或人工门禁通过。
+
+2026-11-03 S19 / r37（MOT-22 / R58）：宣传片配额硬币的实体铜边、双面投影、扫光和220/340ms节奏已移植双端原生组件。最终隔离Swift351项、Android677项及两端构建通过，含并行图标底座修改的集成快照另构建通过。iOS SE配额专项首轮1失败后同设备2/2通过（四种外观与减少动画/XXXL）；Android配额3/3，受影响整组12/13，通用控件PixelCopy超时。iOS6张附件与实际翻面帧、Android4张组件外观图已看；Android系统全屏帧被System UI无响应弹窗干扰。资源压力下基线全量未跑完，随后共享池12项触发本任务10台上限拒绝；完整L3/L4、C01–C18、R58与Android A3未完成，不记验收。源码快照、失败、资源释放及产物边界见 `.artifacts/ui-regression/20261103-quota-coin/summary.md`。

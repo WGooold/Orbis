@@ -6,7 +6,7 @@
 
 2026-11-02 M15 iOS r33：观察原生顶部拖动，在释放时触发一次刷新；指示器不再设置刷新停靠高度，列表只执行一次原生回弹。隔离 `765b0a3` 上 338 核心测试与构建通过，SE 首页手势 4 / 4、iPhone 17 / SE 下拉 3 / 3（含 A1–A4、短拉 / 多选）通过；iPad 同设备前后下拉均实际刷新一次，回弹源帧已审阅。SE 全量 82 项为 75 通过 / 7 失败，6 项原实现同设备复现，上传失败恢复一项在原实现及当前单独复跑通过，首轮失败保留；176 张附件已查看。完整人工 C01–C18、真实 Host、真机体感未验收，不记完整门禁通过。共享主工作树后续 r34 外观修改不在此隔离结论内。详见 `.artifacts/ui-regression/20261102-ios-refresh-rebound/summary.md`。
 
-日期：2026-11-02。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-02/r35`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-03。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-03/r37`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 10 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -132,7 +132,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | Claude 模型回复身份 | `testClaudeNativeHandoffKeepsOneCopyAcrossConsecutiveTurns`（明暗，三阶段 canonical / live 交接；每段正文唯一） | V09、V17–V18 |
 | 聊天内容 / 顶栏 | `testRefreshKeepsHeaderTextAndTruncationStable`、`testClosedDisclosureDefersWorkAcrossChatReentryAndRetainsState`、`testUserMessageCopyAndRewind`、`testToolDetailsLoadPagesAndClose`、`testTruncatedContentAndToolArguments`、`testHistoryPreviewAndNavigation` | S10–S11、S17、S20、M03、M05、V05、V14 |
 | 输入 / 审批 / 队列 | `testSlashPickerStaysAboveKeyboard`、`testOptimisticSendReconcilesAndRejectedSendRestores`、`testUnconfirmedSendCanBeCheckedWithoutResending`、`testCompactionQueuedSendCanBeWithdrawn`、`testApprovalOverlayKeepsComposerStableWhileSubmitting`、`testQueueCancellationNotificationsAndRuntimeFacts`、`testToolExportAndInteractionDraftSwitching` | V06–V08、V10、V12、V17 |
-| 连接状态 / 供应商（r15 后为设置页） | `testCompactQuotaCardsAndTransparentSwitch`、`testFixedRoutingAndStatusProviderSwitch`、`testBasicConnectionStatusAndDirectoryProviderMismatch` | S18–S19、S22–S23 |
+| 连接状态 / 供应商（r15 后为设置页） | `testCompactQuotaCardsAndTransparentSwitch`、`testQuotaCoinReducedMotionKeepsBothReadingsAndTheTouchTarget`、`testFixedRoutingAndStatusProviderSwitch`、`testBasicConnectionStatusAndDirectoryProviderMismatch` | S18–S19、S22–S23 |
 | 下载 | `testDownloadCardsPauseResumeAndSelectWithoutSideButtons` | S15、S20 |
 | 轮次文件审阅 | `testTurnFileReviewLoadsOnlySelectedFilesAndRetainsCache`、`testTurnFileReviewDarkAppearance`、`testTurnFileReviewOnlyHeaderPullCloses`、`testNativeTurnFileReviewShowsSourceAndReadsOnlySelectedDetail` | S21、M13、V19 |
 | 全页面明暗 | `testPageScreenshotsInBothAppearances` | S01–S09、S16、S25 |
@@ -151,7 +151,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 顶栏 / 输入 / 交互 | `ChatStatusLayoutInstrumentedTest`（2）、`ComposerSessionInfoInstrumentedTest`（3）、`InteractionWorkspaceInstrumentedTest`（5）、`QuestionnaireInstrumentedTest`（2）、`CodexPermissionsInstrumentedTest`（3）、`NotificationsInstrumentedTest`（2）、`DshInstrumentedTest`（2） | S12、S17、V05–V08、V12、V17 |
 | 目录 | `SessionDrawerLayoutInstrumentedTest`（2）、`SessionArchiveSelectionInstrumentedTest`（3）、`SessionProviderFilterInstrumentedTest`（3）、`SessionHostOwnershipInstrumentedTest`（3） | S15、S19、M06、M09、V17 |
 | 新建会话 Agent 选择 | `DshInstrumentedTest#selectsLaunchableDeepSeekBeforeBackendReadyAndCreatesSessionInChosenDirectory` | S20、V12、V16–V18 |
-| 状态 / 供应商 | `SubscriptionQuotaInstrumentedTest`（1）、`ProviderSelectionInstrumentedTest`（1） | S19、S22 |
+| 状态 / 供应商 | `SubscriptionQuotaInstrumentedTest`（3，查询 / 翻面、快速接管与减少动画）、`ProviderSelectionInstrumentedTest`（1） | S19、S22 |
 | 下载 / 文件 | `DownloadFileBrowserInstrumentedTest`（3）、`TurnFileChangesInstrumentedTest`（6，含原生 Codex 来源提示及 Pi 预览清单点击、入场期间完整清单 / 首段 diff 到达和关闭重开）、`ChatViewportInstrumentedTest#turnChangeSummaryFollowsTheWholeTurnWhenAnchoredInsideIt` | S09、S15、S20–S21、M13、V19 |
 | 材质 / 字形 / 控件 | `UiPolishInstrumentedTest`（3）、`NeumorphInstrumentedTest`（1） | S01–S09、S12、M04、V15 |
 | 非 UI 但在同一设备套件 | `SessionGraphStoreInstrumentedTest`（32）、`SessionSyncSelectionInstrumentedTest`（6）、`SessionSyncSlowLinkInstrumentedTest`（2） | 缓存 / 同步正确性，全量时一并运行 |
@@ -216,6 +216,13 @@ Codex 桌面新会话同步回归（S18、V16–V18）：Host `host-service.test
 S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionReminderAppearsWhileReadingAndLocatesTheOriginalWithoutFollowing`、`testQuestionReminderTracksNewSourceQuestionsWithoutMovingTheReader`；Android `ChatQuestionTest`、`ChatQuestionReminderInstrumentedTest`（4）。覆盖源消息身份、可见性、点击定位、阅读锚点、通知优先和 Host 隔离，配合既有视口用例及手动 R31，A1–A5；未验收不得计为交付。
 
 
+### R58：宣传片配额硬币原生移植（S19 / ADR-0058 / MOT-22，验证中）
+
+- L1：iOS `QuotaCoinGeometryTests`、Android `QuotaCoinGeometryTest`；正反面落定正向且相同大小，90°实体侧边闭合，连续投影不越出操作槽，曲线只缓动一次。
+- L3：保留 iOS `testCompactQuotaCardsAndTransparentSwitch` 和 Android `SubscriptionQuotaInstrumentedTest` 原用例；补快速连点 / 首次演示接管、刷新中断 / 失败保留周期、离页和减少动画。全量套件仍须运行。
+- L4 / 手动：C12、C16 和 R58，A1–A4，经典 / 雾蓝浅深色；逐帧审阅铜色厚度、侧面无空洞、背面无镜像、单次扫光、影宽35%、角标和触控区固定、每面配额环对应真实读数。补全部 C01–C18，不以几何单测代替视觉门禁。
+- 本轮源码基线和候选快照及证据保存在 `.artifacts/ui-regression/20261103-quota-coin/`；设备占用、既有失败和未跑项分别记录，未完成门禁不记通过。
+
 ### 3.4 r31 共用交互动效映射
 
 本节补充 §3.3，既有用例不删、不跳、不放宽。来源 [ADR-0058](../adr/0058-shared-interaction-motion.md)、[MOT ticket](../agents/interaction-motion-tickets.md)。实际落地用例及证据列于 [交互动效验证记录](interaction-motion.md)；存在不代表通过，缺项明确保留。
@@ -272,7 +279,7 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | C09 | 首页卡片左滑：短滑后松手，再滑过半宽 | 短滑回弹；越过半宽时提示“松手关闭”并触觉一次；退回“关闭”同样触觉一次，同手势反复跨阈值持续反馈，同侧移动和松手 / 回弹不追加；松手后退场；多选模式下不触发 | M10、M12、V11 |
 | C10 | 长按卡片进入多选，再点选和退出 | 每次有效选中或取消触觉一次，首次长按不重复；选中按r31从本次触点260ms扩散，取消160ms；卡片几何不变 | S15、M06、M12 |
 | C11 | 从左缘拖开目录，折叠 / 展开目录，搜索，归档 / 恢复 | 抽屉跟手吸附；折叠后高度立即收缩；一次只展开一个目录 | M09、S19、V17 |
-| C12 | 打开设置页（r15 前由“更多操作 › 连接状态”进入，r15 后点右上角齿轮）；检查当前连接事实行；点配额币；打开供应商切换 | 分区顺序正确，底部另有“外观”单选分区；连接延迟以整数毫秒显示，无样本时为“暂不可用”；供应商卡片区（r15 后位于最上方）：44pt/dp 环、角标、左倾 24° 翻面；切换菜单透明无底色 | S19、S22–S23、M14 |
+| C12 | 打开设置页（r15 前由“更多操作 › 连接状态”进入，r15 后点右上角齿轮）；检查当前连接事实行；点配额币；打开供应商切换 | 分区顺序正确，底部另有“外观”单选分区；连接延迟以整数毫秒显示，无样本时为“暂不可用”；供应商卡片区（r15 后位于最上方）：44pt/dp 环、固定角标、左倾 24° 实体厚边翻面（r37，R58）；切换菜单透明无底色 | S19、S22–S23、M14 |
 | C13 | 打开首页下载页；整卡暂停 / 继续，长按多选 | 没有旁置按钮；长按多选；r15 后可从右侧滑入、右滑返回首页 | S20、S15、M14 |
 | C14 | 在 Codex 长回合（多次工具调用，消息超过 4 条）结束后查看轮次文件概况；Pi 一轮改动超过 4 个文件时，先直接点击预览中的 `.kt` / `.md` 文件，再展开完整清单后打开作对照；查看器入场期间注入完整清单与首段 diff；关闭重开并左右切换文件；正文滚到中段后快速向下甩回顶部并继续下拉 / 快甩；再从标题区短拉、长拉 | 概况卡在整轮最后一行之后，不在回合中段；概况是单个内凹块，标题行可点开查看器，每个文件一行、状态字母颜色正确，长文件名不被目录挤压，未知行数显示短状态而非“+— −—”；预览升级为完整清单时不崩溃、不改选中文件，直接打开与先展开清单具有相同查看语义；跟手、落位、首尾回弹；只请求已落位文件的详情；正文到顶只在差异区内回弹，卡片不移动不关闭；标题区短拉回弹、长拉或快甩关闭，滑出过程中仍显示当前文件、不变成空白或加载态 | S21、M13、V19 |
 | C15 | 用户消息长按切换页顶栏后复制；助手 / 代码沿用原入口 | 原位对勾，2.5 秒后恢复；重复复制重置计时 | M05、V16 |
@@ -515,3 +522,5 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | R56 | 从 App 新建 / 恢复 Codex 终端会话，重复打开已连接会话；模拟 Terminal 不可用 / 只接受 open 但脚本未执行；首轮落盘前退出；终端运行后关闭 / 重开；分别对照 Codex Desktop 选择与历史 `originator=Codex Desktop` | 用户所选后端保持；同一 backend / thread / endpoint 与手机对应且电脑有真实终端；失败显示全文并提供重试 / 返回，不报已开窗，不遗留新增空闲写锁；已有或运行中的任务不被失败打断。等待 shell 与 TUI 都能被看门狗识别，关闭前复核进程身份并确认退出，不处理桌面 / app-server；A1–A4 下草稿、失败页与导航保持。只用隔离 Host / Codex home，不改用户现场会话 | S20、V12、V17–V18、X03 |
 
 §3.3 增补映射：MOT-11→InteractionMotion / PageNavigation 设备中帧；MOT-12/13/15/16→共用按压 / 文字 / 多选设备用例；MOT-14→目录筛选与视口；MOT-17→Qt 材质 / 页面帧；MOT-18→LaunchLedger 与新建交接；MOT-19→用户消息复制 / Rewind 与顶栏；MOT-20→ChatQuestion / 提醒滚动方向；MOT-21→HomePresentation / HomeRuntimeLoading / 首页刷新点击。具体自动用例与每轮结果见 [r35 验证记录](interaction-motion.md#2026-11-02--r35-交互细化)。双端已执行全量，受影响失败继续修复 / 复核；完整 C / R / A 尚未完成，历史失败保留。
+
+2026-11-03 S19 / r37（MOT-22 / R58）：宣传片配额硬币的实体铜边、双面投影、扫光和220/340ms节奏已移植双端原生组件。最终隔离Swift351项、Android677项及两端构建通过，含并行图标底座修改的集成快照另构建通过。iOS SE配额专项首轮1失败后同设备2/2通过（四种外观与减少动画/XXXL）；Android配额3/3，受影响整组12/13，通用控件PixelCopy超时。iOS6张附件与实际翻面帧、Android4张组件外观图已看；Android系统全屏帧被System UI无响应弹窗干扰。资源压力下基线全量未跑完，随后共享池12项触发本任务10台上限拒绝；完整L3/L4、C01–C18、R58与Android A3未完成，不记验收。源码快照、失败、资源释放及产物边界见 `.artifacts/ui-regression/20261103-quota-coin/summary.md`。

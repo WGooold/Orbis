@@ -24,16 +24,87 @@ import java.io.File
 class SubscriptionQuotaInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun rapidTapsAndRefreshTakeOverWithoutChangingTheHitBoxOrQuerying() {
+        val quota = SubscriptionQuota(1, listOf(SubscriptionWindow("five_hour", 82.0, null), SubscriptionWindow("seven_day", 35.0, null)))
+        var loading by mutableStateOf(false)
+        var present by mutableStateOf(true)
+        var queries = 0
+        compose.setContent { OrbisTheme {
+            if (present) SubscriptionQuotaCoin("codex", quota, loading, true, agentBrand("codex").accent()) { queries++ }
+        } }
+        compose.mainClock.advanceTimeBy(800)
+        val coin = compose.onNodeWithTag("quota-coin-codex")
+        val bounds = coin.fetchSemanticsNode().boundsInRoot
+        compose.mainClock.autoAdvance = false
+        coin.performClick(); compose.mainClock.advanceTimeBy(80)
+        coin.performClick(); compose.mainClock.advanceTimeBy(80)
+        compose.runOnIdle { loading = true }
+        compose.mainClock.advanceTimeBy(800)
+        coin.assertIsNotEnabled()
+        coin.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "5 小时配额，剩余 82%"))
+        compose.runOnIdle { loading = false }
+        compose.mainClock.advanceTimeByFrame()
+        coin.performClick(); compose.mainClock.advanceTimeBy(320)
+        coin.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "周配额，剩余 35%"))
+        compose.runOnIdle { loading = true }
+        compose.mainClock.advanceTimeBy(800)
+        coin.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "周配额，剩余 35%"))
+        assertEquals(bounds, coin.fetchSemanticsNode().boundsInRoot)
+        compose.runOnIdle { loading = false; present = false }
+        compose.mainClock.advanceTimeBy(800)
+        coin.assertDoesNotExist()
+        compose.runOnIdle { present = true }
+        compose.mainClock.advanceTimeBy(800)
+        coin.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "5 小时配额，剩余 82%"))
+        compose.runOnIdle { assertEquals(0, queries) }
+        compose.mainClock.autoAdvance = true
+    }
+
+    @Test fun disabledSystemMotionSkipsTheDemonstrationAndSwitchesDirectly() {
+        fun shell(command: String): String = android.os.ParcelFileDescriptor.AutoCloseInputStream(
+            InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        ).bufferedReader().use { it.readText() }
+        val keys = listOf("animator_duration_scale", "transition_animation_scale", "window_animation_scale")
+        val previous = keys.associateWith { shell("settings get global $it").trim() }
+        try {
+            keys.forEach { shell("settings put global $it 0") }
+            compose.waitUntil(5_000) { !android.animation.ValueAnimator.areAnimatorsEnabled() }
+            var quota by mutableStateOf<SubscriptionQuota?>(null)
+            var queries = 0
+            compose.setContent { OrbisTheme {
+                SubscriptionQuotaCoin("claude", quota, false, true, agentBrand("claude").accent()) { queries++ }
+            } }
+            val coin = compose.onNodeWithTag("quota-coin-claude")
+            val bounds = coin.fetchSemanticsNode().boundsInRoot
+            coin.performClick()
+            compose.runOnIdle {
+                assertEquals(1, queries)
+                quota = SubscriptionQuota(1, listOf(SubscriptionWindow("five_hour", 72.0, null), SubscriptionWindow("seven_day", 41.0, null)))
+            }
+            compose.mainClock.advanceTimeBy(4000)
+            coin.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "5 小时配额，剩余 72%"))
+            coin.performClick()
+            coin.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "周配额，剩余 41%"))
+            assertEquals(bounds, coin.fetchSemanticsNode().boundsInRoot)
+            coin.performClick()
+            coin.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "5 小时配额，剩余 72%"))
+            compose.runOnIdle { assertEquals(1, queries) }
+        } finally {
+            previous.forEach { (key, value) -> shell(if (value == "null") "settings delete global $key" else "settings put global $key $value") }
+        }
+    }
+
     @Test fun compactCardsSeparateSwitchFromQueryAndKeepBothAgentReadings() {
         val official = AgentProvider("official", "codex", "官方订阅", true, false, subscriptionSupported = true, official = true)
         val team = official.copy(id = "team", name = "团队供应商", enabled = false, subscriptionSupported = false, official = false)
         var state by mutableStateOf(RemoteState(hostId = "host", e2eReady = true, connection = RelayConnection.ONLINE,
             providerCatalogs = mapOf("codex" to listOf(official, team), "claude" to listOf(official.copy(kind = "claude")))))
         var dark by mutableStateOf(false)
+        var visualStyle by mutableStateOf(OrbisVisualStyle.Classic)
         var queries = 0
         var switched: AgentProvider? = null
         compose.setContent {
-            OrbisTheme(darkTheme = dark) {
+            OrbisTheme(darkTheme = dark, visualStyle = visualStyle) {
                 Column(Modifier.width(340.dp).padding(12.dp)) {
                     AgentStatusProvidersCard(state, { provider, _ -> switched = provider }, { provider, _ ->
                         queries++; state = state.beginSubscriptionQuery(provider, "query")
@@ -63,8 +134,11 @@ class SubscriptionQuotaInstrumentedTest {
         assertTrue(compose.onNodeWithTag("provider-quota-codex").fetchSemanticsNode().boundsInRoot.height / compose.density.density < 130)
         compose.onNodeWithText("轻点卡片查询配额").assertDoesNotExist()
         compose.onNodeWithText("查询订阅配额").assertDoesNotExist()
-        for (appearance in listOf("light", "dark")) {
-            compose.runOnIdle { dark = appearance == "dark" }
+        for (appearance in listOf("light", "dark", "inset-light", "inset-dark")) {
+            compose.runOnIdle {
+                dark = appearance.endsWith("dark")
+                visualStyle = if (appearance.startsWith("inset")) OrbisVisualStyle.InsetFocus else OrbisVisualStyle.Classic
+            }
             compose.waitForIdle()
             val context = ApplicationProvider.getApplicationContext<Context>()
             val file = File(context.getExternalFilesDir(null), "quota-compact-$appearance.png")

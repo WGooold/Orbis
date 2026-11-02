@@ -1,6 +1,5 @@
 package com.orbising.orbis
 
-import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -32,11 +31,12 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -51,6 +51,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.DateFormat
@@ -75,7 +76,9 @@ internal fun SubscriptionQuotaCoin(
     var flipJob by remember { mutableStateOf<Job?>(null) }
     val scope = rememberCoroutineScope()
     val angle = remember { Animatable(0f) }
-    val progress = remember { Animatable(0f) }
+    val fiveHourProgress = remember { Animatable(0f) }
+    val weeklyProgress = remember { Animatable(0f) }
+    val progress = if (weekly) weeklyProgress else fiveHourProgress
     val motionEnabled = ValueAnimator.areAnimatorsEnabled()
     val window = quota?.windows?.firstOrNull { it.name == if (weekly) "seven_day" else "five_hour" }
     val remaining = window?.remainingPercent
@@ -88,10 +91,10 @@ internal fun SubscriptionQuotaCoin(
     val interactions = remember { MutableInteractionSource() }
     val pressed by interactions.collectIsPressedAsState()
     suspend fun flip() {
-        if (motionEnabled) angle.animateTo(90f, tween(220, easing = CubicBezierEasing(0.42f, 0f, 0.75f, 0.45f)))
+        if (motionEnabled) angle.animateTo(90f, tween(QuotaCoinGeometry.OutgoingDuration, easing = LinearEasing))
         weekly = !weekly
         if (motionEnabled) {
-            angle.animateTo(180f, tween(340, easing = CubicBezierEasing(0.16f, 0.75f, 0.25f, 1f)))
+            angle.animateTo(180f, tween(QuotaCoinGeometry.IncomingDuration, easing = LinearEasing))
             angle.snapTo(0f)
         }
     }
@@ -109,11 +112,15 @@ internal fun SubscriptionQuotaCoin(
             }
         }
     }
-    LaunchedEffect(remaining, loading, weekly) {
+    LaunchedEffect(quota?.windows, loading, motionEnabled) {
         if (!loading) {
-            val target = ((remaining ?: 0.0) / 100).toFloat().coerceIn(0f, 1f)
-            if (motionEnabled) progress.animateTo(target, tween(700, easing = FastOutSlowInEasing))
-            else progress.snapTo(target)
+            coroutineScope {
+                for ((name, value) in listOf("five_hour" to fiveHourProgress, "seven_day" to weeklyProgress)) launch {
+                    val target = ((quota?.windows?.firstOrNull { it.name == name }?.remainingPercent ?: 0.0) / 100).toFloat().coerceIn(0f, 1f)
+                    if (motionEnabled) value.animateTo(target, tween(700, easing = FastOutSlowInEasing))
+                    else value.snapTo(target)
+                }
+            }
         }
     }
     val reset = window?.resetsAt?.let { "，重置 " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(it)) }.orEmpty()
@@ -134,8 +141,8 @@ internal fun SubscriptionQuotaCoin(
         QuotaCoinTilt(angle.value, tint) {
             Canvas(Modifier.size(44.dp)) {
                 val stroke = 2.5.dp.toPx()
-                val inset = stroke / 2
-                val bounds = Size(size.width - stroke, size.height - stroke)
+                val inset = 2.dp.toPx()
+                val bounds = Size(size.width - inset * 2, size.height - inset * 2)
                 drawArc(secondary.copy(alpha = 0.16f), -45f, 315f, false, Offset(inset, inset), bounds,
                     style = Stroke(stroke, cap = StrokeCap.Round,
                         pathEffect = if (!hasReadings) PathEffect.dashPathEffect(floatArrayOf(1.dp.toPx(), 4.dp.toPx())) else null))
@@ -153,82 +160,81 @@ internal fun SubscriptionQuotaCoin(
             }
             AgentIcon(agentBrand(kind), Modifier.size(26.dp))
         }
-        Text(if (weekly) "周" else "5h", modifier = Modifier.align(Alignment.TopEnd).graphicsLayer { alpha = 1 - 0.55f * abs(sin(Math.toRadians(angle.value.toDouble()))).toFloat() }.clearAndSetSemantics {},
+        Text(if (weekly) "周" else "5h", modifier = Modifier.align(Alignment.TopEnd).graphicsLayer { alpha = 1 - 0.55f * abs(sin(Math.toRadians(QuotaCoinGeometry.angle(angle.value)))).toFloat() }.clearAndSetSemantics {},
             style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium, color = secondary)
-        Text(percent, modifier = Modifier.align(Alignment.BottomEnd).graphicsLayer { alpha = 1 - 0.55f * abs(sin(Math.toRadians(angle.value.toDouble()))).toFloat() }.clearAndSetSemantics {},
+        Text(percent, modifier = Modifier.align(Alignment.BottomEnd).graphicsLayer { alpha = 1 - 0.55f * abs(sin(Math.toRadians(QuotaCoinGeometry.angle(angle.value)))).toFloat() }.clearAndSetSemantics {},
             style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
             fontWeight = FontWeight.Medium, color = if (remaining == null) secondary else color, maxLines = 1)
     }
 }
 
-/** Only the medallion tilts. Corner labels and its touch target keep their geometry. */
+/** Only the coin transforms; labels and its touch target retain their layout. */
 @Composable
-private fun QuotaCoinTilt(angle: Float, tint: Color, content: @Composable () -> Unit) {
-    val lift = abs(sin(Math.toRadians(angle.toDouble()))).toFloat()
+internal fun QuotaCoinTilt(angle: Float, tint: Color, content: @Composable () -> Unit) {
+    val turn = QuotaCoinGeometry.angle(angle)
+    val lift = abs(sin(Math.toRadians(turn))).toFloat()
     val colors = MaterialTheme.colorScheme
     val highlight = if (LocalOrbisDarkTheme.current) colors.onSurface else Color.White
     val face = listOf(colors.surfaceContainerHighest, colors.surface, colors.surfaceDim)
-    val rim = listOf(highlight.copy(alpha = 0.65f), Color.Transparent, tint.copy(alpha = 0.12f))
-    val edge = listOf(tint.copy(alpha = 0.6f), colors.scrim)
-    val shadow = colors.scrim.copy(alpha = 0.22f)
+    val rim = listOf(highlight.copy(alpha = 0.9f), Color.Transparent, tint.copy(alpha = 0.25f))
+    val bands = remember(turn) { if (lift > 0.0001f) QuotaCoinGeometry.bands(turn) else emptyList() }
+    val projection = remember(turn) { QuotaCoinGeometry.faceProjection(turn) }
     Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
         Canvas(Modifier.size(44.dp)) {
-            val shadowX = center.x + 2.dp.toPx()
-            val shadowY = center.y + 22.dp.toPx()
+            val shadowY = center.y + 24.dp.toPx()
             withTransform({
-                translate(shadowX, shadowY)
-                scale(1 - 0.15f * lift, 0.28f, Offset.Zero)
+                translate(center.x, shadowY)
+                scale(1 - 0.65f * lift, 8f / 36, Offset.Zero)
             }) {
-                drawCircle(Brush.radialGradient(listOf(shadow, Color.Transparent), Offset.Zero, 18.dp.toPx()),
-                    radius = 18.dp.toPx(), center = Offset.Zero, alpha = lift)
+                drawCircle(Brush.radialGradient(listOf(colors.scrim.copy(alpha = 0.28f), Color.Transparent),
+                    Offset.Zero, 18.dp.toPx()), radius = 18.dp.toPx(), center = Offset.Zero,
+                    alpha = lift * (1 - 0.5f * lift))
             }
-        }
-        Box(Modifier.size(44.dp).graphicsLayer {
-            rotationZ = 4f * lift
-            scaleX = 1 + 0.035f * lift; scaleY = scaleX
-            translationX = -lift * density; translationY = -2f * lift * density
-        }, contentAlignment = Alignment.Center) {
-            // A solid edge remains visible when the two projected faces become side-on.
-            Canvas(Modifier.size(44.dp).graphicsLayer {
-                rotationZ = 24f
-                translationX = 1.1f * lift * density; translationY = 0.49f * lift * density
-                alpha = lift * lift * lift
-            }) {
-                val width = 3.2.dp.toPx() * lift
-                drawRoundRect(Brush.linearGradient(listOf(tint.copy(alpha = 0.85f), colors.scrim)),
-                    topLeft = Offset(center.x - width / 2, center.y - 20.5.dp.toPx()),
-                    size = Size(width, 41.dp.toPx()), cornerRadius = CornerRadius(width / 2))
-            }
-            for (layer in 3 downTo 1) {
-                Canvas(Modifier.size(41.dp).graphicsLayer {
-                    translationX = layer * 0.9f * lift * density
-                    translationY = layer * 0.4f * lift * density
-                    alpha = lift
-                }.diagonalCoinProjection(angle)) { drawCircle(Brush.linearGradient(edge)) }
-            }
-            Box(Modifier.size(44.dp).diagonalCoinProjection(angle).drawBehind {
-                val radius = size.minDimension / 2 - 3.dp.toPx()
-                drawCircle(Brush.linearGradient(face), radius)
-                drawCircle(Brush.linearGradient(rim), radius, style = Stroke(0.7.dp.toPx()))
-            }.drawWithContent {
-                drawContent()
-                if (lift > 0f) {
-                    drawCircle(Brush.linearGradient(
-                        0.2f to Color.Transparent, 0.48f to highlight.copy(alpha = 0.48f), 0.7f to Color.Transparent,
-                        start = Offset(size.width * (-0.8f + lift), 0f),
-                        end = Offset(size.width * (0.4f + lift), size.height)),
-                        radius = size.minDimension / 2 - 3.dp.toPx(), alpha = lift)
+            bands.forEach { band ->
+                val path = Path().apply {
+                    band.points.forEachIndexed { index, point ->
+                        val x = point.x.toFloat() * density; val y = point.y.toFloat() * density
+                        if (index == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                    close()
                 }
-            }, contentAlignment = Alignment.Center) { content() }
+                val metal = listOf(0xF3D3C3, 0xC97A55, 0x8A4426).map { hex ->
+                    Color((((hex shr 16) and 255) / 255f * band.brightness.toFloat()).coerceAtMost(1f),
+                        (((hex shr 8) and 255) / 255f * band.brightness.toFloat()).coerceAtMost(1f),
+                        ((hex and 255) / 255f * band.brightness.toFloat()).coerceAtMost(1f))
+                }
+                drawPath(path, Brush.linearGradient(metal, Offset.Zero, Offset(size.width, size.height)))
+            }
         }
+        Box(Modifier.size(44.dp).drawWithContent {
+            // Skip the singular face: the closed cylindrical rim owns the exact side-on frame.
+            if (QuotaCoinGeometry.faceVisible(turn)) {
+                val matrix = android.graphics.Matrix().apply {
+                    setValues(floatArrayOf(projection[0].toFloat(), projection[1].toFloat(), projection[2].toFloat() * density,
+                        projection[3].toFloat(), projection[4].toFloat(), projection[5].toFloat() * density,
+                        projection[6].toFloat() / density, projection[7].toFloat() / density, projection[8].toFloat()))
+                }
+                val canvas = drawContext.canvas.nativeCanvas
+                val checkpoint = canvas.save()
+                try {
+                    canvas.concat(matrix)
+                    drawContent()
+                } finally { canvas.restoreToCount(checkpoint) }
+            }
+        }.drawBehind {
+            drawCircle(Brush.radialGradient(face, Offset(size.width * 0.34f, size.height * 0.28f), 32.dp.toPx()))
+        }.drawWithContent {
+            drawContent()
+            drawCircle(Brush.linearGradient(rim), radius = size.minDimension / 2 - 0.35.dp.toPx(), style = Stroke(0.7.dp.toPx()))
+            if (lift > 0f) {
+                val sweep = (turn / 180 * 2.8).toFloat()
+                drawCircle(Brush.linearGradient(0.30f to Color.Transparent, 0.46f to highlight.copy(alpha = 0.55f),
+                    0.60f to Color.Transparent, start = Offset(size.width * (-1.4f + sweep), 0f),
+                    end = Offset(size.width * (-0.4f + sweep), size.height)), alpha = lift)
+            }
+        }, contentAlignment = Alignment.Center) { content() }
     }
 }
-
-// Rotate the coordinate system, turn about Y, then restore it: a 24° left-leaning axis.
-private fun Modifier.diagonalCoinProjection(angle: Float): Modifier =
-    graphicsLayer { rotationZ = 24f }
-        .graphicsLayer { rotationY = if (angle > 90f) angle - 180f else angle; cameraDistance = 120f * density }
-        .graphicsLayer { rotationZ = -24f }
 
 /** Brief invitation on entry, continuous rotation only while a request is pending. */
 @Composable
