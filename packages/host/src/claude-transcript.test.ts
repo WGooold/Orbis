@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeEvent } from "@orbis/protocol";
 import { ClaudeSessionHistory } from "./claude-session-history.js";
 import { ClaudeTranscriptProjection, ClaudeTranscriptReader, findClaudeTranscript } from "./claude-transcript.js";
+import { AgentConversationState } from "./agent-conversation-state.js";
+import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 
 const at = "2026-10-28T10:00:00.000Z";
 const user = (uuid: string, parentUuid: string | null, content: unknown, extra: Record<string, unknown> = {}) =>
@@ -23,6 +25,30 @@ async function tempConfig(): Promise<string> {
 }
 
 describe("ClaudeTranscriptProjection", () => {
+  it("updates the Host preview after resuming a long transcript and persisting a new reply", async () => {
+    const root = await tempConfig();
+    const path = join(root, "long.jsonl");
+    await writeFile(path, Array.from({ length: 1055 }, (_, i) => line(user(`u${i}`, i ? `u${i - 1}` : null, `row ${i}`))).join(""));
+    const model = new AgentConversationState(new AgentStateRegistry());
+    const scope: StateScope = { kind: "agent", key: { hostId: "local", agentKind: "claude", sessionId: "long" } };
+    const history = new ClaudeSessionHistory("long", root, event => {
+      if (event.type === "session.patch") expect(model.accept(scope, event)).toBe(true);
+    }, { locate: async () => path });
+    try {
+      const initial = await history.sync({ type: "session.sync", sessionId: "long", syncId: "resume", range: "preview" });
+      expect(model.accept(scope, initial)).toBe(true);
+      await appendFile(path, line(user("sent", "u1054", "new question")) + line(assistant("reply", "sent", [{ type: "text", text: "new answer" }])));
+      await history.refresh();
+      const reopened = model.recover(scope, { type: "session.sync", sessionId: "long", syncId: "reopen", range: "preview" });
+      expect(reopened?.cursor.leafId).toBe("reply");
+      expect(reopened?.entries.slice(-2).map(item => item.entryId)).toEqual(["sent", "reply"]);
+      expect(reopened!.source!.seq).toBeGreaterThan(initial.source!.seq);
+      const direct = await history.sync({ type: "session.sync", sessionId: "long", syncId: "direct", range: "preview" });
+      expect(model.accept(scope, direct)).toBe(true);
+      expect(direct.cursor).toEqual(reopened?.cursor);
+    } finally { history.close(); }
+  });
+
   it("shows slash commands, their output and shell runs without Claude's markup", () => {
     const projection = new ClaudeTranscriptProjection();
     projection.push(user("c1", null, "<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>sonnet</command-args>"));

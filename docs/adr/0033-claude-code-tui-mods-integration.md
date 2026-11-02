@@ -194,6 +194,12 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 - `ClaudeBackend.announce` 对在线 Mods / Hook runtime 立即发布 Hook bridge 持有的完整待答清单，包括明确的空清单；新设备握手、首页读取 / 重试与历史同步完成共用此入口。离线 runtime 不发布空清单，已有审批保持原身份及等待状态。历史尚未读完不影响首页需要的 identity / execution / interactions；历史、发送与审批完成仍按原有权威回执确认。
 - 恢复 ADR-0051 S18 / V16 / V18 的既有约束，不增加 feature、不调整 UI / 动效参数；ADR-0058 无新增交互家族或 MOT 参数。Host 适配器三场景在修改前均失败；修改后与加密设备通道首次读取回归通过。双端设备与完整门禁结果登记到 [UI 回归方案](../testing/ui-regression.md) §6 和 `.artifacts/ui-regression/20261102-claude-home-sync/`，未完成项不记为验收通过。需要随 Host 更新生效。
 
+### 17. 长会话 resume 后历史停更（2026-11-03）
+
+真实运行 Host 的只读加密探针确认：Claude 原生追加正常，Host preview 的 head / seq 却停留在恢复前；指定最新 head 时返回 `session_sync_model_rejected`。根因和共用 source 修复按 [ADR-0035 §17](0035-incremental-session-reconcile.md#17-超预算-canonical-批次转为-checkpoint-恢复2026-11-03)：首次恢复超过 256 条 canonical 条目不能永久占住增量发布队列，必须通过 unknown 边界和有界 checkpoint 收敛。此故障不依赖 Claude 的额度确认页，也不要求重新执行已收到的手机消息。
+
+恢复 V09–V10、V16–V18 的既有同步契约；不改变 §13 的步骤身份和原子交接，不新增交互动效。`claude-transcript.test.ts` 覆盖 1,055 条恢复、继续追加与 Host 重开预览；`claude-history-fixture.mjs` 增加可选长前缀，既有 Android 真实加密 / 缓存 / 重连用例复用同一断言。验证、设备门禁与部署状态见 [UI 回归方案](../testing/ui-regression.md) §6 和 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。
+
 ## Alternatives not selected
 
 - **Agent SDK 执行后端**：适合独立管理会话，但不能替代附着到用户正在操作的 TUI；不作为自动回退。

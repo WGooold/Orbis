@@ -340,6 +340,11 @@ ADR-0046 原 17 项要求的映射：1→V01–V04；2→S02；3→S03；4→V05
 - 恢复既有完整快照与可重试契约，关联 V16–V17；不新增 feature 或调整视觉参数。Host 首次读取与重试按在线 Runtime 映射原生 thread ID，避免桌面公共 Session 前缀导致交互库存核对静默失效；原因与身份边界见 [ADR-0032](0032-host-owned-agent-state-model.md#2026-11-01-桌面-codex-新会话的首次模型核对)。两端共用该修复。
 - Host 加密端到端用例覆盖连接后新建、首次无 agentKind 读取、带 agentKind 重试，桌面 / 终端分别断言 identity、execution、interactions ready；两端同名核心测试覆盖分批读取、旧卡片保留、完成与重试退出同步态。设备沿用首页加载 / 同步用例，并补充手动 R25，映射见 [回归方案][Regression] §3.3。证据 `.artifacts/ui-regression/20261101-new-session-sync/`，完整双端设备与手动门禁尚未通过，不能记为全量验收。
 
+### 2026-11-03 Claude 长会话恢复同步修复（恢复 V09–V10 / V16–V18，验证中）
+
+- 运行中 Host 探针确认：1,055 条历史恢复后的 canonical 批次超过 256 条上限，`seq=0` 与旧 preview 被持续保留，原生后续消息虽已落盘却无法更新 App。按 [ADR-0035 §17](0035-incremental-session-reconcile.md#17-超预算-canonical-批次转为-checkpoint-恢复2026-11-03) 显式失效旧 epoch，以既有有界 checkpoint 恢复，之后的小批次继续连续提交；保留原生记录、消息身份与未确认输入语义。
+- 恢复既有基线，不新增 feature、不调整布局 / 动效参数。源端条数 / 字节预算、Host 长历史重开预览及 Android 加密链路映射见 [UI 回归方案][Regression] §3.3 / R18；实际结果见 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。第三次同 Android 设备 / APK 对照中候选专项通过、旧协议仍在追加后超时，三张关键截图已审阅；此前连接超时与模拟器崩溃证据保留。完整双端设备 / 手动门禁与用户现场恢复分别记录，候选包未部署时不能记为已生效。
+
 ### 已知差异与未验收范围
 
 - iOS 17 的滚动兼容分支有编译记录，原打磨验收没有该系统的运行结果；17 不启用字形模糊渐显。

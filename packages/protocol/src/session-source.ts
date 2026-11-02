@@ -506,6 +506,15 @@ export class RecoverableSessionSource {
     if (this.#depth === 0) this.#requestFlush();
   }
 
+  /** A restored history is a checkpoint, not an unbounded incremental commit. Invalidate the
+   * receiver's old baseline before releasing the oversized batch; canonical entries remain in
+   * #entries and are recovered through bounded session.sync pages. Later appends can flow again. */
+  #recoverOversizedCommit(): void {
+    const complete = this.#complete;
+    this.reestablish();
+    this.setAvailability(true, complete);
+  }
+
   /**
    * 构造有界 patch。流式正文过大时缩紧正文预算，已 reconcile 的历史条目仍必须随连续 seq 发出；
    * 如果连空 live 都超预算，就先仅发 canonical 条目，live 状态随后在 sync/checkpoint 收敛。
@@ -514,9 +523,12 @@ export class RecoverableSessionSource {
     if (process.env.ORBIS_SEQ_DEBUG) { try { appendFileSync(process.env.ORBIS_SEQ_DEBUG, `FLUSH ${this.#sessionId.slice(0, 24)} seq=${this.#seq + 1} ready=${this.#ready} complete=${this.#complete} committed=${this.#committed.length} msg=${this.#messages.size} tools=${this.#tools.size} turn=${this.#turn?.turnId ?? "-"}\n`); } catch { /* debug only */ } }
     this.#dirty = false;
     if (this.#messages.size > (this.#toolInventory ? 4352 : 256) || this.#tools.size > (this.#toolInventory ? 4096 : 256)) { this.#committed = []; return; }
-    const current = this.#currentSnapshot(this.#seq + 1);
     const committed = this.#committed;
-    if (this.#ready && committed.length > 256) return;
+    if (this.#ready && committed.length > 256) {
+      this.#recoverOversizedCommit();
+      return;
+    }
+    const current = this.#currentSnapshot(this.#seq + 1);
     // If canonical entries are pending, never publish the new head without them. Otherwise the
     // receiver cannot build the parent chain and its projection becomes empty.
     const batches: readonly RemoteSessionEntry[][] = this.#ready && committed.length > 0
@@ -546,8 +558,12 @@ export class RecoverableSessionSource {
       }
       if (chosen !== undefined) break;
     }
-    // Nothing was published, so retain committed rows and version. A later state change retries.
-    if (chosen === undefined) return;
+    if (chosen === undefined) {
+      // Retrying an indivisible canonical batch cannot make it fit. A new checkpoint is the
+      // explicit recovery boundary; never keep serving the old head as a current baseline.
+      if (this.#ready && committed.length > 0) this.#recoverOversizedCommit();
+      return;
+    }
     this.#seq += 1;
     chosen.patch.seq = this.#seq;
     chosen.patch.source = { ...current.version, seq: this.#seq };

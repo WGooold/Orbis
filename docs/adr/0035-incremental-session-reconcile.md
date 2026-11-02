@@ -147,6 +147,14 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
     这条依赖两个**格式事实**，任一失效都只会退化成旧行为、不会给出错误数据：①v4 每次追加写一个**独立**帧（帧间不引用）；②日志只追加。若 DSH 改成"续接同一帧"或"重写整份"，第二个事实仍在、第一个失效，表现为尾部统一解不开 → 走回退。
     代价与验收：整份 373ms → 追加一帧 7.27ms → 未变 0ms（本机 8.7MB 会话，约 51×）；单测覆盖"只解新帧"、"无新增返回 undefined"、"半行跳过"。
 
+### 17. 超预算 canonical 批次转为 checkpoint 恢复（2026-11-03）
+
+Claude 长会话恢复现场：原生历史 1,055 条，已运行 Host 的 `preview` 仍返回恢复前的 head，`catchup` 已能定位最新 head，强制指定新 head 的 preview 被 `same_seq_state_mismatch` 拒收。根因是 `#committed` 超过 256 条时 `#flush` 直接返回，既不推进 seq，也不释放批次；以后的增量一直积压，Host 反复用旧基线回答 preview。257 / 1,055 条隔离回放复现，255 / 256 条对照正常；不能将独立 transcript 解析成功等同于运行中 Host 的当前投影正确。
+
+当 ready canonical 批次超过 256 条，或完整原子批次在收紧 live 正文后仍超页预算，共用 source 显式建立新 epoch 并发布 `ready=false` 边界，使 Host / App 的旧当前基线失效；随后恢复源端可读状态，由既有 `session.sync` 有界分页建立 checkpoint。仅释放待推送批次，原生历史与 source entries 均保留，不把截断条目、未确认输入或缺失父链当成功。正常可容纳批次继续原子提交，新 checkpoint 后的追加保持连续 seq；相同历史重复读取不重复恢复。该分支属于恢复原同步语义，不新增交互、MOT 参数或视觉基线。
+
+回归覆盖 `session-source.test.ts` 的条数 / 字节上限及后续增量、`claude-transcript.test.ts` 的长原生日志→Host 当前模型→重开 preview；Android 真加密夹具可用 `ORBIS_CLAUDE_HISTORY_PREFIX=1053` 构造 1,055 条初始历史。记录见 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md` 与 UI 回归方案 R18；设备 / 人工门禁和运行中 Host 生效分别记录，不以源码测试替代交付。
+
 ## Consequences and verification
 
 - 带图的会话从 O(全历史字节) 回到 O(变化量)：73 张图的会话单次 sync 从 ~400ms 回到 1ms 量级；纯文本长会话也同样受益（大文本历史此前是同一形状的成本）。

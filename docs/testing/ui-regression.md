@@ -114,6 +114,8 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
 
+2026-11-03 Claude 长会话恢复（R18；V09–V10、V16–V18）：`session-source.test.ts` 覆盖 257 / 1,055 条初始化、字节超限批次、unknown→checkpoint 与后续连续增量；`claude-transcript.test.ts` 覆盖长原生日志继续追加后 Host 重开 preview 的最新 head。Android `ClaudeHistoryInstrumentedTest#existingHistoryAndRunningTurnSurviveParallelToolsAndReconnect` 使用 `ORBIS_CLAUDE_HISTORY_PREFIX=1053` 的真实 Host / Relay / Mods 夹具，比较同设备同 App 的修复前后结果。iOS 沿用 source recovery 核心与 Claude 身份设备映射；完整双端 L1–L4 / C01–C18 / A1–A4 结果不得由此定向对照替代。
+
 **iOS `OrbisUITests`（合并后 83 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项；历史运行计数按证据保留）**
 
 | 区域 | 用例 | 主要 ID |
@@ -328,7 +330,7 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | R17 | 隔离 Host / Claude TUI 中启动长回合，在 App 连发两条 follow-up；观察当前输出与工具；停止主回合；再分别测试正常结束、子 Agent 先结束和 Host 重连 | 当前回合继续同步，停止可达；子 Agent 结束不触发主回合 follow-up；主回合结束且 Host 轮末捕获完成后顺序提交，每条只执行一次；原生用户行消除待确认状态；旧代次消息不补发到新 Host。两端分别保留发送前、运行中、落地截图及事件顺序证据 | V10、V12、V17 |
 
 | R29 | 两端 App 分别选择尚未信任的新项目打开 Claude，再从子目录 / linked worktree 恢复；重复自定义配置目录、配置损坏和写入占用场景。macOS / Windows 分别核对实际终端与 hello | 首次启动直接进入 TUI 并由匹配 launchId 的 hello 完成连接；只信任目标仓库，其他项目 / 工具权限 / MCP 配置不变；损坏或占用明确失败且不开窗，不能提前显示已连接。保存配置字段差异（不含凭据）、启动与握手证据 | V12、V17–V18 |
-| R18 | 隔离 Claude 主回合含工具和多段正文，步骤落盘时保持运行；立即开始下一轮，重复相同短回复；延迟磁盘写入超过 3 秒；再重连。两端明暗录屏，抽查窄屏 / 减少动画 | 每个步骤的正文与 thinking 只出现一份；同文的不同轮都保留；旧轮清理与迟到结束不删下一轮；已声明但未落盘的正文保留，后续原子交接；工具卡与阅读锚点连续。需保存步骤 UUID / patch 顺序，不能以文本去重通过 | V09、V17–V18（关联 V02–V03、V20） |
+| R18 | 隔离 Claude 主回合含工具和多段正文，步骤落盘时保持运行；立即开始下一轮，重复相同短回复；延迟磁盘写入超过 3 秒；再重连。补测超过 256 条历史的 resume、继续发送 / 回复及关闭 App 后重开。两端明暗录屏，抽查窄屏 / 减少动画 | 每个步骤的正文与 thinking 只出现一份；同文的不同轮都保留；旧轮清理与迟到结束不删下一轮；已声明但未落盘的正文保留，后续原子交接；工具卡与阅读锚点连续。长历史恢复后 Host preview 与原生最新 head 一致，seq 继续推进，新消息重开仍可见。需保存步骤 UUID / patch 顺序，不能以文本去重通过 | V09–V10、V16–V18（关联 V02–V03、V20） |
 | R42 | 隔离 Host 先打开 Claude，再连接两端 App 并停留首页；加入第二个未选中 Claude，会话历史保持慢读；分别测试无审批、有待答审批、仅 Hook 在线与重连 / 重新加载，按 A1–A4 检查连接胶囊及卡片 | 首次 `agent.state.request` 的 identity / execution / interactions 均完整可用；没有审批时是明确空清单，有审批时保留真实等待状态。首页准备不依赖 `session.sync` 完成，不出现由交互清单 unknown 引起的“同步失败”；原有卡片 / 列表视口保持，真实读取失败仍显示原因与重试 | S18、V16、V18 |
 
 ### 4.9 全状态用户输入专项（ADR-0055）
@@ -436,6 +438,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+2026-11-03 Claude 长会话恢复同步（V09–V10、V16–V18 / R18）：对运行中 Host 的加密 LAN 探针确认旧 preview 的 `seq=0` 停滞及最新 head 拒收；257 / 1,055 条历史复现，255 / 256 条对照正常。修复前新增 4 项回归失败，修复后相关 Node 65 项、TypeScript / lint、Android JVM 681 项 / 两包构建、Swift Core 351 项通过。Node 全量 1,694 项为 1,685 通过 / 4 失败 / 5 条件未运行，失败整文件复测后仍有 2 项 Codex launcher 失败，未宣称全量通过。共享 Android API 35 同设备 / 同 APK：旧 Host 在追加后不再更新的断言失败，候选首次连接夹具超时、第二次在安装时模拟器退出（-6），失败证据保留。用户要求第三次重试后，候选长历史 / 后续回复 / 重建 ViewModel 与连接后的重开专项 1 / 1 通过，旧协议仍在追加后超时；模块哈希前后一致，三张关键截图已审阅，设备正常恢复设置并释放租约。完整双端 L3–L4、C01–C18、R18 人工、A1–A4 和用户真机未完成；Host 候选已打包 / 验签但未安装重启，不能记为现场恢复或 UI 验收通过。设备故障、锁清理、包哈希和未跑范围见 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。
 
 回答重复提示修复：Host 加密 Relay / 通知存储 / 命令生命周期共 76 项通过，`tsc -p tsconfig.tests.json --noEmit` 通过。证据 `.artifacts/ui-regression/interaction-feedback-dedup/`。本次仅修改 Host 通知生成入口，未构建或部署运行中 Host；双端 L1–L4、C01–C18、R26 与 A1–A4 未执行，当前移动端工作树含并行未提交变更，未建立本修复的隔离设备基线，不记完整门禁或设备验收通过。
 

@@ -18,8 +18,14 @@ const row = (type, uuid, parentUuid, content) => ({ type, uuid, parentUuid, cwd:
   timestamp: new Date().toISOString(), message: { role: type, content,
     ...(type === "assistant" ? { model: "claude-opus-fixture" } : {}) } });
 const lines = rows => rows.map(value => `${JSON.stringify(value)}\n`).join("");
+// Exercise resumed sessions whose initial canonical batch exceeds a single patch.
+const prefixCount = Number(process.env.ORBIS_CLAUDE_HISTORY_PREFIX ?? 0);
+if (!Number.isSafeInteger(prefixCount) || prefixCount < 0 || prefixCount > 4096) throw new Error("invalid_history_prefix");
+const prefix = Array.from({ length: prefixCount }, (_, index) =>
+  row("user", `old-${index}`, index ? `old-${index - 1}` : null, `Earlier question ${index}`));
 await writeFile(transcript, lines([
-  row("user", "u1", null, "Show the existing conversation"),
+  ...prefix,
+  row("user", "u1", prefixCount ? `old-${prefixCount - 1}` : null, "Show the existing conversation"),
   row("assistant", "a1", "u1", [{ type: "text", text: "CLAUDE_HISTORY_VISIBLE" }]),
 ]));
 const relay = await createRelayServer({ port: 0, runtimeCredentials: ["claude-fixture-runtime"],

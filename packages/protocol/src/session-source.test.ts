@@ -7,6 +7,53 @@ const message: ChatMessage = { messageId: "live", role: "assistant", timestamp: 
 const entry: RemoteSessionEntry = { entryId: "entry", parentId: null, type: "message", timestamp: new Date(1).toISOString(), data: { message } };
 
 describe("recoverable source", () => {
+  it.each([257, 1055])("recovers %i restored entries through a checkpoint and keeps later updates flowing", count => {
+    const patches: SessionPatch[] = [];
+    const source = new RecoverableSessionSource("session", patch => patches.push(patch));
+    const entries = Array.from({ length: count }, (_, index): RemoteSessionEntry => ({
+      entryId: `e${index}`, parentId: index ? `e${index - 1}` : null, type: "message",
+      timestamp: new Date(index + 1).toISOString(), data: { message: { role: "user", content: `row ${index}` } },
+    }));
+    source.transaction(() => { source.reconcile(entries, entries.at(-1)!.entryId); source.setAvailability(true, true); });
+    expect(patches.some(patch => !patch.source.ready)).toBe(true);
+    expect(source.published().version).toMatchObject({ ready: true });
+    expect(source.published().version.seq).toBeGreaterThan(0);
+    const initial = source.published();
+    const latest = { ...entry, parentId: entries.at(-1)!.entryId };
+    source.reconcile([...entries, latest], latest.entryId);
+    expect(patches.at(-1)).toMatchObject({ baseSeq: initial.version.seq,
+      source: { epoch: initial.version.epoch, seq: initial.version.seq + 1, ready: true },
+      entries: [latest], head: { leafId: latest.entryId } });
+    const recovered = selectSessionSyncSnapshot([...entries, latest], "session", latest.entryId,
+      { sessionId: "session", syncId: "reopen", range: "preview" }, [], source.published());
+    expect(recovered.cursor.leafId).toBe(latest.entryId);
+    expect(recovered.entries.at(-1)?.entryId).toBe(latest.entryId);
+    for (const patch of patches) {
+      expect(patch.entries?.length ?? 0).toBeLessThanOrEqual(256);
+      expect(Buffer.byteLength(JSON.stringify(patch)) + SESSION_SYNC_WRAPPER_BYTES).toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
+    }
+  });
+
+  it("invalidates a cached baseline when an atomic canonical commit exceeds the wire budget", () => {
+    const patches: SessionPatch[] = [];
+    const source = new RecoverableSessionSource("session", patch => patches.push(patch));
+    source.transaction(() => { source.reconcile([entry], entry.entryId); source.setAvailability(true, true); });
+    const before = source.published();
+    const large = { ...entry, entryId: "large", parentId: entry.entryId,
+      data: { message: { role: "assistant", content: "x".repeat(SESSION_SYNC_PAGE_BYTES) } } };
+    source.reconcile([entry, large], large.entryId);
+    expect(source.version.epoch).not.toBe(before.version.epoch);
+    expect(patches.some(patch => patch.source.epoch === source.version.epoch && !patch.source.ready)).toBe(true);
+    const recovered = selectSessionSyncSnapshot([entry, large], "session", large.entryId,
+      { sessionId: "session", syncId: "recovery", range: "preview", knownState: {
+        epoch: before.version.epoch, seq: before.version.seq, head: before.checkpoint.head,
+      } }, [], source.published());
+    expect(recovered.selection).toBe("snapshot");
+    expect(recovered.cursor.leafId).toBe("large");
+    expect(source.published().checkpoint.head.leafId).toBe("large");
+    expect(large.data.message.content.length).toBe(SESSION_SYNC_PAGE_BYTES);
+  });
+
   it("never serves an unpublished state under an already-published seq", () => {
     // 现场：流式输出期间 Host 每 10–50 秒拒收一条 preview，原因码 `same_seq_state_mismatch`。
     // 触发条件是 live 装不进页预算：`#flush` 回滚了 seq，但状态已经改过；`snapshot()` 仍返回
