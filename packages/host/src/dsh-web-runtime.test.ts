@@ -189,7 +189,7 @@ describe("DeepSeek Web runtime adapter", () => {
     const f = discoveryFixture(); f.list([f.live("busy", true)]);
     const priorRequest = f.request.getMockImplementation()!;
     const inbox = { "next-turn": [{ id: "native-phone", source: { rpcId: "phone-id" }, content: [{ type: "text", text: "phone queued" }] }],
-      "next-step": [{ id: "native-browser", source: { kind: "input" }, content: [{ type: "text", text: "browser steering" }] }] };
+      "next-step": [{ id: "native-browser", source: { kind: "user" }, content: [{ type: "text", text: "browser steering" }] }] };
     let baseline: unknown = { asOfSeq: 10, values: { inbox } };
     f.request.mockImplementation((method, args) => method === "session/projections" ? Promise.resolve(baseline) : priorRequest(method, args));
     await f.runtime.start();
@@ -216,6 +216,64 @@ describe("DeepSeek Web runtime adapter", () => {
     expect(f.events).toContainEqual({ runtimeId: "dsh:busy", event: {
       type: "execution.activity", retry: "unavailable", compaction: "unavailable",
     } });
+  });
+
+  it("keeps runtime context out of the user queue across recovery, live updates and delivery", async () => {
+    const f = discoveryFixture(); f.list([f.live("busy", true)]);
+    const base = f.request.getMockImplementation()!;
+    const context = ["user-approval", "agent-message", "subagent-settled", "plugin", "goal", "future-producer"].map((kind, index) => ({
+      id: `context-${index}`, source: { kind, rpcId: "phone-id" },
+      content: [{ type: "text", text: kind === "subagent-settled" ? "Background subagent finished" : `context from ${kind}` }],
+    }));
+    const human = { id: "native-phone", source: { kind: "user", rpcId: "phone-id" },
+      // The text itself must not decide whether a message is human input.
+      content: [{ type: "text", text: "Background subagent finished" }] };
+    const inbox = { "next-turn": [...context, human], "next-step": context };
+    const submission = deferred<unknown>();
+    f.request.mockImplementation((method, args) => method === "session/projections"
+      ? Promise.resolve({ asOfSeq: 10, values: { inbox } })
+      : method === "session/prompt" ? submission.promise : base(method, args));
+    await f.runtime.start();
+    const delivery = () => f.events.flatMap(item => item.event.type === "delivery.snapshot" ? [item.event] : []);
+    await vi.waitFor(() => expect(delivery().at(-1)).toEqual({ type: "delivery.snapshot", complete: true, items: [
+      { queueId: "phone-id", text: "Background subagent finished", delivery: "followUp", state: "accepted" },
+    ] }));
+    const send = (commandId: string) => f.runtime.dispatchCommand("dsh:busy", commandId, {
+      type: "user_message", messageId: "phone-id", text: "Background subagent finished",
+    });
+    const result = (commandId: string) => f.events.flatMap(({ event }) => event.type === "command.result" && event.commandId === commandId ? [event] : []).at(-1);
+    send("original");
+    await vi.waitFor(() => expect(result("original")?.status).toBe("pending"));
+    const follow = f.follows()[0]!;
+    follow.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: -1, records: [] });
+    context.forEach((message, seq) => follow.frame({ type: "event", event: { seq, time: seq + 1, type: "user/message", data: message } }));
+    const messages = () => f.events.flatMap(({ event }) => event.type === "session.patch" ? (event.entries ?? []).filter(entry => entry.type === "message") : []);
+    expect(messages()).toHaveLength(0);
+    expect(f.events.some(({ event }) => event.type === "message.queued" && event.state === "delivered")).toBe(false);
+    send("after-context");
+    await vi.waitFor(() => expect(result("after-context")?.status).toBe("pending"));
+    follow.frame({ type: "event", event: { seq: context.length, time: 100, type: "user/message", data: human } });
+    expect(messages()).toHaveLength(1);
+    expect(f.events.filter(({ event }) => event.type === "message.queued" && event.state === "delivered")).toHaveLength(1);
+    send("after-human");
+    await vi.waitFor(() => expect(result("after-human")?.status).toBe("success"));
+    submission.resolve({ accepted: true });
+    await vi.waitFor(() => expect(result("original")?.status).toBe("success"));
+    expect(f.request.mock.calls.filter(([method]) => method === "session/prompt")).toHaveLength(1);
+    // Internal messages cannot hide human input behind the 256-item budget.
+    const control = f.subscriptions.find(item => item.method === "session/control")!;
+    const notices = Array.from({ length: 300 }, (_, index) => ({ id: `notice-${index}`, source: { kind: "subagent-settled" } }));
+    control.frame({ type: "projection", sessionId: "busy", key: "inbox", seq: 11, value: {
+      "next-turn": [...notices, human], "next-step": [{ source: { kind: "user-approval" } }],
+    } });
+    expect(delivery().at(-1)).toEqual({ type: "delivery.snapshot", complete: true, items: [
+      { queueId: "phone-id", text: "Background subagent finished", delivery: "followUp", state: "accepted" },
+    ] });
+    // A complete context-only inventory clears the old visible queue.
+    control.frame({ type: "projection", sessionId: "busy", key: "inbox", seq: 12, value: {
+      "next-turn": notices, "next-step": [{ source: { kind: "user-approval" } }],
+    } });
+    expect(delivery().at(-1)).toEqual({ type: "delivery.snapshot", complete: true, items: [] });
   });
 
   it("marks an oversized native inbox partial instead of claiming the truncated page is complete", async () => {
@@ -447,6 +505,7 @@ describe("DeepSeek Web runtime adapter", () => {
     apply("write", "danger-full-access");
     await vi.waitFor(() => expect(result("write")).toMatchObject({ ok: true }));
     expect(f.request).toHaveBeenCalledWith("commands/execute", { agentId: "browser", line: "/permission danger-full-access", submittedAttachments: [] });
+    expect(f.request.mock.calls.some(([method]) => method === "session/prompt")).toBe(false);
     expect(f.runtime.directoryEntries()[0]?.permissions).toMatchObject({ profile: "danger-full-access", sandbox: "unknown" });
     const control = f.subscriptions.find(item => item.method === "session/control")!;
     control.frame({ type: "projection", sessionId: "browser", key: "permissions", value: { currentValue: "workspace-write" }, seq: 12 });

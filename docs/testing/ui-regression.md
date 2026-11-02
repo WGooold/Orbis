@@ -155,6 +155,8 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 Claude 运行中发送的适配器回归（V10、V12、V17）：`claude plugin test packages/claude-mod` 的 `reconnect.test.ts` 覆盖主回合期间不调用 `prompt.submit`、同批消息串行提交、停止与工具事件、子 Agent 完成、Host 轮末捕获屏障及重连代次隔离；设备端仍关联两端乐观发送用例。真实联动验收按 R17 执行，插件模拟通过不能替代设备 / 真实 TUI 验收。
 
+DSH 原生 inbox 来源回归（V09–V10、V12、V17；ADR-0020 / ADR-0031 / ADR-0055）：`dsh-web-runtime.test.ts` 的 `keeps runtime context out of the user queue across recovery, live updates and delivery` 覆盖恢复投影、实时用户事件与队列投影：权限、子代理 / 后台完成、插件、自动目标和未知显式来源均排除，内部 `rpcId` 不结算用户消息，300 条内部通知不占 256 条用户队列预算，完整内部清单确认用户队列为空；同文人类消息、浏览器 steer 与旧版无来源消息仍保留。`dsh-web-history.test.ts` 同时核对非用户来源不创建聊天消息 / App 发送身份；`scripts/test-dsh-web.mjs` 用隔离真实 DSH 验证权限命令保留原生上下文、App 用户队列为空且不发起模型请求。设备沿用 iOS `testQueueCancellationNotificationsAndRuntimeFacts` / `testCompactionQueuedSendCanBeWithdrawn` / `testUnconfirmedSendCanBeCheckedWithoutResending` 与 Android `OptimisticActionsInstrumentedTest`、`InteractionWorkspaceInstrumentedTest`，它们验证消费端队列与权限交互，不能替代真实 DSH 联动。手动专项 R41。
+
 Claude 首页首次同步（S18、V16、V18；ADR-0033 §16）：`agent-backend.test.ts` 的三组 `announces a complete home baseline without waiting for history` 在历史定位一直未返回时，验证无审批 / 有审批 / 仅 Hook 在线均立即具有完整首页领域，审批保持等待，离线目标不发布空清单；`host-service.test.ts` 的 Claude 加密通道用例在任何历史请求之前核对首次读取。消费端沿用 iOS `HomeRuntimeLoadingTests` / 首页加载同步五项 UI 用例与 Android `HomeLoadingInstrumentedTest`，不得用这些夹具代替 R42 真后端 / 双端联动。
 
 Claude 首次启动项目授权回归（V12、V17–V18；ADR-0033 §14）：`claude-workspace-trust.test.ts` / `claude-launcher.test.ts` 覆盖先登记再开窗、既有配置保留、损坏配置拒绝、并发项目、默认 / 自定义配置、Git 子目录 / linked worktree / 嵌套仓库、符号链接和宽泛根拒绝。专项手动 R29（早期记录曾误用已占用的 R19；R19 保留给历史返回）；macOS TUI 握手通过不替代 Windows 或 App 设备门禁。
@@ -375,6 +377,12 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 
 每项 A1–A4，包含起始、1/3、2/3、末帧、反向与取消证据；共用组件接入不能免除调用方手动检查。C10 的160ms旧选中淡入在r31实施后改按触点260ms扩散、取消160ms验证，不删除其他断言。C15复制的用户消息入口改为长按操作栏，助手/代码保持原入口。
 
+### DSH 内部上下文与用户队列专项
+
+| 编号 | 步骤 | 预期 | ID |
+| --- | --- | --- | --- |
+| R41 | 两端连接隔离 DSH：idle 时切换权限；运行中产生子代理汇报与后台完成通知，再夹入 App followUp、浏览器 steer 和同文消息；断线重连、退出重进并撤回真实用户队列项。原生 inbox 包含超过 256 条内部通知时重复检查；A1–A4 与上翻阅读状态对照 | 内部上下文供 Agent 正常消费，但不显示为用户排队消息、不创建用户气泡或结算 App 发送回执；权限切换不发起模型请求。真实用户消息按来源身份显示且可正常撤回 / 投递；完整内部清单确认 App 队列为空，不因内部通知容量或缺少用户消息字段变成不完整；阅读锚点与会话 / 电脑隔离保持 | V09–V10、V12、V17 |
+
 ## 5. 新增或修改 UI 时的用例编写要求
 
 1. **同一任务写用例。** 每个新增或修改的 feature ID 至少有：一个设备 UI 用例，断言该规则的具体数值或几何（坐标、尺寸、可见性、顺序、帧序），只断言“元素存在”不够；状态或逻辑另配单元测试；以及 §4 的手动清单条目。同时更新 §3.3 映射。
@@ -408,6 +416,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 ## 6. 结果记录
 
 2026-11-02 Claude 首页同步（S18 / V16 / V18，ADR-0033 §16）：Host `announce` 补充完整 Hook 交互清单，不再等历史同步。新增适配器三场景在修复前均失败；修改后相关 117 项与加密首次读取、TypeScript / 修改文件 lint / L0 通过。Node 全量 1661 通过、2 项 Codex launcher 失败、5 条件未运行，整类复测仍失败。iOS 构建时 Core 338 项 / Debug 构建通过，首页定向 5 项和全量中的同 5 项均过；全量 81 项 66 过 / 15 失败。Android JVM 667 项 / 两包构建通过；首页定向与实际关闭动画各 2 / 2，全量 164 项 151 过 / 6 失败 / 7 条件未满足；全量首页 PixelCopy 失败在整类复测通过，失败类复测仍有其他 5 失败。首页 iOS 16 张、Android 20 张截图已看；其他任务在运行期间修改 iOS 源码，本轮原生结果只对应当次构建输入，不声称当前共享工作区或同设备受控基线通过。C01–C18 完整手动、R42 真 Claude 联动、完整 L4 与 iOS 窄屏 / A4 未完成，不能记为验收通过；证据与限制见 `.artifacts/ui-regression/20261102-claude-home-sync/summary.md`。本任务设备 / 构建锁已释放，Android 设置核对恢复，未部署。
+
+2026-11-02 DSH 内部上下文 / 用户队列（V09–V10、V12、V17，R41）：Host 来源过滤与回执对账已修复。最终定向 76 项通过，新增用例用修复前适配器回放如期失败；Node 全量 1658 通过 / 5 条件跳过，类型检查与变更文件 lint 通过。隔离官方 DSH smoke 验证权限切换保留原生 `user-approval` 上下文、App 完整用户队列为空、模型请求不增加。iOS Swift 335 / Android JVM 667 与双端构建通过；池内 iPhone 17 全量 79 项为 73 通过 / 6 失败，Android API 35 全量 164 项为 153 通过 / 4 失败 / 7 外部条件未满足，隔离 Host pairing 类未运行。队列撤回、审批确认与发送对账相关用例通过；本轮未重建父提交作同设备同配置对照，不能宣称全量门禁通过。已查看两端队列、撤回与权限截图；完整 L4、C01–C18、A1–A4 和两端真实隔离 DSH 联动 R41 未完成。测试期间其他任务修改手机端及 Host 同步源码，本结果仅对应保存的构建产物与 DSH 文件，不覆盖后来的共享工作区修改。设备 / 构建租约已释放，未部署运行中的 Host。失败清单、源码 / 包哈希与未跑范围见 `.artifacts/ui-regression/20261102-dsh-inbox-source/summary.md` 和 `manual-checklist.md`，不记为完整 UI 验收通过。
 
 2026-11-01 最近提问提示（S24 / ADR-0057）：iOS 233 核心测试与 App / UI Test 构建、Android 568 JVM 测试和 APK 构建通过；Android 提醒专项 4 项通过，全量 146 项 4 失败均属于同设备基线 139 项 5 失败集合。iOS 新增定向用例发现刷新后锚点断言失败，完整设备 / 手动及 A1–A5 未完成，不记为验收通过。证据见 `.artifacts/ui-regression/20261101-question-reminder/summary.md`。
 

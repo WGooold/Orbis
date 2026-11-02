@@ -69,6 +69,12 @@ describe("DSH Web phone send identity (ADR-0049)", () => {
     expect(dshWebEntries("s", [sent])[0]?.data).toMatchObject({ message: { role: "user", clientMessageId: "app-1" } });
   });
 
+  it.each(["user-approval", "agent-message", "subagent-settled", "plugin", "goal", "future-producer"])("keeps %s context out of user history and send identity", kind => {
+    const context = event(1, "user/message", { source: { kind, rpcId: "app-1" }, content: [{ type: "text", text: "runtime context" }] });
+    expect(dshWebMessage("s", context, new Map())).toBeUndefined();
+    expect(dshWebEntries("s", [context])[0]).toMatchObject({ entryId: "dsh:s:web:1", type: "custom", data: { dshEvent: "user/message" } });
+  });
+
   it("does not invent an identity for prompts without one or for other roles", () => {
     expect(dshWebMessage("s", turn[1]!, new Map())?.clientMessageId).toBeUndefined();
     const answer = event(4, "assistant/message", { message: { id: "a1", source: { rpcId: "app-2" }, content: [{ type: "text", text: "回答" }] } });

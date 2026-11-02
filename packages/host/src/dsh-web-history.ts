@@ -25,11 +25,19 @@ export function dshErrorText(error: unknown): string {
 // Web projections have their own versioned IDs: old ACP cache entries remain immutable.
 export const dshWebEntryId = (id: string, seq: number): string => `dsh:${id}:web:${seq}`;
 
+/** DSH also carries runtime context as user-role messages; only human input belongs in the phone's conversation and queue. */
+export function dshWebIsUserMessage(value: unknown): boolean {
+  const source = record(record(value).source);
+  // Older logs omit source.kind. An explicit producer, including unknown future
+  // kinds, must not be presented as input submitted by a person.
+  return source.kind === undefined || source.kind === "user";
+}
+
 export function dshWebMessage(id: string, event: DshWebLogEvent, toolNames: ReadonlyMap<string, string>): ChatMessage | undefined {
   const data = record(event.data);
   const raw = event.type === "user/message" ? data : record(data.message);
   const source = record(raw.source);
-  if (event.type === "user/message" && source.kind !== undefined && source.kind !== "user") return undefined;
+  if (event.type === "user/message" && !dshWebIsUserMessage(raw)) return undefined;
   if (event.type === "turn/end") {
     const reason = record(data.reason);
     if (reason.kind !== "error") return undefined;

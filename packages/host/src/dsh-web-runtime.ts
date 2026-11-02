@@ -13,7 +13,7 @@ import {
 } from "@orbis/protocol";
 import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshWebClient, DshWebUnconfirmedError, type DshWebConnection, type DshWebEvent, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
-import { dshErrorText, dshWebEntries, dshWebEntryId, dshWebEntryText, dshWebMessage, dshWebTreeOptions, type DshStreamDecoder, type DshWebLogEvent } from "./dsh-web-history.js";
+import { dshErrorText, dshWebEntries, dshWebEntryId, dshWebEntryText, dshWebIsUserMessage, dshWebMessage, dshWebTreeOptions, type DshStreamDecoder, type DshWebLogEvent } from "./dsh-web-history.js";
 import { localHostname } from "./sessions.js";
 import { dshPermissionOptions, dshPermissions } from "./dsh-permissions.js";
 import { dshUserQuestionInteraction, dshUserQuestionAnswer } from "./dsh-user-questions.js";
@@ -997,7 +997,7 @@ export class DshWebRuntime implements AgentBackend {
       const raw = event.type === "assistant/message" ? data.message : object(data.message);
       if (typeof object(raw).id === "string") session.persistedMappings.set(String(object(raw).id), entry.entryId);
     }
-    if (event.type === "user/message") {
+    if (event.type === "user/message" && dshWebIsUserMessage(data)) {
       const source = object(data.source);
       const requestId = typeof source.rpcId === "string" ? source.rpcId : undefined;
       if (requestId) {
@@ -1275,7 +1275,7 @@ export class DshWebRuntime implements AgentBackend {
     if (publish) this.#emit(session, structuredClone(session.activity));
   }
 
-  /** Native wire inbox is a complete, durable projection, including other frontends' submissions. */
+  /** Project human submissions from every frontend; native context remains in DSH's inbox. */
   #deliveryProjection(session: WebSession, raw: unknown): boolean {
     const baseline = object(raw); const seq = baseline.asOfSeq;
     const inbox = object(object(baseline.values).inbox);
@@ -1286,7 +1286,9 @@ export class DshWebRuntime implements AgentBackend {
     let complete = true;
     for (const [target, delivery] of [["next-turn", "followUp"], ["next-step", "steer"]] as const) {
       for (const value of inbox[target] as unknown[]) {
-        const message = object(value); const source = object(message.source);
+        const message = object(value);
+        if (!dshWebIsUserMessage(message)) continue;
+        const source = object(message.source);
         const id = typeof source.rpcId === "string" ? source.rpcId : message.id;
         if (typeof id !== "string" || id.length === 0 || id.length > 256 || typeof message.id !== "string") { complete = false; continue; }
         if (items.length >= 256) { complete = false; break; }

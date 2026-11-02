@@ -3,7 +3,7 @@
 // it never attaches to the user's running Web or Host process.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -16,7 +16,7 @@ import { applyDshWebProvider } from "../packages/host/dist/dsh-web-provider.js";
 import { DshRuntime } from "../packages/host/dist/dsh-runtime.js";
 import { loadDshStreamDecoder } from "../packages/host/dist/dsh-web-history.js";
 
-const root = await mkdtemp(join(tmpdir(), "orbis-dsh-web-smoke-"));
+const root = await realpath(await mkdtemp(join(tmpdir(), "orbis-dsh-web-smoke-")));
 const home = join(root, "dsh-home");
 const workspace = join(root, "workspace");
 await mkdir(join(home, "profiles"), { recursive: true });
@@ -189,6 +189,28 @@ try {
   assert.equal(mobile.dispatchCommand(`dsh:${fresh.sessionId}`, "app-prompt", { type: "user_message", text: "APP_TO_BROWSER", messageId: "app-prompt" }), "handled");
   await waitFor(() => browserFrames.some(frame => frame.type === "event" && frame.event.type === "user/message" && frame.event.data.source.rpcId === "app-prompt"));
   await waitFor(() => mobileEvents.some(item => turnSettled(item, fresh.sessionId)));
+  // A permission transition injects model-facing context into the native inbox.
+  // It must remain there for the Agent, without becoming a user queue item or
+  // starting a model request. Exercise the actual installed permission handler.
+  const permissionBefore = await first.request("session/projections", { request: { sessionId: fresh.sessionId } });
+  const previousPreset = permissionBefore.values.permissions.currentValue;
+  const nextPreset = previousPreset === "danger-full-access" ? "workspace-write" : "danger-full-access";
+  const requestsBeforePermission = modelRequests;
+  const permissionStart = mobileEvents.length;
+  assert.equal(mobile.dispatchCommand(`dsh:${fresh.sessionId}`, "app-permission", {
+    type: "permissions.update", settingId: "permission-preset", value: nextPreset,
+  }), "handled");
+  await waitFor(() => mobileEvents.some(({ event }) => event.type === "command.result" && event.commandId === "app-permission"));
+  assert.equal(mobileEvents.find(({ event }) => event.type === "command.result" && event.commandId === "app-permission").event.ok, true);
+  const permissionAfter = await first.request("session/projections", { request: { sessionId: fresh.sessionId } });
+  assert.equal(permissionAfter.values.permissions.currentValue, nextPreset);
+  const nativeContext = [...permissionAfter.values.inbox["next-turn"], ...permissionAfter.values.inbox["next-step"]];
+  assert.ok(nativeContext.some(message => message.source.kind === "user-approval"), "native approval context is retained for the next model step");
+  await waitFor(() => mobileEvents.slice(permissionStart).some(({ event, runtimeId }) => runtimeId === `dsh:${fresh.sessionId}` && event.type === "delivery.snapshot" && event.complete));
+  const permissionQueues = mobileEvents.slice(permissionStart).filter(({ event, runtimeId }) => runtimeId === `dsh:${fresh.sessionId}` && event.type === "delivery.snapshot");
+  assert.ok(permissionQueues.every(({ event }) => event.items.length === 0), "approval context is not a human queue item");
+  assert.equal(modelRequests, requestsBeforePermission, "permission switching does not send a model prompt");
+  console.log("PASS: permission switching retains native context, creates no user queue item and sends no model request");
   await first.request("workspace/archiveSession", { request: { sessionId: fresh.sessionId } });
   await waitFor(() => !mobile.ownsRuntime(`dsh:${fresh.sessionId}`));
   await first.request("workspace/unarchiveSession", { request: { sessionId: fresh.sessionId } });

@@ -100,7 +100,7 @@ Codex 压缩期间发送可能一直显示“发送中”。隔离协议夹具�
 | Pi | 扩展持有待投递输入；isIdle 与压缩 / 队列 / 启动保留位共同判断；原生可执行后逐条投递 | 保持原生 abort + 队列语义，停止和压缩完成要触发核对 / 调度 | 明确 unsupported / not_cancelable |
 | Codex / Codex Desktop | 适配器队列，包含独立压缩暂存；启动保留位保证一次仅一条 | 既有 steer=中断+优先下一条；异步问题原生 steer 保持独立归属 | 没有回合不虚构 turnId；失败或未知按 §6 |
 | Claude Mods | Host 保留命令，插件在主回合、压缩和已有提交保留位均空闲后串行提交 | 不支持 steer，明确 claude_steer_unsupported；stop 等主回合中断事实 | 不借 prompt.submit 等待 idle 冒充立即投递 |
-| DSH Web | 原生 queue / steer，使用 requestId / queue item 身份和原生队列核对 | 原生 cancel；审批独立通道 | 原生拒绝 / 不可确认须保留原因 |
+| DSH Web | 原生 queue / steer，使用 requestId / queue item 身份和原生队列核对；只投影 `source.kind=user` 或旧版未声明来源的用户输入，权限变化、子代理 / 后台完成、插件和自动目标上下文仍由 DSH 消费，不进入用户队列、不结算 App 发送身份；未知显式来源同样排除 | 原生 cancel；审批独立通道 | 原生拒绝 / 不可确认须保留原因 |
 | DSH ACP | 只支持 idle 直发；无原生队列时 followUp / steer 明确失败 | 原生 cancel，不能把 RPC 写入当中断完成 | 明确说明能力限制，保留可重发输入 |
 
 Slash 准入由后端解释已发布目录：只读查询可以执行；权限、压缩、历史改写 / 新会话 / 切换在忙碌或冲突时明确拒绝；模型 / effort 默认同样要求 idle，但 DSH Web 原生已支持带规范化确认的下一轮选型，保持运行中更新下一轮配置的路径，不改变当前请求。会话名称是独立元数据更新，后端原生支持时可运行中执行；skill / template 等产生对话的命令只能 idle 执行，除非后端发布并实现了明确排队能力；退出走独立关闭操作。无法分类的扩展写命令保守要求 idle。命令不在目录或参数无效时立即失败。可查询不代表可修改；配置成功必须先发布原生确认值。
