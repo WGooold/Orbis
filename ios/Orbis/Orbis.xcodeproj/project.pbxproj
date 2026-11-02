@@ -50,6 +50,7 @@
 		A0010001000000000000003A /* TurnFileChangesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000003A /* TurnFileChangesView.swift */; };
 		C05800010000000000000001 /* MotionGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05810010000000000000001 /* MotionGeometry.swift */; };
 		C05800010000000000000002 /* InteractionMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05810010000000000000002 /* InteractionMotion.swift */; };
+		C03300010000000000000001 /* HomePullRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03310010000000000000001 /* HomePullRefresh.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -99,6 +100,7 @@
 		A0011001000000000000003A /* TurnFileChangesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnFileChangesView.swift; sourceTree = "<group>"; };
 		C05810010000000000000001 /* MotionGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionGeometry.swift; sourceTree = "<group>"; };
 		C05810010000000000000002 /* InteractionMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionMotion.swift; sourceTree = "<group>"; };
+		C03310010000000000000001 /* HomePullRefresh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePullRefresh.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -166,6 +168,7 @@
 				A00110010000000000000021 /* Presentation.swift */,
 				C05810010000000000000001 /* MotionGeometry.swift */,
 				C05810010000000000000002 /* InteractionMotion.swift */,
+				C03310010000000000000001 /* HomePullRefresh.swift */,
 				A00110010000000000000020 /* OrbisDesign.swift */,
 			);
 			path = Orbis;
@@ -310,6 +313,7 @@
 				A00100010000000000000021 /* Presentation.swift in Sources */,
 				C05800010000000000000001 /* MotionGeometry.swift in Sources */,
 				C05800010000000000000002 /* InteractionMotion.swift in Sources */,
+				C03300010000000000000001 /* HomePullRefresh.swift in Sources */,
 				A00100010000000000000020 /* OrbisDesign.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

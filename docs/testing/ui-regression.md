@@ -4,6 +4,8 @@
 
 本轮统一交互动效（r31 / ADR-0058）：32场景与MOT ticket先行，双端共用组件已接入。Android全量154项4失败/7外部夹具assumption，iOS全量69项8失败，均未超同设备同配置基线，但受影响既有失败仍阻塞验收。最终Android深色大字20项、实际减少动画19项、iOS SE小屏大字10项及iPad6项定向通过；截图与部分录屏已审阅，完整C/R/A门禁未完成。见 [交互动效验证记录](interaction-motion.md)。
 
+2026-11-02 M15 iOS r33：观察原生顶部拖动，在释放时触发一次刷新；指示器不再设置刷新停靠高度，列表只执行一次原生回弹。隔离 `765b0a3` 上 338 核心测试与构建通过，SE 首页手势 4 / 4、iPhone 17 / SE 下拉 3 / 3（含 A1–A4、短拉 / 多选）通过；iPad 同设备前后下拉均实际刷新一次，回弹源帧已审阅。SE 全量 82 项为 75 通过 / 7 失败，6 项原实现同设备复现，上传失败恢复一项在原实现及当前单独复跑通过，首轮失败保留；176 张附件已查看。完整人工 C01–C18、真实 Host、真机体感未验收，不记完整门禁通过。共享主工作树后续 r34 外观修改不在此隔离结论内。详见 `.artifacts/ui-regression/20261102-ios-refresh-rebound/summary.md`。
+
 日期：2026-11-02。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-02/r35`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 10 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
@@ -108,12 +110,13 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
 
-**iOS `OrbisUITests`（合并后 79 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项；历史运行计数按证据保留）**
+**iOS `OrbisUITests`（合并后 82 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项；历史运行计数按证据保留）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
 | 首页加载 / 同步 | `testHomePublishesCompleteSnapshotsWithoutReturningToLoading`、`testHomeRetriesFailedBackgroundRuntime`、`testHomeBackgroundSyncFailureStaysInConnectionPill`、`testHomeInlineStatusInDarkAndLargeText`、`testHomeKeepsCardsAfterDirectoryReplay` | S18、V16、V18 |
 | 首页手势 / 多选 / 关闭 | `testHomeVerticalDragsScrollFromCardsAndKeepSelection`、`testHomeLongListScrollsToEndInBothAppearances`、`testHomeLongPressSelectsAndClosesOnlyCheckedSessions`、`testHomeShortSwipeReboundsAndLongSwipeClosesOnlyThatRuntime`、`testSwipeCloseHidesBeforeConfirmationAndRestoresOnRejection`、`testSwipeRightFromLeftSideOpensDirectory` | S15、M06、M09–M12、V11 |
+| 首页下拉刷新 | `HomePullRefreshTests`（3 项核心）；`testHomePullRefreshReturnsListToItsStartingPosition`、`testHomePullRefreshInDarkLargeTextAndReducedMotion`、`testHomePullRefreshIgnoresShortPullsAndSelection` | M15、S18、V21 |
 | 首页与目录入口 | `testHomeDirectorySearchAndNewSession`、`testNewSessionOffersLaunchableDeepSeekBeforeBackendIsReady`、`testCompactionStatusInHomeChatAndDrawer` | S19–S20、V05 |
 | 目录抽屉 | `testDrawerCardsKeepUniformGeometryForShortAndLongTitles`、`testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions`、`testDrawerSelectionClearsOnCancelSearchAndClose`、`testDrawerFollowsEdgeDragAndShowsOneDirectory`、`testDrawerCollapseShrinksContentWithoutAnotherDrag` | S15、S19、M06、M09、V17 |
 | 聊天入场 / 返回 | `testCachedOnlineChatEntryTiming`、`testChatSwipeBackReboundsThenReturnsHome`、`testDraftSurvivesBackNavigationAndSlashRequiresSelection` | M07–M08、V13、V17 |
@@ -251,7 +254,7 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | --- | --- | --- | --- |
 | C01 | 冷启动到首页 | 首帧不白屏；首版快照前，加载态占列表空态位置，没有半成品卡片；快照到后一次发布全部卡片 | S18、V18 |
 | C02 | 首页长列表滚到底再回顶；从卡片上起手竖拖 | 滚动顺畅；卡片等宽，标题两行等高；竖拖不误触左滑关闭或抽屉 | S19、M09–M11 |
-| C03 | 首页下拉刷新 | 只在顶部触发；拖动时整张会话列表与手指同步下移，指示器跟随显示；松手触发一次刷新后列表和指示器回到原位，首卡与滚动锚点无跳动；进度 / 失败仍显示在胶囊或列表空态 | M15、S18、V21 |
+| C03 | 首页下拉刷新 | 只在顶部触发；拖动时整张会话列表与手指同步下移，指示器跟随显示；松手触发一次刷新后列表和指示器连续、平滑地回到原位，无分段跳动，首卡与滚动锚点无跳动；进度 / 失败仍显示在胶囊或列表空态 | M15、S18、V21 |
 | C04 | 点卡片进入聊天，再右滑返回：先拖 1/4 后松手（取消），再拖过 1/3 | 从右侧滑入，首页底层压缩并加遮罩；取消时回弹；返回时跟手，回到首页后立即可点 | M07–M08、V13 |
 | C05 | 聊天中上滑阅读，等待新消息 / 流式到达，再点“回到最新” | 阅读位置不被抢；超过三行显示“回到最新”；点击后恢复跟随；流式文字按顺序逐字出现（r15 后） | V01–V04、M04 |
 | C06 | 聚焦输入框，输入多行，打开 Slash 菜单 | 输入框为凹槽并显示柔和双环；键盘上移输入区，顶栏不动；Slash 菜单在键盘上方 | S12、S17、V08 |

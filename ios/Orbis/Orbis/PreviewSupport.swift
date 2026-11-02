@@ -41,10 +41,26 @@ enum PreviewViewportUpdates {
     static var changeList: ((String) -> Void)?
 }
 
+@MainActor
+final class PreviewHomeRefreshProbe: ObservableObject {
+    static let shared = PreviewHomeRefreshProbe()
+    @Published var reads = 0
+}
+
+struct PreviewHomeRefreshReport: View {
+    @ObservedObject private var probe = PreviewHomeRefreshProbe.shared
+    var body: some View {
+        Text(String(probe.reads)).font(.system(size: 1)).foregroundStyle(.clear)
+            .accessibilityIdentifier("preview-home-model-reads")
+            .allowsHitTesting(false)
+    }
+}
+
 // Explicit launch arguments opt into isolated, in-memory fixtures for UI review.
 // They never read Keychain, connect to a real Host, or persist preview content.
 @MainActor
 func makePreviewStore(screen: String) -> OrbisStore {
+    PreviewHomeRefreshProbe.shared.reads = 0
     let transport = PreviewTransport(screen: screen)
     PreviewViewportUpdates.schedule = screen == "viewport" && ProcessInfo.processInfo.arguments.contains("--preview-viewport-drag")
         ? { [weak transport] in transport?.scheduleViewportBatch() } : nil
@@ -294,6 +310,11 @@ private final class PreviewTransport: OrbisTransport {
         }
     }
     func send(_ object: [String: Any]) -> Bool {
+        if ProcessInfo.processInfo.arguments.contains("--preview-home-refresh-probe"),
+           object["type"] as? String == "agent.state.request", object["scope"] as? String == "agent",
+           object["runtimeId"] as? String == "preview-codex" {
+            PreviewHomeRefreshProbe.shared.reads += 1
+        }
         if (object["command"] as? [String: Any])?["type"] as? String == "session.sync" {
             ChatEntryProbe.shared.sentSync()
         }

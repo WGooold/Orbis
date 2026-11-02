@@ -114,6 +114,68 @@ final class OrbisUITests: XCTestCase {
         capture("home-top-after-insert-and-promote", app: app)
     }
 
+    func testHomePullRefreshReturnsListToItsStartingPosition() {
+        checkHomePullRefresh(name: "light")
+    }
+
+    func testHomePullRefreshInDarkLargeTextAndReducedMotion() {
+        checkHomePullRefresh(name: "dark", dark: true)
+        checkHomePullRefresh(name: "large", arguments: ["-UIPreferredContentSizeCategoryName",
+                                                     UIContentSizeCategory.accessibilityExtraExtraExtraLarge.rawValue])
+        checkHomePullRefresh(name: "reduced", arguments: ["--preview-reduce-motion"])
+    }
+
+    func testHomePullRefreshIgnoresShortPullsAndSelection() {
+        let app = launch("home", arguments: ["--preview-home-long-list", "--preview-home-refresh-probe"])
+        let list = app.scrollViews["home-session-list"]
+        let first = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(first.waitForExistence(timeout: 8))
+        let reads = app.staticTexts["preview-home-model-reads"]
+        XCTAssertTrue(reads.waitForExistence(timeout: 5))
+        let originalReads = reads.label, originalY = first.frame.minY
+        let pull = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
+        pull.press(forDuration: 0.05, thenDragTo: pull.withOffset(CGVector(dx: 0, dy: 60)),
+                   withVelocity: .slow, thenHoldForDuration: 0.1)
+        waitForY(first, originalY, operation: "short pull")
+        XCTAssertEqual(reads.label, originalReads, "A short pull must not refresh")
+        first.press(forDuration: 0.8)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        pull.press(forDuration: 0.05, thenDragTo: pull.withOffset(CGVector(dx: 0, dy: 360)),
+                   withVelocity: .slow, thenHoldForDuration: 0.25)
+        waitForY(first, originalY, operation: "selection pull")
+        XCTAssertEqual(reads.label, originalReads, "Selection mode must not refresh")
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].exists)
+        capture("home-pull-refresh-selection-kept", app: app)
+    }
+
+    private func checkHomePullRefresh(name: String, dark: Bool = false, arguments: [String] = []) {
+        let app = launch("home", dark: dark, arguments: ["--preview-home-long-list", "--preview-home-refresh-probe"] + arguments)
+        let list = app.scrollViews["home-session-list"]
+        let first = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(first.waitForExistence(timeout: 8))
+        let reads = app.staticTexts["preview-home-model-reads"]
+        XCTAssertTrue(reads.waitForExistence(timeout: 5))
+        let readsBeforePull = Int(reads.label) ?? -1
+        XCTAssertGreaterThanOrEqual(readsBeforePull, 1)
+        let firstY = first.frame.minY
+
+        let pull = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
+        pull.press(forDuration: 0.05,
+                   thenDragTo: pull.withOffset(CGVector(dx: 0, dy: 360)),
+                   withVelocity: .slow,
+                   thenHoldForDuration: 0.25)
+        let oneMoreRead = NSPredicate(format: "label == %@", String(readsBeforePull + 1))
+        _ = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: oneMoreRead, object: reads)], timeout: 5)
+        XCTAssertEqual(reads.label, String(readsBeforePull + 1),
+                       "A single pull must request the runtime model exactly once")
+        waitForY(first, firstY, operation: "pull-to-refresh must return the list to its starting position")
+        XCTAssertTrue(app.buttons["home-runtime-preview-pi"].isHittable,
+                      "Cards must remain interactive after the refresh rebound")
+        XCTAssertEqual(reads.label, String(readsBeforePull + 1), "The rebound must not issue a second refresh")
+        capture("home-pull-refresh-restored-" + name, app: app)
+        app.terminate()
+    }
+
     func testHomeScrolledAnchorSurvivesInsertionAndReordering() {
         let app = launch("home", arguments: ["--preview-home-long-list", "--preview-viewport-controls"])
         XCTAssertTrue(app.buttons["home-runtime-preview-codex"].waitForExistence(timeout: 8))

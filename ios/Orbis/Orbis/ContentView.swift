@@ -97,6 +97,9 @@ struct ContentView: View {
                     }
                 }.font(.system(size: 10)).padding(.top, 60)
             }
+            if ProcessInfo.processInfo.arguments.contains("--preview-home-refresh-probe") {
+                PreviewHomeRefreshReport()
+            }
         }
         #endif
         .sheet(isPresented: $newSessionOpen, onDismiss: { store.dismissBrowse(); launchIntroReady = launchIntro != nil }) {
@@ -620,6 +623,9 @@ struct HomeView: View {
                     }
                 }
             }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 28)
+                .background(HomePullRefresh(identity: store.selectedHostId, enabled: !selecting,
+                                            tint: UIColor(OrbisPalette(scheme).secondary),
+                                            refresh: store.refresh))
                 .coordinateSpace(name: "home-session-content")
                 .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: {
                     homeListGeometry.contentOrigin = $0
@@ -628,7 +634,7 @@ struct HomeView: View {
             // Recognize alongside the scroll view itself. A child DragGesture can win
             // recognition before its direction guard runs and prevent native scrolling.
             .simultaneousGesture(closeSwipeGesture)
-            .refreshable { store.refresh() }
+            .accessibilityAction(named: "刷新会话") { if !selecting { store.refresh() } }
             .accessibilityIdentifier("home-session-list")
             .onChange(of: launchIntro?.requestId) { _, id in
                 if let id { proxy.scrollTo("new-session-" + id, anchor: .bottom) }

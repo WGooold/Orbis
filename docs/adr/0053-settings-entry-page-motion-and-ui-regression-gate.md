@@ -71,10 +71,12 @@ Status: accepted（2026-10-30 用户决策，同日补充确认：胶囊不再�
 ### 6. 首页下拉刷新（M15，UI-05）
 
 - iOS / Android 首页会话列表都支持下拉刷新：仅当列表在顶部时可以下拉；多选、左滑关闭和抽屉拖动期间不触发。触发后的逻辑与失败重试一致：已连接时刷新会话目录、Host 模型及全部 Runtime 模型，未就绪时重新连接（iOS `store.refresh()`，Android `refreshHome()`）。
-- 下拉过程中列表内容随手指向下位移；iOS 沿用原生 `.refreshable` 滚动行为。Android 保留 Material3 `pullToRefresh` 手势状态，将 `distanceFraction × PositionalThreshold`（默认 80dp）应用到 `LazyColumn` 图层位移，不改变列表测量尺寸或滚动锚点；松手后列表和指示器回到原位。多选、左滑关闭与右滑打开抽屉的手势继续各自生效。
+- 下拉过程中列表内容随手指向下位移；iOS 保留原生 ScrollView 拖动 / 惯性 / 回弹，r33 不再使用会插入刷新停靠高度的 `.refreshable`。Android 保留 Material3 `pullToRefresh` 手势状态，将 `distanceFraction × PositionalThreshold`（默认 80dp）应用到 `LazyColumn` 图层位移，不改变列表测量尺寸或滚动锚点；松手后列表和指示器回到原位。多选、左滑关闭与右滑打开抽屉的手势继续各自生效。
+- iOS r33：`HomePullRefresh` 只观察原生 pan 和 contentOffset，不替换 delegate / recognizer，不改 contentInset / offset。起手时在顶部、非多选，且初始方向向下、释放时原生拉伸达到 80pt，才发出一次刷新；短拉、退回阈值内、横向起手及取消不刷新。指示器在内容顶部的原生拉伸空间显示，回位到 0 后隐藏；整个回位只有 ScrollView 的原生曲线，消除先回到刷新停靠点再收起的两阶段。`HomePullRefreshTests` 覆盖判定，UI 用例核对实际模型读取一次、恢复位置与外观；C03 录屏确认连续、无分段跳动。
 - 指示器只表示本次手势已触发，请求发出后收起；同步进度和失败仍由 S18 的连接胶囊或列表空态表达，不新增状态行。刷新期间保留上一版完整快照和视口位置（V18、V21）。Android 指示器继续使用 Material3 组件并配色跟随主题，不覆盖首卡阴影。
 - Android 的 `isRefreshing` 只作为请求交接信号短暂置真，下一帧切回空闲以启动 Material3 收起动画；不得绑定 Host 同步完成或右上角状态更新。该修复记录于 ADR-0051 r22。
 - Android 列表位移和指示器使用同一个 `HomePullRefreshState` 与回位弹簧；回位期间保持旋转，直到进度回到 0 后才隐藏，避免箭头停在阈值或与列表错拍。该修复记录于 ADR-0051 r23。
+- r33 验证：338 核心 / Simulator 构建通过，SE 首页手势 4 / 4，iPhone 17 与 SE 下拉 / A1–A4 三项专项通过；iPad 原实现与修复版单次下拉都实际读取一次模型并复位，回弹源帧已审阅。SE 全量 82 项 7 失败中 6 项同设备基线复现，上传一项单独复跑通过；完整 C01–C18、真实 Host 和真机未验收。证据 `.artifacts/ui-regression/20261102-ios-refresh-rebound/summary.md`，当前共享工作树其他外观改动不包含在隔离结论中。
 
 ### 7. 下载飞入下载按钮（M16，UI-06）
 
