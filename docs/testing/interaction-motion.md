@@ -179,3 +179,9 @@ MOT-11–21 保持“已接入，验证中”。完整 C01–C18、R45–R55 的
 L0 编号与引用：79 个 feature、43 组场景、21 张 MOT ticket、158 个相对路径 / 锚点检查通过，本机 AGENTS / CLAUDE 一致。源码检查、最终包 / 同基点回退包哈希、源文件清单与手动未验收项分别保存在证据根的 `source-checks-final.json`、`motion-packages/delivery-manifest.json`、`source-manifest.json`、`manual-checklist.md`。本任务设备 / 构建租约已释放；未合并或推送本轮 r35。
 
 2026-11-02 合并编号映射：主线已使用 r33（iOS 下拉回弹）、r34（雾蓝外观）和 R41–R44，本专题分支原 r33 / R41–R51 合并后登记为 r35 / R45–R55。既有 `.artifacts/ui-regression/20261102-motion-refinement/` 证据中的原编号保持不改，按此映射查证；feature / SC / MOT 编号不变，未验收状态不变。
+
+### 2026-11-02 合并校验
+
+主线 `d3627ab` 已纳入动效分支；合并代码及 r35 编号以 `fbfd3ad` 校验。Android 669 项 JVM、Debug / AndroidTest 构建、Swift 335 项、iOS build-for-testing 与包内依赖检查通过；Host 类型检查及 `agent-backend` / `host-service` 67 项通过。L0 的 79 个 feature、43 个场景、21 张 ticket 与 169 个相对链接检查通过；主工作区另有未提交 S25 外观，叠加后为 80 个 feature，相关修改继续保持未提交。合并准备、保留补丁及校验日志见 `.artifacts/merge-back/20261102-motion-r35/`。
+
+此次只追加集成编译、单元与文档检查，未重跑设备全量或人工 C / R / A；原验证记录、失败及未验收状态保持。r35 / R45–R55 的重编号不改写旧证据，不将其他任务的未提交修改纳入动效提交。
