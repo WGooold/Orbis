@@ -788,14 +788,22 @@ struct HomeView: View {
         return HStack(spacing: 0) {
             ZStack(alignment: .trailing) {
                 if !selecting {
-                    HStack(spacing: 6) {
-                        Image(systemName: armed ? "checkmark" : "xmark").font(.system(size: 14, weight: .bold))
-                        Text(armed ? "松手关闭" : "关闭").font(.orbisLabel(.semibold)).lineLimit(1)
+                    // Keep both labels laid out so reversing the threshold never moves the glyphs.
+                    ZStack {
+                        HStack(spacing: 6) {
+                            Image(systemName: "xmark").font(.system(size: 14, weight: .bold))
+                            Text("关闭").font(.orbisLabel(.semibold)).lineLimit(1)
+                        }
+                        .opacity(armed ? 0 : 1)
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark").font(.system(size: 14, weight: .bold))
+                            Text("松手关闭").font(.orbisLabel(.semibold)).lineLimit(1)
+                        }
+                        .opacity(armed ? 1 : 0)
                     }
                     .foregroundStyle(.white)
                     .frame(width: 116).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                     .background(armed ? OrbisPalette(scheme).secondary : OrbisPalette(scheme).error)
-                    .contentTransition(.opacity)
                     .animation(reduceMotion ? nil : InteractionMotion.state, value: armed)
                     .clipShape(RoundedRectangle(cornerRadius: OrbisRadius.card, style: .continuous))
                     .opacity(reveal > 0 ? 1 : 0)
