@@ -3266,6 +3266,19 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
       .toMatchObject({ runtime: { sessionGraphSync: true } });
     const event = (body: unknown) => post("/v1/claude/mods/event", { runtimeId: "claude:live-session", generation, event: body });
 
+    // Home must be ready before any chat/history sync, including an explicitly empty interaction list.
+    device.sendPayload(Buffer.from(JSON.stringify({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION,
+      requestId: "claude-home", scope: "agent", runtimeId: "claude:live-session", sessionId: "live-session", agentKind: "claude",
+      subscribe: true, domains: ["identity", "execution", "interactions"] })));
+    const homeDomains: Record<string, unknown>[] = [];
+    while (homeDomains.length < 3) {
+      const part = await until(message => message.type === "agent.state.snapshot" && message.requestId === "claude-home", "Claude home baseline");
+      expect(part.missing).toEqual([]);
+      homeDomains.push(...part.domains as Record<string, unknown>[]);
+    }
+    for (const domain of homeDomains) expect(domain).toMatchObject({ availability: "ready", completeness: "complete" });
+    expect(homeDomains.find(domain => domain.domain === "interactions")?.value).toEqual({});
+
     expect(await event({ type: "session.state", state: { model: "claude-opus-5-5", modelName: "Opus 5.5", modelOptions: ["sonnet", "opus"],
       context: { tokens: 1000, window: 200000, percent: 0.5 }, commands: [{ name: "compact", description: "Free up context", source: "builtin" }] } }))
       .toEqual({ result: "accepted" });

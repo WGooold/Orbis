@@ -155,6 +155,8 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 Claude 运行中发送的适配器回归（V10、V12、V17）：`claude plugin test packages/claude-mod` 的 `reconnect.test.ts` 覆盖主回合期间不调用 `prompt.submit`、同批消息串行提交、停止与工具事件、子 Agent 完成、Host 轮末捕获屏障及重连代次隔离；设备端仍关联两端乐观发送用例。真实联动验收按 R17 执行，插件模拟通过不能替代设备 / 真实 TUI 验收。
 
+Claude 首页首次同步（S18、V16、V18；ADR-0033 §16）：`agent-backend.test.ts` 的三组 `announces a complete home baseline without waiting for history` 在历史定位一直未返回时，验证无审批 / 有审批 / 仅 Hook 在线均立即具有完整首页领域，审批保持等待，离线目标不发布空清单；`host-service.test.ts` 的 Claude 加密通道用例在任何历史请求之前核对首次读取。消费端沿用 iOS `HomeRuntimeLoadingTests` / 首页加载同步五项 UI 用例与 Android `HomeLoadingInstrumentedTest`，不得用这些夹具代替 R42 真后端 / 双端联动。
+
 Claude 首次启动项目授权回归（V12、V17–V18；ADR-0033 §14）：`claude-workspace-trust.test.ts` / `claude-launcher.test.ts` 覆盖先登记再开窗、既有配置保留、损坏配置拒绝、并发项目、默认 / 自定义配置、Git 子目录 / linked worktree / 嵌套仓库、符号链接和宽泛根拒绝。专项手动 R29（早期记录曾误用已占用的 R19；R19 保留给历史返回）；macOS TUI 握手通过不替代 Windows 或 App 设备门禁。
 
 跨 Agent 启动准备（ADR-0056，S16、V12、V16–V18）：`agent-startup.test.ts` / `spawner.test.ts` / `desktop-terminal.test.ts` / `macos-terminal.test.ts` 覆盖 Pi TUI/RPC、Codex 独立 / remote TUI 和终端开窗；`claude-startup.test.ts` / `claude-launcher.test.ts` 覆盖具名 MCP 临时授权、拒绝优先、插件 / 管理策略、登录失败与本地 setup；`claude-mods-bridge.test.ts` 验证启动失败取消等待；`codex-terminal-sync.test.ts` 验证配置失败不创建 thread；`dsh-client.test.ts` 验证 initialize 未支持交互明确失败。真实项目 / 账号 / 新建 / 恢复按 R30 两端覆盖，完整门禁未完成，不以 Host 测试代替。
@@ -299,6 +301,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 
 | R29 | 两端 App 分别选择尚未信任的新项目打开 Claude，再从子目录 / linked worktree 恢复；重复自定义配置目录、配置损坏和写入占用场景。macOS / Windows 分别核对实际终端与 hello | 首次启动直接进入 TUI 并由匹配 launchId 的 hello 完成连接；只信任目标仓库，其他项目 / 工具权限 / MCP 配置不变；损坏或占用明确失败且不开窗，不能提前显示已连接。保存配置字段差异（不含凭据）、启动与握手证据 | V12、V17–V18 |
 | R18 | 隔离 Claude 主回合含工具和多段正文，步骤落盘时保持运行；立即开始下一轮，重复相同短回复；延迟磁盘写入超过 3 秒；再重连。两端明暗录屏，抽查窄屏 / 减少动画 | 每个步骤的正文与 thinking 只出现一份；同文的不同轮都保留；旧轮清理与迟到结束不删下一轮；已声明但未落盘的正文保留，后续原子交接；工具卡与阅读锚点连续。需保存步骤 UUID / patch 顺序，不能以文本去重通过 | V09、V17–V18（关联 V02–V03、V20） |
+| R42 | 隔离 Host 先打开 Claude，再连接两端 App 并停留首页；加入第二个未选中 Claude，会话历史保持慢读；分别测试无审批、有待答审批、仅 Hook 在线与重连 / 重新加载，按 A1–A4 检查连接胶囊及卡片 | 首次 `agent.state.request` 的 identity / execution / interactions 均完整可用；没有审批时是明确空清单，有审批时保留真实等待状态。首页准备不依赖 `session.sync` 完成，不出现由交互清单 unknown 引起的“同步失败”；原有卡片 / 列表视口保持，真实读取失败仍显示原因与重试 | S18、V16、V18 |
 
 ### 4.9 全状态用户输入专项（ADR-0055）
 
@@ -387,6 +390,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+2026-11-02 Claude 首页同步（S18 / V16 / V18，ADR-0033 §16）：Host `announce` 补充完整 Hook 交互清单，不再等历史同步。新增适配器三场景在修复前均失败；修改后相关 117 项与加密首次读取、TypeScript / 修改文件 lint / L0 通过。Node 全量 1661 通过、2 项 Codex launcher 失败、5 条件未运行，整类复测仍失败。iOS 构建时 Core 338 项 / Debug 构建通过，首页定向 5 项和全量中的同 5 项均过；全量 81 项 66 过 / 15 失败。Android JVM 667 项 / 两包构建通过；首页定向与实际关闭动画各 2 / 2，全量 164 项 151 过 / 6 失败 / 7 条件未满足；全量首页 PixelCopy 失败在整类复测通过，失败类复测仍有其他 5 失败。首页 iOS 16 张、Android 20 张截图已看；其他任务在运行期间修改 iOS 源码，本轮原生结果只对应当次构建输入，不声称当前共享工作区或同设备受控基线通过。C01–C18 完整手动、R42 真 Claude 联动、完整 L4 与 iOS 窄屏 / A4 未完成，不能记为验收通过；证据与限制见 `.artifacts/ui-regression/20261102-claude-home-sync/summary.md`。本任务设备 / 构建锁已释放，Android 设置核对恢复，未部署。
 
 2026-11-01 最近提问提示（S24 / ADR-0057）：iOS 233 核心测试与 App / UI Test 构建、Android 568 JVM 测试和 APK 构建通过；Android 提醒专项 4 项通过，全量 146 项 4 失败均属于同设备基线 139 项 5 失败集合。iOS 新增定向用例发现刷新后锚点断言失败，完整设备 / 手动及 A1–A5 未完成，不记为验收通过。证据见 `.artifacts/ui-regression/20261101-question-reminder/summary.md`。
 

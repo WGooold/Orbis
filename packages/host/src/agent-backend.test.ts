@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
+import type { RuntimeEvent } from "@orbis/protocol";
 
 import { ActivationError } from "./spawner.js";
 import { ClaudeBackend, PiBackend } from "./agent-backend.js";
@@ -15,6 +16,8 @@ import { ClaudeHookBridge } from "./claude-hook-bridge.js";
 import type { ClaudeLauncher, ClaudeLaunchRequest } from "./claude-launcher.js";
 import { CLAUDE_BRIDGE_CAPABILITIES, ClaudeModsBridge } from "./claude-mods-bridge.js";
 import { ClaudeSessionHistory } from "./claude-session-history.js";
+import { AgentStateFacts } from "./agent-state-facts.js";
+import { AgentStateRegistry } from "./agent-state-registry.js";
 import type { SpawnedAgent } from "./spawner.js";
 
 function makeSpawned(overrides: Partial<SpawnedAgent> = {}): SpawnedAgent {
@@ -106,6 +109,37 @@ describe("PiBackend（统一端口的原生实现）", () => {
 });
 
 describe("ClaudeBackend（Hook bridge 的统一端口）", () => {
+  it.each(["empty", "pending", "hook-only"] as const)("announces a complete home baseline without waiting for history: %s", async mode => {
+    const registry = new AgentStateRegistry();
+    const facts = new AgentStateFacts({ registry, hostId: "host", kindOf: () => "claude" });
+    const observe = (runtimeId: string, event: RuntimeEvent) => facts.observe(runtimeId, event);
+    const bridge = new ClaudeHookBridge({ onRuntimeOnline: metadata => observe(metadata.runtimeId, { type: "runtime.metadata", metadata }), onEvent: observe });
+    const mods = new ClaudeModsBridge({ onEvent: observe, createHistory: (id, config, publish) =>
+      new ClaudeSessionHistory(id, config, publish, { locate: () => new Promise(() => {}) }) });
+    const backend = new ClaudeBackend({ bridge, modsBridge: mods,
+      runtimeIds: () => [...new Set([...bridge.runtimeIds(), ...mods.runtimeIds()])], onEvent: observe });
+    const sync = vi.spyOn(mods, "sync");
+    try {
+      if (mode !== "hook-only") expect(mods.hello({ type: "hello", instanceId: "home", sessionId: "claude-session", cwd: "/repo",
+        claudeVersion: "2.1.312", bridgeVersion: "3", capabilities: CLAUDE_BRIDGE_CAPABILITIES }).ok).toBe(true);
+      if (mode !== "empty") void bridge.accept(permission);
+
+      backend.announce();
+
+      const domains = facts.snapshot("claude:claude-session");
+      for (const name of ["identity", "execution", "interactions"]) expect(domains.find(item => item.domain === name)?.state)
+        .toMatchObject({ availability: "ready", completeness: "complete" });
+      const interactions = domains.find(item => item.domain === "interactions")!.state.value;
+      expect(Object.keys(interactions as object)).toHaveLength(mode === "empty" ? 0 : 1);
+      expect(domains.find(item => item.domain === "execution")!.state.value)
+        .toMatchObject({ phase: mode === "empty" ? "idle" : "waiting_local_interaction" });
+      expect(sync).not.toHaveBeenCalled();
+      // A stale runtime must not publish an authoritative empty inventory.
+      backend.announce("claude:offline");
+      expect(facts.snapshot("claude:offline")).toEqual([]);
+    } finally { bridge.close(); mods.close(); }
+  });
+
   it("closes only the selected native process and sends success before taking its runtime offline", async () => {
     let finish!: () => void;
     const terminate = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
