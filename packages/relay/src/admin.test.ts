@@ -228,6 +228,24 @@ describe("Relay web console", () => {
       androidSha256: null,
     });
     expect((await fetch(`${base}/assets/admin.js`)).headers.get("content-type")).toContain("javascript");
+    // The cinematic homepage must work under the same strict CSP and finite asset allowlist.
+    const homepage = await fetch(base).then(response => response.text());
+    expect(homepage).toContain("你想要的");
+    expect(homepage).toContain('src="assets/cinema.js"');
+    expect(homepage).not.toContain("feature-tour");
+    for (const [path, type] of [
+      ["cinema.js", "javascript"], ["cinema.css", "text/css"],
+      ["phone3d.js", "javascript"], ["phone3d.css", "text/css"],
+      ["promo/agents/lobe-claudecode-color.svg", "image/svg+xml"],
+      ["promo/agents/NOTICES.txt", "text/plain"],
+      ["promo/orbis-symbol-2048.png", "image/png"],
+    ]) {
+      const asset = await fetch(`${base}/assets/${path}`);
+      expect(asset.status).toBe(200);
+      expect(asset.headers.get("content-type")).toContain(type);
+      expect(asset.headers.get("content-security-policy")).not.toContain("unsafe-inline");
+    }
+    expect((await fetch(`${base}/assets/promo/unlisted.svg`)).status).toBe(404);
     const redirect = await fetch(`${base}/admin`, { redirect: "manual" });
     expect(redirect.headers.get("location")).toBe("admin/");
     expect((await fetch(`${base}/downloads/secret.env`)).status).toBe(404);

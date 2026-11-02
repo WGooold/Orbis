@@ -4,7 +4,7 @@
 
 Status: accepted（基线冻结；新增与变更按本文维护）
 
-基线版本：`2026-11-03/r37`。盘点参照：`main` 的 `3a5bbf5`、已有 accepted ADR 及下列实现入口；r15 决策见 [ADR-0053][D53]，回归门禁与方案见 [UI 回归方案][Regression]。
+基线版本：`2026-11-03/r39`。盘点参照：`main` 的 `3a5bbf5`、已有 accepted ADR 及下列实现入口；r15 决策见 [ADR-0053][D53]，回归门禁与方案见 [UI 回归方案][Regression]。
 
 2026-11-02 部署验证补充：S21 / V19 的 Codex 原生显示路径修复 Windows Host 默认路径方言泄漏，保持已有 `/` 分隔契约；未新增 feature 或调整基线参数。专题规则与回归见 [ADR-0052 §9.1][D52]、[UI 回归方案][Regression] 及 `.artifacts/delivery-20261102/`；设备、手动与真实后端未重跑，既有未验收状态保持。
 
@@ -15,6 +15,8 @@ Status: accepted（基线冻结；新增与变更按本文维护）
 2026-11-02 iOS 同步拒收修复（V05–V06、V16–V18，验证中）：已完整提交的新 source 替代迟到旧 preview 时保持当前消息与读取终态；本地具体拒收原因保留，不被 Host 的 `session_sync_device_rejected` 回声覆盖。Host 已提交事务不被重复请求、冲突回执或迟到发送回调改为失败。沿用既有显示 / 恢复规则，不增加 feature 或调整视觉参数；事务规则见 [ADR-0037](0037-session-sync-transaction-contract.md)。Host 91 项、iOS 核心 338 项通过；iPad 全量 79 项有 9 失败，其中 8 项在父提交同设备复核也失败，额外聊天入场计时复测仍有失败。完整 L4 / 手动与真实隔离 Host 联动未完成，保持未验收；回归、证据与未覆盖项见 [Regression] 的 R43 与 §6。
 
 交互回答重复提示修复（V06–V07、V16、V22，验证中）：按 [D49] §6.5 保留 App 原位回答摘要；Host 对 `interaction.resolved.source=remote` 不再生成额外“交互已完成”共享横幅，其他设备仍通过交互清单更新请求。电脑端完成、取消、超时与提交失败保留。恢复原位反馈规则，不新增 ID 或变更动效参数；Host 76 项测试及 TypeScript 检查通过，双端设备 / 手动门禁未跑，记录见 [Regression]。
+
+2026-11-03 官网宣传片交互（r39，验证中）：用户授权移除旧卖点轮播、长段陈述与 FAQ，以 `../video/claude` 的立体 Agent 转盘和手机功能演示重构公共首页。修订 X07–X09，X01–X02 / X10 保持品牌与真实发布边界；不新增 feature ID，不修改原生 App / Host 或管理台。规则见 [ADR-0015][D15]、[ADR-0058][D58] SC44 / MOT-23，验证见 [UI 回归方案][Regression] R60。
 
 ## Context
 
@@ -177,10 +179,10 @@ ADR-0046 原 17 项要求的映射：1→V01–V04；2→S02；3→S03；4→V05
 | X04 | Host 阴影缓存 | Gaussian 柔影保持连续衰减、凹影裁切及左上光源；按尺寸、圆角、内外影、材质和模糊等属性变化刷新缓存，重复绘制复用，不重新制造轮廓色带。 | [Host 阴影][H4]、[Host 材质测试][HT1] |
 | X05 | Host 控件动效 | 开关滑块约 160ms OutCubic；确定下载进度约 200ms 插值，未知总量只在适用时显示 1100ms 往返指示。动画表达当前事实，不伪造进度和安装完成。r35 共用 MotionText：短文字 160ms 淡变，首页统计 220ms 上下滚动，初始不滚、直接使用新值，遵守系统减少动画；验证中。 | [H1]、[D58] SC39 |
 | X06 | Host 诊断画面有界 | 日志模型 / 待处理队列最多 300 行、每行最多 1600 字符、250ms 批量发布；固定高度虚拟列表、可选只读纯文本，用户在末尾才跟随。日志不重建整页 Host 状态，导出包含尚未刷新的缓存。 | [日志模型][H5]、[日志视图][H6]、[日志测试][HT2] |
-| X07 | Relay 网页风格 | 公共站点 / 管理台使用现有蓝灰底板、凸起卡片、凹陷输入和共用 CSS token，保留品牌 / 产品预览及 Host / App 分开的下载卡与平台选择。官网展示稿不覆盖实际移动端消息规范。 | [Relay 站点决策][D15]、[Web 样式][W1]、[公共页面][W2]、[管理页面][W3] |
+| X07 | Relay 网页风格 | 管理台沿用既有样式。**r39 公共首页（验证中）**使用宣传片蓝灰四层材质、原品牌 / Agent 资源、立体环形选择器与可点按的手机演示；移除旧卖点轮播、长段陈述与 FAQ。Host / App 下载分开并保留平台选择。官网独立 `cinema.css`，不把演示投影当作移动端规范；预告 Agent 明示即将接入。 | [Relay 站点决策][D15]、[官网样式][W1]、[公共页面][W2]、[管理页面][W3]、[管理台样式][W5] |
 | X08 | Web 响应式与键盘可达 | 保留桌面 / 窄屏布局、320px 最小页面宽度、现有媒体查询、skip link 和 focus-visible。平台切换、页签、表单、表格和危险操作继续有可理解的焦点 / 状态语义。 | [W1]、[W2]、[W3]、[站点脚本][W4] |
-| X09 | 官网导览与滚动动效 | 现有 feature tour 有手动页签 / 前后切换、播放暂停、约 6500ms 自动轮播；减少动画默认暂停。滚动场景按可见区域切换并同步 aria 状态；CSS 减少动画覆盖保留，缺少观察 API 时仍显示初始内容。 | [W1]、[W4] |
-| X10 | Web 动态状态真实性 | 注册可用性、下载平台 / 包、大小与校验信息来自实际接口；加载失败、未发布和不可用明确呈现，不能用演示图或旧静态文字假称可下载 / 注册成功。管理台的操作结果来自 Relay 实际权限边界。 | [D15]、[W3]、[W4] |
+| X09 | 官网导览与滚动动效 | **r39（验证中）**以宣传片交互替代旧 6500ms feature tour：Agent 转盘每 4800ms 前进，1150ms 快后慢旋转；支持点选、拖动吸附、前后与方向 / Home / End 键。7 段手机演示每段 8500ms，可手动操作、选章、暂停和重播。离屏 / 隐藏停钟，减少动画默认暂停并直接落定；手动操作接管当前演示。同步 ARIA 与可聚焦范围，缺观察 API 或脚本时保留静态内容 / 下载退路。 | [W1]、[W4] |
+| X10 | Web 动态状态真实性 | 注册可用性、下载平台 / 包、大小与校验信息来自实际接口；加载失败、未发布和不可用明确呈现，不能用演示图或旧静态文字假称可下载 / 注册成功。管理台的操作结果来自 Relay 实际权限边界。 | [D15]、[W3]、[W6] |
 
 ### 7. 页面覆盖索引
 
@@ -485,10 +487,10 @@ ADR-0046 原 17 项要求的映射：1→V01–V04；2→S02；3→S03；4→V05
 [H6]: ../../packages/windows-host/src/qml/DiagnosticLogView.qml
 [HT1]: ../../packages/windows-host/src/tests/NeuSurfaceTest.cpp
 [HT2]: ../../packages/windows-host/src/tests/DiagnosticLogTest.cpp
-[W1]: ../../packages/relay/src/web/styles.css
+[W1]: ../../packages/relay/src/web/cinema.css
 [W2]: ../../packages/relay/src/web/index.html
 [W3]: ../../packages/relay/src/web/admin.html
-[W4]: ../../packages/relay/src/web/site.js
+[W4]: ../../packages/relay/src/web/cinema.js
 
 [D52]: 0052-turn-file-changes-and-on-demand-diff.md
 [D53]: 0053-settings-entry-page-motion-and-ui-regression-gate.md
@@ -524,3 +526,6 @@ r35 实施补充：双端共用按压、离散文字、目录过渡、新建卡�
 2026-11-03 / r37（验证中）：S19 配额币参考 `../video/claude/compositions/s4-features.html` 的实体厚边、双面投影、光影和节奏，移植为原生 SwiftUI / Compose。分类为 ADR-0058 QuotaCoin / SC27、MOT-22，保留查询与供应商身份规则、角标、触控区、首次演示、取消和减少动画语义。总数80项、已交付67项不变；双端完整门禁未完成，证据与范围见 UI 回归方案 R58。
 
 S19 r37验证补充：双端最终单元/构建通过，配额设备专项通过；iOS首轮演示断言失败复测通过，Android其他控件截图超时及系统弹窗保留。完整门禁受资源压力与共享池登记超限阻塞，状态继续验证中，详见 [UI 回归方案][Regression] R58 和 `.artifacts/ui-regression/20261103-quota-coin/summary.md`。
+
+[W5]: ../../packages/relay/src/web/styles.css
+[W6]: ../../packages/relay/src/web/site.js

@@ -6,7 +6,7 @@
 
 2026-11-02 M15 iOS r33：观察原生顶部拖动，在释放时触发一次刷新；指示器不再设置刷新停靠高度，列表只执行一次原生回弹。隔离 `765b0a3` 上 338 核心测试与构建通过，SE 首页手势 4 / 4、iPhone 17 / SE 下拉 3 / 3（含 A1–A4、短拉 / 多选）通过；iPad 同设备前后下拉均实际刷新一次，回弹源帧已审阅。SE 全量 82 项为 75 通过 / 7 失败，6 项原实现同设备复现，上传失败恢复一项在原实现及当前单独复跑通过，首轮失败保留；176 张附件已查看。完整人工 C01–C18、真实 Host、真机体感未验收，不记完整门禁通过。共享主工作树后续 r34 外观修改不在此隔离结论内。详见 `.artifacts/ui-regression/20261102-ios-refresh-rebound/summary.md`。
 
-日期：2026-11-03。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-03/r37`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-03。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-03/r39`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 10 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -225,6 +225,22 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 - L3：保留 iOS `testCompactQuotaCardsAndTransparentSwitch` 和 Android `SubscriptionQuotaInstrumentedTest` 原用例；补快速连点 / 首次演示接管、刷新中断 / 失败保留周期、离页和减少动画。全量套件仍须运行。
 - L4 / 手动：C12、C16 和 R58，A1–A4，经典 / 雾蓝浅深色；逐帧审阅铜色厚度、侧面无空洞、背面无镜像、单次扫光、影宽35%、角标和触控区固定、每面配额环对应真实读数。补全部 C01–C18，不以几何单测代替视觉门禁。
 - 本轮源码基线和候选快照及证据保存在 `.artifacts/ui-regression/20261103-quota-coin/`；设备占用、既有失败和未跑项分别记录，未完成门禁不记通过。
+
+### R60：官网宣传片转盘与交互演示（r39 / X07–X10）
+
+范围只包含 Relay 公共首页及其静态资源白名单；管理台 CSS、原生 App、Host、协议与共享状态投影没有修改。本次新增网页回归映射，不删除或放宽原生既有门禁。浏览器视口模拟不替代共享池设备 / 真机结论。
+
+| 层级 / 专项 | 用例与判定 |
+| --- | --- |
+| L0 | 80 个 feature ID / 类别计数不变；r39、SC44、MOT-23、R60 引用及本机双入口一致 |
+| Web L1 | `npx vitest run packages/relay/src/admin.test.ts packages/relay/src/relay.test.ts packages/relay/src/registration.test.ts`；白名单 / MIME / CSP、发布元数据、管理台权限边界 |
+| Web L2 | Relay TypeScript / 静态资源构建、受影响文件 ESLint、`git diff --check` |
+| Web L3 | `scripts/test-relay-site.mjs` 对隔离本机 Relay 执行；用 `ORBIS_SITE_URL` 指定含 `/relay/` 的地址，`ORBIS_PLAYWRIGHT_MODULE` / `ORBIS_CHROME` 可指定现有测试运行时；必须检查断言结果，不能只看页面打开 |
+| Web L4 / R60 | 保存桌面、320 / 390 / 768 / 1920px、转盘中帧、7 章手机演示与下载页截图；查看遮挡、背面文字、完整画面、硬币侧边、旋转落定和触点；按结果记录未覆盖浏览器 / 设备 |
+| A1–A4 对应网页 | 默认浅色；系统深色偏好仍使用宣传片固定浅色；窄屏 / 浏览器缩放；真实 `prefers-reduced-motion` 切换；不把网页预览声称为原生主题验收 |
+| 手动清单 R60 | 点选 / 拖动 / 快速反向 / 键盘；离屏与后台暂停 / 恢复；7 章点按与重播；选中文件、仅关闭选中会话、新建 Agent 身份与焦点恢复；配额双向翻面；触屏纵向滚动不被转盘抢走；下载加载 / 无包 / 失败 / 平台切换；断网、无观察 API / 无脚本退路 |
+
+C01–C18 对应的扫码、发送、文件、列表、新建、配额等操作仅检查网页演示中的本地状态；不建立真实连接、不发出 Agent 命令，不据此提升任何原生用例的验收状态。实际共享池设备浏览器、Safari / 真机触屏、全部中帧人工体感仍须分别记录；未跑不能记通过。证据目录 `.artifacts/ui-regression/20261103-cinematic-site/`。
 
 ### 3.4 r31 共用交互动效映射
 
@@ -529,3 +545,7 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 §3.3 增补映射：MOT-11→InteractionMotion / PageNavigation 设备中帧；MOT-12/13/15/16→共用按压 / 文字 / 多选设备用例；MOT-14→目录筛选与视口；MOT-17→Qt 材质 / 页面帧；MOT-18→LaunchLedger 与新建交接；MOT-19→用户消息复制 / Rewind 与顶栏；MOT-20→ChatQuestion / 提醒滚动方向；MOT-21→HomePresentation / HomeRuntimeLoading / 首页刷新点击。具体自动用例与每轮结果见 [r35 验证记录](interaction-motion.md#2026-11-02--r35-交互细化)。双端已执行全量，受影响失败继续修复 / 复核；完整 C / R / A 尚未完成，历史失败保留。
 
 2026-11-03 S19 / r37（MOT-22 / R58）：宣传片配额硬币的实体铜边、双面投影、扫光和220/340ms节奏已移植双端原生组件。最终隔离Swift351项、Android677项及两端构建通过，含并行图标底座修改的集成快照另构建通过。iOS SE配额专项首轮1失败后同设备2/2通过（四种外观与减少动画/XXXL）；Android配额3/3，受影响整组12/13，通用控件PixelCopy超时。iOS6张附件与实际翻面帧、Android4张组件外观图已看；Android系统全屏帧被System UI无响应弹窗干扰。资源压力下基线全量未跑完，随后共享池12项触发本任务10台上限拒绝；完整L3/L4、C01–C18、R58与Android A3未完成，不记验收。源码快照、失败、资源释放及产物边界见 `.artifacts/ui-regression/20261103-quota-coin/summary.md`。
+
+### 2026-11-03 / r39 官网宣传片交互（Web 已验证，设备门禁未完成）
+
+X07–X10 / SC44 / MOT-23 / R60：Relay 31 项、TypeScript / 静态构建、受影响 ESLint、文档 L0 与 diff 检查通过；Chrome 156.0.8078.74 的 56 项浏览器用例通过，覆盖转盘拖动 / 键盘 / 快速选择、七章点按、只关闭选中项、新建卡片实际绘制与身份、配额双面、发布失败 / 无包、320–1920px、减少动画 / 深色偏好、无观察 API / 无脚本。桌面各章、转盘中帧、下载区和视口截图已查看，修正了装饰面命中、背面重影、新建卡片误用关闭样式和窄屏断行。证据 `.artifacts/ui-regression/20261103-cinematic-site/summary.md`。未部署；Safari / Firefox、共享池浏览器、真机触屏、完整逐帧 / 人工体感未验收。原生 App / Host 无改动，其 L1–L4、C01–C18 不据此提升状态；r39 保持验证中。
