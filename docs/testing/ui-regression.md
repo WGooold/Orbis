@@ -157,6 +157,8 @@ Claude 运行中发送的适配器回归（V10、V12、V17）：`claude plugin t
 
 DSH 原生 inbox 来源回归（V09–V10、V12、V17；ADR-0020 / ADR-0031 / ADR-0055）：`dsh-web-runtime.test.ts` 的 `keeps runtime context out of the user queue across recovery, live updates and delivery` 覆盖恢复投影、实时用户事件与队列投影：权限、子代理 / 后台完成、插件、自动目标和未知显式来源均排除，内部 `rpcId` 不结算用户消息，300 条内部通知不占 256 条用户队列预算，完整内部清单确认用户队列为空；同文人类消息、浏览器 steer 与旧版无来源消息仍保留。`dsh-web-history.test.ts` 同时核对非用户来源不创建聊天消息 / App 发送身份；`scripts/test-dsh-web.mjs` 用隔离真实 DSH 验证权限命令保留原生上下文、App 用户队列为空且不发起模型请求。设备沿用 iOS `testQueueCancellationNotificationsAndRuntimeFacts` / `testCompactionQueuedSendCanBeWithdrawn` / `testUnconfirmedSendCanBeCheckedWithoutResending` 与 Android `OptimisticActionsInstrumentedTest`、`InteractionWorkspaceInstrumentedTest`，它们验证消费端队列与权限交互，不能替代真实 DSH 联动。手动专项 R41。
 
+iOS 同步拒收 / 终态重放（V05–V06、V16–V18；ADR-0037）：`session-sync-tasks.test.ts` 覆盖首次 ACK 终态、成功后重复请求、初次未发送 / 已 abort 的 ACK，以及未确认响应重派至 queued / processing 时的迟到 ACK。`StoreTests.newerCommittedPatchSupersedesAnOlderPreviewWithoutShowingTheHostEcho`、`stalePreviewWithoutACompleteAppliedBaselineKeepsAVisibleRecoveryError`、`hostRejectionEchoPreservesTheSpecificLocalFailureAndOtherErrorsRemainVisible` 覆盖已持久化新版本、工具依赖未齐、具体错误与不相关错误隔离。设备沿用首页同步五项、`testRefreshKeepsHeaderTextAndTruncationStable`、聊天视口 / 历史用例；需以 R43 隔离 Host 回放核对真实回执顺序，不能用预览夹具替代。
+
 Claude 首页首次同步（S18、V16、V18；ADR-0033 §16）：`agent-backend.test.ts` 的三组 `announces a complete home baseline without waiting for history` 在历史定位一直未返回时，验证无审批 / 有审批 / 仅 Hook 在线均立即具有完整首页领域，审批保持等待，离线目标不发布空清单；`host-service.test.ts` 的 Claude 加密通道用例在任何历史请求之前核对首次读取。消费端沿用 iOS `HomeRuntimeLoadingTests` / 首页加载同步五项 UI 用例与 Android `HomeLoadingInstrumentedTest`，不得用这些夹具代替 R42 真后端 / 双端联动。
 
 Claude 首次启动项目授权回归（V12、V17–V18；ADR-0033 §14）：`claude-workspace-trust.test.ts` / `claude-launcher.test.ts` 覆盖先登记再开窗、既有配置保留、损坏配置拒绝、并发项目、默认 / 自定义配置、Git 子目录 / linked worktree / 嵌套仓库、符号链接和宽泛根拒绝。专项手动 R29（早期记录曾误用已占用的 R19；R19 保留给历史返回）；macOS TUI 握手通过不替代 Windows 或 App 设备门禁。
@@ -383,6 +385,12 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | --- | --- | --- | --- |
 | R41 | 两端连接隔离 DSH：idle 时切换权限；运行中产生子代理汇报与后台完成通知，再夹入 App followUp、浏览器 steer 和同文消息；断线重连、退出重进并撤回真实用户队列项。原生 inbox 包含超过 256 条内部通知时重复检查；A1–A4 与上翻阅读状态对照 | 内部上下文供 Agent 正常消费，但不显示为用户排队消息、不创建用户气泡或结算 App 发送回执；权限切换不发起模型请求。真实用户消息按来源身份显示且可正常撤回 / 投递；完整内部清单确认 App 队列为空，不因内部通知容量或缺少用户消息字段变成不完整；阅读锚点与会话 / 电脑隔离保持 | V09–V10、V12、V17 |
 
+### iOS 同步拒收与终态重放专项
+
+| 编号 | 步骤 | 预期 | ID |
+| --- | --- | --- | --- |
+| R43 | iOS 连接隔离 Host：首份同步已 applied 后延迟 30 秒重放同 commandId / syncId 请求，再发送冲突 rejected 和迟到 socket 失败；另在未确认首份响应重派 queued / processing 时送达首份 applied；回放旧 preview 晚于完整新 patch、工具依赖尚未齐的旧 preview 和非法 checkpoint。上翻阅读并按 A1–A4 检查状态 / 错误 / 重试 | 已提交任务不再生成快照且终态不翻转；合法迟到 ACK 结束等待并释放预留，不发送第二份响应。从未发送响应 / 已 abort 的 ACK 不复活事务。已完整提交的新 source 保持消息与阅读位置、旧包仍 rejected；不完整新状态有具体恢复提示；Host 同码回声不覆盖已有具体原因，不相关错误仍可见。保存 commandId / syncId、source epoch / seq、ACK 与派发计数，不保存会话正文 | V05–V06、V16–V18 |
+
 ## 5. 新增或修改 UI 时的用例编写要求
 
 1. **同一任务写用例。** 每个新增或修改的 feature ID 至少有：一个设备 UI 用例，断言该规则的具体数值或几何（坐标、尺寸、可见性、顺序、帧序），只断言“元素存在”不够；状态或逻辑另配单元测试；以及 §4 的手动清单条目。同时更新 §3.3 映射。
@@ -414,6 +422,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+2026-11-02 iOS 同步拒收（V05–V06、V16–V18，ADR-0037 / R43）：Host 已 applied 事务不重派、首个有效 ACK 终态与响应资格修复；iOS 已完整提交的新 source 替代旧 preview，本地具体原因不被通用拒收回声覆盖。修复前 Host 两项核心回放与 iOS 三项新增用例均失败；最终 Host 相关 91 项、iOS Swift 338 项 / 32 suites、TypeScript / 修改文件 lint、App / UI Test 构建与 L0 通过。隔离候选及父提交 `765b0a3` 使用池内同一 iPad Air M4 / iOS 27 / Debug、显式 UDID 与关闭并行，42 个 App / UI Test Swift 输入仅 OrbisStore 不同。候选全量 79 项：70 通过 / 9 失败；父提交仅复核这 9 项：8 项同样失败，额外聊天入场计时父提交通过，候选重复 3 次仍 1 失败 / 2 通过，差异来源未定，不能声称失败集合未扩大。同步状态 / 错误 / 恢复与聊天刷新相关既有 UI 用例通过。导出 172 张附件并亲自查看相关 7 张；完整 L4、C01–C18、R43 真实隔离 Host / App 联动、A1–A4 与 375pt 窄屏尚未完成，不记为完整 UI 验收通过。全量 / 基线断言失败返回 65，外层重复关闭已 Shutdown 设备导致清理返回 1；确认本任务进程退出与 owner 后释放残留设备锁，计时复测正常清理，最终设备 Shutdown、设备 / 构建锁均已释放。未部署运行中的 Host 或用户真机，现场通用错误码尚不足以归因每次拒收。证据及未覆盖范围见 [修复验证记录](../../.artifacts/ui-regression/20261102-session-sync-rejected/summary.md)。
 
 2026-11-02 Claude 首页同步（S18 / V16 / V18，ADR-0033 §16）：Host `announce` 补充完整 Hook 交互清单，不再等历史同步。新增适配器三场景在修复前均失败；修改后相关 117 项与加密首次读取、TypeScript / 修改文件 lint / L0 通过。Node 全量 1661 通过、2 项 Codex launcher 失败、5 条件未运行，整类复测仍失败。iOS 构建时 Core 338 项 / Debug 构建通过，首页定向 5 项和全量中的同 5 项均过；全量 81 项 66 过 / 15 失败。Android JVM 667 项 / 两包构建通过；首页定向与实际关闭动画各 2 / 2，全量 164 项 151 过 / 6 失败 / 7 条件未满足；全量首页 PixelCopy 失败在整类复测通过，失败类复测仍有其他 5 失败。首页 iOS 16 张、Android 20 张截图已看；其他任务在运行期间修改 iOS 源码，本轮原生结果只对应当次构建输入，不声称当前共享工作区或同设备受控基线通过。C01–C18 完整手动、R42 真 Claude 联动、完整 L4 与 iOS 窄屏 / A4 未完成，不能记为验收通过；证据与限制见 `.artifacts/ui-regression/20261102-claude-home-sync/summary.md`。本任务设备 / 构建锁已释放，Android 设置核对恢复，未部署。
 

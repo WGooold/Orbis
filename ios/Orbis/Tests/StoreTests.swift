@@ -823,6 +823,74 @@ struct StoreTests {
         #expect((transport.sent.last?["command"] as? [String: Any])?["result"] as? String == "rejected")
     }
 
+    @Test func newerCommittedPatchSupersedesAnOlderPreviewWithoutShowingTheHostEcho() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1]))
+        store.refresh()
+        let request = try #require(transport.syncCommands.last)
+        let commandId = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["syncId"] as? String == request["syncId"] as? String }?["commandId"] as? String)
+        await transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 1, "seq": 3,
+            "source": ["epoch": "source", "seq": 3, "ready": true], "head": ["leafId": "e2"],
+            "entries": [["entryId": "e2", "parentId": "e1"]],
+            "display": ["entries": [["entryId": "e2", "message": message("m2", text: "newer")]]],
+            "live": ["complete": true, "messages": []]], sequence: 2)
+        await transport.event(checkpoint(request, ids: [1], seq: 2), sequence: 3)
+        #expect(store.messages.map(\.text) == ["row 1", "newer"])
+        #expect(!store.isSyncing)
+        #expect(store.activeConnection.sessionReads.latest(historyKey: "a", kind: .source)?.phase == .superseded)
+        #expect((transport.sent.last?["command"] as? [String: Any])?["result"] as? String == "rejected")
+        await transport.emit(["type": "protocol.error", "commandId": commandId,
+            "code": "session_sync_device_rejected", "message": "session_sync_device_rejected"])
+        #expect(store.errorMessage == nil)
+        store.refresh()
+        let known = try #require(transport.syncCommands.last?["knownState"] as? [String: Any])
+        #expect(known["seq"] as? Int64 == 3)
+        #expect((known["head"] as? [String: Any])?["leafId"] as? String == "e2")
+    }
+
+    @Test func stalePreviewWithoutACompleteAppliedBaselineKeepsAVisibleRecoveryError() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1]))
+        store.refresh()
+        let request = try #require(transport.syncCommands.last)
+        let commandId = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["syncId"] as? String == request["syncId"] as? String }?["commandId"] as? String)
+        let agent: [String: Any] = ["hostId": "host-1", "agentKind": "pi", "sessionId": "session-a"]
+        let reference: [String: Any] = ["projectionVersion": 1, "agent": agent,
+            "version": ["epoch": "tools", "revision": 1], "source": ["epoch": "source", "seq": 3],
+            "totalCount": 1, "summaryBytes": 256]
+        await transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 1, "seq": 3,
+            "source": ["epoch": "source", "seq": 3, "ready": true], "head": ["leafId": "e1"],
+            "live": ["complete": true, "messages": [], "toolInventory": reference]], sequence: 2)
+        await transport.event(checkpoint(request, ids: [1], seq: 2), sequence: 3)
+        let reason = try #require(store.errorMessage)
+        #expect(reason.contains("落后"))
+        #expect(store.activeConnection.sessionReads.latest(historyKey: "a", kind: .source)?.phase == .failed)
+        await transport.emit(["type": "protocol.error", "commandId": commandId,
+            "code": "session_sync_device_rejected", "message": "session_sync_device_rejected"])
+        #expect(store.errorMessage == reason)
+        store.activeConnection.shutdown()
+    }
+
+    @Test func hostRejectionEchoPreservesTheSpecificLocalFailureAndOtherErrorsRemainVisible() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        let sync = try #require(transport.syncCommands.last)
+        let commandId = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["syncId"] as? String == sync["syncId"] as? String }?["commandId"] as? String)
+        var invalid = checkpoint(sync, ids: [1])
+        invalid["checkpoint"] = ["checkpointId": "invalid", "headCompleteness": "unknown"]
+        await transport.event(invalid)
+        let reason = try #require(store.errorMessage)
+        #expect(reason.contains("检查点"))
+        await transport.emit(["type": "protocol.error", "commandId": commandId,
+            "code": "session_sync_device_rejected", "message": "session_sync_device_rejected"])
+        #expect(store.errorMessage == reason)
+        await transport.emit(["type": "protocol.error", "commandId": "unrelated",
+            "code": "session_sync_device_rejected", "message": "unrelated failure"])
+        #expect(store.errorMessage == "unrelated failure")
+        await transport.emit(["type": "protocol.error", "commandId": commandId,
+            "code": "session_sync_backend_failed", "message": "backend failure"])
+        #expect(store.errorMessage == "backend failure")
+    }
+
     @Test func cyclicAndNonAdvancingHistoryNeverMutateTheConversation() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
         await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [2, 3], hasOlder: true))

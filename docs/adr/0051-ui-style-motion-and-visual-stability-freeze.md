@@ -10,6 +10,8 @@ Status: accepted（基线冻结；新增与变更按本文维护）
 
 2026-11-02 DSH 队列来源修复：V09–V10 / V12 / V17 的来源身份规则保持；Host 将原生 inbox 中显式非用户来源（权限变化、子代理汇报 / 完成、插件与自动目标上下文）排除出 App 用户队列与发送对账。原生上下文继续供 Agent 消费；完整内部消息清单可确认用户队列为空，未知显式来源同样不冒充用户输入。未增加 feature / 修改基线参数；规则见 [ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[D31]、[D55]，验证与未跑项见 [Regression]。
 
+2026-11-02 iOS 同步拒收修复（V05–V06、V16–V18，验证中）：已完整提交的新 source 替代迟到旧 preview 时保持当前消息与读取终态；本地具体拒收原因保留，不被 Host 的 `session_sync_device_rejected` 回声覆盖。Host 已提交事务不被重复请求、冲突回执或迟到发送回调改为失败。沿用既有显示 / 恢复规则，不增加 feature 或调整视觉参数；事务规则见 [ADR-0037](0037-session-sync-transaction-contract.md)。Host 91 项、iOS 核心 338 项通过；iPad 全量 79 项有 9 失败，其中 8 项在父提交同设备复核也失败，额外聊天入场计时复测仍有失败。完整 L4 / 手动与真实隔离 Host 联动未完成，保持未验收；回归、证据与未覆盖项见 [Regression] 的 R43 与 §6。
+
 ## Context
 
 2026-11-02 Claude 首页同步修复（S18 / V16 / V18，验证中）：Host 首次重播即提供完整交互清单（含空清单），首页不再等待历史同步才解除 unknown；待审批项仍保留真实身份与等待状态。恢复既有基线，不增加 feature、不改变视觉 / 动效参数。规则见 [ADR-0033 §16](0033-claude-code-tui-mods-integration.md#16-首页交互基线不等待历史同步2026-11-02)，测试与未验收项见 [Regression]。

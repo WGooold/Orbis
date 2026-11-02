@@ -108,6 +108,74 @@ describe("SessionSyncTasks", () => {
     expect(h.error).toHaveBeenLastCalledWith("a", "cmd-2", "session_sync_ack_timeout", undefined);
   });
 
+  it("keeps the first ACK terminal even when a socket callback or conflicting ACK arrives later", () => {
+    const committed = harness(true);
+    committed.manager.request("a", "runtime", "cmd", request());
+    committed.manager.tick();
+    committed.manager.acknowledge("a", "sync", "applied");
+    committed.sends[0]!.done(false);
+    committed.manager.acknowledge("a", "sync", "rejected");
+    committed.manager.acknowledge("a", "sync", "applied");
+    committed.time(200_000); committed.manager.tick();
+    committed.manager.request("a", "runtime", "cmd", request());
+    committed.manager.tick();
+    expect(committed.dispatches).toHaveLength(1);
+    expect(committed.sends).toHaveLength(1);
+    expect(committed.sendEvent).toHaveBeenLastCalledWith("a", "runtime", expect.objectContaining({
+      type: "session.sync.pending", syncId: "sync", stage: "delivered",
+    }));
+    expect(committed.error).not.toHaveBeenCalled();
+    expect(committed.log.mock.calls.filter(([line]) => line.includes("stage=ack"))).toHaveLength(1);
+    expect(committed.manager.stats("a").reservedBytes).toBe(0);
+
+    const rejected = harness(true);
+    rejected.manager.request("a", "runtime", "cmd", request());
+    rejected.manager.tick();
+    rejected.manager.acknowledge("a", "sync", "rejected");
+    rejected.sends[0]!.done(true);
+    rejected.manager.acknowledge("a", "sync", "rejected");
+    rejected.manager.acknowledge("a", "sync", "applied");
+    expect(rejected.error).toHaveBeenCalledTimes(1);
+    expect(rejected.error).toHaveBeenCalledWith("a", "cmd", "session_sync_device_rejected", undefined);
+    expect(rejected.log.mock.calls.some(([line]) => line.includes("stage=ack"))).toBe(false);
+    rejected.manager.request("a", "runtime", "cmd", request());
+    expect(rejected.error).toHaveBeenLastCalledWith("a", "cmd", "session_sync_retry_exhausted");
+  });
+
+  it("ignores ACKs before a response is sent and after the coordinator aborts", () => {
+    const h = harness();
+    h.manager.request("a", "runtime", "cmd", request());
+    h.manager.acknowledge("a", "sync", "rejected");
+    h.manager.tick();
+    h.manager.acknowledge("a", "sync", "applied");
+    expect(h.error).not.toHaveBeenCalled();
+    expect(h.manager.stats("a").active).toBe(1);
+    h.time(120_000); h.manager.tick();
+    h.manager.acknowledge("a", "sync", "rejected");
+    h.manager.acknowledge("a", "sync", "applied");
+    expect(h.error).toHaveBeenCalledTimes(1);
+    expect(h.error).toHaveBeenCalledWith("a", "cmd", "session_sync_lease_expired", undefined);
+    expect(h.log.mock.calls.some(([line]) => line.includes("stage=ack"))).toBe(false);
+  });
+
+  it.each([false, true])("accepts a prior response ACK while an unacknowledged retry is preparing (processing=%s)", (processing) => {
+    const h = harness();
+    h.manager.request("a", "runtime", "cmd", request()); h.manager.tick();
+    h.manager.handleEvent("runtime", snapshot(h.dispatches[0]!.command.syncId));
+    h.time(10_000); h.sends[0]!.onProgress?.(); h.sends[0]!.done(true);
+    h.time(30_000); h.manager.request("a", "runtime", "cmd", request());
+    if (processing) h.manager.tick();
+    h.manager.acknowledge("a", "sync", "applied");
+    h.manager.tick();
+    if (processing) h.manager.handleEvent("runtime", snapshot(h.dispatches[1]!.command.syncId));
+    h.manager.acknowledge("a", "sync", "rejected");
+    expect(h.dispatches).toHaveLength(processing ? 2 : 1);
+    expect(h.sends).toHaveLength(1);
+    expect(h.error).not.toHaveBeenCalled();
+    expect(h.manager.stats("a")).toMatchObject({ pending: 0, active: 0, reservedBytes: 0 });
+    expect(h.log.mock.calls.filter(([line]) => line.includes("stage=ack"))).toHaveLength(1);
+  });
+
   it("registers before synchronous dispatch and only sends to the requesting device", () => {
     const h = harness(true);
     h.manager.request("a", "runtime", "cmd", request());

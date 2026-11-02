@@ -280,6 +280,8 @@ final class HostConnection: ObservableObject {
     private var sessionListRequest: String?
     private var snapshotCandidates: [String: SessionSnapshotReceipt] = [:]
     private var snapshotReceipts: [String: SessionSnapshotReceipt] = [:]
+    // The Host echoes a rejected ACK as protocol.error; the local read already owns its result.
+    private var handledSyncRejections: [String] = []
     private var authenticatedModelEpoch: String?
     var didUpdatePairing: ((HostPairing) -> Void)?
     private var modelCatalogReceived = false
@@ -2126,6 +2128,8 @@ final class HostConnection: ObservableObject {
         case "protocol.error":
             let commandId = message["commandId"] as? String
             if commandId?.hasPrefix("session-sync-ack:") == true { return }
+            if message["code"] as? String == "session_sync_device_rejected", let commandId,
+               handledSyncRejections.contains(commandId) { return }
             if let opId = commandId ?? message["requestId"] as? String, ledger.operation(opId) != nil {
                 let rejection = AppLedger.Rejection(message["code"] as? String ?? "failure", message["message"] as? String ?? "电脑端无法完成操作。")
                 handleLedger(ledger.receipt(opId, connection: ledger.connection, .failed(rejection), now: Date())); return
@@ -2414,7 +2418,16 @@ final class HostConnection: ObservableObject {
         if pending.range == "preview", let source = event["source"] as? [String: Any],
            let epoch = source["epoch"] as? String, let seq = integer(source["seq"]),
            let current = sourcePositions[runtimeId], current.epoch == epoch, seq < current.seq {
-            finishSync(syncId); acknowledge(runtimeId: runtimeId, syncId: syncId, result: "rejected"); return
+            // A late response must not replace a newer complete, committed source baseline.
+            // Keep the committed head/live; this packet was not applied and still gets rejected.
+            if let applied = appliedBaselines[runtimeId], applied.epoch == epoch, applied.seq == current.seq {
+                handleSyncRejection(pending.commandId)
+                finishSync(syncId, readPhase: .superseded)
+                acknowledge(runtimeId: runtimeId, syncId: syncId, result: "rejected")
+            } else {
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: "会话同步响应已落后于当前更新，请刷新重试。")
+            }
+            return
         }
         if pending.range == "history" {
             guard event["range"] as? String == "history", event["mode"] as? String == "prepend",
@@ -2543,8 +2556,14 @@ final class HostConnection: ObservableObject {
         }
     }
 
+    private func handleSyncRejection(_ commandId: String) {
+        handledSyncRejections.append(commandId)
+        if handledSyncRejections.count > 128 { handledSyncRejections.removeFirst(handledSyncRejections.count - 128) }
+    }
+
     private func rejectSnapshot(_ syncId: String, runtimeId: String, message: String) {
         guard let pending = pendingSyncs[syncId], pending.runtimeId == runtimeId else { return }
+        handleSyncRejection(pending.commandId)
         let range = pending.range
         finishSync(syncId, readPhase: .failed); acknowledge(runtimeId: runtimeId, syncId: syncId, result: "rejected")
         if range == "history" { historyErrors[runtimeId] = message } else { errorMessage = message }
@@ -2847,7 +2866,7 @@ final class HostConnection: ObservableObject {
         syncReads = [:]; pendingReadPages = [:]; pendingCatchups = [:]; pendingLiveBaselines = [:]
         toolAcknowledgements = [:]; pendingAppliedBaselines = [:]; toolInventories.clear()
         syncTimeouts = [:]; pendingSyncs = [:]; syncedSessions = []; syncDemands = []; snapshotCandidates = [:]; snapshotReceipts = [:]
-        historyLoading = []
+        historyLoading = []; handledSyncRejections = []
         updateSyncing()
     }
 

@@ -87,6 +87,8 @@ ack 丢失必须是安全方向：设备已 applied 而 Host abort → 设备重
 
 兼容：不发送 ack 的设备由 Host 视为 sent 即 committed，ack 租约只对**曾经回过执的设备**生效。
 
+2026-11-02 终态修复：同一事务的首次有效 applied / rejected 回执确定终态，迟到的冲突回执、发送完成回调和已中止后的回执不能反转结果。回执资格以该事务是否已经开始过响应发送判定；未确认响应的重派已进入 queued / processing 时，前一次响应的合法回执仍有效。从未发送响应的任务不能被回执提交。
+
 ### §5 失败是尝试状态，不是会话状态
 
 事务结果分两层存储，职责不得混用：
@@ -100,7 +102,8 @@ ack 丢失必须是安全方向：设备已 applied 而 Host abort → 设备重
 
 ### §6 幂等重放
 
-- 同标识重放不产生第二份工作（已实现），但必须可观测（§3）。
+- 同标识重放在 queued / processing / sending 阶段合并；设备已确认 applied 后，重复请求只返回 delivered 状态，不重新生成快照。未确认的 delivered 响应继续遵守既有有界重派间隔与次数上限；后端处理中收到前一次响应的有效 ACK 后停止本次重派结果发送。协调状态必须可观测（§3）。
+- iOS 拒绝旧 preview 时仍回 rejected；若同 epoch 的当前 source 已有完整且持久化的 applied baseline，则读取终态为 superseded，不回退 head / live。尚无完整 applied baseline 时显示可恢复的具体错误。仅对已明确记录本地具体错误或 superseded 的 commandId 抑制 Host 的同码拒收回声；其他请求和其他错误继续可见。抑制记录有界并随连接清理。
 - 换标识重试必须发生在旧事务 abort 之后；新事务不得复用旧 `syncId`。
 - 节奏由失败类别决定：`pending` → 继续等待，不重发；`aborted(retryable)` → 退避重试；`aborted(deterministic)` → 停止并向用户显示原因，同时保留其它目标（新回合、新页）的同步能力。
 
@@ -143,5 +146,6 @@ ack 丢失必须是安全方向：设备已 applied 而 Host abort → 设备重
 ## 验证
 
 - 状态机测试：受理 → `pending` → abort → 重试 → `committed`；ack 丢失后重试得到 `unchanged`。
+- 2026-11-02 回归：`session-sync-tasks.test.ts` 验证首次 ACK 终态、已提交请求不重派、响应前 / abort 后 ACK 忽略，以及 queued / processing 重派期间前次 ACK 仍有效；iOS `StoreTests` 验证新完整 baseline 替代旧 preview、不完整 baseline 的恢复提示及精确拒收回声过滤。旧 Host / iOS 实现回放新增用例均失败，修复后 Host 相关 91 项、iOS 338 项通过，App / UI Test 包构建通过。设备结果、R43 与手动未跑范围见 [UI 回归方案](../testing/ui-regression.md) 和 `.artifacts/ui-regression/20261102-session-sync-rejected/`；不据核心测试提升 UI 验收状态。
 - 不得回归 ADR-0013 的验收条款：延迟超窗、响应丢失、换路、离线设备、多设备、多 Runtime 下不形成重复响应积压；当前聊天能完成或显示可恢复错误。
 - 明确禁止的回归：任何路径不得让 `sessionSyncFailures` 之类的会话级字段阻止新事务受理。

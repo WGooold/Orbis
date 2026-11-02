@@ -29,6 +29,8 @@ type Task = {
   attempts: number; stage: Stage; backendId: string; reserved: number;
   /** 设备确认已 applied（ADR-0037 §4）；只有它能证明事务提交成功。 */
   acknowledged: boolean;
+  /** ACKs for a prior delivery remain valid while an unacknowledged retry is preparing. */
+  responseStarted: boolean;
 };
 type Options = {
   link: (deviceId: string) => (Pick<DeviceLink, "active" | "sendSessionSnapshot" | "sessionSyncQueuedBytes"> &
@@ -83,6 +85,10 @@ export class SessionSyncTasks {
         this.#notifyPending(existing);
         return;
       }
+      if (existing.acknowledged) {
+        this.#notifyPending(existing);
+        return;
+      }
       if (existing.stage === "failed" || existing.attempts >= MAX_SENDS) {
         this.#rejectRequest(deviceId, runtimeId, commandId, command, "session_sync_retry_exhausted", "retry_exhausted");
         return;
@@ -119,7 +125,7 @@ export class SessionSyncTasks {
     const createdAt = this.#now();
     this.#tasks.set(key, { deviceId, runtimeId, commandId, command: { ...command }, fingerprint,
       createdAt, lastDispatch: 0, lastProgressAt: createdAt, attempts: 0, stage: "queued", backendId: "", reserved: 0,
-      acknowledged: false });
+      acknowledged: false, responseStarted: false });
     this.#schedule();
   }
 
@@ -143,12 +149,13 @@ export class SessionSyncTasks {
         return true;
       }
       task.stage = "sending";
+      task.responseStarted = true;
       const start = this.#now();
       task.lastProgressAt = start;
       const link = this.#options.link(task.deviceId);
       this.#log(task, "response", `entries=${event.entries.length} plaintextBytes=${payload.byteLength} wireBytes=${sessionSyncWireBytes(payload.byteLength)} queueBytes=${link?.sessionSyncQueuedBytes ?? 0} elapsedMs=${start - task.createdAt}`);
       const accepted = link?.sendSessionSnapshot(payload, (written) => {
-        if (!this.#current(task)) return;
+        if (!this.#current(task) || task.stage !== "sending") return;
         if (!written) this.#fail(task, "session_sync_path_lost");
         else {
           task.stage = "delivered";
@@ -193,7 +200,7 @@ export class SessionSyncTasks {
     this.#ackCapable.add(deviceId);
     const task = [...this.#tasks.values()].find((candidate) =>
       candidate.deviceId === deviceId && candidate.command.syncId === syncId);
-    if (task === undefined) return;
+    if (task === undefined || task.acknowledged || task.stage === "failed" || !task.responseStarted) return;
     task.lastProgressAt = this.#now();
     if (result === "rejected") {
       this.#fail(task, "session_sync_device_rejected");
