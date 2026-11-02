@@ -1443,7 +1443,12 @@ internal fun OfflineHistoryScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState: LazyListState? = null) {
+internal fun ChatScreen(
+    state: RemoteState,
+    model: RemoteViewModel,
+    scrollState: LazyListState? = null,
+    executeSlash: (String, String) -> String? = model::executeSlashCommand,
+) {
     val runtimeId = state.selectedRuntimeId ?: return
     val actionHaptic = rememberActionHaptic()
     val runtime = state.runtimes[runtimeId]
@@ -2184,9 +2189,20 @@ internal fun ChatScreen(state: RemoteState, model: RemoteViewModel, scrollState:
                                             showDeliveryChoices = false
                                             // ADR-0049 §6.1：产生对话的 Slash 与消息一样，气泡立即出现、输入框清空。
                                             if (model.producesMessage(selectedCommand, runtime)) {
-                                                submitMessage(model.executeSlashCommand(selectedCommand.name, slash.second))
+                                                submitMessage(executeSlash(selectedCommand.name, slash.second))
+                                            } else if (OperationKinds.isConfigSetting(selectedCommand.name) && slash.second.isNotBlank()) {
+                                                // Config owns its receipt and confirmation in the ledger. It can also
+                                                // accept an unchanged/coalesced choice without creating a command.
+                                                // Leave the composer usable; new messages wait on the config ledger.
+                                                if (executeSlash(selectedCommand.name, slash.second) != null) {
+                                                    actionHaptic()
+                                                    commandFeedback = null
+                                                    input = ""
+                                                    selectedSlashCommandName = null
+                                                    model.clearDraft(runtimeId)
+                                                }
                                             } else trackSubmission(
-                                                model.executeSlashCommand(selectedCommand.name, slash.second),
+                                                executeSlash(selectedCommand.name, slash.second),
                                             )
                                         } else if (runtime?.status == "running" && runtime.agentKind == "claude") {
                                             // Claude Code 只有「等当前回合结束后提交」，没有 Steer 可选。

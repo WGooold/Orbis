@@ -78,6 +78,8 @@
 
 ## MOT-06：发送飞入
 
+2026-11-03 SC16 Android 配置 composer 修复：模型 / thinking 的受理只触发既有按钮反馈，不创建 outbox 或 SendFlight；进度与结果由配置账本负责。`ConfigComposerInstrumentedTest` 覆盖真实 composer 的 Codex / Pi 提交、重复选择、拒绝和未写入，四种外观配置各7项通过；完整回归与限制见 `.artifacts/ui-regression/20261103-config-composer/summary.md`，不提升本 ticket 的整体验收状态。
+
 **场景 / feature**：SC14–SC16；M17、V02–V03、V09–V10、V17–V18；入口双端 composer 提交与本地 outbox 呈现。
 
 **实际问题**：输入清空与气泡插入缺少空间连接，不能以全列表插入动画替代。

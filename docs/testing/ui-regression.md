@@ -108,6 +108,8 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 ### 3.3 全量用例与 feature 映射
 
+2026-11-03 Android 配置切换输入区（V05、V10、V12；R27）：`ConfigComposerInstrumentedTest` 直接点击生产 `ChatScreen` 的 Slash 选项和发送按钮，使用配置账本及 `RelayReducer` 回执，覆盖 Codex / Pi 的模型与思考切换、已确认值重复选择、拒绝、未写入；断言切换结束后发送图标可见且可继续输入。仅替换传输提交，不代表真实 Agent 联动。既有 `ConfigLedgerTest` 继续覆盖确认前发送、规范化、失败连带、连续选择和断线核对。手动 R27 补查同配置重复提交、失败后继续提问、未写入保留命令草稿；完整 C01–C18 / A1–A4 与真实 Host 结果单独记录。
+
 回答重复提示（V06–V07、V16、V22）：`host-service.test.ts` 的 `keeps only the appropriate interaction feedback` 四组加密 Relay 用例覆盖 App 成功无顶部横幅、电脑端完成 / 取消 / 超时各一条，以及重复终态、事件转发与通知重取；配合 `notification-store.test.ts`、`runtime-command-lifecycle.test.ts`。双端沿用 OPT-05 设备用例，真实隔离 Host 按 R26 检查顶部与底部不得重复显示成功提示。
 
 2026-11-02 Codex 终端来源与开窗专项（R56；S20、V12、V17–V18、X03）：Host `codex-terminal-environment.test.ts` 与真实隔离 CLI 对照覆盖继承 Desktop 来源覆盖值导致的新建误标；只在终端子进程清除覆盖值。`codex-session-ownership.test.ts`、`codex-terminal-macos.test.ts`、`macos-terminal.test.ts`、既有 `codex-runtime.test.ts` / `codex-terminal-sync.test.ts` 覆盖 App 终端路由不被历史来源改派、精确 CLI / endpoint、真实 TTY 启动确认、失败回执 / 空闲订阅释放、已有会话保留、等待窗口与 native TUI 检测和 PID 复核关闭。设备消费既有启动失败路径：iOS `testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace`、Android `OptimisticPresentationInstrumentedTest#aFailedLaunchOffersRetryAndBackInPlace`。完整 L1–L4、C01–C18 / A1–A4 与真实隔离 TUI 仍须独立记录，夹具不得算作真实窗口验收。
@@ -438,6 +440,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+2026-11-03 Android 配置切换输入按钮（V05、V10、V12；R27）：修复 composer 等待被配置账本独占消费的通用回执，受理后清空命令并解除输入等待，确认 / 拒绝 / 未确认仍由配置账本负责。修复前生产 composer 设备专项7项6失败，覆盖Codex/Pi模型与思考、重复选择、拒绝；修复后7/7，A1–A4各7/7，673项JVM及两包构建通过。候选全量178项165过 / 6失败 / 7外部条件未满足；5项在当次基线亦失败，额外顶栏Compose空闲超时在原设备整类对照中基线 / 候选各2/2通过，首轮仍保留。基线第155项配额UI ANR，仅154项完成，不能宣称全量门禁通过。设备会话曾发生UiAutomation连接/断开异常，重借后专项恢复；本任务设置已还原，残留锁按owner / 进程 / 端口核对后释放。已看相关普通 / 深色 / 大字截图，完整L4、人工C01–C18、完整R27和真实Host未执行。工作区有并发配额改动，最终构建使用排除该未完成改动的隔离副本，本次修复及测试与共享文件一致；未部署用户手机。证据与准确边界见 `.artifacts/ui-regression/20261103-config-composer/summary.md`。
 
 2026-11-03 Claude 长会话恢复同步（V09–V10、V16–V18 / R18）：对运行中 Host 的加密 LAN 探针确认旧 preview 的 `seq=0` 停滞及最新 head 拒收；257 / 1,055 条历史复现，255 / 256 条对照正常。修复前新增 4 项回归失败，修复后相关 Node 65 项、TypeScript / lint、Android JVM 681 项 / 两包构建、Swift Core 351 项通过。Node 全量 1,694 项为 1,685 通过 / 4 失败 / 5 条件未运行，失败整文件复测后仍有 2 项 Codex launcher 失败，未宣称全量通过。共享 Android API 35 同设备 / 同 APK：旧 Host 在追加后不再更新的断言失败，候选首次连接夹具超时、第二次在安装时模拟器退出（-6），失败证据保留。用户要求第三次重试后，候选长历史 / 后续回复 / 重建 ViewModel 与连接后的重开专项 1 / 1 通过，旧协议仍在追加后超时；模块哈希前后一致，三张关键截图已审阅，设备正常恢复设置并释放租约。完整双端 L3–L4、C01–C18、R18 人工、A1–A4 和用户真机未完成；Host 候选已打包 / 验签但未安装重启，不能记为现场恢复或 UI 验收通过。设备故障、锁清理、包哈希和未跑范围见 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。
 
