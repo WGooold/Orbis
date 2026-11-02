@@ -135,34 +135,53 @@ data class NeumorphColors(
     val darkShadow: Color,
     /** 凹下（Pressed）时的底板色，比 base 深一点。 */
     val insetBase: Color,
+    val lift: Color,
+    val top: Color,
+    val scrim: Color,
 ) {
     fun layer(index: Int): Color = when (index.coerceIn(0, 3)) {
         0 -> insetBase
         1 -> base
-        2 -> if (this == Dark) Color(0xFF292D36) else Color(0xFFEDF1F8)
-        else -> if (this == Dark) Color(0xFF2F333D) else Color(0xFFF3F6FB)
+        2 -> lift
+        else -> top
     }
 
-    val scrim: Color get() = if (this == Dark) Color(0xFF0A0C11) else Color(0xFF2A3344)
     companion object {
         val Light = NeumorphColors(
             base = Color(0xFFE6EBF4),
             lightShadow = Color(0xFFFFFFFF),
             darkShadow = Color(0xFFA6B2C6),
             insetBase = Color(0xFFDDE3EF),
+            lift = Color(0xFFEDF1F8), top = Color(0xFFF3F6FB), scrim = Color(0xFF2A3344),
         )
         val Dark = NeumorphColors(
             base = Color(0xFF23262E),
             lightShadow = Color(0xFF2E323C),
             darkShadow = Color(0xFF0A0C11),
             insetBase = Color(0xFF1C1F26),
+            lift = Color(0xFF292D36), top = Color(0xFF2F333D), scrim = Color(0xFF0A0C11),
+        )
+        val InsetFocusLight = NeumorphColors(
+            base = Color(0xFFEEF0F5), lightShadow = Color.White,
+            darkShadow = Color(0xFFA9B2C3), insetBase = Color(0xFFE4E7EF),
+            lift = Color(0xFFF3F5F9), top = Color(0xFFFAFBFD), scrim = Color(0xFF2A3344),
+        )
+        val InsetFocusDark = NeumorphColors(
+            base = Color(0xFF293244), lightShadow = Color(0xFF44516A),
+            darkShadow = Color(0xFF101828), insetBase = Color(0xFF222A39),
+            lift = Color(0xFF303B4F), top = Color(0xFF37435A), scrim = Color(0xFF101828),
         )
     }
 }
 
 @Composable
 fun rememberNeumorphColors(): NeumorphColors =
-    if (LocalOrbisDarkTheme.current) NeumorphColors.Dark else NeumorphColors.Light
+    when {
+        LocalOrbisVisualStyle.current == OrbisVisualStyle.InsetFocus && LocalOrbisDarkTheme.current -> NeumorphColors.InsetFocusDark
+        LocalOrbisVisualStyle.current == OrbisVisualStyle.InsetFocus -> NeumorphColors.InsetFocusLight
+        LocalOrbisDarkTheme.current -> NeumorphColors.Dark
+        else -> NeumorphColors.Light
+    }
 
 /** 凸起 = Raised（按钮/卡片），凹下 = Pressed（输入框/内嵌面板）。 */
 enum class NeumorphStyle { Raised, Pressed }
@@ -603,7 +622,9 @@ fun NeumorphSurface(
     val inheritedPressed = LocalGlyphPressed.current
     val parent = LocalOrbisSurface.current
     val resolvedShape = concentricShape(shape)
-    val paints = rememberShadowPaints(colors, shadowScale)
+    val insetScale = if (LocalOrbisVisualStyle.current == OrbisVisualStyle.InsetFocus && style == NeumorphStyle.Pressed) 1.25f else 1f
+    val effectiveShadowScale = shadowScale * insetScale
+    val paints = rememberShadowPaints(colors, effectiveShadowScale)
     val pressed by interactionSource.collectIsPressedAsState()
     val currentStyle = if (pressed && active && !selectionMode) NeumorphStyle.Pressed else style
     var touchOrigin by remember { mutableStateOf<Offset?>(null) }
@@ -629,7 +650,7 @@ fun NeumorphSurface(
     Box(
         modifier.then(
             if (parent == null && currentStyle == NeumorphStyle.Raised) {
-                Modifier.neumorphShadows(resolvedShape, currentStyle, colors, shadowScale, paints)
+                Modifier.neumorphShadows(resolvedShape, currentStyle, colors, effectiveShadowScale, paints)
             } else Modifier,
         ),
         propagateMinConstraints = true,
@@ -638,7 +659,7 @@ fun NeumorphSurface(
             Modifier.orbisTouchOrigin(selectionSelected != null && active) { touchOrigin = it }
                 .clip(resolvedShape).background(bodyColor).then(selectionDecoration).then(
                 if (parent == null && currentStyle == NeumorphStyle.Pressed) {
-                    Modifier.neumorphShadows(resolvedShape, currentStyle, colors, shadowScale, paints)
+                    Modifier.neumorphShadows(resolvedShape, currentStyle, colors, effectiveShadowScale, paints)
                 } else Modifier,
             ).then(
                 if (onClick != null) Modifier.combinedClickable(

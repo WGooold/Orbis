@@ -141,6 +141,7 @@ struct SessionDrawerView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var host: HostState
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Binding var state: SessionDirectoryState
     @FocusState private var searchFocused: Bool
     @State private var selectedSessionIds: Set<String> = []
@@ -501,6 +502,7 @@ private func filterTitle(_ kind: String) -> String {
 struct NewSessionView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let presetCwd: String?
     var onCreated: ((HostConnection.LaunchState) -> Void)? = nil
     let onDismiss: () -> Void
@@ -562,6 +564,7 @@ struct NewSessionView: View {
 struct RemoteDirectoryView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     var body: some View {
         VStack(spacing: 14) {
             HStack(spacing: 8) {

@@ -6,6 +6,7 @@ import SwiftUI
 struct ConnectionStatusView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let onBack: () -> Void
     @EnvironmentObject private var host: HostState
     var body: some View {
@@ -36,17 +37,42 @@ struct ConnectionStatusView: View {
                         StatusRow(label: "配对状态", value: store.selectedHost == nil ? "未配对" : "已配对",
                                   tone: store.selectedHost == nil ? OrbisPalette(scheme).error : OrbisPalette(scheme).success)
                     }
+                    StatusSection(title: "外观") {
+                        HStack(spacing: 10) {
+                            appearanceChoice("经典", value: "classic")
+                            appearanceChoice("雾蓝", value: "insetFocus")
+                        }
+                    }
                 }.padding(.horizontal, 20).padding(.vertical, 16)
             }.accessibilityIdentifier("settings-page")
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
             .onAppear { host.loadProviders("codex") }
 }
+
+    private func appearanceChoice(_ title: String, value: String) -> some View {
+        let selected = visualStyle == value
+        let palette = OrbisPalette(scheme)
+        return OrbisMotionButton { visualStyle = value } label: {
+            HStack(spacing: 6) {
+                if selected { Image(systemName: "checkmark").accessibilityHidden(true) }
+                Text(title).lineLimit(1)
+            }
+            .font(.orbisLabel(.semibold))
+            .foregroundStyle(selected ? palette.accent : palette.secondary)
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(NeuButtonStyle(selected: selected))
+        .accessibilityIdentifier("appearance-\(value)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
 }
 
 private struct AgentStatusProviderCard: View {
     @EnvironmentObject private var host: HostState
     @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @State private var switchAnchor = OrbisAnchor()
     let kind: String
     private var providers: [AgentProvider] { host.providers(for: kind) }
@@ -160,6 +186,7 @@ struct AgentProvidersView: View {
     @EnvironmentObject private var host: HostState
     @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @State private var selected: Set<AgentProvider> = []
     @State private var selecting = false
     let onBack: () -> Void
@@ -323,6 +350,7 @@ struct AgentProvidersView: View {
 /// One coin, two quota windows. Card refresh and coin flip remain separate actions.
 private struct SubscriptionQuotaCoin: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var weekly = false
     @State private var angle: Double = 0
@@ -500,6 +528,7 @@ private struct QuotaCoinTilt: AnimatableModifier {
 
 private struct SubscriptionQuotaRing: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var progress: CGFloat = 0
     let name: String
@@ -598,6 +627,7 @@ private struct ProviderInlineButtonStyle: ButtonStyle {
 
 struct StatusSection<Content: View>: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let title: String
     @ViewBuilder var content: Content
     var body: some View {
@@ -613,6 +643,7 @@ struct StatusSection<Content: View>: View {
 
 struct StatusFact: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let label: String
     /// A short qualifier shown beside the label in its own color, instead of joining them with a dot.
     var tag: String? = nil
@@ -637,6 +668,7 @@ struct StatusFact: View {
 /// One fact on a line: label on the left, value (with its state color) on the right, as on Android.
 struct StatusRow: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let label: String
     let value: String
     var tone: Color? = nil

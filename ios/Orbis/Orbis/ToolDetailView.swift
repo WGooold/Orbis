@@ -4,6 +4,7 @@ import UIKit
 struct ToolDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var reader: ToolContentReader
     let title: String

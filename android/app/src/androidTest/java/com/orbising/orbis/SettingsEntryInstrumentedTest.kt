@@ -79,6 +79,35 @@ class SettingsEntryInstrumentedTest {
     @Test fun settingsPutProvidersFirstAndHaveNoComputerEntries() = settingsOrder(dark = false)
     @Test fun darkSettingsKeepTheSameOrder() = settingsOrder(dark = true)
 
+    @Test fun insetFocusAppearanceSwitchUpdatesSelectionWithoutLeavingSettings() = appearanceSwitch(dark = false)
+    @Test fun darkInsetFocusAppearanceSwitchKeepsSelection() = appearanceSwitch(dark = true)
+
+    private fun appearanceSwitch(dark: Boolean) {
+        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val owner = ViewModelStore()
+        val model = RemoteViewModel(app)
+        owner.put("appearance", model)
+        val visualStyle = mutableStateOf(OrbisVisualStyle.Classic)
+        try {
+            compose.setContent {
+                OrbisTheme(darkTheme = dark, visualStyle = visualStyle.value, onVisualStyleChange = { visualStyle.value = it }) {
+                    StatusScreen(RemoteState(hostId = "host", hostName = "Work"), model, model.pairingStatus(), onBack = {})
+                }
+            }
+            compose.onNodeWithTag("appearance-insetFocus").performScrollTo()
+            compose.onNodeWithText("雾蓝").assertIsDisplayed()
+            compose.onNodeWithTag("appearance-insetFocus").performClick()
+            compose.onNodeWithTag("appearance-insetFocus").assertIsSelected()
+            compose.runOnIdle { assertEquals(OrbisVisualStyle.InsetFocus, visualStyle.value) }
+            capture(if (dark) "settings-inset-focus-dark" else "settings-inset-focus-light")
+            compose.onNodeWithTag("appearance-classic").performClick()
+            compose.onNodeWithTag("appearance-classic").assertIsSelected()
+        } finally {
+            owner.clear()
+            app.dispose()
+        }
+    }
+
     private fun settingsOrder(dark: Boolean) {
         val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
         val owner = ViewModelStore()

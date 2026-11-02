@@ -17,25 +17,29 @@ import UIKit
 // adds a tint and outline without changing depth. All distances are points.
 struct OrbisPalette {
     let dark: Bool
-    init(_ scheme: ColorScheme) { dark = scheme == .dark }
+    let insetFocus: Bool
+    init(_ scheme: ColorScheme) {
+        dark = scheme == .dark
+        insetFocus = UserDefaults.standard.string(forKey: "orbis.visualStyle") == "insetFocus"
+    }
     /// Four background layers, each 1–3% lightness apart: well < base < lift < top.
     /// Hierarchy comes from these steps, never from black borders or #000.
-    var well: Color { Color(hex: dark ? 0x1C1F26 : 0xDDE3EF) }
-    var base: Color { Color(hex: dark ? 0x23262E : 0xE6EBF4) }
-    var lift: Color { Color(hex: dark ? 0x292D36 : 0xEDF1F8) }
-    var top: Color { Color(hex: dark ? 0x2F333D : 0xF3F6FB) }
+    var well: Color { Color(hex: insetFocus ? (dark ? 0x222A39 : 0xE4E7EF) : (dark ? 0x1C1F26 : 0xDDE3EF)) }
+    var base: Color { Color(hex: insetFocus ? (dark ? 0x293244 : 0xEEF0F5) : (dark ? 0x23262E : 0xE6EBF4)) }
+    var lift: Color { Color(hex: insetFocus ? (dark ? 0x303B4F : 0xF3F5F9) : (dark ? 0x292D36 : 0xEDF1F8)) }
+    var top: Color { Color(hex: insetFocus ? (dark ? 0x37435A : 0xFAFBFD) : (dark ? 0x2F333D : 0xF3F6FB)) }
     var inset: Color { well }
-    var light: Color { Color(hex: dark ? 0x2E323C : 0xFFFFFF) }
-    var shadow: Color { Color(hex: dark ? 0x0A0C11 : 0xA6B2C6) }
+    var light: Color { Color(hex: insetFocus ? (dark ? 0x44516A : 0xFFFFFF) : (dark ? 0x2E323C : 0xFFFFFF)) }
+    var shadow: Color { Color(hex: insetFocus ? (dark ? 0x101828 : 0xA9B2C3) : (dark ? 0x0A0C11 : 0xA6B2C6)) }
     /// Tinted ink for scrims and drop shadows instead of pure black.
     var scrim: Color { Color(hex: dark ? 0x0A0C11 : 0x2A3344) }
-    var text: Color { Color(hex: dark ? 0xDDE1E9 : 0x232A36) }
-    var secondary: Color { Color(hex: dark ? 0xB8C0CE : 0x4A5364) }
-    var accent: Color { Color(hex: dark ? 0xA9C0FF : 0x2459D3) }
+    var text: Color { Color(hex: insetFocus ? (dark ? 0xE3E9F5 : 0x4A5368) : (dark ? 0xDDE1E9 : 0x232A36)) }
+    var secondary: Color { Color(hex: insetFocus ? (dark ? 0xB9C4D8 : 0x798396) : (dark ? 0xB8C0CE : 0x4A5364)) }
+    var accent: Color { Color(hex: insetFocus ? (dark ? 0x8DB4FF : 0x5F8FE5) : (dark ? 0xA9C0FF : 0x2459D3)) }
     var error: Color { Color(hex: dark ? 0xFFB4AB : 0xB3261E) }
     var success: Color { Color(hex: dark ? 0x84D6B3 : 0x1B7A57) }
     var warning: Color { Color(hex: dark ? 0xF2C26B : 0x9A5B00) }
-    var outline: Color { Color(hex: dark ? 0x3A4150 : 0xC9D1DE) }
+    var outline: Color { Color(hex: insetFocus ? (dark ? 0x4B5870 : 0xC8CEDA) : (dark ? 0x3A4150 : 0xC9D1DE)) }
 
     func layer(_ index: Int) -> Color { [well, base, lift, top][min(max(index, 0), 3)] }
 
@@ -149,6 +153,7 @@ private func nestedLayer(_ parent: Int, inset: Bool) -> Int {
 
 private struct NeuSurface: ViewModifier {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisSurface) private var parent
     let inset: Bool
     let radius: CGFloat
@@ -171,7 +176,7 @@ private struct NeuSurface: ViewModifier {
                 if parent != nil {
                     shape.fill(plain ? .clear : p.layer(layer))
                 } else if inset {
-                    shape.fill(p.well.shadow(.inner(color: p.shadow.opacity(0.38), radius: 3 * intensity,
+                    shape.fill(p.well.shadow(.inner(color: p.shadow.opacity(p.insetFocus ? 0.50 : 0.38), radius: 3 * intensity,
                                                     x: 3 * intensity, y: 3 * intensity))
                         .shadow(.inner(color: p.light.opacity(0.7), radius: 3 * intensity,
                                        x: -3 * intensity, y: -3 * intensity)))
@@ -210,6 +215,7 @@ extension View {
 
 private struct OrbisField: ViewModifier {
     @Environment(\.orbisSurface) private var parent
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let focused: Bool
     let radius: CGFloat
 
@@ -217,7 +223,7 @@ private struct OrbisField: ViewModifier {
         let r = parent?.innerRadius ?? radius
         let shape = RoundedRectangle(cornerRadius: r, style: .continuous)
         content
-            .neuSurface(inset: true, radius: radius, intensity: focused ? 0.9 : 0.6)
+            .neuSurface(inset: true, radius: radius, intensity: focused ? 0.9 : (visualStyle == "insetFocus" ? 0.82 : 0.6))
             // Outer halo: only the half outside the field shows; the field covers the rest.
             .background { shape.stroke(.tint.opacity(focused ? 0.12 : 0), lineWidth: 8) }
             .overlay { shape.strokeBorder(.tint.opacity(focused ? 0.28 : 0), lineWidth: 1.5) }
@@ -229,6 +235,7 @@ private struct OrbisField: ViewModifier {
 /// so rows and headers separate by background steps instead of drawn lines.
 struct OrbisLayerFill: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisSurface) private var surface
     var offset = 1
     var opacity: Double = 1
@@ -388,6 +395,7 @@ struct NeuButtonStyle: ButtonStyle {
 struct OrbisSelectionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisSurface) private var parent
     let selected: Bool
     let selecting: Bool
@@ -415,6 +423,7 @@ struct OrbisSelectionButtonStyle: ButtonStyle {
 /// Keep the slot even outside selection mode, so labels and cards never reflow.
 struct OrbisSelectionIndicator: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduced
     let selected: Bool
     let selecting: Bool
@@ -438,6 +447,7 @@ struct OrbisSelectionIndicator: View {
 /// `size` is the visible disc; the touch target stays at least 44pt (48pt for the default 40pt disc).
 struct OrbisIconButton: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let symbol: String
     let label: String
     var tint: Color? = nil
@@ -478,6 +488,7 @@ struct NeuIconButtonStyle: ButtonStyle {
 /// Small raised text action (Android `NeumorphTextButton`): replaces bare system-tinted text buttons.
 struct OrbisTextButton: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisAccent) private var pageAccent
     let title: String
     var symbol: String? = nil
@@ -507,6 +518,7 @@ struct OrbisTextButton: View {
 /// Raised when off, recessed with the accent check when on (Android `NeumorphCheckbox`).
 struct OrbisCheckbox: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduced
     let checked: Bool
     let label: String
@@ -528,6 +540,7 @@ struct OrbisCheckbox: View {
 /// Recessed track with a raised knob; the track picks up the accent when on.
 struct NeuToggleStyle: ToggleStyle {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
@@ -554,6 +567,7 @@ struct NeuToggleStyle: ToggleStyle {
 /// Copy action whose check mark pops in and hides itself after 2.5 seconds.
 struct OrbisCopyButton: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduced
     let label: String
     var size: CGFloat = 28
@@ -595,6 +609,7 @@ struct OrbisCopyButton: View {
 /// recessed grab handle instead of the system indicator. Content starts outside any surface.
 private struct OrbisSheetChrome: ViewModifier {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let detents: Set<PresentationDetent>
     func body(content: Content) -> some View {
         content
@@ -745,6 +760,7 @@ struct OrbisMenuButton<Label: View>: View {
 struct OrbisMenuIconButton: View {
     @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @State private var anchor = OrbisAnchor()
     let symbol: String
     let label: String
@@ -770,6 +786,7 @@ struct OrbisMenuIconButton: View {
 /// A hand-drawn raised panel (menus, dialogs). Its content counts as nested inside one frame.
 private struct OrbisPanel: ViewModifier {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let radius: CGFloat
     let padding: CGFloat
     func body(content: Content) -> some View {
@@ -788,6 +805,7 @@ private struct OrbisPanel: ViewModifier {
 
 private struct OrbisOverlayLayer: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @ObservedObject var overlay: OrbisOverlay
     @Environment(\.orbisReduceMotion) private var reduceMotion
 
@@ -862,6 +880,7 @@ private struct OrbisPanelEntrance: AnimatableModifier {
 
 private struct OrbisMenuPanel: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let request: OrbisOverlay.MenuRequest
     let anchor: CGRect
@@ -997,6 +1016,7 @@ private struct OrbisMenuPanel: View {
 
 private struct OrbisMenuRow: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let item: OrbisMenuItem
     let action: () -> Void
     @State private var copied = false
@@ -1038,6 +1058,7 @@ private struct OrbisMenuRow: View {
 /// Menu rows sit flat on the panel; only the checked or pressed row takes a recessed fill.
 private struct MenuRowStyle: ButtonStyle {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.isEnabled) private var enabled
     @Environment(\.orbisSurface) private var parent
     let selected: Bool
@@ -1055,6 +1076,7 @@ private struct MenuRowStyle: ButtonStyle {
 
 private struct OrbisDialogPanel: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let request: OrbisOverlay.DialogRequest
     let onAction: (OrbisDialogAction) -> Void
     let onCancel: () -> Void
@@ -1110,6 +1132,7 @@ private struct OrbisDialogPanel: View {
 
 struct OrbisActionButton: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisAccent) private var pageAccent
     let title: String
     var symbol: String? = nil
@@ -1163,6 +1186,7 @@ struct OrbisPageHeader<Trailing: View>: View {
 
 struct AgentEmblem: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let kind: String?
     var size: CGFloat = 44
     var recessed = true
@@ -1201,6 +1225,7 @@ private func agentAsset(_ kind: String?) -> String {
 
 struct RuntimeStatusLabel: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let status: String
     var syncing = false
     var body: some View {
@@ -1229,6 +1254,7 @@ struct RuntimeStatusLabel: View {
 
 struct OrbisEmptyState: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let symbol: String
     let title: String
     var body: some View {
@@ -1241,6 +1267,7 @@ struct OrbisEmptyState: View {
 
 struct OrbisNotice: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let text: String
     var error = false
     var body: some View {
@@ -1367,6 +1394,7 @@ private struct DownloadFlightHost: ViewModifier {
 
 private struct DownloadFlightTarget: ViewModifier {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisAccent) private var pageAccent
     @ObservedObject var flight: DownloadFlight
     func body(content: Content) -> some View {
@@ -1381,6 +1409,7 @@ private struct DownloadFlightTarget: ViewModifier {
 
 private struct DownloadFlightLayer: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     /// Chat pages follow the agent's accent (X02).
     @Environment(\.orbisAccent) private var pageAccent
     @ObservedObject var flight: DownloadFlight

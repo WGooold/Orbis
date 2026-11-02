@@ -110,6 +110,39 @@ private val DarkColors = darkColorScheme(
     inversePrimary = Color(0xFF2459D3),
 )
 
+enum class OrbisVisualStyle(val key: String) {
+    Classic("classic"), InsetFocus("insetFocus");
+    companion object {
+        fun fromKey(key: String?): OrbisVisualStyle = entries.firstOrNull { it.key == key } ?: Classic
+    }
+}
+
+private val InsetFocusLightColors = LightColors.copy(
+    primary = Color(0xFF5F8FE5), primaryContainer = Color(0xFFDCE7FC),
+    onPrimaryContainer = Color(0xFF24457E),
+    background = Color(0xFFEEF0F5), onBackground = Color(0xFF4A5368),
+    surface = Color(0xFFEEF0F5), onSurface = Color(0xFF4A5368),
+    surfaceVariant = Color(0xFFE4E7EF), onSurfaceVariant = Color(0xFF798396),
+    outline = Color(0xFF9CA7B8), outlineVariant = Color(0xFFC8CEDA),
+    surfaceTint = Color(0xFFEEF0F5), surfaceDim = Color(0xFFE4E7EF),
+    surfaceBright = Color(0xFFFAFBFD), surfaceContainerLowest = Color(0xFFE4E7EF),
+    surfaceContainerLow = Color(0xFFEEF0F5), surfaceContainer = Color(0xFFEEF0F5),
+    surfaceContainerHigh = Color(0xFFF3F5F9), surfaceContainerHighest = Color(0xFFFAFBFD),
+    inversePrimary = Color(0xFF8DB4FF),
+)
+
+private val InsetFocusDarkColors = DarkColors.copy(
+    primary = Color(0xFF8DB4FF), primaryContainer = Color(0xFF344D79),
+    background = Color(0xFF293244), onBackground = Color(0xFFE3E9F5),
+    surface = Color(0xFF293244), onSurface = Color(0xFFE3E9F5),
+    surfaceVariant = Color(0xFF222A39), onSurfaceVariant = Color(0xFFB9C4D8),
+    outline = Color(0xFF8290A7), outlineVariant = Color(0xFF4B5870),
+    surfaceTint = Color(0xFF293244), surfaceDim = Color(0xFF222A39),
+    surfaceBright = Color(0xFF37435A), surfaceContainerLowest = Color(0xFF222A39),
+    surfaceContainerLow = Color(0xFF293244), surfaceContainer = Color(0xFF293244),
+    surfaceContainerHigh = Color(0xFF303B4F), surfaceContainerHighest = Color(0xFF37435A),
+)
+
 /** 控件 16dp、卡片 20dp、弹层 28dp，保持同一套圆角层级。 */
 private val NeumorphShapes = Shapes(
     extraSmall = RoundedCornerShape(10.dp),
@@ -120,10 +153,22 @@ private val NeumorphShapes = Shapes(
 )
 
 internal val LocalOrbisDarkTheme = staticCompositionLocalOf { false }
+internal val LocalOrbisVisualStyle = staticCompositionLocalOf { OrbisVisualStyle.Classic }
+internal val LocalOrbisVisualStyleChange = staticCompositionLocalOf<(OrbisVisualStyle) -> Unit> { {} }
 
 @Composable
-fun OrbisTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    val colors = if (darkTheme) DarkColors else LightColors
+fun OrbisTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    visualStyle: OrbisVisualStyle = OrbisVisualStyle.Classic,
+    onVisualStyleChange: (OrbisVisualStyle) -> Unit = {},
+    content: @Composable () -> Unit,
+) {
+    val colors = when {
+        visualStyle == OrbisVisualStyle.InsetFocus && darkTheme -> InsetFocusDarkColors
+        visualStyle == OrbisVisualStyle.InsetFocus -> InsetFocusLightColors
+        darkTheme -> DarkColors
+        else -> LightColors
+    }
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
@@ -136,7 +181,12 @@ fun OrbisTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable 
             }
         }
     }
-    CompositionLocalProvider(LocalOrbisDarkTheme provides darkTheme, LocalContentColor provides colors.onSurface) {
+    CompositionLocalProvider(
+        LocalOrbisDarkTheme provides darkTheme,
+        LocalOrbisVisualStyle provides visualStyle,
+        LocalOrbisVisualStyleChange provides onVisualStyleChange,
+        LocalContentColor provides colors.onSurface,
+    ) {
         MaterialTheme(
             colorScheme = colors,
             typography = Typography().run {

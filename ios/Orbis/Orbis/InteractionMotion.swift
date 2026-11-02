@@ -581,6 +581,7 @@ private struct MessageSendFlightHost: ViewModifier {
     @ObservedObject var flight: MessageSendFlight
     @Environment(\.scenePhase) private var scene
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var viewportSize: CGSize = .zero
     func body(content: Content) -> some View {

@@ -210,11 +210,18 @@ import kotlinx.serialization.json.JsonArray
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val appearancePreferences = getSharedPreferences("orbis-appearance", MODE_PRIVATE)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         setContent {
-            OrbisTheme {
+            var visualStyle by remember {
+                mutableStateOf(OrbisVisualStyle.fromKey(appearancePreferences.getString("visualStyle", null)))
+            }
+            OrbisTheme(visualStyle = visualStyle, onVisualStyleChange = { choice ->
+                visualStyle = choice
+                appearancePreferences.edit().putString("visualStyle", choice.key).apply()
+            }) {
                 val model: RemoteViewModel = viewModel()
                 val state by model.state.collectAsStateWithLifecycle()
                 val hosts by model.hosts.collectAsStateWithLifecycle()
@@ -3103,6 +3110,36 @@ internal fun StatusScreen(
             StatusCard {
                 StatusValueRow("电脑", state.hostName?.takeIf(String::isNotBlank) ?: "已配对的电脑")
                 StatusRow("配对状态", pairingText(pairing), pairingTone(pairing))
+            }
+
+            StatusSectionTitle("外观")
+            val visualStyle = LocalOrbisVisualStyle.current
+            val changeVisualStyle = LocalOrbisVisualStyleChange.current
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                listOf(OrbisVisualStyle.Classic to "经典", OrbisVisualStyle.InsetFocus to "雾蓝").forEach { (choice, label) ->
+                    val selected = visualStyle == choice
+                    NeumorphSurface(
+                        modifier = Modifier.weight(1f).heightIn(min = 56.dp).testTag("appearance-${choice.key}")
+                            .semantics { this.selected = selected },
+                        shape = RemoteUi.ControlShape,
+                        style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                        onClick = { changeVisualStyle(choice) },
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 8.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (selected) {
+                                Icon(Icons.Rounded.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Text(label, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                        }
+                    }
+                }
             }
         }
     }

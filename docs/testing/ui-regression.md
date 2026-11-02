@@ -110,7 +110,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
 
-**iOS `OrbisUITests`（合并后 82 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项；历史运行计数按证据保留）**
+**iOS `OrbisUITests`（合并后 83 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项；历史运行计数按证据保留）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
@@ -127,8 +127,9 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 连接状态 / 供应商（r15 后为设置页） | `testCompactQuotaCardsAndTransparentSwitch`、`testFixedRoutingAndStatusProviderSwitch`、`testBasicConnectionStatusAndDirectoryProviderMismatch` | S18–S19、S22–S23 |
 | 下载 | `testDownloadCardsPauseResumeAndSelectWithoutSideButtons` | S15、S20 |
 | 轮次文件审阅 | `testTurnFileReviewLoadsOnlySelectedFilesAndRetainsCache`、`testTurnFileReviewDarkAppearance`、`testTurnFileReviewOnlyHeaderPullCloses`、`testNativeTurnFileReviewShowsSourceAndReadsOnlySelectedDetail` | S21、M13、V19 |
-| 全页面明暗 | `testPageScreenshotsInBothAppearances` | S01–S09、S16 |
+| 全页面明暗 | `testPageScreenshotsInBothAppearances` | S01–S09、S16、S25 |
 | r15 设置与入口 | `testSettingsPageOrderAndSingleHostMenu` | S18、S22 |
+| r34 外观切换 | `testInsetFocusAppearanceSwitchPersistsAcrossLaunches` | S01–S04、S12、S22、S25 |
 | r24 整页导航 | `testSettingsAndDownloadsSwipeBack`、`testChatDownloadsReturnToSameChat`、`testHistoryDownloadsReturnToHistory`、`testHistorySwipeBackReturnsToChat`、`testAddComputerPageReboundsAndSwipesBack`、`testNestedPagesSwipeBackOneLevelAtATime` | M07–M08、M14、V17–V18 |
 | r15 流式、首页 / 目录视口与飞入 | `testStreamingRevealAdvancesInOrderAcrossBlocks`、`testStreamingRevealWithReducedMotionShowsEveryBlockImmediately`、`testHomeTopShowsNewAndPromotedSessions`、`testHomeScrolledAnchorSurvivesInsertionAndReordering`、`testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates`、`testDrawerTopKeepsNewAndPromotedDirectoriesVisible`、`testDownloadFlightStartsAtTapAndEndsAtButton`、`testDownloadFlightWithReducedMotionHighlightsWithoutFlying`、`testHistoryDownloadButtonAndFlight` | M04、V21、M16 |
 
@@ -149,7 +150,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | 需要隔离 Host | `IsolatedHostPairingInstrumentedTest`（1）；`ToolContinuityCaptureInstrumentedTest`（1，无参数时自动跳过，传入配对载荷与 cwd 时做真实输出逐帧捕获） | 配对；V20 定位 |
 | Pi 连续工具交接 | `ToolContinuityInstrumentedTest`（2，跟随与上滑阅读；连续同 head 更新后父节点补齐） | V20、V09、V01–V04、V18 |
 | r15 首页 / 目录视口与下拉刷新 | `HomeViewportInstrumentedTest`（6，其中 M15 两项）、`SessionDrawerViewportInstrumentedTest`（3） | M15、V21 |
-| r15 设置与入口 | `SettingsEntryInstrumentedTest`（3） | S18、S22–S23 |
+| r15 设置与入口 | `SettingsEntryInstrumentedTest`（5） | S18、S22–S23、S25 |
 | r24 整页导航 | `SwipeBackPagesInstrumentedTest`（2，位于 `SwipeBackInstrumentedTest.kt`）、`HistorySwipeBackInstrumentedTest`（1，真实历史 / 聊天 / 下载层级）、`PageNavigationInstrumentedTest`（3，添加电脑 / 离线历史 / 嵌套系统返回） | M07–M08、M14、V17–V18 |
 | r15 下载飞入 | `DownloadFlightInstrumentedTest`（1） | M16 |
 | r15 流式顺序 | `StreamingRevealInstrumentedTest`（1）；`UiPolishInstrumentedTest#revealKeepsEmojiAndCombiningCharactersTogether` 改用新时钟 | M04 |
@@ -263,11 +264,11 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | C09 | 首页卡片左滑：短滑后松手，再滑过半宽 | 短滑回弹；越过半宽时提示“松手关闭”并触觉一次；退回“关闭”同样触觉一次，同手势反复跨阈值持续反馈，同侧移动和松手 / 回弹不追加；松手后退场；多选模式下不触发 | M10、M12、V11 |
 | C10 | 长按卡片进入多选，再点选和退出 | 每次有效选中或取消触觉一次，首次长按不重复；选中按r31从本次触点260ms扩散，取消160ms；卡片几何不变 | S15、M06、M12 |
 | C11 | 从左缘拖开目录，折叠 / 展开目录，搜索，归档 / 恢复 | 抽屉跟手吸附；折叠后高度立即收缩；一次只展开一个目录 | M09、S19、V17 |
-| C12 | 打开设置页（r15 前由“更多操作 › 连接状态”进入，r15 后点右上角齿轮）；检查当前连接事实行；点配额币；打开供应商切换 | 分区顺序正确；连接延迟以整数毫秒显示，无样本时为“暂不可用”；供应商卡片区（r15 后位于最上方）：44pt/dp 环、角标、左倾 24° 翻面；切换菜单透明无底色 | S19、S22–S23、M14 |
+| C12 | 打开设置页（r15 前由“更多操作 › 连接状态”进入，r15 后点右上角齿轮）；检查当前连接事实行；点配额币；打开供应商切换 | 分区顺序正确，底部另有“外观”单选分区；连接延迟以整数毫秒显示，无样本时为“暂不可用”；供应商卡片区（r15 后位于最上方）：44pt/dp 环、角标、左倾 24° 翻面；切换菜单透明无底色 | S19、S22–S23、M14 |
 | C13 | 打开首页下载页；整卡暂停 / 继续，长按多选 | 没有旁置按钮；长按多选；r15 后可从右侧滑入、右滑返回首页 | S20、S15、M14 |
 | C14 | 在 Codex 长回合（多次工具调用，消息超过 4 条）结束后查看轮次文件概况；Pi 一轮改动超过 4 个文件时，先直接点击预览中的 `.kt` / `.md` 文件，再展开完整清单后打开作对照；查看器入场期间注入完整清单与首段 diff；关闭重开并左右切换文件；正文滚到中段后快速向下甩回顶部并继续下拉 / 快甩；再从标题区短拉、长拉 | 概况卡在整轮最后一行之后，不在回合中段；概况是单个内凹块，标题行可点开查看器，每个文件一行、状态字母颜色正确，长文件名不被目录挤压，未知行数显示短状态而非“+— −—”；预览升级为完整清单时不崩溃、不改选中文件，直接打开与先展开清单具有相同查看语义；跟手、落位、首尾回弹；只请求已落位文件的详情；正文到顶只在差异区内回弹，卡片不移动不关闭；标题区短拉回弹、长拉或快甩关闭，滑出过程中仍显示当前文件、不变成空白或加载态 | S21、M13、V19 |
 | C15 | 用户消息长按切换页顶栏后复制；助手 / 代码沿用原入口 | 原位对勾，2.5 秒后恢复；重复复制重置计时 | M05、V16 |
-| C16 | 切换明暗后重看 C01、C04、C12 | 明暗四层底板；单层材质外框；柔影方向正确，没有纯黑硬边 | S01–S04 |
+| C16 | 切换明暗及经典 / 雾蓝外观后重看 C01、C04、C12 | 明暗四层底板；单层材质外框；柔影方向正确，没有纯黑硬边；选择即时生效 | S01–S04、S25 |
 | C17 | 断开再恢复电脑连接（隔离夹具或预览注入） | 胶囊依次表达连接中 / 同步中 / 同步失败；失败时胶囊旁出现 48 命中的重试；卡片不移位 | S18、V16、V18 |
 | C18 | 两台电脑间切换（iOS `--preview-hosts=2`，Android 夹具） | 首页与目录只显示当前电脑；其他电脑待确认时显示红点；旧卡片不能操作新会话 | S18、V17 |
 
@@ -394,6 +395,12 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | --- | --- | --- | --- |
 | R43 | iOS 连接隔离 Host：首份同步已 applied 后延迟 30 秒重放同 commandId / syncId 请求，再发送冲突 rejected 和迟到 socket 失败；另在未确认首份响应重派 queued / processing 时送达首份 applied；回放旧 preview 晚于完整新 patch、工具依赖尚未齐的旧 preview 和非法 checkpoint。上翻阅读并按 A1–A4 检查状态 / 错误 / 重试 | 已提交任务不再生成快照且终态不翻转；合法迟到 ACK 结束等待并释放预留，不发送第二份响应。从未发送响应 / 已 abort 的 ACK 不复活事务。已完整提交的新 source 保持消息与阅读位置、旧包仍 rejected；不完整新状态有具体恢复提示；Host 同码回声不覆盖已有具体原因，不相关错误仍可见。保存 commandId / syncId、source epoch / seq、ACK 与派发计数，不保存会话正文 | V05–V06、V16–V18 |
 
+### 4.10 雾蓝外观专项（ADR-0059）
+
+| 编号 | 步骤 | 预期 | ID |
+| --- | --- | --- | --- |
+| R44 | 两端设置页切换“经典 / 雾蓝”，离开设置到首页、目录、聊天输入、下载再返回；有草稿与上翻阅读时切换；重启 App。两种外观各在 A1 / A2、A3 窄屏大字、A4 减少动画下截图，对照参考图检查底板、输入凹陷、按钮层次与文字对比 | 选择即时且持久，默认/未知值为经典；设置页选中内凹、蓝色文字和对勾。雾蓝底板为浅灰蓝或深蓝灰，输入与选中态有上白下灰柔和内影；导航、草稿、阅读位置、消息身份、状态和触控尺寸不变，不出现双层阴影或硬边 | S01–S04、S12、S19、S22、S25 |
+
 ## 5. 新增或修改 UI 时的用例编写要求
 
 1. **同一任务写用例。** 每个新增或修改的 feature ID 至少有：一个设备 UI 用例，断言该规则的具体数值或几何（坐标、尺寸、可见性、顺序、帧序），只断言“元素存在”不够；状态或逻辑另配单元测试；以及 §4 的手动清单条目。同时更新 §3.3 映射。
@@ -471,6 +478,10 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 ## 7. 不在本方案结论内
 
 模拟器夹具不替代真机触觉体感、多真实 Host、真实后端和网络、真实订阅账号，也不覆盖 VoiceOver / TalkBack 全流程。这些项目以对应专题的真实环境验收为准，并在结果中单列为未验收。
+
+2026-11-02 雾蓝外观（r34 / S25）：双端主题 token、设置切换及持久化已实现；Swift 341 项、两端构建与 Android JVM 通过。iOS 全量 83 项为 77 通过 / 6 失败；Android 设置 / 材质 / 配额受影响整类重试通过，但全量因 ADB 断连未完成。两端浅色 / 深色设置截图已审阅；iOS 375pt 设置切换、Android 字体 1.5 + 关闭动画定向通过，Android 系统设置已恢复。L4 全量、C01–C18、R44 全页面、完整 A3–A4 和同设备父提交对照未完成，不记为验收通过。证据见 `.artifacts/ui-regression/20261102-inset-focus/summary.md`。
+
+2026-11-02 S25 显示名称修订：设置页选项改为“雾蓝”，内部选择值 `insetFocus` 不变。L0、iOS 设置页定向 UI 1 / 1、Android Debug 与 AndroidTest 构建通过；Android 设置页定向测试因 ADB 在安装时断连未运行。全量、同设备基线及 C01–C18 / R44 / A1–A4 未补跑，维持未验收；本次证据见 `.artifacts/ui-regression/20261102-fog-blue-rename/summary.md`。
 
 ## r35 交互动效补充（已接入，验证中）
 

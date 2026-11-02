@@ -5,6 +5,7 @@ private enum AppPage: Hashable { case chat, pairing, status, providers, history,
 struct ContentView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @StateObject private var navigation = OrbisPageStack<AppPage>()
@@ -208,6 +209,7 @@ struct ContentView: View {
 /// 拉出手势挂在页面内容上与之同时识别，并按第一段位移锁定方向，竖向滚动主页时不会带出抽屉。
 private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Binding var isOpen: Bool
     let edgeSwipeEnabled: Bool
@@ -359,6 +361,7 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
 struct OrbisPageTransition<Underlay: View>: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @EnvironmentObject private var overlay: OrbisOverlay
     let onBack: () -> Void
     @ViewBuilder let underlay: () -> Underlay
@@ -492,6 +495,7 @@ struct HomeView: View {
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @State private var selectedRuntimeIds: Set<String> = []
     @State private var swipeTranslations: [String: CGFloat] = [:]
     private struct ExitingCard {
@@ -896,6 +900,7 @@ struct HomeView: View {
 struct ConnectionPill: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     var sync: HomeSyncStatus = .idle
     var body: some View {

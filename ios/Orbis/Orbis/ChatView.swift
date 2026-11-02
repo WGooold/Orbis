@@ -53,6 +53,7 @@ struct ChatView: View {
     @EnvironmentObject private var agent: AgentState
     @EnvironmentObject private var notifications: RuntimeNotifications
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let runtime: RuntimeSummary
     let onBack: () -> Void
@@ -722,6 +723,7 @@ private struct LegacyScrollInteraction: UIViewRepresentable {
 /// Inputs are plain values so an unchanged row is skipped: it does not observe the whole store.
 struct ChatMessageRow: View, Equatable {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let row: ChatRow
     let kind: String?
     var toolResults: [String: ChatMessage] = [:]
@@ -796,6 +798,7 @@ enum PendingSendAction { case resend, restore, discard, check, cancel }
 /// 下方是与输入框附件条相同的上传状态与进度。只读：重试 / 放回 / 删除在气泡下方的操作区。
 private struct PendingAttachments: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let tasks: [FileTransfer]
     var body: some View {
         let p = OrbisPalette(scheme)
@@ -824,6 +827,7 @@ func pendingAttachmentStatus(_ task: FileTransfer) -> String {
 /// 36pt 方形缩略图：本机暂存的图片按需降采样解码，其他文件或解码失败显示文件图标。
 private struct AttachmentThumbnail: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let task: FileTransfer
     @State private var image: UIImage?
     var body: some View {
@@ -852,6 +856,7 @@ private struct AttachmentThumbnail: View {
 /// 用户气泡下方原本放复制 / 回退的位置，替换为发送状态与恢复操作，不在聊天里另起提示行。
 private struct PendingSendStatus: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let state: PendingSend.State
     let canResend: Bool
     let rowId: String
@@ -898,6 +903,7 @@ private struct MessageContentView: View {
     @EnvironmentObject private var transfers: FileTransfers
     @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @State private var fullOpen = false
     @State private var fullEntryId = ""
     let message: ChatMessage
@@ -963,6 +969,7 @@ private struct FullMessageView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let entryId: String
     private var preview: EntryPreview? { store.entryPreview?.entryId == entryId ? store.entryPreview : nil }
     var body: some View {
@@ -1007,6 +1014,7 @@ func fileNameParts(_ name: String) -> (stem: String, ext: String) {
 
 struct CompactDisclosure<Content: View>: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.chatReadingInteraction) private var readingInteraction
     let title: String
@@ -1038,6 +1046,7 @@ struct CompactDisclosure<Content: View>: View {
 struct ToolSummaryView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @State private var detailOpen = false
     let summary: ToolSummary
     var body: some View {
@@ -1144,6 +1153,7 @@ struct MarkdownMessage: View {
     @EnvironmentObject private var transfers: FileTransfers
     @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     #if DEBUG
     @Environment(\.previewRevealTime) private var previewRevealTime
     #endif
@@ -1331,6 +1341,7 @@ private enum MarkdownCache {
 
 private struct CodeBlockView: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let text: String
     let language: String
     let clock: RevealClock
@@ -1354,6 +1365,7 @@ private struct CodeBlockView: View {
 private struct SlashPickerView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let runtime: RuntimeSummary
     @Binding var selected: String?
     @Binding var input: String
@@ -1408,6 +1420,7 @@ struct PermissionsView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let runtime: RuntimeSummary
     var body: some View {
         let p = OrbisPalette(scheme)
@@ -1473,6 +1486,7 @@ private struct MarkdownTableView: View {
 
 private struct MarkdownImageView: View {
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let alt: String
     let url: URL
     var body: some View {
@@ -1491,6 +1505,7 @@ private struct MarkdownImageView: View {
 struct QueuedMessagesView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let runtimeId: String
     var body: some View {
         let items = store.queuePanelItems(runtimeId)
@@ -1529,6 +1544,7 @@ struct RuntimeNoticesView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var notifications: RuntimeNotifications
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let runtimeId: String
     /// 只有 Codex（含桌面版）会上报通知来源；其他运行时没有「待核对」可言，不显示核对提示。
     let supported: Bool

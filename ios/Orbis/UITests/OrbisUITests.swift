@@ -1176,6 +1176,37 @@ final class OrbisUITests: XCTestCase {
         capture("drawer-computer-menu", app: drawer)
     }
 
+    func testInsetFocusAppearanceSwitchPersistsAcrossLaunches() {
+        let app = launch("status")
+        let page = app.descendants(matching: .any)["settings-page"].firstMatch
+        let focus = app.buttons["appearance-insetFocus"]
+        XCTAssertTrue(page.waitForExistence(timeout: 8))
+        for _ in 0..<8 where !focus.isHittable { page.swipeUp() }
+        XCTAssertTrue(focus.isHittable)
+        XCTAssertTrue(focus.label.contains("雾蓝"))
+        focus.tap()
+        XCTAssertTrue(focus.isSelected)
+        capture("inset-focus-settings-light", app: app)
+        app.terminate()
+
+        let dark = launch("status", dark: true)
+        let darkPage = dark.descendants(matching: .any)["settings-page"].firstMatch
+        let darkChoice = dark.buttons["appearance-insetFocus"]
+        for _ in 0..<8 where !darkChoice.isHittable { darkPage.swipeUp() }
+        XCTAssertTrue(darkChoice.isSelected)
+        capture("inset-focus-settings-dark", app: dark)
+        dark.terminate()
+
+        let reopened = launch("status")
+        let reopenedPage = reopened.descendants(matching: .any)["settings-page"].firstMatch
+        let selected = reopened.buttons["appearance-insetFocus"]
+        for _ in 0..<8 where !selected.isHittable { reopenedPage.swipeUp() }
+        XCTAssertTrue(selected.isSelected)
+        reopened.buttons["appearance-classic"].tap()
+        XCTAssertTrue(reopened.buttons["appearance-classic"].isSelected)
+        reopened.terminate()
+    }
+
     // M14: every full page participates, including adding a computer; sheets keep their own gestures.
     func testAddComputerPageReboundsAndSwipesBack() {
         for (dark, arguments) in [(false, [String]()), (true, ["--preview-reduce-motion"])] {
