@@ -188,6 +188,12 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 
 [ADR-0056](0056-agent-startup-readiness-and-consent.md) 承接 §14，并扩展到 Pi / Codex / DeepSeek。Claude 增加具名项目 MCP 的本次临时授权（明确拒绝不覆盖）、登录状态预检、已识别插件 / 管理策略阻塞、启动失败取消等待及私有 settings 文件清理。目录信任函数本身仍只写 `hasTrustDialogAccepted`，不改变工具权限；MCP 的范围扩展由独立启动设置负责。桌面 setup 保留原生登录入口，手机账号授权 / OAuth / onboarding 的完整交互尚未实现。测试映射为 R29（目录信任；早期误用 R19）和 R30（跨 Agent）；实现文件、原生证据和未完成平台见 ADR-0056，不将源码完成写成安装包交付。
 
+### 16. 首页交互基线不等待历史同步（2026-11-02）
+
+- 修复已打开 Claude 会话时首页连接胶囊长时间显示“同步失败”的初始化缺口：`announce` 原先只重播元数据与命令，完整 `interaction.snapshot` 直到 `session.sync` 完成才发布；首次统一状态读取因此得到 unknown 的交互领域，恢复依赖后续历史同步。
+- `ClaudeBackend.announce` 对在线 Mods / Hook runtime 立即发布 Hook bridge 持有的完整待答清单，包括明确的空清单；新设备握手、首页读取 / 重试与历史同步完成共用此入口。离线 runtime 不发布空清单，已有审批保持原身份及等待状态。历史尚未读完不影响首页需要的 identity / execution / interactions；历史、发送与审批完成仍按原有权威回执确认。
+- 恢复 ADR-0051 S18 / V16 / V18 的既有约束，不增加 feature、不调整 UI / 动效参数；ADR-0058 无新增交互家族或 MOT 参数。Host 适配器三场景在修改前均失败；修改后与加密设备通道首次读取回归通过。双端设备与完整门禁结果登记到 [UI 回归方案](../testing/ui-regression.md) §6 和 `.artifacts/ui-regression/20261102-claude-home-sync/`，未完成项不记为验收通过。需要随 Host 更新生效。
+
 ## Alternatives not selected
 
 - **Agent SDK 执行后端**：适合独立管理会话，但不能替代附着到用户正在操作的 TUI；不作为自动回退。

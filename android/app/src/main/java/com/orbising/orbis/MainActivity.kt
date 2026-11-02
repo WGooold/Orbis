@@ -952,8 +952,10 @@ internal fun RuntimeListScreen(
                                                     verticalAlignment = Alignment.CenterVertically,
                                                 ) {
                                                     androidx.compose.animation.Crossfade(targetState = closeArmed || departure != null,
+                                                        modifier = Modifier.fillMaxWidth(),
                                                         animationSpec = tween(InteractionMotion.duration(InteractionMotion.State)), label = "close-threshold") { armed ->
-                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center,
+                                                            verticalAlignment = Alignment.CenterVertically) {
                                                     Icon(if (armed) Icons.Rounded.Check else Icons.Rounded.Close, contentDescription = null,
                                                         tint = MaterialTheme.colorScheme.onError, modifier = Modifier.size(18.dp))
                                                     Spacer(Modifier.width(6.dp))

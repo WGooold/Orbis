@@ -333,9 +333,13 @@ export class ClaudeBackend implements AgentBackend {
     return [...entries.values()];
   }
 
-  /** Re-sends what a reconnecting device needs before it syncs: metadata and the slash menu. */
+  /** Home facts must not wait for a conversation sync: even an empty Hook inventory is authoritative. */
   announce(runtimeId?: string): void {
-    for (const id of runtimeId === undefined ? this.#options.modsBridge.runtimeIds() : [runtimeId]) this.#options.modsBridge.announce(id);
+    for (const id of runtimeId === undefined ? this.#options.runtimeIds() : [runtimeId]) {
+      if (!this.ownsRuntime(id)) continue;
+      this.#options.modsBridge.announce(id);
+      this.#options.onEvent?.(id, { type: "interaction.snapshot", requests: this.#options.bridge.pendingRequests(id) });
+    }
   }
 
   async #sync(runtimeId: string, commandId: string, command: Extract<RuntimeCommand, { type: "session.sync" }>): Promise<void> {
@@ -353,8 +357,7 @@ export class ClaudeBackend implements AgentBackend {
       return;
     }
     emit(snapshot);
-    this.#options.modsBridge.announce(runtimeId);
-    emit({ type: "interaction.snapshot", requests: this.#options.bridge.pendingRequests(runtimeId) });
+    this.announce(runtimeId);
   }
 
   #configDirs(): string[] {
