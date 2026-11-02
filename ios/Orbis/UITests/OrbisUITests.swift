@@ -1438,7 +1438,22 @@ final class OrbisUITests: XCTestCase {
     /// canonical row that only declares the App id; a rejected send stays and can return to the composer.
     func testSendFlightMovesRightThenUpAndHandsOffTheSameMessage() {
         let text = "逐帧检查发送动效"
-        for progress in [0.25, 0.65, 1.0] {
+        // Also exercise the real clock with a settled software keyboard, so recordings
+        // cover the live handoff rather than only deterministic frozen projections.
+        let live = launch("chat", arguments: ["--preview-send=pi", "--preview-send-probe"])
+        let liveComposer = live.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(liveComposer.waitForExistence(timeout: 8))
+        liveComposer.tap(); liveComposer.typeText(text); liveComposer.tap()
+        XCTAssertTrue(live.keyboards.firstMatch.waitForExistence(timeout: 3))
+        capture("send-live-before", app: live)
+        live.buttons["发送消息"].firstMatch.tap()
+        let liveProbe = live.descendants(matching: .any)["send-flight-probe"].firstMatch
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "count=0"), object: liveProbe)], timeout: 4), .completed)
+        XCTAssertEqual(live.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
+        capture("send-live-handed-off", app: live)
+        live.terminate()
+        for progress in [70.0 / 440, 280.0 / 440, 0.82, 1.0] {
             let app = launch("chat", arguments: ["--preview-send=pi", "--preview-send-probe", "--preview-send-progress=\(progress)"])
             let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
             XCTAssertTrue(composer.waitForExistence(timeout: 8))
@@ -1461,7 +1476,7 @@ final class OrbisUITests: XCTestCase {
             XCTAssertEqual(number("p"), progress, accuracy: 0.001)
             XCTAssertEqual(number("fromY"), submittedFrom.midY, accuracy: 20,
                            "Flight starts at the visible composer, including with the keyboard open")
-            if progress == 0.25 {
+            if progress == 70.0 / 440 {
                 XCTAssertGreaterThanOrEqual(number("x"), number("fromX") + 23.99)
                 XCTAssertEqual(number("y"), number("fromY"), accuracy: 1)
             } else {
@@ -1470,12 +1485,67 @@ final class OrbisUITests: XCTestCase {
             if progress == 1 {
                 XCTAssertEqual(number("x"), number("toX"), accuracy: 1)
                 XCTAssertEqual(number("y"), number("toY"), accuracy: 1)
+                XCTAssertEqual(number("width"), number("toWidth"), accuracy: 1)
+                XCTAssertEqual(number("height"), number("toHeight"), accuracy: 1)
+            } else if progress >= 280.0 / 440 {
+                XCTAssertLessThan(number("width"), number("toWidth"))
+                XCTAssertLessThan(number("height"), number("toHeight"))
+                XCTAssertEqual(number("right"), number("toRight"), accuracy: 1)
+                XCTAssertEqual(number("bottom"), number("toBottom"), accuracy: 1)
             }
             capture("send-phase-\(progress)", app: app)
             let semantics = XCTAttachment(string: app.debugDescription)
             semantics.name = "send-phase-semantics-\(progress)"; semantics.lifetime = .keepAlways
             add(semantics)
             XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
+            app.terminate()
+        }
+    }
+
+    func testSendFlightUnfoldsLongTextToItsFullHeight() {
+        let text = (1...8).map { "第\($0)行：这条消息从输入框上移，再完整展开。" }.joined(separator: "\n")
+        for (progress, dark, large) in [(280.0 / 440, false, false), (0.82, false, false), (1.0, false, false),
+                                        (0.82, true, false), (1.0, false, true)] {
+            let extra = large ? ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"] : []
+            let app = launch("chat", dark: dark, arguments: ["--preview-send=pi", "--preview-send-probe", "--preview-send-progress=\(progress)"] + extra)
+            let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+            XCTAssertTrue(composer.waitForExistence(timeout: 8))
+            composer.tap(); composer.typeText(text); composer.tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+            app.buttons["发送消息"].firstMatch.tap()
+            let probe = app.descendants(matching: .any)["send-flight-probe"].firstMatch
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value CONTAINS %@", "lands=true"), object: probe)], timeout: 4), .completed)
+            let values = flightMetrics(probe)
+            let height = Double(values["height"] ?? "") ?? 0
+            let targetHeight = Double(values["toHeight"] ?? "") ?? 0
+            XCTAssertGreaterThan(targetHeight, 96)
+            if progress == 1 { XCTAssertEqual(height, targetHeight, accuracy: 1) }
+            else { XCTAssertLessThan(height, targetHeight) }
+            XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
+            // Semantics remain on the hidden row; check pixels as well, so an empty Canvas
+            // symbol cannot pass merely because the message exists in the accessibility tree.
+            func number(_ key: String) -> CGFloat { CGFloat(Double(values[key] ?? "") ?? 0) }
+            let visible = CGRect(x: number("x") - number("width") / 2 + 8,
+                                 y: max(number("clipTop") + 4, number("y") - number("height") / 2 + 8),
+                                 width: max(1, number("width") - 16),
+                                 height: max(1, number("bottom") - max(number("clipTop") + 4, number("y") - number("height") / 2 + 8) - 8))
+            let shot = app.screenshot().image
+            let image = shot.cgImage!
+            let scale = CGFloat(image.width) / app.frame.width
+            let crop = image.cropping(to: CGRect(x: visible.minX * scale, y: visible.minY * scale,
+                                                width: visible.width * scale, height: visible.height * scale))!
+            var pixels = [UInt8](repeating: 0, count: crop.width * crop.height * 4)
+            let context = CGContext(data: &pixels, width: crop.width, height: crop.height, bitsPerComponent: 8,
+                                    bytesPerRow: crop.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.draw(crop, in: CGRect(x: 0, y: 0, width: crop.width, height: crop.height))
+            let ink = stride(from: 0, to: pixels.count, by: 4).filter { index in
+                let brightness = (Int(pixels[index]) + Int(pixels[index + 1]) + Int(pixels[index + 2])) / 3
+                return dark ? brightness > 180 : brightness < 100
+            }.count
+            XCTAssertGreaterThan(ink, 30, "The unfolding message must actually draw its text")
+            capture("send-long-unfold-\(progress)-dark-\(dark)-large-\(large)", app: app)
             app.terminate()
         }
     }

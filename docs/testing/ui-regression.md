@@ -118,7 +118,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 2026-11-03 Claude 长会话恢复（R18；V09–V10、V16–V18）：`session-source.test.ts` 覆盖 257 / 1,055 条初始化、字节超限批次、unknown→checkpoint 与后续连续增量；`claude-transcript.test.ts` 覆盖长原生日志继续追加后 Host 重开 preview 的最新 head。Android `ClaudeHistoryInstrumentedTest#existingHistoryAndRunningTurnSurviveParallelToolsAndReconnect` 使用 `ORBIS_CLAUDE_HISTORY_PREFIX=1053` 的真实 Host / Relay / Mods 夹具，比较同设备同 App 的修复前后结果。iOS 沿用 source recovery 核心与 Claude 身份设备映射；完整双端 L1–L4 / C01–C18 / A1–A4 结果不得由此定向对照替代。
 
-**iOS `OrbisUITests`（合并后 83 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项；历史运行计数按证据保留）**
+**iOS `OrbisUITests`（合并后 85 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项，r36 发送展开新增 1 项，r37 配额减少动画新增 1 项；历史运行计数按证据保留）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
@@ -132,6 +132,7 @@ adb -s "$SERIAL" shell am instrument -w -r \
 | Claude 模型回复身份 | `testClaudeNativeHandoffKeepsOneCopyAcrossConsecutiveTurns`（明暗，三阶段 canonical / live 交接；每段正文唯一） | V09、V17–V18 |
 | 聊天内容 / 顶栏 | `testRefreshKeepsHeaderTextAndTruncationStable`、`testClosedDisclosureDefersWorkAcrossChatReentryAndRetainsState`、`testUserMessageCopyAndRewind`、`testToolDetailsLoadPagesAndClose`、`testTruncatedContentAndToolArguments`、`testHistoryPreviewAndNavigation` | S10–S11、S17、S20、M03、M05、V05、V14 |
 | 输入 / 审批 / 队列 | `testSlashPickerStaysAboveKeyboard`、`testOptimisticSendReconcilesAndRejectedSendRestores`、`testUnconfirmedSendCanBeCheckedWithoutResending`、`testCompactionQueuedSendCanBeWithdrawn`、`testApprovalOverlayKeepsComposerStableWhileSubmitting`、`testQueueCancellationNotificationsAndRuntimeFacts`、`testToolExportAndInteractionDraftSwitching` | V06–V08、V10、V12、V17 |
+| r36 发送飞入与展开 | `testSendFlightMovesRightThenUpAndHandsOffTheSameMessage`、`testSendFlightUnfoldsLongTextToItsFullHeight`、`testSendFlightWithReducedMotionKeepsTheMessageAndNoOverlay` | M17、V09–V10 / MOT-06、R37 |
 | 连接状态 / 供应商（r15 后为设置页） | `testCompactQuotaCardsAndTransparentSwitch`、`testQuotaCoinReducedMotionKeepsBothReadingsAndTheTouchTarget`、`testFixedRoutingAndStatusProviderSwitch`、`testBasicConnectionStatusAndDirectoryProviderMismatch` | S18–S19、S22–S23 |
 | 下载 | `testDownloadCardsPauseResumeAndSelectWithoutSideButtons` | S15、S20 |
 | 轮次文件审阅 | `testTurnFileReviewLoadsOnlySelectedFilesAndRetainsCache`、`testTurnFileReviewDarkAppearance`、`testTurnFileReviewOnlyHeaderPullCloses`、`testNativeTurnFileReviewShowsSourceAndReadsOnlySelectedDetail` | S21、M13、V19 |
@@ -234,7 +235,7 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | MOT-03 / SC02–05 | 扩展首页 / 目录归档 / 下载 / 供应商选择；`InteractionMotionInstrumentedTest.selectionStartsAtTheTouchAndReversesWithoutMovingTheCard`；iOS现有多选用例及中帧审阅 | C10–C13、R34 / S15、M06 |
 | MOT-04 / SC06–10 | Android `InteractionMotionInstrumentedTest.menuChangesItsContainerBeforeSlidingToTheChildAndBack`、iOS `testComputerSubmenuReturnsWithinOneAnchoredPanel`：锚点、安全区、自然尺寸、两阶段、返回优先、菜单失效 | C11–C12、C18、R35 / M18 |
 | MOT-05 / SC11–13 | 更新原复制/Rewind入口并保留业务断言；新增长按、滚动/文本选择共存、栏失效 | C05、C15、R36 / S10、M19 |
-| MOT-06 / SC14–16 | 扩展 PendingSend 和乐观发送设备用例；`InteractionMotionTest` / `MotionGeometryTests`；Android `sendFlightUsesTheAcceptedIdentityAndNeverLandsQueuedOrReadingMessages`；iOS `testSendFlightMovesRightThenUpAndHandsOffTheSameMessage` / `testSendFlightWithReducedMotionKeepsTheMessageAndNoOverlay` | C05–C06、R37 / M17、V09–V10 |
+| MOT-06 / SC14–16 | 扩展 PendingSend 和乐观发送设备用例；`InteractionMotionTest` / `MotionGeometryTests`；Android `sendFlightUsesTheAcceptedIdentityAndNeverLandsQueuedOrReadingMessages`；iOS `testSendFlightMovesRightThenUpAndHandsOffTheSameMessage` / `testSendFlightUnfoldsLongTextToItsFullHeight` / `testSendFlightWithReducedMotionKeepsTheMessageAndNoOverlay`；Android `sendFlightUnfoldsTheRecordedBubbleAndHandsOffWithoutChangingItsPixels` | C05–C06、R37 / M17、V09–V10 |
 | MOT-07 / SC17–18 | 原 ChatQuestionReminder 及 iOS 两专项保留；新增中帧和退出内容 / 通知优先 | C05、R31、R38 / S24 |
 | MOT-08 / SC18–27 | 新增 ActionGlyph 有效点击 / 禁用 / 连点 / 图形反馈，保留下载飞行、复制、配额专项 | C06–C08、C12–C15、R39 / M20 |
 | MOT-09 / SC28–32 | 扩展 SwipeBack、PageNavigation、iOS嵌套返回；系统左右边缘取消和完成、菜单/IME/选择优先 | C04、R19–R22、R40 / M08、M14 |
@@ -391,7 +392,7 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | R34 | 首页、目录、下载、供应商分别长按和触点不同时逐项选择；快速反选和退出 | 蓝底从各自触点展开；工具栏线段旋转/合拢/渐显；几何和确认取消保持 | S15、M06 / MOT-03 |
 | R35 | 所有菜单入口四角/窄屏展开；电脑二级进入返回；连续操作/系统返回/切电脑 | 从锚点翻开；容器先变形再侧向翻页；返回相反且只退一层 | M18 / MOT-04 |
 | R36 | 当前聊天、长文本、附件、历史预览和离线消息长按；复制、Rewind、滚动及文字选择 | r35 应用页顶栏切换为操作栏，常驻下方操作移除；pending恢复区仍在；不推动正文/绕过确认 | S10、M19 / MOT-05 |
-| R37 | 文本、多行、附件、运行中排队、重试、连发、断线、上翻阅读中发送 | 先右后上；准确身份交接；不追新、不重播、不飞向不存在的行 | M17 / MOT-06 |
+| R37 | 文本、多行、附件、运行中排队、重试、连发、断线、上翻阅读中发送 | 先右后上，再从右下角原位展开至完整气泡；起步快，末段持续减速且无回弹；初始不闪出目标，展开末帧与正式气泡一致；长文本 / 附件不截高且不覆盖页顶栏；准确身份交接；不追新、不重播、不飞向不存在的行 | M17 / MOT-06 |
 | R38 | 上翻触发最近提问，原文进入视野/点击/通知覆盖/新问题/换会话 | 右上滑入、原路滑出；末帧前内容保留，阅读锚点不动 | S24 / MOT-07 |
 | R39 | 按SC19–SC27逐入口点击图标，重复点击、禁用、减少动画 | 下载箭头弹、设置和历史旋转，其他轻弹；48命中不变，无重复专属动画 | M20 / MOT-08 |
 | R40 | Android整页左右边缘取消/完成/三层返回；菜单、IME、多选、Sheet和根页对照；iOS仅在保留可选增强时测双侧，否则验证原返回无回归 | 压缩顶层露来源；返回优先级正确，无双重pop或丢草稿/锚点；iOS不可为新增边缘行为牺牲文字选择/横滚/Sheet | M08、M14 / MOT-09 |
@@ -447,6 +448,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+2026-11-03 发送原位展开（r36 / M17 / MOT-06 / R37）：Swift347项、Android JVM673项与双端构建通过。Android同池同配置基线170项为159过 / 4失败 / 7外部夹具assumption，候选171项为160过 / 相同4失败 / 相同7assumption；深色 / 字体1.5发送专项各2 / 2。iOS同一iPhone17基线83项为74过 / 9失败，候选85项为76过 / 9失败，但配额卡、目录选择清除、模型切换标记3个失败名称不在基线集合，不能按数量相同判为门禁通过；共享工作区并行修改使整包不是只改变发送的受控对照。最终隔离快照在375pt SE3完成发送正常时钟与固定阶段、长文、减少动画、上传发送4 / 4，19张截图与80个正常时钟变化帧已看，确认同一气泡滑入、减速、展开及无淡入交接；Android发送阶段与A2 / A3图已看。全量iOS早于最后遮罩留阴影和正常时钟测试补充；Android拉取目录含旧图，不能算完整本轮L4。完整C01–C18、R37所有组合、全外观与真机仍未验收。本任务租约 / 进程已清理，未部署；证据、9项失败与边界见 `.artifacts/ui-regression/20261103-send-unfold/summary.md`、`manual-checklist.md` 和 [r36验证记录](interaction-motion.md#2026-11-03--r36-发送原位展开)。
 
 2026-11-03 Android 配置切换输入按钮（V05、V10、V12；R27）：修复 composer 等待被配置账本独占消费的通用回执，受理后清空命令并解除输入等待，确认 / 拒绝 / 未确认仍由配置账本负责。修复前生产 composer 设备专项7项6失败，覆盖Codex/Pi模型与思考、重复选择、拒绝；修复后7/7，A1–A4各7/7，673项JVM及两包构建通过。候选全量178项165过 / 6失败 / 7外部条件未满足；5项在当次基线亦失败，额外顶栏Compose空闲超时在原设备整类对照中基线 / 候选各2/2通过，首轮仍保留。基线第155项配额UI ANR，仅154项完成，不能宣称全量门禁通过。设备会话曾发生UiAutomation连接/断开异常，重借后专项恢复；本任务设置已还原，残留锁按owner / 进程 / 端口核对后释放。已看相关普通 / 深色 / 大字截图，完整L4、人工C01–C18、完整R27和真实Host未执行。工作区有并发配额改动，最终构建使用排除该未完成改动的隔离副本，本次修复及测试与共享文件一致；未部署用户手机。证据与准确边界见 `.artifacts/ui-regression/20261103-config-composer/summary.md`。
 

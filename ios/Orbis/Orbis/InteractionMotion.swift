@@ -123,7 +123,7 @@ enum InteractionMotion {
     static let panel = Animation.easeOut(duration: 0.22)
     static let exit = Animation.easeIn(duration: 0.16)
     static let dismiss = Animation.easeIn(duration: 0.18)
-    static let send = Animation.linear(duration: 0.28)
+    static let send = Animation.linear(duration: MotionGeometry.sendDuration)
     static let toolbar = Animation.easeInOut(duration: 0.26)
 
     static var notice: AnyTransition {
@@ -476,12 +476,13 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
         let source: CGRect
         var target: CGRect
         var progress: CGFloat = 0
-        var handingOff = false
         var landsOnRow = false
+        var awaitingTarget = false
     }
     @Published private(set) var items: [Item] = []
     let composer = OrbisAnchor()
     let root = OrbisAnchor()
+    let viewport = OrbisAnchor()
     var targets: [String: OrbisAnchor] = [:]
     private var tasks: [String: Task<Void, Never>] = [:]
     #if DEBUG
@@ -491,9 +492,8 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
     }
     var previewMetrics: String {
         guard let item = items.last else { return "count=0" }
-        let point = MotionGeometry.sendPoint(from: CGPoint(x: item.source.midX, y: item.source.midY),
-                                            to: CGPoint(x: item.target.midX, y: item.target.midY), progress: item.progress)
-        return "count=\(items.count);id=\(item.id);lands=\(item.landsOnRow);p=\(item.progress);x=\(point.x);y=\(point.y);fromX=\(item.source.midX);fromY=\(item.source.midY);toX=\(item.target.midX);toY=\(item.target.midY)"
+        let frame = MotionGeometry.sendFrame(from: item.source, to: item.target, progress: item.progress)
+        return "count=\(items.count);id=\(item.id);lands=\(item.landsOnRow);p=\(item.progress);x=\(frame.midX);y=\(frame.midY);width=\(frame.width);height=\(frame.height);right=\(frame.maxX);bottom=\(frame.maxY);clipTop=\(viewport.frame.minY);fromX=\(item.source.midX);fromY=\(item.source.midY);toX=\(item.target.midX);toY=\(item.target.midY);toWidth=\(item.target.width);toHeight=\(item.target.height);toRight=\(item.target.maxX);toBottom=\(item.target.maxY)"
     }
     #endif
 
@@ -503,7 +503,8 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
         let source = composer.frame
         let fallback = CGRect(x: root.frame.maxX - min(source.width, 180) - 20, y: source.minY - 72,
                               width: min(source.width, 180), height: min(source.height, 72))
-        items.append(Item(id: send.messageId, text: send.text, source: source, target: fallback))
+        items.append(Item(id: send.messageId, text: send.text, source: source, target: fallback,
+                          awaitingTarget: following && !send.showsInQueue && !send.queueOwned))
         tasks[send.messageId] = Task { @MainActor [weak self] in
             // Allow the newly accepted row to lay out. This never delays submission or clearing the composer.
             await MotionLayoutFrames.wait()
@@ -512,28 +513,33 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
                 self.items[index].target = target
                 self.items[index].landsOnRow = true
             }
+            self.items[index].awaitingTarget = false
             #if DEBUG
             // A deterministic phase supplied by UI fixtures freezes production geometry for frame review.
             if let progress = self.previewProgress {
                 self.items[index].progress = progress
-                self.items[index].handingOff = progress >= 0.78
                 self.tasks[send.messageId] = nil
                 return
             }
             #endif
-            withAnimation(InteractionMotion.send) { self.items[index].progress = 1 }
-            try? await Task.sleep(nanoseconds: 220_000_000)
-            guard !Task.isCancelled, let handingOff = self.items.firstIndex(where: { $0.id == send.messageId }) else { return }
-            withAnimation(.easeOut(duration: 0.06)) { self.items[handingOff].handingOff = true }
-            try? await Task.sleep(nanoseconds: 60_000_000)
-            guard !Task.isCancelled else { return }
-            self.items.removeAll { $0.id == send.messageId }; self.tasks[send.messageId] = nil
+            // The real row stays hidden until its full-size visual has finished unfolding.
+            // Completion follows the rendered animation, rather than a competing wall-clock timer.
+            withAnimation(InteractionMotion.send, completionCriteria: .removed) {
+                self.items[index].progress = 1
+            } completion: { [weak self] in
+                withTransaction(Transaction(animation: nil)) {
+                    self?.items.removeAll { $0.id == send.messageId }
+                }
+            }
+            self.tasks[send.messageId] = nil
         }
     }
     func cancelFlights() {
         tasks.values.forEach { $0.cancel() }; tasks = [:]; items = []
     }
-    func clear() { cancelFlights(); targets = [:] }
+    // Rows unregister on disappearance. A covered/backgrounded page may resume with
+    // the same rows, so cancelling motion must preserve their live landing anchors.
+    func clear() { cancelFlights() }
 }
 
 /// Layout rendezvous uses display frames, not an assumed 60 Hz wall-clock delay.
@@ -574,7 +580,7 @@ extension EnvironmentValues {
 }
 extension View {
     func messageSendFlightHost(_ flight: MessageSendFlight) -> some View { modifier(MessageSendFlightHost(flight: flight)) }
-    func messageSendFlightTarget(_ id: String) -> some View { modifier(MessageSendFlightTarget(id: id)) }
+    func messageSendFlightTarget(_ id: String) -> some View { MessageSendFlightTarget(id: id, content: self) }
 }
 
 private struct MessageSendFlightHost: ViewModifier {
@@ -594,21 +600,17 @@ private struct MessageSendFlightHost: ViewModifier {
                 }
             }
             #endif
-            .overlay(alignment: .topLeading) {
+            .overlayPreferenceValue(MessageSendVisualKey.self) { visuals in
                 ZStack(alignment: .topLeading) {
                     ForEach(flight.items) { item in
-                        // Canvas is a visual copy only. It never creates another readable
-                        // Text node while the canonical message remains in the transcript.
-                        Canvas { context, size in
-                            context.clip(to: Path(CGRect(origin: .zero, size: size)))
-                            context.draw(Text(item.text).font(.orbisBody()).foregroundColor(OrbisPalette(scheme).text),
-                                         in: CGRect(x: 14, y: 14, width: max(0, size.width - 28), height: max(0, size.height - 28)))
-                        }.accessibilityHidden(true)
-                            .modifier(SendFlightPlacement(progress: item.progress, source: item.source,
-                                                          target: item.target, root: flight.root.frame.origin))
-                            .opacity(item.handingOff ? 0 : 1)
+                        SendFlightVisual(progress: item.progress, source: item.source, target: item.target,
+                                         root: flight.root.frame.origin, text: item.text,
+                                         visual: item.landsOnRow || item.awaitingTarget ? visuals[item.id] : nil,
+                                         landsOnRow: item.landsOnRow || item.awaitingTarget)
+                            .transition(.identity)
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .mask { Rectangle().padding(.top, max(0, flight.viewport.frame.minY - flight.root.frame.minY)) }
                     .accessibilityElement(children: .ignore)
                     .allowsHitTesting(false).accessibilityHidden(true)
             }
@@ -623,28 +625,53 @@ private struct MessageSendFlightHost: ViewModifier {
             .onDisappear { flight.clear() }
     }
 }
-private struct SendFlightPlacement: AnimatableModifier {
+/// Render the same bubble (including Markdown and attachments) as a noninteractive Canvas
+/// symbol. A plain two-line text copy cannot hand off seamlessly to the canonical message.
+private struct MessageSendVisualKey: PreferenceKey {
+    static var defaultValue: [String: AnyView] { [:] }
+    static func reduce(value: inout [String: AnyView], nextValue: () -> [String: AnyView]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+private struct SendFlightVisual: View, Animatable {
     var progress: CGFloat
     let source: CGRect
     let target: CGRect
     let root: CGPoint
+    let text: String
+    let visual: AnyView?
+    let landsOnRow: Bool
+    @Environment(\.colorScheme) private var scheme
     var animatableData: CGFloat { get { progress } set { progress = newValue } }
-    func body(content: Content) -> some View {
-        let center = MotionGeometry.sendPoint(from: CGPoint(x: source.midX, y: source.midY),
-                                              to: CGPoint(x: target.midX, y: target.midY), progress: progress)
-        // Reach the message-column width during the rightward stage, so a wide composer
-        // does not extend beyond the screen before the upward stage begins.
-        let widthProgress = min(1, max(0, progress / 0.25))
-        content.frame(width: source.width + (target.width - source.width) * widthProgress,
-                      height: min(96, source.height + (target.height - source.height) * progress))
-            .clipped().neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.6)
-            .position(x: center.x - root.x, y: center.y - root.y)
+    var body: some View {
+        let frame = MotionGeometry.sendFrame(from: source, to: target, progress: progress)
+        Canvas { context, size in
+            context.clip(to: Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: OrbisRadius.card))
+            if let symbol = context.resolveSymbol(id: "message") {
+                let scale = min(1, size.width / max(1, target.width))
+                context.scaleBy(x: scale, y: scale)
+                context.draw(symbol, at: .zero, anchor: .topLeading)
+            }
+        } symbols: {
+            if let visual {
+                visual.frame(width: target.width, height: target.height, alignment: .topLeading).tag("message")
+            } else {
+                Text(text).font(.orbisBody()).foregroundStyle(OrbisPalette(scheme).text)
+                    .padding(14).frame(width: target.width, alignment: .leading)
+                    .neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.6).tag("message")
+            }
+        }
+        .frame(width: frame.width, height: frame.height)
+        .position(x: frame.midX - root.x, y: frame.midY - root.y)
+        .opacity(landsOnRow ? 1 : min(1, max(0, (1 - progress) / (1 - MotionGeometry.sendArrival))))
+        .accessibilityHidden(true).allowsHitTesting(false)
     }
 }
-private struct MessageSendFlightTarget: ViewModifier {
+private struct MessageSendFlightTarget<Content: View>: View {
     @Environment(\.messageSendFlight) private var flight
     let id: String
-    func body(content: Content) -> some View {
+    let content: Content
+    var body: some View {
         if let flight { TrackedSendTarget(flight: flight, id: id, content: content) }
         else { content }
     }
@@ -656,7 +683,17 @@ private struct TrackedSendTarget<Content: View>: View {
     @State private var anchor = OrbisAnchor()
     var body: some View {
         let item = flight.items.first { $0.id == id }
-        content.opacity(item?.landsOnRow == true && item?.handingOff == false ? 0 : 1)
+        let projected = item.map { $0.landsOnRow || $0.awaitingTarget } ?? false
+        content
+            // Keep the selectable native text at full opacity throughout. Restoring
+            // its opacity during an IME layout can animate the underlying text view
+            // even when SwiftUI's handoff transaction has no animation.
+            .mask {
+                Rectangle().fill(projected ? Color.clear : Color.black)
+                    .padding(-OrbisRadius.card)
+                    .transaction { $0.animation = nil; $0.disablesAnimations = true }
+            }
+            .preference(key: MessageSendVisualKey.self, value: projected ? [id: AnyView(content)] : [:])
             .orbisAnchor(anchor)
             .onAppear { flight.targets[id] = anchor }
             .onChange(of: id) { old, new in flight.targets[old] = nil; flight.targets[new] = anchor }

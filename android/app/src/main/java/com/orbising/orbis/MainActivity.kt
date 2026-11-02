@@ -2280,7 +2280,8 @@ internal fun ChatScreen(
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize().nestedScroll(scrollIntent).testTag("chat-transcript"),
+                modifier = Modifier.fillMaxSize().nestedScroll(scrollIntent).testTag("chat-transcript")
+                    .onGloballyPositioned { sendFlight.viewport = it.boundsInWindow() },
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
                 // 轮次间距 24，组内间距由 AssistantTurnCard 提供。
                 verticalArrangement = Arrangement.spacedBy(24.dp),

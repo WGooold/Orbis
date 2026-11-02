@@ -185,3 +185,39 @@ L0 编号与引用：79 个 feature、43 组场景、21 张 MOT ticket、158 个
 主线 `d3627ab` 已纳入动效分支；合并代码及 r35 编号以 `fbfd3ad` 校验。Android 669 项 JVM、Debug / AndroidTest 构建、Swift 335 项、iOS build-for-testing 与包内依赖检查通过；Host 类型检查及 `agent-backend` / `host-service` 67 项通过。L0 的 79 个 feature、43 个场景、21 张 ticket 与 169 个相对链接检查通过；主工作区另有未提交 S25 外观，叠加后为 80 个 feature，相关修改继续保持未提交。合并准备、保留补丁及校验日志见 `.artifacts/merge-back/20261102-motion-r35/`。
 
 此次只追加集成编译、单元与文档检查，未重跑设备全量或人工 C / R / A；原验证记录、失败及未验收状态保持。r35 / R45–R55 的重编号不改写旧证据，不将其他任务的未提交修改纳入动效提交。
+
+## 2026-11-03 — r36 发送原位展开
+
+用户要求输入消息从下方滑入后，以同一气泡展开成完整消息，滑动起步快、后段慢且稳定。M17 / MOT-06 / SC14–SC16 / R37 已接入两端共用实现：70ms右移、210ms上移、160ms右下角锚定展开，各段使用单次cubic ease-out。飞行层保留真实正文、附件和材质，受理时即抑制目标重复绘制，完成后一次交接。保留未跟随、队列、目标不可见的兜底；取消飞行不注销仍挂载行的落点。
+
+证据根 `.artifacts/ui-regression/20261103-send-unfold/`。基线为任务开始时快照，8个当时干净的发送相关源码 / 测试恢复至 `f24de19`；保留已有R57等改动。共享工作区随后有配额、输入和Host并行修改，因此后续整包不是只改变发送动效的受控对照；最新iOS专项改用 `verification/` 冻结快照。具体源文件与产物以清单为准，不能把这些结果外推到之后的工作区。
+
+### 已完成检查
+
+| 检查 | 结果 | 证据 |
+| --- | --- | --- |
+| Swift / Android L1 | 347 / 673项通过；新增端点、逐段单调减速、展开锚点和长文完整高度断言 | `logs/candidate-swift-022537.log`、`logs/final-android-build-022910.log` |
+| 双端L2 | App / 测试包构建通过；iOS源码、plist、scheme与包依赖检查通过 | `packages/final/`、`packages/verified/ios/`、`logs/verified-ios-targeted-video-030211.log` |
+| Android同设备全量 | 基线170项：159过、4失败、7外部夹具assumption；候选171项：160过、相同4失败、相同7assumption | `android-final-comparison.json`；对应 `android-retry-*` 原始结果 |
+| Android A2 / A3发送专项 | 深色、字体1.5各2 / 2；身份 / 队列 / 阅读兜底、取消后再次发送、正文和附件块绘制末帧一致 | `android-retry-20261102T183433Z/`、`android-dark-unfold-review.jpg`、`android-large-unfold-review.jpg` |
+| iOS最终发送专项 | SE3 / 375pt / iOS27，4 / 4；正常时钟与固定阶段、长消息A1–A3、减少动画A4、上传中发送与提交 | `verified-ios-targeted-video-030028.xcresult`、`verified-ios-targeted-summary.json` |
+| iOS基线全量 | iPhone17 / iOS27，83项：74过、9失败 | `baseline-ios-full-021600.xcresult`、同名summary JSON |
+| iOS候选全量 | 同一iPhone17，85项：76过、9失败；发送、长文、附件与减少动画通过，3个失败名称不在基线集合 | `final-ios-full-025001.xcresult`、`ios-full-comparison.json` |
+
+Android4失败为自由文本权限、DeepSeek新建、问卷草稿与电脑归属原用例，完整名称见比较JSON；7条外部夹具未运行不算通过。A3中的绘制对比夹具固定高度220dp，大字下附件示意块受夹具高度约束；末帧一致通过不代表生产附件的大字全流程已验收。
+
+iOS候选失败为添加电脑返回、配额卡、目录折叠、目录更新锚点、目录选择清除、长对话工具展开、模型切换标记及两项最近提问阅读锚点。新增失败名称为 `testCompactQuotaCardsAndTransparentSwitch`、`testDrawerSelectionClearsOnCancelSearchAndClose`、`testModelSwitchShowsTheChoiceWithItsMarkWithoutMovingTheHeader`；基线的缓存入场计时、启动中发送、目录右滑在候选通过。失败数量相同不表示集合未扩大；并行修改与资源负载未被隔离，新增失败来源未定，不归为既有基线失败。全量构建早于最后的遮罩留阴影和正常时钟测试补充，最新完整快照另由4项专项覆盖，未再运行最终快照全量。
+
+Android原运行器在本机共用入口规则新增前执行；之后不再使用它。A2 / A3关闭阶段曾超时，核对本任务进程、端口与owner后完成残留私有ADB和锁清理，见 `cleanup-recovery.json`。最终iOS runner正常执行finally释放；`cleanup-final.json`确认本任务没有残留设备 / 构建租约或进程。当前源码及包、基线回退包哈希保存在 `source-manifest.json` / `package-manifest.json`；未部署。
+
+早期iOS运行保留而不覆盖：Canvas以修饰器内容作symbol时正文空白，改为传递具体气泡视图；长文覆盖页顶时补视口上缘裁切；正式行opacity交接导致原生可选文字再次淡入，改为无动画遮罩，并以动画完成回调交接。`final-send-ios-attachment-video-024312.xcresult` 的上传90%瞬态断言失败（4项中1失败）；最新同一用例通过，首次失败仍保留。原断言未删除或放宽。
+
+### 逐帧审阅与边界
+
+最终iOS19张附件已逐张查看（`ios-verified-review-0`–`2`及索引）；正常时钟录屏完整解码后，365–368秒片段按60fps抽帧，80个变化帧已查看（`verified-live-normal-0`–`3`）。可见同一气泡右移、上移减速、原位展开，交接后位置与文字浓度稳定；键盘保持展开，顶栏未被长文覆盖。60fps为抽样频率，不作设备帧率结论。379–383秒是测试固定在右移末端的下一轮，不能当作正常时钟停顿；按墙钟推算视频位置或输入端seek的旧抽帧不用于时序结论。
+
+iOS候选全量导出188张PNG，已查看 `ios-final-full-overview-08`、`09`、`13`、`15` 的44张概览，包含发送、原生选区、失败恢复、附件外观和启动中发送；其余仅导出，不能记完整L4通过。
+
+Android全量拉取目录的277张可读图片联系表已查看，但包含设备旧图库、gap与tool-capture文件，未完整建立本轮文件归属，不能记为277张本轮L4通过；另有两张0字节debug PNG保留为无效证据。当前发送阶段的root / display截图、最终深色和大字各4张阶段图已查看：紧凑落点、展开、完整投影与正式行一致。
+
+完整C01–C18、R37所有输入 / 快速连发 / 切换 / 中断组合、所有外观的真实页面手动检查、真机流畅度与读屏尚未验收。已执行的自动用例与画面核对不能代替这些门禁。按证据根 `manual-checklist.md` 保留逐项范围，MOT-06维持“r36已接入，验证中”。

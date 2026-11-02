@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -67,7 +68,34 @@ internal object InteractionMotion {
     const val Panel = 220
     const val Exit = 160
     const val Dismiss = 180
-    const val Send = 280
+    const val SendTravel = 280
+    const val SendExpand = 160
+    const val Send = SendTravel + SendExpand
+    const val SendArrival = SendTravel / 440f
+    // Linear clock, one cubic ease-out per spatial stage: fast departure and a steady stop.
+    fun sendEaseOut(progress: Float): Float {
+        val remaining = 1 - progress.coerceIn(0f, 1f)
+        return 1 - remaining * remaining * remaining
+    }
+    fun sendFrame(source: Rect, target: Rect, progress: Float, density: Float = 1f): Rect {
+        val p = progress.coerceIn(0f, 1f)
+        val compact = Size(minOf(source.width, target.width) * 0.86f,
+            minOf(72f * density, source.height, target.height * 0.86f))
+        val landing = Rect(target.bottomRight - Offset(compact.width, compact.height), compact)
+        if (p < SendArrival) {
+            val travel = p / SendArrival
+            val center = sendPoint(source.center, landing.center, travel, 24f * density)
+            val narrow = sendEaseOut(travel / 0.25f)
+            val size = Size(source.width + (compact.width - source.width) * narrow,
+                source.height + (compact.height - source.height) * narrow)
+            return Rect(center - Offset(size.width / 2, size.height / 2), size)
+        }
+        val t = (p - SendArrival) / (1 - SendArrival)
+        val eased = sendEaseOut(t)
+        val size = Size(compact.width + (target.width - compact.width) * eased,
+            compact.height + (target.height - compact.height) * eased)
+        return Rect(target.bottomRight - Offset(size.width, size.height), size)
+    }
     fun duration(value: Int) = if (ValueAnimator.areAnimatorsEnabled()) value else 0
     fun touchOrigin(point: Offset?, size: Size) = Offset(
         (point?.x ?: size.width / 2).coerceIn(0f, size.width),
@@ -77,8 +105,8 @@ internal object InteractionMotion {
     fun sendPoint(from: Offset, to: Offset, progress: Float, minimumRight: Float = 24f): Offset {
         val p = progress.coerceIn(0f, 1f)
         val bend = Offset(max(from.x + minimumRight, to.x), from.y)
-        return if (p < 0.25f) from + (bend - from) * (p / 0.25f)
-        else bend + (to - bend) * ((p - 0.25f) / 0.75f)
+        return if (p < 0.25f) from + (bend - from) * sendEaseOut(p / 0.25f)
+        else bend + (to - bend) * sendEaseOut((p - 0.25f) / 0.75f)
     }
 }
 

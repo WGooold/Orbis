@@ -320,6 +320,7 @@ struct ChatView: View {
                         if #unavailable(iOS 18.0) { LegacyScrollInteraction(onInteraction: userInteractionChanged) }
                     }
             }.coordinateSpace(name: "chat-viewport").scrollDismissesKeyboard(.interactively)
+                .orbisAnchor(sendFlight.viewport)
 
                 .modifier(ChatScrollObserver(viewportHeight: viewport.size.height, following: following, jumpRequest: jumpRequest,
                                              questionJumpRequest: questionJumpRequest,

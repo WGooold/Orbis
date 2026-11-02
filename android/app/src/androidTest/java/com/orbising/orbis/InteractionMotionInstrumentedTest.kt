@@ -14,6 +14,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.graphics.asAndroidBitmap
@@ -28,6 +30,7 @@ import org.junit.Rule
 import org.junit.Test
 import java.io.File
 import kotlin.math.abs
+import kotlinx.coroutines.runBlocking
 
 /** ADR-0058: observable intermediate frames, cancellation and ownership on production components. */
 class InteractionMotionInstrumentedTest {
@@ -321,8 +324,75 @@ class InteractionMotionInstrumentedTest {
         compose.mainClock.advanceTimeByFrame()
         compose.runOnIdle { assertTrue(flight.flights.isEmpty()) }
         assertEquals(bounds, compose.onNodeWithTag("landing").fetchSemanticsNode().boundsInRoot)
+        compose.runOnIdle { active = true }
+        compose.mainClock.advanceTimeByFrame()
+        compose.runOnIdle { flight.launch(send("accepted"), following = true) }
+        compose.mainClock.advanceTimeBy(64)
+        compose.runOnIdle {
+            assertTrue(flight.flights.single().landsOnRow)
+            assertTrue(flight.visuals.containsKey("accepted"))
+            flight.clear()
+        }
     }
 
+
+    @Test fun sendFlightUnfoldsTheRecordedBubbleAndHandsOffWithoutChangingItsPixels() {
+        lateinit var flight: MessageSendFlightState
+        compose.mainClock.autoAdvance = false
+        compose.setContent { OrbisTheme {
+            val scope = rememberCoroutineScope()
+            flight = remember { MessageSendFlightState(scope) }
+            MessageSendFlightHost(flight, true) {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                    Column(Modifier.align(Alignment.TopEnd).padding(top = 100.dp, end = 20.dp)
+                        .messageSendFlightTarget("whole").width(250.dp).height(220.dp)
+                        .background(MaterialTheme.colorScheme.surface).testTag("whole-message")) {
+                        Text("第一行\n第二行\n第三行\n第四行", Modifier.padding(14.dp))
+                        Box(Modifier.padding(14.dp).fillMaxWidth().height(64.dp).background(Color.Cyan)) {
+                            Text("附件内容必须一起展开")
+                        }
+                    }
+                }
+            }
+        } }
+        compose.mainClock.advanceTimeByFrame()
+        val original = compose.onRoot().captureToImage().toPixelMap()
+        lateinit var item: MessageSendFlightState.Flight
+        compose.runOnIdle {
+            val target = flight.targets.getValue("whole")
+            val density = flight.density
+            item = MessageSendFlightState.Flight("whole", "不能代替实际气泡的简化副本",
+                Rect(flight.root.left + 24*density, target.bottom + 72*density,
+                    flight.root.right - 24*density, target.bottom + 128*density), target).apply { landsOnRow = true }
+            flight.flights.add(item)
+            runBlocking { item.progress.snapTo(InteractionMotion.SendArrival) }
+        }
+        compose.mainClock.advanceTimeByFrame()
+        capture("motion-send-compact-arrival")
+        compose.runOnIdle { runBlocking { item.progress.snapTo(0.82f) } }
+        compose.mainClock.advanceTimeByFrame()
+        capture("motion-send-unfold-middle")
+        compose.runOnIdle { runBlocking { item.progress.snapTo(1f) } }
+        compose.mainClock.advanceTimeByFrame()
+        val unfolded = compose.onRoot().captureToImage().toPixelMap()
+        capture("motion-send-unfold-full")
+        // Interior pixels include the fourth text line and attachment, beyond the former 96dp cap.
+        val bounds = compose.onNodeWithTag("whole-message").fetchSemanticsNode().boundsInRoot
+        var changed = 0
+        var sampled = 0
+        for (y in (bounds.top.toInt() + 30) until (bounds.bottom.toInt() - 30) step 3) {
+            for (x in (bounds.left.toInt() + 30) until (bounds.right.toInt() - 30) step 3) {
+                sampled++
+                val a = original[x, y]; val b = unfolded[x, y]
+                if (abs(a.red-b.red) + abs(a.green-b.green) + abs(a.blue-b.blue) > 0.04f) changed++
+            }
+        }
+        assertTrue("Full-size projection must match the actual bubble: $changed/$sampled pixels differ", changed < sampled / 100)
+        compose.onAllNodesWithText("附件内容必须一起展开").assertCountEquals(1)
+        compose.runOnIdle { flight.clear() }
+        compose.mainClock.advanceTimeByFrame()
+        capture("motion-send-canonical-handoff")
+    }
 
     @Test fun newSessionCardRisesBeforeHandingOffExactlyOnce() {
         var completed = 0
