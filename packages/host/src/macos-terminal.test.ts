@@ -33,9 +33,12 @@ describe("macOS terminal launch", () => {
     terminal.codex.mockResolvedValue({ command: "/Orbis Tools/node", prefixArgs: ["/User's tools/$HOME;codex.js"] });
     terminal.claude.mockResolvedValue("/User's tools/claude");
     vi.stubEnv("CLAUDE_CONFIG_DIR", join(workspace, "claude-config"));
-    terminal.spawn.mockImplementation(() => {
+    terminal.spawn.mockImplementation((_command: string, args: string[]) => {
       const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
-      queueMicrotask(() => { child.emit("spawn"); child.emit("exit", 0); });
+      queueMicrotask(async () => {
+        if (args[2]?.includes("claude-") && args[2].endsWith(".command")) await writeFile(`${args[2]}.started`, "");
+        child.emit("spawn"); child.emit("exit", 0);
+      });
       return child;
     });
   });
@@ -47,7 +50,7 @@ describe("macOS terminal launch", () => {
     const scripts = await readdir(join(state, "tmp"));
     expect(scripts).toHaveLength(1);
     const script = join(state, "tmp", scripts[0]!);
-    expect(terminal.spawn).toHaveBeenCalledWith("/usr/bin/open", ["-a", "Terminal", script], expect.objectContaining({ detached: true, stdio: "ignore" }));
+    expect(terminal.spawn).toHaveBeenCalledWith("/usr/bin/open", ["-a", "Terminal", script], expect.objectContaining({ stdio: "ignore", timeout: 15_000 }));
     const contents = await readFile(script, "utf8");
     expect(contents).toContain(`cd -- '${workspace.replaceAll("'", "'\\''")}' || exit 1`);
     expect(contents).toContain("export ORBIS_STATE_DIR=");
@@ -60,6 +63,17 @@ describe("macOS terminal launch", () => {
     terminal.claude.mockResolvedValue(undefined);
     await expect(new DesktopRuntime(() => {}, workspace).openAgent("claude", "tui", workspace)).rejects.toThrow("没有找到 Claude Code");
     expect(terminal.spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects Claude when the opener process starts but exits unsuccessfully", async () => {
+    terminal.spawn.mockImplementation(() => {
+      const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
+      queueMicrotask(() => { child.emit("spawn"); child.emit("exit", 1); });
+      return child;
+    });
+    await expect(new DesktopRuntime(() => {}, join(workspace, "state")).openAgent("claude", "tui", workspace))
+      .rejects.toThrow("Terminal 是否可用");
+    expect(await readdir(join(workspace, "state", "tmp"))).toEqual([]);
   });
 
   it.each([undefined, "relative/path", "/orbis-missing-workspace-for-test"])("rejects an invalid Claude workspace %s before launching", async cwd => {

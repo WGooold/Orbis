@@ -200,6 +200,14 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 
 恢复 V09–V10、V16–V18 的既有同步契约；不改变 §13 的步骤身份和原子交接，不新增交互动效。`claude-transcript.test.ts` 覆盖 1,055 条恢复、继续追加与 Host 重开预览；`claude-history-fixture.mjs` 增加可选长前缀，既有 Android 真实加密 / 缓存 / 重连用例复用同一断言。验证、设备门禁与部署状态见 [UI 回归方案](../testing/ui-regression.md) §6 和 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。
 
+### 18. macOS 启动脚本执行确认（2026-11-03，源码验证 / 未部署）
+
+现场两次新建都生成了私有 `.command`，系统 `open` 已投递给 Terminal，但脚本仍存在且没有新增 Claude 进程；Host 在 60 秒后记录 `session.activate=failed`。未取得 Terminal 窗口内容，不能把原因定为登录、插件、权限提示或系统故障。原 Claude 进程与最新历史仍正常。
+
+macOS 启动器须等待 `open` 的退出结果（15 秒上限），再等待脚本在真实 TTY 执行后的私有回执（10 秒上限）。没有回执时清理本次脚本 / 临时设置并明确说明“Terminal 未确认执行 Claude Code 启动脚本”，取消相应 bridge 等待；回执仅证明脚本已运行，连接成功仍只认原生 hello。Windows 路径与 Codex 原有错误文案保持；不自动重试、不回答系统提示、不终止既有 TUI。
+
+关联 V12、V16–V18 / R29–R30，沿用现有启动页与错误恢复，不新增交互或动效参数。单测、设备未跑项及现场限制见 [UI 回归方案](../testing/ui-regression.md) 和 `.artifacts/ui-regression/20261103-claude-resume-sync/launch-followup.md`；此补丁尚未部署，不能声明用户新建故障已修复。
+
 ## Alternatives not selected
 
 - **Agent SDK 执行后端**：适合独立管理会话，但不能替代附着到用户正在操作的 TUI；不作为自动回退。

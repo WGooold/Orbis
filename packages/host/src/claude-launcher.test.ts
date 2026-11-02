@@ -42,6 +42,7 @@ describe("TerminalClaudeLauncher", () => {
       run: async (command, args) => {
         expect(JSON.parse(await readFile(join(config, ".claude.json"), "utf8")).projects[cwd].hasTrustDialogAccepted).toBe(true);
         runs.push([command, args]);
+        await writeFile(`${args[2]!}.started`, "");
       } });
     expect(await launcher.unavailable()).toBeUndefined();
     await launcher.launch({ cwd, resume: "abc-123", launchId: "launch-1" });
@@ -54,6 +55,9 @@ describe("TerminalClaudeLauncher", () => {
     expect(script).toContain("export ORBIS_CLAUDE_LAUNCH_ID='launch-1'");
     expect(script).toContain(`exec '${join(bin, "claude")}' '--resume' 'abc-123' '--plugin-dir' '${pluginDir}'`);
     expect(script).toContain('rm -f -- "$0"');
+    expect(script).toContain("[ -t 0 ] || exit 1");
+    expect(script).toContain(".command.started' || exit 1");
+    expect((await readdir(join(root, "state", "tmp"))).some(name => name.endsWith(".started"))).toBe(false);
 
     await writeFile(join(config, "settings.json"), JSON.stringify({ enabledPlugins: { "orbis-host-session-link@orbis-host": true } }));
     await launcher.launch({ cwd, launchId: "launch-2" });
@@ -76,7 +80,7 @@ describe("TerminalClaudeLauncher", () => {
     await writeClaudeFixture(join(root, "bin"), false);
     const calls: string[] = [];
     const launcher = new TerminalClaudeLauncher({ stateDir: join(root, "state"), configDir: config, env, platform: "darwin", pluginDir,
-      run: async command => { calls.push(command); } });
+      run: async (command, args) => { calls.push(command); await writeFile(`${args[2]!}.started`, ""); } });
     await expect(launcher.launch({ cwd: root, launchId: "no-login" })).rejects.toThrow("账号授权");
     expect(calls).toEqual([]);
     await launcher.launch({ cwd: root, launchId: "local-setup", setup: true });
@@ -109,6 +113,18 @@ describe("TerminalClaudeLauncher", () => {
     expect(opened).toBe(false);
     expect(await readFile(join(config, ".claude.json"), "utf8")).toBe("invalid config");
     expect(await readdir(join(root, "state", "tmp")).catch(() => [])).toEqual([]);
+  });
+
+  it("rejects an unexecuted script and removes it instead of claiming the terminal opened", async () => {
+    const { root, config, env, pluginDir } = await setup();
+    await writeFile(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { fixture: {} } }));
+    const launcher = new TerminalClaudeLauncher({ stateDir: join(root, "state"), configDir: config, env,
+      platform: "darwin", pluginDir, run: async () => undefined });
+    const clock = vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(10_001);
+    try {
+      await expect(launcher.launch({ cwd: root, launchId: "never-started" })).rejects.toThrow("未确认执行 Claude Code 启动脚本");
+      expect(await readdir(join(root, "state", "tmp"))).toEqual([]);
+    } finally { clock.mockRestore(); }
   });
 
   it("writes cmd scripts with quoted paths for Windows", () => {

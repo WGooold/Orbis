@@ -345,7 +345,8 @@ ADR-0046 原 17 项要求的映射：1→V01–V04；2→S02；3→S03；4→V05
 ### 2026-11-03 Claude 长会话恢复同步修复（恢复 V09–V10 / V16–V18，验证中）
 
 - 运行中 Host 探针确认：1,055 条历史恢复后的 canonical 批次超过 256 条上限，`seq=0` 与旧 preview 被持续保留，原生后续消息虽已落盘却无法更新 App。按 [ADR-0035 §17](0035-incremental-session-reconcile.md#17-超预算-canonical-批次转为-checkpoint-恢复2026-11-03) 显式失效旧 epoch，以既有有界 checkpoint 恢复，之后的小批次继续连续提交；保留原生记录、消息身份与未确认输入语义。
-- 恢复既有基线，不新增 feature、不调整布局 / 动效参数。源端条数 / 字节预算、Host 长历史重开预览及 Android 加密链路映射见 [UI 回归方案][Regression] §3.3 / R18；实际结果见 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。第三次同 Android 设备 / APK 对照中候选专项通过、旧协议仍在追加后超时，三张关键截图已审阅；此前连接超时与模拟器崩溃证据保留。完整双端设备 / 手动门禁与用户现场恢复分别记录，候选包未部署时不能记为已生效。
+- 恢复既有基线，不新增 feature、不调整布局 / 动效参数。源端条数 / 字节预算、Host 长历史重开预览及 Android 加密链路映射见 [UI 回归方案][Regression] §3.3 / R18；实际结果见 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。第三次同 Android 设备 / APK 对照中候选专项通过、旧协议仍在追加后超时，三张关键截图已审阅；此前连接超时与模拟器崩溃证据保留。历史修复 `633edc3` 已获授权安装；最终交接确认 Claude 原进程 / 记录 / 配对保留、最新 preview 与安卓中继重连通过，此前两次回退证据保留。真机消息显示和完整双端设备 / 手动门禁仍未验收。
+- 随后新建 Claude 未完成（V12、V16–V18 / R29–R30）：两次启动脚本未执行且无新增 Claude，Host 操作已超时失败。按 [ADR-0033 §18](0033-claude-code-tui-mods-integration.md#18-macos-启动脚本执行确认2026-11-03源码验证--未部署) 增加 macOS 脚本执行回执与失败清理，沿用现有启动 / 失败显示，无新交互家族或动效参数；该补丁未部署，现场原因未确认，不记新建问题已修复。
 
 ### 已知差异与未验收范围
 

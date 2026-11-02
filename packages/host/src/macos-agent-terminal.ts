@@ -26,12 +26,17 @@ export async function openMacAgentTerminal(input: { stateDir: string; cwd: strin
       child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开 macOS 终端，请检查 Terminal 是否可用")));
     });
     if (input.confirmStart) {
-      const deadline = Date.now() + 10_000;
-      while (!await stat(startedFile).then(() => true, () => false)) {
-        if (Date.now() >= deadline) throw new Error("Terminal 未确认启动 Codex 会话，请检查终端窗口后重试");
-        await delay(50);
-      }
+      await waitForMacTerminalScriptStart(startedFile, "Terminal 未确认启动 Codex 会话，请检查终端窗口后重试");
     }
   } catch (error) { await unlink(file).catch(() => undefined); throw error; }
   finally { if (input.confirmStart) await unlink(startedFile).catch(() => undefined); }
+}
+
+/** An `open` receipt is not evidence that Terminal executed the private script. */
+export async function waitForMacTerminalScriptStart(startedFile: string, timeoutMessage: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!await stat(startedFile).then(() => true, () => false)) {
+    if (Date.now() >= deadline) throw new Error(timeoutMessage);
+    await delay(50);
+  }
 }

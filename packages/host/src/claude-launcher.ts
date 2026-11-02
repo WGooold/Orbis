@@ -7,6 +7,7 @@ import { findClaudeExecutable } from "./claude-integration-install.js";
 import { checkClaudeAuthentication, claudeStartupSettings, claudeManagedSettingsPath } from "./claude-startup.js";
 import { hasDesktopSession, resolveTerminalCommand } from "./spawner.js";
 import { claudeLaunchConfig, trustClaudeWorkspace } from "./claude-workspace-trust.js";
+import { waitForMacTerminalScriptStart } from "./macos-agent-terminal.js";
 
 /**
  * Opens Claude Code's official TUI in a terminal window on this computer (ADR-0033 §1:
@@ -100,14 +101,18 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
     const run = this.#options.run ?? spawnDetached;
     if (platform === "darwin") {
       const script = join(scripts, `claude-${request.launchId}.command`);
-      await writeFile(script, posixScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir: config.directory, settingsFile }), { mode: 0o700 });
+      const startedFile = `${script}.started`;
+      await writeFile(script, posixScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir: config.directory, settingsFile, startedFile }), { mode: 0o700, flag: "wx" });
       await chmod(script, 0o700);
-      try { await run("/usr/bin/open", ["-a", "Terminal", script]); }
+      try {
+        await run("/usr/bin/open", ["-a", "Terminal", script]);
+        await waitForMacTerminalScriptStart(startedFile, "Terminal 未确认执行 Claude Code 启动脚本，请在电脑上检查终端窗口或系统提示后重试");
+      }
       catch (error) {
         await unlink(script).catch(() => undefined);
         if (settingsFile) await unlink(settingsFile).catch(() => undefined);
         throw error;
-      }
+      } finally { await unlink(startedFile).catch(() => undefined); }
       return;
     }
     const script = join(scripts, `claude-${request.launchId}.cmd`);
@@ -132,7 +137,7 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
 
 }
 
-type ScriptInput = { cwd: string; claude: string; args: readonly string[]; launchId: string; stateDir: string; configDir?: string | undefined; settingsFile?: string | undefined };
+type ScriptInput = { cwd: string; claude: string; args: readonly string[]; launchId: string; stateDir: string; configDir?: string | undefined; settingsFile?: string | undefined; startedFile?: string | undefined };
 
 /** Terminal runs it in the person's login shell; it removes itself before handing over to Claude. */
 export function posixScript(input: ScriptInput): string {
@@ -143,6 +148,7 @@ export function posixScript(input: ScriptInput): string {
     `export ORBIS_CLAUDE_LAUNCH_ID=${quote(input.launchId)}`,
     `export ORBIS_STATE_DIR=${quote(input.stateDir)}`,
     ...(input.configDir === undefined ? ["unset CLAUDE_CONFIG_DIR"] : [`export CLAUDE_CONFIG_DIR=${quote(input.configDir)}`]),
+    ...(input.startedFile === undefined ? [] : ["[ -t 0 ] || exit 1", `/usr/bin/touch -- ${quote(input.startedFile)} || exit 1`]),
     "rm -f -- \"$0\"",
     ...(input.settingsFile === undefined ? [`exec ${[input.claude, ...input.args].map(quote).join(" ")}`]
       : [`trap ${quote(`rm -f -- ${quote(input.settingsFile)}`)} EXIT`, [input.claude, ...input.args].map(quote).join(" "), "result=$?", 'exit "$result"']),
@@ -167,6 +173,14 @@ export function windowsScript(input: ScriptInput): string {
 
 function spawnDetached(command: string, args: readonly string[]): Promise<void> {
   return new Promise((resolve, reject) => {
+    // `open` merely hands the script to Terminal. Its spawn event is not an
+    // opener result, and even a successful exit still needs the script receipt.
+    if (command === "/usr/bin/open") {
+      const child = spawn(command, [...args], { stdio: "ignore", timeout: 15_000 });
+      child.once("error", reject);
+      child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开 macOS 终端，请检查 Terminal 是否可用")));
+      return;
+    }
     const child = spawn(command, [...args], { detached: true, stdio: "ignore", windowsHide: false,
       windowsVerbatimArguments: process.platform === "win32" && command.toLowerCase().endsWith("cmd.exe") });
     child.once("error", reject);

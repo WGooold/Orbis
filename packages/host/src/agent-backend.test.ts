@@ -338,6 +338,18 @@ describe("ClaudeBackend directory, archive and phone-opened TUIs", () => {
     await expect(backend.activate({ type: "new", cwd: root })).rejects.toMatchObject({ code: "spawn_failed", message: expect.stringContaining("登录状态、Orbis 插件加载或管理策略") });
   });
 
+  it("cancels the Claude bridge wait when Terminal never executes its startup script", async () => {
+    const { backend, mods, repo } = await fixture(async () => {
+      throw new Error("Terminal 未确认执行 Claude Code 启动脚本");
+    });
+    const cancel = vi.spyOn(mods, "cancelLaunch");
+    await expect(backend.activate({ type: "new", cwd: repo })).rejects.toMatchObject({
+      code: "spawn_failed", message: expect.stringContaining("Terminal 未确认执行"),
+    });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(mods.runtimeIds()).toEqual([]);
+  });
+
   it("routes slash commands the TUI listed and passes attachments as paths", async () => {
     const { backend, mods, events } = await fixture();
     const current = connect(mods, "live");
