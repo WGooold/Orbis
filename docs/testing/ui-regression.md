@@ -4,7 +4,7 @@
 
 本轮统一交互动效（r31 / ADR-0058）：32场景与MOT ticket先行，双端共用组件已接入。Android全量154项4失败/7外部夹具assumption，iOS全量69项8失败，均未超同设备同配置基线，但受影响既有失败仍阻塞验收。最终Android深色大字20项、实际减少动画19项、iOS SE小屏大字10项及iPad6项定向通过；截图与部分录屏已审阅，完整C/R/A门禁未完成。见 [交互动效验证记录](interaction-motion.md)。
 
-日期：2026-11-02。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-02/r33`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-02。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-02/r35`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 10 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -217,20 +217,20 @@ S24 最近提问提示（ADR-0057）：iOS `ChatQuestionTests`、`testQuestionRe
 | MOT-09 / SC28–32 | 扩展 SwipeBack、PageNavigation、iOS嵌套返回；系统左右边缘取消和完成、菜单/IME/选择优先 | C04、R19–R22、R40 / M08、M14 |
 | MOT-10 | 32组场景调用方逐项审计；最终双端全量L1–L4与同设备基线比较 | C01–C18、A1–A4，宽屏A5 |
 
-r33 增补（同属 §3.3 的自动映射；完整结果见 [r33 验证记录](interaction-motion.md#2026-11-02--r33-交互细化)）：
+r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](interaction-motion.md#2026-11-02--r35-交互细化)）：
 
 | Ticket / 场景 | 实际自动验证入口 | 手动 / feature |
 | --- | --- | --- |
-| MOT-11 / SC33 | Android `InteractionMotionTest`、`predictiveBackOnBothEdgesCancelsOrCommitsOnlyOnePage`；iOS `testOptionalEdgeBackKeepsExistingIOSNavigation` | R41 / M08、M14 |
-| MOT-12 / SC34 | `discreteLabelsKeepOnlyTheLiveAccessibilityValueDuringTheirFade`、`ChatStatusLayoutInstrumentedTest`、iOS 状态外观矩阵、Qt `MotionTextTest` | R42 / M21、V05、V16 |
-| MOT-13 / SC35、MOT-15 / SC37 | `physicalPressShowsFeedbackBeforeDispatchAndCancellationDoesNotClick`、`iconActivationChangesTheGlyphWithoutChangingItsHitTarget`；双端共用组件和导航来源中帧 | R43、R45 / M20、M12、V13 |
-| MOT-14 / SC36 | `SessionDrawerViewportInstrumentedTest`、`SessionProviderFilterInstrumentedTest`、iOS `testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates` 及搜索 / 归档既有用例 | R44 / M22、V21 |
-| MOT-16 / SC38 | `HomeSelectionInstrumentedTest` 逐项触觉次数、目录 / 下载选择；iOS 首页 / 目录 / 下载多选 | R46 / M06、M12 |
-| MOT-17 / SC39 | Qt `MotionTextTest`、`--smoke-motion` 普通 / 减少动画的真实窗口中帧 | R47 / X03、X05 |
-| MOT-18 / SC40 | `newSessionCardRisesBeforeHandingOffExactlyOnce`、LaunchLedger、双端启动失败 / 重试 / 启动中输入；iOS 新卡录屏 | R48 / M23、V12、V17 |
-| MOT-19 / SC41 | `nativeTextLongPressReplacesThePageHeaderWithoutMovingTheBubble`；iOS `testUserMessageCopyAndRewind`、`testOptimisticSendReconcilesAndRejectedSendRestores` | R49 / M19、S10、S17 |
-| MOT-20 / SC42 | `ChatQuestionReminderInstrumentedTest`、iOS 两项最近提问专项（保留锚点断言） | R50 / S24、V01–V03 |
-| MOT-21 / SC43 | `HomePresentationTest`、`HomeRuntimeLoadingTests`、`HomeLoadingInstrumentedTest`、iOS `testHomeKeepsCardsAfterDirectoryReplay` | R51 / S18、V13、V18 |
+| MOT-11 / SC33 | Android `InteractionMotionTest`、`predictiveBackOnBothEdgesCancelsOrCommitsOnlyOnePage`；iOS `testOptionalEdgeBackKeepsExistingIOSNavigation` | R45 / M08、M14 |
+| MOT-12 / SC34 | `discreteLabelsKeepOnlyTheLiveAccessibilityValueDuringTheirFade`、`ChatStatusLayoutInstrumentedTest`、iOS 状态外观矩阵、Qt `MotionTextTest` | R46 / M21、V05、V16 |
+| MOT-13 / SC35、MOT-15 / SC37 | `physicalPressShowsFeedbackBeforeDispatchAndCancellationDoesNotClick`、`iconActivationChangesTheGlyphWithoutChangingItsHitTarget`；双端共用组件和导航来源中帧 | R47、R49 / M20、M12、V13 |
+| MOT-14 / SC36 | `SessionDrawerViewportInstrumentedTest`、`SessionProviderFilterInstrumentedTest`、iOS `testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates` 及搜索 / 归档既有用例 | R48 / M22、V21 |
+| MOT-16 / SC38 | `HomeSelectionInstrumentedTest` 逐项触觉次数、目录 / 下载选择；iOS 首页 / 目录 / 下载多选 | R50 / M06、M12 |
+| MOT-17 / SC39 | Qt `MotionTextTest`、`--smoke-motion` 普通 / 减少动画的真实窗口中帧 | R51 / X03、X05 |
+| MOT-18 / SC40 | `newSessionCardRisesBeforeHandingOffExactlyOnce`、LaunchLedger、双端启动失败 / 重试 / 启动中输入；iOS 新卡录屏 | R52 / M23、V12、V17 |
+| MOT-19 / SC41 | `nativeTextLongPressReplacesThePageHeaderWithoutMovingTheBubble`；iOS `testUserMessageCopyAndRewind`、`testOptimisticSendReconcilesAndRejectedSendRestores` | R53 / M19、S10、S17 |
+| MOT-20 / SC42 | `ChatQuestionReminderInstrumentedTest`、iOS 两项最近提问专项（保留锚点断言） | R54 / S24、V01–V03 |
+| MOT-21 / SC43 | `HomePresentationTest`、`HomeRuntimeLoadingTests`、`HomeLoadingInstrumentedTest`、iOS `testHomeKeepsCardsAfterDirectoryReplay` | R55 / S18、V13、V18 |
 
 
 ## 4. 手动回归
@@ -367,7 +367,7 @@ r33 增补（同属 §3.3 的自动映射；完整结果见 [r33 验证记录](i
 | R33 | 左滑跨阈值再退回、再次跨阈值松手；拒绝/断线/换电脑；录屏逐帧检查反向切回“关闭”及淡变结束 | 提示槽宽度稳定，文字不得在淡变期间或结束时重新居中跳位；红灰平滑；每次进入 / 退出阈值各触觉一次，单手势至少反复三轮，同侧移动及松手 / 回弹不追加；卡片完全滑出再收拢；恢复不串身份 | M10 / MOT-02 |
 | R34 | 首页、目录、下载、供应商分别长按和触点不同时逐项选择；快速反选和退出 | 蓝底从各自触点展开；工具栏线段旋转/合拢/渐显；几何和确认取消保持 | S15、M06 / MOT-03 |
 | R35 | 所有菜单入口四角/窄屏展开；电脑二级进入返回；连续操作/系统返回/切电脑 | 从锚点翻开；容器先变形再侧向翻页；返回相反且只退一层 | M18 / MOT-04 |
-| R36 | 当前聊天、长文本、附件、历史预览和离线消息长按；复制、Rewind、滚动及文字选择 | r33 应用页顶栏切换为操作栏，常驻下方操作移除；pending恢复区仍在；不推动正文/绕过确认 | S10、M19 / MOT-05 |
+| R36 | 当前聊天、长文本、附件、历史预览和离线消息长按；复制、Rewind、滚动及文字选择 | r35 应用页顶栏切换为操作栏，常驻下方操作移除；pending恢复区仍在；不推动正文/绕过确认 | S10、M19 / MOT-05 |
 | R37 | 文本、多行、附件、运行中排队、重试、连发、断线、上翻阅读中发送 | 先右后上；准确身份交接；不追新、不重播、不飞向不存在的行 | M17 / MOT-06 |
 | R38 | 上翻触发最近提问，原文进入视野/点击/通知覆盖/新问题/换会话 | 右上滑入、原路滑出；末帧前内容保留，阅读锚点不动 | S24 / MOT-07 |
 | R39 | 按SC19–SC27逐入口点击图标，重复点击、禁用、减少动画 | 下载箭头弹、设置和历史旋转，其他轻弹；48命中不变，无重复专属动画 | M20 / MOT-08 |
@@ -449,20 +449,20 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 
 模拟器夹具不替代真机触觉体感、多真实 Host、真实后端和网络、真实订阅账号，也不覆盖 VoiceOver / TalkBack 全流程。这些项目以对应专题的真实环境验收为准，并在结果中单列为未验收。
 
-## r33 交互动效补充（已接入，验证中）
+## r35 交互动效补充（已接入，验证中）
 
 | 编号 | 专项 / ticket | 验收 | ID |
 | --- | --- | --- | --- |
-| R41 | 系统边缘缩小、双侧缝隙及完整右滑退场 / MOT-11 | ADR-0058 SC33 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M08、M14 |
-| R42 | 共用离散文字切换与出现 / MOT-12 | ADR-0058 SC34 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M21、V05、V16 |
-| R43 | 按下即时反馈与来源保留 / MOT-13 | ADR-0058 SC35 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M20、V13 |
-| R44 | 目录筛选集合过渡 / MOT-14 | ADR-0058 SC36 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M22、V21 |
-| R45 | 旋转按下整圈 / 松开返回与系统反馈 / MOT-15 | ADR-0058 SC37 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M20、M12 |
-| R46 | 每项选中和取消的触觉 / MOT-16 | ADR-0058 SC38 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M06、M12 |
-| R47 | Host 侧栏凹陷过渡和滚动统计 / MOT-17 | ADR-0058 SC39 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | X03、X05 |
-| R48 | 新建卡片追加与启动导航交接 / MOT-18 | ADR-0058 SC40 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M23、V12、V17 |
-| R49 | 消息长按替换页顶状态栏 / MOT-19 | ADR-0058 SC41 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M19、S10、S17 |
-| R50 | 单行提醒和最后上翻意图 / MOT-20 | ADR-0058 SC42 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | S24、V01–V03 |
-| R51 | 同步期间有效卡片可交互 / MOT-21 | ADR-0058 SC43 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | S18、V13、V18 |
+| R45 | 系统边缘缩小、双侧缝隙及完整右滑退场 / MOT-11 | ADR-0058 SC33 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M08、M14 |
+| R46 | 共用离散文字切换与出现 / MOT-12 | ADR-0058 SC34 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M21、V05、V16 |
+| R47 | 按下即时反馈与来源保留 / MOT-13 | ADR-0058 SC35 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M20、V13 |
+| R48 | 目录筛选集合过渡 / MOT-14 | ADR-0058 SC36 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M22、V21 |
+| R49 | 旋转按下整圈 / 松开返回与系统反馈 / MOT-15 | ADR-0058 SC37 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M20、M12 |
+| R50 | 每项选中和取消的触觉 / MOT-16 | ADR-0058 SC38 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M06、M12 |
+| R51 | Host 侧栏凹陷过渡和滚动统计 / MOT-17 | ADR-0058 SC39 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | X03、X05 |
+| R52 | 新建卡片追加与启动导航交接 / MOT-18 | ADR-0058 SC40 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M23、V12、V17 |
+| R53 | 消息长按替换页顶状态栏 / MOT-19 | ADR-0058 SC41 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M19、S10、S17 |
+| R54 | 单行提醒和最后上翻意图 / MOT-20 | ADR-0058 SC42 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | S24、V01–V03 |
+| R55 | 同步期间有效卡片可交互 / MOT-21 | ADR-0058 SC43 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | S18、V13、V18 |
 
-§3.3 增补映射：MOT-11→InteractionMotion / PageNavigation 设备中帧；MOT-12/13/15/16→共用按压 / 文字 / 多选设备用例；MOT-14→目录筛选与视口；MOT-17→Qt 材质 / 页面帧；MOT-18→LaunchLedger 与新建交接；MOT-19→用户消息复制 / Rewind 与顶栏；MOT-20→ChatQuestion / 提醒滚动方向；MOT-21→HomePresentation / HomeRuntimeLoading / 首页刷新点击。具体自动用例与每轮结果见 [r33 验证记录](interaction-motion.md#2026-11-02--r33-交互细化)。双端已执行全量，受影响失败继续修复 / 复核；完整 C / R / A 尚未完成，历史失败保留。
+§3.3 增补映射：MOT-11→InteractionMotion / PageNavigation 设备中帧；MOT-12/13/15/16→共用按压 / 文字 / 多选设备用例；MOT-14→目录筛选与视口；MOT-17→Qt 材质 / 页面帧；MOT-18→LaunchLedger 与新建交接；MOT-19→用户消息复制 / Rewind 与顶栏；MOT-20→ChatQuestion / 提醒滚动方向；MOT-21→HomePresentation / HomeRuntimeLoading / 首页刷新点击。具体自动用例与每轮结果见 [r35 验证记录](interaction-motion.md#2026-11-02--r35-交互细化)。双端已执行全量，受影响失败继续修复 / 复核；完整 C / R / A 尚未完成，历史失败保留。

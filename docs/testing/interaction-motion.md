@@ -118,9 +118,9 @@ iOS早期全量 `ios-full-1` 的新增失败定位后已修复：消息修饰器
 
 集成检查：Swift 239 项通过；Android 573 项 JVM 测试、App / AndroidTest 构建通过；iOS App / UITest 构建通过；76 项 feature、32 场景、10 张 MOT ticket 与引用检查通过。Android 首次以不可执行的 wrapper 启动、第二次用 JDK 25 均未运行测试；改以 `sh gradlew` 和已安装 JDK 21 后通过，首轮日志保留。证据见 `.artifacts/merge-back/20261101-main/`。本次没有重跑设备全量 / 人工验收，原失败与 MOT-10 未完成状态保留。
 
-## 2026-11-02 — r33 交互细化
+## 2026-11-02 — r35 交互细化
 
-工作树 `codex/interaction-motion-refinement`，基点 `8ab14b6`；先行设计提交 `f415a2c`。本轮覆盖用户的 11 项补充，对应 SC33–SC43 / MOT-11–21 / R41–R51，feature 总数 79，已交付计数仍为 67。代码接入与设备验收分开记录；完整手动门禁尚未完成。
+工作树 `codex/interaction-motion-refinement`，基点 `8ab14b6`；先行设计提交 `f415a2c`。本轮覆盖用户的 11 项补充，对应 SC33–SC43 / MOT-11–21 / R45–R55，feature 总数 79，已交付计数仍为 67。代码接入与设备验收分开记录；完整手动门禁尚未完成。
 
 证据根 `.artifacts/ui-regression/20261102-motion-refinement/`；同基点核对位于独立 `interaction-motion-r32-baseline/orbis` 工作树的同名证据目录。只复用共享池 API 35、iPhone SE 3、iPhone 17；每轮均取得设备锁和固定构建目录租约，结束恢复设备设置。池内 iPad 初期被其他任务占用，释放后补跑本轮宽屏专项；不能将旧轮 iPad 结果计作本轮验收。
 
@@ -128,17 +128,17 @@ iOS早期全量 `ios-full-1` 的新增失败定位后已修复：消息修饰器
 
 | 专项 | 接入与验证入口 | 证据和边界 |
 | --- | --- | --- |
-| R41 / SC33 | Android `SwipeBackLayer` / `InteractionMotion.edgeShift`；`InteractionMotionTest`、`predictiveBackOnBothEdgesCancelsOrCommitsOnlyOnePage` | 缩小至 0.92、双侧至少 8dp 缝隙、真实底页遮罩、右向离屏中帧与单次返回已验证；系统箭头与 IME / 弹层组合仍待真实手势检查。iOS 保留原右滑，不交付新增双边缘手势 |
-| R42 / SC34 | 双端 `MotionText`；连接 / 会话状态、卡片标题、筛选与选择计数；Android `discreteLabelsKeepOnlyTheLiveAccessibilityValueDuringTheirFade`；Qt `MotionTextTest` | 160ms 淡变与首次出现；Android 只暴露当前文本及其布局语义。输入中 / 流式正文 / 秒表保留专用行为，不套离散文本动画 |
-| R43 / SC35 | 双端共用按下 / 松开驱动；Android `physicalPressShowsFeedbackBeforeDispatchAndCancellationDoesNotClick` | 短按补足视觉峰值，业务请求立即发出；组件中帧通过，不据此宣称所有快速嵌套导航来源的完整周期均已人工验收 |
-| R44 / SC36 | Android `collectionMotion`、iOS `SessionDrawerView` 筛选事务；既有 provider filter / directory viewport 用例 | Android 稳定 key 的增删 / 位移动效同时覆盖目录更新，保留原视口补偿；iOS 保留列表与分组身份，仅搜索变化更新叶子 hit bounds；SE 目录更新专项复测通过，折叠 / 搜索选择既有失败仍保留 |
-| R45 / SC37 | `OrbisPressedGlyph` / `rememberGlyphProgress` 的旋转角色 | 按下 360°、松开反向回到原位；按下轻触觉，系统减少动画关闭旋转；真机触觉 / 静音体感未验收，不添加强制音效 |
-| R46 / SC38 | 首页 / 目录 / 下载 / 遗留供应商选择入口 | 每次选中 / 取消一次触觉；Android `HomeSelectionInstrumentedTest` 改为新需求的逐项次数断言，保留仅关闭所选等业务断言；无变化的重复长按不叠加 |
-| R47 / SC39 | Host `Motion.js` / `MotionText.qml` / 稳定侧栏槽 | 数字 220ms 上下滚动、凹凸表面交叉过渡；Qt 5 项测试、macOS 普通 / 减少动画实际窗口 smoke 与中帧通过；Windows 未构建 / 未运行 |
-| R48 / SC40 | 双端按 requestId 的新建卡片与导航交接 | Android `newSessionCardRisesBeforeHandingOffExactlyOnce`；iOS 新建失败 / 重试和启动中输入用例；iOS 实际录屏确认底部追加后进聊天。换电脑 / 打开其他页面取消跟随，不撤销已受理请求 |
-| R49 / SC41 | Android 页级 `MessageActionState`，iOS `OrbisMessageActionScope` | 原顶栏固定槽替换为复制 / Rewind；隐藏组不可点击与不可访问；保留原生选区、pending 状态及 Rewind 确认。发送落地长按回归已修复并在 iPad、SE 复测通过，见下方 |
-| R50 / SC42 | 双端 `ChatQuestionReminder` 和真实用户滚动方向 | 单行省略；距底部超过三行且最后操作朝历史方向，沿用源问题不可见等原条件；Android 新增向最新反向滚动隐藏用例通过；iOS 既有提醒锚点失败未放宽 |
-| R51 / SC43 | 双端 `homeCardIsCurrent` | 后台同步不禁用仍有当前身份的有效卡；保持加密连接与 runtime / session / Agent 匹配。Android 单元和实际点击、iOS 核心和实际点击进聊天通过 |
+| R45 / SC33 | Android `SwipeBackLayer` / `InteractionMotion.edgeShift`；`InteractionMotionTest`、`predictiveBackOnBothEdgesCancelsOrCommitsOnlyOnePage` | 缩小至 0.92、双侧至少 8dp 缝隙、真实底页遮罩、右向离屏中帧与单次返回已验证；系统箭头与 IME / 弹层组合仍待真实手势检查。iOS 保留原右滑，不交付新增双边缘手势 |
+| R46 / SC34 | 双端 `MotionText`；连接 / 会话状态、卡片标题、筛选与选择计数；Android `discreteLabelsKeepOnlyTheLiveAccessibilityValueDuringTheirFade`；Qt `MotionTextTest` | 160ms 淡变与首次出现；Android 只暴露当前文本及其布局语义。输入中 / 流式正文 / 秒表保留专用行为，不套离散文本动画 |
+| R47 / SC35 | 双端共用按下 / 松开驱动；Android `physicalPressShowsFeedbackBeforeDispatchAndCancellationDoesNotClick` | 短按补足视觉峰值，业务请求立即发出；组件中帧通过，不据此宣称所有快速嵌套导航来源的完整周期均已人工验收 |
+| R48 / SC36 | Android `collectionMotion`、iOS `SessionDrawerView` 筛选事务；既有 provider filter / directory viewport 用例 | Android 稳定 key 的增删 / 位移动效同时覆盖目录更新，保留原视口补偿；iOS 保留列表与分组身份，仅搜索变化更新叶子 hit bounds；SE 目录更新专项复测通过，折叠 / 搜索选择既有失败仍保留 |
+| R49 / SC37 | `OrbisPressedGlyph` / `rememberGlyphProgress` 的旋转角色 | 按下 360°、松开反向回到原位；按下轻触觉，系统减少动画关闭旋转；真机触觉 / 静音体感未验收，不添加强制音效 |
+| R50 / SC38 | 首页 / 目录 / 下载 / 遗留供应商选择入口 | 每次选中 / 取消一次触觉；Android `HomeSelectionInstrumentedTest` 改为新需求的逐项次数断言，保留仅关闭所选等业务断言；无变化的重复长按不叠加 |
+| R51 / SC39 | Host `Motion.js` / `MotionText.qml` / 稳定侧栏槽 | 数字 220ms 上下滚动、凹凸表面交叉过渡；Qt 5 项测试、macOS 普通 / 减少动画实际窗口 smoke 与中帧通过；Windows 未构建 / 未运行 |
+| R52 / SC40 | 双端按 requestId 的新建卡片与导航交接 | Android `newSessionCardRisesBeforeHandingOffExactlyOnce`；iOS 新建失败 / 重试和启动中输入用例；iOS 实际录屏确认底部追加后进聊天。换电脑 / 打开其他页面取消跟随，不撤销已受理请求 |
+| R53 / SC41 | Android 页级 `MessageActionState`，iOS `OrbisMessageActionScope` | 原顶栏固定槽替换为复制 / Rewind；隐藏组不可点击与不可访问；保留原生选区、pending 状态及 Rewind 确认。发送落地长按回归已修复并在 iPad、SE 复测通过，见下方 |
+| R54 / SC42 | 双端 `ChatQuestionReminder` 和真实用户滚动方向 | 单行省略；距底部超过三行且最后操作朝历史方向，沿用源问题不可见等原条件；Android 新增向最新反向滚动隐藏用例通过；iOS 既有提醒锚点失败未放宽 |
+| R55 / SC43 | 双端 `homeCardIsCurrent` | 后台同步不禁用仍有当前身份的有效卡；保持加密连接与 runtime / session / Agent 匹配。Android 单元和实际点击、iOS 核心和实际点击进聊天通过 |
 
 ### 执行结果
 
@@ -174,6 +174,8 @@ iOS SE 同基点复现的 6 项为：添加电脑返回、目录折叠、搜索�
 
 Android 动效证据包含双侧边缘压缩 / 右向退出、选中触点扩散、一级形变后子菜单进入、顶栏消息动作、离散文字中帧、新建卡片中帧与快速按压。iOS `targeted-ios-1.mp4` 的 113.5s 首页三卡、113.75s 末尾新卡、115s 聊天页面，抽帧 `new-card-sequence/` 与 `new-card-middle/`。Host `host-motion5*` / `host-motion-reduced3*` 记录数字中帧、侧栏切页与减少动画终态。iPad 首轮及修复后 19 张 PNG 已审阅（`ipad-targeted-1-contact.jpg`、`ipad-final-1-contact.jpg`）：消息页顶操作与原生选区共存，宽屏菜单和启动失败状态可见。这些证据不等于全入口流畅度或完整 C / R / A 通过。
 
-MOT-11–21 保持“已接入，验证中”。完整 C01–C18、R41–R51 的四外观逐入口人工检查、快速导航来源完整按压周期、iOS 17、iPad A5 全入口、Windows Host、真实隔离 Host、真机触觉 / 系统音效 / VoiceOver / TalkBack 尚未验收。不得删除或放宽现有失败用例，也不得把排队、仅构建或单个专项通过记作完整验收。
+MOT-11–21 保持“已接入，验证中”。完整 C01–C18、R45–R55 的四外观逐入口人工检查、快速导航来源完整按压周期、iOS 17、iPad A5 全入口、Windows Host、真实隔离 Host、真机触觉 / 系统音效 / VoiceOver / TalkBack 尚未验收。不得删除或放宽现有失败用例，也不得把排队、仅构建或单个专项通过记作完整验收。
 
-L0 编号与引用：79 个 feature、43 组场景、21 张 MOT ticket、158 个相对路径 / 锚点检查通过，本机 AGENTS / CLAUDE 一致。源码检查、最终包 / 同基点回退包哈希、源文件清单与手动未验收项分别保存在证据根的 `source-checks-final.json`、`motion-packages/delivery-manifest.json`、`source-manifest.json`、`manual-checklist.md`。本任务设备 / 构建租约已释放；未合并或推送本轮 r33。
+L0 编号与引用：79 个 feature、43 组场景、21 张 MOT ticket、158 个相对路径 / 锚点检查通过，本机 AGENTS / CLAUDE 一致。源码检查、最终包 / 同基点回退包哈希、源文件清单与手动未验收项分别保存在证据根的 `source-checks-final.json`、`motion-packages/delivery-manifest.json`、`source-manifest.json`、`manual-checklist.md`。本任务设备 / 构建租约已释放；未合并或推送本轮 r35。
+
+2026-11-02 合并编号映射：主线已使用 r33（iOS 下拉回弹）、r34（雾蓝外观）和 R41–R44，本专题分支原 r33 / R41–R51 合并后登记为 r35 / R45–R55。既有 `.artifacts/ui-regression/20261102-motion-refinement/` 证据中的原编号保持不改，按此映射查证；feature / SC / MOT 编号不变，未验收状态不变。
