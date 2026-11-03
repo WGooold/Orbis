@@ -16,22 +16,22 @@ python3 "$HOME/.orbis/tools/ui-regression/android-emulator.py" run --task "本�
 
 工具按已有本机约定放在 `~/.orbis/tools/ui-regression/`，不纳入 Git；本页和 [UI 回归方案](ui-regression.md) 是仓库入口。新 agent 不依赖旧聊天上下文，也不应从 `.artifacts/` 复制某次任务的临时运行器。工具缺失时先报告本机安装缺口，不退回未隔离的 ADB。
 
-本机现有 14 个工作树的 AGENTS.md / CLAUDE.md 已同步共享模拟器入口及用户追加授权的 12 台上限，原有 UI 基线保持。新建工作树后执行 `python3 "$HOME/.orbis/tools/ui-regression/sync-agent-guides.py" --worktree /新工作树绝对路径`；同步器保留旧指南备份，只更新 Git 忽略的入口文件，双入口已不一致时拒绝覆盖。
+本机工作树的 AGENTS.md / CLAUDE.md 通过共享同步器更新设备入口、12 台登记上限和强制解锁责任，原有 UI 基线保持；实际同步范围以当次 Git worktree 清单和备份 manifest 为准。新建工作树后执行 `python3 "$HOME/.orbis/tools/ui-regression/sync-agent-guides.py" --worktree /新工作树绝对路径`；同步器保留旧指南备份，只更新 Git 忽略的入口文件，双入口已不一致时拒绝覆盖。
 
 ## 借用与命令
 
 - `doctor` 列出 API 35 候选设备、占用状态及不兼容 / 文件缺失的排除原因，不启动服务或设备。
 - `smoke` 借用池内设备，验证启动、15 次 shell 响应以及 1 MiB 上传的 SHA-256，再清理自己的探针文件和运行资源。
 - `run -- <前台命令>` 在设备就绪后执行命令，结束后统一清理。需要查看窗口可加 `--visible`；命令必须留在前台，不用 `nohup` / `setsid` 脱离运行器。
-- 默认在 `registry.lock` 内选择池中空闲的 API 35 设备，跳过已占用或未就绪设备；`--device` 可固定选择已经登记、具有固定 loopback serial 的设备，指定设备忙时不会偷偷换机。没有兼容空闲设备时每 20 秒报告一次等待，默认最多等 600 秒；`--wait-seconds 0` 可用于只尝试一次，超时不抢锁。运行器不会新增、克隆或重登记设备。
+- 默认固定使用 `pool.json` 的 `sharedDevices.android`（本机为 `Orbis_UI_Polish_35`）；`--device` 可固定选择池内其他已登记、具有 loopback serial 的设备，繁忙时不会换机。两端先排全机单台名额，每 20 秒复查，`--queue-wait-seconds` 默认不限时，`0` 表示立即检查；取得名额后的设备 / 80% 内存准入由 `--wait-seconds` 控制，默认 600 秒。超时不抢锁；运行器不会新增、克隆或重登记设备。
 - SDK 按 `--sdk`、工作树 `android/local.properties`、SDK 环境变量和默认安装目录查找。AVD 目录取自共享池登记，不把本机磁盘路径写死进运行器。
 - 可配置 `--boot-timeout`、`--command-timeout`、`--output`；输出目录必须尚不存在。默认证据为调用方工作树的 `.artifacts/android-emulator/<owner>/`。
 
-运行器原子持有池的 `registry.lock` 后分配设备锁和 `adb-ports/<port>.lock`；不会在等待设备时一直占住 registry。固定设备池 iOS / Android 合计上限已按 2026-11-03 用户追加要求改为 12 台（5 台 iOS、7 台 Android），见 `AGENTS.md` / `CLAUDE.md`。同一设备的第二个 agent 等待，其他空闲、兼容的已登记设备可独立借用。
+运行器持有全程 `simulator-run.lock`，在池的 `registry.lock` 内分配设备锁和 `adb-ports/<port>.lock`；不会在等待设备时一直占住 registry。固定设备池 iOS / Android 合计上限已按 2026-11-03 用户追加要求改为 12 台（5 台 iOS、7 台 Android），见 `AGENTS.md` / `CLAUDE.md`。两端合计同时只运行 1 台；其他 agent 即使选择不同设备也必须排队，登记容量不代表并行额度。
 
 2026-11-03 用户明确授权将固定池补齐至 10 台：保留 3 台 iOS 和 2 台原有 Android，新增 `Orbis_UI_Regression_35_2` 至 `Orbis_UI_Regression_35_6` 五台 API 35。新 AVD 与注册文件均在 `/Volumes/WD1TB/Android/avd/`；使用已安装的 API 35 ARM64 系统镜像和独立初始数据，1080×2400 / 420 dpi、2 核、2048 MiB 内存。合计 6 台 API 35 自动回归设备，另 1 台 API 37 预览设备保持原用途。永久登记不代表常驻启动，空闲设备保持关闭，借用结束即释放运行资源。
 
-同设备基线 / 候选对照应在一次 `run` 内顺序完成；跨会话必须根据前次 `session.json` 的 `device.id` 使用 `--device` 固定回同一台。默认自动分配可能在下一次调用选择不同设备，不能据此省略同设备对照。`allocation.json` 记录本次选择、已忙设备和排除原因。
+同设备基线 / 候选对照应在一次 `run` 内顺序完成；跨会话必须根据前次 `session.json` 的 `device.id` 使用 `--device` 固定回同一台，不能仅假定默认配置始终不变。`allocation.json` 记录本次选择、已忙设备和排除原因。
 
 运行器给子命令注入：
 
@@ -73,6 +73,8 @@ python3 "$HOME/.orbis/tools/ui-regression/android-emulator.py" run --task "Andro
 4. 正常退出、非零退出、超时、SIGINT / SIGTERM 均先结束自己的命令进程组，恢复并核对字号、动画倍率、夜间模式、屏幕超时，再结束自己的 emulator / ADB。确认退出、端口空闲且 owner 匹配后释放锁。
 
 日志包括 `adb-server.log`、`emulator.log`、`command.log`（run）、`session.json`、`original-settings.json`、`result.json`、`cleanup.json`。中途断电 / SIGKILL、失去连接无法恢复设置、归属变化或残留进程会保留锁并明确报告 `cleanup-required`；依据 owner / PID / 实际设备状态核实后再处理，禁止仅按锁龄回收。不要全局 `adb kill-server`，也不要把失联直接当作模拟器本体崩溃。
+
+所有 agent 用完必须核验清理结果及原 owner 不再占用，主 agent 还须核对子任务证据。忘记解锁、重启残留、不可终止进程和设置恢复失败，按 [共享资源解锁责任与遗留锁恢复](resource-lock-recovery.md) 处理；命令退出或删除锁文件都不等于设备可复用。
 
 ## 验证记录
 

@@ -31,6 +31,32 @@ final class OrbisUITests: XCTestCase {
         }
     }
 
+    func testBackgroundTasksStayVisibleWhileMainComposerIsIdleAndCannotBeClosed() {
+        for dark in [false, true] {
+            let app = launch("home", dark: dark, arguments: ["--preview-background-tasks", "--preview-reduce-motion"])
+            let card = app.buttons["home-runtime-preview-codex"]
+            XCTAssertTrue(card.waitForExistence(timeout: 8))
+            XCTAssertTrue(app.staticTexts["2 个子任务运行中"].exists)
+            card.swipeLeft()
+            XCTAssertTrue(card.exists)
+            XCTAssertFalse(app.buttons["关闭选中会话"].exists)
+            card.tap()
+            let toggle = app.buttons["background-tasks-toggle"]
+            XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+            toggle.tap()
+            XCTAssertTrue(app.descendants(matching: .any)["background-task-review"].exists)
+            XCTAssertTrue(app.descendants(matching: .any)["background-task-tests"].exists)
+            XCTAssertFalse(app.buttons["停止生成"].exists)
+            let input = app.descendants(matching: .any)["chat-composer"].firstMatch
+            XCTAssertTrue(input.waitForExistence(timeout: 3))
+            input.tap(); input.typeText("background draft")
+            toggle.tap(); toggle.tap()
+            XCTAssertEqual(input.value as? String, "background draft")
+            capture("background-tasks-\(dark ? "dark" : "light")", app: app)
+            app.terminate()
+        }
+    }
+
     private func launch(_ screen: String, dark: Bool = false, arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--preview-screen=" + screen] + arguments

@@ -6,7 +6,7 @@
 
 2026-11-02 M15 iOS r33：观察原生顶部拖动，在释放时触发一次刷新；指示器不再设置刷新停靠高度，列表只执行一次原生回弹。隔离 `765b0a3` 上 338 核心测试与构建通过，SE 首页手势 4 / 4、iPhone 17 / SE 下拉 3 / 3（含 A1–A4、短拉 / 多选）通过；iPad 同设备前后下拉均实际刷新一次，回弹源帧已审阅。SE 全量 82 项为 75 通过 / 7 失败，6 项原实现同设备复现，上传失败恢复一项在原实现及当前单独复跑通过，首轮失败保留；176 张附件已查看。完整人工 C01–C18、真实 Host、真机体感未验收，不记完整门禁通过。共享主工作树后续 r34 外观修改不在此隔离结论内。详见 `.artifacts/ui-regression/20261102-ios-refresh-rebound/summary.md`。
 
-日期：2026-11-03。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-03/r43`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-03。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-03/r44`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 12 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -29,9 +29,11 @@
 
 ### 2.1 设备（共享池）
 
-设备身份以 `~/.orbis/simulator-pool/pool.json` 为准，使用前按本机指南取得 `registry.lock` 和设备锁。本文不记录 UDID 或 serial。
+设备身份以 `~/.orbis/simulator-pool/pool.json` 为准；两端通过本机共用入口取得全程单台名额、登记锁和设备锁，不预先手动占锁。全机 Android + iOS 合计同时只运行 1 台，达到 80% 内存占用不启动新设备。本文不记录 UDID 或 serial。
 
 本机 Android 一律经 [共用模拟器入口](android-emulator.md) 的 `run --task "任务名称" -- <命令>` 借用设备；工具路径为 `~/.orbis/tools/ui-regression/android-emulator.py`。下文原始 `adb` 安装 / 测试命令在该入口的子命令内执行，使用其注入的 `adb` / serial；不再从旧任务复制启动脚本或手动配 ADB 端口。入口负责独占锁、连接配置和清理，不代替测试门禁。
+
+本机 iOS 一律经 `~/.orbis/tools/ui-regression/ios-simulator.py run --device <池内UDID> --task "任务名称" -- <命令>` 借用设备，子命令使用 `$ORBIS_IOS_UDID`，Xcode 关闭并行；启动与关闭由入口负责，见 [iOS 借用要求](ios-simulator-storage.md)。所有 agent 收尾必须核验原 owner 的资源已释放；主 agent 核对子任务证据。忘记解锁或异常退出按 [共享资源解锁与遗留锁恢复](resource-lock-recovery.md) 处理，清理失败留锁留证据，不改变用例结果。
 
 | 用途 | 池内设备（名称） | 说明 |
 | --- | --- | --- |
@@ -39,12 +41,12 @@
 | iOS 标准宽度 | `Orbis Layout Regression`（iPhone 17，iOS 27.0） | 手动冒烟与截图抽查；登记时为 Booted，借用前先核实归属 |
 | iOS 宽屏抽查 | iPad Air 11-inch (M4)，iOS 27.0 | 改动影响宽屏布局时抽查 |
 | iOS 扩容标准 / 窄屏 | `Orbis iOS Standard 2`（iPhone 17）、`Orbis iOS Compact 2`（iPhone SE 3），iOS 27.0 | 2026-11-03 用户授权新增；[数据在外接盘](ios-simulator-storage.md)，借用前核对挂载 / 链接并取得各自独占锁 |
-| Android 主力池 | `Orbis_UI_Polish_35`、`Orbis_UI_Regression_35_2`–`Orbis_UI_Regression_35_6`（共 6 台 API 35） | 全量 instrumentation；入口自动借用空闲设备，可无窗口启动；基线 / 候选在同一会话执行或用 `--device` 固定同一台 |
+| Android 主力池 | `Orbis_UI_Polish_35`、`Orbis_UI_Regression_35_2`–`Orbis_UI_Regression_35_6`（共 6 台 API 35） | 全量 instrumentation；默认固定复用 `Orbis_UI_Polish_35`，其余备用；可无窗口启动；基线 / 候选在同一会话执行或用 `--device` 固定同一台，均排全机单台队列 |
 | Android 补充 | `Medium_Phone_API_37.0` | 预览镜像不支持本仓库的 Espresso 输入注入，只用于手动和截图，结果不能替代 API 35 自动回归 |
 
 - 池中没有所需系统时，报告配置缺口，不扩容。iOS 17 兼容分支目前没有可运行设备，只能记为“未运行”。
 - Android 无窗口启动由共用入口完成，内部使用注册 AVD、固定端口、`-no-window -gpu swiftshader_indirect -no-snapshot -no-audio`；不要在子命令外重复启动 emulator / ADB。安装后在入口内用 `adb shell dumpsys package com.orbising.orbis` 核对 `lastUpdateTime`，确认确实装上了本任务包。私有 ADB 端口及不连接 USB 真机的配置由入口统一管理。
-- ADB 断连诊断：先区分 ADB 服务退出与 emulator 退出，保留各自 PID、退出码和日志，不把 `device not found` 直接记成模拟器崩溃。2026-11-03 R57 重试发现本机 ADB 37.0.1 多份 `SIGABRT` 报告指向 `adbmdns_bridge` 的服务名解析；测试专用服务可设 `ADB_MDNS=0`，用 `adb -L tcp:<任务端口> --one-device __orbis_no_usb__ server nodaemon` 启动并保存前台日志。客户端 `-P`、`ANDROID_ADB_SERVER_PORT` 与 `ADB_SERVER_SOCKET=tcp:localhost:<任务端口>` 必须一致，模拟器继承同一环境；随后显式连接池内 serial。先验证连续 shell 和安装，再跑全量。只结束本任务创建的服务，不执行全局 `kill-server` 或接管其他端口；恢复成功仍须记录基点 / 候选测试结果。
+- ADB 断连诊断：先区分 ADB 服务退出与 emulator 退出，保留各自 PID、退出码和日志，不把 `device not found` 直接记成模拟器崩溃。2026-11-03 R57 重试发现本机 ADB 37.0.1 多份 `SIGABRT` 报告指向 `adbmdns_bridge` 的服务名解析；共用入口已统一关闭 mDNS / USB 自动发现，启动私有前台 ADB、保持客户端端口配置一致并显式连接池内 serial。不要另起服务或覆盖注入配置。先通过入口验证连续 shell 和安装，再跑全量；只清理本任务创建的服务，不执行全局 `kill-server` 或接管其他端口，恢复成功仍须记录基点 / 候选测试结果。
 
 ### 2.2 构建目录
 
@@ -132,7 +134,7 @@ Pi 图标视觉尺寸对齐（X02，关联 S19 / S20）：双端 Pi 素材居中
 
 2026-11-03 Claude 长会话恢复（R18；V09–V10、V16–V18）：`session-source.test.ts` 覆盖 257 / 1,055 条初始化、字节超限批次、unknown→checkpoint 与后续连续增量；`claude-transcript.test.ts` 覆盖长原生日志继续追加后 Host 重开 preview 的最新 head。Android `ClaudeHistoryInstrumentedTest#existingHistoryAndRunningTurnSurviveParallelToolsAndReconnect` 使用 `ORBIS_CLAUDE_HISTORY_PREFIX=1053` 的真实 Host / Relay / Mods 夹具，比较同设备同 App 的修复前后结果。iOS 沿用 source recovery 核心与 Claude 身份设备映射；完整双端 L1–L4 / C01–C18 / A1–A4 结果不得由此定向对照替代。
 
-**iOS `OrbisUITests`（合并后 87 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项，r36 发送展开新增 1 项，r37 配额减少动画新增 1 项，r40 返回响应新增 2 项；历史运行计数按证据保留）**
+**iOS `OrbisUITests`（合并后 89 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项，r36 发送展开新增 1 项，r37 配额减少动画新增 1 项，r40 返回响应新增 2 项，r43 普通按钮反馈新增 1 项，r44 后台子任务新增 1 项；历史运行计数按证据保留）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
@@ -143,6 +145,7 @@ Pi 图标视觉尺寸对齐（X02，关联 S19 / S20）：双端 Pi 素材居中
 | 目录抽屉 | `testDrawerCardsKeepUniformGeometryForShortAndLongTitles`、`testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions`、`testDrawerSelectionClearsOnCancelSearchAndClose`、`testDrawerFollowsEdgeDragAndShowsOneDirectory`、`testDrawerCollapseShrinksContentWithoutAnotherDrag` | S15、S19、M06、M09、V17 |
 | 聊天入场 / 返回 | `testCachedOnlineChatEntryTiming`、`testChatSwipeBackReboundsThenReturnsHome`、`testDraftSurvivesBackNavigationAndSlashRequiresSelection` | M07–M08、V13、V17 |
 | 聊天视口 | `testLongTranscriptAppearsAndToolExpansionKeepsItsPositionWithoutDragging`、`testLongFinalReplyKeepsReadingPositionAndOnlyFollowsAfterJump`、`testNewMessagesAndToolsPreserveTheMovingReadingAnchor` | V01–V03、M03 |
+| Claude 后台子任务 | `testBackgroundTasksStayVisibleWhileMainComposerIsIdleAndCannotBeClosed`；L1 `BackgroundTasksTests` / `AgentStateTests` | S26、S17–S20、V05、V12、V16–V18、M03、M06、M10、M20 |
 | Claude 模型回复身份 | `testClaudeNativeHandoffKeepsOneCopyAcrossConsecutiveTurns`（明暗，三阶段 canonical / live 交接；每段正文唯一） | V09、V17–V18 |
 | 聊天内容 / 顶栏 | `testRefreshKeepsHeaderTextAndTruncationStable`、`testClosedDisclosureDefersWorkAcrossChatReentryAndRetainsState`、`testUserMessageCopyAndRewind`、`testToolDetailsLoadPagesAndClose`、`testTruncatedContentAndToolArguments`、`testHistoryPreviewAndNavigation` | S10–S11、S17、S20、M03、M05、V05、V14 |
 | 输入 / 审批 / 队列 | `testSlashPickerStaysAboveKeyboard`、`testOptimisticSendReconcilesAndRejectedSendRestores`、`testUnconfirmedSendCanBeCheckedWithoutResending`、`testCompactionQueuedSendCanBeWithdrawn`、`testApprovalOverlayKeepsComposerStableWhileSubmitting`、`testQueueCancellationNotificationsAndRuntimeFacts`、`testToolExportAndInteractionDraftSwitching` | V06–V08、V10、V12、V17 |
@@ -163,6 +166,7 @@ Pi 图标视觉尺寸对齐（X02，关联 S19 / S20）：双端 Pi 素材居中
 | 首页 | `HomeLoadingInstrumentedTest`（2）、`HomeNavigationInstrumentedTest`（3）、`HomeSelectionInstrumentedTest`（1）、`HomeSwipeCloseInstrumentedTest`（1）、`OptimisticActionsInstrumentedTest`（3） | S18、M06、M10–M12、V10–V11、V13、V18 |
 | 转场 | `SwipeBackInstrumentedTest`（4）、`ChatEntryInstrumentedTest`（1） | M07–M08、V13 |
 | 聊天视口 / 内容 | `ChatViewportInstrumentedTest`（9）、`DeferredDisclosureInstrumentedTest`（2）、`MarkdownInstrumentedTest`（1）、`ToolPanelInstrumentedTest`（3）、`ToolContentInstrumentedTest`（2）、`DisplayScenariosInstrumentedTest`（1）、`ClaudeHistoryInstrumentedTest`（1）、`LiveHistoryReloadInstrumentedTest`（1） | S11、S20、M03、V01–V04、V09、V14 |
+| Claude 后台子任务 | `BackgroundTasksInstrumentedTest`（2，生产折叠更新、首页活动与关闭能力变化）；L1 `BackgroundTasksTest` / `AgentModelConsumerTest` | S26、S17–S20、V05、V12、V16–V18、M03、M06、M10、M20 |
 | 顶栏 / 输入 / 交互 | `ChatStatusLayoutInstrumentedTest`（2）、`ComposerSessionInfoInstrumentedTest`（3）、`InteractionWorkspaceInstrumentedTest`（5）、`QuestionnaireInstrumentedTest`（2）、`CodexPermissionsInstrumentedTest`（3）、`NotificationsInstrumentedTest`（2）、`DshInstrumentedTest`（2） | S12、S17、V05–V08、V12、V17 |
 | 目录 | `SessionDrawerLayoutInstrumentedTest`（2）、`SessionArchiveSelectionInstrumentedTest`（3）、`SessionProviderFilterInstrumentedTest`（3）、`SessionHostOwnershipInstrumentedTest`（3） | S15、S19、M06、M09、V17 |
 | 新建会话 Agent 选择 | `DshInstrumentedTest#selectsLaunchableDeepSeekBeforeBackendReadyAndCreatesSessionInChosenDirectory` | S20、V12、V16–V18 |
@@ -463,6 +467,12 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | --- | --- | --- | --- |
 | R44 | 两端设置页切换“经典 / 雾蓝”，离开设置到首页、目录、聊天输入、下载再返回；有草稿与上翻阅读时切换；重启 App。两种外观各在 A1 / A2、A3 窄屏大字、A4 减少动画下截图，对照参考图检查底板、输入凹陷、按钮层次与文字对比 | 选择即时且持久，默认/未知值为经典；设置页选中内凹、蓝色文字和对勾。雾蓝底板为浅灰蓝或深蓝灰，输入与选中态有上白下灰柔和内影；导航、草稿、阅读位置、消息身份、状态和触控尺寸不变，不出现双层阴影或硬边 | S01–S04、S12、S19、S22、S25 |
 
+### 4.11 Claude 后台子任务专项（ADR-0062）
+
+| 编号 | 步骤 | 预期 | ID |
+| --- | --- | --- | --- |
+| R61 | 两端连接隔离 Claude，主回合结束后保留多个后台任务；逐项切换 pending / running / waiting / idle / completed / failed / killed，恢复 SendMessage；同名嵌套、子审批、清单失败 / 超限、Host 重连和换 Session；展开时输入草稿并上翻正文，检查关闭与多选能力变化 | 首页不假空闲，主输入仍按主 phase；任务身份与状态独立，主完成不清任务 / 子审批；未知保留最后清单；更新不展开、不抢焦点或阅读锚点；子任务不进入普通会话和关闭面板；无 quit 时无关闭手势和选择，旧选择立即失效。A1–A4、48pt/dp 命中与 iPad / 窄屏另查，原生停止范围不作假承诺 | S26、S17–S20、V05、V12、V16–V18、M03、M06、M10、M20 |
+
 ## 5. 新增或修改 UI 时的用例编写要求
 
 1. **同一任务写用例。** 每个新增或修改的 feature ID 至少有：一个设备 UI 用例，断言该规则的具体数值或几何（坐标、尺寸、可见性、顺序、帧序），只断言“元素存在”不够；状态或逻辑另配单元测试；以及 §4 的手动清单条目。同时更新 §3.3 映射。
@@ -494,6 +504,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+2026-11-03 Claude 后台子任务 / r44（S26 / R61，已实施、未验收）：先写 ADR-0062，再接入独立任务清单、汇总状态、子审批身份与关闭能力门禁；协议 19、插件 0.1.6 / bridge 4。最终 Node 全量 1704 过 / 5 条件跳过（160 文件全过），官方 Mod runner 19 / 19、Swift 359 / 359、Android JVM 689 / 689，双端 App 与设备测试包构建通过。首次 Node 的 2 个启动器失败由继承本机包装器环境导致，只在测试子进程去掉两个路径覆盖变量后全量通过；首次 Swift 中继夹具仍为协议 18，同步为 19 后全量通过；首次 Android 新增 lambda 语法错误已修正。原始日志保留。两端共用入口各等待 40 秒，被 `provider-well-shadow-standard-full` 和 `Codex permission model preservation` 的旧设备锁阻塞，未启动设备，未清他人锁。L3–L4、C01–C18 / R61 / A1–A4、iPad、真实隔离 TUI 与同设备基线均未运行；不能宣称完整回归或用户现场问题已验证解决。未部署或重启用户 Host，证据 `.artifacts/ui-regression/20261103-claude-background-agents/summary.md`。
 
 2026-11-03 iOS 返回响应 / r40（M08 / M14 / V13，已实施、验证中）：既有 ADR-0048 / ADR-0054 / ADR-0058 已要求返回后立即交互；本次修复确认退场等待取消弹簧 `.removed` 的不可点击空档，采用共用180ms ease-out，减少动画 / 已屏外直接交接。另修复添加电脑 / 历史页短拖同时激活按钮，补强取消后正常点按恢复断言。SE原实现松手→路径提交698.2ms，早期候选199.8–249.7ms / 减少动画0ms；最终iPhone17导航专项3/3（含聊天A1–A4连续重入），完整全量尝试已完成13项0失败后因外接盘断连中断，受控基线全量未启动。恢复后全机单台队列被其他任务残留设备锁阻塞，不代清锁。Swift352 / Android JVM682项及两端构建通过；Android全量182项为169通过、6失败、7外部夹具assumption，缓存入场按规则复测一次通过；A1导航13/13、A3浅色1.5字体13/13、A4减少动画6/6，A2深色11/13，两项按压亮度断言复测仍失败，返回重入通过。iOS初轮18张与最终专项10张、Android采集324张（去重283）及矩阵新增14张已看，早期退场帧已查；最终抑制版完整录屏、375pt复验、完整C01–C18 / R / A、iOS17与真机未完成。未记完整门禁通过，详细失败、源码边界、队列与清理见 `.artifacts/ui-regression/20261103-ios-return-response/summary.md`。
 
@@ -614,3 +626,19 @@ SC18–27 / SC35 / SC37、M20 / M12：依次按设置、历史/分支、刷新/�
 A1–A4均覆盖；减少动画仅按住时即时透明度变化，结束无残留。保留原R49的取消/连点/失效/减少动画覆盖与业务断言，原整圈视觉目标经用户授权被本轮轻压替代。完整L1–L4与C01–C18分别记录，预览不代替原生设备帧；结果见 `.artifacts/ui-regression/20261103-button-feedback/summary.md`。
 
 2026-11-03 / r43验证：Swift355/355、Android685/685单元测试，iOS应用及UI测试构建、Android Debug/AndroidTest均通过。网页设计预览在320/736px明暗与减少动画检查通过，已看浅色窄屏及深色截图，但不计原生设备验收。双端共享入口仍被`provider-well-shadow-standard-full`与`Codex permission model preservation`的设备锁阻塞；L3/L4、C01–C18、R39/R47/R49及原生A1–A4未运行，不能比较同设备基点失败集合，保持验证中。证据 `.artifacts/ui-regression/20261103-button-feedback/summary.md`。
+
+## R61 / r44：Claude 后台子任务
+
+新增 S26；修订 S17–S20、V05、V12、V16–V18，关联 M03、M06、M10、M20、V01–V03、V21。规则见 [ADR-0062](../adr/0062-claude-background-agents-and-session-activity.md)，SC45 / MOT-24。
+
+§3.3 自动映射：Mod reconnect 测试覆盖 agent.list 库存、非交互入口、切会话 / 重连迟到；Host claude-mods-bridge / claude-hook-bridge / agent-state-facts 覆盖任务状态、代次、审批及 quit 最终校验；协议 agent-state 验证有界库存。双端 BackgroundTasks 单测与设备用例覆盖首页汇总、聊天折叠、主 idle 可发送、无效关闭入口、未知保留与恢复。Codex / Desktop / DSH 原过滤用例保持。
+
+手动 R61：主回合空闲且两个子任务运行，首页不能显示空闲；主回合与子任务各自结束 / 恢复，任务区逐项更新；同名 / 嵌套身份、审批归属、断线未知与重连、展开不抢正文 / 草稿 / 键盘、换页不串会话；左滑与多选只操作有能力的主会话。A1–A4与 iPad 布局检查；C01–C18、双端 L1–L4 及同设备基线全部分别记录。
+
+证据 `.artifacts/ui-regression/20261103-claude-background-agents/summary.md`。Host、协议、Mod 与双端已接入；L1 / L2 和插件模拟验证通过。两端共享入口均被其他任务设备锁阻塞，L3–L4、C01–C18 / R61 / A1–A4、iPad 和真实隔离 Claude TUI 联动未运行；无同设备基线结果，不记验收通过。
+
+### R61 / r44 无设备补验（2026-11-04）
+
+用户选择保留无法终止的旧模拟器现场，继续无设备验证。仅含本任务改动的独立候选快照：Node 全量 1704 通过 / 5 既有条件跳过，官方 Mod runner 19 / 19，Swift 359 / 359，Android JVM 685 / 685；TypeScript、受影响文件 ESLint、双端 App 与设备测试包构建通过。候选排除了其他图标、回答反馈和 Codex 未提交改动，因此 Android 计数不沿用原共享工作区 689 项。首次 iOS 构建因提交范围漏选状态组件片段失败，补齐本任务片段后重跑通过，失败证据保留。
+
+本轮 L3–L4、C01–C18、R61、A1–A4、iPad / iOS 17、同设备失败集合比较和真实隔离 Claude TUI 均未运行，不标记设备验收。旧 emulator PID 15559 经再次定向 SIGTERM / SIGKILL 后仍监听 5680 / 5681，按用户选择保留现场；维护临时锁、候选构建租约均已释放，未部署或重启用户 Host。验证输入、完整结果、首次失败、产物哈希与资源清理记录见 `.artifacts/ui-regression/20261104-claude-background-validation/summary.md`。

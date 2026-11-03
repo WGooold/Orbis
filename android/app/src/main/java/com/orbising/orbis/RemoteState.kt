@@ -27,7 +27,7 @@ internal val MODEL_OWNED_LEGACY_EVENTS = setOf(
     "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished",
     // 这三类是**模型来源事实**：Host 已经把它们记进统一模型，手机按领域读 agent.state。
     // 旧 Host 仍在发的时候只推进序号、不写状态；否则每收到一条就弹「无法安全处理此运行时事件」。
-    "delivery.snapshot", "execution.activity", "notification.source",
+    "delivery.snapshot", "execution.activity", "execution.tasks", "notification.source",
 )
 
 @Serializable
@@ -88,9 +88,26 @@ data class RuntimeSummary(
     val domainAvailability: Map<String, String> = emptyMap(),
     /** Host execution activity; does not change the phase used by send/stop logic. */
     val compactionPhase: String? = null,
+    val backgroundTasks: BackgroundTaskInventory? = null,
 ) {
     val presentationStatus: String
-        get() = if (compactionPhase == "running" && status in setOf("idle", "running")) "compacting" else status
+        get() = when {
+            compactionPhase == "running" && status in setOf("idle", "running") -> "compacting"
+            status == "idle" && backgroundTasks?.confirmed == false -> "tasks_unknown"
+            status == "idle" && (backgroundTasks?.activeCount ?: 0) > 0 -> "background"
+            else -> status
+        }
+    val presentationTitle: String
+        get() {
+            val tasks = backgroundTasks
+            val summary = tasks?.activityTitle
+            if (status !in setOf("idle", "running") || summary == null) return runtimeStatusText(presentationStatus)
+            if (presentationStatus == "compacting") return "压缩中 · $summary"
+            if (status == "running") return if (tasks.confirmed) "运行中 · ${tasks.activeCount} 个子任务" else "运行中 · 子任务待核对"
+            return summary
+        }
+    fun allowsRemoteClose(commands: List<RuntimeSlashCommand>): Boolean =
+        (backgroundTasks?.allowsQuit != false) && commands.any { it.name == "quit" && it.argument?.required != true }
 
     /**
      * 这条 Runtime 是不是 Codex 会话。codex 的对外 runtimeId 形如 `codex:<threadId>`
@@ -100,6 +117,35 @@ data class RuntimeSummary(
     val isCodex: Boolean
         get() = agentKind in setOf("codex", "codexDesktop")
 }
+
+@Serializable
+data class BackgroundTask(val id: String, val title: String, val kind: String, val status: String, val parentId: String? = null) {
+    val statusTitle: String get() = mapOf("pending" to "启动中", "running" to "运行中", "waiting" to "等待中",
+        "idle" to "空闲", "completed" to "已完成", "failed" to "失败", "killed" to "已停止")[status] ?: "状态待核对"
+}
+
+@Serializable
+data class BackgroundTaskInventory(val availability: String, val items: List<BackgroundTask>, val truncated: Boolean) {
+    val valid: Boolean get() = availability in setOf("ready", "unknown", "unavailable") && items.size <= 256 &&
+        items.map { it.id }.toSet().size == items.size && !(availability == "ready" && truncated) && items.all {
+            it.id.isNotBlank() && it.id.length <= 256 && it.title.length <= 256 && it.kind.length <= 128 &&
+                (it.parentId == null || (it.parentId.isNotBlank() && it.parentId.length <= 256)) &&
+                it.status in setOf("pending", "running", "waiting", "idle", "completed", "failed", "killed", "unknown")
+        }
+    val confirmed: Boolean get() = availability == "ready" && !truncated && items.none { it.status == "unknown" }
+    val activeCount: Int get() = items.count { it.status in setOf("pending", "running", "waiting") }
+    val allowsQuit: Boolean get() = confirmed && activeCount == 0
+    val visible: Boolean get() = !confirmed || items.isNotEmpty()
+    val activityTitle: String? get() {
+        if (!confirmed) return "子任务状态待核对"
+        return listOf("running" to "运行中", "pending" to "启动中", "waiting" to "等待中").mapNotNull { (state, title) ->
+            items.count { it.status == state }.takeIf { it > 0 }?.let { "$it 个子任务$title" }
+        }.joinToString(" · ").takeIf { it.isNotEmpty() }
+    }
+}
+
+internal fun RemoteState.canCloseRuntime(id: String): Boolean =
+    runtimes[id]?.allowsRemoteClose(capabilities[id]?.commands.orEmpty()) == true
 
 @Serializable
 data class RemoteArtifact(
@@ -623,6 +669,7 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
         sessionName = if (sameSession?.domainAvailability?.get("identity") == "ready") sameSession.sessionName else sessionName,
         status = sameSession?.status ?: "unknown",
         compactionPhase = sameSession?.compactionPhase,
+        backgroundTasks = sameSession?.backgroundTasks,
         model = sameSession?.model,
         thinkingLevel = sameSession?.thinkingLevel,
         contextUsage = sameSession?.contextUsage,
@@ -3458,4 +3505,17 @@ private fun String.containsCjk(): Boolean = any { character ->
 }
 
 private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
+}
+
+internal fun runtimeStatusText(status: String): String = when (status) {
+    "starting" -> "启动中"
+    "launch_unconfirmed" -> "启动未确认"
+    "idle" -> "空闲"
+    "running" -> "运行中"
+    "compacting" -> "压缩中"
+    "background" -> "子任务运行中"
+    "tasks_unknown" -> "子任务状态待核对"
+    "unknown" -> "状态待核对"
+    "waiting_local_interaction" -> "等待电脑端交互"
+    else -> "未知状态"
 }

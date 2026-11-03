@@ -17,7 +17,7 @@ function bridgeWith(options: ClaudeModsBridgeOptions = {}): ClaudeModsBridge {
 
 function hello(overrides: Record<string, unknown> = {}) {
   return { type: "hello", instanceId: "instance-1", sessionId: "session-1", cwd: "C:\\work", claudeVersion: "2.1.310",
-    bridgeVersion: "3", capabilities: CLAUDE_BRIDGE_CAPABILITIES, ...overrides };
+    bridgeVersion: "4", interactive: true, capabilities: CLAUDE_BRIDGE_CAPABILITIES, ...overrides };
 }
 
 function online(bridge: ClaudeModsBridge, input: unknown = hello()) {
@@ -79,6 +79,8 @@ describe("ClaudeModsBridge", () => {
     const current = online(bridge, hello({ processId: 4242 }));
     expect(bridge.hasCommand(current.runtimeId, "quit")).toBe(false);
     await Promise.resolve();
+    expect(bridge.hasCommand(current.runtimeId, "quit")).toBe(false);
+    bridge.receiveEvent(current.runtimeId, current.generation, { type: "tasks.snapshot", tasks: { availability: "ready", items: [], truncated: false } });
     expect(bridge.hasCommand(current.runtimeId, "quit")).toBe(true);
     const first = bridge.quit(current.runtimeId), duplicate = bridge.quit(current.runtimeId);
     expect(terminate).toHaveBeenCalledTimes(1);
@@ -106,7 +108,7 @@ describe("ClaudeModsBridge", () => {
     expect(bridge.hello(hello({ capabilities: ["prompt.submit"] }))).toEqual({ ok: false, error: "missing_capability:turn.abort" });
     expect(bridge.hello(hello({ capabilities: ["turn.abort", "prompt.submit", "session.append", "turn.start", "turn.complete", "tool.call"] })))
       .toEqual({ ok: false, error: "missing_capability:turn.step.delta" });
-    expect(bridge.hello(hello({ bridgeVersion: "2" }))).toEqual({ ok: false, error: "bridge_version_unsupported:3" });
+    expect(bridge.hello(hello({ bridgeVersion: "2" }))).toEqual({ ok: false, error: "bridge_version_unsupported:4" });
   });
 
   it("keeps commands bound to a generation and requires a native result before retiring them", () => {
@@ -322,7 +324,7 @@ describe("ClaudeModsBridge", () => {
     bridge.receiveEvent(current.runtimeId, current.generation, { type: "turn.start", turnId: "t1" });
     bridge.receiveEvent(current.runtimeId, current.generation, { type: "tool.started", toolCallId: "toolu_1", toolName: "Bash", arguments: { command: "ls" } });
     bridge.receiveEvent(current.runtimeId, current.generation, { type: "tool.finished", toolCallId: "toolu_1", toolName: "Bash", result: "a" });
-    expect(finished).toHaveBeenCalledWith(current.runtimeId, "Bash", { command: "ls" });
+    expect(finished).toHaveBeenCalledWith(current.runtimeId, "Bash", { command: "ls" }, undefined, "toolu_1");
     bridge.receiveEvent(current.runtimeId, current.generation, { type: "interactions.local" });
     expect(local).toHaveBeenCalledWith(current.runtimeId);
     expect(bridge.poll(current.runtimeId, current.generation)).toMatchObject({ pendingInteractions: 2 });

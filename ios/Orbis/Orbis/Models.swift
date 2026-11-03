@@ -1,6 +1,6 @@
 import Foundation
 
-let orbisProtocolVersion = 18
+let orbisProtocolVersion = 19
 
 struct PairingQR: Codable, Hashable {
     let v: Int
@@ -98,9 +98,64 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
     var sessionLeafId: String? = nil
     /// Host execution activity; kept separate from the phase used by send/stop logic.
     var compactionPhase: String? = nil
+    var backgroundTasks: BackgroundTaskInventory? = nil
     var id: String { runtimeId }
     var presentationStatus: String {
-        compactionPhase == "running" && ["idle", "running"].contains(status) ? "compacting" : status
+        if compactionPhase == "running" && ["idle", "running"].contains(status) { return "compacting" }
+        if status == "idle", let tasks = backgroundTasks {
+            if !tasks.confirmed { return "tasks_unknown" }
+            if tasks.activeCount > 0 { return "background" }
+        }
+        return status
+    }
+    var presentationTitle: String {
+        guard ["idle", "running"].contains(status), let tasks = backgroundTasks, let summary = tasks.activityTitle else {
+            return runtimeStatusTitle(presentationStatus)
+        }
+        if presentationStatus == "compacting" { return "压缩中 · \(summary)" }
+        if status == "running" { return tasks.confirmed ? "运行中 · \(tasks.activeCount) 个子任务" : "运行中 · 子任务待核对" }
+        return summary
+    }
+    func allowsRemoteClose(_ commands: [SlashCommand]) -> Bool {
+        (backgroundTasks?.allowsQuit ?? true) && commands.contains { $0.name == "quit" && $0.argument?.required != true }
+    }
+}
+
+struct BackgroundTask: Codable, Hashable, Identifiable {
+    var id: String
+    var parentId: String? = nil
+    var title: String
+    var kind: String
+    var status: String
+    var statusTitle: String {
+        ["pending": "启动中", "running": "运行中", "waiting": "等待中", "idle": "空闲", "completed": "已完成",
+         "failed": "失败", "killed": "已停止", "unknown": "状态待核对"][status] ?? "状态待核对"
+    }
+}
+
+struct BackgroundTaskInventory: Codable, Hashable {
+    var availability: String
+    var items: [BackgroundTask]
+    var truncated: Bool
+    var valid: Bool {
+        ["ready", "unknown", "unavailable"].contains(availability) && items.count <= 256 &&
+        Set(items.map(\.id)).count == items.count && !(availability == "ready" && truncated) && items.allSatisfy {
+            !$0.id.isEmpty && $0.id.utf16.count <= 256 && $0.title.utf16.count <= 256 && $0.kind.utf16.count <= 128 &&
+            ($0.parentId == nil || (!$0.parentId!.isEmpty && $0.parentId!.utf16.count <= 256)) &&
+            ["pending", "running", "waiting", "idle", "completed", "failed", "killed", "unknown"].contains($0.status)
+        }
+    }
+    var confirmed: Bool { availability == "ready" && !truncated && !items.contains { $0.status == "unknown" } }
+    var activeCount: Int { items.filter { ["pending", "running", "waiting"].contains($0.status) }.count }
+    var allowsQuit: Bool { confirmed && activeCount == 0 }
+    var visible: Bool { !confirmed || !items.isEmpty }
+    var activityTitle: String? {
+        guard confirmed else { return "子任务状态待核对" }
+        let labels = [("running", "运行中"), ("pending", "启动中"), ("waiting", "等待中")].compactMap { state, title -> String? in
+            let count = items.filter { $0.status == state }.count
+            return count > 0 ? "\(count) 个子任务\(title)" : nil
+        }
+        return labels.isEmpty ? nil : labels.joined(separator: " · ")
     }
 }
 

@@ -3,7 +3,7 @@ export * from "./turn-file-changes.js";
 import { z } from "zod";
 export { orbisEnvironment } from "./product-environment.js";
 import {
-  AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema, AgentActivitySchema, AgentDeliveryItemSchema,
+  AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema, AgentActivitySchema, AgentDeliveryItemSchema, AgentTaskInventorySchema,
   DiagnosticsPageMessageSchema, DiagnosticsRequestSchema,
   AgentCatalogSessionSchema as AgentSessionSummarySchema, AgentStateRangeRequestSchema, AgentStateRangePageSchema,
 } from "./agent-state.js";
@@ -30,7 +30,7 @@ export * from "./tool-inventory-source.js";
  * 所有入站校验都是 `!== PROTOCOL_VERSION` 直接拒绝，没有兼容旧版的旁路——升版就是断代，
  * 两端必须一起更新。
  */
-export const PROTOCOL_VERSION = 18 as const;
+export const PROTOCOL_VERSION = 19 as const;
 
 /**
  * `protocol.error` 的 code：连接的对面用的是另一版协议。
@@ -824,6 +824,7 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("tool.activity"), summary: ToolSummarySchema }),
   ToolContentPageSchema, ToolReadFailureSchema, ToolInventoryPageSchema, ToolInventoryPatchSchema, ToolInventoryChangedSchema, ToolInventoryProducedSchema, ToolInventoryOpenedSchema,
   z.strictObject({ type: z.literal("delivery.snapshot"), items: z.array(AgentDeliveryItemSchema).max(256), complete: z.boolean().optional() }),
+  z.strictObject({ type: z.literal("execution.tasks"), tasks: AgentTaskInventorySchema }),
   z.strictObject({ type: z.literal("execution.activity"), retry: AgentActivitySchema, compaction: AgentActivitySchema }),
   NotificationSourceEventSchema,
   z.strictObject({ type: z.literal("runtime.status"), status: RuntimeStatusSchema }),

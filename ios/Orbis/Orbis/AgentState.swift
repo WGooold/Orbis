@@ -174,7 +174,10 @@ struct AgentProjection {
         var result = AgentProjection(runtime: runtime, commands: commands, interactions: interactions, queuedMessages: queuedMessages)
         for (name, domain) in domains {
             guard domain.availability == "ready" else {
-                if name == "execution" { result.runtime.status = "unknown"; result.runtime.compactionPhase = nil }
+                if name == "execution" {
+                    result.runtime.status = "unknown"; result.runtime.compactionPhase = nil
+                    result.runtime.backgroundTasks?.availability = "unknown"
+                }
                 continue
             }
             let value = domain.value, complete = domain.completeness == "complete" || domain.projectionComplete == true
@@ -190,6 +193,14 @@ struct AgentProjection {
                 guard let phase = value["phase"].string, ["idle", "running", "waiting_local_interaction"].contains(phase) else { return nil }
                 result.runtime.status = phase
                 result.runtime.compactionPhase = value["compaction"]["phase"].string
+                if value["tasks"] != .null {
+                    guard var tasks: BackgroundTaskInventory = value["tasks"].decoded(), tasks.valid else { return nil }
+                    if tasks.availability != "ready", let previous = result.runtime.backgroundTasks { tasks.items = previous.items }
+                    result.runtime.backgroundTasks = tasks
+                } else if complete, result.runtime.backgroundTasks != nil || result.runtime.agentKind == "claude" {
+                    result.runtime.backgroundTasks = BackgroundTaskInventory(availability: "unknown",
+                        items: result.runtime.backgroundTasks?.items ?? [], truncated: false)
+                }
             case "model":
                 if value == .null { if complete { result.runtime.model = nil; result.runtime.thinkingLevel = nil } }
                 else {

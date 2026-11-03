@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AgentTaskInventorySchema, agentTasksAllowQuit, type AgentTaskInventory } from "@orbis/protocol";
 import type { ToolContentStore } from "@orbis/runtime-bridge";
 import {
   ChatMessageSchema,
@@ -21,10 +22,11 @@ import { localHostname } from "./sessions.js";
 import { LocalClaudeProcessControl, type ClaudeProcessControl, type ClaudeProcessIdentity } from "./claude-process.js";
 
 /** The bridge contract is deliberately independent of the TUI's internal API. */
-export const CLAUDE_BRIDGE_VERSION = "3";
+export const CLAUDE_BRIDGE_VERSION = "4";
 export const CLAUDE_MIN_VERSION = "2.1.287";
 export const CLAUDE_BRIDGE_CAPABILITIES = [
   "prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity",
+  "agent.list",
 ] as const;
 export type ClaudeBridgeCapability = typeof CLAUDE_BRIDGE_CAPABILITIES[number];
 
@@ -44,6 +46,7 @@ export type ClaudeModsHello = {
   /** Set when the Host opened this TUI for a phone (`ORBIS_CLAUDE_LAUNCH_ID`). */
   launchId?: string;
   processId?: number;
+  interactive: boolean;
 };
 
 export type ClaudeModsCommand =
@@ -65,6 +68,9 @@ export type ClaudeSessionState = {
 };
 
 export type ClaudeModsNativeEvent =
+  | { type: "tasks.snapshot"; tasks: AgentTaskInventory }
+  | { type: "task.tool.finished"; agentId: string; toolCallId: string; toolName: string; arguments: unknown }
+  | { type: "task.turn.finished"; agentId: string }
   | { type: "prompt.submit"; text: string; origin: string; turnId?: string; wait?: boolean }
   | { type: "session.append"; uuid: string; door: string }
   | { type: "turn.step.row"; turnId: string; stepIndex: number; uuid: string }
@@ -107,6 +113,8 @@ type Session = {
   state: ClaudeSessionState;
   facts: ClaudeTranscriptFacts;
   compaction: "running" | "idle" | "failed";
+  tasks: AgentTaskInventory;
+  tasksCheckedAt: number;
   published: { metadata: string; capabilities: string };
   activeTurn?: {
     turnId: string;
@@ -139,7 +147,8 @@ export type ClaudeModsBridgeOptions = {
   /** A hello the Host refused; the reason belongs in diagnostics, not only in the TUI. */
   onRejected?: (reason: string, hello: Partial<ClaudeModsHello>) => void;
   /** A native tool finished: any Hook asking about it was answered in the TUI. */
-  onToolFinished?: (runtimeId: string, toolName: string, input: unknown) => void;
+  onToolFinished?: (runtimeId: string, toolName: string, input: unknown, agentId?: string, toolCallId?: string) => void;
+  onTaskTurnFinished?: (runtimeId: string, agentId: string) => void;
   /** A main turn ended: nothing of it can still be waiting for permission. */
   onTurnFinished?: (runtimeId: string) => void;
   /** The person at the computer asked to answer pending interactions there. */
@@ -180,7 +189,7 @@ export class ClaudeModsBridge {
   configDirs(): string[] { return [...new Set([...this.#sessions.values()].map(session => session.history.configDir))]; }
   capabilities(runtimeId: string): RuntimeCapabilities | undefined {
     const session = this.#sessions.get(runtimeId);
-    return session === undefined ? undefined : claudeCapabilities(session.state, session.process !== undefined);
+    return session === undefined ? undefined : claudeCapabilities(session.state, session.process !== undefined && agentTasksAllowQuit(session.tasks));
   }
   hasCommand(runtimeId: string, name: string): boolean {
     return this.capabilities(runtimeId)?.commands.some(command => command.name === name) ?? false;
@@ -223,6 +232,7 @@ export class ClaudeModsBridge {
       return { ok: false as const, error };
     };
     if (parsed === undefined) return reject("invalid_hello");
+    if (!parsed.interactive) return reject("non_interactive_session");
     if (parsed.bridgeVersion !== CLAUDE_BRIDGE_VERSION) return reject(`bridge_version_unsupported:${CLAUDE_BRIDGE_VERSION}`);
     const minimum = this.#options.minClaudeVersion ?? CLAUDE_MIN_VERSION;
     if (compareVersion(parsed.claudeVersion, minimum) < 0) return reject(`claude_version_too_old:${minimum}`);
@@ -263,6 +273,7 @@ export class ClaudeModsBridge {
       instanceId: parsed.instanceId, claudeVersion: parsed.claudeVersion, bridgeVersion: parsed.bridgeVersion,
       capabilities, generation, commands: new Map(), completedStops: new Map(), completedTurns: new Set(), runningTools: new Map(),
       lastSeenAt: Date.now(), history, state: {}, facts: {}, compaction: "idle", published: { metadata: "", capabilities: "" },
+      tasks: { availability: "unknown", items: previous?.tasks.items ?? [], truncated: false }, tasksCheckedAt: 0,
     };
     this.#sessions.set(runtimeId, session);
     if (parsed.processId !== undefined) {
@@ -274,6 +285,7 @@ export class ClaudeModsBridge {
     }
     session.runtime = this.#metadata(session);
     session.published.metadata = JSON.stringify(session.runtime);
+    this.#options.onEvent?.(runtimeId, { type: "execution.tasks", tasks: session.tasks });
     this.#options.onRuntimeOnline?.(session.runtime);
     void history.refresh().catch(() => undefined);
     if (parsed.launchId !== undefined) this.#launches.get(parsed.launchId)?.resolve(session.runtime);
@@ -296,7 +308,7 @@ export class ClaudeModsBridge {
     if (!session) return "offline";
     if (session.generation !== input.generation) return "stale";
     const event = parseNativeEvent(input.event);
-    if (!event) return "invalid";
+    if (!event) return this.receiveEvent(input.runtimeId, input.generation, input.event);
     if (event.type === "turn.start" && session.activeTurn?.turnId !== event.turnId && !session.completedTurns.has(event.turnId)) {
       await this.#options.beforeFileChangeTurn?.(input.runtimeId, event.turnId, signal).catch(() => undefined);
       if (this.#sessions.get(input.runtimeId) !== session) return "stale";
@@ -352,8 +364,24 @@ export class ClaudeModsBridge {
     if (session === undefined) return "offline";
     if (session.generation !== generation) return "stale";
     const parsed = parseNativeEvent(input);
-    if (parsed === undefined) return "invalid";
+    if (parsed === undefined) {
+      if (isRecord(input) && input.type === "tasks.snapshot") {
+        session.tasks = { ...session.tasks, availability: "unknown" };
+        this.#options.onEvent?.(runtimeId, { type: "execution.tasks", tasks: session.tasks });
+        this.#publishCapabilities(runtimeId, session);
+      }
+      return "invalid";
+    }
     session.lastSeenAt = Date.now();
+    if (parsed.type === "task.tool.finished") {
+      this.#options.onToolFinished?.(runtimeId, parsed.toolName, parsed.arguments, parsed.agentId, parsed.toolCallId);
+      return "accepted";
+    }
+    if (parsed.type === "task.turn.finished") {
+      this.#options.onTaskTurnFinished?.(runtimeId, parsed.agentId);
+      return "accepted";
+    }
+
     if (parsed.type === "turn.complete" && session.completedTurns.has(parsed.turnId)) {
       for (const completed of session.completedStops.values()) {
         if (completed.turnId === parsed.turnId) this.#options.onEvent?.(runtimeId, completed.event);
@@ -384,6 +412,15 @@ export class ClaudeModsBridge {
     if (parsed.type === "session.state") {
       session.state = { ...session.state, ...parsed.state };
       this.#publishMetadata(runtimeId, session);
+      this.#publishCapabilities(runtimeId, session);
+      return "accepted";
+    }
+    if (parsed.type === "tasks.snapshot") {
+      session.tasksCheckedAt = Date.now();
+      const tasks = parsed.tasks.availability === "ready" ? parsed.tasks : { ...parsed.tasks, items: session.tasks.items };
+      const changed = JSON.stringify(tasks) !== JSON.stringify(session.tasks);
+      session.tasks = tasks;
+      if (changed) this.#options.onEvent?.(runtimeId, { type: "execution.tasks", tasks });
       this.#publishCapabilities(runtimeId, session);
       return "accepted";
     }
@@ -422,7 +459,7 @@ export class ClaudeModsBridge {
     } else if (parsed.type === "tool.finished") {
       const started = session.runningTools.get(parsed.toolCallId);
       session.runningTools.delete(parsed.toolCallId);
-      this.#options.onToolFinished?.(runtimeId, parsed.toolName, started?.arguments);
+      this.#options.onToolFinished?.(runtimeId, parsed.toolName, started?.arguments, undefined, parsed.toolCallId);
     } else if (parsed.type === "command.result") {
       const pending = session.commands.get(parsed.commandId);
       // Stop completion is owned by the native turn.complete event observed above.
@@ -469,7 +506,11 @@ export class ClaudeModsBridge {
   async quit(runtimeId: string): Promise<void> {
     const session = this.#sessions.get(runtimeId);
     if (session?.process === undefined) throw new Error("无法核对 Claude Code 进程，请更新插件并重新打开会话。");
-    session.closing ??= this.#processControl.terminate(session.process, () => this.#sessions.get(runtimeId) === session);
+    if (!agentTasksAllowQuit(session.tasks) || Date.now() - session.tasksCheckedAt > 5_000) {
+      throw new Error("请先在电脑结束子任务，待状态同步后再关闭会话。");
+    }
+    session.closing ??= this.#processControl.terminate(session.process, () => this.#sessions.get(runtimeId) === session &&
+      agentTasksAllowQuit(session.tasks) && Date.now() - session.tasksCheckedAt <= 5_000);
     try { await session.closing; }
     catch (error) { delete session.closing; throw error; }
   }
@@ -477,6 +518,11 @@ export class ClaudeModsBridge {
   expireStale(now = Date.now(), leaseMs = 15_000): number {
     let expired = 0;
     for (const [runtimeId, session] of this.#sessions) {
+      if (session.tasks.availability === "ready" && now - session.tasksCheckedAt > 5_000) {
+        session.tasks = { ...session.tasks, availability: "unknown" };
+        this.#options.onEvent?.(runtimeId, { type: "execution.tasks", tasks: session.tasks });
+        this.#publishCapabilities(runtimeId, session);
+      }
       if (now - session.lastSeenAt <= leaseMs) continue;
       this.disconnect(runtimeId, session.generation, "bridge_lease_expired");
       expired++;
@@ -494,7 +540,8 @@ export class ClaudeModsBridge {
     const session = this.#sessions.get(runtimeId);
     if (session === undefined) return;
     this.#options.onEvent?.(runtimeId, { type: "runtime.metadata", metadata: session.runtime });
-    this.#options.onEvent?.(runtimeId, { type: "runtime.capabilities", capabilities: claudeCapabilities(session.state, session.process !== undefined) });
+    this.#options.onEvent?.(runtimeId, { type: "execution.tasks", tasks: session.tasks });
+    this.#options.onEvent?.(runtimeId, { type: "runtime.capabilities", capabilities: claudeCapabilities(session.state, session.process !== undefined && agentTasksAllowQuit(session.tasks)) });
   }
 
   /**
@@ -542,7 +589,7 @@ export class ClaudeModsBridge {
   }
 
   #publishCapabilities(runtimeId: string, session: Session): void {
-    const capabilities = claudeCapabilities(session.state, session.process !== undefined);
+    const capabilities = claudeCapabilities(session.state, session.process !== undefined && agentTasksAllowQuit(session.tasks));
     const encoded = JSON.stringify(capabilities);
     if (encoded === session.published.capabilities) return;
     session.published.capabilities = encoded;
@@ -626,7 +673,8 @@ function parseHello(value: unknown): ClaudeModsHello | undefined {
   if (value.configDir !== undefined && !text(value.configDir, 4096)) return undefined;
   if (value.launchId !== undefined && !text(value.launchId, 128)) return undefined;
   if (value.processId !== undefined && (typeof value.processId !== "number" || !Number.isSafeInteger(value.processId) || value.processId <= 1)) return undefined;
-  return { type: "hello", sessionId: value.sessionId, instanceId: value.instanceId, cwd: value.cwd, claudeVersion: value.claudeVersion,
+  if (typeof value.interactive !== "boolean") return undefined;
+  return { type: "hello", interactive: value.interactive, sessionId: value.sessionId, instanceId: value.instanceId, cwd: value.cwd, claudeVersion: value.claudeVersion,
     bridgeVersion: value.bridgeVersion, capabilities: value.capabilities, ...(value.configDir === undefined ? {} : { configDir: value.configDir }),
     ...(value.launchId === undefined ? {} : { launchId: value.launchId }),
     ...(value.processId === undefined ? {} : { processId: value.processId as number }) };
@@ -662,6 +710,14 @@ function parseState(value: unknown): ClaudeSessionState | undefined {
 
 function parseNativeEvent(value: unknown): ClaudeModsNativeEvent | undefined {
   if (!isRecord(value) || typeof value.type !== "string") return undefined;
+  if (value.type === "task.tool.finished" && text(value.agentId, 256) && text(value.toolCallId, 256) && text(value.toolName, 256)) {
+    return { type: value.type, agentId: value.agentId, toolCallId: value.toolCallId, toolName: value.toolName, arguments: value.arguments };
+  }
+  if (value.type === "task.turn.finished" && text(value.agentId, 256)) return { type: value.type, agentId: value.agentId };
+  if (value.type === "tasks.snapshot") {
+    const result = AgentTaskInventorySchema.safeParse(value.tasks);
+    return result.success ? { type: "tasks.snapshot", tasks: result.data } : undefined;
+  }
   if (value.type === "prompt.submit" && text(value.text, 100_000) && text(value.origin, 128)) return { type: value.type, text: value.text, origin: value.origin, ...(text(value.turnId, 256) ? { turnId: value.turnId } : {}), ...(typeof value.wait === "boolean" ? { wait: value.wait } : {}) };
   // The row itself is read from the transcript; the event only announces its identity.
   if (value.type === "session.append" && text(value.uuid, 256) && text(value.door, 64)) return { type: value.type, uuid: value.uuid, door: value.door };
@@ -714,6 +770,9 @@ function normalizeNativeEvent(native: ClaudeModsNativeEvent, session: Session): 
     case "turn.step.row":
     case "turn.step.finished":
     case "session.state":
+    case "tasks.snapshot":
+    case "task.tool.finished":
+    case "task.turn.finished":
     case "compaction":
     case "interactions.local": return [];
     case "turn.start": return [{ type: "turn.started", turnId: native.turnId, startedAt: native.startedAt ?? Date.now(), ...(native.turnIndex === undefined ? {} : { turnIndex: native.turnIndex }) }];

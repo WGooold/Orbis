@@ -208,6 +208,10 @@ macOS 启动器须等待 `open` 的退出结果（15 秒上限），再等待脚
 
 关联 V12、V16–V18 / R29–R30，沿用现有启动页与错误恢复，不新增交互或动效参数。单测、设备未跑项及现场限制见 [UI 回归方案](../testing/ui-regression.md) 和 `.artifacts/ui-regression/20261103-claude-resume-sync/launch-followup.md`；此补丁尚未部署，不能声明用户新建故障已修复。
 
+### 19. 主回合与后台子任务（2026-11-03）
+
+按 [ADR-0062](0062-claude-background-agents-and-session-activity.md) 实施独立任务库存、汇总活动与能力门禁。主回合 idle 不代表后台没有任务；仅过滤普通会话列表不足以修复。`agent.list()` 为库存来源，主回合结束不清任务，未知库存不冒充空闲；非交互子执行不发布普通会话。S26 / R61 未完成设备与真实隔离 TUI 门禁不得记为验收。
+
 ## Alternatives not selected
 
 - **Agent SDK 执行后端**：适合独立管理会话，但不能替代附着到用户正在操作的 TUI；不作为自动回退。

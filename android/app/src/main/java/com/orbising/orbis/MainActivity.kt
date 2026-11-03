@@ -687,10 +687,12 @@ internal fun RuntimeListScreen(
     val latestHomeRows by rememberUpdatedState(latestRuntimes)
     val visibleRuntimes = rememberViewportItems(presentedRuntimes, homeListState, activeHostId)
     val visibleIds = visibleRuntimes.map { it.runtime.runtimeId }.toSet()
-    val selectedIds = selectedRuntimeIds.intersect(visibleIds)
+    val closableIds = visibleRuntimes.filter { it.state.canCloseRuntime(it.runtime.runtimeId) }.map { it.runtime.runtimeId }.toSet()
+    val selectedIds = selectedRuntimeIds.intersect(visibleIds).intersect(closableIds)
     val selecting = selectedIds.isNotEmpty()
-    LaunchedEffect(visibleIds) { selectedRuntimeIds = selectedRuntimeIds.intersect(visibleIds) }
+    LaunchedEffect(visibleIds, closableIds) { selectedRuntimeIds = selectedRuntimeIds.intersect(visibleIds).intersect(closableIds) }
     fun toggleSelection(id: String) {
+        if (id !in closableIds) return
         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         selectedRuntimeIds = if (id in selectedIds) selectedIds - id else selectedIds + id
     }
@@ -777,7 +779,7 @@ internal fun RuntimeListScreen(
                                 text = "关闭",
                                 onClick = {
                                     activeHostId?.let { hostId ->
-                                        val currentIds = visibleRuntimes.filter { it.state.homeCardIsCurrent(it.card) }
+                                        val currentIds = visibleRuntimes.filter { it.state.homeCardIsCurrent(it.card) && it.state.canCloseRuntime(it.runtime.runtimeId) }
                                             .map { it.runtime.runtimeId }.toSet()
                                         selectedRuntimeIds = selectedIds - submitClose(hostId, selectedIds.intersect(currentIds))
                                     }
@@ -878,6 +880,8 @@ internal fun RuntimeListScreen(
                             val runtime = row.runtime
                             val departure = departing[runtime.runtimeId]
                             val cardCurrent = departure == null && row.state.homeCardIsCurrent(row.card)
+                            val canClose = cardCurrent && row.state.canCloseRuntime(runtime.runtimeId)
+                            val currentCanClose by rememberUpdatedState(canClose)
                             val currentCardIsCurrent by rememberUpdatedState(cardCurrent)
                             var cardWidth by remember(row.hostId, runtime.runtimeId) { mutableFloatStateOf(0f) }
                             val closeThreshold = cardWidth / 2f
@@ -900,6 +904,9 @@ internal fun RuntimeListScreen(
                                     swipeOffset = 0f; closeArmed = false
                                     swipeAnim.animateTo(0f, OrbisMotion.drag())
                                 }
+                            }
+                            LaunchedEffect(canClose) {
+                                if (!canClose && departure == null) { swipeOffset = 0f; closeArmed = false; swipeAnim.snapTo(0f) }
                             }
                             LaunchedEffect(opening, selecting) {
                                 if (opening) {
@@ -979,13 +986,13 @@ internal fun RuntimeListScreen(
                                             .testTag("home-runtime-${runtime.runtimeId}")
                                             .semantics { selected = runtime.runtimeId in selectedIds }
                                             .immediatePressFeedback(!selecting && cardCurrent) { touchPressed = it }
-                                            .pointerInput(selecting, runtime.runtimeId, cardWidth, cardCurrent) {
-                                                if (!selecting && cardCurrent) {
+                                            .pointerInput(selecting, runtime.runtimeId, cardWidth, canClose) {
+                                                if (!selecting && canClose) {
                                                     detectHomeCloseDragGestures(
                                                         onDragEnd = {
                                                             val shouldClose = closeThreshold > 0f && swipeOffset >= closeThreshold
                                                             // 提交成功后卡片从松手位置继续向左离开，不先弹回再消失。
-                                                            val closing = shouldClose && currentCardIsCurrent && submitClose(row.hostId, setOf(runtime.runtimeId)).isNotEmpty()
+                                                            val closing = shouldClose && currentCanClose && submitClose(row.hostId, setOf(runtime.runtimeId)).isNotEmpty()
                                                             if (!closing) {
                                                                 swipeOffset = 0f; closeArmed = false
                                                                 swipeScope.launch { swipeAnim.animateTo(0f, OrbisMotion.drag()) }
@@ -1014,17 +1021,17 @@ internal fun RuntimeListScreen(
                                         shadowScale = 0.8f,
                                         style = if (!selecting && (touchPressed || opening)) NeumorphStyle.Pressed else NeumorphStyle.Raised,
                                         selectionSelected = runtime.runtimeId in selectedIds,
-                                        selectionMode = selecting,
+                                        selectionMode = selecting && canClose,
                                         onClick = {
-                                            if (selecting) toggleSelection(runtime.runtimeId)
+                                            if (selecting) { if (canClose) toggleSelection(runtime.runtimeId) }
                                             else if (swipeOffset == 0f && !opening) opening = true
                                         },
-                                        onLongClick = {
+                                        onLongClick = if (!canClose) null else ({
                                             if (runtime.runtimeId !in selectedIds) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                             swipeOffset = 0f; closeArmed = false
                                             swipeScope.launch { swipeAnim.snapTo(0f) }
                                             selectedRuntimeIds = selectedIds + runtime.runtimeId
-                                        },
+                                        }),
                                         contentInset = 16.dp,
                                     ) {
                                         Row(
@@ -1045,10 +1052,10 @@ internal fun RuntimeListScreen(
                                                             Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
                                                             Text("待确认", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                                                         }
-                                                    } else RuntimeStatus(runtime.presentationStatus)
+                                                    } else RuntimeStatus(runtime.presentationStatus, title = runtime.presentationTitle)
                                                 }
                                             }
-                                            OrbisSelectionIndicator(runtime.runtimeId in selectedIds, selecting)
+                                            OrbisSelectionIndicator(runtime.runtimeId in selectedIds, selecting && canClose)
                                         }
                                     }
                                 }
@@ -1988,6 +1995,7 @@ internal fun ChatScreen(
                         }
                         ChatRuntimeStatus(
                             status = runtime?.presentationStatus ?: launch?.status ?: "error",
+                            title = runtime?.presentationTitle,
                             isChatSyncing = displayReadPending,
                             // ADR-0049 §6.7：切换中显示所选值加标记；同一槽位、同一省略规则（V05）。
                             modelLabel = state.configStatus(runtimeId, "model")?.let { "${it.first} · ${it.second}" }
@@ -2034,6 +2042,9 @@ internal fun ChatScreen(
             // 阴影会把「同一块地面」切断）。键盘出现时输入区随键盘上移，顶栏保持原位。
             Surface(Modifier.imePadding()) {
                 Column {
+                    runtime?.backgroundTasks?.takeIf { it.visible }?.let { tasks ->
+                        androidx.compose.runtime.key(runtimeId, sessionId) { BackgroundTasksPanel(tasks) }
+                    }
                     ComposerContextRail(composerStatus(runtime))
                     PendingMessagesPanel(
                         messages = state.queuePanelItems(runtimeId),
@@ -3547,6 +3558,7 @@ internal fun ChatRuntimeStatus(
     isChatSyncing: Boolean,
     modelLabel: String?,
     thinkingLevel: String?,
+    title: String? = null,
 ) {
     Row(
         Modifier.fillMaxWidth(),
@@ -3566,7 +3578,7 @@ internal fun ChatRuntimeStatus(
             }
         }
         MotionText(
-            runtimeStatusText(status),
+            title ?: runtimeStatusText(status),
             color = runtimeStatusColor(status),
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
@@ -3607,12 +3619,13 @@ private fun MetaLineSlot(content: @Composable () -> Unit) {
 @Composable
 private fun RuntimeStatus(
     status: String,
+    title: String? = null,
     isChatSyncing: Boolean = false,
     modelLabel: String? = null,
     modifier: Modifier = Modifier,
 ) {
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
-        RuntimeStatusIndicator(status)
+        RuntimeStatusIndicator(status, title)
         modelLabel?.takeIf(String::isNotBlank)?.let { label ->
             MotionText(
                 "$label",
@@ -3635,10 +3648,10 @@ private fun RuntimeStatus(
 }
 
 @Composable
-internal fun RuntimeStatusIndicator(status: String) {
+internal fun RuntimeStatusIndicator(status: String, title: String? = null) {
     Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
         RuntimeStatusDot(status)
-        MotionText(runtimeStatusText(status), color = runtimeStatusColor(status), style = MaterialTheme.typography.labelSmall)
+        MotionText(title ?: runtimeStatusText(status), color = runtimeStatusColor(status), style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -3649,9 +3662,10 @@ private fun RuntimeStatusDot(status: String) {
 
 @Composable
 private fun runtimeStatusColor(status: String): Color = when (status) {
+    "unknown", "tasks_unknown" -> MaterialTheme.colorScheme.onSurfaceVariant
     "idle" -> MaterialTheme.colorScheme.tertiary
     // ADR-0049 §6.8：启动中是进行中的状态，与运行中同色；启动未确认待核对，与等待同色，不显示为错误。
-    "running", "compacting", "starting" -> MaterialTheme.colorScheme.primary
+    "running", "compacting", "starting", "background" -> MaterialTheme.colorScheme.primary
     "waiting_local_interaction", "launch_unconfirmed" -> MaterialTheme.colorScheme.secondary
     else -> MaterialTheme.colorScheme.error
 }
@@ -4444,15 +4458,6 @@ internal fun InteractionPanel(
     }
 }
 
-private fun runtimeStatusText(status: String): String = when (status) {
-    "starting" -> "启动中"
-    "launch_unconfirmed" -> "启动未确认"
-    "idle" -> "空闲"
-    "running" -> "运行中"
-    "compacting" -> "压缩中"
-    "waiting_local_interaction" -> "等待电脑端交互"
-    else -> "未知状态"
-}
 
 private fun toolStateText(state: String): String = when (state) {
     "started" -> "已开始"

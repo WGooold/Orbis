@@ -1307,13 +1307,17 @@ final class HostConnection: ObservableObject {
     }
 
     /// Close a home-list selection without changing the active conversation or its draft.
+    func canCloseRuntime(_ id: String) -> Bool {
+        runtimes.first { $0.runtimeId == id }?.allowsRemoteClose(commands[id] ?? []) == true
+    }
+
     func closeRuntimes(_ runtimeIds: Set<String>) -> Set<String> {
         guard connection == .secured else {
             errorMessage = "关闭会话未发送：请先连接电脑。"; return []
         }
         var submitted: Set<String> = []
         for runtime in runtimes where runtimeIds.contains(runtime.runtimeId) {
-            guard commands[runtime.runtimeId]?.contains(where: { $0.name == "quit" && $0.argument?.required != true }) == true else {
+            guard canCloseRuntime(runtime.runtimeId) else {
                 agentState.subscribe(runtime: runtime, force: true)
                 errorMessage = "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。"
                 continue

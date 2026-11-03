@@ -33,10 +33,15 @@ let reportedState: { connection: Connection; encoded: string } | undefined;
 let reporting = false;
 let rejected: { error: string; until: number; descriptor: Descriptor } | undefined;
 let status: string | undefined;
+let interactiveSession = false;
+let readingTasks = false;
+let reportedTasks: { connection: Connection; encoded: string; at: number } | undefined;
 
 export const register: Register = on => {
   on("session.start", async ($, event, next) => {
+    interactiveSession = event.isInteractive && event.surface === "terminal";
     const result = await next(event);
+    if (!interactiveSession) return result;
     // Lets the person at the computer take back interactions that were sent to a phone.
     void $.command.register({ name: "orbis-local", description: "把已发到手机的权限请求和问题收回到电脑上回答",
       immediate: true }).catch(() => undefined);
@@ -51,6 +56,7 @@ export const register: Register = on => {
   });
 
   on("session.append", async ($, event, next) => {
+    if (event.agentId !== undefined) return await next(event);
     const step = event.agentId === undefined && event.door === "response" && event.message.type === "assistant"
       ? activeStep : undefined;
     // Reserve before native storage: a sync triggered by another event must not publish the row
@@ -131,8 +137,12 @@ export const register: Register = on => {
   });
 
   on("turn.complete", async ($, event, next) => {
+    const childTarget = event.agentId === undefined ? undefined : connection;
     if (event.agentId === undefined && activeStep?.turnId === event.turnId) await finishStep($);
     const result = await next(event);
+    if (event.agentId !== undefined && childTarget) {
+      await postEvent($, childTarget, { type: "task.turn.finished", agentId: event.agentId });
+    }
     if (event.agentId === undefined) {
       const nativeEvent = { type: "turn.complete", turnId: event.turnId, durationMs: event.durationMs,
         answer: clipText(event.answer, 64_000), reason: event.reason, isAborted: event.isAborted } satisfies BridgeEvent;
@@ -152,6 +162,15 @@ export const register: Register = on => {
   });
 
   on("tool.call", async ($, event, next) => {
+    // Children have their own task identity. Their tool output is not a main-loop reply.
+    if (event.agentId !== undefined) {
+      const target = connection;
+      const result = await next(event);
+      if (target) await postEvent($, target, { type: "task.tool.finished", agentId: event.agentId,
+        toolName: event.tool, toolCallId: event.tool_use_id,
+        arguments: boundedValue(Object.fromEntries(Object.entries(event).filter(([key]) => !RESERVED_TOOL_FIELDS.has(key))), 24_000) });
+      return result;
+    }
     const toolName = event.tool;
     const toolCallId = event.tool_use_id;
     // The tool's own input, as a Hook's `tool_input` carries it: the engine's reserved fields left out.
@@ -172,6 +191,8 @@ async function poll($: Api): Promise<void> {
   try {
     const current = await connect($);
     if (current === undefined) return;
+    void reportTasks($, current).catch(() => undefined);
+    if (connection !== current) return;
     const response = await request<PollReply>($, "/v1/claude/mods/poll", {
       runtimeId: current.runtimeId, generation: current.generation,
     }, current.descriptor);
@@ -200,6 +221,33 @@ async function poll($: Api): Promise<void> {
   }
 }
 
+/** Full native inventory, independent of main turn boundaries; old reads cannot cross sessions. */
+async function reportTasks($: Api, target: Connection): Promise<void> {
+  if (readingTasks) return;
+  readingTasks = true;
+  try {
+    const started = await $.clock.now();
+    let tasks: { availability: "ready" | "unknown"; items: { id: string; parentId?: string; title: string; kind: string; status: string }[]; truncated: boolean };
+    try {
+      const agents = await $.agent.list();
+      if (agents.length > 256) tasks = { availability: "unknown", items: [], truncated: true };
+      else tasks = { availability: "ready", truncated: false, items: agents.map(agent => ({
+        id: agent.id, ...(agent.parentId ? { parentId: agent.parentId } : {}),
+        title: clipText(agent.description || agent.name || agent.type, 256), kind: clipText(agent.type, 128),
+        // A pane teammate has no loop here: its roster may survive the process. Do not claim liveness.
+        status: agent.teammateId === agent.id && !["completed", "failed", "killed"].includes(agent.status) ? "unknown" : agent.status,
+      })).sort((a, b) => a.id.localeCompare(b.id)) };
+    } catch { tasks = { availability: "unknown", items: [], truncated: false }; }
+    if (connection !== target || await $.session.id() !== target.sessionId) return;
+    const at = await $.clock.now();
+    // A slow source read cannot renew liveness with an old snapshot.
+    if (at - started > 3_000) tasks = { availability: "unknown", items: [], truncated: false };
+    const encoded = JSON.stringify(tasks);
+    if (reportedTasks?.connection === target && reportedTasks.encoded === encoded && at - reportedTasks.at < 3_000) return;
+    if (await postEvent($, target, { type: "tasks.snapshot", tasks })) reportedTasks = { connection: target, encoded, at };
+  } finally { readingTasks = false; }
+}
+
 async function connect($: Api): Promise<Connection | undefined> {
   if (connecting !== undefined) return connecting;
   const pending = connectOnce($);
@@ -209,6 +257,7 @@ async function connect($: Api): Promise<Connection | undefined> {
 }
 
 async function connectOnce($: Api): Promise<Connection | undefined> {
+  if (!interactiveSession) return undefined;
   const sessionId = await $.session.id();
   // A cached endpoint can stay unreachable forever: Host restarts on a random
   // port and with a new token. Read discovery even while we have a generation.
@@ -232,8 +281,8 @@ async function connectOnce($: Api): Promise<Connection | undefined> {
     ...(Number.isSafeInteger(processId) && processId! > 1 ? { processId } : {}),
     ...(configDir === undefined || configDir.length === 0 ? {} : { configDir }),
     ...(launchId === undefined || launchId.length === 0 ? {} : { launchId }),
-    claudeVersion: version.version, bridgeVersion: "3",
-    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity"],
+    interactive: true, claudeVersion: version.version, bridgeVersion: "4",
+    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list"],
   }, descriptor);
   if (!response.ok || response.body?.ok !== true) {
     const error = response.body !== undefined && "error" in response.body ? response.body.error : undefined;

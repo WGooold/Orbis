@@ -11,12 +11,18 @@
 
 ## 借用要求
 
-1. 按本机指南原子取得 `registry.lock`，再取得对应 `devices/ios-<UDID>.lock`；核实设备空闲及 owner 后使用。不能只看设备名称或 Shutdown 状态忽略租约。
+1. 通过本机 `ios-simulator.py run` 取得全程单台名额，再由入口取得 `registry.lock` 和对应 `devices/ios-<UDID>.lock`；核实设备空闲及 owner 后使用。两端合计同时只运行 1 台，不预先手动借锁或仅凭 Shutdown 忽略租约。
 2. 对登记了 `storagePath` 的设备，确认 `/Volumes/WD1TB` 已挂载，`dataPath` 是有效符号链接，解析后与 `storagePath` 相同。未挂载、链接丢失或指向不一致时停止借用并报告路径问题；不要创建本地同名目录、erase 或新建设备代替。
 3. 使用显式 UDID；`xcodebuild` 继续设置 `-parallel-testing-enabled NO`，构建目录与构建租约规则照常执行。基线和候选使用同一台设备、同一配置。
-4. 只清理本任务夹具。结束时停止自己的任务、关闭自己借用的设备，确认 Shutdown 后核对 owner 并释放自己的锁。设备运行时外接盘须保持挂载。
+4. 只清理本任务夹具。结束时由入口停止自己的任务、关闭借用设备，确认 Shutdown 后核对 owner 并释放自己的锁；agent 还须核验清理结果和实际状态。遗留锁按 [共享资源解锁责任与遗留锁恢复](resource-lock-recovery.md) 处理。设备运行时外接盘须保持挂载。
 
-常规命令形式为 `xcrun simctl boot <UDID>`、`xcrun simctl bootstatus <UDID>`、`xcrun simctl install <UDID> <App路径>`，均在取得独占租约并确认存储路径后执行；本页没有替代租约的独立启动入口。
+常规操作统一使用共用入口，它负责存储核对、80% 内存门槛、设备启动和退出关闭；不要单独执行 `simctl boot`：
+
+```sh
+python3 "$HOME/.orbis/tools/ui-regression/ios-simulator.py" run --device <池内UDID> --task "iOS 回归" -- sh -c 'xcrun simctl get_app_container "$ORBIS_IOS_UDID" com.orbising.orbis app'
+```
+
+安装、截图和测试命令同样放在 `run --` 的前台子命令中，使用注入的 `$ORBIS_IOS_UDID`。入口不替代构建租约、测试结果判定或人工 UI 门禁。
 
 ## 验证记录
 

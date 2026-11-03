@@ -27,6 +27,22 @@ class AgentModelConsumerTest {
     private fun interaction(id: String = "question") = """{"requestId":"$id","extensionId":"extension","kind":"select",
         "title":"Choose","expiresAt":9007199254740991,"options":[{"value":"yes","label":"Yes"}]}"""
 
+    @Test fun `task inventory is projected independently and unknown retains last tasks`() {
+        var state = receive(initial(), domain("execution", """{"phase":"idle","tasks":{"availability":"ready","items":[{"id":"child","title":"任务","kind":"Explore","status":"running"}],"truncated":false}}"""))
+        assertEquals("idle", state.runtimes.getValue("runtime").status)
+        assertEquals("1 个子任务运行中", state.runtimes.getValue("runtime").presentationTitle)
+        state = receive(state, domain("execution", """{"phase":"idle","tasks":{"availability":"unknown","items":[],"truncated":false}}""", 2))
+        assertEquals("child", state.runtimes.getValue("runtime").backgroundTasks!!.items.single().id)
+        assertEquals("unknown", state.runtimes.getValue("runtime").backgroundTasks!!.availability)
+        state = receive(state, domain("execution", """{"phase":"idle","tasks":{"availability":"ready","items":[],"truncated":false}}""", 3))
+        assertEquals("空闲", state.runtimes.getValue("runtime").presentationTitle)
+        state = receive(state, domain("execution", """{"phase":"idle"}""", 4))
+        assertEquals("子任务状态待核对", state.runtimes.getValue("runtime").presentationTitle)
+        state = receive(state, domain("execution", "null", 5, availability = "unknown"))
+        assertEquals("unknown", state.runtimes.getValue("runtime").status)
+        assertEquals("unknown", state.runtimes.getValue("runtime").backgroundTasks!!.availability)
+    }
+
     @Test fun `compaction activity drives presentation without changing execution phase`() {
         var state = receive(initial(), domain("execution", """{"phase":"idle","compaction":{"phase":"running"}}"""))
         var runtime = state.runtimes.getValue("runtime")

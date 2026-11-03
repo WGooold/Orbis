@@ -45,8 +45,8 @@ async function post(path, body) {
   return response.json();
 }
 const hello = await post("/v1/claude/mods/hello", { type: "hello", instanceId: "fixture-tui", sessionId,
-  cwd: stateDir, claudeVersion: "2.1.312", bridgeVersion: "3", configDir,
-  capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity"] });
+  cwd: stateDir, claudeVersion: "2.1.312", bridgeVersion: "4", interactive: true, configDir,
+  capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list"] });
 if (!hello.ok) throw new Error(`bridge_hello_${hello.error}`);
 async function event(value) {
   const result = await post("/v1/claude/mods/event", { runtimeId, generation: hello.generation, event: value });

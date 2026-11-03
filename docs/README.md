@@ -4,9 +4,11 @@ This directory is organized by authority and maintenance horizon. The root `READ
 
 ## Current references
 
+- [ADR-0062](adr/0062-claude-background-agents-and-session-activity.md)：Claude 主回合与后台子任务库存独立，双端活动展示、任务区和关闭能力；r44 / S26 / R61，已接入，设备与真实原生联动待验证。
+
 - [Claude Code 供应商与官方订阅配额](agents/claude-providers-and-subscription-quota.md)：Host、iOS 和 Android 的配置切换与 5 小时 / 周配额查询。
 - `docs/adr/`: accepted architecture decisions. ADRs preserve historical reasoning; a superseded ADR is marked in its header.
-- [ADR-0051](adr/0051-ui-style-motion-and-visual-stability-freeze.md)：UI 风格、动效与画面稳定性的统一冻结入口，基线 `2026-11-03/r39`，登记 80 项（已交付 67 项；移动端 70 项及品牌 / Host / Relay 10 项；设备与手动门禁按各轮记录）feature；相关设计与修改前必读，演进时同步维护 ADR 和本机 `AGENTS.md` / `CLAUDE.md`。
+- [ADR-0051](adr/0051-ui-style-motion-and-visual-stability-freeze.md)：UI 风格、动效与画面稳定性的统一冻结入口，基线 `2026-11-03/r44`，登记 81 项（已交付 67 项；移动端 71 项及品牌 / Host / Relay 10 项；设备与手动门禁按各轮记录）feature；相关设计与修改前必读，演进时同步维护 ADR 和本机 `AGENTS.md` / `CLAUDE.md`。
 - [ADR-0050](adr/0050-fixed-lan-relay-routing.md): LAN / Relay only with fixed LAN-first routing; configurable priorities are removed. Merged into main and locally verified; release validation pending.
 - [ADR-0052](adr/0052-turn-file-changes-and-on-demand-diff.md)：Host 保存轮次前后版本、先同步文件元数据，双端按需查看差异并带动画切换文件。
 - [ADR-0053](adr/0053-settings-entry-page-motion-and-ui-regression-gate.md)：r15 决策——打字机顺序揭示、运行中工具呈现连续、首页视口稳定、设置页与唯一配对入口、设置 / 下载页转场、下拉刷新、下载飞入；自动用例大部分已实施，Android Pi / Codex 与 V21 定向验证已有结果，iOS 全量、真实输出与手动回归仍待完成；实施拆分见 [UI r15 ticket](agents/ui-r15-tickets.md)。
@@ -18,6 +20,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 - `docs/testing/isolated-host/README.md`: isolated Host test rig — its own process, state directory and local Relay, so Host/App verification never touches the Host the user is running. Read it before any on-machine pairing or display-projection regression run.
 - [本机 Android 模拟器入口](testing/android-emulator.md)：所有 agent / 工作树共用的设备借用、隔离 ADB、诊断与退出清理。
 - [本机 iOS 模拟器外接存储](testing/ios-simulator-storage.md)：12 台共享池、新增 iOS 设备、外接数据目录及借用前检查。
+- [共享资源解锁与遗留锁恢复](testing/resource-lock-recovery.md)：所有 agent 的强制收尾、主 / 子任务责任、忘记解锁与异常退出后的核查、定向释放及阻塞交接。
 - [UI 回归方案](testing/ui-regression.md)：任何 UI 功能、设计或影响显示的改动完成前必须执行的自动 / 手动模拟器回归、全量用例与 feature 映射、新用例编写要求和证据格式。
 - `docs/testing/mobile-ui-polish.md`: mobile UI constraints and isolated iOS / Android regression evidence for ADR-0046.
 - `docs/deployment.md`: production Relay deployment and release checks.

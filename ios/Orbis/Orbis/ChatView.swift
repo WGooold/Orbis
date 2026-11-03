@@ -233,7 +233,7 @@ struct ChatView: View {
                 }
                 HStack(spacing: 8) {
                     if store.connection == .secured {
-                        RuntimeStatusLabel(status: runtime.presentationStatus, syncing: store.isSyncing)
+                        RuntimeStatusLabel(status: runtime.presentationStatus, syncing: store.isSyncing, title: runtime.presentationTitle)
                             .fixedSize(horizontal: true, vertical: false)
                     } else {
                         HStack(spacing: 5) {
@@ -253,7 +253,7 @@ struct ChatView: View {
                 }
             }.contentShape(Rectangle()).onTapGesture { composerFocused = false; runtimeInfoOpen = true }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(agentTitle(kind))，\(store.displayName(runtime))，\(store.connection == .secured ? runtimeStatusTitle(runtime.presentationStatus) : connectionTitle(store.connection))")
+                .accessibilityLabel("\(agentTitle(kind))，\(store.displayName(runtime))，\(store.connection == .secured ? runtime.presentationTitle : connectionTitle(store.connection))")
                 .accessibilityHint("查看会话信息").accessibilityIdentifier("chat-title")
                 .accessibilityAddTraits(.isButton)
         } trailing: {
@@ -451,6 +451,9 @@ struct ChatView: View {
         let p = OrbisPalette(scheme)
         return VStack(spacing: 0) {
             InteractionWorkspaceView(runtimeId: runtime.runtimeId)
+            if let tasks = runtime.backgroundTasks, tasks.visible {
+                BackgroundTasksView(tasks: tasks).id("\(runtime.runtimeId):\(runtime.sessionId ?? "")")
+            }
             if let percent = contextUsagePercent(runtime.contextUsage), domainReady("context") {
                 GeometryReader { geometry in
                     Rectangle().fill(accent.opacity(0.15))
@@ -1616,7 +1619,7 @@ private struct RuntimeInfoView: View {
                         StatusFact(label: "上下文", value: ready("context") ? contextText : "状态待核对")
                     }
                     StatusSection(title: "执行状态") {
-                        StatusFact(label: "当前状态", value: ready("execution") ? runtimeStatusTitle(runtime.presentationStatus) : "状态待核对")
+                        StatusFact(label: "当前状态", value: ready("execution") ? runtime.presentationTitle : "状态待核对")
                         if ready("execution"), let execution = snapshot?.domains["execution"]?.value {
                             StatusFact(label: "重试", value: activity(execution["retry"]))
                             StatusFact(label: "上下文压缩", value: activity(execution["compaction"]))
@@ -1664,4 +1667,45 @@ private struct RuntimeInfoView: View {
 
 private func agentDomainTitle(_ name: String) -> String {
     ["identity": "会话身份", "availability": "可用性", "execution": "执行", "delivery": "消息队列", "interactions": "交互", "permissions": "权限", "model": "模型", "context": "上下文", "capabilities": "可用命令", "resources": "资源", "providerBinding": "供应商归属", "workspaceRef": "工作区", "artifacts": "附件", "records": "诊断记录"][name] ?? name
+}
+
+/// ADR-0062: read-only native task inventory, independent of the main composer state.
+struct BackgroundTasksView: View {
+    let tasks: BackgroundTaskInventory
+    @State private var expanded = false
+    @Environment(\.colorScheme) private var scheme
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            OrbisMotionButton { expanded.toggle() } label: {
+                HStack(spacing: 8) {
+                    OrbisActionSymbol(systemName: expanded ? "chevron.down" : "chevron.right")
+                    Text(tasks.activityTitle ?? "子任务 · \(tasks.items.count) 项").font(.orbisCaption(.medium)).lineLimit(2)
+                    Spacer(minLength: 0)
+                }.frame(minHeight: 48).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityIdentifier("background-tasks-toggle")
+                .accessibilityValue(expanded ? "已展开" : "已收起")
+            OrbisCollapse(expanded: expanded) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !tasks.confirmed {
+                            Text("正在核对子任务状态，以下为最后已知信息").font(.orbisCaption())
+                        }
+                        ForEach(tasks.items) { task in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text(task.title.isEmpty ? task.kind : task.title).font(.orbisLabel()).lineLimit(2)
+                                    Spacer(minLength: 0)
+                                    Text(task.statusTitle).font(.orbisCaption()).fixedSize(horizontal: true, vertical: false)
+                                }
+                                Text(task.kind).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                                if let parentId = task.parentId, let parent = tasks.items.first(where: { $0.id == parentId }) {
+                                    Text("来自：\(parent.title)").font(.orbisCaption()).lineLimit(1)
+                                }
+                            }.accessibilityElement(children: .combine).accessibilityIdentifier("background-task-\(task.id)")
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 8)
+                }.frame(maxHeight: 160)
+            }
+        }.padding(.horizontal, 16).foregroundStyle(OrbisPalette(scheme).secondary)
+    }
 }

@@ -34,7 +34,8 @@ internal fun RemoteState.applyAgentDomainProjection(
             runtime = runtime.copy(domainAvailability = runtime.domainAvailability + (name to domain.availability))
             // unknown/unavailable 保留最后已知值；availability 本身仍已登记在镜像内。
             if (domain.availability != "ready") {
-                if (name == "execution") runtime = runtime.copy(status = "unknown", compactionPhase = null)
+                if (name == "execution") runtime = runtime.copy(status = "unknown", compactionPhase = null,
+                    backgroundTasks = runtime.backgroundTasks?.copy(availability = "unknown"))
                 continue
             }
             val value = domain.value?.takeUnless { it is JsonNull }
@@ -52,6 +53,16 @@ internal fun RemoteState.applyAgentDomainProjection(
                     require(phase in setOf("idle", "running", "waiting_local_interaction"))
                     runtime = runtime.copy(status = phase,
                         compactionPhase = ((value as? JsonObject)?.get("compaction") as? JsonObject)?.text("phase"))
+                    val taskValue = (value as? JsonObject)?.get("tasks")?.takeUnless { it is JsonNull }
+                    if (taskValue != null) {
+                        val tasks = json.decodeFromJsonElement<BackgroundTaskInventory>(taskValue)
+                        require(tasks.valid)
+                        runtime = runtime.copy(backgroundTasks = if (tasks.availability == "ready") tasks else
+                            tasks.copy(items = runtime.backgroundTasks?.items ?: tasks.items))
+                    } else if ((domain.completeness == "complete" || domain.projectionComplete == true) &&
+                        (runtime.backgroundTasks != null || runtime.agentKind == "claude")) {
+                        runtime = runtime.copy(backgroundTasks = BackgroundTaskInventory("unknown", runtime.backgroundTasks?.items.orEmpty(), false))
+                    }
                     conversation = conversation.copy(waitingLocalInteraction = phase == "waiting_local_interaction")
                 }
                 "model" -> runtime = if (value == null && domain.completeness == "complete") {

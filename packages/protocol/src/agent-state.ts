@@ -155,12 +155,28 @@ export const AgentActivitySchema = z.union([z.literal("unavailable"), z.strictOb
   phase: z.enum(["idle", "running", "failed"]), turnId: identity.optional(),
   attempt: z.number().int().nonnegative().optional(), detail: z.string().max(4_000).optional(),
 })]);
+/** ADR-0062: background work is independent of the main turn and command admission. */
+export const AgentTaskSchema = z.strictObject({
+  id: identity, parentId: identity.optional(), title: z.string().max(256), kind: z.string().max(128),
+  status: z.enum(["pending", "running", "waiting", "idle", "completed", "failed", "killed", "unknown"]),
+});
+export const AgentTaskInventorySchema = z.strictObject({
+  availability: DomainAvailabilitySchema, items: z.array(AgentTaskSchema).max(256), truncated: z.boolean(),
+}).refine(value => new Set(value.items.map(item => item.id)).size === value.items.length, "Duplicate task identity")
+  .refine(value => !value.truncated || value.availability !== "ready", "Truncated inventory is not complete");
+export type AgentTaskInventory = z.infer<typeof AgentTaskInventorySchema>;
+export type AgentTask = z.infer<typeof AgentTaskSchema>;
+export function agentTasksAllowQuit(tasks: AgentTaskInventory): boolean {
+  return tasks.availability === "ready" && !tasks.truncated &&
+    tasks.items.every(item => ["idle", "completed", "failed", "killed"].includes(item.status));
+}
 export const AgentExecutionStateSchema = z.strictObject({
   phase: AgentExecutionPhaseSchema,
   /** 正在等待回答的交互 requestId，升序。非空时 phase 必须是 waiting_local_interaction。 */
   waitingFor: z.array(z.string().min(1)).max(64),
   retry: AgentActivitySchema,
   compaction: AgentActivitySchema,
+  tasks: AgentTaskInventorySchema.optional(),
   turn: z.strictObject({ turnId: identity, startedAt: z.number().int().nonnegative(), durationMs: z.number().int().nonnegative().optional() }).nullable().optional(),
 });
 export type AgentExecutionState = z.infer<typeof AgentExecutionStateSchema>;

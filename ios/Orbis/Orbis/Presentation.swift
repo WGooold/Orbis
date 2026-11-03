@@ -79,6 +79,8 @@ func runtimeStatusTitle(_ status: String) -> String {
     switch status {
     case "running": return "运行中"
     case "compacting": return "压缩中"
+    case "background": return "子任务运行中"
+    case "tasks_unknown": return "子任务状态待核对"
     case "waiting", "waiting_interaction", "waiting_local_interaction": return "等待确认"
     case "error": return "异常"
     case "idle": return "空闲"

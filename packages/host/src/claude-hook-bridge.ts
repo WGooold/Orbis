@@ -31,6 +31,8 @@ type Pending = {
   hook: HookKind;
   sessionId: string;
   toolName: string;
+  agentId?: string;
+  toolCallId?: string;
   generation: string;
   settle: (output: ClaudeHookOutput, fingerprint?: string, reason?: "timeout" | "disconnected" | "cancelled" | "owner_closed") => void;
   timer: ReturnType<typeof setTimeout>;
@@ -50,6 +52,8 @@ export type ClaudeHookBridgeOptions = {
   hasRemoteDevice?: () => boolean;
   /** Status owned by the Mods bridge, restored once no Hook interaction is pending. */
   baseStatus?: (runtimeId: string) => RuntimeStatus | undefined;
+  /** Explicit child Hooks can only use an already identified parent Session. */
+  hasSession?: (runtimeId: string) => boolean;
   onRuntimeOnline?: (runtime: RuntimeMetadata) => void;
   onRuntimeOffline?: (runtimeId: string, reason: string) => void;
   onEvent?: (runtimeId: string, event: RuntimeEvent) => void;
@@ -99,6 +103,9 @@ export class ClaudeHookBridge {
     if (parsed === undefined) throw new ClaudeHookInputError("invalid Claude Hook input");
     if (this.#options.hasRemoteDevice?.() === false) return passthrough();
     const runtimeId = `claude:${parsed.sessionId}`;
+    const childTranscript = isRecord(input) && typeof input.transcript_path === "string" && /[\\/]subagents[\\/]/u.test(input.transcript_path);
+    if (childTranscript && parsed.agentId === undefined) return passthrough();
+    if (parsed.agentId !== undefined && this.#options.hasSession?.(runtimeId) !== true) return passthrough();
     if (!this.#sessions.has(runtimeId)) {
       const session = { runtimeId, sessionId: parsed.sessionId, cwd: parsed.cwd };
       this.#sessions.set(runtimeId, session);
@@ -136,6 +143,8 @@ export class ClaudeHookBridge {
       }
       signal?.addEventListener("abort", onAbort, { once: true });
       this.#pending.set(requestId, { request: requestWithExpiry, hook: parsed.hook, sessionId: parsed.sessionId, toolName: parsed.toolName,
+        ...(parsed.agentId === undefined ? {} : { agentId: parsed.agentId }),
+        ...(parsed.toolCallId === undefined ? {} : { toolCallId: parsed.toolCallId }),
         generation: this.#generation, settle: (output, responseFingerprint, reason) => {
           finish(output, responseFingerprint, reason);
         }, timer, fingerprint, rawToolInput: parsed.toolInput,
@@ -181,20 +190,27 @@ export class ClaudeHookBridge {
   /**
    * The TUI decided first: a native tool finished, or the turn ended, while its Hook still
    * waited for a phone. Claude ignores the Hook's late empty output; the phone card closes
-   * as answered on the computer. Without a tool name every pending Hook of the runtime closes.
+   * as answered on the computer. Without a tool name every pending Hook of that exact loop closes.
    */
-  resolveLocally(runtimeId: string, toolName?: string, input?: unknown): void {
+  resolveLocally(runtimeId: string, toolName?: string, input?: unknown, agentId?: string, toolCallId?: string): void {
     for (const pending of [...this.#pending.values()]) {
       if (`claude:${pending.sessionId}` !== runtimeId) continue;
+      if (pending.agentId !== agentId) continue;
+      const exactTool = pending.toolCallId !== undefined && toolCallId !== undefined;
+      if (exactTool && pending.toolCallId !== toolCallId) continue;
       if (toolName !== undefined && (pending.hook !== "PermissionRequest" || pending.toolName !== toolName)) continue;
-      if (toolName !== undefined && !sameInput(pending.rawToolInput, input)) continue;
+      if (toolName !== undefined && !exactTool && !sameInput(pending.rawToolInput, input)) continue;
       this.#options.onEvent?.(runtimeId, { type: "interaction.resolved", requestId: pending.request.requestId, source: "local" });
       pending.settle(passthrough());
     }
   }
 
   /** The person at the computer asked to answer there: every pending Hook makes no decision now. */
-  deferToLocal(runtimeId: string): void { this.resolveLocally(runtimeId); }
+  deferToLocal(runtimeId: string): void {
+    for (const pending of [...this.#pending.values()]) {
+      if (`claude:${pending.sessionId}` === runtimeId) this.resolveLocally(runtimeId, undefined, undefined, pending.agentId);
+    }
+  }
 
   /** Defers every pending interaction of the runtime to the native TUI dialog. */
   cancelRuntime(runtimeId: string, reason: "cancelled" | "disconnected" | "owner_closed" = "disconnected"): void {
@@ -239,6 +255,8 @@ type ParsedHook = {
   toolInput: Record<string, unknown>;
   request: Record<string, unknown>;
   cwd: string;
+  agentId?: string;
+  toolCallId?: string;
   rawQuestions?: readonly unknown[];
 };
 
@@ -256,13 +274,16 @@ function parseHookInput(input: unknown): ParsedHook | undefined {
   const resolvedCwd = cwd === undefined ? "claude-code" :
     typeof cwd === "string" && boundedText(cwd, 4096) ? cwd : undefined;
   if (resolvedCwd === undefined) return undefined;
-  if (hookEvent === "PermissionRequest") return { hook: hookEvent, sessionId, toolName, toolInput: toolInput as Record<string, unknown>, request: value, cwd: resolvedCwd };
+  if (value.agent_id !== undefined && (typeof value.agent_id !== "string" || !boundedText(value.agent_id, 256))) return undefined;
+  const owner = { ...(typeof value.agent_id === "string" ? { agentId: value.agent_id } : {}),
+    ...(typeof value.tool_use_id === "string" && boundedText(value.tool_use_id, 256) ? { toolCallId: value.tool_use_id } : {}) };
+  if (hookEvent === "PermissionRequest") return { hook: hookEvent, sessionId, toolName, toolInput: toolInput as Record<string, unknown>, request: value, cwd: resolvedCwd, ...owner };
   if (hookEvent === "PreToolUse" && toolName === "AskUserQuestion") {
     const questions = (toolInput as Record<string, unknown>).questions;
     if (!Array.isArray(questions) || questions.length === 0 || questions.length > 4 || !questions.every(validQuestionInput)) return undefined;
     const texts = questions.map(question => (question as Record<string, unknown>).question as string);
     if (new Set(texts).size !== texts.length) return undefined;
-    return { hook: "AskUserQuestion", sessionId, toolName, toolInput: toolInput as Record<string, unknown>, request: value, cwd: resolvedCwd, rawQuestions: questions };
+    return { hook: "AskUserQuestion", sessionId, toolName, toolInput: toolInput as Record<string, unknown>, request: value, cwd: resolvedCwd, rawQuestions: questions, ...owner };
   }
   return undefined;
 }

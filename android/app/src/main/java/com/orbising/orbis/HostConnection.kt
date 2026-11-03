@@ -1508,7 +1508,7 @@ internal class HostConnection(
         }
         return runtimeIds.filterTo(mutableSetOf()) { runtimeId ->
             if (runtimeId !in state.runtimes) return@filterTo false
-            if (state.capabilities[runtimeId]?.commands?.any { it.name == "quit" && it.argument?.required != true } != true) {
+            if (!state.canCloseRuntime(runtimeId)) {
                 refreshAgentModel(runtimeId, force = true)
                 updateState { it.copy(error = "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。") }
                 return@filterTo false

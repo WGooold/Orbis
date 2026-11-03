@@ -9,7 +9,7 @@ import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry, type StateDomain, type StateScope } from "./agent-state-registry.js";
 
 const HOST = "host-1";
-const kinds: Record<string, "codex" | "pi"> = { "codex:r1": "codex", "codex:r2": "codex", "pi:r1": "pi" };
+const kinds: Record<string, "codex" | "pi" | "claude"> = { "codex:r1": "codex", "codex:r2": "codex", "pi:r1": "pi", "claude:r1": "claude", "claude:r2": "claude" };
 
 const setup = () => {
   const registry = new AgentStateRegistry({ modelEpoch: "model-1" });
@@ -31,13 +31,38 @@ const request = (requestId: string): InteractionRequest => ({
   expiresAt: 1_800_000_000_000,
 });
 
-const scope = (sessionId = "s1", agentKind: "codex" | "pi" = "codex"): StateScope =>
+const scope = (sessionId = "s1", agentKind: "codex" | "pi" | "claude" = "codex"): StateScope =>
   ({ kind: "agent", key: { hostId: HOST, agentKind, sessionId } });
 
-const read = <T>(registry: AgentStateRegistry, domain: StateDomain, sessionId = "s1", agentKind: "codex" | "pi" = "codex") =>
+const read = <T>(registry: AgentStateRegistry, domain: StateDomain, sessionId = "s1", agentKind: "codex" | "pi" | "claude" = "codex") =>
   registry.read<T>(scope(sessionId, agentKind), domain);
 
 describe("AgentStateFacts 运行 / 模型 / 上下文", () => {
+  it("Claude 主状态与库存分别投影，来源替换保留任务但撤回确定性", () => {
+    const { registry, facts } = setup();
+    const tasks: NonNullable<AgentExecutionState["tasks"]> = { availability: "ready", truncated: false,
+      items: [{ id: "child", title: "Review", kind: "Explore", status: "running" }] };
+    facts.observe("claude:r1", { type: "execution.tasks", tasks });
+    facts.observe("claude:r1", metadata({}, "claude:r1"));
+    const execution = () => read<AgentExecutionState>(registry, "execution", "s1", "claude")?.value;
+    expect(execution()).toMatchObject({ phase: "idle", tasks });
+    facts.observe("claude:r1", { type: "runtime.status", status: "running" });
+    facts.observe("claude:r1", { type: "runtime.status", status: "idle" });
+    expect(execution()).toMatchObject({ phase: "idle", tasks });
+    facts.runtimeOffline("claude:r1", "reconnected");
+    facts.observe("claude:r1", metadata({}, "claude:r1"));
+    expect(execution()?.tasks).toEqual({ ...tasks, availability: "unknown" });
+    facts.runtimeOffline("claude:r1", "new-runtime");
+    facts.observe("claude:r2", metadata({}, "claude:r2"));
+    expect(execution()?.tasks).toEqual({ ...tasks, availability: "unknown" });
+    facts.observe("claude:r2", { type: "execution.tasks", tasks: { ...tasks, availability: "unknown", items: [] } });
+    expect(execution()?.tasks).toEqual({ ...tasks, availability: "unknown" });
+    facts.observe("claude:r1", { type: "execution.tasks", tasks: { ...tasks, items: [] } });
+    expect(execution()?.tasks?.items).toHaveLength(1);
+    facts.observe("claude:r2", { type: "execution.tasks", tasks: { ...tasks, items: [] } });
+    expect(execution()?.tasks).toEqual({ ...tasks, items: [] });
+  });
+
   it("metadata 建立身份并提交运行、模型与上下文事实", () => {
     const { registry, facts } = setup();
     facts.observe("codex:r1", metadata({

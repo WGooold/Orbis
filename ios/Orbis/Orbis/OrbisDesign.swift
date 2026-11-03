@@ -1245,6 +1245,7 @@ struct RuntimeStatusLabel: View {
     @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let status: String
     var syncing = false
+    var title: String? = nil
     var body: some View {
         HStack(spacing: 5) {
             // Keep the status dot and refresh spinner in the same measured slot.
@@ -1254,15 +1255,16 @@ struct RuntimeStatusLabel: View {
                 .overlay {
                     if syncing { ProgressView().controlSize(.mini).accessibilityLabel("正在刷新") }
                 }
-            OrbisMotionText(runtimeStatusTitle(status)).font(.orbisCaption()).lineLimit(1)
+            OrbisMotionText(title ?? runtimeStatusTitle(status)).font(.orbisCaption()).lineLimit(1)
         }.foregroundStyle(OrbisPalette(scheme).secondary)
     }
     private var color: Color {
         let p = OrbisPalette(scheme)
         switch status {
         // ADR-0049 §6.8：启动中是进行中的状态，与运行中同色；启动未确认待核对，与等待同色。
-        case "running", "compacting", "starting": return p.accent
+        case "running", "compacting", "starting", "background": return p.accent
         case "waiting", "waiting_interaction", "waiting_local_interaction", "launch_unconfirmed": return p.warning
+        case "unknown", "tasks_unknown": return p.secondary
         case "error": return p.error
         default: return p.success
         }

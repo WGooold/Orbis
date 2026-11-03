@@ -121,7 +121,7 @@ describe("ClaudeBackend（Hook bridge 的统一端口）", () => {
     const sync = vi.spyOn(mods, "sync");
     try {
       if (mode !== "hook-only") expect(mods.hello({ type: "hello", instanceId: "home", sessionId: "claude-session", cwd: "/repo",
-        claudeVersion: "2.1.312", bridgeVersion: "3", capabilities: CLAUDE_BRIDGE_CAPABILITIES }).ok).toBe(true);
+        claudeVersion: "2.1.312", bridgeVersion: "4", interactive: true, capabilities: CLAUDE_BRIDGE_CAPABILITIES }).ok).toBe(true);
       if (mode !== "empty") void bridge.accept(permission);
 
       backend.announce();
@@ -154,8 +154,9 @@ describe("ClaudeBackend（Hook bridge 的统一端口）", () => {
       onCommandResult: (_id, event) => events.push(event) });
     for (const [sessionId, processId] of [["first", 4242], ["second", 4243]] as const) {
       expect(modsBridge.hello({ type: "hello", instanceId: sessionId, sessionId, cwd: "/repo", claudeVersion: "2.1.310",
-        bridgeVersion: "3", capabilities: CLAUDE_BRIDGE_CAPABILITIES, processId }).ok).toBe(true);
+        bridgeVersion: "4", interactive: true, capabilities: CLAUDE_BRIDGE_CAPABILITIES, processId }).ok).toBe(true);
     }
+    for (const id of modsBridge.runtimeIds()) modsBridge.receiveEvent(id, modsBridge.generationOf(id)!, { type: "tasks.snapshot", tasks: { availability: "ready", items: [], truncated: false } });
     await Promise.resolve();
     expect(backend.dispatchCommand("claude:first", "close", { type: "slash.execute", name: "quit", args: "" })).toBe("handled");
     expect(terminate).toHaveBeenCalledWith(expect.objectContaining({ pid: 4242 }), expect.any(Function));
@@ -179,7 +180,8 @@ describe("ClaudeBackend（Hook bridge 的统一端口）", () => {
     const backend = new ClaudeBackend({ bridge: new ClaudeHookBridge(), modsBridge, runtimeIds: () => modsBridge.runtimeIds(),
       onCommandResult: (_id, event) => events.push(event) });
     modsBridge.hello({ type: "hello", instanceId: "one", sessionId: "one", cwd: "/repo", claudeVersion: "2.1.310",
-      bridgeVersion: "3", capabilities: CLAUDE_BRIDGE_CAPABILITIES, processId: 4242 });
+      bridgeVersion: "4", interactive: true, capabilities: CLAUDE_BRIDGE_CAPABILITIES, processId: 4242 });
+    modsBridge.receiveEvent("claude:one", modsBridge.generationOf("claude:one")!, { type: "tasks.snapshot", tasks: { availability: "ready", items: [], truncated: false } });
     await Promise.resolve();
     backend.dispatchCommand("claude:one", "close", { type: "slash.execute", name: "quit", args: "" });
     await vi.waitFor(() => expect(events).toContainEqual({ type: "command.result", commandId: "close", ok: false, status: "failure", error: "permission denied" }));
@@ -262,7 +264,7 @@ describe("ClaudeBackend（Hook bridge 的统一端口）", () => {
     const modsBridge = new ClaudeModsBridge({ createHistory: (sessionId, configDir, publish) =>
       new ClaudeSessionHistory(sessionId, configDir, publish, { locate: async () => undefined }) });
     const hello = modsBridge.hello({ type: "hello", instanceId: "i", sessionId: "claude-session", cwd: "D:/repo", claudeVersion: "2.1.312",
-      bridgeVersion: "3", capabilities: [...CLAUDE_BRIDGE_CAPABILITIES] });
+      bridgeVersion: "4", interactive: true, capabilities: [...CLAUDE_BRIDGE_CAPABILITIES] });
     expect(hello.ok).toBe(true);
     const backend = new ClaudeBackend({ bridge, modsBridge, runtimeIds: () => ["claude:claude-session"],
       onCommandResult: (_runtimeId, event) => events.push(event), onEvent: (_runtimeId, event) => events.push(event) });
@@ -300,7 +302,7 @@ describe("ClaudeBackend directory, archive and phone-opened TUIs", () => {
     return { backend, mods, launches, events, repo, root };
   }
   const connect = (mods: ClaudeModsBridge, sessionId: string, launchId?: string, cwd = "/repo") => {
-    const result = mods.hello({ type: "hello", instanceId: `i-${sessionId}`, sessionId, cwd, claudeVersion: "2.1.312", bridgeVersion: "3",
+    const result = mods.hello({ type: "hello", instanceId: `i-${sessionId}`, sessionId, cwd, claudeVersion: "2.1.312", bridgeVersion: "4", interactive: true,
       capabilities: [...CLAUDE_BRIDGE_CAPABILITIES], ...(launchId === undefined ? {} : { launchId }) });
     if (!result.ok) throw new Error(result.error);
     return result;

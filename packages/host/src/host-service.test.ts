@@ -3223,8 +3223,8 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
     const post = async (path: string, body: unknown) => (await fetch(descriptor.url.replace(/^ws/u, "http") + path,
       { method: "POST", headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" }, body: JSON.stringify(body) })).json() as Promise<Record<string, unknown>>;
     const hello = await post("/v1/claude/mods/hello", { type: "hello", instanceId: "review-instance", sessionId: "review-session",
-      cwd: workspace, configDir: config, claudeVersion: "2.1.312", bridgeVersion: "3",
-      capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity"] });
+      cwd: workspace, configDir: config, claudeVersion: "2.1.312", bridgeVersion: "4", interactive: true,
+      capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list"] });
     const runtimeId = "claude:review-session", agent = { hostId: opened.payload.hostId, agentKind: "claude", sessionId: "review-session" };
     await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata).runtimeId === runtimeId);
     const emit = (event: unknown) => post("/v1/claude/mods/event", { runtimeId, generation: hello.generation, event });
@@ -3296,8 +3296,8 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
       return await response.json() as Record<string, unknown>;
     };
     const hello = await post("/v1/claude/mods/hello", { type: "hello", instanceId: "tui-1", sessionId: "live-session", cwd: stateDir,
-      claudeVersion: "2.1.312", bridgeVersion: "3", configDir: config,
-      capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity"] });
+      claudeVersion: "2.1.312", bridgeVersion: "4", interactive: true, configDir: config,
+      capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list"] });
     expect(hello).toMatchObject({ ok: true, runtimeId: "claude:live-session" });
     const generation = hello.generation as string;
     expect(await until(message => message.type === "runtime.online" && (message.runtime as RuntimeMetadata).runtimeId === "claude:live-session", "runtime.online"))
@@ -3369,7 +3369,7 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
 
     // A refused bridge leaves a diagnostic instead of failing silently.
     expect(await post("/v1/claude/mods/hello", { type: "hello", instanceId: "old", sessionId: "old-session", cwd: stateDir,
-      claudeVersion: "2.1.100", bridgeVersion: "3", capabilities: [] })).toMatchObject({ ok: false, error: "claude_version_too_old:2.1.287" });
+      claudeVersion: "2.1.100", bridgeVersion: "4", interactive: true, capabilities: [] })).toMatchObject({ ok: false, error: "claude_version_too_old:2.1.287" });
     expect(host.readDiagnostics({ category: "backend.transport" }).records).toContainEqual(expect.objectContaining({ agentKind: "claude",
       message: "Claude Code bridge refused", detail: expect.objectContaining({ reason: "claude_version_too_old:2.1.287", claudeVersion: "2.1.100" }) }));
     expect(launches).toEqual([]);

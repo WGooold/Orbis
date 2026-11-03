@@ -473,6 +473,7 @@ internal fun SessionDrawer(
                                     DrawerSessionRow(
                                         row = row,
                                         runtimeStatus = row.runtimeId?.let(state.runtimes::get)?.presentationStatus,
+                                        runtimeStatusTitle = row.runtimeId?.let(state.runtimes::get)?.presentationTitle,
                                         otherProvider = sessionOtherProvider(row, state.currentProviders[row.agentKind]),
                                         onOpenSession = {
                                             if (isActiveHost && state.codexProviderMismatch(row.sessionId) != null) {
@@ -746,6 +747,7 @@ private fun DrawerSessionRow(
     row: CachedSessionRow,
     /** Status of the live Runtime for an online row; null for a catalog/history row. */
     runtimeStatus: String?,
+    runtimeStatusTitle: String? = null,
     /** Provider that owns this Codex session when it differs from the current one. */
     otherProvider: String?,
     onOpenSession: () -> Unit,
@@ -788,7 +790,7 @@ private fun DrawerSessionRow(
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         val caption = MaterialTheme.typography.labelSmall
                         val muted = MaterialTheme.colorScheme.onSurfaceVariant
-                        if (runtimeStatus != null) RuntimeStatusIndicator(runtimeStatus)
+                        if (runtimeStatus != null) RuntimeStatusIndicator(runtimeStatus, runtimeStatusTitle)
                         else if (row.catalogEntry?.hasHistoryCache == true) Text("缓存历史", style = caption, color = muted)
                         if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = caption, color = muted, maxLines = 1)
                         if (row.agentKind == "codexDesktop") Text("桌面版", style = caption, color = agentBrand(row.agentKind).accent(), maxLines = 1)

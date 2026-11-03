@@ -7,6 +7,7 @@ function setup(on: On) {
   const world = {
     descriptor: { url: "ws://127.0.0.1:41001", token: "first-host-token-for-test" },
     descriptorPresent: true,
+    sessionId: "same-native-session",
     reachable: true,
     generation: "first-generation",
     rejection: "",
@@ -18,9 +19,17 @@ function setup(on: On) {
     aborts: [] as string[],
     requests: [] as { url: string; authorization: string | undefined; body: Record<string, unknown> }[],
     statuses: [] as (string | undefined)[],
+    agents: [] as { id: string; description: string; type: string; status: string; parentId?: string }[],
+    agentListFails: false,
+    agentListDelay: 0,
   };
   on("session.start", (_$, event) => ({ cwd: event.cwd }));
-  on("session.id", () => ({ value: "same-native-session" }));
+  on("agent.list", async () => {
+    const agents = world.agents;
+    if (world.agentListDelay) await clock.sleep(world.agentListDelay);
+    return world.agentListFails ? { deny: "read failed" } : { value: agents as import("claude-code").AgentInfo[] };
+  });
+  on("session.id", () => ({ value: world.sessionId }));
   on("session.version", () => ({ value: { version: "2.1.312", base: "2.1.312", builtAt: "2026-10-29" } }));
   on("session.cwd", () => ({ value: "/workspace" }));
   on("process.run", (_$, event) => {
@@ -56,7 +65,7 @@ function setup(on: On) {
     const reply = (status: number, value: unknown) => ({ value: { status, ok: status < 300, headers: {}, text: JSON.stringify(value) } });
     if (event.url.endsWith("/hello")) return world.rejection
       ? reply(409, { ok: false, error: world.rejection })
-      : reply(200, { ok: true, runtimeId: "claude:same-native-session", generation: world.generation });
+      : reply(200, { ok: true, runtimeId: `claude:${body.sessionId}`, generation: world.generation });
     if (event.url.endsWith("/poll")) return world.pollError
       ? reply(world.pollError === "unauthorized" ? 401 : 409, { ok: false, error: world.pollError })
       : reply(200, { ok: true, commands: world.commands });
@@ -309,4 +318,72 @@ test("defers a phone submission during standalone compaction and releases it on 
   await clock.advance(1500);
   await compacting;
   expect(world.submits).toBe(1);
+});
+
+
+test("tracks background inventory after main completion and restores it on Host reconnection", async ($, on) => {
+  const { clock, world } = setup(on);
+  world.agents = [{ id: "child", description: "Review", type: "Explore", status: "running" }];
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  await $.turn.start({ text: "main", turnId: "main" });
+  await $.turn.complete({ turnId: "main", answer: "delegated", durationMs: 0, reason: "answer", isAborted: false });
+  await clock.advance(750);
+  const inventories = () => world.requests.filter(r => (r.body.event as {type?: string})?.type === "tasks.snapshot");
+  expect(inventories().at(-1)?.body.event).toMatchObject({ tasks: { availability: "ready", items: [{id: "child", status: "running"}] } });
+  world.generation = "reconnected";
+  world.descriptor = { url: "ws://127.0.0.1:42002", token: "replacement-host-token" };
+  await clock.advance(750);
+  expect(inventories().at(-1)?.body.generation).toBe("reconnected");
+  expect(inventories().at(-1)?.body.event).toMatchObject({ tasks: { items: [{id: "child", status: "running"}] } });
+  world.agentListFails = true;
+  await clock.advance(750);
+  expect(inventories().at(-1)?.body.event).toMatchObject({ tasks: { availability: "unknown" } });
+  world.agentListFails = false;
+  world.agents[0]!.status = "completed";
+  await clock.advance(750);
+  expect(inventories().at(-1)?.body.event).toMatchObject({ tasks: { availability: "ready", items: [{id: "child", status: "completed"}] } });
+});
+
+test("does not register noninteractive child executions as ordinary sessions", async ($, on) => {
+  const { clock, world, hellos } = setup(on);
+  await $.session.start({ cwd: "/workspace", surface: null, isInteractive: false });
+  await $.turn.start({ text: "child", turnId: "child-turn" });
+  await clock.advance(3000);
+  expect(hellos()).toHaveLength(0);
+  expect(world.requests).toHaveLength(0);
+});
+
+test("drops a delayed task read after the native session changes and bounds incomplete inventories", async ($, on) => {
+  const { clock, world } = setup(on);
+  world.agents = [{ id: "old-child", description: "Old", type: "Explore", status: "running" }];
+  world.agentListDelay = 1500;
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  world.sessionId = "replacement-session";
+  world.generation = "replacement-generation";
+  world.agents = [];
+  world.agentListDelay = 0;
+  await clock.advance(2250);
+  const inventories = () => world.requests.filter(r => (r.body.event as {type?: string})?.type === "tasks.snapshot");
+  expect(inventories().some(r => JSON.stringify(r.body.event).includes("old-child"))).toBe(false);
+  expect(inventories().at(-1)?.body).toMatchObject({ runtimeId: "claude:replacement-session", generation: "replacement-generation",
+    event: { tasks: { availability: "ready", items: [] } } });
+  world.agents = Array.from({ length: 257 }, (_, index) => ({ id: String(index), description: "Task", type: "Explore", status: "running" }));
+  await clock.advance(750);
+  expect(inventories().at(-1)?.body.event).toMatchObject({ tasks: { availability: "unknown", truncated: true } });
+  world.agents = [];
+  world.agentListDelay = 3750;
+  await clock.advance(4500);
+  expect(inventories().at(-1)?.body.event).toMatchObject({ tasks: { availability: "unknown", truncated: false } });
+});
+
+test("child tool completion preserves approval identity without becoming a main tool or main completion", async ($, on) => {
+  const { clock, world } = setup(on);
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  await $.tool.call({ tool: "Bash", command: "unused", tool_use_id: "child-tool", agentId: "child" });
+  const events = world.requests.map(r => r.body.event).filter(Boolean);
+  expect(events).toContainEqual({ type: "task.tool.finished", agentId: "child", toolCallId: "child-tool", toolName: "Bash", arguments: { command: "unused" } });
+  expect(events.some(event => (event as {type: string}).type === "tool.started")).toBe(false);
 });

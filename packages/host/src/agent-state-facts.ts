@@ -33,7 +33,7 @@ const INTERESTING_EVENTS: ReadonlySet<RuntimeEvent["type"]> = new Set([
   "runtime.metadata", "runtime.status", "runtime.capabilities",
   "message.queued", "message.started", "message.finished",
   "interaction.requested", "interaction.snapshot", "interaction.resolved", "interaction.cancelled",
-  "delivery.snapshot", "execution.activity",
+  "delivery.snapshot", "execution.activity", "execution.tasks",
 ] as const);
 
 const SESSION_KEYS = ["identity", "availability", "execution", "model", "context", "permissions", "providerBinding", "workspaceRef"] as const;
@@ -69,6 +69,7 @@ type Pending = {
   queueComplete?: boolean;
   interactionsComplete?: boolean;
   activity?: Extract<RuntimeEvent, { type: "execution.activity" }>;
+  tasks?: AgentExecutionState["tasks"];
 };
 
 type SessionFacts = {
@@ -94,6 +95,7 @@ type SessionFacts = {
   queueComplete?: boolean;
   interactionsComplete?: boolean;
   activity?: Extract<RuntimeEvent, { type: "execution.activity" }>;
+  tasks?: AgentExecutionState["tasks"];
   turn?: AgentExecutionState["turn"];
 };
 
@@ -140,6 +142,7 @@ export class AgentStateFacts {
   prepareOffline(runtimeId: string): PreparedRegistryCommit | undefined {
     const session = this.#sessionFor(runtimeId); if (!session) return;
     const next = this.#clone(session); next.revision += 1; next.fresh.clear();
+    if (next.tasks) next.tasks = { ...next.tasks, availability: "unknown" };
     return { changes: this.#unverified(next), onCommitted: () => { this.#sessions.set(next.key, next); } };
   }
 
@@ -252,6 +255,8 @@ export class AgentStateFacts {
         pending.fresh.add("delivery");
         break;
       case "execution.activity": pending.activity = event; break;
+      case "execution.tasks": pending.tasks = event.tasks.availability === "ready" ? event.tasks :
+        { ...event.tasks, items: pending.tasks?.items ?? event.tasks.items }; break;
       case "interaction.requested":
         if (pending.interactions.size >= MAX_PENDING_ITEMS) pending.interactions.delete(pending.interactions.keys().next().value as string);
         pending.interactions.set(event.request.requestId, interactionItem(event.request));
@@ -305,6 +310,7 @@ export class AgentStateFacts {
       session.queueComplete = false;
       session.interactionsComplete = false;
       delete session.activity;
+      if (session.tasks) session.tasks = { ...session.tasks, availability: "unknown" };
       session.turn = null;
       this.#markUnverified(session);
     }
@@ -320,6 +326,8 @@ export class AgentStateFacts {
       session.queueComplete = pending.queueComplete === true;
       session.interactionsComplete = pending.interactionsComplete === true;
       if (pending.activity) session.activity = pending.activity;
+      if (pending.tasks) session.tasks = pending.tasks.availability === "ready" ? pending.tasks :
+        { ...pending.tasks, items: session.tasks?.items ?? pending.tasks.items };
     }
     session.revision += 1;
     const touched = new Set<StateDomain>(SESSION_KEYS);
@@ -372,6 +380,9 @@ export class AgentStateFacts {
     const touched = new Set<StateDomain>();
     switch (event.type) {
       case "execution.activity": session.activity = event; touched.add("execution"); break;
+      case "execution.tasks":
+        session.tasks = event.tasks.availability === "ready" ? event.tasks : { ...event.tasks, items: session.tasks?.items ?? event.tasks.items };
+        touched.add("execution"); break;
       case "delivery.snapshot":
         session.queue.clear();
         for (const item of event.items) session.queue.set(item.queueId, item);
@@ -451,6 +462,7 @@ export class AgentStateFacts {
         retry: session.activity?.retry ?? "unavailable",
         compaction: session.activity?.compaction ?? "unavailable",
         turn: session.turn ?? null,
+        ...(session.tasks ? { tasks: session.tasks } : session.agentKind === "claude" ? { tasks: { availability: "unknown" as const, items: [], truncated: false } } : {}),
       };
       commitValue("execution", { source, availability: "ready", completeness: "complete", value: execution });
     }

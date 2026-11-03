@@ -40,6 +40,25 @@ struct AgentStateTests {
          "options": [["value": "yes", "label": "Yes"]]]
     }
 
+    @Test func taskInventoryIsProjectedIndependentlyAndUnknownKeepsTheLastTasks() {
+        let h = Harness()
+        let task: [String: Any] = ["id": "child", "title": "任务", "kind": "Explore", "status": "running"]
+        h.receive([domain("execution", ["phase": "idle", "tasks": ["availability": "ready", "items": [task], "truncated": false]])])
+        #expect(h.runtime.status == "idle")
+        #expect(h.runtime.presentationTitle == "1 个子任务运行中")
+        h.receive([domain("execution", ["phase": "idle", "tasks": ["availability": "unknown", "items": [], "truncated": false]], revision: 2)])
+        #expect(h.runtime.backgroundTasks?.items.first?.id == "child")
+        #expect(h.runtime.backgroundTasks?.availability == "unknown")
+        h.receive([domain("execution", ["phase": "idle", "tasks": ["availability": "ready", "items": [], "truncated": false]], revision: 3)])
+        #expect(h.runtime.presentationTitle == "空闲")
+        #expect(h.runtime.backgroundTasks?.items.isEmpty == true)
+        h.receive([domain("execution", ["phase": "idle"], revision: 4)])
+        #expect(h.runtime.presentationTitle == "子任务状态待核对")
+        h.receive([domain("execution", NSNull(), revision: 5, availability: "unknown")])
+        #expect(h.runtime.status == "unknown")
+        #expect(h.runtime.backgroundTasks?.availability == "unknown")
+    }
+
     @Test func compactionActivityDrivesPresentationWithoutChangingExecutionPhase() {
         let h = Harness()
         h.receive([domain("execution", ["phase": "idle", "compaction": ["phase": "running"]])])

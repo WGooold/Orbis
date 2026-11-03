@@ -256,3 +256,7 @@ iOS 的确认退场不再复用取消回弹并等待弹簧 `.removed`：统一�
 - 验证：双端生命周期单元用例；Android生产组件48ms取消后208ms恢复、重按/禁用与零附加触觉；iOS生产按钮夹具的取消、连续激活、命中槽及明暗/减少动画。沿用所有原按钮、导航、复制、下载、配额用例；R39 / R47 / R49、L1–L4、C01–C18及A1–A4均要求执行，不能拿仅编译或预览替代设备门禁。证据 `.artifacts/ui-regression/20261103-button-feedback/`。
 
 2026-11-03 / r43验证：Swift355/355、Android685/685单元测试，iOS应用及UI测试构建、Android Debug/AndroidTest均通过。网页设计预览在320/736px明暗与减少动画检查通过，已看浅色窄屏及深色截图，但不计原生设备验收。双端共享入口仍被`provider-well-shadow-standard-full`与`Codex permission model preservation`的设备锁阻塞；L3/L4、C01–C18、R39/R47/R49及原生A1–A4未运行，不能比较同设备基点失败集合，保持验证中。证据 `.artifacts/ui-regression/20261103-button-feedback/summary.md`。
+
+## SC45：Claude 后台子任务区（2026-11-03 / r44）
+
+S26 / [ADR-0062](0062-claude-background-agents-and-session-activity.md) 归入既有 Disclosure / M03、ActionGlyph / M20；复用自然高度与按钮反馈，无新参数。后台更新不自动展开 / 滚动，不重置同会话展开状态；面板有界，保留 composer 与阅读锚点。MOT-24 / R61 覆盖双端中帧、键盘、明暗 / 大字 / 减少动画；尚未验收。

@@ -733,6 +733,7 @@ export class HostService {
     this.#claudeBridge = new ClaudeHookBridge({
       hasRemoteDevice: () => [...this.#links.values()].some(link => link.active !== undefined),
       baseStatus: runtimeId => this.#claudeModsBridge.statusOf(runtimeId),
+      hasSession: runtimeId => this.#claudeModsBridge.isOnline(runtimeId),
       onRuntimeOnline: runtime => this.#registerClaudeRuntime(runtime),
       onRuntimeOffline: (runtimeId, reason) => this.#unregisterClaudeRuntime(runtimeId, reason),
       onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
@@ -750,7 +751,8 @@ export class HostService {
       onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
       onRejected: (reason, hello) => this.#recordClaudeRejection(reason, hello),
       // Native outcomes close the phone's copy of a Hook the TUI already answered.
-      onToolFinished: (runtimeId, toolName, input) => this.#claudeBridge.resolveLocally(runtimeId, toolName, input),
+      onToolFinished: (runtimeId, toolName, input, agentId, toolCallId) => this.#claudeBridge.resolveLocally(runtimeId, toolName, input, agentId, toolCallId),
+      onTaskTurnFinished: (runtimeId, agentId) => this.#claudeBridge.resolveLocally(runtimeId, undefined, undefined, agentId),
       onTurnFinished: runtimeId => this.#claudeBridge.resolveLocally(runtimeId),
       onLocalInteractions: runtimeId => this.#claudeBridge.deferToLocal(runtimeId),
       pendingInteractions: runtimeId => this.#claudeBridge.pendingRequests(runtimeId).length,
