@@ -5,6 +5,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class QuotaCoinGeometryTest {
+    @Test fun contactShadowStaysVisibleAndInsideTheWellThroughoutBothDirections() {
+        val resting = QuotaCoinGeometry.shadow(0.0)
+        val side = QuotaCoinGeometry.shadow(90.0)
+        assertTrue(side.widthScale < resting.widthScale)
+        for (angle in 0..180) {
+            val shadow = QuotaCoinGeometry.shadow(angle.toDouble())
+            val reverse = QuotaCoinGeometry.shadow(180.0 - angle)
+            assertTrue(shadow.opacityScale > 0 && shadow.opacityScale <= 1)
+            assertEquals(shadow.widthScale, reverse.widthScale, 0.0001f)
+            // Check the entire soft footprint against the 56dp circular well.
+            for (step in 0..126) {
+                val t = step * 0.05
+                val x = QuotaCoinGeometry.ShadowDiameter / 2 * shadow.widthScale * cos(t)
+                val y = QuotaCoinGeometry.ShadowOffsetY + QuotaCoinGeometry.ShadowHeight / 2 * sin(t)
+                assertTrue(hypot(x, y) < 28)
+            }
+        }
+    }
+
     @Test fun bothFacesLandUprightAtTheOriginalSize() {
         for (angle in listOf(0.0, 180.0)) {
             val matrix = QuotaCoinGeometry.faceProjection(angle)

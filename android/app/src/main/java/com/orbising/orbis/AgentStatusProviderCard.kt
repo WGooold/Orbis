@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -89,7 +91,10 @@ internal fun AgentStatusProviderCard(
                             current?.let { onQuery(it, state.hostId) }
                         }
                     }
-                } else AgentIcon(agentBrand(kind), Modifier.size(32.dp))
+                } else Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) {
+                    AgentIconRecess(Modifier.wrapContentSize(unbounded = true).requiredSize(48.dp))
+                    AgentIcon(agentBrand(kind), Modifier.size(32.dp))
+                }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(agentBrand(kind).title, modifier = Modifier.weight(1f, fill = false),

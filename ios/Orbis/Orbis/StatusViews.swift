@@ -136,7 +136,9 @@ private struct AgentStatusProviderCard: View {
                     if current?.subscriptionSupported == true {
                         Color.clear.frame(width: 64, height: 56)
                     } else {
-                        AgentEmblem(kind: kind, size: 32, recessed: false).accessibilityHidden(true)
+                        AgentEmblem(kind: kind, size: 32, recessed: false)
+                            .background { AgentIconRecess().frame(width: 48, height: 48) }
+                            .accessibilityHidden(true)
                     }
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
@@ -419,6 +421,7 @@ private struct SubscriptionQuotaCoin: View {
                     AgentEmblem(kind: kind, size: 26, recessed: false)
                 }.frame(width: 44, height: 44)
                     .modifier(QuotaCoinTilt(angle: angle, palette: palette, tint: tint))
+                    .background { AgentIconRecess().frame(width: 56, height: 56) }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .trailing) {
                     Text(weekly ? "周" : "5h").foregroundStyle(palette.secondary)
@@ -493,11 +496,14 @@ private struct QuotaCoinTilt: AnimatableModifier {
     private var highlight: Color { palette.dark ? palette.text : palette.light }
 
     func body(content: Content) -> some View {
+        let shadow = QuotaCoinGeometry.shadow(angle: turn)
         ZStack {
-            Ellipse().fill(RadialGradient(colors: [palette.scrim.opacity(0.28), .clear],
-                                         center: .center, startRadius: 0, endRadius: 18))
-                .frame(width: 36, height: 8).offset(y: 24)
-                .opacity(lift * (1 - 0.5 * lift)).scaleEffect(x: 1 - 0.65 * lift, y: 1)
+            Circle().fill(RadialGradient(colors: [palette.scrim.opacity(palette.dark ? 0.52 : 0.32), .clear],
+                                        center: .center, startRadius: 0, endRadius: QuotaCoinGeometry.shadowDiameter / 2))
+                .frame(width: QuotaCoinGeometry.shadowDiameter, height: QuotaCoinGeometry.shadowDiameter)
+                .scaleEffect(x: shadow.widthScale, y: QuotaCoinGeometry.shadowHeight / QuotaCoinGeometry.shadowDiameter)
+                .offset(y: QuotaCoinGeometry.shadowOffsetY).opacity(shadow.opacityScale)
+                .allowsHitTesting(false).accessibilityHidden(true)
             Canvas { context, _ in
                 guard lift > 0.0001 else { return }
                 for band in QuotaCoinGeometry.bands(angle: turn) {

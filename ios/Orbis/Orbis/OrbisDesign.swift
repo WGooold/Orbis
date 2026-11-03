@@ -1184,6 +1184,24 @@ struct OrbisPageHeader<Trailing: View>: View {
     }
 }
 
+/// S02 / S19: a local identity recess, without changing the enclosing material context.
+/// Keep it behind the glyph/coin so it never clips a projected edge or intercepts a tap.
+struct AgentIconRecess: View {
+    @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    var radius: CGFloat = 16
+
+    var body: some View {
+        let palette = OrbisPalette(scheme)
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(palette.well
+                .shadow(.inner(color: palette.shadow.opacity(palette.insetFocus ? 0.50 : 0.38),
+                               radius: 2.4, x: 2.4, y: 2.4))
+                .shadow(.inner(color: palette.light.opacity(0.7), radius: 2.4, x: -2.4, y: -2.4)))
+            .allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+
 struct AgentEmblem: View {
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.visualStyle") private var visualStyle = "classic"

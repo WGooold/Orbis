@@ -10,6 +10,15 @@ enum QuotaCoinGeometry {
     static let outgoingDuration = 0.22
     static let incomingDuration = 0.34
     static let rimBands = 13
+    static let shadowDiameter = 34.0
+    static let shadowHeight = 10.0
+    static let shadowOffsetY = 21.0
+
+    /// A resting contact shadow anchors the coin in its well; the turn narrows it.
+    static func shadow(angle: Double) -> (widthScale: Double, opacityScale: Double) {
+        let sideOn = abs(sin(angle * .pi / 180))
+        return (1 - 0.65 * sideOn, 1 - 0.25 * sideOn)
+    }
     private static let axisX = -sin(24 * Double.pi / 180)
     private static let axisY = cos(24 * Double.pi / 180)
     private static let circumference = (0..<64).map { index in

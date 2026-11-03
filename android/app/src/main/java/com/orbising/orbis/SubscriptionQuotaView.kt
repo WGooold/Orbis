@@ -15,6 +15,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.offset
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Icon
@@ -138,6 +139,7 @@ internal fun SubscriptionQuotaCoin(
         }.graphicsLayer {
             alpha = if (!enabled) 0.4f else if (pressed) 0.6f else 1f
         }, contentAlignment = Alignment.CenterStart) {
+        AgentIconRecess(Modifier.size(56.dp).offset(x = (-6).dp))
         QuotaCoinTilt(angle.value, tint) {
             Canvas(Modifier.size(44.dp)) {
                 val stroke = 2.5.dp.toPx()
@@ -179,16 +181,19 @@ internal fun QuotaCoinTilt(angle: Float, tint: Color, content: @Composable () ->
     val rim = listOf(highlight.copy(alpha = 0.9f), Color.Transparent, tint.copy(alpha = 0.25f))
     val bands = remember(turn) { if (lift > 0.0001f) QuotaCoinGeometry.bands(turn) else emptyList() }
     val projection = remember(turn) { QuotaCoinGeometry.faceProjection(turn) }
+    val shadow = QuotaCoinGeometry.shadow(turn)
+    val shadowAlpha = if (LocalOrbisDarkTheme.current) 0.52f else 0.32f
     Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
         Canvas(Modifier.size(44.dp)) {
-            val shadowY = center.y + 24.dp.toPx()
+            val shadowY = center.y + QuotaCoinGeometry.ShadowOffsetY.toFloat().dp.toPx()
+            val shadowRadius = (QuotaCoinGeometry.ShadowDiameter / 2).toFloat().dp.toPx()
             withTransform({
                 translate(center.x, shadowY)
-                scale(1 - 0.65f * lift, 8f / 36, Offset.Zero)
+                scale(shadow.widthScale, (QuotaCoinGeometry.ShadowHeight / QuotaCoinGeometry.ShadowDiameter).toFloat(), Offset.Zero)
             }) {
-                drawCircle(Brush.radialGradient(listOf(colors.scrim.copy(alpha = 0.28f), Color.Transparent),
-                    Offset.Zero, 18.dp.toPx()), radius = 18.dp.toPx(), center = Offset.Zero,
-                    alpha = lift * (1 - 0.5f * lift))
+                drawCircle(Brush.radialGradient(listOf(colors.scrim.copy(alpha = shadowAlpha), Color.Transparent),
+                    Offset.Zero, shadowRadius), radius = shadowRadius, center = Offset.Zero,
+                    alpha = shadow.opacityScale)
             }
             bands.forEach { band ->
                 val path = Path().apply {

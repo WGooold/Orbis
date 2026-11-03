@@ -118,7 +118,7 @@ Android 接系统 predictive back 的左右边缘进度和取消事件，让系�
 | SC24 | 目录新建、Git 分支刷新、文件夹上一级、文件浏览刷新 / 下载 | `SessionViews、ChatView、DownloadBrowserView` | `ComposerSessionInfo、RemoteFileBrowser、DirectoryPickerDialog` | 图标文字按钮也覆盖 |
 | SC25 | 文件差异前后文件、关闭、展开；工具 / thinking 折叠箭头 | `TurnFileChangesView、CompactDisclosure` | `TurnFileChangeViews、CompactDisclosure` | ActionGlyph；M03 / M13 保留 |
 | SC26 | 通知 / 错误关闭、问卷 / 审批选项、配对取消 | `OrbisNotice、InteractionView、PairingScannerView` | `NoticeBanner、QuestionnaireDialog、InteractionPanel、PairingScreen` | ActionGlyph；不改变授权和成功判定 |
-| SC27 | 配额币切换 / 刷新 | `SubscriptionQuotaCoin` | `SubscriptionQuotaView` | QuotaCoin / MOT-22；r37 原生实体厚边、独立双面读数，排除重复动画 |
+| SC27 | 配额币切换 / 刷新 | `SubscriptionQuotaCoin` | `SubscriptionQuotaView` | QuotaCoin / MOT-22；r37 原生实体厚边、独立双面读数，排除重复动画；r42 固定圆角矩形凹槽和常驻接触影，静止 / 减少动画保留；R58 / R59，完整门禁未完成 |
 | SC28 | 首页 / 目录 → 在线聊天 / 离线历史 / 设置 | `OrbisPageStack、OrbisPageTransition` | `OrbisPageHost、SwipeBackLayer` | EdgeBack / MOT-09 |
 | SC29 | 首页 / 聊天 / 历史 → 下载；聊天 → 历史 → 下载逐层返回 | 同上 | 同上 | 同上；保存来源实例 |
 | SC30 | 已配对后的添加电脑 | 同上、`PairingScannerView` | 同上、`PairingScreen` | 同上；安全配对阻断保持 |
@@ -217,3 +217,11 @@ iOS 正式行用不参与动画的绘制遮罩切换，保持可选择原生文�
 离屏、页面隐藏停止帧时钟，恢复不追赶已错过的时间。减少动画默认暂停、去除空间变换 / 打字 / 模糊，并直接展示操作终点；改变系统偏好即时停播。隐藏抽屉与已关闭卡片退出焦点树，转盘为图片式舞台、另有完整可聚焦选择按钮。每段演示不创建真实业务对象；下载 / 激活仍由实际接口决定。手机动作复用既有类别的表现含义，官网参数不覆盖 SendFlight、QuotaCoin 等原生基线。
 
 本条只扩展网页展示类别，不改变原有 SC01–SC43。验证入口为 [UI 回归 R60](../testing/ui-regression.md)，本次代码已接入，完整设备 / 手动结论分别记录。
+
+2026-11-03 / r40（验证中）：按用户反馈放大设置供应商凹槽，普通图标后方由40改为48pt/dp、圆角16，配额币后方由48改为56pt/dp、圆角28；图标和币面尺寸、供应商行布局与命中区保持。硬币底部改为常驻柔和接触影，34×10pt/dp、中心下移21pt/dp，随翻面收窄至35%，侧面透明度保留静止的75%；浅 / 深色使用既有带色scrim，中心alpha分别0.32 / 0.52。完整软影足迹位于56圆槽内；减少动画仍保留静止投影。分类沿用QuotaCoin / SC27 / MOT-22，影响S02、S04、S19，关联S13、S22、S25、M11；R58 / R59与双端L0–L4、C01–C18、A1–A4逐项记录，未完成门禁不记验收。证据 `.artifacts/ui-regression/20261103-provider-well-shadow/`。
+
+2026-11-03 r40 凹槽/底影验证：隔离基线/候选 Swift 351/352 项、Android 681/682 项及双端构建通过。iOS 配额/外观专项 4/4；Android 正常字体/动画基线和候选专项各 7/7，大字体及减少动画各 7/7；双端两品牌四外观翻面帧已看，未见新增裁切。Android 首轮全量继承大字体/动画关闭，候选 23 失败对基线 22 失败，新增两项 PixelCopy 错误所在整类同配置复测双方各 5/5；保留原失败集合。标准配置补跑与 iOS 全量在外接盘断连时中断（Android 基线 28 项，iOS 基线 52 项为 46 过/6 失败，候选均未开始）。完整 L3/L4、C01–C18 与真实 Host 未完成，不记验收。原始失败、源码/包边界和 Android 清理阻塞见 `.artifacts/ui-regression/20261103-provider-well-shadow/summary.md`。
+
+2026-11-03 / r42（验证中）：设置供应商凹槽统一为圆角矩形，普通标识与配额币均直接复用 `AgentIconRecess` 的默认16pt/dp圆角、既有材质与内影方向；取消配额币专用圆形/半边长圆角。普通32pt/dp标识配48pt/dp底座、44pt/dp硬币配56pt/dp底座，原居中、行布局、角标和64×56pt/dp命中区保持；硬币常驻底影与翻面几何/时序不变。范围S02 / S03 / S04 / S19，关联S22 / S25、SC27 / MOT-22、R58 / R59。新形状仍需双端L1–L4、C01–C18及A1–A4验证；旧r40圆形截图不替代本轮结果。证据 `.artifacts/ui-regression/20261103-provider-well-rounded/`。
+
+2026-11-03 r42 圆角矩形验证：iOS 352/352、Android 682/682 单测及双端构建通过，源码检查确认普通图标和配额币共用默认16pt/dp圆角/内影。全机单台队列仍被旧磁盘故障的Android进程及残留锁阻塞，本轮L3/L4、C01–C18、R58/R59和A1–A4未运行，保留验证中；旧圆形截图不算新形状验收。源码边界、产物哈希及阻塞见 `.artifacts/ui-regression/20261103-provider-well-rounded/summary.md`。

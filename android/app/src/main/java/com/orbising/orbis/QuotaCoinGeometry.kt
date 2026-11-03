@@ -10,6 +10,16 @@ internal object QuotaCoinGeometry {
     const val OutgoingDuration = 220
     const val IncomingDuration = 340
     const val RimBands = 13
+    const val ShadowDiameter = 34.0
+    const val ShadowHeight = 10.0
+    const val ShadowOffsetY = 21.0
+    data class Shadow(val widthScale: Float, val opacityScale: Float)
+
+    // Keep contact at rest; narrow the soft shadow as the coin turns edge-on.
+    fun shadow(angle: Double): Shadow {
+        val sideOn = abs(sin(angle * PI / 180)).toFloat()
+        return Shadow(1 - 0.65f * sideOn, 1 - 0.25f * sideOn)
+    }
     private val axisX = -sin(24 * PI / 180)
     private val axisY = cos(24 * PI / 180)
     data class Point(val x: Double, val y: Double)

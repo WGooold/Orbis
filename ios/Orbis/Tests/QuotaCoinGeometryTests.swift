@@ -4,6 +4,25 @@ import Testing
 @testable import OrbisCore
 
 struct QuotaCoinGeometryTests {
+    @Test func contactShadowStaysVisibleAndInsideTheWellThroughoutBothDirections() {
+        let resting = QuotaCoinGeometry.shadow(angle: 0)
+        let side = QuotaCoinGeometry.shadow(angle: 90)
+        #expect(side.widthScale < resting.widthScale)
+        for angle in stride(from: 0.0, through: 180.0, by: 1) {
+            let shadow = QuotaCoinGeometry.shadow(angle: angle)
+            let reverse = QuotaCoinGeometry.shadow(angle: 180 - angle)
+            #expect(shadow.opacityScale > 0 && shadow.opacityScale <= 1)
+            #expect(abs(shadow.widthScale - reverse.widthScale) < 0.0001)
+            // The complete soft footprint fits the 56pt well, not only its opaque center.
+            let x = QuotaCoinGeometry.shadowDiameter / 2 * shadow.widthScale
+            let y = QuotaCoinGeometry.shadowOffsetY
+            let radiusY = QuotaCoinGeometry.shadowHeight / 2
+            for t in stride(from: 0.0, through: 2 * Double.pi, by: 0.05) {
+                #expect(hypot(x * cos(t), y + radiusY * sin(t)) < 28)
+            }
+        }
+    }
+
     @Test func bothFacesLandUprightAtTheOriginalSize() {
         for angle in [0.0, 180.0] {
             let matrix = QuotaCoinGeometry.faceProjection(angle: angle)

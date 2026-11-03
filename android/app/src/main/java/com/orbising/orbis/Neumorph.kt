@@ -686,6 +686,16 @@ fun NeumorphSurface(
     }
 }
 
+/** S02 / S19 identity recess only. Never reset the parent material or clip the foreground coin. */
+@Composable
+internal fun AgentIconRecess(modifier: Modifier = Modifier, shape: Shape = RemoteUi.ControlShape) {
+    val colors = rememberNeumorphColors()
+    val scale = if (LocalOrbisVisualStyle.current == OrbisVisualStyle.InsetFocus) 0.8f else 0.65f
+    val paints = rememberShadowPaints(colors, scale)
+    Box(modifier.clip(shape).background(colors.insetBase)
+        .neumorphShadows(shape, NeumorphStyle.Pressed, colors, scale, paints))
+}
+
 /** Always reserve this slot. The entire card toggles selection; the marker adds no second hit target. */
 @Composable
 internal fun OrbisSelectionIndicator(selected: Boolean, selecting: Boolean) {
