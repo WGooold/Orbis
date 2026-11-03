@@ -39,8 +39,12 @@ struct QuotaCoinGeometryTests {
         var projectedWidth: [Double] = []
         for band in bands {
             let points = band.points
-            let area = abs(zip(points, Array(points.dropFirst()) + [points[0]])
-                .reduce(0.0) { $0 + $1.0.x * $1.1.y - $1.1.x * $1.0.y }) / 2
+            let nextPoints = Array(points.dropFirst()) + [points[0]]
+            var doubledArea: CGFloat = 0
+            for (point, next) in zip(points, nextPoints) {
+                doubledArea = doubledArea + point.x * next.y - next.x * point.y
+            }
+            let area = abs(doubledArea) / 2
             #expect(area > 20) // Each depth slice is filled, not a zero-width transformed disc.
             projectedWidth += points.map { Double($0.x) * cos(24 * .pi / 180) + Double($0.y) * sin(24 * .pi / 180) }
         }
