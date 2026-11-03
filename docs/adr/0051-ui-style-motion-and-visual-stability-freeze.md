@@ -28,6 +28,9 @@ Status: accepted（基线冻结；新增与变更按本文维护）
 
 2026-11-03 iOS 返回响应（r40，验证中）：M08 / M14 / V13 沿用 [ADR-0054][D54] 的来源身份与立即交互约束；确认返回使用 180ms 共用退场，取消仍用原弹簧，消除可见来源等待屏外弹簧移除的空档。覆盖聊天、设置、下载、历史与添加电脑，规则见 [D58] 的 r40 补充；回归沿用 C04、R11–R13 / R19–R22 / R47。无新增 ID，80 项 / 已交付 67 项计数保持；设备和手动结论另记。
 
+
+2026-11-04 原生 QUIC（[ADR-0063](0063-native-quic-relay-transport.md)，待实施 / 验证）：关联 S18 / S23、V05、V09–V12、V16–V18、V22；QUIC 与 WS 仍是同一 Relay 路径，LAN 优先、延迟测量、消息身份、同步与操作对账不变。不新增 UI feature 或交互动效，已交付计数保持；专项 R62。
+
 ## Context
 
 2026-11-03 Codex 权限更新重置选型修复（[ADR-0061](0061-codex-selection-and-native-settings-reconciliation.md)；V05、V12、V17–V18，验证中）：Host 分离原生模型 / effort 观测值与下一轮覆盖，权限通知及首次订阅重复旧值不再清除用户选择；真实原生变更继续同步。保留尚未物化终端的无设置 RPC 选型路径，不强制首条输入或伪造确认。规则见 [ADR-0021](0021-codex-terminal-host-attachment.md#revision-2026-11-03-model-selection-before-the-first-input)、[D31]、[D49] §6.7；分类沿用 [D58] SC16，不新增 feature 或动效参数。原生 0.166.0 隔离 PTY 与回归、设备及未完成门禁见 [Regression] R27 / R56，未部署用户 Host。

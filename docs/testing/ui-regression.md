@@ -614,3 +614,11 @@ SC18–27 / SC35 / SC37、M20 / M12：依次按设置、历史/分支、刷新/�
 A1–A4均覆盖；减少动画仅按住时即时透明度变化，结束无残留。保留原R49的取消/连点/失效/减少动画覆盖与业务断言，原整圈视觉目标经用户授权被本轮轻压替代。完整L1–L4与C01–C18分别记录，预览不代替原生设备帧；结果见 `.artifacts/ui-regression/20261103-button-feedback/summary.md`。
 
 2026-11-03 / r43验证：Swift355/355、Android685/685单元测试，iOS应用及UI测试构建、Android Debug/AndroidTest均通过。网页设计预览在320/736px明暗与减少动画检查通过，已看浅色窄屏及深色截图，但不计原生设备验收。双端共享入口仍被`provider-well-shadow-standard-full`与`Codex permission model preservation`的设备锁阻塞；L3/L4、C01–C18、R39/R47/R49及原生A1–A4未运行，不能比较同设备基点失败集合，保持验证中。证据 `.artifacts/ui-regression/20261103-button-feedback/summary.md`。
+
+### R62 原生 QUIC 中继（ADR-0063；2026-11-04）
+
+关联 S18 / S23、V05、V09–V12、V16–V18、V22；不增加动效家族，ADR-0058 原分类保持。§3.3 增补映射：Go Q01–Q02 / Q04、双端传输 Q03、既有配对 / Relay / E2E / 乐观账本与 UI Q05、现场对照 Q06；具体自动用例随实现登记，不以候选映射冒充通过。
+
+执行双端 L0–L4、C01–C18、R62 / 受影响专项和 A1–A4。手动在同设备 / 同配置下核对：HTTPS 宣告 / 未宣告、UDP 不可达回退、认证拒绝、发出命令后断网、前后台、配对与重连、切 Host、LAN↔Relay、聊天 / 工具流 / 文件并发、未确认操作与恢复、阅读锚点及设置延迟；不得重复提交命令或把传输 ready 显示为完成。单流首版不承诺文件与聊天互不阻塞。保留既有用例，Q06 使用真实手机对比同机 Hysteria 2，不以模拟器替代。
+
+证据 `.artifacts/ui-regression/20261104-native-quic/`。当前仅设计登记，自动 / 设备 / 人工 / 现场均未完成；主工作树 R61 仍保留给 Claude 后台子任务。

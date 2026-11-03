@@ -4,6 +4,8 @@ This directory is organized by authority and maintenance horizon. The root `READ
 
 ## Current references
 
+- [ADR-0063](adr/0063-native-quic-relay-transport.md)：移动端原生 QUIC、认证前 WS 回退与同机 Relay 适配器；实现 / 设备 / 真实线路分别验收。
+
 - [Claude Code 供应商与官方订阅配额](agents/claude-providers-and-subscription-quota.md)：Host、iOS 和 Android 的配置切换与 5 小时 / 周配额查询。
 - `docs/adr/`: accepted architecture decisions. ADRs preserve historical reasoning; a superseded ADR is marked in its header.
 - [ADR-0051](adr/0051-ui-style-motion-and-visual-stability-freeze.md)：UI 风格、动效与画面稳定性的统一冻结入口，基线 `2026-11-03/r39`，登记 80 项（已交付 67 项；移动端 70 项及品牌 / Host / Relay 10 项；设备与手动门禁按各轮记录）feature；相关设计与修改前必读，演进时同步维护 ADR 和本机 `AGENTS.md` / `CLAUDE.md`。
