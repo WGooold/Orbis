@@ -5,6 +5,8 @@ export default tseslint.config(
   {
     ignores: [
       "**/dist/**",
+      // Unmodified third-party GSAP runtime; license retained alongside it.
+      "packages/relay/src/web/vendor/gsap.min.js",
       "node_modules/**",
       "agent/**",
       "android/**",

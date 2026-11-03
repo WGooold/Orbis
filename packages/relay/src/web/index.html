@@ -9,7 +9,13 @@
   <link rel="icon" type="image/png" href="assets/orbis.png">
   <link rel="stylesheet" href="assets/cinema.css">
   <link rel="stylesheet" href="assets/phone3d.css">
+  <link rel="stylesheet" href="assets/film-source.css">
+  <link rel="stylesheet" href="assets/film.css">
+  <script src="assets/vendor/gsap.min.js" defer></script>
   <script src="assets/phone3d.js" defer></script>
+  <script src="assets/film-markup.js" defer></script>
+  <script src="assets/film-timeline.js" defer></script>
+  <script src="assets/film.js" defer></script>
   <script src="assets/cinema.js" defer></script>
   <script src="assets/site.js" defer></script>
 </head>
@@ -45,33 +51,25 @@
     </section>
     <section class="experience-section" id="experience" aria-labelledby="experience-title">
       <div class="experience-heading shell"><p class="eyebrow">MADE TO BE FELT.</p><h2 id="experience-title">这可能是你用过<br>最有<span class="accent">交互感</span>的<br class="mobile-break"> Agent 远控。</h2></div>
-      <div class="demo-layout shell" id="feature-demo">
-        <div class="demo-caption">
-          <span class="chapter-index" id="chapter-index">01 / 07</span>
-          <h3 id="chapter-title">一句话。<br>即刻出发。</h3>
-          <p id="chapter-description">输入、飞入、流式展开。<br>对话跟得上你的思路。</p>
-          <div class="chapter-line"><span id="chapter-progress"></span></div>
-          <div class="demo-playback"><button class="playback" id="demo-play" type="button" aria-label="暂停功能演示"><span class="play-icon" aria-hidden="true">Ⅱ</span><span class="play-label">暂停</span></button><button class="playback" id="demo-replay" type="button"><span aria-hidden="true">↻</span> 重播</button></div>
+      <div class="film-demo" id="feature-demo">
+        <div class="chapter-tabs" role="tablist" aria-label="选择功能">
+          <button id="tab-chat" type="button" role="tab" aria-selected="true" aria-controls="film-viewport" tabindex="0" data-scene="chat">实时对话</button>
+          <button id="tab-diff" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="diff">文件审阅</button>
+          <button id="tab-download" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="download">文件下载</button>
+          <button id="tab-sessions" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="sessions">会话管理</button>
+          <button id="tab-create" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="create">新建会话</button>
+          <button id="tab-quota" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="quota">订阅配额</button>
+          <button id="tab-pair" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="pair">扫码配对</button>
         </div>
-        <div class="phone-stage" id="phone-stage">
-          <div class="phone-floor" aria-hidden="true"></div>
-          <div class="phone-anchor"><div class="demo-phone" id="demo-phone"><div class="phone-screen" id="phone-screen">
-            <div class="phone-status" aria-hidden="true"><span>9:41</span><span class="system-status">▮▮▮ <span>◔</span> ▰</span></div>
-            <div class="phone-content" id="phone-content" role="tabpanel" aria-labelledby="tab-chat"><div class="phone-toolbar"><strong>Claude Code</strong><span>Orbis</span></div><div class="phone-body"><div class="chat-user">首页下拉回弹有点卡，帮我看看</div><div class="chat-assistant">正在梳理页面，下一步从这里开始。</div></div></div>
-            <div class="home-indicator" aria-hidden="true"></div>
-          </div></div></div>
+        <div class="film-viewport" id="film-viewport" role="tabpanel" aria-labelledby="tab-chat">
+          <div id="film-canvas"></div>
+          <noscript><p class="film-fallback">实时对话 · 文件审阅 · 文件下载 · 会话管理 · 新建会话 · 订阅配额 · 扫码配对</p></noscript>
         </div>
-        <div class="demo-side-note"><span class="demo-side-line"></span><p>每一次触碰<br>都有回应。</p></div>
-        <div class="chapter-tabs" role="tablist" aria-label="选择功能演示">
-          <button id="tab-chat" type="button" role="tab" aria-selected="true" aria-controls="phone-content" data-scene="chat"><span>01</span>实时对话</button>
-          <button id="tab-diff" type="button" role="tab" aria-selected="false" aria-controls="phone-content" tabindex="-1" data-scene="diff"><span>02</span>逐页审阅</button>
-          <button id="tab-download" type="button" role="tab" aria-selected="false" aria-controls="phone-content" tabindex="-1" data-scene="download"><span>03</span>文件飞入</button>
-          <button id="tab-sessions" type="button" role="tab" aria-selected="false" aria-controls="phone-content" tabindex="-1" data-scene="sessions"><span>04</span>会话收放</button>
-          <button id="tab-create" type="button" role="tab" aria-selected="false" aria-controls="phone-content" tabindex="-1" data-scene="create"><span>05</span>即刻新建</button>
-          <button id="tab-quota" type="button" role="tab" aria-selected="false" aria-controls="phone-content" tabindex="-1" data-scene="quota"><span>06</span>配额翻面</button>
-          <button id="tab-pair" type="button" role="tab" aria-selected="false" aria-controls="phone-content" tabindex="-1" data-scene="pair"><span>07</span>扫码连接</button>
+        <div class="film-controls">
+          <button class="playback" id="demo-play" type="button" aria-label="播放功能演示"><span class="play-icon" aria-hidden="true">▶</span><span class="play-label">播放</span></button>
+          <button class="playback" id="demo-replay" type="button"><span aria-hidden="true">↻</span> 重置</button>
+          <span class="demo-disclaimer">交互演示</span>
         </div>
-        <p class="demo-disclaimer">可点按的交互演示 · 示例会话与数据</p>
         <p id="demo-announcement" class="sr-only" role="status"></p>
       </div>
     </section>

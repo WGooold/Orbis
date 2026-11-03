@@ -1,4 +1,4 @@
-/* Phone body from ../video/claude/assets/phone3d.js; external CSS for the Relay CSP. */
+/* Original film phone mesh; styles externalized for the site CSP. */
 
   .ph3-plate { position: absolute; left: 0; top: 0; width: 413px; height: 872px; border-radius: 62px; }
   .ph3-side { position: absolute; backface-visibility: hidden; -webkit-backface-visibility: hidden; }
@@ -29,5 +29,3 @@
     background: radial-gradient(ellipse, rgba(170,190,255,0.75), rgba(170,190,255,0)); transform: rotate(-30deg); }
   .ph3-flash { position: absolute; width: 20px; height: 20px; border-radius: 50%;
     background: radial-gradient(circle, #f6f1e2 0 40%, #d9d2bd 60%, #a9a291 100%); box-shadow: inset 0 0 0 1.5px #9aa1ab; }
-  .ph3-btn { position: absolute; left: 0; top: 0; width: 14px; border-radius: 4px;
-    background: linear-gradient(90deg, #8f969f, #e3e6ea 45%, #a5acb5 70%, #7f868f); }

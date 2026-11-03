@@ -1,12 +1,15 @@
-# Public-site promo assets
+# Public-site film sources
 
-Adapted from the local Orbis film project `../video/claude`, reference commit `0803434`:
+The website uses `../video/claude`, revision `5672fd8`, directly. It runs independently of that source directory.
 
-- `compositions/s3-agents.html`: 11-card ring, Agent order, example tasks and front/back geometry.
-- `compositions/s4-features.html`: seven website chapters adapted from the phone demonstrations, with browser controls.
-- `assets/orbis-ui.css`: classic-light material, icon references and brand colors.
-- `assets/phone3d.js`: titanium mesh, bezel, back, lenses and side buttons. The website keeps styles in `../phone3d.css` to respect its CSP.
-- `assets/brand`: original brand pixels, resampled with macOS `sips`; no replacement logo geometry.
-- `assets/agents` and `assets/icons`: original SVG files. Third-party notices are in [agents/NOTICES.txt](agents/NOTICES.txt).
+- `compositions/s3-agents.html`: original 393 × 669 cards, radius 950, eleven slots, sampled continuous acceleration curve and camera sequence. `cinema.js` adds dragging, keyboard selection and a stable interactive camera. Six planned Agents are labelled “即将接入” and have no fabricated working conversations.
+- `compositions/s4-features.html`: original 393 × 852 phone UI, send/ink, permissions/reminders, full-page navigation, quadratic file flight, selection spread, toolbar morph, card rise and copper quota coin. `film.js` adds local controls, per-file downloads, all five creation choices and the third review file.
+- `compositions/s2-pair.html`: original raised/recessed pairing page, scanner, recognition and connection receipt. The displayed QR is demonstration artwork; it does not pair a computer.
+- `assets/orbis-ui.css`, `assets/phone3d.js`: original tokens, icons and current phone mesh. Mesh styles are in `../phone3d.css`.
+- `assets/brand`, `assets/agents`, `assets/icons`: original artwork. Agent notices are in `agents/NOTICES.txt`.
 
-The website is independent of the film project at runtime. It ships no video renderer, remote fonts, CDN scripts, sound or third-party runtime dependencies. Six film Agents are previews, not availability claims. Demo actions are local and do not connect to a Host.
+`film-markup.js`, `film-source.css` and `film-timeline.js` hold the transplanted source. Inline presentation is externalized, CSS selectors are scoped, and the pairing surface mask is a local SVG. The CSP is unchanged. Page wrappers and feature controls are in `film.css` and `film.js`; keep web interaction changes there rather than rewriting the original motion.
+
+Playback uses the original durations, easing and cameras. Manual mode holds a complete phone and starts each operation at its usable state. Offscreen/hidden playback pauses; reduced motion settles actions immediately. Every demo object stays local. Download publication still uses the real site API.
+
+GSAP 3.15.0 is vendored at `../vendor/gsap.min.js` from the installed HyperFrames runtime. The original copyright/license header is preserved; see `../vendor/NOTICE.txt`. The site ships no video renderer, remote font, CDN request, music or audio.

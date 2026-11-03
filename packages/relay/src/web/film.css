@@ -1,0 +1,60 @@
+/* Responsive frame around the original 393 × 852 film UI. */
+.film-demo{margin:44px auto 0;max-width:1440px;position:relative}
+.film-demo .chapter-tabs{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin:0 auto 12px;padding:6px;max-width:920px;width:fit-content;border-radius:22px;background:transparent;box-shadow:none}
+.film-demo .chapter-tabs button{min-height:48px;padding:12px 21px;font-size:14px;white-space:nowrap;border-radius:16px;color:var(--muted);background:transparent;transition:box-shadow .22s,color .22s}
+.film-demo .chapter-tabs button[aria-selected=true]{color:var(--ink);background:var(--surface);box-shadow:var(--pressed)}
+.film-viewport{position:relative;width:100%;height:800px;overflow:clip;isolation:isolate}
+#film-canvas{position:absolute;left:50%;top:50%;width:1920px;height:1080px;margin:-540px 0 0 -960px;transform:scale(var(--film-scale,.72));transform-origin:50% 50%}
+.film-source{width:1920px;height:1080px;text-align:left;line-height:normal;letter-spacing:normal}
+.film-source p{margin:0}.film-source button{font:inherit;border:0;letter-spacing:inherit;padding:0;appearance:none}
+.film-source [role=button],.film-source button{cursor:pointer;touch-action:pan-y}
+.film-source [role=button]:focus-visible{outline:3px solid #2459d3;outline-offset:4px}
+.film-source [inert]{pointer-events:none!important}
+.film-source [data-action]{-webkit-user-select:none;user-select:none}
+.film-source .ph3-plate,.film-source .ph3-side,.film-source .ph3-bezel,.film-source .ph3-btn,.film-source .ph3-island,.film-source .ph3-glare{pointer-events:none}
+#film-s4 #s4-touch{pointer-events:none}
+#film-s4 #s4-homedim,#film-s4 #s4-scrim{pointer-events:none}
+#film-s4 #s4-pager{pointer-events:none}
+#film-s4 .card-state{position:relative;width:46px;height:16px}
+#film-s4 .card-state .st-a,#film-s4 .card-state .st-b{position:absolute;left:0;white-space:nowrap}
+#film-s4 .card-state .st-b{opacity:0}
+#film-s4 #s4-list{touch-action:pan-y}
+#film-s4 #s4-view{touch-action:pan-y}
+#film-s4 #s4-diff .film-diff-hit{position:absolute;left:0;top:120px;width:393px;height:620px;touch-action:pan-y}
+#film-s4 #s4-pg1,#film-s4 #s4-pg2{pointer-events:none}
+#film-s4 .film-select{position:absolute;inset:0;border-radius:24px;pointer-events:none;clip-path:circle(0px at 50% 50%);background:#dde3ef;box-shadow:inset 3px 3px 6px rgba(166,178,198,.62),inset -3px -3px 6px rgba(255,255,255,.85)}
+#film-s4 .scard>*:not(.sel){position:relative}
+/* Original card positions are absolute; keep the existing well/text/indicator geometry. */
+#film-s4 .scard>.well,#film-s4 .scard>.t,#film-s4 .scard>.p,#film-s4 .scard>.s,#film-s4 .scard>.ind{position:absolute}
+#film-s4 #s4-seltitle{white-space:nowrap}
+#film-s4 .demo-directory-current{color:var(--accent)}
+#film-s4 .film-pagecount{position:absolute;left:100px;top:786px;width:193px;text-align:center;color:var(--secondary);font-size:14px;font-weight:600;pointer-events:none}
+#film-s4 .film-home-indicator{position:absolute;width:130px;height:5px;background:#232a36;border-radius:4px;bottom:8px;left:131.5px;z-index:90;pointer-events:none;opacity:.7}
+#film-s2 .film-pair-note{position:absolute;left:22px;right:22px;bottom:78px;text-align:center;font-size:12px;color:var(--secondary)}
+#film-s2 .film-pair-reset{position:absolute;left:140px;top:640px;width:113px;height:48px;border-radius:16px;display:grid;place-items:center;color:var(--accent)}
+.film-controls{display:flex;gap:18px;align-items:center;justify-content:center;margin:14px 0 0;min-height:48px}
+.film-controls .playback{display:inline-flex;gap:8px;align-items:center;justify-content:center;min-height:44px;padding:10px 14px;background:transparent;border-radius:12px;font-size:12px;color:var(--muted)}
+.film-controls .playback:hover{box-shadow:var(--raised)}
+.film-controls .demo-disclaimer{margin:0;color:var(--muted);font-size:11px}
+.film-fallback{position:relative;text-align:center;padding:100px 24px;font-size:16px;line-height:2.2}
+@media(max-width:700px){.film-demo{margin-top:30px}.film-demo .chapter-tabs{padding:4px 14px;gap:4px;margin-bottom:8px}.film-demo .chapter-tabs button{font-size:12px;padding:10px 13px;min-height:44px;border-radius:13px}.film-viewport{height:700px}.film-controls{gap:8px;margin-top:0}.film-controls .playback{font-size:11px}.film-controls .demo-disclaimer{font-size:10px}}
+@media(prefers-reduced-motion:reduce){.film-source #s4-rot{transform:none!important}.film-source #s4-touch{display:none}.film-source .ink span{filter:none!important}}
+
+#film-s4 #film-download-empty{position:absolute;top:310px;left:22px;width:349px;text-align:center;font-size:15px;color:var(--secondary)}
+#film-s4 [data-action=download-file]{touch-action:pan-y}
+/* Original S3 cards and continuous camera sequence, with an interactive resting view. */
+.agent-theatre{height:620px;margin-top:8px}
+.orbit-stage{perspective:none;overflow:clip}
+#orbit-canvas{position:absolute;left:50%;top:50%;width:1920px;height:1080px;margin:-540px 0 0 -960px;transform:scale(var(--orbit-scale,.62));transform-origin:50% 50%}
+#film-s3 #s3-bg{background:transparent}
+#film-s3 .film-preview-agent .c-user,#film-s3 .film-preview-agent .c-asst,#film-s3 .film-preview-agent .c-path,#film-s3 .film-preview-agent .c-field,#film-s3 .film-preview-agent .c-send,#film-s3 .film-preview-agent .c-clip{display:none}
+#film-s3 .film-preview-agent .card-face::after{content:"即将接入";position:absolute;inset:0;display:grid;place-items:center;font-size:34px;color:var(--secondary)}
+#film-s3 .card-back{backface-visibility:hidden}
+@media(max-width:700px){.agent-theatre{height:540px;margin-top:4px}}
+@media(max-width:380px){.agent-theatre{height:500px}}
+
+#film-s4 #s4-sf,#film-s4 #s4-fly,#film-s4 #s4-dlbadge{pointer-events:none}
+
+#film-s4 .film-test-diff{margin:14px 16px 0;border-radius:20px;padding:12px 0;height:540px;overflow:hidden}
+#film-s4 .film-test-diff .dline{padding-left:14px}
+#film-s4 #s4-askst{pointer-events:none}

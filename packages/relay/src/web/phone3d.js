@@ -5,9 +5,9 @@
  * phoneEl: a preserve-3d box of 413 x 872 (iOS points, scaled by the scene).
  * screenEl: the scene's own 393 x 852 screen content, placed at (10, 10) on the glass.
  * Adds: titanium side wall (continuous faceted band, shaded per facet), black bezel,
- * glass glare (tween its backgroundPosition), Dynamic Island, side buttons,
+ * glass glare (tween its backgroundPosition), Dynamic Island,
  * and a frosted-glass back with a three-lens camera plateau.
- * Returns { glare, back, power }.
+ * Returns { glare, back }. No side buttons: the band stays one clean surface.
  */
 (function () {
   const W = 413;
@@ -100,18 +100,7 @@
     island.style.transform = `translateZ(${islandZ}px)`;
     const glare = div("ph3-glare", phone);
     glare.style.transform = `translateZ(${glareZ}px)`;
-    // side buttons (planes facing +x / -x at mid-thickness)
-    const side = (x, y, h, face) => {
-      const b = div("ph3-btn", phone, first);
-      b.style.height = h + "px";
-      b.style.transform = `translate3d(${x}px, ${y}px, ${-T / 2 + 7}px) rotateY(${face}deg)`;
-      return b;
-    };
-    side(-9, 150, 34, -90); // action button
-    side(-9, 214, 62, -90); // volume up
-    side(-9, 290, 62, -90); // volume down
-    const power = side(W - 5, 250, 100, 90);
-    return { glare, back, power };
+    return { glare, back };
   }
   window.OrbisPhone = { build, W, H };
 })();

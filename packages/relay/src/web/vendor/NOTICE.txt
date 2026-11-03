@@ -1,0 +1,8 @@
+GSAP 3.15.0
+Copyright 2026, GreenSock. All rights reserved.
+Subject to the terms at https://gsap.com/standard-license.
+
+The minified runtime is copied with trailing whitespace normalized from the installed
+HyperFrames distribution: vendor/npm/gsap@3.15.0/dist/gsap.min.js.
+Its original copyright and license header is preserved. This runtime is
+third-party software, not covered by the Orbis repository MIT license.
