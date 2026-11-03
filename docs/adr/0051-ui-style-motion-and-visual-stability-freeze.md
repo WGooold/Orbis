@@ -178,7 +178,7 @@ ADR-0046 原 17 项要求的映射：1→V01–V04；2→S02；3→S03；4→V05
 | ID | Feature | 冻结规则 | 来源 / 实现入口 |
 | --- | --- | --- | --- |
 | X01 | Orbis 品牌母版 | 开口方环和右上小方块保持独立及既定间隙；各尺寸从同一母稿导出。商店素材不预制圆角，Android adaptive / monochrome 遵守安全区；macOS Dock 用深蓝圆角底板，窗口 / 菜单栏用透明符号。 | [品牌资源][Brand] |
-| X02 | Agent 视觉身份 | Pi、Codex、DeepSeek、Claude 图标随包交付并保留来源许可；身份来自 runtime / session，不能根据模型供应商推断。底板不随 Agent 改色，聊天强调色跟随 Agent；通用设置 / 连接 / 下载不冒用 Agent 主题。Pi / Claude 图形保留原色。 | [Agent 标识][Icons]、[iOS 设计组件][I1]、[Android Agent][A18] |
+| X02 | Agent 视觉身份 | Pi、Codex、DeepSeek、Claude 图标随包交付并保留来源许可；身份来自 runtime / session，不能根据模型供应商推断。底板不随 Agent 改色，聊天强调色跟随 Agent；通用设置 / 连接 / 下载不冒用 Agent 主题。Pi / Claude 图形保留原色。Pi 方块标志在双端素材内居中按裁边后尺寸的 85% 显示，使视觉重量与其他 Agent 对齐；外层图标槽、底板、布局与触控尺寸不变（专项验证中）。 | [Agent 标识][Icons]、[iOS 设计组件][I1]、[Android Agent][A18] |
 | X03 | Host 桌面材质与控件 | macOS / Windows 共用 Qt Quick 页面，蓝灰 `#E6EBF4` 底板、双向柔影卡片、凹陷输入和按下态；按钮保留焦点、禁用、primary / danger 语义。Host 设置清楚区分启动时预启动 Codex 终端后端与 DeepSeek 后端；Codex Desktop 按需接入，不由终端开关限制。共用 Card / ActionButton，不导入移动端另一套几何或网页 CSS。r35 侧栏选中为凹陷，稳定按钮槽的材质 160ms 交叉渐变，验证中。 | [Host 主界面][H1]、[Host 卡片][H2]、[Host 按钮][H3]、[ADR-0056] |
 | X04 | Host 阴影缓存 | Gaussian 柔影保持连续衰减、凹影裁切及左上光源；按尺寸、圆角、内外影、材质和模糊等属性变化刷新缓存，重复绘制复用，不重新制造轮廓色带。 | [Host 阴影][H4]、[Host 材质测试][HT1] |
 | X05 | Host 控件动效 | 开关滑块约 160ms OutCubic；确定下载进度约 200ms 插值，未知总量只在适用时显示 1100ms 往返指示。动画表达当前事实，不伪造进度和安装完成。r35 共用 MotionText：短文字 160ms 淡变，首页统计 220ms 上下滚动，初始不滚、直接使用新值，遵守系统减少动画；验证中。 | [H1]、[D58] SC39 |

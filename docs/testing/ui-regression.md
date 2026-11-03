@@ -118,6 +118,8 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 2026-11-02 Codex 终端来源与开窗专项（R56；S20、V12、V17–V18、X03）：Host `codex-terminal-environment.test.ts` 与真实隔离 CLI 对照覆盖继承 Desktop 来源覆盖值导致的新建误标；只在终端子进程清除覆盖值。`codex-session-ownership.test.ts`、`codex-terminal-macos.test.ts`、`macos-terminal.test.ts`、既有 `codex-runtime.test.ts` / `codex-terminal-sync.test.ts` 覆盖 App 终端路由不被历史来源改派、精确 CLI / endpoint、真实 TTY 启动确认、失败回执 / 空闲订阅释放、已有会话保留、等待窗口与 native TUI 检测和 PID 复核关闭。设备消费既有启动失败路径：iOS `testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace`、Android `OptimisticPresentationInstrumentedTest#aFailedLaunchOffersRetryAndBackInPlace`。完整 L1–L4、C01–C18 / A1–A4 与真实隔离 TUI 仍须独立记录，夹具不得算作真实窗口验收。
 
+Pi 图标视觉尺寸对齐（X02，关联 S19 / S20）：双端 Pi 素材居中缩至裁边尺寸的 85%，保留图形路径与原色、图标槽和触控尺寸。沿用 iOS `testPageScreenshotsInBothAppearances`、`testHomeDirectorySearchAndNewSession`、`testSettingsPageOrderAndSingleHostMenu`、`testRefreshKeepsHeaderTextAndTruncationStable`，Android `DisplayScenariosInstrumentedTest`、`ProviderSelectionInstrumentedTest`、`SessionProviderFilterInstrumentedTest`、`ChatStatusLayoutInstrumentedTest`；C01–C04 / C17–C18 按 A1–A4 对照首页、目录、聊天、新建与设置的 Pi / Codex / Claude / DeepSeek 图标，确认 Pi 居中、视觉大小协调且文字与命中范围不动。素材静态核对不替代双端 L1–L4 与人工门禁，当前设备回归未运行、未验收。
+
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
 
 2026-11-03 Claude macOS 启动执行确认（V12、V16–V18 / R29–R30）：`claude-launcher.test.ts` 覆盖实际脚本回执 / 未执行超时与文件清理，`macos-terminal.test.ts` 覆盖 opener spawn 后非零退出，`agent-backend.test.ts` 覆盖取消 bridge 等待。手动补查系统开窗成功但脚本未执行、执行后插件未接入、正常 hello 三种边界；两端启动页应分别结束为明确失败 / 未确认 / 已连接，保留草稿、旧会话，不自动重发。现有新建页用例与 C01–C18 / A1–A4 继续适用。源码验证与现场恢复分开记录，证据 `launch-followup.md`，本补丁未部署。
