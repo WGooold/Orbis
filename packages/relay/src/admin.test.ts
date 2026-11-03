@@ -190,9 +190,9 @@ describe("Relay web console", () => {
     // Android 的 APK 和版本元数据由另一个目录服务（nginx 的 /var/www/orbis-downloads），
     // /v1/site 必须读那一份，而不是凑巧放在 Windows 下载目录里的同名文件。
     const androidDirectory = await mkdtemp(join(tmpdir(), "orbis-android-downloads-"));
-    const name = "OrbisHost-0.1.0-windows-x64-setup.exe";
-    const macName = "OrbisHost-0.1.11-macos-arm64.dmg";
-    const intelName = "OrbisHost-0.1.11-macos-x64.dmg";
+    const name = "OrbisHost-0.1.14-windows-x64-setup.exe";
+    const macName = "OrbisHost-0.1.14-macos-arm64.dmg";
+    const intelName = "OrbisHost-0.1.14-macos-x64.dmg";
     await writeFile(join(directory, name), "test artifact");
     await writeFile(join(directory, `${name}.sha256`), `${"a".repeat(64)}  ${name}`);
     await writeFile(join(directory, macName), "macOS artifact");
@@ -211,7 +211,7 @@ describe("Relay web console", () => {
     expect(site.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(site.headers.get("content-security-policy")).not.toContain("unsafe-inline");
     await expect(fetch(`${base}/v1/site`).then(response => response.json())).resolves.toMatchObject({
-      version: "0.1.0",
+      version: "0.1.14",
       windows: [{ name, url: `downloads/${name}`, checksumUrl: `downloads/${name}.sha256` }],
       macos: [
         { name: macName, url: `downloads/${macName}`, checksumUrl: `downloads/${macName}.sha256` },

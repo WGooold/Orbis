@@ -1,5 +1,4 @@
 // Shared by the QML editor and its behavioral tests. No Host/native writes.
-/* eslint-disable @typescript-eslint/no-unused-vars -- QML imports these functions as a namespace. */
 function newModel(kind, id, name) {
     var model = {id: id || "", name: name || id || "", input: ["text"], contextWindow: kind === "dsh" ? 262144 : "", maxTokens: kind === "dsh" ? 32768 : ""}
     if (kind === "dsh") model.reasoningEfforts = defaultReasoningEfforts()

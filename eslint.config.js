@@ -26,6 +26,25 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    files: ["packages/windows-host/src/qml/**/*.js"],
+    // Qt library scripts export their top-level variables to QML. Blank the
+    // Qt-only directive without moving diagnostics or autofix offsets.
+    processor: {
+      preprocess(source) {
+        return [source.replace(/^[\t ]*\.pragma[\t ]+library[\t ]*\r?$/gm,
+          directive => directive.replace(/[^\r\n]/g, " "))];
+      },
+      postprocess(messages) {
+        return messages.flat();
+      },
+      supportsAutofix: true,
+    },
+    languageOptions: { sourceType: "script" },
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["error", { vars: "local" }],
+    },
+  },
+  {
     files: ["packages/relay/src/web/*.js"],
     languageOptions: { globals: {
       document: "readonly", window: "readonly", location: "readonly", navigator: "readonly", fetch: "readonly",
