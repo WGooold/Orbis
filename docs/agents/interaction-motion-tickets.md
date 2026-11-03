@@ -114,6 +114,8 @@
 
 ## MOT-09：系统两侧边缘返回
 
+2026-11-03 / r40 返回响应补充（同时涉及 MOT-13 / V13）：iOS 确认退场复用 180ms 共用 token，完成即交还原栈来源；取消保持原弹簧。覆盖全部 SC28–SC30 整页，新增聊天连续重入及嵌套返回预算，应用内探针测量松手→提交，不能让 XCTest 空闲等待掩盖不可点击窗口。目录 / 菜单 / Sheet 另做审计；R11–R13 / R19–R22 / R47 与 A1–A4、全量门禁保持，未完成项不得关单。证据 `.artifacts/ui-regression/20261103-ios-return-response/`。 最终导航专项3/3与核心测试通过；完整iOS全量因外接盘中断、残留设备锁阻塞，Android深色按压反馈两项未过；完整人工和最终动效帧未完成，MOT-09 / MOT-13保持未验收，详见该目录 `summary.md`。
+
 **场景 / feature**：SC28–SC32；M08、M14、V13、V17–V18。入口 `OrbisPageTransition` / `OrbisPageHost/SwipeBackLayer`。
 
 **实际问题**：Android普通 BackHandler 无手势进度；iOS自定义拖动只处理右移，顶部页面无边缘压缩。

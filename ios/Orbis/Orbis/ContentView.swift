@@ -146,6 +146,7 @@ struct ContentView: View {
         .orbisOverlayHost(overlay)
         #if DEBUG
         .overlay(alignment: .topLeading) { if ChatEntryProbe.enabled { ChatEntryReport() } }
+        .overlay(alignment: .bottomLeading) { if PageReturnProbe.enabled { PageReturnReport() } }
         #endif
     }
 
@@ -369,6 +370,7 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
     @State private var horizontalDrag: Bool?
     @State private var containerWidth: CGFloat = 390
     @State private var returning = false
+    @State private var suppressTaps = false
     @State private var revealing = false
     @State private var settleID = UUID()
     @State private var backPriority: OrbisBackPriority?
@@ -389,6 +391,8 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
                     .accessibilityHidden(true)
             }
             content.offset(x: max(0, offset))
+                .disabled(suppressTaps)
+                .allowsHitTesting(!returning)
         }
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
@@ -398,10 +402,11 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
             // System interruptions may cancel a gesture without calling onEnded.
             if !active && horizontalDrag != nil && !returning {
                 horizontalDrag = nil
+                releaseTaps()
                 settle(back: false, velocity: 0)
             }
         }
-        .onDisappear { returning = false; settleID = UUID() }
+        .onDisappear { returning = false; suppressTaps = false; settleID = UUID() }
     }
 
     private var gesture: some Gesture {
@@ -414,6 +419,9 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
                     settleID = UUID()
                 }
                 guard horizontalDrag == true else { return }
+                // Simultaneous recognition preserves scrolling, but a Button under
+                // the finger must not also fire when this horizontal drag ends.
+                suppressTaps = true
                 // A selection or modal must not preview a different page.
                 if backPriority != nil { return }
                 revealing = true
@@ -423,6 +431,7 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
             .onEnded { value in
                 let horizontal = horizontalDrag == true
                 horizontalDrag = nil
+                releaseTaps()
                 guard horizontal && !returning else { return }
                 let velocity = (value.predictedEndTranslation.width - value.translation.width) / 0.2
                 if backPriority != nil {
@@ -433,21 +442,45 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
             }
     }
 
+    private func releaseTaps() {
+        // Keep controls disabled through the current touch-up's action dispatch.
+        DispatchQueue.main.async { suppressTaps = false }
+    }
+
     private func settle(back: Bool, velocity: CGFloat) {
         let id = UUID()
         settleID = id
         returning = back
+        #if DEBUG
+        if back { PageReturnProbe.shared.begin() }
+        #endif
         let target = back ? containerWidth : 0
         let distance = target - offset
         let initialVelocity = abs(distance) > 1 ? max(-8, min(8, velocity / distance)) : 0
-        withAnimation(reduceMotion ? nil : .orbisSwipeBack(velocity: Double(initialVelocity)), completionCriteria: .removed) {
-            offset = target
-        } completion: {
+        let finish = {
             guard settleID == id else { return }
             guard back && returning else { revealing = false; return }
+            // Consume this completion before handing navigation back to the source.
+            settleID = UUID()
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             withTransaction(transaction) { onBack() }
+            #if DEBUG
+            PageReturnProbe.shared.committed()
+            #endif
+        }
+        // The preview is noninteractive. Do not leave it on screen waiting for
+        // a spring to finish oscillating offscreen after the visible page is gone.
+        if reduceMotion || (back && offset >= containerWidth) {
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { offset = target }
+            finish()
+        } else {
+            let animation = back ? InteractionMotion.pageReturn : .orbisSwipeBack(velocity: Double(initialVelocity))
+            withAnimation(animation, completionCriteria: back ? .logicallyComplete : .removed) {
+                offset = target
+            } completion: { finish() }
         }
     }
 }

@@ -764,6 +764,36 @@ private final class PreviewTransport: OrbisTransport {
     }
 }
 
+/// Records inside the app: XCTest waits for idle before its next input, which
+/// otherwise hides the unresponsive interval after a swipe has visually ended.
+@MainActor
+final class PageReturnProbe: ObservableObject {
+    static let shared = PageReturnProbe()
+    static let enabled = ProcessInfo.processInfo.arguments.contains("--measure-page-return")
+    @Published private(set) var report = "idle"
+    private var start: TimeInterval?
+    private var count = 0
+    func begin() {
+        guard Self.enabled else { return }
+        start = ProcessInfo.processInfo.systemUptime
+    }
+    func committed() {
+        guard Self.enabled, let start else { return }
+        self.start = nil; count += 1
+        report = String(format: "count=%d;commitMs=%.1f", count,
+                        (ProcessInfo.processInfo.systemUptime - start) * 1000)
+        NSLog("OrbisPageReturn %@", report)
+    }
+}
+
+struct PageReturnReport: View {
+    @ObservedObject private var probe = PageReturnProbe.shared
+    var body: some View {
+        Text(probe.report).font(.system(size: 10))
+            .accessibilityIdentifier("page-return-metrics").allowsHitTesting(false)
+    }
+}
+
 /// Opt-in fixture diagnostics. The draw callback measures app rendering, not source-sync latency
 /// or the display's physical presentation time. No message text or identity is recorded.
 @MainActor

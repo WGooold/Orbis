@@ -1207,6 +1207,71 @@ final class OrbisUITests: XCTestCase {
         reopened.terminate()
     }
 
+    private func returnWithoutSettling(_ app: XCUIApplication, count: Int, reduced: Bool = false) {
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+                   withVelocity: .slow, thenHoldForDuration: 0.1)
+        let report = app.staticTexts["page-return-metrics"]
+        XCTAssertTrue(report.waitForExistence(timeout: 3))
+        let values = Dictionary(uniqueKeysWithValues: report.label.split(separator: ";").compactMap { part -> (String, Double)? in
+            let pair = part.split(separator: "=", maxSplits: 1)
+            guard pair.count == 2, let number = Double(pair[1]) else { return nil }
+            return (String(pair[0]), number)
+        })
+        XCTAssertEqual(values["count"], Double(count), "一次手势只能弹出一层")
+        XCTAssertLessThan(values["commitMs"] ?? .infinity, reduced ? 50 : 300,
+                          "松手后不能等待屏外弹簧尾巴；记录应用内时钟，不含 XCTest 等待空闲")
+    }
+
+    func testChatReturnImmediatelyAcceptsRepeatedCardEntry() {
+        for (name, dark, options) in [("light", false, [String]()), ("dark", true, []),
+            ("xxxl", false, ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]),
+            ("reduced", false, ["--preview-reduce-motion"])] {
+            let app = launch("home", dark: dark, arguments: ["--measure-page-return"] + options)
+            let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "home-runtime-")).firstMatch
+            XCTAssertTrue(card.waitForExistence(timeout: 8))
+            for count in 1...3 {
+                card.tap()
+                XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 3))
+                returnWithoutSettling(app, count: count, reduced: name == "reduced")
+                XCTAssertTrue(card.isHittable)
+                XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].exists)
+            }
+            // A different destination must also accept the very next action.
+            app.buttons["home-settings"].tap()
+            XCTAssertTrue(app.descendants(matching: .any)["settings-page"].firstMatch.waitForExistence(timeout: 3))
+            capture("immediate-return-" + name, app: app)
+            app.terminate()
+        }
+    }
+
+    func testFullPageReturnBudgetAndNestedSourceReentry() {
+        let app = launch("home", arguments: ["--measure-page-return"])
+        XCTAssertTrue(app.buttons["home-settings"].waitForExistence(timeout: 8))
+        for (index, entry) in ["home-settings", "home-downloads"].enumerated() {
+            app.buttons[entry].tap()
+            returnWithoutSettling(app, count: index + 1)
+            XCTAssertTrue(app.buttons[entry].isHittable)
+        }
+        let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "home-runtime-")).firstMatch
+        card.tap()
+        app.buttons["历史与分支"].tap()
+        let downloads = app.buttons["history-downloads"]
+        XCTAssertTrue(downloads.waitForExistence(timeout: 3))
+        for count in 3...5 {
+            downloads.tap()
+            returnWithoutSettling(app, count: count)
+            XCTAssertTrue(downloads.isHittable)
+            XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].exists)
+        }
+        returnWithoutSettling(app, count: 6)
+        XCTAssertTrue(app.buttons["历史与分支"].isHittable)
+        app.buttons["chat-downloads"].tap()
+        returnWithoutSettling(app, count: 7)
+        XCTAssertTrue(app.buttons["chat-downloads"].isHittable)
+        capture("immediate-return-nested-chat", app: app)
+    }
+
     // M14: every full page participates, including adding a computer; sheets keep their own gestures.
     func testAddComputerPageReboundsAndSwipesBack() {
         for (dark, arguments) in [(false, [String]()), (true, ["--preview-reduce-motion"])] {
@@ -1219,17 +1284,25 @@ final class OrbisUITests: XCTestCase {
             XCTAssertTrue(title.waitForExistence(timeout: 3))
             settle()
             let originalX = title.frame.minX
-            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
-            start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.30, dy: 0.6)),
+            // Start on an actual control on both compact and standard phones.
+            let y = app.buttons["扫码配对"].frame.midY - app.frame.minY
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: app.frame.width * 0.15, dy: y))
+            start.press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: app.frame.width * 0.30, dy: y)),
                         withVelocity: .slow, thenHoldForDuration: 0.3)
             XCTAssertTrue(title.exists)
+            XCTAssertFalse(app.staticTexts["扫描配对二维码"].exists, "从扫码按钮开始右滑不能同时触发按钮")
             let returned = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 title.exists && abs(title.frame.minX - originalX) <= 1
             }, object: title)
             XCTAssertEqual(XCTWaiter().wait(for: [returned], timeout: 5), .completed)
             XCTAssertEqual(title.frame.minX, originalX, accuracy: 1)
             capture("pairing-short-drag-" + (dark ? "dark-reduced" : "light"), app: app)
-            start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+            app.buttons["扫码配对"].tap()
+            XCTAssertTrue(app.staticTexts["扫描配对二维码"].waitForExistence(timeout: 3), "取消右滑后正常点按立即恢复")
+            app.buttons["取消"].tap()
+            XCTAssertTrue(app.staticTexts["扫描配对二维码"].waitForNonExistence(timeout: 3))
+            start.press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: app.frame.width * 0.88, dy: y)),
                         withVelocity: .slow, thenHoldForDuration: 0.1)
             XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
             XCTAssertFalse(app.buttons["取消添加电脑"].exists)
@@ -1396,6 +1469,7 @@ final class OrbisUITests: XCTestCase {
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.30, dy: 0.6)),
                     withVelocity: .slow, thenHoldForDuration: 0.3)
         XCTAssertTrue(app.buttons["history-downloads"].exists)
+        XCTAssertFalse(app.buttons["退出预览"].exists, "取消右滑不能同时打开手指下的历史卡片")
         capture("history-swipe-cancelled", app: app)
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
                     withVelocity: .slow, thenHoldForDuration: 0.1)

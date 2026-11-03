@@ -123,6 +123,8 @@ enum InteractionMotion {
     static let panel = Animation.easeOut(duration: 0.22)
     static let exit = Animation.easeIn(duration: 0.16)
     static let dismiss = Animation.easeIn(duration: 0.18)
+    /// A committed page return ends with the visible slide, never a spring's invisible tail.
+    static let pageReturn = Animation.easeOut(duration: 0.18)
     static let send = Animation.linear(duration: MotionGeometry.sendDuration)
     static let toolbar = Animation.easeInOut(duration: 0.26)
 

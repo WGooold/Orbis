@@ -154,3 +154,9 @@ Android 客户端最终完整报告 `OK (9 tests)`，设备日志也确认 9 项
 - 对应回归入口为 `SwipeBackInstrumentedTest`（含 `rightSwipeInterruptsEntranceBeforeLoadingFinishes`）
   和 `HomeNavigationInstrumentedTest`。这是本次对既有实现 / 测试的盘点，不是本次重新运行设备测试；
   上方旧耗时与首页释放结果不用于证明后续实现的性能或生命周期。
+
+## 2026-11-03 / r40：iOS 返回响应边界
+
+用户再次报告 iOS 返回列表后短时间不能点击。原本的首帧探针从点击回调开始，无法发现点击之前被退场层挡住的时间；新增应用内松手→路径提交测量。确认返回改为共用 180ms 退场，取消保留原弹簧；不等待屏外弹簧移除才交回来源。规则与全部整页覆盖见 [ADR-0054](0054-shared-full-page-navigation.md) / [ADR-0058](0058-shared-interaction-motion.md) r40；不重用上文历史首帧数字作为本轮结论。证据与未完成门禁见 `.artifacts/ui-regression/20261103-ios-return-response/`。
+
+2026-11-03 r40 返回响应验证：代码已实施，应用内实测与最终专项支持返回交接修复；完整iOS全量受外接盘中断和共享设备残留锁阻塞，Android深色按压反馈及其他全量失败保留，完整人工/最终动效帧未验收。结果与未跑范围见 [UI 回归方案 §6](../testing/ui-regression.md) 和 `.artifacts/ui-regression/20261103-ios-return-response/summary.md`。

@@ -112,6 +112,8 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 ### 3.3 全量用例与 feature 映射
 
+2026-11-03 iOS 返回即时交接（r40；M08 / M14 / V13；ADR-0054 / ADR-0058）：新增 `testChatReturnImmediatelyAcceptsRepeatedCardEntry`（A1–A4，连续三次重入）、`testFullPageReturnBudgetAndNestedSourceReentry`（设置、首页下载、聊天→历史→下载、聊天下载连续重入）。`--measure-page-return` 只在 Debug 记录应用内单调时钟的松手→路径提交，正常 <300ms，减少动画 <50ms；不含正文 / 身份，不把 XCTest 空闲后的可点击断言当作延迟测量。补强添加电脑 / 历史短拖断言，禁止松手同时打开扫码 Sheet 或历史预览；保留 `testAddComputerPageReboundsAndSwipesBack`、`testSettingsAndDownloadsSwipeBack`、`testNestedPagesSwipeBackOneLevelAtATime`、`testOptionalEdgeBackKeepsExistingIOSNavigation` 与聊天 / 历史下载原有用例；Android 复跑 `SwipeBackInstrumentedTest`、`HomeNavigationInstrumentedTest`、`SwipeBackPagesInstrumentedTest`、`HistorySwipeBackInstrumentedTest`、`PageNavigationInstrumentedTest`。C04、R11–R13 / R19–R22 / R47 加查：屏幕回到来源即连续点卡片 / 图标，取消后再拖、快速重入、减少动画 / 已屏外、嵌套只退一层，录屏确认没有额外原生退场或透明层。完整 L1–L4 / C01–C18 / A1–A4 分别记录于 `.artifacts/ui-regression/20261103-ios-return-response/`。
+
 2026-11-03 Codex 权限更新后选型保持（[ADR-0061](../adr/0061-codex-selection-and-native-settings-reconciliation.md)；V05、V12、V17–V18；R27 / R56，ADR-0021 / ADR-0031 / ADR-0049 §6.7）：`codex-permission-settings.test.ts` 覆盖 Sol→Astra / effort 后分别修改四类权限、相同原生快照、resume、真实电脑端变更、字段独立交接及 null effort，断言下一次 `turn/start` 仍携带正确选择；`codex-terminal-sync.test.ts` 覆盖首条输入前 resume 拒绝、无原生设置 RPC 选型、首轮物化 / 订阅及后续权限通知。真实隔离 PTY 使用 Codex 0.166.0 和本地 Responses stub，分别检查电脑首条 / 手机首条输入，不能用纯 RPC 成功替代订阅和通知。两端沿用配置 / 权限及状态用例，包含 iOS `testModelSwitchShowsTheChoiceWithItsMarkWithoutMovingTheHeader`、Android `ConfigComposerInstrumentedTest` / `CodexPermissionsInstrumentedTest`；C05–C06、C17–C18 与 R27 补查“切模型 / effort→改权限→继续提问”、空终端首次输入及电脑端真正改模。完整双端 L1–L4、C01–C18 / A1–A4 结果另记，证据 `.artifacts/ui-regression/20261103-codex-permission-model/`。
 
 2026-11-03 Android 配置切换输入区（V05、V10、V12；R27）：`ConfigComposerInstrumentedTest` 直接点击生产 `ChatScreen` 的 Slash 选项和发送按钮，使用配置账本及 `RelayReducer` 回执，覆盖 Codex / Pi 的模型与思考切换、已确认值重复选择、拒绝、未写入；断言切换结束后发送图标可见且可继续输入。仅替换传输提交，不代表真实 Agent 联动。既有 `ConfigLedgerTest` 继续覆盖确认前发送、规范化、失败连带、连续选择和断线核对。手动 R27 补查同配置重复提交、失败后继续提问、未写入保留命令草稿；完整 C01–C18 / A1–A4 与真实 Host 结果单独记录。
@@ -130,7 +132,7 @@ Pi 图标视觉尺寸对齐（X02，关联 S19 / S20）：双端 Pi 素材居中
 
 2026-11-03 Claude 长会话恢复（R18；V09–V10、V16–V18）：`session-source.test.ts` 覆盖 257 / 1,055 条初始化、字节超限批次、unknown→checkpoint 与后续连续增量；`claude-transcript.test.ts` 覆盖长原生日志继续追加后 Host 重开 preview 的最新 head。Android `ClaudeHistoryInstrumentedTest#existingHistoryAndRunningTurnSurviveParallelToolsAndReconnect` 使用 `ORBIS_CLAUDE_HISTORY_PREFIX=1053` 的真实 Host / Relay / Mods 夹具，比较同设备同 App 的修复前后结果。iOS 沿用 source recovery 核心与 Claude 身份设备映射；完整双端 L1–L4 / C01–C18 / A1–A4 结果不得由此定向对照替代。
 
-**iOS `OrbisUITests`（合并后 85 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项，r36 发送展开新增 1 项，r37 配额减少动画新增 1 项；历史运行计数按证据保留）**
+**iOS `OrbisUITests`（合并后 87 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项，r36 发送展开新增 1 项，r37 配额减少动画新增 1 项，r40 返回响应新增 2 项；历史运行计数按证据保留）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
@@ -488,6 +490,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+2026-11-03 iOS 返回响应 / r40（M08 / M14 / V13，已实施、验证中）：既有 ADR-0048 / ADR-0054 / ADR-0058 已要求返回后立即交互；本次修复确认退场等待取消弹簧 `.removed` 的不可点击空档，采用共用180ms ease-out，减少动画 / 已屏外直接交接。另修复添加电脑 / 历史页短拖同时激活按钮，补强取消后正常点按恢复断言。SE原实现松手→路径提交698.2ms，早期候选199.8–249.7ms / 减少动画0ms；最终iPhone17导航专项3/3（含聊天A1–A4连续重入），完整全量尝试已完成13项0失败后因外接盘断连中断，受控基线全量未启动。恢复后全机单台队列被其他任务残留设备锁阻塞，不代清锁。Swift352 / Android JVM682项及两端构建通过；Android全量182项为169通过、6失败、7外部夹具assumption，缓存入场按规则复测一次通过；A1导航13/13、A3浅色1.5字体13/13、A4减少动画6/6，A2深色11/13，两项按压亮度断言复测仍失败，返回重入通过。iOS初轮18张与最终专项10张、Android采集324张（去重283）及矩阵新增14张已看，早期退场帧已查；最终抑制版完整录屏、375pt复验、完整C01–C18 / R / A、iOS17与真机未完成。未记完整门禁通过，详细失败、源码边界、队列与清理见 `.artifacts/ui-regression/20261103-ios-return-response/summary.md`。
 
 2026-11-03 Codex 权限更新后选型保持（[ADR-0061](../adr/0061-codex-selection-and-native-settings-reconciliation.md)，V05、V12、V17–V18 / R27 / R56）：Host 将下一轮模型 / effort 覆盖与原生观测分开，权限完整快照、首次订阅及 resume 的重复值不再冲掉本地选择；仍接受电脑端实际变化。修复前新增回归 16 项中 3 失败，修复后相关 188 / 188；隔离真实 Codex 0.166.0 PTY 的电脑首条 / 手机首条两条路径均通过，实际下一轮请求使用 Astra，首条输入前选型无设置 RPC，模型流量只到本地假服务。类型检查 / 变更文件 lint 通过；Node 全量 1701 项为 1694 过 / 2 launcher 失败 / 5 条件未运行，整类复测仍有相同两失败。掉盘恢复后从 `3bdb968` 建立隔离基线 / 候选，Android 各 677 JVM、iOS 各 351 Core 及双端构建通过；原共享工作树的 Android 681 项另记，不合并计数。Android 两次共用入口均在模拟器启动时退出 -11，未进入 instrumentation，两个新会话正常清理。iOS 同池 SE 基线仅完成 50 项（44 过 / 6 失败），测试驱动随后等待 crash-log 收集，重启后进程退出；候选全量未开始，不能比较失败集合，未完成 xcresult 不能导出摘要。iPhone 17 的 9 张预览图已看，仅局部静态核对，未满足完整 A3 / L4 / C01–C18 / 真实 App R27 / R56。重启后内存检查 83.5% ≥ 80% 拒绝新设备 / 构建，未绕过；核对归属、进程和 Shutdown 后释放本轮 5 个残留租约，旧 Android 会话锁另保留。未部署或重启用户 Host，完整设备 / 手动门禁未通过；原始失败、截图、包哈希、清理与边界见 `.artifacts/ui-regression/20261103-codex-permission-model/summary.md` 和 `resumed-validation/`。本隔离结论不覆盖后来共享工作树的 r40 等并行修改。
 
