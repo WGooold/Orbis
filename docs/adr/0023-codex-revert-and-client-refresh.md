@@ -161,6 +161,8 @@ ADR-0024 的 checkpoint、patch 和 running sync 只能复制 Codex adapter 已�
 
 GUI 重开时的 `thread/queue/list` 是只读查询，不属于用户并发操作，也不提供历史加载完成的证据；只有实际队列修改、turn 操作及归档等生命周期修改才能使本次刷新失效。2026-10-10 修复此前把所有 `thread/queue/*` 都判为修改操作、导致桌面已重开却向 APP 误报手动归档的问题。
 
+2026-11-03 刷新回执显示修复（V06、V12、V16–V18，验证中）：`awaiting_confirmation` 表示归档、恢复订阅及重开请求已完成，仍待 GUI 自身的历史读取证据；使用信息级条件通知“历史已回退，正在等待桌面历史加载确认”，不提示刷新失败或要求再次手动归档。收到本次操作的 hydration 证据后只清除对应通知；`recovery_pending`、`manual_required` 及异常继续保留原有恢复提示。命令回执仍只确认已完成的原生回退，不把 open / resume 或等待态当成 GUI 加载成功，不再次 revert。Host 自动用例覆盖延迟确认、确认后的精确清除及真实恢复问题；双端设备、手动与真实 GUI 门禁单独登记，未跑不得记为通过。
+
 首版自动刷新仅支持已经核对缓存清理和本地路由的 Windows 桌面版本 `26.930.7945`、`26.1002.7124`，且目标必须没有原生派生子 threads。兼容检查使用 GUI 的 `initialize.clientInfo.version`；2026-10-09 实机确认安装包 `26.1002.7124.0` 实际上报 `26.1002.52244`，不能用安装包版本号替代协议版本，否则已验证版本也会在 archive 前被拒绝。执行前及包装器提交前分别用显式全部 sourceKinds、ancestorThreadId 查询活动和归档子树；任何派生 thread、未知状态、排队工作、审批或不兼容版本均保留已完成回退并提示手动重开，不执行自动 archive。完整 subtree 补偿和 TUI 生产 driver 仍待实现，通用协调器及 journal 不代表它们已接入。
 
 已通过真实 Codex CLI `0.162.0` 的隔离双客户端实验：本地测试 provider 生成两轮，回退后保留一轮，GUI 协议客户端接收 archive/unarchive、重新加载 paginated turns/items，恢复完成。该实验验证实际原生协议及 driver，不替代真实桌面 GUI 画面验收。已有运行中的旧包装器需关闭后重新打开 Codex 桌面版才加载新增控制端点；Host 也需更新后重启。

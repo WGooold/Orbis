@@ -114,6 +114,8 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 2026-11-03 Android 配置切换输入区（V05、V10、V12；R27）：`ConfigComposerInstrumentedTest` 直接点击生产 `ChatScreen` 的 Slash 选项和发送按钮，使用配置账本及 `RelayReducer` 回执，覆盖 Codex / Pi 的模型与思考切换、已确认值重复选择、拒绝、未写入；断言切换结束后发送图标可见且可继续输入。仅替换传输提交，不代表真实 Agent 联动。既有 `ConfigLedgerTest` 继续覆盖确认前发送、规范化、失败连带、连续选择和断线核对。手动 R27 补查同配置重复提交、失败后继续提问、未写入保留命令草稿；完整 C01–C18 / A1–A4 与真实 Host 结果单独记录。
 
+Codex Desktop Rewind 反馈（2026-11-03，V06、V12、V16–V18）：`codex-desktop-refresh.test.ts` 覆盖手机 `/tree` → 原生 revert → archive / unarchive / resume / open，GUI 历史确认延迟时只产生信息级等待通知、保留成功的回退回执；同一操作确认后清除，其他错误不受影响。版本不支持或恢复失败仍有明确警告，不重复 revert / archive。沿用 C05、C15、C17–C18、R36 与 A1–A4：双端对照延迟确认 / 已确认 / 真实失败，横幅不推动正文、不抢阅读锚点；桌面已回退时不得显示“未执行”或要求再次回退。设备与真实隔离 GUI 的执行结果见 §6；协议夹具不替代完整门禁。
+
 回答重复提示（V06–V07、V16、V22）：`host-service.test.ts` 的 `keeps only the appropriate interaction feedback` 四组加密 Relay 用例覆盖 App 成功无顶部横幅、电脑端完成 / 取消 / 超时各一条，以及重复终态、事件转发与通知重取；配合 `notification-store.test.ts`、`runtime-command-lifecycle.test.ts`。双端沿用 OPT-05 设备用例，真实隔离 Host 按 R26 检查顶部与底部不得重复显示成功提示。
 
 2026-11-02 Codex 终端来源与开窗专项（R56；S20、V12、V17–V18、X03）：Host `codex-terminal-environment.test.ts` 与真实隔离 CLI 对照覆盖继承 Desktop 来源覆盖值导致的新建误标；只在终端子进程清除覆盖值。`codex-session-ownership.test.ts`、`codex-terminal-macos.test.ts`、`macos-terminal.test.ts`、既有 `codex-runtime.test.ts` / `codex-terminal-sync.test.ts` 覆盖 App 终端路由不被历史来源改派、精确 CLI / endpoint、真实 TTY 启动确认、失败回执 / 空闲订阅释放、已有会话保留、等待窗口与 native TUI 检测和 PID 复核关闭。设备消费既有启动失败路径：iOS `testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace`、Android `OptimisticPresentationInstrumentedTest#aFailedLaunchOffersRetryAndBackInPlace`。完整 L1–L4、C01–C18 / A1–A4 与真实隔离 TUI 仍须独立记录，夹具不得算作真实窗口验收。
@@ -478,6 +480,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+2026-11-03 Codex Desktop Rewind 反馈修复（V06、V12、V16–V18 / R36）：Host 定向回归在最终共享工作树重跑 3 个文件共 204 项全部通过，包含 `awaiting_confirmation` 的信息级等待提示、回退回执保留、GUI hydration 后精确清除，以及版本不支持 / unarchive 未知结果仍保留警告且不重复回退；TypeScript 检查与变更文件 lint 通过。Android 既有构建 / JVM 与通知 A1–A4 证据保持通过；标准动画全量 182 项有 6 项既有失败，未新增失败。iOS Core 351 项通过，但 iOS UI 全量在 `DshInstrumentedTest` 的 DeepSeek 新建会话场景后因外接盘中断，最后记录为 54 项完成、5 项失败，不能视为完整 L3 / L4。C01–C18、受影响 R36 / A1–A4、真实隔离 Host + Codex Desktop GUI + App 联动未完成；本轮未部署、未重启用户 Host。证据见 `.artifacts/ui-regression/20261103-codex-rewind-feedback/summary.md`、`focused-final.log`、`ios-ui-full.log`。
 
 2026-11-03 发送原位展开（r36 / M17 / MOT-06 / R37）：Swift347项、Android JVM673项与双端构建通过。Android同池同配置基线170项为159过 / 4失败 / 7外部夹具assumption，候选171项为160过 / 相同4失败 / 相同7assumption；深色 / 字体1.5发送专项各2 / 2。iOS同一iPhone17基线83项为74过 / 9失败，候选85项为76过 / 9失败，但配额卡、目录选择清除、模型切换标记3个失败名称不在基线集合，不能按数量相同判为门禁通过；共享工作区并行修改使整包不是只改变发送的受控对照。最终隔离快照在375pt SE3完成发送正常时钟与固定阶段、长文、减少动画、上传发送4 / 4，19张截图与80个正常时钟变化帧已看，确认同一气泡滑入、减速、展开及无淡入交接；Android发送阶段与A2 / A3图已看。全量iOS早于最后遮罩留阴影和正常时钟测试补充；Android拉取目录含旧图，不能算完整本轮L4。完整C01–C18、R37所有组合、全外观与真机仍未验收。本任务租约 / 进程已清理，未部署；证据、9项失败与边界见 `.artifacts/ui-regression/20261103-send-unfold/summary.md`、`manual-checklist.md` 和 [r36验证记录](interaction-motion.md#2026-11-03--r36-发送原位展开)。
 

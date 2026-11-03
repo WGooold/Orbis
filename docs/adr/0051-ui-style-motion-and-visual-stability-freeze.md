@@ -26,6 +26,8 @@ Status: accepted（基线冻结；新增与变更按本文维护）
 
 2026-11-03 Android 配置切换输入按钮修复（V05、V10、V12，ADR-0049 §6.7 / ADR-0055 I03）：从 composer 提交模型或思考深度后交给配置账本，输入区不再等待被账本消费的通用命令回执；重复选择确认值同样解除输入区等待。保持原配置确认、失败与消息前置等待语义，动效归类为 ADR-0058 SC16 的按钮反馈，不创建消息飞行。恢复既有规则，不新增 ID 或调整参数；测试与未验收范围见 UI 回归 R27 / §6。
 
+2026-11-03 Codex Desktop Rewind 反馈修复（V06、V12、V16–V18，验证中）：桌面刷新 `awaiting_confirmation` 改为信息级“历史已回退，正在等待桌面历史加载确认”，不把正常等待归为刷新失败或要求重复归档；真实恢复问题仍明确提示，收到同一操作的 GUI 历史证据后清除通知。沿用 [ADR-0023](0023-codex-revert-and-client-refresh.md) 的分阶段完成与 [D49] / [D55] 的真实回执规则，无新 feature 或动效参数。自动映射、双端设备及手动未跑范围见 [Regression]。
+
 2026-11-02 Codex 终端来源与开窗修复（S20、V12、V17–V18、X03，验证中）：已复现 Host 继承 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` 污染 App 新建终端会话的来源；只在独立终端子进程边界清除覆盖值，用户所选后端、历史与桌面包装器保持。macOS 用原生 Terminal 打开同一 app-server 的远程 TUI，启动失败明确返回并清理新建空闲订阅；窗口检测 / 关闭覆盖 macOS，不再把 `wt.exe` 失败记录为已开窗。沿用既有 ID、看门狗生命周期与真实结果规则，不变更视觉 / 动效参数。规则见 [ADR-0021](0021-codex-terminal-host-attachment.md)、[ADR-0022](0022-codex-desktop-daemon-attachment.md)；验证与未跑项见 [Regression] R56。未部署用户 Host，未完成门禁不记验收通过。
 
 2026-11-02 Claude 首页同步修复（S18 / V16 / V18，验证中）：Host 首次重播即提供完整交互清单（含空清单），首页不再等待历史同步才解除 unknown；待审批项仍保留真实身份与等待状态。恢复既有基线，不增加 feature、不改变视觉 / 动效参数。规则见 [ADR-0033 §16](0033-claude-code-tui-mods-integration.md#16-首页交互基线不等待历史同步2026-11-02)，测试与未验收项见 [Regression]。

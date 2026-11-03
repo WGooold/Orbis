@@ -223,7 +223,14 @@ describe("phone tree to desktop lifecycle", () => {
     h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-notice", "session");
     const inventory = () => h.events.filter(event => event.type === "notification.source").at(-1)?.notifications ?? [];
     await vi.waitFor(() => expect(inventory().map(item => item.code).sort()).toEqual(["codex.refresh", "codex.sandbox"]));
-    expect(inventory().find(item => item.code === "codex.refresh")?.scope.operationId).toBeTruthy();
+    const waiting = inventory().find(item => item.code === "codex.refresh");
+    expect(waiting).toMatchObject({ severity: "info", lifecycle: "condition",
+      message: "历史已回退，正在等待桌面历史加载确认" });
+    expect(waiting?.scope.operationId).toBeTruthy();
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-notice", ok: true,
+      result: { editorText: "question 2" } }));
+    expect(h.lifecycle).toEqual(["resume", "revert", "archive", "unarchive", "resume"]);
+    expect((await h.journal.list())[0]).toMatchObject({ kind: "operation", phase: "confirming" });
     h.hydrate();
     await vi.waitFor(() => expect(inventory().map(item => item.code)).toEqual(["codex.sandbox"]), { timeout: 4000 });
     expect(h.lifecycle.filter(item => item === "revert")).toHaveLength(1);
@@ -246,6 +253,22 @@ describe("phone tree to desktop lifecycle", () => {
     expect(app.open).toHaveBeenCalledExactlyOnceWith("session", "local");
     expect((await h.journal.list())[0]).toMatchObject({ kind: "receipt", result: { status: "complete" } });
     expect(h.events.filter(event => event.type === "runtime.error")).toEqual([]);
+    expect(h.events.filter(event => event.type === "notification.source").flatMap(event => event.notifications)
+      .filter(item => item.code === "codex.refresh")).toEqual([]);
+  });
+
+  it("retains a recovery warning when unarchive has an unknown native outcome", async () => {
+    const h = await harness();
+    h.failUnarchive();
+    h.runtime.markStarted();
+    await vi.waitFor(() => expect(h.runtime.directoryEntries()).toHaveLength(1));
+    h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-recovery", "session");
+    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-recovery", ok: true })));
+    const inventory = h.events.filter(event => event.type === "notification.source").at(-1)?.notifications ?? [];
+    expect(inventory).toContainEqual(expect.objectContaining({ code: "codex.refresh", severity: "warning",
+      message: expect.stringContaining("请手动归档") }));
+    expect(h.lifecycle).toEqual(["resume", "revert", "archive", "unarchive"]);
+    expect((await h.journal.list())[0]).toMatchObject({ kind: "operation", phase: "restoring" });
   });
 
   it("keeps native rewind but reports unsupported desktop versions before archive", async () => {
