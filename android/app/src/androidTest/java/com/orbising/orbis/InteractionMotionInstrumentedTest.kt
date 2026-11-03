@@ -164,11 +164,55 @@ class InteractionMotionInstrumentedTest {
         gear.performTouchInput { click() }
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(64)
-        compose.runOnIdle { assertEquals("Dispatch must not wait for the rotation", 1, count) }
+        compose.runOnIdle { assertEquals("Dispatch must not wait for visual feedback", 1, count) }
         assertFalse(resting.sameAs(gear.captureToImage().asAndroidBitmap()))
         capture("motion-fast-press-feedback")
         compose.mainClock.advanceTimeBy(700)
         assertEquals(bounds, gear.fetchSemanticsNode().boundsInRoot)
+    }
+
+    @Test fun quickCancellationReturnsImmediatelyAndRepressTakesOver() {
+        var pressed by mutableStateOf(false)
+        var enabled by mutableStateOf(true)
+        var activation by mutableIntStateOf(0)
+        var haptics = 0
+        compose.mainClock.autoAdvance = false
+        compose.setContent { OrbisTheme {
+            CompositionLocalProvider(androidx.compose.ui.platform.LocalHapticFeedback provides
+                object : androidx.compose.ui.hapticfeedback.HapticFeedback {
+                    override fun performHapticFeedback(hapticFeedbackType: androidx.compose.ui.hapticfeedback.HapticFeedbackType) { haptics++ }
+                }) {
+                Box(Modifier.padding(30.dp).background(MaterialTheme.colorScheme.background).size(48.dp).testTag("pressure"),
+                    contentAlignment = Alignment.Center) {
+                    OrbisMotionIcon(Icons.Rounded.Settings, null, MaterialTheme.colorScheme.onSurface, 24.dp,
+                        activation, pressed = pressed, enabled = enabled)
+                }
+            }
+        } }
+        compose.mainClock.advanceTimeBy(300)
+        val icon = compose.onNodeWithTag("pressure")
+        val bounds = icon.fetchSemanticsNode().boundsInRoot
+        val resting = icon.captureToImage().asAndroidBitmap()
+        compose.runOnIdle { pressed = true }
+        compose.mainClock.advanceTimeBy(48)
+        assertFalse(resting.sameAs(icon.captureToImage().asAndroidBitmap()))
+        compose.runOnIdle { pressed = false }
+        // A cancelled touch must not finish the former 260ms outward rotation.
+        compose.mainClock.advanceTimeBy(208)
+        assertTrue(resting.sameAs(icon.captureToImage().asAndroidBitmap()))
+        compose.runOnIdle { pressed = true }
+        compose.mainClock.advanceTimeBy(96)
+        compose.runOnIdle { pressed = false; activation++ }
+        compose.mainClock.advanceTimeBy(48)
+        compose.runOnIdle { pressed = true }
+        compose.mainClock.advanceTimeBy(208)
+        assertFalse("Re-press must retain pressure", resting.sameAs(icon.captureToImage().asAndroidBitmap()))
+        compose.runOnIdle { enabled = false }
+        compose.mainClock.advanceTimeBy(32)
+        assertTrue("Disabled glyph resets without a tail", resting.sameAs(icon.captureToImage().asAndroidBitmap()))
+        assertEquals(bounds, icon.fetchSemanticsNode().boundsInRoot)
+        assertEquals("Navigation glyphs add no haptic", 0, haptics)
+        capture("motion-quiet-pressure-reset")
     }
 
     @Test fun discreteLabelsKeepOnlyTheLiveAccessibilityValueDuringTheirFade() {

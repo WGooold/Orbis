@@ -40,7 +40,7 @@ struct OrbisActionSymbol: View {
     @Environment(\.orbisGlyphActivation) private var activation
     let systemName: String
     var body: some View {
-        Image(systemName: systemName).modifier(OrbisPressedGlyph(role: systemName, activation: activation))
+        Image(systemName: systemName).modifier(OrbisPressedGlyph(activation: activation))
     }
 }
 
@@ -52,44 +52,52 @@ extension EnvironmentValues {
     }
 }
 
-/// A short tap finishes its visual press while the action runs immediately. Re-press takes over.
+/// Quiet, interruptible pressure. The action never waits for this visual response.
 struct OrbisPressedGlyph: ViewModifier {
     @Environment(\.orbisGlyphPressed) private var pressed
     @Environment(\.orbisReduceMotion) private var reduced
-    let role: String
+    @Environment(\.isEnabled) private var enabled
     let activation: Int
     @State private var progress: Double = 0
-    @State private var began: Date?
-    @State private var pointerActivation = false
-    private var rotates: Bool { InteractionMotion.rotates(role) }
-    private var downloads: Bool { role == "arrow.down.to.line" }
+    @State private var feedback = GlyphFeedbackState()
+    private struct Input: Equatable {
+        let pressed: Bool
+        let activation: Int
+        let reduced: Bool
+        let enabled: Bool
+    }
     func body(content: Content) -> some View {
-        content.rotationEffect(.degrees(rotates ? progress * 360 : 0))
-            .scaleEffect(rotates || downloads ? 1 : 1 - progress * 0.12)
-            .offset(y: downloads ? progress * 4 : 0)
-            .task(id: pressed) {
-                if pressed {
-                    began = Date(); pointerActivation = true
-                    if rotates { OrbisHaptics.press() }
-                    withAnimation(reduced ? nil : .easeOut(duration: rotates ? 0.26 : 0.09)) { progress = reduced ? 0 : 1 }
-                } else if let began {
-                    let remaining = max(0, (rotates ? 0.26 : 0.09) - Date().timeIntervalSince(began))
-                    if !reduced { try? await Task.sleep(for: .seconds(remaining)) }
-                    guard !Task.isCancelled else { return }
-                    withAnimation(reduced ? nil : downloads ? .orbisPop : .easeOut(duration: rotates ? 0.26 : 0.13)) { progress = 0 }
-                    self.began = nil; pointerActivation = false
+        content
+            .scaleEffect(reduced ? 1 : 1 - progress * (1 - MotionGeometry.glyphPressedScale))
+            .opacity(1 - progress * (1 - MotionGeometry.glyphPressedOpacity))
+            .task(id: Input(pressed: pressed, activation: activation, reduced: reduced, enabled: enabled)) {
+                let response = feedback.update(pressed: pressed, activation: activation, enabled: enabled)
+                if reduced || !enabled {
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { progress = enabled && pressed ? 1 : 0 }
+                    if !pressed { feedback.released() }
+                    return
+                }
+                switch response {
+                case .press:
+                    withAnimation(InteractionMotion.glyphPress) { progress = 1 }
+                case .release:
+                    withAnimation(InteractionMotion.glyphRelease) { progress = 0 }
+                    do { try await Task.sleep(for: .seconds(MotionGeometry.glyphReleaseDuration)) }
+                    catch { return }
+                    feedback.released()
+                case .activate:
+                    // Keyboard / VoiceOver, or a tap coalesced into one display frame.
+                    withAnimation(InteractionMotion.glyphPress) { progress = 1 }
+                    do { try await Task.sleep(for: .seconds(MotionGeometry.glyphPressDuration)) }
+                    catch { return }
+                    withAnimation(InteractionMotion.glyphRelease) { progress = 0 }
+                case .reset:
+                    progress = 0
                 }
             }
-            .task(id: activation) {
-                guard activation > 0 else { return }
-                if pointerActivation { pointerActivation = false; return }
-                // Keyboard / VoiceOver activation has no physical press phase.
-                withAnimation(reduced ? nil : InteractionMotion.state) { progress = reduced ? 0 : 1 }
-                if !reduced { try? await Task.sleep(for: .seconds(rotates ? 0.26 : 0.09)) }
-                guard !Task.isCancelled else { return }
-                withAnimation(reduced ? nil : downloads ? .orbisPop : InteractionMotion.selection) { progress = 0 }
-            }
-            .onDisappear { progress = 0; began = nil; pointerActivation = false }
+            .onDisappear { progress = 0; feedback = GlyphFeedbackState() }
     }
 }
 
@@ -111,13 +119,14 @@ struct OrbisMotionText: View {
 struct OrbisActionPulse: ViewModifier {
     @Environment(\.orbisGlyphActivation) private var activation
     func body(content: Content) -> some View {
-        content.modifier(OrbisPressedGlyph(role: "asset", activation: activation))
+        content.modifier(OrbisPressedGlyph(activation: activation))
     }
 }
 
 /// All business callers use these semantic tokens (ADR-0058), including reduced motion.
 enum InteractionMotion {
-    static func rotates(_ role: String) -> Bool { ["gearshape", "clock.arrow.circlepath", "arrow.clockwise", "arrow.triangle.2.circlepath", "point.3.connected.trianglepath.dotted"].contains(role) }
+    static let glyphPress = Animation.timingCurve(0.2, 0, 0, 1, duration: MotionGeometry.glyphPressDuration)
+    static let glyphRelease = Animation.timingCurve(0.2, 0, 0, 1, duration: MotionGeometry.glyphReleaseDuration)
     static let selection = Animation.easeOut(duration: 0.26)
     static let state = Animation.easeOut(duration: 0.16)
     static let panel = Animation.easeOut(duration: 0.22)
@@ -205,7 +214,7 @@ struct OrbisSelectionFill: View {
     }
 }
 
-/// Stable glyph slot: download animates the arrow alone; menu/close uses actual line geometry.
+/// Stable glyph slot. State morphs keep their meaning; every action shares quiet pressure.
 struct OrbisMotionGlyph: View {
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let symbol: String
@@ -224,22 +233,18 @@ struct OrbisMotionGlyph: View {
                     .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round))
                     .animation(reduceMotion ? nil : InteractionMotion.toolbar, value: symbol)
             } else if symbol == "arrow.down.to.line" {
-                ZStack {
-                    Path { p in p.move(to: CGPoint(x: size * 0.18, y: size * 0.85)); p.addLine(to: CGPoint(x: size * 0.82, y: size * 0.85)) }
-                        .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    Path { p in
-                        p.move(to: CGPoint(x: size / 2, y: size * 0.12)); p.addLine(to: CGPoint(x: size / 2, y: size * 0.65))
-                        p.move(to: CGPoint(x: size * 0.28, y: size * 0.45)); p.addLine(to: CGPoint(x: size / 2, y: size * 0.67)); p.addLine(to: CGPoint(x: size * 0.72, y: size * 0.45))
-                    }.stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                        .modifier(OrbisPressedGlyph(role: symbol, activation: activation))
-                }
+                Path { p in
+                    p.move(to: CGPoint(x: size * 0.18, y: size * 0.85)); p.addLine(to: CGPoint(x: size * 0.82, y: size * 0.85))
+                    p.move(to: CGPoint(x: size / 2, y: size * 0.12)); p.addLine(to: CGPoint(x: size / 2, y: size * 0.65))
+                    p.move(to: CGPoint(x: size * 0.28, y: size * 0.45)); p.addLine(to: CGPoint(x: size / 2, y: size * 0.67)); p.addLine(to: CGPoint(x: size * 0.72, y: size * 0.45))
+                }.stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
             } else {
                 Image(systemName: symbol).font(.system(size: size, weight: .medium))
                     .contentTransition(.opacity)
                     .animation(reduceMotion ? nil : InteractionMotion.state, value: symbol)
-                    .modifier(OrbisPressedGlyph(role: symbol, activation: activation))
             }
         }.frame(width: size, height: size)
+            .modifier(OrbisPressedGlyph(activation: activation))
             .accessibilityHidden(true)
     }
 }

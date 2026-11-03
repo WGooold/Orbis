@@ -18,6 +18,9 @@ struct OrbisApp: App {
                 DisclosurePerformancePreview()
             } else if ProcessInfo.processInfo.arguments.contains("--preview-screen=reveal") {
                 StreamingRevealPreview().environmentObject(store)
+            } else if ProcessInfo.processInfo.arguments.contains("--preview-screen=feedback") {
+                ActionFeedbackPreview()
+                    .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--preview-dark") ? .dark : .light)
             } else {
                 appContent
             }

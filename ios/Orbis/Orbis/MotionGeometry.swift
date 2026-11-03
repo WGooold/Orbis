@@ -3,6 +3,10 @@ import CoreGraphics
 
 /// ADR-0058. Pure geometry shared by selection, send feedback and edge navigation.
 enum MotionGeometry {
+    static let glyphPressDuration = 0.08
+    static let glyphReleaseDuration = 0.16
+    static let glyphPressedScale = 0.94
+    static let glyphPressedOpacity = 0.82
     static let sendTravelDuration = 0.28
     static let sendExpandDuration = 0.16
     static let sendDuration = sendTravelDuration + sendExpandDuration
@@ -60,4 +64,22 @@ enum MotionGeometry {
         let t = sendEaseOut((p - 0.25) / 0.75)
         return CGPoint(x: bend.x + (to.x - bend.x) * t, y: from.y + (to.y - from.y) * t)
     }
+}
+
+/// Physical release/cancel always wins over decorative activation. No minimum press hold.
+struct GlyphFeedbackState {
+    enum Response { case press, release, activate, reset }
+    private var lastActivation: Int?
+    private var physicalCycle = false
+
+    mutating func update(pressed: Bool, activation: Int, enabled: Bool) -> Response {
+        let activated = lastActivation.map { $0 != activation } ?? false
+        lastActivation = activation
+        guard enabled else { physicalCycle = false; return .reset }
+        if pressed { physicalCycle = true; return .press }
+        if physicalCycle { return .release }
+        return activated ? .activate : .reset
+    }
+
+    mutating func released() { physicalCycle = false }
 }

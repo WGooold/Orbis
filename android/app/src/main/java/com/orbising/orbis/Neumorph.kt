@@ -677,6 +677,7 @@ fun NeumorphSurface(
                 LocalContentColor provides MaterialTheme.colorScheme.onSurface,
                 LocalGlyphActivation provides if (onClick != null) glyphActivation else inheritedActivation,
                 LocalGlyphPressed provides if (onClick != null) (pressed && active) else inheritedPressed,
+                LocalGlyphEnabled provides (active && LocalGlyphEnabled.current),
                 LocalOrbisSurface provides OrbisSurfaceContext(layer, (parent?.depth ?: 0) + 1,
                     corner?.let { (it - contentInset).coerceAtLeast(0.dp) }),
             ) {
@@ -763,7 +764,7 @@ fun NeumorphIconButton(
         NeumorphSurface(
             modifier = Modifier.size(if (compact) 36.dp else size),
             shape = shape,
-            style = if (pressed) NeumorphStyle.Pressed else style,
+            style = if (pressed && active) NeumorphStyle.Pressed else style,
             shadowScale = if (compact) 0.32f else compactShadowScale(size) * 0.8f,
         ) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -775,6 +776,7 @@ fun NeumorphIconButton(
                     },
                     size = if (compact) 18.dp else RemoteUi.IconSize,
                     activation = activation, menuMorph = menuMorph, backMorph = backMorph, pressed = pressed && active,
+                    enabled = active,
                 )
             }
         }

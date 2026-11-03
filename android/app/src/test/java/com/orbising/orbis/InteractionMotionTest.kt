@@ -8,6 +8,34 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class InteractionMotionTest {
+    @Test fun physicalReleaseAndCancellationNeverFinishADecorativePeak() {
+        val state = GlyphFeedbackState()
+        assertEquals(GlyphFeedbackState.Response.Reset, state.update(false, 0, true))
+        assertEquals(GlyphFeedbackState.Response.Press, state.update(true, 0, true))
+        assertEquals(GlyphFeedbackState.Response.Release, state.update(false, 0, true))
+        assertEquals(GlyphFeedbackState.Response.Release, state.update(false, 1, true))
+        state.released()
+        assertEquals(GlyphFeedbackState.Response.Activate, state.update(false, 2, true))
+    }
+
+    @Test fun repressTakesOverAndDisablingDropsTheOldGesture() {
+        val state = GlyphFeedbackState()
+        state.update(true, 0, true)
+        assertEquals(GlyphFeedbackState.Response.Release, state.update(false, 1, true))
+        assertEquals(GlyphFeedbackState.Response.Press, state.update(true, 1, true))
+        assertEquals(GlyphFeedbackState.Response.Reset, state.update(true, 1, false))
+        assertEquals(GlyphFeedbackState.Response.Reset, state.update(false, 1, true))
+        assertEquals(GlyphFeedbackState.Response.Activate, state.update(false, 2, true))
+    }
+
+    @Test fun mountingAnExistingActivationDoesNotReplayIt() {
+        val state = GlyphFeedbackState()
+        assertEquals(GlyphFeedbackState.Response.Reset, state.update(false, 7, true))
+        assertEquals(GlyphFeedbackState.Response.Activate, state.update(false, 8, true))
+        assertEquals(GlyphFeedbackState.Response.Activate, state.update(false, 9, true))
+        assertEquals(GlyphFeedbackState.Response.Reset, state.update(false, 10, false))
+    }
+
     @Test fun sendStartsQuicklyAndContinuouslySlowsToAStopWithoutBouncing() {
         val source = Offset(160f, 620f); val target = Offset(260f, 410f)
         for ((start, duration) in listOf(0f to 0.25f, 0.25f to 0.75f)) {

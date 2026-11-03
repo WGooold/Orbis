@@ -4,6 +4,35 @@ import Testing
 @testable import OrbisCore
 
 struct MotionGeometryTests {
+    @Test func physicalReleaseAndCancellationNeverFinishADecorativePeak() {
+        var state = GlyphFeedbackState()
+        #expect(state.update(pressed: false, activation: 0, enabled: true) == .reset)
+        #expect(state.update(pressed: true, activation: 0, enabled: true) == .press)
+        #expect(state.update(pressed: false, activation: 0, enabled: true) == .release)
+        // A click delivered just after up belongs to that same physical gesture.
+        #expect(state.update(pressed: false, activation: 1, enabled: true) == .release)
+        state.released()
+        #expect(state.update(pressed: false, activation: 2, enabled: true) == .activate)
+    }
+
+    @Test func repressTakesOverAndDisablingDropsTheOldGesture() {
+        var state = GlyphFeedbackState()
+        _ = state.update(pressed: true, activation: 0, enabled: true)
+        #expect(state.update(pressed: false, activation: 1, enabled: true) == .release)
+        #expect(state.update(pressed: true, activation: 1, enabled: true) == .press)
+        #expect(state.update(pressed: true, activation: 1, enabled: false) == .reset)
+        #expect(state.update(pressed: false, activation: 1, enabled: true) == .reset)
+        #expect(state.update(pressed: false, activation: 2, enabled: true) == .activate)
+    }
+
+    @Test func mountingAnExistingActivationDoesNotReplayIt() {
+        var state = GlyphFeedbackState()
+        #expect(state.update(pressed: false, activation: 7, enabled: true) == .reset)
+        #expect(state.update(pressed: false, activation: 8, enabled: true) == .activate)
+        #expect(state.update(pressed: false, activation: 9, enabled: true) == .activate)
+        #expect(state.update(pressed: false, activation: 10, enabled: false) == .reset)
+    }
+
     @Test func sendStartsQuicklyAndContinuouslySlowsToAStopWithoutBouncing() {
         let source = CGPoint(x: 160, y: 620), target = CGPoint(x: 260, y: 410)
         for (start, duration) in [(CGFloat(0), CGFloat(0.25)), (CGFloat(0.25), CGFloat(0.75))] {

@@ -3,6 +3,29 @@ import Foundation
 import SwiftUI
 import UIKit
 
+/// Uses production buttons with no network or navigation, for cancellation and frame review.
+struct ActionFeedbackPreview: View {
+    @Environment(\.colorScheme) private var scheme
+    @State private var count = 0
+    @State private var enabled = true
+    private let symbols = ["gearshape", "clock.arrow.circlepath", "arrow.clockwise", "arrow.down.to.line"]
+    private let labels = ["设置", "历史", "刷新", "下载"]
+    var body: some View {
+        VStack(spacing: 32) {
+            Text("\(count)").accessibilityIdentifier("feedback-count")
+            HStack(spacing: 12) {
+                ForEach(symbols.indices, id: \.self) { index in
+                    OrbisIconButton(symbol: symbols[index], label: labels[index]) { count += 1 }
+                        .disabled(!enabled)
+                }
+            }
+            Button(enabled ? "禁用按钮" : "启用按钮") { enabled.toggle() }
+            Spacer().frame(height: 160)
+        }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(OrbisPalette(scheme).base)
+    }
+}
+
 private struct PreviewRevealTimeKey: EnvironmentKey {
     static let defaultValue: TimeInterval? = nil
 }

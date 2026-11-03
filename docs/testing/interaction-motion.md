@@ -28,7 +28,7 @@
 | SC14–16 | 接受的发送通过准确 outbox id 启动飞行；文本/附件/运行中/重试沿用同一提交入口 | 未准入不飞、非跟随兜底、控制类Slash不伪造用户行 |
 | SC17 | 最近提问保留离场快照并从右上出入 | 现有源身份、通知优先及阅读锚点断言不放宽 |
 | SC18 | 回到最新按钮接图标反馈，原显隐与跟随语义不变 | 点击才恢复跟随 |
-| SC19–21 | 下载/设置/历史/刷新/返回/搜索/删除等共用按钮接角色反馈 | 只动画图形；稳定命中槽；禁用无反馈 |
+| SC19–21 | 下载/设置/历史/刷新/返回/搜索/删除等共用按钮接r43统一轻压 | 只动画图形；稳定命中槽；禁用无反馈 |
 | SC22 | 发送/停止/附件/权限与交互工作区接共享反馈 | 原准入、触觉、审批语义保持 |
 | SC23 | 消息/代码/路径/全文/工具复制保留 M05；重复激活反馈 | 2.5秒复位和重置计时 |
 | SC24 | 新建/文件夹/分支/远程文件浏览中的行图标接父动作激活 | 不给静态状态图标播放假反馈 |
@@ -130,9 +130,9 @@ iOS早期全量 `ios-full-1` 的新增失败定位后已修复：消息修饰器
 | --- | --- | --- |
 | R45 / SC33 | Android `SwipeBackLayer` / `InteractionMotion.edgeShift`；`InteractionMotionTest`、`predictiveBackOnBothEdgesCancelsOrCommitsOnlyOnePage` | 缩小至 0.92、双侧至少 8dp 缝隙、真实底页遮罩、右向离屏中帧与单次返回已验证；系统箭头与 IME / 弹层组合仍待真实手势检查。iOS 保留原右滑，不交付新增双边缘手势 |
 | R46 / SC34 | 双端 `MotionText`；连接 / 会话状态、卡片标题、筛选与选择计数；Android `discreteLabelsKeepOnlyTheLiveAccessibilityValueDuringTheirFade`；Qt `MotionTextTest` | 160ms 淡变与首次出现；Android 只暴露当前文本及其布局语义。输入中 / 流式正文 / 秒表保留专用行为，不套离散文本动画 |
-| R47 / SC35 | 双端共用按下 / 松开驱动；Android `physicalPressShowsFeedbackBeforeDispatchAndCancellationDoesNotClick` | 短按补足视觉峰值，业务请求立即发出；组件中帧通过，不据此宣称所有快速嵌套导航来源的完整周期均已人工验收 |
+| R47 / SC35 | 双端共用按下 / 松开驱动；Android `physicalPressShowsFeedbackBeforeDispatchAndCancellationDoesNotClick` | r35旧规则为短按补峰值，r43改为松手立即复位；业务请求立即发出。旧组件中帧通过，不据此宣称所有快速嵌套导航来源的完整周期均已人工验收 |
 | R48 / SC36 | Android `collectionMotion`、iOS `SessionDrawerView` 筛选事务；既有 provider filter / directory viewport 用例 | Android 稳定 key 的增删 / 位移动效同时覆盖目录更新，保留原视口补偿；iOS 保留列表与分组身份，仅搜索变化更新叶子 hit bounds；SE 目录更新专项复测通过，折叠 / 搜索选择既有失败仍保留 |
-| R49 / SC37 | `OrbisPressedGlyph` / `rememberGlyphProgress` 的旋转角色 | 按下 360°、松开反向回到原位；按下轻触觉，系统减少动画关闭旋转；真机触觉 / 静音体感未验收，不添加强制音效 |
+| R49 / SC37 | `OrbisPressedGlyph` / `rememberGlyphProgress` 的旋转角色 | r35旧目标为整圈往返与轻震，r43已由统一80ms轻压 / 160ms即时复位替代；删除附加轻震，旧证据保留；新版双端设备门禁待验证 |
 | R50 / SC38 | 首页 / 目录 / 下载 / 遗留供应商选择入口 | 每次选中 / 取消一次触觉；Android `HomeSelectionInstrumentedTest` 改为新需求的逐项次数断言，保留仅关闭所选等业务断言；无变化的重复长按不叠加 |
 | R51 / SC39 | Host `Motion.js` / `MotionText.qml` / 稳定侧栏槽 | 数字 220ms 上下滚动、凹凸表面交叉过渡；Qt 5 项测试、macOS 普通 / 减少动画实际窗口 smoke 与中帧通过；Windows 未构建 / 未运行 |
 | R52 / SC40 | 双端按 requestId 的新建卡片与导航交接 | Android `newSessionCardRisesBeforeHandingOffExactlyOnce`；iOS 新建失败 / 重试和启动中输入用例；iOS 实际录屏确认底部追加后进聊天。换电脑 / 打开其他页面取消跟随，不撤销已受理请求 |
@@ -221,3 +221,9 @@ iOS候选全量导出188张PNG，已查看 `ios-final-full-overview-08`、`09`�
 Android全量拉取目录的277张可读图片联系表已查看，但包含设备旧图库、gap与tool-capture文件，未完整建立本轮文件归属，不能记为277张本轮L4通过；另有两张0字节debug PNG保留为无效证据。当前发送阶段的root / display截图、最终深色和大字各4张阶段图已查看：紧凑落点、展开、完整投影与正式行一致。
 
 完整C01–C18、R37所有输入 / 快速连发 / 切换 / 中断组合、所有外观的真实页面手动检查、真机流畅度与读屏尚未验收。已执行的自动用例与画面核对不能代替这些门禁。按证据根 `manual-checklist.md` 保留逐项范围，MOT-06维持“r36已接入，验证中”。
+
+## 2026-11-03 / r43 按钮轻压重设计
+
+双端入口`OrbisPressedGlyph` / `rememberGlyphProgress`由单一可取消任务驱动，`GlyphFeedbackState`区分物理按压/释放与无触摸激活；所有共用图标统一轻压，原专属配额/复制/发送语义保持。MOT-08/13/15、R39/R47/R49沿用原编号，旧旋转行为由用户授权替代。新增单元与设备用例及未运行门禁见 `.artifacts/ui-regression/20261103-button-feedback/summary.md`；本次预览仅供设计体验，不计设备验收。
+
+2026-11-03 / r43验证：Swift355/355、Android685/685单元测试，iOS应用及UI测试构建、Android Debug/AndroidTest均通过。网页设计预览在320/736px明暗与减少动画检查通过，已看浅色窄屏及深色截图，但不计原生设备验收。双端共享入口仍被`provider-well-shadow-standard-full`与`Codex permission model preservation`的设备锁阻塞；L3/L4、C01–C18、R39/R47/R49及原生A1–A4未运行，不能比较同设备基点失败集合，保持验证中。证据 `.artifacts/ui-regression/20261103-button-feedback/summary.md`。

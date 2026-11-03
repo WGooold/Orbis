@@ -3,6 +3,7 @@ package com.orbising.orbis
 import android.animation.ValueAnimator
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -21,11 +22,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import kotlinx.coroutines.delay
-import android.os.SystemClock
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -57,7 +53,11 @@ import kotlin.math.max
 
 /** ADR-0058. Durations and geometry are semantic shared contracts, never per-screen constants. */
 internal object InteractionMotion {
-    fun rotates(role: String) = role in setOf("Settings", "History", "HistoryEdu", "Refresh", "AccountTree")
+    const val GlyphPress = 80
+    const val GlyphRelease = 160
+    const val GlyphPressedScale = 0.94f
+    const val GlyphPressedOpacity = 0.82f
+    val GlyphEase = CubicBezierEasing(0.2f, 0f, 0f, 1f)
     const val EdgeShrink = 0.08f
     fun edgeShift(width: Float, progress: Float, direction: Float, gap: Float): Float {
         val p = progress.coerceIn(0f, 1f)
@@ -110,6 +110,22 @@ internal object InteractionMotion {
     }
 }
 
+/** Physical release/cancel wins over decorative activation; no minimum press hold. */
+internal class GlyphFeedbackState {
+    enum class Response { Press, Release, Activate, Reset }
+    private var lastActivation: Int? = null
+    private var physicalCycle = false
+    fun update(pressed: Boolean, activation: Int, enabled: Boolean): Response {
+        val activated = lastActivation?.let { it != activation } ?: false
+        lastActivation = activation
+        if (!enabled) { physicalCycle = false; return Response.Reset }
+        if (pressed) { physicalCycle = true; return Response.Press }
+        if (physicalCycle) return Response.Release
+        return if (activated) Response.Activate else Response.Reset
+    }
+    fun released() { physicalCycle = false }
+}
+
 /** Observe initial down without consuming slop, scrolling, long presses or child links. */
 internal fun Modifier.orbisTouchOrigin(enabled: Boolean = true, onTouch: (Offset) -> Unit): Modifier =
     if (!enabled) this else pointerInput(Unit) {
@@ -131,15 +147,16 @@ internal fun OrbisMotionIcon(
     menuMorph: Boolean? = null,
     backMorph: Boolean? = null,
     pressed: Boolean = LocalGlyphPressed.current,
+    enabled: Boolean = LocalGlyphEnabled.current,
 ) {
     val name = icon.name.substringAfterLast('.')
-    val rotates = InteractionMotion.rotates(name)
-    val progress = rememberGlyphProgress(pressed, activation, rotates)
+    val progress = rememberGlyphProgress(pressed, activation, enabled)
+    val glyph = modifier.glyphPressure(progress)
     val semantics = if (description != null) Modifier.semantics { contentDescription = description } else Modifier
     if (backMorph != null) {
         val p by animateFloatAsState(if (backMorph) 1f else 0f,
             tween(InteractionMotion.duration(InteractionMotion.Selection)), label = "back-close")
-        Canvas(modifier.size(size).then(semantics)) {
+        Canvas(glyph.size(size).then(semantics)) {
             val h = this.size.width * 0.34f
             fun point(a: Offset, b: Offset) = center + a + (b-a) * p
             drawLine(tint, point(Offset(-h, 0f), Offset(-h, h)), point(Offset(0f, -h), Offset(h, -h)), 2.dp.toPx(), StrokeCap.Round)
@@ -149,7 +166,7 @@ internal fun OrbisMotionIcon(
     } else if (menuMorph != null) {
         val p by animateFloatAsState(if (menuMorph) 1f else 0f,
             tween(InteractionMotion.duration(InteractionMotion.Selection)), label = "menu-close")
-        Canvas(modifier.size(size).then(semantics)) {
+        Canvas(glyph.size(size).then(semantics)) {
             val half = this.size.width * 0.36f
             val angle = p * Math.PI.toFloat() / 4
             val dx = cos(angle) * half; val dy = sin(angle) * half
@@ -159,22 +176,20 @@ internal fun OrbisMotionIcon(
             drawLine(tint, center + Offset(-dx, gap + dy), center + Offset(dx, gap - dy), 2.dp.toPx(), StrokeCap.Round)
         }
     } else if (name == "Download") {
-        Canvas(modifier.size(size).then(semantics)) {
-            val w = this.size.width; val h = this.size.height; val dy = progress * 4.dp.toPx(); val stroke = 2.dp.toPx()
+        Canvas(glyph.size(size).then(semantics)) {
+            val w = this.size.width; val h = this.size.height; val dy = 0f; val stroke = 2.dp.toPx()
             drawLine(tint, Offset(w * 0.18f, h * 0.85f), Offset(w * 0.82f, h * 0.85f), stroke, StrokeCap.Round)
             drawLine(tint, Offset(w / 2, h * 0.12f + dy), Offset(w / 2, h * 0.65f + dy), stroke, StrokeCap.Round)
             drawLine(tint, Offset(w * 0.28f, h * 0.45f + dy), Offset(w / 2, h * 0.67f + dy), stroke, StrokeCap.Round)
             drawLine(tint, Offset(w / 2, h * 0.67f + dy), Offset(w * 0.72f, h * 0.45f + dy), stroke, StrokeCap.Round)
         }
-    } else Icon(icon, description, tint = tint, modifier = modifier.size(size).graphicsLayer {
-        rotationZ = if (rotates) progress * 360 else 0f
-        scaleX = if (rotates) 1f else 1 - 0.12f * progress; scaleY = scaleX
-    })
+    } else Icon(icon, description, tint = tint, modifier = glyph.size(size))
 }
 
 internal val LocalMotionActionsEnabled = staticCompositionLocalOf { true }
 internal val LocalGlyphActivation = staticCompositionLocalOf { 0 }
 internal val LocalGlyphPressed = staticCompositionLocalOf { false }
+internal val LocalGlyphEnabled = staticCompositionLocalOf { true }
 
 /** For icon-bearing rows: the parent action owns activation; static glyphs receive zero. */
 @Composable
@@ -182,7 +197,7 @@ internal fun OrbisActionIcon(imageVector: ImageVector, contentDescription: Strin
     tint: Color = LocalContentColor.current) {
     if (imageVector.name.substringAfterLast('.') == "Download") {
         OrbisMotionIcon(imageVector, contentDescription, tint, 24.dp, LocalGlyphActivation.current, modifier)
-    } else Icon(imageVector, contentDescription, modifier.actionGlyphMotion(LocalGlyphActivation.current, imageVector.name.substringAfterLast('.')), tint)
+    } else Icon(imageVector, contentDescription, modifier.actionGlyphMotion(LocalGlyphActivation.current), tint)
 }
 
 @Composable
@@ -192,10 +207,15 @@ internal fun OrbisActionIcon(painter: Painter, contentDescription: String?, modi
 }
 
 @Composable
-internal fun Modifier.actionGlyphMotion(activation: Int, role: String = "generic"): Modifier {
-    val rotates = InteractionMotion.rotates(role)
-    val progress = rememberGlyphProgress(LocalGlyphPressed.current, activation, rotates)
-    return graphicsLayer { rotationZ = if (rotates) progress * 360 else 0f; scaleX = if (rotates) 1f else 1 - 0.12f * progress; scaleY = scaleX }
+internal fun Modifier.actionGlyphMotion(activation: Int): Modifier {
+    val progress = rememberGlyphProgress(LocalGlyphPressed.current, activation, LocalGlyphEnabled.current)
+    return glyphPressure(progress)
+}
+
+private fun Modifier.glyphPressure(progress: Float): Modifier = graphicsLayer {
+    scaleX = if (ValueAnimator.areAnimatorsEnabled()) 1 - (1 - InteractionMotion.GlyphPressedScale) * progress else 1f
+    scaleY = scaleX
+    alpha = 1 - (1 - InteractionMotion.GlyphPressedOpacity) * progress
 }
 
 /** One stable slot for normal/batch actions. Progress is shared by each icon's merge offset. */
@@ -222,35 +242,31 @@ internal fun SelectionToolbar(
 }
 
 
-/** Action dispatch is independent of this visual minimum. Re-press cancels the old return. */
+/** One animation owner: release/cancel immediately reverses, re-press takes over. */
 @Composable
-private fun rememberGlyphProgress(pressed: Boolean, activation: Int, rotates: Boolean): Float {
+private fun rememberGlyphProgress(pressed: Boolean, activation: Int, enabled: Boolean): Float {
     val progress = remember { Animatable(0f) }
-    var downAt by remember { mutableLongStateOf(0L) }
-    var pointerActivation by remember { mutableStateOf(false) }
-    val haptic = LocalHapticFeedback.current
+    val feedback = remember { GlyphFeedbackState() }
     val reduced = !ValueAnimator.areAnimatorsEnabled()
-    LaunchedEffect(pressed, reduced) {
-        if (pressed) {
-            downAt = SystemClock.uptimeMillis(); pointerActivation = true
-            if (rotates) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-            progress.animateTo(if (reduced) 0f else 1f, tween(InteractionMotion.duration(if (rotates) 260 else 90)))
-        } else if (downAt != 0L) {
-            if (!reduced) {
-                // Finish the peak after a quick release; do not jump straight to a smaller target.
-                val left = ((if (rotates) 260L else 90L) - (SystemClock.uptimeMillis() - downAt)).coerceAtLeast(0)
-                if (left > 0) progress.animateTo(1f, tween(left.toInt()))
-            }
-            progress.animateTo(0f, tween(InteractionMotion.duration(if (rotates) 260 else 130)))
-            downAt = 0L; pointerActivation = false
+    LaunchedEffect(pressed, activation, reduced, enabled) {
+        val response = feedback.update(pressed, activation, enabled)
+        if (reduced || !enabled) {
+            progress.snapTo(if (enabled && pressed) 1f else 0f)
+            if (!pressed) feedback.released()
+            return@LaunchedEffect
         }
-    }
-    LaunchedEffect(activation) {
-        if (activation == 0) return@LaunchedEffect
-        if (pointerActivation) { pointerActivation = false; return@LaunchedEffect }
-        if (!reduced) {
-            progress.animateTo(1f, tween(if (rotates) 260 else 90))
-            progress.animateTo(0f, tween(if (rotates) 260 else 130))
+        when (response) {
+            GlyphFeedbackState.Response.Press -> progress.animateTo(1f,
+                tween(InteractionMotion.GlyphPress, easing = InteractionMotion.GlyphEase))
+            GlyphFeedbackState.Response.Release -> {
+                progress.animateTo(0f, tween(InteractionMotion.GlyphRelease, easing = InteractionMotion.GlyphEase))
+                feedback.released()
+            }
+            GlyphFeedbackState.Response.Activate -> {
+                progress.animateTo(1f, tween(InteractionMotion.GlyphPress, easing = InteractionMotion.GlyphEase))
+                progress.animateTo(0f, tween(InteractionMotion.GlyphRelease, easing = InteractionMotion.GlyphEase))
+            }
+            GlyphFeedbackState.Response.Reset -> progress.snapTo(0f)
         }
     }
     return progress.value

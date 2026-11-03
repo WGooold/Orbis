@@ -4,6 +4,33 @@ import UIKit
 final class OrbisUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
+    func testActionFeedbackKeepsTargetsAndCancelsWithoutDispatchInAllAppearances() {
+        for dark in [false, true] {
+            for reduced in [false, true] {
+                let app = launch("feedback", dark: dark, arguments: reduced ? ["--preview-reduce-motion"] : [])
+                let count = app.staticTexts["feedback-count"]
+                XCTAssertTrue(count.waitForExistence(timeout: 5))
+                let gear = app.buttons["设置"]
+                let frame = gear.frame
+                let origin = gear.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                origin.press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: 0, dy: 140)))
+                XCTAssertEqual(count.label, "0")
+                XCTAssertEqual(frame, gear.frame)
+                for (index, label) in ["设置", "历史", "刷新", "下载"].enumerated() {
+                    app.buttons[label].tap()
+                    XCTAssertEqual(count.label, String(index + 1))
+                }
+                gear.tap(); gear.tap()
+                XCTAssertEqual(count.label, "6")
+                XCTAssertEqual(frame, gear.frame)
+                app.buttons["禁用按钮"].tap()
+                XCTAssertFalse(gear.isEnabled)
+                capture("quiet-feedback-\(dark ? "dark" : "light")-\(reduced ? "reduced" : "normal")", app: app)
+                app.terminate()
+            }
+        }
+    }
+
     private func launch(_ screen: String, dark: Bool = false, arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--preview-screen=" + screen] + arguments

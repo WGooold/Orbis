@@ -4220,7 +4220,7 @@ private fun NoticeBanner(text: String, isError: Boolean, recheck: Boolean, onRec
                     var glyphActivation by remember { mutableStateOf(0) }
                     Row(Modifier.clip(CircleShape).clickable { glyphActivation++; onRecheck() }.padding(vertical = 2.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp).actionGlyphMotion(glyphActivation, "Refresh"))
+                        Icon(Icons.Rounded.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp).actionGlyphMotion(glyphActivation))
                         Text("重新核对", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }

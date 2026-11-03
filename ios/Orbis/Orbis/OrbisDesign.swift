@@ -366,7 +366,6 @@ enum OrbisHaptics {
     private static let selection = UISelectionFeedbackGenerator()
     static func beginSelection() { selectionChanged() }
     static func selectionChanged() { selection.selectionChanged(); selection.prepare() }
-    static func press() { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
 
     static func commit() {
         impact.impactOccurred()

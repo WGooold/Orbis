@@ -6,7 +6,7 @@
 
 2026-11-02 M15 iOS r33：观察原生顶部拖动，在释放时触发一次刷新；指示器不再设置刷新停靠高度，列表只执行一次原生回弹。隔离 `765b0a3` 上 338 核心测试与构建通过，SE 首页手势 4 / 4、iPhone 17 / SE 下拉 3 / 3（含 A1–A4、短拉 / 多选）通过；iPad 同设备前后下拉均实际刷新一次，回弹源帧已审阅。SE 全量 82 项为 75 通过 / 7 失败，6 项原实现同设备复现，上传失败恢复一项在原实现及当前单独复跑通过，首轮失败保留；176 张附件已查看。完整人工 C01–C18、真实 Host、真机体感未验收，不记完整门禁通过。共享主工作树后续 r34 外观修改不在此隔离结论内。详见 `.artifacts/ui-regression/20261102-ios-refresh-rebound/summary.md`。
 
-日期：2026-11-03。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-03/r42`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-03。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-03/r43`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 12 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -293,7 +293,7 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | --- | --- | --- |
 | MOT-11 / SC33 | Android `InteractionMotionTest`、`predictiveBackOnBothEdgesCancelsOrCommitsOnlyOnePage`；iOS `testOptionalEdgeBackKeepsExistingIOSNavigation` | R45 / M08、M14 |
 | MOT-12 / SC34 | `discreteLabelsKeepOnlyTheLiveAccessibilityValueDuringTheirFade`、`ChatStatusLayoutInstrumentedTest`、iOS 状态外观矩阵、Qt `MotionTextTest` | R46 / M21、V05、V16 |
-| MOT-13 / SC35、MOT-15 / SC37 | `physicalPressShowsFeedbackBeforeDispatchAndCancellationDoesNotClick`、`iconActivationChangesTheGlyphWithoutChangingItsHitTarget`；双端共用组件和导航来源中帧 | R47、R49 / M20、M12、V13 |
+| MOT-13 / SC35、MOT-15 / SC37 | 保留`physicalPressShowsFeedbackBeforeDispatchAndCancellationDoesNotClick`、`iconActivationChangesTheGlyphWithoutChangingItsHitTarget`；r43新增Android `quickCancellationReturnsImmediatelyAndRepressTakesOver`、iOS `testActionFeedbackKeepsTargetsAndCancelsWithoutDispatchInAllAppearances`；两端`MotionGeometryTests / InteractionMotionTest`生命周期三项；双端共用组件和导航来源中帧 | R47、R49 / M20、M12、V13 |
 | MOT-14 / SC36 | `SessionDrawerViewportInstrumentedTest`、`SessionProviderFilterInstrumentedTest`、iOS `testDrawerScrolledSessionsKeepTheirPositionDuringCatalogUpdates` 及搜索 / 归档既有用例 | R48 / M22、V21 |
 | MOT-16 / SC38 | `HomeSelectionInstrumentedTest` 逐项触觉次数、目录 / 下载选择；iOS 首页 / 目录 / 下载多选 | R50 / M06、M12 |
 | MOT-17 / SC39 | Qt `MotionTextTest`、`--smoke-motion` 普通 / 减少动画的真实窗口中帧 | R51 / X03、X05 |
@@ -440,7 +440,7 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | R36 | 当前聊天、长文本、附件、历史预览和离线消息长按；复制、Rewind、滚动及文字选择 | r35 应用页顶栏切换为操作栏，常驻下方操作移除；pending恢复区仍在；不推动正文/绕过确认 | S10、M19 / MOT-05 |
 | R37 | 文本、多行、附件、运行中排队、重试、连发、断线、上翻阅读中发送 | 先右后上，再从右下角原位展开至完整气泡；起步快，末段持续减速且无回弹；初始不闪出目标，展开末帧与正式气泡一致；长文本 / 附件不截高且不覆盖页顶栏；准确身份交接；不追新、不重播、不飞向不存在的行 | M17 / MOT-06 |
 | R38 | 上翻触发最近提问，原文进入视野/点击/通知覆盖/新问题/换会话 | 右上滑入、原路滑出；末帧前内容保留，阅读锚点不动 | S24 / MOT-07 |
-| R39 | 按SC19–SC27逐入口点击图标，重复点击、禁用、减少动画 | 下载箭头弹、设置和历史旋转，其他轻弹；48命中不变，无重复专属动画 | M20 / MOT-08 |
+| R39 | 按SC19–SC27逐入口点击图标，重复点击、禁用、减少动画 | r43所有普通图标80ms轻压至0.94/0.82，松手/取消立即160ms复位，无整圈往返、箭头弹动或附加轻震；48命中不变，无重复专属动画 | M20 / MOT-08 |
 | R40 | Android整页左右边缘取消/完成/三层返回；菜单、IME、多选、Sheet和根页对照；iOS仅在保留可选增强时测双侧，否则验证原返回无回归 | 压缩顶层露来源；返回优先级正确，无双重pop或丢草稿/锚点；iOS不可为新增边缘行为牺牲文字选择/横滚/Sheet | M08、M14 / MOT-09 |
 
 每项 A1–A4，包含起始、1/3、2/3、末帧、反向与取消证据；共用组件接入不能免除调用方手动检查。C10 的160ms旧选中淡入在r31实施后改按触点260ms扩散、取消160ms验证，不删除其他断言。C15复制的用户消息入口改为长按操作栏，助手/代码保持原入口。
@@ -573,7 +573,7 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | R46 | 共用离散文字切换与出现 / MOT-12 | ADR-0058 SC34 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M21、V05、V16 |
 | R47 | 按下即时反馈与来源保留 / MOT-13 | ADR-0058 SC35 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M20、V13 |
 | R48 | 目录筛选集合过渡 / MOT-14 | ADR-0058 SC36 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M22、V21 |
-| R49 | 旋转按下整圈 / 松开返回与系统反馈 / MOT-15 | ADR-0058 SC37 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M20、M12 |
+| R49 | 统一轻压 / 即时复位（r43替代整圈往返）/ MOT-15 | ADR-0058 SC37 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M20、M12 |
 | R50 | 每项选中和取消的触觉 / MOT-16 | ADR-0058 SC38 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M06、M12 |
 | R51 | Host 侧栏凹陷过渡和滚动统计 / MOT-17 | ADR-0058 SC39 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | X03、X05 |
 | R52 | 新建卡片追加与启动导航交接 / MOT-18 | ADR-0058 SC40 的起始、中帧、结束、取消 / 连点 / 失效 / 减少动画；正常 / 明暗 / 窄屏大字；保留旧业务断言 | M23、V12、V17 |
@@ -605,3 +605,12 @@ X07–X10 / SC44 / MOT-23 / R60：交互区只保留功能名、画面与控制�
 2026-11-03 r42 圆角矩形验证：iOS 352/352、Android 682/682 单测及双端构建通过，源码检查确认普通图标和配额币共用默认16pt/dp圆角/内影。全机单台队列仍被旧磁盘故障的Android进程及残留锁阻塞，本轮L3/L4、C01–C18、R58/R59和A1–A4未运行，保留验证中；旧圆形截图不算新形状验收。源码边界、产物哈希及阻塞见 `.artifacts/ui-regression/20261103-provider-well-rounded/summary.md`。
 
 R58 / R59 的 r42 验证映射：沿用两端配额/凹槽与几何整类，不删改既有断言。C12 / C16、A1–A4 并列检查 Pi / DeepSeek 普通图标与 Claude Code / Codex 配额币：共用圆角矩形、同向内影、各自居中及留白、名称不被压住。翻面起止/侧面/换面/减少动画检查铜边、扫光、底影、角标与64×56命中区；完整C01–C18及L1–L4分别记录。
+
+
+### R39 / R47 / R49 的 r43 增补映射与手动检查
+
+SC18–27 / SC35 / SC37、M20 / M12：依次按设置、历史/分支、刷新/重连/重试、下载、返回/关闭、复制/附件/发送。核对80ms轻压与160ms平顺复位；快速松手/拖出立即回位、长按不循环、重按接管；有效点击立即执行一次，取消零次。检查固定命中区、图标与文字不移位，普通按压无额外轻震/声音；实际加载和结果保持原判定。复制M05、下载M16、配额S19/MOT-22专属用例仍执行；展开箭头/菜单形变按状态表达。
+
+A1–A4均覆盖；减少动画仅按住时即时透明度变化，结束无残留。保留原R49的取消/连点/失效/减少动画覆盖与业务断言，原整圈视觉目标经用户授权被本轮轻压替代。完整L1–L4与C01–C18分别记录，预览不代替原生设备帧；结果见 `.artifacts/ui-regression/20261103-button-feedback/summary.md`。
+
+2026-11-03 / r43验证：Swift355/355、Android685/685单元测试，iOS应用及UI测试构建、Android Debug/AndroidTest均通过。网页设计预览在320/736px明暗与减少动画检查通过，已看浅色窄屏及深色截图，但不计原生设备验收。双端共享入口仍被`provider-well-shadow-standard-full`与`Codex permission model preservation`的设备锁阻塞；L3/L4、C01–C18、R39/R47/R49及原生A1–A4未运行，不能比较同设备基点失败集合，保持验证中。证据 `.artifacts/ui-regression/20261103-button-feedback/summary.md`。
