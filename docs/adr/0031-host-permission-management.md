@@ -20,6 +20,8 @@ Codex maps select settings to its native thread-settings update and confirmation
 
 Approval requests continue through structured interactions and are not automatically answered by this interface. Permission updates are unavailable while the Session is working or has pending approval interactions. The backend remains responsible for enforcing this condition at execution time; client disabling is only feedback.
 
+2026-11-03 Codex selection preservation ([ADR-0061](0061-codex-selection-and-native-settings-reconciliation.md)): a permission notification can contain the full native model/effort snapshot even when those fields did not change. Host must not overwrite an existing next-turn model or effort choice with an unchanged native value. Initial TUI subscription and ordinary resume apply the same reconciliation; actual native changes continue to synchronize independently per field. The pre-input subscription boundary and real 0.166.0 PTY verification are documented in [ADR-0021](0021-codex-terminal-host-attachment.md#revision-2026-11-03-model-selection-before-the-first-input). The permission command remains a permission-only patch with the existing RPC plus notification confirmation, and never starts a turn.
+
 The existing raw `permissions` metadata remains available for diagnostics and existing backend tests. It is not the presentation or edit contract. Native slash commands may remain for the general command menu, but the permission page never discovers or applies settings through `slash.execute`. This qualifies ADR-0003: permission management is a dedicated typed runtime operational control rather than a second catalog for invoking arbitrary slash commands.
 
 ## Consequences and verification

@@ -28,6 +28,9 @@ function harness() {
     if (method === "turn/start") return Promise.resolve({ turn: { id: "phone-turn" } });
     if (method === "config/read") return Promise.resolve({ config: {} });
     if (method === "config/batchWrite") return Promise.resolve({ status: "ok" });
+    if (method === "model/list") return Promise.resolve({ data: [
+      { id: "terminal-model", isDefault: true }, { id: "gpt-6-astra" },
+    ] });
     return Promise.resolve({ data: [] });
   });
   const server = { request, endpoint: "ws://127.0.0.1:9931", codexCommand: { command: "node.exe", prefixArgs: ["codex.js"] } } as unknown as CodexAppServer;
@@ -115,6 +118,31 @@ describe("terminal Codex session synchronization", () => {
       expect.objectContaining({ entryId: "u1" }), expect.objectContaining({ entryId: "a1" }),
     ]) }));
     expect(h.runtime.directoryEntries()[0]?.permissions?.sandbox).toBe("dangerFullAccess");
+  });
+
+  it("keeps pre-input model selections without settings RPCs and preserves them through the first subscription", async () => {
+    const h = harness();
+    h.resume.mockRejectedValueOnce(new Error("no rollout found for thread id terminal"));
+    await h.launch();
+    h.request.mockClear();
+    h.runtime.handleCommand({ type: "slash.execute", name: "model", args: "gpt-6-astra" }, "model", "terminal");
+    h.runtime.handleCommand({ type: "slash.execute", name: "thinking", args: "low" }, "thinking", "terminal");
+    expect(h.events).toContainEqual({ type: "command.result", commandId: "model", ok: true });
+    expect(h.events).toContainEqual({ type: "command.result", commandId: "thinking", ok: true });
+    expect(h.request).not.toHaveBeenCalled();
+    h.snapshot.turns = [{ id: "first", status: "completed", items: [user("u1", "first terminal input")] }];
+    h.notify("thread/status/changed", { threadId: "terminal", status: { type: "idle" } });
+    await vi.waitFor(() => expect(h.runtime.directoryEntries()[0]?.sessionLeafId).toBe("u1"));
+    h.notify("thread/settings/updated", { threadId: "terminal", threadSettings: {
+      ...h.settings, effort: "high", approvalPolicy: "on-request",
+    } });
+    expect(h.runtime.directoryEntries()[0]).toMatchObject({ model: { id: "gpt-6-astra" }, thinkingLevel: "low",
+      permissions: { approvalPolicy: "on-request" } });
+    h.runtime.handleCommand({ type: "user_message", text: "from phone" }, "send", "terminal");
+    await vi.waitFor(() => expect(h.request).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      threadId: "terminal", model: "gpt-6-astra", effort: "low",
+    })));
+    expect(h.request.mock.calls.some(([method]) => method === "thread/settings/update")).toBe(false);
   });
 
   it("accepts an empty live resume before its rollout file exists", async () => {

@@ -9,10 +9,14 @@ afterEach(() => { cleanups.splice(0).forEach((fn) => fn()); vi.useRealTimers(); 
 
 async function harness() {
   const events: RuntimeEvent[] = [];
-  const settings = { approvalPolicy: "on-request", approvalsReviewer: "user",
+  const settings = { model: "gpt-6.1-sol", modelProvider: "openai", effort: "medium",
+    approvalPolicy: "on-request", approvalsReviewer: "user",
     sandboxPolicy: { type: "workspaceWrite", networkAccess: false, writableRoots: ["D:/shared"], excludeSlashTmp: true } };
   const request = vi.fn(async (method: string, params: Record<string, unknown>) => method === "thread/resume"
-    ? { thread: { id: params.threadId, cwd: "D:/test", turns: [] }, ...settings } : { data: [] });
+    ? { thread: { id: params.threadId, cwd: "D:/test", turns: [] }, ...settings, reasoningEffort: settings.effort }
+    : method === "model/list" ? { data: [
+      { id: "gpt-6.1-sol", isDefault: true }, { id: "gpt-6-astra" },
+    ] } : { data: [] });
   const server = { request } as unknown as CodexAppServer;
   const runtime = new CodexRuntime({ server, onEvent: (event) => events.push(event), rolloutRoot: "D:/not-existing-controls-rollouts" });
   runtime.markStarted();
@@ -24,6 +28,47 @@ async function harness() {
 }
 
 describe("mobile Codex permission settings", () => {
+  it("preserves next-turn Astra and reasoning selections across every permission snapshot", async () => {
+    const h = await harness();
+    h.request.mockClear();
+    h.runtime.dispatchCommand("codex:a", "model", { type: "slash.execute", name: "model", args: "gpt-6-astra" });
+    h.runtime.dispatchCommand("codex:a", "thinking", { type: "slash.execute", name: "thinking", args: "high" });
+    expect(h.request).not.toHaveBeenCalled();
+    for (const [name, value, patch] of [
+      ["network", "enabled", { sandboxPolicy: { ...h.settings.sandboxPolicy, networkAccess: true } }],
+      ["approvals", "never", { approvalPolicy: "never" }],
+      ["approval-reviewer", "auto_review", { approvalsReviewer: "auto_review" }],
+      ["sandbox", "dangerFullAccess", { sandboxPolicy: { type: "dangerFullAccess" } }],
+    ] as const) {
+      h.apply(name, value, name);
+      expect(h.request).toHaveBeenLastCalledWith("thread/settings/update", { threadId: "a", ...patch });
+      // Native permissions include the unchanged base model, not Host's next-turn override.
+      h.notify(patch);
+      await vi.waitFor(() => expect(h.events).toContainEqual({ type: "command.result", commandId: name, ok: true }));
+      expect(h.runtime.directoryEntries()[0]).toMatchObject({ model: { id: "gpt-6-astra" }, thinkingLevel: "high" });
+    }
+    h.runtime.dispatchCommand("codex:a", "message", { type: "user_message", text: "continue" });
+    await vi.waitFor(() => expect(h.request).toHaveBeenCalledWith("turn/start", {
+      threadId: "a", input: [{ type: "text", text: "continue" }], model: "gpt-6-astra", effort: "high",
+    }));
+  });
+
+  it("preserves local selections on resume and still adopts real native configuration changes", async () => {
+    const h = await harness();
+    h.runtime.dispatchCommand("codex:a", "model", { type: "slash.execute", name: "model", args: "gpt-6-astra" });
+    h.runtime.dispatchCommand("codex:a", "thinking", { type: "slash.execute", name: "thinking", args: "high" });
+    await h.runtime.activate({ type: "resume", sessionId: "a" });
+    expect(h.runtime.directoryEntries()[0]).toMatchObject({ model: { id: "gpt-6-astra" }, thinkingLevel: "high" });
+    h.notify({ model: "desktop-model", effort: "low" });
+    expect(h.runtime.directoryEntries()[0]).toMatchObject({ model: { id: "desktop-model" }, thinkingLevel: "low" });
+    h.runtime.dispatchCommand("codex:a", "model-again", { type: "slash.execute", name: "model", args: "gpt-6-astra" });
+    h.runtime.dispatchCommand("codex:a", "thinking-again", { type: "slash.execute", name: "thinking", args: "high" });
+    h.notify({ model: "desktop-model", effort: "xhigh" });
+    expect(h.runtime.directoryEntries()[0]).toMatchObject({ model: { id: "gpt-6-astra" }, thinkingLevel: "xhigh" });
+    h.notify({ model: "gpt-6-astra", effort: null });
+    expect(h.runtime.directoryEntries()[0]?.thinkingLevel).toBeUndefined();
+  });
+
   it("acknowledges an already effective value without waiting for a notification Codex does not emit", async () => {
     const h = await harness();
     h.request.mockClear();

@@ -281,6 +281,12 @@ type ThreadState = {
   modelProvider: string | undefined;
   /** 会话级 reasoning effort 覆盖（`/thinking` 命令写入，随后每个 turn 带上）。 */
   effort: string | undefined;
+  /** App 明确选择的下一轮覆盖：空 TUI 尚不能订阅确认时也必须允许选型（ADR-0061）。 */
+  modelOverride?: string;
+  effortOverride?: string;
+  /** 最近实际观察到的原生值；权限完整快照可能原样重复，不能当作新切模。 */
+  nativeModel?: string;
+  nativeEffort?: string | null;
   /**
    * app-server `thread/tokenUsage/updated` 报的当前上下文占用（`last.inputTokens` /
    * `modelContextWindow`）。`total.inputTokens` 是线程累计输入量，不能用于上下文窗口
@@ -745,6 +751,35 @@ export class CodexRuntime implements AgentBackend {
       liveMessages: new Map(),
       liveTools: new Map(),
     };
+  }
+
+  /**
+   * model / effort 用于下一次 turn/start，native* 只记录源端观测基线（ADR-0061）。
+   * 权限通知、resume 和首次订阅可能重复旧原生值，不能因此撤销 App 已选的覆盖。
+   * 原生体现所选值，或相对已知基线发生变化，才交还对应字段；两字段独立处理。
+   * Codex 0.166.0 首次输入前线程未物化，Host resume 会失败；此时 settings/update
+   * 虽可返回成功，未订阅的 Host 仍收不到确认通知，不能强制走该更新路径。
+   */
+  #applyNativeSettings(thread: ThreadState, value: unknown): void {
+    const settings = object(value);
+    const model = settings.model;
+    if (typeof model === "string" && model.length > 0) {
+      if (model === thread.modelOverride || thread.nativeModel !== undefined && model !== thread.nativeModel) {
+        delete thread.modelOverride;
+      }
+      thread.nativeModel = model;
+      thread.model = thread.modelOverride ?? model;
+    }
+    const provider = settings.modelProvider;
+    if (typeof provider === "string" && provider.length > 0) thread.modelProvider = provider;
+    const effort = settings.effort !== undefined ? settings.effort : settings.reasoningEffort;
+    if (typeof effort === "string" || effort === null) {
+      if (effort === thread.effortOverride || thread.nativeEffort !== undefined && effort !== thread.nativeEffort) {
+        delete thread.effortOverride;
+      }
+      thread.nativeEffort = effort;
+      thread.effort = thread.effortOverride ?? effort ?? undefined;
+    }
   }
 
   /** 单个 thread 的 runtime 元数据。 */
@@ -1321,8 +1356,7 @@ export class CodexRuntime implements AgentBackend {
     });
     thread.cwd = cwd;
     thread.name = codexSessionName(threadJson?.name);
-    if (typeof result.model === "string") thread.model = result.model;
-    if (typeof result.modelProvider === "string") thread.modelProvider = result.modelProvider;
+    this.#applyNativeSettings(thread, result);
     thread.permissions = codexPermissions(result) ?? thread.permissions;
     if (codexPermissions(result)) this.#effectiveSettings.set(id, object(result));
     this.#threads.set(id, thread);
@@ -2128,6 +2162,7 @@ export class CodexRuntime implements AgentBackend {
           return true;
         }
         thread.model = arg;
+        thread.modelOverride = arg;
         this.#commandResult(threadId, commandId, true);
         // 换模型后 `/thinking` 的候选 effort 也跟着变（各模型支持的不一样）：
         // 元数据刷新会连同 capabilities 一起重播，手机再打开那个菜单才是对的。
@@ -2151,6 +2186,7 @@ export class CodexRuntime implements AgentBackend {
           return true;
         }
         thread.effort = arg;
+        thread.effortOverride = arg;
         this.#commandResult(threadId, commandId, true);
         this.#publishMetadataEvent(thread);
         return true;
@@ -3128,9 +3164,7 @@ export class CodexRuntime implements AgentBackend {
         if (snapshot.id !== thread.id) throw new Error("app-server 的 thread/resume 响应缺少匹配的 thread.id");
         if (typeof snapshot.cwd === "string") thread.cwd = snapshot.cwd;
         thread.name = codexSessionName(snapshot.name) ?? thread.name;
-        if (typeof result.model === "string") thread.model = result.model;
-        if (typeof result.modelProvider === "string") thread.modelProvider = result.modelProvider;
-        if (typeof result.reasoningEffort === "string") thread.effort = result.reasoningEffort;
+        this.#applyNativeSettings(thread, result);
         thread.permissions = codexPermissions(result) ?? thread.permissions;
         if (codexPermissions(result)) this.#effectiveSettings.set(thread.id, result);
         await this.#hydrateNativeHistory(thread, snapshot, generation);
@@ -3394,11 +3428,7 @@ export class CodexRuntime implements AgentBackend {
       }
       case "thread/settings/updated": {
         const settings = object(record.threadSettings ?? record);
-        const model = settings.model;
-        const modelProvider = settings.modelProvider;
-        if (typeof model === "string" && model.length > 0) thread.model = model;
-        if (typeof modelProvider === "string" && modelProvider.length > 0) thread.modelProvider = modelProvider;
-        if (typeof settings.effort === "string") thread.effort = settings.effort;
+        this.#applyNativeSettings(thread, settings);
         if (typeof settings.cwd === "string") thread.cwd = settings.cwd;
         thread.permissions = codexPermissions(settings) ?? thread.permissions;
         this.#publishMetadataEvent(thread);

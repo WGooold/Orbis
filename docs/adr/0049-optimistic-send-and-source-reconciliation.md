@@ -240,6 +240,8 @@ Pi 的 live → entry 映射、Codex 的 `persistedEntryId` 等现有身份链�
 
 #### 6.7 模型与思考级别（条件乐观）
 
+2026-11-03 Codex 选型对账修复（[ADR-0061](0061-codex-selection-and-native-settings-reconciliation.md)）：保留 Host 已有的下一轮模型 / effort 覆盖，不要求尚未物化的终端线程先执行原生设置更新。权限完整通知、首次订阅及 resume 重复未变化的原生配置时，不能反向覆盖该选择；原生实际改变某个字段或确认所选值时，再交回该字段的原生来源。两字段独立对账，原生明确的 null effort 可清除旧值。首次输入前的订阅与确认限制见 [ADR-0021](0021-codex-terminal-host-attachment.md#revision-2026-11-03-model-selection-before-the-first-input)，权限写入仍按 [ADR-0031](0031-host-permission-management.md) 等真实确认；App 账本、发送前置及交互动效规则保持。
+
 - 前提是当前允许修改（ADR-0055 §5：通常要求 idle；DSH Web 运行中修改的是下一轮配置）。
   不允许时不显示新值，按原规则说明原因。
 - 选择后，选择器和顶栏立即显示所选值，并带“切换中”标记；标记消失才表示后端已确认生效。

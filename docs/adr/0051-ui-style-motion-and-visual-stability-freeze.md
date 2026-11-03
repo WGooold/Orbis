@@ -24,6 +24,8 @@ Status: accepted（基线冻结；新增与变更按本文维护）
 
 ## Context
 
+2026-11-03 Codex 权限更新重置选型修复（[ADR-0061](0061-codex-selection-and-native-settings-reconciliation.md)；V05、V12、V17–V18，验证中）：Host 分离原生模型 / effort 观测值与下一轮覆盖，权限通知及首次订阅重复旧值不再清除用户选择；真实原生变更继续同步。保留尚未物化终端的无设置 RPC 选型路径，不强制首条输入或伪造确认。规则见 [ADR-0021](0021-codex-terminal-host-attachment.md#revision-2026-11-03-model-selection-before-the-first-input)、[D31]、[D49] §6.7；分类沿用 [D58] SC16，不新增 feature 或动效参数。原生 0.166.0 隔离 PTY 与回归、设备及未完成门禁见 [Regression] R27 / R56，未部署用户 Host。
+
 2026-11-03 Android 配置切换输入按钮修复（V05、V10、V12，ADR-0049 §6.7 / ADR-0055 I03）：从 composer 提交模型或思考深度后交给配置账本，输入区不再等待被账本消费的通用命令回执；重复选择确认值同样解除输入区等待。保持原配置确认、失败与消息前置等待语义，动效归类为 ADR-0058 SC16 的按钮反馈，不创建消息飞行。恢复既有规则，不新增 ID 或调整参数；测试与未验收范围见 UI 回归 R27 / §6。
 
 2026-11-03 Codex Desktop Rewind 反馈修复（V06、V12、V16–V18，验证中）：桌面刷新 `awaiting_confirmation` 改为信息级“历史已回退，正在等待桌面历史加载确认”，不把正常等待归为刷新失败或要求重复归档；真实恢复问题仍明确提示，收到同一操作的 GUI 历史证据后清除通知。沿用 [ADR-0023](0023-codex-revert-and-client-refresh.md) 的分阶段完成与 [D49] / [D55] 的真实回执规则，无新 feature 或动效参数。自动映射、双端设备及手动未跑范围见 [Regression]。
