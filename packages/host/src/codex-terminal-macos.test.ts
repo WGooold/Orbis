@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from "vitest";
 import { closeMacCodexTuis, macCodexTerminalScript, parseMacCodexTuis } from "./codex-terminal-macos.js";
 
 describe("macOS Codex terminal", () => {
-  it("runs the exact CLI with literal arguments and the existing backend after rollout exists", async () => {
+  // This executes the native POSIX script; portable parsing tests below run on every platform.
+  it.skipIf(process.platform === "win32")("runs the exact CLI with literal arguments and the existing backend after rollout exists", async () => {
     const root = await mkdtemp(join(tmpdir(), "orbis-codex-mac ' $ "));
     try {
       const sessionsRoot = join(root, "sessions");

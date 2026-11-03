@@ -89,6 +89,7 @@ jobs:
             packages/host/src/codex-desktop-launcher.test.ts \
             packages/host/src/codex-desktop-macos.test.ts \
             packages/host/src/codex-desktop-wrapper.test.ts \
+            packages/host/src/codex-terminal-macos.test.ts \
             packages/host/src/desktop-installation.test.ts \
             packages/host/src/login-shell-env.test.ts \
             packages/host/src/turn-file-change-service.test.ts \
