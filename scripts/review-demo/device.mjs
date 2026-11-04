@@ -6,14 +6,14 @@ import { DeviceHandshake, E2eChannel, buildPairEnvelope, buildPlaintextEnvelope,
   readHandshakeEnvelope, readPairEnvelope, verifyPairAccept } from "@orbis/e2e";
 import { EnvelopeReassembler, PROTOCOL_VERSION } from "@orbis/protocol";
 
-export async function connectDevice(text) {
+export async function connectDevice(text, options = {}) {
   const qr = decodePairingQrText(text);
-  const base = qr.relayUrl.replace(/^ws/u, "http").replace(/\/$/u, "");
-  const response = await fetch(`${base}/v1/pairings`, { method: "POST", headers: { "content-type": "application/json" },
+  const base = options.httpBase ?? qr.relayUrl.replace(/^ws/u, "http").replace(/\/$/u, "");
+  const response = await fetch(`${base}/v1/pairings`, { method: "POST", headers: { "content-type": "application/json", "User-Agent": "OrbisReviewProbe/1.0" },
     body: JSON.stringify({ code: qr.code, deviceName: "Orbis review connectivity check" }) });
   if (!response.ok) throw new Error(`Pairing code exchange failed: HTTP ${response.status}`);
   const paired = await response.json();
-  const socket = new WebSocket(`${qr.relayUrl.replace(/\/$/u, "")}/v1/device`);
+  const socket = new WebSocket(`${(options.relayUrl ?? qr.relayUrl).replace(/\/$/u, "")}/v1/device`, { headers: { "User-Agent": "OrbisReviewProbe/1.0" } });
   let channel; let waiter;
   const queue = []; const reassembler = new EnvelopeReassembler();
   const deliver = item => { if (waiter) { const current = waiter; waiter = undefined; current(item); } else queue.push(item); };

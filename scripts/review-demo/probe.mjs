@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { connectDevice } from "./device.mjs";
 
 // Run inside the isolated Host container after deployment. No personal Host config.
-const response = await fetch("http://127.0.0.1:8788/pair", { method: "POST", headers: { "x-review-request": "1" } });
+const access = JSON.parse(await readFile("/data/review-pairing.json", "utf8"));
+const response = await fetch(`http://127.0.0.1:8788/${access.code}/pairing.json`);
 if (!response.ok) throw new Error(`Review page failed: HTTP ${response.status}`);
-const { text } = await response.json();
-const device = await connectDevice(text);
+const text = await response.text();
+const device = await connectDevice(text, process.argv.includes("--local") ? { httpBase: "http://127.0.0.1:8788", relayUrl: "ws://127.0.0.1:8787" } : {});
 try {
   const runtime = device.ready.runtimes.find(item => item.cwd === "/data/workspace");
   if (!runtime) throw new Error("Real Pi runtime is not visible to paired mobile client");

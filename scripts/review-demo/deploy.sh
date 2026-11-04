@@ -5,7 +5,6 @@ release_dir=${1:?release directory required}
 image=${2:?image tag required}
 test -s "$task_dir/private/host.json"
 test -s "$task_dir/private/deepseek.key"
-test -s /etc/nginx/orbis-review.htpasswd
 docker build -f "$release_dir/scripts/review-demo/Dockerfile" -t "$image" "$release_dir"
 mkdir -p "$task_dir/data/home" "$task_dir/data/workspace" "$task_dir/data/host"
 chown -R 1000:1000 "$task_dir/data"
