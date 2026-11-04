@@ -11,6 +11,7 @@ on:
       - tsconfig.base.json
       - scripts/clean.mjs
       - scripts/build-relay-web.mjs
+      - scripts/review-demo/**
       - packages/relay/**
       - packages/protocol/**
       - packages/host/**
@@ -62,13 +63,20 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: '22.23.2'
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run lint
       - run: npm run typecheck
-      - run: npx vitest run --maxWorkers=1 --testTimeout=30000
+      - run: npx vitest run --maxWorkers=1 --testTimeout=30000 --reporter=default --reporter=junit --outputFile.junit=.artifacts/ci/windows.xml
       - run: npm run build
+      - name: Preserve Windows test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-tests-windows
+          path: .artifacts/ci/windows.xml
+          retention-days: 14
 
   check-macos:
     name: macOS Host compatibility tests
@@ -81,6 +89,8 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      # The real Pi review fixture loads the compiled extension, not test aliases.
+      - run: npm run typecheck
       # Run the native shell, executable-bit and application-bundle checks on macOS.
       # Windows still runs the complete suite, including the portable assertions.
       - run: |
@@ -93,11 +103,42 @@ jobs:
             packages/host/src/desktop-installation.test.ts \
             packages/host/src/login-shell-env.test.ts \
             packages/host/src/turn-file-change-service.test.ts \
-            --maxWorkers=1 --testTimeout=30000
+            scripts/review-demo/cleanup.test.mjs \
+            scripts/review-demo/portal.test.mjs \
+            --maxWorkers=1 --testTimeout=30000 \
+            --reporter=default --reporter=junit --outputFile.junit=.artifacts/ci/macos.xml
+      - name: Preserve macOS test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-tests-macos
+          path: .artifacts/ci/macos.xml
+          retention-days: 14
+
+  check-review-linux:
+    name: Linux review Host integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build
+      - run: npx vitest run scripts/review-demo/cleanup.test.mjs scripts/review-demo/portal.test.mjs --maxWorkers=1 --testTimeout=30000 --reporter=default --reporter=junit --outputFile.junit=.artifacts/ci/linux.xml
+      - name: Preserve Linux test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-tests-linux
+          path: .artifacts/ci/linux.xml
+          retention-days: 14
 
   deploy:
     name: 部署到服务器
-    needs: [check, check-macos]
+    needs: [check, check-macos, check-review-linux]
     runs-on: ubuntu-latest
     environment: production
     env:

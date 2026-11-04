@@ -31,7 +31,27 @@ Create a `production` environment and configure its secrets:
 
 The workflow also accepts the former `PI_REMOTE_*` names for these secrets. Relay runtime configuration prefers `ORBIS_*` and accepts existing `PI_REMOTE_*` values, so a naming upgrade does not require rewriting deployed credentials. The deployment script uses `orbis-relay` for new containers and can replace an existing `pi-remote-relay` container while preserving its original name during rollback.
 
-Push relevant changes to `main`. The full check job runs on Windows; a second job runs the Host path, shell, launcher and Git-hook compatibility tests on macOS. Both must pass before deployment. Host changes also trigger this workflow because its tests are part of the deployment gate. The deploy job archives `git archive HEAD`, uploads via pinned SSH, builds on the server and checks a candidate before switching traffic. Application deployments have no local shortcut.
+Push relevant changes to `main`. The full check job runs on Windows; a second job runs the Host path, shell, launcher and Git-hook compatibility tests on macOS; a third job checks the review Host integration on Linux. All three must pass before deployment. Host changes also trigger this workflow because its tests are part of the deployment gate. The deploy job archives `git archive HEAD`, uploads via pinned SSH, builds on the server and checks a candidate before switching traffic. Application deployments have no local shortcut.
+
+2026-11-04 CI cleanup correction: the review portal and process-tree cleanup tests
+also run on Windows, macOS and Linux. The Linux integration job is an additional
+required dependency of deployment; existing Host tests and assertions remain.
+All these jobs use Node 22.23.2, and upload JUnit results even after a test failure
+(14-day retention). The review scripts themselves trigger Relay validation, so
+editing the fixture cannot miss this gate. The compiled Pi extension is prepared
+before running its real-process fixture on each platform.
+
+Review fixtures terminate only their own recorded process trees: Windows uses
+the system `taskkill.exe /PID <pid> /T /F`; POSIX uses the detached process group,
+with bounded graceful shutdown and forced termination. Cleanup waits for the
+owned roots and POSIX process groups to exit, including children whose parent
+has already stopped. Resource state is drained before awaiting cleanup; every
+closer is attempted and failures are aggregated. A live process prevents removal
+of its temporary directory. The regression verifies a real parent/child tree,
+directory release, preservation of an unrelated process, and failure isolation.
+These checks reduce recurrence; a successful local macOS run does not establish
+Windows or Linux success. Confirm all required CI jobs and the deployed health
+commit before reporting an update as live.
 
 Confirm the successful Actions run, public health `commit`, and `/opt/orbis/shared/deployed-commit` match. A failed rollout restores the previous container. State schema downgrades may require a matching state backup; container rollback cannot undo incompatible data migrations.
 
