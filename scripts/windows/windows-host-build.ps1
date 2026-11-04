@@ -58,6 +58,30 @@ try {
             New-Item -ItemType Directory -Path $launcherBin -Force | Out-Null
             & "$CompilerRoot\bin\g++.exe" -O2 -o (Join-Path $launcherBin 'codex-launcher.exe') "$repoRoot\packages\host\native\codex-launcher.c" -lshell32
             if ($LASTEXITCODE -ne 0) { throw 'Codex desktop wrapper launcher build failed' }
+            # 桌面版启动时会传带引号的 JSON（--startup-client-info），参数丢引号会让它停在
+            # 「组织设置无法加载」。这条冒烟检查钉住「参数原样转发」：`_wspawnv` 转发会把引号剥掉。
+            $probeDir = Join-Path $releaseRoot 'wrapper-smoke'
+            New-Item -ItemType Directory -Path $probeDir -Force | Out-Null
+            $probeDump = Join-Path $probeDir 'argv-probe.mjs'
+            Set-Content -LiteralPath $probeDump -Encoding ascii -Value 'process.stdout.write(JSON.stringify(process.argv.slice(2)));'
+            $probeRunner = Join-Path $probeDir 'launcher-argv-smoke.mjs'
+            $probeSource = @'
+import { spawnSync } from "node:child_process";
+const [launcher, dump] = process.argv.slice(2);
+const info = JSON.stringify({ name: "codex_desktop", title: "Codex Desktop", version: "0" });
+const result = spawnSync(launcher, ["app-server", "--startup-client-info", info], {
+  env: { ...process.env, ORBIS_CODEX_WRAPPER_NODE: process.execPath, ORBIS_CODEX_WRAPPER_SCRIPT: dump },
+  encoding: "utf8",
+});
+const expected = JSON.stringify(["app-server", "--startup-client-info", info]);
+if (result.status !== 0 || result.stdout.trim() !== expected) {
+  console.error(`launcher argv smoke failed: status=${result.status} stdout=${result.stdout.trim()} stderr=${result.stderr.trim()}`);
+  process.exit(1);
+}
+'@
+            Set-Content -LiteralPath $probeRunner -Encoding ascii -Value $probeSource
+            node $probeRunner (Join-Path $launcherBin 'codex-launcher.exe') $probeDump
+            if ($LASTEXITCODE -ne 0) { throw 'Codex desktop wrapper launcher lost argument quoting' }
             Copy-Item -LiteralPath "$repoRoot\LICENSE" -Destination $stage
             Copy-Item -LiteralPath "$repoRoot\packages\windows-host\README.md" -Destination "$stage\README.md"
             Copy-Item -LiteralPath "$repoRoot\packages\windows-host\THIRD-PARTY-NOTICES.md" -Destination $stage

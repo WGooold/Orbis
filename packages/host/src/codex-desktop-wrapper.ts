@@ -20,7 +20,7 @@
  * 失败语义：这里只允许失败在“接不上”，不允许让桌面版用不了——任何一步出错都退回
  * 与真实 CLI 一模一样的 stdio 行为，只是这一轮没有可接入端点。
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, Socket } from "node:net";
 import { homedir } from "node:os";
@@ -55,9 +55,17 @@ export function endpointFilePath(env: NodeJS.ProcessEnv = process.env): string {
   return join(stateDir, "codex-desktop-endpoint.json");
 }
 
-/** 桌面版是否在让它的 CLI 跑 app-server（而不是 `login`、`exec` 之类）。 */
+/**
+ * 桌面版也会用 `app-server` 前缀跑**一次性**命令：`app-server --print-startup-config`
+ * 是它启动时读策略的那次调用，输出一份 JSON 就退出。这类调用必须原样转发：当成常驻
+ * 服务去桥接会把它的 stdout 收进 stderr，并在等端口 15s 后才回退，桌面版看到的是
+ * 「协议失败」而不是策略，于是停在「组织设置无法加载」。
+ */
+const ONE_SHOT_APP_SERVER_ARGS = new Set(["--print-startup-config", "--startup-sign-out"]);
+
+/** 桌面版是否在让它的 CLI 跑常驻 app-server（而不是 `login`、`exec`、一次性启动查询之类）。 */
 export function isAppServerInvocation(args: readonly string[]): boolean {
-  return args.includes("app-server");
+  return args.includes("app-server") && !args.some(arg => ONE_SHOT_APP_SERVER_ARGS.has(arg));
 }
 
 /** The desktop CLI enables this when its app-server needs the separate code-mode host. */
@@ -72,15 +80,98 @@ export type ResolveRealCodexOptions = {
   platform?: NodeJS.Platform;
   /** macOS：启动本包装器的进程（桌面版 GUI）的可执行路径。 */
   parentExecutable?: () => Promise<string | undefined>;
+  /** Windows：已安装的桌面版包全名（测试注入）；缺省读本机 AppX 注册表。 */
+  listDesktopPackages?: () => readonly string[];
 };
 
 const DEFAULT_CODE_MODE_RUNTIME_WAIT_MS = 120_000;
 const DEFAULT_CODE_MODE_RUNTIME_POLL_MS = 100;
 const CODE_MODE_HOST_NAME = "codex-code-mode-host.exe";
+/** `OpenAI.Codex_26.1027.6604.0_x64__2p2nqsd0c76g0`：包全名里带版本与架构。 */
+const DESKTOP_PACKAGE_PATTERN = /^OpenAI\.Codex_(\d+(?:\.\d+)*)_(x64|arm64)__/u;
+/** 每用户的 AppX 注册表；机器级安装落在 HKLM 下，两处都看。 */
+const APPX_PACKAGE_KEYS = [
+  "HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\Repository\\Packages",
+  "HKLM\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\Repository\\Packages",
+] as const;
 
 /**
- * 真正的 CLI：Host 会把桌面版本该用的那份显式交给我们；没交就找桌面版自己下载的
- * 最新副本（`%LOCALAPPDATA%\OpenAI\Codex\bin\...`），最后才退回 PATH 上的 codex。
+ * 桌面版包里那份 CLI（`<包目录>\app\resources\codex.exe`）。
+ *
+ * 桌面版自己会把它拷到 `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe` 再用；但只要有
+ * `CODEX_CLI_PATH`（我们包装器要它才接得上），桌面版就跳过组件解析（日志里 `source=override`），
+ * 于是那份副本永远停在装上包装器时的版本。GUI 与 app-server 的接口是随桌面版一起变的：
+ * 26.1027 的启动策略读走 `app-server --print-startup-config`，旧 CLI 直接以 2 退出。
+ * 包目录本身列不出来（`WindowsApps` 对普通用户是 EPERM），所以按 AppX 注册表里的包全名拼。
+ */
+export function desktopAppCliPath(
+  env: NodeJS.ProcessEnv = process.env,
+  listPackages: () => readonly string[] = installedDesktopPackages,
+): string | undefined {
+  const explicit = env.ORBIS_CODEX_DESKTOP_CLI?.trim();
+  if (explicit) return existsSync(explicit) ? explicit : undefined;
+  const roots = [env.ProgramW6432, env.ProgramFiles, env["ProgramFiles(x86)"]]
+    .map(root => root?.trim())
+    .filter((root): root is string => root !== undefined && root.length > 0);
+  if (roots.length === 0) return undefined;
+  let packages: readonly string[];
+  try { packages = listPackages(); }
+  catch { return undefined; }
+  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  const installed = packages
+    .map(name => ({ name, match: DESKTOP_PACKAGE_PATTERN.exec(name) }))
+    .filter((entry): entry is { name: string; match: RegExpExecArray } => entry.match !== null && entry.match[2] === arch)
+    .sort((left, right) => compareVersions(right.match[1] ?? "", left.match[1] ?? ""));
+  const seen = new Set<string>();
+  for (const { name } of installed) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    for (const root of roots) {
+      const cli = join(root, "WindowsApps", name, "app", "resources", "codex.exe");
+      if (existsSync(cli)) return cli;
+    }
+  }
+  return undefined;
+}
+
+/** 已安装的桌面版包全名。`reg query` 只在本机 win32 上可用，其他平台当没有。 */
+function installedDesktopPackages(): readonly string[] {
+  if (process.platform !== "win32") return [];
+  const reg = join(process.env.SystemRoot?.trim() || "C:\\Windows", "System32", "reg.exe");
+  const names: string[] = [];
+  for (const key of APPX_PACKAGE_KEYS) {
+    let output: string;
+    try {
+      output = execFileSync(reg, ["query", key, "/f", "OpenAI.Codex*", "/k"], {
+        encoding: "utf8",
+        timeout: 5_000,
+        windowsHide: true,
+      });
+    } catch {
+      // 这一处没有该包（或没有权限）就换下一条：注册表查询失败不等于没有桌面版。
+      continue;
+    }
+    names.push(...output.split(/\r?\n/u)
+      .map(line => line.trim())
+      .filter(line => line.startsWith("HKEY_"))
+      .map(line => line.slice(line.lastIndexOf("\\") + 1)));
+  }
+  return names;
+}
+
+function compareVersions(left: string, right: string): number {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+/**
+ * 真正的 CLI。顺序：Host 显式指定的那份 → 桌面版包里与 GUI 同版本的那份 → 桌面版拷出来的
+ * 最新副本（`%LOCALAPPDATA%\OpenAI\Codex\bin\...`）→ PATH 上的 codex。
  *
  * Desktop can start this wrapper before its primary runtime installer has finished. When
  * code-mode is enabled, starting an older CLI during that window is not equivalent to
@@ -96,6 +187,12 @@ export async function resolveRealCodex(
     return { command: explicit, prefixArgs: [] };
   }
   if ((options.platform ?? process.platform) === "darwin") return resolveMacRealCodex(env, options);
+
+  const packaged = desktopAppCliPath(env, options.listDesktopPackages);
+  if (packaged !== undefined && (options.requireCodeModeHost !== true
+    || existsSync(join(dirname(packaged), CODE_MODE_HOST_NAME)))) {
+    return { command: packaged, prefixArgs: [] };
+  }
 
   const root = join(env.LOCALAPPDATA?.trim() || join(homedir(), "AppData", "Local"), "OpenAI", "Codex", "bin");
   const requireCodeModeHost = options.requireCodeModeHost === true;

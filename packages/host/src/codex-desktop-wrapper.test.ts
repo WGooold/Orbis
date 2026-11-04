@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, posix, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { requestsCodeModeHost, resolveRealCodex } from "./codex-desktop-wrapper.js";
+import { requestsCodeModeHost, isAppServerInvocation, resolveRealCodex } from "./codex-desktop-wrapper.js";
 
 describe("Codex desktop wrapper CLI selection", () => {
   it("waits for a code-mode-capable runtime when installation races app-server startup", async () => {
@@ -34,10 +34,38 @@ describe("Codex desktop wrapper CLI selection", () => {
     }
   });
 
-  it("only requires the helper for app-server invocations that enable code mode", () => {
+  it("prefers the CLI shipped inside the desktop app package over the copy it made earlier", async () => {
+    // 有 CODEX_CLI_PATH 时桌面版不再刷新自己那份副本，旧副本会让它的启动策略读失败。
+    const root = await mkdtemp(join(tmpdir(), "orbis-codex-desktop-"));
+    const arch = process.arch === "arm64" ? "arm64" : "x64";
+    const packageName = `OpenAI.Codex_26.1027.6604.0_${arch}__2p2nqsd0c76g0`;
+    const localAppData = join(root, "Local");
+    const programFiles = join(root, "ProgramFiles");
+    const copied = join(localAppData, "OpenAI", "Codex", "bin", "6257d9e8f63c0f2b");
+    const packaged = join(programFiles, "WindowsApps", packageName, "app", "resources");
+    try {
+      await mkdir(copied, { recursive: true });
+      await writeFile(join(copied, "codex.exe"), "stale");
+      await mkdir(packaged, { recursive: true });
+      await writeFile(join(packaged, "codex.exe"), "packaged");
+
+      const resolution = resolveRealCodex(
+        { LOCALAPPDATA: localAppData, ProgramW6432: programFiles, ProgramFiles: programFiles },
+        { listDesktopPackages: () => [packageName] },
+      );
+
+      await expect(resolution).resolves.toEqual({ command: join(packaged, "codex.exe"), prefixArgs: [] });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("only bridges a real app-server start, not the one-shot startup queries", () => {
     expect(requestsCodeModeHost(["-c", "features.code_mode_host=true", "app-server"])).toBe(true);
     expect(requestsCodeModeHost(["app-server"])).toBe(false);
     expect(requestsCodeModeHost(["--version"])).toBe(false);
+    expect(isAppServerInvocation(["app-server"])).toBe(true);
+    expect(isAppServerInvocation(["app-server", "--print-startup-config", "--startup-client-info", "{}"])).toBe(false);
   });
 });
 
