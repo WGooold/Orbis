@@ -55,13 +55,13 @@ describe("relay online runtime discovery", () => {
     await relay?.close();
   });
 
-  it("reports a protocol version mismatch on both authentication routes", async () => {
+  it.each([17, 20])("reports unsupported protocol %s on both authentication routes", async (protocolVersion) => {
     relay = await createRelayServer({ port: 0 });
     const runtime = await openSocket(`${relay.url}/v1/runtime`);
     sockets.push(runtime);
     runtime.send(JSON.stringify({
       type: "runtime.authenticate",
-      protocolVersion: PROTOCOL_VERSION - 1,
+      protocolVersion,
       credential: "runtime-secret",
       role: "host",
       runtime: { runtimeId: "host-1", name: "desktop", cwd: "/", status: "idle" },
@@ -76,7 +76,7 @@ describe("relay online runtime discovery", () => {
     sockets.push(device);
     device.send(JSON.stringify({
       type: "device.authenticate",
-      protocolVersion: PROTOCOL_VERSION - 1,
+      protocolVersion,
       credential: "device-secret",
     }));
     await expect(nextMessage(device)).resolves.toMatchObject({

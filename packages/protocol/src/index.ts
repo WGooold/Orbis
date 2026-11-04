@@ -27,8 +27,8 @@ export * from "./tool-inventory-source.js";
  * 16：Path 仅允许 LAN / Relay；固定 LAN 优先，删除路径偏好设置（ADR-0050）。
  * 13：客户端改为消费 Host 的显示投影（`session.snapshot` / `session.patch` 上的 `display`：
  * 窗口起点 `windowStart` + 渲染锚点 `anchor`），App 不再解释原生形状。版本号是**精确匹配**的：
- * 所有入站校验都是 `!== PROTOCOL_VERSION` 直接拒绝，没有兼容旧版的旁路——升版就是断代，
- * 两端必须一起更新。
+ * 本机与 E2E 业务格式仍使用此修订。Relay 的独立路由外层按 ADR-0064 保留已实现的 18 / 19；
+ * 接受旧路由格式不代表新 Host 已能处理旧 E2E 业务格式。
  */
 export const PROTOCOL_VERSION = 19 as const;
 
@@ -1125,6 +1125,26 @@ export const DeviceClientMessageSchema = z.discriminatedUnion("type", [
   V2FrameSchema,
 ]);
 export type DeviceClientMessage = z.infer<typeof DeviceClientMessageSchema>;
+
+/**
+ * ADR-0064: Relay only authenticates endpoints and carries opaque envelopes.
+ * These two released outer formats are identical except for the version literal.
+ * Keep this boundary separate from loopback and E2E business schemas; do not infer
+ * support for a future format from its version number.
+ */
+export const RELAY_WIRE_PROTOCOL_VERSIONS = [18, 19] as const;
+export const RelayWireProtocolVersionSchema = z.literal(RELAY_WIRE_PROTOCOL_VERSIONS);
+export type RelayWireProtocolVersion = z.infer<typeof RelayWireProtocolVersionSchema>;
+const relayWireVersion = { protocolVersion: RelayWireProtocolVersionSchema };
+export const RelayRuntimeClientMessageSchema = z.discriminatedUnion("type", [
+  RuntimeClientMessageSchema.options[0].extend(relayWireVersion),
+  RuntimeClientMessageSchema.options[1].extend(relayWireVersion),
+  V2FrameSchema.extend(relayWireVersion),
+]);
+export const RelayDeviceClientMessageSchema = z.discriminatedUnion("type", [
+  DeviceClientMessageSchema.options[0].extend(relayWireVersion),
+  V2FrameSchema.extend(relayWireVersion),
+]);
 
 /**
  * E2E `data` 载荷里允许出现的消息（spec §5.2 / §8）。

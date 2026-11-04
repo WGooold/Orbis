@@ -2,7 +2,7 @@
 
 日期：2026-11-04（Asia/Taipei）
 
-Status: accepted（长期兼容目标已确认；第一阶段实现 Android 与既有 18 / 19 的互通，验证中、未上线）
+Status: accepted（长期兼容目标已确认；第一阶段 Android 已合并，第二阶段恢复 Relay 对已部署 Host 18 的传输兼容；完整产品组合仍未验收）
 
 关联：[ADR-0008](0008-drop-backward-compatibility.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0062](0062-claude-background-agents-and-session-activity.md)。本文替代 ADR-0008 的“所有版本必须相等、禁止能力协商”策略；认证、E2E、核心字段验证、身份与真实回执约束继续生效。
 
@@ -90,3 +90,40 @@ Claude 后台子任务提交 `20a9898` 将共享协议、Android 和 iOS 从 18 
 交付 Debug APK 的 SHA-256 为 `034bcaddb85ce7d1f1ba842467899e1105e99bdefadbfea40aeda920f440cb0e`，签名与导入基线一致；正式签名 APK、混淆映射和回退包同时保留。完整结果、失败比较、产物及清理记录见 `.artifacts/ui-regression/20261104-protocol19-compatibility/summary.md`。
 
 工作树 `/Volumes/WD1TB/Orbis/orbis-protocol19-compatibility`，分支 `codex/protocol19-compatibility`；证据 `.artifacts/ui-regression/20261104-protocol19-compatibility/`。没有操作真机、重启用户 Host 或部署 Relay。
+
+## 第二阶段：Relay 接受已部署 Host / App 18（2026-11-04）
+
+Relay `b59f99755b86` 部署后仍使用严格协议 19 认证，已安装 Host 0.1.13
+（实际协议 18）因而无法重连。第一阶段仅修改 Android，未覆盖 Host–Relay 边界。
+用户授权修复、push 并部署；此前部署前漏掉了既有 Host 18 的兼容核验。
+
+本阶段只演进 Relay 的独立传输外层，已核对真实 Host 18 的认证、ready 和
+Envelope 格式与 19 的差异仅为该外层版本字面量。显式接受 18 / 19，在完整
+schema 校验和凭据认证成功后按 socket 绑定版本；后续帧不得中途切换。ready
+及转发帧按接收 socket 的已认证版本序列化，不添加旧 strict schema 不接受的
+握手字段。完整 Envelope（hdr、MAC、ct、内部业务版本、分片）保持原样；不做
+解密、业务重试或操作 ID 改写。17 / 20 及畸形版本继续拒绝，不虚报未来格式。
+
+兼容 schema 独立于原有 loopback 与 E2E schema；不据此声称新 Host / iOS 19
+已支持 18 业务消息。已安装 Host 18 与 Android 0.1.54 可继续使用各自已实现的
+18 E2E 格式。本阶段不改变 UI / 消息投影、状态语义、动效或手机包，不重启
+用户 Host、不修改配对与生产凭据。
+
+部署门禁在 Windows 全量测试基础上，将 Relay 18 / 19 四组合、原样握手 / 密文 /
+回执 / 二进制 / 片帧、凭据和身份拒绝、同连接版本绑定纳入 macOS 和 Linux 必跑
+用例；Linux 另跑完整 protocol / Relay 套件。上线后核对 Actions、服务器部署
+标记、公网健康提交，并以无效测试凭据验证公网 18 / 19 已进入认证检查、17 / 20
+仍被版本门禁拒绝。真实已安装 Host 18 模块的隔离本地验证与部署证据保存至
+`.artifacts/deploy/20261104-relay-protocol18/`；不把测试进程冒充用户线上 Host，
+不把传输互通表述为全部 UI / 真机门禁已完成。
+
+服务器脚本还在切换前检查隔离候选的实际 WebSocket 版本门禁，切换后在原有回滚
+边界内检查公网路径；两处均使用随机无效测试凭据，不注册 Host / App、不读取真实
+凭据、不改写用户会话。HTTP 健康但拒绝现有 18 的候选因此不能切入生产。
+
+本地 lint、TypeScript 检查、生产构建及 protocol / Relay / E2E / Host Relay
+相关 247 项测试通过。将 Relay 临时换回修复前实现时，新增 Host18 / App18
+回归如期失败，修复源文件已按哈希恢复。直接加载本机已安装 Host 0.1.13 的
+未修改 Relay client、protocol18 和 E2E 模块，以隔离凭据分别对接 App 18 / 19
+外层：认证、完整握手、旧 schema 的 ready / 请求 / 回执与协议18二进制往返均
+通过，请求 ID 保持且仅执行一次；本轮未连接用户 Host 配置或真实模型进程。

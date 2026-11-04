@@ -14,7 +14,15 @@ If Cloudflare proxies HTTPS, configure Nginx's trusted Cloudflare address ranges
 
 Connections use LAN / Relay only, with a fixed LAN-first order (ADR-0050). The Relay requires TCP 443 through the reverse proxy; local discovery and direct connections follow the Host LAN configuration.
 
-Protocol v17 requires matching Relay, Host, runtime / bridge and mobile builds. Prepare the artifacts before the cutover, update Relay first, and then update the endpoints. Mixed versions reject connections with an upgrade message. Preserve pairing keys and persistent state; roll back matching versions together if needed. Production cutover and service retirement require a separate deployment record.
+Per ADR-0064, the Relay transport accepts the released wire formats 18 and 19.
+Each socket binds its version during authentication; ready messages and forwarded
+outer frames use the recipient's version. The encrypted envelope is unchanged,
+including its inner business version. Reject unsupported formats (including 17
+and 20) and attempts to change version after authentication. This permits an
+existing Host 18 to reconnect after a Relay update without reinstalling it.
+It does not add protocol-18 E2E support to a strict Host/iOS 19 implementation;
+Android 0.1.54 separately handles Host E2E formats 18 and 19. Preserve pairing
+keys and persistent state. Production cutover requires a deployment record.
 
 ## GitHub Actions
 
@@ -54,6 +62,19 @@ Windows or Linux success. Confirm all required CI jobs and the deployed health
 commit before reporting an update as live.
 
 Confirm the successful Actions run, public health `commit`, and `/opt/orbis/shared/deployed-commit` match. A failed rollout restores the previous container. State schema downgrades may require a matching state backup; container rollback cannot undo incompatible data migrations.
+
+Relay compatibility is a deployment gate on all three operating systems. The
+18/18, 18/19, 19/18 and 19/19 transport matrix checks exact released ready-message
+shapes, real E2E handshakes and decryption, request/receipt identity, binary bytes,
+and opaque piece forwarding. Credential and sender validation, unsupported
+versions and changes to the authenticated version remain negative regressions.
+Linux also runs the full protocol and Relay suites. Before reporting the rollout
+as live, verify that public protocol-18 and protocol-19 authentication with
+deliberately invalid test credentials reaches `unauthorized`, while protocol 17
+and 20 return `protocol_version_mismatch`; no user credential is needed. The
+deployment script runs this probe against the isolated candidate before stopping
+the previous service, then through the public WebSocket path before committing
+the release. Either failure stays inside the existing rollback boundary.
 
 ## Downloads
 

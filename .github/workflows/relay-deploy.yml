@@ -103,6 +103,9 @@ jobs:
             packages/host/src/desktop-installation.test.ts \
             packages/host/src/login-shell-env.test.ts \
             packages/host/src/turn-file-change-service.test.ts \
+            packages/protocol/src/relay-compatibility.test.ts \
+            packages/relay/src/protocol-compatibility.test.ts \
+            packages/relay/src/relay.test.ts \
             scripts/review-demo/cleanup.test.mjs \
             scripts/review-demo/portal.test.mjs \
             --maxWorkers=1 --testTimeout=30000 \
@@ -116,7 +119,7 @@ jobs:
           retention-days: 14
 
   check-review-linux:
-    name: Linux review Host integration tests
+    name: Linux Relay compatibility and review integration tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -127,7 +130,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run build
-      - run: npx vitest run scripts/review-demo/cleanup.test.mjs scripts/review-demo/portal.test.mjs --maxWorkers=1 --testTimeout=30000 --reporter=default --reporter=junit --outputFile.junit=.artifacts/ci/linux.xml
+      - run: npx vitest run packages/protocol/src packages/relay/src scripts/review-demo/cleanup.test.mjs scripts/review-demo/portal.test.mjs --maxWorkers=1 --testTimeout=30000 --reporter=default --reporter=junit --outputFile.junit=.artifacts/ci/linux.xml
       - name: Preserve Linux test results
         if: always()
         uses: actions/upload-artifact@v4

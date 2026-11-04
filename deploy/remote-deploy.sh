@@ -132,6 +132,9 @@ if [[ "$candidate_healthy" -ne 1 ]]; then
   docker logs --tail 80 "$candidate" >&2 || true
   false
 fi
+# A healthy HTTP process can still reject every installed Host. Check the actual
+# version gates with invalid test credentials before touching the active service.
+docker exec "$candidate" node packages/relay/dist/protocol-smoke.js
 docker rm -f "$candidate" >/dev/null
 
 # Keep the former container intact until both local and public health checks pass.
@@ -179,6 +182,9 @@ if ! grep -q "\"commit\":\"$release\"" <<<"$public_health_body"; then
   echo "Public health check is not serving the expected commit $release" >&2
   false
 fi
+
+# Check the public WebSocket path inside the rollback boundary as well.
+docker exec orbis-relay node packages/relay/dist/protocol-smoke.js "${public_health_url%/healthz}"
 
 # Pages and authentication must pass before marking the release healthy, so
 # missing web assets still use the same container rollback as Relay failures.

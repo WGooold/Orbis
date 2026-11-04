@@ -5,13 +5,15 @@ import type { AddressInfo } from "node:net";
 import { dirname } from "node:path";
 import {
   decodeJson,
-  DeviceClientMessageSchema,
+  RelayDeviceClientMessageSchema,
   PROTOCOL_VERSION,
   OutboundChannelMux,
   type MuxChannel,
   type RelayToDeviceMessage,
   type RelayToRuntimeMessage,
-  RuntimeClientMessageSchema,
+  RelayRuntimeClientMessageSchema,
+  RelayWireProtocolVersionSchema,
+  type RelayWireProtocolVersion,
 } from "@orbis/protocol";
 import { WebSocketServer, WebSocket } from "ws";
 import { RegistrationError, type RegistrationAuthority } from "./registration.js";
@@ -78,6 +80,9 @@ const hasCredential = (hashes: Buffer[], candidate: string): boolean => {
  * 按 channel 调度，零知识一点没少。
  */
 const deviceMuxes = new WeakMap<WebSocket, OutboundChannelMux<string>>();
+// Each authenticated transport keeps its own outer version. The recipient's
+// version is used when forwarding, without changing any envelope or ciphertext.
+const relayWireVersions = new WeakMap<WebSocket, RelayWireProtocolVersion>();
 const MUX_WARN_INTERVAL_MS = 10_000;
 let lastMuxWarnAt = 0;
 
@@ -88,7 +93,11 @@ let lastMuxWarnAt = 0;
  * 不参与加密流、本来就没有 `ch`，按 `ctl` 走（它们必须立即有序地送出去）；其余（状态、目录、
  * 交互、推送通知）都是小帧，一律当 `ctl`。
  */
-const muxChannelOfMessage = (message: RelayToDeviceMessage | RelayToRuntimeMessage): MuxChannel => {
+type WithRelayWireVersion<T> = T extends { protocolVersion: number }
+  ? Omit<T, "protocolVersion"> & { protocolVersion: RelayWireProtocolVersion } : T;
+type RelayOutboundMessage = WithRelayWireVersion<RelayToDeviceMessage | RelayToRuntimeMessage>;
+
+const muxChannelOfMessage = (message: RelayOutboundMessage): MuxChannel => {
   if (message.type !== "v2.frame") return "ctl";
   const { k, ch } = message.envelope.hdr;
   if (k === "hs" || k === "pair") return "ctl";
@@ -134,11 +143,13 @@ const muxFor = (socket: WebSocket): OutboundChannelMux<string> => {
   return created;
 };
 
-const send = (socket: WebSocket, message: RelayToDeviceMessage | RelayToRuntimeMessage): void => {
+const send = (socket: WebSocket, message: RelayOutboundMessage): void => {
   if (socket.readyState !== WebSocket.OPEN) return;
   // 先序列化再入队：多路复用器要拿字节数记账。`ctl` 在同一个 tick 内就写出去，
   // 所以相对顺序与直接 `socket.send` 完全一致；只有 `bulk` 会在链路积压时留在队列里等。
-  const text = JSON.stringify(message);
+  const text = JSON.stringify("protocolVersion" in message
+    ? { ...message, protocolVersion: relayWireVersions.get(socket) ?? PROTOCOL_VERSION }
+    : message);
   muxFor(socket).enqueue(muxChannelOfMessage(message), text, text.length);
 };
 
@@ -153,7 +164,7 @@ const hasIncompatibleProtocolVersion = (value: unknown, authenticateType: string
   return message.type === authenticateType
     && typeof message.protocolVersion === "number"
     && Number.isInteger(message.protocolVersion)
-    && message.protocolVersion !== PROTOCOL_VERSION;
+    && !RelayWireProtocolVersionSchema.safeParse(message.protocolVersion).success;
 };
 
 const protocolValidationMessage = (value: unknown, issues: readonly { path: PropertyKey[] }[]): string => {
@@ -515,7 +526,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         reject(socket, "invalid_message", "Message must be valid JSON");
         return;
       }
-      const parsed = RuntimeClientMessageSchema.safeParse(decoded);
+      const parsed = RelayRuntimeClientMessageSchema.safeParse(decoded);
       if (!parsed.success) {
         if (!runtimeId && hasIncompatibleProtocolVersion(decoded, "runtime.authenticate")) {
           reject(socket, "protocol_version_mismatch", "Protocol version mismatch. Update Orbis Host to the latest version.");
@@ -526,6 +537,11 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         return;
       }
       const message = parsed.data;
+
+      if (runtimeId && message.protocolVersion !== relayWireVersions.get(socket)) {
+        reject(socket, "protocol_version_mismatch", "The protocol version is fixed by authentication");
+        return;
+      }
 
       if (!runtimeId) {
         if (message.type !== "runtime.authenticate") {
@@ -550,6 +566,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
           return;
         }
         runtimeId = message.runtime.runtimeId;
+        relayWireVersions.set(socket, message.protocolVersion);
         const previous = runtimes.get(runtimeId);
         if (previous) {
           previous.socket.close(4001, "replaced");
@@ -626,11 +643,11 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         reject(socket, "invalid_message", "Device messages must be JSON");
         return;
       }
-      let parsed: ReturnType<typeof DeviceClientMessageSchema.safeParse>;
+      let parsed: ReturnType<typeof RelayDeviceClientMessageSchema.safeParse>;
       let decoded: unknown;
       try {
         decoded = decodeJson(raw);
-        parsed = DeviceClientMessageSchema.safeParse(decoded);
+        parsed = RelayDeviceClientMessageSchema.safeParse(decoded);
       } catch {
         reject(socket, "invalid_message", "Message must be valid JSON");
         return;
@@ -644,6 +661,11 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         return;
       }
       const message = parsed.data;
+
+      if (connection && message.protocolVersion !== relayWireVersions.get(socket)) {
+        reject(socket, "protocol_version_mismatch", "The protocol version is fixed by authentication");
+        return;
+      }
 
       if (!connection) {
         if (message.type !== "device.authenticate") {
@@ -662,6 +684,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         }
         connection = { socket, deviceId: credential.deviceId, ...(credential.hostId === undefined ? {} : { hostId: credential.hostId }) };
         devices.add(connection);
+        relayWireVersions.set(socket, message.protocolVersion);
         markAuthenticated(socket);
         send(socket, {
           type: "device.ready",
