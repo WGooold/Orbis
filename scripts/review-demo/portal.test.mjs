@@ -1,18 +1,28 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, expect, it } from "vitest";
 import { createRelayServer } from "@orbis/relay";
 import { decodePairingQrText, loadOrCreateHostIdentity } from "@orbis/e2e";
 import { HostService } from "../../packages/host/src/host-service.ts";
+import { SessionSpawner } from "../../packages/host/src/spawner.ts";
 import { createPortal } from "./portal.mjs";
 import { connectDevice } from "./device.mjs";
+import { configurePi } from "./pi-config.mjs";
 
-let relay, host, portal, dir, device;
+let relay, host, portal, dir, device, spawner;
 afterEach(async () => {
+  for (const agent of spawner?.running ?? []) { try { process.kill(-agent.pid, "SIGTERM"); } catch { /* Exited. */ } }
+  for (let n = 0; n < 100 && spawner?.running.length; n++) await delay(50);
+  for (const agent of spawner?.running ?? []) { try { process.kill(-agent.pid, "SIGKILL"); } catch { /* Exited. */ } }
+  for (let n = 0; n < 20 && spawner?.running.length; n++) await delay(50);
+  const remaining = spawner?.running ?? [];
   await device?.close(); await portal?.close(); await host?.stop(); await relay?.close();
   if (dir) await rm(dir, { recursive: true, force: true });
-  relay = host = portal = dir = device = undefined;
+  relay = host = portal = dir = device = spawner = undefined;
+  expect(remaining).toHaveLength(0);
 });
 
 async function setup(publicRelayUrl) {
@@ -28,6 +38,26 @@ async function setup(publicRelayUrl) {
 async function pair() {
   return fetch(`${portal.url}/pair`, { method: "POST", headers: { "x-review-request": "1" } });
 }
+
+it("registers a real headless Pi through the standard local Host channel without calling a model", async () => {
+  dir = await mkdtemp(join(tmpdir(), "orbis-review-config-"));
+  await configurePi(dir);
+  relay = await createRelayServer({ host: "127.0.0.1", port: 0, runtimeCredentials: ["review-runtime"], adminToken: "review-admin" });
+  spawner = new SessionSpawner({ stateDir: dir, env: {
+    PATH: process.env.PATH, HOME: dir, PI_CODING_AGENT_DIR: dir, ORBIS_STATE_DIR: dir, PI_OFFLINE: "1",
+    DEEPSEEK_API_KEY: "unused-test-placeholder",
+    ORBIS_PI_ENTRY: fileURLToPath(new URL("../../node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url)),
+    ORBIS_EXTENSION_PATH: fileURLToPath(new URL("../../packages/pi-extension/dist/index.js", import.meta.url)),
+  } });
+  host = await HostService.create({ relayUrl: relay.url, stateDir: dir, sessionsRoot: join(dir, "sessions"),
+    credential: "review-runtime", adminToken: "review-admin", lan: false, reconnect: false, spawner });
+  await host.start();
+  await spawner.activate({ deviceId: "test", target: { type: "new", agentKind: "pi", cwd: dir }, spawnMode: "headless" });
+  const end = Date.now() + 20_000;
+  while (!host.localRuntimes.length && Date.now() < end) await delay(100);
+  expect(host.localRuntimes).toHaveLength(1);
+  expect(await realpath(host.localRuntimes[0].cwd)).toBe(await realpath(dir));
+}, 30_000);
 
 it("uses the public Relay URL while keeping a fresh, ordinary short-lived pairing payload", async () => {
   await setup("wss://orbising.com/review-relay");

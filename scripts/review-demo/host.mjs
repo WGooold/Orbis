@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { access, copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadOrCreateHostIdentity } from "@orbis/e2e";
@@ -9,6 +9,7 @@ import { SessionSpawner } from "../../packages/host/dist/spawner.js";
 import { listPiSessions } from "../../packages/host/dist/sessions.js";
 import { createRelayServer } from "../../packages/relay/dist/index.js";
 import { createPortal } from "./portal.mjs";
+import { configurePi } from "./pi-config.mjs";
 
 const config = JSON.parse(await readFile("/run/secrets/host.json", "utf8"));
 if (!config.publicRelayUrl?.startsWith("wss://")) throw new Error("Invalid review configuration");
@@ -33,16 +34,7 @@ if (!await access(join(workspace, ".git")).then(() => true, () => false)) {
   execFileSync("git", ["add", "."], { cwd: workspace, stdio: "ignore" });
   execFileSync("git", ["-c", "user.name=Orbis Review", "-c", "user.email=review@orbising.com", "commit", "-m", "Add sample workspace"], { cwd: workspace, stdio: "ignore" });
 }
-await writeFile(join(agentDir, "models.json"), JSON.stringify({ providers: { "review-deepseek": {
-  baseUrl: "https://api.deepseek.com/v1", api: "openai-completions", apiKey: "$DEEPSEEK_API_KEY",
-  compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: false },
-  models: [{ id: "deepseek-flash", name: "DeepSeek Flash (Review)", reasoning: false, input: ["text"],
-    contextWindow: 1048576, maxTokens: 393216, samplingParams: { thinking: { type: "disabled" } } }],
-} } }), { mode: 0o600 });
-await writeFile(join(agentDir, "settings.json"), JSON.stringify({
-  defaultProvider: "review-deepseek", defaultModel: "deepseek-flash", defaultThinkingLevel: "off",
-  enableInstallTelemetry: false, enableAnalytics: false,
-}), { mode: 0o600 });
+await configurePi(agentDir);
 await loadOrCreateHostIdentity({ dir: stateDir, hostName: "Orbis Review Demo" });
 
 // The public iOS UI may request a terminal window. This Linux review Host has no GUI.

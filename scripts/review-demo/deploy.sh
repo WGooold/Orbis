@@ -26,7 +26,7 @@ docker rm orbis-review-host >/dev/null 2>&1 || true
 start_host "$image"
 healthy=false
 for _ in $(seq 1 45); do
-    if curl -fsS http://127.0.0.1:8788/healthz >/dev/null; then healthy=true; break; fi
+    if curl -fsS --max-time 3 http://127.0.0.1:8788/healthz >/dev/null 2>&1; then healthy=true; break; fi
     sleep 2
 done
 if [ "$healthy" != true ]; then
